@@ -35,23 +35,151 @@ touches the live Zoho tenant not at all. Its ``export/`` segment comes FIRST for
 the shadowing reason above: ``/crm/leads/export.csv`` would sit under
 ``/crm/leads/{record_id}``.
 
+``fields.py`` is WS-53 CRM-Q4 — ``GET /crm/fields/{entity}``, the field
+definitions that the sync and the field studio write. Read only. Since CRM-C4a,
+``?layout=1`` returns the sections, the system fields and the custom fields.
+
+``field_studio.py`` is WS-53 CRM-C4a — the field studio of a Native CRM:
+``POST``, ``PATCH`` and ``DELETE`` on ``/crm/fields/{entity}[/{key}]``, the
+restore, ``PUT /crm/field-layout/{entity}`` and ``/crm/field-sections/{entity}``.
+Admin only, behind ``CRM_FIELD_STUDIO_ORGS``, and 409 in Mirror mode. It also
+holds the rules of the ``custom`` write path, which ``records.py`` calls.
+
+``modules.py`` is WS-53 CRM-Q6b — ``GET /crm/modules`` and the read-only
+record routes of each mirrored generic Zoho module (``crm_module_records``).
+Its paths start with the literal ``modules/`` segment, so no route shadows it.
+
+``field_rules.py`` is WS-53 CRM-Q7a — ``GET``, ``POST`` and ``PATCH`` on
+``/crm/field-rules``, the Field map of the mirror. Admin only, behind
+``CRM_MIRROR``, and Mirror mode only. It writes ``crm_field_rules`` and never a
+CRM record. The sync applies an approved rule.
+
+``mapping_plans.py`` is WS-53 CRM-Q18-1 — ``GET`` and ``POST
+/crm/mapping/plans`` and the approve and restore of a version (table
+``crm_mapping_plans``). It has the guards of the Field map. Its ``commit`` is
+the one approve, and ``field_rules.py`` calls it too.
+
+``suggestions.py`` is WS-53 CRM-Q20-2 — ``GET /crm/mapping/suggestions`` and
+the approve, the Undo and the dismiss of one slot. It has the guards of the
+Field map, and it approves through ``mapping_plans.commit``.
+
+``analysis.py`` is WS-53 CRM-Q32-10 — ``POST /crm/analysis/rerun`` and
+``GET /crm/analysis/status``. An admin runs the steps of the end of a sync
+run now, through ``crm_sync/scheduler.start_analysis``. It has the guards of
+the Field map.
+
 ``reports.py`` is WS-26g — the four read-only ``/crm/reports/*`` blocks
 (forecast by stage, funnel, win/loss, owner leaderboard) over
 ``crm_status_changes`` and ``crm_deals``. It writes nothing and adds no
 migration; the weighted-₹ expression it shares with ``pipeline`` lives in
 ``core.WEIGHTED_SQL`` so there is exactly one copy of the formula.
+
+``settings.py`` is WS-53 CRM-T5 — ``GET`` and ``PATCH /crm/settings``, the
+organization's CRM mode and its access rule, admin only. Its two helpers
+register no routes: ``access.py`` holds the router dependency that ``core``
+runs third, and ``seed.py`` holds the starting pipeline that the change to
+Native mode writes.
+
+``connection.py`` is WS-53 CRM-Z2 — ``GET /crm/connection``, the Zoho
+connect (``POST /crm/connection/zoho/start`` and the callback
+``GET /crm/oauth/zoho/callback``) and ``POST /crm/connection/disconnect``. Each
+route is behind ``CRM_MIRROR``, default OFF. The credential lives in
+``gateway/connections/store.py``, the only reader of the blob.
+
+``pipelines.py`` is WS-53 CRM-Q1 and CRM-Q2 — ``GET /crm/pipelines``, the three
+Native-mode writes on a pipeline and its stages, and ``GET /crm/source-profile``
+(behind ``CRM_MIRROR``).
+
+``sync.py`` is WS-53 CRM-Z5 — ``GET /crm/sync/status`` and ``POST /crm/sync/zoho``
+(Sync now). Both are behind ``CRM_MIRROR``. The engine they start lives in
+``gateway/crm_sync/``, which imports ``routes.crm.core``, so ``sync.py`` imports
+it inside its handlers.
+
+``views.py`` is WS-53 CRM-Q8 — ``GET``, ``POST``, ``PATCH`` and ``DELETE`` on
+``/crm/views``, the saved views of the lists and boards (table ``crm_views``).
+A view is not a CRM record, so the routes work in Mirror mode as well.
+
+``aggregate.py`` is WS-53 CRM-C7 — ``GET /crm/aggregate`` and
+``GET /crm/aggregate/stage-dwell``, the totals that an agent reads. Read only.
+It builds its filters with ``records.list_query``, the one list builder.
+``settings.py`` also holds ``GET /crm/mode``, the mode for any admitted member,
+and ``PUT /crm/settings/labels`` (CRM-Z10g), the names of the core records in
+a Native CRM, admin only.
+
+``convert_mapping.py`` is WS-53 CRM-C6a — ``GET`` and ``PUT
+/crm/conversion-mapping``, the lead-conversion mapping of a Native CRM (table
+``crm_convert_mappings``). Admin only, behind ``CRM_FIELD_STUDIO_ORGS``, and
+409 in Mirror mode. ``pipeline.convert_lead`` applies the map.
+
+``cutover.py`` is WS-53 CRM-Z10a — ``GET /crm/cutover/preview``, what moves to
+Metorite when the org leaves Zoho and what does not. Read only, with no source
+call. Admin only, behind ``CRM_MIRROR``, and Mirror mode only. CRM-Z10b adds
+the switch: ``POST /crm/cutover/start``, ``GET /crm/cutover/status`` and
+``POST /crm/cutover``. Admin only, behind ``CRM_CUTOVER_ORGS``, and the admin
+types ``SWITCH``.
+
+``note_search.py`` is WS-53 CRM-Q27 — ``GET /crm/notes/search``, the notes
+nearest to a query by meaning (table ``crm_note_vectors``). Read only. An org
+outside ``CRM_NOTE_SEARCH_ORGS`` gets ``degraded`` with no embed call. Its
+``notes/`` segment is a literal, and no other route uses it.
+
+``catalogue.py`` is WS-53 CRM-Q31-1 — ``GET /crm/catalogue``, what each core
+entity and each mirrored module is for, with its key fields and links. Read
+only. The code rules live in ``crm_sync/catalogue.py``. An org outside
+``CRM_CATALOGUE_ORGS`` gets 404 ``catalogue_off`` in each mode.
+
+``questions.py`` is WS-53 CRM-Q32 — ``GET /crm/questions``, the open
+questions of the CRM, and their answers. The guards of the Field map, and an
+org outside ``CRM_QUESTIONS_ORGS`` gets 404 ``questions_off``. The kinds and
+the order live in ``crm_sync/questions.py``, as pure functions.
+
+``digests.py`` is WS-53 CRM-Q28 — ``GET /crm/digests``, the weekly digests
+of the org. Read only. ``crm_sync/digest.py`` writes
+the table, and only for an org on ``CRM_DIGEST_ORGS``.
+
+``rules.py`` is WS-53 CRM-Q33 — ``/crm/rules``, the business rules of the org
+and of each member (table ``crm_business_rules``), and the hold and the
+confirm of a rule from the chat. An org outside ``CRM_ANSWER_FIRST_ORGS``
+gets 404 ``rules_off``.
+
+``change_log.py`` is WS-CRM CRM-M1 — ``GET /crm/change-history`` and
+``POST /crm/change-history/{id}/undo`` (table ``crm_change_log``), and
+``log_change``, the one writer of a Change history row. Each feature module
+registers the Undo of its own areas there.
 """
 
 from gateway.routes.crm import activities as _activities  # noqa: F401
 from gateway.routes.crm import admin as _admin  # noqa: F401
+from gateway.routes.crm import aggregate as _aggregate  # noqa: F401
+from gateway.routes.crm import analysis as _analysis  # noqa: F401
+from gateway.routes.crm import catalogue as _catalogue  # noqa: F401
+from gateway.routes.crm import change_log as _change_log  # noqa: F401
+from gateway.routes.crm import connection as _connection  # noqa: F401
+from gateway.routes.crm import convert_mapping as _convert_mapping  # noqa: F401
+from gateway.routes.crm import cutover as _cutover  # noqa: F401
 from gateway.routes.crm import deal_contacts as _deal_contacts  # noqa: F401
+from gateway.routes.crm import digests as _digests  # noqa: F401
 from gateway.routes.crm import export as _export  # noqa: F401
+from gateway.routes.crm import field_rules as _field_rules  # noqa: F401
+from gateway.routes.crm import field_studio as _field_studio  # noqa: F401
+from gateway.routes.crm import fields as _fields  # noqa: F401
 from gateway.routes.crm import import_zoho as _import_zoho  # noqa: F401
+from gateway.routes.crm import mapping_plans as _mapping_plans  # noqa: F401
+from gateway.routes.crm import modules as _modules  # noqa: F401
+from gateway.routes.crm import note_search as _note_search  # noqa: F401
 from gateway.routes.crm import pipeline as _pipeline  # noqa: F401
+from gateway.routes.crm import pipelines as _pipelines  # noqa: F401
+from gateway.routes.crm import questions as _questions  # noqa: F401
 from gateway.routes.crm import records as _records  # noqa: F401
 from gateway.routes.crm import reports as _reports  # noqa: F401
+from gateway.routes.crm import rules as _rules  # noqa: F401
+from gateway.routes.crm import settings as _settings  # noqa: F401
 from gateway.routes.crm import stage_metadata as _stage_metadata  # noqa: F401
+from gateway.routes.crm import suggestions as _suggestions  # noqa: F401
+from gateway.routes.crm import sync as _sync  # noqa: F401
 from gateway.routes.crm import sync_zoho as _sync_zoho  # noqa: F401
+from gateway.routes.crm import terms as _terms  # noqa: F401
+from gateway.routes.crm import views as _views  # noqa: F401
 from gateway.routes.crm.core import router
 
 __all__ = ["router"]

@@ -29,7 +29,28 @@ const SIZES: Record<InputSize, string> = {
 const BASE =
   "cc-control rounded-lg border border-border bg-background text-foreground " +
   "placeholder:text-muted-foreground outline-none focus:border-primary/50 " +
-  "disabled:cursor-not-allowed disabled:opacity-60";
+  "disabled:cursor-not-allowed disabled:opacity-60 " +
+  // The glass look (D143, GL-2), all behind `glass:`. The ring of keyboard
+  // focus is GL-1's tinted outline; the border takes the tint on focus. A
+  // 16 px face on a touch screen stops iOS from zooming the page on focus,
+  // and it is pinned in px because density scales rem.
+  "glass:border-input glass:bg-field " +
+  "glass:focus:border-primary/60 glass:pointer-coarse:text-[16px]";
+
+/**
+ * GL-6, one family for a single-line field. It is a capsule, as the glass
+ * `Button` is, and its heights match the buttons: `sm` is 28 px like
+ * `Button sm` and `SelectButton`, `md` is 32 px like `Button md`, and `lg`
+ * is 36 px for a form. A touch screen gets 44 px. `Textarea` is not a
+ * capsule, so it takes its own radius and face below.
+ */
+const GLASS_FIELD = "glass:rounded-full glass:border-input glass:bg-field";
+const GLASS_HEIGHT: Record<InputSize, string> = {
+  sm: `${GLASS_FIELD} glass:h-7 glass:py-0 glass:text-footnote glass:pointer-coarse:h-11`,
+  md: `${GLASS_FIELD} glass:h-8 glass:py-0 glass:text-label glass:pointer-coarse:h-11`,
+  lg: `${GLASS_FIELD} glass:h-9 glass:py-0 glass:text-subhead glass:pointer-coarse:h-11`,
+};
+const GLASS_TEXTAREA = "glass:rounded-lg glass:text-subhead";
 
 /**
  * 🔴 **`w-full` USED TO LIVE IN `BASE`, AND IT SILENTLY ATE EVERY CALLER'S
@@ -102,7 +123,7 @@ export function Input({ inputSize = "md", icon, className = "", ...rest }: Input
   const field = (
     <input
       {...rest}
-      className={`${BASE} ${icon ? "w-full" : width} ${SIZES[inputSize]} ${icon ? "pl-8" : ""} ${styles}`}
+      className={`${BASE} ${icon ? "w-full" : width} ${SIZES[inputSize]} ${GLASS_HEIGHT[inputSize]} ${icon ? "pl-8" : ""} ${icon ? "glass:pl-9" : "glass:pl-3.5"} glass:pr-3.5 ${styles}`}
     />
   );
   if (!icon) return field;
@@ -126,7 +147,7 @@ export function Input({ inputSize = "md", icon, className = "", ...rest }: Input
       <Icon
         name={icon}
         size={14}
-        className="pointer-events-none absolute left-2.5 top-1/2 z-10 -translate-y-1/2 text-muted-foreground"
+        className="pointer-events-none absolute left-2.5 top-1/2 z-10 -translate-y-1/2 text-muted-foreground glass:left-3"
       />
       {field}
     </div>
@@ -164,7 +185,7 @@ export function Textarea({ inputSize = "md", className = "", ...rest }: Textarea
   return (
     <textarea
       {...rest}
-      className={`${BASE} ${width} ${SIZES[inputSize]} resize-y ${styles}`}
+      className={`${BASE} ${GLASS_TEXTAREA} ${width} ${SIZES[inputSize]} resize-y ${styles}`}
     />
   );
 }
@@ -221,14 +242,14 @@ export function Select({
     <div className={`relative ${width}`}>
       <select
         {...rest}
-        className={`${BASE} w-full ${SIZES[inputSize]} cursor-pointer appearance-none pr-7 disabled:cursor-not-allowed ${styles}`}
+        className={`${BASE} w-full ${SIZES[inputSize]} ${GLASS_HEIGHT[inputSize]} cursor-pointer appearance-none pr-7 glass:pr-8 glass:pl-3.5 disabled:cursor-not-allowed ${styles}`}
       >
         {children}
       </select>
       <Icon
         name="ChevronDown"
         size={14}
-        className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground"
+        className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground glass:right-3"
       />
     </div>
   );

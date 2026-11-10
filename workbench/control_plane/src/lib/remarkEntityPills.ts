@@ -16,13 +16,28 @@
  *   person pill. That is the fallback for a model that drops the marks.
  * - A pill never shows the guillemets. A stray mark left in the text is
  *   dropped too.
+ * - With `{ taskRefs: true }`, a bare `#171` becomes a `taskRef` node
+ *   (owner report, 2026-10-13). `taskRefs.ts` holds the rules of what counts
+ *   as one. `ChatTaskRef.tsx` draws it as the same task pill, or as the plain
+ *   text when no visible task has that number.
+ * - With `{ names: false, taskRefs: true }`, ONLY the bare `#171`s change
+ *   (WS-57 TR-5). The task card's description and comments use it: a «mark»
+ *   and an email there are the member's own words, and stay as written.
  *
  * The node is `span[data-entity-pill]` in the HTML tree, so `MarkdownBody`
  * draws it through its `span` component, and nothing here knows React.
  * `entityIndex.ts` decides what the pill resolves to.
  *
  * Pure and framework-free, so the node-env vitest can hold it.
+ *
+ * The fence pattern is `FENCE_SOURCE` in `fencedText.ts`, the one parser of
+ * the marks. A surface that is not Markdown draws them with `FencedText`.
+ * With `{ emails: false }` the plugin marks only the fenced names: that is the
+ * mode of an answer that draws no pills (`MarkdownBody` `fences`).
  */
+
+import { FENCE_SOURCE, QUOTE_SOURCE } from "@/lib/fencedText";
+import { findTaskRefs, splitTaskRefs } from "@/lib/taskRefs";
 
 /** The smallest shape of an mdast node this plugin reads and writes. */
 export interface MdNode {
@@ -30,6 +45,7 @@ export interface MdNode {
   value?: string;
   url?: string;
   children?: MdNode[];
+  position?: { start?: { offset?: number }; end?: { offset?: number } };
   data?: {
     hName?: string;
     hProperties?: Record<string, string>;
@@ -41,6 +57,11 @@ export interface MdNode {
 export const PILL_ATTR = "data-entity-pill";
 export const PILL_TEXT_ATTR = "data-entity-text";
 export const PILL_NUMBER_ATTR = "data-entity-number";
+/** The attribute of a bare task reference (`#171`). It carries the `#n`. */
+export const TASK_REF_ATTR = "data-task-ref";
+/** The words right after a bare reference, so the pill can see that the
+ *  answer already wrote the title there (review round 1). */
+export const TASK_REF_AFTER_ATTR = "data-task-ref-after";
 
 const EMAIL_SOURCE = String.raw`[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}`;
 
@@ -49,9 +70,12 @@ const EMAIL_SOURCE = String.raw`[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]
  * email. The fenced arm comes first, so an email inside «» is one pill.
  */
 const PILL = new RegExp(
-  String.raw`(?:(#\d+)\s+)?«([^«»\n]{1,200})»|(?<![\w.@+-])(${EMAIL_SOURCE})(?![\w@-])`,
+  String.raw`(${QUOTE_SOURCE})|${FENCE_SOURCE}|(?<![\w.@+-])(${EMAIL_SOURCE})(?![\w@-])`,
   "g",
 );
+
+/** The fenced names only: the mode with no email pills. */
+const FENCE_ONLY = new RegExp(`(${QUOTE_SOURCE})|${FENCE_SOURCE}`, "g");
 
 /** A whole run that is one fenced name, for the bold unwrap. */
 const ONE_PILL = /^\s*(?:#\d+\s+)?«[^«»\n]{1,200}»\s*$/;
@@ -69,6 +93,18 @@ function pillNode(text: string, number?: string): MdNode {
       hProperties: props,
       // The fallback text if no component draws the pill: never the marks.
       hChildren: [{ type: "text", value: number ? `${number} ${text}` : text }],
+    },
+  };
+}
+
+function taskRefNode(ref: string, after: string): MdNode {
+  return {
+    type: "taskRef",
+    data: {
+      hName: "span",
+      hProperties: { [TASK_REF_ATTR]: ref, [TASK_REF_AFTER_ATTR]: after.slice(0, 200) },
+      // The fallback text if no component draws it: the reference as written.
+      hChildren: [{ type: "text", value: ref }],
     },
   };
 }
@@ -96,7 +132,7 @@ function textOf(nodes: MdNode[]): string | null {
  * fenced name, turn a mailto autolink back into text, and merge adjacent
  * text, so a name split across nodes by the parser is one run again.
  */
-function normalise(children: MdNode[]): MdNode[] {
+function normalise(children: MdNode[], emails: boolean): MdNode[] {
   const flat: MdNode[] = [];
   for (const child of children) {
     if ((child.type === "strong" || child.type === "emphasis") && child.children) {
@@ -106,7 +142,7 @@ function normalise(children: MdNode[]): MdNode[] {
         continue;
       }
     }
-    if (isMailtoAutolink(child)) {
+    if (emails && isMailtoAutolink(child)) {
       flat.push({ type: "text", value: child.children?.[0].value ?? "" });
       continue;
     }
@@ -124,29 +160,53 @@ function normalise(children: MdNode[]): MdNode[] {
   return merged;
 }
 
-/** Split one text value into text and pill nodes. */
-export function splitText(value: string): MdNode[] {
+/** Split one text value into text and pill nodes. With `refs`, a bare
+ *  `#171` in the plain runs becomes a `taskRef` node too. */
+export function splitText(value: string, emails = true, refs = false): MdNode[] {
   const out: MdNode[] = [];
   let last = 0;
-  for (const m of value.matchAll(PILL)) {
-    const start = m.index ?? 0;
-    if (start > last) out.push({ type: "text", value: value.slice(last, start) });
-    if (m[2] !== undefined) {
-      const name = m[2].trim();
-      if (name) out.push(pillNode(name, m[1]));
-      else if (m[1]) out.push({ type: "text", value: `${m[1]} ` });
-    } else {
-      out.push(pillNode(m[3]));
+  // A stray guillemet — an unclosed mark, an empty pair — never shows. A
+  // padded quotation (`« oui »`) is kept as written (`fencedText.ts` rule 3).
+  const text = (v: string, keep = false) => {
+    const clean = keep ? v : v.replace(/[«»]/g, "");
+    if (!clean) return;
+    if (!refs || keep) {
+      out.push({ type: "text", value: clean });
+      return;
     }
+    const parts = splitTaskRefs(clean);
+    parts.forEach((part, k) => {
+      const next = parts[k + 1];
+      out.push(
+        part.kind === "ref"
+          ? taskRefNode(part.ref, next?.kind === "text" ? next.text : "")
+          : { type: "text", value: part.text },
+      );
+    });
+  };
+  for (const m of value.matchAll(emails ? PILL : FENCE_ONLY)) {
+    const start = m.index ?? 0;
+    if (start > last) text(value.slice(last, start));
     last = start + m[0].length;
+    if (m[1] !== undefined) {
+      text(m[1], true);
+    } else if (m[3] !== undefined) {
+      const name = m[3].trim();
+      if (name) out.push(pillNode(name, m[2]));
+      else if (m[2]) text(`${m[2]} `);
+    } else {
+      out.push(pillNode(m[4]));
+    }
   }
-  if (last < value.length) out.push({ type: "text", value: value.slice(last) });
-  // A stray guillemet — an unclosed mark, an empty pair — never shows.
-  return glueTrailingPunctuation(
-    out
-      .map((n) => (n.type === "text" ? { ...n, value: (n.value ?? "").replace(/[«»]/g, "") } : n))
-      .filter((n) => n.type !== "text" || n.value !== ""),
-  );
+  if (last < value.length) text(value.slice(last));
+  // Merge the runs the scan split, so the punctuation glue sees one text.
+  const merged: MdNode[] = [];
+  for (const n of out) {
+    const prev = merged[merged.length - 1];
+    if (n.type === "text" && prev?.type === "text") prev.value = (prev.value ?? "") + (n.value ?? "");
+    else merged.push(n);
+  }
+  return glueTrailingPunctuation(merged);
 }
 
 /** The class of the span that keeps a pill and its punctuation together. */
@@ -167,7 +227,7 @@ function glueTrailingPunctuation(nodes: MdNode[]): MdNode[] {
   const out: MdNode[] = [];
   for (let k = 0; k < nodes.length; k++) {
     const node = nodes[k];
-    if (node.type !== "entityPill") {
+    if (node.type !== "entityPill" && node.type !== "taskRef") {
       out.push(node);
       continue;
     }
@@ -202,31 +262,151 @@ function glueTrailingPunctuation(nodes: MdNode[]): MdNode[] {
   return out;
 }
 
-function walk(node: MdNode, insideLink: boolean): void {
+/** The card's source, and where the finder finds a reference in it. */
+interface Source {
+  text: string;
+  /** The offset of each `#` that `findTaskRefs` accepts in the whole source. */
+  refs: Set<number>;
+}
+
+/**
+ * Split one text value into text and `taskRef` nodes, and touch nothing
+ * else: the mode with no names (WS-57 TR-5). Exported for its test.
+ *
+ * With `source`, a reference counts only where the finder also finds it in
+ * the Markdown source, as the gateway reads it (`text_links.py`, review
+ * round 1). `start` is the node's offset in the source. Two cases:
+ *
+ * - The node's source equals its value: the reference must start at a `#`
+ *   the whole-source finder accepts. So `_#11_` draws no pill, because the
+ *   `_` before the `#` rules it out in the source.
+ * - The parser decoded an escape or an entity (`\#12`, `&#35;12`): a
+ *   reference counts only as often as the finder finds its number in the
+ *   node's source. So an escaped `#12` draws no pill.
+ */
+export function splitRefsOnly(value: string, source?: Source, start?: number, end?: number): MdNode[] {
+  const raw = source && start !== undefined && end !== undefined ? source.text.slice(start, end) : value;
+  const left = new Map<number, number>();
+  if (raw !== value) {
+    for (const r of findTaskRefs(raw)) left.set(r.number, (left.get(r.number) ?? 0) + 1);
+  }
+  const keep = (r: { start: number; number: number }): boolean => {
+    if (!source || start === undefined) return true;
+    if (raw === value) return source.refs.has(start + r.start);
+    const n = left.get(r.number) ?? 0;
+    if (n === 0) return false;
+    left.set(r.number, n - 1);
+    return true;
+  };
+  const out: MdNode[] = [];
+  const pushText = (t: string) => {
+    if (!t) return;
+    const prev = out[out.length - 1];
+    if (prev?.type === "text") prev.value = (prev.value ?? "") + t;
+    else out.push({ type: "text", value: t });
+  };
+  const found = findTaskRefs(value).filter(keep);
+  let last = 0;
+  found.forEach((r, k) => {
+    pushText(value.slice(last, r.start));
+    const after = value.slice(r.end, found[k + 1]?.start ?? value.length);
+    out.push(taskRefNode(value.slice(r.start, r.end), after));
+    last = r.end;
+  });
+  pushText(value.slice(last));
+  return glueTrailingPunctuation(out);
+}
+
+function walk(
+  node: MdNode, insideLink: boolean, emails: boolean, refs: boolean, names: boolean,
+  source?: Source,
+): void {
   if (!node.children || SKIP.has(node.type)) return;
-  const kids = insideLink ? node.children : normalise(node.children);
+  const kids = insideLink || !names ? node.children : normalise(node.children, emails);
   const next: MdNode[] = [];
   for (const child of kids) {
     if (child.type === "text") {
-      if (insideLink) {
+      if (!names) {
+        // The task card's text: its words stay as written, «marks» too.
+        // Only a `#171` outside a link becomes a node.
+        next.push(
+          ...(insideLink || !refs
+            ? [child]
+            : splitRefsOnly(
+              child.value ?? "", source, child.position?.start?.offset, child.position?.end?.offset,
+            )),
+        );
+      } else if (insideLink) {
         // No pill inside a link (a control inside a control), and no marks.
         next.push({ ...child, value: (child.value ?? "").replace(/[«»]/g, "") });
       } else {
-        next.push(...splitText(child.value ?? ""));
+        next.push(...splitText(child.value ?? "", emails, refs));
       }
       continue;
     }
-    walk(child, insideLink || child.type === "link");
+    walk(child, insideLink || child.type === "link", emails, refs, names, source);
     next.push(child);
   }
   node.children = next;
 }
 
+/** The plugin's options. `emails: false` marks only the fenced names.
+ *  `taskRefs: true` marks each bare `#171` as well. `names: false` marks no
+ *  fenced name and no email, and changes no word: only the `#171`s, for the
+ *  task card (WS-57 TR-5). */
+export interface EntityPillOptions {
+  emails?: boolean;
+  taskRefs?: boolean;
+  names?: boolean;
+}
+
 /** The plugin. `remarkPlugins={[remarkGfm, remarkEntityPills]}`. */
-export default function remarkEntityPills() {
-  return (tree: MdNode) => {
-    walk(tree, false);
+export default function remarkEntityPills(options?: EntityPillOptions) {
+  const emails = options?.emails !== false;
+  const refs = options?.taskRefs === true;
+  const names = options?.names !== false;
+  // The source is read in the card's mode only, so the chat's output does
+  // not change (`markdownChatGolden.test.ts`).
+  return (tree: MdNode, file?: { value?: unknown }) => {
+    const text = !names && typeof file?.value === "string" ? file.value : undefined;
+    const source = text === undefined
+      ? undefined
+      : { text, refs: new Set(findTaskRefs(text).map((r) => r.start)) };
+    walk(tree, false, emails, refs, names, source);
   };
+}
+
+// ── A typed bullet ───────────────────────────────────────────────────────────
+
+/** A line that starts with a typed bullet character, not a Markdown marker. */
+const TYPED_BULLET = /^(\s*)[•▪‣◦●]\s+/;
+
+/**
+ * `• one` on its own line is a list item the model typed by hand (owner
+ * report, 2026-10-07). Markdown does not read `•` as a list, so the items ran
+ * together into one paragraph. Make each one a `- ` item before the parser
+ * runs. Fenced code is left alone. Exported for its test.
+ */
+export function typedBulletsToList(content: string): string {
+  if (!/[•▪‣◦●]/.test(content)) return content;
+  let fence: string | null = null;
+  return content
+    .split("\n")
+    .map((line) => {
+      const mark = line.match(/^ {0,3}(`{3,}|~{3,})/);
+      if (fence !== null) {
+        if (mark && mark[1][0] === fence[0] && mark[1].length >= fence.length) fence = null;
+        return line;
+      }
+      if (mark) {
+        fence = mark[1];
+        return line;
+      }
+      // A line indented four spaces or a tab can be code: leave it alone.
+      if (/^(?: {4}|\t)/.test(line)) return line;
+      return line.replace(TYPED_BULLET, "$1- ");
+    })
+    .join("\n");
 }
 
 // ── The missing space before bold ────────────────────────────────────────────

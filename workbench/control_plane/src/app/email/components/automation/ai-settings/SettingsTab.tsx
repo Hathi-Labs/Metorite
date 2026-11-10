@@ -10,6 +10,7 @@ import Icon from "@/components/Icon";
 import { useCallback, useEffect, useState } from "react";
 import {
   approveKnowledge, createKnowledge, deleteKnowledge, deleteLearnedPattern,
+  getAlwaysCopy, saveAlwaysCopy, type AlwaysCopyList, type AlwaysCopyRule,
   deleteRulePattern,
   generateWritingStyle, getAssistantSettings, getVoiceProfile, listColdSenders,
   listKnowledge,
@@ -18,10 +19,16 @@ import {
   reviewRulePatterns, saveAssistantSettings, scanFollowUps, updateKnowledge,
   upsertColdSender,
 } from "../../../lib/api";
-import { autoDraftRepliesOn } from "../../../lib/assistantSettings";
 import {
-  AssistantSettings, ColdBlockerMode, ColdSender, DRAFT_CONFIDENCE_OPTIONS,
-  DraftConfidence, KnowledgeEntry, LLMConfigResponse, LearnedPattern,
+  AUTO_RUN_AI_LINE, AUTO_RUN_DESCRIPTION, autoDraftRepliesOn,
+  settingsSaveBody, withoutAutoRunChoice,
+} from "../../../lib/assistantSettings";
+import {
+  dialogAfterSave, patchBody, saveSignature, settingsAfterSave, shownError, type SignatureSave,
+} from "../../../lib/signatureSave";
+import {
+  AssistantSettings, AssistantSettingsSave, ColdBlockerMode, ColdSender, DRAFT_CONFIDENCE_OPTIONS,
+  DraftConfidence, KnowledgeEntry, LearnedPattern,
   LearnedRulePattern, RuleGuidance, VoiceProfile, WEEKDAYS,
 } from "../../../lib/types";
 import { SignatureEditor } from "../../SignatureEditor";
@@ -127,13 +134,139 @@ function OrgDomainsCard({
   );
 }
 
+/** The member's "always copy" rules (§21.16). Each rule names a domain or
+ *  an address, and the colleagues that go, ticked, on each matching reply
+ *  and new-mail card. Nothing sends on its own. The server takes only a
+ *  colleague or a person you wrote to before, and says who it refused. */
+function AlwaysCopyCard({ accountId }: { accountId: string }) {
+  // Review P2: `list` stays null until a read succeeds. A failed read shows
+  // its error and offers no write, so a partial list never replaces the
+  // stored one. Each write sends the version it read.
+  const [list, setList] = useState<AlwaysCopyList | null>(null);
+  const rules: AlwaysCopyRule[] | null = list ? list.rules : null;
+  const [match, setMatch] = useState("");
+  const [people, setPeople] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setList(null);
+    setError(null);
+    getAlwaysCopy(accountId)
+      .then((r) => !cancelled && setList(r))
+      .catch((e) => !cancelled && setError((e as Error).message || "Could not load the rules. Reload to try again."));
+    return () => {
+      cancelled = true;
+    };
+  }, [accountId]);
+
+  const save = async (next: AlwaysCopyRule[]) => {
+    if (!list) return false;
+    setBusy(true);
+    setError(null);
+    try {
+      setList(await saveAlwaysCopy(accountId, next, list.version));
+      return true;
+    } catch (e) {
+      setError((e as Error).message || "Could not save the rules. Try again.");
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const add = async () => {
+    const m = match.trim().toLowerCase().replace(/^@+/, "");
+    const cc = people.split(/[\s,;]+/).map((a) => a.trim().toLowerCase()).filter(Boolean);
+    if (!m || cc.length === 0 || !rules) return;
+    const next = [...rules.filter((r) => r.match !== m), { match: m, cc }];
+    if (await save(next)) {
+      setMatch("");
+      setPeople("");
+    }
+  };
+
+  return (
+    <SettingCard
+      title="Always copy"
+      description="Name a domain or an address, and the colleagues to copy. They go, ticked, on each reply and new-mail card for that mail, and you can untick them. Nothing sends on its own. Only a colleague or a person you wrote to before can be on a rule."
+    >
+      <div className="space-y-1.5" data-always-copy="">
+        {rules === null && !error && (
+          <span className="text-[11px] text-muted-foreground">Loading the rules…</span>
+        )}
+        {rules !== null && rules.length === 0 && (
+          <span className="text-[11px] text-muted-foreground italic">
+            No rule yet. Add one below, or ask the assistant to always copy someone.
+          </span>
+        )}
+        {(rules ?? []).map((r) => (
+          <div
+            key={r.match}
+            className="flex items-start justify-between gap-2 rounded-md border border-border bg-secondary px-2 py-1.5 text-[11px]"
+            data-always-copy-rule={r.match}
+          >
+            <span className="min-w-0 break-words text-foreground">
+              <span className="font-medium">{r.match}</span>
+              <span className="text-muted-foreground"> → copy </span>
+              {r.cc.join(", ")}
+            </span>
+            <button
+              onClick={() => rules && void save(rules.filter((x) => x.match !== r.match))}
+              disabled={busy}
+              className="text-muted-foreground hover:text-destructive transition-colors disabled:opacity-40"
+              aria-label={`Remove the rule for ${r.match}`}
+            >
+              <Icon name="X" size={11} />
+            </button>
+          </div>
+        ))}
+      </div>
+      <div className="mt-2.5 flex flex-wrap items-center gap-2">
+        <input
+          value={match}
+          onChange={(e) => setMatch(e.target.value)}
+          placeholder="domain or address, e.g. university.edu"
+          aria-label="Domain or address"
+          className={`${INPUT_BASE} min-w-[10rem] flex-1`}
+        />
+        <input
+          value={people}
+          onChange={(e) => setPeople(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              void add();
+            }
+          }}
+          placeholder="colleagues, e.g. kiran@yourco.com, veena@yourco.com"
+          aria-label="Colleagues to copy"
+          className={`${INPUT_BASE} min-w-[12rem] flex-[2]`}
+        />
+        <button
+          onClick={() => void add()}
+          disabled={busy || !match.trim() || !people.trim() || rules === null}
+          className="flex items-center gap-1 px-2.5 py-2 rounded-lg border border-border text-xs text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors disabled:opacity-40"
+        >
+          <Icon name="Plus" size={12} /> {busy ? "Saving…" : "Add rule"}
+        </button>
+      </div>
+      {error && (
+        <p className="mt-1.5 break-words text-[11px] text-destructive" role="alert" data-always-copy-error="">
+          {error}
+        </p>
+      )}
+    </SettingCard>
+  );
+}
+
 export function SettingsTab({ accountId }: { accountId: string | null }) {
   const [settings, setSettings] = useState<AssistantSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [llm, setLlm] = useState<LLMConfigResponse | null>(null);
   const [dialog, setDialog] = useState<
     | "followup"
     | "digest"
@@ -161,13 +294,6 @@ export function SettingsTab({ accountId }: { accountId: string | null }) {
   }, [accountId]);
 
   useEffect(() => {
-    fetch("/api/settings/llm")
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => d && setLlm(d))
-      .catch(() => {});
-  }, []);
-
-  useEffect(() => {
     if (!accountId) {
       setLoading(false);
       return;
@@ -185,14 +311,16 @@ export function SettingsTab({ accountId }: { accountId: string | null }) {
 
   // Persist the whole settings object. Toggles/selects persist immediately;
   // the free-text cards rely on the bottom "Save settings" button.
-  const persist = async (next: AssistantSettings) => {
-    setSettings(next);
+  // Task 2305: the state never holds the Auto-run marker, and only the
+  // Auto-run switch passes `autoRunChoice`. So only its save sends the marker.
+  const persist = async (next: AssistantSettingsSave, autoRunChoice = false) => {
+    setSettings(withoutAutoRunChoice(next));
     setSaving(true);
     setError(null);
     setSaved(false);
     try {
-      const res = await saveAssistantSettings(next);
-      setSettings(res);
+      const res = await saveAssistantSettings(settingsSaveBody(next, autoRunChoice));
+      setSettings(withoutAutoRunChoice(res));
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (e) {
@@ -206,7 +334,17 @@ export function SettingsTab({ accountId }: { accountId: string | null }) {
   if (loading || !settings) return <Spinner label="Loading settings…" />;
 
   const s = settings; // narrowed
-  const persistPatch = (p: Partial<AssistantSettings>) => persist({ ...s, ...p });
+  // Builds on the settings state, which holds the STORED signature, so a
+  // toggle never sends a signature edit that did not save (WS-17 SG-1).
+  // persist drops the Auto-run marker, so a toggle records no choice (task 2305).
+  const persistPatch = (p: Partial<AssistantSettings>) => persist(patchBody(s, p));
+  // A signature save changes the state only on success. A refusal leaves the
+  // stored signature in the state and on the card (signatureSave.ts).
+  const persistSignature = async (signature: string): Promise<SignatureSave> => {
+    const result = await saveSignature(s, signature, saveAssistantSettings);
+    setSettings((now) => (now ? settingsAfterSave(now, result) : now));
+    return result;
+  };
   const followUpOn = s.follow_up_awaiting_days > 0 || s.follow_up_needs_reply_days > 0;
   const digestOn = s.digest_frequency !== "OFF";
 
@@ -359,11 +497,16 @@ export function SettingsTab({ accountId }: { accountId: string | null }) {
           <SectionHeader>Advanced</SectionHeader>
           <SettingCard
             title="Run rules automatically on new mail"
-            description="Processes incoming inbox mail with your enabled rules as it arrives. Turn it off to stop auto-running (rules still apply when you run them manually or process past emails)."
+            description={
+              <>
+                {AUTO_RUN_DESCRIPTION}
+                <span className="block mt-1">{AUTO_RUN_AI_LINE}</span>
+              </>
+            }
             right={
               <Toggle
                 enabled={s.auto_run}
-                onChange={(v) => persistPatch({ auto_run: v })}
+                onChange={(v) => persist({ ...s, auto_run: v }, true)}
               />
             }
           />
@@ -407,97 +550,15 @@ export function SettingsTab({ accountId }: { accountId: string | null }) {
             }
           />
           <ColdSendersList accountId={accountId} />
+          <AlwaysCopyCard accountId={accountId} />
           <OrgDomainsCard
             ownDomain={s.own_domain || ""}
             domains={s.org_domains || []}
             onChange={(next) => persistPatch({ org_domains: next })}
           />
-          {/* No rules model (D-EM-7): the rules run on the `decide` tier,
-              and no member can change it. */}
-          {([
-            {
-              key: "draft_model" as const,
-              title: "Draft writing model",
-              description:
-                "Writes background reply drafts, follow-ups, and rule draft actions. A powerful tier is recommended for reply quality — nobody is waiting on these.",
-              value: s.draft_model,
-              def: "tier-powerful",
-            },
-            {
-              key: "compose_model" as const,
-              title: "Manual draft model",
-              description:
-                "The composer's \"Draft with AI\" button — you wait on this one, so a fast tier is recommended (reasoning tiers can take 30s+ per click).",
-              value: s.compose_model,
-              def: "tier-fast",
-            },
-            {
-              key: "chat_model" as const,
-              title: "Email chat model",
-              description:
-                "The model the assistant chat panel uses inside the email app.",
-              value: s.chat_model,
-              def: "tier-balanced",
-            },
-          ]).map((cfg) => (
-            <SettingCard
-              key={cfg.key}
-              title={cfg.title}
-              description={cfg.description}
-              right={
-                <select
-                  value={cfg.value || cfg.def}
-                  onChange={(e) =>
-                    persistPatch({ [cfg.key]: e.target.value })
-                  }
-                  className={`${INPUT_CLS} w-56 py-1`}
-                >
-                  {llm ? (
-                    <>
-                      {llm && (
-                        <optgroup label="Tiers (auto-routing)">
-                          {llm.tiers.map((t) => (
-                            <option key={t.tier_name} value={t.tier_name}>
-                              {t.tier_name}
-                              {t.tier_name === cfg.def ? " (default)" : ""}
-                            </option>
-                          ))}
-                        </optgroup>
-                      )}
-                      {/* ⚠️ A RAW-MODEL OPTGROUP WAS HERE, and D32.7 is why
-                          it is not. **Customers never see a model.** Tiers are
-                          the only vocabulary, and the
-                          Console answers a bare model id with a 400 rather
-                          than coercing it — so a value picked here would stop
-                          working the day `ROUTER_SERVING_ENABLED` flips.
-
-                          This is H-72's defect on a second surface. /tasks was
-                          the urgent one because /tasks is LIVE; /email is
-                          `preview` (WS-17), so this closes the same hole
-                          before anyone can fall into it.
-
-                          ⚠️ This stops NEW ones. It does not heal a value
-                          already saved: that still shows below, because hiding
-                          it would leave somebody staring at a picker that
-                          disagrees with what their email AI actually runs on.
-                          Which tier an existing model id should become is a
-                          product decision (H-72). */}
-                      {cfg.value &&
-                        !llm?.tiers.some((t) => t.tier_name === cfg.value) && (
-                          <option value={cfg.value}>
-                            {cfg.value} (not a tier — ask us)
-                          </option>
-                        )}
-                    </>
-                  ) : (
-                    <option value={cfg.value || cfg.def}>
-                      {cfg.value || cfg.def} (default)
-                    </option>
-                  )}
-                </select>
-              }
-            />
-          ))}
+          {/* No model and no tier is a member choice (D-EM-7, D-EM-61).
+              Our code picks the tier of each email AI task, so the Advanced
+              section ends with the domains card. Fence: noTierChoice.test.ts. */}
         </div>
 
         {/* ── Danger zone ── */}
@@ -604,10 +665,7 @@ export function SettingsTab({ accountId }: { accountId: string | null }) {
       {dialog === "signature" && (
         <SignatureDialog
           settings={s}
-          onSave={(next) => {
-            persist(next);
-            setDialog(null);
-          }}
+          onSave={persistSignature}
           onClose={() => setDialog(null)}
         />
       )}
@@ -761,30 +819,64 @@ function PersonalInstructionsDialog({
   );
 }
 
+/** The signature dialog. A save that the server refuses keeps the dialog
+ *  open, with the member's edit in the editor and the server's sentence inside
+ *  the dialog (WS-17 SG-1, `lib/signatureSave.ts`). Only a saved signature
+ *  closes it. */
 function SignatureDialog({
   settings,
   onSave,
   onClose,
 }: {
   settings: AssistantSettings;
-  onSave: (next: AssistantSettings) => void;
+  onSave: (signature: string) => Promise<SignatureSave>;
   onClose: () => void;
 }) {
-  const [draft, setDraft] = useState(settings);
+  const [draft, setDraft] = useState(settings.signature || "");
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    const next = dialogAfterSave(draft, await onSave(draft));
+    setBusy(false);
+    setDraft(next.draft);
+    setError(next.error);
+    setNotice(next.notice);
+    if (!next.open) onClose();
+  };
+  const uploadOff = settings.signature_image_upload === false;
+  // The editor shows the upload-off line itself, so the error drops it.
+  const errorText = shownError(error, uploadOff);
   return (
     <Modal
       title="Email signature"
       description="Appended to the bottom of your replies. Use rich text or full HTML — links and images supported."
       onClose={onClose}
       footer={
-        <Button layout="flex items-center" onClick={() => onSave(draft)} className="ml-auto">
-          <Icon name="Check" size={13} /> Save
+        <Button layout="flex items-center" onClick={() => void save()} disabled={busy} className="ml-auto">
+          <Icon name="Check" size={13} /> {busy ? "Saving…" : "Save"}
         </Button>
       }
     >
+      {errorText && (
+        <p role="alert" data-signature-error className="mb-2 text-[11px] text-destructive">
+          {errorText}
+        </p>
+      )}
+      {/* Saved, and the clean took out each link or image that is not https. */}
+      {notice && (
+        <p role="status" data-signature-removed className="mb-2 text-[11px] text-muted-foreground">
+          {notice}
+        </p>
+      )}
       <SignatureEditor
-        value={draft.signature || ""}
-        onChange={(html) => setDraft({ ...draft, signature: html })}
+        value={draft}
+        onChange={setDraft}
+        accountId={settings.account_id}
+        uploadAvailable={!uploadOff}
       />
     </Modal>
   );

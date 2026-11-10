@@ -328,12 +328,21 @@ async def test_assigned_to_me_hides_closed_work_by_category_not_by_name(
 
 # ── The grant write path ────────────────────────────────────────────────────
 
-async def test_a_grant_can_be_created_through_the_api(db: FakeProjectsDB) -> None:
+async def test_a_grant_can_be_created_through_the_api(
+    db: FakeProjectsDB, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """WS-14 C1's review found an acceptance that could go green with **no way
     to create a grant at all**. The same hole here would make every scoping
     test a fixture INSERT proving nothing about the API, so the creation path is
     exercised end to end and the effect is read back through the read model."""
     project = db.seed_project(name="Sales", subject=None)
+
+    # The fake does not model ``org_group``. The route refuses a group that
+    # does not exist (WS-64 OP-6b fix round 1), so the one read says it does.
+    async def _groups(_db, _org):
+        return [{"slug": "sales", "display_name": "Sales"}]
+
+    monkeypatch.setattr(pm_core, "org_groups", _groups)
 
     created = await pm_tree.create_grant(
         str(project.id), pm_tree.GrantIn(subject="group:sales"), user=OWNER,

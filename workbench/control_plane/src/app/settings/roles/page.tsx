@@ -17,7 +17,7 @@ import Icon from "@/components/Icon";
 import { useCallback, useEffect, useState } from "react";
 import { useAccess } from "@/components/AccessProvider";
 import type { Feature, Role } from "../members/types";
-import SettingsHeader from "@/components/SettingsHeader";
+import { AppTopBar } from "@/components/AppTopBar";
 
 export default function RolesPage() {
   const { access } = useAccess();
@@ -86,20 +86,18 @@ export default function RolesPage() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="shrink-0 border-b border-border px-4 py-3 sm:px-6 sm:py-4">
-        <SettingsHeader
-          title="Roles"
-          subtitle="Permission bundles you assign to members"
-          backHref="/settings/organization"
-          backLabel="Back to Organisation"
-          actions={
-            <Button size="lg" layout="flex items-center" onClick={() => setCreating(true)}>
-              <Icon name="Plus" size={15} />
-              New role
-            </Button>
-          }
-        />
-      </div>
+      {/* The page's title bar (owner, 2026-10-10). Roles opens from the
+          Organisation bar, so its way back leads there. */}
+      <AppTopBar
+        back={{ href: "/settings/organization", label: "Back to Organisation" }}
+        title="Roles"
+        subtitle="Permission bundles you assign to members"
+        tools={
+          <Button size="sm" icon="Plus" onClick={() => setCreating(true)}>
+            New role
+          </Button>
+        }
+      />
 
       {error && (
         <div className="mx-4 mt-3 flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive sm:mx-6">

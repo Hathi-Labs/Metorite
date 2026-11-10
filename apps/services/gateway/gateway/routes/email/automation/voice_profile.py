@@ -23,16 +23,19 @@ import json
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from email_ingestion.llm_cap import automation_job, llm_slot
 from fastapi import BackgroundTasks, Depends, HTTPException, Query, status
+from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.automation.jobs import JobTracker
 from gateway.routes.email.core import (
     _assert_account_owner,
-    _tenant_session,
     _llm_json,
     _log,
     _parse_iso_date,
+    _tenant_session,
     router,
 )
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from gateway.routes.email.quoting import split_quoted_text
 from pydantic import BaseModel, Field
 from sqlalchemy import text
@@ -246,6 +249,8 @@ async def _llm_observe_batch(
         [{"role": "system", "content": sys_prompt},
          {"role": "user", "content": joined[:16000]}],
         max_tokens=1500,
+        feature="voice_profile",
+        job="structured",
     )
     return data if isinstance(data, dict) else {}
 
@@ -282,7 +287,9 @@ async def _llm_synthesize_profile(
         "tier-powerful",
         [{"role": "system", "content": sys_prompt},
          {"role": "user", "content": user}],
-        max_tokens=2000, temperature=0.2,
+        max_tokens=3000, temperature=0.2,
+        feature="voice_profile",
+        job="writing",
     )
     if not isinstance(data, dict):
         return {}, ""
@@ -335,6 +342,7 @@ async def _store_kb_suggestions(
     return stored
 
 
+@automation_job  # EM-T4b: the cap and the daily budget bind its model calls
 async def _build_voice_profile_job(
     account_id: str, sources: list[str], start: Any, end: Any,
     extract_knowledge: bool, token: int,
@@ -477,7 +485,9 @@ async def get_voice_profile(
     """The account's voice profile (or an EMPTY placeholder), plus how many
     suggested knowledge entries are waiting for review."""
     async with _tenant_session() as db:
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="send")
         row = (await db.execute(text(
             """SELECT enabled, status, style_guide, traits, sources,
                       range_start, range_end, analyzed_count, last_error,
@@ -502,7 +512,9 @@ async def preview_voice_profile(
     start = _parse_iso_date(start_date, end_of_day=False)
     end = _parse_iso_date(end_date, end_of_day=True)
     async with _tenant_session() as db:
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="send")
         counts: dict[str, int] = {}
         for folder in _VALID_SOURCES:
             if folder not in src:
@@ -595,6 +607,8 @@ async def voice_profile_status(
 ):
     """Live progress for the most recent build on this account. {"status":
     "idle"} when none has run (or it belongs to a different user)."""
+    account_id = await resolve_account_filter(
+        None, account_id, user.email or "anonymous", required=True)
     job = _VOICE_JOBS.get(account_id)
     if not job or job.get("owner") != (user.email or "anonymous"):
         return {"status": "idle"}
@@ -651,6 +665,8 @@ async def delete_voice_profile(
     """Remove the profile — and the knowledge suggestions it proposed that were
     never approved (approved entries are the user's now and stay)."""
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         await _assert_account_owner(db, account_id, user.email or "anonymous")
         await db.execute(text(
             """DELETE FROM email_knowledge
@@ -696,12 +712,15 @@ async def sample_voice_profile(
             "email body (greeting through sign-off) — no subject, no "
             "commentary. Invent plausible but generic specifics.\n\n" + block
         )
-        resp, _ = await acompletion_with_fallback(
-            model="tier-powerful",
-            messages=[{"role": "system", "content": sys_prompt},
-                      {"role": "user", "content": f"Scenario: {scenario}"}],
-            temperature=0.4, max_tokens=700,
-        )
+        # A member drives the sample, so the slot binds nothing (EM-T4b).
+        async with llm_slot():
+            resp, _ = await acompletion_with_fallback(
+                model="tier-powerful",
+                messages=[{"role": "system", "content": sys_prompt},
+                          {"role": "user", "content": f"Scenario: {scenario}"}],
+                temperature=0.4, max_tokens=700,
+                feature="email.voice_profile", job="writing",
+            )
         sample = (resp.choices[0].message.content or "").strip()
     except Exception as exc:
         _log.warning("email.voice_profile_sample_failed", error=str(exc)[:160])
@@ -725,7 +744,8 @@ async def approve_knowledge(
                       updated_at = now()
                FROM email_accounts ea
                WHERE ek.id = :id AND ek.account_id = ea.id
-                 AND ea.user_id = :uid"""
+                 AND """
+            + mailbox_predicate("ea", uid="uid", level="manage")
         ), {"id": kid, "uid": user.email or "anonymous"})
         if res.rowcount == 0:
             raise HTTPException(status_code=404, detail="Not found")

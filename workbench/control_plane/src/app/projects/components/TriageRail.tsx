@@ -17,6 +17,7 @@
  * count that matters.
  */
 
+import { displayRowProject } from "../lib/personalTree";
 import { useCallback, useEffect, useState } from "react";
 
 import Icon from "@/components/Icon";
@@ -33,7 +34,7 @@ import {
   sortQueue,
   type IntakeItem,
 } from "../lib/intake";
-import { MIN_QUERY, type Hit } from "../lib/search";
+import { isSearchableQuery, type Hit } from "../lib/search";
 
 type Ruling = "accept" | "duplicate" | "snooze";
 
@@ -82,7 +83,7 @@ export function TriageRail({ projectId, statuses, onOpenTask, onResolved }: Prop
     // The duplicate picker rides the existing search surface — same ranking,
     // same visibility, same escaping as ⌘K.
     const term = duplicateQuery.trim();
-    if (term.length < MIN_QUERY) {
+    if (!isSearchableQuery(term)) {
       setHits([]);
       return;
     }
@@ -264,7 +265,7 @@ export function TriageRail({ projectId, statuses, onOpenTask, onResolved }: Prop
                         <span className="truncate">{hit.title}</span>
                         {hit.project_name ? (
                           <span className="ml-auto shrink-0 text-muted-foreground">
-                            {hit.project_name}
+                            {displayRowProject(hit)}
                           </span>
                         ) : null}
                       </button>

@@ -15,6 +15,8 @@ export interface ProjectNode {
   name: string;
   parent_project_id?: string | null;
   kind?: string | null;
+  /** Migration 196: this node keeps its own status set. Absent on an old gateway. */
+  owns_statuses?: boolean | null;
   /** Migration 194 — a themed icon NAME and a ramp SLOT (1..8), never a colour. */
   icon?: string | null;
   icon_slot?: number | null;
@@ -30,6 +32,11 @@ export interface ProjectNode {
    * and writes ONE row.
    */
   position?: number | null;
+  /**
+   * Set when the node is filed. The server returns archived rows in the tree
+   * on purpose (the rail splits them out); every picker leaves them out.
+   */
+  archived_at?: string | null;
   children?: ProjectNode[];
 }
 
@@ -38,6 +45,36 @@ export type NodeKind = "project" | "folder";
 /** A row's kind. Absent/null reads as 'project' (R6 — migration 193). */
 export function nodeKind(node: Pick<ProjectNode, "kind">): NodeKind {
   return node.kind === "folder" ? "folder" : "project";
+}
+
+/**
+ * The one name of the private space (D-OP-2, OP-12b). The server stores the
+ * personal root as "My tasks" (`PERSONAL_PROJECT_NAME`), the old inbox word.
+ * The app never prints the stored name of this node, and never renames it.
+ */
+export const PERSONAL_NODE_NAME = "Personal";
+
+type NameFacts = {
+  name: string;
+  personal?: boolean | null;
+  parent_project_id?: string | null;
+};
+
+/** True for the root of a personal tree: personal, and nothing above it. */
+export function isPersonalRoot(
+  node: Pick<NameFacts, "personal" | "parent_project_id">,
+): boolean {
+  return node.personal === true && !node.parent_project_id;
+}
+
+/**
+ * The name to PRINT for a node, and the one function for it. The sidebar, the
+ * page title, the breadcrumb, the project chip, the pickers and the search
+ * results all call it. A personal root reads "Personal" whatever its stored
+ * name is. Any other node keeps its stored name.
+ */
+export function displayNodeName(node: NameFacts): string {
+  return isPersonalRoot(node) ? PERSONAL_NODE_NAME : node.name;
 }
 
 /**
@@ -254,6 +291,24 @@ export function flatten(
 }
 
 /**
+ * `flatten`, leaving out every archived node and what hangs under it. The
+ * server returns filed rows in the tree on purpose (the rail splits them out),
+ * and every list a member PICKS from reads this instead (WS-64).
+ */
+export function flattenActive(
+  nodes: readonly ProjectNode[],
+  depth = 0
+): Array<{ node: ProjectNode; depth: number }> {
+  const out: Array<{ node: ProjectNode; depth: number }> = [];
+  for (const node of nodes) {
+    if (node.archived_at) continue;
+    out.push({ node, depth });
+    out.push(...flattenActive(node.children ?? [], depth + 1));
+  }
+  return out;
+}
+
+/**
  * The roots a Center's slice shows: those granted to `group:<slug>`.
  *
  * ⚠️ **Presentation only.** This narrows what the sidebar renders for a Center
@@ -320,6 +375,21 @@ export function pathTo(
     if (below.length) return [root, ...below];
   }
   return [];
+}
+
+/**
+ * A task's place in the tree, for the task card's breadcrumb
+ * (`TaskHeaderRow`'s `where`): one crumb per node, from the space down to the
+ * task's own project. Empty when the tree does not hold the project — a
+ * private project of mine, or a tree that has not loaded — and the card then
+ * starts at the ref.
+ */
+export function taskWhere(
+  roots: readonly ProjectNode[],
+  projectId: string | null | undefined
+): { id: string; name: string }[] {
+  if (!projectId) return [];
+  return pathTo(roots, projectId).map((node) => ({ id: node.id, name: displayNodeName(node) }));
 }
 
 /**

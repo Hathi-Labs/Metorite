@@ -1,0 +1,621 @@
+"""The storage meter of a mailbox, its limit, and the removal of older mail
+from Metorite (WS-17 EM-T6c).
+
+Spec: ``project-docs/specs/email_app_master_plan.md`` §10.4.7, the part
+"EM-T6c". Owner decision D-EM-14 and the owner answers Q1 to Q4 (§10.2).
+
+This module is the ONE owner of the rules below. Do not copy them:
+
+* **The limit (Q1).** Each mailbox has its own limit. The setting
+  ``email_mailbox_storage_limit_mb`` (default 2048) times 1,048,576 is the
+  limit in bytes (:func:`storage_limit_bytes`). A mailbox is at the limit when
+  its meter is at or over that value (:func:`at_limit`).
+* **The resume (EM-T6f).** A first import that the limit stopped ends in the
+  phase ``limit``. :func:`import_resumes` says when that import goes on: the
+  phase is ``limit``, the meter ran, the meter is under the limit by at
+  least :func:`resume_margin_bytes` (20 MB, or 1% of the limit when that is
+  more), and the import has a point to go on from (``import_reached_at``).
+  :func:`resume_import` then writes ``initial_sync_done = false`` and
+  ``import_phase = 'importing'``, in one conditional UPDATE. The scheduler
+  calls it in phase (a) of a loop cycle, under the mailbox lock. The import
+  then goes on from ``import_reached_at`` down to the floor, and it stops at
+  the limit again as before. The scheduler paces the resumes
+  (``STORAGE_RESUME_GAP_SECS``).
+* **The meter (D-EM-14).** :func:`measure_stored_bytes` sums
+  ``pg_column_size`` of each column of variable length in the
+  ``email_messages`` rows of the mailbox, its ``email_attachments`` rows and
+  its ``email_embeddings`` rows. It writes ``stored_bytes`` and
+  ``stored_bytes_at``. ``pg_column_size`` reads the size of a stored value
+  from its header, so the meter fetches no body. Do not use
+  ``octet_length``, and do not take the size of a whole row.
+* **The meter of an import (EM-T6f review P1).** The full meter reads every
+  row of the mailbox, so an import does not run it after each batch.
+  :class:`ImportMeter` runs it after the first batch of a run. After each
+  later batch it adds the growth of that batch only: the same sums over the
+  rows of the batch, before and after its write (:func:`batch_bytes`,
+  :func:`add_batch_growth`). When that sum is at the limit, the full meter
+  runs again and decides. A run makes at most :data:`IMPORT_FULL_METERS`
+  full meters, and after that the sum decides.
+* **The preview.** :func:`preview_older` returns the count of messages and
+  the bytes that a removal before a date would free. It writes nothing.
+* **The removal.** :func:`advance_import_since` moves the import floor
+  first, before any delete (G3). :func:`remove_older_chunk` then deletes the
+  ``email_executed_rules`` rows of up to 1,000 messages, and then those
+  messages. It returns the threads of the messages that it deleted. The
+  attachment rows and the embeddings cascade. The rules, the learned
+  patterns, the rule guidance, the senders, the contacts and the Mem0
+  memories stay. No Mem0 key names one mail. The last steps are
+  :func:`delete_empty_thread_status`, :func:`delete_orphan_ai_drafts` (G5),
+  the meter and :func:`end_limit_phase` (G4).
+* **The orphan deletes touch only the threads of this removal (review round
+  1).** The two deletes of the last step take the threads that the chunks
+  returned. A row of another thread stays, also when no message of its
+  thread is in the mailbox. A reply from mailbox B to mail of mailbox A
+  stores a draft row of B for the thread of A, and that row stays.
+* **Drafts stay (G1).** The preview and the removal skip the folder
+  ``drafts`` (:data:`KEPT_FOLDERS_SQL`), so an unsent draft stays. This is an
+  orchestrator decision of 2026-10-04, and the owner can reverse it.
+
+⚠️ **The removal is Metorite's copy ONLY (D-EM-14).** This module imports
+nothing from ``email_ingestion.providers``, and it never calls the provider.
+Metorite never deletes or changes mail in the Outlook mailbox of the member.
+
+⚠️ **Each step takes a session, opens none and never commits.** The caller
+opens one ``tenant_session(org)`` for each step or chunk. A ``commit()``
+here would end ``SET LOCAL``. Fence: ``tests/unit/test_email_storage_limit.py``.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any
+
+from acb_common.settings import get_settings
+from sqlalchemy import text
+
+__all__ = [
+    "ATTACHMENT_COLUMNS",
+    "BATCH_ROWS_SQL",
+    "BYTES_PER_MB",
+    "EMBEDDING_COLUMNS",
+    "IMPORT_FULL_METERS",
+    "KEPT_FOLDERS_SQL",
+    "MESSAGE_COLUMNS",
+    "MESSAGE_DERIVED_COLUMNS",
+    "REMOVE_CHUNK",
+    "RESUME_MARGIN_MIN_BYTES",
+    "ImportMeter",
+    "OlderMail",
+    "RemovedChunk",
+    "add_batch_growth",
+    "advance_import_since",
+    "at_limit",
+    "batch_bytes",
+    "delete_empty_thread_status",
+    "delete_orphan_ai_drafts",
+    "end_limit_phase",
+    "import_resumes",
+    "measure_stored_bytes",
+    "preview_older",
+    "remove_older_chunk",
+    "resume_import",
+    "resume_margin_bytes",
+    "storage_limit_bytes",
+]
+
+#: The limit setting is in MB, and one MB is this many bytes.
+BYTES_PER_MB = 1_048_576
+
+#: The messages that one block of a removal deletes (EM-T6c item 10).
+REMOVE_CHUNK = 1000
+
+#: The filter that keeps the drafts out of a preview and a removal (G1). An
+#: unsent draft stays in Metorite. The test of the folder copies the one in
+#: ``body_backfill.py``, so a NULL folder is not a draft. It reads ``em``.
+KEPT_FOLDERS_SQL = "LOWER(COALESCE(em.folder, '')) NOT IN ('drafts', 'draft')"
+
+#: The filter of the rows of one import batch, by provider id (EM-T6f review
+#: P1). The unique key ``(account_id, provider_message_id)`` makes it an index
+#: read. It is a WHERE test, never a size. It reads ``em``.
+BATCH_ROWS_SQL = "em.provider_message_id = ANY(CAST(:pids AS text[]))"
+
+#: The least room under the limit that a resume needs (EM-T6f review P3a).
+#: :func:`resume_margin_bytes` takes the larger of this and 1% of the limit.
+RESUME_MARGIN_MIN_BYTES = 20 * BYTES_PER_MB
+
+#: The full meters that one run of the import may make (EM-T6f review P1).
+#: One runs after the first batch. Up to two more run when the sum of the
+#: batches reaches the limit. Phase (d) of the cycle adds one, so a cycle
+#: makes at most four, whatever the size of the import.
+IMPORT_FULL_METERS = 3
+
+#: The columns of variable length of each table that the meter counts. A
+#: column of fixed length (a uuid, a timestamp, a boolean) is the same size in
+#: every row, and a member cannot remove it by a choice of mail. The R8 fence
+#: compares each tuple with ``pg_attribute`` (``attlen = -1``), so a new
+#: column of variable length fails until it is named here.
+MESSAGE_COLUMNS: tuple[str, ...] = (
+    "provider_message_id", "thread_id", "folder", "labels", "from_address",
+    "to_addresses", "cc_addresses", "bcc_addresses", "subject", "body_text",
+    "body_html", "snippet", "importance", "categories", "unsubscribe_link",
+    "internet_message_id",
+    # WS-65 SM-1: the author of a local draft of a shared mailbox.
+    "drafted_by",
+)
+#: The columns of variable length that the meter does NOT count. Each one is
+#: derived search data, like an index, and the meter counts no index. KG-3a
+#: (migration 314) added ``fts``, the stored copy of the search vector. A
+#: count of it would grow each mailbox after the backfill, and a mailbox near
+#: its limit would lose older mail with no change by the member. The R8 fence
+#: reads this tuple too, so a new column must go in one of the two lists.
+MESSAGE_DERIVED_COLUMNS: tuple[str, ...] = ("fts",)
+ATTACHMENT_COLUMNS: tuple[str, ...] = (
+    "filename", "mime_type", "provider_attachment_id", "download_url",
+    "storage_path",
+)
+EMBEDDING_COLUMNS: tuple[str, ...] = (
+    "embedding", "model", "content_hash",
+)
+
+
+def _sizes(alias: str, columns: tuple[str, ...]) -> str:
+    """The SQL sum of ``pg_column_size`` of each column. A NULL counts 0."""
+    return " + ".join(
+        f"COALESCE(pg_column_size({alias}.{col}), 0)" for col in columns)
+
+
+def _bytes_cte(scope_filter: str) -> str:
+    """Two CTEs: ``scope`` (the messages and their own bytes) and ``total``
+    (their count, and their bytes plus those of their attachments and
+    embeddings). The meter and the preview share them."""
+    return f"""WITH scope AS (
+           SELECT em.id, ({_sizes("em", MESSAGE_COLUMNS)}) AS bytes
+             FROM email_messages em
+            WHERE em.account_id = :aid{scope_filter}
+       ), total AS (
+           SELECT (SELECT count(*) FROM scope) AS messages,
+                  CAST(
+                      (SELECT COALESCE(SUM(s.bytes), 0) FROM scope s)
+                    + (SELECT COALESCE(SUM({_sizes("ea", ATTACHMENT_COLUMNS)}), 0)
+                         FROM email_attachments ea
+                         JOIN scope s ON s.id = ea.message_id)
+                    + (SELECT COALESCE(SUM({_sizes("ee", EMBEDDING_COLUMNS)}), 0)
+                         FROM email_embeddings ee
+                         JOIN scope s ON s.id = ee.message_id)
+                  AS bigint) AS bytes
+       )"""
+
+
+#: The meter: one statement reads the sizes and writes them on the account.
+_MEASURE = text(
+    _bytes_cte("")
+    + """
+       UPDATE email_accounts
+          SET stored_bytes = (SELECT bytes FROM total),
+              stored_bytes_at = now()
+        WHERE id = :aid
+    RETURNING stored_bytes"""
+)
+
+#: The bytes that the rows of one import batch hold now: the same sums as the
+#: meter, over the rows of the batch only (EM-T6f review P1). It writes
+#: nothing.
+_BATCH_BYTES = text(
+    _bytes_cte(f" AND {BATCH_ROWS_SQL}")
+    + "\n       SELECT bytes FROM total"
+)
+
+#: The meter after a later batch of an import (EM-T6f review P1). It adds the
+#: growth of the batch, the bytes of its rows now minus ``:before``, to the
+#: meter. It keeps ``stored_bytes_at``, the time of the last full meter. A
+#: row with no meter yet counts as 0, but the first batch of each run writes
+#: the full meter, so a later batch always finds one.
+_ADD_BATCH_GROWTH = text(
+    _bytes_cte(f" AND {BATCH_ROWS_SQL}")
+    + """
+       UPDATE email_accounts
+          SET stored_bytes = COALESCE(stored_bytes, 0)
+                             + (SELECT bytes FROM total)
+                             - CAST(:before AS bigint)
+        WHERE id = :aid
+    RETURNING stored_bytes"""
+)
+
+#: The preview of a removal. It writes nothing. It counts no draft (G1).
+_PREVIEW = text(
+    _bytes_cte(f" AND em.received_at < :before AND {KEPT_FOLDERS_SQL}")
+    + "\n       SELECT messages, bytes FROM total"
+)
+
+#: One chunk of a removal, oldest first. A message with no ``received_at``
+#: is not received before any date, so it stays. A draft stays (G1).
+_CHUNK_IDS = text(
+    f"""SELECT em.id FROM email_messages em
+        WHERE em.account_id = :aid AND em.received_at < :before
+          AND {KEPT_FOLDERS_SQL}
+        ORDER BY em.received_at, em.id
+        LIMIT :lim"""
+)
+
+#: The FK of ``email_executed_rules.message_id`` is SET NULL, so the rows of
+#: the removed mail are deleted first (EM-T6c item 10, risk R-6).
+_DELETE_EXECUTED = text(
+    """DELETE FROM email_executed_rules
+        WHERE account_id = :aid AND message_id = ANY(CAST(:ids AS uuid[]))"""
+)
+
+#: The attachment rows and the embeddings cascade. ``email_rule_guidance``
+#: keeps its row with ``message_id`` NULL (item 11). The thread of each
+#: deleted message comes back, so the last step knows which threads this
+#: removal emptied (review round 1).
+_DELETE_MESSAGES = text(
+    """DELETE FROM email_messages
+        WHERE account_id = :aid AND id = ANY(CAST(:ids AS uuid[]))
+    RETURNING thread_id"""
+)
+
+#: The thread statuses of the threads that this removal emptied. A status
+#: of any other thread stays (review round 1).
+_DELETE_EMPTY_THREAD_STATUS = text(
+    """DELETE FROM email_thread_status ts
+        WHERE ts.account_id = :aid
+          AND ts.thread_id = ANY(CAST(:tids AS text[]))
+          AND NOT EXISTS (SELECT 1 FROM email_messages em
+                           WHERE em.account_id = ts.account_id
+                             AND em.thread_id = ts.thread_id)"""
+)
+
+#: The reply drafts of the AI whose thread this removal emptied (G5). The
+#: drafter keys a row on the mailbox and the thread, so a row of a removed
+#: thread can never show again. A draft of another thread stays, because a
+#: reply from this mailbox to mail of another mailbox names the thread of
+#: that mailbox (review round 1).
+#:
+#: WS-17 EM-G11c2 round 2: a TEMPLATE draft records its text under
+#: ``template:<thread_id>``. Its record goes with its thread too, so the
+#: delete also names each ``template:`` key, and the NOT EXISTS strips the
+#: prefix before it looks for the thread's mail.
+#:
+#: The prefix of a template draft record. It MIRRORS
+#: ``gateway.routes.email.automation.drafting.TEMPLATE_DRAFT_PREFIX``, because
+#: ingestion cannot import the gateway. ``test_email_background_writes.py``
+#: fails when the two differ.
+TEMPLATE_DRAFT_PREFIX = "template:"
+
+_DELETE_ORPHAN_AI_DRAFTS = text(
+    """DELETE FROM email_ai_drafts d
+        WHERE d.account_id = :aid
+          AND (d.thread_id = ANY(CAST(:tids AS text[]))
+               OR d.thread_id = ANY(CAST(:tmpl AS text[])))
+          AND NOT EXISTS (SELECT 1 FROM email_messages em
+                           WHERE em.account_id = d.account_id
+                             AND em.thread_id = CASE
+                               WHEN left(d.thread_id, char_length(CAST(:prefix AS text)))
+                                    = CAST(:prefix AS text)
+                               THEN substr(d.thread_id,
+                                           char_length(CAST(:prefix AS text)) + 1)
+                               ELSE d.thread_id END)"""
+)
+
+#: A Resync then imports no mail older than ``before`` (EM-T6c item 12).
+#: ``GREATEST`` ignores a NULL, so a mailbox from before EM-T6 gets ``before``.
+#: Such a mailbox also gets ``onboarding_done_at`` (review round 1). Its
+#: guided setup never ran, and a first ``import_since`` would show the rules
+#: step of EM-T6d again. Each SET expression reads the old row, so the
+#: ``CASE`` sees the old ``import_since``. A mailbox in its guided setup
+#: already has ``import_since``, and it keeps ``onboarding_done_at`` as it is.
+_ADVANCE_IMPORT_SINCE = text(
+    """UPDATE email_accounts
+          SET import_since = GREATEST(import_since, CAST(:before AS timestamptz)),
+              onboarding_done_at = CASE
+                  WHEN import_since IS NULL THEN COALESCE(onboarding_done_at, now())
+                  ELSE onboarding_done_at END,
+              updated_at = now()
+        WHERE id = :aid"""
+)
+
+#: The end of the ``limit`` phase after a removal (G4). The ``WHERE`` keeps
+#: every other phase as it is, so a running import keeps its progress. The
+#: phase ends only when no gap is left (review round 1). The import stopped
+#: at ``import_reached_at``, so mail between the floor and that point is not
+#: in Metorite. The first block moved ``import_since`` already, so the test
+#: reads the new floor.
+_END_LIMIT_PHASE = text(
+    """UPDATE email_accounts
+          SET import_phase = 'done', updated_at = now()
+        WHERE id = :aid AND import_phase = 'limit'
+          AND (import_reached_at IS NULL OR import_since >= import_reached_at)"""
+)
+
+#: The resume of an import that the limit stopped (EM-T6f). The import of
+#: the scheduler goes on while ``initial_sync_done`` is false, and it starts
+#: at ``import_reached_at`` with the count that it reached. So the UPDATE
+#: writes these two columns only, and it keeps ``import_reached_at`` and
+#: ``import_count``. The ``WHERE`` makes the write conditional. The phase must
+#: still be ``limit``, so a second write finds no row. The meter must still
+#: be the value that :func:`import_resumes` judged, so a meter that changed
+#: since the read keeps the row as it is.
+_RESUME_IMPORT = text(
+    """UPDATE email_accounts
+          SET initial_sync_done = false, import_phase = 'importing',
+              updated_at = now()
+        WHERE id = :aid AND import_phase = 'limit'
+          AND stored_bytes = :stored"""
+)
+
+
+def storage_limit_bytes() -> int:
+    """The limit of one mailbox in bytes (Q1)."""
+    return int(get_settings().email_mailbox_storage_limit_mb) * BYTES_PER_MB
+
+
+def at_limit(stored_bytes: int | None) -> bool:
+    """True when a meter of ``stored_bytes`` is at or over the limit.
+
+    ``None`` means the meter did not run yet, and it is not at the limit."""
+    if stored_bytes is None:
+        return False
+    return int(stored_bytes) >= storage_limit_bytes()
+
+
+def resume_margin_bytes() -> int:
+    """The room under the limit that a resume needs (EM-T6f review P3a).
+
+    It is the larger of :data:`RESUME_MARGIN_MIN_BYTES` (20 MB) and 1% of the
+    limit, so 20.48 MB at 2 GB. A mailbox that stopped a few KB over the
+    limit then does not resume when a deleted draft takes it just under, and
+    a resume has room for many batches. The margin is never more than a
+    tenth of the limit, so a small limit (a test, or a box that sets a few
+    MB) can still resume."""
+    limit = storage_limit_bytes()
+    return min(max(RESUME_MARGIN_MIN_BYTES, limit // 100), limit // 10)
+
+
+async def measure_stored_bytes(db: Any, account_id: str) -> int | None:
+    """Measure the copy of one mailbox, write it, and return it.
+
+    ONE statement. It sums ``pg_column_size`` of the columns of variable length
+    of the messages, their attachment rows and their embeddings. It writes
+    ``stored_bytes`` and ``stored_bytes_at``. It returns ``None`` when the
+    account row is gone. Takes the caller's session, opens none and never
+    commits."""
+    value = (await db.execute(_MEASURE, {"aid": account_id})).scalar()
+    return None if value is None else int(value)
+
+
+async def batch_bytes(db: Any, account_id: str, pids: list[str]) -> int:
+    """The bytes that the rows of ``pids`` hold now in the mailbox: their
+    messages, attachment rows and embeddings (EM-T6f review P1). A message
+    that is not stored counts 0. It reads those rows only, by the unique key,
+    and writes nothing. Takes the caller's session, opens none and never
+    commits."""
+    if not pids:
+        return 0
+    value = (await db.execute(
+        _BATCH_BYTES, {"aid": account_id, "pids": list(pids)})).scalar()
+    return int(value or 0)
+
+
+async def add_batch_growth(
+    db: Any, account_id: str, pids: list[str], before: int,
+) -> int | None:
+    """Add the growth of one import batch to the meter, and return the new
+    meter (EM-T6f review P1). The growth is the bytes of the rows of ``pids``
+    now minus ``before``, their bytes before the write. It returns ``None``
+    when the account row is gone. Takes the caller's session, opens none and
+    never commits."""
+    value = (await db.execute(
+        _ADD_BATCH_GROWTH,
+        {"aid": account_id, "pids": list(pids), "before": int(before)})).scalar()
+    return None if value is None else int(value)
+
+
+class ImportMeter:
+    """The meter of one run of an import, in bounded work (EM-T6f review P1).
+
+    The full meter reads every row of the mailbox. One run after each batch
+    of 100 made the I/O of an import grow with the square of its size. So:
+
+    * The first batch of a run ends with the full meter. The run then starts
+      from an exact value, which also counts the bodies and the embeddings
+      that phases (e) and (f) wrote after the meter of the cycle before.
+    * Each later batch reads its own rows before its write
+      (:meth:`before_write`), and after it (:meth:`after_write`). The
+      difference is the growth of the batch, and one UPDATE adds it to
+      ``stored_bytes``. An insert adds its bytes, an update adds its change
+      and a delete takes its bytes off. So the sum follows each write of the
+      import, and other writers move only by what they store meanwhile.
+    * When the sum is at the limit, the full meter runs again, and its value
+      decides. A run makes at most :data:`IMPORT_FULL_METERS` full meters.
+      After that, the sum decides. A sum over the true value only stops the
+      import early.
+
+    The stop keeps its batch: the import stops after the batch that takes
+    the meter to the limit, as before, so it can go over the limit by at
+    most one batch. Each method takes the caller's session, opens none and
+    never commits. The caller calls both methods in the block of the batch.
+    """
+
+    def __init__(self, account_id: str) -> None:
+        self.account_id = account_id
+        #: The full meters that this run made.
+        self.full_meters = 0
+        self._before = 0
+
+    async def before_write(self, db: Any, pids: list[str]) -> None:
+        """Read the bytes of the rows of the batch before its write. The
+        first batch reads nothing, because the full meter follows it."""
+        self._before = (0 if self.full_meters == 0
+                        else await batch_bytes(db, self.account_id, pids))
+
+    async def after_write(self, db: Any, pids: list[str]) -> int | None:
+        """Write the meter after the batch, and return it. ``None`` means the
+        account row is gone."""
+        if self.full_meters == 0:
+            return await self._full(db)
+        stored = await add_batch_growth(db, self.account_id, pids, self._before)
+        if at_limit(stored) and self.full_meters < IMPORT_FULL_METERS:
+            stored = await self._full(db)
+        return stored
+
+    async def _full(self, db: Any) -> int | None:
+        self.full_meters += 1
+        return await measure_stored_bytes(db, self.account_id)
+
+
+@dataclass(frozen=True)
+class OlderMail:
+    """What a removal before a date would remove: messages and bytes."""
+
+    messages: int
+    bytes: int
+
+
+async def preview_older(db: Any, account_id: str, before: datetime) -> OlderMail:
+    """The count of messages received before ``before``, and the bytes that
+    their removal would free. It writes nothing."""
+    row = (await db.execute(
+        _PREVIEW, {"aid": account_id, "before": before})).fetchone()
+    if row is None:
+        return OlderMail(messages=0, bytes=0)
+    return OlderMail(messages=int(row.messages or 0), bytes=int(row.bytes or 0))
+
+
+@dataclass(frozen=True)
+class RemovedChunk:
+    """One chunk of a removal: how many messages it deleted, and the threads
+    of those messages. A message with no thread adds no thread."""
+
+    removed: int
+    thread_ids: frozenset[str]
+
+
+async def remove_older_chunk(
+    db: Any, account_id: str, before: datetime, *, chunk: int = REMOVE_CHUNK,
+) -> RemovedChunk:
+    """Remove up to ``chunk`` messages received before ``before``, oldest
+    first. Returns how many it removed, and their threads.
+
+    It deletes the ``email_executed_rules`` rows of those messages first, and
+    then the messages. The caller collects the threads, and the last step
+    gives them to :func:`delete_empty_thread_status` and
+    :func:`delete_orphan_ai_drafts`. It makes no provider call. Takes the
+    caller's session, opens none and never commits, so each chunk is one
+    block of the caller."""
+    ids = [str(r.id) for r in (await db.execute(
+        _CHUNK_IDS,
+        {"aid": account_id, "before": before, "lim": chunk})).fetchall()]
+    if not ids:
+        return RemovedChunk(removed=0, thread_ids=frozenset())
+    params = {"aid": account_id, "ids": ids}
+    await db.execute(_DELETE_EXECUTED, params)
+    rows = (await db.execute(_DELETE_MESSAGES, params)).fetchall()
+    return RemovedChunk(
+        removed=len(rows),
+        thread_ids=frozenset(str(r.thread_id) for r in rows
+                             if r.thread_id is not None))
+
+
+def _rowcount(result: Any) -> int:
+    removed = getattr(result, "rowcount", None)
+    return 0 if removed is None or removed < 0 else int(removed)
+
+
+async def delete_empty_thread_status(
+    db: Any, account_id: str, thread_ids: Iterable[str],
+) -> int:
+    """Delete the ``email_thread_status`` row of each thread in
+    ``thread_ids`` that has no message left in the mailbox. Returns how many
+    it deleted. ``thread_ids`` holds the threads that this removal emptied.
+    A row of any other thread stays (review round 1)."""
+    tids = sorted(set(thread_ids))
+    if not tids:
+        return 0
+    return _rowcount(await db.execute(
+        _DELETE_EMPTY_THREAD_STATUS, {"aid": account_id, "tids": tids}))
+
+
+async def delete_orphan_ai_drafts(
+    db: Any, account_id: str, thread_ids: Iterable[str],
+) -> int:
+    """Delete the ``email_ai_drafts`` row of each thread in ``thread_ids``
+    that has no message left in the mailbox (G5). Returns how many it
+    deleted. A draft of any other thread stays (review round 1).
+
+    It touches no Mem0 memory. No Mem0 key names one mail, so the memories of
+    the mailbox stay. The purge of a disconnect is the only Mem0 delete."""
+    tids = sorted(set(thread_ids))
+    if not tids:
+        return 0
+    return _rowcount(await db.execute(
+        _DELETE_ORPHAN_AI_DRAFTS,
+        {"aid": account_id, "tids": tids,
+         "tmpl": [TEMPLATE_DRAFT_PREFIX + t for t in tids],
+         "prefix": TEMPLATE_DRAFT_PREFIX}))
+
+
+async def advance_import_since(db: Any, account_id: str, before: datetime) -> None:
+    """Move ``import_since`` to the later of itself and ``before``.
+
+    The removal calls it in its first block, before any delete (G3). So a
+    removal that fails part way still keeps a Resync from that mail. A
+    mailbox with no ``import_since`` also gets ``onboarding_done_at``, so
+    the guided setup does not open for it (review round 1)."""
+    await db.execute(_ADVANCE_IMPORT_SINCE, {"aid": account_id, "before": before})
+
+
+async def end_limit_phase(db: Any, account_id: str, stored_bytes: int | None) -> bool:
+    """Write ``import_phase = 'done'`` when the phase is ``limit``, the new
+    meter is under the limit (G4), and no gap is left below the point that
+    the import reached (review round 1). Returns True when it wrote the row.
+
+    ``None`` means the account row is gone, and it writes nothing."""
+    if stored_bytes is None or at_limit(stored_bytes):
+        return False
+    return _rowcount(await db.execute(_END_LIMIT_PHASE, {"aid": account_id})) > 0
+
+
+def import_resumes(
+    phase: str | None, stored_bytes: int | None, reached_at: datetime | None,
+) -> bool:
+    """True when the import of a mailbox that the limit stopped goes on
+    (EM-T6f). Each of the four tests must hold:
+
+    * The phase is ``limit``. A mailbox in any other phase is never touched.
+    * The meter ran. ``None`` means that it did not run, and the import
+      does not go on. Note that :func:`at_limit` reads ``None`` as under the
+      limit, so this test comes first.
+    * The meter is under the limit by at least :func:`resume_margin_bytes`
+      (review P3a). Nearer the limit, the import stays stopped, so it does
+      not stop and start at each cycle when a small delete takes the meter
+      just under the limit.
+    * The import reached a point (``import_reached_at``). With no point, it
+      would start again from now and read the newest mail a second time."""
+    if phase != "limit":
+        return False
+    if stored_bytes is None:
+        return False
+    if int(stored_bytes) + resume_margin_bytes() >= storage_limit_bytes():
+        return False
+    return reached_at is not None
+
+
+async def resume_import(
+    db: Any, account_id: str, *, phase: str | None, stored_bytes: int | None,
+    reached_at: datetime | None,
+) -> bool:
+    """Write the resume of an import that the limit stopped (EM-T6f), when
+    :func:`import_resumes` says yes for the values that the caller read.
+    Returns True when it wrote the row.
+
+    The write is conditional (``_RESUME_IMPORT``). The row must still be in
+    the phase ``limit`` and still hold the meter ``stored_bytes``. So a
+    second write, or a write after a change of the meter, finds no row. The
+    caller holds the mailbox lock. Takes the caller's session, opens none and
+    never commits."""
+    if not import_resumes(phase, stored_bytes, reached_at):
+        return False
+    return _rowcount(await db.execute(
+        _RESUME_IMPORT, {"aid": account_id, "stored": stored_bytes})) > 0

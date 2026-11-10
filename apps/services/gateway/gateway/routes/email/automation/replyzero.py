@@ -1,5 +1,5 @@
 """Automation · Reply Zero — needs-reply classification, the reply-zero views,
-follow-up reminders, and the inbox AI chat/quick-action endpoints."""
+and follow-up reminders."""
 
 from __future__ import annotations
 
@@ -10,40 +10,71 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from email_ingestion.llm_cap import LLMBudgetExhausted, automation_job
+from email_ingestion.post_sync import status_skips_rule_match, triage_once_per_cycle
 from fastapi import BackgroundTasks, Depends, Query
 from gateway import decide_features
+from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.automation.assistant import _load_assistant_about
 from gateway.routes.email.automation.identity import (
+    SELF_ADDRESSES_SQL,
+    recipient_lists_sql,
     resolve_org_domains,
+    resolve_self,
+    resolve_self_addresses,
     sender_scope,
 )
 from gateway.routes.email.automation.jobs import JobTracker
 from gateway.routes.email.core import (
     CLEANUP_CATEGORIES,
     _assert_account_owner,
+    _assert_thread_in_mailbox,
     _attachment_summaries,
     _fmt_addr_list,
-    _tenant_session,
     _instantiate_provider,
     _llm_json,
     _log,
     _persist_rotated_creds,
+    _tenant_session,
     router,
 )
+from gateway.routes.email.mailbox_access import mailbox_ids_sql
 from pydantic import BaseModel
 from sqlalchemy import text
-
 
 
 def _addr_dict(raw: Any) -> dict:
     return raw if isinstance(raw, dict) else json.loads(raw or "{}")
 
 
+#: The guard of a status write after a model call (WS-17 EM-T4a-2 item 6).
+#: A row of the thread that is newer than the newest stored ``received_at``
+#: that the read step saw (``:seen``) voids the write. Three kinds of row
+#: never void it:
+#:
+#: - a row in ``sent`` or ``drafts``. The sent copy of the member's own reply
+#:   started the recompute, so it is not news.
+#: - a row with a NULL ``received_at``.
+#: - a tie: a row with the same ``received_at`` as ``:seen``.
+#:
+#: When the read saw no row with a date, ``:seen`` is NULL, and any dated row
+#: is newer. That is the order of ``build_thread_context``
+#: (``ASC NULLS FIRST``).
+_NO_NEWER_MAIL_SQL = """NOT EXISTS (
+               SELECT 1 FROM email_messages m
+                WHERE m.account_id = CAST(:aid AS uuid) AND m.thread_id = :tid
+                  AND m.received_at IS NOT NULL
+                  AND (CAST(:seen AS timestamptz) IS NULL
+                       OR m.received_at > CAST(:seen AS timestamptz))
+                  AND LOWER(COALESCE(m.folder, '')) NOT IN ('sent', 'drafts'))"""
+
+
 async def _upsert_thread_status(
     db: Any, account_id: str, thread_id: str, status: str,
     msg_id: Any, msg_at: Any, reason: str, *, preserve_done: bool = False,
-) -> None:
-    """Write a thread's Reply Zero status.
+    guard: bool = False, seen_at: Any = None,
+) -> bool:
+    """Write a thread's Reply Zero status. Returns True when it wrote the row.
 
     ``preserve_done`` is for the AUTOMATED re-projection paths (the live runner
     and the backfill, via ``project_reply_status_from_matches``): a thread the
@@ -51,18 +82,39 @@ async def _upsert_thread_status(
     FYI. With it set, a DONE thread is only re-opened when the new message
     genuinely NEEDS A REPLY (→ NEEDS_REPLY); any other determined status keeps it
     DONE. Explicit user actions (Mark Done / Reopen / Fix) and the user's own
-    reply (``_mark_thread_replied``) leave it False, so their intent still wins."""
+    reply (``_mark_thread_replied``) leave it False, so their intent still wins.
+
+    ``guard`` (WS-17 EM-T4a-2 item 6) is for a write after a model call.
+    ``seen_at`` is the newest non-NULL ``received_at`` that the read step
+    saw. The guard and the upsert are ONE statement, so there is no gap
+    between a separate check and the write. A newer message
+    (:data:`_NO_NEWER_MAIL_SQL`) voids the write: no row is written, and
+    this returns False. Without ``guard`` the statement is the old one,
+    and it always writes."""
     status_expr = "EXCLUDED.status"
     if preserve_done:
         status_expr = (
             "CASE WHEN email_thread_status.status = 'DONE' "
             "AND EXCLUDED.status <> 'NEEDS_REPLY' THEN 'DONE' "
             "ELSE EXCLUDED.status END")
-    await db.execute(text(
+    params = {"aid": account_id, "tid": thread_id, "st": status, "mid": msg_id,
+              "mat": msg_at, "reason": reason}
+    if guard:
+        # The uuid and timestamp values carry a cast, so each one has an
+        # explicit type. `:aid` also appears in the guard, with the same cast.
+        rows = ("SELECT CAST(:aid AS uuid), :tid, :st, CAST(:mid AS uuid),\n"
+                "                  CAST(:mat AS timestamptz), :reason, now()\n"
+                f"            WHERE {_NO_NEWER_MAIL_SQL}")
+        returning = "\n           RETURNING 1"
+        params["seen"] = seen_at
+    else:
+        rows = "VALUES (:aid, :tid, :st, :mid, :mat, :reason, now())"
+        returning = ""
+    result = await db.execute(text(
         f"""INSERT INTO email_thread_status
              (account_id, thread_id, status, last_message_id, last_message_at,
               reason, classified_at)
-           VALUES (:aid, :tid, :st, :mid, :mat, :reason, now())
+           {rows}
            ON CONFLICT (account_id, thread_id) DO UPDATE SET
              status = {status_expr},
              last_message_id = EXCLUDED.last_message_id,
@@ -72,9 +124,11 @@ async def _upsert_thread_status(
              follow_up_reminded_at = CASE
                WHEN email_thread_status.status IS DISTINCT FROM EXCLUDED.status
                  OR email_thread_status.last_message_id IS DISTINCT FROM EXCLUDED.last_message_id
-               THEN NULL ELSE email_thread_status.follow_up_reminded_at END"""
-    ), {"aid": account_id, "tid": thread_id, "st": status, "mid": msg_id,
-        "mat": msg_at, "reason": reason})
+               THEN NULL ELSE email_thread_status.follow_up_reminded_at END{returning}"""
+    ), params)
+    if not guard:
+        return True
+    return result.fetchone() is not None
 
 
 # Reply Zero status → (our thread status, the category label) mapping.
@@ -135,6 +189,24 @@ _FOLLOW_UP_LABEL = "Follow-up"
 # the #110 invariant has a permanent regression alarm instead of a script someone
 # has to remember to run. Keep them sharing this constant — if the definition of
 # "damaged" ever drifts between the alarm and the fix, the alarm lies.
+#
+# A Gmail user label is a label and never a folder (O-GM-1), so a rule move to
+# "Receipts" leaves the message in ``archive`` and the label compare misses it.
+# The ``OR`` branch mirrors ``GmailProvider.folder_after_move``: on a Gmail
+# mailbox, a move to a non-blank label that is no system name expects
+# ``archive``. Its literals are the keys of ``_CANONICAL_FOLDERS`` whose value is
+# not ``archive``, then ``_GMAIL_RESERVED``, then the ``CATEGORY_`` prefix.
+# WS-17 EM-G3b-f7 (email_app_master_plan.md §12.3.12.6). Fence:
+# test_the_gmail_damage_rule_matches_folder_after_move, which reads the names
+# from the Python sets, so a name added on one side only turns it red.
+#
+# ⚠️ Nothing inside the MOVE_FOLDER ``EXISTS`` may name ``ts.``. The provider
+# check reads ``em.account_id``, the same value as ``ts.account_id``. A reference
+# to the outermost row stops Postgres from hashing that ``EXISTS``, so it runs
+# once for each thread. Measured in review round 1 (non-privileged role, JIT
+# off): the live Outlook health query went from 354 ms to 792 ms at 100k
+# threads, with 4.7x the buffers. Fence:
+# test_the_move_rule_exists_never_correlates_to_the_thread_row.
 DAMAGED_CONVERSATION_THREADS_SQL = """
     SELECT DISTINCT ts.account_id, ts.thread_id, ts.status
     FROM email_thread_status ts
@@ -156,8 +228,25 @@ DAMAGED_CONVERSATION_THREADS_SQL = """
                         WHERE er.message_id = em.id
                           AND er.status = 'APPLIED'
                           AND er.actions_taken @> '"MOVE_FOLDER"'
-                          AND LOWER(TRIM(ea.label)) =
-                              LOWER(COALESCE(em.folder, '')))))
+                          AND (LOWER(TRIM(ea.label)) =
+                                   LOWER(COALESCE(em.folder, ''))
+                               OR (LOWER(COALESCE(em.folder, '')) = 'archive'
+                                   AND EXISTS (SELECT 1 FROM email_accounts acct
+                                         WHERE acct.id = em.account_id
+                                           AND acct.provider = 'gmail')
+                                   AND TRIM(ea.label) <> ''
+                                   AND LOWER(TRIM(ea.label)) NOT IN
+                                       ('inbox', 'sent', 'sentitems',
+                                        'sent items', 'sent mail', 'drafts',
+                                        'draft', 'trash', 'deleteditems',
+                                        'deleted items', 'bin', 'junk',
+                                        'junkemail', 'junk email', 'spam')
+                                   AND UPPER(TRIM(ea.label)) NOT IN
+                                       ('INBOX', 'SENT', 'DRAFT', 'TRASH',
+                                        'SPAM', 'UNREAD', 'STARRED',
+                                        'IMPORTANT', 'CHAT')
+                                   AND NOT starts_with(UPPER(TRIM(ea.label)),
+                                                       'CATEGORY_'))))))
 """
 
 
@@ -180,7 +269,7 @@ async def count_damaged_conversation_threads(
         params["aid"] = account_id
     if user_email:
         where.append(
-            "d.account_id IN (SELECT id FROM email_accounts WHERE user_id = :uid)"
+            "d.account_id IN (" + mailbox_ids_sql(uid="uid", level="read") + ")"
         )
         params["uid"] = user_email
     filt = (" WHERE " + " AND ".join(where)) if where else ""
@@ -215,6 +304,67 @@ def _match_conversation_key(match: dict[str, Any] | None) -> str:
     return key if key in _CONVERSATION_RULE_STATUS else ""
 
 
+#: D-EM-27 (EM-T8e-1 review rounds 1 and 2): does the thread of ``:aid`` have
+#: a participant OUTSIDE the mailboxes of the member? A participant is the
+#: sender of a mail that is not in Sent, and each To, Cc and Bcc address of
+#: each mail. Two cases keep the status that the thread had before:
+#:
+#: - An empty address counts as outside.
+#: - A mail with no recipient at all (each list empty or NULL) counts as
+#:   outside, because its recipients are unknown, not "only the member".
+#:
+#: ``has_external`` of :class:`ThreadContext` cannot answer this: it reads
+#: senders only, and a colleague is ``internal``, not external.
+_THREAD_OUTSIDE_SQL = f"""
+    SELECT COUNT(*) AS n,
+           COALESCE(BOOL_OR(
+             (LOWER(COALESCE(m.folder, '')) <> 'sent'
+              AND LOWER(COALESCE(m.from_address->>'email', ''))
+                  NOT IN ({SELF_ADDRESSES_SQL}))
+             OR jsonb_array_length(rc.addrs) = 0
+             OR EXISTS (
+               SELECT 1 FROM jsonb_array_elements(rc.addrs) AS p(addr)
+                WHERE LOWER(COALESCE(p.addr->>'email', ''))
+                      NOT IN ({SELF_ADDRESSES_SQL}))
+           ), false) AS outside
+      FROM email_messages m
+      CROSS JOIN LATERAL (SELECT {recipient_lists_sql("m")} AS addrs) AS rc
+     WHERE m.account_id = :aid AND m.thread_id = :tid"""
+
+#: The reason on the row of a thread that has only the member's mailboxes.
+SELF_ONLY_REASON = "Only your own mailboxes"
+
+
+async def _thread_is_self_only(db: Any, account_id: str, thread_id: str) -> bool:
+    """True when each participant of the thread is a mailbox of the member.
+
+    Mail between two mailboxes of the member is not "awaiting reply"
+    (D-EM-27, edge case 14). Such a thread gets no open Reply Zero status: it
+    is never NEEDS_REPLY and never AWAITING. It is FYI, so the backfill does
+    not ask about it again. A thread with no rows is not self-only."""
+    row = (await db.execute(text(_THREAD_OUTSIDE_SQL),
+                            {"aid": account_id, "tid": thread_id})).fetchone()
+    n = getattr(row, "n", 0) if row is not None else 0
+    return isinstance(n, int) and n > 0 and getattr(row, "outside", True) is False
+
+
+def conversation_match_proposes(
+    matches: list[dict[str, Any]] | None,
+) -> bool:
+    """True when a conversation rule among ``matches`` has ``automated=false``
+    (WS-17 EM-G11c2, §12.3.13.7, G5).
+
+    Such a rule proposes for approval, so its label must wait for the member
+    too. The status row of the thread is still written for the UI. Each
+    caller of :func:`project_reply_status_from_matches` that then calls
+    :func:`_reconcile_thread_labels` asks this first.
+    """
+    from gateway.routes.email.automation.rules import proposes_only
+    return any(
+        _match_conversation_key(m) and proposes_only(m.get("rule") or {})
+        for m in matches or [])
+
+
 async def project_reply_status_from_matches(
     db: Any, account_id: str, message_row: Any,
     matches: list[dict[str, Any]] | None,
@@ -241,6 +391,12 @@ async def project_reply_status_from_matches(
                           < _CONVERSATION_PRIORITY.index(chosen)):
             chosen, reason = key, (m.get("reason") or "")
     status = _CONVERSATION_RULE_STATUS.get(chosen, "FYI")
+    # D-EM-27: an open status needs a participant outside the member's own
+    # mailboxes. Without one, the thread is FYI, and the FYI label replaces
+    # the open label that the matched rule put on (review round 1).
+    if status in ("NEEDS_REPLY", "AWAITING") and await _thread_is_self_only(
+            db, account_id, thread_id):
+        chosen, status, reason = "FYI", "FYI", SELF_ONLY_REASON
     # preserve_done: this is an AUTOMATED inbound re-projection — never let a
     # trailing FYI/notification silently re-open a thread the user marked DONE
     # (only a genuine NEEDS_REPLY re-opens it). A non-empty reason keeps the row
@@ -254,11 +410,85 @@ async def project_reply_status_from_matches(
 
 # The thread-status judgment is hard to do well on a weak model (it's a
 # multi-turn "whose court is it?" call), and any wrong/empty answer collapses to
-# the AWAITING fallback — so default to a mid tier and ESCALATE once on failure
-# rather than silently mis-classifying. Configurable hook left for a future
-# per-account "status" model role.
+# the AWAITING fallback — so default to a mid tier. Configurable hook left for
+# a future per-account "status" model role.
 _STATUS_MODEL = "tier-balanced"
-_STATUS_MODEL_ESCALATION = "tier-powerful"
+#: The one retry of the old status call, after an answer that we cannot read.
+#:
+#: 🔴 **Measured 2026-10-02 to 10-08 (usage_event).** The retry used to be
+#: `tier-powerful`. The Router binds `tier-balanced` and `tier-powerful` to ONE
+#: model, `deepseek/deepseek-v4-pro`, so the retry asked the same model the
+#: same question. Each failed ask cost two calls that failed the same way:
+#: 4,755 and 4,616 calls, 10,598 credits, all at the output cap.
+#:
+#: The retry is now a DIFFERENT and cheaper model. An unreadable answer is a
+#: format slip, and a second model is the useful second opinion. When this
+#: tier resolves to the model of the first try, :func:`_status_retry_model`
+#: skips the retry. Fence: ``tests/unit/test_email_ai_cost.py``.
+_STATUS_RETRY_MODEL = "tier-fast"
+#: The output cap of the old status call. The answer is one JSON object with
+#: a key and a one-line reason, which is less than 100 tokens.
+_STATUS_MAX_TOKENS = 300
+#: The reasoning budget of the old status call: none.
+#:
+#: 🔴 **The root cause of the failed status calls (WS-17, 2026-10-09).**
+#: `deepseek/deepseek-v4-pro` thinks by default (``model_limits`` marks it
+#: ``reasoning``, and ``customer_console/reasoning.py`` records that it sends
+#: ``reasoning_content`` with no ``thinking`` parameter). The vendor counts
+#: the reasoning tokens in ``completion_tokens``. So the model spent the old
+#: cap of 500 tokens on reasoning. It stopped with ``finish_reason=length``
+#: before it wrote the JSON, ``content`` was empty, ``_safe_json`` read None,
+#: and the call fell back to a guessed ``· auto`` status. 98% of the calls
+#: stopped at exactly 500 output tokens. The question is a choice of four
+#: keys, so it needs no reasoning. litellm sends ``{"type": "disabled"}`` to
+#: DeepSeek as it is (``DeepSeekChatConfig.map_openai_params``), and the
+#: Router forwards ``thinking`` (``acb_llm.routed._FORWARDABLE``).
+_STATUS_THINKING: dict[str, str] = {"type": "disabled"}
+
+
+def _status_retry_model(model: str) -> str:
+    """The tier of the one retry of the old status call, or "" for no retry.
+
+    Off the Router, no retry when :data:`_STATUS_RETRY_MODEL` resolves to the
+    model of the first try (``acb_llm.context.resolve_underlying_model``, the
+    check that ``acompletion_with_fallback`` uses). A second ask of the same
+    model is a second bill for the same failure.
+
+    ⚠️ **On the Router the local table is not the binding** (review round 1).
+    ``resolve_underlying_model`` reads ``acb_llm.client._TIER_MODEL``, and
+    the Console ``tier_binding`` decides a routed call. So on the Router
+    only the tier names are compared, and the two differ. The named
+    constraint ``STATUS_TIER_CONSTRAINT`` says what the operator keeps true.
+    """
+    from acb_llm.context import resolve_underlying_model
+    from acb_llm.routed import routing_is_on
+
+    retry = _STATUS_RETRY_MODEL
+    if not retry or retry == model:
+        return ""
+    if routing_is_on():
+        return retry
+    if resolve_underlying_model(retry) == resolve_underlying_model(model):
+        return ""
+    return retry
+
+
+#: ADVISORY (R7: no test can read the live Console). What the operator keeps
+#: true for the old status call, when the Router serves it:
+#:
+#: 1. ``tier-balanced`` and ``tier-fast`` bind DIFFERENT models. Else the
+#:    retry asks the same model twice.
+#: 2. Each one binds a model that takes ``thinking``: DeepSeek or Anthropic.
+#:    The Console sends ``thinking`` to litellm with no ``drop_params``, so an
+#:    OpenAI model raises ``UnsupportedParamsError``. The ask then falls back
+#:    to a guessed status (review round 1, measured on litellm 1.103.0).
+#:
+#: ``test_email_ai_cost.py`` holds the SEED to both (``002_seed_catalog.sql``),
+#: which is the binding of a new Console. A later binding is an operator act.
+STATUS_TIER_CONSTRAINT = (
+    "tier-balanced and tier-fast bind different models, and each takes thinking")
+
+
 # How many chars of the thread the determiner reads. Kept as the TAIL (newest
 # messages, incl. the user's closing reply) — never the head, which is what's
 # safe to drop as a thread grows.
@@ -410,7 +640,7 @@ def _status_question(
     messages: list[dict[str, Any]] | None, user_email: str, about: str,
     *, user_sent_last: bool, corrections: str = "",
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
-    """The ``decide`` request for the thread status (EM-T5b-1, shadow only).
+    """The ``decide`` request for the thread status (EM-T5b-1), for `shadow` and `on`.
 
     FYI is an option only when ``last_message_side`` is ``other_party``,
     which is when the owner's side did NOT send last, as in the old call.
@@ -418,7 +648,7 @@ def _status_question(
     """
     if not messages:
         return None
-    from acb_llm import ChoiceQuestion  # shadow mode only
+    from acb_llm import ChoiceQuestion  # `shadow` and `on` only
 
     state = _status_state(messages, user_email, about, user_sent_last=user_sent_last)
     criteria = dict(_STATUS_CRITERIA)
@@ -433,12 +663,95 @@ def _status_question(
         )}
 
 
+def _status_keys(user_sent_last: bool) -> tuple[str, ...]:
+    """The status options: FYI only when the owner's side did NOT send last."""
+    return ("REPLY", "AWAITING_REPLY", "DONE") + (() if user_sent_last else ("FYI",))
+
+
+#: The bar of a thread status whose conversation rule MOVES mail (EM-T5b-2
+#: fix round 3). The status selects the rule, and the runner then runs its
+#: actions. A wrong move hides real mail from the inbox, so the status needs
+#: the 0.7 of a rule that moves mail (§10.4.8 "Thresholds"). A status whose
+#: rule only labels keeps the plurality of the choice.
+_STATUS_MOVE_THRESHOLD = 0.7
+
+
+def _read_status(
+    decision: Any, user_sent_last: bool, move_keys: frozenset[str] = frozenset(),
+) -> tuple[tuple[str, bool], dict[str, Any]]:
+    """The thread status that a ``decide`` answer gives, in ``on``.
+
+    Returns ``(status, reaches_bar)``. The choice decides the status. When
+    the status is in ``move_keys`` (its conversation rule moves mail), it
+    must also reach :data:`_STATUS_MOVE_THRESHOLD` with its own probability,
+    or ``reaches_bar`` is False. With no ``move_keys`` it is always True.
+    An answer that is not one of our option keys raises, and
+    ``decide_features.ask`` then logs ``unreadable`` and gives no decision.
+    The log fields are our own key and numbers only.
+    """
+    answer = decision["status"]
+    keys = _status_keys(user_sent_last)
+    if answer.choice not in keys:
+        raise ValueError("an option outside the question")
+    # The probability of the chosen key, as `engine._read_rule_match` reads
+    # the `conv` choice: the confidence when the map does not name the key.
+    probability = float(answer.probabilities.get(
+        answer.choice, answer.confidence or 0.0))
+    moves = answer.choice in move_keys
+    reaches_bar = not moves or probability >= _STATUS_MOVE_THRESHOLD
+    return (answer.choice, reaches_bar), {
+        "answer": answer.choice,
+        "confidence": answer.confidence,
+        "margin": decide_features.top_margin(answer.probabilities),
+        "options": len(keys),
+        "p_answer": round(probability, 4),
+        "moves": moves,
+        "move_bar_met": reaches_bar,
+    }
+
+
+async def _decide_thread_status(
+    thread_messages: list[dict[str, Any]] | None, user_email: str, about: str,
+    *, user_sent_last: bool, corrections: str,
+    account_id: str | None, message_id: str | None, member: str | None,
+    move_keys: frozenset[str] = frozenset(),
+) -> tuple[str, bool]:
+    """The thread status in ``on``: the ``decide`` answer decides.
+
+    EM-T5b-2 (D-EM-8). No LLM call is made. With no decision this raises
+    ``engine.DecisionUnavailable``. Each caller then writes nothing, and a
+    later cycle asks again.
+
+    The second value is ``reaches_bar`` of :func:`_read_status`. It is False
+    only when the status is in ``move_keys`` and its probability is under
+    :data:`_STATUS_MOVE_THRESHOLD` (fix round 3). Only the resolver passes
+    ``move_keys``. With none the value is always True, so a decided status
+    is confident and never gets the ``· auto`` tag (item 7).
+    """
+    # Lazy: the engine imports this module.
+    from gateway.routes.email.automation.engine import DecisionUnavailable
+
+    verdict = await decide_features.ask(
+        "email.thread_status", account_id=account_id, message_id=message_id,
+        build=lambda: _status_question(
+            thread_messages, user_email, about,
+            user_sent_last=user_sent_last, corrections=corrections),
+        read=lambda decision: _read_status(decision, user_sent_last, move_keys),
+        member=member,
+    )
+    if verdict is None:
+        raise DecisionUnavailable("decide gave no thread status")
+    return verdict
+
+
 async def _llm_determine_thread_status(
     thread_text: str, user_email: str, about: str, *, user_sent_last: bool = True,
     model: str = _STATUS_MODEL, corrections: str = "",
     account_id: str | None = None,
     thread_messages: list[dict[str, Any]] | None = None,
     message_id: str | None = None,
+    member: str | None = None,
+    move_keys: frozenset[str] = frozenset(),
 ) -> tuple[str, bool]:
     """Determine an email thread's status from the user's perspective — a faithful
     port of inbox-zero's aiDetermineThreadStatus.
@@ -454,7 +767,21 @@ async def _llm_determine_thread_status(
     EM-T5b-1: ``thread_messages`` is ``ThreadContext.messages``, the thread as
     facts for the ``decide`` state. With none, the shadow call is skipped.
     ``thread_text`` stays for the old call. ``message_id`` goes into each
-    ``decide`` log line."""
+    ``decide`` log line.
+
+    EM-T5b-2: in ``on``, the ``decide`` answer decides and no LLM call is
+    made (:func:`_decide_thread_status`). No answer raises
+    ``engine.DecisionUnavailable``. ``member`` is the mailbox owner, for a
+    deployment Router key. ``move_keys`` (``on`` only) names the statuses
+    whose conversation rule moves mail. In ``on`` the second value is then
+    False for such a status under the move bar (fix round 3)."""
+    if decide_features.mode_for("email.thread_status") == "on":
+        return await _decide_thread_status(
+            thread_messages, user_email, about,
+            user_sent_last=user_sent_last, corrections=corrections,
+            account_id=account_id, message_id=message_id, member=member,
+            move_keys=move_keys)
+
     async def _old() -> tuple[str, bool]:
         fallback = "AWAITING_REPLY" if user_sent_last else "FYI"
         try:
@@ -516,17 +843,34 @@ async def _llm_determine_thread_status(
                 allowed.add("FYI")
             messages = [{"role": "system", "content": sys_prompt},
                         {"role": "user", "content": user_prompt}]
-            # Try the configured tier, then escalate once. A wrong/empty answer here
-            # always biases AWAITING, so a second stronger attempt is cheap insurance.
-            for attempt_model in (model, _STATUS_MODEL_ESCALATION):
-                data, _content, _used = await _llm_json(
-                    attempt_model, messages, max_tokens=500,
+            # The configured tier, then at most ONE retry on a different,
+            # cheaper model. Each try asks for no reasoning, so the cap holds
+            # the answer (`_STATUS_THINKING`). A wrong or empty answer here
+            # always biases AWAITING, so the retry is cheap insurance.
+            attempts = [model]
+            retry = _status_retry_model(model)
+            if retry:
+                attempts.append(retry)
+            for attempt_model in attempts:
+                data, content, _used = await _llm_json(
+                    attempt_model, messages, max_tokens=_STATUS_MAX_TOKENS,
+                    feature="thread_status",
+                    thinking=dict(_STATUS_THINKING),
                 )
                 st = ((data.get("status") if isinstance(data, dict) else "") or "")
                 st = _canon_status_key(st)  # tolerate a legacy TO_REPLY/ACTIONED reply
                 if st in allowed:
                     return st, True
+                # Our own numbers only, never the reply text: it can quote mail.
+                _log.warning("email.determine_status_unreadable",
+                             model=attempt_model, content_chars=len(content or ""),
+                             parsed=isinstance(data, dict))
             return fallback, False
+        except LLMBudgetExhausted:
+            # EM-T4b item 13: a spent daily budget is not an answer. Raise it
+            # again and write no `· auto` fallback, so nothing guesses a
+            # status, and a later cycle asks again.
+            raise
         except Exception as exc:  # noqa: BLE001
             _log.warning("email.determine_status_failed", error=str(exc)[:160])
             return fallback, False
@@ -535,44 +879,51 @@ async def _llm_determine_thread_status(
     # ALWAYS the old call's, compared after the escalation, and the log keeps
     # the old `confident` flag (§10.4.4 item 9). EM-T5b-1 rebuilt the question
     # to the System One conventions (§10.4.8).
-    options = 3 if user_sent_last else 4
+    keys = _status_keys(user_sent_last)
     return await decide_features.shadow(
         "email.thread_status", _old, account_id=account_id, message_id=message_id,
         build=lambda: _status_question(
             thread_messages, user_email, about,
             user_sent_last=user_sent_last, corrections=corrections),
         compare=decide_features.compare_choice(
-            lambda r: r[0], qid="status", options=options,
+            lambda r: r[0], qid="status", options=len(keys),
             extra_of=lambda r: {"confident": bool(r[1])},
-            keys=("REPLY", "AWAITING_REPLY", "DONE") + (() if user_sent_last else ("FYI",))),
+            keys=keys),
     )
 
 
 def _msg_scope(
     r: Any, self_email: str,
     extra_domains: frozenset[str] | set[str] = frozenset(),
+    self_addresses: frozenset[str] | set[str] = frozenset(),
 ) -> str:
     """Direction of one stored message: 'self' (the owner sent it — folder='sent'
     or the from-address is the owner), 'internal' (the owner's organisation sent
     it — same/extra domain), or 'external'. The 'sent' folder is authoritative for
     'self' so an owner reply mirrored before its from-address resolves is still
-    recognised as ours."""
+    recognised as ours.
+
+    ``self_addresses`` holds each mailbox of the member (D-EM-27), so mail from
+    another mailbox of the member is 'self' and never makes a thread
+    "awaiting your reply"."""
     if (getattr(r, "folder", "") or "").lower() == "sent":
         return "self"
     raw = getattr(r, "from_address", None)
     frm = raw if isinstance(raw, dict) else json.loads(raw or "{}")
-    return sender_scope(frm.get("email", ""), self_email, extra_domains)
+    return sender_scope(frm.get("email", ""), self_email, extra_domains,
+                        self_addresses=self_addresses)
 
 
 def _fmt_thread_msg(
     r: Any, self_email: str = "",
     extra_domains: frozenset[str] | set[str] = frozenset(),
     attach_line: str = "",
+    self_addresses: frozenset[str] | set[str] = frozenset(),
 ) -> str:
     frm = r.from_address if isinstance(r.from_address, dict) \
         else json.loads(r.from_address or "{}")
     sender = frm.get("name") or frm.get("email") or "?"
-    scope = _msg_scope(r, self_email, extra_domains)
+    scope = _msg_scope(r, self_email, extra_domains, self_addresses)
     direction = {
         "self": " (you sent)",
         "internal": " (your organisation sent)",
@@ -593,7 +944,8 @@ def _fmt_thread_msg(
             _recipient_role,
         )
         if _recipient_role(self_email, getattr(r, "to_addresses", None),
-                           getattr(r, "cc_addresses", None)) == "cc":
+                           getattr(r, "cc_addresses", None),
+                           self_addresses) == "cc":
             lines.append("(the user is only Cc'd here, not a direct To recipient)")
     dt = getattr(r, "received_at", None)
     if hasattr(dt, "isoformat"):
@@ -610,6 +962,7 @@ def _thread_message(
     r: Any, self_email: str = "",
     extra_domains: frozenset[str] | set[str] = frozenset(),
     attach_line: str = "",
+    self_addresses: frozenset[str] | set[str] = frozenset(),
 ) -> dict[str, Any]:
     """One message of the thread as FACTS, for the ``decide`` state.
 
@@ -619,7 +972,7 @@ def _thread_message(
     """
     frm = r.from_address if isinstance(r.from_address, dict) \
         else json.loads(r.from_address or "{}")
-    scope = _msg_scope(r, self_email, extra_domains)
+    scope = _msg_scope(r, self_email, extra_domains, self_addresses)
     external = scope == "external"
     to = cc = ""
     cc_only = False
@@ -630,7 +983,7 @@ def _thread_message(
         from gateway.routes.email.automation.engine import _recipient_role
         cc_only = _recipient_role(
             self_email, getattr(r, "to_addresses", None),
-            getattr(r, "cc_addresses", None)) == "cc"
+            getattr(r, "cc_addresses", None), self_addresses) == "cc"
     dt = getattr(r, "received_at", None)
     # `clip_fact` takes any value, so a name that is None or not text reads
     # as text, as the f-string of `_fmt_thread_msg` reads it. It also bounds
@@ -662,6 +1015,33 @@ async def _conversation_rule_for_status(
     return None
 
 
+async def _enabled_conversation_rules(
+    db: Any, account_id: str,
+) -> dict[str, dict[str, Any]]:
+    """The enabled conversation rule of each status key, in one read.
+
+    The keys are REPLY, AWAITING_REPLY, FYI and DONE. The first rule in the
+    canonical order wins, as in :func:`_conversation_rule_for_status`. Empty
+    when the mailbox has no enabled conversation rule, and then the ``on``
+    resolver asks no status (EM-T5b-2 fix round 3).
+    """
+    from gateway.routes.email.automation.rules import _load_rules
+    out: dict[str, dict[str, Any]] = {}
+    for r in await _load_rules(db, account_id):
+        key = _match_conversation_key({"rule": r}) if r.get("enabled") else ""
+        if key and key not in out:
+            out[key] = r
+    return out
+
+
+def _move_keys(rules: dict[str, dict[str, Any]]) -> frozenset[str]:
+    """The status keys whose conversation rule moves mail (fix round 3)."""
+    # Lazy: the engine imports this module. `_MOVE_ACTIONS` is the one set.
+    from gateway.routes.email.automation.engine import _moves_mail
+
+    return frozenset(k for k, r in rules.items() if _moves_mail(r))
+
+
 async def _thread_is_conversation(
     db: Any, account_id: str, thread_id: str,
 ) -> bool:
@@ -683,7 +1063,9 @@ async def _thread_is_conversation(
          proves nothing and falls through to the participation test.
       2. Real back-and-forth: ≥2 messages and OUR side (the owner or their org
          domains) has participated. A newsletter blast never trips this; a
-         colleague thread or a vendor exchange does.
+         colleague thread or a vendor exchange does. A message from another
+         mailbox of the member is our side too (D-EM-27, EM-T8e-1), through
+         ``identity.SELF_ADDRESSES_SQL``.
     """
     st = (await db.execute(text(
         """SELECT 1 FROM email_thread_status
@@ -702,11 +1084,13 @@ async def _thread_is_conversation(
     if not doms:
         return False
     row = (await db.execute(text(
-        """SELECT COUNT(*) AS n,
+        f"""SELECT COUNT(*) AS n,
                   BOOL_OR(LOWER(COALESCE(folder, '')) = 'sent'
                           OR split_part(LOWER(COALESCE(
                                  from_address->>'email', '')), '@', 2)
-                             = ANY(:doms)) AS ours
+                             = ANY(:doms)
+                          OR LOWER(from_address->>'email')
+                             IN ({SELF_ADDRESSES_SQL})) AS ours
            FROM email_messages
            WHERE account_id = :aid AND thread_id = :tid"""
     ), {"aid": account_id, "tid": thread_id, "doms": sorted(doms)})).fetchone()
@@ -816,10 +1200,14 @@ async def _restore_conversation_messages(
     ), {"aid": account_id, "tid": thread_id})).fetchall()
     if not rows:
         return
-    from email_ingestion.providers.base import canonical_folder
+    # The folder that each rule move left, as the provider decides it
+    # (WS-17 EM-G3b item 10, E-M10). A Gmail rule move files a user label
+    # as ``archive``, so ``canonical_folder`` of the label would never match.
+    from email_ingestion.providers.base import local_folder_after_move
     for r in rows:
-        dests = {canonical_folder((lbl or "").strip())
+        dests = {local_folder_after_move(provider, (lbl or "").strip())
                  for lbl in (r.move_labels or []) if (lbl or "").strip()}
+        dests.discard(None)
         if r.folder not in dests:
             continue  # not our doing (or the user re-filed it) — leave it
         try:
@@ -843,10 +1231,309 @@ async def _restore_conversation_messages(
                          error=str(exc)[:160])
 
 
+async def _determine_status_of(
+    db: Any, account_id: str, message_row: Any,
+    *, move_keys: frozenset[str] = frozenset(),
+) -> tuple[str, bool] | None:
+    """The status of the thread of ``message_row``, over the FULL thread.
+
+    The one status call of the resolver, in every mode, before or after the
+    rule match. Returns ``(status, flag)`` as
+    :func:`_llm_determine_thread_status` does, or None when the thread has
+    no rows. In ``on`` it raises ``engine.DecisionUnavailable`` with no
+    decision. ``move_keys`` reaches ``on`` only (fix round 3).
+
+    A thread whose participants are all mailboxes of the member is FYI, with
+    no model call (D-EM-27, :func:`_thread_is_self_only`).
+    """
+    # Lazy: the engine imports this module.
+    from gateway.routes.email.automation.engine import _decide_member
+
+    if await _thread_is_self_only(db, account_id, message_row.thread_id):
+        return "FYI", True
+    # Thread-status classification only decides whether a thread needs a
+    # reply — the knowledge base is drafting facts, pure noise + token cost
+    # in this prompt. Drop it (3.5).
+    about, _sig = await _load_assistant_about(
+        db, account_id, include_kb=False)
+    # One read gives the address of this mailbox AND each mailbox of the
+    # member, which is "self" over the thread (D-EM-27, EM-T8e-1).
+    me = await resolve_self(db, account_id)
+    acc_email = me.address
+    ctx = await build_thread_context(
+        db, account_id, message_row.thread_id, acc_email,
+        self_addresses=me.self_addresses)
+    if ctx is None:
+        return None
+    row_id = getattr(message_row, "id", None)
+    return await _llm_determine_thread_status(
+        ctx.thread_text, acc_email, about,
+        user_sent_last=ctx.our_side_last,
+        corrections=await _status_corrections_block(db, account_id),
+        account_id=account_id,
+        thread_messages=getattr(ctx, "messages", None),
+        message_id=str(row_id) if row_id is not None else None,
+        member=await _decide_member(db, account_id, "email.thread_status"),
+        move_keys=move_keys)
+
+
+async def _determined_matches(
+    db: Any, provider: Any, account_id: str, thread_id: str,
+    status: str, target: dict[str, Any], matches: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """The determined rule as the ONE live match, and the rest suppressed."""
+    determined = {"rule": target, "reason": f"Thread status: {status}",
+                  "source": "thread_status", "is_primary": True}
+    # The losing matches ride along FLAGGED, not live. The runner logs them
+    # as SKIPPED so History answers "why wasn't this filed as a Receipt?",
+    # but their actions never run — running them is what moved one bubble
+    # of a conversation into the Receipt folder while the thread said Done.
+    suppressed = [{**m, "suppressed": "conversation"}
+                  for m in matches if not _match_conversation_key(m)]
+    await _restore_conversation_messages(db, provider, account_id, thread_id)
+    return [determined, *suppressed]
+
+
+@dataclass(frozen=True)
+class StatusFirst:
+    """What the ``on`` resolver learned BEFORE the rule match (fix round 3).
+
+    ``rules`` is the enabled conversation rule of each status key, and it is
+    empty when there is none (then no status is asked). ``conversation`` is
+    :func:`_thread_is_conversation`. ``verdict`` is the decided
+    ``(status, reaches_bar)``, or None when the status was not asked.
+
+    WS-17 EM-T4a-2 PR-B3: ``seen`` is the read of the status for a job, from
+    :func:`read_status_first`. The job asks it with no block open, through
+    :func:`ask_status_first`. Then ``verdict`` stays None, and the job
+    carries the answer in a :class:`JobStatus`.
+    """
+
+    rules: dict[str, dict[str, Any]]
+    conversation: bool = False
+    verdict: tuple[str, bool] | None = None
+    seen: StatusRead | None = None
+
+
+async def status_before_match(
+    db: Any, account_id: str, message_row: Any,
+) -> StatusFirst | None:
+    """In ``on``, ask the thread status BEFORE the rule match (fix round 3).
+
+    The rule match is a paid call too. So when the status is sure to be
+    asked, it is asked first. A missing status then raises
+    ``engine.DecisionUnavailable`` before the rule match is paid, and the
+    email stays undecided for the next cycle (D-EM-8).
+
+    The status is sure when the mailbox has an enabled conversation rule and
+    the thread is already a conversation (:func:`_thread_is_conversation`).
+    For another thread, only a conversation rule that the rule match picks
+    makes the resolver ask. That ask waits for the match, because an early
+    ask would pay for each email that matches no conversation rule. With no
+    enabled conversation rule, no status is asked at all.
+
+    Returns None outside ``on`` of ``email.thread_status``, and reads
+    nothing then. Any failure other than ``DecisionUnavailable`` gives an
+    empty plan, so the resolver keeps the per-message matches, as it does
+    on a failure of its own.
+    """
+    if decide_features.mode_for("email.thread_status") != "on":
+        return None
+    # Lazy: the engine imports this module.
+    from gateway.routes.email.automation.engine import DecisionUnavailable
+
+    thread_id = getattr(message_row, "thread_id", None)
+    if not thread_id:
+        return StatusFirst(rules={})
+    try:
+        rules = await _enabled_conversation_rules(db, account_id)
+        if not rules:
+            return StatusFirst(rules={})
+        conversation = await _thread_is_conversation(db, account_id, thread_id)
+        verdict = (await _determine_status_of(
+            db, account_id, message_row, move_keys=_move_keys(rules))
+            if conversation else None)
+        return StatusFirst(rules=rules, conversation=conversation, verdict=verdict)
+    except DecisionUnavailable:
+        raise
+    except Exception as exc:  # a failed read never stops the rule match
+        _log.warning("email.resolve_conversation_status_failed",
+                     account_id=account_id, error=str(exc)[:160])
+        return StatusFirst(rules={})
+
+
+async def read_status_first(
+    db: Any, account_id: str, message_row: Any,
+) -> StatusFirst | None:
+    """The READ half of :func:`status_before_match` for a job (WS-17
+    EM-T4a-2 PR-B3). It takes ``db``, opens no block and asks no model. A job
+    calls it in Block R.
+
+    It reads the plan of fix round 3 in its order: the enabled conversation
+    rules, then the conversation test. For a conversation it also reads the
+    status with :func:`read_job_status`, with the move keys of the rules.
+    Returns None outside ``on`` of ``email.thread_status``, and reads
+    nothing then. A failed read of the plan logs and gives an empty plan, as
+    :func:`status_before_match` does.
+    """
+    if decide_features.mode_for("email.thread_status") != "on":
+        return None
+    thread_id = getattr(message_row, "thread_id", None)
+    if not thread_id:
+        return StatusFirst(rules={})
+    try:
+        rules = await _enabled_conversation_rules(db, account_id)
+        if not rules:
+            return StatusFirst(rules={})
+        conversation = await _thread_is_conversation(db, account_id, thread_id)
+        move_keys = _move_keys(rules)
+    except Exception as exc:  # a failed read never stops the rule match
+        _log.warning("email.resolve_conversation_status_failed",
+                     account_id=account_id, error=str(exc)[:160])
+        return StatusFirst(rules={})
+    seen = (await read_job_status(db, account_id, message_row,
+                                  move_keys=move_keys)
+            if conversation else None)
+    return StatusFirst(rules=rules, conversation=conversation, seen=seen)
+
+
+async def ask_status_first(first: StatusFirst | None) -> JobStatus:
+    """The ASK half of :func:`status_before_match` for a job (PR-B3). It
+    takes NO ``db``. The job calls it after Block R and BEFORE the rule-match
+    ask, so the status-first order of fix round 3 stays.
+
+    With no plan, no rule or no conversation, it asks nothing. Otherwise it
+    runs :func:`ask_job_status`. "Undecided" raises ``DecisionUnavailable``
+    here, so the job skips the row before the rule match is paid (D-EM-8).
+    """
+    # Lazy: the engine imports this module.
+    from gateway.routes.email.automation.engine import DecisionUnavailable
+
+    if first is None or not first.rules or not first.conversation:
+        return NOT_ASKED
+    status = await ask_job_status(first.seen)
+    if status.state == UNDECIDED.state:
+        raise DecisionUnavailable("decide gave no thread status")
+    return status
+
+
+def skip_rule_match(
+    first: StatusFirst | None, status: JobStatus, *, account_id: str, job: str,
+) -> bool:
+    """Does the job skip the rule-match ask of this row (WS-17 EM-T16 PR-B)?
+
+    Yes when :func:`_resolve_on` is sure to return :func:`_determined_matches`
+    with this ``status``: the thread is a known conversation of the ``on``
+    plan, the :class:`JobStatus` of :func:`ask_status_first` reaches the bar,
+    and the mailbox has an enabled rule for it. Then the rule match only
+    pays for suppressed History lines. It takes NO ``db``.
+
+    Only with ``email_status_skips_rule_match`` (``post_sync``). A
+    ``dry_run`` (``first`` None) and a new thread (``NOT_ASKED``) never
+    skip. A skip logs ``email.rule_match_skipped`` with ids only, so the
+    saving can be counted (H-42). Spec: ``email_app_master_plan.md``
+    §10.4.17 PR-B.
+    """
+    if not (first is not None and first.rules and first.conversation):
+        return False
+    verdict = status.verdict
+    if not (status.state == "verdict" and verdict is not None and verdict[1]
+            and first.rules.get(verdict[0])):
+        return False
+    if not status_skips_rule_match():
+        return False
+    _log.info("email.rule_match_skipped", account_id=account_id,
+              status=verdict[0], job=job)
+    return True
+
+
+def status_move_keys(read: Any) -> frozenset[str]:
+    """The move keys of the status ask of a job (PR-B3): those of the ``on``
+    plan in ``read.first``, and none outside ``on``."""
+    first = read.first
+    return _move_keys(first.rules) if first is not None else frozenset()
+
+
+async def _resolve_on(
+    db: Any, account_id: str, message_row: Any,
+    matches: list[dict[str, Any]], *, provider: Any,
+    first: StatusFirst | None, status: JobStatus | None = None,
+) -> list[dict[str, Any]]:
+    """The resolver in ``on`` of ``email.thread_status`` (fix round 3).
+
+    ``first`` is what :func:`status_before_match` learned before the rule
+    match. A caller with none gets it read here. Three rules of fix round 3:
+
+    - With no enabled conversation rule, no status is asked.
+    - A status that was not asked first is asked here only when the rule
+      match picked a conversation rule.
+    - A status whose rule moves mail needs :data:`_STATUS_MOVE_THRESHOLD`.
+      Under the bar the rule does not run, and the per-message matches
+      stand, as for a status with no enabled rule.
+
+    ``DecisionUnavailable`` passes through, so the runner skips the row
+    (D-EM-8). Any other failure keeps the per-message matches.
+
+    WS-17 EM-T4a-2 PR-B3: a job passes ``status``, the :class:`JobStatus`
+    that it asked with no block open. Then this asks no model. "Undecided"
+    raises ``DecisionUnavailable``, and "not asked" or "no status" keep the
+    matches. With ``status`` None it asks, as before, for the request paths.
+    """
+    # Lazy: the engine imports this module.
+    from gateway.routes.email.automation.engine import DecisionUnavailable
+
+    thread_id = getattr(message_row, "thread_id", None)
+    if not thread_id:
+        return matches
+    try:
+        plan = first
+        if plan is None and status is None:  # a job never asks in Block W
+            plan = await status_before_match(db, account_id, message_row)
+        if plan is None or not plan.rules:
+            return matches
+        if status is not None:
+            if status.state == UNDECIDED.state:
+                raise DecisionUnavailable("decide gave no thread status")
+            verdict = status.verdict
+            if verdict is None:
+                return matches
+        else:
+            verdict = plan.verdict
+        if verdict is None:
+            if plan.conversation or not any(
+                    _match_conversation_key(m) for m in matches):
+                # A conversation with no verdict is a thread with no rows.
+                return matches
+            verdict = await _determine_status_of(
+                db, account_id, message_row, move_keys=_move_keys(plan.rules))
+            if verdict is None:
+                return matches
+        status, reaches_bar = verdict
+        target = plan.rules.get(status)
+        if not target:
+            return matches
+        if not reaches_bar:
+            row_id = getattr(message_row, "id", None)
+            _log.info("email.thread_status_under_move_bar",
+                      account_id=account_id,
+                      message_id=str(row_id) if row_id is not None else None,
+                      status=status)
+            return matches
+        return await _determined_matches(
+            db, provider, account_id, thread_id, status, target, matches)
+    except DecisionUnavailable:
+        raise
+    except Exception as exc:  # degrade to the per-message pick
+        _log.warning("email.resolve_conversation_status_failed",
+                     account_id=account_id, error=str(exc)[:160])
+        return matches
+
+
 async def resolve_conversation_status_matches(
     db: Any, account_id: str, message_row: Any,
     matches: list[dict[str, Any]] | None,
-    *, provider: Any = None,
+    *, provider: Any = None, first: StatusFirst | None = None,
+    status: JobStatus | None = None,
 ) -> list[dict[str, Any]] | None:
     """A conversation has ONE classification, re-evaluated on every new message.
 
@@ -872,50 +1559,84 @@ async def resolve_conversation_status_matches(
     Bulk mail — no back-and-forth, no status row, no conversation match — is
     untouched: per-message classification stands, and no model call is spent.
     On any failure (or no enabled rule for the determined status) returns the
-    input unchanged, so classification degrades to the per-message pick."""
+    input unchanged, so classification degrades to the per-message pick.
+
+    EM-T5b-2: in ``on`` of ``email.thread_status``, a missing decision is NOT
+    such a failure. ``DecisionUnavailable`` passes through the broad handler,
+    so the runner skips the row, applies nothing and stamps nothing (D-EM-8).
+    The ``decide`` call names the mailbox owner. Fix round 3: ``on`` runs
+    :func:`_resolve_on`, with ``first`` from :func:`status_before_match`.
+    ``off`` and ``shadow`` run the path below, as before.
+
+    WS-17 EM-T4a-2 PR-B2: a job passes ``status``, the :class:`JobStatus`
+    that it asked with no block open. Then the resolver asks no model and
+    reads no conversation test (:func:`_resolve_asked`). With ``status``
+    None it asks, as before, for the request paths of EM-T4a-4. PR-B3: in
+    ``on``, :func:`_resolve_on` takes ``status`` in the same way."""
+    # Lazy: the engine imports this module.
+    from gateway.routes.email.automation.engine import DecisionUnavailable
+
     matches = matches or []
+    if decide_features.mode_for("email.thread_status") == "on":
+        return await _resolve_on(
+            db, account_id, message_row, matches, provider=provider, first=first,
+            status=status)
     thread_id = getattr(message_row, "thread_id", None)
     if not thread_id:
         return matches
+    if status is not None:
+        return await _resolve_asked(
+            db, provider, account_id, thread_id, matches, status)
     if not any(_match_conversation_key(m) for m in matches) \
             and not await _thread_is_conversation(db, account_id, thread_id):
         return matches
     try:
-        # Thread-status classification only decides whether a thread needs a
-        # reply — the knowledge base is drafting facts, pure noise + token cost
-        # in this prompt. Drop it (3.5).
-        about, _sig = await _load_assistant_about(
-            db, account_id, include_kb=False)
-        acc = (await db.execute(text(
-            "SELECT email_address FROM email_accounts WHERE id = :id"
-        ), {"id": account_id})).fetchone()
-        acc_email = (acc.email_address if acc else "") or ""
-        ctx = await build_thread_context(
-            db, account_id, thread_id, acc_email)
-        if ctx is None:
+        determined = await _determine_status_of(db, account_id, message_row)
+        if determined is None:
             return matches
-        row_id = getattr(message_row, "id", None)
-        status, _confident = await _llm_determine_thread_status(
-            ctx.thread_text, acc_email, about,
-            user_sent_last=ctx.our_side_last,
-            corrections=await _status_corrections_block(db, account_id),
-            account_id=account_id,
-            thread_messages=getattr(ctx, "messages", None),
-            message_id=str(row_id) if row_id is not None else None)
+        status, _confident = determined
         target = await _conversation_rule_for_status(db, account_id, status)
         if not target:
             return matches
-        determined = {"rule": target, "reason": f"Thread status: {status}",
-                      "source": "thread_status", "is_primary": True}
-        # The losing matches ride along FLAGGED, not live. The runner logs them
-        # as SKIPPED so History answers "why wasn't this filed as a Receipt?",
-        # but their actions never run — running them is what moved one bubble
-        # of a conversation into the Receipt folder while the thread said Done.
-        suppressed = [{**m, "suppressed": "conversation"}
-                      for m in matches if not _match_conversation_key(m)]
-        await _restore_conversation_messages(db, provider, account_id, thread_id)
-        return [determined, *suppressed]
+        return await _determined_matches(
+            db, provider, account_id, thread_id, status, target, matches)
+    except DecisionUnavailable:
+        # `on`, and `decide` gave no status. The email is undecided, so the
+        # caller skips it. It is not a failure to degrade from (D-EM-8).
+        raise
     except Exception as exc:  # noqa: BLE001
+        _log.warning("email.resolve_conversation_status_failed",
+                     account_id=account_id, error=str(exc)[:160])
+        return matches
+
+
+async def _resolve_asked(
+    db: Any, provider: Any, account_id: str, thread_id: str,
+    matches: list[dict[str, Any]], status: JobStatus,
+) -> list[dict[str, Any]]:
+    """The resolver of ``off`` and ``shadow`` with the status of a job
+    (WS-17 EM-T4a-2 PR-B2 items 8 and 9). It asks no model.
+
+    "Undecided" raises ``DecisionUnavailable``, so the job skips the row
+    (D-EM-8). "Not asked" and "no status" keep the per-message matches. A
+    verdict runs the rest of the resolver: the enabled rule of the status
+    becomes the ONE live match. A failure there keeps the matches, as before.
+    """
+    # Lazy: the engine imports this module.
+    from gateway.routes.email.automation.engine import DecisionUnavailable
+
+    if status.state == UNDECIDED.state:
+        raise DecisionUnavailable("decide gave no thread status")
+    if status.verdict is None:
+        return matches
+    try:
+        determined, _flag = status.verdict
+        target = await _conversation_rule_for_status(db, account_id, determined)
+        if not target:
+            return matches
+        return await _determined_matches(
+            db, provider, account_id, thread_id, determined, target, matches)
+    except Exception as exc:
         _log.warning("email.resolve_conversation_status_failed",
                      account_id=account_id, error=str(exc)[:160])
         return matches
@@ -1023,7 +1744,12 @@ class ThreadContext:
 
     ``messages`` (EM-T5b-1) is the same thread as facts, one dict for each
     message, oldest first, for the ``decide`` state. ``thread_text`` stays
-    for the old LLM call."""
+    for the old LLM call.
+
+    ``newest_received_at`` (EM-T4a-2) is the newest non-NULL ``received_at``
+    of the STORED rows, or None when no row has one. The guard of the
+    status write compares with it. ``last_message_at`` is not the same
+    value: it is ``now()`` when a pending reply is folded in."""
     thread_id: str
     last_message_id: Any
     last_message_at: Any
@@ -1031,12 +1757,14 @@ class ThreadContext:
     has_external: bool
     thread_text: str
     messages: list[dict[str, Any]] = field(default_factory=list)
+    newest_received_at: Any = None
 
 
 async def build_thread_context(
     db: Any, account_id: str, thread_id: str, self_email: str, *,
     extra_domains: frozenset[str] | set[str] | None = None,
     pending_reply: tuple[str, str] | None = None,
+    self_addresses: frozenset[str] | set[str] | None = None,
 ) -> ThreadContext | None:
     """Load a thread and render it for the determiner, once, for every caller.
 
@@ -1044,12 +1772,18 @@ async def build_thread_context(
     resolved here (so every status path is org-domain-aware without each caller
     plumbing it). Pass an explicit set (e.g. ``frozenset()``) to skip the lookup.
 
+    ``self_addresses`` works the same way: None resolves the address of each
+    mailbox of the member here (D-EM-27, EM-T8e-1), so a message from another
+    mailbox of the member is "(you sent)" and never leaves a thread awaiting.
+
     ``pending_reply`` is ``(body, subject)`` of a reply the owner JUST sent that
     isn't mirrored into ``email_messages`` yet — it's appended as the final
     ``(you sent)`` message so the determination is accurate immediately (and
     ``our_side_last`` becomes True). Returns None when the thread has no rows."""
     if extra_domains is None:
         extra_domains = await resolve_org_domains(db, account_id)
+    if self_addresses is None:
+        self_addresses = await resolve_self_addresses(db, account_id)
     rows = (await db.execute(text(
         """SELECT id, from_address, to_addresses, cc_addresses, subject,
                   body_text, snippet, folder, received_at
@@ -1064,8 +1798,10 @@ async def build_thread_context(
     # "Attachments: invoice.pdf (…)" — a strong signal for status/intent.
     attach = await _attachment_summaries(db, [r.id for r in rows])
     parts = [_fmt_thread_msg(r, self_email, extra_domains,
-                             attach.get(str(r.id), "")) for r in rows]
-    scopes = [_msg_scope(r, self_email, extra_domains) for r in rows]
+                             attach.get(str(r.id), ""), self_addresses)
+             for r in rows]
+    scopes = [_msg_scope(r, self_email, extra_domains, self_addresses)
+              for r in rows]
     has_external = any(s == "external" for s in scopes)
     our_side_last = scopes[-1] != "external"
 
@@ -1078,14 +1814,16 @@ async def build_thread_context(
             f"Subject: {subject or latest.subject or ''}\n{body[:1500]}")
         our_side_last = True
 
-    # The thread as facts serves the `decide` shadow only (EM-T5b-1). In `off`
-    # it is not built, so the live path does exactly what it did before. A
-    # failure here costs the shadow its question, never the status.
+    # The thread as facts serves `decide`, in `shadow` and `on` (EM-T5b-1 and
+    # EM-T5b-2). In `off` it is not built, so the live path does exactly what
+    # it did before. A failure here costs `shadow` its question. In `on` it
+    # costs the decision, so the thread stays undecided (D-EM-8).
     messages: list[dict[str, Any]] = []
     if decide_features.mode_for("email.thread_status") != "off":
         try:
             messages = [_thread_message(r, self_email, extra_domains,
-                                        attach.get(str(r.id), "")) for r in rows]
+                                        attach.get(str(r.id), ""),
+                                        self_addresses) for r in rows]
             if reply_pending:
                 fact = decide_features.clip_fact
                 messages.append({
@@ -1103,10 +1841,178 @@ async def build_thread_context(
     # follow-up clock starts from NOW, not the inbound message we replied to.
     last_at = (datetime.now(timezone.utc)
                if reply_pending else latest.received_at)
+    # The rows come `ASC NULLS FIRST`, so the last row with a date is the
+    # newest stored one (EM-T4a-2, the guard of the status write).
+    newest = next((r.received_at for r in reversed(rows)
+                   if getattr(r, "received_at", None) is not None), None)
     return ThreadContext(
         thread_id=thread_id, last_message_id=latest.id, last_message_at=last_at,
         our_side_last=our_side_last, has_external=has_external,
-        thread_text="\n\n---\n\n".join(parts), messages=messages)
+        thread_text="\n\n---\n\n".join(parts), messages=messages,
+        newest_received_at=newest)
+
+
+@dataclass(frozen=True)
+class StatusRead:
+    """What the READ step of the thread status saw (WS-17 EM-T4a-2).
+
+    The ask step and the write step take each fact from here, and never read
+    a row or a request again: the account, the thread, the trigger, the
+    context (with the self addresses of the member inside it), the about
+    text, the corrections and the member of a ``decide`` call.
+    ``self_only`` means that each participant is a mailbox of the member
+    (D-EM-27). Such a thread is FYI, and no model is asked for it.
+
+    PR-B2: ``message_id`` is the id of the row that a job resolves, and the
+    ask puts it in each ``decide`` log line. With None the ask uses
+    ``ctx.last_message_id``. ``move_keys`` reaches ``on`` only (fix round 3).
+
+    ⚠️ The read of a self-only thread from ``read_job_status`` holds
+    ``ctx=None``. Only ``ask_job_status`` takes it, and that step returns FYI
+    before it reads ``ctx``. ``write_thread_status`` needs a context.
+    """
+
+    account_id: str
+    thread_id: str
+    trigger: str
+    ctx: Any
+    acc_email: str
+    about: str
+    model: str
+    self_only: bool
+    corrections: str = ""
+    member: str | None = None
+    message_id: str | None = None
+    move_keys: frozenset[str] = frozenset()
+
+    @property
+    def seen_at(self) -> Any:
+        """The newest non-NULL ``received_at`` of the stored rows that the
+        read saw. The guard of the write compares with it, and never with
+        ``ctx.last_message_at``, which is ``now()`` for a pending reply."""
+        return getattr(self.ctx, "newest_received_at", None)
+
+
+async def read_thread_status(
+    db: Any, account_id: str, thread_id: str, *, trigger: str,
+    about: str = "", acc_email: str = "",
+    extra_domains: frozenset[str] | set[str] | None = None,
+    pending_reply: tuple[str, str] | None = None,
+    model: str = _STATUS_MODEL,
+    self_addresses: frozenset[str] | set[str] | None = None,
+    message_id: str | None = None,
+    move_keys: frozenset[str] = frozenset(),
+) -> StatusRead | None:
+    """The READ step of the thread status (WS-17 EM-T4a-2). It takes ``db``,
+    opens no block and asks no model.
+
+    It builds the context over the whole thread (:func:`build_thread_context`
+    resolves the self addresses when ``self_addresses`` is None). For a
+    thread that is not self-only it also reads the corrections and the
+    mailbox owner for a ``decide`` call in ``on``. Returns None when the
+    thread has no rows. ``message_id`` and ``move_keys`` go into the
+    :class:`StatusRead` as they are (PR-B2)."""
+    # Lazy: the engine imports this module.
+    from gateway.routes.email.automation.engine import _decide_member
+
+    ctx = await build_thread_context(
+        db, account_id, thread_id, acc_email,
+        extra_domains=extra_domains, pending_reply=pending_reply,
+        self_addresses=self_addresses)
+    if ctx is None:
+        return None
+    facts: dict[str, Any] = {
+        "account_id": account_id, "thread_id": thread_id, "trigger": trigger,
+        "ctx": ctx, "acc_email": acc_email, "about": about, "model": model,
+        "message_id": message_id, "move_keys": frozenset(move_keys)}
+    if await _thread_is_self_only(db, account_id, thread_id):
+        return StatusRead(**facts, self_only=True)
+    return StatusRead(
+        **facts, self_only=False,
+        corrections=await _status_corrections_block(db, account_id),
+        member=await _decide_member(db, account_id, "email.thread_status"))
+
+
+async def ask_thread_status(read: StatusRead) -> tuple[str, bool] | None:
+    """The ASK step of the thread status (WS-17 EM-T4a-2). It takes NO ``db``.
+
+    Returns ``(status, confident)`` as :func:`_llm_determine_thread_status`
+    does, or None when ``decide`` gives no decision in ``on`` (D-EM-8). The
+    model await stays in its own slot, in ``_llm_json`` or ``_ask_all``
+    (EM-T4b), so this adds no ``llm_slot``. ``LLMBudgetExhausted`` passes up
+    (EM-T4b item 13), so no caller writes a guessed status. The caller never
+    asks for a self-only thread. The log id is ``read.message_id``, or
+    ``ctx.last_message_id`` when that is None (PR-B2 item 4)."""
+    # Lazy: the engine imports this module.
+    from gateway.routes.email.automation.engine import DecisionUnavailable
+
+    ctx = read.ctx
+    last_id = read.message_id if read.message_id is not None \
+        else ctx.last_message_id
+    try:
+        return await _llm_determine_thread_status(
+            ctx.thread_text, read.acc_email, read.about,
+            user_sent_last=ctx.our_side_last, model=read.model,
+            corrections=read.corrections,
+            account_id=read.account_id,
+            thread_messages=getattr(ctx, "messages", None),
+            message_id=str(last_id) if last_id is not None else None,
+            member=read.member, move_keys=read.move_keys)
+    except DecisionUnavailable:
+        return None
+
+
+async def write_thread_status(
+    db: Any, read: StatusRead, verdict: tuple[str, bool] | None,
+) -> tuple[str, str] | None:
+    """The WRITE step of the thread status (WS-17 EM-T4a-2). It takes ``db``
+    and opens no block. After an ask, the caller opens a NEW short block.
+
+    A self-only thread writes FYI with :data:`SELF_ONLY_REASON`, and its
+    ``verdict`` is None. Any other thread writes the status of ``verdict``.
+    The write goes through the guard of item 6, in ONE statement
+    (``_upsert_thread_status(guard=True)``). Returns ``(rz_status, label)``
+    when the row was written. Returns None when a newer message voided the
+    write: the row stays as it was, the caller reconciles no labels, and the
+    next cycle decides the thread again."""
+    ctx = read.ctx
+    if read.self_only:
+        # D-EM-27: mail between the member's own mailboxes is never open. It
+        # is FYI, with no model call (review round 1).
+        rz_status, label = _THREAD_STATUS_MAP["FYI"]
+        reason = SELF_ONLY_REASON
+    else:
+        if verdict is None:
+            raise ValueError("a thread that is not self-only needs a verdict")
+        status, confident = verdict
+        rz_status, label = _THREAD_STATUS_MAP.get(
+            _canon_status_key(status), ("AWAITING", "Awaiting Reply"))
+        # Whoever spoke last is a FACT, not a judgment call. The determiner
+        # sometimes answers REPLY even when the real last message is the
+        # owner's — which stamps "you owe a reply" on a thread the user just
+        # answered, and the digest then repeats that lie every morning (10 of
+        # 29 NEEDS_REPLY rows on the live account were exactly this). When our
+        # side sent last, the only honest open state is AWAITING; the reason
+        # records the coercion.
+        coerced = ctx.our_side_last and rz_status == "NEEDS_REPLY"
+        if coerced:
+            rz_status, label = "AWAITING", "Awaiting Reply"
+        prefix = _TRIGGER_REASON.get(read.trigger, read.trigger.capitalize())
+        # A low-confidence (fallback) determination keeps the "· auto" marker
+        # so the backfill re-checks it instead of trusting a guessed AWAITING.
+        reason = (f"{prefix} — {status}"
+                  + (" → Awaiting (we sent last)" if coerced else "")
+                  + ("" if confident else " · auto"))
+    written = await _upsert_thread_status(
+        db, read.account_id, read.thread_id, rz_status, ctx.last_message_id,
+        ctx.last_message_at, reason,
+        preserve_done=(read.trigger in ("inbound", "backfill")),
+        guard=True, seen_at=read.seen_at)
+    if not written:
+        _log.info("email.thread_status_write_voided",
+                  account_id=read.account_id, thread_id=read.thread_id)
+        return None
+    return rz_status, label
 
 
 async def recompute_thread_status(
@@ -1115,58 +2021,175 @@ async def recompute_thread_status(
     extra_domains: frozenset[str] | set[str] | None = None,
     pending_reply: tuple[str, str] | None = None,
     model: str = _STATUS_MODEL,
+    self_addresses: frozenset[str] | set[str] | None = None,
 ) -> tuple[str, str] | None:
     """THE thread-status authority: build the context, determine the status over
     the whole thread (with ``user_sent_last`` taken from the real last message —
     not assumed by the trigger), and write it through the single writer.
+
+    ``self_addresses`` reaches :func:`build_thread_context`, which resolves
+    each mailbox of the member when it is None (D-EM-27).
 
     ``trigger`` is one of ``outbound`` / ``inbound`` / ``backfill`` / ``reopen``.
     Automated triggers (inbound / backfill) PRESERVE a user's DONE; a reply the
     owner sent (outbound) or an explicit reopen may move it. A low-confidence
     (fallback) determination is tagged ``· auto`` so the backfill re-checks it.
     Returns ``(rz_status, label)`` or None when the thread has no messages.
-    Caller commits; reconciling provider labels is the caller's job."""
-    ctx = await build_thread_context(
-        db, account_id, thread_id, acc_email,
-        extra_domains=extra_domains, pending_reply=pending_reply)
-    if ctx is None:
+    Caller commits; reconciling provider labels is the caller's job.
+
+    EM-T5b-2: in ``on`` of ``email.thread_status``, ``decide`` decides and
+    names the mailbox owner. A decided status is confident, so it never gets
+    ``· auto``, and an old ``· auto`` row gets one more check. With no
+    decision this writes nothing and returns None (D-EM-8). The caller then
+    leaves the labels, and the backfill asks again in a later cycle.
+
+    WS-17 EM-T4a-2: this is the COMPOSED form. It runs
+    :func:`read_thread_status`, :func:`ask_thread_status` and
+    :func:`write_thread_status` on the ONE ``db`` of its caller, so it holds
+    that session across the ask. It stays for a caller that holds a session
+    (the request paths of EM-T4a-4, item 8). ``_mark_thread_replied`` runs
+    the three steps itself, with no session open across the ask. The write
+    goes through the guard here too, and a voided write returns None."""
+    read = await read_thread_status(
+        db, account_id, thread_id, trigger=trigger, about=about,
+        acc_email=acc_email, extra_domains=extra_domains,
+        pending_reply=pending_reply, model=model,
+        self_addresses=self_addresses)
+    if read is None:
         return None
-    last_id = ctx.last_message_id
-    status, confident = await _llm_determine_thread_status(
-        ctx.thread_text, acc_email, about,
-        user_sent_last=ctx.our_side_last, model=model,
-        corrections=await _status_corrections_block(db, account_id),
-        account_id=account_id,
-        thread_messages=getattr(ctx, "messages", None),
-        message_id=str(last_id) if last_id is not None else None)
-    rz_status, label = _THREAD_STATUS_MAP.get(
-        _canon_status_key(status), ("AWAITING", "Awaiting Reply"))
-    # Whoever spoke last is a FACT, not a judgment call. The determiner
-    # sometimes answers REPLY even when the real last message is the owner's —
-    # which stamps "you owe a reply" on a thread the user just answered, and the
-    # digest then repeats that lie every morning (10 of 29 NEEDS_REPLY rows on
-    # the live account were exactly this). When our side sent last, the only
-    # honest open state is AWAITING; the reason records the coercion.
-    coerced = ctx.our_side_last and rz_status == "NEEDS_REPLY"
-    if coerced:
-        rz_status, label = "AWAITING", "Awaiting Reply"
-    prefix = _TRIGGER_REASON.get(trigger, trigger.capitalize())
-    # A low-confidence (fallback) determination keeps the "· auto" marker so the
-    # backfill re-checks it instead of trusting a guessed AWAITING.
-    reason = (f"{prefix} — {status}"
-              + (" → Awaiting (we sent last)" if coerced else "")
-              + ("" if confident else " · auto"))
-    await _upsert_thread_status(
-        db, account_id, thread_id, rz_status, ctx.last_message_id,
-        ctx.last_message_at, reason,
-        preserve_done=(trigger in ("inbound", "backfill")))
-    return rz_status, label
+    verdict = None
+    if not read.self_only:
+        verdict = await ask_thread_status(read)
+        if verdict is None:
+            return None
+    return await write_thread_status(db, read, verdict)
 
 
+# ── The status ask of the two jobs (WS-17 EM-T4a-2 PR-B2) ──────────────────
+# In `off` and `shadow` of `email.thread_status`, `_run_rules_job` and the gap
+# loop of `_maybe_classify_threads` ask the status of the resolver with NO
+# block open. After the rule-match ask, `status_ask_needed` says whether the
+# job asks. Then Block S calls `read_job_status` and ends with `SELECT 1`,
+# `ask_job_status` asks with no block open, and Block W gives the
+# `JobStatus` to the resolver. PR-B3 does the same in `on`. Block R reads the
+# status-first plan (`read_status_first`), and `ask_status_first` asks it
+# before the rule match. Block S reads the status that only a conversation
+# match asks.
+
+
+@dataclass(frozen=True)
+class JobStatus:
+    """The status that a job carries into Block W (WS-17 EM-T4a-2 PR-B2).
+
+    ``state`` is one of four: ``not_asked`` (the job asked nothing),
+    ``none`` (no status: a thread with no rows, or a failed read or ask),
+    ``undecided`` (``decide`` gave no decision, D-EM-8) and ``verdict``.
+    ``verdict`` holds ``(status, flag)`` in the last state only.
+    """
+
+    state: str
+    verdict: tuple[str, bool] | None = None
+
+
+NOT_ASKED = JobStatus("not_asked")
+NO_STATUS = JobStatus("none")
+UNDECIDED = JobStatus("undecided")
+
+
+def status_ask_needed(
+    read: Any, message_row: Any, matches: list[dict[str, Any]],
+) -> bool:
+    """Does the job ask the thread status of this row (PR-B2 item 2)?
+
+    ``read`` is the ``engine.ClassifyRead`` of Block R. Outside ``on``, yes
+    when the resolver runs, the row has a thread, and a match has a
+    conversation key or the thread is a conversation. This is the test of
+    :func:`resolve_conversation_status_matches` before it asks.
+
+    PR-B3: in ``on``, yes when the plan of Block R has a conversation rule,
+    the thread is not a conversation (so :func:`ask_status_first` asked
+    nothing), and a match has a conversation key. This is the test of
+    :func:`_resolve_on` before it asks after the match.
+    """
+    if not (read.resolve and getattr(message_row, "thread_id", None)):
+        return False
+    conversation_match = any(_match_conversation_key(m) for m in matches)
+    if decide_features.mode_for("email.thread_status") == "on":
+        first = read.first
+        return bool(first is not None and first.rules
+                    and not first.conversation and conversation_match)
+    return bool(read.conversation or conversation_match)
+
+
+async def read_job_status(
+    db: Any, account_id: str, message_row: Any,
+    *, move_keys: frozenset[str] = frozenset(),
+) -> StatusRead | None:
+    """The read of the status ask of a job (PR-B2 item 3). It takes ``db``,
+    opens no block and asks no model. A job calls it in Block S.
+
+    It reads what :func:`_determine_status_of` reads, in its order. A
+    self-only thread reads nothing more, and its read says ``self_only``
+    with no context (review round 1). Any other thread reads ``about`` with
+    ``include_kb=False``, the self addresses, then :func:`read_thread_status`
+    with the id of the row. Returns None for a thread with no rows. A failed
+    read logs ``email.resolve_conversation_status_failed`` and returns None,
+    as the resolver does today. Block S then runs ``SELECT 1``, so a read
+    that left the block aborted stops the job (item 6).
+    """
+    row_id = getattr(message_row, "id", None)
+    message_id = str(row_id) if row_id is not None else None
+    try:
+        # D-EM-27 first, as in `_determine_status_of`: FYI, with no ask.
+        if await _thread_is_self_only(db, account_id, message_row.thread_id):
+            return StatusRead(
+                account_id=account_id, thread_id=message_row.thread_id,
+                trigger="inbound", ctx=None, acc_email="", about="",
+                model=_STATUS_MODEL, self_only=True, message_id=message_id)
+        # The knowledge base is drafting facts, and the status needs none.
+        about, _sig = await _load_assistant_about(
+            db, account_id, include_kb=False)
+        me = await resolve_self(db, account_id)
+        return await read_thread_status(
+            db, account_id, message_row.thread_id, trigger="inbound",
+            about=about, acc_email=me.address,
+            self_addresses=me.self_addresses, message_id=message_id,
+            move_keys=move_keys)
+    except Exception as exc:
+        _log.warning("email.resolve_conversation_status_failed",
+                     account_id=account_id, error=str(exc)[:160])
+        return None
+
+
+async def ask_job_status(read: StatusRead | None) -> JobStatus:
+    """The status ask of a job (PR-B2 items 5 and 7). It takes NO ``db``.
+
+    A read of None gives no status. A self-only thread is FYI, and no model
+    is asked (D-EM-27). ``ask_thread_status`` turns ``DecisionUnavailable``
+    into None, which is "undecided". Any other error of the ask, and
+    ``LLMBudgetExhausted`` too, logs
+    ``email.resolve_conversation_status_failed`` and gives no status, so the
+    per-message matches stand.
+    """
+    if read is None:
+        return NO_STATUS
+    if read.self_only:
+        return JobStatus("verdict", ("FYI", True))
+    try:
+        verdict = await ask_thread_status(read)
+    except Exception as exc:
+        _log.warning("email.resolve_conversation_status_failed",
+                     account_id=read.account_id, error=str(exc)[:160])
+        return NO_STATUS
+    return UNDECIDED if verdict is None else JobStatus("verdict", verdict)
+
+
+@automation_job  # EM-T4b: the cap and the daily budget bind its model calls
 async def _mark_thread_replied(
     account_id: str, thread_id: str,
     sent_body: str | None = None, sent_subject: str | None = None,
-) -> None:
+    *, labels: bool = True,
+) -> JobStatus | None:
     """After the user sends a reply, re-determine the thread's status with the
     AI (exact inbox-zero aiDetermineThreadStatus parity) and reconcile labels:
     set the Reply Zero status and collapse the thread to a SINGLE conversation
@@ -1180,17 +2203,41 @@ async def _mark_thread_replied(
     Done call accurate immediately (inbox-zero sees the sent message at once)
     instead of defaulting to Awaiting and only correcting on the next sync.
 
-    EM-T1b-2 (``email_app_master_plan.md`` §10.4.2): two ``_tenant_session()``
-    blocks with the ambient tenant, and no ``commit()``. The Reply Zero
-    backfill calls this with no session of its own open, and the send and
-    draft routes run it as a BackgroundTask bound by the request. Block A reads
-    and writes the status (the model call stays inside, and EM-T4 owns it).
-    The provider authenticates with no session open. Block B reconciles the
-    labels and persists rotated credentials.
+    EM-T1b-2 and EM-T4a-2 (``email_app_master_plan.md`` §10.4.2 and
+    §10.4.6): ``_tenant_session()`` blocks with the ambient tenant, and no
+    ``commit()``. The Reply Zero backfill calls this with no session of its
+    own open, and the send and draft routes run it as a BackgroundTask bound
+    by the request.
+
+    - Block A reads the account and the thread (:func:`read_thread_status`).
+      A self-only thread asks no model, so Block A also writes its FYI row.
+    - The status ask runs with NO session open (:func:`ask_thread_status`).
+      With no decision it writes nothing, and the labels stay.
+    - Block W is a new short block. It writes the status through the guard
+      (:func:`write_thread_status`). A newer stored inbound message voids
+      the write, and the job then ends: it reconciles no labels.
+    - The provider authenticates with no session open. Block B reconciles
+      the labels and persists rotated credentials. EM-T4a-3 owns the
+      ``set_labels`` I/O of Block B.
+
+    The steps after Block A take the account, the member and the self
+    addresses from the read, and never read them again.
+
+    WS-17 EM-T16 PR-A: it returns :data:`UNDECIDED` when the ask gave no
+    decision, and None in every other case. The Reply Zero backfill then
+    writes its back-off mark. The send and draft routes drop the value.
+
+    WS-17 EM-G11c2 (§12.3.13.7, G3): with ``labels=False`` it writes the
+    status row and stops. It writes no label, local or at the provider, and
+    it builds no provider. The Reply Zero backfill passes the Auto-run choice
+    of the mailbox. The send and draft routes keep the default, because the
+    member sent the reply.
     """
     if not thread_id:
-        return
+        return None
     try:
+        read: StatusRead | None = None
+        result: tuple[str, str] | None = None
         async with _tenant_session() as db:
             # Thread-status classification only decides whether a thread needs
             # a reply — the knowledge base is drafting facts, pure noise +
@@ -1203,14 +2250,24 @@ async def _mark_thread_replied(
             ), {"id": account_id})).fetchone()
             acc_email = (acc.email_address if acc else "") or ""
 
-            # The thread-status authority does the whole-thread determination +
-            # write (over the SAME context, with the just-sent reply folded
-            # in). Outbound trigger: the owner replied, so this may move a DONE
-            # thread.
-            result = await recompute_thread_status(
+            # The read step of the thread-status authority, over the whole
+            # thread with the just-sent reply folded in. Outbound trigger: the
+            # owner replied, so the write may move a DONE thread.
+            read = await read_thread_status(
                 db, account_id, thread_id, trigger="outbound",
                 about=about, acc_email=acc_email,
                 pending_reply=(sent_body, sent_subject or "") if sent_body else None)
+            if read is not None and read.self_only:
+                result = await write_thread_status(db, read, None)
+        if read is None:
+            return
+        if not read.self_only:
+            # EM-T4a-2: the status ask runs with NO session open.
+            verdict = await ask_thread_status(read)
+            if verdict is None:
+                return UNDECIDED  # D-EM-8: no row, and the labels stay
+            async with _tenant_session() as db:
+                result = await write_thread_status(db, read, verdict)
         if result is None:
             return
         _rz_status, new_cat = result
@@ -1218,8 +2275,8 @@ async def _mark_thread_replied(
         # Reconcile the thread to a SINGLE conversation label (mutually
         # exclusive, inbox-zero parity): clear any stale Reply / Awaiting / FYI /
         # Follow-up across the thread and apply the new status label. Needs the
-        # provider.
-        if not acc:
+        # provider. EM-G11c2: with Auto-run OFF the backfill writes no label.
+        if not acc or not labels:
             return
         from acb_llm.key_store import get_key_store  # noqa: PLC0415
         store = get_key_store()
@@ -1350,6 +2407,122 @@ _REPLY_DETERMINE_CAP = 40
 # How many inbound gap threads get an engine match (classification) per cycle.
 _BACKFILL_INBOUND_CAP = 25
 
+#: How long a provisional status (a reason that ends in ``· auto``) waits
+#: before the backfill asks about its thread again.
+#:
+#: 🔴 **The re-ask storm (WS-17, 2026-10-09).** A failed status ask writes a
+#: guessed status with ``· auto``. The backfill runs on EACH sync cycle,
+#: about every 5 minutes, and it selected each ``· auto`` row again at once.
+#: While the asks failed (they all did, see ``_STATUS_THINKING``), one thread
+#: cost a failed pair of calls in each cycle, up to 40 threads a cycle. Now a
+#: thread gets one ask in this window. A new message on the thread still
+#: selects it at once, because its ``last_message_id`` changes.
+_PROVISIONAL_RECHECK_HOURS = 6
+
+#: The ONE "this thread needs a status" test of the backfill, over the
+#: latest message ``l`` of a thread and its status row ``s``. The selection
+#: of :func:`_maybe_classify_threads` and the count of
+#: :func:`_count_reply_zero_backlog` share it, so the drain stops when the
+#: backfill has nothing left to select. Fence: ``test_email_ai_cost.py``.
+_NEEDS_STATUS_SQL = f"""(s.thread_id IS NULL
+       OR s.last_message_id::text <> l.id::text
+       OR (COALESCE(s.reason, '') LIKE '%· auto'
+           AND (s.classified_at IS NULL
+                OR s.classified_at < now() - interval '{_PROVISIONAL_RECHECK_HOURS} hours')))"""
+
+# ── The back-off of an undecided status ask in `on` (WS-17 EM-T16 PR-A) ──────
+# In `on` of `email.thread_status`, an undecided ask writes no row (D-EM-8),
+# so the next cycle selected the thread and asked again. With the flag
+# `email_triage_once_per_cycle`, the backfill keeps a mark for each account,
+# thread and last message id in tenant Redis, and skips a marked thread
+# BEFORE its caps. The mark holds no verdict. A new message makes a new key.
+# Outside `on`, `_PROVISIONAL_RECHECK_HOURS` does this job. Spec:
+# `email_app_master_plan.md` §10.4.17 PR-A. Fence: `test_email_ai_cost.py`.
+
+STATUS_BACKOFF_NAMESPACE = "email-status-backoff"
+STATUS_BACKOFF_TTL_SECS = 1800
+
+
+def _status_backoff_on() -> bool:
+    """True when the backfill keeps back-off marks: the flag is on, and
+    ``email.thread_status`` is ``on`` for the bound tenant."""
+    return (triage_once_per_cycle()
+            and decide_features.mode_for("email.thread_status") == "on")
+
+
+def _backoff_org() -> str | None:
+    """The organization of the marks: the tenant that the sync loop or the
+    request bound. Never a value from input (R5). None: no mark."""
+    from acb_common.db import current_tenant
+
+    return current_tenant()
+
+
+async def _status_backoff_marked(account_id: str, rows: list[Any]) -> set[str]:
+    """The thread ids of ``rows`` that hold a mark, in ONE ``mget``. Each
+    row is the latest message of its thread. No tenant, or a Redis failure,
+    gives no mark, and the backfill asks as before."""
+    org = _backoff_org()
+    if not org or not rows:
+        return set()
+    try:
+        from acb_common.tenant_redis import get_tenant_redis, key, organization_scope
+
+        client = get_tenant_redis()
+        with organization_scope(org):
+            keys = [key(STATUS_BACKOFF_NAMESPACE, str(account_id),
+                        str(r.thread_id), str(r.id)) for r in rows]
+            values = await client.mget(keys)
+    except Exception as exc:  # the mark is best effort
+        _log.info("email.status_backoff_unavailable", account_id=account_id,
+                  error_type=type(exc).__name__)
+        return set()
+    return {str(r.thread_id) for r, v in zip(rows, values, strict=False) if v}
+
+
+async def _mark_status_backoff(
+    account_id: str, thread_id: str, message_id: Any,
+) -> None:
+    """Keep the mark of an undecided status ask for
+    :data:`STATUS_BACKOFF_TTL_SECS`, with one ``setex``. Best effort."""
+    org = _backoff_org()
+    if not org:
+        return
+    try:
+        from acb_common.tenant_redis import get_tenant_redis, key, organization_scope
+
+        client = get_tenant_redis()
+        with organization_scope(org):
+            await client.setex(
+                key(STATUS_BACKOFF_NAMESPACE, str(account_id), str(thread_id),
+                    str(message_id)),
+                STATUS_BACKOFF_TTL_SECS, "1")
+    except Exception as exc:  # the mark is best effort
+        _log.info("email.status_backoff_unavailable", account_id=account_id,
+                  error_type=type(exc).__name__)
+
+
+async def _drop_marked_rows(
+    account_id: str, rows: list[Any], backoff: bool,
+) -> list[Any]:
+    """The backfill rows without a marked thread. The backfill calls it
+    BEFORE its two caps, so a marked thread takes no slot. Only inbox and
+    sent rows are asked, so only they can hold a mark."""
+    if not backoff:
+        return rows
+    marked = await _status_backoff_marked(account_id, [
+        r for r in rows if (r.folder or "").lower() in ("inbox", "sent")])
+    return [r for r in rows if str(r.thread_id) not in marked]
+
+
+async def _back_off_if_undecided(
+    backoff: bool, status: JobStatus | None, account_id: str,
+    thread_id: str, message_id: Any,
+) -> None:
+    """Keep the mark when the status ask of this row was undecided."""
+    if backoff and status == UNDECIDED:
+        await _mark_status_backoff(account_id, thread_id, message_id)
+
 
 def _split_backfill_rows(
     rows: list[Any], existing: dict[str, tuple[str, str]],
@@ -1410,7 +2583,13 @@ async def _write_filed_fyi(account_id: str, filed_rows: list[Any]) -> None:
                      error=str(exc)[:200])
 
 
-async def _maybe_classify_threads(account_id: str) -> None:
+# EM-T4b review round 1, finding C: every caller is a background path. The
+# Reply Zero list starts it as a BackgroundTask on a cold mailbox, outside any
+# job scope, so the function opens the scope itself.
+@automation_job  # EM-T4b: the cap and the daily budget bind its model calls
+async def _maybe_classify_threads(
+    account_id: str, *, obey_auto_run: bool = True,
+) -> None:
     """Reply Zero BACKFILL: fill in per-thread status for threads the live rules
     pipeline hasn't classified yet — historical mail, accounts with auto-apply
     off, or anything the runner missed.
@@ -1431,6 +2610,9 @@ async def _maybe_classify_threads(account_id: str) -> None:
     whose stored status is provisional ("· auto" — a prior LLM fallback), so a
     guessed AWAITING self-heals. Caps work per cycle. Best-effort (never raises).
 
+    The inbox and the sent gap threads keep the new-mail floor of owner
+    decision (d) (``rules.NEW_MAIL_FLOOR_SQL``, EM-T5b-2 fix rounds 2 and 3).
+
     EM-T1b-2 (``email_app_master_plan.md`` §10.4.2): the backfill runs in
     phases, and each phase is its own ``_tenant_session()`` with the ambient
     tenant, which the sync loop or the request binds. No phase calls
@@ -1439,15 +2621,42 @@ async def _maybe_classify_threads(account_id: str) -> None:
     ``_mark_thread_replied`` with NO session open, because that call spends a
     model call in sessions of its own. Phase 2 reads the gap attachments and
     the account. The provider authenticates with no session open. Each gap
-    thread gets one block, and a last block persists rotated credentials.
+    thread gets Block R, the rule-match ask with no block open, and Block W
+    (EM-T4a-2 PR-B1, §10.4.6). When the job asks the thread status, Block S
+    reads it between the two, and the ask runs with no block open (PR-B2).
+    In ``on``, the status-first ask also runs with no block open, after
+    Block R and before the rule-match ask (PR-B3).
+    A last block persists rotated credentials.
+
+    EM-T16 PR-A: in ``on``, with ``email_triage_once_per_cycle``, an
+    undecided status ask keeps a back-off mark (:func:`_mark_status_backoff`),
+    and the selection drops a marked thread before both caps.
+
+    🔴 WS-17 EM-G11c2 (§12.3.13.7, G3): the backfill obeys Auto-run, on each
+    provider. Phase 0 reads it through the one helper ``rules.auto_run_on``.
+    With Auto-run OFF it still writes each status row for the UI, but it
+    builds no provider, moves no mail and writes no label, local or at the
+    provider. Fence: ``tests/unit/test_email_background_writes.py``.
+
+    Fix round 1: ``obey_auto_run=False`` is the member-started reclassify
+    (``_reclassify_reply_zero_job``). The click is the member's choice, as
+    for a manual dispatch and a member sweep, so it writes the labels. Every
+    background caller keeps the default True.
     """
     try:
         from gateway.routes.email.automation.engine import (  # noqa: PLC0415
+            DecisionUnavailable,
             LLMUnavailable,
-            classify_matches,
+            ask_rule_match,
             email_dict_from_row,
+            read_classification,
+            resolve_classification,
         )
+        from gateway.routes.email.automation.rules import auto_run_on
         async with _tenant_session() as db:
+            # EM-G11c2: the member's Auto-run choice decides every write of
+            # this job other than the status rows.
+            writes = await auto_run_on(db, account_id) or not obey_auto_run
             # Select threads that NEED WORK, not simply the newest ones.
             #
             # This used to take the 200 most recent threads from the last 30
@@ -1459,12 +2668,16 @@ async def _maybe_classify_threads(account_id: str) -> None:
             # threads that actually need doing, and the backlog drains instead
             # of standing still.
             #
-            # 🔴 The new-mail floor (owner decision (d), EM-T5b-2 fix round
-            # 2): an INBOX gap thread is selected only when its latest message
-            # arrived at or after the oldest enabled rule. Those rows go to
-            # `classify_matches` (Jev in `on`), which writes a status and
-            # provider labels, and older mail changes only through "Process
-            # past emails". The sent and the filed rows keep no floor.
+            # 🔴 The new-mail floor (owner decision (d), EM-T5b-2 fix rounds
+            # 2 and 3): an INBOX or a SENT gap thread is selected only when
+            # its latest message arrived at or after the oldest enabled rule.
+            # The inbox rows go to the split form of `classify_matches`, and
+            # the sent rows go to `_mark_thread_replied`. Each one asks for a
+            # status (Jev in `on`) and writes it and provider labels. Older
+            # mail changes only through "Process past emails". With no
+            # enabled rule the floor is NULL, so neither kind is selected.
+            # The filed rows keep no floor: they get a fixed FYI, with no
+            # model call and no provider write.
             from gateway.routes.email.automation.rules import NEW_MAIL_FLOOR_SQL
             rows = (await db.execute(text(
                 f"""WITH latest AS (
@@ -1478,10 +2691,8 @@ async def _maybe_classify_threads(account_id: str) -> None:
                    SELECT l.* FROM latest l
                      LEFT JOIN email_thread_status s
                             ON s.account_id = :aid AND s.thread_id = l.thread_id
-                    WHERE (s.thread_id IS NULL
-                       OR s.last_message_id::text <> l.id::text
-                       OR COALESCE(s.reason, '') LIKE '%· auto')
-                      AND (LOWER(COALESCE(l.folder, '')) <> 'inbox'
+                    WHERE {_NEEDS_STATUS_SQL}
+                      AND (LOWER(COALESCE(l.folder, '')) NOT IN ('inbox', 'sent')
                            OR l.received_at >= {NEW_MAIL_FLOOR_SQL})
                     -- Inbox first. Those are the threads that might still need a
                     -- reply, so they must not queue behind a filed backlog that is
@@ -1511,11 +2722,17 @@ async def _maybe_classify_threads(account_id: str) -> None:
             # token cost in this prompt. Drop it (3.5).
             about, _sig = await _load_assistant_about(
                 db, account_id, include_kb=False)
-            acc = (await db.execute(text(
-                "SELECT email_address FROM email_accounts WHERE id = :id"
-            ), {"id": account_id})).fetchone()
-            self_email = (acc.email_address if acc else "") or ""
+            # The address of this mailbox and each mailbox of the member, in
+            # one read (D-EM-27, EM-T8e-1).
+            me = await resolve_self(db, account_id)
+            self_email = me.address
             extra_domains = await resolve_org_domains(db, account_id)
+
+        # EM-T16 PR-A: in `on`, with the flag, skip a thread whose last
+        # status ask was undecided, BEFORE the two caps. No session is open.
+        backoff = _status_backoff_on()
+        latest_ids = {r.thread_id: r.id for r in rows}
+        rows = await _drop_marked_rows(account_id, rows, backoff)
 
         sent_threads, gap_inbound, filed_rows = _split_backfill_rows(
             rows, existing)
@@ -1535,7 +2752,9 @@ async def _maybe_classify_threads(account_id: str) -> None:
             # 2026-08-06: a session parked mid-LLM-call, a migration's ALTER
             # TABLE queued behind its lock, and Postgres's FIFO lock queue then
             # stalling every later reader of that table.
-            await _mark_thread_replied(account_id, tid)
+            outcome = await _mark_thread_replied(account_id, tid, labels=writes)
+            await _back_off_if_undecided(
+                backoff, outcome, account_id, tid, latest_ids[tid])
 
         gap = gap_inbound[:_BACKFILL_INBOUND_CAP]  # cap engine work per cycle
         if not gap:
@@ -1550,7 +2769,9 @@ async def _maybe_classify_threads(account_id: str) -> None:
                 "WHERE id = :id"
             ), {"id": account_id})).fetchone()
         provider = store = None
-        if acc_row:
+        # EM-G11c2: with Auto-run OFF there is no provider, so the resolver
+        # moves no mail (`_restore_conversation_messages`).
+        if acc_row and writes:
             from acb_llm.key_store import get_key_store  # noqa: PLC0415
             store = get_key_store()
             creds = json.loads(store.decrypt(acc_row.credentials_encrypted))
@@ -1561,34 +2782,78 @@ async def _maybe_classify_threads(account_id: str) -> None:
             # extra_domains is a KEYWORD arg (positional lands it in self_name).
             email = email_dict_from_row(
                 r, self_email, about, extra_domains=extra_domains,
-                attachments=gap_attach.get(str(r.id), ""))
-            # One block per gap thread. It lands where the per-thread commit
-            # used to land. EM-T4 owns the model and provider I/O inside it.
-            async with _tenant_session() as db:
-                # Match + full-thread status determination through the shared
-                # enforcement point (the SAME #110 path the live runner uses).
+                attachments=gap_attach.get(str(r.id), ""),
+                self_addresses=me.self_addresses)
+            # Match + full-thread status determination through the shared
+            # split form of engine.classify_matches (the SAME #110 path the
+            # live runner uses, EM-T4a-2 PR-B1, §10.4.6). Block R reads, the
+            # rule-match ask runs with NO block open, and Block W writes.
+            status: JobStatus | None = None
+            try:
+                async with _tenant_session() as db:
+                    plan = await read_classification(
+                        db, account_id, r, email, multi_rule=False, resolve=True)
+                    # Fail closed: this raises when a reader swallowed a failed statement.
+                    await db.execute(text("SELECT 1"))
+                # PR-B3: in `on`, the status-first ask runs with NO block
+                # open, before the rule match. "Undecided" raises here.
                 try:
-                    matches = await classify_matches(
-                        db, account_id, r, email,
-                        multi_rule=False, resolve=True, provider=provider)
-                except LLMUnavailable:
-                    # Classifier down for this one — skip it (this backfill
-                    # writes no watermark, so the gap query re-selects it next
-                    # cycle) rather than abort the whole batch on the outer
-                    # handler.
-                    continue
-                keep_label = await project_reply_status_from_matches(
-                    db, account_id, r, matches)
-                # Collapse the thread to that ONE conversation label. This
-                # backfill wrote the status row but never reconciled the labels,
-                # so earlier messages kept whatever they were tagged with and a
-                # thread ended up wearing Reply AND Awaiting AND Done at once —
-                # 68 threads on the live account. The status row and the labels
-                # are two views of one decision; writing only the first is what
-                # let them disagree.
-                if keep_label:
-                    await _reconcile_thread_labels(
-                        db, provider, account_id, r.thread_id, keep_label)
+                    status = await ask_status_first(plan.first)
+                except DecisionUnavailable:
+                    status = UNDECIDED  # EM-T16 PR-A: the back-off below
+                    raise
+                # EM-T16 PR-B: when the status decides the thread, the
+                # rule match is not asked. The backfill writes no History.
+                asked = [] if skip_rule_match(
+                    plan.first, status, account_id=account_id,
+                    job="backfill") else await ask_rule_match(plan.match)
+                # Block S (EM-T4a-2 PR-B2): only when the job asks the
+                # status. The ask runs with NO block open after it.
+                if status_ask_needed(plan, r, asked):
+                    async with _tenant_session() as db:
+                        seen = await read_job_status(
+                            db, account_id, r, move_keys=status_move_keys(plan))
+                        # Fail closed, as at the end of Block R.
+                        await db.execute(text("SELECT 1"))
+                    status = await ask_job_status(seen)
+                # Block W: one block per gap thread. It lands where the
+                # per-thread commit used to land. EM-T4 owns the model and
+                # provider I/O inside it.
+                async with _tenant_session() as db:
+                    matches = await resolve_classification(
+                        db, account_id, r, plan, asked, provider=provider,
+                        status=status)
+                    keep_label = await project_reply_status_from_matches(
+                        db, account_id, r, matches)
+                    # Collapse the thread to that ONE conversation label. This
+                    # backfill wrote the status row but never reconciled the
+                    # labels, so earlier messages kept whatever they were
+                    # tagged with and a thread ended up wearing Reply AND
+                    # Awaiting AND Done at once — 68 threads on the live
+                    # account. The status row and the labels are two views of
+                    # one decision; writing only the first is what let them
+                    # disagree.
+                    # EM-G11c2: with Auto-run OFF, the status row is the
+                    # only write. No label changes, local or upstream.
+                    if keep_label and writes \
+                            and not conversation_match_proposes(matches):
+                        await _reconcile_thread_labels(
+                            db, provider, account_id, r.thread_id, keep_label)
+            except LLMUnavailable as exc:
+                # Classifier down for this one — skip it (this backfill writes
+                # no watermark, so the gap query re-selects it next cycle)
+                # rather than abort the whole batch on the outer handler. The
+                # raise comes before any write of Block W, which rolls back.
+                #
+                # EM-T16 PR-A: an undecided STATUS ask in `on` keeps a mark,
+                # from `ask_status_first` or from `_resolve_on` in Block W.
+                # An undecided rule match leaves `status` at no verdict, and
+                # a spent budget is not `DecisionUnavailable`, so neither
+                # keeps one. No session is open here.
+                await _back_off_if_undecided(
+                    backoff and isinstance(exc, DecisionUnavailable), status,
+                    account_id, r.thread_id, r.id)
+                continue
         if provider is not None and store is not None \
                 and provider.credentials_dirty():
             async with _tenant_session() as db:
@@ -1633,9 +2898,10 @@ _RECLASSIFY_MAX_PASSES = 200
 async def _count_reply_zero_backlog(db: Any, account_id: str) -> int:
     """How many threads still NEED a status — the same "needs work" predicate the
     backfill selects on (statusless, latest-message changed, or a provisional
-    "· auto" status). Drives both the progress total and the drain's stop test."""
+    "· auto" status past its recheck window, :data:`_NEEDS_STATUS_SQL`).
+    Drives both the progress total and the drain's stop test."""
     return (await db.execute(text(
-        """WITH latest AS (
+        f"""WITH latest AS (
              SELECT DISTINCT ON (thread_id) thread_id, id
              FROM email_messages
              WHERE account_id = :aid AND thread_id IS NOT NULL
@@ -1644,12 +2910,11 @@ async def _count_reply_zero_backlog(db: Any, account_id: str) -> int:
            SELECT COUNT(*) FROM latest l
              LEFT JOIN email_thread_status s
                     ON s.account_id = :aid AND s.thread_id = l.thread_id
-            WHERE s.thread_id IS NULL
-               OR s.last_message_id::text <> l.id::text
-               OR COALESCE(s.reason, '') LIKE '%· auto'"""
+            WHERE {_NEEDS_STATUS_SQL}"""
     ), {"aid": account_id})).scalar() or 0
 
 
+@automation_job  # EM-T4b: the cap and the daily budget bind its model calls
 async def _reclassify_reply_zero_job(
     account_id: str, *, token: int | None = None,
 ) -> None:
@@ -1707,7 +2972,9 @@ async def _reclassify_reply_zero_job(
         if prev_remaining is not None and remaining >= prev_remaining:
             break
         prev_remaining = remaining
-        await _maybe_classify_threads(account_id)
+        # EM-G11c2 fix round 1: the member started this, so Auto-run does
+        # not gate it.
+        await _maybe_classify_threads(account_id, obey_auto_run=False)
     _RECLASSIFY_JOBS.finish(
         account_id, token, status="done", finished_at=_dt_now_iso())
 
@@ -1733,9 +3000,16 @@ async def resolve_thread(
     Done → status='DONE' (shows under the Done tab) and the provider/local labels
     are collapsed to "Done" (clearing stale Reply / Awaiting / Follow-up).
     Reopen → re-derive NEEDS_REPLY/AWAITING from the latest message's folder and
-    swap the label back to Reply / Awaiting Reply."""
+    swap the label back to Reply / Awaiting Reply.
+
+    The pair must match (D-EM-19, EM-T8e-1): when no mail of ``account_id``
+    has ``thread_id``, the answer is 404 and nothing is written. That covers
+    the done, the reopen and the dismiss branches. The chat tool
+    ``mark_thread_done`` has no mail id, so this check is what makes a wrong
+    mailbox from the model fail closed."""
     async with _tenant_session() as db:
-        await _assert_account_owner(db, req.account_id, user.email or "anonymous")
+        await _assert_account_owner(db, req.account_id, user.email or "anonymous", level="send")
+        await _assert_thread_in_mailbox(db, req.account_id, req.thread_id)
         keep_label = "Done"
         if req.dismiss:
             # A dead loop the user will never answer: file it as FYI. DONE
@@ -1773,8 +3047,7 @@ async def resolve_thread(
             # commitment task, or an inbound capture on the same thread). The
             # helper only touches non-DONE tasks, so a task the forward path
             # already closed is left alone — no ping-pong.
-            from gateway.routes.tasks.email_link import (
-                propagate_thread_done_to_tasks)
+            from gateway.routes.tasks.email_link import propagate_thread_done_to_tasks
             with contextlib.suppress(Exception):  # best-effort; thread is Done
                 await propagate_thread_done_to_tasks(
                     db, user.email or "anonymous", req.account_id,
@@ -1844,7 +3117,9 @@ async def reclassify_reply_zero_status(
     """Progress of an in-flight (or the last) whole-mailbox reclassify: status,
     total threads to rebuild, how many remain, and how many are done."""
     async with _tenant_session() as db:
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="read")
     job = _RECLASSIFY_JOBS.get(account_id)
     if not job:
         return {"status": "idle"}
@@ -1870,13 +3145,20 @@ async def reply_zero(
     populated; an existing draft for the thread is surfaced (``draft_id``) so the
     UI offers "View draft" instead of drafting a second reply."""
     async with _tenant_session() as db:
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="read")
         want = {"awaiting": "AWAITING", "done": "DONE"}.get(type, "NEEDS_REPLY")
-        # Trash is hidden from every bucket; archiving a thread also drops it from
-        # the ACTIVE buckets ("archived = off my reply queue") while it still shows
-        # under Done. (Controlled literal — safe to inline.)
-        excluded = ("'trash', 'archive'"
-                    if want in ("NEEDS_REPLY", "AWAITING") else "'trash'")
+        # Trash is hidden from every bucket. The ACTIVE buckets read the ONE
+        # live-thread rule of the digest and the shell's needs feed
+        # (``digest._LIVE_THREAD``, HANDOFF H-286): a last message in trash,
+        # junk or the archive, or one the member snoozed, is off the reply
+        # queue. Done still shows an archived thread, so it hides trash only.
+        # (Controlled literals — safe to inline.)
+        from gateway.routes.email.digest import _LIVE_THREAD
+
+        hidden = (_LIVE_THREAD if want in ("NEEDS_REPLY", "AWAITING")
+                  else "LOWER(COALESCE(em.folder, '')) <> 'trash'")
         rows = (await db.execute(text(
             f"""SELECT ts.thread_id, ts.reason, ts.last_message_at,
                       em.id, em.subject, em.from_address, em.is_read,
@@ -1892,9 +3174,12 @@ async def reply_zero(
                  LIMIT 1
                ) d ON true
                WHERE ts.account_id = :aid AND ts.status = :st
-                 -- Hide trashed (all buckets) / archived (active buckets) threads.
-                 AND LOWER(COALESCE(em.folder, '')) NOT IN ({excluded})
-               ORDER BY ts.last_message_at DESC NULLS LAST LIMIT :limit"""
+                 -- Trash (all buckets). Junk, archive, snoozed (active buckets).
+                 AND {hidden}
+               -- The thread id breaks a tie, so a bigger LIMIT begins with
+               -- the smaller one and the chat's next page repeats nothing.
+               ORDER BY ts.last_message_at DESC NULLS LAST, ts.thread_id DESC
+               LIMIT :limit"""
         ), {"aid": account_id, "st": want, "limit": limit})).fetchall()
 
         # Cold start: nothing classified yet → schedule a one-off backfill so the

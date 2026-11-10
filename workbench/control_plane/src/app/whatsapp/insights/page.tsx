@@ -77,7 +77,7 @@ export default function InsightsPage() {
     <div className="mx-auto h-full max-w-3xl overflow-y-auto p-4 text-foreground md:p-6">
       <div className="mb-5 flex items-center gap-3">
         <Icon name="Activity" className="h-4 w-4 text-primary" />
-        <h1 className="text-[15px] font-semibold">Pulse</h1>
+        <h2 className="text-[15px] font-semibold">Pulse</h2>
         <div className="ml-auto flex items-center gap-1 rounded-lg border border-border p-0.5 text-[11px]">
           {[7, 30].map((d) => (
             <button

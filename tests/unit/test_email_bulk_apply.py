@@ -172,7 +172,7 @@ async def test_an_unfiltered_bulk_action_is_refused() -> None:
         bulk_action,
     )
 
-    req = BulkActionRequest(action="trash", account_id="acc-1")
+    req = BulkActionRequest(action="trash", account_id="a0000000-0000-4000-8000-000000000001")
     with pytest.raises(HTTPException) as exc:
         await bulk_action(req, MagicMock(), MagicMock(email="u@x.io"))
     assert exc.value.status_code == 400
@@ -201,7 +201,7 @@ async def test_any_filter_is_enough_to_proceed(kwargs) -> None:
         async def commit(self): ...
         async def close(self): ...
 
-    req = s.BulkActionRequest(action="archive", account_id="acc-1", **kwargs)
+    req = s.BulkActionRequest(action="archive", account_id="a0000000-0000-4000-8000-000000000001", **kwargs)
     with patch.object(s, "_tenant_session", bind_db(_DB())):
         res = await s.bulk_action(req, MagicMock(), MagicMock(email="u@x.io"))
     assert res == {"affected": 0}
@@ -232,7 +232,7 @@ async def test_archiving_a_sender_never_reaches_into_the_bin() -> None:
 
     captured: dict = {}
     req = s.BulkActionRequest(
-        action="archive", account_id="acc-1", sender_email="news@site.com")
+        action="archive", account_id="a0000000-0000-4000-8000-000000000001", sender_email="news@site.com")
     with patch.object(s, "_tenant_session", bind_db(_capture_db(captured))):
         await s.bulk_action(req, MagicMock(), MagicMock(email="u@x.io"))
 
@@ -247,7 +247,7 @@ async def test_trashing_still_reaches_archived_mail() -> None:
 
     captured: dict = {}
     req = s.BulkActionRequest(
-        action="trash", account_id="acc-1", sender_email="news@site.com")
+        action="trash", account_id="a0000000-0000-4000-8000-000000000001", sender_email="news@site.com")
     with patch.object(s, "_tenant_session", bind_db(_capture_db(captured))):
         await s.bulk_action(req, MagicMock(), MagicMock(email="u@x.io"))
 
@@ -277,7 +277,7 @@ async def test_affected_counts_only_what_changed(action, already) -> None:
 
     captured: dict = {}
     req = s.BulkActionRequest(
-        action=action, account_id="acc-1", sender_email="news@site.com")
+        action=action, account_id="a0000000-0000-4000-8000-000000000001", sender_email="news@site.com")
     with patch.object(s, "_tenant_session", bind_db(_capture_db(captured))):
         await s.bulk_action(req, MagicMock(), MagicMock(email="u@x.io"))
 
@@ -342,7 +342,7 @@ async def test_reconcile_retries_then_reverts_what_never_applied() -> None:
     with patch.object(s, "_tenant_session", bind_db(_DB())), \
             patch.object(s, "provider_session", lambda *a, **k: _Ctx()), \
             patch.object(s.asyncio, "sleep", AsyncMock()):
-        await s._bulk_reconcile_provider("acc-1", ["m1"], "archive")
+        await s._bulk_reconcile_provider("a0000000-0000-4000-8000-000000000001", ["m1"], "archive")
 
     # Retried rather than given up on after the first transient failure…
     assert len(calls) == s._RECONCILE_ATTEMPTS
@@ -379,7 +379,7 @@ async def test_reconcile_leaves_the_mirror_alone_when_it_succeeds() -> None:
 
     with patch.object(s, "_tenant_session", bind_db(_DB())), \
             patch.object(s, "provider_session", lambda *a, **k: _Ctx()):
-        await s._bulk_reconcile_provider("acc-1", ["m1"], "archive")
+        await s._bulk_reconcile_provider("a0000000-0000-4000-8000-000000000001", ["m1"], "archive")
 
     assert not [q for q in statements if "SET folder = 'inbox'" in q]
 
@@ -413,7 +413,7 @@ async def test_cleaner_excludes_archived_mail_by_default() -> None:
     captured: dict = {}
     with patch.object(s, "_tenant_session", bind_db(_senders_db(captured))):
         await s.list_senders(
-            account_id="acc-1", folder=None, include_archived=False,
+            account_id="a0000000-0000-4000-8000-000000000001", folder=None, include_archived=False,
             limit=200, offset=0, user=MagicMock(email="u@x.io"))
 
     assert "<> 'archive'" in captured["sql"]
@@ -430,7 +430,7 @@ async def test_cleaner_can_still_show_the_whole_mailbox() -> None:
     captured: dict = {}
     with patch.object(s, "_tenant_session", bind_db(_senders_db(captured))):
         await s.list_senders(
-            account_id="acc-1", folder=None, include_archived=True,
+            account_id="a0000000-0000-4000-8000-000000000001", folder=None, include_archived=True,
             limit=200, offset=0, user=MagicMock(email="u@x.io"))
 
     assert "<> 'archive'" not in captured["sql"]
@@ -498,7 +498,7 @@ async def test_light_search_omits_message_bodies() -> None:
 
     with patch.object(sr, "_tenant_session", bind_db(_DB())):
         await sr.search_messages(
-            q=None, account_id="acc-1", folder="all", label=None, labels=None,
+            q=None, account_id="a0000000-0000-4000-8000-000000000001", folder="all", label=None, labels=None,
             uncategorized=False, from_addr="news@site.com", to_addr=None,
             is_read=None, is_starred=None, received_after=None,
             received_before=None, has_attachments=None, sender_category=None,

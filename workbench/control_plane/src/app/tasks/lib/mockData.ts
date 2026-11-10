@@ -313,7 +313,7 @@ export const CAPTURE_TRIGGERS: string[] = [
 
 /** Quick-action pills for the assistant rail (wired in a later slice). */
 export const QUICK_ACTIONS: { label: string; prompt: string }[] = [
-  { label: "Process my inbox", prompt: "Help me clarify my inbox items one by one." },
+  { label: "Process my task inbox", prompt: "Help me clarify my inbox items one by one." },
   { label: "What's my next action?", prompt: "Given my contexts and energy, what should I do next?" },
   { label: "Run weekly review", prompt: "Walk me through my weekly review." },
   { label: "What am I waiting on?", prompt: "Show me everything I'm waiting on and what's overdue." },

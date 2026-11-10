@@ -106,6 +106,26 @@ describe("every NEXT_PUBLIC flag reaches the browser", () => {
       "NEXT_PUBLIC_PROJECTS_CHAT",
       "NEXT_PUBLIC_PROJECTS_IMPORT",
       "NEXT_PUBLIC_SHOW_PREVIEW_APPS",
+      // WS-45 S3: the chat's model picker leaves for a covered agent.
+      "NEXT_PUBLIC_AI_TIER_ROUTING",
+      // WS-44 NS-6: the shell's one bell, and later its dock.
+      "NEXT_PUBLIC_SHELL_DOCK",
+      // D99, NS-6 slice 6b: the chat bar and the one assistant.
+      "NEXT_PUBLIC_SHELL_CHAT",
+      // WS-58 MD-1b: My Day draws the live feed.
+      "NEXT_PUBLIC_MY_DAY_FEED",
+      // WS-BRIEF BR-2c-2: My Day draws the brief card.
+      "NEXT_PUBLIC_BRIEF_CARD",
+      // WS-PKG PKG-18a: My Day draws the Today band above the feed.
+      "NEXT_PUBLIC_TODAY_BAND",
+      // WS-62 CF-1: the chat-first surface, first the peek strip on a phone.
+      "NEXT_PUBLIC_CHAT_FIRST",
+      // WS-64 OP-1: the compact chrome of Projects (tool row, sheets, chips).
+      "NEXT_PUBLIC_PROJECTS_COMPACT_CHROME",
+      // WS-64 OP-2: My work in the Projects sidebar, and Today as the landing.
+      "NEXT_PUBLIC_PROJECTS_MY_WORK",
+      // WS-66 PN-1 has NO build-time flag: the Notifications section asks the
+      // gateway (`WEB_PUSH_ENABLED`, through `/api/push/public-key`).
     ];
     const all = sourcesNamingAFlag()
       .map((f) => f.text)

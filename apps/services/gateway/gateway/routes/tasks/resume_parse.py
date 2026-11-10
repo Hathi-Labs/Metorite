@@ -19,6 +19,9 @@ import re
 from pathlib import Path
 from typing import Any
 
+from acb_llm.voice import voice_prompt
+from gateway.routes.tasks.core import NO_THINKING
+
 # A small base vocabulary so a résumé skill that no one in people has yet is
 # still detected. The PRIMARY vocabulary is the org's existing skills (passed in),
 # so this only needs to cover common tech/PM terms the seed might miss.
@@ -124,10 +127,11 @@ async def llm_extract_profile(text: str) -> dict[str, Any]:
         resp, _used = await acompletion_with_fallback(
             model="tier-balanced",
             fallback_model="tier-balanced",
-            messages=[{"role": "system", "content": system},
+            messages=[{"role": "system", "content": system + "\n\n" + voice_prompt("summary", json=True)},
                       {"role": "user", "content": snippet}],
             temperature=0.0,
             max_tokens=500,
+            thinking=dict(NO_THINKING),
             response_format={"type": "json_object"},
         )
         raw = resp.choices[0].message.content or ""

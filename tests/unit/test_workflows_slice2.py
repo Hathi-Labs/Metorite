@@ -9,6 +9,8 @@ broker handler — no Postgres, no LLM.
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from typing import Any, ClassVar
 
 from gateway.routes.workflows import broker_handlers, service
@@ -188,21 +190,46 @@ def test_resume_handler_registered_and_calls_service(monkeypatch) -> None:
         broker_handlers.register_handlers()
         assert "workflow.resume_run" in _HANDLERS
 
-        calls: list[str] = []
+        calls: list[tuple[str, str | None]] = []
 
-        async def fake_resume(run_id: str, *, resumed_by: str = "") -> dict:
-            calls.append(run_id)
+        async def fake_resume(
+            run_id: str, *, resumed_by: str = "", organization_id: str | None = None,
+        ) -> dict:
+            calls.append((run_id, organization_id))
             return {"ok": True, "run_id": run_id}
 
         monkeypatch.setattr(service, "resume_run", fake_resume)
 
         class _Proposal:
-            payload: ClassVar[dict] = {"run_id": "run-123"}
+            payload: ClassVar[dict] = {"run_id": "run-123", "organization_id": "spoofed"}
 
-        result = asyncio.run(_HANDLERS["workflow.resume_run"](_Proposal()))
-        assert result["ok"] is True and calls == ["run-123"]
+        from acb_common.db import bind_tenant, release_tenant
+
+        token = bind_tenant("org-approver")
+        try:
+            result = asyncio.run(_HANDLERS["workflow.resume_run"](_Proposal()))
+        finally:
+            release_tenant(token)
+        # The approver's bound org, never a payload field (R11).
+        assert result["ok"] is True and calls == [("run-123", "org-approver")]
     finally:
         clear_action_handlers()
+
+
+def test_resume_handler_with_no_bound_org_refuses(monkeypatch) -> None:
+    calls: list[str] = []
+
+    async def fake_resume(run_id: str, **_kw) -> dict:
+        calls.append(run_id)
+        return {"ok": True}
+
+    monkeypatch.setattr(service, "resume_run", fake_resume)
+
+    class _Proposal:
+        payload: ClassVar[dict] = {"run_id": "run-123"}
+
+    result = asyncio.run(broker_handlers._resume_run_handler(_Proposal()))
+    assert result["ok"] is False and calls == []
 
 
 def test_resume_handler_without_run_id_fails_closed() -> None:
@@ -245,10 +272,21 @@ def test_reconcile_orphaned_runs_fails_running_only(monkeypatch) -> None:
     paused runs must survive restarts (resume rebuilds from the snapshot)."""
     fake = _FakeReconcileDb(rowcount=3)
 
-    async def fake_get_db() -> Any:
-        return fake
+    async def fake_orgs() -> list[str]:
+        return ["org-1"]
 
-    monkeypatch.setattr(service, "_get_db", fake_get_db)
+    @asynccontextmanager
+    async def fake_tenant_session(org: str | None = None) -> Any:
+        yield fake
+        await fake.commit()
+
+    # H-328 part (b): the sweep binds each LISTED org. "org-1" is listed.
+    monkeypatch.setattr(service, "_organization_ids", fake_orgs)
+    monkeypatch.setattr(service, "_tenant_session", fake_tenant_session)
+    monkeypatch.setattr(
+        service.unattended, "get_settings",
+        lambda: SimpleNamespace(workflow_unattended_orgs="org-1"),
+    )
     assert asyncio.run(service.reconcile_orphaned_runs()) == 3
     assert fake.committed
     sql = " ".join(fake.statements)

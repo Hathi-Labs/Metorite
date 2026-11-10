@@ -19,6 +19,7 @@
  * the literal `sections.<name>` access, which the lockstep test reads.
  */
 import type {
+  AgentRunsReport,
   CapacityReport,
   ConflictsReport,
   FinishedReport,
@@ -27,10 +28,13 @@ import type {
   OutlookReport,
   PreviewReportBody,
   PulseReport,
+  QualityReport,
   RebalanceReport,
   RenderedReportBody,
   StuckReport,
   ThroughputReport,
+  WaitingReport,
+  WhoDidTheWorkReport,
 } from "./api";
 import { asList } from "./analyticsRead";
 
@@ -90,6 +94,9 @@ export function throughputPanelData(
     weeks: frame.report.config.weeks,
     series,
     current_week_partial: series.length > 0,
+    // WS-27bn RA-2. The split of people and agents, copied. Absent before RA-2.
+    ...(section.actor_cycle ? { actor_cycle: section.actor_cycle } : {}),
+    ...(typeof section.actor_summary === "string" ? { actor_summary: section.actor_summary } : {}),
     summary: {
       ...(typeof section.completed === "number" ? { completed: section.completed } : {}),
       median_hours: section.median_hours,
@@ -122,6 +129,8 @@ export function loadPanelData(
     ...(typeof section.hidden_people === "number"
       ? { hidden_people: section.hidden_people }
       : {}),
+    // WS-27bn RA-6. Copied. Absent from an older server.
+    ...(section.needs_owner ? { needs_owner: { ...section.needs_owner } } : {}),
   };
 }
 
@@ -233,6 +242,90 @@ export function hygienePanelData(
     ...section,
     by_kind: { ...(section.by_kind ?? {}) },
     rows: asList<HygieneReport["rows"][number]>(section.rows),
+  };
+}
+
+/**
+ * `waiting` as `WaitingPanel` takes it (WS-27bn RA-3).
+ *
+ * The section IS `waiting_body`, so this copies it. A list the body lacks
+ * reads as no rows, never as a figure. The period line is the frame's, for
+ * the answer time, which reads the report period.
+ */
+export function waitingPanelData(
+  section: NonNullable<Sections["waiting"]>,
+  frame: ReportFrame
+): WaitingReport & { period_start: string; period_end: string } {
+  return {
+    ...section,
+    questions: asList<WaitingReport["questions"][number]>(section.questions),
+    reviews: asList<WaitingReport["reviews"][number]>(section.reviews),
+    handoffs: asList<WaitingReport["handoffs"][number]>(section.handoffs),
+    period_start: frame.period_start,
+    period_end: frame.period_end,
+  };
+}
+
+/**
+ * `finished` as `WhoDidTheWorkPanel` takes it (WS-27bn RA-2).
+ *
+ * The weeks, the split, the sentence and the member rows are the server's.
+ * The last week runs on only when the period keeps the running week, as
+ * `weekly_sql` and `actor_weekly_sql` end their spines. A key the section
+ * lacks stays absent, and the split falls back to the labels with no row.
+ */
+export function whoDidTheWorkPanelData(
+  section: NonNullable<Sections["finished"]>,
+  frame: ReportFrame
+): WhoDidTheWorkReport {
+  const series = asList<WhoDidTheWorkReport["actor_series"][number]>(section.actor_series).map(
+    (w) => ({ ...w })
+  );
+  return {
+    period_start: frame.period_start,
+    period_end: frame.period_end,
+    actor_summary: section.actor_summary ?? "",
+    actor_series: series,
+    actor_split: { agent_finished: 0, agent_assisted: 0, person: 0, ...(section.actor_split ?? {}) },
+    agent_members: asList<WhoDidTheWorkReport["agent_members"][number]>(section.agent_members),
+    ...(typeof section.agent_members_total === "number"
+      ? { agent_members_total: section.agent_members_total }
+      : {}),
+    ...(typeof section.hidden_people === "number" ? { hidden_people: section.hidden_people } : {}),
+    current_week_partial: series.length > 0 && !frame.report.config.skip_current_week,
+  };
+}
+
+/**
+ * `agent_runs` as `AgentRunsPanel` takes it (WS-27bn RA-4).
+ *
+ * The section IS `agent_runs_body`, so this copies it. A list the body lacks
+ * reads as no rows, never as a figure. It takes no period: the section
+ * reads its own 14 days, and the panel names them.
+ */
+export function agentRunsPanelData(section: NonNullable<Sections["agent_runs"]>): AgentRunsReport {
+  return {
+    ...section,
+    series: asList<AgentRunsReport["series"][number]>(section.series),
+    silent: asList<AgentRunsReport["silent"][number]>(section.silent),
+    long_runs: asList<AgentRunsReport["long_runs"][number]>(section.long_runs),
+  };
+}
+
+/**
+ * `quality` as `QualityPanel` takes it (WS-27bn RA-5).
+ *
+ * The section IS `quality_body`, so this copies it. A list the body lacks
+ * reads as no rows, never as a figure. It takes no period: the section
+ * reads its own 14 days, and the panel names them.
+ */
+export function qualityPanelData(section: NonNullable<Sections["quality"]>): QualityReport {
+  return {
+    ...section,
+    checks: {
+      ...section.checks,
+      failing: asList<QualityReport["checks"]["failing"][number]>(section.checks?.failing),
+    },
   };
 }
 

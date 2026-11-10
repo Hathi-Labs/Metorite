@@ -13,12 +13,16 @@ Two halves, and they are deliberately independent:
   than from inside the assignment handler.
 
 Hermetic: `_get_db` is monkeypatched to a fake and the orchestrator is never
-imported. Nothing here needs Docker or a database.
+imported (a stand-in module takes `orchestrator.executor`'s place where the
+run itself is under test). Nothing here needs Docker or a database.
 """
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -347,11 +351,29 @@ def test_a_ref_that_resolves_to_nothing_fails_the_node_rather_than_patching_noth
 # is broken".
 
 
+@pytest.fixture(autouse=True)
+def _dispatch_on(monkeypatch):
+    """The run is dark by default (`PROJECTS_AGENT_DISPATCH`). The tests of
+    the run need it ON. The OFF tests below take it away again."""
+    monkeypatch.setenv(agent_dispatch.DISPATCH_FLAG, "1")
+
+
 def _assigned(task_id, assignees, org: str | None = DEFAULT_ORGANIZATION):
     payload = {"task_id": str(task_id), "assignees": assignees}
     if org is not None:
         payload["organization_id"] = org
     return payload
+
+
+async def _dispatch(payload):
+    """The sink, then every run it started.
+
+    The sink starts each run in the background and returns, so a test that
+    reads the runs must wait for them. Without the wait, a test passes or
+    fails on the order asyncio happens to run its ready callbacks in.
+    """
+    await agent_dispatch.on_event("projects", "pm.task.assigned", payload)
+    await agent_dispatch.wait_for_runs()
 
 
 def test_agent_targets_selects_agents_and_ignores_people():
@@ -407,8 +429,7 @@ def test_assigning_a_person_dispatches_nothing(monkeypatch, db, project):
         agent_dispatch, "_run_and_record",
         lambda *a: calls.append(a) or _noop(),
     )
-    run(agent_dispatch.on_event(
-        "projects", "pm.task.assigned",
+    run(_dispatch(
         _assigned(project.task.id, ["priya@fracktal.in"]),
     ))
     assert calls == []
@@ -425,12 +446,11 @@ def test_assigning_an_agent_records_the_handoff_BEFORE_the_run(monkeypatch, db, 
     bind_db(monkeypatch, db, (agent_dispatch,))
     seen_at_dispatch: list[int] = []
 
-    async def _fake_run(agent, message, task_id, organization_id) -> None:
+    async def _fake_run(agent, message, task_id, organization_id, member="") -> None:
         seen_at_dispatch.append(len(db.activities("agent_run")))
 
     monkeypatch.setattr(agent_dispatch, "_run_and_record", _fake_run)
-    run(agent_dispatch.on_event(
-        "projects", "pm.task.assigned",
+    run(_dispatch(
         _assigned(project.task.id, ["agent:researcher"]),
     ))
     assert seen_at_dispatch == [1]
@@ -445,8 +465,7 @@ def test_a_missing_task_dispatches_nothing(monkeypatch, db):
         agent_dispatch, "_run_and_record",
         lambda *a: calls.append(a) or _noop(),
     )
-    run(agent_dispatch.on_event(
-        "projects", "pm.task.assigned",
+    run(_dispatch(
         _assigned("00000000-0000-0000-0000-000000000000", ["agent:researcher"]),
     ))
     assert calls == []
@@ -456,12 +475,11 @@ def test_two_agents_on_one_assignment_each_get_a_run(monkeypatch, db, project):
     bind_db(monkeypatch, db, (agent_dispatch,))
     dispatched: list[str] = []
 
-    async def _fake_run(agent, message, task_id, organization_id) -> None:
+    async def _fake_run(agent, message, task_id, organization_id, member="") -> None:
         dispatched.append(agent)
 
     monkeypatch.setattr(agent_dispatch, "_run_and_record", _fake_run)
-    run(agent_dispatch.on_event(
-        "projects", "pm.task.assigned",
+    run(_dispatch(
         _assigned(project.task.id, ["agent:a", "agent:b"]),
     ))
     assert dispatched == ["a", "b"]
@@ -489,8 +507,7 @@ def test_an_event_without_a_tenant_refuses_instead_of_running_unbound(
         agent_dispatch, "_run_and_record",
         lambda *a: calls.append(a) or _noop(),
     )
-    run(agent_dispatch.on_event(
-        "projects", "pm.task.assigned",
+    run(_dispatch(
         _assigned(project.task.id, ["agent:researcher"], org=org),
     ))
     assert calls == []
@@ -503,12 +520,11 @@ def test_the_sink_binds_the_events_tenant_explicitly(monkeypatch, db, project):
     """`[None]` here would mean the ambient form — the inheritance H4 forbids."""
     bind_db(monkeypatch, db, (agent_dispatch,))
 
-    async def _fake_run(agent, message, task_id, organization_id) -> None:
+    async def _fake_run(agent, message, task_id, organization_id, member="") -> None:
         return None
 
     monkeypatch.setattr(agent_dispatch, "_run_and_record", _fake_run)
-    run(agent_dispatch.on_event(
-        "projects", "pm.task.assigned",
+    run(_dispatch(
         _assigned(project.task.id, ["agent:researcher"]),
     ))
     assert db.bound_tenants == [DEFAULT_ORGANIZATION]
@@ -544,18 +560,469 @@ def test_the_dispatch_loop_hands_the_events_tenant_to_every_run(
     bind_db(monkeypatch, db, (agent_dispatch,))
     seen: list[tuple] = []
 
-    async def _fake_run(agent, message, task_id, organization_id) -> None:
+    async def _fake_run(agent, message, task_id, organization_id, member="") -> None:
         seen.append((agent, task_id, organization_id))
 
     monkeypatch.setattr(agent_dispatch, "_run_and_record", _fake_run)
-    run(agent_dispatch.on_event(
-        "projects", "pm.task.assigned",
+    run(_dispatch(
         _assigned(project.task.id, ["agent:a", "agent:b"]),
     ))
     assert seen == [
         ("a", str(project.task.id), DEFAULT_ORGANIZATION),
         ("b", str(project.task.id), DEFAULT_ORGANIZATION),
     ]
+
+
+# ── The run itself: the payload, the reply, the failure, the wait ───────────
+#
+# From 2026-08-06 until 2026-10-04 the sink handed `run_agent` a STRING, and
+# every dispatched run failed with `'str' object has no attribute 'keys'`.
+# Every test above replaces `_run_and_record`, so none of them could see it.
+# These tests run the REAL `_run_and_record` against a stand-in executor
+# module. `test_projects_agent_dispatch_run.py` runs the real executor on a
+# real Postgres.
+
+
+def _executor(monkeypatch, run_agent) -> None:
+    """Stand in for `orchestrator.executor`, so this suite imports no runtime."""
+    monkeypatch.setitem(
+        sys.modules, "orchestrator.executor", SimpleNamespace(run_agent=run_agent),
+    )
+
+
+class _Log:
+    def __init__(self) -> None:
+        self.warnings: list[tuple[str, dict]] = []
+
+    def warning(self, event: str, **fields) -> None:
+        self.warnings.append((event, fields))
+
+
+def test_the_run_is_handed_a_dict_payload_and_the_tenant_as_a_keyword(
+    monkeypatch, db, project,
+):
+    bind_db(monkeypatch, db, (agent_dispatch,))
+    calls: list[tuple] = []
+
+    async def run_agent(agent, payload, **kwargs):
+        calls.append((agent, payload, kwargs))
+        return {"answer": "done", "result": "done"}
+
+    _executor(monkeypatch, run_agent)
+    run(_dispatch(_assigned(project.task.id, ["agent:researcher"])))
+    [(agent, payload, kwargs)] = calls
+    assert agent == "researcher"
+    assert isinstance(payload, dict), f"run_agent was handed {type(payload).__name__}"
+    assert "Ship the thing" in payload["message"]
+    assert payload["source"] == agent_dispatch.RUN_SOURCE
+    # The tenant is a keyword. The payload is agent-visible (R5, R11). The
+    # run is never solo: its reply goes on the task timeline (WS-63 PZ-2,
+    # personalization.md §5.1).
+    # H-240: an event with no member starts a run with no member, as before.
+    assert kwargs == {
+        "organization_id": DEFAULT_ORGANIZATION, "session_user": None,
+        "solo_room": False,
+    }
+    assert "organization_id" not in payload
+    assert "user_email" not in payload
+
+
+# ── H-240: the run acts for the member who assigned the task ────────────────
+
+
+def _record_runs(monkeypatch) -> list[tuple]:
+    calls: list[tuple] = []
+
+    async def run_agent(agent, payload, **kwargs):
+        calls.append((agent, payload, kwargs))
+        return {"result": "done"}
+
+    _executor(monkeypatch, run_agent)
+    return calls
+
+
+def test_the_events_member_is_the_runs_session_user(monkeypatch, db, project):
+    """H-240. The member the gateway's emitter wrote goes to ``run_agent`` as
+    ``session_user``, the keyword no body can set, and as the run's own
+    ``user_email``, which binds the acting user of the gateway-calling tools
+    (``executor._bind_run_identity``).
+
+    Mutation (R7): drop ``session_user=`` from ``_run_and_record``, or drop the
+    member from ``run_payload``, and this fails."""
+    bind_db(monkeypatch, db, (agent_dispatch,))
+    calls = _record_runs(monkeypatch)
+    payload = _assigned(project.task.id, ["agent:researcher"])
+    payload[agent_dispatch.MEMBER_KEY] = "priya@fracktal.in"
+    run(_dispatch(payload))
+    [(_agent, sent, kwargs)] = calls
+    assert kwargs["session_user"] == "priya@fracktal.in"
+    assert sent["user_email"] == "priya@fracktal.in"
+    assert set(sent) == {"message", "mode", "source", "user_email"}
+
+
+@pytest.mark.parametrize("named", ["", "agent:researcher", "nobody", " "])
+def test_a_member_that_is_not_an_address_starts_a_run_with_no_member(
+    monkeypatch, db, project, named,
+):
+    """H-240. Only a plain address names a member. An agent key never
+    becomes the run's member, so a run cannot act as an agent."""
+    bind_db(monkeypatch, db, (agent_dispatch,))
+    calls = _record_runs(monkeypatch)
+    payload = _assigned(project.task.id, ["agent:researcher"])
+    payload[agent_dispatch.MEMBER_KEY] = named
+    run(_dispatch(payload))
+    [(_agent, sent, kwargs)] = calls
+    assert kwargs["session_user"] is None
+    assert "user_email" not in sent
+
+
+def test_an_agent_with_a_live_run_on_the_task_gets_no_second_run(
+    monkeypatch, db, project,
+):
+    """H-240. The run acts as its member, so it can assign the task again.
+    An agent that puts itself back on its own task must not start a copy of
+    itself. The second event writes no row and starts no run, and a later
+    event after the first run ends starts one again.
+
+    Mutation (R7): remove the ``_LIVE`` check in ``on_event``, and the second
+    event starts a second run."""
+    bind_db(monkeypatch, db, (agent_dispatch,))
+    release = asyncio.Event()
+    calls: list[str] = []
+
+    async def run_agent(agent, payload, **kwargs):
+        calls.append(agent)
+        await release.wait()
+        return {"result": "done"}
+
+    _executor(monkeypatch, run_agent)
+    event = _assigned(project.task.id, ["agent:researcher"])
+
+    async def go() -> None:
+        await agent_dispatch.on_event("projects", "pm.task.assigned", event)
+        await asyncio.sleep(0)
+        await agent_dispatch.on_event("projects", "pm.task.assigned", event)
+        release.set()
+        await agent_dispatch.wait_for_runs()
+        assert not agent_dispatch._LIVE, "a finished run kept its pair"
+        await _dispatch(event)
+
+    run(go())
+    assert calls == ["researcher", "researcher"]
+    states = [a["meta"]["state"] for a in db.activities("agent_run")]
+    assert states == ["started", "finished", "started", "finished"], states
+
+
+def test_a_dispatch_that_fails_before_its_run_gives_its_pair_back(
+    monkeypatch, db, project,
+):
+    """H-240. The sink holds the pair before it writes the "started" row. A
+    write or a commit that fails must give the pair back, or the agent could
+    never run on that task again until a restart.
+
+    Mutation (R7): remove the ``except`` that empties ``held``, and this
+    fails."""
+    bind_db(monkeypatch, db, (agent_dispatch,))
+
+    async def broken(*_a, **_k):
+        raise RuntimeError("the write failed")
+
+    monkeypatch.setattr(agent_dispatch, "record_activity", broken)
+    with pytest.raises(RuntimeError):
+        run(agent_dispatch.on_event(
+            "projects", "pm.task.assigned",
+            _assigned(project.task.id, ["agent:researcher"]),
+        ))
+    assert not agent_dispatch._LIVE
+
+
+_REPO = Path(__file__).resolve().parents[2]
+
+
+def _calls_to(name: str):
+    """Each call of *name* outside the tests: ``(path, call node, module)``."""
+    for root in ("apps", "packages"):
+        for path in (_REPO / root).rglob("*.py"):
+            if "tests" in path.parts or ".venv" in path.parts:
+                continue
+            source = path.read_text(encoding="utf-8")
+            if name not in source:
+                continue
+            tree = ast.parse(source)
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                f = node.func
+                called = f.id if isinstance(f, ast.Name) else getattr(f, "attr", "")
+                rel = path.relative_to(_REPO).as_posix()
+                if called == name:
+                    yield rel, node, tree
+                elif called == "add_task" and node.args and getattr(
+                    node.args[0], "id", "",
+                ) == name:
+                    # `background_tasks.add_task(emit_event, SOURCE, ...)`.
+                    yield rel, ast.Call(func=node.args[0], args=node.args[1:], keywords=[]), tree
+
+
+def _source_value(node, tree) -> str | None:
+    """The literal first argument of a call, through a module constant."""
+    if not node.args:
+        return None
+    arg = node.args[0]
+    if isinstance(arg, ast.Constant):
+        return str(arg.value)
+    if isinstance(arg, ast.Name):
+        for stmt in tree.body:
+            targets = (stmt.targets if isinstance(stmt, ast.Assign)
+                       else [stmt.target] if isinstance(stmt, ast.AnnAssign) else [])
+            if any(getattr(t, "id", "") == arg.id for t in targets) and isinstance(
+                stmt.value, ast.Constant,
+            ):
+                return str(stmt.value.value)
+    return None
+
+
+def test_only_the_projects_emitter_can_publish_a_projects_event():
+    """H-240. The sink trusts the member on ``pm.task.assigned`` because only
+    the gateway's own emitter (``core.emit``) writes a ``projects`` event, and
+    it reads the member from the verified session. So every other publisher
+    must name a source that is a literal and is not ``projects``. The
+    ingestion consumer reads only its fixed streams, and none is
+    ``projects``.
+
+    Mutation (R7): make a webhook call ``emit_event`` with ``"projects"``, or
+    with a source it reads from its request, or add a ``projects`` stream to
+    ``STREAM_SOURCES``, and this fails."""
+    from ingestion.consumer import STREAM_SOURCES
+
+    own = "apps/services/gateway/gateway/routes/projects/core.py"
+    consumer = "apps/services/ingestion/ingestion/consumer.py"
+    seen: dict[str, list[str | None]] = {}
+    for path, node, tree in _calls_to("emit_event"):
+        seen.setdefault(path, []).append(_source_value(node, tree))
+    assert seen.get(own) == ["projects"], seen.get(own)
+    assert "projects" not in STREAM_SOURCES.values(), STREAM_SOURCES
+    others = {p: s for p, s in seen.items() if p not in (own, consumer)}
+    assert others, "the scan found no other publisher, so it reads nothing"
+    for path, sources in others.items():
+        for source in sources:
+            assert source is not None, f"{path}: a source that is not a literal"
+            assert source != "projects", f"{path} publishes a projects event"
+
+
+@pytest.mark.parametrize("result, shown", [
+    ({"answer": "A", "result": "R"}, "R"),
+    ({"answer": "A"}, "A"),
+    ({"result": {"content": "C"}}, "C"),
+    ({"answer": "", "result": ""}, "Finished with no reply."),
+    (None, "Finished with no reply."),
+])
+def test_the_timeline_shows_the_reply_and_never_the_result_dict(
+    monkeypatch, db, project, result, shown,
+):
+    bind_db(monkeypatch, db, (agent_dispatch,))
+
+    async def run_agent(agent, payload, **kwargs):
+        return result
+
+    _executor(monkeypatch, run_agent)
+    run(_dispatch(_assigned(project.task.id, ["agent:researcher"])))
+    last = db.activities("agent_run")[-1]
+    assert last["meta"]["state"] == "finished"
+    assert last["body"] == shown
+
+
+def test_a_long_reply_is_cut_at_the_limit(monkeypatch, db, project):
+    bind_db(monkeypatch, db, (agent_dispatch,))
+
+    async def run_agent(agent, payload, **kwargs):
+        return {"result": "x" * (agent_dispatch.REPLY_LIMIT + 50)}
+
+    _executor(monkeypatch, run_agent)
+    run(_dispatch(_assigned(project.task.id, ["agent:researcher"])))
+    assert len(db.activities("agent_run")[-1]["body"]) == agent_dispatch.REPLY_LIMIT
+
+
+@pytest.mark.parametrize("error, detail", [
+    (RuntimeError("SELECT * FROM pm_tasks failed at http://127.0.0.1:4000/v1"),
+     "SELECT * FROM pm_tasks failed at http://127.0.0.1:4000/v1"),
+    # An exception with no message still says what failed, in the log.
+    (RuntimeError(), "RuntimeError"),
+])
+def test_a_failed_run_closes_the_handoff_and_logs_a_warning(
+    monkeypatch, db, project, error, detail,
+):
+    """The 'keys' failure was a timeline row on a task nobody opened, and no
+    log line. A failure now writes both. The member reads the exception's type
+    and a fixed sentence. The text, which can carry SQL or an internal URL,
+    goes to the WARNING log only."""
+    bind_db(monkeypatch, db, (agent_dispatch,))
+    log = _Log()
+    monkeypatch.setattr(agent_dispatch, "_log", log)
+
+    async def run_agent(agent, payload, **kwargs):
+        raise error
+
+    _executor(monkeypatch, run_agent)
+    run(_dispatch(_assigned(project.task.id, ["agent:researcher"])))
+    last = db.activities("agent_run")[-1]
+    assert last["meta"]["state"] == "failed"
+    assert last["body"] == (
+        f"Agent run failed (RuntimeError). {agent_dispatch.FAILED_HINT}"
+    )
+    assert "SELECT" not in last["body"] and "127.0.0.1" not in last["body"]
+    [(event, fields)] = log.warnings
+    assert event == "projects.agent_dispatch_failed"
+    assert fields["error"] == detail and fields["task_id"] == str(project.task.id)
+
+
+def test_the_sink_returns_while_the_run_is_still_running(monkeypatch, db, project):
+    """`PUT /tasks/{id}/assignees` awaits this sink. A sink that awaited the
+    run held the member's request open for the whole run."""
+    bind_db(monkeypatch, db, (agent_dispatch,))
+    release = asyncio.Event()
+
+    async def run_agent(agent, payload, **kwargs):
+        await release.wait()
+        return {"result": "done"}
+
+    _executor(monkeypatch, run_agent)
+
+    async def go() -> list[str]:
+        await asyncio.wait_for(
+            agent_dispatch.on_event(
+                "projects", "pm.task.assigned",
+                _assigned(project.task.id, ["agent:researcher"]),
+            ),
+            timeout=5,
+        )
+        before = [a["meta"]["state"] for a in db.activities("agent_run")]
+        assert agent_dispatch._RUNS, "the sink started no run"
+        release.set()
+        await agent_dispatch.wait_for_runs()
+        return before
+
+    assert run(go()) == ["started"]
+    assert [a["meta"]["state"] for a in db.activities("agent_run")] == [
+        "started", "finished",
+    ]
+    assert not agent_dispatch._RUNS, "a finished run stayed in the set"
+
+
+# ── Dark by default: `PROJECTS_AGENT_DISPATCH` ──────────────────────────────
+#
+# A dispatched run spends the org's AI credits, and §9.12.10 keeps "Assign to
+# AI" parked. OFF: no run, nothing spent, one row a member reads.
+
+
+class _InfoLog(_Log):
+    def __init__(self) -> None:
+        super().__init__()
+        self.infos: list[tuple[str, dict]] = []
+
+    def info(self, event: str, **fields) -> None:
+        self.infos.append((event, fields))
+
+
+def test_the_flag_is_off_when_unset(monkeypatch):
+    monkeypatch.delenv(agent_dispatch.DISPATCH_FLAG, raising=False)
+    assert agent_dispatch.dispatch_enabled() is False
+
+
+@pytest.mark.parametrize("raw, on", [
+    ("1", True), ("on", True), (" TRUE ", True), ("yes", True),
+    ("0", False), ("off", False), ("", False), ("maybe", False),
+])
+def test_only_the_usual_spellings_turn_the_flag_on(monkeypatch, raw, on):
+    monkeypatch.setenv(agent_dispatch.DISPATCH_FLAG, raw)
+    assert agent_dispatch.dispatch_enabled() is on
+
+
+@pytest.mark.parametrize("raw", [None, "0", "maybe"])
+def test_off_starts_no_run_and_tells_the_member_once(monkeypatch, db, project, raw):
+    """The REAL sink with the flag OFF: no `run_agent` call, no "started" row,
+    one row the member reads, and an INFO line. Two agents, still one row."""
+    if raw is None:
+        monkeypatch.delenv(agent_dispatch.DISPATCH_FLAG, raising=False)
+    else:
+        monkeypatch.setenv(agent_dispatch.DISPATCH_FLAG, raw)
+    bind_db(monkeypatch, db, (agent_dispatch,))
+    log = _InfoLog()
+    monkeypatch.setattr(agent_dispatch, "_log", log)
+    calls: list = []
+
+    async def run_agent(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {"result": "spent"}
+
+    _executor(monkeypatch, run_agent)
+    run(_dispatch(_assigned(project.task.id, ["agent:a", "agent:b"])))
+    assert calls == [], "a run started with the flag OFF"
+    rows = db.activities("agent_run")
+    assert [(r["body"], r["meta"]["state"]) for r in rows] == [
+        (agent_dispatch.DISABLED_BODY, "disabled"),
+    ]
+    assert rows[0]["meta"]["agents"] == ["a", "b"]
+    assert [e for e, _ in log.infos] == ["projects.agent_dispatch_disabled"]
+    assert log.warnings == []
+
+
+def test_off_in_a_paused_project_stays_silent(monkeypatch, db, project):
+    """The run-state guard comes first, as it did: a paused project gets no
+    row at all, ON or OFF."""
+    monkeypatch.delenv(agent_dispatch.DISPATCH_FLAG, raising=False)
+    bind_db(monkeypatch, db, (agent_dispatch,))
+
+    async def paused(*_a, **_k):
+        return False
+
+    monkeypatch.setattr(agent_dispatch, "is_runnable_with_ancestors", paused)
+    run(_dispatch(_assigned(project.task.id, ["agent:a"])))
+    assert db.activities("agent_run") == []
+
+
+# ── A restart during a run ──────────────────────────────────────────────────
+
+
+def test_a_cancelled_run_closes_its_row_and_stays_cancelled(monkeypatch, db, project):
+    """A restart cancels the run. CancelledError is not an Exception, so
+    without its own clause the "started" row stayed open for ever. The run
+    writes "interrupted by a restart", and the task still ends cancelled."""
+    bind_db(monkeypatch, db, (agent_dispatch,))
+    entered = asyncio.Event()
+
+    async def run_agent(agent, payload, **kwargs):
+        entered.set()
+        await asyncio.Event().wait()  # a run that never ends by itself
+
+    _executor(monkeypatch, run_agent)
+
+    async def go() -> bool:
+        await agent_dispatch.on_event(
+            "projects", "pm.task.assigned",
+            _assigned(project.task.id, ["agent:researcher"]),
+        )
+        [task] = list(agent_dispatch._RUNS)
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        await asyncio.wait_for(agent_dispatch.stop_runs(), timeout=10)
+        return task.cancelled()
+
+    assert run(go()) is True, "the cancellation was swallowed"
+    rows = [(a["meta"]["state"], a["body"]) for a in db.activities("agent_run")]
+    assert rows[-1] == (
+        "failed", f"Agent run failed: {agent_dispatch.INTERRUPTED_DETAIL}",
+    ), rows
+    assert not agent_dispatch._RUNS
+
+
+def test_the_gateway_stops_the_runs_on_shutdown():
+    """The lifespan's shutdown half calls `stop_runs`, before the audit drain."""
+    from pathlib import Path
+
+    main = Path(agent_dispatch.__file__).resolve().parents[2] / "main.py"
+    src = main.read_text(encoding="utf-8")
+    assert "agent_dispatch import stop_runs" in src
+    assert src.index("await stop_runs()") < src.index("await drain_audit()")
 
 
 async def _noop() -> None:

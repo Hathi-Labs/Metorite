@@ -19,11 +19,17 @@ people work around for months instead of reporting.
 
 from __future__ import annotations
 
+import os
+import re
 from datetime import UTC, datetime
 from typing import Any
 
+from acb_common import get_settings
+from acb_common.db import current_tenant
 from fastapi import HTTPException
-from gateway.routes.projects.core import task_visibility_clause
+from gateway.routes.projects import due_day
+from gateway.routes.projects.core import CLOSING_CATEGORIES, task_visibility_clause, wire
+from gateway.routes.projects.due_day import overdue_sql
 from sqlalchemy import text
 
 #: `pm_task_statuses.category`. Mirrored from the CHECK the migrations leave in
@@ -52,14 +58,68 @@ MAX_MULTI = 100
 #: module is the one it already depends on, so the arrow only points one way);
 #: two copies of a threshold is how they stop matching.
 #:
-#: ⚠️ **Two characters is one below the length a trigram index can serve.**
-#: `pg_trgm` extracts whole trigrams from the pattern, and `%ab%` contains none
-#: — measured on 240k rows, a 2-character term is still a 168 ms full scan while
-#: a 3-character one is 0.4 ms off `idx_pm_tasks_title_trgm` (migration 170).
-#: Raising this to 3 would make every accepted query servable, but it is a
-#: PRODUCT change — "qa", "ui" and "hr" are real searches — so it is recorded as
-#: owed in project_management_app.md §11.33 rather than taken here.
-MIN_QUERY = 2
+#: **3, by D-PM-31** (owner, 2026-08-13; built 2026-10-06). `pg_trgm` extracts
+#: whole trigrams from the pattern, and `%ab%` contains none — measured on 240k
+#: rows, a 2-character term was a 168 ms full scan while a 3-character one is
+#: 0.4 ms off `idx_pm_tasks_title_trgm` (migration 170). At 3, every accepted
+#: text query is one the index can serve.
+#:
+#: ⚠️ **A task number is not text, and it passes at any length** (the owner's
+#: exception, 2026-10-06). `#7` is an exact lookup on `task_number`, served by
+#: `idx_pm_tasks_task_number` (migration 170), so the trigram reason does not
+#: apply to it. :func:`task_number` decides what counts as one, and
+#: :func:`short_text_query` is the one test both endpoints ask.
+#:
+#: Two other readers hold a copy, because they cannot import this: the chat tool
+#: (`skill_projects/reads.py`) and the browser (`app/projects/lib/search.ts`).
+#: `tests/unit/test_projects_search_minimum_lockstep.py` holds all three equal.
+MIN_QUERY = 3
+
+
+#: Whitespace at either end, plus U+FEFF. ``str.strip`` keeps U+FEFF and
+#: JavaScript's ``trim`` drops it, so a pasted "\ufeff7" was a task number in
+#: the browser and a 422 here. ``search.ts`` ``cleanQuery`` strips this set.
+_EDGE_SPACE = re.compile(r"^[\s\ufeff]+|[\s\ufeff]+$")
+
+
+def clean_query(raw: str) -> str:
+    """A query with its edge whitespace (and U+FEFF) removed. The one trim
+    the minimum rule reads, here and in the browser."""
+    return _EDGE_SPACE.sub("", raw or "")
+
+
+def task_number(raw: str) -> int | None:
+    """``#42`` or ``42`` → 42, else ``None``.
+
+    Bounded to what the column can hold: `task_number` is a BIGINT, and a
+    forty-digit "number" is a phrase somebody typed, not a lookup. Without the
+    bound it would also be an unbounded integer parse on user input.
+
+    ASCII digits only. ``str.isdigit`` is also true for ``²``, and ``int("²")``
+    raises, so without ``isascii`` a superscript answered a 500.
+    """
+    stripped = clean_query(clean_query(raw).lstrip("#"))
+    if not (stripped.isascii() and stripped.isdigit()) or len(stripped) > 18:
+        return None
+    return int(stripped)
+
+
+def short_text_query(term: str) -> bool:
+    """True when ``term`` is text too short to search (D-PM-31).
+
+    An empty term is not a query at all, and a task number passes at any
+    length, so neither is "short".
+    """
+    return bool(term) and len(term) < MIN_QUERY and task_number(term) is None
+
+
+def short_query_message(term: str) -> str:
+    """The 422 detail for a short text query. The chat tool says the same
+    sentence with the term in «guillemets», because it fences member text."""
+    return (
+        f"Give at least {MIN_QUERY} characters to search ('{term}' is"
+        f" {len(term)}). A task number works at any length: #7."
+    )
 
 
 def split_csv(raw: str | None) -> list[str]:
@@ -104,6 +164,56 @@ def like_escape(term: str) -> str:
     return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+#: The most words one text query matches one by one (owner request,
+#: 2026-10-13). Words past this are ignored, so a pasted paragraph cannot
+#: become a fifty-arm WHERE.
+MAX_QUERY_WORDS = 8
+
+
+def query_words(term: str) -> list[str]:
+    """The words a text query must each find, in the order typed.
+
+    **Why words and not the phrase.** Until 2026-10-13 both routes matched the
+    query as ONE substring. "invoice approval" then missed a task whose
+    description says "approval of the invoice", and the chat concluded that
+    descriptions are not searched at all. Every word must still appear, in the
+    title or in the description, so a phrase match is always a word match too:
+    the change only widens.
+
+    Words repeat case-insensitively only once. When no word reaches
+    :data:`MIN_QUERY` (``"to do"``), the trigram index could serve none of
+    them, so the whole term is the one word, which is the old phrase rule.
+    """
+    seen: dict[str, str] = {}
+    for word in term.split():
+        seen.setdefault(word.lower(), word)
+    words = list(seen.values())[:MAX_QUERY_WORDS]
+    if not any(len(word) >= MIN_QUERY for word in words):
+        return [term]
+    return words
+
+
+def text_match_clause(
+    term: str, *, alias: str = "t", param: str = "q",
+) -> tuple[str, dict[str, str]]:
+    """``(clause, params)``: every word of ``term`` is in the title or the
+    description. The ONE text predicate, read by ``/projects/search`` and by
+    the list endpoint's ``?q=`` alike, so the two cannot drift.
+
+    Each arm is ``title ILIKE :w OR description ILIKE :w``, the shape the two
+    trigram indexes of migration 170 serve. A word shorter than three letters
+    cannot use a trigram, so the planner checks it as a filter on the rows the
+    longer words found (``query_words`` keeps at least one long word).
+    """
+    arms: list[str] = []
+    params: dict[str, str] = {}
+    for i, word in enumerate(query_words(term)):
+        key = f"{param}_w{i}"
+        arms.append(f"({alias}.title ILIKE :{key} OR {alias}.description ILIKE :{key})")
+        params[key] = f"%{like_escape(word)}%"
+    return "(" + " AND ".join(arms) + ")", params
+
+
 def parse_when(raw: str, *, field: str) -> datetime:
     """A query-string timestamp → a real ``datetime``.
 
@@ -117,9 +227,9 @@ def parse_when(raw: str, *, field: str) -> datetime:
     and `due_before=tomorrow` deserves to be told so rather than to read as a
     server fault.
 
-    A naive value is taken as UTC. ``due_at`` is a ``timestamptz`` and `overdue`
-    compares against `now()`, so UTC is the frame this module already works in —
-    stated rather than left to whatever the connection's TimeZone happens to be.
+    A naive value is taken as UTC. ``due_at`` is a ``timestamptz``, and UTC is
+    the frame this module works in, stated rather than left to whatever the
+    connection's TimeZone happens to be.
     """
     try:
         parsed = datetime.fromisoformat(raw.strip())
@@ -142,6 +252,7 @@ def build_task_filters(
     assignees: str | None = None,
     unassigned: bool = False,
     overdue: bool = False,
+    day_start: datetime | None = None,
     due_before: str | None = None,
     importance_gte: int | None = None,
     q: str | None = None,
@@ -152,6 +263,13 @@ def build_task_filters(
     watching: bool = False,
     viewer: str | None = None,
     top_level: bool = False,
+    has_parent: bool | None = None,
+    is_epic: bool | None = None,
+    assigned: bool | None = None,
+    updated_before: str | None = None,
+    updated_after: str | None = None,
+    created_after: str | None = None,
+    title_prefix: str | None = None,
 ) -> tuple[list[str], dict[str, Any]]:
     """The WHERE fragments for one task query, and their bound parameters.
 
@@ -248,17 +366,57 @@ def build_task_filters(
     if overdue:
         # Overdue means "past due AND still open". A finished task with a past
         # due date is not overdue, it is done — colouring it red forever is how
-        # a board teaches people to ignore red.
+        # a board teaches people to ignore red. The date half is the one
+        # rule (`due_day`): `day_start` is the reader's own, and a caller that
+        # has none reads the UTC day.
         clauses.append(
-            "t.due_at < now() AND NOT EXISTS ("
+            f"{overdue_sql()} AND NOT EXISTS ("
             "  SELECT 1 FROM pm_task_statuses s "
             "  WHERE s.id = t.status_id AND s.category = ANY(:closed))"
         )
         params["closed"] = list(CLOSED_CATEGORIES)
+        params["day_start"] = day_start or due_day.day_start("UTC", datetime.now(UTC))
 
     if due_before:
         clauses.append("t.due_at < :due_before")
         params["due_before"] = parse_when(due_before, field="due_before")
+
+    # MCP-G19a. The audit filters of the agent door. Each is optional, and
+    # they combine with every filter above. `list_tasks` and `board_stats`
+    # both call this builder, so a count and a list cannot disagree.
+    if has_parent is True:
+        clauses.append("t.parent_task_id IS NOT NULL")
+    elif has_parent is False:
+        clauses.append("t.parent_task_id IS NULL")
+    if assigned is True:
+        clauses.append(
+            "EXISTS (SELECT 1 FROM pm_task_assignees aa WHERE aa.task_id = t.id)"
+        )
+    elif assigned is False:
+        clauses.append(
+            "NOT EXISTS (SELECT 1 FROM pm_task_assignees aa WHERE aa.task_id = t.id)"
+        )
+    if is_epic is not None:
+        # The same rule as `core.is_epic_type`: the flag, or the system seed
+        # type named Epic. A task with no type is not an epic.
+        epic = (
+            "EXISTS (SELECT 1 FROM pm_task_types ty WHERE ty.id = t.type_id"
+            " AND (coalesce(ty.is_epic, false)"
+            " OR (coalesce(ty.is_system, false) AND ty.name = 'Epic')))"
+        )
+        clauses.append(epic if is_epic else f"NOT {epic}")
+    if updated_before:
+        clauses.append("t.updated_at < :updated_before")
+        params["updated_before"] = parse_when(updated_before, field="updated_before")
+    if updated_after:
+        clauses.append("t.updated_at >= :updated_after")
+        params["updated_after"] = parse_when(updated_after, field="updated_after")
+    if created_after:
+        clauses.append("t.created_at >= :created_after")
+        params["created_after"] = parse_when(created_after, field="created_after")
+    if title_prefix and title_prefix.strip():
+        clauses.append("t.title ILIKE :title_prefix")
+        params["title_prefix"] = like_escape(title_prefix.strip()) + "%"
 
     if importance_gte is not None:
         clauses.append("t.importance >= :importance_gte")
@@ -278,12 +436,23 @@ def build_task_filters(
     # A literal, not a bound parameter: the planner constant-folds it into a
     # one-time filter and the query never touches `pm_tasks` at all, which is
     # the entire point.
-    term = (q or "").strip()
-    if term and len(term) < MIN_QUERY:
+    #
+    # D-PM-31's exception: a query that is only a task number (`#7`, `7`) is
+    # an exact lookup on `task_number`, at any length, and never a text scan.
+    # The search route answers it the same way, so the two endpoints agree.
+    term = clean_query(q or "")
+    number = task_number(term) if term else None
+    if number is not None:
+        clauses.append("t.task_number = :q_number")
+        params["q_number"] = number
+    elif short_text_query(term):
         clauses.append("FALSE")
     elif term:
-        clauses.append("(t.title ILIKE :q OR t.description ILIKE :q)")
-        params["q"] = f"%{like_escape(term)}%"
+        # Every word, in the title or the description (`text_match_clause`):
+        # the same predicate `/projects/search` runs.
+        match, match_params = text_match_clause(term)
+        clauses.append(match)
+        params.update(match_params)
 
     # WS-27m. TWO tag filters, because both questions get asked and one cannot
     # answer the other: `tags` is ANY (`&&` — "show me bugs or regressions"),
@@ -376,8 +545,12 @@ VIEW_FILTER_KEYS: frozenset[str] = frozenset({
 #: "In progress" meaning the same thing. `category` is the only vocabulary two
 #: sets share, which makes it the only axis that stays legible across them, and
 #: the one every cross-project number in §9.12.7 will rest on.
+#:
+#: WS-55 EA-13e (EA3-43): ``agent`` groups by the agent state of a row. The
+#: client draws the lanes from ``agent_state``, and a drop between two agent
+#: lanes writes nothing, because a person does not set a run state.
 GROUP_BY: tuple[str, ...] = (
-    "status", "category", "assignee", "project", "importance", "tag", "none",
+    "status", "category", "assignee", "project", "importance", "tag", "agent", "none",
 )
 
 #: WS-27x — the field keys a view's `shown_fields` may name. Mirrors the
@@ -390,7 +563,9 @@ SHOWN_FIELDS: tuple[str, ...] = (
     # is "a preference the server silently strips on the next save" — the
     # member ticks Type, it draws, and their next saved view drops it.
     "status", "type", "source", "assignees", "start_date", "due_at", "importance",
-    "subtasks", "blocked", "tags", "attachments", "estimate", "created_at",
+    # WS-55 EA-13d: `pr`, the pull request chip, in the SAME change as the
+    # client's `FIELD_KEYS` and the export's `FIELD_LABELS`.
+    "subtasks", "blocked", "pr", "tags", "attachments", "estimate", "created_at",
 )
 
 #: D-PM-38 — how a view draws a subtask. `nested` puts it under its parent,
@@ -673,19 +848,34 @@ async def attach_parent_context(
             row["parent"] = seen.get(str(parent), {"hidden": True})
     return rows
 
+def open_block_sql(link: str, blocker_status: str) -> str:
+    """The ONE SQL text of an open ``blocks`` link: the link *link* is a
+    ``blocks`` link, and the status *blocker_status* of its SOURCE task is not
+    in a closed category. A finished blocker blocks nothing (WS-27p).
+
+    ``blocked_by_count`` (:data:`_BLOCKER_COUNTS_SQL`) and the "blocked by
+    parked work" kind of Needs attention (``needs_attention.py``, WS-55
+    SW-11a, spec §12.7) read it, so a card and the list cannot disagree about
+    what blocks. It binds ``:closed``, a list of :data:`CLOSED_CATEGORIES`.
+    """
+    return (
+        f"({link}.link_type = 'blocks'"
+        f" AND NOT ({blocker_status}.category = ANY(:closed)))"
+    )
+
+
 #: How many still-OPEN tasks block each of these.
 #:
 #: Filtered to open blockers in SQL rather than counted and filtered after: a
 #: finished blocker blocks nothing (WS-27p), and a card that stays marked
 #: blocked after its dependency shipped is a card people learn to ignore.
-_BLOCKER_COUNTS_SQL = """
+_BLOCKER_COUNTS_SQL = f"""
 SELECT l.target_task_id AS blocked, count(*) AS blockers
   FROM pm_task_links l
   JOIN pm_tasks t ON t.id = l.source_task_id
   JOIN pm_task_statuses s ON s.id = t.status_id
- WHERE l.link_type = 'blocks'
+ WHERE {open_block_sql('l', 's')}
    AND l.target_task_id = ANY(CAST(:ids AS uuid[]))
-   AND NOT (s.category = ANY(:closed))
  GROUP BY l.target_task_id
 """
 
@@ -789,4 +979,700 @@ async def attach_assignees(db: Any, rows: list[dict[str, Any]]) -> list[dict[str
     by_task = {str(r.task_id): list(r.people or []) for r in found}
     for row in rows:
         row["assignees"] = by_task.get(str(row["id"]), [])
+    return rows
+
+
+# ── WS-55 EA-12a: the agent pill (external_agent_access.md §12.1, EA12-10) ──
+
+#: The runs that are OPEN (EA12-6). The partial unique index of the
+#: `pm_agent_runs` migration lists the same four values.
+AGENT_RUN_OPEN_STATUSES: tuple[str, ...] = ("created", "in_progress", "awaiting", "stopping")
+
+#: Seconds with no activity before an `in_progress` run reads `stale`.
+AGENT_RUN_STALE_AFTER_S = 300
+
+# ── WS-55 EA-14a: one AI for each task, and the lease ──────────────────────
+
+#: A task has at most ONE open run. A run keeps the task while its last
+#: activity is newer than the lease. After that, the next claim takes over.
+AGENT_RUN_LEASE_DEFAULT_S = 7200
+#: An `awaiting` run waits for a person, not for the agent. It keeps the task
+#: this many leases, so a question that waits one night does not lose the task.
+AGENT_RUN_QUESTION_LEASE_FACTOR = 3
+#: The environment variable that overrides the lease, in seconds.
+AGENT_RUN_LEASE_ENV = "AGENT_RUN_LEASE_SECONDS"
+
+
+def agent_run_lease_s() -> int:
+    """The lease in seconds. The default is two hours. A value that is not a
+    whole number above zero reads as the default."""
+    raw = os.environ.get(AGENT_RUN_LEASE_ENV, "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return AGENT_RUN_LEASE_DEFAULT_S
+    return value if value > 0 else AGENT_RUN_LEASE_DEFAULT_S
+
+
+def agent_run_hold_s(status: str) -> int:
+    """How long a run in *status* keeps its task with no activity."""
+    factor = AGENT_RUN_QUESTION_LEASE_FACTOR if status == "awaiting" else 1
+    return agent_run_lease_s() * factor
+
+
+def lease_expired(status: str, idle_s: float) -> bool:
+    """True when a run in *status* idle for *idle_s* seconds no longer keeps
+    its task. The ONE Python rule of the lease. The ``unheld`` filter reads
+    the same constants in SQL (:func:`unheld_clause`)."""
+    return idle_s > agent_run_hold_s(status)
+
+
+def connection_gone_sql(alias: str) -> str:
+    """SW-13c. True in SQL when the agent connection of the run *alias* is
+    revoked or expired (``agent_connection``, migration 248). Such a run can
+    never send a heartbeat again, so it keeps its task no longer than a run
+    whose lease ended. A run with no ``connection_id`` is NOT gone: no code
+    deletes a connection, so that state has no meaning to act on, and the
+    lease rule alone decides. ONE text for the gate (``agent_runs._HOLDER_SQL``),
+    the ``unheld`` filter and ``held_by``, so the three cannot disagree."""
+    # The organization arm is defence in depth beside FORCE RLS, as
+    # `agent_tokens._CONNECTION_LIVE_SQL` has it (fix round 1, P3).
+    return (
+        f"EXISTS (SELECT 1 FROM agent_connection gc WHERE gc.id = {alias}.connection_id"
+        f" AND gc.organization_id = {alias}.organization_id"
+        " AND (gc.revoked_at IS NOT NULL OR gc.expires_at <= now()))"
+    )
+
+
+def holder_free(status: str, idle_s: float, connection_gone: bool) -> bool:
+    """True when an open run no longer keeps its task, so the next claim
+    takes it over (EA-14a, SW-13c): its lease ended, or its connection is
+    revoked or expired. The ONE Python rule of the gate and of
+    ``held_by.stale``. :func:`holder_free_sql` is its SQL twin."""
+    return connection_gone is True or lease_expired(status, idle_s)
+
+
+def lease_held_sql(alias: str) -> str:
+    """True in SQL while the lease of the open run *alias* holds: its last
+    activity is newer than the lease, or three leases while it waits on a
+    question. The SQL twin of NOT :func:`lease_expired`. ONE text for the
+    ``unheld`` filter (:func:`unheld_clause`) and :func:`holder_free_sql`.
+    The idle time is ``last_activity_at``, so ANY activity renews it, a
+    member's answer too.
+
+    The lease is read when the text is built, never at import, so the
+    environment override works in a running process.
+    """
+    lease = agent_run_lease_s()
+    hold = lease * AGENT_RUN_QUESTION_LEASE_FACTOR
+    return (
+        f"{alias}.last_activity_at >= now() - (CASE WHEN {alias}.status = 'awaiting'"
+        f" THEN {hold} ELSE {lease} END) * interval '1 second'"
+    )
+
+
+def holder_free_sql(alias: str) -> str:
+    """The SQL twin of :func:`holder_free` over the open run *alias*: its
+    lease ended (:func:`lease_held_sql` fails), or its connection is revoked
+    or expired. The stranded rule (:func:`stranded_clause`) and the close of
+    a run of a closed task (``agent_runs``, SW-10a) read it, and the
+    ``unheld`` filter reads its two parts."""
+    return f"(NOT ({lease_held_sql(alias)}) OR {connection_gone_sql(alias)})"
+
+
+#: SW-10a (spec §12.6). The RAW answered rule over the alias ``r``: the newest
+#: activity of the run is a member's prompt, and no agent activity followed
+#: it. ONE text: the derived state, the ``needs_agent`` filter
+#: (``agent_runs._NEEDS_AGENT_SQL``) and the strand reason all read it.
+AGENT_RUN_ANSWER_WAITS_SQL = (
+    "(r.last_agent_activity_at IS NULL"
+    " OR r.last_activity_at > r.last_agent_activity_at)"
+)
+
+#: The derived state of one run, in SQL, over the alias ``r``. ONE copy:
+#: ``agent_runs.py`` reads it for each run, and :func:`attach_agent_state`
+#: reads it for the pill. The database ``now()`` decides ``stale`` (EA12-10).
+#:
+#: * Only ``in_progress`` goes ``stale``. ``created`` reads ``queued``, and an
+#:   ``awaiting`` run waits for a person, not for the agent.
+#: * SW-10a (spec §12.6): ``stale`` comes BEFORE ``answered``. An answer is
+#:   the newest activity of its run, so an answered run reads ``answered``
+#:   for :data:`AGENT_RUN_STALE_AFTER_S` after the answer, and ``stale``
+#:   after that, while no agent activity follows. Before SW-10a an answer
+#:   that no agent read stayed ``answered`` for ever (EA12-5 as amended).
+#:   The age limit is the stale band and not the lease: the state says
+#:   whether an agent works on the task NOW, and the lease is read from the
+#:   environment, which this import-time constant cannot follow.
+#: * Every other status reads as itself.
+AGENT_RUN_STATE_SQL = (
+    "CASE r.status"
+    " WHEN 'created' THEN 'queued'"
+    " WHEN 'in_progress' THEN CASE"
+    f"   WHEN r.last_activity_at < now() - interval '{AGENT_RUN_STALE_AFTER_S} seconds'"
+    "     THEN 'stale'"
+    f"   WHEN {AGENT_RUN_ANSWER_WAITS_SQL} THEN 'answered'"
+    "   ELSE 'working' END"
+    " ELSE r.status END"
+)
+
+# ── WS-55 SW-10a: stranded runs (external_agent_access.md §12.6) ───────────
+
+#: The two reasons of a strand. ``answer_unread``: a member answered and no
+#: agent read it. ``agent_quiet``: the agent sent nothing. The CHECK of the
+#: ``pm_agent_run_strands`` migration lists the same two.
+STRAND_REASONS: tuple[str, ...] = ("agent_quiet", "answer_unread")
+
+#: The reason of a stranded run, in SQL, over the alias ``r``.
+STRAND_REASON_SQL = (
+    f"(CASE WHEN {AGENT_RUN_ANSWER_WAITS_SQL} THEN 'answer_unread'"
+    " ELSE 'agent_quiet' END)"
+)
+
+
+def task_closed_sql(alias: str) -> str:
+    """The ONE SQL text of "the task of run *alias* is closed" (SW-10a fix
+    round): the task is archived, or its status is in a closed category
+    (:data:`CLOSED_CATEGORIES`). Such a run is never stranded, and the sweep
+    closes it instead (``agent_runs.closed_task_run_ids``)."""
+    closed = ", ".join(f"'{c}'" for c in CLOSED_CATEGORIES)
+    return (
+        "EXISTS (SELECT 1 FROM pm_tasks ct"
+        " LEFT JOIN pm_task_statuses cs ON cs.id = ct.status_id"
+        f" WHERE ct.id = {alias}.task_id"
+        f" AND (ct.archived_at IS NOT NULL OR cs.category IN ({closed})))"
+    )
+
+
+def stranded_clause() -> str:
+    """The ONE SQL text of a stranded run, over the alias ``r`` (SW-10a).
+
+    A run is stranded when its status is ``in_progress``, its derived state
+    is ``stale`` (a quiet run, or an answer older than the stale band), and
+    it has no live path: its lease ended, or its connection is revoked or
+    expired. That last part is the SQL twin of :func:`holder_free` for an
+    ``in_progress`` run. An ``awaiting`` run waits on a person and never
+    matches, and neither does a ``created`` or a ``stopping`` run.
+
+    Fix round: a run whose task is closed (:func:`task_closed_sql`) is never
+    stranded. Nobody can claim a closed task, so a bell that says "start a
+    session" would be false. The sweep closes such a run instead.
+
+    The lease is read when the clause is built, never at import, as
+    :func:`unheld_clause` reads it.
+    """
+    return (
+        "(r.status = 'in_progress'"
+        f" AND ({AGENT_RUN_STATE_SQL}) = 'stale'"
+        f" AND {holder_free_sql('r')}"
+        f" AND NOT {task_closed_sql('r')})"
+    )
+
+
+def strand_fits_sql(strand: str, run: str) -> str:
+    """True in SQL when the strand row *strand* still fits the run *run*
+    (SW-10a): the strand is not cleared, the run is still ``in_progress``,
+    and no activity came on the run since the first miss. ONE text for
+    ``needs_agent`` (:func:`open_strand_sql`) and for ``stranded`` on the runs
+    wire (``agent_runs._OPEN_STRANDS_SQL``)."""
+    return (
+        f"({strand}.run_id = {run}.id AND {strand}.organization_id = {run}.organization_id"
+        f" AND {strand}.cleared_at IS NULL AND {run}.status = 'in_progress'"
+        f" AND {strand}.seen_activity_at = {run}.last_activity_at)"
+    )
+
+
+def open_strand_sql(alias: str) -> str:
+    """True in SQL when the run *alias* has an open strand that still fits
+    it (:func:`strand_fits_sql`). ``needs_agent`` reads it, so a strand stops
+    at once when an activity comes, before the next tick writes
+    ``cleared_at``."""
+    return (
+        "EXISTS (SELECT 1 FROM pm_agent_run_strands fs"
+        f" WHERE {strand_fits_sql('fs', alias)})"
+    )
+
+
+def open_recovery_sql(strand: str, run: str) -> str:
+    """True in SQL when the strand row *strand* is an OPEN RECOVERY RECORD of
+    the run *run* (WS-55 SW-11a, spec §12.7): the second miss of SW-10a
+    happened (``recovered_at``), and the strand still fits the run
+    (:func:`strand_fits_sql`: not cleared, the run is ``in_progress``, and no
+    activity came after it).
+
+    ONE text for the "stalled" kind of Needs attention and for the check of
+    the Resume route (``agent_runs.resume_agent_run``). So a row that the list
+    shows is a row that Resume takes, and a row that left the list is one
+    that Resume refuses. A new activity ends it at once, before the next tick
+    of the sweep writes ``cleared_at``.
+    """
+    return f"({strand}.recovered_at IS NOT NULL AND {strand_fits_sql(strand, run)})"
+
+_OPEN_LIST = ", ".join(f"'{s}'" for s in AGENT_RUN_OPEN_STATUSES)
+
+#: The newest line of the open run, for the hover of the pill (EA-13d, EA3-41):
+#: the first line of the body of the newest `thought`, `response` or
+#: `elicitation`. A leading blank line is skipped. Python cuts it to
+#: :data:`AGENT_NOTE_MAX` characters.
+_AGENT_NOTE_SQL = (
+    "(SELECT split_part(btrim(a.content->>'body', E' \t\r\n'), E'\n', 1)"
+    "   FROM pm_agent_run_activities a"
+    "  WHERE a.run_id = r.id AND a.type IN ('thought', 'response', 'elicitation')"
+    "  ORDER BY a.seq DESC LIMIT 1)"
+)
+
+#: The longest ``agent_note``, in characters (EA3-41, EA-13d P4).
+AGENT_NOTE_MAX = 140
+
+
+def unheld_clause() -> str:
+    """The fragment of the ``unheld`` filter, over the task alias ``t``.
+
+    A task is unheld when no open run keeps it. A run whose lease ended does
+    not keep it, because the next claim takes the task over. SW-13c: nor does
+    a run whose connection is revoked or expired (:func:`holder_free`). The
+    lease is read when the clause is built, never at import, so the
+    environment override works in a running process.
+    """
+    open_list = ", ".join(f"'{s}'" for s in AGENT_RUN_OPEN_STATUSES)
+    return (
+        "NOT EXISTS (SELECT 1 FROM pm_agent_runs h"
+        " WHERE h.task_id = t.id AND h.task_id IS NOT NULL"
+        f"   AND h.status IN ({open_list})"
+        f"   AND {lease_held_sql('h')}"
+        f"   AND NOT {connection_gone_sql('h')})"
+    )
+
+
+def holder_sql() -> str:
+    """The member who holds the task now, or null for a free task. The same
+    open-run, lease and connection rules as :func:`unheld_clause`, so
+    ``holder`` is null exactly where ``unheld`` is true."""
+    open_list = ", ".join(f"'{s}'" for s in AGENT_RUN_OPEN_STATUSES)
+    return (
+        "(SELECT lower(h.member_email) FROM pm_agent_runs h"
+        " WHERE h.task_id IS NOT NULL AND h.task_id = t.id"
+        f"   AND h.status IN ({open_list})"
+        f"   AND {lease_held_sql('h')}"
+        f"   AND NOT {connection_gone_sql('h')}"
+        " ORDER BY h.last_activity_at DESC LIMIT 1)"
+    )
+
+
+#: The age bands of ``updated_age``, in order.
+UPDATED_AGE_BANDS: tuple[str, ...] = ("<1d", "1-3d", "3-7d", "7-30d", ">30d")
+
+UPDATED_AGE_SQL = (
+    "(CASE"
+    " WHEN t.updated_at >= now() - interval '1 day' THEN '<1d'"
+    " WHEN t.updated_at >= now() - interval '3 days' THEN '1-3d'"
+    " WHEN t.updated_at >= now() - interval '7 days' THEN '3-7d'"
+    " WHEN t.updated_at >= now() - interval '30 days' THEN '7-30d'"
+    " ELSE '>30d' END)"
+)
+
+
+def agent_state_sql(task_filter: str) -> str:
+    """The pill query over the tasks that *task_filter* selects (alias ``r``).
+
+    ONE text of the pick rule. The list rows bind ``:ids`` through
+    :data:`_AGENT_STATE_SQL`, and the project summary (EA-13e) binds a
+    subquery, so a count and a card cannot disagree about a task's state.
+
+    The pill of each task comes from its OPEN runs (§12.1, "The task pill"):
+
+    1. an `awaiting` run, because a person must act, and a newer run of
+       another member must not hide the question;
+    2. else an `answered` run, so the answer stays in view;
+    3. else the newest open run.
+
+    A task with no open run shows a `failed` run that is the newest run of its
+    task (EA12-12: the pill stays until a newer run exists). One query for the
+    page, as `_ASSIGNEES_SQL` does.
+    """
+    return f"""
+SELECT DISTINCT ON (r.task_id) r.task_id, {AGENT_RUN_STATE_SQL} AS state,
+       r.client_via, r.member_email, r.status AS run_status, {_AGENT_NOTE_SQL} AS note,
+       COALESCE(r.started_at, r.created_at) AS held_since,
+       r.last_activity_at AS held_last,
+       EXTRACT(EPOCH FROM (clock_timestamp() - r.last_activity_at)) AS idle_s,
+       {connection_gone_sql('r')} AS connection_gone,
+       (SELECT u.display_name FROM app_user u
+         WHERE lower(u.email) = lower(r.member_email) LIMIT 1) AS member_name
+  FROM pm_agent_runs r
+ WHERE {task_filter}
+   AND r.task_id IS NOT NULL
+   AND (r.status IN ({_OPEN_LIST})
+        OR (r.status = 'failed'
+            AND NOT EXISTS (SELECT 1 FROM pm_agent_runs n
+                             WHERE n.task_id = r.task_id
+                               AND (n.created_at, n.id) > (r.created_at, r.id))))
+ ORDER BY r.task_id, (r.status IN ({_OPEN_LIST})) DESC,
+          CASE {AGENT_RUN_STATE_SQL} WHEN 'awaiting' THEN 0 WHEN 'answered' THEN 1
+               ELSE 2 END,
+          r.created_at DESC, r.id DESC
+"""
+
+
+_AGENT_STATE_SQL = agent_state_sql("r.task_id = ANY(CAST(:ids AS uuid[]))")
+
+
+def answer_change_enabled() -> bool:
+    """The flag ``agent_answer_change_enabled`` (default OFF, SW-43). The
+    gateway side of the one reader in ``acb_auth.agent_oauth``."""
+    from acb_auth import agent_oauth
+
+    return agent_oauth.answer_change_enabled()
+
+
+def answer_changeable_sql(r: str, p: str) -> str:
+    """SW-43. The ONE text of "the member may still take this answer back",
+    over the run alias *r* and the answer alias *p*. The route and the runs
+    wire both read it. All of these hold: the run works (``in_progress``),
+    the answer is not withdrawn, no agent has read it (``content.read_at``),
+    and no agent activity of the run follows it (an agent write carries
+    ``actor_via``). The window closes at the first read or post."""
+    return (
+        f"({r}.status = 'in_progress'"
+        f" AND NOT ({p}.type = 'prompt' AND {p}.content ? 'withdrawn')"
+        f" AND NOT ({p}.content ? 'read_at')"
+        " AND NOT EXISTS (SELECT 1 FROM pm_agent_run_activities x"
+        f"                 WHERE x.run_id = {p}.run_id AND x.seq > {p}.seq"
+        "                   AND x.actor_via IS NOT NULL))"
+    )
+
+
+def live_answer_sql(where: str) -> str:
+    """SW-43. The newest answer of each run that *where* picks (a member
+    ``prompt`` with ``in_reply_to`` set, written by the run's own member),
+    with ``changeable``. The marker row
+    of a withdraw has no ``in_reply_to``, so it is never an answer."""
+    return (
+        "SELECT DISTINCT ON (p.run_id) p.id, p.seq, p.run_id, p.in_reply_to,"
+        f" {answer_changeable_sql('r', 'p')} AS changeable"
+        " FROM pm_agent_run_activities p"
+        " JOIN pm_agent_runs r ON r.id = p.run_id AND r.task_id IS NOT NULL"
+        " WHERE p.type = 'prompt' AND p.in_reply_to IS NOT NULL"
+        f" AND lower(p.actor) = lower(r.member_email) AND {where}"
+        " ORDER BY p.run_id, p.seq DESC"
+    )
+
+
+def agent_runs_enabled() -> bool:
+    """The flag ``agent_runs_enabled`` (default OFF). The gateway side of the
+    one reader, ``acb_auth.agent_oauth.runs_enabled``, which the edge reads
+    too (EA-12b)."""
+    from acb_auth import agent_oauth
+
+    return agent_oauth.runs_enabled()
+
+
+def agent_questions_allowed(organization_id: str | None) -> bool:
+    """True when ``AGENT_QUESTIONS_ORGS`` holds the org, or holds ``*``.
+    Default OFF (WS-55 EA-18a, ``external_agent_access.md`` §12.8).
+
+    The one reader of the flag. The list, the write rule, the audience of
+    ``agent_question`` and the ``waiting`` focus each ask here, so a flip moves
+    all four together. The org comes from the session, a bound tenant or the
+    run's row, never from request input (R5). It reads ``get_settings()`` on
+    each call, so a flag reload applies a change with no restart.
+    """
+    org = str(organization_id or "").strip().lower()
+    if not org:
+        return False
+    raw = str(getattr(get_settings(), "agent_questions_orgs", "") or "")
+    listed = {p.strip().lower() for p in raw.split(",") if p.strip()}
+    return "*" in listed or org in listed
+
+
+def held_by_of(hit: Any) -> dict[str, Any]:
+    """The ``held_by`` of a task: who keeps it, through which client, since
+    when, and whether the lease ended (EA-14a). ``stale`` here is the LEASE
+    (hours). It is not the idle pill state of five minutes. SW-13c: a run
+    whose connection is revoked or expired reads ``stale`` too, by the same
+    rule as the gate (:func:`holder_free`)."""
+    from acb_auth import agent_oauth
+
+    return {
+        "member": hit.member_email,
+        "member_name": hit.member_name or hit.member_email,
+        "client_via": hit.client_via,
+        "client_name": agent_oauth.client_label(hit.client_via),
+        "since": wire(hit.held_since),
+        "last_activity_at": wire(hit.held_last),
+        "stale": holder_free(hit.run_status, float(hit.idle_s),
+                             getattr(hit, "connection_gone", False) is True),
+    }
+
+
+async def attach_agent_state(db: Any, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Fill each row's ``agent_state``, ``agent_client_via``,
+    ``agent_member_email`` and ``agent_note``, mutating and returning the list.
+
+    ``queued``, ``working``, ``awaiting``, ``answered``, ``stopping``,
+    ``stale`` or ``failed``. ``None`` for a task with no open run. While the
+    flag is off, every row gets ``None`` and no pill statement runs, so the
+    task reads cost nothing until the owner turns the feature on.
+
+    EA-13d and EA-13e ride the same call, because every route that hands a
+    task row to the client already calls it, and the client merges the row
+    over its own copy (a missing ``pr`` would erase the chip). So the call
+    also fills ``pr`` (:func:`attach_pr_chip`) and ``agent_worked``
+    (:func:`attach_agent_worked`), one batched query each.
+    """
+    for row in rows:
+        row.update(agent_state=None, agent_client_via=None, agent_member_email=None,
+                   agent_note=None, held_by=None)
+    ids = [str(r["id"]) for r in rows if r.get("id")]
+    if ids and agent_runs_enabled():
+        found = (await db.execute(text(_AGENT_STATE_SQL), {"ids": ids})).fetchall()
+        by_task = {str(r.task_id): r for r in found}
+        for row in rows:
+            hit = by_task.get(str(row["id"]))
+            if hit is not None:
+                note = " ".join(str(hit.note or "").split())
+                row.update(agent_state=hit.state, agent_client_via=hit.client_via,
+                           agent_member_email=hit.member_email,
+                           agent_note=note[:AGENT_NOTE_MAX] or None)
+                if hit.run_status in AGENT_RUN_OPEN_STATUSES:
+                    row["held_by"] = held_by_of(hit)
+    await attach_pr_chip(db, rows)
+    await attach_agent_worked(db, rows)
+    return rows
+
+
+# ── WS-55 EA-13d: the PR chip (external_agent_access.md §12.2 item 2, EA3-48) ──
+
+#: One query for the page. The partition picks ONE pull request for each task,
+#: by EA3-48: an open or draft one first, the newest by ``pr_updated_at``. Else
+#: the newest merged one, else the newest closed one. ``total`` counts every
+#: pull request of the task whose state is read, so ``more`` is ``total - 1``.
+#: A reference that GitHub has not been read for (``state`` NULL) has no word
+#: for the chip, so it neither shows nor counts.
+_PR_CHIP_SQL = """
+SELECT x.task_id, x.ref, x.url, x.title, x.state, x.checks_state, x.checks_summary,
+       x.merged_at, x.total
+  FROM (
+    SELECT r.task_id, r.ref, r.url, r.title, r.state, r.checks_state,
+           r.checks_summary, r.merged_at,
+           row_number() OVER (
+             PARTITION BY r.task_id
+             ORDER BY CASE r.state WHEN 'open' THEN 0 WHEN 'draft' THEN 0
+                                   WHEN 'merged' THEN 1 ELSE 2 END,
+                      COALESCE(r.pr_updated_at, r.updated_at) DESC,
+                      r.created_at DESC, r.id DESC) AS rn,
+           count(*) OVER (PARTITION BY r.task_id) AS total
+      FROM pm_task_refs r
+     WHERE r.task_id = ANY(CAST(:ids AS uuid[]))
+       AND r.kind = 'pull_request' AND r.provider = 'github'
+       AND r.state IN ('open', 'draft', 'merged', 'closed')
+  ) x
+ WHERE x.rn = 1
+"""
+
+
+def _checks_summary(value: Any) -> dict[str, int] | None:
+    """The checks counts as a plain object of integers, or ``None``."""
+    if isinstance(value, str):
+        import json
+
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return None
+    if not isinstance(value, dict):
+        return None
+    return {str(k): int(v) for k, v in value.items()
+            if isinstance(v, int) and not isinstance(v, bool)}
+
+
+def _pr_chip(hit: Any) -> dict[str, Any]:
+    repo, _, number = str(hit.ref).rpartition("#")
+    merged = getattr(hit, "merged_at", None)
+    return {
+        "repo": repo,
+        "number": int(number) if number.isdigit() else None,
+        "state": hit.state,
+        "checks_state": hit.checks_state,
+        "checks_summary": _checks_summary(hit.checks_summary),
+        "url": hit.url,
+        # Beyond the shape of the spec: the hover shows the title (EA3-41),
+        # and the strip's "merged this week" button reads the merge time.
+        "title": hit.title,
+        "merged_at": merged.isoformat() if merged is not None else None,
+        "more": max(int(hit.total) - 1, 0),
+    }
+
+
+async def attach_pr_chip(db: Any, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Fill each row's ``pr``: ``{repo, number, state, checks_state,
+    checks_summary, url, title, merged_at, more}``, or ``None`` for a task with
+    no pull request reference. ONE query for the whole list, never one for each
+    row (EA-13d, P5). The session is bound to the tenant, so a reference of
+    another organization is out of reach under RLS (P3)."""
+    for row in rows:
+        row["pr"] = None
+    ids = [str(r["id"]) for r in rows if r.get("id")]
+    if not ids:
+        return rows
+    found = (await db.execute(text(_PR_CHIP_SQL), {"ids": ids})).fetchall()
+    by_task = {str(r.task_id): r for r in found}
+    for row in rows:
+        hit = by_task.get(str(row["id"]))
+        if hit is not None:
+            row["pr"] = _pr_chip(hit)
+    return rows
+
+
+#: The states that read as "working" on the strip: the agent has the task, and
+#: the run is live, answered or idle (EA3-43). ONE copy: the summary strip, the
+#: analytics and :func:`agent_focus_clause` read it here.
+WORKING_STATES: tuple[str, ...] = ("working", "answered", "stale")
+
+#: The five foci of the agent strip, in the order it draws them. ``waiting`` is
+#: "Waiting on me". The list filter ``agent_focus`` accepts exactly these.
+AGENT_FOCI: tuple[str, ...] = ("queued", "working", "waiting", "review", "merged")
+
+#: The one named parameter of :func:`agent_focus_clause`: the lower-cased
+#: address of the SESSION's member. The route binds it, never the request (R11).
+AGENT_FOCUS_ME = "af_me"
+
+#: The foci that read the agent run state, and so need the runs flag.
+_RUN_FOCI = frozenset({"queued", "working", "waiting"})
+
+
+def _state_exists(condition: str) -> str:
+    """``EXISTS`` over the ONE pill row of the task ``t`` (:func:`agent_state_sql`)."""
+    return (
+        f"EXISTS (SELECT 1 FROM ({agent_state_sql('r.task_id = t.id')}) s"
+        f" WHERE {condition})"
+    )
+
+
+def _pull_request_exists(condition: str) -> str:
+    return (
+        "EXISTS (SELECT 1 FROM pm_task_refs ar WHERE ar.task_id = t.id"
+        " AND ar.kind = 'pull_request' AND ar.provider = 'github'"
+        f" AND {condition})"
+    )
+
+
+def agent_focus_clause(focus: str) -> str:
+    """The WHERE predicate of one agent-strip focus, over the task alias ``t``.
+
+    ⚠️ **ONE text for the strip and the list.** ``agent_summary`` counts the
+    tasks that this predicate keeps, and ``GET /projects/tasks?agent_focus=``
+    filters by it, so a count and the rows behind it cannot disagree. Paging
+    happens in SQL, so the filter has to be a WHERE clause too.
+
+    * ``queued``: the pill state is ``queued``. ``working``: it is one of
+      :data:`WORKING_STATES`. Both read :func:`agent_state_sql`, the text that
+      fills the card pill.
+    * ``waiting``: the "Waiting on me" rule of §12.1. The pill state is
+      ``awaiting`` and the run is the caller's (``:af_me``, bound by the
+      route), or the caller is assigned to the task. With
+      ``AGENT_QUESTIONS_ORGS`` on for the bound tenant, it reads
+      ``agent_runs.person_may_answer_sql`` instead, so "Waiting on me" and the
+      list "For me" name the same people (§12.8, D-EA-14). The creator of the
+      task then counts too. It also reads ``agent_runs.listed_question_sql``
+      over the task's one open run. So a closed task counts in neither, and a
+      typed archive request counts for the run's member only, in both.
+    * ``review``: an open or draft GitHub pull request, and the task is not in
+      a closing category. ``merged``: a pull request merged in the last 7 days.
+
+    While ``agent_runs_enabled`` is off the three run foci keep nothing, as
+    the cards show no pill. The two pull request foci do not read the flag.
+    An unknown focus is a ``ValueError``: the route turns it into a 422.
+    """
+    if focus not in AGENT_FOCI:
+        raise ValueError(f"Unknown agent focus '{focus}'. One of: {list(AGENT_FOCI)}.")
+    if focus in _RUN_FOCI and not agent_runs_enabled():
+        return "false"
+    if focus == "queued":
+        return _state_exists("s.state = 'queued'")
+    if focus == "working":
+        working = ", ".join(f"'{s}'" for s in WORKING_STATES)
+        return _state_exists(f"s.state IN ({working})")
+    if focus == "waiting":
+        if agent_questions_allowed(current_tenant()):
+            # A lazy import: `agent_runs` imports this module.
+            from gateway.routes.projects.agent_runs import (
+                listed_question_sql,
+                person_may_answer_sql,
+            )
+
+            # The pill row has no run id. A task has one open run at most
+            # (`pm_agent_runs_one_open_per_task`), so the awaiting run of the
+            # task is the run of the pill.
+            return _state_exists(
+                f"s.state = 'awaiting' AND {person_may_answer_sql('s', me=AGENT_FOCUS_ME)}"
+                " AND EXISTS (SELECT 1 FROM pm_agent_runs qr"
+                " WHERE qr.task_id = s.task_id AND qr.task_id IS NOT NULL"
+                f" AND qr.status = 'awaiting'"
+                f" AND {listed_question_sql('qr', me=AGENT_FOCUS_ME)})"
+            )
+        return _state_exists(
+            "s.state = 'awaiting'"
+            f" AND (lower(s.member_email) = :{AGENT_FOCUS_ME}"
+            "  OR EXISTS (SELECT 1 FROM pm_task_assignees a"
+            f"             WHERE a.task_id = s.task_id AND lower(a.assignee) = :{AGENT_FOCUS_ME}))"
+        )
+    if focus == "review":
+        closed = ", ".join(f"'{c}'" for c in sorted(CLOSING_CATEGORIES))
+        return (
+            _pull_request_exists("ar.state IN ('open', 'draft')")
+            + " AND EXISTS (SELECT 1 FROM pm_task_statuses ast"
+            f" WHERE ast.id = t.status_id AND ast.category NOT IN ({closed}))"
+        )
+    return _pull_request_exists(
+        "ar.state = 'merged' AND ar.merged_at >= now() - interval '7 days'"
+    )
+
+
+def agent_filter_clauses(
+    agent_focus: str | None, agent_worked: bool, me: str,
+) -> tuple[list[str], dict[str, Any]]:
+    """The WHERE pieces and bind params of the two agent filters (task #986).
+
+    ONE helper for ``GET /projects/tasks`` and the CSV export, so a file holds
+    the rows that the board shows. An unknown focus is a **422** that lists the
+    allowed values. *me* is the SESSION's member (``actor(user)``), never a
+    name from the request (R11). Neither filter is in a saved view.
+    """
+    clauses: list[str] = []
+    params: dict[str, Any] = {}
+    if agent_focus is not None:
+        if agent_focus not in AGENT_FOCI:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown agent focus '{agent_focus}'. One of: {list(AGENT_FOCI)}.",
+            )
+        clauses.append(agent_focus_clause(agent_focus))
+        params[AGENT_FOCUS_ME] = me.strip().lower()
+    if agent_worked:
+        from gateway.routes.projects.agent_worked import agent_worked_sql
+
+        # "Now" is every row that exists, as `attach_agent_worked` reads it.
+        clauses.append(agent_worked_sql("t.id", "'infinity'::timestamptz"))
+    return clauses, params
+
+
+#: The ``before`` of a read at this moment (see :func:`attach_agent_worked`).
+_READ_HORIZON = datetime(9999, 1, 1, tzinfo=UTC)
+
+
+async def attach_agent_worked(db: Any, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Fill each row's ``agent_worked`` through the ONE predicate of
+    ``agent_worked.py`` (EA-13e, EA3-49), read now. One query for the list."""
+    from gateway.routes.projects import agent_worked
+
+    for row in rows:
+        row["agent_worked"] = False
+    ids = [str(r["id"]) for r in rows if r.get("id")]
+    if not ids:
+        return rows
+    # "Now" is every row that exists: no row is created in the future, and a
+    # client clock that runs ahead of the database's cannot hide a fresh run.
+    worked = await agent_worked.worked_among(db, ids, _READ_HORIZON)
+    for row in rows:
+        row["agent_worked"] = str(row.get("id")) in worked
     return rows

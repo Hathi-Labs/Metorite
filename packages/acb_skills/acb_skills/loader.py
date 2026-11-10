@@ -12,9 +12,14 @@ Design change from original v2:
     4. ``LoadedAgent.cleanup()`` removes only the sys.path injection and the
        in-memory module; the local clone is preserved for the next event.
 
-Authentication — private repos (ADR-020):
-  Primary:  ``GITHUB_TOKEN`` (PAT with ``repo`` scope) embedded in the clone
-            URL and refreshed before every pull via ``git remote set-url``.
+Authentication — private repos (ADR-020, H-363):
+  A clone's remote URL holds NO token. ``acb_common.git_credentials`` gives
+  the credential to one git process at a time, through an inline credential
+  helper, from a gateway bare repo that no agent can write. A read uses
+  ``GITHUB_READ_TOKEN``, else ``GITHUB_TOKEN``. Before each pull the loader
+  scrubs the clone's config (:func:`_refresh_remote_auth`), so a clone that an
+  older loader made loses its token on its next load. The gateway also scrubs
+  every clone at startup (:func:`scrub_clone_credentials`).
   Upgrade path (not yet active):  GitHub App (``GITHUB_APP_ID`` +
             ``GITHUB_APP_PRIVATE_KEY_PATH``) — short-lived installation tokens,
             scoped to the org.  Swap ``_get_auth_token()`` when ready.
@@ -38,17 +43,163 @@ import os
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any
 
 from acb_common import get_logger, get_settings
+from acb_common import git_credentials as git_auth
+from acb_common.child_env import child_env
+
+from acb_skills import agent_site
 
 _log = get_logger("acb_skills.loader")
 
 
 class AgentLoadError(Exception):
     """Raised when an agent or skill repo cannot be cloned or imported."""
+
+
+# ---------------------------------------------------------------------------
+# The Copilot SDK runtime is leaving (D84, D92, WS-43n)
+# ``project-docs/specs/maf_coding_engine.md`` §15.5 is the design.
+# ---------------------------------------------------------------------------
+
+#: The text that a refused Copilot agent gets, at registration (HTTP 400 in
+#: ``gateway/routes/agent.py``) and at load time (``AgentRuntimeUnsupported``).
+#: One text, so the two refusals cannot tell a repo owner two things.
+COPILOT_MIGRATION_TEXT = (
+    "Metorite no longer runs GitHub Copilot SDK agents (D84, D92). "
+    "Change the repo so that agents.py build_agents() returns an "
+    "agent_framework.Agent, and set \"runtime\": \"maf\" in config.json "
+    "(or remove the field, because \"maf\" is the default). "
+    "See project-docs/specs/maf_coding_engine.md section 15.5."
+)
+
+#: The switch of WS-43r. While it is True, the loader still builds a Copilot
+#: agent and logs one deprecation line for it. WS-43r sets it to False, and
+#: from then on the loader raises ``AgentRuntimeUnsupported``. It is a code
+#: constant, not a setting: no env value can bring the Copilot runtime back.
+#: Fence: ``tests/unit/test_agent_runtime_default.py`` (WS43-F18).
+COPILOT_AGENTS_SUPPORTED = True
+
+#: The agents that already logged their deprecation line in this process.
+_copilot_deprecation_logged: set[str] = set()
+_copilot_deprecation_lock = threading.Lock()
+
+#: Each spelling of the Copilot runtime that a registry entry or a
+#: ``config.json`` can carry. ``gateway.routes.agent._normalize_runtime`` reads
+#: this set too, so the two cannot disagree.
+COPILOT_RUNTIME_LABELS: frozenset[str] = frozenset({
+    "github-copilot", "github_copilot", "githubcopilot", "copilot", "copilot-sdk",
+})
+
+#: The text that a delegation to a Copilot agent gets (D84, D92). The
+#: orchestrator reads it as the answer of the sub-task, so it says what to do.
+COPILOT_SPECIALIST_TEXT = (
+    "It runs on the GitHub Copilot SDK runtime, which Metorite retired "
+    "(D84, D92), so it does not run as a specialist. Use another registered "
+    "agent, or answer with your own tools."
+)
+
+
+class AgentRuntimeUnsupported(AgentLoadError):
+    """Raised when an agent builds a Copilot SDK agent after WS-43r, and when
+    a run delegates to a Copilot agent (:func:`refuse_copilot_specialist`).
+
+    An ``AgentLoadError``, so every caller answers it as it answers an agent
+    that does not load.
+    """
+
+
+#: The ONLY Copilot agents that may still run as a specialist of another run.
+#: Owner call, 2026-10-19 (review of PR #1161): app-builder stays a main-chat
+#: specialist until it is ported to MAF (WS-43h, then WS-43j). Delete its name
+#: in the PR that ports it. Every other Copilot agent is refused: task-manager,
+#: the root metorite agent and any repo agent on that runtime. A new name needs an owner
+#: call and a test. Fence: ``tests/unit/test_copilot_specialist_refused.py``
+#: (``test_the_allow_list_holds_app_builder_only``).
+COPILOT_SPECIALIST_ALLOWED: frozenset[str] = frozenset({"app-builder"})
+
+
+def is_copilot_runtime_label(label: Any) -> bool:
+    """True when *label* (a registry ``agent_runtime``) names the Copilot runtime."""
+    return isinstance(label, str) and label.strip().lower() in COPILOT_RUNTIME_LABELS
+
+
+def may_delegate_to(agent_name: str, label: Any) -> bool:
+    """True when a run may name *agent_name* as a specialist, by its label.
+
+    The orchestrator's specialist tools and the registry block read this, so
+    they offer the same agents that :func:`refuse_copilot_specialist` lets run.
+    """
+    return agent_name in COPILOT_SPECIALIST_ALLOWED or not is_copilot_runtime_label(label)
+
+
+def refuse_copilot_specialist(
+    agent_name: str, *, label: Any = None, built: list[Any] | None = None,
+) -> None:
+    """Refuse a DELEGATED run of a Copilot agent (D84, D92).
+
+    A Copilot agent still runs as the agent of its own app until its port
+    (WS-8i, WS-43h) or the WS-43r switch. As a specialist of another run it
+    does not: the sub-run would start the Copilot CLI on the retired runtime.
+    The caller (``call_agent``, ``call_agents_parallel``, a specialist tool,
+    ``delegate_to_agent``) gets the error as the answer of the sub-task, and
+    the orchestrator falls back to another agent or its own tools.
+
+    *label* is the registry ``agent_runtime``, read before the load, so a
+    labelled agent is refused with no clone and no import. *built* is the
+    ``build_agents()`` result, which finds a Copilot object whatever its label
+    says. An agent of :data:`COPILOT_SPECIALIST_ALLOWED` passes (owner call,
+    2026-10-19). Fence: ``tests/unit/test_copilot_specialist_refused.py``.
+    """
+    if agent_name in COPILOT_SPECIALIST_ALLOWED:
+        return
+    if not (is_copilot_runtime_label(label)
+            or any(is_copilot_agent(a) for a in (built or []))):
+        return
+    _log.warning("loader.copilot_specialist_refused", agent=agent_name)
+    raise AgentRuntimeUnsupported(
+        f"Agent {agent_name!r} cannot run as a specialist. " + COPILOT_SPECIALIST_TEXT
+    )
+
+
+def is_copilot_agent(agent: Any) -> bool:
+    """True if *agent* is a Copilot SDK agent.
+
+    The executor uses the same test (``_default_options`` that is not None) to
+    send an object down the Copilot path, whatever its label says. A native
+    ``agent_framework.Agent`` has no ``_default_options``. The test names no
+    Copilot module, so this file stays off the WS43-F15 allowlist.
+    """
+    return getattr(agent, "_default_options", None) is not None
+
+
+def _check_built_runtime(agent_name: str, built: list[Any]) -> None:
+    """Refuse or flag the Copilot agents in *built* (WS-43n, §15.5 steps 2-3).
+
+    Before WS-43r, log one deprecation line for each agent name in each
+    process. After WS-43r, raise ``AgentRuntimeUnsupported``.
+    """
+    if not any(is_copilot_agent(a) for a in built):
+        return
+    if not COPILOT_AGENTS_SUPPORTED:
+        raise AgentRuntimeUnsupported(
+            f"Agent {agent_name!r} builds a GitHub Copilot SDK agent. "
+            + COPILOT_MIGRATION_TEXT
+        )
+    with _copilot_deprecation_lock:
+        if agent_name in _copilot_deprecation_logged:
+            return
+        _copilot_deprecation_logged.add(agent_name)
+    _log.warning(
+        "loader.copilot_agent_deprecated",
+        agent=agent_name,
+        spec="project-docs/specs/maf_coding_engine.md §15.5",
+        detail=COPILOT_MIGRATION_TEXT,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -59,6 +210,30 @@ class AgentLoadError(Exception):
 _cache_meta_lock = threading.Lock()
 # Per-repo locks prevent concurrent clone/pull races for the same repo.
 _repo_locks: dict[str, threading.Lock] = {}
+
+
+# Chat speed: every run used to fetch from origin before the first model call.
+# One refresh per repo each TTL is enough, because a push from a person takes
+# effect on the next run after the TTL. ``AGENT_REPO_REFRESH_TTL_SECONDS=0``
+# restores the old fetch-on-every-run behaviour.
+_REFRESHED_AT: dict[str, float] = {}
+
+
+def _refresh_ttl() -> float:
+    try:
+        return max(0.0, float(os.environ.get("AGENT_REPO_REFRESH_TTL_SECONDS", "60")))
+    except ValueError:
+        return 60.0
+
+
+def _refresh_due(local_name: str) -> bool:
+    ttl = _refresh_ttl()
+    last = _REFRESHED_AT.get(local_name)
+    return ttl <= 0 or last is None or (time.monotonic() - last) >= ttl
+
+
+def _mark_refreshed(local_name: str) -> None:
+    _REFRESHED_AT[local_name] = time.monotonic()
 
 
 def _get_repo_lock(repo_name: str) -> threading.Lock:
@@ -72,28 +247,41 @@ def _get_repo_lock(repo_name: str) -> threading.Lock:
 # Git helpers
 # ---------------------------------------------------------------------------
 
-def _build_github_url(org: str, repo: str, token: str | None) -> str:
-    """Return an authenticated (or public) GitHub HTTPS clone URL."""
-    if token:
-        return f"https://x-token:{token}@github.com/{org}/{repo}.git"
-    return f"https://github.com/{org}/{repo}.git"
+def _build_github_url(org: str, repo: str, token: str | None = None) -> str:
+    """The GitHub HTTPS URL of *org*/*repo*. It NEVER holds a token (H-363).
+
+    *token* is kept for old callers and ignored: the credential reaches git
+    through ``acb_common.git_credentials`` only.
+    """
+    del token
+    return git_auth.public_url(org, repo)
 
 
-# Environment passed to every git subprocess: suppresses credential popups and
-# GUI password prompts (GIT_TERMINAL_PROMPT=0, GCM_INTERACTIVE=never) so the
-# process fails fast rather than hanging waiting for user input.
+# The names every local git command of the loader adds to
+# ``acb_common.child_env``'s allowlist (WS-49 BH-1). They suppress credential
+# popups and GUI password prompts (GIT_TERMINAL_PROMPT=0, GCM_INTERACTIVE=never)
+# so the process fails fast rather than hanging waiting for user input.
 # PYTHONUTF8=1 + PYTHONIOENCODING=utf-8: ensure child Python processes use
 # UTF-8 on Windows (avoids cp1252 UnicodeEncodeError for scripts with emoji/
 # non-ASCII output — e.g. zoho_crm.py's pipeline summary headers).
-_GIT_ENV: dict[str, str] = {
-    **os.environ,
+# H-363: no GCM_CREDENTIAL_STORE. It told Git Credential Manager to keep a
+# credential in a PLAINTEXT file. No credential is stored, by any helper.
+_GIT_EXTRA: dict[str, str] = {
     "GIT_TERMINAL_PROMPT": "0",
     "GIT_ASKPASS": "echo",
     "GCM_INTERACTIVE": "never",
-    "GCM_CREDENTIAL_STORE": "plaintext",
     "PYTHONUTF8": "1",
     "PYTHONIOENCODING": "utf-8",
 }
+
+
+def _git_env() -> dict[str, str]:
+    """The env of a git clone or pull: the allowlist and ``_GIT_EXTRA``.
+
+    It is built at each call, so a name the gateway sets after import (a
+    proxy, ``UV_CACHE_DIR``) reaches the child, and no secret does.
+    """
+    return child_env(extra=_GIT_EXTRA)
 
 
 def _run_git(args: list[str], *, cwd: Path, timeout: int = 60) -> subprocess.CompletedProcess[str]:
@@ -104,42 +292,56 @@ def _run_git(args: list[str], *, cwd: Path, timeout: int = 60) -> subprocess.Com
         text=True,
         encoding="utf-8",
         errors="replace",
-        env=_GIT_ENV,
+        env=_git_env(),
         timeout=timeout,
     )
 
 
 def _clone_repo(url: str, dest: Path) -> None:
-    """Full clone of *url* into *dest*.  Raises :class:`AgentLoadError` on failure."""
+    """Full clone of *url* into *dest*.  Raises :class:`AgentLoadError` on failure.
+
+    A GitHub URL goes through ``acb_common.git_credentials.clone`` (H-363):
+    the read credential reaches that one git process through the helper, and
+    the new ``.git/config`` holds the public URL only. Any other URL (a local
+    path on a dev box or in a test) is cloned plainly, with no credential.
+    """
     # Remove a stale/partial directory that has no .git — git clone refuses to
     # clone into a non-empty directory, leaving agents in a broken state.
     if dest.exists() and not (dest / ".git").exists():
         import shutil
         shutil.rmtree(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    result = subprocess.run(
-        ["git", "clone", url, str(dest)],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        env=_GIT_ENV,
-        timeout=120,
-    )
-    if result.returncode != 0:
-        raise AgentLoadError(
-            f"git clone failed for {url.split('@')[-1]!r}:\n{result.stderr.strip()}"
+    remote = git_auth.parse_github_remote(url)
+    if remote is not None:
+        cloned = git_auth.clone(remote, dest, timeout=120)
+        returncode, stderr = cloned.returncode, cloned.stderr
+        shown = remote.url
+    else:
+        result = subprocess.run(
+            ["git", "clone", "--", git_auth.strip_url_secret(url), str(dest)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=_git_env(),
+            timeout=120,
         )
+        returncode, stderr = result.returncode, git_auth.redact(result.stderr)
+        shown = git_auth.strip_url_secret(url)
+    if returncode != 0:
+        raise AgentLoadError(f"git clone failed for {shown!r}:\n{stderr.strip()}")
     # If the checked-out working tree is empty (e.g. the default branch is an
     # empty placeholder while all code lives on another branch), try to checkout
     # the first remote branch that has actual files.
     tracked = subprocess.run(
-        ["git", "ls-files"], cwd=str(dest), capture_output=True, text=True, encoding="utf-8"
+        ["git", "ls-files"], cwd=str(dest), capture_output=True, text=True, encoding="utf-8",
+        env=child_env(),
     )
     if not tracked.stdout.strip():
         branches_r = subprocess.run(
             ["git", "branch", "-r", "--sort=-committerdate"],
             cwd=str(dest), capture_output=True, text=True, encoding="utf-8",
+            env=child_env(),
         )
         for branch_line in branches_r.stdout.splitlines():
             branch = branch_line.strip()
@@ -148,11 +350,13 @@ def _clone_repo(url: str, dest: Path) -> None:
             co = subprocess.run(
                 ["git", "checkout", branch, "--", "."],
                 cwd=str(dest), capture_output=True, text=True, encoding="utf-8",
+                env=child_env(),
             )
             if co.returncode == 0:
                 # Verify we actually got files
                 verify = subprocess.run(
-                    ["git", "ls-files"], cwd=str(dest), capture_output=True, text=True, encoding="utf-8"
+                    ["git", "ls-files"], cwd=str(dest), capture_output=True, text=True, encoding="utf-8",
+                    env=child_env(),
                 )
                 if verify.stdout.strip():
                     _log.info("loader.fallback_branch", dest=dest.name, branch=branch)
@@ -208,10 +412,76 @@ def _configure_bot_identity(repo_dir: Path, settings: Any) -> None:
     _run_git(["config", "user.email", bot_email], cwd=repo_dir)
 
 
-def _refresh_remote_auth(repo_dir: Path, org: str, repo_name: str, token: str | None) -> None:
-    """Update the remote URL so short-lived or rotated tokens stay current."""
-    url = _build_github_url(org, repo_name, token)
+def _refresh_remote_auth(
+    repo_dir: Path, org: str, repo_name: str, token: str | None = None,
+) -> None:
+    """Point ``origin`` at the PUBLIC URL, and scrub every secret (H-363).
+
+    This ran before every pull, and it used to WRITE the token into the
+    remote URL. Now it does the opposite: it sets ``origin`` to the URL with
+    no userinfo, and :func:`acb_common.git_credentials.scrub_clone` removes
+    any credential helper, extra header or token URL that an older loader or
+    a run left in ``.git/config``. *token* is ignored. The pull gets its
+    credential from the helper, in one gateway process.
+    """
+    del token
+    for line in git_auth.scrub_clone(repo_dir):
+        _log.warning("loader.clone_credential_scrubbed", repo=repo_dir.name, what=line)
+    url = _build_github_url(org, repo_name)
     _run_git(["remote", "set-url", "origin", url], cwd=repo_dir)
+
+
+def agent_remote(
+    agent_name: str, repo_name: str | None = None, settings: Any = None,
+) -> git_auth.GitHubRemote | None:
+    """The GitHub repo of *agent_name*, resolved as :func:`load_agent` does.
+
+    ``repo_name`` is the registry's. An ``org/repo`` slug names its own org.
+    It reads the registry and the settings, never the clone. ``None`` for a
+    name that is not a GitHub name.
+    """
+    settings = settings or get_settings()
+    org: str = getattr(settings, "github_org", "FracktalWorks")
+    repo = repo_name or f"agent-{agent_name}"
+    if repo_name and "/" in repo_name:
+        org, repo = repo_name.split("/", 1)
+    try:
+        return git_auth.GitHubRemote(org, repo.removesuffix(".git"))
+    except ValueError:
+        return None
+
+
+def scrub_clone_credentials(
+    settings: Any = None, *, home: Path | None = None,
+) -> list[str]:
+    """Scrub every agent clone and the credential stores. Return what went.
+
+    The gateway runs it once at startup (``gateway.main``), so a clone that
+    an older loader made loses its token before any run starts, also when
+    its agent does not load again. Then it checks each ``.git/config`` again,
+    and logs an error for any file that still holds a secret. It never logs
+    a value. ``home`` is for the fence.
+    """
+    settings = settings or get_settings()
+    root = Path(getattr(settings, "agents_clone_dir", "/tmp/acb_agents")) / "repos"
+    tokens = [
+        str(getattr(settings, name, "") or "").strip()
+        for name in ("github_token", "github_read_token", "mutation_pr_token")
+    ]
+    tokens = [t for t in tokens if t]
+    report: list[str] = []
+    try:
+        clones = sorted(p for p in root.iterdir() if (p / ".git").is_dir())
+    except OSError:
+        clones = []
+    for clone_dir in clones:
+        report.extend(f"{clone_dir.name}: {line}" for line in git_auth.scrub_clone(clone_dir))
+    report.extend(git_auth.scrub_credential_stores(home=home, tokens=tokens))
+    for line in report:
+        _log.warning("loader.clone_credential_scrubbed", what=line)
+    for path in git_auth.find_clone_secrets(root, tokens):
+        _log.error("loader.clone_credential_left", path=path)
+    return report
 
 
 def _resolve_rebase_conflicts(repo_dir: Path) -> bool:
@@ -507,8 +777,23 @@ def _pull_latest(repo_dir: Path) -> dict[str, Any]:
         "conflicts_resolved_by_llm": False,
     }
 
+    # ── Fetch origin (H-363) ──────────────────────────────────────────
+    # The fetch is the ONE network step, and it goes through the credential
+    # seam: the read credential lives in one gateway process, never in the
+    # clone. A ``git pull`` here would run the network step inside the
+    # clone, with its config, so the steps below are local.
+    fetch_result = git_auth.fetch(repo_dir, timeout=30)
+    if not fetch_result.ok:
+        _log.warning(
+            "loader.pull_fetch_failed",
+            repo=repo_dir.name,
+            stderr=fetch_result.stderr.strip()[:200],
+            hint="Using cached clone.",
+        )
+        return result_info
+
     # Step 1 — fast-forward (best case: no divergence)
-    result = _run_git(["pull", "--ff-only"], cwd=repo_dir, timeout=30)
+    result = _run_git(["merge", "--ff-only", "@{upstream}"], cwd=repo_dir, timeout=30)
     if result.returncode == 0:
         result_info["strategy"] = "fast-forward"
         return result_info
@@ -519,17 +804,6 @@ def _pull_latest(repo_dir: Path) -> dict[str, Any]:
         stderr=result.stderr.strip()[:200],
         hint="Checking for local-only commits before falling back.",
     )
-
-    # ── Fetch origin so we can compare HEAD positions ──────────────────
-    fetch_result = _run_git(["fetch", "origin"], cwd=repo_dir, timeout=30)
-    if fetch_result.returncode != 0:
-        _log.warning(
-            "loader.pull_fetch_failed",
-            repo=repo_dir.name,
-            stderr=fetch_result.stderr.strip()[:200],
-            hint="Using cached clone.",
-        )
-        return result_info
 
     # ── Detect local-only (unpushed) commits ───────────────────────────
     # git rev-list origin/HEAD..HEAD lists commits we have that origin doesn't.
@@ -651,6 +925,18 @@ def _pull_latest(repo_dir: Path) -> dict[str, Any]:
 
 
 def _ensure_local_git_repo(source_dir: Path, cache_dir: Path, settings: Any) -> None:
+    """Sync *source_dir* into *cache_dir* and seed its git repo, under the lock.
+
+    WS-67 OA-9b hardening item 7: up to five spawn children load the worker at
+    once into one cache dir. The per-repo lock of the clone path (``_repo_locks``)
+    now also holds the copy, so a reader never imports a short file. The lock is
+    taken by cache dir name, the same key that ``_get_repo_lock`` uses.
+    """
+    with _get_repo_lock(cache_dir.name):
+        _ensure_local_git_repo_locked(source_dir, cache_dir, settings)
+
+
+def _ensure_local_git_repo_locked(source_dir: Path, cache_dir: Path, settings: Any) -> None:
     """Initialise or sync a local-only git-tracked working copy of *source_dir*.
 
     This gives pure MAF agents (without GitHub remotes) the same version-control
@@ -837,15 +1123,18 @@ def _sync_new_skills(agent_dir: Path, settings: Any) -> None:
         tool_defs.append(
             f"\nasync def {fn}(*args: str) -> str:\n"
             f'    """Run {script.stem} ({skill_name}). Pass CLI args as strings."""\n'
-            f"    import asyncio as _a, os as _os, subprocess as _s, sys as _sys\n"
+            f"    import asyncio as _a, subprocess as _s, sys as _sys\n"
             f"    from pathlib import Path as _P\n"
+            # WS-49 BH-1: the script gets the one allowlisted env, never the
+            # gateway's. agents.py runs in the gateway, so acb_common imports.
+            f"    from acb_common.child_env import child_env as _child_env\n"
             f"    _d = _P(__file__).parent.resolve()\n"
             f'    _cmd = [_sys.executable, "-X", "utf8", str(_d / "{rel}")] + list(args)\n'
-            f"    _env = {{**_os.environ, \"PYTHONUTF8\": \"1\", \"PYTHONIOENCODING\": \"utf-8\"}}\n"
-            f"    _r = await _a.to_thread(\n"
-            f"        _s.run, _cmd, capture_output=True, encoding=\"utf-8\", errors=\"replace\",\n"
+            f"    _env = _child_env(extra={{\"PYTHONUTF8\": \"1\", \"PYTHONIOENCODING\": \"utf-8\"}})\n"
+            f"    _r = await _a.to_thread(lambda: _s.run(\n"
+            f"        _cmd, capture_output=True, encoding=\"utf-8\", errors=\"replace\",\n"
             f"        cwd=str(_d), env=_env,\n"
-            f"    )\n"
+            f"    ))\n"
             f"    if _r.returncode != 0:\n"
             f"        raise RuntimeError(_r.stderr[:500] or \"Script exited non-zero\")\n"
             f"    return _r.stdout or \"(no output)\"\n"
@@ -994,31 +1283,44 @@ def _ensure_repo(
     lock = _get_repo_lock(local_name)
     with lock:
         clone_dir = cache_root / local_name
+        # H-363: record the repo from the registry, in gateway memory. A push
+        # goes to this repo, never to an ``origin`` that a run rewrote.
+        try:
+            git_auth.pin_remote(clone_dir, git_auth.GitHubRemote(org, repo_name))
+        except ValueError:
+            pass
         if clone_dir.exists() and (clone_dir / ".git").exists():
-            # Already cloned — refresh auth token in remote URL, then pull
-            _refresh_remote_auth(clone_dir, org, repo_name, token)
-            _pull_latest(clone_dir)
+            # Already cloned — scrub any token from the clone's config and
+            # set the public URL (H-363), then pull through the seam.
+            # The scrub is local and cheap, so it runs on every call. Only the
+            # fetch waits for the TTL (H-363).
+            _refresh_remote_auth(clone_dir, org, repo_name)
+            if _refresh_due(local_name):
+                _pull_latest(clone_dir)
+                _mark_refreshed(local_name)
         else:
-            # First use — full clone
+            # First use — full clone. The URL holds no token (H-363).
             _log.info("loader.clone_new", repo=repo_name, org=org, local=local_name)
-            url = _build_github_url(org, repo_name, token)
+            url = _build_github_url(org, repo_name)
             _clone_repo(url, clone_dir)
             _configure_bot_identity(clone_dir, settings)
             _install_push_guard(clone_dir)
+            _mark_refreshed(local_name)
         # Keep generated workspace dirs untracked (idempotent) so a mutation
         # reset can't wipe them and outputs/ persists across redeploys.
         _ensure_workspace_gitignore(clone_dir)
-        # After every pull/clone, auto-sync any new skill scripts into agents.py
+        # On every load, auto-sync any new skill scripts into agents.py. The
+        # scan reads the working tree, so a script that a coding session
+        # committed locally is wired without waiting for the next fetch.
         _sync_new_skills(clone_dir, settings)
-        # Install the repo's declared deps into the SHARED gateway venv — agents
-        # are imported in-process, so their imports must resolve in the same
-        # interpreter the gateway runs from.
+        # Install the repo's declared deps into agent-site (WS-49 BH-7). Agents
+        # are imported in-process, and agent-site is on the gateway's sys.path.
         _install_agent_deps(clone_dir, settings)
         return clone_dir
 
 
 # ---------------------------------------------------------------------------
-# Dependency installation (shared venv)
+# Dependency installation (agent-site, WS-49 BH-7)
 # ---------------------------------------------------------------------------
 
 def _is_platform_dep(spec: str) -> bool:
@@ -1035,25 +1337,6 @@ def _is_platform_dep(spec: str) -> bool:
         or name.startswith("agent-framework")
         or name == "copilot"
     )
-
-
-def _find_uv() -> str | None:
-    """Locate the ``uv`` binary, even when it's not on the service PATH."""
-    import shutil  # noqa: PLC0415
-    found = shutil.which("uv")
-    if found:
-        return found
-    for cand in (
-        Path.home() / ".local" / "bin" / "uv",
-        Path("/usr/local/bin/uv"),
-        Path("/root/.local/bin/uv"),
-    ):
-        try:
-            if cand.is_file():
-                return str(cand)
-        except Exception:  # noqa: BLE001
-            continue
-    return None
 
 
 def _detect_system_packages(error: str) -> list[str]:
@@ -1135,18 +1418,19 @@ def read_dep_status(agent_dir: Path) -> dict[str, Any] | None:
 
 
 def _install_agent_deps(agent_dir: Path, settings: Any) -> None:
-    """Install an agent's (or skill's) declared dependencies into the shared
-    gateway venv.
+    """Install an agent's (or skill's) declared dependencies into agent-site.
 
-    Agents are imported into the gateway interpreter and run in-process, so any
-    third-party package an agent or its skills import must exist in the SAME
-    venv the gateway runs from.  Nothing else installs them, so we do it here
-    after every clone/pull.
+    Agents are imported into the gateway interpreter and run in-process, so a
+    third-party package that an agent or its skills import must be importable
+    there. WS-49 BH-7 (BH-D10): the install goes to
+    ``/var/lib/acb-gateway/agent-site`` with ``uv pip install --target``, and
+    NEVER into the shared venv, because the deploy runs code from the venv as
+    a user with sudo. ``agent_site`` builds the command, with ``-c`` and the
+    venv's freeze, so a package never takes a version that differs from the
+    venv. The gateway appends agent-site to ``sys.path`` after the venv.
 
     Sources: ``requirements.txt`` (installed verbatim) and the
     ``[project].dependencies`` of ``pyproject.toml`` (platform packages skipped).
-    Installed into ``sys.executable``'s environment via ``uv pip install``
-    (falling back to ``pip``).
 
     RCE guard (BO-7 fast pass): unless ``settings.agent_deps_allow_source_
     builds`` is explicitly set, installs run with ``--only-binary=:all:`` —
@@ -1157,15 +1441,26 @@ def _install_agent_deps(agent_dir: Path, settings: Any) -> None:
     covered by anything downstream in the loader — the wheel-only restriction
     is the actual boundary here, not a defense in depth on top of one.
 
-    Best-effort + idempotent: a SHA-256 of the dep sources is cached in
-    ``.git/acb-deps-hash``; an unchanged set is skipped.  A failed install logs
-    a warning and never blocks the agent run.  Runs under the caller's per-repo
-    lock, so concurrent loads can't race the installer.
+    A declared dependency that the venv already provides at an allowed
+    version (an editable workspace member too) is skipped before any uv call.
+    A venv package at a version that the agent does not allow is a conflict:
+    it is not installed, and the dep status is red on every load. The marker
+    holds the conflict, so a standing conflict runs no uv again.
+    When the venv provides all of them, the loader runs no uv.
+
+    Best-effort + idempotent: a SHA-256 of the deps to install, the target dir
+    and the constraints is cached in ``.git/acb-deps-hash``, and an unchanged
+    set is skipped. The target is in the hash (spec Q3b), so an agent that was
+    installed into the venv before BH-7 installs again into agent-site on its
+    next load. A failed install logs a warning and never blocks the agent run.
+    When the unit's dirs are absent (``agent_site.not_ready``), the loader
+    logs that it skipped the install, and it never falls back to the venv.
+    Runs under the caller's per-repo lock, so concurrent loads can't race the
+    installer.
     """
     import hashlib  # noqa: PLC0415
-    import subprocess  # noqa: PLC0415
-    import sys  # noqa: PLC0415
 
+    agent_site.ensure_on_sys_path()
     try:
         req = agent_dir / "requirements.txt"
         pyproject = agent_dir / "pyproject.toml"
@@ -1192,60 +1487,165 @@ def _install_agent_deps(agent_dir: Path, settings: Any) -> None:
         if not req.is_file() and not pyproject_deps:
             return  # nothing declared to install
 
-        digest = hashlib.sha256(
-            "\x00".join(sources).encode("utf-8", "replace")
-        ).hexdigest()
+        # WS-49 BH-7 fix rounds 1 and 2. --target does not see the venv, so a
+        # dependency that the venv already holds would resolve on PyPI. An
+        # editable workspace member (skill-projects) answers 404 there. So
+        # classify() sorts each line first. A line the venv provides at an
+        # allowed version, or whose marker is false here, is not installed.
+        # A line that asks for a venv package at a version the venv does not
+        # hold is a CONFLICT. It is not installed either, because a second
+        # copy would shadow the venv in a child. The rest of the deps install
+        # as normal, the dep status is red and names the conflict, and no
+        # marker is written. That is how a failed install already reports.
+        req_v = agent_site.classify(
+            agent_site.requirement_lines(sources[0]) if req.is_file() else []
+        )
+        py_v = agent_site.classify(pyproject_deps)
+        provided = req_v.provided + py_v.provided
+        conflicts = req_v.conflicts + py_v.conflicts
+        if provided:
+            _log.info(
+                "loader.deps_provided_by_venv", agent=agent_dir.name,
+                deps=[f"{spec} ({version})" for spec, version in provided],
+            )
+        if req_v.not_here or py_v.not_here:
+            _log.info(
+                "loader.deps_marker_false", agent=agent_dir.name,
+                deps=req_v.not_here + py_v.not_here,
+            )
+        if conflicts:
+            _log.warning("loader.deps_conflict", agent=agent_dir.name, conflicts=conflicts)
+        conflict_text = "\n".join(f"conflict: {c}" for c in conflicts)
         marker = agent_dir / ".git" / "acb-deps-hash"
+        if not req_v.to_install and not py_v.to_install:
+            if conflicts:
+                _write_dep_status(
+                    agent_dir, ok=False, error=conflict_text, needs_system=[],
+                    has_requirements=req.is_file(), pyproject_dep_count=len(pyproject_deps),
+                )
+                return  # nothing to install, and no marker
+            # The venv provides every declared dependency: no uv at all. The
+            # marker holds the venv versions, so a warm load that finds the
+            # same set returns here at once.
+            digest = hashlib.sha256(
+                "\x00".join([
+                    "venv-provides-all",
+                    *(f"{spec}={version}" for spec, version in provided),
+                    *req_v.not_here, *py_v.not_here,
+                    f"target={agent_site.AGENT_SITE}",
+                ]).encode("utf-8", "replace")
+            ).hexdigest()
+            try:
+                if marker.is_file() and marker.read_text(encoding="utf-8").strip() == digest:
+                    return  # unchanged since the last check
+            except Exception:  # noqa: BLE001
+                pass
+            _write_dep_status(
+                agent_dir, ok=True, error="", needs_system=[],
+                has_requirements=req.is_file(), pyproject_dep_count=len(pyproject_deps),
+            )
+            try:
+                marker.write_text(digest, encoding="utf-8")
+            except Exception:  # noqa: BLE001
+                pass
+            return
+
+        reason = agent_site.not_ready()
+        uv = agent_site.find_uv()
+        if reason is None and not uv:
+            reason = "uv is not on this box"
+        if reason is not None or uv is None:
+            _log.warning(
+                "loader.deps_install_skipped", agent=agent_dir.name, error=reason,
+            )
+            _write_dep_status(
+                agent_dir, ok=False, error=f"install skipped: {reason}",
+                needs_system=[], has_requirements=req.is_file(),
+                pyproject_dep_count=len(pyproject_deps),
+            )
+            return
+        constraints = agent_site.prepare(uv)
+
+        # The hash holds the set to install, each conflict with its venv
+        # version, the target (spec Q3b) and the constraints digest. So a new
+        # venv state installs again, and a conflict added or resolved later
+        # changes the hash too. Fences: test_agent_deps_target.py (the hash
+        # tests).
+        digest = hashlib.sha256(
+            "\x00".join([
+                *req_v.to_install,
+                "--",
+                *py_v.to_install,
+                "--",
+                *conflicts,
+                f"target={agent_site.AGENT_SITE}",
+                f"constraints={constraints}",
+            ]).encode("utf-8", "replace")
+        ).hexdigest()
         try:
-            if (
-                marker.is_file()
-                and marker.read_text(encoding="utf-8").strip() == digest
-            ):
-                return  # unchanged since the last successful install
+            if marker.is_file() and marker.read_text(encoding="utf-8").strip() == digest:
+                # Unchanged since the last good install: no uv (fix round 3,
+                # P2-d). A standing conflict still reports red on each load.
+                if conflicts:
+                    _write_dep_status(
+                        agent_dir, ok=False, error=conflict_text, needs_system=[],
+                        has_requirements=req.is_file(),
+                        pyproject_dep_count=len(pyproject_deps),
+                    )
+                return
         except Exception:  # noqa: BLE001
             pass
 
-        uv = _find_uv()
-        base = (
-            [uv, "pip", "install", "--python", sys.executable]
-            if uv
-            else [sys.executable, "-m", "pip", "install"]
-        )
-        if not bool(getattr(settings, "agent_deps_allow_source_builds", False)):
-            base = base + ["--only-binary", ":all:"]
-        cmds: list[list[str]] = []
-        if req.is_file():
-            cmds.append(base + ["-r", str(req)])
-        if pyproject_deps:
-            cmds.append(base + pyproject_deps)
+        only_binary = not bool(getattr(settings, "agent_deps_allow_source_builds", False))
+        args: list[str] = []
+        if req_v.to_install and not req_v.dropped:
+            # Nothing dropped: the agent's OWN file, so its relative includes
+            # and its hash lines resolve as the author wrote them.
+            args += ["-r", str(req)]
+        elif req_v.to_install:
+            # Some lines dropped: the rest go to a file of the gateway's own.
+            # Each -r/-c include is made absolute against the agent dir, and
+            # each kept pin carries its own --hash options on its line.
+            req_dir = agent_site.CACHE_ROOT / "requirements"
+            req_dir.mkdir(exist_ok=True)
+            to_file = req_dir / f"{agent_dir.name}.txt"
+            lines = agent_site.absolute_includes(req_v.to_install, agent_dir)
+            to_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            args += ["-r", str(to_file)]
+        args += py_v.to_install
+        cmds = [agent_site.install_command(uv, args, only_binary=only_binary)]
 
-        ok = True
-        errors: list[str] = []
+        installed = True
+        errors: list[str] = [conflict_text] if conflicts else []
         for cmd in cmds:
             try:
                 result = subprocess.run(
                     cmd, capture_output=True, text=True, timeout=600,
+                    env=child_env(),
                 )
                 if result.returncode != 0:
-                    ok = False
+                    installed = False
                     err = (result.stderr or result.stdout or "")
                     errors.append(err)
                     _log.warning(
                         "loader.deps_install_failed",
                         agent=agent_dir.name,
-                        tool="uv" if uv else "pip",
+                        tool="uv",
                         error=err[-700:],
                     )
             except Exception as exc:  # noqa: BLE001
-                ok = False
+                installed = False
                 errors.append(str(exc))
                 _log.warning(
                     "loader.deps_install_error",
                     agent=agent_dir.name, error=str(exc),
                 )
+        agent_site.prune_venv_duplicates()
+        agent_site.scrub()
 
         # Persist a machine-readable status so the agents page can surface
         # unmet dependencies (and any apt/system packages the build needs).
+        ok = installed and not conflicts
         joined_err = "\n".join(errors)
         needs_system = [] if ok else _detect_system_packages(joined_err)
         _write_dep_status(
@@ -1257,16 +1657,20 @@ def _install_agent_deps(agent_dir: Path, settings: Any) -> None:
             pyproject_dep_count=len(pyproject_deps),
         )
 
-        if ok:
+        if installed:
+            # The marker goes in when uv succeeded, even with a conflict, so
+            # the next load runs no uv. The conflict is in the digest.
             try:
                 marker.write_text(digest, encoding="utf-8")
             except Exception:  # noqa: BLE001
                 pass
+        if ok:
             _log.info(
                 "loader.deps_installed",
                 agent=agent_dir.name,
                 requirements=req.is_file(),
                 pyproject_deps=len(pyproject_deps),
+                target=str(agent_site.AGENT_SITE),
             )
         else:
             _log.warning(
@@ -1394,6 +1798,9 @@ class LoadedAgent:
                 f"Agent {self.agent_name!r}: build_agents() must return a list, "
                 f"got {type(result).__name__}."
             )
+        # WS-43n: a Copilot SDK agent still runs until WS-43r, with one
+        # deprecation line. After WS-43r it does not load.
+        _check_built_runtime(self.agent_name, result)
         return result
 
     def build_graph(self) -> Any:
@@ -1429,6 +1836,62 @@ class LoadedAgent:
 
     def __exit__(self, *_: object) -> None:
         self.cleanup()
+
+
+def _attach_skill_repos(
+    skill_repos: list[str],
+    *,
+    agent_name: str,
+    org: str,
+    token: str | None,
+    cache_root: Path,
+    settings: Any,
+) -> list[str]:
+    """Make each skill of ``config.json`` importable. Return the paths it put
+    on ``sys.path``.
+
+    A skill that the gateway's venv already provides (a workspace member such
+    as ``skill-projects`` or ``skill-my-tasks``) is used from the venv. The
+    loader does not clone it, and it puts no path before the venv. A clone of
+    ``{org}/{skill}`` would only shadow the monorepo's copy with an older
+    one, and with no valid token every load logged a failed clone
+    (production, 2026-10-18).
+
+    Any other skill is cloned or pulled as before: a skill of a repo agent
+    that the venv does not hold still needs its repo. A failed clone logs a
+    warning and the agent still loads.
+    Fence: ``tests/unit/test_loader_venv_skills.py``.
+    """
+    injected: list[str] = []
+    for skill_repo_name in skill_repos:
+        provided = agent_site.venv_version(skill_repo_name)
+        if provided is not None:
+            _log.info(
+                "loader.skill_provided_by_venv",
+                skill=skill_repo_name, agent=agent_name, version=provided,
+            )
+            continue
+        try:
+            skill_dir = _ensure_repo(
+                skill_repo_name,
+                org=org,
+                token=token,
+                cache_root=cache_root,
+                settings=settings,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "loader.skill_clone_failed",
+                skill=skill_repo_name,
+                agent=agent_name,
+                error=str(exc),
+            )
+            continue
+        skill_src = skill_dir / "src"
+        skill_path = str(skill_src if skill_src.exists() else skill_dir)
+        sys.path.insert(0, skill_path)
+        injected.append(skill_path)
+    return injected
 
 
 def load_agent(
@@ -1503,28 +1966,10 @@ def load_agent(
             except Exception as exc:  # noqa: BLE001
                 _log.warning("loader.config_parse_error", agent=agent_name, error=str(exc))
 
-        injected_paths: list[str] = []
-        for skill_repo_name in skill_repos:
-            try:
-                skill_dir = _ensure_repo(
-                    skill_repo_name,
-                    org=org,
-                    token=token,
-                    cache_root=cache_root,
-                    settings=settings,
-                )
-            except Exception as exc:  # noqa: BLE001
-                _log.warning(
-                    "loader.skill_clone_failed",
-                    skill=skill_repo_name,
-                    agent=agent_name,
-                    error=str(exc),
-                )
-                continue
-            skill_src = skill_dir / "src"
-            skill_path = str(skill_src if skill_src.exists() else skill_dir)
-            sys.path.insert(0, skill_path)
-            injected_paths.append(skill_path)
+        injected_paths = _attach_skill_repos(
+            skill_repos, agent_name=agent_name, org=org, token=token,
+            cache_root=cache_root, settings=settings,
+        )
 
         agent_path = str(agent_dir)
         sys.path.insert(0, agent_path)
@@ -1577,30 +2022,11 @@ def load_agent(
         except Exception as exc:  # noqa: BLE001
             _log.warning("loader.config_parse_error", agent=agent_name, error=str(exc))
 
-    injected_paths: list[str] = []
-
     # Ensure each skill repo is present and up-to-date
-    for skill_repo_name in skill_repos:
-        try:
-            skill_dir = _ensure_repo(
-                skill_repo_name,
-                org=org,
-                token=token,
-                cache_root=cache_root,
-                settings=settings,
-            )
-        except Exception as exc:  # noqa: BLE001
-            _log.warning(
-                "loader.skill_clone_failed",
-                skill=skill_repo_name,
-                agent=agent_name,
-                error=str(exc),
-            )
-            continue
-        skill_src = skill_dir / "src"
-        skill_path = str(skill_src if skill_src.exists() else skill_dir)
-        sys.path.insert(0, skill_path)
-        injected_paths.append(skill_path)
+    injected_paths = _attach_skill_repos(
+        skill_repos, agent_name=agent_name, org=org, token=token,
+        cache_root=cache_root, settings=settings,
+    )
 
     # Inject agent repo path
     agent_path = str(agent_dir)

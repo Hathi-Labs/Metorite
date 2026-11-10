@@ -22,22 +22,46 @@ holds each one:
    carries the count the route reports. A card that says "delete X" with no
    size is a signature bought under a misdescription.
 
-What is deliberately NOT here: hard delete of a project or a task (D-PM-35,
-class X until WS-40), a bulk ``delete`` action for the same reason, and a
-grant write (spec §12, question 2).
+Hard delete of a project or a task IS here since 2026-10-22 (owner, over
+D-PM-35): ``delete_project`` and ``delete_task``, one act per card. A grant
+write IS here since WS-64 OP-6b (D-OP-9, which reverses D-PM-40):
+``grant_access`` and ``revoke_access``, one grant per card. The route decides
+who may write a grant (D-OP-11). What is deliberately NOT here: a bulk
+``delete`` action.
 """
 
 from __future__ import annotations
 
+import json
+import uuid
 from typing import Any
+from urllib.parse import quote
+
+from acb_common.card_body import CardWontFit
+from acb_common.no_person import NO_PERSON_TEXT, no_person_present
 
 from skill_projects import client as _client
+from skill_projects import task_files
 from skill_projects.client import (
+    GatewayRefusal,
     data,
     delete,
     get,
+    patch,
     post,
+    post_file,
     uuid_of,
+)
+from skill_projects.inbox import (
+    DECISIONS_OFF,
+    TEMPLATES_OFF,
+    UPDATE_HEALTHS,
+    UPDATES_OFF,
+    UPDATES_PAGE_MAX,
+    _area_key,
+    _clean_area_name,
+    _my_area,
+    subject_words,
 )
 from skill_projects.priority import (
     Removed,
@@ -46,24 +70,56 @@ from skill_projects.priority import (
     priority_fields,
     takes_priority,
 )
-from skill_projects.reads import _day, _task_line
+from skill_projects.reads import (
+    DELIVERY_MAY_BE_OFF,
+    DELIVERY_OFF,
+    DELIVERY_ON,
+    REMINDERS,
+    SCHEDULE_WORDS,
+    _day,
+    _names_of,
+    _task_line,
+    for_the_model,
+)
+from skill_projects.refusals import REFUSED
 from skill_projects.writes import (
+    _REOPENING,
     CANCELLED,
-    CARD_NOTE,
+    CARD_CONTEXT_LIMIT,
+    FORGED_BATCH_ROWS,
     MAX_BATCH,
+    OVERLAY_ARGUMENTS,
+    REPORT_CHANGE_REFUSED,
     _clears,
     _confirm,
+    _date_arg,
     _field_of,
     _fields_block,
     _int_or_none,
+    _my_reminder,
     _node,
     _one_named,
     _org_wide,
+    _overlay_values,
     _ref,
+    _reminder_card,
+    _reminder_gate,
+    _reminder_named,
+    _reminder_not_found,
     _resolve_assignee,
+    _resolve_assignee_name,
+    _same_chase,
     _split,
+    _subtask_counts,
+    _subtask_receipt,
+    _subtasks_phrase,
+    _subtasks_wanted,
     _task,
     _vocab,
+    agent_assignee_refusal_as_text,
+    ask_about_subtasks,
+    shared_set_line,
+    status_edit_refusal,
 )
 
 try:
@@ -84,6 +140,45 @@ ONE_ACT = "takes ONE id. A guarded act is one card per row. Ask again for each o
 #: ``reports.DELETE_REFUSED``. A test pins the two as one sentence.
 REPORT_DELETE_REFUSED = "Only the author of this report or an admin may delete it."
 
+def delete_refusal(row: dict[str, Any], noun: str, name: Any) -> str:
+    """The server's "no" before a delete card, or ``""`` to go on (WS-64 OP-8).
+
+    *row* is ``GET /projects/tasks/{id}`` or ``GET /projects/nodes/{id}``. Its
+    ``can_delete`` and ``delete_refusal`` come from ``authority.py``, the rule
+    and the 403 words of the delete route (D-OP-12). So the tool quotes the
+    server and never decides who may act. Only an explicit ``False`` stops the
+    tool. A row without the flag lets the tool go on, and the route decides.
+    """
+    if row.get("can_delete") is not False:
+        return ""
+    lines = [
+        f"{REFUSED} The server says that this member may not delete the {noun} "
+        f"{name}. Nothing was done."
+    ]
+    said = str(row.get("delete_refusal") or "").strip()
+    if said:
+        lines.append(f"Gateway said: {data(said)}")
+    lines.append(
+        "Next: Tell the member what the gateway said. Do not try again, and do "
+        "not try another tool for the same act."
+    )
+    return "\n".join(lines)
+
+
+#: A product rule, not a permission (owner directive 2026-10-07,
+#: ``projects_agent_parity.md`` §16). Since H-205 (2026-10-01) the routes let
+#: a member with organization settings permission delete a shared tag, field
+#: or type, and merge two shared tags, after the count. The chat has no tool
+#: for that count (``GET /projects/vocabulary/{kind}/{id}/impact`` is class X
+#: in the manifest), so the chat does not do the act for ANY member, the
+#: owner too. The text says where the act lives and names no permission.
+def _shared_entry_text(row: dict[str, Any], verb: str) -> str:
+    return (
+        f"{data(row.get('name'))} is an organization-wide entry. The chat does not "
+        f"{verb} a shared entry, for any member. In the app, Projects settings, "
+        "Shared vocabulary does it and shows the count first."
+    )
+
 
 def _many(value: str) -> bool:
     """A comma or a newline in a one-row argument is a list. A space is
@@ -98,10 +193,7 @@ def _guard_card(impact: str, rest: dict[str, Any]) -> str:
     The impact line is the tool's own sentence, so it is not fenced the way
     a member value is. Member values inside it already carry their fence.
     """
-    body = _fields_block(rest)
-    assert body.startswith(CARD_NOTE)
-    line = "impact: " + " ".join(impact.split())
-    return CARD_NOTE + "\n" + line + body[len(CARD_NOTE) :]
+    return _fields_block(rest, lead="impact: " + " ".join(impact.split()))
 
 
 def _open_count(summary: dict[str, Any]) -> int:
@@ -167,7 +259,7 @@ def _short_ref(task: dict[str, Any]) -> str:
 # ── Projects ─────────────────────────────────────────────────────────────────
 
 
-@_annotate(read_only=False, destructive=True, idempotent=True)
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
 async def archive_project(project_id: str) -> str:
     """File a project and its whole subtree out of the default surfaces.
     ONE project per call. The card leads with how many projects the archive
@@ -197,7 +289,7 @@ async def archive_project(project_id: str) -> str:
             {
                 "project": data(node.get("name")),
                 "tasks": "not changed; they follow their project out of view",
-                "undo": "unarchive_project restores exactly the rows this archive stamps",
+                "undo": "restoring it from the archive brings back exactly these rows",
             },
         ),
     ):
@@ -210,7 +302,7 @@ async def archive_project(project_id: str) -> str:
     )
 
 
-@_annotate(read_only=False, destructive=True, idempotent=True)
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
 async def unarchive_project(project_id: str) -> str:
     """Bring an archived project back, with every row its own archive filed.
     ONE project per call. A project filed by an ANCESTOR's archive is refused
@@ -253,60 +345,567 @@ async def unarchive_project(project_id: str) -> str:
     )
 
 
-@_annotate(read_only=False, destructive=True, idempotent=False)
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
+async def delete_project(project_id: str) -> str:
+    """Delete a project and EVERYTHING under it for good: its subprojects,
+    their tasks (archived ones too), comments and grants. ONE project per
+    call. There is no undo. The card leads with how many projects and open
+    tasks you can see go with it. When the member only wants it out of the
+    way, archive_project is the reversible act: offer that first."""
+    if _many(project_id):
+        return f"delete_project {ONE_ACT}"
+    pid, node = await _node(project_id)
+    refused = delete_refusal(node, "project", data(node.get("name")))
+    if refused:
+        return refused
+    summary = (await get(f"/projects/nodes/{pid}/summary")) or {}
+    below = _descendants(await _tree_node(pid))
+    open_tasks = _open_count(summary)
+    # Both reads are visibility-filtered and the delete is not: it takes the
+    # whole subtree, archived tasks included. So the card says "you can see".
+    impact = (
+        f"{_plural(1 + below, 'project')} you can see deleted for good · "
+        f"{_plural(open_tasks, 'open task')} you can see go with them, with every "
+        "archived task, comment and grant below; rows you cannot see go too"
+    )
+    if not await _confirm(
+        title="Delete this project for good?",
+        detail=f"{data(node.get('name'))} · {impact}",
+        context=_guard_card(
+            impact,
+            {
+                "project": data(node.get("name")),
+                "undo": "none; deleting is permanent. Archiving is the reversible way",
+            },
+        ),
+    ):
+        return CANCELLED
+    result = (await delete(f"/projects/nodes/{pid}")) or {}
+    gone = result.get("cascaded") or {}
+    return (
+        f"Deleted {data(node.get('name'))}: {_plural(int(gone.get('projects') or 0), 'project')}, "
+        f"{_plural(int(gone.get('tasks') or 0), 'task')} and "
+        f"{_plural(int(gone.get('grants') or 0), 'grant')} removed."
+        f"\n  project_id: {pid}"
+    )
+
+
+def convert_refusal(row: dict[str, Any], name: Any) -> str:
+    """The server's "no" before a convert card, or ``""`` to go on (WS-64 OP-10).
+
+    *row* is ``GET /projects/nodes/{id}``. Its ``can_convert`` and
+    ``convert_refusal`` come from ``authority.py``, the rule and the 403
+    words of the convert route (D-OP-16). Only an explicit ``False`` stops
+    the tool. A row without the flag lets the tool go on, and the route
+    decides.
+    """
+    if row.get("can_convert") is not False:
+        return ""
+    lines = [
+        f"{REFUSED} The server says that this member may not turn the folder "
+        f"{name} into a project. Nothing was done."
+    ]
+    said = str(row.get("convert_refusal") or "").strip()
+    if said:
+        lines.append(f"Gateway said: {data(said)}")
+    lines.append(
+        "Next: Tell the member what the gateway said. Do not try again, and do "
+        "not try another tool for the same act."
+    )
+    return "\n".join(lines)
+
+
+#: How many child names the convert card lists before it says "and N more".
+#: The same number as ``CONVERT_LIST_LIMIT`` in the app's
+#: ``projects/lib/projectConvert.ts``, and
+#: ``test_projects_folder_convert.py`` fails if the two differ.
+CONVERT_LIST_LIMIT = 8
+
+
+def _convert_list(names: list[str]) -> str:
+    """The names, capped at :data:`CONVERT_LIST_LIMIT`, as the dialog says them."""
+    shown = names[:CONVERT_LIST_LIMIT]
+    more = len(names) - len(shown)
+    return ", ".join(shown) + (f" and {more} more" if more > 0 else "")
+
+
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
+async def convert_folder_to_project(project_id: str) -> str:
+    """Turn a folder into a project. ONE folder per call. The projects inside
+    the folder become its subprojects. Their tasks, statuses and access do
+    not change, and the folder keeps its name, lead and access. The route
+    refuses when a project inside has subprojects of its own, and names it.
+    The card leads with how many projects become subprojects. A project
+    does not turn back into a folder."""
+    if _many(project_id):
+        return f"convert_folder_to_project {ONE_ACT}"
+    pid, node = await _node(project_id)
+    name = data(node.get("name"))
+    if str(node.get("kind") or "project") != "folder":
+        return f"{name} is already a project. Only a folder converts to a project."
+    refused = convert_refusal(node, name)
+    if refused:
+        return refused
+    found = await _tree_node(pid)
+    kids = list((found or {}).get("children") or [])
+    # The tree read is visibility-filtered and the conversion is not: every
+    # project inside becomes a subproject. So the card says "you can see".
+    impact = (
+        f"{name} becomes a project · {_plural(len(kids), 'project')} you can see inside it "
+        "become its subprojects; their tasks and statuses do not change"
+    )
+    rest: dict[str, Any] = {
+        "folder": name,
+        "subprojects": _convert_list([data(c.get("name")) for c in kids]) or "none",
+        "undo": "none; a project does not turn back into a folder",
+    }
+    if not await _confirm(
+        title="Convert this folder to a project?",
+        detail=f"{name} · the projects inside it become subprojects",
+        context=_guard_card(impact, rest),
+    ):
+        return CANCELLED
+    await post(f"/projects/nodes/{pid}/convert", {"to": "project"})
+    return (
+        f"Converted {name} to a project. The {_plural(len(kids), 'project')} inside it "
+        f"are now its subprojects.\n  project_id: {pid}"
+    )
+
+
+#: The most rows one card holds (``acb_skills.ask_tools.MAX_CARD_ROWS``). The
+#: task is the first row, so a task with more subtasks than this draws no
+#: tick boxes, and the choice is "none" or "all".
+DELETE_CARD_ROWS = 100
+
+
+#: The most ids one delete sends in its query. Same number as the route's
+#: ``MAX_QUERY_DELETE_IDS``. More than this and "all" sends a flag instead.
+DELETE_QUERY_IDS = 200
+
+
+def _subtree_order(subs: list[dict[str, Any]], root: str) -> list[dict[str, Any]]:
+    """The visible subtasks depth first, each parent before its children.
+    A row whose parent the member cannot see counts as a child of the task."""
+    ids = {str(r["id"]) for r in subs}
+    kids: dict[str, list[dict[str, Any]]] = {}
+    for r in subs:
+        p = str(r.get("parent_task_id") or "")
+        kids.setdefault(p if p in ids and p != str(r["id"]) else root, []).append(r)
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def walk(pid: str) -> None:
+        for r in kids.get(pid, []):
+            rid = str(r["id"])
+            if rid not in seen:
+                seen.add(rid)
+                out.append(r)
+                walk(rid)
+
+    walk(root)
+    out.extend(r for r in subs if str(r["id"]) not in seen)
+    return out
+
+
+def _subtree_depths(subs: list[dict[str, Any]], root: str) -> dict[str, int]:
+    """Each visible subtask's depth below the task. A row whose parent the
+    member cannot see counts as a child of the task, as the app draws it."""
+    ids = {str(r["id"]) for r in subs}
+    parent = {str(r["id"]): str(r.get("parent_task_id") or "") for r in subs}
+    depth: dict[str, int] = {}
+    for rid in parent:
+        d, cur, seen = 1, parent[rid], {rid}
+        while cur in ids and cur != root and cur not in seen:
+            seen.add(cur)
+            d += 1
+            cur = parent[cur]
+        depth[rid] = d
+    return depth
+
+
+def _subtasks_choice(value: str, offered: set[str]) -> frozenset[str] | str:
+    """``subtasks_to_delete`` as ids: "none", "all", or a list of ids.
+
+    A wrong word or an id that is not a visible subtask is a refusal text
+    and no card. The route checks the ids again (422 ``subtask_not_below``).
+    """
+    raw = str(value or "none").strip()
+    word = raw.lower()
+    if word in ("", "none"):
+        return frozenset()
+    if word == "all":
+        return frozenset(offered)
+    ids = frozenset(uuid_of(part, "subtasks_to_delete") for part in _split(raw.replace("\n", ",")))
+    if ids - offered:
+        return (
+            "subtasks_to_delete names an id that is not a subtask of this task that you "
+            "can see. Read task_detail for the subtasks, or pass none or all. "
+            "Nothing was changed."
+        )
+    return ids
+
+
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
+async def delete_task(task_id: str, subtasks_to_delete: str = "none") -> str:
+    """Delete one task for good, with its comments, attachments and links.
+    ONE task per call. There is no undo. subtasks_to_delete is none (the
+    default: every subtask moves up one level, to this task's own parent),
+    all (every subtask the member can see is deleted too), or a comma list
+    of subtask ids to delete. The others move up. The card shows the subtask
+    tree with a box for each. Your choice is ticked, and the member may change
+    the ticks before the yes. Subtasks the member cannot see are never deleted.
+    When the member only wants it out of the way, archive_task is the
+    reversible act."""
+    if _many(task_id):
+        return f"delete_task {ONE_ACT}"
+    tid, task = await _task(task_id)
+    refused = delete_refusal(task, "task", _ref(task))
+    if refused:
+        return refused
+    tree = (await get(f"/projects/tasks/{tid}/subtree")) or {}
+    subs: list[dict[str, Any]] = [r for r in tree.get("subtasks") or [] if r.get("id")]
+    hidden = int(tree.get("hidden") or 0)
+    offered = {str(r["id"]) for r in subs}
+    chosen = _subtasks_choice(subtasks_to_delete, offered)
+    if isinstance(chosen, str):
+        return chosen
+    lane = await _status_name(task)
+    total = len(subs)
+    ticks = len(subs) + 1 <= DELETE_CARD_ROWS
+    if total and not ticks and chosen not in (frozenset(), frozenset(offered)):
+        return (
+            f"This task has {total} subtasks, too many for tick boxes on one card. "
+            "Pass subtasks_to_delete as none or all. Nothing was changed."
+        )
+    if total:
+        tail = (
+            f"{len(chosen)} of {_plural(total, 'subtask')} marked to delete, "
+            f"{total - len(chosen)} would move up one level"
+        )
+        if hidden:
+            tail += f" · {_plural(hidden, 'subtask')} hidden from you, kept and moved up"
+    else:
+        tail = "no subtasks" if not hidden else (
+            f"{_plural(hidden, 'subtask')} hidden from you, kept and moved up"
+        )
+    impact = f"1 task deleted for good from lane {lane} · {tail}"
+    rows = None
+    if total and ticks:
+        depth = _subtree_depths(subs, tid)
+        rows = [{"id": tid, "label": f"Delete this task {_ref(task)}", "hint": f"lane {lane}",
+                 "checked": True}]
+        for r in _subtree_order(subs, tid):
+            rid = str(r["id"])
+            state = str(r.get("status_name") or "")
+            if r.get("archived"):
+                state += " · archived" if state else "archived"
+            rows.append({
+                "id": rid,
+                "label": "— " * (depth[rid] - 1) + data(r.get("title")),
+                "hint": state,
+                "checked": rid in chosen,
+            })
+    answer = await _confirm(
+        title="Delete this task for good?",
+        detail=f"{_ref(task)} · {impact}",
+        context=_guard_card(
+            impact,
+            {
+                "task": _ref(task),
+                "status": lane,
+                "subtasks": (
+                    "a ticked box deletes that subtask. A subtask left unticked stays and "
+                    "moves up to its nearest kept parent. Untick the first box to cancel"
+                    if rows
+                    else (
+                        "all of them are deleted too" if total and chosen
+                        else "none is deleted; each moves up one level"
+                    )
+                ),
+                "undo": "none; deleting is permanent. Archiving is the reversible way",
+            },
+        ),
+        rows=rows,
+    )
+    if rows is not None:
+        # The task is the first row, so a yes always ticks it. A card where
+        # the member cleared it is no yes to the delete.
+        if not isinstance(answer, frozenset) or tid not in answer:
+            return CANCELLED
+        if not answer <= {r["id"] for r in rows}:
+            return FORGED_BATCH_ROWS
+        chosen = frozenset(answer - {tid})
+    elif not answer:
+        return CANCELLED
+    if len(chosen) > DELETE_QUERY_IDS:
+        # Only "all" gets here: a card with tick boxes holds under 100 rows,
+        # and a wider tree refuses any list above. A flag has no id list to
+        # overrun the URL.
+        params: dict[str, Any] | None = {"delete_all_subtasks": "true"}
+    else:
+        params = {"delete_subtask_ids": sorted(chosen)} if chosen else None
+    result = (await delete(f"/projects/tasks/{tid}", params)) or {}
+    gone = result.get("cascaded") or {}
+    deleted = int(gone.get("subtasks_deleted") or 0)
+    moved = int(gone.get("subtasks_promoted") or 0)
+    unseen = int(gone.get("subtasks_kept_hidden") or 0)
+    return (
+        f"Deleted {_ref(task)}."
+        + (f" {_plural(deleted, 'subtask')} deleted too." if deleted else "")
+        + (f" {_plural(moved, 'subtask')} moved up one level." if moved else "")
+        + (f" Kept, because hidden from you: {_plural(unseen, 'subtask')}." if unseen else "")
+        + f"\n  task_id: {tid}"
+    )
+
+
+# ── The order of a node among its siblings (WS-46 P7, G13) ─────────────────
+#
+# The tree drag's maths (``lib/treeDrop.ts``), mirrored: a float position, the
+# midpoint of the two neighbours, and a one-time spread of a sibling set that
+# was never ordered. ``tests/unit/test_projects_project_fields.py`` holds the
+# two constants equal to the TypeScript.
+
+#: What a first, unordered sibling set is spread across (``POSITION_SPAN``).
+POSITION_SPAN = 65536
+#: The gap below which two positions are re-spread (``MIN_GAP``).
+MIN_GAP = 1e-6
+PLACES = ("first", "last", "before", "after")
+
+
+def _place_of(place: str) -> tuple[str, str] | str:
+    """``first``, ``last``, ``before <full_id>`` or ``after <full_id>`` ->
+    ``(word, sibling id)``, ``("", "")`` for none, or the refusal."""
+    raw = " ".join(str(place or "").replace(":", " ").split())
+    if not raw:
+        return "", ""
+    word, _, rest = raw.partition(" ")
+    word = word.lower()
+    if word in ("first", "last") and not rest:
+        return word, ""
+    if word in ("before", "after") and rest:
+        return word, uuid_of(rest, "place")
+    return (
+        "place is first, last, before <full_id> or after <full_id>, where the id is a "
+        "sibling's full_id from projects_tree."
+    )
+
+
+def _position_at(others: list[dict[str, Any]], index: int) -> float | None:
+    """``positionAt``: the float for a node landing at *index* among
+    *others*, or ``None`` when the set must be spread first."""
+    if any(not isinstance(n.get("position"), (int, float)) for n in others):
+        return None
+    before = float(others[index - 1]["position"]) if index > 0 else None
+    after = float(others[index]["position"]) if index < len(others) else None
+    if before is None and after is None:
+        return POSITION_SPAN / 2
+    if before is None:
+        return after / 2  # type: ignore[operator]
+    if after is None:
+        return before + POSITION_SPAN / 2
+    if after - before < MIN_GAP:
+        return None
+    return (before + after) / 2
+
+
+def _spread(others: list[dict[str, Any]], moving: str, index: int) -> list[tuple[str, float]]:
+    """``spreadPositions``: every sibling, evenly spread, the node at *index*."""
+    order = [str(n["id"]) for n in others[:index]] + [moving]
+    order += [str(n["id"]) for n in others[index:]]
+    step = POSITION_SPAN / (len(order) + 1)
+    return [(nid, step * (i + 1)) for i, nid in enumerate(order)]
+
+
+def _plan_place(
+    rows: list[dict[str, Any]], pid: str, parent_id: str | None, word: str, sibling: str
+) -> tuple[float, list[tuple[str, float]], str] | str | None:
+    """``(position, spread, phrase)`` for the node *pid* placed by *word*
+    under *parent_id*, ``None`` when it is there already, or the refusal.
+
+    The siblings are the live children of the parent in the tree's order,
+    which is the order the app draws.
+    """
+    if parent_id is None:
+        # Only the true roots. The tree shows a node whose parent the member
+        # cannot see as a root (tree.py `get_tree`). A spread that wrote
+        # `parent_project_id: null` for it would make it a space (review
+        # round 1).
+        siblings = [n for n in rows if n.get("parent_project_id") is None]
+    else:
+        parent = _find_node(rows, parent_id)
+        if parent is None:
+            return (
+                "Its parent is not visible to you, so the order of its siblings "
+                "cannot be read. Ask a person who can see the parent."
+            )
+        siblings = parent.get("children") or []
+    live = [n for n in siblings if not n.get("archived_at")]
+    others = [n for n in live if str(n.get("id")) != pid]
+    if word in ("first", "last"):
+        index = 0 if word == "first" else len(others)
+        phrase = f"{word} among {_plural(len(others) + 1, 'sibling')}"
+    else:
+        at = next((i for i, n in enumerate(others) if str(n.get("id")) == sibling), None)
+        if at is None:
+            return (
+                f"{sibling} is not a live sibling there. The siblings are: "
+                + ", ".join(f"{data(n.get('name'))} ({n.get('id')})" for n in others)
+            )
+        index = at if word == "before" else at + 1
+        phrase = f"{word} {data(others[at].get('name'))}"
+    now = next((i for i, n in enumerate(live) if str(n.get("id")) == pid), None)
+    if now is not None and now == index:
+        return None
+    position = _position_at(others, index)
+    if position is not None:
+        return position, [], phrase
+    spread = _spread(others, pid, index)
+    mine = next(p for nid, p in spread if nid == pid)
+    return mine, [(nid, p) for nid, p in spread if nid != pid], phrase
+
+
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def move_project(
-    project_id: str, parent_project_id: str = "", to_top_level: bool = False
+    project_id: str, parent_project_id: str = "", to_top_level: bool = False, place: str = ""
 ) -> str:
     """Re-parent a project, folder or subproject under another node, or
     make it a space (to_top_level=true). ONE node per call. Every task under
     it is re-rooted, its types and counter follow the new root, and a task
     whose lane the new set lacks is re-pointed by category. The card leads
-    with the subtree size and the task count."""
+    with the subtree size and the task count.
+    place sets its order among its siblings, as the tree drag does: first,
+    last, before <full_id> or after <full_id> of a sibling. With place and no
+    parent, the node stays under its parent and only its order changes. A
+    sibling set that was never ordered is numbered once, and the card says
+    how many siblings that touches."""
     if _many(project_id):
         return f"move_project {ONE_ACT}"
-    if bool(parent_project_id.strip()) == bool(to_top_level):
-        return "Pass parent_project_id, or to_top_level=true to make it a space, not both."
+    placed = _place_of(place)
+    if isinstance(placed, str):
+        return placed
+    word, sibling = placed
+    reorder = bool(word) and not parent_project_id.strip() and not to_top_level
+    if not reorder and bool(parent_project_id.strip()) == bool(to_top_level):
+        return (
+            "Pass parent_project_id, or to_top_level=true to make it a space, not both. "
+            "To change only the order, pass place alone."
+        )
     pid, node = await _node(project_id)
+    if word and parent_project_id.strip() and uuid_of(parent_project_id, "parent_project_id") == str(
+        node.get("parent_project_id")
+    ):
+        # The node's own parent with a place is a reorder, and its card says
+        # so. It is not a move (review round 1).
+        reorder, parent_project_id = True, ""
+    found = await _move_target(pid, node, parent_project_id, word, reorder)
+    if isinstance(found, str):
+        return found
+    target, parent, where, tree_rows = found
+    plan = _plan_place(tree_rows, pid, target, word, sibling) if word else (0.0, [], "")
+    if plan is None:
+        return f"{data(node.get('name'))} is already {word} there. Nothing changed."
+    if isinstance(plan, str):
+        return plan
+    position, spread, phrase = plan
+    card = await _move_card(
+        pid, node, parent, target, where, tree_rows, phrase if word else "", len(spread), reorder
+    )
+    if isinstance(card, str):
+        return card
+    title, detail, impact, rest = card
+    if not await _confirm(title=title, detail=detail, context=_guard_card(impact, rest)):
+        return CANCELLED
+    # The spread first, every row of it, as the tree drag writes it: the
+    # node's own position means nothing until its siblings carry one.
+    for sid, at in spread:
+        sibling_id = uuid_of(sid, "sibling")
+        await post(
+            f"/projects/nodes/{sibling_id}/move",
+            {"parent_project_id": target, "position": at},
+        )
+    payload: dict[str, Any] = {"parent_project_id": target}
+    if word:
+        payload["position"] = position
+    result = (await post(f"/projects/nodes/{pid}/move", payload)) or {}
+    if reorder:
+        return f"Placed {data(node.get('name'))} {phrase} under {where}.\n  project_id: {pid}"
+    remapped = (result.get("statuses_remapped") or {}).get("moved")
+    tail = f" {remapped} task(s) changed lane." if remapped else ""
+    spot = f", {phrase}" if word else ""
+    return f"Moved {data(node.get('name'))} under {where}{spot}.{tail}\n  project_id: {pid}"
+
+
+async def _move_target(
+    pid: str, node: dict[str, Any], parent_project_id: str, word: str, reorder: bool
+) -> tuple[str | None, dict[str, Any] | None, str, list[dict[str, Any]]] | str:
+    """``(target parent id, parent row, its name, the tree)`` for a move, or
+    the refusal. A reorder keeps the node's own parent."""
     parent: dict[str, Any] | None = None
     parent_id = ""
     if parent_project_id.strip():
         parent_id, parent = await _node(parent_project_id)
         if parent_id == pid:
             return "A project cannot be moved under itself."
-        if str(parent.get("id")) == str(node.get("parent_project_id")):
+        if not word and str(parent.get("id")) == str(node.get("parent_project_id")):
             return f"{data(node.get('name'))} is already under {data(parent.get('name'))}."
-    elif node.get("parent_project_id") is None:
+    elif not reorder and node.get("parent_project_id") is None:
         return f"{data(node.get('name'))} is already a space."
+    rows = ((await get("/projects/tree")) or {}).get("rows") or []
+    if not reorder:
+        where = "the top level (a space)" if parent is None else data(parent.get("name"))
+        return parent_id or None, parent, where, rows
+    current = node.get("parent_project_id")
+    if not current:
+        return None, None, "the top level", rows
+    target = uuid_of(current, "parent_project_id")
+    return target, None, data((_find_node(rows, target) or {}).get("name") or "its parent"), rows
+
+
+async def _move_card(
+    pid: str,
+    node: dict[str, Any],
+    parent: dict[str, Any] | None,
+    target: str | None,
+    where: str,
+    rows: list[dict[str, Any]],
+    phrase: str,
+    spread: int,
+    reorder: bool,
+) -> tuple[str, str, str, dict[str, Any]] | str:
+    """``(title, detail, impact, rest)`` of the move card, or the refusal.
+    *target* is the new parent's id as the caller gave it, canonical."""
+    pid = uuid_of(pid, "project_id")
+    name = data(node.get("name"))
+    order: dict[str, Any] = {"place": phrase} if phrase else {}
+    if spread:
+        order["order"] = (
+            f"the siblings had no order yet, so {_plural(spread, 'other sibling')} "
+            "get a position too, once"
+        )
+    if reorder:
+        rest = {"project": name, "under": where, **order, "undo": "move it back with place"}
+        impact = f"{name} placed {phrase} under {where}"
+        return "Reorder this project?", f"{name} → {phrase} under {where}", impact, rest
     summary = (await get(f"/projects/nodes/{pid}/summary")) or {}
-    subtree = await _tree_node(pid)
-    if parent_id and subtree is not None and _find_node(subtree.get("children") or [], parent_id):
-        # `assert_no_project_cycle`'s 422, said before the card.
-        return f"{data(parent.get('name'))} is inside {data(node.get('name'))}. A tree cannot loop."
-    below = _descendants(subtree)
-    tasks = int(summary.get("tasks") or 0)
-    where = "the top level (a space)" if parent is None else data(parent.get("name"))
-    impact = (
-        f"{_plural(1 + below, 'project')} moved · {_plural(tasks, 'task')} re-rooted under {where}"
-    )
-    if not await _confirm(
-        title="Move this project?",
-        detail=f"{data(node.get('name'))} → {where} · {impact}",
-        context=_guard_card(
-            impact,
-            {
-                "project": data(node.get("name")),
-                "to": where,
-                "statuses": "a task whose lane the destination set lacks is re-pointed by category",
-                "undo": "move it back; the counter and types follow the new root",
-            },
-        ),
+    subtree = _find_node(rows, pid)
+    if parent is not None and target and subtree is not None and _find_node(
+        subtree.get("children") or [], target
     ):
-        return CANCELLED
-    payload: dict[str, Any] = {"parent_project_id": parent_id or None}
-    result = (await post(f"/projects/nodes/{pid}/move", payload)) or {}
-    remapped = (result.get("statuses_remapped") or {}).get("moved")
-    tail = f" {remapped} task(s) changed lane." if remapped else ""
-    return f"Moved {data(node.get('name'))} under {where}.{tail}\n  project_id: {pid}"
+        # `assert_no_project_cycle`'s 422, said before the card.
+        return f"{data(parent.get('name'))} is inside {name}. A tree cannot loop."
+    tasks = int(summary.get("tasks") or 0)
+    impact = (
+        f"{_plural(1 + _descendants(subtree), 'project')} moved · "
+        f"{_plural(tasks, 'task')} re-rooted under {where}"
+    )
+    rest = {
+        "project": name,
+        "to": where,
+        **order,
+        "statuses": "a task whose lane the destination set lacks is re-pointed by category",
+        "undo": "move it back; the counter and types follow the new root",
+    }
+    return "Move this project?", f"{name} → {where} · {impact}", impact, rest
 
 
 # ── Tasks ────────────────────────────────────────────────────────────────────
@@ -320,39 +919,46 @@ async def _status_name(task: dict[str, Any]) -> str:
     return "(unknown)"
 
 
-@_annotate(read_only=False, destructive=True, idempotent=True)
-async def archive_task(task_id: str) -> str:
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+async def archive_task(task_id: str, include_subtasks: str = "") -> str:
     """Shelve one task from every board, list, calendar and search. ONE
     task per call, from any status; archiving is a filing decision and
-    claims no outcome. Subtasks stay where they are: the gateway also takes
-    include_subtasks, which shelves them too, and this tool does NOT send it.
-    The card carries the title, the lane and how many open subtasks it leaves
-    behind. unarchive_task is the undo."""
+    claims no outcome. include_subtasks (yes or no): yes shelves its
+    subtasks too. When the task has subtasks and no answer is given, the
+    tool asks first (D-PM-38: the app takes them along by default). The card
+    carries the title, the lane and what happens to the subtasks.
+    unarchive_task is the undo, and it restores one task."""
     if _many(task_id):
         return f"archive_task {ONE_ACT}"
+    wanted = _subtasks_wanted(include_subtasks)
     tid, task = await _task(task_id)
     if task.get("archived_at"):
         return f"{_ref(task)} is already archived."
-    relations = (await get(f"/projects/tasks/{tid}/relations")) or {}
-    progress = relations.get("progress") or {}
-    subtasks = relations.get("subtasks") or []
-    open_subs = max(0, len(subtasks) - int(progress.get("done") or 0))
+    count = await _subtask_counts(tid)
+    if wanted is None and count.total:
+        return ask_about_subtasks(task, count.total, "archive", count.capped)
     lane = await _status_name(task)
-    impact = (
-        f"1 task archived from lane {lane} · {_plural(open_subs, 'open subtask')} left on the board"
-    )
+    if wanted and count.total:
+        tail = f"{_subtasks_phrase(count.total, 'archive', count.capped)} archived with it"
+    else:
+        tail = f"{_subtasks_phrase(count.open, 'complete', count.capped)} left on the board"
+    impact = f"1 task archived from lane {lane} · {tail}"
+    rest = {"task": _ref(task), "status": lane, "undo": "restore it from the archive"}
     if not await _confirm(
         title="Archive this task?",
         detail=f"{_ref(task)} · {impact}",
-        context=_guard_card(impact, {"task": _ref(task), "status": lane, "undo": "unarchive_task"}),
+        context=_guard_card(impact, rest),
     ):
         return CANCELLED
-    row = await post(f"/projects/tasks/{tid}/archive")
+    params = {"include_subtasks": True} if wanted else None
+    row = await post(f"/projects/tasks/{tid}/archive", params=params)
     merged = {**task, **(row if isinstance(row, dict) else {})}
-    return "\n".join(["Archived:", *_task_line(merged)])
+    return "\n".join(
+        ["Archived:", *_task_line(merged), *_subtask_receipt(row, "subtasks_archived", "archive")]
+    )
 
 
-@_annotate(read_only=False, destructive=True, idempotent=False)
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def merge_tasks(target_task_id: str, source_task_ids: str) -> str:
     """Fold one or more tasks into a survivor, in the SAME project. Their
     comments, attachments, links, subtasks and watchers move to the
@@ -457,7 +1063,10 @@ async def _bulk_body(
     if patch:
         body["patch"] = patch
     for key, raw in (("assignees_add", assignees_add), ("assignees_remove", assignees_remove)):
-        people = [await _resolve_assignee(a) for a in _split(raw)]
+        # H-236: only an assignee to ADD can start an agent's run.
+        people = [
+            await _resolve_assignee(a, dispatch=key == "assignees_add") for a in _split(raw)
+        ]
         if people:
             body[key] = people
     for key, raw in (("tags_add", tags_add), ("tags_remove", tags_remove)):
@@ -478,27 +1087,62 @@ async def _bulk_body(
     return body
 
 
+def _bulk_subtasks(body: dict[str, Any], include_subtasks: str) -> dict[str, str]:
+    """``include_subtasks`` on a bulk act, asked once for the whole selection.
+
+    It means something with ``action: archive`` and with a status patch,
+    where the route cascades into a Done lane. It is set on *body* here.
+    Returns the card's ``subtasks`` line. A bulk act does not read each
+    task's subtree first, so the line states the rule and not a count.
+    """
+    wanted = _subtasks_wanted(include_subtasks)
+    archiving = body.get("action") == "archive"
+    closing = "status" in (body.get("patch") or {})
+    if not archiving and not closing:
+        if wanted is not None:
+            raise GatewayRefusal(
+                "include_subtasks goes with action archive, or with a status in a Done lane."
+            )
+        return {}
+    if wanted:
+        body["include_subtasks"] = True
+        if archiving:
+            return {"subtasks": "archived with each task"}
+        return {"subtasks": "open subtasks completed too, where a task lands in a Done lane"}
+    return {"subtasks": "stay as they are, unless you ask for them too"}
+
+
 def _bulk_impact(body: dict[str, Any], n: int) -> str:
+    """The card's one-line impact. It names no wire key (owner report,
+    2026-10-07: the member read "tags_add → Bug"). The change itself is on
+    the card as fields, from :func:`_bulk_changes`, and the card draws each
+    one by its key: a tag as a tag, a status as a status."""
     verb = body.get("action")
     if verb:
         return f"{_plural(n, 'task')} {verb}d"
-    described: dict[str, Any] = {}
+    return f"one change across {_plural(n, 'task')}"
+
+
+def _bulk_changes(body: dict[str, Any]) -> dict[str, Any]:
+    """The change of a bulk body as card fields: ``key: value`` lines, each
+    member value fenced. The keys are the ones the card's label map knows
+    (``cardFields.ts``). A cleared field reads ``cleared``."""
+    out: dict[str, Any] = {}
     for key, value in (body.get("patch") or {}).items():
         # The flags as a member reads them, never the stored number (H-173).
         if key in ("importance", "leveraged"):
-            described.update(card_view({key: value}))
+            out.update({k: data(v) for k, v in card_view({key: value}).items()})
         else:
-            described[key] = value
+            out[key] = "cleared" if value is None else data(value)
     for key in ("assignees_add", "assignees_remove", "tags_add", "tags_remove"):
         if key in body:
-            described[key] = ", ".join(body[key])
-    return f"{_plural(n, 'task')} changed: " + ", ".join(
-        f"{k} → {'cleared' if v is None else v}" for k, v in described.items()
-    )
+            out[key] = ", ".join(data(v) for v in body[key])
+    return out
 
 
-@_annotate(read_only=False, destructive=True, idempotent=False)
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 @takes_priority
+@agent_assignee_refusal_as_text
 async def bulk_update(
     task_ids: str,
     status: str = "",
@@ -515,6 +1159,8 @@ async def bulk_update(
     important: str = "",
     leveraged: str = "",
     importance: Removed = None,
+    include_subtasks: str = "",
+    personal: str = "",
 ) -> str:
     """One change across a selection of tasks, in one transaction. task_ids
     is comma-separated, at most 50. status is by NAME and is resolved per
@@ -523,12 +1169,38 @@ async def bulk_update(
     not pass stays as it is on every task. assignees_add/remove and
     tags_add/remove take comma-separated values. action is archive or
     unarchive, on its own with no other change. Deleting is not offered.
+    include_subtasks (yes or no) is asked once for the whole selection: yes
+    with action archive shelves each task's subtasks too, and yes with a
+    status in a Done lane completes their open subtasks. Without it the
+    subtasks stay as they are, and the card says so.
+    personal sets the member's OWN overlay on every task, as the My Tasks
+    bulk bar does: a JSON object with set_my_overlay's arguments, for example
+    {"disposition": "someday", "context": "@home"}. It goes on its own, with
+    no other change.
     The card names every task and the exact change."""
     ids = [uuid_of(t, "task_id") for t in _split(task_ids)]
     if not ids:
         return "Give at least one task id."
     if len(ids) > MAX_BATCH:
         return f"That is {len(ids)} tasks. The limit for one card is {MAX_BATCH}."
+    if str(personal or "").strip():
+        others = [
+            name for name, value in (
+                ("status", status), ("due", due), ("start", start), ("clear", clear),
+                ("estimate_mins", estimate_mins), ("assignees_add", assignees_add),
+                ("assignees_remove", assignees_remove), ("tags_add", tags_add),
+                ("tags_remove", tags_remove), ("action", action), ("priority", priority),
+                ("important", important), ("leveraged", leveraged),
+                ("include_subtasks", include_subtasks),
+            )
+            if str(value or "").strip() not in ("", "0")
+        ]
+        if others:
+            return (
+                f"personal goes on its own. Send {', '.join(others)} in another call: the "
+                "overlay is yours, and the other fields are the team's."
+            )
+        return await _bulk_personal(ids, personal)
     patch = _bulk_patch(
         status, importance, due, start, estimate_mins, clear, priority, important, leveraged
     )
@@ -539,11 +1211,20 @@ async def bulk_update(
     )
     if isinstance(body, str):
         return body
+    subtasks = _bulk_subtasks(body, include_subtasks)
     tasks = [(await _task(t))[1] for t in ids]
     impact = _bulk_impact(body, len(tasks))
-    rest: dict[str, Any] = {}
+    rest: dict[str, Any] = {**_bulk_changes(body), **subtasks}
+    # Whole titles when the card holds them, and the UI cuts a long one with
+    # its full title as the tooltip. Only a card too long for the limit clips
+    # the titles, and the clip comes BEFORE the fence (owner, 2026-10-07).
+    whole = {f"task {i + 1}": _ref(t) for i, t in enumerate(tasks)}
+    try:
+        fits = len(_guard_card(impact, {**rest, **whole})) <= CARD_CONTEXT_LIMIT
+    except CardWontFit:
+        fits = False
     for i, t in enumerate(tasks):
-        rest[f"task {i + 1}"] = _short_ref(t)
+        rest[f"task {i + 1}"] = whole[f"task {i + 1}"] if fits else _short_ref(t)
     if not await _confirm(
         title=f"Change {_plural(len(tasks), 'task')} at once?",
         detail=impact,
@@ -552,6 +1233,8 @@ async def bulk_update(
         return CANCELLED
     result = (await post("/projects/tasks/bulk", body)) or {}
     out = [f"Applied to {result.get('applied', 0)} of {result.get('requested', len(ids))} tasks."]
+    door = ("subtasks_archived", "archive") if body.get("action") else ("subtasks_completed", "complete")
+    out.extend(_subtask_receipt(result, *door))
     for row in result.get("skipped") or []:
         out.append(f"- skipped {row.get('task_id')}: {data(row.get('reason'))}")
     for row in result.get("failed") or []:
@@ -565,6 +1248,107 @@ async def bulk_update(
             # The level asked for, against each task's own due date.
             out.extend(level_note(priority, {**t, **patch}))
     return "\n".join(out)
+
+
+def _overlay_shown(value: Any) -> str:
+    """One overlay value on the card. A flag reads yes or no: ``data(False)``
+    is ``«»``, which the card would draw as "none" (review round 1)."""
+    if value is None:
+        return "cleared"
+    if isinstance(value, bool):
+        return data("yes" if value else "no")
+    if isinstance(value, dict):
+        return data(value.get("email"))
+    return data(value)
+
+
+async def _bulk_personal(ids: list[str], personal: str) -> str:
+    """``action: personal`` (``bulk.py`` ``validate_personal``): the member's
+    own overlay on every task of the selection, under one class C card."""
+    try:
+        given = json.loads(personal)
+    except ValueError:
+        given = None
+    if not isinstance(given, dict):
+        return (
+            "personal is a JSON object with set_my_overlay's arguments, for example "
+            f'{{"disposition": "someday"}}. The arguments are {", ".join(OVERLAY_ARGUMENTS)}.'
+        )
+    values = await _overlay_values(given, {})
+    if isinstance(values, str):
+        return values
+    if not values:
+        return "Nothing to change in personal."
+    tasks = [(await _task(t))[1] for t in ids]
+    groups = await _chase_groups(ids, values, bool(str(given.get("waiting_since") or "").strip()))
+    shown = ", ".join(
+        f"{k} → {'cleared' if v is None else (v.get('email') if isinstance(v, dict) else v)}"
+        for k, v in values.items()
+    )
+    # The card names no wire key in its prose (owner, 2026-10-07). The
+    # values are fields, which the card labels and draws by kind.
+    impact = f"your own triage of {_plural(len(tasks), 'task')}"
+    rest: dict[str, Any] = {k: _overlay_shown(v) for k, v in values.items()}
+    rest["seen by"] = "you only. The board does not change"
+    kept = sum(len(g) for g, v in groups if "waiting_on" in v and "delegated_at" not in v)
+    if kept:
+        rest["waiting since"] = (
+            f"{_plural(kept, 'task')} already wait on this person and keep their start. "
+            "The others start now"
+        )
+    finished = [t for t in tasks if t.get("completed_at")]
+    if values.get("disposition") in _REOPENING and finished:
+        rest["reopens"] = (
+            f"{_plural(len(finished), 'finished task')} reopen on the board (D77)"
+        )
+    for i, t in enumerate(tasks):
+        rest[f"task {i + 1}"] = _short_ref(t)
+    if not await _confirm(
+        title=f"Set your triage of {_plural(len(tasks), 'task')}?",
+        detail=impact,
+        context=_guard_card(impact, rest),
+    ):
+        return CANCELLED
+    applied, skipped, failed = 0, [], []
+    for group_ids, group_values in groups:
+        body = {"task_ids": group_ids, "action": "personal", "personal": group_values}
+        result = (await post("/projects/tasks/bulk", body)) or {}
+        applied += int(result.get("applied") or 0)
+        skipped += result.get("skipped") or []
+        failed += result.get("failed") or []
+    out = [f"Your triage is set on {applied} of {len(ids)} tasks: {shown}."]
+    for row in skipped:
+        out.append(f"- skipped {row.get('task_id')}: {data(row.get('reason'))}")
+    for row in failed:
+        out.append(f"- failed {row.get('task_id')}: {data(row.get('reason'))}")
+    return "\n".join(out)
+
+
+async def _chase_groups(
+    ids: list[str], values: dict[str, Any], since_given: bool
+) -> list[tuple[list[str], dict[str, Any]]]:
+    """The bulk bodies for one overlay: ``[(task ids, values)]``.
+
+    The route writes ONE overlay to every task of a request. A chase needs a
+    since-when (migration 188), and the tool stamps now. A task that already
+    waits on the same person keeps its start, because the age is what a
+    person scans before a nudge (PR #683 review). So each overlay is read
+    first, and those tasks get a second body with no ``delegated_at``. The
+    app's own bulk bar sends a disposition only, and never a chase.
+    """
+    if "waiting_on" not in values or since_given:
+        return [(ids, values)]
+    same: list[str] = []
+    new: list[str] = []
+    for tid in ids:
+        task_id = uuid_of(tid, "task_id")
+        try:
+            mine = (await get(f"/projects/my/tasks/{task_id}")) or {}
+        except GatewayRefusal:
+            mine = {}
+        (same if _same_chase(values["waiting_on"], mine) else new).append(tid)
+    keep = {k: v for k, v in values.items() if k != "delegated_at"}
+    return [g for g in ((same, keep), (new, values)) if g[0]]
 
 
 # ── The timeline ─────────────────────────────────────────────────────────────
@@ -582,7 +1366,7 @@ async def _timeline_row(task_id: str, activity_id: str, kind: str) -> dict[str, 
     return None
 
 
-@_annotate(read_only=False, destructive=True, idempotent=True)
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
 async def delete_comment(task_id: str, comment_id: str) -> str:
     """Delete a comment the member wrote. The words are cleared and the row
     is hidden; replies keep their place. The author only, checked before the
@@ -621,7 +1405,7 @@ def _change_lines(changes: list[dict[str, Any]]) -> list[tuple[str, str]]:
     return out
 
 
-@_annotate(read_only=False, destructive=True, idempotent=False)
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def revert_activity(task_id: str, activity_id: str) -> str:
     """Undo one field change from a task's timeline: the values it recorded
     as "old" are written back. activity_id comes from task_detail's
@@ -642,7 +1426,8 @@ async def revert_activity(task_id: str, activity_id: str) -> str:
     aid = uuid_of(activity_id, "activity_id")
     if not await _confirm(
         title="Revert this change?",
-        detail=f"{_ref(task)} · " + ", ".join(f"{f}: {v}" for f, v in lines),
+        # The fields are rows on the card. The detail names no wire key.
+        detail=impact,
         context=_guard_card(impact, {"task": _ref(task), **dict(lines)}),
     ):
         return CANCELLED
@@ -656,13 +1441,17 @@ async def revert_activity(task_id: str, activity_id: str) -> str:
 # ── Vocabulary deletes ───────────────────────────────────────────────────────
 
 
-@_annotate(read_only=False, destructive=True, idempotent=False)
-async def delete_status(project_id: str, status: str, move_to: str = "") -> str:
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
+async def delete_status(
+    project_id: str, status: str, move_to: str = "", change_whole_set: bool = False,
+) -> str:
     """Delete a lane, moving the tasks in it to move_to (a status NAME in
     the same set) first. The card leads with how many tasks move: the count
     the statuses read returns per lane, which is the count the route acts
     on. The last lane, the last Done lane (D79) and the last lane that
-    closes a task cannot be deleted, and the tool says so before any card."""
+    closes a task cannot be deleted, and the tool says so before any card.
+    Pass change_whole_set=true only when the member asks to change a set that
+    other projects share."""
     if _many(status):
         return f"delete_status {ONE_ACT.replace('id', 'name')}"
     pid, node = await _node(project_id)
@@ -693,8 +1482,11 @@ async def delete_status(project_id: str, status: str, move_to: str = "") -> str:
             "or Cancelled lane first."
         )
     owner = (await get(f"/projects/nodes/{pid}/status-set")) or {}
-    if owner.get("may_edit") is False:
-        return "You may not edit this project's statuses. It needs the settings permission."
+    refused = status_edit_refusal(
+        owner, node.get("name"), guard_shared=True, change_shared=change_whole_set,
+    )
+    if refused:
+        return refused
     in_use = int(counts.get(sid) or 0)
     target: dict[str, Any] | None = None
     if move_to.strip():
@@ -708,9 +1500,13 @@ async def delete_status(project_id: str, status: str, move_to: str = "") -> str:
         )
     where = data(target.get("name")) if target else "(none needed; the lane is empty)"
     impact = f"1 lane deleted · {_plural(in_use, 'task')} moved to {where}"
+    shared = shared_set_line(owner)
     if not await _confirm(
         title="Delete this status?",
-        detail=f"{data(row.get('name'))} in {data(node.get('name'))} · {impact}",
+        detail=(
+            f"{data(row.get('name'))} in {data(node.get('name'))} · {impact}"
+            + (f" · {shared}" if shared else "")
+        ),
         context=_guard_card(
             impact,
             {"status": data(row.get("name")), "category": row.get("category"), "move to": where},
@@ -731,7 +1527,7 @@ async def delete_status(project_id: str, status: str, move_to: str = "") -> str:
     )
 
 
-@_annotate(read_only=False, destructive=True, idempotent=False)
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def set_status_set(project_id: str, mode: str, copy_from: str = "") -> str:
     """Switch where a project's lanes come from. mode=inherit drops its own
     set and uses the parent's; mode=own gives it a set of its own, copied
@@ -746,8 +1542,9 @@ async def set_status_set(project_id: str, mode: str, copy_from: str = "") -> str
         return "mode is inherit or own."
     pid, node = await _node(project_id)
     current = (await get(f"/projects/nodes/{pid}/status-set")) or {}
-    if current.get("may_edit") is False:
-        return "You may not edit this project's statuses. It needs the settings permission."
+    refused = status_edit_refusal(current, node.get("name"))
+    if refused:
+        return refused
     if which == "inherit" and not current.get("can_inherit"):
         return f"{data(node.get('name'))} is a space. It has nothing to inherit from."
     if which == "inherit" and not current.get("owns"):
@@ -787,7 +1584,7 @@ async def set_status_set(project_id: str, mode: str, copy_from: str = "") -> str
     )
 
 
-@_annotate(read_only=False, destructive=True, idempotent=False)
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def delete_type(project_id: str, type_name: str) -> str:
     """Delete a task type from the project's root. Tasks that carry it keep
     existing, untyped. The route counts them as it deletes and the receipt
@@ -798,7 +1595,7 @@ async def delete_type(project_id: str, type_name: str) -> str:
     pid, node = await _node(project_id)
     row = _one_named(await _vocab(pid, "types"), type_name, "type")
     if _org_wide(row):
-        return f"{data(row.get('name'))} is organization-wide. It is not deleted from a project."
+        return _shared_entry_text(row, "delete")
     if row.get("is_system"):
         return f"{data(row.get('name'))} is a system type and cannot be deleted."
     kid = uuid_of(str(row.get("id")), "type_id")
@@ -819,7 +1616,7 @@ async def delete_type(project_id: str, type_name: str) -> str:
     )
 
 
-@_annotate(read_only=False, destructive=True, idempotent=False)
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def delete_field(project_id: str, field: str) -> str:
     """Delete a custom field AND every value filed under its key, across
     the project's tree. The route counts the values as it clears them and
@@ -830,7 +1627,7 @@ async def delete_field(project_id: str, field: str) -> str:
     pid, node = await _node(project_id)
     row = _field_of(await _vocab(pid, "fields"), field)
     if _org_wide(row):
-        return f"{data(row.get('name'))} is organization-wide. It is not deleted from a project."
+        return _shared_entry_text(row, "delete")
     fid = uuid_of(str(row.get("id")), "field_id")
     impact = (
         f"1 field deleted · every value under key {data(row.get('field_key'))} in "
@@ -852,7 +1649,7 @@ async def delete_field(project_id: str, field: str) -> str:
     )
 
 
-@_annotate(read_only=False, destructive=True, idempotent=False)
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def delete_tag(project_id: str, tag: str) -> str:
     """Delete a tag and strip it from every task in the project's tree.
     The card leads with the impact read: how many tasks, in how many
@@ -862,7 +1659,7 @@ async def delete_tag(project_id: str, tag: str) -> str:
     pid, node = await _node(project_id)
     row = _one_named(await _vocab(pid, "tags"), tag, "tag")
     if _org_wide(row):
-        return f"{data(row.get('name'))} is organization-wide. It is not deleted from a project."
+        return _shared_entry_text(row, "delete")
     gid = uuid_of(str(row.get("id")), "tag_id")
     hit = (await get(f"/projects/tags/{gid}/impact")) or {}
     tasks = int(hit.get("tasks") or 0)
@@ -878,7 +1675,7 @@ async def delete_tag(project_id: str, tag: str) -> str:
     return f"Deleted tag {data(row.get('name'))}; {_plural(stripped, 'task')} untagged.\n  tag_id: {gid}"
 
 
-@_annotate(read_only=False, destructive=True, idempotent=False)
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def merge_tags(project_id: str, tag: str, into: str) -> str:
     """Fold one tag into another and delete the first. Every task wearing
     the first gets the second once. Same project only, root-local only.
@@ -892,7 +1689,7 @@ async def merge_tags(project_id: str, tag: str, into: str) -> str:
     if source.get("id") == target.get("id"):
         return "A tag cannot be merged into itself."
     if _org_wide(source) or _org_wide(target):
-        return "An organization-wide tag is not merged from a project."
+        return _shared_entry_text(source if _org_wide(source) else target, "merge")
     sid = uuid_of(str(source.get("id")), "tag_id")
     tid = uuid_of(str(target.get("id")), "into")
     # The list's `task_count` excludes archived tasks; the merge's rewrite
@@ -922,7 +1719,7 @@ async def merge_tags(project_id: str, tag: str, into: str) -> str:
 # ── Views, reports, attachments ──────────────────────────────────────────────
 
 
-@_annotate(read_only=False, destructive=True, idempotent=False)
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def delete_view(project_id: str, view_name: str) -> str:
     """Delete a saved view, its hand-arranged order and every member's
     arrangement of it. The route counts both as it deletes and the receipt
@@ -951,7 +1748,7 @@ async def delete_view(project_id: str, view_name: str) -> str:
     )
 
 
-@_annotate(read_only=False, destructive=True, idempotent=True)
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
 async def report_delete(report_id: str) -> str:
     """Delete a saved report definition, with its schedule and recipients.
     The numbers it renders are not stored, so nothing else is lost."""
@@ -978,7 +1775,7 @@ async def report_delete(report_id: str) -> str:
     return f"Deleted report {data(row.get('name'))}.\n  report_id: {rid}"
 
 
-@_annotate(read_only=False, destructive=True, idempotent=True)
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
 async def delete_attachment(task_id: str, attachment_id: str) -> str:
     """Detach a file from a task. The bytes are kept, because the same
     file may hang off another task. attachment_id comes from task_detail.
@@ -988,7 +1785,7 @@ async def delete_attachment(task_id: str, attachment_id: str) -> str:
     tid, task = await _task(task_id)
     aid = uuid_of(attachment_id, "attachment_id")
     files = ((await get(f"/projects/tasks/{tid}/attachments")) or {}).get("rows") or []
-    row = next((f for f in files if str(f.get("id")) == aid), None)
+    row = next((f for f in files if str(f.get("attachment_id") or f.get("id")) == aid), None)
     if row is None:
         return f"{_ref(task)} has no attachment with that id. task_detail lists them."
     impact = f"1 file detached from {_ref(task)}; the bytes are kept"
@@ -1002,10 +1799,1028 @@ async def delete_attachment(task_id: str, attachment_id: str) -> str:
     return f"Detached {data(row.get('name'))} from {_ref(task)}.\n  full_id: {tid}"
 
 
+# ── The member's own areas (WS-64 OP-6a, D-OP-9) ─────────────────────────────
+
+
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+async def rename_area(area: str, new_name: str) -> str:
+    """Rename one of the member's own areas, the categories of their private
+    tasks. area is its project_id from my_areas, or its exact name. The card
+    shows the old name and the new name. Tasks in the area stay in it."""
+    if _many(area):
+        return f"rename_area {ONE_ACT.replace('id', 'area')}"
+    row = await _my_area(area)
+    aid = uuid_of(str(row.get("id")), "area")
+    clean = _clean_area_name(new_name)
+    if clean == str(row.get("name") or ""):
+        return f"The area is already called {data(clean)}. Nothing changed.\n  area_id: {aid}"
+    rows = ((await get("/projects/my/areas")) or {}).get("rows") or []
+    key = _area_key(clean)
+    twin = next(
+        (r for r in rows if not r.get("archived") and str(r.get("id")) != aid
+         and _area_key(r.get("name")) == key),
+        None,
+    )
+    if twin is not None:
+        return (
+            f"You already have another area called {data(twin.get('name'))}. "
+            f"Choose a different name.\n  area_id: {aid}"
+        )
+    held = int(row.get("open_tasks") or 0)
+    impact = (
+        f"1 area renamed {data(row.get('name'))} → {data(clean)} · "
+        f"{held} open task{'' if held == 1 else 's'} in it, none moved"
+    )
+    if not await _confirm(
+        title="Rename this area?",
+        detail=f"{data(row.get('name'))} → {data(clean)}",
+        context=_guard_card(impact, {"area": data(row.get("name")), "name": data(clean)}),
+    ):
+        return CANCELLED
+    result = (await patch(f"/projects/my/areas/{aid}", {"name": clean})) or {}
+    return f"Renamed the area to {data(result.get('name') or clean)}.\n  area_id: {aid}"
+
+
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
+async def delete_area(area: str) -> str:
+    """Delete one of the member's own areas. The route deletes an area that
+    holds no task and no folder inside it. Any other area is archived and
+    everything in it stays. The card says which, with the open count,
+    and the receipt says which happened. area is its project_id from
+    my_areas, or its exact name."""
+    if _many(area):
+        return f"delete_area {ONE_ACT.replace('id', 'area')}"
+    row = await _my_area(area)
+    aid = uuid_of(str(row.get("id")), "area")
+    held = int(row.get("open_tasks") or 0)
+    impact = (
+        f"{held} open task{'' if held == 1 else 's'} in the area. "
+        "An area with no task and no folder inside is deleted for good. "
+        "Otherwise it is archived and everything stays. "
+        "The receipt says which happened"
+    )
+    if not await _confirm(
+        title="Delete this area?",
+        detail=data(row.get("name")),
+        context=_guard_card(impact, {"area": data(row.get("name"))}),
+    ):
+        return CANCELLED
+    result = (await delete(f"/projects/my/areas/{aid}")) or {}
+    tasks = int(result.get("tasks") or 0)
+    if result.get("outcome") == "archived":
+        return (
+            f"Archived the area {data(row.get('name'))}. It held {tasks} "
+            f"task{'' if tasks == 1 else 's'}, and they stay.\n  area_id: {aid}"
+        )
+    if result.get("outcome") == "deleted":
+        return f"Deleted the empty area {data(row.get('name'))}.\n  area_id: {aid}"
+    return f"Removed the area {data(row.get('name'))}.\n  area_id: {aid}"
+
+
+# ── Nudge and attach (WS-64 OP-6c, D-OP-9) ───────────────────────────────────
+
+#: The budget, the blocked types and the checks of a task file are in
+#: ``task_files.py``, which ``create_task`` calls too (IMG-2). The names stay
+#: here for the tests and the callers that import them.
+TASK_FILE_BUDGET = task_files.TASK_FILE_BUDGET
+BLOCKED_FILE_TYPES = task_files.BLOCKED_FILE_TYPES
+_mb = task_files.mb
+
+
+def _nudge_refusal(task: dict[str, Any], mine: dict[str, Any]) -> str:
+    """The route's refusal for a task that nobody can be chased on, in the
+    route's own words, said before the card. ``""`` when the nudge may go."""
+    if task.get("completed_at"):
+        return "This task is done. There is nobody to chase."
+    person = mine.get("waiting_on") if isinstance(mine.get("waiting_on"), dict) else {}
+    email = str(person.get("email") or "").strip()
+    if not email:
+        return (
+            "You are not waiting on anybody for this task. set_my_overlay with "
+            "waiting_on starts a chase."
+        )
+    if email.lower().startswith("agent:"):
+        return (
+            "An agent has no inbox to nudge. Agents are handed work by "
+            "dispatch, not by a notification."
+        )
+    return ""
+
+
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
+async def nudge_task(task_id: str) -> str:
+    """Nudge the person the member is waiting on for a task. It sends ONE
+    notification to their bell inside Metorite. It sends no email and no
+    message, and it never repeats: one call is one nudge. The card names the
+    person and the task. The route refuses a task that is done or that the
+    member is not waiting on, and the refusal comes back in its words."""
+    if _many(task_id):
+        return f"nudge_task {ONE_ACT}"
+    tid, task = await _task(task_id)
+    try:
+        mine = (await get(f"/projects/my/tasks/{tid}")) or {}
+    except GatewayRefusal as exc:
+        # A task that is not in the member's own lists holds no chase of theirs.
+        if exc.status != 404:
+            raise
+        mine = {}
+    refusal = _nudge_refusal(task, mine)
+    if refusal:
+        return f"{refusal}\n  full_id: {tid}"
+    person = mine["waiting_on"]
+    who = data(person.get("name") or person.get("email"))
+    impact = (
+        f"1 notification to {who} in their Metorite bell, about {_ref(task)} · "
+        "no email, no message outside Metorite · one nudge, and it does not repeat"
+    )
+    rest: dict[str, Any] = {
+        "person": who,
+        "task": _ref(task),
+        "sent as": "a notification in their bell only",
+    }
+    if mine.get("last_nudged_at"):
+        rest["last nudged"] = _day(mine.get("last_nudged_at"))
+    if not await _confirm(
+        title="Nudge this person?",
+        detail=f"{who} about {_ref(task)}",
+        context=_guard_card(impact, rest),
+    ):
+        return CANCELLED
+    result = (await post(f"/projects/tasks/{tid}/nudge")) or {}
+    if not result.get("notified"):
+        skipped = ", ".join(data(x) for x in result.get("skipped") or []) or who
+        return (
+            f"Nobody was told. {skipped} cannot open this task, so the nudge reached no one."
+            f"\n  full_id: {tid}"
+        )
+    return (
+        f"Nudged {who} about {_ref(task)}. They see it in their Metorite bell. "
+        f"I sent no email.\n  full_id: {tid}"
+    )
+
+
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
+async def attach_to_task(task_id: str, file_name: str) -> str:
+    """Attach a file that the member uploaded to THIS chat onto a task. Pass
+    the file name that the upload message shows. The card names the file, its
+    size and the task, because everyone who can open the task can open the
+    file. One task holds 10 MB of files in all. A file over that, or of a
+    blocked type such as .exe, is refused before the card."""
+    if _many(task_id):
+        return f"attach_to_task {ONE_ACT}"
+    tid, task = await _task(task_id)
+    got = await task_files.read_checked([file_name])
+    if isinstance(got, str):
+        return got
+    [(name, content)] = got
+    size = len(content)
+    held = ((await get(f"/projects/tasks/{tid}/attachments")) or {}).get("rows") or []
+    used = sum(int(f.get("size") or 0) for f in held)
+    over = task_files.budget_refusal(got, used, _ref(task))
+    if over:
+        return over
+    impact = (
+        f"1 file of {_mb(size)} attached to {_ref(task)} · everyone who can open "
+        "the task can open the file"
+    )
+    if not await _confirm(
+        title="Attach this file?",
+        detail=f"{data(name)} ({_mb(size)}) to {_ref(task)}",
+        context=_guard_card(
+            impact,
+            {"file": data(name), "size": _mb(size), "task": _ref(task),
+             "visible to": "everyone who can open the task"},
+        ),
+    ):
+        return CANCELLED
+    row = (
+        await post_file(
+            f"/projects/tasks/{tid}/attachments", "file", name, content, task_files.mime_of(name)
+        )
+    ) or {}
+    return (
+        f"Attached {data(row.get('name') or name)} to {_ref(task)}."
+        f"\n  full_id: {tid}\n  attachment_id: {row.get('attachment_id')}"
+    )
+
+
+# ── Who can see a project (WS-64 OP-6b, D-OP-9, D-OP-11) ────────────────────
+
+
+def grant_refusal(node: dict[str, Any]) -> str:
+    """The server's "no" before a grant card, or ``""`` to go on.
+
+    *node* is ``GET /projects/nodes/{id}``. Its ``can_write_grants`` and
+    ``grant_refusal`` come from ``authority.attach_can_write_grants``, the rule
+    and the 403 words of the two grant routes (D-OP-11). So the tool quotes the
+    server and never decides who may act. Only an explicit ``False`` stops the
+    tool. A row without the flag lets the tool go on, and the route decides.
+    """
+    if node.get("can_write_grants") is not False:
+        return ""
+    lines = [
+        f"{REFUSED} The server says that this member may not change who can see "
+        f"the project {data(node.get('name'))}. Nothing was done."
+    ]
+    said = str(node.get("grant_refusal") or "").strip()
+    if said:
+        lines.append(f"Gateway said: {data(said)}")
+    lines.append(
+        "Next: Tell the member what the gateway said. Do not try again, and do "
+        "not try another tool for the same act."
+    )
+    return "\n".join(lines)
+
+
+def _subject_or_refusal(tool: str, subject: str) -> tuple[str, str]:
+    """``(subject, "")`` in its stored form, or ``("", refusal)``.
+
+    The grammar is the ONE grant grammar of D12,
+    ``acb_auth.permissions.normalize_grant_subject``, which the route also
+    calls. The chat holds no copy of it.
+    """
+    from acb_auth.permissions import normalize_grant_subject
+
+    try:
+        return normalize_grant_subject(subject), ""
+    except ValueError as exc:
+        return "", (
+            f"{REFUSED} {tool} could not read the subject, so nothing was done.\n"
+            f"Gateway said: {data(str(exc))}\n"
+            "Next: Pass org for everyone in the organization, group:<slug> for a "
+            "group, or one member's email address. Then call the tool once more."
+        )
+
+
+def _unknown_group(subject: str, grants: dict[str, Any]) -> str:
+    """A refusal when *subject* is ``group:<slug>`` and no such group exists.
+
+    *grants* is ``GET /projects/nodes/{id}/grants``. Its ``groups`` come from
+    the gateway (``core.org_groups``), the list that ``POST`` checks too, so
+    the tool holds no copy of the directory. A payload without ``groups``
+    lets the tool go on, and the route decides.
+    """
+    groups = grants.get("groups")
+    if not subject.startswith("group:") or not isinstance(groups, list):
+        return ""
+    slug = subject.split(":", 1)[1]
+    if any(str(g.get("slug") or "").lower() == slug for g in groups):
+        return ""
+    lines = [f"{REFUSED} There is no group called {data(slug)}, so nothing was done."]
+    if groups:
+        listed = ", ".join(
+            f"{data(g.get('display_name'))} ({data('group:' + str(g.get('slug') or ''))})"
+            for g in groups
+        )
+        lines.append(f"The groups are: {listed}.")
+        lines.append(
+            "Next: Ask the member which group they mean. Then call the tool once "
+            "more with its group:<slug>."
+        )
+    else:
+        lines.append("This organization has no groups.")
+        lines.append(
+            "Next: Tell the member. Pass org or one member's email address, or ask "
+            "an admin to make the group first."
+        )
+    return "\n".join(lines)
+
+
+async def _sees_parent(node: dict[str, Any]) -> bool:
+    """Can the member see the parent of *node*? A grant covers the subtree, so a
+    member who sees the parent also sees *node* without a grant on it."""
+    parent = node.get("parent_project_id")
+    if not parent:
+        return False
+    parent_id = uuid_of(str(parent), "parent_project_id")
+    try:
+        await get(f"/projects/nodes/{parent_id}")
+    except GatewayRefusal:
+        return False
+    return True
+
+
+#: The impact clauses of a revoke that removes the last way in (OP-6b, fix
+#: round 1). They come first on the card.
+LAST_GRANT_CLAUSE = (
+    "This is the last grant. Afterwards only a member who can see every "
+    "project will see this project."
+)
+LOSE_SIGHT_CLAUSE = "You will lose sight of this project."
+
+
+async def _revoke_warnings(
+    node: dict[str, Any], row: dict[str, Any], grants: dict[str, Any],
+) -> list[str]:
+    """The clauses that go first on a revoke card, or ``[]``.
+
+    *grants* is ``GET /projects/nodes/{id}/grants``. Its ``yours`` and
+    ``you_see_all`` come from the gateway's own visibility. A sub-project
+    stays in sight of each member who sees its parent, so the last-grant
+    clause is for a top project only.
+    """
+    rows = grants.get("rows") or []
+    others = [g for g in rows if str(g.get("id")) != str(row.get("id"))]
+    clauses = []
+    if not others and not node.get("parent_project_id"):
+        clauses.append(LAST_GRANT_CLAUSE)
+    if (
+        row.get("yours") is True
+        and not grants.get("you_see_all")
+        and not any(g.get("yours") is True for g in others)
+        and not await _sees_parent(node)
+    ):
+        clauses.append(LOSE_SIGHT_CLAUSE)
+    return clauses
+
+
+async def _project_path(node: dict[str, Any]) -> str:
+    """``«Space» / «Team» / «Project»``: the node and the parents the member
+    can see, walked up through ``parent_project_id``. Capped, because a cycle
+    is a database fault and not a reason to loop."""
+    names = [data(node.get("name"))]
+    current = node
+    for _ in range(8):
+        parent = current.get("parent_project_id")
+        if not parent:
+            break
+        parent_id = uuid_of(str(parent), "parent_project_id")
+        try:
+            current = (await get(f"/projects/nodes/{parent_id}")) or {}
+        except GatewayRefusal:
+            break
+        names.append(data(current.get("name")))
+    return " / ".join(reversed(names))
+
+
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+async def grant_access(project_id: str, subject: str) -> str:
+    """Let more people see a project and every sub-project under it. subject
+    is org (everyone in the organization), group:<slug> (one group) or one
+    member's email address. ONE subject per call. The card names the project
+    path and who will see it. The server decides if the member may change who
+    can see the project, and a refusal comes back in its words."""
+    if _many(subject) or _many(project_id):
+        return f"grant_access {ONE_ACT.replace('id', 'subject')}"
+    clean, refused = _subject_or_refusal("grant_access", subject)
+    if refused:
+        return refused
+    pid, node = await _node(project_id)
+    refused = grant_refusal(node)
+    if refused:
+        return refused
+    grants = (await get(f"/projects/nodes/{pid}/grants")) or {}
+    refused = _unknown_group(clean, grants)
+    if refused:
+        return refused
+    held = grants.get("rows") or []
+    if any(str(g.get("subject") or "").lower() == clean for g in held):
+        return (
+            f"{subject_words(clean)} can already see {data(node.get('name'))} through a "
+            f"grant on it. Nothing changed.\n  project_id: {pid}"
+        )
+    path = await _project_path(node)
+    who = subject_words(clean)
+    impact = (
+        f"access widens: {who} will see {path} and every sub-project under it, "
+        "with their tasks"
+    )
+    if not await _confirm(
+        title="Change who can see this project?",
+        detail=f"{path} · add {who}",
+        context=_guard_card(
+            impact,
+            {"project": path, "gives access to": who,
+             "covers": "this project and every sub-project under it"},
+        ),
+    ):
+        return CANCELLED
+    row = (await post(f"/projects/nodes/{pid}/grants", {"subject": clean})) or {}
+    return (
+        f"{who} can now see {path} and every sub-project under it."
+        f"\n  project_id: {pid}\n  grant_id: {row.get('id')}"
+    )
+
+
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+async def revoke_access(project_id: str, grant: str) -> str:
+    """Remove one grant from a project. grant is a grant_id from
+    project_access, or the grant's subject (org, group:<slug> or an email
+    address). ONE grant per call. The card names the project path and whose
+    access goes. A person with another way in, such as another grant, keeps
+    it. To change the audience, grant the new one with grant_access first, and
+    then revoke the old one. The card warns when this is the last grant, or
+    when the member loses sight of the project. The server decides if the
+    member may change who can see the project."""
+    if _many(grant) or _many(project_id):
+        return f"revoke_access {ONE_ACT.replace('id', 'grant')}"
+    pid, node = await _node(project_id)
+    refused = grant_refusal(node)
+    if refused:
+        return refused
+    grants = (await get(f"/projects/nodes/{pid}/grants")) or {}
+    rows = grants.get("rows") or []
+    wanted = str(grant or "").strip()
+    row = next((g for g in rows if str(g.get("id") or "").lower() == wanted.lower()), None)
+    if row is None:
+        # Not a grant_id of this project, so read it as a subject. A value that
+        # is neither finds no grant, and the answer below says so.
+        clean, _bad = _subject_or_refusal("revoke_access", wanted)
+        row = next(
+            (g for g in rows if clean and str(g.get("subject") or "").lower() == clean), None
+        )
+    if row is None:
+        return (
+            f"{data(node.get('name'))} has no grant like that. project_access lists "
+            f"its grants, each with a grant_id.\n  project_id: {pid}"
+        )
+    gid = uuid_of(str(row.get("id")), "grant")
+    path = await _project_path(node)
+    who = subject_words(str(row.get("subject") or ""))
+    warnings = await _revoke_warnings(node, row, grants)
+    impact = " ".join([*warnings, (
+        f"access narrows: {who} loses the access this grant gives to {path} and every "
+        "sub-project under it. Another grant can still let some of them see it"
+    )])
+    if not await _confirm(
+        title="Change who can see this project?",
+        detail=f"{path} · remove {who}",
+        context=_guard_card(
+            impact,
+            {"project": path, "takes access from": who,
+             "covers": "this project and every sub-project under it"},
+        ),
+    ):
+        return CANCELLED
+    await delete(f"/projects/nodes/{pid}/grants/{gid}")
+    return (
+        f"Removed the grant of {who} on {path}."
+        f"\n  project_id: {pid}\n  grant_id: {gid}"
+    )
+
+
+# ── The authority page of a project (WS-ALN ALN-4) ──────────────────────────
+
+#: What the member reads for a 403 or a 404 of the authority routes. A 409
+#: carries the route's own words (not published, or narrower than the project).
+_PIN_REFUSALS = {
+    403: "The server says that you may not change the authority page of this project.",
+    404: "The project, the page or the pin was not found, or it is hidden from you.",
+}
+
+
+#: The answer while ``AUTHORITY_PINS_ORGS`` does not hold the org. The routes
+#: answer 404, and a tool makes no card.
+PINS_OFF = "Authority pages are not on for this organization yet. Nothing was changed."
+
+
+async def _pins_or_off(pid: str) -> tuple[list[dict[str, Any]], str]:
+    """``(pins, "")``, or ``([], PINS_OFF)`` when the flag is off. This read
+    runs BEFORE any card. A 404 here, for a project the member just read, is
+    the flag. Any other refusal is raised again."""
+    pid = uuid_of(pid, "project_id")
+    try:
+        got = (await get(f"/projects/nodes/{pid}/authorities")) or {}
+    except GatewayRefusal as exc:
+        if getattr(exc, "status", None) == 404:
+            return [], PINS_OFF
+        raise
+    return got.get("rows") or [], ""
+
+
+def _pin_refusal(exc: GatewayRefusal) -> str:
+    """One plain sentence for a 403, 404 or 409 of the authority routes.
+
+    Any other status is raised again for the shared wrapper.
+    """
+    status = getattr(exc, "status", None)
+    if status in _PIN_REFUSALS:
+        return f"{REFUSED} {_PIN_REFUSALS[status]} Nothing was changed."
+    if status == 409:
+        said = str(getattr(exc, "detail", "") or "").strip()
+        return f"{REFUSED} {data(said) if said else 'The server refused the pin.'} Nothing was changed."
+    raise exc
+
+
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+async def pin_authority(project_id: str, page_id: str) -> str:
+    """Pin one published Knowledge page to a project as its authority: the
+    page that holds the project's rules. page_id is the full id of a page.
+    ONE page per call. The card names the project and the page id. The server
+    decides if the member may pin. It refuses a page that is not published,
+    and a page that fewer people can read than can see the project. A refusal
+    comes back in one sentence."""
+    if _many(page_id) or _many(project_id):
+        return f"pin_authority {ONE_ACT.replace('id', 'page_id')}"
+    page = uuid_of(page_id, "page_id")
+    pid, node = await _node(project_id)
+    refused = grant_refusal(node)
+    if refused:
+        return refused
+    held, off = await _pins_or_off(pid)
+    if off:
+        return off
+    same = next((r for r in held if str(r.get("page_id") or "").lower() == page), None)
+    if same is not None:
+        name = "a page hidden from you" if same.get("page_hidden") is True else data(same.get("title"))
+        return (
+            f"{name} is already the authority page of {data(node.get('name'))}. "
+            f"Nothing changed.\n  project_id: {pid}\n  pin_id: {same.get('id')}"
+        )
+    path = await _project_path(node)
+    impact = (
+        f"a finding of {path} will quote this page to everyone who can see the "
+        "project. The server refuses a page that fewer people can read"
+    )
+    if not await _confirm(
+        title="Pin this page as the authority of the project?",
+        detail=f"{path} · page {page}",
+        context=_guard_card(
+            impact,
+            {"project": path,
+             "covers": f"page {page} becomes the source of the rules of this project"},
+        ),
+    ):
+        return CANCELLED
+    try:
+        row = (await post(f"/projects/nodes/{pid}/authorities", {"page_id": page})) or {}
+    except GatewayRefusal as exc:
+        return _pin_refusal(exc)
+    name = "a page hidden from you" if row.get("page_hidden") is True else data(row.get("title"))
+    return (
+        f"{name} is now the authority page of {path}."
+        f"\n  project_id: {pid}\n  pin_id: {row.get('id')}"
+    )
+
+
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+async def unpin_authority(project_id: str, pin_id: str) -> str:
+    """Remove one authority pin from a project. pin_id is a pin_id from
+    project_authorities. ONE pin per call. The card names the project and the
+    page title, and the title shows only when the member can read the page.
+    The page itself stays. The server decides if the member may remove the
+    pin, and a refusal comes back in one sentence."""
+    if _many(pin_id) or _many(project_id):
+        return f"unpin_authority {ONE_ACT.replace('id', 'pin_id')}"
+    pid, node = await _node(project_id)
+    refused = grant_refusal(node)
+    if refused:
+        return refused
+    rows, off = await _pins_or_off(pid)
+    if off:
+        return off
+    wanted = str(pin_id or "").strip().lower()
+    row = next((r for r in rows if str(r.get("id") or "").lower() == wanted), None)
+    if row is None:
+        return (
+            f"{data(node.get('name'))} has no pin like that. project_authorities lists "
+            f"its pins, each with a pin_id.\n  project_id: {pid}"
+        )
+    pin = uuid_of(str(row.get("id")), "pin_id")
+    path = await _project_path(node)
+    name = "a page hidden from you" if row.get("page_hidden") is True else data(row.get("title"))
+    impact = (
+        f"{path} loses {name} as its authority page. A finding of the project "
+        "stops quoting its rules to everyone who sees the project. The page itself stays"
+    )
+    if not await _confirm(
+        title="Remove the authority page of this project?",
+        detail=f"{path} · remove {name}",
+        context=_guard_card(
+            impact,
+            {"project": path, "covers": f"{name} stops being the authority page of this project"},
+        ),
+    ):
+        return CANCELLED
+    try:
+        await delete(f"/projects/nodes/{pid}/authorities/{pin}")
+    except GatewayRefusal as exc:
+        return _pin_refusal(exc)
+    return f"Removed {name} as the authority page of {path}.\n  project_id: {pid}\n  pin_id: {pin}"
+
+
+# ── WS-39 LP-1a: delete a project update ─────────────────────────────────────
+
+#: The pages of updates that the delete reads to find the named one. Each
+#: page holds :data:`inbox.UPDATES_PAGE_MAX` updates.
+UPDATE_DELETE_PAGES = 10
+
+
+async def _find_update(pid: str, wanted: str) -> tuple[dict[str, Any] | None, str]:
+    """The live update *wanted* of a project, read page by page.
+
+    Returns ``(row, "")``, or ``(None, "")`` when no page holds it, or
+    ``(None, UPDATES_OFF)`` while the flag is off. Every call is a read.
+    """
+    pid = uuid_of(pid, "project_id")
+    before = ""
+    for _ in range(UPDATE_DELETE_PAGES):
+        params: dict[str, Any] = {"limit": UPDATES_PAGE_MAX}
+        if before:
+            params["before"] = before
+        try:
+            got = (await get(f"/projects/nodes/{pid}/updates", params)) or {}
+        except GatewayRefusal as exc:
+            if getattr(exc, "status", None) == 404:
+                return None, UPDATES_OFF
+            raise
+        for row in got.get("rows") or []:
+            if str(row.get("id") or "").lower() == wanted:
+                return row, ""
+        before = str(got.get("next_before") or "")
+        if not before:
+            break
+    return None, ""
+
+
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+async def delete_project_update(project_id: str, update_id: str) -> str:
+    """Delete one update of a project. update_id is an update_id from
+    list_project_updates. ONE update per call. The card names the project, the
+    health, the author and the text. The update leaves the project and its
+    list, and the app has no undo for it. The server decides if the member may
+    delete it, and a refusal comes back in one sentence."""
+    if _many(update_id) or _many(project_id):
+        return f"delete_project_update {ONE_ACT.replace('id', 'update_id')}"
+    pid, node = await _node(project_id)
+    uid = uuid_of(update_id, "update_id")
+    row, off = await _find_update(pid, uid)
+    if off:
+        return off
+    name = data(node.get("name"))
+    if row is None:
+        return (
+            f"{name} has no live update like that. list_project_updates lists its "
+            f"updates, each with an update_id.\n  project_id: {pid}"
+        )
+    health = UPDATE_HEALTHS.get(str(row.get("health")), str(row.get("health")))
+    refused = delete_refusal(row, "update of", name)
+    if refused:
+        return refused
+    impact = (
+        f"1 update ({health}) leaves {name} and its list of updates. The app has "
+        "no undo for it"
+    )
+    if not await _confirm(
+        title="Delete this project update?",
+        detail=f"{name} · {health}",
+        context=_guard_card(
+            impact,
+            {
+                "project": name,
+                "health": health,
+                "author": data(row.get("author")),
+                "body": str(row.get("body") or ""),
+            },
+        ),
+    ):
+        return CANCELLED
+    await delete(f"/projects/nodes/{pid}/updates/{uid}")
+    return (
+        f"Deleted the update ({health}) of {name}.\n  project_id: {pid}\n"
+        f"  update_id: {uid}"
+    )
+
+
+# ── One person decides (WS-ALN ALN-2a, D-OP-9) ──────────────────────────────
+
+#: What the member reads for a 403, a 404 or a 409 of the answer route.
+_DECISION_REFUSALS = {
+    403: "The server says that a person must answer this decision.",
+    404: "The decision was not found, or it does not name you.",
+}
+
+
+def _decision_refusal(exc: GatewayRefusal) -> str:
+    """One plain sentence for a 403, 404, 409 or 422 of the answer route."""
+    status = getattr(exc, "status", None)
+    if status in _DECISION_REFUSALS:
+        return f"{REFUSED} {_DECISION_REFUSALS[status]} Nothing was changed."
+    if status == 409:
+        said = str(getattr(exc, "detail", "") or "")
+        late = "expired" in said
+        why = "The decision expired." if late else "The decision already has an answer."
+        return f"{REFUSED} {why} Nothing was changed."
+    if status == 422:
+        return f"{REFUSED} The answer is not one of the options. Nothing was changed."
+    raise exc
+
+
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+async def answer_decision(decision_id: str, answer_key: str) -> str:
+    """Answer one decision that names the member. decision_id and the option
+    keys come from my_decisions. ONE decision per call. A run that no person
+    watches cannot answer, and the tool refuses it before any card. The card
+    shows the question, the option and the task. The answer goes on the task
+    as a comment, and it runs no action. The server decides if the answer
+    stands, and a refusal comes back in one sentence."""
+    if no_person_present():
+        return f"{REFUSED} {NO_PERSON_TEXT} Nothing was changed."
+    if _many(decision_id):
+        return f"answer_decision {ONE_ACT.replace('id', 'decision_id')}"
+    did = uuid_of(decision_id, "decision_id")
+    key = str(answer_key or "").strip()
+    try:
+        rows = ((await get("/projects/decisions")) or {}).get("decisions") or []
+    except GatewayRefusal as exc:
+        if getattr(exc, "status", None) == 404:
+            return DECISIONS_OFF
+        raise
+    row = next((r for r in rows if str(r.get("id") or "").lower() == did), None)
+    if row is None:
+        return (
+            "No open decision like that waits for you. my_decisions lists them, "
+            "each with a decision_id."
+        )
+    label = next(
+        (str(o.get("label")) for o in row.get("options") or [] if o.get("key") == key), None
+    )
+    if label is None:
+        keys = ", ".join(str(o.get("key")) for o in row.get("options") or [])
+        return f"answer_key must be one of: {keys}. Nothing was done."
+    task = uuid_of(str(row.get("subject_id")), "task_id")
+    try:
+        title = data(((await get(f"/projects/tasks/{task}")) or {}).get("title"))
+    except GatewayRefusal:
+        title = f"task {task}"
+    impact = (
+        "your answer goes on the task as a comment that everyone who can open the task "
+        "reads. It runs no action. The decision takes one answer"
+    )
+    if not await _confirm(
+        title="Answer this decision?",
+        detail=f"{title} · {data(label)}",
+        context=_guard_card(
+            impact,
+            {"question": data(row.get("question")), "answer": data(label), "task": title},
+        ),
+    ):
+        return CANCELLED
+    try:
+        await post(f"/projects/decisions/{did}/answer", {"answer_key": key})
+    except GatewayRefusal as exc:
+        return _decision_refusal(exc)
+    return f"Answered {data(row.get('question'))} with {data(label)}.{chr(10)}  decision_id: {did}"
+
+
+# ── Who gets a report, and when (WS-64 OP-6d, D-OP-9) ───────────────────────
+
+
+async def _report_for_change(report_id: str, tool: str) -> tuple[str, dict[str, Any], str]:
+    """``(id, report, "")`` when the member may change the report, else
+    ``("", {}, refusal)``. The server decides: ``can_edit`` is its answer
+    (``reports._report_dict``, one rule with the 403 of the three routes).
+    Only an explicit ``False`` stops the tool. A report without the flag lets
+    the tool go on, and the route decides."""
+    if _many(report_id):
+        return "", {}, f"{tool} {ONE_ACT}"
+    rid = uuid_of(report_id, "report_id")
+    report = (await get(f"/projects/reports/{rid}")) or {}
+    if report.get("can_edit") is False:
+        return "", {}, f"{REPORT_CHANGE_REFUSED}\n  report_id: {rid}"
+    return rid, report, ""
+
+
+def _path_address(value: str) -> str:
+    """A recipient address as ONE path segment of the delete route. A slash, a
+    dot-dot or a query mark cannot ride in it."""
+    raw = str(value or "").strip().lower()
+    if "@" not in raw or any(c in raw for c in "/\\?#% \t\n"):
+        raise GatewayRefusal("A recipient must be an email address.")
+    return quote(raw, safe="@")
+
+
+async def _recipient_rows(report_id: str) -> list[str]:
+    rid = uuid_of(report_id, "report_id")
+    payload = (await get(f"/projects/reports/{rid}/recipients")) or {}
+    return [str(r.get("recipient") or "").lower() for r in payload.get("recipients") or []]
+
+
+async def _recipient_address(value: str) -> str:
+    """An address as typed, or the one person a name means. A report goes to a
+    person, so an ``agent:`` value gets the route's own sentence."""
+    address = await _resolve_assignee_name(value)
+    if address.startswith("agent:"):
+        raise GatewayRefusal("A report goes to a person, never to an agent.")
+    return address
+
+
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+async def add_report_recipient(report_id: str, recipient: str) -> str:
+    """Add ONE person to the list that receives a saved report by email.
+    recipient is a member's email address, or a name that matches one person.
+    The card names the address, the name, the report and its schedule. Only
+    the author of the report or an admin may change the list, and only a
+    person the directory knows can be added. A refusal comes back in the
+    words of the server. Delivery may be switched off, and the card says so."""
+    if _many(recipient):
+        return f"add_report_recipient {ONE_ACT.replace('id', 'recipient')}"
+    rid, report, refused = await _report_for_change(report_id, "add_report_recipient")
+    if refused:
+        return refused
+    rid = uuid_of(rid, "report_id")
+    email = await _recipient_address(recipient)
+    held = await _recipient_rows(rid)
+    if email in held:
+        return (
+            f"{data(email)} already receives {data(report.get('name'))}. Nothing changed."
+            f"\n  report_id: {rid}"
+        )
+    name = (await _names_of([email])).get(email)
+    who = f"{data(name)} ({data(email)})" if name else f"{data(email)} (not in the directory)"
+    when = (
+        SCHEDULE_WORDS.get(str(report.get("schedule")), "on its schedule")
+        if report.get("enabled")
+        else "not scheduled"
+    )
+    impact = (
+        f"1 person joins the list of {data(report.get('name'))}, which has {len(held)} now. "
+        f"Each report is rendered with their own access · {DELIVERY_MAY_BE_OFF}"
+    )
+    if not await _confirm(
+        title="Add this person to a report?",
+        detail=f"{data(report.get('name'))} · add {who}",
+        context=_guard_card(
+            impact,
+            {"report": data(report.get("name")), "recipient": who,
+             "schedule": when, "people on the list now": len(held)},
+        ),
+    ):
+        return CANCELLED
+    await post(f"/projects/reports/{rid}/recipients", {"recipient": email})
+    return (
+        f"{who} is now on the list of {data(report.get('name'))}. {DELIVERY_MAY_BE_OFF}"
+        f"\n  report_id: {rid}"
+    )
+
+
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+async def remove_report_recipient(report_id: str, recipient: str) -> str:
+    """Take ONE person off the list that receives a saved report. recipient
+    is the address from report_recipients, or the name of one person on the
+    list. The card names the person and the report. The server decides if
+    the member may change the list, and a refusal comes back in its words."""
+    if _many(recipient):
+        return f"remove_report_recipient {ONE_ACT.replace('id', 'recipient')}"
+    rid, report, refused = await _report_for_change(report_id, "remove_report_recipient")
+    if refused:
+        return refused
+    rid = uuid_of(rid, "report_id")
+    held = await _recipient_rows(rid)
+    wanted = str(recipient or "").strip().lower()
+    email = wanted if wanted in held else ""
+    if not email:
+        names = await _names_of(held)
+        hits = [e for e in held if names.get(e, "").lower() == wanted]
+        email = hits[0] if len(hits) == 1 else ""
+    if not email:
+        return (
+            f"{data(recipient)} is not on the list of {data(report.get('name'))}. "
+            f"report_recipients shows who is.\n  report_id: {rid}"
+        )
+    name = (await _names_of([email])).get(email)
+    who = f"{data(name)} ({data(email)})" if name else data(email)
+    impact = (
+        f"1 person leaves the list of {data(report.get('name'))}, which has {len(held)} now. "
+        "They no longer receive the report. Their access to the data does not change"
+    )
+    if report.get("enabled") and len(held) == 1:
+        impact += (
+            ". This is the LAST person on the list, and the schedule is on, "
+            "so the report would go to nobody"
+        )
+    if not await _confirm(
+        title="Take this person off a report?",
+        detail=f"{data(report.get('name'))} · remove {who}",
+        context=_guard_card(
+            impact,
+            {"report": data(report.get("name")), "recipient": who,
+             "people on the list now": len(held)},
+        ),
+    ):
+        return CANCELLED
+    tail = _path_address(email)
+    await delete(f"/projects/reports/{rid}/recipients/{tail}")
+    return (
+        f"{who} is off the list of {data(report.get('name'))}. {DELIVERY_MAY_BE_OFF}"
+        f"\n  report_id: {rid}"
+    )
+
+
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+async def set_report_schedule(report_id: str, enabled: bool) -> str:
+    """Turn the weekly schedule of a saved report on (enabled=true) or off
+    (enabled=false). The card names the report, the schedule in plain words
+    and the people on the list. A report with nobody on the list cannot be
+    turned on. Delivery may be switched off for the deployment, which is the
+    owner's choice and not a tool's. The receipt says what the server
+    answered. The server decides if the member may change the schedule."""
+    rid, report, refused = await _report_for_change(report_id, "set_report_schedule")
+    if refused:
+        return refused
+    rid = uuid_of(rid, "report_id")
+    if not isinstance(enabled, bool):
+        return "enabled must be true or false."
+    held = await _recipient_rows(rid)
+    if enabled and not held:
+        return (
+            "Add at least one recipient before you turn this on. A schedule with no "
+            f"audience reads as armed and delivers nothing.\n  report_id: {rid}"
+        )
+    if bool(report.get("enabled")) == enabled:
+        state = "on" if enabled else "off"
+        return (
+            f"The schedule of {data(report.get('name'))} is already {state}. "
+            f"Nothing changed.\n  report_id: {rid}"
+        )
+    names = await _names_of(held)
+    shown: list[str] = []
+    for e in held:
+        if len(shown) == 10:
+            break
+        shown.append(f"{data(names[e])} ({data(e)})" if e in names else data(e))
+    people = ", ".join(shown) + (f" and {len(held) - 10} more" if len(held) > 10 else "")
+    if enabled:
+        impact = (
+            f"the schedule goes on: {data(report.get('name'))} goes by email to {_plural(len(held), 'person')} "
+            f"every week · {DELIVERY_MAY_BE_OFF}"
+        )
+        rest = {"report": data(report.get("name")), "schedule": "every week",
+                "sent to": people or "nobody"}
+    else:
+        impact = (
+            f"the schedule goes off: {data(report.get('name'))} stops going to its "
+            f"{_plural(len(held), 'person')}. The list stays"
+        )
+        rest = {"report": data(report.get("name")), "schedule": "off",
+                "stops going to": people or "nobody"}
+    if not await _confirm(
+        title="Turn this report's schedule on?" if enabled else "Turn this report's schedule off?",
+        detail=f"{data(report.get('name'))} · {'every week' if enabled else 'off'}",
+        context=_guard_card(impact, rest),
+    ):
+        return CANCELLED
+    row = (await patch(f"/projects/reports/{rid}/schedule", {"enabled": enabled})) or {}
+    if not enabled:
+        return f"The schedule of {data(report.get('name'))} is off.\n  report_id: {rid}"
+    armed = row.get("delivery_armed_on_this_deployment")
+    tail = DELIVERY_ON if armed is True else DELIVERY_OFF if armed is False else DELIVERY_MAY_BE_OFF
+    return (
+        f"The schedule of {data(report.get('name'))} is on, every week, for "
+        f"{_plural(len(held), 'person')}. {tail}\n  report_id: {rid}"
+    )
+
+
+# ── A reminder becomes a task (WS-66 RM-3, D114) ─────────────────────────────
+
+
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False, card_write=True)
+async def promote_reminder(reminder_id: str) -> str:
+    """Make one of the member's OPEN reminders a private task in their own
+    personal project ("make it a task"). The task takes the reminder's
+    title and notes. The reminder ends, and it cannot reopen, so the card
+    asks first. Use it when the reminder is real work to track. Pass the
+    reminder_id that list_reminders or set_reminder printed."""
+    if _many(reminder_id):
+        return f"promote_reminder {ONE_ACT}"
+    gate = await _reminder_gate("promote_reminder")
+    if gate:
+        return gate
+    rid, row, whole = await _my_reminder(reminder_id)
+    if row is None and whole:
+        return _reminder_not_found()
+    impact = (
+        f"1 private task in your personal project, made from {_reminder_named(row)} · "
+        "the reminder ends, and it cannot reopen"
+    )
+    rest: dict[str, Any] = dict(_reminder_card(row))
+    if row is not None and row.get("notes"):
+        rest["notes"] = row["notes"]
+    rest["visible to"] = "you only"
+    if not await _confirm(
+        title="Make this reminder a task?", detail=_reminder_named(row), context=_guard_card(impact, rest),
+    ):
+        return CANCELLED
+    saved = (await post(f"{REMINDERS}/{rid}/promote")) or {}
+    task_id = saved.get("promoted_task_id")
+    if not task_id:
+        # No `reminder_id:` line: the receipt reads an id line as "done".
+        return (
+            "The server answered with no task id, so the task may not exist.\n"
+            + for_the_model("Do not tell the member that the task exists. Check with list_reminders.")
+        )
+    return (
+        f"Made a private task from {data(saved.get('title'))} in your personal project. "
+        f"The reminder is closed, and it cannot reopen.\n  full_id: {task_id}\n"
+        f"  reminder_id: {rid}"
+    )
+
+
 __all__ = [  # noqa: RUF022 — grouped by what they act on
     "archive_project",
     "unarchive_project",
     "move_project",
+    "convert_folder_to_project",
     "archive_task",
     "merge_tasks",
     "bulk_update",
@@ -1020,4 +2835,197 @@ __all__ = [  # noqa: RUF022 — grouped by what they act on
     "delete_view",
     "report_delete",
     "delete_attachment",
+    "rename_area",
+    "delete_area",
+    "nudge_task",
+    "attach_to_task",
+    "grant_access",
+    "revoke_access",
+    "pin_authority",
+    "unpin_authority",
+    "delete_project_update",
+    "answer_decision",
+    "add_report_recipient",
+    "remove_report_recipient",
+    "set_report_schedule",
+    "promote_reminder",
 ]
+
+
+# ── Templates (WS-39 TPL-1a, task 18) ───────────────────────────────────────
+
+#: The longest template name and description (``templates.NAME_MAX`` and
+#: ``templates.DESCRIPTION_MAX`` of the gateway). A pin test holds the copies.
+TEMPLATE_NAME_MAX = 120
+TEMPLATE_DESCRIPTION_MAX = 2000
+
+
+async def _templates_or_off(template_id: str = "") -> tuple[list[dict[str, Any]], str]:
+    """``(templates, "")``, or ``([], TEMPLATES_OFF)`` when the flag is off.
+    This read runs BEFORE any card. A 404 here is the flag. Any other
+    refusal is raised again for the shared wrapper. *template_id* reads that
+    one template, so a template past the first page of the list is found."""
+    params = {"template_id": template_id} if template_id else None
+    try:
+        got = (await get("/projects/templates", params)) or {}
+    except GatewayRefusal as exc:
+        if getattr(exc, "status", None) == 404:
+            return [], TEMPLATES_OFF
+        raise
+    return list(got.get("rows") or []), ""
+
+
+def _template_refusal(exc: GatewayRefusal) -> str:
+    """One plain sentence for a refusal of a template route. The server's own
+    words say what happened and what to do next. A 5xx is raised again."""
+    status = getattr(exc, "status", None)
+    if status in (403, 404, 409, 422):
+        said = str(getattr(exc, "detail", "") or "").strip()
+        return (f"{REFUSED} {data(said) if said else 'The server refused the template.'} "
+                "Nothing was changed.")
+    raise exc
+
+
+def _counts_line(counts: dict[str, Any]) -> str:
+    return (
+        f"{int(counts.get('tasks') or 0)} starter tasks, "
+        f"{int(counts.get('statuses') or 0)} statuses, "
+        f"{int(counts.get('types') or 0)} task types, "
+        f"{int(counts.get('fields') or 0)} fields and "
+        f"{int(counts.get('tags') or 0)} tags"
+    )
+
+
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
+async def save_as_template(
+    project_id: str, name: str, description: str = "", start_date: str = "",
+) -> str:
+    """Save one project as a template of the organization (WS-39 TPL-1a).
+    ONE project per call. The template copies the project's statuses, task
+    types, fields and tags, and its tasks and subtasks with their dates as
+    days from the start. It copies no person, no comment and no history. A
+    done task becomes an open starter task. Every member of the organization
+    can list the template, so the server takes only a project that the whole
+    organization can see. start_date (YYYY-MM-DD) is the day that the
+    offsets count from. Leave it out to count from the earliest task date."""
+    if _many(project_id):
+        return f"save_as_template {ONE_ACT}"
+    title = " ".join(str(name or "").split())
+    if not title:
+        return "A template needs a name. Nothing was changed."
+    if len(title) > TEMPLATE_NAME_MAX:
+        return f"A template name has {TEMPLATE_NAME_MAX} characters at most. Nothing was changed."
+    about = " ".join(str(description or "").split())
+    if len(about) > TEMPLATE_DESCRIPTION_MAX:
+        return (f"A template description has {TEMPLATE_DESCRIPTION_MAX} characters at most. "
+                "Nothing was changed.")
+    start = _date_arg(start_date, "start_date")
+    pid, node = await _node(project_id)
+    held, off = await _templates_or_off()
+    if off:
+        return off
+    taken = next((r for r in held if str(r.get("name") or "").strip().lower() == title.lower()), None)
+    if taken is not None:
+        return (f"A template called {data(taken.get('name'))} already exists. Pick another name. "
+                f"Nothing was changed.\n  template_id: {taken.get('id')}")
+    impact = (
+        "every member of the organization can list this template and make a project from it. "
+        f"It copies the statuses, types, fields, tags and tasks of {data(node.get('name'))}, "
+        "with no person, comment or history"
+    )
+    rest: dict[str, Any] = {"project": data(node.get("name")), "name": data(title)}
+    if about:
+        rest["description"] = data(about)
+    rest["starts from"] = start or "the earliest task date"
+    if not await _confirm(
+        title="Save this project as a template?",
+        detail=f"{data(node.get('name'))} · {data(title)}",
+        context=_guard_card(impact, rest),
+    ):
+        return CANCELLED
+    body: dict[str, Any] = {"project_id": pid, "name": title}
+    if about:
+        body["description"] = about
+    if start:
+        body["start_date"] = start
+    try:
+        row = (await post("/projects/templates", body)) or {}
+    except GatewayRefusal as exc:
+        return _template_refusal(exc)
+    return (
+        f"Saved the template {data(row.get('name'))}: {_counts_line(row.get('counts') or {})}."
+        f"\n  template_id: {row.get('id')}"
+    )
+
+
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
+async def create_project_from_template(
+    template_id: str, parent_id: str, name: str = "", description: str = "",
+    start_date: str = "",
+) -> str:
+    """Make a new project from a template (WS-39 TPL-1a). ONE template per
+    call. template_id comes from list_templates. parent_id is the space, the
+    folder or the project to make the new project in. A space holds no
+    tasks, so the template always makes a project. The new project gets the
+    template's statuses, and its starter tasks and subtasks with their dates:
+    start_date (YYYY-MM-DD, today when left out) plus the days of each task.
+    A task type, field or tag that the space lacks is added to the whole
+    space. name is the project name, the template's name when left out."""
+    if _many(template_id) or _many(parent_id):
+        return f"create_project_from_template {ONE_ACT}"
+    tid = uuid_of(template_id, "template_id")
+    title = " ".join(str(name or "").split())
+    about = " ".join(str(description or "").split())
+    start = _date_arg(start_date, "start_date")
+    held, off = await _templates_or_off(tid)
+    if off:
+        return off
+    template = next((r for r in held if str(r.get("id") or "").lower() == tid), None)
+    if template is None:
+        return "No template has that template_id. Call list_templates. Nothing was changed."
+    pid, node = await _node(parent_id)
+    path = await _project_path(node)
+    counts = template.get("counts") or {}
+    impact = (
+        f"a new project with {_counts_line(counts)} goes inside {path}. Each person who "
+        "can see it there sees the new project. A task type, field or tag that the space "
+        "lacks is added to the whole space"
+    )
+    rest = {
+        "from": data(template.get("name")),
+        "under": path,
+        "name": data(title or template.get("name")),
+        "start": start or "today",
+    }
+    if about:
+        rest["description"] = data(about)
+    if not await _confirm(
+        title="Make a project from this template?",
+        detail=f"{data(template.get('name'))} · inside {data(node.get('name'))}",
+        context=_guard_card(impact, rest),
+    ):
+        return CANCELLED
+    # One key for each approved card. A retry of this request makes no
+    # second project: the gateway returns the first one (TPL-1a).
+    body: dict[str, Any] = {
+        "idempotency_key": f"chat-{uuid.uuid4().hex}", "parent_project_id": pid,
+    }
+    if title:
+        body["name"] = title
+    if about:
+        body["description"] = about
+    if start:
+        body["start_date"] = start
+    try:
+        made = (await post(f"/projects/templates/{tid}/apply", body)) or {}
+    except GatewayRefusal as exc:
+        return _template_refusal(exc)
+    project = made.get("project") or {}
+    created = made.get("created") or {}
+    lanes = ("its own copy of the template's statuses" if made.get("own_statuses")
+             else "the statuses of the space")
+    return (
+        f"Made {data(project.get('name'))} from the template {data(template.get('name'))}: "
+        f"{int(created.get('tasks') or 0)} tasks, with {lanes}."
+        f"\n  project_id: {project.get('id')}"
+    )

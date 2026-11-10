@@ -5,7 +5,7 @@
 // rules — caller's choice → email match → create for the contact, caller's
 // choice → exact name match → create for the organization. The modal's job is
 // to let a human make that choice BEFORE the server guesses, which is what
-// `contact_id` / `organization_id` in the request body are for.
+// `contact_id` / `company_id` in the request body are for.
 //
 // This module is the modal's brain: what the server would do if nobody chose,
 // and what to send once somebody has.
@@ -116,7 +116,7 @@ export function initialChoice(
 
 export type ConvertBody = {
   contact_id?: string;
-  organization_id?: string;
+  company_id?: string;
   deal?: {
     name?: string;
     amount?: number;
@@ -136,7 +136,7 @@ export function convertBody(choice: ConvertChoice): ConvertBody {
   const body: ConvertBody = {};
   if (choice.contact.kind === "existing") body.contact_id = choice.contact.id;
   if (choice.organization.kind === "existing") {
-    body.organization_id = choice.organization.id;
+    body.company_id = choice.organization.id;
   }
   const deal: NonNullable<ConvertBody["deal"]> = {};
   if (choice.deal.name.trim()) deal.name = choice.deal.name.trim();

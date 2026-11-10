@@ -1,0 +1,416 @@
+/**
+ * My Day's rules, all pure (`navigation_shell.md` §4.3 to §4.5, NS-3).
+ *
+ * My Day has ONE job: notice. It answers "What needs me today?" in a few
+ * seconds and hands every longer act to the app that owns it. Planning goes
+ * to Calendar, lists go to My Tasks (§4.3).
+ *
+ * Everything that decides what the page shows is here, so each rule is an
+ * assertion and not a click: the greeting, the summary, the groups, the
+ * seven-row cut, the Next actions dedupe and which cards a member gets.
+ * Fence: `myDay.test.ts`.
+ */
+import { NAV_SECTIONS } from "@/lib/nav";
+import { dueLabel, relativeTime } from "@/lib/taskCard";
+
+import { orderCards } from "./presets";
+import { isReminderKind } from "./reminderKinds";
+import {
+  KIND_ORDER,
+  NEEDS_SOURCE_APP,
+  type NeedsApp,
+  type NeedsItem,
+  type NeedsKind,
+  type NeedsSource,
+  type SourceState,
+} from "./needs";
+
+// ── The header ──────────────────────────────────────────────────────────────
+
+/**
+ * The ONE table of greetings (PZ-39). Each row is the first hour of a band and
+ * its greeting. A band runs until the next row starts. The last band runs past
+ * midnight until 05:00. The late hours read "Hello", never "Good night",
+ * because "Good night" is a goodbye. The server holds the same table in
+ * `acb_common.today.GREETING_TABLE`.
+ * Fence: `tests/unit/test_greeting_table.py` fails when the two differ.
+ */
+export const GREETING_TABLE: ReadonlyArray<readonly [number, string]> = [
+  [5, "Good morning"],
+  [12, "Good afternoon"],
+  [17, "Good evening"],
+  [21, "Hello"],
+];
+
+/** The greeting for an hour (0 to 23), from `GREETING_TABLE`. */
+export function greeting(hour: number): string {
+  let found = GREETING_TABLE[GREETING_TABLE.length - 1][1];
+  for (const [from, word] of GREETING_TABLE) {
+    if (from <= hour) found = word;
+  }
+  return found;
+}
+
+/**
+ * The first name to greet. A display name gives its first word. An address
+ * gives nothing, because "Good morning, vijay.r" reads worse than no name.
+ */
+export function firstName(name: string | null | undefined): string | null {
+  const raw = (name ?? "").trim();
+  if (!raw || raw.includes("@")) return null;
+  return raw.split(/\s+/)[0] || null;
+}
+
+/** "Good morning, Vijay", or "Good morning" with no name. */
+export function greetingLine(now: Date, name: string | null | undefined): string {
+  const first = firstName(name);
+  return first ? `${greeting(now.getHours())}, ${first}` : greeting(now.getHours());
+}
+
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const MONTHS = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+/** "Thursday, 9 October". Built by hand so no locale moves the comma. */
+export function dateLine(now: Date): string {
+  return `${WEEKDAYS[now.getDay()]}, ${now.getDate()} ${MONTHS[now.getMonth()]}`;
+}
+
+const things = (n: number) => (n === 1 ? "1 thing" : `${n} things`);
+
+/**
+ * The one summary sentence, or `null` for no sentence. `today` is `null`
+ * when the member has no calendar, so the sentence does not claim an empty
+ * one.
+ *
+ * `partial` is true when a source did not answer. The page then says the
+ * caveat ONCE, in the card, beside the gap ("Email did not answer, so its
+ * replies may be missing."). So the summary makes no claim about needs at
+ * all, and says only what the calendar holds.
+ *
+ * `handled` is the claim of the live feed (`handledClaim` in `feed.ts`,
+ * `my_day_feed.md` §6.7, MD-2c). It adds "The rest is handled." after a
+ * count of needs. A source that failed (`partial`) silences it, and so does
+ * a count of none, because "Nothing needs you" already says it all. With
+ * the feed off, the page passes no claim, and the line is the line of NS-3.
+ */
+export function summaryLine(needs: number, today: number | null, partial = false, handled = false): string | null {
+  const calCount = today === null || today === 0 ? null : `${things(today)} ${today === 1 ? "is" : "are"} on your calendar today.`;
+  if (needs > 0) {
+    const head = `${things(needs)} ${needs === 1 ? "needs" : "need"} you`;
+    const claim = handled && !partial ? " The rest is handled." : "";
+    if (today === null || today === 0) return `${head}.${claim}`;
+    return `${head}, and ${today === 1 ? "1 is" : `${today} are`} on your calendar today.${claim}`;
+  }
+  if (partial) {
+    if (today === null) return null;
+    return calCount ?? "Your calendar is clear.";
+  }
+  if (calCount) return `Nothing needs you right now. ${calCount}`;
+  if (today === 0) return "Nothing needs you right now, and your calendar is clear.";
+  return "Nothing needs you right now.";
+}
+
+/**
+ * The Needs you card's empty line. With a source missing it says "else",
+ * because the card cannot vouch for an app that did not answer.
+ */
+export function emptyNeedsLine(partial: boolean): string {
+  return partial ? "Nothing else needs you right now." : "Nothing needs you right now.";
+}
+
+// ── Needs you ───────────────────────────────────────────────────────────────
+
+/** The small plain label over each group, by kind. */
+export const KIND_LABELS: Readonly<Record<NeedsKind, string>> = {
+  overdue: "Overdue",
+  approval: "Waiting for your approval",
+  due_today: "Due today",
+  notification: "From your projects",
+  needs_reply: "Waiting for your reply",
+  reminder_due: "Reminder due",
+  reminder_check: "Reminder still open",
+  reminder_unconfirmed: "Reminder not confirmed",
+};
+
+/** Rows shown before "Show all". Seven is what the eye takes in one look. */
+export const NEEDS_SHOWN = 7;
+
+/**
+ * Approval rows shown before "Show all". An admin's queue can be long, and
+ * the member's own work must stay in view below it.
+ */
+export const APPROVALS_SHOWN = 5;
+
+/**
+ * Whether this member gets the "Waiting for your approval" group: an org
+ * admin who holds `approvals` (owner decision, 2026-10-10). The server
+ * applies the same test (`ADMIN_SOURCES` in `routes/shell/needs.py`).
+ */
+export function seesApprovals(features: readonly string[], isAdmin: boolean): boolean {
+  return isAdmin && features.includes("approvals");
+}
+
+/** The feed's rows, minus any approval row this member may not see. */
+export function keepApprovals(items: readonly NeedsItem[], allowed: boolean): NeedsItem[] {
+  return allowed ? [...items] : items.filter((i) => i.kind !== "approval");
+}
+
+export interface NeedsGroup {
+  kind: NeedsKind;
+  label: string;
+  items: NeedsItem[];
+}
+
+/** The reminder kinds that wait on the member. The bell lists them first (RX-3). */
+const FIRED_FIRST: readonly NeedsKind[] = ["reminder_due", "reminder_check"];
+
+/**
+ * Reminder rows shown before "Show all". Reminders sort first, so a long run
+ * of them would push every other row out of the seven. Three keep the rest in
+ * view, as the approval cap does for the admin's queue (RX-3).
+ */
+export const REMINDERS_SHOWN = 3;
+
+/**
+ * The kind order, with the member's preset's first kind moved to the front
+ * (NS-7, §8.1: the Sales manager reads replies first). A kind the feed does
+ * not carry changes nothing.
+ */
+export function kindOrder(first?: string): readonly NeedsKind[] {
+  // RX-3: a reminder that fired and waits on the member sorts first in the
+  // bell, ahead of the server's order. The member's preset (NS-7) still moves
+  // its own kind in front of them.
+  const base: readonly NeedsKind[] = [...FIRED_FIRST, ...KIND_ORDER.filter((k) => !FIRED_FIRST.includes(k))];
+  if (!first || !(KIND_ORDER as readonly string[]).includes(first)) return base;
+  return [first as NeedsKind, ...base.filter((k) => k !== first)];
+}
+
+/**
+ * Group rows under their labels, in the server's kind order, or with the
+ * preset's first kind in front. The order inside a group is the server's:
+ * the shell sorts nothing again.
+ */
+export function groupNeeds(items: readonly NeedsItem[], first?: string): NeedsGroup[] {
+  return kindOrder(first).map((kind) => ({
+    kind,
+    label: KIND_LABELS[kind],
+    items: items.filter((i) => i.kind === kind),
+  })).filter((g) => g.items.length > 0);
+}
+
+/**
+ * The rows to draw: the first seven, or all of them once the member asks.
+ * The cut runs over the whole feed, then groups, so seven means seven rows
+ * and not seven per group. Before "Show all", at most five are approvals,
+ * so the member's own work stays in view. With a preset's first kind (NS-7),
+ * the cut runs over the feed in that order, so its rows are the ones that stay.
+ */
+export function shownNeeds(
+  items: readonly NeedsItem[],
+  expanded: boolean,
+  limit = NEEDS_SHOWN,
+  first?: string,
+): { groups: NeedsGroup[]; hidden: number } {
+  const order = kindOrder(first);
+  // The cut runs over the kind order, with the reminders in front (RX-3).
+  const sorted = order.flatMap((kind) => items.filter((i) => i.kind === kind));
+  let approvals = 0;
+  let reminders = 0;
+  const shown = expanded
+    ? sorted
+    : sorted
+        .filter((i) => i.kind !== "approval" || ++approvals <= APPROVALS_SHOWN)
+        .filter((i) => !isReminderKind(i.kind) || ++reminders <= REMINDERS_SHOWN)
+        .slice(0, limit);
+  return { groups: groupNeeds(shown, first), hidden: items.length - shown.length };
+}
+
+/**
+ * A row's time, in muted words. An overdue row says the day it was due, such
+ * as "Due 2d ago", and never a clock (RX-5). A row due today says nothing,
+ * because its group heading says "Due today". Any other row says how long ago
+ * it came.
+ */
+export function rowTime(item: Pick<NeedsItem, "kind" | "at">, nowMs = Date.now()): string {
+  if (item.kind === "due_today") return "";
+  if (item.kind === "overdue") {
+    const day = dueLabel(item.at, nowMs);
+    return day ? `Due ${day}` : "";
+  }
+  return relativeTime(item.at, nowMs);
+}
+
+/** The member-facing name of each source app. */
+export const APP_NAMES: Readonly<Record<NeedsApp, string>> = {
+  tasks: "My work",
+  approvals: "Approvals",
+  projects: "Projects",
+  email: "Email",
+  calendar: "Calendar",
+};
+
+const APP_HREFS: Readonly<Record<NeedsApp, string>> = {
+  tasks: "/tasks",
+  approvals: "/approvals",
+  projects: "/projects",
+  email: "/email",
+  calendar: "/calendar",
+};
+
+/** A row's icon: its app's own icon from the manifest, never a second list. */
+export function appIcon(app: NeedsApp): string {
+  const pane = NAV_SECTIONS.flatMap((s) => s.items).find((p) => p.href === APP_HREFS[app]);
+  return pane?.icon ?? "Circle";
+}
+
+/**
+ * A source that can fail, named by its SOURCE id: the needs sources, and the
+ * feed's `calendar` source. The server keys `sources` this way, so
+ * `reminders` is not `calendar` (`NEEDS_SOURCE_APP` maps it to its app).
+ */
+export type FailedSource = NeedsSource | "calendar";
+
+/** What a source's silence can hide, in the member's words. Keyed by source. */
+const MISSING: Readonly<Record<FailedSource, string>> = {
+  tasks: "due tasks",
+  approvals: "approvals",
+  projects: "notifications",
+  email: "replies",
+  reminders: "reminders",
+  calendar: "time blocks",
+};
+
+/** True when the key is a source this card knows how to word. */
+export function isFailedSource(source: string): source is FailedSource {
+  return Object.hasOwn(MISSING, source);
+}
+
+/** The app a source speaks for. A needs source goes through THE map. */
+function appOfSource(source: FailedSource): NeedsApp {
+  return source === "calendar" ? "calendar" : NEEDS_SOURCE_APP[source];
+}
+
+/**
+ * One muted line per source that failed: "Email did not answer. …". The keys
+ * are SOURCE ids, as the server sends them. The name is the source's app.
+ */
+export function failedLines(sources: Partial<Record<FailedSource, SourceState>>): string[] {
+  return (Object.keys(MISSING) as FailedSource[])
+    .filter((source) => sources[source] === "failed")
+    .map((source) => `${APP_NAMES[appOfSource(source)]} did not answer, so its ${MISSING[source]} may be missing.`);
+}
+
+// ── Next actions ────────────────────────────────────────────────────────────
+
+/** Next actions shown. Five is a short list, which is the point. */
+export const NEXT_SHOWN = 5;
+
+/**
+ * The task ids the feed already shows. A task row names it in `act_ref`, and
+ * a notification names its task in the `task` value of its link.
+ */
+export function needsTaskIds(items: readonly NeedsItem[]): Set<string> {
+  const ids = new Set<string>();
+  for (const item of items) {
+    if (item.app === "tasks" && item.act_ref) ids.add(item.act_ref);
+    const linked = taskInHref(item.href);
+    if (linked) ids.add(linked);
+  }
+  return ids;
+}
+
+function taskInHref(href: string): string | null {
+  const at = href.indexOf("?");
+  if (at === -1) return null;
+  return new URLSearchParams(href.slice(at + 1)).get("task");
+}
+
+/**
+ * The first five next actions, minus any task Needs you already shows.
+ * One task in two cards teaches the eye to skip both.
+ */
+export function nextActions<T extends { id: string }>(
+  tasks: readonly T[],
+  needs: readonly NeedsItem[],
+  limit = NEXT_SHOWN,
+): T[] {
+  const shown = needsTaskIds(needs);
+  return tasks.filter((t) => !shown.has(t.id)).slice(0, limit);
+}
+
+// ── Today ───────────────────────────────────────────────────────────────────
+
+/** The member's local day, `[midnight, next midnight)`, as ISO instants. */
+export function todayWindow(now: Date): { start: string; end: string } {
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  return { start: start.toISOString(), end: end.toISOString() };
+}
+
+// ── Which cards show ────────────────────────────────────────────────────────
+
+export interface MyDayCards {
+  needs: boolean;
+  today: boolean;
+  next: boolean;
+}
+
+/**
+ * Which cards a member gets. A card shows only for an app the member holds:
+ * a placeholder for an app they lack is a defect (§4.5).
+ *
+ * ⚠️ A card asks for what the SERVER asks for, not only for its pane's
+ * feature. Today and Next actions read the lens (`/projects/my/*`), and the
+ * Projects router demands `feature:projects` for it. The My Tasks pane and
+ * the Calendar pane ride `feature:tasks`. So both cards need both. A member
+ * with `tasks` and no `projects` would otherwise get two error cards.
+ *
+ * Needs you shows when any source of the feed is open to the member. The
+ * feed's tasks and Projects sources need `feature:projects`, its email
+ * source needs `feature:email`, and its approvals source needs
+ * `feature:approvals` AND the admin test (`routes/shell/needs.py`,
+ * `PROVIDERS` and `ADMIN_SOURCES`). So an org admin with no other app gets
+ * the card for the "Waiting for your approval" group, and any other member
+ * with `approvals` alone gets no card.
+ */
+export function cardsFor(features: readonly string[], isAdmin = false): MyDayCards {
+  const has = new Set(features);
+  const lens = has.has("tasks") && has.has("projects");
+  return {
+    needs: has.has("projects") || has.has("email") || seesApprovals(features, isAdmin),
+    today: lens,
+    next: lens,
+  };
+}
+
+/**
+ * The order My Day draws its cards in (NS-7). With the shell nav off, the
+ * page's own order. Otherwise the member's layout: the stored one, the
+ * browser's copy of it, or the role's preset when the read failed. While
+ * nothing is known the page holds the card area, so this order never
+ * changes under the member's eye.
+ */
+export function cardOrderFor<T extends string>(
+  held: readonly T[],
+  shell: { enabled: boolean; layout: { cards: readonly string[] } },
+): T[] {
+  return shell.enabled ? orderCards(held, shell.layout.cards) : [...held];
+}
+
+// ── Today's rows ────────────────────────────────────────────────────────────
+
+/** Where a scheduled block sits against now. A past block draws muted. */
+export function blockState(
+  start: string | null | undefined,
+  end: string | null | undefined,
+  nowMs: number,
+): "past" | "now" | "later" {
+  const s = start ? Date.parse(start) : NaN;
+  const e = end ? Date.parse(end) : NaN;
+  if (!Number.isNaN(e) && e <= nowMs) return "past";
+  if (!Number.isNaN(s) && s <= nowMs) return Number.isNaN(e) ? "past" : "now";
+  return "later";
+}

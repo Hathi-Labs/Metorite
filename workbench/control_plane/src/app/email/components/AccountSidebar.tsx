@@ -2,9 +2,17 @@
 
 import AppIcon, { themedIcon } from "@/components/Icon";
 import { ContextMenu, type CtxItem } from "@/components/ContextMenu";
+import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
+import OverflowTip from "@/components/ui/OverflowTip";
+import RailRow from "@/components/ui/RailRow";
+import { shellChatOn } from "@/lib/shell/chatFlag";
 import { useState } from "react";
 import { EmailAccount, EmailFolder, AutomationFeature } from "../lib/types";
+import { MailboxAvatar, mailboxLabel } from "./MailboxChip";
+import { allInboxesFolders } from "../lib/emailStore";
+import { hasAllInboxes, pooledMailboxes, separateMark, separateToggle } from "../lib/mailbox";
+import { storageMark } from "../lib/storage";
 
 interface AccountSidebarProps {
   accounts: EmailAccount[];
@@ -21,6 +29,18 @@ interface AccountSidebarProps {
    * dialog. Without this prop the account menu is not drawn.
    */
   onDisconnect?: (account: EmailAccount) => void;
+  /** Rename and recolour a mailbox (EM-T8b). The page owns the dialog. */
+  onEditMailbox?: (account: EmailAccount) => void;
+  /** "Keep separate" (false) or "Show in All inboxes" (true): the store sends
+   *  the `PATCH` (EM-T8g-2, D-EM-28). Without it the menu offers neither. */
+  onToggleSeparate?: (id: string, pooled: boolean) => void;
+  /** All inboxes is the view (EM-T8d, D-EM-22). */
+  viewAll?: boolean;
+  /** All inboxes: the count of each well-known folder, summed over each
+   *  mailbox (`allFolderCounts` of the store, EM-T8f-3). Null until it lands. */
+  folderSums?: Readonly<Record<string, number>> | null;
+  /** Open All inboxes. Without it, the row is not drawn. */
+  onSelectAll?: () => void;
   /** Open one of the Email Automation feature views. */
   onOpenAutomation?: (feature: AutomationFeature) => void;
   /** Currently-open automation feature, for highlighting. */
@@ -31,6 +51,62 @@ interface AccountSidebarProps {
   /** Show the Email Automation app list. Default true.
    *  Set false for the "Inbox" mobile drawer (folders only). */
   showAutomation?: boolean;
+}
+
+/**
+ * The items of the mailbox menu. It holds no hook, so a test calls it and
+ * runs each `onSelect` (EM-T8g-2 fence `email-separate-menu`).
+ */
+export function accountMenuItems(
+  account: EmailAccount,
+  accounts: ReadonlyArray<EmailAccount>,
+  on: {
+    onEditMailbox?: (account: EmailAccount) => void;
+    onSetDefault?: (id: string) => void;
+    onToggleSeparate?: (id: string, pooled: boolean) => void;
+    onDisconnect?: (account: EmailAccount) => void;
+  },
+): CtxItem[] {
+  const { onEditMailbox, onSetDefault, onToggleSeparate, onDisconnect } = on;
+  const items: CtxItem[] = [{ kind: "label", label: account.emailAddress }];
+  if (onEditMailbox) {
+    items.push({
+      kind: "item",
+      label: "Name and colour",
+      icon: themedIcon("Palette"),
+      onSelect: () => onEditMailbox(account),
+    });
+  }
+  if (!account.isDefault && onSetDefault) {
+    items.push({
+      kind: "item",
+      label: "Set as default mailbox",
+      icon: themedIcon("Star"),
+      onSelect: () => onSetDefault(account.id),
+    });
+  }
+  // "Keep separate", or "Show in All inboxes" for a separate mailbox
+  // (EM-T8g-2 item 1). With one mailbox the menu offers neither.
+  const toggle = onToggleSeparate ? separateToggle(account, accounts) : null;
+  if (toggle && onToggleSeparate) {
+    items.push({
+      kind: "item",
+      label: toggle.label,
+      icon: themedIcon(toggle.icon),
+      onSelect: () => onToggleSeparate(account.id, toggle.nextPooled),
+    });
+  }
+  if (onDisconnect) {
+    items.push({ kind: "sep" });
+    items.push({
+      kind: "item",
+      label: "Disconnect mailbox",
+      icon: themedIcon("Unplug"),
+      danger: true,
+      onSelect: () => onDisconnect(account),
+    });
+  }
+  return items;
 }
 
 const AUTOMATION_ITEMS: {
@@ -45,6 +121,16 @@ const AUTOMATION_ITEMS: {
   { key: "analytics", label: "Analytics", icon: themedIcon("BarChart3") },
 ];
 
+/**
+ * The automation rows to draw. With the one assistant on (D99), the top bar
+ * is the only chat door, and `page.tsx` sends a click on "Chat" there anyway,
+ * so the row goes. With the flag off, "Chat keeps its sidebar door"
+ * (`lib/shell/chatFlag.ts`). Fence: `lib/sidebarChatRow.test.ts`.
+ */
+export function automationItems(chatOn: boolean = shellChatOn()) {
+  return chatOn ? AUTOMATION_ITEMS.filter((item) => item.key !== "chat") : AUTOMATION_ITEMS;
+}
+
 export function AccountSidebar({
   accounts,
   selectedAccountId,
@@ -55,37 +141,31 @@ export function AccountSidebar({
   onAddAccount,
   onSetDefault,
   onDisconnect,
+  onEditMailbox,
+  onToggleSeparate,
+  viewAll = false,
+  folderSums = null,
+  onSelectAll,
   onOpenAutomation,
   activeAutomation,
   showMailbox = true,
   showAutomation = true,
 }: AccountSidebarProps) {
   const [accountsExpanded, setAccountsExpanded] = useState(true);
+  // All inboxes shows for two or more pooled mailboxes. Its count is the sum
+  // of their Inbox counts (§11.4), and a selected mailbox row is never also
+  // selected. A separate mailbox adds to neither (EM-T8g-2 item 2).
+  const pooled = pooledMailboxes(accounts);
+  const showAll = !!onSelectAll && hasAllInboxes(accounts);
+  const allUnread = pooled.reduce((n, a) => n + (a.unreadCount || 0), 0);
+  const isSelected = (id: string) => !viewAll && selectedAccountId === id;
+  // In All inboxes only the folders that every mailbox has show, because a
+  // custom folder belongs to one mailbox. Each well-known folder shows its
+  // sum over each mailbox, and each other folder shows no count (§11.4
+  // "Folders", EM-T8f-3).
+  const shownFolders = viewAll ? allInboxesFolders(folders, folderSums) : folders;
   // The account menu: which account, and where to draw it.
   const [menu, setMenu] = useState<{ account: EmailAccount; x: number; y: number } | null>(null);
-
-  const menuItems = (account: EmailAccount): CtxItem[] => {
-    const items: CtxItem[] = [{ kind: "label", label: account.emailAddress }];
-    if (!account.isDefault && onSetDefault) {
-      items.push({
-        kind: "item",
-        label: "Set as default mailbox",
-        icon: themedIcon("Star"),
-        onSelect: () => onSetDefault(account.id),
-      });
-    }
-    if (onDisconnect) {
-      items.push({ kind: "sep" });
-      items.push({
-        kind: "item",
-        label: "Disconnect mailbox",
-        icon: themedIcon("Unplug"),
-        danger: true,
-        onSelect: () => onDisconnect(account),
-      });
-    }
-    return items;
-  };
 
   return (
     <div className="flex flex-col h-full bg-sidebar text-sidebar-foreground overflow-hidden">
@@ -93,7 +173,7 @@ export function AccountSidebar({
       <>
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-4 border-b border-sidebar-border flex-shrink-0">
-        <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">
+        <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold glass:normal-case glass:tracking-normal glass:text-footnote">
           Accounts
         </span>
         <button
@@ -117,11 +197,39 @@ export function AccountSidebar({
 
         {accountsExpanded && (
           <div className="mt-1 space-y-0.5">
+            {showAll && (
+              <button
+                onClick={onSelectAll}
+                aria-pressed={viewAll}
+                className={`flex items-center gap-2.5 w-full px-2 py-2 rounded-md transition-colors text-left ${
+                  viewAll
+                    ? "bg-sidebar-accent text-sidebar-foreground"
+                    : "hover:bg-sidebar-accent/60 text-sidebar-foreground/70 hover:text-sidebar-foreground"
+                }`}
+              >
+                <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border border-border bg-muted text-muted-foreground">
+                  <AppIcon name="Inbox" size={13} />
+                </span>
+                <span className="flex-1 min-w-0">
+                  <span className="block text-xs font-medium truncate">All inboxes</span>
+                  <span className="block text-[10px] text-muted-foreground truncate">
+                    {pooled.length} mailboxes
+                  </span>
+                </span>
+                {viewAll ? (
+                  <AppIcon name="Check" size={11} className="text-primary flex-shrink-0" />
+                ) : allUnread > 0 ? (
+                  <span className="bg-primary text-primary-foreground text-[10px] rounded-full px-1.5 py-0.5 flex-shrink-0">
+                    {allUnread}
+                  </span>
+                ) : null}
+              </button>
+            )}
             {accounts.map((account) => (
               <div
                 key={account.id}
                 className={`group flex items-center gap-1 w-full px-2 py-2 rounded-md transition-colors ${
-                  selectedAccountId === account.id
+                  isSelected(account.id)
                     ? "bg-sidebar-accent text-sidebar-foreground"
                     : "hover:bg-sidebar-accent/60 text-sidebar-foreground/70 hover:text-sidebar-foreground"
                 }`}
@@ -130,19 +238,39 @@ export function AccountSidebar({
                   onClick={() => onAccountSelect(account.id)}
                   className="flex items-center gap-2.5 flex-1 min-w-0 text-left"
                 >
-                  <div
-                    className="w-7 h-7 rounded-full flex items-center justify-center text-white flex-shrink-0"
-                    style={{
-                      backgroundColor: account.color,
-                      fontSize: "10px",
-                      fontWeight: 600,
-                    }}
-                  >
-                    {account.avatar}
-                  </div>
+                  <MailboxAvatar account={account} />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1">
-                      <span className="text-xs font-medium truncate">{account.label}</span>
+                      {/* A long address cuts here, and the tip shows it whole. */}
+                      <OverflowTip text={mailboxLabel(account)} className="text-xs font-medium" />
+                      {separateMark(account, accounts) && (
+                        // A separate mailbox says so in words, beside its chip:
+                        // All inboxes leaves it out (EM-T8g-2 item 1).
+                        <Badge size="xs" title="Kept out of All inboxes" className="flex-shrink-0">
+                          {separateMark(account, accounts)}
+                        </Badge>
+                      )}
+                      {account.syncStatus === "error" && (
+                        // A mailbox that stopped syncing shows it in the switcher,
+                        // so All inboxes cannot hide it (§11.4, EM-T8d review).
+                        <AppIcon name="AlertCircle"
+                          size={10}
+                          className="text-warning flex-shrink-0"
+                          aria-label="Needs attention"
+                        />
+                      )}
+                      {storageMark(account) && (
+                        // Each mailbox at the storage limit, a separate one
+                        // too, so a full mailbox cannot hide (UC-12, EM-T6e D3).
+                        <span title={storageMark(account) ?? undefined} className="inline-flex flex-shrink-0">
+                          <AppIcon name="HardDrive"
+                            size={10}
+                            className="text-warning"
+                            role="img"
+                            aria-label={storageMark(account) ?? undefined}
+                          />
+                        </span>
+                      )}
                       {account.isDefault && (
                         <AppIcon name="Star"
                           size={10}
@@ -169,10 +297,10 @@ export function AccountSidebar({
                     <AppIcon name="Star" size={11} />
                   </button>
                 )}
-                {selectedAccountId === account.id && (
+                {isSelected(account.id) && (
                   <AppIcon name="Check" size={11} className="text-primary flex-shrink-0" />
                 )}
-                {onDisconnect && (
+                {(onDisconnect || onEditMailbox || onToggleSeparate) && (
                   <Button
                     variant="ghost"
                     size="icon-sm"
@@ -188,7 +316,7 @@ export function AccountSidebar({
                     className="flex-shrink-0"
                   />
                 )}
-                {account.unreadCount > 0 && selectedAccountId !== account.id && (
+                {account.unreadCount > 0 && !isSelected(account.id) && (
                   <span className="bg-primary text-primary-foreground text-[9px] rounded-full px-1.5 py-0.5 flex-shrink-0">
                     {account.unreadCount}
                   </span>
@@ -203,7 +331,9 @@ export function AccountSidebar({
         <ContextMenu
           x={menu.x}
           y={menu.y}
-          items={menuItems(menu.account)}
+          items={accountMenuItems(menu.account, accounts, {
+            onEditMailbox, onSetDefault, onToggleSeparate, onDisconnect,
+          })}
           onClose={() => setMenu(null)}
         />
       )}
@@ -215,24 +345,19 @@ export function AccountSidebar({
       {/* Email Automation — sits between accounts and folders */}
       {showAutomation && (
         <div className="flex-shrink-0 px-2 py-2.5">
-          <div className="flex items-center gap-1.5 px-2 py-1 text-[10px] tracking-widest uppercase text-muted-foreground font-semibold">
+          <div className="flex items-center gap-1.5 px-2 py-1 text-[10px] tracking-widest uppercase text-muted-foreground font-semibold glass:normal-case glass:tracking-normal glass:text-caption">
             <AppIcon name="Zap" size={11} className="text-primary" />
             <span>Email Automation</span>
           </div>
           <div className="mt-1 space-y-0.5">
-            {AUTOMATION_ITEMS.map(({ key, label, icon: Icon }) => (
-              <button
+            {automationItems().map(({ key, label, icon: Icon }) => (
+              <RailRow
                 key={key}
-                onClick={() => onOpenAutomation?.(key)}
-                className={`flex items-center gap-2.5 w-full px-2 py-1.5 rounded-md transition-colors text-left ${
-                  activeAutomation === key
-                    ? "bg-primary/15 text-primary"
-                    : "text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent"
-                }`}
-              >
-                <Icon size={13} className="flex-shrink-0" />
-                <span className="text-xs">{label}</span>
-              </button>
+                label={label}
+                selected={activeAutomation === key}
+                onSelect={() => onOpenAutomation?.(key)}
+                icon={<Icon size={14} className="flex-shrink-0" />}
+              />
             ))}
           </div>
         </div>
@@ -245,32 +370,20 @@ export function AccountSidebar({
       {/* Folders */}
       {showMailbox && (
       <div className="flex-1 overflow-y-auto px-2 space-y-0.5 scrollbar-hide">
-        {folders.map(({ label, key, count, type }) => {
+        {shownFolders.map(({ label, key, count, type }) => {
           const IconComponent = getFolderIcon(key, type);
+          // A rail row (owner, 2026-10-10). A provider label can be long, and
+          // this row did not cut it at all: it ran under the count. Now it cuts
+          // with an ellipsis and shows whole in a tip.
           return (
-            <button
+            <RailRow
               key={key}
-              onClick={() => onFolderSelect(key)}
-              className={`flex items-center gap-2.5 w-full px-3 py-2 rounded-md transition-colors text-left ${
-                selectedFolder === key
-                  ? "bg-primary/15 text-primary"
-                  : "text-sidebar-foreground/70 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
-              }`}
-            >
-              <IconComponent size={14} className="flex-shrink-0" />
-              <span className="flex-1 text-xs">{label}</span>
-              {count > 0 && (
-                <span
-                  className={`text-[10px] px-1.5 py-0.5 rounded-full ${
-                    selectedFolder === key
-                      ? "bg-primary text-primary-foreground"
-                      : "bg-secondary text-muted-foreground"
-                  }`}
-                >
-                  {count}
-                </span>
-              )}
-            </button>
+              label={label}
+              selected={selectedFolder === key}
+              onSelect={() => onFolderSelect(key)}
+              icon={<IconComponent size={14} className="flex-shrink-0" />}
+              meta={count > 0 ? count : null}
+            />
           );
         })}
       </div>

@@ -1,0 +1,255 @@
+"use client";
+
+/**
+ * One value on a confirmation card, drawn by its kind (`lib/cardFields.ts`).
+ *
+ * A tag is the tag pill (the `--cat` ramp), a status is the shared status
+ * chip, a task is the task pill with its number muted, a person is a person
+ * pill, a project is a project pill, and a date is a formatted date. The
+ * pills are the chat's own (`ui/EntityPill.tsx`), so a card and an answer
+ * draw a name the same way. A task pill opens its task, as it does in an
+ * answer (owner report, 2026-10-19: "From #247" and "To #248" on a "Link
+ * these tasks?" card did not open). It links only when one visible task
+ * carries the card's number and title (`FencedTaskRef`). No other card pill
+ * links: a person, a tag or a status has nothing more to open.
+ *
+ * A value that does not fit its kind (a phrase, two names with words
+ * between) draws through `FencedText`, so it still never shows a mark.
+ * A change draws as the old value, muted, an arrow, and the new value.
+ */
+
+import { useEffect, useRef, useState } from "react";
+
+import { FencedTaskRef } from "@/components/ChatTaskRef";
+import FencedText from "@/components/FencedText";
+import Icon from "@/components/Icon";
+import EntityPill from "@/components/ui/EntityPill";
+import {
+  type FieldKind,
+  type ValueItem,
+  formatCardDate,
+  formatMinutes,
+  formatPlain,
+  formatWords,
+  isLongText,
+  isLongTextChange,
+  parseFieldValue,
+  personOf,
+} from "@/lib/cardFields";
+import { accentForHue, resolveHue, statusAccent } from "@/lib/statusAccent";
+import { categoryLabel } from "@/lib/statusCategory";
+
+/** One short name with no mark: a lane's name or a category key. */
+const LANE_WORD = /^[\p{L}\p{N}][\p{L}\p{N} _&/-]{0,39}$/u;
+
+/**
+ * True when an element draws as its chip. A fenced name does. An unfenced
+ * category ("in_progress") or status ("Qualified", in a CRM read) is still
+ * one lane, and an unfenced address ("priya@x.io") is still one person, so
+ * each draws as its chip and never as the raw value (follow-up of #716 and
+ * #735). A phrase stays words.
+ */
+function asChip(item: ValueItem, kind: FieldKind): boolean {
+  if (item.named) return true;
+  const text = item.text.trim();
+  if (kind === "category" || kind === "status" || kind === "color") return LANE_WORD.test(text) && formatPlain(text) !== "none";
+  if (kind === "person") return personOf(text).email !== undefined;
+  return false;
+}
+
+/** One element of a value, by kind. Exported for its test. */
+export function ValueElement({ item, kind }: { item: ValueItem; kind: FieldKind }) {
+  const text = item.text;
+  if (!asChip(item, kind)) {
+    if (kind === "date") return <>{formatCardDate(formatPlain(text))}</>;
+    if (kind === "minutes") return <>{formatMinutes(text)}</>;
+    if (kind === "flag") return <>{formatPlain(text)}</>;
+    const plain = formatPlain(text);
+    return plain === "none" ? <span className="text-muted-foreground">none</span> : <FencedText text={text} pills={false} />;
+  }
+  switch (kind) {
+    case "task": {
+      const chip = <EntityPill fit kind="task" label={text} number={item.number} />;
+      // The card names the task by number and title: the pill opens that
+      // task once the lookup finds it (owner report, 2026-10-19).
+      return item.number && /^#[1-9][0-9]{0,8}$/.test(item.number)
+        ? <FencedTaskRef fit refText={item.number} title={text} fallback={chip} />
+        : chip;
+    }
+    case "tag":
+      return <EntityPill fit kind="tag" label={text} />;
+    case "status":
+      // A phrase in the place of a name ("the default") is words, not a lane.
+      if (/^the\s/i.test(text)) return <span className="text-foreground">{text}</span>;
+      return <EntityPill fit kind="status" label={text} accent={statusAccent({ name: text })} />;
+    case "category":
+      return (
+        <EntityPill fit kind="status" label={categoryLabel(text)} accent={statusAccent({ category: text, name: text })} />
+      );
+    case "color": {
+      // PJP-1: a swatch in the hue, and the hue's name. A hex code maps by
+      // the same rule as the server (`resolveHue`).
+      const hue = resolveHue({ color: text });
+      return (
+        <span className="inline-flex items-center gap-1.5 text-foreground">
+          <span aria-hidden className={`inline-block size-2.5 shrink-0 rounded-full ${accentForHue(hue).dot}`} />
+          {formatWords(hue)}
+        </span>
+      );
+    }
+    case "person": {
+      if (text.startsWith("agent:")) return <EntityPill fit kind="agent" label={text.slice(6)} />;
+      // "Priya (priya@x.io)" is a name and an address, never one label.
+      const who = personOf(text);
+      return <EntityPill fit kind="person" label={who.name} email={who.email} />;
+    }
+    case "project":
+      return <EntityPill fit kind="project" label={text} />;
+    // A value in the value column is already set apart by its label, so it
+    // draws in the body weight. Only a name inside running text is emphasised.
+    case "date":
+      return <span className="text-foreground">{formatCardDate(text)}</span>;
+    case "minutes":
+      return <span className="text-foreground">{formatMinutes(text)}</span>;
+    case "flag":
+      return <span className="text-foreground">{formatPlain(text)}</span>;
+    case "words":
+      return <span className="text-foreground">{formatWords(text)}</span>;
+    default:
+      return (
+        <span className="text-foreground">
+          {item.number && <span className="text-muted-foreground">{item.number} </span>}
+          {text}
+        </span>
+      );
+  }
+}
+
+/** The kinds that draw as a pill or a chip. */
+const CHIP_KINDS: ReadonlySet<FieldKind> = new Set(["task", "tag", "status", "category", "person", "project"]);
+
+/**
+ * One side of a value. Each item is ONE box, so a phrase with a name inside
+ * it stays one run of text (a flex gap between its parts read as
+ * "Priya ( priya@x.io )"). Several chips sit in a wrapping row with a gap.
+ */
+function Side({ items, kind, muted = false }: { items: ValueItem[]; kind: FieldKind; muted?: boolean }) {
+  return (
+    <span
+      className={`inline-flex min-w-0 max-w-full flex-wrap items-center gap-1 ${muted ? "text-muted-foreground opacity-80" : ""}`}
+    >
+      {items.map((item, i) => (
+        // `inline-flex max-w-full` lets a long pill shrink to the column and
+        // truncate (its tooltip holds the whole name), at 390px too.
+        <span key={i} className={CHIP_KINDS.has(kind) && asChip(item, kind) ? "inline-flex min-w-0 max-w-full" : "min-w-0"}>
+          <ValueElement item={item} kind={kind} />
+          {i < items.length - 1 && kind === "text" && ","}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/**
+ * A change to a long text: the old text on a "Before" line, muted and cut to
+ * two lines with a "Show all" toggle, then the new text in full under "Now".
+ * Both captions stay, so the pair reads the same when either side is short.
+ * No lone arrow: in a narrow column it stood on a line of its own.
+ */
+function LongChange({
+  before,
+  after,
+  kind,
+  plain,
+}: {
+  before: ValueItem[];
+  after: ValueItem[];
+  kind: FieldKind;
+  plain: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const cuttable = before.some((i) => isLongText(i.text.trim()));
+  // The toggle shows only when the clamp cuts text: in a wide card a long
+  // old text can fit in two lines, and a toggle that opens nothing misleads.
+  const clamp = useRef<HTMLSpanElement>(null);
+  const [cut, setCut] = useState(cuttable);
+  useEffect(() => {
+    const el = clamp.current;
+    if (!el || open || typeof ResizeObserver === "undefined") return;
+    const check = () => setCut(el.scrollHeight > el.clientHeight + 1);
+    check();
+    const watch = new ResizeObserver(check);
+    watch.observe(el);
+    return () => watch.disconnect();
+  }, [open]);
+  // A fenced side draws as its words in the colour of its line: the default
+  // element paints `text-foreground`, and Before must stay muted.
+  const words = (item: ValueItem, i: number) =>
+    item.named ? (
+      <span key={i}>
+        {item.number && `${item.number} `}
+        {item.text}
+      </span>
+    ) : (
+      <ValueElement key={i} item={item} kind={kind} />
+    );
+  return (
+    <span className="flex min-w-0 max-w-full flex-col gap-1" title={plain} data-card-long-change="">
+      <span className="flex min-w-0 flex-col items-start gap-0.5">
+        <span className="text-[11px] text-muted-foreground">Before</span>
+        <span
+          ref={clamp}
+          className={`min-w-0 max-w-full whitespace-pre-wrap break-words text-muted-foreground ${open ? "" : "line-clamp-2"}`}
+        >
+          {before.map(words)}
+        </span>
+        {cuttable && (cut || open) && (
+          <button
+            type="button"
+            aria-expanded={open}
+            onClick={() => setOpen((v) => !v)}
+            className="rounded-sm text-[11px] text-muted-foreground underline underline-offset-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {open ? "Show less" : "Show all"}
+          </button>
+        )}
+      </span>
+      <span className="flex min-w-0 flex-col gap-0.5">
+        <span className="text-[11px] text-muted-foreground">Now</span>
+        <span className="min-w-0 max-w-full whitespace-pre-wrap break-words text-foreground">
+          {after.map(words)}
+        </span>
+      </span>
+    </span>
+  );
+}
+
+export default function CardFieldValue({
+  value,
+  kind = "text",
+  many = false,
+  fenced = true,
+}: {
+  value: string;
+  kind?: FieldKind;
+  many?: boolean;
+  /** False: the server did not fence this card, so the value is drawn as sent. */
+  fenced?: boolean;
+}) {
+  if (!fenced) return <span className="min-w-0 break-words">{value}</span>;
+  const parsed = parseFieldValue(value, many);
+  if (parsed.before && isLongTextChange(parsed, kind)) {
+    return <LongChange before={parsed.before} after={parsed.after} kind={kind} plain={parsed.plain} />;
+  }
+  return (
+    <span className="inline-flex min-w-0 max-w-full flex-wrap items-center gap-1" title={parsed.plain}>
+      {parsed.before && (
+        <>
+          <Side items={parsed.before} kind={kind} muted />
+          <Icon name="ArrowRight" size={12} className="shrink-0 text-muted-foreground" aria-label="changes to" />
+        </>
+      )}
+      <Side items={parsed.after} kind={kind} />
+    </span>
+  );
+}

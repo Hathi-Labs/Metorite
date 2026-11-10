@@ -111,8 +111,10 @@ export function mapProject(raw: Raw): MyTasksProject {
     outcome: String(raw.name ?? raw.outcome ?? ""),
     purpose: raw.description ? String(raw.description) : undefined,
     // `active` is the only node status a picker offers; anything else
-    // (archived, closed) reads as DONE so the ACTIVE filter drops it.
-    status: status === "ACTIVE" ? "ACTIVE" : "DONE",
+    // (closed) reads as DONE so the ACTIVE filter drops it. A FILED project
+    // carries `archived_at` and keeps the run state `active`, so it reads as
+    // DONE too (WS-64).
+    status: status === "ACTIVE" && !raw.archived_at ? "ACTIVE" : "DONE",
     hasNextAction: false,
   };
 }
@@ -1005,6 +1007,11 @@ export async function apiClarifyPropose(
           title: String((r.parent_suggestion as Raw).title ?? ""),
         }
       : undefined,
+    clarifiedBy:
+      r.clarified_by === "llm" || r.clarified_by === "heuristic"
+        ? r.clarified_by
+        : undefined,
+    fallbackReason: r.fallback_reason ? String(r.fallback_reason) : undefined,
   };
 }
 

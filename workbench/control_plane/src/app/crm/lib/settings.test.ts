@@ -9,6 +9,7 @@ import {
   renumber,
   reorder,
   reorderFailureMessage,
+  STATUS_TYPE_LABELS,
   validateLostReasonDraft,
   validateStatusDraft,
 } from "./settings";
@@ -151,7 +152,7 @@ describe("reorderFailureMessage", () => {
     // is how somebody drags again and makes it worse.
     const message = reorderFailureMessage(["Status not found"], 4);
     expect(message).toContain("1 of 4");
-    expect(message).toContain("the order shown is the server's");
+    expect(message).toContain("the saved order, not the one you dropped");
     expect(message).toContain("Status not found");
   });
 });
@@ -230,7 +231,7 @@ describe("validateStatusDraft", () => {
       "deal"
     );
     expect(message).toContain("always forecasts 100%");
-    expect(message).toContain("Set probability to 100");
+    expect(message).toContain("Set the win chance to 100");
   });
 
   it("names the rule when a lost stage would not forecast 0", () => {
@@ -262,10 +263,27 @@ describe("validateStatusDraft", () => {
     ).toBeNull();
   });
 
-  it("never applies the clamp to a lead status", () => {
-    // `crm_lead_statuses` has no probability column at all, so a won lead
-    // status is not a contradiction — it is a lane with no forecast.
-    expect(validateStatusDraft({ name: "Qualified", type: "won" }, "lead")).toBeNull();
+  it("applies the won=100 and lost=0 clamp to a lead status too (CRM-U6)", () => {
+    // Migration 288 gave `crm_lead_statuses` a win chance, with the same rule.
+    expect(
+      validateStatusDraft({ name: "Qualified", type: "won", probability: 40 }, "lead")
+    ).toContain("Set the win chance to 100");
+    expect(
+      validateStatusDraft({ name: "Qualified", type: "won", probability: 100 }, "lead")
+    ).toBeNull();
+    expect(
+      validateStatusDraft({ name: "Cold", type: "open", probability: 140 }, "lead")
+    ).toContain("outside 0-100");
+  });
+
+  it("names every stage type in plain words", () => {
+    expect(STATUS_TYPE_LABELS).toEqual({
+      open: "Open",
+      ongoing: "In progress",
+      on_hold: "On hold",
+      won: "Won",
+      lost: "Lost",
+    });
   });
 });
 
@@ -347,7 +365,7 @@ describe("validateStatusDraft · stage discipline", () => {
     // intermittent bug.
     expect(
       validateStatusDraft({ ...base, required_fields: ["amont"] }, "deal")
-    ).toContain("amont");
+    ).toContain("Amont");
   });
 
   it("accepts an empty requirement set — that is how a stage stops asking", () => {

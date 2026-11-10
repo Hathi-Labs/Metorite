@@ -10,16 +10,21 @@ import { describe, expect, it } from "vitest";
 
 import type { OutlookReport } from "./api";
 import {
+  FORECAST_SLOT,
   capacityLine,
+  capacityShown,
+  forecastAccent,
+  forecastBand,
   forecastGap,
+  forecastRule,
   headlineVerdict,
   isDrawableOutlook,
   peopleLine,
   shortDate,
-  slipRange,
   velocityLine,
   LEAVE_NOT_COUNTED,
 } from "./outlook";
+import { HASH_SLOTS, accentForSlot } from "@/lib/categorical";
 
 function report(over: Partial<OutlookReport> = {}): OutlookReport {
   return {
@@ -103,7 +108,8 @@ describe("velocityLine", () => {
       finish_date: null,
     });
     expect(thin.tone).toBe("quiet");
-    expect(thin.headline).toBe("Too early to say");
+    // WS-27bn RA-6: the §5 word.
+    expect(thin.headline).toBe("Not enough history");
   });
 
   it("gives the date and the NET rate when it converges", () => {
@@ -332,7 +338,7 @@ describe("headlineVerdict — the answer before the evidence", () => {
     const v = headlineVerdict(
       report({ velocity: { ...report().velocity, verdict: "no_history" } })
     );
-    expect(v.headline).toBe("Too early to forecast");
+    expect(v.headline).toBe("Not enough history");
     expect(v.tone).toBe("quiet");
   });
 });
@@ -480,54 +486,200 @@ describe("⚠️ reading a response this panel cannot trust", () => {
   });
 });
 
-describe("slipRange — the plan against the forecast (WS-27bn R3a)", () => {
-  it("places the plan and the forecast on a track from today", () => {
-    // Forecast in 10 weeks (70 days), 23 days after the plan, so the plan
-    // sits 47 days out. The forecast is the far end of the track.
-    const r = slipRange(report())!;
-    expect(r.forecast).toBe(100);
-    expect(r.plan).toBeCloseTo((47 / 70) * 100, 5);
-    expect(r.start).toBeCloseTo(r.plan, 5);
-    expect(r.width).toBeCloseTo(100 - r.plan, 5);
-    expect(r.slip).toBe("23 days late");
-    expect(r.planLabel).toBe("17 Feb 2027");
-    expect(r.forecastLabel).toBe("12 Mar 2027");
-    expect(r.tone).toBe("bad");
-    expect(r.planPassed).toBe(false);
+/** WS-27bn RA-6. The forecast by count, as the server sends it. */
+function counted(over: Partial<OutlookReport["velocity"]> = {}): OutlookReport {
+  return report({
+    velocity: {
+      ...report().velocity,
+      weeks_remaining: 10,
+      finish_date: "2027-03-12",
+      p50_weeks: 10,
+      p50_date: "2027-03-12",
+      p85_weeks: 13,
+      p85_date: "2027-04-02",
+      weeks_with_finishes: 5,
+      finished_in_window: 13,
+      min_finished: 3,
+      min_finish_weeks: 2,
+      trials: 2000,
+      cap_weeks: 52,
+      reason: null,
+      converge_per_week: null,
+      summary:
+        "Half of 2,000 runs finish the 31 open tasks by 12 Mar 2027, and 85% finish by 2 Apr 2027.",
+      ...over,
+    },
+  });
+}
+
+describe("headlineVerdict — the server's sentence first (WS-27bn RA-6, §6.8 E5)", () => {
+  it("prints the summary, then the plan, under the slip", () => {
+    const v = headlineVerdict(counted());
+    expect(v.headline).toBe("23 days late");
+    expect(v.detail.startsWith("Half of 2,000 runs finish the 31 open tasks")).toBe(true);
+    expect(v.detail).toContain("The plan is 17 Feb 2027.");
   });
 
-  it("an early forecast puts the plan at the far end, in a good tone", () => {
-    const r = slipRange(report({ plan: { ...report().plan, slip_days: -14 } }))!;
-    expect(r.plan).toBe(100);
-    expect(r.forecast).toBeCloseTo((70 / 84) * 100, 5);
-    expect(r.slip).toBe("14 days early");
-    expect(r.tone).toBe("good");
+  it("prints the summary of a refusal as it is", () => {
+    const said = "Not converging: work arrives at least as fast as it finishes.";
+    const v = headlineVerdict(counted({ verdict: "not_converging", summary: said }));
+    expect(v.headline).toBe("Not converging");
+    expect(v.detail).toBe(said);
+    const thin = headlineVerdict(counted({ verdict: "no_history", summary: "Not enough history to forecast." }));
+    expect(thin.headline).toBe("Not enough history");
+    expect(thin.detail).toBe("Not enough history to forecast.");
+  });
+});
+
+describe("velocityLine — the count forecast (WS-27bn RA-6)", () => {
+  it("names the 85% date beside the 50% headline", () => {
+    const line = velocityLine(counted().velocity);
+    expect(line.headline).toBe("12 Mar 2027");
+    expect(line.detail).toContain("31 open: 50% by then, 85% by 2 Apr 2027");
+  });
+
+  it("⚠️ NOT CONVERGING for arrivals names the rate that would converge it", () => {
+    const line = velocityLine(
+      counted({
+        verdict: "not_converging",
+        reason: "arrivals",
+        converge_per_week: 6.6,
+        finish_date: null,
+      }).velocity
+    );
+    expect(line.detail).toContain("To converge, it needs 6.6 finished a week.");
+    expect(line.detail).toContain("4.2/wk");
+  });
+
+  it("⚠️ NOT CONVERGING past the cap names no rate (fix round 1)", () => {
+    const line = velocityLine(
+      counted({ verdict: "not_converging", reason: "cap", converge_per_week: null, finish_date: null })
+        .velocity
+    );
+    expect(line.detail).toContain("The 85% date is more than 52 weeks away at this rate.");
+    expect(line.detail).not.toContain("To converge");
+  });
+
+  it("not enough history says the finishes, the weeks and the rule", () => {
+    const line = velocityLine(
+      counted({
+        verdict: "no_history",
+        finished_in_window: 2,
+        weeks_with_finishes: 1,
+        finish_date: null,
+      }).velocity
+    );
+    expect(line.headline).toBe("Not enough history");
+    expect(line.detail).toBe(
+      "2 finished in 1 of the last 6 weeks. A forecast needs 3, in 2 weeks or more."
+    );
+  });
+});
+
+describe("forecastRule — each rule is reachable (WS-27bn RA-6, §6.8 E6)", () => {
+  it("explains the runs, the two dates and no estimate", () => {
+    const rule = forecastRule(counted().velocity)!;
+    expect(rule).toContain("2,000 times");
+    expect(rule).toContain("50% date");
+    expect(rule).toContain("85% date");
+    expect(rule).toContain("No estimate is used.");
+  });
+
+  it("explains not converging and not enough history", () => {
+    const arrivals = forecastRule(counted({ verdict: "not_converging", reason: "arrivals" }).velocity)!;
+    expect(arrivals).toContain("new work arrives at least as fast");
+    expect(arrivals).toContain("spread over 52 weeks");
+    // RA-6 fix round 1: the cap rule names what helps, and no rate.
+    const cap = forecastRule(counted({ verdict: "not_converging", reason: "cap" }).velocity)!;
+    expect(cap).toContain("fewer than 85% of 2,000 runs finish within 52 weeks");
+    expect(cap).not.toContain("rate that converges");
+    expect(forecastRule(counted({ verdict: "no_history" }).velocity)).toContain(
+      "3 finished tasks in the last 6 weeks, in 2 weeks or more"
+    );
+  });
+
+  it("has nothing to explain when nothing is open", () => {
+    expect(forecastRule(counted({ verdict: "nothing_left" }).velocity)).toBeNull();
+    expect(forecastRule(undefined)).toBeNull();
+  });
+});
+
+describe("capacityShown — estimates add a line only when they exist (WS-27bn RA-6)", () => {
+  it("drops Nothing sized, and keeps a real estimate and a missing capacity", () => {
+    expect(capacityShown({ ...report().capacity, verdict: "no_estimates" })).toBe(false);
+    expect(capacityShown({ ...report().capacity, verdict: "nothing_left" })).toBe(false);
+    expect(capacityShown(report().capacity)).toBe(true);
+    expect(capacityShown({ ...report().capacity, verdict: "no_capacity" })).toBe(true);
+    expect(capacityShown(undefined)).toBe(false);
+  });
+});
+
+describe("forecastBand — the two dates on a track from today (WS-27bn RA-6)", () => {
+  it("places the 50% and the 85% dates, and the plan, on one track", () => {
+    // 50% in 10 weeks (70 days), 85% in 13 (91 days). The plan is 23 days
+    // before the 50% date, so it sits 47 days out.
+    const b = forecastBand(counted())!;
+    expect(b.p85).toBe(100);
+    expect(b.p50).toBeCloseTo((70 / 91) * 100, 5);
+    expect(b.plan).toBeCloseTo((47 / 91) * 100, 5);
+    expect(b.p50Label).toBe("12 Mar 2027");
+    expect(b.p85Label).toBe("2 Apr 2027");
+    expect(b.planLabel).toBe("17 Feb 2027");
+    expect(b.slip).toBe("23 days late");
+    expect(b.tone).toBe("bad");
+    expect(b.title).toBe(
+      "50% by 12 Mar 2027, 85% by 2 Apr 2027. Plan 17 Feb 2027: 23 days late."
+    );
+  });
+
+  it("a plan after the 85% date ends the track, early and good", () => {
+    const b = forecastBand(counted({}))!;
+    const early = forecastBand({ ...counted(), plan: { ...counted().plan, slip_days: -35 } })!;
+    expect(b.plan).not.toBe(100);
+    expect(early.plan).toBe(100);
+    expect(early.slip).toBe("35 days early");
+    expect(early.tone).toBe("good");
   });
 
   it("a plan date already past sits at today and says so", () => {
-    const r = slipRange(report({ plan: { ...report().plan, slip_days: 90 } }))!;
-    expect(r.plan).toBe(0);
-    expect(r.planPassed).toBe(true);
-    expect(r.slip).toBe("90 days late");
+    const b = forecastBand({ ...counted(), plan: { ...counted().plan, slip_days: 90 } })!;
+    expect(b.plan).toBe(0);
+    expect(b.planPassed).toBe(true);
+    expect(b.slip).toBe("90 days late");
   });
 
   it("one day is a day, and zero is the plan date", () => {
-    expect(slipRange(report({ plan: { ...report().plan, slip_days: 1 } }))!.slip).toBe("1 day late");
-    const on = slipRange(report({ plan: { ...report().plan, slip_days: 0 } }))!;
-    expect(on.slip).toBe("on the plan date");
-    expect(on.width).toBeGreaterThanOrEqual(1);
+    expect(forecastBand({ ...counted(), plan: { ...counted().plan, slip_days: 1 } })!.slip).toBe(
+      "1 day late"
+    );
+    expect(forecastBand({ ...counted(), plan: { ...counted().plan, slip_days: 0 } })!.slip).toBe(
+      "on the plan date"
+    );
   });
 
-  it("draws nothing when either date is absent", () => {
+  it("with no plan, the band has no tick and no slip", () => {
+    const b = forecastBand({
+      ...counted(),
+      plan: { ...counted().plan, planned_finish: null, slip_days: null },
+    })!;
+    expect(b.plan).toBeNull();
+    expect(b.slip).toBeNull();
+    expect(b.title).toBe("50% by 12 Mar 2027, 85% by 2 Apr 2027.");
+  });
+
+  it("draws nothing without both dates, or for a refusal", () => {
     for (const verdict of ["not_converging", "no_history", "nothing_left"] as const) {
-      const o = report({
-        velocity: { ...report().velocity, verdict, finish_date: null, weeks_remaining: null },
-        plan: { ...report().plan, slip_days: null },
-      });
-      expect(slipRange(o), verdict).toBeNull();
+      expect(forecastBand(counted({ verdict })), verdict).toBeNull();
     }
-    expect(slipRange(report({ plan: { ...report().plan, planned_finish: null, slip_days: null } }))).toBeNull();
-    expect(slipRange({} as never)).toBeNull();
-    expect(slipRange(null)).toBeNull();
+    // An older server sends no 85% date: no band, and the headline stands.
+    expect(forecastBand(report())).toBeNull();
+    expect(forecastBand(counted({ p85_weeks: 9 }))).toBeNull();
+    expect(forecastBand({} as never)).toBeNull();
+    expect(forecastBand(null)).toBeNull();
+  });
+
+  it("takes an explicit slot of the ramp, outside the hashed slots", () => {
+    expect(FORECAST_SLOT).toBeGreaterThanOrEqual(HASH_SLOTS);
+    expect(forecastAccent()).toEqual(accentForSlot(FORECAST_SLOT));
   });
 });

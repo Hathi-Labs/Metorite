@@ -23,8 +23,11 @@ export const FOLD_STORAGE_KEY = "cc-projects-panel-folded";
 export const FOLDABLE_SECTIONS = [
   "details",
   "description",
-  "properties",
+  // "properties" left on 2026-10-19, when Tags and Repeats became Details
+  // rows. `parseFolded` drops it from storage, so nothing stays hidden.
   "links",
+  // WS-57 TR-2: the Links section (pull requests, commits, docs, URLs).
+  "refs",
   "files",
   "activity",
 ] as const;

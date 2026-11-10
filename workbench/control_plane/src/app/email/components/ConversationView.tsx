@@ -1,22 +1,35 @@
 "use client";
 
 import Button from "@/components/ui/Button";
-import AppIcon, { themedIcon } from "@/components/Icon";
-import { useEffect, useRef, useState } from "react";
+import AppIcon from "@/components/Icon";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Email } from "../lib/types";
 import { fullDateLabel, initials, buildOptimisticSent } from "../lib/utils";
 import { getEmail, fetchFullBody, detectReplyCommitment } from "../lib/api";
+import { withFailedFiles } from "../lib/attachmentRow";
 import { useDraftSession } from "../lib/useDraftSession";
 import { splitQuotedText } from "../lib/quoting";
-import { useEmailStore } from "../lib/emailStore";
+import { useEmailStore, withPatch } from "../lib/emailStore";
 import { ComposerQuote, AiButton } from "./ComposerAI";
 import { DraftAssistant } from "./DraftAssistant";
+import { ComposerBody, ComposerExpandButton, useComposerSize } from "./ComposerSize";
+import { useViewMode } from "@/components/ViewModeProvider";
 import { MessageContent } from "./MessageContent";
+import { remoteHtmlId } from "../lib/htmlPrefetch";
 import { AttachmentList } from "./AttachmentList";
 import { getSignatureText, stripSignature } from "../lib/signature";
 import { RecipientInput } from "./RecipientInput";
+import { draftRecipients, ownAddresses, replyRecipients } from "../lib/mailbox";
 import { TaskCaptureModal, type CommitmentContext } from "./TaskCaptureModal";
-import { ContactTrigger, RecipientList } from "./ContactCard";
+import { ContactTrigger, RecipientSummary } from "./ContactCard";
+import {
+  autosaveWait, createAutosave, failedSaveStatus, saveFailureText, sendFailureText,
+  type DraftStatus,
+} from "../lib/draftAutosave";
+import {
+  draftSavePayload, draftText, isHtmlUnavailable, needsHtmlRead, noticeAfterSave,
+  noticeWords, sendAfterPreSave, showsFormattingNotice,
+} from "../lib/draftSave";
 
 const isDraft = (m: Email) =>
   (m.folder || "").toLowerCase() === "drafts" ||
@@ -40,18 +53,28 @@ const INPUT =
 export function ConversationView({
   messages,
   openedId,
-  onReply,
+  renderActions,
+  renderReplyBar,
+  lightVersions,
   onSent,
 }: {
   messages: Email[];
   openedId: string;
-  /** Reply / Reply All / Forward a specific message in the thread. Opens the
-   *  composer (in EmailDetail) threaded onto that message. */
-  onReply?: (message: Email, mode: "reply" | "reply-all" | "forward") => void;
+  /** The action row of one card (`MessageActions`): Reply, Reply all,
+   *  Forward and "More actions". The reading pane owns every handler, so
+   *  each card acts on its own message. */
+  renderActions?: (message: Email) => ReactNode;
+  /** The Reply, Reply all and Forward buttons below the body of one open card
+   *  (`MessageReplyBar`). The reading pane owns these handlers too. */
+  renderReplyBar?: (message: Email) => ReactNode;
+  /** The messages whose light version the member asked for. */
+  lightVersions?: ReadonlySet<string>;
   /** Called after an in-thread draft is sent so the parent can surface the
    *  reply immediately and pull the real synced copy. */
   onSent?: (sent?: Email) => void;
 }) {
+  // The last change of this pane to each message (read, flag, star, labels).
+  const messagePatches = useEmailStore((s) => s.messagePatches);
   // Locally-discarded drafts hide instantly (the provider delete is async).
   const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
   // Hide messages deleted upstream (trash) so the conversation reflects the
@@ -137,7 +160,7 @@ export function ConversationView({
           .then((full) => setHydrated((h) => ({ ...h, [m.id]: full })))
           // On failure, cache the list row so the effect doesn't retry this
           // message forever every time `hydrated` changes for another card.
-          .catch(() => setHydrated((h) => ({ ...h, [m.id]: m })));
+          .catch(() => setHydrated((h) => ({ ...h, [m.id]: withFailedFiles(m) })));
       }
     });
   }, [expanded, visible, hydrated]);
@@ -161,7 +184,15 @@ export function ConversationView({
           );
         }
         const isOpen = expanded.has(m.id);
-        const view = hydrated[m.id] ?? m;
+        // The hydrated copy holds the body and the files. Its read, flag,
+        // star, folder and labels come from the thread row, which the pane
+        // keeps current, and a write in flight shows on top (fix rounds 1
+        // and 3).
+        const full = hydrated[m.id];
+        const base = full
+          ? { ...full, isRead: m.isRead, isStarred: m.isStarred, isFlagged: m.isFlagged, folder: m.folder, categories: m.categories }
+          : m;
+        const view = withPatch(base, messagePatches);
         return (
           <div
             key={m.id}
@@ -227,49 +258,45 @@ export function ConversationView({
             {isOpen && (
               <div className="px-3 pb-3">
                 <div className="flex items-start justify-between gap-2 mb-2">
-                  <div className="min-w-0 truncate text-[11px]">
-                    <RecipientList
-                      label="To"
-                      people={m.to}
-                      accountId={m.accountId}
-                    />
-                  </div>
-                  {onReply && (
-                    <div className="flex items-center gap-0.5 flex-shrink-0 -mt-0.5">
-                      <CardAction
-                        icon={themedIcon("Reply")}
-                        label="Reply"
-                        onClick={() => onReply(view, "reply")}
-                      />
-                      <CardAction
-                        icon={themedIcon("ReplyAll")}
-                        label="Reply all"
-                        onClick={() => onReply(view, "reply-all")}
-                      />
-                      <CardAction
-                        icon={themedIcon("Forward")}
-                        label="Forward"
-                        onClick={() => onReply(view, "forward")}
-                      />
-                    </div>
-                  )}
+                  {/* Every recipient of each mail of a thread: To, Cc and the
+                      Bcc of a mail the member sent, in one line until the
+                      member asks (owner, 2026-11-01). The Cc stays in the
+                      line by name: one cut line hid it (2026-10-24). */}
+                  <RecipientSummary to={m.to} cc={m.cc} bcc={m.bcc} accountId={m.accountId} className="min-w-0 space-y-0.5 text-[11px]" />
+                  {/* A direct child: the row measures this line for its width. */}
+                  {renderActions?.(view)}
                 </div>
+                {/* The files of this message, on top of its body as in Outlook
+                    (owner, 2026-11-06). The same chips as the single email, so
+                    the earlier messages of a thread show their files too. The
+                    fetch below settles `hydrated`, also on a failure. */}
+                {view.hasAttachments && (
+                  <AttachmentList
+                    attachments={view.attachments}
+                    status={view.attachmentsStatus}
+                    onRetry={async () => {
+                      // This one message: the other cards stay as they are.
+                      const again = await getEmail(m.id);
+                      setHydrated((h) => ({ ...h, [m.id]: again }));
+                    }}
+                    pending={!hydrated[m.id]}
+                    className="mb-3"
+                  />
+                )}
                 {view.bodyHtml || view.bodyText ? (
-                  <MessageContent html={view.bodyHtml} text={view.bodyText} />
+                  <MessageContent
+                    html={view.bodyHtml}
+                    text={view.bodyText}
+                    remoteId={remoteHtmlId(view)}
+                    lightVersion={lightVersions?.has(view.id) ?? false}
+                    messageId={view.id}
+                  />
                 ) : (
                   <div className="text-xs text-muted-foreground italic py-2">
                     No preview text.
                   </div>
                 )}
-                {/* Per-message attachments — same card UI (with image
-                    thumbnails) as the single-message reader, so a thread's
-                    earlier messages surface their files too. */}
-                {view.hasAttachments && (
-                  <AttachmentList
-                    attachments={view.attachments}
-                    className="mt-4 pt-3 border-t border-border"
-                  />
-                )}
+                {renderReplyBar?.(view)}
               </div>
             )}
           </div>
@@ -287,26 +314,6 @@ export function ConversationView({
         />
       )}
     </div>
-  );
-}
-
-/** Small per-message action button (Reply / Reply All / Forward) on a card. */
-function CardAction({
-  icon: Icon,
-  label,
-  onClick,
-}: {
-  icon: React.ElementType;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <Button variant="ghost" size="icon-sm" radius="keep" layout="" type="button" title={label} aria-label={label} onClick={(e) => {
-        e.stopPropagation();
-        onClick();
-      }} className="rounded">
-      <Icon size={13} />
-    </Button>
   );
 }
 
@@ -338,34 +345,34 @@ export function DraftCard({
   const {
     deleteEmail, selectedAccountId, saveDraft, sendDraft, accounts,
   } = useEmailStore();
-  const ownEmail = accounts
+  // The mailbox of the draft sends. Reply-all leaves out EVERY address of the
+  // member, not only this one (D-EM-27, MB-7, EM-T8a review).
+  const own = ownAddresses(accounts);
+  const sendingAddress = accounts
     .find((a) => a.id === (draft.accountId || selectedAccountId))
-    ?.emailAddress?.toLowerCase();
+    ?.emailAddress;
+  // The provider of the mailbox. Only a Gmail draft keeps its HTML, reads it,
+  // or shows the notice (EM-G3a-f7, D-G3a-f7-5).
+  const provider = accounts
+    .find((a) => a.id === (draft.accountId || selectedAccountId))
+    ?.provider;
+  const gmail = provider === "gmail";
   // A real inbound message to reply to (vs a from-scratch / compose draft) —
   // gates the Reply / Reply All toggle and the reply-all recipient maths.
   const hasReplyTarget = !!replyTo && replyTo.id !== draft.id;
-  // REPLY-ALL recipients: the original sender + everyone on To, minus yourself;
-  // original Cc carried over. Falls back to whatever the draft already has.
-  const replyAllTo = (() => {
-    if (!replyTo) return draft.to.map((t) => t.email).filter(Boolean);
-    const all = [
-      replyTo.from?.email,
-      ...(replyTo.to || []).map((t) => t.email),
-    ];
-    const deduped = all.filter(
-      (e, i) => e && all.indexOf(e) === i && e.toLowerCase() !== ownEmail
-    );
-    return deduped.length ? deduped : draft.to.map((t) => t.email).filter(Boolean);
-  })();
-  const replyAllCc = (replyTo?.cc || [])
-    .map((c) => c.email)
-    .filter((e) => e && e.toLowerCase() !== ownEmail);
+  const draftTo = draft.to.map((t) => t.email).filter(Boolean);
+  // REPLY-ALL recipients: the original sender + everyone on To, minus the
+  // member; original Cc carried over. Falls back to what the draft has.
+  const all = hasReplyTarget && replyTo
+    ? replyRecipients(replyTo, "reply-all", own, sendingAddress)
+    : null;
+  const replyAllTo = all && all.to.length ? all.to : draftTo;
+  const replyAllCc = all ? all.cc : [];
   // REPLY (sender only) recipients.
-  const replyOnlyTo = (() => {
-    const from = replyTo?.from?.email;
-    if (from && from.toLowerCase() !== ownEmail) return [from];
-    return draft.to.map((t) => t.email).filter(Boolean);
-  })();
+  const only = hasReplyTarget && replyTo
+    ? replyRecipients(replyTo, "reply", own, sendingAddress)
+    : null;
+  const replyOnlyTo = only && only.to.length ? only.to : draftTo;
 
   // Split any quoted trailing chain out of the draft body so the editable box
   // holds only the new text (and AI never rewrites the quote); it's reattached
@@ -374,15 +381,36 @@ export function DraftCard({
   const [hydratedBody, setHydratedBody] = useState<string | null>(null);
   const [body, setBody] = useState(initSplit.main);
   const [quote, setQuote] = useState(initSplit.quoted || "");
-  const [to, setTo] = useState(replyAllTo.join(", "));
-  const [cc, setCc] = useState(replyAllCc.join(", "));
-  const [bcc, setBcc] = useState("");
-  // Default to reply-all when replying to a real message (parity with
-  // EmailDetail); the toggle narrows to the sender only.
-  const [replyAll, setReplyAll] = useState(hasReplyTarget);
-  // Show Cc/Bcc up-front on a reply so they're always visible; keep them behind
-  // the reveal button only for a from-scratch draft.
-  const [showCc, setShowCc] = useState(hasReplyTarget || replyAllCc.length > 0);
+  // The text of the card at open (EM-G3a-f7, D-G3a-f7-2). A save with this
+  // text keeps the HTML of a Gmail draft. For a draft that came with no body,
+  // the text at open is the text that the hydrate put in the card.
+  const [initialText] = useState(() => draftText(initSplit.main, initSplit.quoted || ""));
+  const openedText = hydratedBody === null
+    ? initialText
+    : (() => {
+        const sp = splitQuotedText(hydratedBody);
+        return draftText(sp.main, sp.quoted || "");
+      })();
+  // The card starts with the To, Cc and Bcc of its draft, and with the button
+  // that matches them, or neither (EM-T10). Before, it started on Reply All
+  // and wrote those lists over a reply that the member had narrowed.
+  const [start] = useState(() =>
+    draftRecipients(
+      draft,
+      all ? { to: replyAllTo, cc: replyAllCc } : null,
+      only ? replyOnlyTo : null,
+    ),
+  );
+  const [to, setTo] = useState(start.to.join(", "));
+  const [cc, setCc] = useState(start.cc.join(", "));
+  const [bcc, setBcc] = useState(start.bcc.join(", "));
+  // `null` marks neither button: the lists match no click of the toggle.
+  const [replyAll, setReplyAll] = useState<boolean | null>(start.replyAll);
+  // The Cc row shows for a Cc or a Bcc, and on a reply that is not Reply.
+  const [showCc, setShowCc] = useState(start.showCc);
+  // An edit of the member. Only then does the autosave run. It is declared
+  // before its first reader, so the React lint knows it is a ref.
+  const dirty = useRef(false);
 
   /** Flip Reply ↔ Reply All, recomputing To/Cc from the original message.
    *  Reply All reveals the Cc/Bcc fields; Reply (sender only) hides them and
@@ -402,8 +430,33 @@ export function DraftCard({
     }
   };
   const [sending, setSending] = useState(false);
-  const dirty = useRef(false);
-  const [draftStatus, setDraftStatus] = useState<"idle" | "saving" | "saved">("idle");
+  // The text of a failed send. Before EM-G3c-2 the card dropped it (item 14).
+  const [sendError, setSendError] = useState<string | null>(null);
+  // EM-G3a-f7: the HTML that the card read for a Gmail draft with none, a
+  // save that answered `lost`, and a stopped send. The member saw the notice
+  // after a stop, so the next press sends the text only (D-G3a-f7-11, -12).
+  const [htmlRead, setHtmlRead] = useState<{ html: string | null; failed: boolean } | null>(null);
+  const htmlReadStarted = useRef(false);
+  const [htmlLost, setHtmlLost] = useState(false);
+  // The send reads the loss through a ref. A press during an autosave that
+  // answers `lost` then still sees it after the drain (review round 1, P2).
+  const htmlLostRef = useRef(false);
+  const markLost = () => {
+    htmlLostRef.current = true;
+    setHtmlLost(true);
+  };
+  const [textOnlyConfirmed, setTextOnlyConfirmed] = useState(false);
+  // A stopped send shows its own words, until the next send or a text edit.
+  const [sendStopped, setSendStopped] = useState(false);
+  /** Stop the send: the next press sends the text only, and the card says so. */
+  const stopSend = () => {
+    setTextOnlyConfirmed(true);
+    setSendStopped(true);
+  };
+  const [draftStatus, setDraftStatus] = useState<DraftStatus>("idle");
+  // The pending autosave. An unmount and a change of draft run it at once
+  // (EM-G3c-2 item 11).
+  const [autosave] = useState(() => createAutosave());
   // AI draft/refine panel — the session owns live backend steps + revisions.
   const [aiOpen, setAiOpen] = useState(false);
   const [aiInstruction, setAiInstruction] = useState("");
@@ -423,13 +476,20 @@ export function DraftCard({
   const ai = useDraftSession({
     onBody: (next) => {
       dirty.current = true;
+      setSendStopped(false);
       setBody(next);
     },
   });
+  // The size of the body: auto-grow, a dragged height, or the whole pane
+  // (owner request, 2026-10-14). The inline reply shares the same hook.
+  const cardRef = useRef<HTMLDivElement>(null);
+  const { isMobile } = useViewMode();
+  const size = useComposerSize(cardRef, true, isMobile);
+  const expanded = size.state.expanded;
 
   /** The full outgoing body: the editable text plus the quoted trailing chain. */
   const combinedBody = () =>
-    quote ? `${body.replace(/\s+$/, "")}\n\n${quote}` : body;
+    draftText(body, quote);
 
   const ccList = () => cc.split(",").map((s) => s.trim()).filter(Boolean);
   const bccList = () => bcc.split(",").map((s) => s.trim()).filter(Boolean);
@@ -469,6 +529,17 @@ export function DraftCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft.id]);
 
+  // EM-G3a-f7 (B5): a Gmail draft that came with no HTML reads it once, so
+  // the card knows to show the notice. The hydrate above returns early for a
+  // draft with text, so this read is an effect of its own.
+  useEffect(() => {
+    if (!needsHtmlRead(provider, draft.bodyHtml, htmlReadStarted.current)) return;
+    htmlReadStarted.current = true;
+    fetchFullBody(draft.id)
+      .then((fb) => setHtmlRead({ html: fb.body_html, failed: false }))
+      .catch(() => setHtmlRead({ html: null, failed: true }));
+  }, [provider, draft.id, draft.bodyHtml]);
+
   const recipients = () =>
     to.split(",").map((s) => s.trim()).filter(Boolean);
 
@@ -476,54 +547,85 @@ export function DraftCard({
   // provider Drafts and survive a refresh — keyed on the draft's own id.
   useEffect(() => {
     const accountId = draft.accountId || selectedAccountId;
-    if (!accountId || !dirty.current) return;
-    const handle = setTimeout(async () => {
+    if (!accountId || !dirty.current) {
+      autosave.cancel();
+      return;
+    }
+    autosave.schedule(async () => {
       try {
         setDraftStatus("saving");
-        await saveDraft({
+        const saved = await saveDraft(draftSavePayload({
           accountId,
           draftId: draft.id,
           to: recipients(),
           cc: ccList(),
           bcc: bccList(),
           subject: draft.subject || "",
-          body: combinedBody(),
-        });
+        }, openedText, combinedBody(), provider));
+        if (noticeAfterSave(saved)) markLost();
         setDraftStatus("saved");
-      } catch {
-        setDraftStatus("idle");
+      } catch (err) {
+        // The next edit tries again (EM-G3c-2 item 13).
+        setDraftStatus(failedSaveStatus(err));
       }
-    }, 1200);
-    return () => clearTimeout(handle);
+    }, autosaveWait(
+      accounts.find((a) => a.id === accountId)?.provider,
+      draft.hasAttachments,
+    ), 0);
+    // Stop the timer and keep the save, so an unmount can still flush it.
+    return () => autosave.hold();
+    // An edit of the Cc or the Bcc saves too (EM-T10 item 4, EM-G3c-2-f2).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [body, quote, to]);
+  }, [body, quote, to, cc, bcc]);
+
+  // An unmount, and a switch of the card to another draft, run the pending
+  // save at once (EM-G3c-2 item 11). The save names the draft of before.
+  useEffect(() => () => autosave.flush(), [autosave, draft.id]);
 
   const send = async () => {
     const accountId = draft.accountId || selectedAccountId;
     if (!accountId || recipients().length === 0) return;
     setSending(true);
+    setSendError(null);
+    setSendStopped(false);
+    // The send carries the last edit, so each queued autosave goes. A save
+    // that runs settles first, so no older text lands after this save
+    // (EM-G3c-2 review round 2). The key gives each draft its own card, so
+    // the card has one session, 0 (EM-G3c-3 item 1).
+    await autosave.drain(0);
     try {
       // Persist the latest edits — Cc/Bcc included, now carried on the provider
       // draft — then send THIS draft natively (Drafts → Sent, no duplicate).
       // sendDraft removes it from the list. No more full-send detour for a Cc'd
       // reply, which used to start a fresh (unthreaded) message.
-      await saveDraft({
+      // A save with the text at open keeps the HTML of a Gmail draft
+      // (EM-G3a-f7, D-G3a-f7-2).
+      const saved = await saveDraft(draftSavePayload({
         accountId,
         draftId: draft.id,
         to: recipients(),
         cc: ccList(),
         bcc: bccList(),
         subject: draft.subject || "",
-        body: combinedBody(),
-      });
-      await sendDraft(accountId, draft.id);
+      }, openedText, combinedBody(), provider));
+      if (noticeAfterSave(saved)) markLost();
+      // A `lost` stops the first press, and the card shows the notice. The
+      // next press sends the text only (D-G3a-f7-12). A `lost` of an earlier
+      // autosave stops it too, because this save then answers `none`.
+      if (sendAfterPreSave(saved, textOnlyConfirmed, htmlLostRef.current) === "stop") {
+        stopSend();
+        return;
+      }
+      // A Gmail send asks for a 409 when the gateway cannot read the HTML,
+      // until the member saw the notice. Each other send is as on main.
+      await sendDraft(accountId, draft.id, gmail ? textOnlyConfirmed : undefined);
       // Surface the reply in the conversation at once + pull the real copy.
       const sentThreadId = replyTo?.threadId || draft.threadId;
       onSent?.(
         buildOptimisticSent({
           accountId,
           threadId: sentThreadId,
-          fromEmail: ownEmail || "",
+          fromEmail: sendingAddress?.toLowerCase() || "",
           to: recipients(),
           cc: ccList(),
           subject: draft.subject || "",
@@ -542,8 +644,13 @@ export function DraftCard({
           replyToMessageId: replyTo?.providerMessageId || null,
         });
       }
-    } catch {
-      /* send failure — the draft stays in Drafts so the user can retry */
+    } catch (err) {
+      // The draft stays in Drafts so the user can retry. The card shows why,
+      // and a 413 shows "This mail is too large to send." (EM-G3c-2 item 14).
+      // The 409 of a Gmail draft whose HTML the gateway cannot read shows the
+      // notice, and the next press sends the text only (D-G3a-f7-11).
+      if (isHtmlUnavailable(err)) stopSend();
+      else setSendError(sendFailureText(err));
     } finally {
       setSending(false);
     }
@@ -551,7 +658,11 @@ export function DraftCard({
 
   const discard = async () => {
     if (!confirm("Discard this draft?")) return;
+    // The chain drains first, so no save that waited writes the draft again.
+    // The delete waits for the save that runs (EM-G3c-2 review round 2).
+    const drained = autosave.drain(0);
     onDismiss?.(); // hide instantly; the provider delete is async
+    await drained;
     try {
       await deleteEmail(draft.id);
     } catch {
@@ -582,8 +693,27 @@ export function DraftCard({
     if (result) setAiInstruction("");
   };
 
+  // "Not saved" or "Too large to save" after a failed save (EM-G3c-2 item 13).
+  const saveFailure = saveFailureText(draftStatus);
+  // The notice of a Gmail draft with HTML (EM-G3a-f7, D-G3a-f7-3). It also
+  // shows after a save that lost the HTML, and after a stopped send. It shows
+  // while the HTML read runs, so the member knows before the first edit.
+  const showNotice =
+    showsFormattingNotice(
+      provider,
+      draft.bodyHtml || htmlRead?.html,
+      htmlRead?.failed ?? false,
+      needsHtmlRead(provider, draft.bodyHtml, htmlRead !== null),
+    ) || htmlLost || textOnlyConfirmed;
+
   return (
-    <div className="border border-primary/40 rounded-lg bg-primary/5 px-3 py-3">
+    <div
+      ref={cardRef}
+      data-email-composer=""
+      data-ask-clear=""
+      style={size.rootStyle}
+      className={`border border-primary/40 rounded-lg bg-primary/5 px-3 py-3 ${size.rootClass}`}
+    >
       <div className="flex items-center gap-1.5 mb-2">
         <AppIcon name="PenLine" size={12} className="text-primary" />
         <span className="text-xs font-medium text-primary">Draft</span>
@@ -594,7 +724,7 @@ export function DraftCard({
               onClick={() => applyReplyAll(false)}
               title="Reply to sender only"
               className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] whitespace-nowrap transition-colors ${
-                !replyAll ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
+                replyAll === false ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
               }`}
             >
               <AppIcon name="Reply" size={11} className="flex-shrink-0" /> Reply
@@ -604,7 +734,7 @@ export function DraftCard({
               onClick={() => applyReplyAll(true)}
               title="Reply to everyone"
               className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] whitespace-nowrap transition-colors ${
-                replyAll ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
+                replyAll === true ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
               }`}
             >
               <AppIcon name="ReplyAll" size={11} className="flex-shrink-0" /> Reply All
@@ -614,8 +744,12 @@ export function DraftCard({
         <span className="text-[10px] text-muted-foreground ml-auto truncate max-w-[45%]">
           {draft.subject}
         </span>
+        <ComposerExpandButton
+          expanded={expanded}
+          onToggle={() => size.dispatch({ type: "toggleExpand" })}
+        />
       </div>
-      <div className="space-y-2">
+      <div className={`space-y-2 ${expanded ? "flex flex-1 flex-col" : ""}`}>
         <div className="flex items-center gap-2">
           <RecipientInput
             value={to}
@@ -635,7 +769,7 @@ export function DraftCard({
           <>
             <RecipientInput
               value={cc}
-              onChange={setCc}
+              onChange={(v) => { dirty.current = true; setCc(v); }}
               accountId={draft.accountId || selectedAccountId}
               ariaLabel="Cc recipients"
               placeholder="Cc (comma-separated)"
@@ -644,7 +778,7 @@ export function DraftCard({
             />
             <RecipientInput
               value={bcc}
-              onChange={setBcc}
+              onChange={(v) => { dirty.current = true; setBcc(v); }}
               accountId={draft.accountId || selectedAccountId}
               ariaLabel="Bcc recipients"
               placeholder="Bcc (comma-separated)"
@@ -653,13 +787,24 @@ export function DraftCard({
             />
           </>
         )}
+        {showNotice && (
+          <p
+            role={sendStopped ? "alert" : "status"}
+            className="flex items-start gap-1.5 rounded-md border border-warning/30 bg-warning/10 px-2.5 py-2 text-[11px] leading-snug text-warning"
+          >
+            <AppIcon name="AlertTriangle" size={12} className="mt-px flex-shrink-0" />
+            <span>{noticeWords(sendStopped)}</span>
+          </p>
+        )}
+        <ComposerBody size={size} value={body}>
         <textarea
           value={body}
-          onChange={(e) => { dirty.current = true; setBody(e.target.value); }}
+          onChange={(e) => { dirty.current = true; setSendStopped(false); setBody(e.target.value); }}
           rows={7}
           placeholder="Write your reply…"
-          className={`${INPUT} resize-y leading-relaxed`}
+          className={`${INPUT} resize-none leading-relaxed`}
         />
+        </ComposerBody>
         {/* The signature is IN the stored draft body (signed at draft-write
             time) — no separate preview card. */}
         {/* Quoted trailing email — collapsed, read-only (reattached on send) */}
@@ -678,6 +823,8 @@ export function DraftCard({
             revisions={ai.revisions}
             activeRevision={ai.activeRevision}
             elapsedMs={ai.elapsedMs}
+            notice={ai.notice}
+            onStop={ai.stop}
             onRun={runAi}
             onRestore={(id) => ai.restore(id)}
             onClose={() => setAiOpen(false)}
@@ -700,14 +847,24 @@ export function DraftCard({
           <AppIcon name="Trash2" size={13} /> Discard
         </button>
         <AiButton active={aiOpen} onClick={() => setAiOpen((v) => !v)} />
-        <span className="text-[10px] text-muted-foreground ml-auto">
-          {draftStatus === "saving"
-            ? "Saving draft…"
-            : draftStatus === "saved"
-              ? "Draft saved · sends into this conversation"
-              : "Sends into this conversation"}
-        </span>
+        {saveFailure ? (
+          <span className="text-[10px] text-destructive ml-auto">{saveFailure}</span>
+        ) : (
+          <span className="text-[10px] text-muted-foreground ml-auto">
+            {draftStatus === "saving"
+              ? "Saving draft…"
+              : draftStatus === "saved"
+                ? "Draft saved · sends into this conversation"
+                : "Sends into this conversation"}
+          </span>
+        )}
       </div>
+      {/* The slot of a failed send (EM-G3c-2 item 14) */}
+      {sendError && (
+        <p role="alert" className="mt-1.5 text-[10px] text-destructive">
+          {sendError}
+        </p>
+      )}
     </div>
   );
 }

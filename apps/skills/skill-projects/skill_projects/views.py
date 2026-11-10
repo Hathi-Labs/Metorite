@@ -30,7 +30,9 @@ import json
 import re
 from typing import Any
 
-from skill_projects.client import GatewayRefusal, data, get, post, uuid_of
+from acb_common.paging import paged
+
+from skill_projects.client import GatewayRefusal, data, get, post, request, uuid_of
 from skill_projects.priority import change_view, level_label
 from skill_projects.reads import (
     _MISSING,
@@ -116,7 +118,7 @@ def _change_text(meta: dict[str, Any]) -> tuple[str, str, str]:
 # ── The timeline ─────────────────────────────────────────────────────────────
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def render_timeline(task_id: str, kind: str = "all") -> str:
     """Draw a task's timeline as a card: every comment, field change,
     assignment and system note, newest first, with who and when. kind is
@@ -202,7 +204,7 @@ def _list_params(project_id: str, **extra: Any) -> dict[str, Any]:
     return params
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def render_board(project_id: str, assignee: str = "", tags: str = "") -> str:
     """Draw a project's board as a card: one column per status lane, the
     OPEN tasks in each (done and cancelled lanes stay empty), with assignee
@@ -249,7 +251,7 @@ async def render_board(project_id: str, assignee: str = "", tags: str = "") -> s
     return "\n".join(lines)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def render_tasks(
     project_id: str = "",
     status_category: str = "",
@@ -343,6 +345,9 @@ REPORT_CARD_SECTIONS: dict[str, dict[str, Any]] = {
             ("velocity.verdict", "Forecast"),
             ("plan.planned_finish", "Planned finish"),
             ("velocity.finish_date", "Forecast finish"),
+            # WS-27bn RA-6. The forecast by count: the finish above is the
+            # 50% date, and this is the 85% date.
+            ("velocity.p85_date", "85% finish"),
         ],
     },
     "stuck": {
@@ -365,6 +370,71 @@ REPORT_CARD_SECTIONS: dict[str, dict[str, Any]] = {
             ("help_reasons", "Needs help"),
         ],
     },
+    # WS-27bn RA-3. The three counts, then one row for each waiting task.
+    # `_card_section` joins the three lists into one table, with a kind.
+    "waiting": {
+        "title": "Waiting on people",
+        "stats": [
+            ("questions_total", "Questions"),
+            ("reviews_total", "Reviews"),
+            ("handoffs_total", "Handoffs"),
+        ],
+        "rows": "questions",
+        "columns": [
+            ("kind", "Waiting for"),
+            ("title", "Task"),
+            ("agent", "Agent"),
+            ("member", "For"),
+            # `_card_section` copies `since` here, so the date cut applies.
+            ("since_at", "Since"),
+        ],
+    },
+    # WS-27bn RA-4. The outcomes of 14 days, then one row for each silent
+    # run. `_card_section` names the member over the address, as the panel
+    # does. The success rate and the long runs are in the text beside it.
+    "agent_runs": {
+        "title": "Agent runs",
+        "stats": [
+            ("outcomes.completed", "Completed"),
+            ("outcomes.failed", "Failed"),
+            ("outcomes.abandoned", "Abandoned"),
+            ("outcomes.server_closed", "Closed by Metorite"),
+            ("silent_total", "Silent now"),
+            ("long_total", "4 hours or more"),
+        ],
+        "rows": "silent",
+        "columns": [
+            ("title", "Task"),
+            ("agent", "Agent"),
+            ("member", "For"),
+            # `_card_section` copies `since` here, so the date cut applies.
+            ("since_at", "Silent since"),
+        ],
+    },
+    # WS-27bn RA-5. The pull requests and the rework in numbers, then one row
+    # for each open agent pull request whose checks fail. `_card_rows` names
+    # the member over the address. The summary sits in the text beside it.
+    "quality": {
+        "title": "Quality",
+        "stats": [
+            ("prs.merged", "Agent PRs merged"),
+            ("prs.closed", "Closed, not merged"),
+            ("prs.open", "Open now"),
+            ("checks.failing_total", "Failing checks"),
+            ("checks.merged_red", "Merged while red"),
+            ("rework.reopened.agents.reopened", "Tasks reopened after agents"),
+            ("rework.reopened.people.reopened", "Tasks reopened after people"),
+            ("rework.reopened.agents.undone", "Agent finishes reopened later"),
+            ("rework.reopened.people.undone", "Person finishes reopened later"),
+        ],
+        "rows": "checks.failing",
+        "columns": [
+            ("title", "Task"),
+            ("agent", "Agent"),
+            ("member", "For"),
+            ("ref", "Pull request"),
+        ],
+    },
     # WS-27bn R3c. The four counts, then one row for each named task.
     "hygiene": {
         "title": "Data hygiene",
@@ -384,7 +454,8 @@ REPORT_CARD_SECTIONS: dict[str, dict[str, Any]] = {
     },
     "load": {
         "title": "Open work",
-        "stats": [("total_tasks", "Open tasks")],
+        # WS-27bn RA-6. The open tasks with no assignee and no open run.
+        "stats": [("total_tasks", "Open tasks"), ("needs_owner.total", "Need an owner")],
         "rows": "people",
         "columns": [("assignee", "Assignee"), ("open_tasks", "Open"), ("overdue", "Overdue")],
     },
@@ -422,6 +493,9 @@ REPORT_CARD_SECTIONS: dict[str, dict[str, Any]] = {
     },
 }
 
+#: WS-27bn RA-6. A verdict whose §5 word is not its key in plain case.
+VERDICT_WORDS: dict[str, str] = {"no_history": "Not enough history"}
+
 #: A value that is an ISO timestamp. The card prints its date only, as the
 #: Reports app's `shortDate` does (H-185 item 1).
 #:
@@ -445,13 +519,18 @@ def _human(key: str) -> str:
     return text[:1].upper() + text[1:]
 
 
-def _card_cell(key: str, row: dict[str, Any]) -> str:
+def _card_cell(key: str, row: dict[str, Any], numbers: bool = False) -> Any:
+    """One cell of a section table. With ``numbers`` (a report, §14.10.9), a
+    number stays the route's number. The card prints every cell as text."""
     value = _dig(row, key)
     if value is _MISSING:
         value = None
+    if numbers and isinstance(value, int | float) and not isinstance(value, bool):
+        return value
     if key.endswith("verdict") and isinstance(value, str):
         # A server word such as ``not_converging`` reads as "Not converging".
-        return _human(value)
+        # WS-27bn RA-6: ``no_history`` reads as the §5 word.
+        return VERDICT_WORDS.get(value) or _human(value)
     if key in ("assignee", "name") and not value:
         # The Unassigned row carries no person. Say so, as the Reports app does.
         return _plain(row.get("assignee") or "Unassigned")
@@ -479,7 +558,7 @@ HELP_REASON_WORDS: dict[str, str] = {
 }
 
 
-def _pulse_cell(key: str, row: dict[str, Any]) -> str:
+def _pulse_cell(key: str, row: dict[str, Any], numbers: bool = False) -> Any:
     """One cell of a pulse card row. A status and a reason print in words."""
     if key == "help_reasons":
         reasons = row.get("help_reasons")
@@ -489,7 +568,7 @@ def _pulse_cell(key: str, row: dict[str, Any]) -> str:
     if key == "status":
         status = row.get("status")
         return pulse_status_words(status) if isinstance(status, str) else ""
-    return _card_cell(key, row)
+    return _card_cell(key, row, numbers)
 
 
 def _report_card_notes(name: str, section: dict[str, Any]) -> list[str]:
@@ -501,8 +580,51 @@ def _report_card_notes(name: str, section: dict[str, Any]) -> list[str]:
     return [line] if line else []
 
 
-def _card_section(name: str, section: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
-    """The tiles and the table one section adds to the card."""
+#: The most rows a section table of the report card holds.
+REPORT_CARD_ROWS = 25
+
+
+def _card_rows(name: str, rows: Any) -> Any:
+    """The rows of a section as its card table reads them.
+
+    WS-27bn RA-4. A row of ``agent_runs`` names the member over the
+    address, as the panel shows it, and its ``since`` takes the date cut.
+    The rows then go through the one table of :func:`_card_section`, with
+    its one cut. Every other section keeps its rows as they are.
+    """
+    if name not in ("agent_runs", "quality") or not isinstance(rows, list):
+        return rows
+    if name == "quality":
+        return [
+            {**r, "member": r.get("member_name") or r.get("member")}
+            for r in rows
+            if isinstance(r, dict)
+        ]
+    return [
+        {**r, "member": r.get("member_name") or r.get("member"), "since_at": r.get("since")}
+        for r in rows
+        if isinstance(r, dict)
+    ]
+
+
+def _spec_rows(section: dict[str, Any], spec: dict[str, Any]) -> Any:
+    """The list a card spec names. WS-27bn RA-5: a dotted key reads a nested
+    list (``checks.failing``), and a key that is absent reads as no list."""
+    if not spec.get("rows"):
+        return None
+    rows = _dig(section, spec["rows"])
+    return None if rows is _MISSING else rows
+
+
+def _card_section(
+    name: str, section: dict[str, Any], *, numbers: bool = False,
+    rows_max: int = REPORT_CARD_ROWS,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """The tiles and the table one section adds to the card.
+
+    The report of §14.10.9 reads the same tiles and table, so the chat knows
+    each section in ONE place. It passes ``numbers`` to keep a number a
+    number, and a ``rows_max`` above every list, to cut the rows itself."""
     spec = REPORT_CARD_SECTIONS.get(name)
     title = spec["title"] if spec else _human(name)
     if spec:
@@ -518,7 +640,7 @@ def _card_section(name: str, section: dict[str, Any]) -> tuple[list[dict[str, An
             rows = [section]
             columns = spec["fields"]
         else:
-            rows = section.get(spec["rows"]) if spec.get("rows") else None
+            rows = _spec_rows(section, spec)
             columns = spec.get("columns") or []
     else:
         stats = [
@@ -544,8 +666,8 @@ def _card_section(name: str, section: dict[str, Any]) -> tuple[list[dict[str, An
         # WS-27bn R3d. One row for each card, then the E5 line when the
         # report hides the cards of other people from this reader.
         cells = [
-            {"cells": [_pulse_cell(key, r) for key, _ in columns]}
-            for r in (rows if isinstance(rows, list) else [])[:25]
+            {"cells": [_pulse_cell(key, r, numbers) for key, _ in columns]}
+            for r in (rows if isinstance(rows, list) else [])[:rows_max]
             if isinstance(r, dict)
         ]
         if line := hidden_people_line(section):
@@ -557,13 +679,35 @@ def _card_section(name: str, section: dict[str, Any]) -> tuple[list[dict[str, An
             "columns": [label for _, label in columns],
             "rows": cells,
         }
+    if name == "waiting" and columns:
+        # WS-27bn RA-3. The three lists in one table, in the panel's order,
+        # each row with the kind of wait. The member name wins over the
+        # address, as the panel shows it.
+        joined = [
+            {**r, "kind": kind, "member": r.get("member_name") or r.get("member"),
+             "since_at": r.get("since")}
+            for key, kind in (("questions", "An answer"), ("reviews", "A review"),
+                              ("handoffs", "A handoff"))
+            for r in section.get(key) or []
+            if isinstance(r, dict)
+        ]
+        if not joined:
+            return stats, None
+        return stats, {
+            "title": title,
+            "columns": [label for _, label in columns],
+            "rows": [
+                {"cells": [_card_cell(key, r, numbers) for key, _ in columns]}
+                for r in joined[:rows_max]
+            ],
+        }
     if name == "hygiene" and isinstance(rows, list) and rows and columns:
         # WS-27bn R3c. Five rows of each kind, then a count of the rest. The
         # rows come sorted by kind, so one cap of 25 hid the later kinds.
         cells: list[dict[str, Any]] = []
         for kind, shown, more in _hygiene_groups(section, rows):
             cells.extend(
-                {"cells": [_card_cell(key, r) for key, _ in columns]} for r in shown
+                {"cells": [_card_cell(key, r, numbers) for key, _ in columns]} for r in shown
             )
             if more > 0:
                 blank = [""] * (len(columns) - 2)
@@ -573,14 +717,15 @@ def _card_section(name: str, section: dict[str, Any]) -> tuple[list[dict[str, An
             "columns": [label for _, label in columns],
             "rows": cells,
         }
+    rows = _card_rows(name, rows)
     notes = _report_card_notes(name, section)
     if isinstance(rows, list) and rows and isinstance(rows[0], dict) and columns:
         table = {
             "title": title,
             "columns": [label for _, label in columns],
             "rows": [
-                {"cells": [_card_cell(key, r) for key, _ in columns]}
-                for r in rows[:25]
+                {"cells": [_card_cell(key, r, numbers) for key, _ in columns]}
+                for r in rows[:rows_max]
                 if isinstance(r, dict)
             ] + [
                 # WS-27bn R5a. The rows this reader cannot see.
@@ -596,12 +741,195 @@ def _card_section(name: str, section: dict[str, Any]) -> tuple[list[dict[str, An
     return stats, table
 
 
-async def _draw_report(payload: dict[str, Any], rid: str | None) -> str:
+# ── A rendered report as a kept report (B3, §14.10.9) ────────────────────────
+
+#: The chart a kept report draws for a section with a ranking or a series:
+#: ``(rows key, label key, value key, chart type, title)``. The card draws no
+#: chart, so this is the one place a section gets one. Every other figure of
+#: a section comes from :func:`_card_section`, the card's own reading.
+REPORT_CHARTS: dict[str, tuple[str, str, str, str, str]] = {
+    "finished": ("projects", "name", "completed", "bar", "Tasks finished by project"),
+    "throughput": ("series", "week_start", "completed", "line", "Tasks finished each week"),
+    "load": ("people", "assignee", "open_tasks", "bar", "Open tasks by person"),
+    "stuck": ("overdue", "name", "overdue", "bar", "Overdue tasks by project"),
+}
+#: A bar chart holds 12 bars and a line chart 60 points (``whatsapp_render``).
+REPORT_CHART_BARS = 12
+REPORT_CHART_POINTS = 60
+#: A table visual holds 20 rows (``write_artifact.GENUI_REPORT_MAX_TABLE_ROWS``).
+REPORT_ROWS = 20
+#: A report holds 12 visuals, and the KPI tiles count as one (``documents``).
+REPORT_VISUALS = 12
+#: The KPI tiles of a report, as on the card.
+REPORT_KPIS = 8
+#: Above every list a section sends, so the report cuts the rows itself.
+_ALL_ROWS = 10_000
+
+
+def _figure(value: Any) -> str:
+    """A number as the route gave it: 12, 30.5. Never "12.0"."""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _report_chart(name: str, section: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
+    """The chart of one section, and a note when the chart shows only part.
+
+    Each value is the route's number. A row with no number means no chart,
+    so the chart never drops a row in silence."""
+    spec = REPORT_CHARTS.get(name)
+    rows = section.get(spec[0]) if spec else None
+    if not spec or not isinstance(rows, list) or not rows:
+        return None, ""
+    _, label_key, value_key, kind, title = spec
+    points: list[tuple[str, int | float]] = []
+    for row in rows:
+        value = row.get(value_key) if isinstance(row, dict) else None
+        if not isinstance(value, int | float) or isinstance(value, bool):
+            return None, ""
+        label = (_day(row.get(label_key)) if label_key == "week_start"
+                 else str(_card_cell(label_key, row)))
+        points.append((label, value))
+    if kind == "line" and len(points) < 2:
+        kind = "bar"
+    most = REPORT_CHART_POINTS if kind == "line" else REPORT_CHART_BARS
+    shown = paged(points, 0, most, default=most, maximum=most).items
+    note = (f"The chart shows the first {len(shown)} of {len(points)} rows."
+            if len(points) > len(shown) else "")
+    return {"kind": "chart", "type": kind, "title": title,
+            "labels": [label for label, _ in shown],
+            "values": [value for _, value in shown]}, note
+
+
+#: The line of a table that the visual cap of a report leaves out.
+REPORT_TABLE_LEFT_OUT = (f"This report holds at most {REPORT_VISUALS} visuals, "
+                         "so this table is left out.")
+
+
+def _sentence(text: str) -> str:
+    """*text* with one full stop at its end, never two."""
+    text = text.rstrip()
+    return text if text.endswith((".", "!", "?")) else f"{text}."
+
+
+def _report_table(
+    name: str, section: dict[str, Any], table: dict[str, Any] | None,
+) -> tuple[dict[str, Any] | None, list[str], str]:
+    """The card's table of one section as a table visual, its notes, and the
+    line that says when the table shows only part of the rows.
+
+    A note row of the card (the hidden-people line, the HR hint) becomes a
+    line of text, because each is code's own words. Every other cell stays a
+    cell: a project name, a task title or a sentence that a member wrote is
+    text in a cell, so no markdown-lite check reads it."""
+    if not table:
+        return None, [], ""
+    known = set(_report_card_notes(name, section))
+    if name == "pulse" and (line := hidden_people_line(section)):
+        known.add(line)
+    hint = (REPORT_CARD_SECTIONS.get(name) or {}).get("hr_hint")
+    if hint:
+        known.add(hint)
+    rows: list[list[Any]] = []
+    notes: list[str] = []
+    for row in table.get("rows") or []:
+        cells = list(row.get("cells") or []) if isinstance(row, dict) else []
+        if cells and cells[0] in known and all(c == "" for c in cells[1:]):
+            notes.append(_sentence(str(cells[0])))
+        elif cells:
+            rows.append(cells)
+    if not rows:
+        return None, notes, ""
+    shown = paged(rows, 0, REPORT_ROWS, default=REPORT_ROWS, maximum=REPORT_ROWS).items
+    cut = (f"The table shows {len(shown)} of {len(rows)} rows. "
+           "The Reports app shows them all." if len(rows) > len(shown) else "")
+    return {"kind": "table", "title": str(table.get("title") or "")[:80],
+            "columns": list(table.get("columns") or []), "rows": shown}, notes, cut
+
+
+def _cap_visuals(parts: list[dict[str, Any]], budget: int) -> None:
+    """Keep at most *budget* visuals: drop the charts first, from the end,
+    then the tables. A dropped visual loses its cut line, and a dropped table
+    says why it is not there. The notes of the part (the hidden-people line,
+    the HR hint) stay."""
+    for drop_charts in (True, False):
+        for part in reversed(parts):
+            if sum(1 for p in parts if p.get("visual")) <= budget:
+                return
+            if part.get("visual") and bool(part.get("chart")) == drop_charts:
+                part["visual"] = None
+                part["cut"] = "" if drop_charts else REPORT_TABLE_LEFT_OUT
+
+
+def _report_part(part: dict[str, Any]) -> dict[str, Any]:
+    """One section of the spec: its heading, its text and its visual."""
+    out: dict[str, Any] = {}
+    if part.get("heading"):
+        out["heading"] = part["heading"]
+    text = " ".join(t for t in (part.get("facts"), part.get("cut"), part.get("note")) if t)
+    if text:
+        out["text"] = text
+    if part.get("visual"):
+        out["visual"] = part["visual"]
+    return out
+
+
+def _report_spec(payload: dict[str, Any]) -> dict[str, Any]:
+    """A rendered report as a ``make_report`` spec (``projects_ai_chat.md``
+    §14.10.9). Code builds it from the payload of the render route, through
+    the card's own reading of each section, so every number is the route's.
+
+    The text fields hold code's words and numbers only. A name or a title
+    that a member wrote goes into a table cell or a chart label."""
+    report = payload.get("report") or {}
+    period = f"{_day(payload.get('period_start'))} to {_day(payload.get('period_end'))}"
+    kpis: list[dict[str, Any]] = []
+    parts: list[dict[str, Any]] = []
+    for name, section in (payload.get("sections") or {}).items():
+        if not isinstance(section, dict):
+            continue
+        name = str(name)
+        stats, card_table = _card_section(name, section, numbers=True, rows_max=_ALL_ROWS)
+        kpis.extend(stats)
+        heading = (REPORT_CARD_SECTIONS.get(name) or {}).get("title") or _human(name)
+        facts = " ".join(f"{s['label']}: {_figure(s['value'])}." for s in stats)
+        chart, chart_note = _report_chart(name, section)
+        table, notes, cut = _report_table(name, section, card_table)
+        if chart:
+            parts.append({"heading": heading, "facts": facts, "cut": chart_note,
+                          "visual": chart, "chart": True})
+            if table or notes:
+                parts.append({"cut": cut, "note": " ".join(notes), "visual": table})
+        else:
+            parts.append({"heading": heading, "facts": facts, "cut": cut,
+                          "note": " ".join(notes), "visual": table})
+    _cap_visuals(parts, REPORT_VISUALS - (1 if kpis else 0))
+    sections = [out for part in parts if (out := _report_part(part))]
+    if not sections:
+        sections = [{"heading": "No data", "text": "This report has no section for this period."}]
+    spec: dict[str, Any] = {
+        "title": (_plain(report.get("name")) or "Report")[:120],
+        "period": period,
+        "summary": f"This report covers {period}. The Reports app computed each number.",
+        "sections": sections,
+        "sources": [f"Projects Reports, {period}"],
+    }
+    if kpis:
+        spec["kpis"] = paged(kpis, 0, REPORT_KPIS, default=REPORT_KPIS,
+                             maximum=REPORT_KPIS).items
+    return spec
+
+
+async def _draw_report(payload: dict[str, Any], rid: str | None,
+                       make_report: bool = False) -> str:
     """The one formatter of a rendered report: the text and one card.
 
     A saved report and the name form (WS-27bn R-final) both call it, so the
     chat prints one report in one way. A preview has no row, so its card
-    carries no ``reportId``.
+    carries no ``reportId``. With ``make_report`` and a run that holds the
+    tool, code makes the kept report from the same payload, and the report
+    card replaces the report card of W3 (§14.10.9).
     """
     report = payload.get("report") or {}
     sections = payload.get("sections") or {}
@@ -620,6 +948,14 @@ async def _draw_report(payload: dict[str, Any], rid: str | None) -> str:
         stats.extend(section_stats)
         if table:
             tables.append(table)
+    from acb_skills.reports import by_code
+
+    outcome = await by_code(lambda: _report_spec(payload), make_report,
+                            tool="render_report",
+                            say="Say in one or two lines what the report shows.")
+    lines.extend(outcome.lines)
+    if outcome.state == "made":
+        return "\n".join(lines)
     card: dict[str, Any] = {
         "title": _plain(report.get("name")),
         "period": f"{payload.get('period_start')} to {payload.get('period_end')}",
@@ -681,10 +1017,18 @@ def _subject_options(asked: str, found: dict[str, Any]) -> list[tuple[dict[str, 
     ]
 
 
-@_annotate(read_only=True, idempotent=True)
-async def render_report(report_id: str = "", template: str = "", subject: str = "") -> str:
+# read_only=False, idempotent=False (§14.10.9): with make_report=true it
+# writes two files and draws a card, as status_report does. Its manifest class
+# stays A, because it reaches only reads. CHAT_FILE_WRITERS names it.
+@_annotate(read_only=False, idempotent=False, open_world=False)
+async def render_report(
+    report_id: str = "", template: str = "", subject: str = "", make_report: bool = False,
+) -> str:
     """Draw a report as a card: its headline numbers as tiles and each section
-    as a table. The Reports app's own SQL computes the numbers now.
+    as a table. The Reports app's own SQL computes the numbers now. For a
+    report the member keeps, pass make_report=true, only when you hold
+    make_report: code then makes the report card and its PDF from the same
+    numbers, with no number from you.
 
     Two forms. Give ``report_id`` to draw a saved report, for "show me the
     weekly report". Give ``template`` and ``subject`` and no ``report_id``
@@ -699,7 +1043,7 @@ async def render_report(report_id: str = "", template: str = "", subject: str = 
     if report_id.strip():
         rid = uuid_of(report_id, "report_id")
         payload = await get(f"/projects/reports/{rid}/render")
-        return await _draw_report(payload, rid)
+        return await _draw_report(payload, rid, make_report)
     if not template.strip():
         raise GatewayRefusal(
             "Name a saved report (report_id from report_list), or a template"
@@ -751,7 +1095,7 @@ async def render_report(report_id: str = "", template: str = "", subject: str = 
         # display name must not turn a valid subject into a 422.
         name = f"{name} · {label}"[:120]
     payload = await post("/projects/reports/preview", {"name": name, "config": config})
-    return await _draw_report(payload, None)
+    return await _draw_report(payload, None, make_report)
 
 
 # ── W2 · the status report ───────────────────────────────────────────────────
@@ -773,13 +1117,141 @@ def _flag(child: dict[str, Any], blocked_ids: set[str], overdue_ids: set[str]) -
     return "on track"
 
 
-@_annotate(read_only=True, idempotent=True)
-async def status_report(project_id: str = "") -> str:
+#: The most rows of the project table in a status report. A table visual
+#: holds 20 rows (``whatsapp_render.MAX_ROWS``).
+REPORT_TABLE_ROWS = 20
+#: The most blocked tasks a status report lists, in a table of 20 rows.
+REPORT_BLOCKED_ROWS = 20
+
+
+def _status_report_spec(
+    scope_name: str,
+    summary: dict[str, Any],
+    stuck: dict[str, Any],
+    flags: list[tuple[dict[str, Any], str]],
+    counts: dict[str, int],
+    *,
+    load_rows: list[list[Any]],
+    load_note: str,
+    forecast: str,
+) -> dict[str, Any]:
+    """The W2 status report as a ``make_report`` spec (``projects_ai_chat.md``
+    §14.10). Code builds it from the reads of :func:`status_report`, so every
+    number in it is the analytics routes' number, never the model's.
+
+    Member text (a task title, a name) goes only into TABLE cells. Both
+    renderers draw a cell as text, and make_report's markdown-lite check reads
+    model prose, so a title such as "Fix <Button>" or a URL never trips it.
+    The text fields hold code's own words and numbers."""
+    blocked_rows = stuck.get("blocked") or []
+    kpis = [
+        {"label": "Open tasks", "value": summary.get("tasks") or 0},
+        {"label": "Overdue tasks", "value": summary.get("overdue") or 0},
+        {"label": "Blocked by open work", "value": stuck.get("blocked_total") or 0},
+        {"label": "Blocked projects", "value": counts["blocked"]},
+        {"label": "At risk projects", "value": counts["at risk"]},
+        {"label": "On track projects", "value": counts["on track"]},
+    ]
+    sections: list[dict[str, Any]] = []
+    health = {
+        "heading": "Project health",
+        "text": (
+            f"{counts['blocked']} blocked, {counts['at risk']} at risk and "
+            f"{counts['on track']} on track. A project is blocked when a task in it "
+            "has an open blocking link, and at risk when it has overdue work."
+        ),
+    }
+    shown = [(f.capitalize(), counts[f], tone)
+             for f, tone in zip(FLAG_ORDER, ("red", "amber", "green"), strict=True)
+             if counts[f]]
+    if shown:
+        health["visual"] = {
+            "kind": "chart", "type": "donut", "title": "Projects by flag",
+            "labels": [s[0] for s in shown], "values": [s[1] for s in shown],
+            "tones": [s[2] for s in shown],
+        }
+    sections.append(health)
+    if flags:
+        ordered = sorted(flags, key=lambda cf: FLAG_ORDER.index(cf[1]))
+        page = paged(ordered, 0, REPORT_TABLE_ROWS, default=REPORT_TABLE_ROWS)
+        table = {
+            "heading": "Projects",
+            "visual": {
+                "kind": "table", "title": "Each project and its flag",
+                "columns": ["Project", "Flag", "Open", "Overdue"],
+                "rows": [
+                    [_plain(c.get("name")), flag, c.get("tasks") or 0, c.get("overdue") or 0]
+                    for c, flag in page.items
+                ],
+            },
+        }
+        if page.total > len(page.items):
+            table["text"] = (
+                f"The table shows {len(page.items)} of {page.total} projects, "
+                "the blocked and at-risk ones first."
+            )
+        sections.append(table)
+    if blocked_rows:
+        page = paged(blocked_rows, 0, REPORT_BLOCKED_ROWS, default=REPORT_BLOCKED_ROWS)
+        blocked: dict[str, Any] = {
+            "heading": "Blocked work",
+            "visual": {
+                "kind": "table", "title": "Tasks blocked by open work",
+                "columns": ["Task", "Title", "Due"],
+                "rows": [
+                    [f"#{r.get('task_number')}", _plain(r.get("title")), _day(r.get("due_at"))]
+                    for r in page.items
+                ],
+            },
+        }
+        total = stuck.get("blocked_total") or page.total
+        if total > len(page.items):
+            blocked["text"] = f"The first {len(page.items)} of {total} blocked tasks."
+        sections.append(blocked)
+    if load_rows:
+        sections.append({
+            "heading": "Load",
+            "text": load_note,
+            "visual": {
+                "kind": "table", "title": "Open work by person",
+                "columns": ["Person", "Open", "Overdue"], "rows": load_rows,
+            },
+        })
+    if forecast:
+        sections.append({"heading": "Forecast", "text": forecast})
+    return {
+        "title": f"Status report · {scope_name[:100]}",
+        "summary": (
+            f"**{counts['blocked']} blocked**, {counts['at risk']} at risk and "
+            f"{counts['on track']} on track. {summary.get('overdue') or 0} of "
+            f"{summary.get('tasks') or 0} open tasks are overdue."
+        ),
+        "kpis": kpis,
+        "sections": sections,
+        "sources": [
+            "Projects analytics: the summary, stuck, load and outlook reads",
+        ],
+    }
+
+
+#: What the model does after a status report: the follow-up of W2.
+_STATUS_FOLLOW_UP = "Offer to comment on each at-risk task (one class B batch)."
+_STATUS_THEN = "Then offer to comment on each at-risk task (one class B batch)."
+
+
+# read_only=False, idempotent=False (review of #1064): with make_report=true
+# it writes two files and draws a card, so an edited turn must not run it
+# again unseen (``chat_supersede.is_side_effect_tool``). Its manifest class
+# stays A: the class names the Projects routes a tool reaches, and it reaches
+# only reads. ``test_projects_chat_coverage.CHAT_FILE_WRITERS`` names it.
+@_annotate(read_only=False, idempotent=False, open_world=False)
+async def status_report(project_id: str = "", make_report: bool = False) -> str:
     """W2: a status report for a node or the portfolio. Every child project
     gets one flag from the server's reads: blocked (a task with an open
     blocking link), at risk (overdue work, or named by the stuck read), on
-    track. Draws a dashboard card and returns the report as Markdown, which
-    you then save with write_artifact so the member can open it. The
+    track. Returns the report as Markdown and draws a dashboard card. For a
+    report the member keeps, pass make_report=true: code then makes the
+    report card and its PDF from these reads, with no number from you. The
     numbers are the analytics routes'; nothing here counts a list."""
     params: dict[str, Any] = {"include_subtree": True}
     scope_name = "the portfolio"
@@ -839,35 +1311,59 @@ async def status_report(project_id: str = "") -> str:
                 f"- #{r.get('task_number')} {_plain(r.get('title'))} (due {_day(r.get('due_at'))})"
             )
     hidden = hidden_people_line(load, "view")
+    load_rows: list[list[Any]] = []
+    load_note = ""
     if hidden:
         # WS-27bn R5a. The load rows are only the people this reader may
         # report on. "Most" over those rows is false, so list them and say
         # how many people the view hides.
         shown = [p for p in people if int(p.get("open_tasks") or 0)][:10]
-        md += ["", "## Load", ""]
-        md += [
-            f"- {_plain(p.get('assignee') or 'unassigned')}: "
-            f"{p.get('open_tasks')} open, {p.get('overdue', 0)} overdue."
+        load_rows = [
+            [_plain(p.get("assignee") or "unassigned"), p.get("open_tasks"), p.get("overdue", 0)]
             for p in shown
         ]
-        md.append(f"{hidden}.")
+        load_note = f"{hidden}."
+        md += ["", "## Load", ""]
+        md += [f"- {a}: {o} open, {d} overdue." for a, o, d in load_rows]
+        md.append(load_note)
     elif top and int(top.get("open_tasks") or 0):
+        load_rows = [[_plain(top.get("assignee") or "unassigned"),
+                      top.get("open_tasks"), top.get("overdue", 0)]]
+        load_note = "The person with the most open work."
         md += [
             "",
             "## Load",
             "",
-            f"Most open work: {_plain(top.get('assignee') or 'unassigned')} with "
-            f"{top.get('open_tasks')} open, {top.get('overdue', 0)} overdue.",
+            f"Most open work: {load_rows[0][0]} with "
+            f"{load_rows[0][1]} open, {load_rows[0][2]} overdue.",
         ]
     plan = outlook.get("plan") or {}
+    forecast = ""
     if plan.get("planned_finish"):
-        md += [
-            "",
-            "## Forecast",
-            "",
+        forecast = (
             f"Planned finish {_day(plan.get('planned_finish'))} over {plan.get('dated', 0)} dated "
-            f"of {plan.get('tasks', 0)} tasks; slip {plan.get('slip_days', 0)} days.",
-        ]
+            f"of {plan.get('tasks', 0)} tasks; slip {plan.get('slip_days', 0)} days."
+        )
+        md += ["", "## Forecast", "", forecast]
+    text_lines = [legend(), *md]
+    # §14.10 (owner, 2026-10-16): code makes the report from these reads, so
+    # the model copies no number. Access is an intersection: the run must hold
+    # make_report itself (`reports.by_code`, the one gate, §14.10.9).
+    from acb_skills.reports import by_code
+
+    outcome = await by_code(
+        lambda: _status_report_spec(
+            scope_name, summary, stuck, flags, counts,
+            load_rows=load_rows, load_note=load_note, forecast=forecast,
+        ),
+        make_report, tool="status_report",
+        say=f"Say the flags in one or two lines. {_STATUS_THEN}",
+    )
+    if outcome.state == "made":
+        return "\n".join([*text_lines, *outcome.lines])
+    # Final review P2: with no report the member still gets the plain status
+    # report and its dashboard card.
+    text_lines.extend(outcome.lines)
     await _emit(
         _template(
             "statDashboard",
@@ -882,12 +1378,125 @@ async def status_report(project_id: str = "") -> str:
             },
         )
     )
-    text_lines = [legend(), *md]
-    text_lines.append(
-        "Save this as a Markdown artifact with write_artifact, then offer to comment on "
-        "each at-risk task (one class B batch)."
-    )
+    if outcome.state == "offer":
+        text_lines[-1] += f" {_STATUS_THEN}"
+    elif outcome.state in ("off", "none"):
+        text_lines.append(_STATUS_FOLLOW_UP)
     return "\n".join(text_lines)
+
+
+# ── The filtered list as a file of the chat (WS-64 OP-6c, D-OP-9) ────────────
+
+#: The columns of an export when the member names none. The route sends only
+#: ``#`` and ``Title`` for an empty ``shown_fields``, which is a sheet nobody
+#: wants, so the chat asks for the usual set. Each key is one of the route's
+#: ``filters.SHOWN_FIELDS``, and ``test_projects_nudge_attach_tools.py`` holds
+#: that.
+DEFAULT_EXPORT_FIELDS = "status,type,assignees,start_date,due_at,importance,tags,estimate"
+
+
+def _csv_rows(body: bytes) -> int:
+    """The data rows of a CSV body, a header excluded. A cell may span lines."""
+    import csv
+    import io
+
+    text = body.decode("utf-8-sig", errors="replace")
+    return max(0, sum(1 for _ in csv.reader(io.StringIO(text))) - 1)
+
+
+def _export_stem(resp: Any) -> str:
+    """The file name the route chose, without ``.csv``, else a fixed stem."""
+    header = ""
+    try:
+        header = str((getattr(resp, "headers", None) or {}).get("Content-Disposition") or "")
+    except AttributeError:
+        header = ""
+    hit = re.search(r'filename="([A-Za-z0-9._-]{1,80})\.csv"', header)
+    return hit.group(1) if hit else "projects-tasks"
+
+
+# read_only=False, idempotent=False: it writes one file into the chat's
+# outputs, never a Projects row. Its manifest class stays A, because it reaches
+# only a read. CHAT_FILE_WRITERS names it (OP-6c).
+@_annotate(read_only=False, idempotent=False, open_world=False)
+async def export_tasks(
+    project_id: str = "",
+    include_subtree: bool = True,
+    status_category: str = "",
+    assignee: str = "",
+    unassigned: bool = False,
+    overdue: bool = False,
+    due_before: str = "",
+    tags: str = "",
+    watching: bool = False,
+    include_archived: bool = False,
+    query: str = "",
+    shown_fields: str = "",
+) -> str:
+    """Export the tasks that a filter picks as a CSV file in this chat. The
+    filters are those of list_tasks: project_id, include_subtree,
+    status_category, assignee, unassigned, overdue, due_before, tags,
+    watching, include_archived and query. shown_fields is a comma list of
+    columns from status, type, source, assignees, start_date, due_at,
+    importance, subtasks, blocked, pr, tags, attachments, estimate and
+    created_at. Empty shown_fields gives the usual columns. A file card shows
+    the file, so name it in words and paste no link. The export is complete or
+    refused: above the row limit it exports nothing, and the answer says to
+    narrow the filter. Nothing is written to Projects."""
+    params: dict[str, Any] = {
+        "include_subtree": bool(include_subtree),
+        "shown_fields": (shown_fields or "").strip() or DEFAULT_EXPORT_FIELDS,
+    }
+    if project_id:
+        params["project_id"] = uuid_of(project_id, "project_id")
+    if status_category:
+        params["status_category"] = status_category
+    if assignee:
+        params["assignees"] = assignee
+    if unassigned:
+        params["unassigned"] = True
+    if overdue:
+        params["overdue"] = True
+    if due_before:
+        params["due_before"] = due_before
+    if tags:
+        params["tags"] = tags
+    if watching:
+        params["watching"] = True
+    if include_archived:
+        params["include_archived"] = True
+    term = (query or "").strip()
+    if term:
+        params["q"] = term
+    try:
+        resp = await request("GET", "/projects/export/tasks.csv", params=params, timeout=60.0)
+    except GatewayRefusal as exc:
+        if exc.status == 422 and "export cap" in (exc.detail or ""):
+            return (
+                f"Nothing was exported. {exc.detail} Ask the member which filter to add, "
+                "then export again."
+            )
+        raise
+    body = bytes(resp.content or b"")
+    rows = _csv_rows(body)
+    # The route's own count, when it sent one; the file is complete by construction.
+    header = (getattr(resp, "headers", None) or {}).get("X-Export-Rows")
+    if header is not None and str(header).isdigit():
+        rows = int(header)
+    from acb_skills import documents as docs
+
+    saved = await docs.save_outputs(
+        _export_stem(resp), (".csv",), lambda _rels: {".csv": body}, announce=True
+    )
+    if "error" in saved:
+        return f"The tasks were read but the file was not saved: {saved['error']}"
+    written = saved["files"][".csv"]
+    return (
+        f"Exported {rows} task{'' if rows == 1 else 's'} to {written['path']} "
+        f"({written['size']} bytes), with the columns {params['shown_fields']}. "
+        "A card in the chat shows the file. Name it in words, say in one line what it "
+        "holds, and paste no link."
+    )
 
 
 __all__ = [  # noqa: RUF022 — grouped by what they draw
@@ -896,4 +1505,5 @@ __all__ = [  # noqa: RUF022 — grouped by what they draw
     "render_tasks",
     "render_report",
     "status_report",
+    "export_tasks",
 ]

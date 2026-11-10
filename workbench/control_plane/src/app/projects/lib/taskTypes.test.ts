@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import { isKnownIcon } from "@/lib/icons";
 
-import { TYPE_ICON_CHOICES, iconChoiceFor, iconOptionsFor, iconValueFor, sortTypes, typeDeleteBody, typeOrgWide } from "./taskTypes";
+import { TYPE_ICON_CHOICES, iconChoiceFor, iconOptionsFor, iconSelectOptions, iconValueFor, sortTypes, typeDeleteBody, typeOrgWide } from "./taskTypes";
 
 describe("task types", () => {
   it("every icon choice resolves, so no card draws the fallback", () => {
@@ -24,6 +24,13 @@ describe("task types", () => {
     expect(iconOptionsFor("star")[0]).toBe("star");
     expect(iconValueFor("bug")).toBe("Bug");
     expect(iconOptionsFor("bug")).toEqual([...TYPE_ICON_CHOICES]);
+  });
+  it("gives each icon option its own glyph, so the picker draws icons (task #417)", () => {
+    const options = iconSelectOptions("bug");
+    expect(options.map((o) => o.value)).toEqual([...TYPE_ICON_CHOICES]);
+    for (const o of options) expect(o.icon).toBe(o.value);
+    // An unlisted stored icon is still drawn as itself.
+    expect(iconSelectOptions("star")[0]).toEqual({ value: "star", label: "star", icon: "star" });
   });
   it("knows an organization row from a space's own", () => {
     expect(typeOrgWide({ project_id: null })).toBe(true);

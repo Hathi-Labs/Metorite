@@ -21,10 +21,12 @@ routes each one to the system that actually does that kind of work:
 Two entry points: ``auto_dispatch(meeting_id, triggered_by)`` runs after notes
 generation (per-kind settings + a confidence gate), and ``POST /notes/actions/
 {id}/dispatch`` is the manual per-item button. Both funnel through
-``_dispatch`` so behaviour never diverges. Every dispatch writes an
-``audit_event`` row and records its destination in
-``action_item.dispatch_ref`` — or its failure in ``dispatch_error``, leaving
-the row a draft so a human can retry.
+``_dispatch`` so behaviour never diverges. Every dispatch records its
+destination in ``action_item.dispatch_ref`` — or its failure in
+``dispatch_error``, leaving the row a draft so a human can retry. It also
+records an ``audit_event`` row through ``acb_audit``, in the bound tenant. A
+dispatch with no bound tenant (with ``ACB_GRAPH_TENANT_BIND`` on) logs
+``audit.skipped_no_tenant`` and writes no audit row (task 2189).
 
 ``triggered_by`` is not decoration. ``auto_dispatch`` is reached from notes
 generation, notes generation is reached from ``POST /meetings/{id}/summarize``
@@ -44,7 +46,10 @@ import json
 import re
 from datetime import UTC, datetime
 
+from acb_audit import AuditEvent, record, refuse_tenantless
 from acb_auth import UserContext, get_current_user
+from acb_common.db import current_tenant
+from acb_llm.voice import voice_prompt
 from fastapi import Depends, HTTPException
 from gateway.routes.notes.actions import ApproveResponse, _create_task_from_action
 from gateway.routes.notes.core import _get_db, _log, _tenant_session, router
@@ -234,7 +239,7 @@ async def _draft_email(action, meeting, recipient: str, excerpts: list[str]) -> 
             else ""
         )
     )
-    data = await _llm_json(_EMAIL_DRAFT_SYSTEM, user, "tier-balanced", max_tokens=700)
+    data = await _llm_json(_EMAIL_DRAFT_SYSTEM + "\n\n" + voice_prompt("email", json=True), user, "tier-balanced", max_tokens=700, job="writing")
     if not data:
         return None
     subject = str(data.get("subject") or "").strip()
@@ -257,11 +262,20 @@ async def _default_email_account(db, owner_email: str) -> str | None:
     return str(row.id) if row else None
 
 
-async def _dispatch_email(action, meeting, owner_email: str, actor: str) -> str:
+async def _dispatch_email(
+    action, meeting, owner_email: str, actor: str, *, background: bool = False,
+) -> str:
     """Send (recipient known) or draft (recipient unknown) the committed email.
 
     Returns the dispatch ref: ``sent:<provider msg id>`` or
     ``draft:<provider draft id>``.
+
+    🔴 WS-17 EM-G11c2 (``email_app_master_plan.md`` §12.3.13.7, G1): a
+    ``background`` dispatch (``auto_dispatch``) through a GMAIL mailbox makes
+    a draft and never sends. The member sends the draft. The manual route
+    passes ``background=False``, because the click is the member's choice.
+    The Outlook and IMAP paths do not change (Q-GM-12 stays open). Fence:
+    ``tests/unit/test_email_background_writes.py``.
 
     ``provider_session(db, owner_email, …)`` loads the account scoped to
     ``owner_email``, so this function will happily authenticate as whoever it
@@ -280,15 +294,19 @@ async def _dispatch_email(action, meeting, owner_email: str, actor: str) -> str:
     if refusal:
         raise DispatchError(refusal)
 
+    from gateway.routes.email.automation.rules import _account_provider
     from gateway.routes.email.core import _get_db as _email_db
     from gateway.routes.email.core import provider_session
-    from gateway.routes.email.signature import build_signed_bodies
+    from gateway.routes.email.signature import build_signed_bodies, resolve_signature
 
     db = await _email_db()
     try:
         account_id = await _default_email_account(db, owner_email)
         if not account_id:
             raise DispatchError("No email account connected for this user.")
+        # G1: no background send from a Gmail mailbox, only a draft.
+        draft_only = background and (
+            await _account_provider(db, account_id) == "gmail")
 
         excerpts = await _segment_texts(db, action.segment_ids)
         recipient = resolve_recipient(
@@ -299,18 +317,10 @@ async def _dispatch_email(action, meeting, owner_email: str, actor: str) -> str:
             draft = await _draft_email(action, meeting, recipient, excerpts)
 
         async with provider_session(db, owner_email, account_id=account_id) as sess:
-            sig_row = (
-                await db.execute(
-                    text(
-                        "SELECT signature FROM email_assistant_settings "
-                        "WHERE account_id = :aid"
-                    ),
-                    {"aid": account_id},
-                )
-            ).fetchone()
-            signature = (sig_row.signature if sig_row else "") or ""
+            # WS-17 SG-2 (D-EM-66): the resolver gives the signature of new mail.
+            signature = await resolve_signature(db, account_id, "new")
 
-            if recipient and draft:
+            if recipient and draft and not draft_only:
                 body_text, body_html = build_signed_bodies(
                     signature, draft["body"], None
                 )
@@ -322,9 +332,10 @@ async def _dispatch_email(action, meeting, owner_email: str, actor: str) -> str:
                 )
                 ref = f"sent:{msg_id}"
             else:
-                # No safe recipient (or the drafter failed): leave a provider
-                # draft in the mailbox for the user to finish. Subject/body
-                # fall back to the commitment itself.
+                # No safe recipient (or the drafter failed), or a background
+                # dispatch from Gmail (G1): leave a provider draft in the
+                # mailbox for the user to finish and send. Subject/body fall
+                # back to the commitment itself.
                 subject = (draft or {}).get(
                     "subject", f"Follow-up: {action.description[:120]}"
                 )
@@ -384,7 +395,7 @@ async def _dispatch_document(action, meeting, owner_email: str) -> str:
             else ""
         )
     )
-    data = await _llm_json(_DOC_DRAFT_SYSTEM, user, "tier-balanced", max_tokens=1800)
+    data = await _llm_json(_DOC_DRAFT_SYSTEM + "\n\n" + voice_prompt("title", "summary", json=True), user, "tier-balanced", max_tokens=1800, job="writing")
     title = str((data or {}).get("title") or "").strip() or action.description[:80]
     markdown = str((data or {}).get("markdown") or "").strip()
     if not markdown:
@@ -453,30 +464,38 @@ async def _mark(action_id: str, *, ref: str | None, task_id: str | None,
 
 async def _audit(actor: str, action_id: str, meeting_id: str, kind: str,
                  ref: str | None, error: str | None) -> None:
+    """Record one ``notes.action_dispatched`` row in the bound tenant (task 2189).
+
+    It goes through the one ``acb_audit`` seam, never a raw INSERT. The org is
+    ``current_tenant()``, which the request or the job bound, never a request
+    field. With no tenant and ``ACB_GRAPH_TENANT_BIND`` on (a background path
+    that H4 has not bound yet), ``refuse_tenantless`` skips the row, so it
+    never lands under the operator org. ``record`` is best-effort and does not
+    block a loop. A failed audit write never breaks the dispatch. Fence:
+    ``tests/unit/test_notes_dispatch_audit_org_r8.py``.
+    """
     with contextlib.suppress(Exception):
-        # H4: reached from the background summary pipeline and the meeting-bot
-        # poller — no ambient tenant; derive it from the meeting/action row.
-        async with await _get_db() as db:
-            await db.execute(
-                text(
-                    "INSERT INTO audit_event (actor, action, target, payload) "
-                    "VALUES (:actor, 'notes.action_dispatched', :target, "
-                    "CAST(:p AS JSONB))"
-                ),
-                {
-                    "actor": actor,
-                    "target": f"action_item:{action_id}",
-                    "p": json.dumps(
-                        {"meeting_id": meeting_id, "kind": kind,
-                         "ref": ref, "error": error}
-                    ),
-                },
-            )
-            await db.commit()
+        org = current_tenant()
+        event = AuditEvent(
+            actor=actor,
+            action="notes.action_dispatched",
+            target=f"action_item:{action_id}",
+            payload={"meeting_id": meeting_id, "kind": kind,
+                     "ref": ref, "error": error},
+            organization_id=str(org) if org else None,
+        )
+        if refuse_tenantless(event):
+            return
+        record(event)
 
 
-async def _dispatch(action, meeting, actor: str) -> tuple[str | None, str | None]:
-    """Route one action item by kind. Returns (dispatch_ref, error)."""
+async def _dispatch(
+    action, meeting, actor: str, *, background: bool = False,
+) -> tuple[str | None, str | None]:
+    """Route one action item by kind. Returns (dispatch_ref, error).
+
+    ``background`` is True for ``auto_dispatch`` only. A Gmail email item
+    then becomes a draft (WS-17 EM-G11c2, G1)."""
     owner = meeting.owner_email or actor or "anonymous"
     kind = action.kind if action.kind in KINDS else "task"
     ref: str | None = None
@@ -509,7 +528,8 @@ async def _dispatch(action, meeting, actor: str) -> tuple[str | None, str | None
             await _mark(str(action.id), ref=task_id, task_id=None, error=None)
             ref = task_id
         elif kind == "email":
-            ref = await _dispatch_email(action, meeting, owner, actor)
+            ref = await _dispatch_email(
+                action, meeting, owner, actor, background=background)
             await _mark(str(action.id), ref=ref, task_id=None, error=None)
         else:
             ref = await _dispatch_document(action, meeting, owner)
@@ -584,7 +604,9 @@ async def auto_dispatch(meeting_id: str, triggered_by: str) -> dict:
         if not allowed.get(kind, False):
             skipped += 1
             continue
-        ref, error = await _dispatch(action, meeting, triggered_by)
+        # G1 (EM-G11c2): nobody clicked, so a Gmail email item drafts only.
+        ref, error = await _dispatch(
+            action, meeting, triggered_by, background=True)
         if error is None and ref is not None:
             done += 1
         else:

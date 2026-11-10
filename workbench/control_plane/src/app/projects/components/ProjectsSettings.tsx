@@ -22,11 +22,14 @@ import Button from "@/components/ui/Button";
 import SelectButton from "@/components/ui/SelectButton";
 
 import type { ProjectRow } from "../lib/api";
+import { SPACE_DEFAULT_STATUSES } from "../lib/statusSetCopy";
 import { FieldManager } from "./FieldManager";
 import ImportHistory, { type DiscardOutcome, DiscardNotice } from "./ImportHistory";
 import { LifecyclePolicy } from "./LifecyclePolicy";
 import SharedVocabulary from "./SharedVocabulary";
+import { firstTeamSpaceId } from "../lib/personalTree";
 import SpaceSettings from "./SpaceSettings";
+import { StatusStageTip } from "./StageHelp";
 import { StatusManager } from "./StatusManager";
 import { TagManager } from "./TagManager";
 import { TypeManager } from "./TypeManager";
@@ -63,8 +66,10 @@ const IMPORT_SECTIONS: SectionItem[] = [
 export const SPACE_SECTIONS: SectionItem[] = [
   { id: "general", label: "General", icon: "Settings", hint: "The name, icon and colour the space wears." },
   {
+    // PST-1 (D185): the pane edits the set of the SPACE, which every project
+    // below it uses unless it keeps its own. The name says so.
     id: "statuses",
-    label: "Statuses",
+    label: SPACE_DEFAULT_STATUSES,
     icon: "Columns3",
     hint: "The lanes tasks move through. Progress and roll-ups count a Done status as finished, and leave a Cancelled one out.",
   },
@@ -103,6 +108,11 @@ export interface ProjectsSettingsProps {
   onBoardStale: () => void;
   /** Bumped by the page when the wizard closes or an import ends. */
   importsVersion?: number;
+  /**
+   * PST-1: opens the Statuses editor of a project that keeps its own set,
+   * from the list in that section.
+   */
+  onOpenStatuses?: (project: { id: string; name: string }) => void;
 }
 
 export default function ProjectsSettings({
@@ -117,6 +127,7 @@ export default function ProjectsSettings({
   onLifecycleSaved,
   onBoardStale,
   importsVersion = 0,
+  onOpenStatuses,
 }: ProjectsSettingsProps) {
   const firstSection: SettingsSection =
     initialSection ?? (spaces.length > 0 ? "general" : mayImport ? "import" : "vocabulary");
@@ -194,7 +205,7 @@ export default function ProjectsSettings({
 
   const body = (() => {
     if (current.id === "vocabulary")
-      return <SharedVocabulary onChanged={onBoardStale} anchorSpaceId={spaces[0]?.id ?? null} />;
+      return <SharedVocabulary onChanged={onBoardStale} anchorSpaceId={firstTeamSpaceId(spaces)} />;
     if (current.id === "import") {
       return (
         <div className="flex flex-col gap-4">
@@ -255,6 +266,7 @@ export default function ProjectsSettings({
             onClose={() => undefined}
             onChanged={onEdited}
             onTasksTouched={onBoardStale}
+            onOpenStatuses={onOpenStatuses}
           />
         );
       case "fields":
@@ -318,12 +330,16 @@ export default function ProjectsSettings({
             All settings
           </button>
           <header>
-            <h2 className="text-sm font-semibold">
-              {current.label}
-              {isSpaceSection && space ? (
-                <span className="font-normal text-muted-foreground"> · {space.name}</span>
-              ) : null}
-            </h2>
+            <div className="flex items-center gap-1">
+              <h2 className="text-sm font-semibold">
+                {current.label}
+                {isSpaceSection && space ? (
+                  <span className="font-normal text-muted-foreground"> · {space.name}</span>
+                ) : null}
+              </h2>
+              {/* I-10b: what a status is, what a stage is, and the five stages. */}
+              {current.id === "statuses" ? <StatusStageTip /> : null}
+            </div>
             <p className="text-xs text-muted-foreground">{current.hint}</p>
           </header>
           {body}

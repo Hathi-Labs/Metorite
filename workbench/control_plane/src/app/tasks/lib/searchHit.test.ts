@@ -102,7 +102,7 @@ describe("My Tasks binds ⌘K to search", () => {
   it("⌘K opens the search palette, not capture", () => {
     const src = page();
     expect(src).toMatch(
-      /if \(isOpenShortcut\(e\)\) \{\s*e\.preventDefault\(\);\s*openSearch\(\);\s*return;\s*\}/,
+      /if \(isOpenShortcut\(e\)\) \{\s*e\.preventDefault\(\);\s*openSearch\(\);\s*\}/,
     );
     // The old binding, gone.
     expect(src).not.toMatch(/e\.key === "k"/);
@@ -120,8 +120,9 @@ describe("My Tasks binds ⌘K to search", () => {
     expect(src).toMatch(/<AppSearchButton onOpen=\{openSearch\} \/>/);
   });
 
-  it("capture stays on C", () => {
-    expect(page()).toMatch(/\(e\.key === "c" \|\| e\.key === "C"\)\s*\)\s*\{\s*e\.preventDefault\(\);\s*openQuickCapture\("single"\);/);
+  it("capture is the Capture button, and no longer the C key (owner, 2026-10-13)", () => {
+    expect(page()).not.toMatch(/e\.key === "c"/);
+    expect(page()).toMatch(/onClick=\{\(\) => openQuickCapture\("single"\)\}/);
   });
 
   it("mounts the ONE palette, with no commands, and opens a hit through hitTarget", () => {
@@ -135,10 +136,10 @@ describe("My Tasks binds ⌘K to search", () => {
     expect(src.match(/\{search\}/g) ?? []).toHaveLength(2);
   });
 
-  it("the shortcuts sheet says ⌘K searches", () => {
-    // Continuity P3: the inline legend became the `?` sheet (`shortcuts.ts`).
-    const sheet = read("app/tasks/lib/shortcuts.ts");
-    expect(sheet).toMatch(/\{ keys: "⌘ K", label: "Search", icon: "Search" \}/);
+  it("⌘K searches, and Quick Capture does not claim it", () => {
+    // The shortcuts sheet that printed this went on 2026-10-13. ⌘K is the
+    // one key My Tasks still binds of its own, through Projects' predicate.
+    expect(read("app/tasks/page.tsx")).toMatch(/if \(isOpenShortcut\(e\)\) \{\s*e\.preventDefault\(\);\s*openSearch\(\);/);
     expect(read("app/tasks/components/QuickCapture.tsx")).not.toMatch(/⌘K/);
   });
 

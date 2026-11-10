@@ -15,6 +15,7 @@ import {
   durationLabel,
   formatStatus,
   initials,
+  dueLabel,
   isOverdue,
   relativeTime,
 } from "../lib/utils";
@@ -31,8 +32,12 @@ import {
   type TagRow,
   type TaskRow,
   projectsApi,
+  projectsKey,
 } from "@/app/projects/lib/api";
 import { taskDeepLink, taskRef } from "@/app/projects/lib/card";
+import { dueDayOf, dueInstantForDay } from "@/app/projects/lib/quickAdd";
+import { taskWhere } from "@/app/projects/lib/tree";
+import { useCachedResource } from "@/lib/useCachedResource";
 import { EditableTaskTitle, TaskHeaderRow } from "@/components/TaskPanelHeader";
 import { CLOSE_TASK_LABEL } from "@/lib/taskPanel";
 import { fetchMyTaskLanes } from "../lib/api";
@@ -47,6 +52,8 @@ import { isWaitingOverdue } from "../lib/waiting";
 import { useCardActions } from "../lib/useCardActions";
 import { ProjectLabel } from "./ProjectLabel";
 import { PromoteDialog } from "./PromoteDialog";
+import { useAccess } from "@/components/AccessProvider";
+import { taskRefResolverFor } from "@/lib/taskRefs";
 
 // ── Two compositions, one under the lens (WS-39 S6e) ───────────────────────
 //
@@ -312,8 +319,9 @@ export function TaskDetail({
    *  Omitted → no ✕ is drawn (the overlay has its own). */
   onClose?: () => void;
 }) {
+  // A copied link names this organization, so it opens in the right account.
+  const orgId = useAccess().access.organization?.id ?? null;
   const projects = useTaskStore((s) => s.projects);
-  const contexts = useTaskStore((s) => s.contexts);
   const people = useTaskStore((s) => s.people);
   const urgentWindowHours = useTaskStore((s) => s.settings.urgentWindowHours);
   const updateItem = useTaskStore((s) => s.updateItem);
@@ -324,12 +332,23 @@ export function TaskDetail({
   const archiveItem = useTaskStore((s) => s.archiveItem);
   const openFocus = useTaskStore((s) => s.openFocus);
   const enterFocusSession = useTaskStore((s) => s.enterFocusSession);
-  const deferItem = useTaskStore((s) => s.deferItem);
-  const undeferItem = useTaskStore((s) => s.undeferItem);
   const isArchived = !!item.archivedAt;
   // S6e — the shared body needs the one store's routes, which the demo
   // backend does not serve. The strip draws in both modes.
   const lens = backend === "live";
+  // The header's breadcrumb: where a board task lives, from its space down.
+  // A task in a private project of mine is not in the company tree, so it
+  // has none. A crumb opens that node in Projects (`?project=`).
+  //
+  // The tree comes through the SHARED cache key the Projects page reads, not
+  // `useCompanyTree`. That one is held for the whole session, which suits a
+  // picker and not a display that says where a task lives: a project moved or
+  // renamed in Projects would keep its old path here. A write in Projects
+  // invalidates this key, and a second card paints from it at once (review
+  // of #927).
+  const router = useRouter();
+  const tree = useCachedResource(lens ? projectsKey("tree") : null, () => projectsApi.tree());
+  const where = taskWhere(tree.data?.rows ?? [], item.projectId);
 
   const [pushState, setPushState] = useState<"idle" | "busy" | string>("idle");
   // Delegating a LOCAL task opens the "create in ClickUp under a project" flow
@@ -356,7 +375,7 @@ export function TaskDetail({
   // directory alone — which is the correct answer under one store, and worth
   // saying rather than leaving as an unexplained simplification.
   const memberPeople: Person[] = people;
-  // The local Kanban stage (the workflow-stage axis of My Next Actions). Used to
+  // The local Kanban stage (the workflow-stage axis of My tasks). Used to
   // show/change the task's status category in the detail, like the card.
   const stageActions = useCardActions(item);
   // The full owner set (falls back to the single assignee for older rows / mock).
@@ -371,12 +390,13 @@ export function TaskDetail({
   // information, not a control.
   const sync = syncBadge(item.syncState);
 
-  const dueValue = item.dueAt ? item.dueAt.slice(0, 10) : "";
+  // RX-7: the day of the instant in this browser, not its first ten characters (the UTC date).
+  const dueValue = item.dueAt ? dueDayOf(item.dueAt) : "";
   // The promised-by date on the waiting-for record (null = no promise made).
   // `promiseLate` highlights only an EXPLICIT promise that has passed — when
   // there is none the Due field above already carries the overdue styling, so
   // the panel never says the same thing twice in two places.
-  const promisedValue = item.expectedBy ? item.expectedBy.slice(0, 10) : "";
+  const promisedValue = item.expectedBy ? dueDayOf(item.expectedBy) : "";
   const promiseLate = !!item.expectedBy && isWaitingOverdue(item);
 
   // S6e — the overlay strip: the member's own facts, drawn in both modes.
@@ -407,98 +427,10 @@ export function TaskDetail({
               task's facts) right below, so this strip names what it holds:
               the member's own planning. */}
           <SectionLabel icon={themedIcon("Tag")}>{lens ? "My planning" : "Details"}</SectionLabel>
-            <div className={`grid gap-2 ${focused ? "grid-cols-2" : "grid-cols-1"}`}>
-              {/* Context */}
-              <MetaEdit label="Context" icon={themedIcon("Tag")}
-                display={item.context
-                  ? <span className="font-mono text-primary/90">{item.context}</span>
-                  : null}
-              >
-                {(close) => (
-                  <ChipMenu
-                    options={contexts.map((c) => c.name)}
-                    active={item.context}
-                    mono
-                    allowClear
-                    onPick={(v) => { updateItem(item.id, { context: v ?? "" }); close(); }}
-                  />
-                )}
-              </MetaEdit>
-
-              {/* Energy */}
-              <MetaEdit label="Energy" icon={themedIcon("Gauge")}
-                display={item.energy
-                  ? <span className="inline-flex items-center gap-1.5 capitalize">
-                      <span className={`h-2 w-2 rounded-full ${ENERGY_DOT[item.energy]}`} />
-                      {item.energy}
-                    </span>
-                  : null}
-              >
-                {(close) => (
-                  <ChipMenu
-                    options={["low", "medium", "high"]}
-                    active={item.energy}
-                    capitalize
-                    allowClear
-                    onPick={(v) => { updateItem(item.id, { energy: (v as Energy) ?? undefined }); close(); }}
-                  />
-                )}
-              </MetaEdit>
-
-              {/* Estimate — D77: the task's ONE estimate, a work fact. Under
-                  the lens the shared body draws and edits it; here only on
-                  the demo backend. */}
-              {!lens && (<>
-              <MetaEdit label="Estimate" icon={themedIcon("Zap")}
-                display={item.timeEstimateMins
-                  ? <span>{durationLabel(item.timeEstimateMins)}</span>
-                  : null}
-              >
-                {(close) => (
-                  <ChipMenu
-                    options={ESTIMATES.map((m) => durationLabel(m))}
-                    active={item.timeEstimateMins ? durationLabel(item.timeEstimateMins) : undefined}
-                    allowClear
-                    onPick={(label) => {
-                      const mins = label ? ESTIMATES[ESTIMATES.map((m) => durationLabel(m)).indexOf(label)] : 0;
-                      updateItem(item.id, { timeEstimateMins: mins });
-                      close();
-                    }}
-                  />
-                )}
-              </MetaEdit>
-              </>)}
-
-              {/* Defer — the tickler (my_tasks_cutover.md §4.8 point 3 names
-                  it in the strip). Hidden from the active lists until the
-                  date. The overlay's fact, so it is here in both modes. */}
-              <MetaEdit label="Defer until" icon={themedIcon("CalendarClock")}
-                display={item.deferUntil
-                  ? <span>{relativeTime(item.deferUntil)}</span>
-                  : null}
-              >
-                {(close) => (
-                  <div className="flex items-center gap-1.5">
-                    <input
-                      type="date"
-                      defaultValue={item.deferUntil ? item.deferUntil.slice(0, 10) : ""}
-                      autoFocus
-                      onChange={(e) => {
-                        if (e.target.value) deferItem(item.id, new Date(e.target.value).toISOString());
-                        else undeferItem(item.id);
-                        close();
-                      }}
-                      className="rounded-md border border-border bg-background px-2 py-1 text-sm text-foreground focus:border-primary/50 focus:outline-none"
-                    />
-                    {item.deferUntil && (
-                      <button type="button" onClick={() => { undeferItem(item.id); close(); }}
-                        className="tech-transition rounded p-1 text-muted-foreground hover:text-destructive" title="Clear">
-                        <AppIcon name="X" className="h-3.5 w-3.5" />
-                      </button>
-                    )}
-                  </div>
-                )}
-              </MetaEdit>
+            {/* `-mx-2`: the strip pads `px-5` and the body `px-3`, so the
+                rows' label column lines up with the body's rows below. */}
+            <div className={`-mx-2 grid ${focused ? "grid-cols-2 gap-x-6 gap-y-1" : "grid-cols-1 gap-y-1"}`}>
+              <PlanningRows item={item} lens={lens} />
 
               {/* Due, Stage and Assignee are the TASK's facts, shared with the
                   board. Under the lens the shared body draws and edits them
@@ -509,7 +441,7 @@ export function TaskDetail({
                 display={item.dueAt
                   ? <span className={`inline-flex items-center gap-1 ${overdue ? "font-medium text-destructive" : ""}`}>
                       {overdue ? <AppIcon name="AlertTriangle" className="h-3 w-3" /> : <AppIcon name="Clock" className="h-3 w-3" />}
-                      {relativeTime(item.dueAt)}
+                      {dueLabel(item.dueAt)}
                     </span>
                   : null}
               >
@@ -521,7 +453,7 @@ export function TaskDetail({
                       autoFocus
                       onChange={(e) => {
                         updateItem(item.id, {
-                          dueAt: e.target.value ? new Date(e.target.value).toISOString() : "",
+                          dueAt: e.target.value ? dueInstantForDay(e.target.value) : "",
                         });
                         close();
                       }}
@@ -538,7 +470,7 @@ export function TaskDetail({
               </MetaEdit>
 
               {/* Stage — for a SYNCED task the raw ClickUp status (back-syncs on
-                  change); for a LOCAL task the workflow stage (the My Next Actions
+                  change); for a LOCAL task the workflow stage (the My tasks
                   column). Local tasks always show one now, so their stage is
                   visible/changeable here too, not just on the board. */}
               {isSynced ? (
@@ -690,18 +622,18 @@ export function TaskDetail({
             </section>
           )}
 
-          {/* Offer to drop a just-reassigned/unassigned task from My Next Actions.
+          {/* Offer to drop a just-reassigned/unassigned task from My tasks.
               It stays on ClickUp — only the personal list changes. The regular
               delete/two-way sync is untouched. */}
           {offerDropFromNext && (
             <div className="flex flex-wrap items-center gap-2 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2.5">
               <AppIcon name="AlertTriangle" className="h-4 w-4 shrink-0 text-warning" />
               <span className="min-w-0 flex-1 text-[12.5px] text-foreground">
-                No longer your action? Remove it from My Next Actions — it stays on its project board.
+                No longer your action? Remove it from My tasks — it stays on its project board.
               </span>
               <Button size="none" radius="keep" layout="inline-flex items-center" type="button" onClick={() => { updateItem(item.id, { isMine: false }); setOfferDropFromNext(false); }} className="gap-1.5 rounded-md px-2.5 py-1.5 text-xs">
                 <AppIcon name="UserMinus" className="h-3.5 w-3.5" />
-                Remove from My Next Actions
+                Remove from My tasks
               </Button>
               <Button variant="ghost" size="none" radius="keep" layout="" type="button" onClick={() => setOfferDropFromNext(false)} className="rounded-md px-2.5 py-1.5 text-xs">
                 Keep
@@ -732,11 +664,11 @@ export function TaskDetail({
                   display={item.expectedBy
                     ? <span className={`inline-flex items-center gap-1 ${promiseLate ? "font-medium text-destructive" : ""}`}>
                         {promiseLate ? <AppIcon name="AlertTriangle" className="h-3 w-3" /> : <AppIcon name="Clock" className="h-3 w-3" />}
-                        {relativeTime(item.expectedBy)}
+                        {dueLabel(item.expectedBy)}
                       </span>
                     : <span className="text-sm text-muted-foreground/70">
                         {item.dueAt
-                          ? `not promised — judged on due ${relativeTime(item.dueAt)}`
+                          ? `not promised — judged on due ${dueLabel(item.dueAt)}`
                           : "not promised"}
                       </span>}
                 >
@@ -749,7 +681,7 @@ export function TaskDetail({
                         onChange={(e) => {
                           updateItem(item.id, {
                             expectedBy: e.target.value
-                              ? new Date(e.target.value).toISOString() : "",
+                              ? dueInstantForDay(e.target.value) : "",
                           });
                           close();
                         }}
@@ -854,11 +786,15 @@ export function TaskDetail({
             archive/delete actions clear of it */}
         <div className={focused ? "pr-9" : ""}>
           <TaskHeaderRow
+            where={{
+              path: where,
+              onOpen: (id) => router.push(`/projects?project=${encodeURIComponent(id)}`),
+            }}
             taskRef={taskRef({ task_number: item.taskNumber ?? null }) ?? "Task"}
             // The link opens the task in Projects, the deep link the bell and
             // search already use. Only a live task has one: a demo row is
             // not in any project.
-            linkFor={lens ? () => taskDeepLink(item, window.location.origin) : undefined}
+            linkFor={lens ? () => taskDeepLink(item, window.location.origin, orgId) : undefined}
             chips={
               <>
                 {/* Status is changed through the status chip (disposition)
@@ -949,9 +885,12 @@ export function TaskDetail({
             onClose={!focused ? onClose : undefined}
           />
         </div>
+        {/* WS-57 TR-5 — the same root store the body below reads, so the
+            title and the description draw the same `#123` alike. */}
         <EditableTaskTitle
           value={item.title}
           onSave={(t) => updateItem(item.id, { title: t })}
+          refResolver={taskRefResolverFor(item.rootProjectId)}
         />
         {/* AI affordances — re-clarify (break down / refine) + fill missing
             details. Available for every task, local or ClickUp. Hidden for
@@ -1116,7 +1055,122 @@ function LocalSubtasksSection({ item }: { item: MyTask }) {
 
 // ── Small editable building blocks ──────────────────────────────────────────
 
-function SectionLabel({
+/**
+ * The member's own planning rows: context, energy, the estimate off the lens
+ * backend, and defer. The strip above the shared body draws them, and so does
+ * the Projects `TaskPanel` for a My work task (WS-64 OP-2b, one composition
+ * and not a copy). They write through the one task store.
+ */
+export function PlanningRows({
+  item,
+  lens,
+}: {
+  item: MyTask;
+  /** Under the lens the shared body draws the estimate (D77). */
+  lens: boolean;
+}) {
+  const contexts = useTaskStore((s) => s.contexts);
+  const updateItem = useTaskStore((s) => s.updateItem);
+  const deferItem = useTaskStore((s) => s.deferItem);
+  const undeferItem = useTaskStore((s) => s.undeferItem);
+  return (
+    <>
+              {/* Context */}
+              <MetaEdit label="Context" icon={themedIcon("Tag")}
+                display={item.context
+                  ? <span className="font-mono text-primary/90">{item.context}</span>
+                  : null}
+              >
+                {(close) => (
+                  <ChipMenu
+                    options={contexts.map((c) => c.name)}
+                    active={item.context}
+                    mono
+                    allowClear
+                    onPick={(v) => { updateItem(item.id, { context: v ?? "" }); close(); }}
+                  />
+                )}
+              </MetaEdit>
+
+              {/* Energy */}
+              <MetaEdit label="Energy" icon={themedIcon("Gauge")}
+                display={item.energy
+                  ? <span className="inline-flex items-center gap-1.5 capitalize">
+                      <span className={`h-2 w-2 rounded-full ${ENERGY_DOT[item.energy]}`} />
+                      {item.energy}
+                    </span>
+                  : null}
+              >
+                {(close) => (
+                  <ChipMenu
+                    options={["low", "medium", "high"]}
+                    active={item.energy}
+                    capitalize
+                    allowClear
+                    onPick={(v) => { updateItem(item.id, { energy: (v as Energy) ?? undefined }); close(); }}
+                  />
+                )}
+              </MetaEdit>
+
+              {/* Estimate — D77: the task's ONE estimate, a work fact. Under
+                  the lens the shared body draws and edits it; here only on
+                  the demo backend. */}
+              {!lens && (<>
+              <MetaEdit label="Estimate" icon={themedIcon("Zap")}
+                display={item.timeEstimateMins
+                  ? <span>{durationLabel(item.timeEstimateMins)}</span>
+                  : null}
+              >
+                {(close) => (
+                  <ChipMenu
+                    options={ESTIMATES.map((m) => durationLabel(m))}
+                    active={item.timeEstimateMins ? durationLabel(item.timeEstimateMins) : undefined}
+                    allowClear
+                    onPick={(label) => {
+                      const mins = label ? ESTIMATES[ESTIMATES.map((m) => durationLabel(m)).indexOf(label)] : 0;
+                      updateItem(item.id, { timeEstimateMins: mins });
+                      close();
+                    }}
+                  />
+                )}
+              </MetaEdit>
+              </>)}
+
+              {/* Defer — the tickler (my_tasks_cutover.md §4.8 point 3 names
+                  it in the strip). Hidden from the active lists until the
+                  date. The overlay's fact, so it is here in both modes. */}
+              <MetaEdit label="Defer until" icon={themedIcon("CalendarClock")}
+                display={item.deferUntil
+                  ? <span>{relativeTime(item.deferUntil)}</span>
+                  : null}
+              >
+                {(close) => (
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="date"
+                      defaultValue={item.deferUntil ? item.deferUntil.slice(0, 10) : ""}
+                      autoFocus
+                      onChange={(e) => {
+                        if (e.target.value) deferItem(item.id, new Date(e.target.value).toISOString());
+                        else undeferItem(item.id);
+                        close();
+                      }}
+                      className="rounded-md border border-border bg-background px-2 py-1 text-sm text-foreground focus:border-primary/50 focus:outline-none"
+                    />
+                    {item.deferUntil && (
+                      <button type="button" onClick={() => { undeferItem(item.id); close(); }}
+                        className="tech-transition rounded p-1 text-muted-foreground hover:text-destructive" title="Clear">
+                        <AppIcon name="X" className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
+                )}
+              </MetaEdit>
+    </>
+  );
+}
+
+export function SectionLabel({
   icon: Icon,
   children,
 }: {
@@ -1201,7 +1255,7 @@ function EditableText({
  *  WHOLE card is the click target (label, value, and the empty space around
  *  them) — not just a thin strip under the label — so it's an easy, obvious hit
  *  area. Opening reveals the editor with an × to dismiss. */
-function MetaEdit({
+export function MetaEdit({
   label,
   icon: Icon,
   display,
@@ -1214,34 +1268,38 @@ function MetaEdit({
 }) {
   const [open, setOpen] = useState(false);
 
+  // A ROW, the grammar of the shared body's `FieldCell` right below this
+  // strip (2026-10-19): the label on the left, the value on the right. Two
+  // looks a hand's width apart would read as two products.
+  const labelCell = (
+    <span className="flex h-8 w-24 shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
+      <Icon className="h-3.5 w-3.5 shrink-0" />
+      <span className="truncate">{label}</span>
+    </span>
+  );
   if (!open) {
     return (
       <button
         type="button"
         onClick={() => setOpen(true)}
         aria-label={`Edit ${label}`}
-        className="tech-transition group min-w-0 rounded-md border border-border bg-card px-3 py-2 text-left hover:border-primary/40 hover:bg-secondary/30"
+        className="tech-transition group flex min-w-0 items-start gap-3 rounded-md px-1 py-1 text-left hover:bg-muted/30"
       >
-        <div className="flex items-center justify-between">
-          <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-            <Icon className="h-3 w-3" />
-            {label}
+        {labelCell}
+        <span className="flex min-h-8 min-w-0 flex-1 items-center gap-2 text-sm text-foreground">
+          <span className="min-w-0 flex-1">
+            {display ?? <span className="text-muted-foreground/60">—</span>}
           </span>
           <AppIcon name="Pencil" className="h-3 w-3 shrink-0 text-muted-foreground/50 transition-opacity reveal-on-hover" />
-        </div>
-        <div className="mt-0.5 text-sm text-foreground">
-          {display ?? <span className="text-muted-foreground/60">—</span>}
-        </div>
+        </span>
       </button>
     );
   }
   return (
-    <div className="min-w-0 rounded-md border border-primary/40 bg-card px-3 py-2">
-      <div className="flex items-center justify-between">
-        <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-          <Icon className="h-3 w-3" />
-          {label}
-        </span>
+    <div className="flex min-w-0 items-start gap-3 rounded-md bg-muted/30 px-1 py-1">
+      {labelCell}
+      <div className="flex min-h-8 min-w-0 flex-1 items-center gap-2">
+        <div className="min-w-0 flex-1">{children(() => setOpen(false))}</div>
         <button
           type="button"
           onClick={() => setOpen(false)}
@@ -1251,12 +1309,11 @@ function MetaEdit({
           <AppIcon name="X" className="h-3 w-3" />
         </button>
       </div>
-      <div className="mt-1.5">{children(() => setOpen(false))}</div>
     </div>
   );
 }
 
-function ChipMenu({
+export function ChipMenu({
   options,
   active,
   mono,

@@ -46,12 +46,25 @@
  * should not look like one you have not tried.
  */
 
+import { ControlLink } from "@/components/ControlLink";
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import SelectButton from "@/components/ui/SelectButton";
-import { useEffect, useMemo, useState } from "react";
+import { type ProjectNode, nodeKind } from "../lib/tree";
+import { ProjectSelect } from "./ProjectSelect";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { findMerges, mergeWarning, overrideNote } from "../lib/statusSwitch";
+import { findMerges, mergeWarning } from "../lib/statusSwitch";
+import {
+  exceptionsNote,
+  hiddenOverridesLine,
+  openStatusesLabel,
+  overridePath,
+  overrideShared,
+  overridesHeading,
+  readOnlyLine,
+  scopeLine,
+} from "../lib/statusSetCopy";
 import {
   type ProjectRow,
   type StatusSetChange,
@@ -66,6 +79,13 @@ interface Props {
   onSwitched: (summary: string) => void;
   onError: (message: string) => void;
   busy: boolean;
+  /**
+   * Drawn in the settings pane (PST-1). The pane lists each project that
+   * keeps its own set, with a link. The dialog keeps a one-line note.
+   */
+  inline?: boolean;
+  /** Opens one project's own Statuses editor, from a row of the pane's list. */
+  onOpenStatuses?: (project: { id: string; name: string }) => void;
 }
 
 export function StatusSetControl({
@@ -73,6 +93,8 @@ export function StatusSetControl({
   onSwitched,
   onError,
   busy,
+  inline = false,
+  onOpenStatuses,
 }: Props) {
   const [info, setInfo] = useState<StatusSetInfo | null>(null);
   /** The change being considered, and what it would do. Null = nothing asked. */
@@ -93,9 +115,10 @@ export function StatusSetControl({
         ]);
         if (!live) return;
         setInfo(set);
-        // Anything but this node — copying a set from yourself is a no-op the
-        // picker should not offer as though it were a choice.
-        setSources(tree.rows.filter((r) => r.id !== projectId));
+        // The whole TREE (owner, 2026-10-10: the picker every other project
+        // list uses). This node and the folders are offered but refused, with
+        // the reason, by `copyRule` below.
+        setSources(tree.rows);
       } catch (err) {
         if (live) onError(String((err as Error).message));
       }
@@ -107,6 +130,26 @@ export function StatusSetControl({
   }, [projectId]);
 
   /** Rows the human actually has to answer: they carry tasks and they move. */
+  /**
+   * Which nodes may lend their lanes: only a node that OWNS a set. This one
+   * cannot (a copy from yourself is a no-op), a folder holds none
+   * (`hasStatusSet`), and a node that inherits would lend its owner's lanes
+   * under its own name — or this node's own, a silent no-op (review of #866).
+   * Every refused node stays in the tree, with the reason, so the tree keeps
+   * its shape. `owns_statuses` absent (an old gateway) refuses nothing more.
+   */
+  const copyRule = useCallback(
+    (node: ProjectNode) =>
+      node.id === projectId
+        ? "This is the project you are changing."
+        : nodeKind(node) === "folder"
+          ? "A folder has no statuses of its own."
+          : node.owns_statuses === false
+            ? "It uses the statuses of a project above it. Pick that one."
+            : null,
+    [projectId],
+  );
+
   const questions = useMemo(
     () => (preview?.moves ?? []).filter((m) => m.tasks > 0 && !m.unchanged),
     [preview]
@@ -178,17 +221,33 @@ export function StatusSetControl({
 
   if (!info) return null;
 
+  /**
+   * WS-42 PST-1 (§9.5). The scope line, and under it the projects that left
+   * this set. Every word comes from `statusSetCopy`, so no sentence is built
+   * here. ⚠️ It used to write a possessive of the owner name, and a name
+   * that ends in "s" then read wrong. The copy module writes no possessive.
+   */
+  const scope = (
+    <div className="flex flex-col gap-1.5">
+      <p className="text-xs leading-snug text-foreground">{scopeLine(info)}</p>
+      {inline ? (
+        <OverrideList info={info} onOpen={onOpenStatuses} />
+      ) : exceptionsNote(info) ? (
+        <p className="text-[11px] leading-snug text-muted-foreground">
+          {exceptionsNote(info)}
+        </p>
+      ) : null}
+    </div>
+  );
+
   // Read-only, and it says which permission and who grants it. An admin can
   // act on that sentence; "you cannot do this" cannot be acted on at all.
   if (!info.may_edit) {
     return (
-      <p className="border-b border-border px-3 py-2 text-xs text-muted-foreground">
-        Statuses come from{" "}
-        <span className="font-medium text-foreground">{info.owner_name}</span>.
-        Changing them needs the{" "}
-        <code className="font-mono">projects:settings:write</code> permission —
-        ask an organization admin.
-      </p>
+      <div className="flex flex-col gap-1.5 border-b border-border px-3 py-2.5">
+        {scope}
+        <p className="text-[11px] leading-snug text-muted-foreground">{readOnlyLine(info)}</p>
+      </div>
     );
   }
 
@@ -211,6 +270,14 @@ export function StatusSetControl({
 
   return (
     <div className="border-b border-border px-3 py-2.5">
+      {/* The scope line leads: whose set this is, and who shares it. While a
+          switch waits on the card below, the list steps aside, as the old
+          note did. */}
+      {pending ? (
+        <p className="mb-2 text-xs leading-snug text-foreground">{scopeLine(info)}</p>
+      ) : (
+        <div className="mb-2.5">{scope}</div>
+      )}
       {/* ⚠️ The choice row holds the CHOICE and nothing else.
           "Copy from…" used to sit here as a third flex sibling with `ml-auto`,
           which said two wrong things: that it was a peer of the two options,
@@ -273,10 +340,13 @@ export function StatusSetControl({
             Start from another project&apos;s lanes:
           </span>
           <div className="w-48">
-            <SelectButton
+            <ProjectSelect
               label="Copy statuses from another project"
+              prompt="Choose a project…"
               widthClass="w-full"
               disabled={disabled}
+              roots={sources}
+              rule={copyRule}
               // Stays on the placeholder: this control ACTS rather than
               // holds a value, so binding it to a selection would leave the
               // last project it copied sitting in the box as if it were a
@@ -286,45 +356,17 @@ export function StatusSetControl({
                 if (!next) return;
                 void ask({ mode: "own", copy_from: next });
               }}
-              options={[
-                { value: "", label: "Choose a project…" },
-                ...sources.map((row) => ({ value: row.id, label: row.name })),
-              ]}
             />
           </div>
         </div>
       ) : null}
 
-      {/* ⚠️ ONE line, and the docstring above explains why it is not three.
-          The owner asked for "a short brief ... in very brief" (2026-09-16)
-          after meeting this screen cold. What was missing is not the model in
-          the abstract — it is WHOSE lanes these are, which is the one fact a
-          reader cannot deduce from a list of coloured rows. */}
-      {!pending ? (
-        <p className="mt-2 text-[11px] leading-snug text-muted-foreground">
-          These are the board&apos;s lanes, grouped by stage.{" "}
-          {info.owns
-            ? "This project keeps its own set — everything under it inherits these lanes."
-            : `This project uses ${info.owner_name}'s set, so an edit here changes that project's lanes too.`}
-          {/* ⚠️ The EXCEPTIONS, named. Before this, an override was invisible
-              from outside: you edited a space's lanes, silently missed the
-              three projects that had opted out, and the only way to find out
-              was to open each project's own dialog one at a time — which
-              nobody does, so nobody found out.
-
-              It rides on the sentence that already states the reach rather
-              than becoming a panel of its own. "Everything under it" was the
-              half-truth; this is the other half, in the same breath. */}
-          {info.overrides.length > 0 ? (
-            <>
-              {" "}
-              <span className="text-foreground">
-                {overrideNote(info.overrides.map((o) => o.name))}
-              </span>
-            </>
-          ) : null}
-        </p>
-      ) : null}
+      {/* ⚠️ The one-line brief that stood here moved to the top, as the scope
+          line of PST-1. The owner asked for "a short brief ... in very brief"
+          (2026-09-16) after meeting this screen cold. What was missing is
+          WHOSE lanes these are, and the scope line says it with the count.
+          The EXCEPTIONS stay named: the dialog says them in one note, and the
+          pane lists them with a link each. */}
 
       {preview && pending ? (
         <div className="mt-3 rounded-lg border border-border">
@@ -439,6 +481,64 @@ export function StatusSetControl({
           </div>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * The pane's list of projects that keep their own set (PST-1, §9.5).
+ *
+ * Each row is one real link. A plain click opens that project's Statuses
+ * editor in place, and a modified click opens the project in a new tab
+ * (`ControlLink`). Only projects the member can see arrive from the server.
+ * The rest are a count, and no name of them is drawn.
+ *
+ * ⚠️ An old gateway, for a few minutes in a release, sends no `path` and no
+ * `used_by`. The row then draws its name alone, and nothing throws.
+ */
+function OverrideList({
+  info,
+  onOpen,
+}: {
+  info: StatusSetInfo;
+  onOpen?: (project: { id: string; name: string }) => void;
+}) {
+  const hidden = hiddenOverridesLine(info);
+  const rows = info.overrides ?? [];
+  return (
+    <div className="flex flex-col gap-1">
+      <p className="text-[11px] font-medium text-muted-foreground">{overridesHeading(info)}</p>
+      {rows.length > 0 ? (
+        <ul className="flex flex-col gap-1">
+          {rows.map((row) => {
+            const shared = overrideShared(row);
+            const path = overridePath(row);
+            return (
+              <li key={row.id}>
+                <ControlLink
+                  href={`/projects?project=${encodeURIComponent(row.id)}`}
+                  aria-label={openStatusesLabel(row)}
+                  onActivate={() => onOpen?.({ id: row.id, name: row.name })}
+                  className="flex min-w-0 items-center gap-2 rounded-md border border-border px-2 py-1.5 hover:bg-muted"
+                >
+                  <Icon name="Columns3" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span className="truncate text-xs font-medium text-foreground">{row.name}</span>
+                    {path ? (
+                      <span className="truncate text-[11px] text-muted-foreground">{path}</span>
+                    ) : null}
+                  </span>
+                  {shared ? (
+                    <span className="shrink-0 text-[11px] text-muted-foreground">{shared}</span>
+                  ) : null}
+                  <Icon name="ChevronRight" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                </ControlLink>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+      {hidden ? <p className="text-[11px] text-muted-foreground">{hidden}</p> : null}
     </div>
   );
 }

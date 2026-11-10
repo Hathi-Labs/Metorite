@@ -34,11 +34,15 @@
  *
  * NOTE ON ROUTING: `src/app/api/email/[...path]/route.ts` also matches this URL.
  * Next resolves static/dynamic segments ahead of a catch-all, so this file wins.
- * That matters: the catch-all fetches with the default `redirect: "follow"` and
- * would silently return the provider's login HTML through the proxy.
+ * That matters: the catch-all would pass the gateway's 302 on as its own
+ * answer, and it is not built to send the member on to the provider. Since
+ * H-280, `gatewayFetch` never follows a redirect by default (its rule 11).
+ * Before that, the catch-all followed it and returned the provider's login
+ * HTML through the proxy.
  */
 import { NextRequest, NextResponse } from "next/server";
 import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
+import { bounceQuery } from "../../bounce";
 
 export const dynamic = "force-dynamic";
 
@@ -72,9 +76,12 @@ const IMPORT_MONTHS = /^[0-6]$/;
  * ⚠️ The Location is RELATIVE. Do not build it from `req.nextUrl.origin`: in
  * production Next runs behind Caddy on `localhost:3001`, so a route handler's
  * origin is the bind host, not the public origin (EM-T1a fix round 1, F3).
+ *
+ * Each failure names its provider (EM-G7 E-C1). Pass the path segment as it
+ * came: `bounceQuery` lets only `gmail` and `microsoft` through.
  */
-function failed(reason: string): NextResponse {
-  const qs = new URLSearchParams({ error: reason }).toString();
+function failed(reason: string, provider: string): NextResponse {
+  const qs = bounceQuery(reason, provider);
   return new NextResponse(null, {
     status: 303,
     headers: { location: `${CALLBACK_PAGE}?${qs}` },
@@ -99,7 +106,7 @@ export async function GET(
 ): Promise<NextResponse> {
   const { provider } = await params;
   if (!PROVIDER_SEGMENT.test(provider)) {
-    return failed(`unknown_provider`);
+    return failed("unknown_provider", provider);
   }
 
   // Resolve the member BEFORE reaching for the bearer, so a signed-out caller is
@@ -143,15 +150,18 @@ export async function GET(
       signal: AbortSignal.timeout(AUTHORIZE_TIMEOUT_MS),
     });
   } catch {
-    return failed("gateway_unreachable");
+    return failed("gateway_unreachable", provider);
   }
 
+  // A 409 from authorize is the mailbox limit (Q-MB-1, owner 2026-10-23,
+  // 5 per member). The callback page names it by its code (`callbackView`).
+  if (res.status === 409) return failed("mailbox_limit", provider);
   if (res.status < 300 || res.status >= 400) {
-    return failed(await refusalReason(res));
+    return failed(await refusalReason(res), provider);
   }
 
   const location = res.headers.get("location");
-  if (!location) return failed("authorize_no_location");
+  if (!location) return failed("authorize_no_location", provider);
 
   // The provider consent URL is built by the gateway from configured provider
   // constants, so this is a sanity check rather than a trust boundary — but a
@@ -161,10 +171,10 @@ export async function GET(
   try {
     target = new URL(location);
   } catch {
-    return failed("authorize_bad_location");
+    return failed("authorize_bad_location", provider);
   }
   if (target.protocol !== "https:" && target.protocol !== "http:") {
-    return failed("authorize_bad_location");
+    return failed("authorize_bad_location", provider);
   }
 
   return NextResponse.redirect(target.toString(), 302);

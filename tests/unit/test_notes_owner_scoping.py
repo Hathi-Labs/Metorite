@@ -470,7 +470,8 @@ def auto_dispatch_rig(monkeypatch):
 
     sent: list[tuple] = []
 
-    async def _send(action, meeting, owner_email, actor):
+    async def _send(action, meeting, owner_email, actor, *, background=False):
+        # EM-G11c2 (G1): auto_dispatch passes background=True.
         sent.append((owner_email, actor))
         return "sent:msg-1"
 

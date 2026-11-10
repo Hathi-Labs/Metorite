@@ -1,16 +1,19 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import Icon from "@/components/Icon";
+import { ContextMenu } from "@/components/ContextMenu";
+import Icon, { themedIcon } from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
+import RailRow from "@/components/ui/RailRow";
 import { useToast } from "@/components/ui/Toast";
 import { categoricalAccent } from "@/lib/categorical";
 import type { LensArea } from "../lib/api";
 import { inboxCount } from "../lib/inbox";
 import { itemsInArea, useTaskStore, viewCounts } from "../lib/taskStore";
 import { MyTask, ViewKey } from "../lib/types";
+import { VIEW_TITLES } from "../lib/viewTitles";
 
 type NavRow = {
   view: ViewKey;
@@ -23,15 +26,15 @@ type NavRow = {
   soon?: boolean;
 };
 
-// The single flat nav. "My Next Actions" is one destination — its slices
+// The single flat nav. "My tasks" is one destination — its slices
 // (Priority / Suggestion / Context / Energy grouping, list vs board) are
 // configured IN the view (toolbar group-by + column settings), not as separate
 // sidebar entries. Priority and Engage were removed as standalone views for
 // that reason.
 const PRIMARY: NavRow[] = [
-  { view: "inbox", label: "Inbox", icon: "Inbox", showCount: true },
-  { view: "next", label: "My Next Actions", icon: "ListChecks", showCount: true },
-  { view: "waiting", label: "Waiting For", icon: "Clock", showCount: true },
+  { view: "inbox", label: VIEW_TITLES.inbox, icon: "Inbox", showCount: true },
+  { view: "next", label: VIEW_TITLES.next, icon: "ListChecks", showCount: true },
+  { view: "waiting", label: VIEW_TITLES.waiting, icon: "Clock", showCount: true },
   // ⚠️ Calendar left this list 2026-08-24 (D54, board WS-39 S2): it is its own
   // Personal Center app at `/calendar`. It is deliberately NOT re-added here as
   // a link — a sidebar row that navigates OUT of the app it sits in is the kind
@@ -40,7 +43,7 @@ const PRIMARY: NavRow[] = [
   // app is the personal lens. The company's projects live in `/projects` and
   // the directory in `/people`, each a whole app rather than a cramped tab
   // behind a task manager.
-  { view: "someday", label: "Someday / Maybe", icon: "Lightbulb", showCount: true },
+  { view: "someday", label: VIEW_TITLES.someday, icon: "Lightbulb", showCount: true },
   { view: "done", label: "Done", icon: "CheckCircle2", showCount: true },
   { view: "archive", label: "Archive", icon: "Archive" },
 ];
@@ -87,13 +90,12 @@ export function ListsSidebar({
   // with them. ⚠️ NOT the Inbox: a capture lands in the personal ROOT, before
   // any Area, so an Area scope would empty the Inbox and hide the badge.
   // S6g — the Inbox badge is `inboxCount`, the same number the Inbox header
-  // says: my captures and the untriaged board rows, one rule (`inbox.ts`).
-  const fromProjectIds = useTaskStore((s) => s.fromProjectIds);
+  // says: my captures only, one rule (`inbox.ts`, D170).
   const counts = useMemo(() => {
     const scoped = viewCounts(itemsInArea(items, selectedAreaId));
-    scoped.inbox = inboxCount(items, fromProjectIds);
+    scoped.inbox = inboxCount(items);
     return scoped;
-  }, [items, selectedAreaId, fromProjectIds]);
+  }, [items, selectedAreaId]);
 
   return (
     <nav className="flex h-full flex-col gap-1 overflow-y-auto p-3 text-sm">
@@ -111,8 +113,8 @@ export function ListsSidebar({
           noticed (S6b, 2026-09-23). Restored as they were. */}
       {PRIMARY.map((row) => {
         const count = counts[row.view];
-        // My Next Actions stays highlighted even when an in-view @context pill is
-        // active (selectedContext set) — it's still the Next Actions view.
+        // My tasks stays highlighted even when an in-view @context pill is
+        // active (selectedContext set) — it's still the My tasks view.
         const active =
           selectedView === row.view &&
           (row.view === "next" ? true : !selectedContext);
@@ -198,37 +200,18 @@ function NavButton({
   count?: number;
   onClick: () => void;
 }) {
+  // A rail row (owner, 2026-10-10): the count is the row's muted `meta`, as
+  // the Projects tree draws its own, rather than a filled pill.
   return (
-    <button
-      type="button"
-      disabled={row.soon}
-      onClick={onClick}
-      className={[
-        "tech-transition flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left",
-        row.soon
-          ? "cursor-default text-muted-foreground/50"
-          : active
-            ? "bg-primary/10 text-primary"
-            : "text-muted-foreground hover:bg-secondary hover:text-foreground",
-      ].join(" ")}
-    >
-      <Icon name={row.icon} className="h-4 w-4 shrink-0" />
-      <span className="flex-1 truncate">{row.label}</span>
-      {row.soon ? (
-        <span className="rounded bg-muted px-1.5 py-0.5 text-[9px] font-medium uppercase text-muted-foreground">
-          soon
-        </span>
-      ) : row.showCount && count ? (
-        <span
-          className={[
-            "min-w-[18px] rounded-full px-1.5 py-0.5 text-center text-[10px] font-semibold",
-            active ? "bg-primary/20 text-primary" : "bg-muted text-muted-foreground",
-          ].join(" ")}
-        >
-          {count}
-        </span>
-      ) : null}
-    </button>
+    <RailRow
+      label={row.label}
+      selected={active}
+      onSelect={onClick}
+      buttonProps={{ disabled: row.soon }}
+      className={row.soon ? "cursor-default opacity-50" : ""}
+      icon={<Icon name={row.icon} className="h-4 w-4 shrink-0" />}
+      meta={row.soon ? "soon" : row.showCount && count ? count : null}
+    />
   );
 }
 
@@ -269,6 +252,8 @@ function AreasSection({
   const [renaming, setRenaming] = useState<LensArea | null>(null);
   const [renameTo, setRenameTo] = useState("");
   const [removing, setRemoving] = useState<LensArea | null>(null);
+  // The phone's "···" menu: which Area, and where it opens.
+  const [areaMenu, setAreaMenu] = useState<{ area: LensArea; x: number; y: number } | null>(null);
 
   const submitCreate = async () => {
     const clean = newName.trim();
@@ -352,74 +337,75 @@ function AreasSection({
         const active = selectedAreaId === area.id;
         const count = openInArea(items, area.id);
         return (
-          <div
+          <RailRow
             key={area.id}
-            className={[
-              "group tech-transition flex w-full items-center gap-2 rounded-lg pr-1",
-              active
-                ? "bg-primary/10 text-primary"
-                : "text-muted-foreground hover:bg-secondary hover:text-foreground",
-            ].join(" ")}
-          >
-            <button
-              type="button"
-              aria-pressed={active}
-              onClick={() => {
-                selectArea(area.id);
-                onNavigate?.();
-              }}
-              className="flex min-w-0 flex-1 items-center gap-2.5 px-2.5 py-2 text-left"
-            >
+            label={area.name}
+            selected={active}
+            buttonProps={{ "aria-pressed": active }}
+            onSelect={() => {
+              selectArea(area.id);
+              onNavigate?.();
+            }}
+            icon={
               <span
                 aria-hidden
                 className={`h-2 w-2 shrink-0 rounded-full ${categoricalAccent(area.name).dot}`}
               />
-              <span className="flex-1 truncate">{area.name}</span>
-              {count > 0 && (
-                <span
-                  className={[
-                    "min-w-[18px] rounded-full px-1.5 py-0.5 text-center text-[10px] font-semibold",
-                    active ? "bg-primary/20 text-primary" : "bg-muted text-muted-foreground",
-                  ].join(" ")}
-                >
-                  {count}
-                </span>
-              )}
-            </button>
-            {/* Row actions. Hidden until hover or focus so the list reads as
-                a list. `reveal-on-hover` (globals.css) also shows them on a
-                touch display and on keyboard focus, which a bare Tailwind
-                hover variant never would — `revealOnHover.test.ts` fences it. */}
-            <span className="reveal-on-hover tech-transition flex shrink-0 items-center">
+            }
+            meta={count > 0 ? count : null}
+            // On a phone: one "···", always shown, that opens Rename and
+            // Remove. Nothing can hover there, and choosing an Area closes
+            // the drawer.
+            phoneActions={
               <Button
                 type="button"
                 variant="ghost"
-                size="icon-xs"
+                size="none"
                 radius="keep"
-                layout=""
-                icon="Pencil"
-                aria-label={`Rename ${area.name}`}
-                title="Rename"
-                className="rounded-md"
-                onClick={() => {
-                  setRenaming(area);
-                  setRenameTo(area.name);
+                icon="Ellipsis"
+                aria-label={`Actions for ${area.name}`}
+                className="h-10 w-10 rounded-md"
+                onClick={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  setAreaMenu({ area, x: rect.left, y: rect.bottom + 2 });
                 }}
               />
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-xs"
-                radius="keep"
-                layout=""
-                icon="Trash2"
-                aria-label={`Remove ${area.name}`}
-                title="Remove"
-                className="rounded-md"
-                onClick={() => setRemoving(area)}
-              />
-            </span>
-          </div>
+            }
+            // Hidden until hover or focus so the list reads as a list.
+            // `RailRow` holds the reveal, and on a phone the selected Area
+            // keeps them on screen.
+            actions={
+              <>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  radius="keep"
+                  layout=""
+                  icon="Pencil"
+                  aria-label={`Rename ${area.name}`}
+                  title="Rename"
+                  className="rounded-md"
+                  onClick={() => {
+                    setRenaming(area);
+                    setRenameTo(area.name);
+                  }}
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  radius="keep"
+                  layout=""
+                  icon="Trash2"
+                  aria-label={`Remove ${area.name}`}
+                  title="Remove"
+                  className="rounded-md"
+                  onClick={() => setRemoving(area)}
+                />
+              </>
+            }
+          />
         );
       })}
 
@@ -456,6 +442,32 @@ function AreasSection({
           </Button>
         </div>
       )}
+
+      {areaMenu ? (
+        <ContextMenu
+          x={areaMenu.x}
+          y={areaMenu.y}
+          items={[
+            {
+              kind: "item",
+              label: "Rename",
+              icon: themedIcon("Pencil"),
+              onSelect: () => {
+                setRenaming(areaMenu.area);
+                setRenameTo(areaMenu.area.name);
+              },
+            },
+            {
+              kind: "item",
+              label: "Remove",
+              icon: themedIcon("Trash2"),
+              danger: true,
+              onSelect: () => setRemoving(areaMenu.area),
+            },
+          ]}
+          onClose={() => setAreaMenu(null)}
+        />
+      ) : null}
 
       <Modal
         open={renaming !== null}
@@ -552,35 +564,24 @@ function LedProjectsSection({ onNavigate }: { onNavigate?: () => void }) {
         const active =
           selectedView === "projects" && selectedLedProjectId === project.id;
         return (
-          <button
+          <RailRow
             key={project.id}
-            type="button"
-            aria-pressed={active}
-            onClick={() => {
+            label={project.name}
+            selected={active}
+            buttonProps={{ "aria-pressed": active }}
+            onSelect={() => {
               selectLedProject(project.id);
               onNavigate?.();
             }}
-            className={[
-              "tech-transition flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left",
-              active
-                ? "bg-primary/10 text-primary"
-                : "text-muted-foreground hover:bg-secondary hover:text-foreground",
-            ].join(" ")}
-          >
-            <Icon name="FolderKanban" className="h-4 w-4 shrink-0" />
-            <span className="flex-1 truncate">{project.name}</span>
-            {project.openTasks > 0 && (
-              <span
-                title={`${project.openTasks} open · ${project.myTasks.length} assigned to you`}
-                className={[
-                  "min-w-[18px] rounded-full px-1.5 py-0.5 text-center text-[10px] font-semibold",
-                  active ? "bg-primary/20 text-primary" : "bg-muted text-muted-foreground",
-                ].join(" ")}
-              >
-                {project.openTasks}
-              </span>
-            )}
-          </button>
+            icon={<Icon name="FolderKanban" className="h-4 w-4 shrink-0" />}
+            meta={
+              project.openTasks > 0 ? (
+                <span title={`${project.openTasks} open · ${project.myTasks.length} assigned to you`}>
+                  {project.openTasks}
+                </span>
+              ) : null
+            }
+          />
         );
       })}
     </div>

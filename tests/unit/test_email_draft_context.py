@@ -112,7 +112,8 @@ async def test_hydrate_fetches_full_body_when_only_snippet_stored() -> None:
 
     provider = AsyncMock()
     provider.authenticate.return_value = True
-    provider.get_message.return_value = SimpleNamespace(
+    # The body-only read (EM-T17 PR-A): the hydrate never asks for the files.
+    provider.get_message_body.return_value = SimpleNamespace(
         body_text="Sounds good. I am available Tuesday and Thursday afternoon.",
         body_html=None,
     )
@@ -131,7 +132,8 @@ async def test_hydrate_fetches_full_body_when_only_snippet_stored() -> None:
     assert "I am ava" != body[-8:]  # not truncated mid-word
     # It ran an UPDATE to persist (SELECT + UPDATE = 2 execute calls).
     assert db.execute.await_count >= 2
-    provider.get_message.assert_awaited_once()
+    provider.get_message_body.assert_awaited_once()
+    provider.get_message.assert_not_awaited()
 
 
 async def test_hydrate_noop_when_body_already_present() -> None:
@@ -225,9 +227,12 @@ async def test_compose_assist_renders_reply_to_body_and_apply_rule() -> None:
     user_msg = captured["messages"][1]["content"]
     sys_prompt = captured["messages"][0]["content"].lower()
     # The replied-to email (with its template) reaches the model, and the system
-    # prompt tells it to APPLY that email's contents.
+    # prompt tells it to fill that form. WS-17 EM-G11d round 1: the email is a
+    # framed block, and only the owner's instruction line steers the model.
     assert "TEMPLATE_MARKER" in user_msg
-    assert "apply" in sys_prompt
+    assert "<<<REPLIED EMAIL " in user_msg
+    assert "fill that form in its field order" in sys_prompt
+    assert "apply any template" not in sys_prompt
 
 
 async def test_compose_assist_reply_empty_body_uses_shared_reply_drafter() -> None:
@@ -248,9 +253,6 @@ async def test_compose_assist_reply_empty_body_uses_shared_reply_drafter() -> No
             patch.object(_drafting, "_assert_account_owner", AsyncMock()), \
             patch.object(_drafting, "_load_assistant_about",
                          AsyncMock(return_value=("about", "sig"))), \
-            patch.object(_drafting, "_account_models",
-                         AsyncMock(return_value={"draft": "tier-powerful",
-                                                 "compose": "tier-fast"})), \
             patch.object(_drafting, "_build_reply_context",
                          AsyncMock(return_value=ctx)), \
             patch.object(_drafting, "_agent_draft_reply", fake_agent_draft), \
@@ -288,9 +290,6 @@ async def test_compose_assist_improve_passes_reply_to_body() -> None:
             patch.object(_drafting, "_assert_account_owner", AsyncMock()), \
             patch.object(_drafting, "_load_assistant_about",
                          AsyncMock(return_value=("about", "sig"))), \
-            patch.object(_drafting, "_account_models",
-                         AsyncMock(return_value={"draft": "tier-powerful",
-                                                 "compose": "tier-fast"})), \
             patch.object(_drafting, "_build_reply_context",
                          AsyncMock(return_value=ctx)), \
             patch.object(_drafting, "_agent_draft_reply", fake_agent_draft), \
@@ -324,9 +323,6 @@ async def test_compose_assist_reply_empty_body_passes_user_instruction() -> None
             patch.object(_drafting, "_assert_account_owner", AsyncMock()), \
             patch.object(_drafting, "_load_assistant_about",
                          AsyncMock(return_value=("about", "sig"))), \
-            patch.object(_drafting, "_account_models",
-                         AsyncMock(return_value={"draft": "tier-powerful",
-                                                 "compose": "tier-fast"})), \
             patch.object(_drafting, "_build_reply_context",
                          AsyncMock(return_value=ctx)), \
             patch.object(_drafting, "_agent_draft_reply", fake_agent_draft):
@@ -382,9 +378,6 @@ async def test_compose_assist_signature_only_body_is_a_fresh_draft() -> None:
             patch.object(_drafting, "_assert_account_owner", AsyncMock()), \
             patch.object(_drafting, "_load_assistant_about",
                          AsyncMock(return_value=("about", "Best,\nVijay"))), \
-            patch.object(_drafting, "_account_models",
-                         AsyncMock(return_value={"draft": "tier-powerful",
-                                                 "compose": "tier-fast"})), \
             patch.object(_drafting, "_build_reply_context",
                          AsyncMock(return_value=ctx)), \
             patch.object(_drafting, "_agent_draft_reply", fake_agent_draft), \

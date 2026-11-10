@@ -1,8 +1,9 @@
 "use client";
 
 import { CATEGORY_LABEL } from "@/lib/statusCategory";
+import { Board } from "@/components/board/Board";
+import { BoardColumn } from "@/components/board/BoardColumn";
 import { DropGap } from "@/components/DropGap";
-import { QuickAdd } from "@/components/QuickAdd";
 import { useFlash } from "@/components/useFlash";
 import { gapKey } from "@/lib/boardDrop";
 import { clampCursor, stepCursor } from "@/lib/cursor";
@@ -244,20 +245,44 @@ export function TaskBoard({
   };
 
   return (
-    <div
+    <Board
       tabIndex={0}
       onKeyDown={onKeyDown}
       aria-label="Task board — arrow keys move, Enter opens"
-      className="flex h-full gap-3 overflow-x-auto p-4 outline-none"
+      className="outline-none"
     >
       {columns.map((col) => {
         const colItems = byColumn.get(col.key) ?? [];
         const isOver = overCol === col.key;
         const refusal = isOver && dragged ? refusalFor(col.key) : null;
-        const accent = categoryAccent(col.key);
         return (
-          <div
+          <BoardColumn
             key={col.key}
+            // CRM-C2: the lane is the shared `BoardColumn`, the same lane the
+            // Projects and CRM boards draw. Its colour is the inset chip, and
+            // a column that takes the hovering card shows a ring, because a
+            // column that does not react reads as a refusal.
+            header={{
+              accent: categoryAccent(col.key),
+              title: col.label,
+              count: colItems.length,
+            }}
+            dropTarget={isOver && !refusal}
+            empty={colItems.length === 0 ? (isOver ? "Drop here" : "Empty") : undefined}
+            // WS-27y backport: the refusal, said on the target while the
+            // card hovers — same overlay grammar as the Projects board.
+            overlay={
+              refusal ? (
+                <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-background/85 p-3 text-center text-xs font-medium text-destructive">
+                  {refusal}
+                </div>
+              ) : null
+            }
+            // WS-27y backport: the column's own capture box — a task added
+            // here is born a NEXT action in THIS stage (shared QuickAdd +
+            // lib/quickAdd prefill), and flashes where it lands.
+            addLabel={`Add to ${col.label}`}
+            onAdd={(title) => quickAdd(title, col.key)}
             onDragOver={(e) => {
               // preventDefault even when refusing — the browser must keep
               // sending events or the overlay could never show; the refusal
@@ -269,113 +294,51 @@ export function TaskBoard({
             }}
             onDragLeave={() => setOverCol((c) => (c === col.key ? null : c))}
             onDrop={() => dropColumn(col.key)}
-            className={[
-              // S1: the column's chrome is /projects' — `rounded-lg border
-              // border-border bg-card`, where this board drew `rounded-xl` on a
-              // `bg-secondary/30` well. Both radii are themed here (globals.css
-              // derives the whole `--radius-*` scale from `--radius`, and
-              // `--radius-xl` IS `--radius`), so this is a convergence, not a
-              // theming fix: two boards side by side drew the same object at two
-              // corner radii on two surfaces. The drop highlight stays —
-              // /projects has no equivalent, and a column that does not react
-              // while a card hovers over it reads as a refusal.
-              "relative flex h-full w-72 shrink-0 flex-col overflow-hidden rounded-lg border bg-card",
-              isOver ? "border-primary bg-primary/5" : "border-border",
-            ].join(" ")}
           >
-            {/* WS-27y backport: the refusal, said on the target while the
-                card hovers — same overlay grammar as the Projects board. */}
-            {refusal ? (
-              <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-background/85 p-3 text-center text-xs font-medium text-destructive">
-                {refusal}
-              </div>
-            ) : null}
-            {/* accent cap so each stage column is identifiable at a glance */}
-            <div className={`h-1 w-full ${accent.dot}`} />
-            <div
-              className={[
-                "flex items-center justify-between gap-2 border-b border-border px-3 py-2",
-                accent.soft,
-              ].join(" ")}
-            >
-              <span className="flex min-w-0 items-center gap-1.5">
-                <span className={`h-2 w-2 shrink-0 rounded-full ${accent.dot}`} />
-                <span className={`truncate text-xs font-semibold ${accent.text}`}>
-                  {/* Per-project columns ARE raw ClickUp statuses — show them
-                      title-cased like the tool. The global board's columns are
-                      the user's own workflow-stage names, left as typed. */}
-                  {col.label}
-                </span>
-              </span>
-              <span className="shrink-0 rounded-full bg-background/60 px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
-                {colItems.length}
-              </span>
-            </div>
-            {/* S1: `space-y-1` on the column, /projects' gutter, rather than a
-                `mb-2` on each card — the gap belongs to the list, and putting
-                it on the child left the drop gaps spaced differently from the
-                cards they sit between. Cards and gaps are siblings here for the
-                same reason they are on /projects: `space-y-*` only reaches
-                direct children, so a card wrapped in a div of its own opts out
-                of the spacing the column just set. */}
-            <div className="flex flex-1 flex-col space-y-1 overflow-y-auto p-2">
-              {colItems.map((i, idx) => (
-                <Fragment key={i.id}>
-                  {/* drop gap ABOVE this card (manual reorder) */}
-                  {manual && (
-                    <DropGap
-                      active={dropAt === gapKey(col.key, idx)}
-                      onOver={() => dragId && setDropAt(gapKey(col.key, idx))}
-                      onDrop={() => dropAtIndex(col.key, idx)}
-                    />
-                  )}
-                  <TaskCard
-                    item={i}
-                    // S1: the cursor ring and the flash target are the CARD's,
-                    // handed to the shared shell through the card. This board
-                    // used to wrap every card in a div and re-draw `ring-2
-                    // ring-ring` on it — a second implementation of a prop the
-                    // shell already had, and the wrapper is what made the ring
-                    // sit a pixel off the card's own radius.
-                    innerRef={attach(i.id)}
-                    atCursor={cursorAt >= 0 && rows[cursorAt] === i.id}
-                    draggable={!selectMode}
-                    selected={selectedIds.has(i.id)}
-                    // The column is the CATEGORY; the pill is the card's own
-                    // lane name (D73.9), so it stays on the board.
-                    showStage
-                    onToggleSelected={(shift) => toggleSelected(i.id, shift, rows)}
-                    onDragStart={() => setDragId(i.id)}
-                    onDragEnd={() => { setDragId(null); setOverCol(null); setDropAt(null); }}
+            {/* Cards and gaps are siblings, as on /projects: the column's
+                gutter reaches direct children only, so a card wrapped in a
+                div of its own would opt out of the spacing. */}
+            {colItems.map((i, idx) => (
+              <Fragment key={i.id}>
+                {/* drop gap ABOVE this card (manual reorder) */}
+                {manual && (
+                  <DropGap
+                    active={dropAt === gapKey(col.key, idx)}
+                    onOver={() => dragId && setDropAt(gapKey(col.key, idx))}
+                    onDrop={() => dropAtIndex(col.key, idx)}
                   />
-                </Fragment>
-              ))}
-              {/* trailing gap → drop at the end */}
-              {manual && colItems.length > 0 && (
-                <DropGap
-                  active={dropAt === gapKey(col.key, colItems.length)}
-                  onOver={() => dragId && setDropAt(gapKey(col.key, colItems.length))}
-                  onDrop={() => dropAtIndex(col.key, colItems.length)}
+                )}
+                <TaskCard
+                  item={i}
+                  // S1: the cursor ring and the flash target are the CARD's,
+                  // handed to the shared shell through the card. This board
+                  // used to wrap every card in a div and re-draw the ring
+                  // on it — a second implementation of a prop the shell
+                  // already had.
+                  innerRef={attach(i.id)}
+                  atCursor={cursorAt >= 0 && rows[cursorAt] === i.id}
+                  draggable={!selectMode}
+                  selected={selectedIds.has(i.id)}
+                  // The column is the CATEGORY; the pill is the card's own
+                  // lane name (D73.9), so it stays on the board.
+                  showStage
+                  onToggleSelected={(shift) => toggleSelected(i.id, shift, rows)}
+                  onDragStart={() => setDragId(i.id)}
+                  onDragEnd={() => { setDragId(null); setOverCol(null); setDropAt(null); }}
                 />
-              )}
-              {colItems.length === 0 && (
-                <div className="flex flex-1 items-center justify-center rounded-lg border border-dashed border-border/60 py-6 text-[11px] text-muted-foreground/60">
-                  {isOver ? "Drop here" : "Empty"}
-                </div>
-              )}
-            </div>
-            {/* WS-27y backport: the column's own capture box — a task added
-                here is born a NEXT action in THIS stage (shared QuickAdd +
-                lib/quickAdd prefill), and flashes where it lands. */}
-            <div className="p-2 pt-0">
-              <QuickAdd
-                label={`Add to ${col.label}`}
-                onAdd={(title) => quickAdd(title, col.key)}
+              </Fragment>
+            ))}
+            {/* trailing gap → drop at the end */}
+            {manual && colItems.length > 0 && (
+              <DropGap
+                active={dropAt === gapKey(col.key, colItems.length)}
+                onOver={() => dragId && setDropAt(gapKey(col.key, colItems.length))}
+                onDrop={() => dropAtIndex(col.key, colItems.length)}
               />
-            </div>
-          </div>
+            )}
+          </BoardColumn>
         );
       })}
-    </div>
+    </Board>
   );
 }

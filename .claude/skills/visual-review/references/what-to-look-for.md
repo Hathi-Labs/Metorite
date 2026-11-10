@@ -97,6 +97,59 @@ existed. It costs one round trip per load, and nobody sees it.
 Also read the error list in the same file. A console error that never reaches
 the screen is still a defect.
 
+## 12. A focus you cannot see
+
+**The keyboard walk.** Press Tab through the surface. Three things break it for
+a keyboard user. A stop shows no ring. A stop lands on something that does
+nothing. The order jumps across the page. A menu that Escape does not close is
+the same defect.
+
+The tell in code is `outline-none` with no `focus-visible:` partner, or a
+`div` with `onClick` and no role.
+
+## 13. A target too small to hit
+
+**Context: compact.** Density shrinks `rem` sizes, and an `icon-xs` button
+shrinks with them. WCAG 2.2 asks for a 24 px target. A smaller target passes
+only when its centre is 24 px or more from the centre of its neighbour. On a
+phone, ask for 40 px, as `RailRow` does.
+
+Measure the target in the compact capture, not in the default one.
+
+## 14. The accent on everything
+
+**Context: accent.** `--primary` means "selected" or "the one action". Count
+the places that wear it in one view. When the count passes about four, the
+accent stops pointing at anything. A heading, an icon or a border in
+`text-primary` for decoration is this defect.
+
+## 15. A card in a card in a card
+
+**Any context.** A bordered panel inside a bordered panel inside a third one
+spends three borders to say one thing. Depth comes from the panel, the row and
+the space between. Two levels is the limit.
+
+## 16. An emoji as an icon
+
+**Any context.** The `<Icon>` seam fences out a second icon library, but it
+cannot see an emoji. An emoji draws in the OS's own art and colour, and it
+ignores the mode and the accent. Use an icon name. An emoji that a member
+typed is content, and it stays.
+
+## 17. Words that do not help
+
+**Read the text of each capture aloud.** A button that says "OK" or "Submit".
+An error with no next step. An empty state with no action. Two labels for one
+action. `DESIGN_SYSTEM.md` §10 holds the rules.
+
+## 18. Motion that moves the layout
+
+**Hover and open, then capture.** A transition on `width`, `height` or `top`
+shifts the content beside it on each frame. A popup that grows from the
+centre of the screen, and not from its anchor, loses the reader. Run the
+rig once after `page.emulateMedia({ reducedMotion: "reduce" })` too. `DESIGN_SYSTEM.md` §4 holds the
+rules.
+
 ## Two questions to finish on
 
 **Does it hold at the neighbour?** CLAUDE.md asks for continuity across apps.

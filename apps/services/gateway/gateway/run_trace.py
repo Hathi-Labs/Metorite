@@ -77,15 +77,24 @@ def build_run_trace_row(
     started_ms: int | None = None,
     ended_ms: int | None = None,
     flagged: bool = False,
+    holds_mail: bool = False,
 ) -> dict[str, Any]:
     """Assemble the ``agent_run`` row dict from a run's events + folded message.
 
     Pure function (no DB / no clock) so it's unit-testable. The full ``trace``
     is attached ONLY for errored or flagged runs; successful runs store just the
     metadata + tool_summary.
+
+    WS-17 EM-G11f3 (``email_app_master_plan.md`` section 12.3.13.9.1, item 6):
+    a run that holds mail keeps NO trace body, because ``content``,
+    ``tool_events``, ``reasoning`` and ``custom_events`` can quote a mail, and
+    no mailbox purge reaches this table. The row keeps the error and the tool
+    summary. *holds_mail* is the answer of ``acb_skills.egress.run_holds_mail``
+    that the gateway took, so this module reads no Redis. Fence:
+    ``tests/unit/test_mail_copies_in_chat_stores.py``.
     """
     status, err_msg, err_type = _derive_status(events)
-    keep_trace = status in ("error", "cancelled") or flagged
+    keep_trace = (status in ("error", "cancelled") or flagged) and not holds_mail
 
     tool_summary = _tool_summary(folded)
 
@@ -144,12 +153,22 @@ def _persist_row(row: dict[str, Any], organization_id: str | None) -> None:
     ``agent_run`` is FORCE RLS in production, so the write binds the run's
     tenant (WS-27bm S15, ``projects_ai_chat.md`` §21). With no tenant,
     ``tenant_session`` raises ``TenantUnbound`` and no row is written.
+
+    The row passes through ``acb_common.pg_text.storable`` first (incident
+    2026-10-09). An errored run keeps its folded message in ``trace``, and a
+    tool result in it can hold a NUL that ``jsonb`` refuses.
     """
     import json
     from datetime import datetime
 
+    from acb_common.pg_text import storable
+    from acb_common.setup_markers import redact_tree
     from acb_graph import tenant_session
     from sqlalchemy import text
+
+    # WS-54 fix round 2, item 5: the folded message of a run stores no
+    # <<<SETUP:...>>> value either.
+    row = redact_tree(storable(row))
 
     ended_at = None
     if row.get("ended_ms"):
@@ -235,8 +254,11 @@ async def record_run_trace(
     ended_ms: int | None = None,
     flagged: bool = False,
     organization_id: str | None,
+    holds_mail: bool = False,
 ) -> None:
-    """Build + persist the agent_run trace row at the run boundary. Never raises."""
+    """Build + persist the agent_run trace row at the run boundary. Never raises.
+
+    *holds_mail* drops the trace body (:func:`build_run_trace_row`)."""
     try:
         import asyncio
 
@@ -244,6 +266,7 @@ async def record_run_trace(
             run_id=run_id, thread_id=thread_id, agent_name=agent_name,
             user_id=user_id, model=model, events=events, folded=folded,
             started_ms=started_ms, ended_ms=ended_ms, flagged=flagged,
+            holds_mail=holds_mail,
         )
         await asyncio.to_thread(_persist_row, row, organization_id)
         _log.info(

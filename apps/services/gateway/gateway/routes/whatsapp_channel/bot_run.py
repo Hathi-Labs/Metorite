@@ -1,0 +1,2444 @@
+"""Chat on WhatsApp — a linked member's message runs the assistant (WS-47 WAC-3).
+
+Spec: ``project-docs/specs/whatsapp_assistant_channel.md`` §5.4 ("The bot
+message record, as WAC-3 builds it"), §5.5, §5.6 and §5.9.
+
+The path of one text from a linked phone:
+
+1. **Before the 200** (:func:`record_inbound`, called by ``inbound.py``). The
+   org and the member come from the phone's CURRENT link, never from the
+   message (D-WAC-3). The org must be on ``WHATSAPP_ASSISTANT_ORGS``. A member
+   who is not active in that org gets a ``refused`` row and nothing else. For
+   an active member the text becomes the member's turn in the WhatsApp thread
+   (``chat_session.channel = 'whatsapp'``), and then a ``received`` row goes
+   into ``whatsapp_bot_messages`` with ``ON CONFLICT (wamid) DO NOTHING``.
+   Only the insert that wrote the row returns a :class:`RunRequest`.
+2. **After the 200** (:func:`start`). The webhook's background task starts
+   the run as a task of its own and returns at once. So a slow run can never
+   hold the response or the connection.
+3. **The run** (:func:`run_message`). It takes the THREAD's lock first, so
+   one thread runs one message at a time. Then it works the thread's waiting
+   rows oldest first, so a second message runs right after the first, with
+   the first answer in its history. For each row: the checks (the switch and
+   the allowlist, the link is still current, the member is active, the member
+   may chat, ``resolve_identity`` answers the link's org, the thread is not a
+   shared room, no web run holds it), the claim (``received`` to
+   ``running``), then ``run_agent`` in this process with the link's org and
+   email. The reply goes into the thread, then to WhatsApp in chunks of at
+   most 4096 characters.
+4. **The sweep** (:func:`sweep_once`, every minute). It binds each org of the
+   allowlist in turn and takes the oldest waiting row of each thread. A row
+   that stayed ``received`` or ``running`` for 5 minutes runs again, at most 3
+   times. A row that used its 3 tries gets the general failure text once. A
+   row older than 24 hours becomes ``expired`` and gets no reply.
+
+**At most one reply per message, and at least one unless the channel fails.**
+Just before the first part of a reply goes out, the row becomes ``sending``,
+in the database. Nothing runs a ``sending`` row again, and nothing sends it
+the general text: the sweep closes it as ``replied`` (``send_unconfirmed``)
+after 5 minutes. A crash in the middle of a long reply can lose its tail, and
+it never sends a part twice. A failure BEFORE ``sending`` gives the row back
+as ``received`` with its try counted, so the sweep runs it again. A first part
+that SURELY did not reach the member (Meta answered 4xx, or the connection
+never opened) gives the row back too, and the next try sends the reply stored
+in the thread, with no second run of the agent. Any other send error (a read
+timeout, a 5xx, a 200 with no message id) may have delivered the text, so the
+row closes as ``replied`` (``send_unconfirmed``) and nothing is sent again.
+The last try sends the stored reply if the thread holds one, and else the
+general text, once. A channel that refused every try gets no general text.
+
+**The trade-off is at-most-once.** A restart, or an unclear error, during the
+first send can lose the reply and still record the row as ``replied``. A
+reply that goes out twice is the worse failure, so the code picks the loss.
+
+**The text lives in the thread only.** The table holds no text (§5.9). The
+member's turn is written BEFORE the 200, with an id made from the ``wamid``
+(:func:`turn_id`). So a crash after the 200 loses nothing: the sweep reads the
+turn back from ``chat_session_id`` and that id, and runs it.
+
+**A shared room is not the WhatsApp thread.** A thread is a room when it has a
+participant who is not its member, or a visibility other than ``private``.
+The member's own ``owner`` row (a web run on the thread writes one) does not
+make a room. The next text after a room opens a new solo thread, no run reads
+a room, and no reply is written into one.
+
+**WAC-3 is reads only (§5.6).** The run opens
+``acb_skills.ask_tools.refuse_cards``. A tool that asks for a card gets a deny
+at once and writes nothing, and the scope rule tells the model to send the
+member to the web app for a change.
+
+**A confirmed write (WAC-4, §14).** With ``WHATSAPP_ASSISTANT_WRITES`` and the
+profile on, the run opens the profile with writes. Then ``create_task``, and
+no other tool, parks its card (``acb_skills.whatsapp_acts``). The run stores
+the act (``acts.park``) and sends the card as text with code's Confirm and
+Cancel buttons. The phone's next message in the thread is settled before any
+run (``acts.settle``): Confirm runs the stored call once with no model, Cancel
+closes the act, and any other message voids it and runs as normal.
+
+**An email act (H-391, §18).** With writes on, the card of an email write of
+the email assistant parks too, with its tick-box rows or its reply form. The
+run stores it with the hash of a reply code (``acts.park_code``) and sends the
+whole card as text, the code last, with no buttons. "YES <code>" approves it,
+and the model runs again inside ``whatsapp_acts.approving_email``.
+
+**The WhatsApp profile (WAC-10a, §12).** With ``WHATSAPP_ASSISTANT_NATIVE_UI``
+on, the run opens ``acb_skills.whatsapp_ui.whatsapp_run`` as well. The
+injection seam then drops the web-only tools and the web prompt blocks, and
+gives the run's own agent ``whatsapp_ui``. The run first shows the typing
+indicator. After it, the text goes out first and each queued element after
+it, under the same send mark, so the at-most-once rules above hold for them.
+The thread keeps the text plus each element's rendition. A resend of a stored
+reply is that text only.
+
+**Reply and react like a person (WAC-10e).** With the profile, the first part
+of every answer quotes the member's message, so a late answer shows which
+message it answers. A reaction that the run queued goes on the member's
+message first, best effort. A plain thanks gets a 👍 from code, with no AI
+call and no text (``views.thanks``).
+
+**One process.** The thread locks and ``_LIVE_ROWS`` live in this gateway
+process, like the WAC-2 limiter. The row's claim is the guard that holds
+across processes.
+
+Fences: ``tests/unit/test_wac_bot_run.py`` (database-free) and
+``tests/unit/test_wac_bot_run_r8.py`` (R8, FORCE RLS as a non-privileged role).
+WAC-4: ``tests/unit/test_wac_writes.py`` and ``tests/unit/test_wac_writes_r8.py``.
+"""
+
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import hashlib
+import re
+import time
+import uuid
+from collections.abc import Awaitable, Callable, Coroutine
+from dataclasses import dataclass
+from typing import Any
+
+from acb_common import get_logger
+from acb_llm.routed import OUT_OF_CREDITS
+from gateway.db import bind_tenant, release_tenant, tenant_session
+from gateway.routes.whatsapp_channel import flags
+from sqlalchemy import text
+
+_log = get_logger(__name__)
+
+#: The value of ``chat_session.channel`` for this channel's threads.
+CHANNEL = "whatsapp"
+#: The main Chat assistant, the default agent of ``/chat`` (§5.5).
+AGENT = "orchestrator"
+#: The run's ``source``, for the run context and the usage page.
+SOURCE = "whatsapp"
+THREAD_TITLE = "WhatsApp"
+
+# ── The fixed replies (§5.5, §5.6), word for word ──────────────────────────
+
+REPLY_NO_WORKSPACE = (
+    "Metorite cannot open this workspace from WhatsApp yet. Use the web app."
+)
+#: The one sentence of a 402, shared with ``analyze_image`` (WS-VOX VOX-3).
+REPLY_CREDITS = OUT_OF_CREDITS
+REPLY_FAILED = "Metorite could not answer just now. Try again in a few minutes."
+#: WAC-13 (§16.4): Metorite itself did not answer (a restart, an outage). The
+#: message waits, and the sweep answers it when the AI path is back.
+REPLY_UPDATING = ("Metorite is updating right now. I have your message, and I will "
+                  "answer it here when Metorite is back online.")
+#: WAC-13: a restart cancels a run that waits on the model. The sweep runs the
+#: message again after the restart, so the answer still comes.
+REPLY_UPDATING_HOLD = ("Metorite is updating right now. Your answer comes here in "
+                       "a few minutes.")
+#: WAC-13, for an org that the sweep does not visit (only ``*`` admits it). No
+#: sweep keeps a promise there, so the text makes none (review round 1).
+REPLY_UPDATING_PLAIN = ("Metorite is updating right now, so it could not answer. "
+                        "Send your message again in a few minutes.")
+#: The early message that code sends when a run takes long and the AI did not
+#: say so itself (WAC-10e).
+REPLY_WORKING = ("Still on it. This one takes a little longer, and I will reply "
+                 "here when it is ready.")
+
+#: The channel instruction (§5.5 "The scope rule", D-WAC-5). Advisory: no unit
+#: test can prove a model's refusal (§9). It goes to the run as
+#: ``system_context``, which the executor puts before the turn. It names email
+#: and the CRM since 2026-10-19 (WS-47 parity): a rule that named tasks,
+#: projects and the calendar only steered a billing question away from the CRM.
+SCOPE_RULE = (
+    "You are answering a member of this organization on WhatsApp. Answer only "
+    "about this member's work in Metorite: their tasks, projects, calendar, "
+    "email, the CRM and the other data of their organization in Metorite. If "
+    "the member asks about "
+    "any other topic, refuse in one line. Keep each reply short. Write plain "
+    "text, with no tables and no headings. This chat cannot show a "
+    "confirmation card, so you cannot change data from WhatsApp. When the "
+    "member asks for a change, tell them to make it in the Metorite web app."
+)
+
+#: The scope rule of a run with the WhatsApp profile (WAC-10a, §12). The same
+#: scope and the same "no change from WhatsApp", plus how to write for a phone
+#: and when to call ``whatsapp_ui``. Advisory, like ``SCOPE_RULE``.
+SCOPE_RULE_NATIVE = (
+    "You are answering a member of this organization on WhatsApp. Answer only "
+    "about this member's work in Metorite: their tasks, projects, calendar, "
+    "email, the CRM and the other data of their organization in Metorite. If "
+    "the member asks about "
+    "any other topic, refuse in one line.\n"
+    "Write for a phone screen: short paragraphs, one idea each, and no "
+    "greeting. WhatsApp shows plain text with its own marks only: *bold*, "
+    "_italic_, ~strike~, a list line that starts with \"- \" or \"1. \", and a "
+    "``` block for monospace. Markdown headings, tables, ** and [text](url) "
+    "links do not work. A ``` block of at most 30 characters a line can align "
+    "a few short rows. Marks such as ✅ ⏳ ❌ and a bar such as ▓▓▓▓░░ 60% work "
+    "well.\n"
+    "Call whatsapp_ui when an element reads better than text. Its doc says "
+    "which kind fits which answer. For my day, due today, overdue, calendar "
+    "and approvals, send the ready view (kind \"view\") and write no rows. A "
+    "tap comes back to you as the member's next message.\n"
+    "One item (a task, a project, an email) is a text card:\n"
+    "*Title*\n🔥 Critical · ⏳ In progress · 📅 Fri 11 Oct\n📁 Project · 👤 Name · "
+    "⏱ 3 h left\nthen one or two lines of what matters, and a link button. "
+    "Priority marks: 🔥 Critical, 🚨 Urgent, 📈 High-Leverage, ❗ Important, 📤 "
+    "Quick win, 🧪 Speculative, none for Low.\n"
+    "Links on https://app.metorite.com: a task /projects?task=<id>, a project "
+    "/projects?project=<id>, an email /email?email=<id>&account=<id>, a person "
+    "/people/<id>, and /tasks, /calendar, /approvals, /chat.\n"
+    "Never type an element as text (no \"[Table: …]\" or \"[Chart …]\"): call "
+    "whatsapp_ui. Never say \"tap\" unless you sent buttons or a list. Items "
+    "the member may dig into go in a list.\n"
+    "You cannot change data from WhatsApp. When the member asks for a change, "
+    "tell them to make it in the Metorite web app, and add a link button.\n"
+    "React to the member's message when an emoji says it well (whatsapp_ui "
+    "kind \"react\"): 👍 noted, ✅ done, 🎉 good news, 🙏 thanks, 👀 looking into "
+    "it, 😕 bad news. Do it in the same step as your first other tool call. A "
+    "message that needs no answer gets the reaction and no text.\n"
+    "Say each thing once. The text that you write before a tool call reaches "
+    "the member too, so after the call add only what is new.\n"
+    "When a job takes more than about 15 seconds (an image, a calculation, "
+    "code, a page, a long search), FIRST call whatsapp_ui kind \"working\" with "
+    "one line: what you are doing and about how long it takes. Then do the job."
+)
+
+#: The one sentence of :data:`SCOPE_RULE_NATIVE` that WAC-4 changes.
+_NO_CHANGE = (
+    "You cannot change data from WhatsApp. When the member asks for a change, "
+    "tell them to make it in the Metorite web app, and add a link button.\n"
+)
+#: The scope rule of a run with writes on (WAC-4, §14; WAC-4b). Adding a task
+#: and blocking time on the member's calendar are the changes allowed. Every
+#: other change, class C and class X among them, still goes to the web app
+#: with a link. Advisory, like ``SCOPE_RULE``: the card gate, not this text,
+#: is what keeps every other write out.
+SCOPE_RULE_WRITES = SCOPE_RULE_NATIVE.replace(_NO_CHANGE, (
+    "You can make two kinds of change from WhatsApp: add a task, and block "
+    "time on the member's calendar. A calendar block is the scheduled time of "
+    "a task. To block time for something new (a meeting, a call, a visit), "
+    "ask the Projects assistant to create a private task with block_start and "
+    "block_end (create_personal_task). To block time for a task that exists, "
+    "ask it to set block_start and block_end on that task (set_my_overlay). "
+    "Times are YYYY-MM-DD HH:MM in the member's own zone. Nothing is written "
+    "until the member taps Confirm: Metorite sends them the summary and the "
+    "Confirm and Cancel buttons itself. So say in one line that it is ready "
+    "for their Confirm, add no buttons, and never say that it is done. One "
+    "change waits at a time. When the member asks for several, prepare the "
+    "first, and say that you do the next one when they ask after their "
+    "Confirm.\n"
+    "You can also make the member's email changes from WhatsApp, through the "
+    "Email assistant: archive, label, move, reply, send a draft, schedule a "
+    "send, forward and a new mail. Ask the Email assistant to do it, as in "
+    "the web chat. Nothing is sent or changed until the member replies with "
+    "the code that Metorite sends them with the whole summary. So say in one "
+    "line that it waits for their code, never write a code or the summary "
+    "yourself, and never say that it is done. "
+    "For any other change, tell the member to make it in the Metorite web "
+    "app, and add a link button.\n"
+))
+
+#: What a run with the profile tools adds to its scope rule (WS-63 PZ-8). It
+#: states the one exception to "no change from WhatsApp": the member's own
+#: profile. Advisory, like ``SCOPE_RULE``: the profile write gate, not this
+#: text, keeps every other write out. The flag-off rule stays byte-for-byte.
+PROFILE_EXCEPTION_RULE = (
+    "One change needs no web app: the member's own profile. Save what they "
+    "say about themselves, how to address or answer them, an alias, or an "
+    "undo, with the profile tools. For a sensitive or address-like fact, "
+    "Metorite sends the Confirm buttons itself. No other change is allowed."
+)
+#: The channel limits win over the member's Answer length line. Advisory
+#: (R7): no test can read the model's choice, and the 4096-character split
+#: in ``split_reply`` is the hard limit.
+PROFILE_CHANNEL_RULE = (
+    "Keep the limits of this rule over any Answer length line."
+)
+
+#: What a run with documents on adds to its scope rule (WAC-12, §15).
+#: Advisory, like ``SCOPE_RULE``: ``whatsapp_ui`` checks every spec.
+DOCUMENTS_RULE = (
+    "You can send a PDF file that the member can forward: a sales deck, a pitch "
+    "deck, a report or an analysis. When the member asks for one, first collect "
+    "the facts from Metorite (the CRM, email, projects, through the assistants "
+    "that hold them). Never invent a number. Then call whatsapp_ui kind "
+    "\"document\" once, with a deck of slides or a report of sections, and "
+    "charts, tiles and tables as visuals. Tell the member in one line what the "
+    "file holds."
+)
+
+# ── The limits ──────────────────────────────────────────────────────────────
+
+#: WhatsApp's limit for one text message.
+MAX_CHARS = 4096
+#: A row that waits this long gets a run again from the sweep.
+STALE_S = 5 * 60
+#: The most runs one message gets.
+MAX_TRIES = 3
+#: The reply window. An older row gets no reply.
+EXPIRE_S = 24 * 3600
+#: A message this long after the thread's last activity starts a new thread.
+THREAD_IDLE_S = 24 * 3600
+#: Shorter than ``STALE_S``, so the sweep never takes a run that still works.
+RUN_TIMEOUT_S = 4 * 60
+#: The prior turns that the run sees.
+HISTORY_TURNS = 20
+SWEEP_EVERY_S = 60
+SWEEP_BATCH = 20
+#: The typing indicator is a nicety. It never holds the run longer than this.
+_TYPING_TIMEOUT_S = 5
+#: A quick command's view (WAC-10c). Past this, the assistant answers instead.
+QUICK_TIMEOUT_S = 15
+#: A run this long with no early message gets :data:`REPLY_WORKING` (WAC-10e).
+#: Meta hides "typing…" after 25 seconds, so the member hears before that.
+WORKING_AFTER_S = 20
+
+#: WAC-13: the run error codes that mean Metorite itself did not answer.
+UNAVAILABLE_CODES = frozenset({"timeout", "connection"})
+#: The row codes of WAC-13. ``updating``: the message waits for the AI path.
+#: ``updating_plain``: an org that the sweep does not visit, so nothing waits,
+#: and the member sends the message again.
+UPDATING_CODE = "updating"
+PLAIN_CODE = "updating_plain"
+#: With no success since, the AI path counts as back only after this long
+#: with no new failure of :data:`UNAVAILABLE_CODES`.
+OUTAGE_QUIET_S = 5 * 60
+#: The bound on the shutdown notes, and on one health read of the Router.
+HOLD_TIMEOUT_S = 3.0
+HEALTH_TIMEOUT_S = 5.0
+
+#: The namespace of a thread id that a message opens (:func:`new_thread_id`).
+_THREAD_NS = uuid.UUID("5f3c1a2e-9d47-4b8e-a6c1-7e2d0b9f4a13")
+
+
+def _digest(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:32]
+
+
+def turn_id(wamid: str) -> str:
+    """The chat message id of the member's turn. The same for a redelivery."""
+    return f"wa-in-{_digest(wamid)}"
+
+
+def reply_id(wamid: str) -> str:
+    """The chat message id of the assistant's reply to one message."""
+    return f"wa-out-{_digest(wamid)}"
+
+
+def new_thread_id(organization_id: str, member_email: str, wamid: str) -> str:
+    """The id of a thread that one message opens.
+
+    Made from the message, so two copies of one first message that arrive at
+    once open ONE thread, not two. It holds no colon, so it is not a run id
+    (``routes/chat.py`` H-227).
+    """
+    return str(uuid.uuid5(_THREAD_NS, f"{organization_id}|{member_email}|{wamid}"))
+
+
+@dataclass(frozen=True)
+class RunRequest:
+    """One recorded message that waits for its run. It holds no text."""
+
+    message_id: str
+    organization_id: str
+    member_email: str
+    wa_id: str
+    wamid: str
+    chat_session_id: str
+
+
+# ── The reply text ──────────────────────────────────────────────────────────
+
+
+def split_reply(reply: str, limit: int = MAX_CHARS) -> list[str]:
+    """Split *reply* at paragraph breaks into chunks of at most *limit*.
+
+    A paragraph longer than the limit splits at a line break, then at a
+    space, then hard at the limit. No chunk is empty.
+    """
+    chunks: list[str] = []
+    current = ""
+    for para in [p.strip() for p in reply.split("\n\n")]:
+        if not para:
+            continue
+        for piece in _split_long(para, limit):
+            joined = f"{current}\n\n{piece}" if current else piece
+            if len(joined) <= limit:
+                current = joined
+            else:
+                chunks.append(current)
+                current = piece
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _split_long(para: str, limit: int) -> list[str]:
+    out: list[str] = []
+    rest = para
+    while len(rest) > limit:
+        cut = rest.rfind("\n", 0, limit + 1)
+        if cut <= 0:
+            cut = rest.rfind(" ", 0, limit + 1)
+        if cut <= 0:
+            cut = limit
+        out.append(rest[:cut].rstrip())
+        rest = rest[cut:].lstrip()
+    if rest:
+        out.append(rest)
+    return [p for p in out if p]
+
+
+def _preview(value: str) -> str:
+    return " ".join(value.split())[:200]
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+# ── The bound reads and writes ──────────────────────────────────────────────
+#
+# Each runs in `tenant_session()` with the org that the caller bound from the
+# link row (R5, R11). The chat rows go through `routes/chat.py`, the one
+# writer of the chat tables.
+
+_MEMBER_STATUS_SQL = """
+SELECT status FROM app_user
+ WHERE lower(email) = lower(:email)
+   AND organization_id = CAST(:org AS uuid)
+ LIMIT 1
+"""
+
+_INSERT_SQL = """
+INSERT INTO whatsapp_bot_messages
+       (organization_id, member_email, wa_id, wamid, direction, state,
+        chat_session_id, error_code, context_wamid)
+VALUES (CAST(:org AS uuid), :email, :wa, :wamid, :direction, :state,
+        :sid, :code, :ctx)
+ON CONFLICT (wamid) DO NOTHING
+RETURNING id::text AS id
+"""
+
+#: When the session ``s`` is a shared room: a visibility other than
+#: ``private`` (the room route sets it with no participant row), or a
+#: participant who is not the session's member. The member's OWN ``owner``
+#: row (``routes/chat.py`` ``_ensure_session``) is no room. The subject of a
+#: person is the plain email, the same value as ``user_id``.
+_ROOM_SQL = """(
+    COALESCE(s.visibility, 'private') <> 'private'
+    OR EXISTS (
+        SELECT 1 FROM chat_session_participant p
+         WHERE p.session_id = s.id
+           AND lower(p.subject) <> lower(s.user_id)
+    )
+)"""
+
+#: The member's WhatsApp thread: their latest SOLO `whatsapp` session.
+_FIND_THREAD_SQL = f"""
+SELECT s.id FROM chat_session s
+ WHERE s.channel = 'whatsapp'
+   AND s.user_id = :email
+   AND s.updated_at > now() - make_interval(secs => CAST(:idle AS double precision))
+   AND NOT {_ROOM_SQL}
+ ORDER BY s.updated_at DESC
+ LIMIT 1
+"""
+
+#: What a write needs to know of a session: the agent the member chose (a
+#: bot write keeps it), the other turns, and whether this turn is there.
+_SESSION_STATE_SQL = """
+SELECT s.agent_name,
+       (SELECT count(*) FROM chat_message m
+         WHERE m.session_id = s.id AND m.id <> :mid) AS others,
+       EXISTS (SELECT 1 FROM chat_message m
+                WHERE m.session_id = s.id AND m.id = :mid) AS has_turn
+  FROM chat_session s
+ WHERE s.id = :sid
+"""
+
+_SHARED_SQL = f"""
+SELECT EXISTS (SELECT 1 FROM chat_session s WHERE s.id = :sid AND {_ROOM_SQL})
+"""
+
+#: The fresh claim: only a row that waits.
+_CLAIM_FRESH_SQL = """
+UPDATE whatsapp_bot_messages
+   SET state = 'running', tries = tries + 1, updated_at = now()
+ WHERE id = CAST(:id AS uuid)
+   AND direction = 'in'
+   AND state = 'received'
+   AND tries < :max
+RETURNING tries
+"""
+
+#: The sweep's claim: a row that waited too long, whatever it last did.
+_CLAIM_STALE_SQL = """
+UPDATE whatsapp_bot_messages
+   SET state = 'running', tries = tries + 1, updated_at = now()
+ WHERE id = CAST(:id AS uuid)
+   AND direction = 'in'
+   AND state IN ('received', 'running')
+   AND tries < :max
+   AND updated_at < now() - make_interval(secs => CAST(:stale AS double precision))
+RETURNING tries
+"""
+
+_REFUSE_SQL = """
+UPDATE whatsapp_bot_messages
+   SET state = 'refused', error_code = :code, updated_at = now()
+ WHERE id = CAST(:id AS uuid)
+   AND state IN ('received', 'running')
+RETURNING id
+"""
+
+_END_SQL = """
+UPDATE whatsapp_bot_messages
+   SET state = :state, error_code = :code, updated_at = now()
+ WHERE id = CAST(:id AS uuid)
+   AND state = 'running'
+RETURNING id
+"""
+
+#: One state change, from one state only. `sending` is set just before the
+#: first part of a reply goes out, and nothing takes a `sending` row again.
+_MOVE_SQL = """
+UPDATE whatsapp_bot_messages
+   SET state = :to, error_code = :code, updated_at = now()
+ WHERE id = CAST(:id AS uuid)
+   AND state = :frm
+RETURNING id
+"""
+
+#: A failure before any reply went out: the row waits again, with its try
+#: counted, so the sweep runs it again.
+_RETRY_SQL = """
+UPDATE whatsapp_bot_messages
+   SET state = 'received', error_code = :code, updated_at = now()
+ WHERE id = CAST(:id AS uuid)
+   AND state = 'running'
+RETURNING id
+"""
+
+#: The waiting rows of ONE thread, oldest first.
+_NEXT_SQL = """
+SELECT id::text AS id, organization_id::text AS organization_id,
+       member_email, wa_id, wamid, chat_session_id
+  FROM whatsapp_bot_messages
+ WHERE chat_session_id = :sid
+   AND direction = 'in'
+   AND state = 'received'
+   AND tries < :max
+   AND error_code IS DISTINCT FROM 'updating'
+   AND received_at >= now() - make_interval(secs => CAST(:expire AS double precision))
+ ORDER BY received_at, id
+ LIMIT :n
+"""
+
+#: The member's own turn. A shared room gives no row: no run reads a room.
+_TURN_SQL = f"""
+SELECT content, timestamp_ms FROM chat_message
+ WHERE session_id = :sid AND id = :mid AND role = 'user'
+   AND NOT EXISTS (SELECT 1 FROM chat_session s WHERE s.id = :sid AND {_ROOM_SQL})
+"""
+
+#: Whether the member's turn is marked forwarded (WS-63 PZ-6a fix round 2).
+_FORWARDED_SQL = """
+SELECT COALESCE(custom_events, CAST('[]' AS jsonb))
+       @> CAST('[{"name": "forwarded"}]' AS jsonb)
+  FROM chat_message
+ WHERE session_id = :sid AND id = :mid AND role = 'user'
+"""
+
+#: The reply that a try already wrote into the thread. A retry sends it again
+#: with no second run of the agent.
+_STORED_REPLY_SQL = """
+SELECT content FROM chat_message
+ WHERE session_id = :sid AND id = :mid AND role = 'assistant'
+"""
+
+#: The prior turns: the thread as it was at this turn. A row written at or
+#: before this turn, of either role. A bot reply counts by the turn it
+#: answers, not by its own time: a newer text's turn was written before the
+#: 200, so the reply to an older text is LATER than this turn and still
+#: belongs here, and the reply to a NEWER text does not (a retry).
+_HISTORY_SQL = f"""
+SELECT role, content FROM chat_message m
+ WHERE m.session_id = :sid
+   AND m.id <> :mid
+   AND m.role IN ('user', 'assistant')
+   AND (
+       m.timestamp_ms <= :ts
+       OR (m.role = 'assistant' AND m.id LIKE 'wa-out-%' AND EXISTS (
+           SELECT 1 FROM chat_message q
+            WHERE q.session_id = :sid
+              AND q.role = 'user'
+              AND q.id = 'wa-in-' || substr(m.id, 8)
+              AND q.timestamp_ms <= :ts))
+   )
+   AND NOT EXISTS (SELECT 1 FROM chat_session s WHERE s.id = :sid AND {_ROOM_SQL})
+ ORDER BY timestamp_ms DESC, id DESC
+ LIMIT :n
+"""
+
+_EXPIRE_SQL = """
+UPDATE whatsapp_bot_messages
+   SET state = 'expired', updated_at = now()
+ WHERE direction = 'in'
+   AND state IN ('received', 'running')
+   AND received_at < now() - make_interval(secs => CAST(:expire AS double precision))
+RETURNING id
+"""
+
+#: A row that used its tries. It gets the general text once, from the sweep.
+#: Never a `sending` row, and never a row whose run is live in this process.
+_EXHAUSTED_SQL = """
+UPDATE whatsapp_bot_messages
+   SET state = 'failed', error_code = 'tries', updated_at = now()
+ WHERE direction = 'in'
+   AND state IN ('received', 'running')
+   AND tries >= :max
+   AND updated_at < now() - make_interval(secs => CAST(:stale AS double precision))
+   AND id::text <> ALL(CAST(:live AS text[]))
+RETURNING id::text AS id, organization_id::text AS organization_id,
+          member_email, wa_id, wamid, chat_session_id
+"""
+
+#: A `sending` row that nobody closed (a crash or a cancel between the send
+#: and the end write). A part may have gone out, so it is never sent again.
+_UNCONFIRMED_SQL = """
+UPDATE whatsapp_bot_messages
+   SET state = 'replied', error_code = 'send_unconfirmed', updated_at = now()
+ WHERE direction = 'in'
+   AND state = 'sending'
+   AND updated_at < now() - make_interval(secs => CAST(:stale AS double precision))
+   AND id::text <> ALL(CAST(:live AS text[]))
+RETURNING id
+"""
+
+#: The OLDEST waiting row of each thread, when it waited too long. The run
+#: then works the rest of the thread in order.
+_STALE_SQL = """
+SELECT id, organization_id, member_email, wa_id, wamid, chat_session_id
+  FROM (
+      SELECT DISTINCT ON (chat_session_id)
+             id::text AS id, organization_id::text AS organization_id,
+             member_email, wa_id, wamid, chat_session_id, updated_at,
+             received_at
+        FROM whatsapp_bot_messages
+       WHERE direction = 'in'
+         AND state IN ('received', 'running')
+         AND tries < :max
+         AND chat_session_id IS NOT NULL
+         AND (error_code IS DISTINCT FROM 'updating' OR :back)
+         AND received_at >= now() - make_interval(secs => CAST(:expire AS double precision))
+       ORDER BY chat_session_id, received_at, id
+  ) oldest
+ WHERE updated_at < now() - make_interval(secs => CAST(:stale AS double precision))
+ ORDER BY received_at
+ LIMIT :n
+"""
+
+
+#: WAC-13: the message waits for the AI path. Its FIRST hold gives back its
+#: try, so one outage never uses up a message. A later hold keeps the try, so
+#: a message that fails each time ends after :data:`MAX_TRIES` with the general
+#: text (verifier F2). ``before`` is the code it had: the member hears
+#: :data:`REPLY_UPDATING` only on its first hold.
+_HOLD_SQL = """
+WITH prev AS (
+    SELECT error_code FROM whatsapp_bot_messages WHERE id = CAST(:id AS uuid)
+)
+UPDATE whatsapp_bot_messages
+   SET state = 'received', error_code = :code,
+       tries = CASE WHEN error_code IS DISTINCT FROM :code
+                    THEN GREATEST(tries - 1, 0) ELSE tries END,
+       updated_at = now()
+ WHERE id = CAST(:id AS uuid)
+   AND state = 'running'
+RETURNING (SELECT error_code FROM prev) AS before
+"""
+
+def _request(row: Any) -> RunRequest:
+    return RunRequest(str(row["id"]), str(row["organization_id"]),
+                      str(row["member_email"]), str(row["wa_id"]),
+                      str(row["wamid"]), str(row["chat_session_id"]))
+
+
+async def _member_active(org: str, email: str) -> bool:
+    """True when *email* is an ACTIVE member of *org*. A bound read."""
+    async with tenant_session() as db:
+        row = (await db.execute(
+            text(_MEMBER_STATUS_SQL), {"org": org, "email": email},
+        )).mappings().first()
+    return row is not None and row["status"] == "active"
+
+
+async def _insert(
+    *, org: str, email: str, wa_id: str, wamid: str, direction: str,
+    state: str, session_id: str | None, code: str | None = None,
+    context_wamid: str | None = None,
+) -> str | None:
+    """Record one message. Returns the new row id, or None for a repeat.
+
+    *context_wamid* is the message that an inbound tap or swipe reply
+    answers (WAC-4). A Confirm counts only for the card that it names.
+    """
+    async with tenant_session() as db:
+        row = (await db.execute(text(_INSERT_SQL), {
+            "org": org, "email": email, "wa": wa_id, "wamid": wamid,
+            "direction": direction, "state": state, "sid": session_id,
+            "code": code, "ctx": (context_wamid or None) and context_wamid[:200],
+        })).mappings().first()
+    return str(row["id"]) if row else None
+
+
+async def _find_thread(email: str) -> str | None:
+    async with tenant_session() as db:
+        row = (await db.execute(
+            text(_FIND_THREAD_SQL), {"email": email, "idle": THREAD_IDLE_S},
+        )).mappings().first()
+    return str(row["id"]) if row else None
+
+
+async def _session_state(
+    session_id: str, message_id: str,
+) -> tuple[str | None, int, bool]:
+    """``(agent_name, other turns, this turn is there)``. No row: a new one."""
+    async with tenant_session() as db:
+        row = (await db.execute(
+            text(_SESSION_STATE_SQL), {"sid": session_id, "mid": message_id},
+        )).mappings().first()
+    if row is None:
+        return None, 0, False
+    return (str(row["agent_name"]) if row["agent_name"] else None,
+            int(row["others"] or 0), bool(row["has_turn"]))
+
+
+async def _thread_shared(session_id: str) -> bool:
+    """True when the thread is a shared room (``_ROOM_SQL``): a visibility
+    other than ``private``, or a participant who is not its member. The
+    member's own ``owner`` row is no room."""
+    async with tenant_session() as db:
+        return bool((await db.execute(
+            text(_SHARED_SQL), {"sid": session_id},
+        )).scalar())
+
+
+async def _write_session(
+    org: str, email: str, session_id: str, *, agent: str, preview: str,
+    count: int,
+) -> None:
+    from gateway.routes.chat import SessionUpsertRequest, _upsert_session
+
+    await asyncio.to_thread(
+        _upsert_session, email,
+        SessionUpsertRequest(
+            id=session_id, agent_name=agent, title=THREAD_TITLE,
+            last_preview=preview, message_count=count,
+        ),
+        organization_id=org, channel=CHANNEL,
+    )
+
+
+#: The custom event of a member's turn that Meta marked forwarded (WS-63
+#: PZ-6a fix round 2). The turn grounds no profile write.
+FORWARDED_EVENT = "forwarded"
+
+
+async def _write_turn(
+    org: str, email: str, wamid: str, body: str, forwarded: bool = False,
+) -> str:
+    """Write the member's turn into the WhatsApp thread. Returns the thread id.
+
+    The thread is the member's latest solo ``whatsapp`` session in this org.
+    A message more than 24 hours after its last activity opens a new one
+    (§5.5), and so does a thread that became a shared room. A redelivery
+    whose turn is already there writes nothing, so the preview keeps the
+    newest text. A bot write keeps the agent the member chose on the web.
+    """
+    from gateway.routes.chat import MessageRecord, _upsert_messages
+
+    mid = turn_id(wamid)
+    sid = await _find_thread(email) or new_thread_id(org, email, wamid)
+    agent, others, has_turn = await _session_state(sid, mid)
+    if has_turn:
+        return sid
+    await _write_session(org, email, sid, agent=agent or AGENT,
+                         preview=_preview(body), count=others + 1)
+    declined = await asyncio.to_thread(
+        _upsert_messages, sid,
+        [MessageRecord(id=mid, role="user", content=body, timestamp=_now_ms(),
+                       custom_events=([{"name": FORWARDED_EVENT, "value": {}}]
+                                      if forwarded else []))],
+        actor_email=email, organization_id=org,
+    )
+    if declined:
+        raise RuntimeError("the member's turn was declined")
+    return sid
+
+
+async def _write_reply(req: RunRequest, reply: str) -> None:
+    from gateway.chat_fold import persist_channel_reply
+
+    mid = reply_id(req.wamid)
+    agent, others, _has = await _session_state(req.chat_session_id, mid)
+    await _write_session(req.organization_id, req.member_email,
+                         req.chat_session_id, agent=agent or AGENT,
+                         preview=_preview(reply), count=others + 1)
+    if not await persist_channel_reply(
+        req.chat_session_id, mid, reply,
+        user_id=req.member_email, agent_name=AGENT,
+        timestamp_ms=_now_ms(), organization_id=req.organization_id,
+    ):
+        raise RuntimeError("the reply was declined")
+
+
+async def _claim(message_id: str, *, stale: bool) -> int | None:
+    """Claim one row for a run. Returns its try number, or None."""
+    sql, params = (
+        (_CLAIM_STALE_SQL, {"id": message_id, "max": MAX_TRIES, "stale": STALE_S})
+        if stale else
+        (_CLAIM_FRESH_SQL, {"id": message_id, "max": MAX_TRIES})
+    )
+    async with tenant_session() as db:
+        row = (await db.execute(text(sql), params)).first()
+    return int(row[0]) if row is not None else None
+
+
+async def _refuse(message_id: str, code: str) -> bool:
+    async with tenant_session() as db:
+        return (await db.execute(
+            text(_REFUSE_SQL), {"id": message_id, "code": code},
+        )).first() is not None
+
+
+async def _end(message_id: str, state: str, code: str | None) -> bool:
+    async with tenant_session() as db:
+        return (await db.execute(
+            text(_END_SQL), {"id": message_id, "state": state, "code": code},
+        )).first() is not None
+
+
+async def _move(message_id: str, frm: str, to: str, code: str | None) -> bool:
+    """Change the row's state from *frm* to *to*. False when it was not *frm*."""
+    async with tenant_session() as db:
+        return (await db.execute(text(_MOVE_SQL), {
+            "id": message_id, "frm": frm, "to": to, "code": code,
+        })).first() is not None
+
+
+async def _stored_reply(session_id: str, wamid: str) -> str | None:
+    """The reply that an earlier try of this message wrote, or None."""
+    async with tenant_session() as db:
+        row = (await db.execute(text(_STORED_REPLY_SQL), {
+            "sid": session_id, "mid": reply_id(wamid),
+        })).first()
+    return str(row[0]) if row is not None and row[0] else None
+
+
+async def _retry(message_id: str, code: str) -> bool:
+    async with tenant_session() as db:
+        return (await db.execute(
+            text(_RETRY_SQL), {"id": message_id, "code": code},
+        )).first() is not None
+
+
+async def _waiting(session_id: str) -> list[RunRequest]:
+    """The waiting rows of one thread, oldest first. A message that waits for
+    the AI path (WAC-13) is never one of them: only the sweep, which reads the
+    Router's health, runs it again (verifier F3)."""
+    async with tenant_session() as db:
+        rows = (await db.execute(text(_NEXT_SQL), {
+            "sid": session_id, "max": MAX_TRIES, "expire": EXPIRE_S,
+            "n": SWEEP_BATCH,
+        })).mappings().all()
+    return [_request(r) for r in rows]
+
+
+async def _turn_forwarded(session_id: str, message_id: str) -> bool:
+    """True when the member's turn carries :data:`FORWARDED_EVENT`. A fault
+    reads as forwarded, so it fails closed: the turn grounds nothing."""
+    try:
+        async with tenant_session() as db:
+            return bool((await db.execute(
+                text(_FORWARDED_SQL), {"sid": session_id, "mid": message_id},
+            )).scalar())
+    except Exception as exc:  # the record names the class only
+        _log.warning("whatsapp_channel.run.forwarded_unread",
+                     error_type=type(exc).__name__)
+        return True
+
+
+async def _thread_turns(
+    session_id: str, message_id: str,
+) -> tuple[str | None, list[dict[str, str]]]:
+    """The member's turn, and the prior turns of the thread in order."""
+    async with tenant_session() as db:
+        turn = (await db.execute(
+            text(_TURN_SQL), {"sid": session_id, "mid": message_id},
+        )).mappings().first()
+        if turn is None:
+            return None, []
+        rows = (await db.execute(text(_HISTORY_SQL), {
+            "sid": session_id, "mid": message_id,
+            "ts": int(turn["timestamp_ms"]), "n": HISTORY_TURNS,
+        })).mappings().all()
+    history = [{"role": str(r["role"]), "content": str(r["content"] or "")}
+               for r in reversed(rows)]
+    return str(turn["content"] or ""), history
+
+
+# ── Before the 200 ──────────────────────────────────────────────────────────
+
+
+#: One lock for each member in each org, in this process. Two copies of one
+#: first message that arrive at once would both open the same thread id, and
+#: the second one's `_refuse_if_elsewhere` can read the first one's row
+#: between its two reads. So the thread write and the insert run one after
+#: the other. Bounded: a full map drops every lock that nobody holds.
+_THREAD_LOCKS: dict[tuple[str, str], asyncio.Lock] = {}
+_THREAD_LOCKS_MAX = 1024
+
+
+def _thread_lock(org: str, email: str) -> asyncio.Lock:
+    key = (org, email)
+    lock = _THREAD_LOCKS.get(key)
+    if lock is None:
+        if len(_THREAD_LOCKS) >= _THREAD_LOCKS_MAX:
+            for k in [k for k, lk in _THREAD_LOCKS.items() if not lk.locked()]:
+                del _THREAD_LOCKS[k]
+        lock = _THREAD_LOCKS[key] = asyncio.Lock()
+    return lock
+
+
+def current_link(links: list[Any]) -> Any | None:
+    """The phone's CURRENT link, or None. Every run uses it (§5.3)."""
+    return next((lk for lk in links if lk["is_current"]), None)
+
+
+async def record_inbound(
+    links: list[Any], wa_id: str, wamid: str, body: str,
+    context_wamid: str | None = None, forwarded: bool = False,
+) -> RunRequest | None:
+    """Record one text from a linked phone. Returns the run to start, or None.
+
+    *links* is what ``whatsapp_member_links_for_phone`` returned. Runs inside
+    the webhook request, before the 200, so the turn is durable before Meta
+    hears that the message arrived. *context_wamid* is the message that a tap
+    or a swipe reply answers (Meta's ``context.id``), or None. *forwarded*
+    marks the turn (:data:`FORWARDED_EVENT`), so it grounds no profile write.
+    """
+    hint = wa_id[-4:]
+    link = current_link(links)
+    if link is None:
+        _log.info("whatsapp_channel.run.no_current_link", phone_hint=hint)
+        return None
+    org = str(link["organization_id"])
+    email = str(link["member_email"]).strip().lower()
+    if not flags.org_allowed(org):
+        _log.info("whatsapp_channel.run.org_closed", phone_hint=hint,
+                  organization_id=org)
+        return None
+
+    from gateway.rooms import SessionOfAnotherTenant
+
+    token = bind_tenant(org)
+    try:
+        if not await _member_active(org, email):
+            await _insert(org=org, email=email, wa_id=wa_id, wamid=wamid,
+                          direction="in", state="refused", session_id=None,
+                          code="inactive")
+            _log.info("whatsapp_channel.run.refused", phone_hint=hint,
+                      organization_id=org, reason="inactive")
+            return None
+        async with _thread_lock(org, email):
+            try:
+                session_id = await _write_turn(org, email, wamid, body, forwarded=forwarded)
+            except SessionOfAnotherTenant:
+                # A copy of this message in ANOTHER process opened the
+                # thread between the two reads of `_refuse_if_elsewhere`.
+                # Once more: the thread read finds it now. A row of another
+                # tenant raises again, and nothing is written.
+                session_id = await _write_turn(org, email, wamid, body, forwarded=forwarded)
+            row_id = await _insert(org=org, email=email, wa_id=wa_id,
+                                   wamid=wamid, direction="in",
+                                   state="received", session_id=session_id,
+                                   context_wamid=context_wamid)
+    finally:
+        release_tenant(token)
+
+    if row_id is None:
+        _log.info("whatsapp_channel.run.redelivered", phone_hint=hint,
+                  organization_id=org)
+        return None
+    _log.info("whatsapp_channel.run.received", phone_hint=hint,
+              organization_id=org, message_id=row_id)
+    return RunRequest(row_id, org, email, wa_id, wamid, session_id)
+
+
+# ── After the 200: the run ──────────────────────────────────────────────────
+
+_RUNS: set[asyncio.Task[None]] = set()
+#: The rows whose run is live in this process.
+_LIVE_ROWS: set[str] = set()
+#: WAC-13: the runs that wait on the model now, by row id. At shutdown each
+#: one hears :data:`REPLY_UPDATING_HOLD` before its cancel.
+_WAITING_ON_MODEL: dict[str, RunRequest] = {}
+#: WAC-13: when a model run last failed with :data:`UNAVAILABLE_CODES`, and
+#: when one last answered, in this process (epoch seconds).
+_OUTAGE: dict[str, float] = {"failed": 0.0, "answered": 0.0}
+#: One lock for each THREAD with a run waiting or live in this process, and
+#: how many runs hold or wait for it. A lock leaves the map with its last
+#: user, so the map holds only the threads that are busy now.
+_RUN_LOCKS: dict[str, asyncio.Lock] = {}
+_RUN_LOCK_USERS: dict[str, int] = {}
+
+#: How long a cancelled run may take to close a row whose reply went out.
+_CANCEL_WRITE_S = 2.0
+
+#: The refusals that tell the member something. Every other one is silent.
+_REFUSAL_REPLIES = {"identity": REPLY_NO_WORKSPACE, "shared": REPLY_FAILED}
+
+
+def _start_task(run: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
+    task = asyncio.get_running_loop().create_task(run)
+    _RUNS.add(task)
+    task.add_done_callback(_RUNS.discard)
+    return task
+
+
+def start(req: RunRequest, *, stale: bool = False) -> asyncio.Task[None]:
+    """Start the run of one message as a task of its own, and return at once."""
+    return _start_task(run_message(req, stale=stale))
+
+
+async def stop_runs(timeout: float = 5.0) -> None:
+    """Cancel the live runs (gateway shutdown).
+
+    A row before its send stays ``running``, or goes back to ``received``,
+    and the next process's sweep runs it again. A row whose send started is
+    closed as ``replied`` in a shielded write, or stays ``sending`` for the
+    sweep to close, so nothing goes out twice (at-most-once).
+    """
+    waiting = list(_WAITING_ON_MODEL.values())
+    if waiting:
+        # WAC-13: each member whose run waits on the model hears why the
+        # answer is late. Best effort, and bounded, so a slow Meta never
+        # holds the shutdown.
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(asyncio.gather(
+                *(_send_bound(req, REPLY_UPDATING_HOLD if _swept(req.organization_id)
+                              else REPLY_UPDATING_PLAIN, kind="updating_hold")
+                  for req in waiting), return_exceptions=True), HOLD_TIMEOUT_S)
+        _log.info("whatsapp_channel.run.hold_notes", runs=len(waiting))
+    runs = list(_RUNS)
+    for task in runs:
+        task.cancel()
+    if runs:
+        await asyncio.wait(runs, timeout=timeout)
+
+
+async def _router_healthy() -> bool:
+    """True when the AI Router's ``/health`` answers 200 (WAC-13).
+
+    No Router wired (a dev box, a test) counts as healthy: the AI path is
+    then the gateway's own. Never raises.
+    """
+    try:
+        import httpx
+        from acb_common import get_settings
+
+        base = str(getattr(get_settings(), "customer_console_url", "") or "").strip()
+        if not base:
+            return True
+        async with httpx.AsyncClient(timeout=HEALTH_TIMEOUT_S) as client:
+            resp = await client.get(base.rstrip("/") + "/health")
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
+def _quiet_now() -> bool:
+    """True when this process counts the AI path as back: a model run
+    answered after the last failure, or no failure for :data:`OUTAGE_QUIET_S`.
+    A new failure on ANY phone holds every waiting message (review round 1).
+    The sweep also asks the Router's health (:func:`_back`)."""
+    if _OUTAGE["answered"] > _OUTAGE["failed"]:
+        return True
+    return time.time() - _OUTAGE["failed"] >= OUTAGE_QUIET_S
+
+
+def _swept(org: str) -> bool:
+    """True when the sweep visits *org*: it is named in the allowlist. An org
+    that only ``*`` admits gets no re-run, so none of its messages waits."""
+    return org.lower() in {o.strip().lower() for o in flags.assistant_orgs()}
+
+
+def _ai_path_down(code: str, exc: BaseException, run_started: float) -> bool:
+    """Did Metorite's AI path fail to answer (WAC-13)?
+
+    ``connection`` always: the Router or the model refused or dropped the
+    call. ``timeout`` from a call (a 504, a read timeout) too. The run's OWN
+    time limit is ``timeout`` as well, and a long job meets it with every
+    part of Metorite up. So that one counts only when the Router failed during
+    this run (review round 1).
+    """
+    if code not in UNAVAILABLE_CODES:
+        return False
+    own_limit = (type(exc) is TimeoutError
+                 and time.time() - run_started >= RUN_TIMEOUT_S - 1)
+    if not own_limit:
+        return True
+    from gateway.routes.v1_compat import router_failed_since
+
+    return router_failed_since(run_started)
+
+
+async def _send_bound(req: RunRequest, text_: str, *, kind: str) -> int:
+    """:func:`_send` with the request's org bound: a shutdown has none bound,
+    and the ``out`` row needs one (review round 1)."""
+    token = bind_tenant(req.organization_id)
+    try:
+        return await _send(req, [text_], kind=kind)
+    finally:
+        release_tenant(token)
+
+
+async def _hold(message_id: str) -> str | None:
+    """Put a running message back to wait for the AI path (:data:`_HOLD_SQL`).
+
+    Returns the code that it had, or None when it was not ``running``. Only
+    a message that was not held before gets :data:`REPLY_UPDATING`.
+    """
+    async with tenant_session() as db:
+        row = (await db.execute(text(_HOLD_SQL), {
+            "id": message_id, "code": UPDATING_CODE,
+        })).first()
+    if row is None:
+        return None
+    return str(row[0]) if row[0] is not None else ""
+
+
+async def wait_for_runs() -> None:
+    """Wait until every run that this module started has ended (tests)."""
+    while _RUNS:
+        await asyncio.gather(*list(_RUNS), return_exceptions=True)
+
+
+def _executor() -> Any:
+    """The executor's batch entry point, in this process.
+
+    The gateway and the orchestrator share one process: ``routes/agent.py``
+    and ``routes/projects/agent_dispatch.py`` call ``run_agent`` the same
+    way. No new transport.
+    """
+    from orchestrator.executor import run_agent
+
+    return run_agent
+
+
+async def _may_chat(email: str) -> bool:
+    """``feature:chat`` and the run of the Chat assistant, in the bound org.
+
+    The same resolver as the request path (``acb_auth.access``), with the
+    link's org bound, so the read of ``app_user`` is the org's.
+    """
+    from acb_auth.access import resolve_access
+
+    access = await resolve_access(email)
+    return bool(access.is_active and access.can_use_feature("chat")
+                and access.can_run_agent(AGENT))
+
+
+async def _identity_org(email: str) -> tuple[str | None, bool]:
+    """The org that ``resolve_identity`` gives *email*, and whether it is sure.
+
+    The tools find the org again from the email (§5.5 "The tools find the org
+    again"). A read that failed is not an answer, so the run waits for the
+    sweep rather than refuse.
+    """
+    from acb_auth.access import (
+        IdentityUnavailable,
+        identity_read_failed,
+        resolve_identity,
+    )
+
+    try:
+        _user_id, org = await resolve_identity(email)
+    except IdentityUnavailable:
+        return None, False
+    if org is None and identity_read_failed():
+        return None, False
+    return org, True
+
+
+async def _thread_busy(session_id: str) -> bool:
+    """True when a WEB run is live on the thread. A WhatsApp run of this
+    process cannot be: the thread's lock holds it."""
+    try:
+        from orchestrator.stream_relay import is_active
+
+        return bool(await is_active(session_id))
+    except Exception:  # fail open, like `_refuse_if_another_run_is_active`
+        _log.warning("whatsapp_channel.run.active_check_failed")
+        return False
+
+
+async def _check(req: RunRequest) -> str | None:
+    """Why this run must not start, or None. The order is the spec's (§5.5).
+
+    ``later`` means "not now": the row stays ``received`` and the sweep asks
+    again. Any other answer refuses the row.
+    """
+    if not flags.org_allowed(req.organization_id):
+        return "closed"
+    from gateway.routes.whatsapp_channel import inbound
+
+    link = current_link(await inbound._active_links_for_phone(req.wa_id))
+    if (link is None or str(link["organization_id"]) != req.organization_id
+            or str(link["member_email"]).strip().lower() != req.member_email):
+        return "link"
+    if not await _member_active(req.organization_id, req.member_email):
+        return "inactive"
+    if not await _may_chat(req.member_email):
+        return "feature"
+    org, sure = await _identity_org(req.member_email)
+    if not sure:
+        return "later"
+    if org != req.organization_id:
+        return "identity"
+    if await _thread_shared(req.chat_session_id):
+        # The thread became a shared room after the text arrived. No run
+        # reads a room. The member's next text opens a new solo thread.
+        return "shared"
+    if await _thread_busy(req.chat_session_id):
+        return "later"
+    return None
+
+
+def _error_code(exc: BaseException) -> str:
+    from acb_llm.run_errors import classify_run_error
+
+    original = getattr(exc, "original", None)
+    if isinstance(original, BaseException):
+        code = classify_run_error(original)
+        if code != "unknown":
+            return code
+    return classify_run_error(exc)
+
+
+@dataclass
+class _Attempt:
+    """What one claimed try has done so far: its try number, and whether any
+    part of a reply went out. A failure reads it to never lose and never
+    send twice."""
+
+    tries: int = 0
+    sent: bool = False
+    #: The send mark was asked for: the row is `sending`, or may be.
+    marked: bool = False
+    #: A send raised in a way that may have delivered the text (a read
+    #: timeout, a 5xx, a cancel in flight). Never resend after it.
+    unsure: bool = False
+
+
+async def run_message(req: RunRequest, *, stale: bool = False) -> None:
+    """Run the waiting rows of *req*'s thread, one at a time, oldest first.
+
+    The thread's lock is taken BEFORE the first await, so two runs of one
+    thread in this process can never interleave. *stale* is the sweep's: it
+    runs *req* itself first, whatever its state. Never raises, except a
+    cancel.
+    """
+    sid = req.chat_session_id
+    _RUN_LOCK_USERS[sid] = _RUN_LOCK_USERS.get(sid, 0) + 1
+    lock = _RUN_LOCKS.setdefault(sid, asyncio.Lock())
+    try:
+        async with lock:
+            token = bind_tenant(req.organization_id)
+            try:
+                await _drain(req, stale=stale)
+            finally:
+                release_tenant(token)
+    finally:
+        _RUN_LOCK_USERS[sid] -= 1
+        if _RUN_LOCK_USERS[sid] <= 0:
+            _RUN_LOCK_USERS.pop(sid, None)
+            _RUN_LOCKS.pop(sid, None)
+
+
+async def _drain(req: RunRequest, *, stale: bool) -> None:
+    """Work the thread's waiting rows in ``received_at`` order.
+
+    Each row is tried once in a drain. A row that waits again (a web run
+    holds the thread, a failure gave it back) is left for the sweep, and the
+    newer rows still run.
+    """
+    seen: set[str] = set()
+    if stale:
+        seen.add(req.message_id)
+        await _process(req, stale=True)
+    while True:
+        try:
+            waiting = await _waiting(req.chat_session_id)
+        except Exception as exc:
+            _log.warning("whatsapp_channel.run.next_failed",
+                         error_type=type(exc).__name__)
+            return
+        nxt = next((r for r in waiting
+                    if r.message_id not in seen
+                    and r.message_id not in _LIVE_ROWS), None)
+        if nxt is None:
+            return
+        seen.add(nxt.message_id)
+        await _process(nxt, stale=False)
+
+
+async def _process(req: RunRequest, *, stale: bool) -> None:
+    """Check, claim, run and reply for ONE row. Never raises, except a cancel."""
+    if req.message_id in _LIVE_ROWS:
+        return
+    _LIVE_ROWS.add(req.message_id)
+    hint = req.wa_id[-4:]
+    attempt = _Attempt()
+    try:
+        reason = await _check(req)
+        if reason == "later":
+            _log.info("whatsapp_channel.run.deferred", phone_hint=hint,
+                      organization_id=req.organization_id,
+                      message_id=req.message_id)
+            return
+        if reason is not None:
+            refused = await _refuse(req.message_id, reason)
+            _log.info("whatsapp_channel.run.refused", phone_hint=hint,
+                      organization_id=req.organization_id,
+                      message_id=req.message_id, reason=reason)
+            if refused and reason in _REFUSAL_REPLIES:
+                await _send(req, [_REFUSAL_REPLIES[reason]], kind=reason)
+            return
+        tries = await _claim(req.message_id, stale=stale)
+        if tries is None:
+            _log.info("whatsapp_channel.run.not_claimed", phone_hint=hint,
+                      message_id=req.message_id)
+            return
+        attempt.tries = tries
+        await _answer(req, attempt)
+    except asyncio.CancelledError:
+        # A restart. Before `sending`, the row stays `running` and the next
+        # sweep takes it. After a part went out, the end write is shielded
+        # and bounded. If it still fails, the row stays `sending`, which no
+        # run takes again, so nothing is sent twice.
+        with contextlib.suppress(BaseException):
+            if attempt.sent or attempt.unsure:
+                await asyncio.wait_for(asyncio.shield(_move(
+                    req.message_id, "sending", "replied", "cancelled")),
+                    timeout=_CANCEL_WRITE_S)
+            elif attempt.marked:
+                # The mark landed (or may have), and no send started. The
+                # row waits again, and the next try sends the stored reply.
+                await asyncio.wait_for(asyncio.shield(_move(
+                    req.message_id, "sending", "received", "cancelled")),
+                    timeout=_CANCEL_WRITE_S)
+        raise
+    except Exception as exc:  # the record names the class only
+        _log.warning("whatsapp_channel.run.failed_internal",
+                     message_id=req.message_id, error_type=type(exc).__name__,
+                     tries=attempt.tries, sent=attempt.sent)
+        await _after_failure(req, attempt)
+    finally:
+        _LIVE_ROWS.discard(req.message_id)
+
+
+async def _after_failure(req: RunRequest, attempt: _Attempt) -> None:
+    """Close a try that raised. At most one reply.
+
+    Known gap (verifier F1, 2026-10-10): the last word's own send mark has no
+    path back. If that mark commits and then raises, the row stays
+    ``sending``, the sweep closes it ``send_unconfirmed``, and the member gets
+    nothing. It needs a DB fault after commit, and it never sends twice.
+
+    * Not claimed yet: nothing changed, and the row still waits.
+    * A part went out, or may have: the row is ``replied``. Nothing more goes.
+    * The mark was asked for and nothing went out: the row goes back to
+      ``running`` (it may be ``sending`` if the mark committed and then
+      raised), and is handled as below.
+    * Tries left: the row waits again (``received``), and the sweep runs it.
+    * The last try: the stored reply goes once if the thread holds one, else
+      the general text goes once (:func:`_last_word`).
+    """
+    if attempt.tries == 0:
+        return
+    with contextlib.suppress(Exception):
+        if attempt.marked and (attempt.sent or attempt.unsure):
+            await _move(req.message_id, "sending", "replied",
+                        "internal" if attempt.sent else "send_unconfirmed")
+            return
+        if attempt.marked:
+            await _move(req.message_id, "sending", "running", "internal")
+        if attempt.tries < MAX_TRIES:
+            await _retry(req.message_id, "internal")
+        else:
+            await _last_word(req, attempt.tries)
+
+
+async def _last_word(req: RunRequest, tries: int) -> None:
+    """The last try of a ``running`` row: its stored reply, else the general
+    text. Each one goes once, under the row's state change."""
+    stored = _resend_text(await _stored_reply(req.chat_session_id, req.wamid))
+    # "" is a stored answer too: a reaction only (WAC-10e). It closes the row
+    # with nothing sent, never with the general text.
+    if stored is not None:
+        await _deliver(req, stored, _Attempt(tries=tries), frm="running",
+                       last_try=True)
+    elif await _end(req.message_id, "failed", "internal"):
+        await _send(req, [REPLY_FAILED], kind="failed")
+
+
+async def _close_used_up(req: RunRequest) -> None:
+    """The last word of a row that the sweep found used up (now ``failed``).
+
+    A full answer may sit in the thread: a try that crashed after it wrote
+    the reply and before ``sending``. Then that reply goes, once, under the
+    same send mark. Else the general text goes, once.
+    """
+    stored = _resend_text(await _stored_reply(req.chat_session_id, req.wamid))
+    if stored is not None:  # "" is a reaction-only answer (`_last_word`)
+        await _deliver(req, stored, _Attempt(tries=MAX_TRIES), frm="failed",
+                       last_try=True)
+    else:
+        await _send(req, [REPLY_FAILED], kind="tries")
+
+
+def model_turn(turn: dict[str, str]) -> dict[str, str]:
+    """A past turn as the model reads it: the text of a reply only.
+
+    The thread keeps each element's record after an invisible mark, for the
+    web chat and for a resend. The model must not read those records: a
+    model that saw "[Table: …]" in its own past replies typed it as text and
+    sent no image (owner screenshots, 2026-10-10). An answer of elements
+    only reads as a short note.
+    """
+    from acb_skills.whatsapp_ui import RENDITION_MARK, VIEW_MARK, without_reactions
+
+    content = str(turn.get("content") or "")
+    if turn.get("role") != "assistant" or (
+            RENDITION_MARK not in content and VIEW_MARK not in content):
+        return turn
+    text, _mark, records = content.replace(VIEW_MARK, "").partition(RENDITION_MARK)
+    if text.strip():
+        return {**turn, "content": text.strip()}
+    note = ("(I sent the member a WhatsApp card.)" if without_reactions(records)
+            else "(I reacted to the member's message.)")
+    return {**turn, "content": note}
+
+
+def _offered_ai_choice(history: list[dict[str, str]]) -> bool:
+    """True when the last reply was the AI's own buttons or list.
+
+    Then a tap such as "Today" answers the AI's question, and must not open
+    the canned view of the same name (WAC-10c review). A view's own reply
+    carries :data:`VIEW_MARK`, so a tap on the menu still runs the view.
+    """
+    from acb_skills.whatsapp_ui import RENDITION_MARK, VIEW_MARK
+
+    last = next((t for t in reversed(history) if t.get("role") == "assistant"), None)
+    if last is None:
+        return False
+    content = str(last.get("content") or "")
+    if content.startswith(VIEW_MARK) or RENDITION_MARK not in content:
+        return False
+    records = content.split(RENDITION_MARK, 1)[1]
+    return "[Buttons:" in records or "[List " in records
+
+
+def build_payload(message: str, history: list[dict[str, str]],
+                  member_email: str, *, native: bool = False,
+                  writes: bool = False, documents: bool = False,
+                  memory_context: str = "",
+                  org: str | None = None) -> dict[str, Any]:
+    """The event payload of one run.
+
+    ``_history_loader`` makes the batch executor take its STRUCTURED path on
+    every turn, the first one too: the scope rule is then a leading system
+    message, and never text folded into the member's turn
+    (``executor._run_with_maf_agent``). *native* picks the scope rule of the
+    WhatsApp profile (WAC-10a), and *writes* the rule of WAC-4. *documents*
+    adds :data:`DOCUMENTS_RULE` (WAC-12). *memory_context* is the member's
+    pre-read memory (WAC-P2, :func:`_memory_preread`), the web route's block.
+    *org* is the organization of the link row. The profile sentences come
+    only when ``assistant_profile.enabled_for(org)`` is true (PZ-25), so no
+    org gives none.
+    """
+    prior = [model_turn(m) for m in history]
+    rule = (SCOPE_RULE_WRITES if native and writes
+            else SCOPE_RULE_NATIVE if native else SCOPE_RULE)
+    if native and documents:
+        rule = f"{rule}\n{DOCUMENTS_RULE}"
+    from acb_common import assistant_profile
+    if assistant_profile.enabled_for(org):
+        # WS-63 PZ-8. With writes off the run holds no profile write tool,
+        # so only the channel sentence is added.
+        if native and writes:
+            rule = f"{rule}\n{PROFILE_EXCEPTION_RULE}"
+        rule = f"{rule}\n{PROFILE_CHANNEL_RULE}"
+    payload: dict[str, Any] = {
+        "mode": "chat",
+        "message": message,
+        "messages": prior,
+        "_history_loader": lambda: list(prior),
+        "system_context": rule,
+        "think_mode": "auto",
+        # How the tools reach the member (`executor._payload_user`). The
+        # server's value, from the link row, never from the message.
+        "user_email": member_email,
+        "source": SOURCE,
+    }
+    if memory_context:
+        payload["memory_context"] = memory_context
+    return payload
+
+
+async def _memory_preread(req: RunRequest, message: str, *, shared: bool) -> str:
+    """The member's pre-read memory for this turn (WS-47 WAC-P2).
+
+    The web chat route's block (``gateway.memory_preread``): Mem0, the
+    member's preferences, the agent's and the org's memory, and the
+    knowledge graph. It reads as the LINK's member, in the link's org, which
+    ``run_message`` bound from the link row. A shared room or a group reads
+    nothing at all (no run reads a room). A fault reads nothing: memory is
+    advice, and the turn still runs."""
+    if shared:
+        return ""
+    try:
+        from gateway.memory_preread import memory_preread
+
+        return await memory_preread(
+            user_id=req.member_email, agent_name=AGENT,
+            thread_id=req.chat_session_id, message=message, shared=False)
+    except Exception as exc:  # the record names the class only
+        _log.warning("whatsapp_channel.run.memory_failed",
+                     error_type=type(exc).__name__)
+        return ""
+
+
+async def _answer(req: RunRequest, attempt: _Attempt) -> None:
+    """The claimed run: read the turn, run the assistant, write, send."""
+    message, history = await _thread_turns(req.chat_session_id, turn_id(req.wamid))
+    if not message:
+        if await _end(req.message_id, "failed", "no_turn"):
+            await _send(req, [REPLY_FAILED], kind="failed", attempt=attempt)
+        return
+
+    run_id = str(uuid.uuid4())
+    # A try whose reply is already in the thread (its send failed, or it
+    # crashed before `sending`) sends that reply again. The agent runs once.
+    # The elements of that try are not stored, so a resend is text only: the
+    # thread's reply holds each element's rendition (WAC-10a, §12).
+    reply = _resend_text(await _stored_reply(req.chat_session_id, req.wamid))
+    ui: list[Any] = []
+    if reply is None:
+        native = flags.native_ui_enabled()
+        writes = flags.writes_enabled(req.organization_id)
+        from acb_skills.whatsapp_ui import VIEW_MARK, thread_record
+        from gateway.routes.whatsapp_channel import acts
+
+        # WAC-4: a pending act is settled BEFORE any run. "Confirm" runs the
+        # stored call with no model, "Cancel" closes it, and any other
+        # message voids it and runs below as a normal message.
+        # A room is not this member's thread: no act settles there, and the
+        # room check below refuses the message (WAC-4 verifier, D7).
+        shared = await _thread_shared(req.chat_session_id)
+        # WS-53 CRM-Q33 fix round 1 (P2): a parked act owns the next message.
+        # "yes" must never void the act AND save a CRM rule, so the CRM's
+        # pending ask waits while an act is pending.
+        act_pending = writes and not shared and await acts.has_pending(req)
+        outcome = (await acts.settle(req, message)
+                   if writes and not shared else None)
+        # WAC-P4: the Confirm of one egress call runs the model again, and
+        # only that call gets the yes. Anything else that settle gives is
+        # the reply.
+        approved = outcome if isinstance(outcome, acts.Approved) else None
+        settled = outcome if isinstance(outcome, str) else None
+        # WS-53 CRM-Q33 part 2: the member's reply to the CRM's one question
+        # ("2", a label, or YES to save a rule), matched by code and never by
+        # the model. A reply that matches nothing runs as a normal message.
+        if outcome is None and not shared and not act_pending:
+            settled = await _crm_text_answer(req, message)
+        # WAC-10c: a quick command ("today", "calendar", a menu tap) is
+        # answered by code, with no AI call. A view that fails falls back
+        # to the assistant, so it never costs the member an answer.
+        view = (await _quick_answer(req, message, history)
+                if native and settled is None and approved is None else None)
+        if settled is not None:
+            reply = settled
+        elif view is not None:
+            reply, ui = view.text, list(view.ui)
+        else:
+            forwarded = await _turn_forwarded(req.chat_session_id, turn_id(req.wamid))
+            answered = await _model_answer(req, message, history, attempt, run_id,
+                                           native=native, writes=writes,
+                                           approved=approved, shared=shared,
+                                           forwarded=forwarded)
+            if answered is None:
+                return
+            reply, ui = answered
+        if await _thread_shared(req.chat_session_id):
+            # The thread became a room while the agent ran. The answer was
+            # made for one member, so it goes into no room: nothing is
+            # written, and the member gets the general text once.
+            if await _end(req.message_id, "refused", "shared"):
+                await _send(req, [REPLY_FAILED], kind="shared", attempt=attempt)
+            return
+        # The thread keeps the text AND what each element showed, so the
+        # next turn knows which buttons it offered. A resend cuts the
+        # renditions off again (`_resend_text`).
+        record = thread_record(reply, ui)
+        if view is not None or settled is not None:
+            record = VIEW_MARK + record  # code built it (`_offered_ai_choice`)
+        await _write_reply(req, record)
+    else:
+        _log.info("whatsapp_channel.run.resend_stored", run_id=run_id,
+                  message_id=req.message_id)
+
+    await _deliver(req, reply, attempt, frm="running",
+                   last_try=attempt.tries >= MAX_TRIES, ui=ui)
+
+
+async def _crm_text_answer(req: RunRequest, message: str) -> str | None:
+    """The reply to a pick of the CRM's pending question, or None (WS-53
+    CRM-Q33 part 2, ``routes/crm/text_asks.settle``). The org and the member
+    are the link's, never the message's. A fault never costs the member the
+    answer: the message then runs as a normal message."""
+    try:
+        from gateway.routes.crm import text_asks
+
+        return await text_asks.settle(req.organization_id, req.member_email,
+                                      text_asks.CHANNEL_WHATSAPP, message)
+    except Exception as exc:  # the record names the class only
+        _log.warning("whatsapp_channel.crm_ask.settle_failed", message_id=req.message_id,
+                     error_type=type(exc).__name__)
+        return None
+
+
+def _open_crm_asks(org: str) -> Any:
+    """The holder of the CRM's one text question of this run, for an org on
+    ``CRM_ANSWER_FIRST_ORGS`` only (WS-53 CRM-Q33 part 2), or None."""
+    try:
+        from acb_skills.crm_tools import open_text_asks
+        from gateway.routes.crm.flags import answer_first_allowed
+        from gateway.routes.crm.text_asks import CHANNEL_WHATSAPP
+    except ImportError:
+        return None
+    return open_text_asks(CHANNEL_WHATSAPP) if answer_first_allowed(org) else None
+
+
+def _with_crm_notes(holder: Any, reply: str) -> str:
+    """*reply* with the "How I got this" note of a CRM total that the model
+    left out (``crm_tools.with_missing_notes``). Never raises."""
+    if holder is None or not reply:
+        return reply
+    try:
+        from acb_skills.crm_tools import with_missing_notes
+
+        return with_missing_notes(holder, reply)
+    except Exception:  # the note is advice: the answer stands
+        return reply
+
+
+def _close_crm_asks(token: Any) -> Any:
+    """Close the holder of the run, and give it, or None."""
+    if token is None:
+        return None
+    from acb_skills.crm_tools import release_text_asks, run_text_asks
+
+    holder = run_text_asks()
+    release_text_asks(token)
+    return holder
+
+
+async def _crm_follow_up(req: RunRequest, holder: Any, reply: str = "",
+                         parked: bool = False) -> str | None:
+    """The text of the run's one CRM question, which the gateway built and
+    keeps as a pending ask, or None when the run named none. Only a run that
+    answered offers it, so the member sees each question that waits.
+
+    CRM-Q33 fix round 1 (P2): no CRM question goes out while the run parked
+    an act (its Confirm owns the next message), or when the model's own
+    reply asks a numbered choice. Then any earlier pending ask is dropped,
+    so a later "2" or "yes" can never pick in it."""
+    if holder is None or getattr(holder, "ask", None) is None:
+        return None
+    try:
+        from gateway.routes.crm import text_asks
+
+        if parked or text_asks.reply_asks_a_choice(reply):
+            await text_asks.drop(req.organization_id, req.member_email,
+                                 text_asks.CHANNEL_WHATSAPP)
+            return None
+
+        return await text_asks.offer(req.organization_id, req.member_email,
+                                     text_asks.CHANNEL_WHATSAPP, holder.ask)
+    except Exception as exc:  # a follow-up never fails the answer
+        _log.warning("whatsapp_channel.crm_ask.offer_failed", message_id=req.message_id,
+                     error_type=type(exc).__name__)
+        return None
+
+
+async def _model_answer(req: RunRequest, message: str,
+                        history: list[dict[str, str]], attempt: _Attempt,
+                        run_id: str, *, native: bool, writes: bool,
+                        approved: Any = None, shared: bool = False,
+                        forwarded: bool = False,
+                        ) -> tuple[str, list[Any]] | None:
+    """Run the assistant for one message. Returns the reply and its elements.
+
+    None when the run failed: the row is closed and the member got the
+    failure text once.
+
+    *approved* (WAC-P4, ``acts.Approved``) is the Confirm of one egress
+    call. The run then holds the yes for that ONE call, and the act closes
+    after it. *shared* is True for a room, which reads no memory (WAC-P2).
+
+    WS-63 PZ-6a fix round 2: the run binds the member's TYPED words
+    (``assistant_profile.member_typed``), the only words that ground a
+    profile write. A Confirm (*approved*) and a *forwarded* text bind "":
+    the Confirm's turn holds the model's arguments, and another person
+    wrote a forwarded text.
+    """
+    from acb_common.assistant_profile import member_typed, profile_channel
+    from acb_skills.ask_tools import refuse_cards
+    from acb_skills.whatsapp_ui import whatsapp_run
+    from gateway.routes.whatsapp_channel import acts, views
+
+    documents = native and flags.documents_enabled()
+    turn = acts.approved_message(message, approved) if approved is not None else message
+    payload = build_payload(turn, history, req.member_email,
+                            native=native, writes=writes, documents=documents,
+                            memory_context=await _memory_preread(req, message,
+                                                                 shared=shared),
+                            # PZ-25: the link row's org, never the message's.
+                            org=req.organization_id)
+    if native:
+        await _show_typing(req)
+    _WAITING_ON_MODEL[req.message_id] = req
+    run_started = time.time()
+    # WS-53 CRM-Q33 part 2: the holder of the CRM's one text question. The
+    # run's tasks copy the context, so they share this one holder.
+    crm_asks = _open_crm_asks(req.organization_id)
+    yes: Any = None
+    try:
+        # WS-63 PZ-6a fix round 1: the channel of the run, native or not, so
+        # a profile write labels `whatsapp`, and with the org's writes off
+        # the run holds no profile write tool (SCOPE_RULE says the same).
+        typed = "" if approved is not None or forwarded else message
+        with refuse_cards(), profile_channel("whatsapp", writes=writes), \
+                member_typed(typed), _approval(req, approved) as yes, (whatsapp_run(
+                AGENT, org=req.organization_id,
+                views=views.runner(req.member_email, req.organization_id),
+                notify=_notifier(req), writes=writes,
+                document=_document_renderer(req) if documents else None)
+                if native else contextlib.nullcontext()) as wa_run:
+            result = await _still_working(req, wa_run, asyncio.wait_for(
+                _executor()(
+                    AGENT, payload,
+                    run_id=run_id,
+                    thread_id=req.chat_session_id,
+                    model=None,
+                    # D-WAC-3: the link's org, bound explicitly.
+                    organization_id=req.organization_id,
+                    # H-73: the member who pays is the link's member.
+                    session_user=req.member_email,
+                    # WS-63 PZ-2: the link's thread is the member's own. A
+                    # room is refused before the run, and `shared` says so.
+                    solo_room=not shared,
+                ),
+                timeout=RUN_TIMEOUT_S,
+            ))
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        code = _error_code(exc)
+        _log.warning("whatsapp_channel.run.agent_failed", run_id=run_id,
+                     message_id=req.message_id, code=code,
+                     error_type=type(exc).__name__)
+        _WAITING_ON_MODEL.pop(req.message_id, None)  # no hold note after this
+        if _ai_path_down(code, exc, run_started):
+            # WAC-13: Metorite itself did not answer. In an org that the
+            # sweep visits, the message waits, and the sweep answers it when
+            # the AI path is back. The member hears so once. Elsewhere no
+            # sweep would keep that promise, so the text makes none.
+            _OUTAGE["failed"] = time.time()
+            if _swept(req.organization_id):
+                before = await _hold(req.message_id)
+                if before is not None and before != UPDATING_CODE:
+                    await _send(req, [REPLY_UPDATING], kind="updating", attempt=attempt)
+                _log.info("whatsapp_channel.run.held", message_id=req.message_id,
+                          first=before != UPDATING_CODE)
+            elif await _end(req.message_id, "failed", PLAIN_CODE):
+                await _send(req, [REPLY_UPDATING_PLAIN], kind="updating", attempt=attempt)
+            return None
+        if await _end(req.message_id, "failed", code):
+            await _send(req, [REPLY_CREDITS if code == "credits" else REPLY_FAILED],
+                        kind="failed", attempt=attempt)
+        return None
+    finally:
+        _WAITING_ON_MODEL.pop(req.message_id, None)
+        crm_holder = _close_crm_asks(crm_asks)
+        if approved is not None:
+            # WAC-P4: the act is done when the run made the confirmed call,
+            # and void when it did not. Its yes closed with the run.
+            await acts.finish(approved, bool(yes is not None and yes.used))
+    _OUTAGE["answered"] = time.time()
+
+    reply = final_text(result).strip()
+    # WS-53 CRM-Q33 fix round 1: the note of a CRM total goes in when the
+    # model left it out.
+    reply = _with_crm_notes(crm_holder, reply)
+    ui: list[Any] = []
+    parked = wa_run is not None and getattr(wa_run, "parked", None) is not None
+    if wa_run is not None:
+        reply, ui = await _native_parts(req, wa_run, reply)
+    follow_up = await _crm_follow_up(req, crm_holder, reply, parked) if reply else None
+    if follow_up:
+        # The one CRM question goes after the answer, as code built it.
+        reply = f"{reply}\n\n{follow_up}"
+    if not reply and not ui:
+        if await _end(req.message_id, "failed", "empty"):
+            await _send(req, [REPLY_FAILED], kind="failed", attempt=attempt)
+        return None
+    return reply, ui
+
+
+def _approval(req: RunRequest, approved: Any) -> Any:
+    """The yes of a run at a Confirm, or a context that holds none.
+
+    WAC-P4: ``whatsapp_acts.approving`` for ONE egress call. H-391: an email
+    act that a code approved gets ``approving_email``, with the lines that
+    the member left out or added, and the org, the member and the thread of
+    the link row (R5). Each one closes with the run."""
+    from acb_skills.whatsapp_acts import approving, approving_email
+
+    if approved is None:
+        return contextlib.nullcontext()
+    if getattr(approved, "kind", "egress") == "email":
+        return approving_email(approved.card, tool=approved.tool,
+                               arguments=approved.arguments, without=approved.without,
+                               include=approved.include, org=req.organization_id,
+                               member=req.member_email, thread=req.chat_session_id)
+    return approving(approved.card)
+
+
+async def _native_parts(req: RunRequest, wa_run: Any,
+                        reply: str) -> tuple[str, list[Any]]:
+    """The reply and the elements of a run with the WhatsApp profile.
+
+    A parked act (WAC-4) goes into the table first, and its summary and its
+    Confirm and Cancel buttons go last. They go in before the guard, so the
+    guard sees the buttons that a "tap Confirm" names.
+    """
+    from acb_skills.whatsapp_ui import polish, whatsapp_run
+
+    ui = list(wa_run.outbox)
+    offer = (await _offer_act(req, wa_run.parked)
+             if wa_run.parked is not None else None)
+    if isinstance(offer, str):
+        reply = f"{reply}\n\n{offer}".strip()
+        offer = None
+    elif offer:
+        ui = [*ui, *offer]
+    # The reply guard: no copied element record, and no tap promise with
+    # nothing to tap (whatsapp_ui.polish). It may draw, so it runs off the
+    # event loop, in the run's context.
+    with whatsapp_run(AGENT, org=req.organization_id):
+        reply, ui = await asyncio.to_thread(polish, reply, ui)
+    if offer:
+        ui = [m for m in ui if all(m is not o for o in offer)] + list(offer)
+    return reply, ui
+
+
+async def _offer_act(req: RunRequest, act: Any) -> list[Any] | str:
+    """Store the act that the run parked, and the parts that offer it (WAC-4).
+
+    The parts are the card as text, then the Confirm and Cancel buttons. Only
+    code builds them. When the act cannot be stored, nothing waits for a
+    Confirm, and the member gets a line that sends the change to the web app.
+    """
+    from acb_skills.whatsapp_acts import code_summary_parts, confirm_buttons, summary
+    from acb_skills.whatsapp_ui import OutMessage
+    from gateway.routes.whatsapp_channel import acts
+
+    if getattr(act, "kind", "button") == "code":
+        # H-391: the whole card as text, the reply code last, and no buttons.
+        # The LAST part names the act, so the code counts only once Meta took
+        # the part that holds it.
+        parked = await acts.park_code(req, act)
+        if parked is None:
+            return acts.REPLY_NOT_HELD
+        act_id, code = parked
+        parts = code_summary_parts(act, code, MAX_CHARS)
+        return [OutMessage("text", part, act_id=act_id if i == len(parts) - 1 else None)
+                for i, part in enumerate(parts)]
+    act_id = await acts.park(req, act)
+    if act_id is None:
+        return acts.REPLY_NOT_HELD
+    # The buttons name the act. Only when Meta takes that part is the act
+    # offered (`_send`), so a card that never reached the phone waits for no
+    # Confirm.
+    return [*(OutMessage("text", part) for part in split_reply(summary(act))),
+            confirm_buttons(act_id)]
+
+
+def final_text(result: Any) -> str:
+    """The one WhatsApp text of a run, from its model steps (WAC-4b).
+
+    The agent framework's ``response.text`` joins the text of EVERY model
+    step with no separator. A model that wrote a line, called a tool (a
+    link button) and then wrote its answer again gave the member both texts
+    glued together ("Sahakar NagarTwo blocks…", 2026-10-15). The web chat
+    streams each step as its own part, so only a channel that sends one
+    text needs this.
+
+    Each step goes, in order, a blank line apart, except a step that says
+    again what another step says (:func:`_said_elsewhere`). A step goes
+    out when another step that is at least as long holds most of its
+    words. So the fuller of two copies stays, and a step that adds
+    something is never lost:
+
+    * The owner's incident: the answer, a link button, then the same answer
+      said again (0.83 of its words). One copy goes.
+    * A text card, a link button, then "Open it with the button below." The
+      line is too short to be a copy, so both go.
+
+    A result with no ``steps`` (``executor._step_texts``), from another
+    path, falls back to the joined text.
+    """
+    from gateway.routes.projects.agent_dispatch import reply_text
+
+    steps = result.get("steps") if isinstance(result, dict) else None
+    if not isinstance(steps, list):
+        return reply_text(result)
+    texts = [str(t).strip() for t in steps if str(t or "").strip()]
+    if not texts:
+        return reply_text(result)
+    kept = [t for i, t in enumerate(texts) if not _said_elsewhere(i, texts)]
+    return "\n\n".join(kept)
+
+
+#: The share of a step's words that another step holds, at or above which
+#: the step is the same text said again.
+_RESTATED = 0.6
+#: A step with fewer words than this is a short line, never a copy.
+_RESTATED_MIN_WORDS = 6
+_WORD = re.compile("[\\w:\u2013'-]+")  # \u2013: the en dash of "8:30\u201310:30"
+
+
+def _words(text: str) -> set[str]:
+    return {w for w in _WORD.findall(text.lower()) if len(w) >= 3}
+
+
+def _said_elsewhere(i: int, texts: list[str]) -> bool:
+    """True when another step holds most words of step *i* (:func:`final_text`).
+
+    That other step has at least as many words, so the fuller copy stays.
+    Of two copies with as many words, the later one stays.
+    """
+    mine = _words(texts[i])
+    if len(mine) < _RESTATED_MIN_WORDS:
+        return False
+    for j, other in enumerate(texts):
+        if j == i:
+            continue
+        theirs = _words(other)
+        if len(theirs) < len(mine) or (len(theirs) == len(mine) and j < i):
+            continue
+        if len(mine & theirs) / len(mine) >= _RESTATED:
+            return True
+    return False
+
+
+def _document_renderer(req: RunRequest) -> Callable[[dict[str, Any]], Awaitable[bytes]]:
+    """Lays out a document for this run's member (WAC-12): the ONE PDF seam.
+
+    ``pdf_render.render_pdf`` runs the layout in its child process, with its
+    timeout and its turn for each member and each org. The member and the org
+    are the link's, never the message's (D-WAC-3).
+    """
+    async def _render(layout: dict[str, Any]) -> bytes:
+        import json
+
+        from gateway.pdf_render import render_pdf
+
+        return await render_pdf("document", json.dumps(layout, ensure_ascii=False),
+                                member=req.member_email, org=req.organization_id)
+
+    return _render
+
+
+def _resend_text(stored: str | None) -> str | None:
+    """The text a resend sends from a stored reply: the text part only, not
+    the element renditions (``whatsapp_ui.resend_text``, WAC-10a)."""
+    from acb_skills.whatsapp_ui import resend_text
+
+    return resend_text(stored)
+
+
+def _notifier(req: RunRequest) -> Callable[[str], Awaitable[bool]]:
+    """The early message of one run (WAC-10e, ``whatsapp_ui`` kind "working").
+
+    It quotes the member's message, then shows "typing…" again, because
+    Meta hides the indicator when a message arrives. Best effort: it never
+    raises. It is no part of the answer and goes before the send mark, so a
+    run that a later try repeats can send it again. That costs one short
+    line, never a second answer.
+    """
+    async def _notify(text: str) -> bool:
+        creds = flags.bot_credentials()
+        if creds is None:
+            return False
+        try:
+            from whatsapp_ingestion.providers.factory import build_provider
+
+            provider = build_provider("cloud_api", creds)
+            await asyncio.wait_for(
+                provider.send_text(req.wa_id, text, reply_to_wa_message_id=req.wamid),
+                timeout=_TYPING_TIMEOUT_S)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Like the answer: an unclear error (a timeout, a 5xx) may have
+            # delivered the line, so it counts as sent, and no second line
+            # follows (review, 2026-10-11).
+            sure = send_surely_failed(exc)
+            _log.info("whatsapp_channel.run.working_failed",
+                      error_type=type(exc).__name__, surely_not_sent=sure)
+            return not sure
+        _log.info("whatsapp_channel.run.working_sent", message_id=req.message_id)
+        await _show_typing(req)
+        return True
+
+    return _notify
+
+
+async def _still_working(req: RunRequest, wa_run: Any,
+                         job: Coroutine[Any, Any, Any]) -> Any:
+    """Await *job*. Past :data:`WORKING_AFTER_S` with no early message, tell
+    the member, in code and with no AI call, that the answer is on its way.
+    """
+    if wa_run is None or wa_run.notify is None:
+        return await job
+
+    async def _later() -> None:
+        await asyncio.sleep(WORKING_AFTER_S)
+        if not wa_run.notified:
+            wa_run.notified = True
+            wa_run.notified = await wa_run.notify(REPLY_WORKING)
+
+    timer = asyncio.create_task(_later())
+    try:
+        return await job
+    finally:
+        timer.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await timer
+
+
+async def _quick_answer(req: RunRequest, message: str,
+                        history: list[dict[str, str]]) -> Any:
+    """The answer code gives with no AI call, or None (WAC-10c, WAC-10e).
+
+    A quick command's view, or for a plain thanks a 👍 and no text. Never
+    when the AI's own buttons asked the question (:func:`_offered_ai_choice`).
+    """
+    from gateway.routes.whatsapp_channel import views
+
+    if _offered_ai_choice(history):
+        return None
+    name = views.match(message)
+    view = await _quick_view(req, name) if name else None
+    if view is None and views.thanks(message):
+        from acb_skills.whatsapp_ui import reaction
+
+        view = views.View("thanks", "", [reaction(views.THANKS_REACTION)])
+        _log.info("whatsapp_channel.run.quick", view="thanks", elements=0,
+                  message_id=req.message_id)
+    return view
+
+
+async def _quick_view(req: RunRequest, name: str) -> Any:
+    """The view of a quick command, or None to let the assistant answer.
+
+    Bounded, and never raises: any failure (a read, a render, a feature the
+    member does not hold) hands the message to the assistant instead.
+    """
+    from acb_skills.whatsapp_ui import whatsapp_run
+    from gateway.routes.whatsapp_channel import views
+
+    async def _build() -> Any:
+        # The resolve sits inside the bound, and the view sits inside a run
+        # context that carries the link's org, so each link button names it.
+        ctx = await views.member_context(req.member_email, req.organization_id)
+        with whatsapp_run(AGENT, org=req.organization_id):
+            return await views.run(name, ctx)
+
+    try:
+        view = await asyncio.wait_for(_build(), timeout=QUICK_TIMEOUT_S)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        _log.info("whatsapp_channel.run.quick_fallback", view=name,
+                  error_type=type(exc).__name__)
+        return None
+    _log.info("whatsapp_channel.run.quick", view=name, elements=len(view.ui),
+              message_id=req.message_id)
+    return view
+
+
+async def _show_typing(req: RunRequest) -> None:
+    """Mark the member's message read and show "typing…" (WAC-10a).
+
+    Best effort and bounded: a failure here never stops the run.
+    """
+    creds = flags.bot_credentials()
+    if creds is None:
+        return
+    try:
+        from whatsapp_ingestion.providers.factory import build_provider
+
+        provider = build_provider("cloud_api", creds)
+        show = getattr(provider, "show_typing", None)
+        if show is not None:
+            await asyncio.wait_for(show(req.wamid), timeout=_TYPING_TIMEOUT_S)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        _log.info("whatsapp_channel.run.typing_failed", error_type=type(exc).__name__)
+
+
+async def _deliver(req: RunRequest, reply: str, attempt: _Attempt, *,
+                   frm: str, last_try: bool, ui: list[Any] | None = None) -> None:
+    """Send *reply* under the durable send mark, then close the row.
+
+    *ui* holds the elements that ``whatsapp_ui`` queued (WAC-10a). Each one is
+    one more part after the text parts, so the rules below hold for it too.
+
+    The mark (``frm`` → ``sending``) comes first. From then on no run takes
+    the row again, and nothing sends it the general text. ``attempt.marked``
+    is set BEFORE the mark's await: if the UPDATE commits and then raises,
+    or a cancel lands in it, the failure path still knows a mark may exist
+    and gives the row back, because no send started.
+
+    How the row closes:
+
+    * every part went out → ``replied``
+    * a send may have delivered (:func:`send_surely_failed` is False) →
+      ``replied``/``send_unconfirmed``, never sent again
+    * a part went out, then one surely failed → ``replied``/``send_partial``
+    * nothing went out, surely: tries left → ``received``/``send`` (the next
+      try sends this stored reply), the last try → ``failed``/``send``
+    """
+    attempt.marked = True
+    if not await _move(req.message_id, frm, "sending", None):
+        attempt.marked = False
+        _log.info("whatsapp_channel.run.not_sending", message_id=req.message_id)
+        return
+    # A reaction is no part (WAC-10e): it goes first, best effort, under the
+    # mark, so a try that runs again (a stored reply, text only) never sends
+    # it twice.
+    reactions = [m for m in (ui or []) if getattr(m, "kind", None) == "reaction"]
+    if reactions:
+        await _react(req, reactions[-1].emoji)
+    parts: list[Any] = [*split_reply(reply),
+                        *(m for m in (ui or []) if getattr(m, "kind", None) != "reaction")]
+    sent = await _send(req, parts, kind="answer", attempt=attempt) if parts else 0
+    if sent == len(parts):
+        to, code = "replied", None
+    elif attempt.unsure:
+        to, code = "replied", "send_unconfirmed"
+    elif sent:
+        to, code = "replied", "send_partial"
+    elif not last_try:
+        to, code = "received", "send"
+    else:
+        # The channel refused every try. No general text either.
+        to, code = "failed", "send"
+    await _move(req.message_id, "sending", to, code)
+    _log.info("whatsapp_channel.run.replied" if sent == len(parts) else
+              "whatsapp_channel.run.send_failed",
+              message_id=req.message_id, chars=len(reply), parts=len(parts),
+              sent=sent, state=to, code=code)
+
+
+def send_surely_failed(exc: BaseException) -> bool:
+    """True only when the text SURELY did not reach the member.
+
+    * ``httpx.HTTPStatusError`` with a 4xx: Meta's own refusal.
+    * ``httpx.ConnectError`` or ``httpx.ConnectTimeout``: nothing reached Meta.
+
+    Every other error may come AFTER Meta accepted the text: a read timeout,
+    a 5xx, or ``cloud_api._post_message``'s "unexpected send response shape"
+    on a 200. Those read as "possibly sent", so nothing is sent again.
+    """
+    import httpx
+
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = getattr(exc.response, "status_code", None)
+        return isinstance(status, int) and 400 <= status < 500
+    return isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout))
+
+
+async def _send(req: RunRequest, texts: list[Any], *, kind: str,
+                attempt: _Attempt | None = None) -> int:
+    """Send each part from the bot number, and record each one sent.
+
+    A part is a text, or an element of ``whatsapp_ui`` (:func:`_send_part`).
+
+    Logs Meta's error fields only, never the exception text, which can carry
+    a URL or a token. Returns how many texts went out, and stops at the first
+    one that fails. *attempt* notes that a part went out, and whether a
+    failed send may have delivered its text (:func:`send_surely_failed`).
+    """
+    hint = req.wa_id[-4:]
+    creds = flags.bot_credentials()
+    if creds is None:
+        _log.warning("whatsapp_channel.run.no_token_at_send", kind=kind)
+        return 0
+
+    from gateway.routes.whatsapp.transport.connect import meta_error_fields
+    from whatsapp_ingestion.providers.factory import build_provider
+
+    try:
+        provider = build_provider("cloud_api", creds)
+    except ValueError as exc:
+        _log.warning("whatsapp_channel.run.provider_refused",
+                     error_class=type(exc).__name__)
+        return 0
+    sent = 0
+    # The first part quotes the member's message (WAC-10e), with the profile.
+    quote = req.wamid if flags.native_ui_enabled() else None
+    for index, part in enumerate(texts):
+        try:
+            out_id = await _send_part(provider, req.wa_id, part,
+                                      reply_to=quote if index == 0 else None)
+        except asyncio.CancelledError:
+            # A cancel while the request is in flight: Meta may have it.
+            if attempt is not None:
+                attempt.unsure = True
+            raise
+        except Exception as exc:
+            sure = send_surely_failed(exc)
+            if attempt is not None and not sure:
+                attempt.unsure = True
+            _log.warning("whatsapp_channel.run.reply_failed", kind=kind,
+                         phone_hint=hint, sent=sent, surely_not_sent=sure,
+                         **meta_error_fields(exc))
+            return sent
+        sent += 1
+        if attempt is not None:
+            attempt.sent = True
+        act_id = getattr(part, "act_id", None)
+        if act_id and out_id:
+            # WAC-4: Meta took the Confirm and Cancel buttons, so the act
+            # can now be confirmed, and only from those buttons or later.
+            from gateway.routes.whatsapp_channel import acts
+
+            await acts.offered(str(act_id), str(out_id))
+        if out_id:
+            try:
+                await _insert(
+                    org=req.organization_id, email=req.member_email,
+                    wa_id=req.wa_id, wamid=str(out_id)[:200], direction="out",
+                    state="replied", session_id=req.chat_session_id,
+                )
+            except Exception as exc:  # the send already happened
+                _log.warning("whatsapp_channel.run.out_record_failed",
+                             error_type=type(exc).__name__)
+    _log.info("whatsapp_channel.run.reply_sent", kind=kind, phone_hint=hint,
+              parts=len(texts))
+    return sent
+
+
+async def _send_part(provider: Any, wa_id: str, part: Any, *,
+                     reply_to: str | None = None) -> str:
+    """Send one part: a text, an interactive element, an image or a document.
+
+    *reply_to* quotes the member's message above the part, as a person's
+    swipe reply does (WAC-10e). Meta drops the quote, and still delivers the
+    part, when it cannot find that message.
+
+    An image goes up to Meta's media store first, then out by its id. An
+    upload alone shows the member nothing, so an upload error goes through
+    :func:`send_surely_failed` like a send error. An unclear one reads as
+    "maybe sent", and the code then sends nothing again, which is the safe
+    side.
+    """
+    quote = {"reply_to_wa_message_id": reply_to} if reply_to else {}
+    if isinstance(part, str):
+        return await provider.send_text(wa_id, part, **quote)
+    if part.kind == "text":  # a view's own text (WAC-10c)
+        return await provider.send_text(wa_id, part.rendition, **quote)
+    if part.kind == "interactive":
+        return await provider.send_interactive(wa_id, part.interactive, **quote)
+    if part.kind == "document":  # a PDF file (WAC-12)
+        media_id = await provider.upload_media(part.pdf, "application/pdf", part.filename)
+        return await provider.send_document(wa_id, media_id, filename=part.filename,
+                                            caption=part.caption, **quote)
+    media_id = await provider.upload_media(part.png, "image/png", "metorite.png")
+    return await provider.send_image(wa_id, media_id, caption=part.caption, **quote)
+
+
+async def _react(req: RunRequest, emoji: str) -> bool:
+    """React with *emoji* to the member's message (WAC-10e).
+
+    Best effort, and never raises: a reaction is a nicety, so a refused one
+    never costs the member the answer, and it is never retried.
+    """
+    creds = flags.bot_credentials()
+    if creds is None:
+        return False
+    try:
+        from whatsapp_ingestion.providers.factory import build_provider
+
+        provider = build_provider("cloud_api", creds)
+        await asyncio.wait_for(provider.send_reaction(req.wa_id, req.wamid, emoji),
+                               timeout=_TYPING_TIMEOUT_S)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        _log.info("whatsapp_channel.run.react_failed", error_type=type(exc).__name__)
+        return False
+    _log.info("whatsapp_channel.run.reacted", message_id=req.message_id)
+    return True
+
+
+# ── The sweep ───────────────────────────────────────────────────────────────
+
+
+def _uuid_or_none(value: str) -> str | None:
+    try:
+        return str(uuid.UUID(value))
+    except ValueError:
+        return None
+
+
+async def _sweep_org(org: str, *, back: bool = True) -> list[RunRequest]:
+    """Expire, close and collect the waiting rows of ONE org. Bound.
+
+    A row that used its tries gets its last word once, here: the UPDATE
+    that closes it returns it only once (:func:`_close_used_up`).
+    """
+    token = bind_tenant(org)
+    try:
+        async with tenant_session() as db:
+            expired = (await db.execute(
+                text(_EXPIRE_SQL), {"expire": EXPIRE_S},
+            )).fetchall()
+            live = sorted(_LIVE_ROWS)
+            # Exhausted first: its own `state` filter is what keeps a
+            # `sending` row from the general text, not the order.
+            exhausted = (await db.execute(text(_EXHAUSTED_SQL), {
+                "max": MAX_TRIES, "stale": STALE_S, "live": live,
+            })).mappings().all()
+            unconfirmed = (await db.execute(
+                text(_UNCONFIRMED_SQL), {"stale": STALE_S, "live": live},
+            )).fetchall()
+            rows = (await db.execute(text(_STALE_SQL), {
+                "max": MAX_TRIES, "stale": STALE_S, "expire": EXPIRE_S,
+                "n": SWEEP_BATCH, "back": back,
+            })).mappings().all()
+        for row in exhausted:
+            if row["chat_session_id"] is None:
+                continue
+            with contextlib.suppress(Exception):
+                await _close_used_up(_request(row))
+    finally:
+        release_tenant(token)
+    if expired or exhausted or unconfirmed:
+        _log.info("whatsapp_channel.sweep.closed", organization_id=org,
+                  expired=len(expired), exhausted=len(exhausted),
+                  unconfirmed=len(unconfirmed))
+    # A thread whose lock a run of this process holds runs its rows in that
+    # drain. A second task would only wait and then fail its claim.
+    return [_request(r) for r in rows
+            if str(r["id"]) not in _LIVE_ROWS
+            and str(r["chat_session_id"]) not in _RUN_LOCKS]
+
+
+async def sweep_once() -> int:
+    """One pass over every org of the allowlist. Returns the runs started.
+
+    Only with the switch on. Each org is bound in turn, so the sweep needs no
+    SECURITY DEFINER function. One bad org does not stop the others.
+    """
+    if not flags.assistant_enabled():
+        return 0
+    started = 0
+    # WAC-13: a waiting message runs again only when the AI path is back:
+    # this process proves it, and the Router's health answers. One read.
+    back = _quiet_now() and await _router_healthy()
+    for raw in sorted(flags.assistant_orgs()):
+        if raw == "*":
+            continue  # admits every org at the door; the sweep needs named ids
+        org = _uuid_or_none(raw)
+        if org is None:
+            _log.warning("whatsapp_channel.sweep.bad_org_id", length=len(raw))
+            continue
+        try:
+            for req in await _sweep_org(org, back=back):
+                start(req, stale=True)
+                started += 1
+        except Exception as exc:
+            _log.warning("whatsapp_channel.sweep.org_failed",
+                         organization_id=org, error_type=type(exc).__name__)
+    return started
+
+
+_sweep_task: asyncio.Task[None] | None = None
+
+
+async def _sweep_loop() -> None:
+    while True:
+        try:
+            started = await sweep_once()
+            if started:
+                _log.info("whatsapp_channel.sweep.started_runs", runs=started)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # never let one bad pass kill the loop
+            _log.warning("whatsapp_channel.sweep.failed",
+                         error_type=type(exc).__name__)
+        await asyncio.sleep(SWEEP_EVERY_S)
+
+
+async def start_sweep() -> None:
+    """Launch the one sweep loop (the gateway lifespan). It reads the switch
+    on each pass, so a dark channel costs one settings read a minute."""
+    global _sweep_task
+    if _sweep_task and not _sweep_task.done():
+        return
+    _sweep_task = asyncio.create_task(_sweep_loop())
+    _log.info("whatsapp_channel.sweep.started")
+
+
+async def stop_sweep() -> None:
+    """Cancel the sweep loop (gateway shutdown)."""
+    global _sweep_task
+    task, _sweep_task = _sweep_task, None
+    if task and not task.done():
+        task.cancel()

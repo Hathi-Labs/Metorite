@@ -9,17 +9,20 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import ipaddress
 import json
-import socket
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import httpx
 from acb_auth import UserContext, get_current_user
 from fastapi import BackgroundTasks, Depends, HTTPException, Query
-from gateway import decide_features
-from gateway.routes.email.automation.identity import sender_scope
+from gateway import decide_features, outbound_guard
+from gateway.outbound_guard import (  # noqa: F401 — the old names (EM-T13b-2)
+    _host_is_public,
+    _is_safe_external_url,
+)
+from gateway.routes.email.account_ref import resolve_account_filter
+from gateway.routes.email.automation.identity import proven_own_send, sender_scope
 from gateway.routes.email.core import (
     CLEANUP_CATEGORIES,
     CONVERSATION_LABELS_LOWER,
@@ -27,16 +30,17 @@ from gateway.routes.email.core import (
     KNOWN_LABELS_LOWER,
     _account_scope,
     _assert_account_owner,
-    _tenant_session,
     _llm_json,
     _log,
+    _owned_accounts_sql,
     _savepoint,
+    _tenant_session,
     provider_session,
     router,
 )
+from gateway.routes.email.mailbox_access import mailbox_ids_sql, private_predicate
 from pydantic import BaseModel
 from sqlalchemy import text
-
 
 # Folders whose mail is already disposed of (or was never received). The Email
 # Cleaner and its uncategorized sweep both exclude these, so a sender is never
@@ -100,9 +104,17 @@ async def list_senders(
     tail can still be cleaned up.
     """
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous")
         params: dict[str, Any] = {"uid": user.email or "anonymous",
                                   "limit": limit, "offset": offset}
-        scope = _account_scope(account_id, params)
+        # With no account_id this is a read of more than one mailbox, so the
+        # mail and the dispositions of a separate mailbox stay out of it
+        # (EM-T8g-1, D-EM-30). The three "never list the user" subqueries
+        # below keep EVERY mailbox of the member: a separate mailbox is still
+        # the member (D-EM-27).
+        scope = _account_scope(account_id, params, pooled_only=True, level="read")
+        owned = _owned_accounts_sql(account_id, params, pooled_only=True, level="read")
         # Already-disposed mail never counts toward "how noisy is this sender".
         folder_sql = f" AND {_NOT_DISPOSED}"
         if not include_archived:
@@ -110,8 +122,7 @@ async def list_senders(
             # a decision on, so their status tabs stay reviewable (see docstring).
             disp_sub = (
                 "SELECT LOWER(email) FROM email_newsletters WHERE account_id IN "
-                "(SELECT id FROM email_accounts WHERE user_id = :uid"
-                + (" AND id = :aid" if account_id else "") + ")"
+                f"({owned})"
             )
             folder_sql += (
                 " AND (LOWER(COALESCE(em.folder, '')) <> 'archive'"
@@ -123,10 +134,7 @@ async def list_senders(
             # inbox, so also include any sender carrying a saved disposition.
             # Otherwise the Unsubscribed / Auto-archive tabs go empty after a
             # refresh and the user can't review or undo their decisions.
-            nl_sub = "account_id IN (SELECT id FROM email_accounts WHERE user_id = :uid"
-            if account_id:
-                nl_sub += " AND id = :aid"
-            nl_sub += ")"
+            nl_sub = f"account_id IN ({owned})"
             folder_sql += (
                 " AND (LOWER(em.folder) = LOWER(:folder)"
                 " OR LOWER(em.from_address->>'email') IN ("
@@ -140,6 +148,8 @@ async def list_senders(
         # meant different things on different rows.
         in_folder_sql = "COUNT(*) FILTER (WHERE LOWER(folder) = 'inbox')"
         rows = (await db.execute(text(
+            # "Never list the user" reads "self": private_predicate, the
+            # member's private mailboxes only (D-SM-5, WS-65 SM-2).
             f"""SELECT LOWER(from_address->>'email') AS email,
                        MAX(from_address->>'name') AS name,
                        COUNT(*) AS count,
@@ -155,7 +165,7 @@ async def list_senders(
                   -- + self-CC'd mail is all from-self).
                   AND LOWER(from_address->>'email') NOT IN (
                     SELECT LOWER(email_address) FROM email_accounts
-                    WHERE user_id = :uid)
+                    WHERE {private_predicate(uid="uid")})
                 GROUP BY LOWER(from_address->>'email')
                 -- Tie-break on the address so paging is stable: without a
                 -- deterministic order, senders with equal volume could shuffle
@@ -169,24 +179,24 @@ async def list_senders(
         # hides the tail is worse than useless — the user believes they've dealt
         # with everything.
         total_row = (await db.execute(text(
+            # "Never list the user" reads "self": private_predicate, the
+            # member's private mailboxes only (D-SM-5, WS-65 SM-2).
             f"""SELECT COUNT(DISTINCT LOWER(from_address->>'email')) AS c
                 FROM email_messages em
                 WHERE {scope}{folder_sql}
                   AND COALESCE(from_address->>'email','') <> ''
                   AND LOWER(from_address->>'email') NOT IN (
                     SELECT LOWER(email_address) FROM email_accounts
-                    WHERE user_id = :uid)"""
+                    WHERE {private_predicate(uid="uid")})"""
         ), params)).fetchone()
 
         # Merge newsletter disposition (APPROVED/UNSUBSCRIBED/AUTO_ARCHIVED).
         nl_params: dict[str, Any] = {"uid": user.email or "anonymous"}
         nl_scope = (
-            "account_id IN (SELECT id FROM email_accounts WHERE user_id = :uid"
+            "account_id IN ("
+            + _owned_accounts_sql(account_id, nl_params, pooled_only=True, level="read")
+            + ")"
         )
-        if account_id:
-            nl_scope += " AND id = :aid"
-            nl_params["aid"] = account_id
-        nl_scope += ")"
         nl_rows = (await db.execute(text(
             f"SELECT LOWER(email) AS email, status, auto_archive_filter_id "
             f"FROM email_newsletters WHERE {nl_scope}"
@@ -216,9 +226,11 @@ async def list_senders(
         # trims, so an exact-case comparison here silently dropped every label
         # whose rule name differed by case or stray whitespace — the sender then
         # rendered as uncategorized despite its mail being labelled.
+        # "Never list the user" reads "self": private_predicate, the
+        # member's private mailboxes only (D-SM-5, WS-65 SM-2).
         not_self = (" AND LOWER(em.from_address->>'email') NOT IN ("
                     "SELECT LOWER(email_address) FROM email_accounts "
-                    "WHERE user_id = :uid)")
+                    "WHERE " + private_predicate(uid="uid") + ")")
         msgcat_rows = (await db.execute(text(
             _LABEL_TALLY_SQL.format(scope=scope, extra=folder_sql + not_self)
         ), {**params, "labels": _KNOWN_LABELS_LOWER})).fetchall()
@@ -337,6 +349,9 @@ class BulkActionRequest(BaseModel):
     folder: str | None = None
     older_than_days: int | None = None
     only_read: bool | None = None
+    #: Count the mail that the act would change, and change nothing. The
+    #: chat's ``bulk_manage_inbox`` shows the count on its card first.
+    dry_run: bool = False
 
 
 _BULK_DB_UPDATE = {
@@ -384,6 +399,11 @@ async def bulk_action(
     What IS refused is an *unfiltered* bulk action — no ids, no sender, no
     folder, no age. That request means "trash my entire mailbox", which is
     never what a click in the cleaner meant, and uncapping made it reachable.
+
+    EM-T8g-1 (D-EM-30): an act BY IDS keeps the owner scope only, because
+    ``manage_inbox`` sends mail ids with no ``account_id``. An act BY FILTER
+    with no ``account_id`` is an act on All inboxes, so it leaves out a
+    separate mailbox. Its own ``account_id`` still reaches it.
     """
     if req.action not in _BULK_DB_UPDATE:
         raise HTTPException(
@@ -401,7 +421,8 @@ async def bulk_action(
 
     async with _tenant_session() as db:
         params: dict[str, Any] = {"uid": user.email or "anonymous"}
-        scope = _account_scope(req.account_id, params)
+        scope = _account_scope(
+            req.account_id, params, pooled_only=not req.message_ids, level="send")
         clauses = [scope]
         if req.message_ids:
             clauses.append("em.id::text = ANY(:ids)")
@@ -428,6 +449,11 @@ async def bulk_action(
         if req.action == "archive":
             clauses.append(_NOT_DISPOSED)
         where_sql = " AND ".join(clauses)
+        if req.dry_run:
+            matched = (await db.execute(text(
+                f"SELECT COUNT(*) FROM email_messages em WHERE {where_sql}"
+            ), params)).scalar()
+            return {"matched": int(matched or 0), "affected": 0}
 
         # One set-based UPDATE, RETURNING the provider ids we need to reconcile.
         # Doing it in a single statement (rather than SELECT-then-UPDATE-by-id)
@@ -609,8 +635,10 @@ async def list_newsletters(
 ):
     """List newsletter dispositions for the user's accounts."""
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous")
         params: dict[str, Any] = {"uid": user.email or "anonymous"}
-        scope = "account_id IN (SELECT id FROM email_accounts WHERE user_id = :uid"
+        scope = "account_id IN (" + mailbox_ids_sql(uid="uid", level="read")
         if account_id:
             scope += " AND id = :aid"
             params["aid"] = account_id
@@ -719,35 +747,8 @@ async def upsert_newsletter(
 # ── Real unsubscribe: RFC 8058 one-click + mailto, with SSRF guard ───────────
 
 
-def _host_is_public(host: str) -> bool:
-    """True only if every address ``host`` resolves to is a public IP (SSRF
-    guard — blocks localhost, private ranges, link-local, etc.)."""
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except Exception:  # noqa: BLE001 — unresolvable host → unsafe
-        return False
-    if not infos:
-        return False
-    for info in infos:
-        try:
-            ip = ipaddress.ip_address(info[4][0])
-        except ValueError:
-            return False
-        if (ip.is_private or ip.is_loopback or ip.is_link_local
-                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
-            return False
-    return True
-
-
-async def _is_safe_external_url(url: str) -> bool:
-    """http(s) scheme + a hostname resolving only to public IPs."""
-    try:
-        parsed = urlparse(url)
-    except Exception:  # noqa: BLE001
-        return False
-    if parsed.scheme not in ("http", "https") or not parsed.hostname:
-        return False
-    return await asyncio.to_thread(_host_is_public, parsed.hostname)
+#: The headers of each unsubscribe request.
+_UNSUBSCRIBE_HEADERS = {"User-Agent": "Metorite-Unsubscribe/1.0"}
 
 
 async def _http_unsubscribe(url: str) -> tuple[bool, str]:
@@ -755,46 +756,66 @@ async def _http_unsubscribe(url: str) -> tuple[bool, str]:
 
     Tries the RFC 8058 one-click POST (``List-Unsubscribe=One-Click``) first,
     then falls back to a plain GET (many mailers honour a GET on the same URL).
-    Returns ``(succeeded, detail)``."""
-    if not await _is_safe_external_url(url):
+    Returns ``(succeeded, detail)``.
+
+    Both requests go through ``gateway.outbound_guard`` (EM-T13b-2). The host
+    resolves once, and both requests go to that one checked address. The guard
+    follows no redirect, because a redirect target never passed the check.
+    ONE ``deadline()`` covers the lookup, the POST and the GET (review
+    round 1)."""
+    try:
+        async with outbound_guard.deadline():
+            return await _http_unsubscribe_steps(url)
+    except TimeoutError:
+        return False, "timeout"
+
+
+async def _http_unsubscribe_steps(url: str) -> tuple[bool, str]:
+    """The check, the POST and the GET of :func:`_http_unsubscribe`."""
+    try:
+        target = await outbound_guard.check_url(url)
+    except outbound_guard.OutboundRefused:
         return False, "unsafe-url"
     try:
-        # follow_redirects=False: the initial URL is SSRF-validated, but httpx
-        # would follow a 3xx to an UNVALIDATED internal target (cloud metadata
-        # 169.254.169.254, localhost, private ranges) — the guard only ran on the
-        # first hop. RFC 8058 one-click returns 200 directly, so we don't chase
-        # redirects; the mailto / provider-filter fallbacks cover the rest.
-        async with httpx.AsyncClient(
-            follow_redirects=False, timeout=10.0,
-            headers={"User-Agent": "Metorite-Unsubscribe/1.0"},
-        ) as client:
-            try:
-                resp = await client.post(
-                    url, content=b"List-Unsubscribe=One-Click",
-                    headers={"Content-Type": "application/x-www-form-urlencoded"},
-                )
-                if resp.is_success:
-                    return True, "one-click-post"
-            except httpx.HTTPError:
-                pass  # fall through to GET
-            resp = await client.get(url)
-            return resp.is_success, ("get" if resp.is_success
-                                     else f"http-{resp.status_code}")
+        resp = await outbound_guard.send(
+            target, "POST", content=b"List-Unsubscribe=One-Click",
+            headers={**_UNSUBSCRIBE_HEADERS,
+                     "Content-Type": "application/x-www-form-urlencoded"},
+        )
+        if resp.is_success:
+            return True, "one-click-post"
+    except (httpx.HTTPError, outbound_guard.OutboundRefused):
+        pass  # fall through to GET
+    try:
+        resp = await outbound_guard.send(
+            target, "GET", headers=dict(_UNSUBSCRIBE_HEADERS))
+    except outbound_guard.OutboundRefused as exc:
+        return False, exc.reason
     except httpx.HTTPError as exc:
         return False, str(exc)[:120]
+    return resp.is_success, ("get" if resp.is_success
+                             else f"http-{resp.status_code}")
+
+
+def _mailto_parts(mailto: str) -> tuple[str, str, str]:
+    """``(address, subject, body)`` of a ``mailto:`` link (RFC 2369).
+
+    The target route and the send both read the link here, so the chat card
+    names the address that the send uses (EM-T13b-1)."""
+    parsed = urlparse(mailto)
+    qs = parse_qs(parsed.query)
+    subject = (qs.get("subject") or ["unsubscribe"])[0]
+    body = (qs.get("body") or ["Please unsubscribe me from this list."])[0]
+    return parsed.path.strip(), subject, body
 
 
 async def _mailto_unsubscribe(provider: Any, mailto: str) -> tuple[bool, str]:
     """Send the unsubscribe email a ``mailto:`` List-Unsubscribe target asks for
     (RFC 2369), using the account's own send path."""
     try:
-        parsed = urlparse(mailto)
-        to_addr = parsed.path.strip()
+        to_addr, subject, body = _mailto_parts(mailto)
         if not to_addr:
             return False, "no-address"
-        qs = parse_qs(parsed.query)
-        subject = (qs.get("subject") or ["unsubscribe"])[0]
-        body = (qs.get("body") or ["Please unsubscribe me from this list."])[0]
         await provider.send_message(to=[to_addr], subject=subject, body_text=body)
         return True, "mailto"
     except Exception as exc:  # noqa: BLE001
@@ -881,6 +902,72 @@ class UnsubscribeRequest(BaseModel):
     unsubscribe_link: str | None = None
 
 
+async def _stored_unsubscribe_link(
+    db: Any, account_id: str, email: str,
+) -> str | None:
+    """The stored unsubscribe link of one sender in ONE mailbox (EM-T13b-1).
+
+    ``GET /unsubscribe/target`` and ``POST /unsubscribe`` both read it here,
+    so the chat card shows the link that the POST uses."""
+    row = (await db.execute(text(
+        """SELECT MAX(unsubscribe_link) AS link FROM email_messages
+           WHERE account_id = :aid
+             AND LOWER(from_address->>'email') = LOWER(:email)
+             AND unsubscribe_link IS NOT NULL"""
+    ), {"aid": account_id, "email": email})).fetchone()
+    return row.link if row else None
+
+
+def _unsubscribe_kind(link: str | None) -> str:
+    """``one-click``, ``mailto`` or ``block``: the act of the POST for a link."""
+    low = (link or "").lower()
+    if low.startswith("http"):
+        return "one-click"
+    if low.startswith("mailto:"):
+        return "mailto"
+    return "block"
+
+
+@router.get("/unsubscribe/target")
+async def unsubscribe_target(
+    account_id: str = Query(...),
+    email: str = Query(...),
+    user: UserContext = Depends(get_current_user),
+):
+    """What ``POST /unsubscribe`` does for a sender, before it does it.
+
+    WS-17 EM-T13b-1 (``email_app_master_plan.md`` §10.4.15). The email
+    assistant shows the host of a one-click link, or the address of a
+    ``mailto:`` link, on its card. Then it posts this exact ``link``. ``kind``
+    is ``one-click``, ``mailto`` or ``block``. The route only reads.
+
+    For a ``mailto:`` link it also answers the ``subject`` and the ``body``
+    that the send uses, because the sender of the list writes both (review
+    round 1, P2)."""
+    async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="read")
+        link = await _stored_unsubscribe_link(db, account_id, email)
+    kind = _unsubscribe_kind(link)
+    host: str | None = None
+    address: str | None = None
+    subject: str | None = None
+    body: str | None = None
+    try:
+        if kind == "one-click":
+            host = urlparse(link or "").hostname or ""
+        elif kind == "mailto":
+            address, subject, body = _mailto_parts(link or "")
+    except ValueError:
+        # A link that the parser cannot read names no target, so the tool
+        # refuses it before its card.
+        host = "" if kind == "one-click" else None
+        address = "" if kind == "mailto" else None
+    return {"kind": kind, "link": link, "host": host, "address": address,
+            "subject": subject, "body": body}
+
+
 @router.post("/unsubscribe")
 async def unsubscribe_sender(
     req: UnsubscribeRequest,
@@ -897,27 +984,21 @@ async def unsubscribe_sender(
     sender's existing inbox mail is archived. Returns what was actually done so
     the UI can tell the user (unsubscribed vs blocked)."""
     async with _tenant_session() as db:
-        await _assert_account_owner(db, req.account_id, user.email or "anonymous")
+        await _assert_account_owner(db, req.account_id, user.email or "anonymous", level="send")
 
         # Use the link the UI passed; otherwise recover the best one we stored.
         link = req.unsubscribe_link
         if not link:
-            row = (await db.execute(text(
-                """SELECT MAX(unsubscribe_link) AS link FROM email_messages
-                   WHERE account_id = :aid
-                     AND LOWER(from_address->>'email') = LOWER(:email)
-                     AND unsubscribe_link IS NOT NULL"""
-            ), {"aid": req.account_id, "email": req.email})).fetchone()
-            link = row.link if row else None
+            link = await _stored_unsubscribe_link(db, req.account_id, req.email)
 
         ok = False
         method = "none"
         detail = "no-link"
-        low = (link or "").lower()
-        if low.startswith("http"):
+        kind = _unsubscribe_kind(link)
+        if kind == "one-click":
             method = "one-click"
             ok, detail = await _http_unsubscribe(link)
-        elif low.startswith("mailto:"):
+        elif kind == "mailto":
             method = "mailto"
             async with provider_session(
                 db, user.email or "anonymous",
@@ -1089,14 +1170,13 @@ async def _categorize_senders_job(account_id: str, limit: int) -> None:
                 return
             # The account's own address + configured org domains → sender_scope,
             # so we never bucket the user's own / same-org senders into a
-            # RECEIVE category.
-            acc = (await db.execute(text(
-                "SELECT email_address FROM email_accounts WHERE id = :id"
-            ), {"id": account_id})).fetchone()
-            self_email = (acc.email_address if acc else "") or ""
+            # RECEIVE category. "Own" is each mailbox of the member (D-EM-27,
+            # EM-T8e-1), read with this mailbox's address in one query.
             from gateway.routes.email.automation.identity import (  # noqa: PLC0415
                 resolve_org_domains,
+                resolve_self,
             )
+            me = await resolve_self(db, account_id)
             org_domains = await resolve_org_domains(db, account_id)
 
             # Never categorize the user's OWN address as a "sender". Keep
@@ -1104,7 +1184,8 @@ async def _categorize_senders_job(account_id: str, limit: int) -> None:
             # 'user' overrides.
             cands = [
                 r for r in rows
-                if sender_scope(r.email, self_email, org_domains) != "self"
+                if sender_scope(r.email, me.address, org_domains,
+                                self_addresses=me.self_addresses) != "self"
                 and (r.cur_source or "") != "user"
             ]
             if not cands:
@@ -1195,7 +1276,9 @@ async def sender_categories(
 ):
     """List the category vocabulary + per-category sender counts."""
     async with _tenant_session() as db:
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="read")
         rows = (await db.execute(text(
             """SELECT category, COUNT(*) AS c FROM email_senders
                WHERE account_id = :aid AND category IS NOT NULL
@@ -1227,8 +1310,28 @@ def _cold_user_prompt(email: dict[str, str]) -> str:
 
 
 #: The probability at which ``decide`` calls an email cold (§10.4.8
-#: "Thresholds"). A start value: the old prompt asked for no margin.
+#: "Thresholds"). A start value: the old prompt asked for no margin. It is
+#: the bar of a blocker that only labels.
 _COLD_THRESHOLD = 0.5
+#: The bar of a blocker that ARCHIVES (EM-T5b-2 fix round 3). An archive
+#: moves mail, and a wrong move hides real mail from the inbox, so it needs
+#: the 0.7 of a rule that moves mail (``engine._RULE_MOVE_THRESHOLD``).
+_COLD_MOVE_THRESHOLD = 0.7
+
+
+def _cold_blocker_moves(blocker: str) -> bool:
+    """True when the blocker moves a cold email out of the inbox.
+
+    The ONE test: ``_maybe_block_cold`` archives on it, and
+    :func:`_cold_threshold` raises the bar on it, so the two cannot disagree.
+    """
+    return blocker == "ARCHIVE"
+
+
+def _cold_threshold(blocker: str) -> float:
+    """The probability at which ``decide`` calls an email cold for ``blocker``."""
+    return _COLD_MOVE_THRESHOLD if _cold_blocker_moves(blocker) else _COLD_THRESHOLD
+
 
 _COLD_QUESTION = "Is the email in `email` cold outreach?"
 _COLD_GUIDANCE = (
@@ -1240,14 +1343,14 @@ _COLD_GUIDANCE = (
 
 
 def _cold_question(email: dict[str, str]) -> tuple[dict[str, Any], dict[str, Any]]:
-    """The ``decide`` request for the cold check (EM-T5b-1, shadow only).
+    """The ``decide`` request for the cold check (EM-T5b-1, ``shadow`` and ``on``).
 
     The state is the ``email`` and ``direction`` facts of the rule match,
     plus ``sender.prior_contact``. The only caller, ``_maybe_block_cold``,
     asks only after it found no mail from the owner to this sender, so the
     fact is always false.
     """
-    from acb_llm import BooleanQuestion  # shadow mode only
+    from acb_llm import BooleanQuestion  # `shadow` and `on` only
     from gateway.routes.email.automation.engine import (
         _email_direction,
         _email_facts,
@@ -1268,16 +1371,52 @@ def _cold_question(email: dict[str, str]) -> tuple[dict[str, Any], dict[str, Any
     )}
 
 
+def _read_cold(
+    decision: Any, threshold: float,
+) -> tuple[tuple[bool, str], dict[str, Any]]:
+    """The cold verdict that a ``decide`` answer gives, in ``on``.
+
+    Cold at ``threshold`` or above, and only then (:func:`_cold_threshold`:
+    0.5 for a blocker that labels, 0.7 for one that archives). The caller
+    writes the cold row and blocks the email (a label, or a label and an
+    archive) on a True verdict, so nothing below the bar acts. The reason
+    holds a number and no tenant text, as the rule match reason does.
+    """
+    probability = float(decision["cold"].probability)
+    cold = probability >= threshold
+    reason = f"Cold outreach by AI (probability {probability:.2f})." if cold else ""
+    return (cold, reason), {"p_cold": probability, "cold": cold,
+                            "threshold": threshold}
+
+
 async def _llm_is_cold(
-    email: dict[str, str], *, account_id: str | None = None,
+    email: dict[str, str], *, blocker: str, account_id: str | None = None,
     message_id: str | None = None,
+    member: str | None = None,
 ) -> tuple[bool, str]:
     """Classify whether an email is cold outreach. (is_cold, reason).
 
     EM-T5: in ``shadow`` mode ``decide`` runs beside the old call, and the
     result is always the old call's (``gateway/decide_features.py``).
     ``message_id`` goes into each ``decide`` log line.
+
+    EM-T5b-2: in ``on``, the ``decide`` answer decides and no LLM call is
+    made. With no decision the email is NOT cold (§10.4.8 item 6): no cold
+    row, no label and no archive, and the rule outcome stands. ``member`` is
+    the mailbox owner, for a deployment Router key.
+
+    ``blocker`` is the policy that acts on a True verdict. It has no default
+    on purpose: a caller states whether the verdict moves mail, because an
+    archive needs the higher bar (fix round 3, :func:`_cold_threshold`). The
+    shadow comparison uses the same bar, so its log shows what ``on`` does.
     """
+    threshold = _cold_threshold(blocker)
+    if decide_features.mode_for("email.cold_check") == "on":
+        verdict = await decide_features.ask(
+            "email.cold_check", account_id=account_id, message_id=message_id,
+            build=lambda: _cold_question(email),
+            read=lambda decision: _read_cold(decision, threshold), member=member)
+        return verdict if verdict is not None else (False, "")
 
     async def _old() -> tuple[bool, str]:
         try:
@@ -1292,6 +1431,8 @@ async def _llm_is_cold(
                 [{"role": "system", "content": sys_prompt},
                  {"role": "user", "content": user_prompt}],
                 max_tokens=500,
+                feature="cold_check",
+                job="structured",
             )
             if isinstance(data, dict):
                 return bool(data.get("cold")), str(data.get("reason", ""))[:300]
@@ -1304,7 +1445,7 @@ async def _llm_is_cold(
         "email.cold_check", _old, account_id=account_id, message_id=message_id,
         build=lambda: _cold_question(email),
         compare=decide_features.compare_boolean(
-            lambda r: r[0], qid="cold", threshold=_COLD_THRESHOLD),
+            lambda r: r[0], qid="cold", threshold=threshold),
     )
 
 
@@ -1339,9 +1480,21 @@ async def _maybe_block_cold(
     provider_msg_id: str, email: dict[str, str], blocker: str,
 ) -> None:
     """Cold-email gate: for a first-time, non-whitelisted sender, LLM-classify
-    and (if cold) label/archive + record. Runs only when no rule matched."""
+    and (if cold) label/archive + record. Runs only when no rule matched.
+
+    Mail that the member sent from another of their mailboxes is never cold
+    (D-EM-27, EM-T8e-1). The payload's ``sender_scope`` says ``self`` for it,
+    because the runner builds the payload with each mailbox of the member.
+    That alone is not enough, because an outside sender can forge the From.
+    So the check skips the mail only when a Sent copy in another mailbox of
+    the member proves the send (``identity.proven_own_send``, review round
+    1). A forged From, or a Sent copy that has not synced yet, gets the check
+    as before."""
     sender = (email.get("from") or "").lower()
     if not sender:
+        return
+    if (email.get("sender_scope") or "") == "self" and await proven_own_send(
+            db, account_id, str(message_id)):
         return
     # Already known to the cold-sender table (flagged or whitelisted) → skip.
     seen = (await db.execute(text(
@@ -1354,8 +1507,13 @@ async def _maybe_block_cold(
     # compares without case (`_PRIOR_CONTACT_SQL`).
     if await _has_prior_contact(db, account_id, sender):
         return
+    # Lazy: the runner imports this module, and the engine sits beside it.
+    from gateway.routes.email.automation.engine import _decide_member
+
     is_cold, reason = await _llm_is_cold(
-        email, account_id=account_id, message_id=str(message_id))
+        email, blocker=blocker, account_id=account_id,
+        message_id=str(message_id),
+        member=await _decide_member(db, account_id, "email.cold_check"))
     if not is_cold:
         return
     await db.execute(text(
@@ -1365,7 +1523,7 @@ async def _maybe_block_cold(
     ), {"aid": account_id, "e": sender, "reason": reason})
     actions: list[str] = []
     try:
-        if blocker == "ARCHIVE":
+        if _cold_blocker_moves(blocker):
             await db.execute(text(
                 "UPDATE email_messages SET folder='archive', updated_at=now() "
                 "WHERE id=:id"), {"id": message_id})
@@ -1409,11 +1567,13 @@ async def list_cold_senders(
 ):
     """List cold-email verdicts (flagged + whitelisted) for an account."""
     async with _tenant_session() as db:
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="read")
         rows = (await db.execute(text(
             """SELECT from_email, status, reason, updated_at
                FROM email_cold_senders WHERE account_id = :aid
-               ORDER BY updated_at DESC LIMIT 500"""
+               ORDER BY updated_at DESC, id DESC LIMIT 500"""
         ), {"aid": account_id})).fetchall()
         return {
             "cold_senders": [

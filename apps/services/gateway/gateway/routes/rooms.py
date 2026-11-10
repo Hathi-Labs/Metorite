@@ -45,6 +45,7 @@ from acb_auth import UserContext, get_current_user, require_feature_router
 from acb_common import get_logger
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from gateway.assistant_summaries import clear_on_share
 from gateway.room_stream import (
     publish_room_event,
     read_presence,
@@ -245,6 +246,18 @@ async def _capability_cap(session_id: str, members: list[str]) -> dict[str, Any]
     return {"capped": capped, "inactive": inactive, "degraded": False}
 
 
+def _refuse_unreadable(access: Any) -> None:
+    """Refuse a caller who cannot read the room: 404, or 503 in an outage.
+
+    A failed lookup (``resolve_failed``) is not "this conversation is not
+    yours". It answers 503 with the retry wording, so a client never reads a
+    database blip as a refusal and drops a chat that is the member's own.
+    """
+    if getattr(access, "resolve_failed", False):
+        raise HTTPException(status_code=503, detail=access.denied("read"))
+    raise HTTPException(status_code=404, detail="Conversation not found")
+
+
 @router.get("/sessions/{session_id}/room", summary="Room state: people, agents, cap")
 async def get_room(
     session_id: str,
@@ -256,7 +269,7 @@ async def get_room(
         organization_id=user.organization_id,
     )
     if not access.can_read:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        _refuse_unreadable(access)
 
     if access.unknown_session:
         # A thread that has never been persisted is a room of one, and saying
@@ -361,6 +374,9 @@ def _add_participant(
             {"sid": session_id, "subject": subject, "role": role,
              "by": added_by, "waterline": waterline_ms},
         )
+        # PZ-33a: the chat summary is for a solo chat only. A chat with a
+        # second party loses it, in this same transaction.
+        clear_on_share(s, session_id)
         return result.rowcount > 0
 
 
@@ -382,7 +398,7 @@ async def add_participant(
         organization_id=user.organization_id,
     )
     if not access.can_read:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        _refuse_unreadable(access)
     if not access.can_invite:
         raise HTTPException(status_code=403, detail=access.denied("invite people"))
     if access.unknown_session:
@@ -443,6 +459,8 @@ def _set_visibility(
             text("UPDATE chat_session SET visibility = :v, updated_at = now() WHERE id = :sid"),
             {"sid": session_id, "v": visibility},
         )
+        # PZ-33a: a chat that leaves `private` loses its summary.
+        clear_on_share(s, session_id)
 
 
 @router.patch("/sessions/{session_id}/participants/{subject}", summary="Change a room role")
@@ -458,7 +476,7 @@ async def patch_participant(
         organization_id=user.organization_id,
     )
     if not access.can_read:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        _refuse_unreadable(access)
     if not access.can_invite:
         raise HTTPException(status_code=403, detail=access.denied("change roles"))
     if req.role not in ROOM_ROLES:
@@ -537,7 +555,7 @@ async def remove_participant(
         organization_id=user.organization_id,
     )
     if not access.can_read:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        _refuse_unreadable(access)
 
     leaving = subject == email.lower()
     if not leaving and not access.can_invite:
@@ -611,7 +629,7 @@ async def patch_room(
         organization_id=user.organization_id,
     )
     if not access.can_read:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        _refuse_unreadable(access)
     if not access.can_manage:
         raise HTTPException(status_code=403, detail=access.denied("change room settings"))
 
@@ -653,6 +671,8 @@ def _update_room(
             text(f"UPDATE chat_session SET {sets}, updated_at = now() WHERE id = :sid"),
             {"sid": session_id, **updates},
         )
+        # PZ-33a: a chat that leaves `private` loses its summary.
+        clear_on_share(s, session_id)
 
 
 # ---------------------------------------------------------------------------
@@ -680,7 +700,7 @@ async def add_room_agent(
         organization_id=user.organization_id,
     )
     if not access.can_read:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        _refuse_unreadable(access)
     if not access.can_manage:
         raise HTTPException(status_code=403, detail=access.denied("add agents"))
 
@@ -751,7 +771,7 @@ async def remove_room_agent(
         organization_id=user.organization_id,
     )
     if not access.can_read:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        _refuse_unreadable(access)
     if not access.can_manage:
         raise HTTPException(status_code=403, detail=access.denied("remove agents"))
 
@@ -814,7 +834,7 @@ async def heartbeat(
         organization_id=user.organization_id,
     )
     if not access.can_read:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        _refuse_unreadable(access)
     # A solo session has nobody to tell. Skipping the write keeps single-player
     # free of a Redis round trip every 15 seconds.
     if not access.is_shared:
@@ -844,7 +864,7 @@ async def room_stream(
         organization_id=user.organization_id,
     )
     if not access.can_read:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        _refuse_unreadable(access)
 
     async def _gen():
         try:

@@ -8,13 +8,15 @@
  * parent already refuses a non-admin before this renders.
  *
  * Today that is one thing: the logo that replaces our mark in the top-left of
- * every member's shell, with "powered by Metorite" beneath it. The page is
+ * every member's shell, alone since 2026-10-11 (our comet signs the right end
+ * of the shell bar instead, owner decision). The page is
  * scoped to the org, so it is admin-gated — one member changing what the whole
  * company sees is exactly the kind of write that has an admin gate on it.
  *
  * The gateway is the authority on whether an upload is acceptable
- * (`gateway/routes/settings.py`); the pre-check here only spares an admin a
- * round-trip for a file that obviously will not do.
+ * (`gateway/routes/settings.py`). Since 2026-10-09 an admin rarely meets its
+ * rules: a picked file opens in the logo editor (`LogoEditor.tsx`), which
+ * crops it and draws the small PNG the shell needs, with a dark-mode version.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -22,16 +24,25 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Icon from "@/components/Icon";
 import { useAccess } from "@/components/AccessProvider";
 import Button from "@/components/ui/Button";
-import { BrandMark, invalidateOrgBranding } from "@/components/OrgBrandLockup";
+import { BAR_LOCKUP, BrandMark, invalidateOrgBranding } from "@/components/OrgBrandLockup";
+import { LOGO_PICK_ACCEPT, type Source, decodeFile } from "@/lib/logoCanvas";
 import {
-  LOGO_ACCEPT,
   LOGO_RULES,
-  POWERED_BY,
   type OrgBranding,
   formatBytes,
   precheckLogoFile,
 } from "@/lib/orgBranding";
 import SettingsHeader from "@/components/SettingsHeader";
+import OrgNameForm from "./OrgNameForm";
+import { OrgNumberFormat } from "@/components/NumberFormatSettings";
+import type { DarkStyle } from "@/lib/logoImage";
+import LogoEditor, { type LogoSave, type OwnDark, modeVars } from "./LogoEditor";
+
+/** Decode a stored logo, so the editor can open what is saved today. */
+async function decodeStored(dataUri: string, name: string): Promise<Source> {
+  const blob = await (await fetch(dataUri)).blob();
+  return decodeFile(new File([blob], name, { type: blob.type }));
+}
 
 export default function BrandingTab() {
   const { access } = useAccess();
@@ -40,6 +51,19 @@ export default function BrandingTab() {
   const [busy, setBusy] = useState<"upload" | "remove" | null>(null);
   const [error, setError] = useState("");
   const [pickedName, setPickedName] = useState("");
+  const [editing, setEditing] = useState<Source | null>(null);
+  // A fresh editor for every picked file. Reused, it kept the previous
+  // image's crop box, which can lie outside the new image and draw nothing
+  // (measured 2026-10-09, a long wordmark after a square logo).
+  const [editKey, setEditKey] = useState(0);
+  const [editError, setEditError] = useState("");
+  // Set when the editor reopens the saved logo ("Change dark mode").
+  const [editInitial, setEditInitial] = useState<{
+    style: DarkStyle;
+    own: OwnDark | null;
+    savedMain: string;
+    savedMark: string | null;
+  } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -59,20 +83,7 @@ export default function BrandingTab() {
     void load();
   }, [load]);
 
-  /** Read the file as base64 without the `data:…;base64,` prefix. */
-  const encode = (file: File): Promise<string> =>
-    new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onerror = () => reject(new Error("That file could not be read."));
-      reader.onload = () => {
-        const result = String(reader.result ?? "");
-        // The server strips a prefix too, but sending only the payload keeps
-        // the caller-declared MIME type out of the request entirely.
-        resolve(result.slice(result.indexOf(",") + 1));
-      };
-      reader.readAsDataURL(file);
-    });
-
+  /** Open the picked file in the editor. Nothing is sent until it saves. */
   const onPick = async (file: File | undefined) => {
     // Always clear the input's value: picking the same file twice in a row
     // fires no change event otherwise, so a failed upload could not be retried.
@@ -85,14 +96,27 @@ export default function BrandingTab() {
       setError(complaint);
       return;
     }
-
-    setBusy("upload");
     setError("");
+    try {
+      setEditError("");
+      const source = await decodeFile(file);
+      setEditKey((k) => k + 1);
+      setEditInitial(null);
+      setEditing(source);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "That file could not be opened.");
+    }
+  };
+
+  /** Send what the editor drew. The server still checks every bound. */
+  const onSave = async (save: LogoSave) => {
+    setBusy("upload");
+    setEditError("");
     try {
       const r = await fetch("/api/settings/branding", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ logoBase64: await encode(file) }),
+        body: JSON.stringify(save),
       });
       const body = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(body.detail ?? `Upload failed (${r.status})`);
@@ -100,10 +124,55 @@ export default function BrandingTab() {
       // Push the new mark into the shell so it changes now, rather than at the
       // next full page load — the whole point of this page is seeing it work.
       invalidateOrgBranding(body as OrgBranding);
+      setEditing(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Upload failed.");
+      // Shown inside the editor, so the crop and the choices are not lost.
+      setEditError(e instanceof Error ? e.message : "Upload failed.");
     } finally {
       setBusy(null);
+    }
+  };
+
+  /**
+   * Reopen the saved logo, to add or change its dark-mode version without
+   * finding the original file again. The saved dark image comes too.
+   */
+  const onChangeDark = async () => {
+    const current = branding?.logo;
+    if (!current) return;
+    setError("");
+    try {
+      const source = await decodeStored(current.dataUri, "your current logo");
+      let style: DarkStyle = branding?.darkStyle ?? "same";
+      let own: OwnDark | null = null;
+      if (style === "own" && branding?.logoDark) {
+        // A saved dark version that will not open drops to "As it is", and
+        // the editor still opens, rather than nothing at all.
+        try {
+          const dataUri = branding.logoDark.dataUri;
+          own = {
+            source: await decodeStored(dataUri, "your dark version"),
+            name: "your dark version",
+            storedBase64: dataUri.slice(dataUri.indexOf(",") + 1),
+          };
+        } catch {
+          style = "same";
+        }
+      }
+      setPickedName("your current logo");
+      setEditError("");
+      setEditKey((k) => k + 1);
+      // The saved bytes go back unchanged (`savePayload`).
+      const savedMarkUri = branding?.logoMark?.dataUri ?? null;
+      setEditInitial({
+        style,
+        own,
+        savedMain: current.dataUri.slice(current.dataUri.indexOf(",") + 1),
+        savedMark: savedMarkUri ? savedMarkUri.slice(savedMarkUri.indexOf(",") + 1) : null,
+      });
+      setEditing(source);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "The saved logo could not be opened.");
     }
   };
 
@@ -135,6 +204,8 @@ export default function BrandingTab() {
   }
 
   const logo = branding?.logo ?? null;
+  // The same name the bar shows beside our mark when there is no logo (D51).
+  const orgName = access.organization?.display_name?.trim() || access.organization?.slug?.trim() || "";
 
   return (
     <div className="flex h-full flex-col">
@@ -142,40 +213,39 @@ export default function BrandingTab() {
         <SettingsHeader
           title="Organization"
           subtitle="How your company appears to everyone in it"
-          backHref="/settings/models"
+          backHref="/settings/organization"
           backLabel="Back to settings"
         />
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+      <div className="flex flex-1 flex-col gap-4 overflow-y-auto p-4 sm:p-6">
+        <OrgNameForm />
+        <OrgNumberFormat />
         <section className="max-w-2xl rounded-xl border border-border p-4 sm:p-5">
           <h2 className="text-sm font-semibold text-foreground">Logo</h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            Shown in the top-left corner of the app for every member of your
-            organization, above “{POWERED_BY}”.
+            Every member of your organization sees it at the top left of the
+            app on a computer, and at the top of the menu on a phone.
           </p>
 
-          {/* The preview sits on the sidebar's own background, because that is
-              where it will actually live — a logo checked against the page
-              background is how a dark wordmark ships onto a dark rail. */}
-          <div className="mt-4 flex flex-wrap items-center gap-4">
-            {/* Width-matched to the sidebar's own lockup slot (w-64 rail, less
-                px-4 padding and the collapse control), so the preview clips
-                where the real thing clips. A preview in a roomier box is how a
-                wordmark that truncates in the rail looks fine here. */}
-            <div className="flex h-20 w-[184px] items-center rounded-lg border border-sidebar-border bg-sidebar px-4">
-              {loading ? (
-                <span className="text-xs text-muted-foreground">Loading…</span>
-              ) : (
-                // The shell's own component, not a copy of it. The copy that
-                // used to be here rendered the logo and the attribution side by
-                // side — which is not what the sidebar does.
-                <BrandMark
-                  branding={branding}
-                  fallbackCaption="No logo uploaded"
-                />
-              )}
-            </div>
+          {/* Both colour modes, side by side, each on the sidebar's own
+              background. The shell bar's own lockup (`BAR_LOCKUP`), in a box
+              as wide as its 176px slot, so the preview clips where the real
+              thing clips. The no-logo case shows the organization's name, as
+              the bar does. */}
+          <div className="mt-4 flex flex-wrap items-start gap-4">
+            {(["light", "dark"] as const).map((mode) => (
+              <div key={mode} className="flex flex-col gap-1">
+                <span className="text-xs text-muted-foreground">{mode === "light" ? "Light mode" : "Dark mode"}</span>
+                <div className="flex h-20 w-[204px] items-center rounded-lg border px-3" style={modeVars(mode)}>
+                  {loading ? (
+                    <span className="text-xs text-muted-foreground">Loading…</span>
+                  ) : (
+                    <BrandMark branding={branding} fallbackCaption="No logo uploaded" orgName={orgName} mode={mode} {...BAR_LOCKUP} />
+                  )}
+                </div>
+              </div>
+            ))}
 
             <div className="flex flex-col gap-2">
               {/* AGENTS.md rule 3: the native input is hidden and driven by a
@@ -185,7 +255,7 @@ export default function BrandingTab() {
               <input
                 ref={inputRef}
                 type="file"
-                accept={LOGO_ACCEPT}
+                accept={LOGO_PICK_ACCEPT}
                 className="hidden"
                 onChange={(e) => void onPick(e.target.files?.[0])}
               />
@@ -196,12 +266,19 @@ export default function BrandingTab() {
                 onClick={() => inputRef.current?.click()}
               >
                 <Icon name="Upload" size={14} />
-                {busy === "upload"
-                  ? "Uploading…"
-                  : logo
-                    ? "Replace logo"
-                    : "Upload logo"}
+                {logo ? "Replace logo" : "Upload logo"}
               </Button>
+              {logo ? (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  icon="Moon"
+                  disabled={busy !== null}
+                  onClick={() => void onChangeDark()}
+                >
+                  Change dark mode
+                </Button>
+              ) : null}
               {logo ? (
                 <Button
                   variant="secondary"
@@ -247,6 +324,21 @@ export default function BrandingTab() {
             </p>
           ) : null}
         </section>
+        {editing ? (
+          <LogoEditor
+            key={editKey}
+            source={editing}
+            fileName={pickedName}
+            saving={busy === "upload"}
+            error={editError}
+            onCancel={() => setEditing(null)}
+            onSave={(save) => void onSave(save)}
+            initialStyle={editInitial?.style ?? null}
+            initialOwn={editInitial?.own ?? null}
+            savedMain={editInitial?.savedMain ?? null}
+            savedMark={editInitial?.savedMark ?? null}
+          />
+        ) : null}
       </div>
     </div>
   );

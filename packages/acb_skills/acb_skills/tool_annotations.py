@@ -12,9 +12,20 @@ injected-tools addendum so agents can reason about risk, and permission /
 confirmation layers consult it to decide what may proceed without a human.
 
 Agents' own tools can register too via :func:`annotate`.
+
+``open_world`` is also the egress annotation (H-236), and the rule that reads
+it fails closed (``acb_skills.egress``). A covered Projects run, and each run
+under it, keeps only the tools that say ``open_world=False`` (and the
+delegation and sandbox tools). A tool with no ``open_world`` counts as able to
+send data off the platform. So every tool states it: ``True`` for a send, a
+fetch, a push to an outside system or a rule that forwards, ``False`` for a
+read or a write that stays inside Metorite. :func:`annotate` has no default
+for it. Fence: ``tests/unit/test_delegation_no_egress.py``.
 """
 from __future__ import annotations
 
+import inspect
+from collections.abc import Iterable
 from typing import Any, Callable
 
 # name → {read_only, destructive, idempotent, open_world}
@@ -23,12 +34,30 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     "call_agent":            {"read_only": False, "destructive": False, "idempotent": False, "open_world": True},
     "call_agents_parallel":  {"read_only": False, "destructive": False, "idempotent": False, "open_world": True},
     "call_agent_background": {"read_only": False, "destructive": False, "idempotent": False, "open_world": True},
+    # WS-67 OA-9b: children that only read, started by the main assistant.
+    "spawn_subagents":       {"read_only": False, "destructive": False, "idempotent": False, "open_world": True},
     # Web access
     "web_search":            {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": True},
     "fetch_page":            {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": True},
     # Artifacts
     "write_artifact":        {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
     "share_artifact":        {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    # One zip of this chat's files, in this chat's own folder. No code runs,
+    # and nothing leaves the working dir, so it is no egress tool (H-236).
+    "package_artifacts":     {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    # H-315: lays out a PDF in the gateway's own child and writes it to the
+    # chat's outputs. No network, no egress.
+    "make_document":         {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    # projects_ai_chat.md §14.10: the same PDF seam, a report file in the
+    # chat's outputs and one card. No network, no egress.
+    "make_report":           {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    # H-229: the text of a file attached in this chat. Pure parsing, no code.
+    "read_attachment":       {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    # WS-VOX VOX-3: an attached image to tier-vision through the Console. It
+    # changes no record, and it reaches only the metered model, so it is no
+    # egress tool. Each call counts against a cap and draws credits, so it is
+    # not idempotent.
+    "analyze_image":         {"read_only": True,  "destructive": False, "idempotent": False, "open_world": False},
     # Memory
     "remember":              {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     "recall_timeline":       {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
@@ -74,7 +103,213 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     # WS-31 CP-13d: a typed decision from a third-party model through the
     # Console Router. It changes nothing, and it reaches outside Metorite.
     "decide":                {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": True},
+    # WS-43d (maf_coding_engine.md §7.4): the sandbox tools. run_command runs
+    # code, so it is a shell tool (manifest.SHELL_TOOLS), and it runs only in
+    # the container, which has no network: open_world is False until a grant
+    # (WS-43g). request_network_access is the stub of that grant. Neither is
+    # ever injected, so the risk block below never names them.
+    "run_command":           {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    "request_network_access": {"read_only": False, "destructive": False, "idempotent": False, "open_world": True},
+    # H-236: the other sandbox tools. MAF's eight file tools over the run's
+    # TenantFileStore and the three tools of its SkillsProvider. They touch
+    # only the run's own files, and a skill script runs in the container,
+    # which has no network. So each one says open_world=False explicitly.
+    "file_access_read":       {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "file_access_read_lines": {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "file_access_ls":         {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "file_access_grep":       {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "file_access_write":      {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    "file_access_delete":     {"read_only": False, "destructive": True,  "idempotent": True,  "open_world": False},
+    "file_access_replace":    {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    "file_access_replace_lines": {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    "load_skill":             {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "read_skill_resource":    {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "run_skill_script":       {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    # H-236: chain tools that had no entry. emit_generative_ui renders in the
+    # member's own sandboxed iframe, load_artifact_kit reads a bundled file,
+    # and the four agent and org memory tools read and write the platform's
+    # own store. None of them reaches outside Metorite.
+    "emit_generative_ui":    {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    "load_artifact_kit":     {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "recall_agent":          {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "recall_org":            {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "save_agent_memory":     {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    "save_org_memory":       {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    # WS-53 CRM-C7: the CRM read tools (`crm_tools.py`). Each one reads a
+    # `/crm` route as the member, and nothing leaves the platform.
+    "crm_list_records":      {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "crm_get_record":        {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "crm_list_fields":       {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "crm_list_pipelines":    {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "crm_deal_contacts":     {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "crm_list_owners":       {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    # projects_ai_chat.md §14.10.9: with make_report=true it writes two files
+    # and draws a card, so an edited turn must not run it again unseen. It
+    # still sends only GET to the CRM.
+    "crm_report":            {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    "crm_aggregate":         {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "crm_stage_dwell":       {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "crm_list_modules":      {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "crm_list_module_records": {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "crm_get_module_record": {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    # WS-53 CRM-Q27: search of note text by meaning. It reads
+    # `GET /crm/notes/search` as the member. The query goes to the platform's
+    # own embed door, as for `search_company`.
+    "crm_search_notes":      {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    # WS-CRM CRM-M1: the Change history of the CRM set-up. It reads
+    # `GET /crm/change-history` as the member, and nothing leaves the platform.
+    "crm_change_history":    {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    # WS-53 CRM-Q32-5: the org-facts read (`org_facts_tools.py`). It reads
+    # `GET /org/facts` as the member, and nothing leaves the platform.
+    "org_facts":             {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    # WS-53 CRM-Q32-8: the reply of a CRM question card. It posts the key that
+    # the member picked to `/crm/questions/{id}/reply`, as the member. The
+    # server decides: an admin's answer (Undo in CRM settings), or a proposal.
+    "crm_answer_question":   {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    # WS-53 CRM-Q33: a business rule that the member said, held in tenant
+    # Redis for the member's confirm. It saves nothing by itself.
+    "crm_propose_rule":      {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    # WS-61 KR-2: company retrieval (`company_search_tools.py`). It reads
+    # `GET /search/company` as the member, and nothing leaves the platform.
+    "search_company":        {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    # WS-63 PZ-5: a name to one colleague (`profile_tools.py`). It reads
+    # `GET /auth/me/assistant-profile/resolve-person` as the member, and
+    # nothing leaves the platform.
+    "resolve_person":        {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    # WS-63 PZ-6a: the five profile writes (`profile_tools.py`). Each changes
+    # the member's own profile through `/auth/me/assistant-profile` as the
+    # member, offers Undo, and sends nothing outside the platform. Each
+    # refuses outside the member's own chat (`WRITES_OPEN`).
+    "profile_remember":      {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    "profile_forget":        {"read_only": False, "destructive": False, "idempotent": True,  "open_world": False},
+    "profile_set":           {"read_only": False, "destructive": False, "idempotent": True,  "open_world": False},
+    "profile_alias":         {"read_only": False, "destructive": False, "idempotent": True,  "open_world": False},
+    # PZ-6a fix round 1: the spoken Undo of the last chat change.
+    "profile_undo":          {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    # WS-63 PZ-26: the interview. It reads the open areas and marks one. A
+    # mark changes the member's own interview state and sends nothing out.
+    "profile_interview":     {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    # WS-61 KB-4a: the two Knowledge reads (`knowledge_tools.py`). Each reads
+    # a `/knowledge` route as the member, and nothing leaves the platform.
+    "read_page":             {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "list_spaces":           {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    # WS-61 KB-5a: the two Knowledge proposals. Each files a draft or a
+    # proposal row behind one card, as the member, and publishes nothing.
+    # A person accepts in the app. Nothing leaves the platform.
+    "propose_page":          {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    "propose_edit":          {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    # WS-47 WAC-10a: queues an element for the member's own WhatsApp chat.
+    # `bot_run` sends it to the member who asked, so it reaches no third party.
+    "whatsapp_ui":           {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    # WS-67 OA-4: the member's corrections and limits of one chat
+    # (`chat_constraints.py`). Each writes a short list of the member's own
+    # words in tenant Redis, and nothing leaves the platform.
+    "keep_correction":       {"read_only": False, "destructive": False, "idempotent": True,  "open_world": False},
+    "drop_correction":       {"read_only": False, "destructive": False, "idempotent": True,  "open_world": False},
+    # CTX-1 (#825): pages of a stored tool result. It reads an in-process
+    # store of this chat and nothing leaves the platform.
+    "read_tool_result":      {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
 }
+
+#: Tools that only a sandboxed run holds (WS-43d). ``_inject_agent_tools`` never
+#: adds them, and only a factory that the broker covers attaches them, to ONE
+#: run. :func:`risk_summary_block` leaves them out, so the addendum of every
+#: other agent stays byte-identical (``tests/unit/test_run_command_tool.py``).
+SANDBOX_TOOL_NAMES: frozenset[str] = frozenset({
+    "run_command", "request_network_access",
+    "file_access_read", "file_access_read_lines", "file_access_ls", "file_access_grep",
+    "file_access_write", "file_access_delete", "file_access_replace",
+    "file_access_replace_lines", "load_skill", "read_skill_resource", "run_skill_script",
+})
+
+#: Names that H-236 registered only so that each one carries an explicit
+#: ``open_world``. The risk block leaves them out, so it stays the text it
+#: was before H-236.
+_H236_UNLISTED: frozenset[str] = frozenset({
+    "emit_generative_ui", "load_artifact_kit", "recall_agent", "recall_org",
+    "save_agent_memory", "save_org_memory",
+    # Not H-236's, and left out for the same reason: only a WhatsApp run holds
+    # it, so the block of every other agent stays byte-identical.
+    "whatsapp_ui",
+    # WS-67 OA-9b: only the orchestrator holds it, and only for an org on
+    # SPAWN_SUBAGENTS_ORGS. No other agent's block names it, so every block
+    # stays byte-identical.
+    "spawn_subagents",
+    # WS-53 CRM-C7: the twelve CRM reads. They only read, so the risk block
+    # gains nothing from them, and it stays byte-identical for every agent.
+    "crm_list_records",
+    "crm_get_record",
+    "crm_list_fields",
+    "crm_list_pipelines",
+    "crm_deal_contacts",
+    "crm_list_owners",
+    "crm_report",
+    "crm_aggregate",
+    "crm_stage_dwell",
+    "crm_list_modules",
+    "crm_list_module_records",
+    "crm_get_module_record",
+    # WS-53 CRM-Q27: the search of notes reads only, on the same terms.
+    "crm_search_notes",
+    # WS-CRM CRM-M1: the read of the Change history, on the same terms.
+    "crm_change_history",
+    # WS-53 CRM-Q32-5: the org-facts read, on the same terms.
+    "org_facts",
+    # WS-53 CRM-Q32-8: the reply of a card that the member picked. It is no
+    # destructive act, and it goes with `org_facts`, so the block stays the same.
+    "crm_answer_question",
+    # WS-53 CRM-Q33: the hold of a rule for the member's confirm, on the same
+    # terms. It saves nothing by itself.
+    "crm_propose_rule",
+    # WS-61 KR-2: company retrieval only reads, and only the orchestrator
+    # holds it, behind COMPANY_SEARCH_ENABLED. So every risk block stays
+    # byte-identical.
+    "search_company",
+    # WS-61 KB-4a: the two Knowledge reads, on the same terms.
+    "read_page",
+    "list_spaces",
+    # WS-61 KB-5a: the two proposals. Only the orchestrator holds them,
+    # behind COMPANY_SEARCH_ENABLED, and each asks with a card first. So
+    # every risk block stays byte-identical.
+    "propose_page",
+    "propose_edit",
+    # WS-63 PZ-5: the colleague lookup only reads, and only the orchestrator
+    # holds it, behind ASSISTANT_PROFILE_ENABLED. So every risk block stays
+    # byte-identical.
+    "resolve_person",
+    # WS-63 PZ-6a: the five profile writes, on the same terms. Only the
+    # orchestrator holds them, behind ASSISTANT_PROFILE_ENABLED.
+    "profile_remember",
+    "profile_forget",
+    "profile_set",
+    "profile_alias",
+    "profile_undo",
+    "profile_interview",
+    # WS-67 OA-4: the two correction tools, on the same terms. Only the
+    # orchestrator holds them, behind CHAT_CONSTRAINTS. So every risk block
+    # stays byte-identical.
+    "keep_correction",
+    "drop_correction",
+    # CTX-1 (#825): the page reader of a stored result. It only reads, and
+    # only the orchestrator holds it, behind TOOL_RESULT_SPILL `on`.
+    "read_tool_result",
+})
+
+#: Every name that :func:`annotate` registered: an agent's OWN tool. They
+#: used to join the risk block whenever their module was imported, so the
+#: block changed with the import order of one process. Now each agent's block
+#: names its own risky tools only (:func:`risk_summary_block`, ``own=``).
+_AGENT_OWN: set[str] = set()
+
+#: The platform's own names: the entries this module defines, captured before
+#: any :func:`annotate` call or runtime registration. The risk block lists
+#: these, so it no longer depends on what one process imported.
+_PLATFORM_STATIC: frozenset[str] = frozenset(TOOL_ANNOTATIONS)
+
+#: RX-1: the parameters of each tool that says ``card_write``, read when the
+#: tool registers. A caller with only a NAME cannot read a signature, so
+#: ``egress.is_held_card_write`` holds a bare name to this record.
+CARD_WRITE_PARAMS: dict[str, frozenset[str]] = {}
 
 
 def annotate(
@@ -82,25 +317,50 @@ def annotate(
     read_only: bool = False,
     destructive: bool = False,
     idempotent: bool = False,
-    open_world: bool = False,
+    open_world: bool | None = None,
+    card_bound: bool = False,
+    card_write: bool = False,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator registering risk annotations for an agent-defined tool.
+
+    ``open_world`` has no default (H-236). A tool that omits it carries no
+    ``open_world`` key, and ``acb_skills.egress`` then counts it as able to
+    send data off the platform. So every tool states it.
+
+    ``card_bound`` (EM-CR and H-374, ``email_app_master_plan.md`` §18) marks
+    a send that the member confirms on its card. The mark alone keeps
+    nothing in a held run: ``egress.is_card_bound_send`` also needs the
+    tool's name on its list and its pinned parameters. The key is set only
+    when it is true, so every other tool's hints stay as they were.
+
+    ``card_write`` (RX-1, D169) marks a first-party write that always shows
+    its exact change on one card. The mark alone keeps nothing in a held
+    chat: ``egress.is_held_card_write`` also needs the tool's name on its
+    list and its pinned parameters.
 
     Example::
 
         @annotate(destructive=True, open_world=True)
         async def send_email(...): ...
     """
-    hints = {
+    hints: dict[str, bool] = {
         "read_only": read_only,
         "destructive": destructive,
         "idempotent": idempotent,
-        "open_world": open_world,
     }
+    if open_world is not None:
+        hints["open_world"] = bool(open_world)
+    if card_bound:
+        hints["card_bound"] = True
+    if card_write:
+        hints["card_write"] = True
 
     def _wrap(fn: Callable[..., Any]) -> Callable[..., Any]:
         TOOL_ANNOTATIONS[fn.__name__] = hints
+        _AGENT_OWN.add(fn.__name__)
         fn.__tool_risk__ = hints  # type: ignore[attr-defined]
+        if card_write:
+            CARD_WRITE_PARAMS[fn.__name__] = frozenset(inspect.signature(fn).parameters)
         return fn
 
     return _wrap
@@ -123,20 +383,35 @@ def is_destructive(tool: str | Callable[..., Any]) -> bool:
     return bool(hints and hints["destructive"])
 
 
-def risk_summary_block() -> str:
+def risk_summary_block(own: Iterable[tuple[str, bool, bool, bool]] = ()) -> str:
     """Byte-stable addendum block summarising tool risk classes.
 
     Rendered into the injected-tools system-prompt addendum so the agent can
     reason about which calls are safe to make freely vs. which reach outside
     the platform or mutate state.
+
+    It is PER AGENT and deterministic (H-236). It lists the platform's own
+    names (:data:`_PLATFORM_STATIC`, without the sandbox tools), plus every
+    annotated tool of THIS agent in *own*: ``(name, read_only, destructive,
+    open_world)``, on the same four lines as a platform name. The caller
+    builds *own* from the agent's own tool list, the app and workflow tools
+    it was given included, never from the process-wide registry. So no tool
+    of another agent joins the block, and the text does not depend on what
+    one process imported.
     """
-    read_only = sorted(n for n, h in TOOL_ANNOTATIONS.items() if h["read_only"])
+    unlisted = SANDBOX_TOOL_NAMES | _H236_UNLISTED
+    listed: dict[str, dict[str, bool]] = {
+        n: dict(TOOL_ANNOTATIONS.get(n, {})) for n in _PLATFORM_STATIC if n not in unlisted
+    }
+    for name, ro, de, ow in own:
+        listed.setdefault(name, {"read_only": ro, "destructive": de, "open_world": ow})
+    read_only = sorted(n for n, h in listed.items() if h.get("read_only"))
     writes = sorted(
-        n for n, h in TOOL_ANNOTATIONS.items()
-        if not h["read_only"] and not h["destructive"]
+        n for n, h in listed.items()
+        if not h.get("read_only") and not h.get("destructive")
     )
-    destructive = sorted(n for n, h in TOOL_ANNOTATIONS.items() if h["destructive"])
-    open_world = sorted(n for n, h in TOOL_ANNOTATIONS.items() if h["open_world"])
+    destructive = sorted(n for n, h in listed.items() if h.get("destructive"))
+    open_world = sorted(n for n, h in listed.items() if h.get("open_world"))
 
     lines = [
         "### Tool risk annotations",

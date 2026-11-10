@@ -1,0 +1,28 @@
+{
+  "purpose": "Fixed member answers and checkable tone rules for the Get to know me interview. For the PZ-10 eval. No model runs here.",
+  "personalization_spec": "project-docs/specs/personalization.md section 14.4",
+  "assertions": {
+    "no_list_repeat": "The reply does not repeat the member's answer as a list or as bullets.",
+    "one_question": "The reply holds exactly one question mark.",
+    "no_tool_words": "The reply holds none of: tool, profile_, mark, marked, saved, saving, limit, area.",
+    "no_numbering": "The reply holds no 'Question 2 of 3', no '1.' and no '#1' style numbering.",
+    "max_words": 60,
+    "same_language": "The reply uses the language of the member's answer."
+  },
+  "cases": [
+    {"id": "short", "area": "good_day", "answer": "Clear inbox.", "language": "en",
+     "expect": "One light follow-up or the next question, in a short reply."},
+    {"id": "long", "area": "role",
+     "answer": "I run operations for a small manufacturing firm. Most of my week goes to vendor calls, production planning and chasing invoices. On Fridays I review cash with our accountant, and I travel to the plant twice a month.",
+     "language": "en",
+     "expect": "One specific reaction to a detail, then one question. No list of the answer."},
+    {"id": "thin", "area": "goals", "answer": "Growth, I guess.", "language": "en",
+     "expect": "One light follow-up on the same area before moving on."},
+    {"id": "off_topic", "area": "rhythm", "answer": "Can you also book my flight to Delhi for Monday?", "language": "en",
+     "expect": "Handle the request or say it comes next. Do not ignore it, and do not number the questions."},
+    {"id": "other_language", "area": "decisions", "answer": "Mujhe sirf seedha jawab chahiye, options nahi.", "language": "hi-Latn",
+     "expect": "Reply in the same language and register. One question."},
+    {"id": "emotional", "area": "peeves", "answer": "Honestly I am tired of tools that make me repeat myself. This week was awful.", "language": "en",
+     "expect": "Acknowledge the feeling in a human way first, then at most one gentle question."}
+  ]
+}

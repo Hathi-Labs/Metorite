@@ -86,11 +86,11 @@ describe("runway", () => {
     expect(runwayTone(90)).toBe("ok");
   });
 
-  it("🔴 says 'no burn', never 'forever'", () => {
+  it("🔴 says 'no recent use', never 'forever'", () => {
     // ⚠️ Null means there is no rate to extrapolate from. Printing ∞ would
     // hide the more interesting fact, which the silent flag reports.
     expect(runwayTone(null)).toBe("neutral");
-    expect(runwayLabel(null)).toBe("no burn");
+    expect(runwayLabel(null)).toBe("no recent use");
   });
 
   it("says out of credit at zero rather than '0d left'", () => {
@@ -104,14 +104,15 @@ describe("what wants a human", () => {
   });
 
   it("leads with the thing that stops service", () => {
-    const flags = orgFlags(ROW({ runwayDays: 2, marginRatio: "0.5", silent: true }));
-    expect(flags[0].label).toContain("2d");
-    expect(flags.map((f) => f.label)).toContain("below cost");
+    const flags = orgFlags(ROW({ runwayDays: 2, silent: true }), -50);
+    expect(flags[0].label).toBe("2 days left");
+    expect(flags.map((f) => f.label)).toContain("losing money");
     expect(flags).toHaveLength(3);
   });
 
-  it("does not flag an unmeasured margin as below cost", () => {
-    expect(orgFlags(ROW({ marginRatio: null }))).toEqual([]);
+  it("does not flag an unknown profit, and never judges the old ratio", () => {
+    expect(orgFlags(ROW({ marginRatio: "0.5" }), null)).toEqual([]);
+    expect(orgFlags(ROW({ marginRatio: "0.5" }))).toEqual([]);
   });
 });
 
@@ -294,13 +295,13 @@ describe("a customer past zero", () => {
     const labels = orgFlags(
       ROW({ balance: "-500", runwayDays: 0 }),
     ).map((f) => f.label);
-    expect(labels[0]).toBe("past zero — still serving");
+    expect(labels[0]).toBe("below zero — still served");
     expect(labels).not.toContain("out of credit");
   });
 
   it("does not fire on a healthy balance", () => {
     expect(orgFlags(ROW()).map((f) => f.label)).not.toContain(
-      "past zero — still serving",
+      "below zero — still served",
     );
   });
 
@@ -308,22 +309,22 @@ describe("a customer past zero", () => {
     const line = usageHeadline([
       ROW({ slug: "a", balance: "-500", runwayDays: 0 }),
     ]);
-    expect(line).toContain("1 past zero and still being served");
+    expect(line).toContain("1 below zero and still being served");
     expect(line).not.toContain("nearly out of credit");
   });
 
   it("still reports a thin-but-positive customer as nearly out", () => {
     const line = usageHeadline([ROW({ slug: "b", balance: "5", runwayDays: 1 })]);
     expect(line).toContain("1 nearly out of credit");
-    expect(line).not.toContain("past zero");
+    expect(line).not.toContain("below zero");
   });
 
   it("🔴 makes the runway COLUMN agree with the chip beside it", () => {
-    // The two render independently. One row said "past zero — still serving"
+    // The two render independently. One row said "below zero — still served"
     // and "out of credit" at once, two cells apart, which reads as two
     // different customers' facts on one line.
     const row = ROW({ balance: "-500", runwayDays: 0 });
-    expect(rowRunwayLabel(row)).toBe("past zero");
+    expect(rowRunwayLabel(row)).toBe("below zero");
     expect(orgFlags(row).map((f) => f.label)).not.toContain("out of credit");
   });
 
@@ -332,7 +333,7 @@ describe("a customer past zero", () => {
       "out of credit",
     );
     expect(rowRunwayLabel(ROW({ balance: "900", runwayDays: 12 }))).toBe(
-      "12d left",
+      "12 days left",
     );
   });
 

@@ -16,6 +16,7 @@ from typing import Any
 
 from acb_auth import require_feature_router, require_permission
 from acb_common import get_logger
+from acb_llm.jobs import THINKING_OFF
 from fastapi import APIRouter, HTTPException
 
 # The shared gateway engine (BO-10 / D-CRM-4) — see the DB section below for
@@ -42,6 +43,33 @@ router = APIRouter(
     prefix="/tasks", tags=["tasks"],
     dependencies=[require_feature_router("tasks")],
 )
+
+
+# ── AI calls ask for no reasoning ────────────────────────────────────────────
+#: The ``thinking`` value that every AI call of this package sends.
+#:
+#: 🔴 **Why (2026-10-31, task #1122).** The Router binds ``tier-fast`` and
+#: ``tier-balanced`` to ``deepseek/deepseek-flash`` and ``tier-powerful`` to
+#: ``deepseek/deepseek-v4-pro``. Both models think by default, and the vendor
+#: counts the reasoning in ``completion_tokens``. These calls ask for one small
+#: JSON object with a cap of 40 to 2200 tokens. So the reasoning used up the
+#: cap, the reply came back with ``finish_reason=length`` and empty
+#: ``content``, and the JSON parse failed. Production ``usage_event``,
+#: 2026-10-25 to 10-30: 19 of 20 Tasks calls stopped at exactly their cap.
+#: The email status call had the same fault and the same fix
+#: (``replyzero._STATUS_THINKING``).
+#:
+#: The day plan (``calendar._llm_rank_day``) follows the same rule since
+#: 2026-11-01. It asks for no reasoning on ``tier-fast``, because at 8000
+#: tokens with thinking on, one call outran the 30 s limit of the BFF. Task
+#: 1338 adds a faster path through ``decide`` (``calendar_decide.py``). This
+#: call is its fallback. Fence: ``tests/unit/test_calendar_plan_llm.py`` and
+#: ``tests/unit/test_tasks_ai_no_thinking.py``.
+#:
+#: The value is the seam's own (``acb_llm.jobs.THINKING_OFF``, task 1128), so
+#: the repo holds one literal. The seam drops it for a model that does not
+#: take it. Each call sends a copy, ``dict(NO_THINKING)``.
+NO_THINKING: dict[str, str] = THINKING_OFF
 
 
 # ── People directory (HR) access ─────────────────────────────────────────────

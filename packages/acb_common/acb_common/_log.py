@@ -17,7 +17,9 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
-from collections.abc import Iterator
+import re
+from collections.abc import Iterator, Mapping
+from contextvars import ContextVar
 
 import structlog
 
@@ -33,10 +35,139 @@ def _want_json(json_logs: bool | None) -> bool:
     return fmt in ("json", "1", "true", "yes")
 
 
+# ── Box token redaction (EA-19e, external_agent_access.md §10.9 question 3) ──
+
+#: A box token: ``mbt_`` and 43 URL-safe characters. The same shape as the
+#: ``metorite-box-token`` rule of ``.gitleaks.toml``.
+BOX_TOKEN_RE = re.compile(r"mbt_[A-Za-z0-9_-]{43}")
+BOX_TOKEN_MASK = "mbt_[redacted]"
+_BOX_TOKEN_PREFIX = "mbt_"
+_BOX_TOKEN_BYTES_RE = re.compile(BOX_TOKEN_RE.pattern.encode("ascii"))
+_BOX_TOKEN_BYTES_MASK = BOX_TOKEN_MASK.encode("ascii")
+_BOX_TOKEN_BYTES_PREFIX = _BOX_TOKEN_PREFIX.encode("ascii")
+
+
+def _redact_value(value: object) -> object:
+    """Mask each box token in ``value``, at any depth.
+
+    It walks str, bytes, bytearray, dict, list, tuple, set and frozenset, and
+    the text of an exception. It returns the same object when nothing
+    changed, so a clean event costs one ``in`` test for each string. Any
+    other object passes as it is. :class:`BoxTokenMaskingRenderer` masks its
+    rendered text.
+    """
+    if isinstance(value, str):
+        if _BOX_TOKEN_PREFIX not in value:
+            return value
+        return BOX_TOKEN_RE.sub(BOX_TOKEN_MASK, value)
+    if isinstance(value, (bytes, bytearray)):
+        if _BOX_TOKEN_BYTES_PREFIX not in value:
+            return value
+        masked = _BOX_TOKEN_BYTES_RE.sub(_BOX_TOKEN_BYTES_MASK, bytes(value))
+        return masked if isinstance(value, bytes) else bytearray(masked)
+    if isinstance(value, dict):
+        out = {k: _redact_value(v) for k, v in value.items()}
+        return value if all(out[k] is value[k] for k in value) else out
+    if isinstance(value, (list, tuple)):
+        items = [_redact_value(v) for v in value]
+        if all(a is b for a, b in zip(items, value, strict=True)):
+            return value
+        return items if isinstance(value, list) else tuple(items)
+    if isinstance(value, (set, frozenset)):
+        members = [(v, _redact_value(v)) for v in value]
+        if all(a is b for a, b in members):
+            return value
+        return type(value)(b for _, b in members)
+    if isinstance(value, BaseException):
+        text = str(value)
+        if _BOX_TOKEN_PREFIX in text:
+            return BOX_TOKEN_RE.sub(BOX_TOKEN_MASK, f"{type(value).__name__}: {text}")
+    return value
+
+
+class BoxTokenMaskingRenderer:
+    """Wrap the final structlog renderer, and mask each box token it renders.
+
+    :func:`redact_box_tokens` walks the event dict, but an object of another
+    type (a starlette ``Headers``, for example) renders through its ``repr``.
+    So this wrapper also masks the rendered str or bytes. It is the last
+    processor of :func:`configure_logging`. Fence:
+    ``tests/unit/test_box_token_secret_rules.py``.
+    """
+
+    def __init__(self, inner: object) -> None:
+        self.inner = inner
+
+    def __call__(self, logger: object, method: str, event_dict: dict) -> object:
+        out = self.inner(logger, method, event_dict)  # type: ignore[operator]
+        if isinstance(out, str):
+            if _BOX_TOKEN_PREFIX in out:
+                return BOX_TOKEN_RE.sub(BOX_TOKEN_MASK, out)
+            return out
+        if isinstance(out, (bytes, bytearray)):
+            if _BOX_TOKEN_BYTES_PREFIX in out:
+                return _BOX_TOKEN_BYTES_RE.sub(_BOX_TOKEN_BYTES_MASK, bytes(out))
+            return out
+        return out
+
+
+def redact_box_tokens(_logger: object, _method: str, event_dict: dict) -> dict:
+    """A structlog processor: mask each box token in the event dict.
+
+    It reads every string and bytes value, the ``event`` message too, and
+    walks nested dicts, lists, tuples and sets. It runs after ``format_exc_info``, so it also
+    masks the text of an exception. :func:`configure_logging` puts it just
+    before the renderer. Fence: ``tests/unit/test_box_token_secret_rules.py``.
+    """
+    for key, value in list(event_dict.items()):
+        new = _redact_value(value)
+        if new is not value:
+            event_dict[key] = new
+    return event_dict
+
+
+class BoxTokenRedactFilter(logging.Filter):
+    """A stdlib filter: mask each box token in a log record.
+
+    It renders the message with its args, and the exception and stack text,
+    then masks them. :func:`configure_logging` puts it on each root handler,
+    so a record that a child logger sends up the tree passes it too.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage()
+        except Exception:
+            message = str(record.msg)
+        if _BOX_TOKEN_PREFIX in message:
+            record.msg = BOX_TOKEN_RE.sub(BOX_TOKEN_MASK, message)
+            record.args = None
+        if record.exc_info and not record.exc_text:
+            record.exc_text = logging.Formatter().formatException(record.exc_info)
+        if record.exc_text and _BOX_TOKEN_PREFIX in record.exc_text:
+            record.exc_text = BOX_TOKEN_RE.sub(BOX_TOKEN_MASK, record.exc_text)
+        if record.stack_info and _BOX_TOKEN_PREFIX in record.stack_info:
+            record.stack_info = BOX_TOKEN_RE.sub(BOX_TOKEN_MASK, record.stack_info)
+        return True
+
+
+def install_box_token_filter(logger: logging.Logger | None = None) -> None:
+    """Put one :class:`BoxTokenRedactFilter` on each handler of ``logger``.
+
+    The default is the root logger. It is idempotent. A handler added later
+    does not get the filter, so call it again after you add one.
+    """
+    target = logger or logging.getLogger()
+    for handler in target.handlers:
+        if not any(isinstance(f, BoxTokenRedactFilter) for f in handler.filters):
+            handler.addFilter(BoxTokenRedactFilter())
+
+
 def configure_logging(
     level: str = "INFO", *, json_logs: bool | None = None,
 ) -> None:
     logging.basicConfig(format="%(message)s", level=level.upper())
+    install_box_token_filter()
     renderer: object = (
         structlog.processors.JSONRenderer()
         if _want_json(json_logs)
@@ -49,7 +180,11 @@ def configure_logging(
             structlog.processors.TimeStamper(fmt="iso"),
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
-            renderer,
+            # ⚠️ After format_exc_info (so it masks the exception text) and
+            # before the renderer (nothing after it reads the dict).
+            redact_box_tokens,
+            # The renderer is wrapped, so its rendered text is masked too.
+            BoxTokenMaskingRenderer(renderer),
         ],
         wrapper_class=structlog.make_filtering_bound_logger(
             getattr(logging, level.upper(), logging.INFO)
@@ -176,8 +311,117 @@ def run_context_scope() -> Iterator[None]:
             structlog.contextvars.bind_contextvars(**before)
 
 
+# ── The name of a background model call (AI-call attribution, 2026-10-10) ────
+
+#: The shape of the agent name that a background model call carries:
+#: ``<app>.<feature>``, for example ``email.rule_match``. One dot, and two
+#: lower-case words. Spec: ``customer_console.md`` §4.3a.
+AUTOMATION_AGENT_RE = re.compile(r"[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*")
+
+#: The automation name that :func:`automation_agent_scope` bound on this task,
+#: or None. It is how the two readers tell OUR name from a chat agent's name.
+#: ⚠️ A ContextVar, not a run-context key, so it never reaches a log line and
+#: no request can set it.
+_AUTOMATION_AGENT: ContextVar[str | None] = ContextVar("acb_automation_agent", default=None)
+
+
+def _bound_agent() -> str:
+    return str(structlog.contextvars.get_contextvars().get("agent") or "").strip()
+
+
 @contextlib.contextmanager
-def job_member_scope(owner: str | None, *, app: str | None = None) -> Iterator[None]:
+def automation_agent_scope(name: str | None) -> Iterator[None]:
+    """Name the model calls in this block ``name``, unless a chat agent runs.
+
+    🔴 **97% of the email AI calls reached the Router with no agent.**
+    Measured on production, 2026-10-10: about 8,500 email calls in 7 days with
+    ``agent`` NULL, so the Operator dashboard showed them as "not attributed".
+    A background job binds a member and an app, and no agent at all.
+
+    - ``name`` is a CODE CONSTANT of the shape :data:`AUTOMATION_AGENT_RE`.
+      Member text never reaches it (R5). A name of another shape binds
+      nothing and logs ``attribution.agent_name_refused``.
+    - **A chat agent wins.** When the task holds an agent that this function
+      did not bind, such as ``email-assistant``, the block keeps it.
+    - **A narrower automation name wins over a wider one.** Inside a job that
+      bound ``email.automation``, a call that binds ``email.rule_match``
+      replaces it for that call alone.
+    - Scoped like :func:`run_context_scope`, so the agent before the block
+      comes back exactly on exit.
+
+    Fences: ``tests/unit/test_usage_attribution.py`` (``TestBackgroundAI*``).
+    """
+    agent = str(name or "").strip()
+    if agent and not AUTOMATION_AGENT_RE.fullmatch(agent):
+        structlog.get_logger("acb_common.attribution").warning(
+            "attribution.agent_name_refused", name=agent[:64])
+    bound = _bound_agent()
+    held = _AUTOMATION_AGENT.get()
+    if not AUTOMATION_AGENT_RE.fullmatch(agent) or (bound and bound != held):
+        yield
+        return
+    with run_context_scope():
+        token = _AUTOMATION_AGENT.set(agent)
+        try:
+            structlog.contextvars.bind_contextvars(agent=agent)
+            yield
+        finally:
+            try:
+                _AUTOMATION_AGENT.reset(token)
+            except ValueError:  # a token from another context
+                _AUTOMATION_AGENT.set(held)
+
+
+def chat_agent_label(name: str | None) -> str:
+    """The name a CHAT agent reports. The ONE rule against a claimed name.
+
+    An agent name may hold a dot (``agent_paths.AGENT_NAME_RE``, and a MAF
+    manifest slug), so a member could name an agent ``email.rule_match``. A
+    name of the shape :data:`AUTOMATION_AGENT_RE` comes back as
+    ``agent:<name>``, the grant grammar's spelling of an agent. Every other
+    name comes back unchanged, so ``email-assistant`` stays as it is. It is
+    idempotent, because ``agent:`` holds a colon.
+
+    Callers: :func:`attributed_agent`, ``acb_llm.attribution.attributed_openai``
+    (the fixed ``X-CC-Agent`` of every MAF client), ``acb_skills.system_one``
+    and ``acb_skills.decide_tools``.
+    """
+    label = str(name or "").strip()
+    if AUTOMATION_AGENT_RE.fullmatch(label):
+        return f"agent:{label}"
+    return label
+
+
+def attributed_agent(ctx: Mapping[str, str], module: str | None) -> str | None:
+    """The agent name that a model call reports. The ONE rule for both readers.
+
+    ``acb_llm.routed.run_attribution`` (the in-process Router and ``decide``)
+    and ``acb_llm.attribution.attribution_headers`` (the HTTP agents) both
+    call it, so the two paths cannot name one call two ways.
+
+    1. A bound agent is reported as it is.
+    2. 🔴 **A chat agent cannot claim an automation name.** An agent name may
+       hold a dot (``agent_paths.AGENT_NAME_RE``), so a member could name an
+       agent ``email.rule_match``. A bound name of that shape that
+       :func:`automation_agent_scope` did not bind goes through
+       :func:`chat_agent_label`, and so reports ``agent:<name>``.
+    3. **The backstop.** With no agent bound and a module known, the call
+       reports ``<module>.automation``. With no module it reports None. It
+       never invents an app.
+    """
+    bound = str(ctx.get("agent") or "").strip()
+    if bound:
+        if bound == _AUTOMATION_AGENT.get():
+            return bound
+        return chat_agent_label(bound)
+    app = str(module or "").strip()
+    return f"{app}.automation" if app else None
+
+
+@contextlib.contextmanager
+def job_member_scope(
+    owner: str | None, *, app: str | None = None, agent: str | None = None,
+) -> Iterator[None]:
     """Run a BACKGROUND job as the member it belongs to. H-152.
 
     🔴 **A job with no session reached the Router with no member.** Under the
@@ -197,6 +441,11 @@ def job_member_scope(owner: str | None, *, app: str | None = None) -> Iterator[N
     an address (``None``, ``anonymous``) therefore leaves the job memberless,
     never billed to a bystander.
 
+    ``agent`` names the job's model calls, as ``email.automation``
+    (AI-call attribution, 2026-10-10). It goes through
+    :func:`automation_agent_scope`, so a chat agent the task already holds
+    keeps its name, and a call inside may name a narrower feature.
+
     Scoped like :func:`run_context_scope`, so the caller's fields come back
     exactly on exit.
     """
@@ -207,7 +456,8 @@ def job_member_scope(owner: str | None, *, app: str | None = None) -> Iterator[N
             bind_run_context(user=member, app=app, member_verified=True)
         elif app:
             bind_run_context(app=app)
-        yield
+        with automation_agent_scope(agent):
+            yield
 
 
 def clear_run_context() -> None:

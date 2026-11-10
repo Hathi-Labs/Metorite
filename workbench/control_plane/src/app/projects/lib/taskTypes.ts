@@ -4,6 +4,8 @@
  * Spec: `project-docs/specs/projects_settings.md` §7 row PS-2.
  */
 
+import type { SelectOption } from "@/components/ui/SelectButton";
+
 import type { TaskTypeRow } from "./api";
 
 /**
@@ -57,6 +59,14 @@ export function iconOptionsFor(icon: string | null | undefined): string[] {
   const value = iconValueFor(icon);
   const list: string[] = [...TYPE_ICON_CHOICES];
   return list.includes(value) ? list : [value, ...list];
+}
+
+/**
+ * The icon picker's options (task #417). Each option carries its own name as
+ * `icon`, so the list draws the glyph and not only the word.
+ */
+export function iconSelectOptions(icon: string | null | undefined): SelectOption[] {
+  return iconOptionsFor(icon).map((c) => ({ value: c, label: c, icon: c }));
 }
 
 /** A row the whole organization owns. PS-3 edits those; this screen does not. */

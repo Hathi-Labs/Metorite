@@ -1,0 +1,581 @@
+"""WS-55 MCP-G7 — a comment or a link no longer breaks a pending task write.
+
+Spec: ``project-docs/specs/project_management_app.md`` §9.10.3. Task #367.
+
+``If-Match`` (and the MCP ``version``) is ``pm_tasks.updated_at``. The
+satellite bump (``core.touch_task``) moves that stamp for every comment, link
+and attachment, so until this change a comment on task A, or a link to A from
+task B, gave every pending write to A a 412. Migration
+``*_pm_tasks_fields_at.sql`` adds ``fields_at`` and a trigger, and
+``core.precondition_holds`` passes a token from ``fields_at`` up to
+``updated_at``.
+
+**Hermetic.** The migration is found by CONTENT (R1), and it carries the
+trigger, the backfill and the monotonic stamp.
+
+**R8** (a real Postgres, the real ``/projects`` router, the non-privileged
+role of the phase-4 rehearsal). A fake agrees with any SQL, and the whole fix
+is a trigger, so every acceptance case runs here::
+
+    TENANT_LADDER_DATABASE_URL=postgresql+psycopg://acb:acb@127.0.0.1:5434/acb_tenant \\
+        uv run pytest tests/unit/test_task_precondition_fields_at.py -v -rs
+
+Mutations (each must turn a named test red):
+
+* M1. ``core.precondition_holds``: drop the ``fields_at`` arm.
+  ``test_a_link_from_another_task_keeps_the_token_good``,
+  ``test_a_comment_keeps_the_token_good_for_a_status_move``.
+* M2. The migration: stamp ``fields_at`` on every stamped UPDATE (drop the
+  ``to_jsonb`` comparison). ``test_the_trigger_leaves_fields_at_on_a_bump``.
+* M3. The migration: drop the monotonic lift.
+  ``test_the_now_stamp_is_monotonic_and_an_explicit_one_is_kept``.
+* M4. The migration: ``BEFORE INSERT OR UPDATE`` with an early return when
+  ``updated_at`` did not move (the first draft).
+  ``test_a_bump_then_a_field_in_one_transaction_stamps_fields_at``, and the
+  claim race of ``test_mcp_edge_claim.py`` (two 200s for one version).
+* M5. ``core.lift_subtasks_to_grandparent``: drop ``updated_at = now()``.
+  ``test_a_subtask_promoted_by_a_parent_delete_gives_412``.
+* M6. ``merge._reparent_children``: drop ``updated_at = now()`` from the
+  move of the children. ``test_a_subtask_moved_by_a_merge_gives_412``.
+* M7. ``tasks.delete_task_in``: drop ``updated_at = now()`` from the kept
+  moves. ``test_a_subtask_kept_by_a_partial_delete_gives_412``.
+* M8. ``merge._reparent_children``: drop ``updated_at = now()`` from the lift
+  of the target. ``test_a_target_lifted_by_a_merge_gives_412``.
+
+  Since fix round 2 the trigger also catches a field write with no stamp
+  (step 4), so the four stamps are defence in depth. M5 to M8 each go red
+  when M9 is applied with them, and stay green alone. Each one went red alone
+  at ``b7e3ea8e4``, before step 4.
+* M9. The migration: the trigger back to ``BEFORE INSERT OR UPDATE OF
+  updated_at``. ``test_a_tag_rename_then_a_comment_gives_412`` and
+  ``test_a_type_delete_then_a_comment_gives_412``.
+* B. The migration: the trigger treats ``description`` as a stamp (it drops it
+  from the comparison as well). ``test_a_field_change_by_someone_else_gives_412``
+  with ``description``. Each column of the parametrize has the same guard.
+
+The agent delete keeps strict equality on purpose. Its fences are H2b and
+H2c of ``test_mcp_edge_delete.py`` (mutation D30 there).
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+pytest.importorskip("sqlalchemy")
+pytest.importorskip("gateway.routes.projects", reason="gateway not installed")
+
+from sqlalchemy import text
+
+from tests.unit.test_agent_runs_r8 import (
+    _principal,
+    _seed_task,
+    _session,
+)
+from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
+    _DB_GATE,
+    app_engine,
+    promoted,
+)
+
+_MIGRATIONS = Path(__file__).resolve().parents[2] / "infra" / "postgres"
+
+ME = "g7-me@fields-at.test"
+OTHER = "g7-other@fields-at.test"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Hermetic
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _migration() -> Path:
+    found = [p for p in sorted(_MIGRATIONS.glob("*.sql"))
+             if "FUNCTION pm_tasks_stamp_fields()" in p.read_text(encoding="utf-8")]
+    assert len(found) == 1, found
+    return found[0]
+
+
+def test_the_migration_adds_the_column_the_trigger_and_the_backfill() -> None:
+    sql = _migration().read_text(encoding="utf-8")
+    assert "ADD COLUMN IF NOT EXISTS fields_at TIMESTAMPTZ;" in sql
+    assert "CREATE OR REPLACE TRIGGER trg_pm_tasks_stamp_fields" in sql
+    # Every UPDATE (fix round 2): a sweep does not SET updated_at, and under
+    # `UPDATE OF updated_at` it left `fields_at` behind.
+    assert "BEFORE INSERT OR UPDATE ON pm_tasks" in sql
+    assert "BEFORE INSERT OR UPDATE OF updated_at ON pm_tasks" not in sql
+    # A request that bumps first and writes a field second stamps one `now()`
+    # twice, so "equals now()" must count as stamped.
+    assert "NEW.updated_at IS DISTINCT FROM OLD.updated_at OR NEW.updated_at = now()" in sql
+    assert "WHERE fields_at IS NULL" in sql
+    assert "OLD.updated_at + interval '1 microsecond'" in sql
+    # R6: nullable, no default, so the ADD rewrites nothing.
+    assert "fields_at TIMESTAMPTZ NOT NULL" not in sql
+
+
+def test_the_backfill_runs_before_the_trigger_exists() -> None:
+    """The backfill sets no `updated_at`, so it needs no trigger, and the
+    trigger made it about five times slower on a big table. The lock of the
+    ADD COLUMN holds to COMMIT, so no writer comes between the two."""
+    sql = _migration().read_text(encoding="utf-8")
+    add = sql.index("ADD COLUMN IF NOT EXISTS fields_at TIMESTAMPTZ;")
+    fill = sql.index("DO $pm_fill$")
+    trigger = sql.index("CREATE OR REPLACE TRIGGER trg_pm_tasks_stamp_fields\n")
+    assert add < fill < trigger
+
+
+def test_the_trigger_sorts_after_the_org_triggers() -> None:
+    """BEFORE triggers run in name order. The stamp must see the final row."""
+    assert "trg_pm_tasks_stamp_fields" > "trg_pm_tasks_org_from_root"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# R8
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _lane(p: Any, task: str, name: str, category: str, position: int) -> str:
+    """A second lane in the project of *task*, as the RLS-bypassing admin."""
+    with p.admin_engine.begin() as c:
+        row = c.execute(text(
+            "SELECT project_id, organization_id FROM pm_tasks WHERE id = CAST(:t AS uuid)"),
+            {"t": task}).one()
+        lane = str(uuid.uuid4())
+        c.execute(text(
+            "INSERT INTO pm_task_statuses (id, organization_id, project_id, name, "
+            "category, position) VALUES (:id, :o, :p, :n, :c, :pos)"),
+            {"id": lane, "o": row.organization_id, "p": row.project_id, "n": name,
+             "c": category, "pos": position})
+    return lane
+
+
+def _second_task(p: Any, task: str, *, number: int = 2, title: str = "Order the nozzles",
+                 parent: str | None = None) -> str:
+    """Task B, in the same project as task A, so the member sees both. With
+    *parent*, a subtask of that task."""
+    with p.admin_engine.begin() as c:
+        row = c.execute(text(
+            "SELECT project_id, organization_id, status_id FROM pm_tasks "
+            "WHERE id = CAST(:t AS uuid)"), {"t": task}).one()
+        other = str(uuid.uuid4())
+        c.execute(text(
+            "INSERT INTO pm_tasks (id, organization_id, project_id, root_project_id, "
+            "task_number, status_id, title, created_by, parent_task_id) "
+            "VALUES (:id, :o, :p, :p, :n, :s, :title, :e, CAST(:parent AS uuid))"),
+            {"id": other, "o": row.organization_id, "p": row.project_id, "n": number,
+             "s": row.status_id, "title": title, "e": ME, "parent": parent})
+    return other
+
+
+def _stamps(p: Any, task: str) -> Any:
+    with p.admin_engine.connect() as c:
+        return c.execute(text(
+            "SELECT updated_at, fields_at FROM pm_tasks WHERE id = CAST(:t AS uuid)"),
+            {"t": task}).one()
+
+
+@pytest.fixture
+def world(promoted):  # noqa: F811 — a fixture
+    """Task A and task B in one project of org A, and a second lane.
+
+    A fresh pair for each test, so no test reads a stamp another one moved.
+    """
+    task_a = _seed_task(promoted, promoted.org_a, ME, grant=ME)
+    with promoted.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO app_user (email, display_name, role, status, organization_id) "
+            "VALUES (:e, :e, 'employee', 'active', CAST(:o AS uuid)) "
+            "ON CONFLICT DO NOTHING"), {"e": OTHER, "o": promoted.org_a})
+    return type("World", (), {
+        "p": promoted,
+        "task_a": task_a,
+        "task_b": _second_task(promoted, task_a),
+        "doing": _lane(promoted, task_a, "Doing", "in_progress", 20),
+        "me": _principal(ME, promoted.org_a),
+        "other": _principal(OTHER, promoted.org_a),
+    })
+
+
+async def _as(call: Any, user: Any, method: str, path: str, body: dict | None = None,
+              if_match: str | None = None) -> Any:
+    """One request as *user*, with ``If-Match`` when it is set."""
+    key = str(id(user))
+    call.users[key] = user
+    headers = {"x-test-as": key}
+    if if_match is not None:
+        headers["If-Match"] = if_match
+    return await call.client.request(method, path, json=body, headers=headers)
+
+
+async def _version(call: Any, w: Any) -> str:
+    got = await _as(call, w.me, "GET", f"/projects/tasks/{w.task_a}")
+    assert got.status_code == 200, got.text
+    return got.json()["updated_at"]
+
+
+@_DB_GATE
+class TestTheVersionOnARealDatabase:
+    async def test_the_route_runs_as_a_role_that_cannot_bypass_rls(self, app_engine):  # noqa: F811
+        with app_engine.connect() as c:
+            role = c.execute(text(
+                "SELECT rolsuper, rolbypassrls FROM pg_roles "
+                "WHERE rolname = current_user")).first()
+        assert role == (False, False)
+
+    async def test_a_link_from_another_task_keeps_the_token_good(self, world):
+        """Read A, link B to A (the `#mention` path), PATCH A with the old token."""
+        w = world
+        async with _session(w.p) as call:
+            version = await _version(call, w)
+            linked = await _as(call, w.me, "POST", f"/projects/tasks/{w.task_b}/links",
+                               {"target_task_id": w.task_a, "link_type": "relates_to"})
+            assert linked.status_code == 201, linked.text
+            # The bump moved the token, so equality alone would refuse it.
+            assert await _version(call, w) != version
+            patched = await _as(call, w.me, "PATCH", f"/projects/tasks/{w.task_a}",
+                                {"title": "Fix the extruder today"}, if_match=version)
+        assert patched.status_code == 200, patched.text
+        assert patched.json()["title"] == "Fix the extruder today"
+
+    async def test_a_comment_keeps_the_token_good_for_a_status_move(self, world):
+        """Read A, comment on A, move A's status with the old token."""
+        w = world
+        async with _session(w.p) as call:
+            version = await _version(call, w)
+            said = await _as(call, w.other, "POST", f"/projects/tasks/{w.task_a}/comments",
+                             {"body": "Nozzle is on the bench."})
+            assert said.status_code == 201, said.text
+            assert await _version(call, w) != version
+            moved = await _as(call, w.me, "PATCH", f"/projects/tasks/{w.task_a}",
+                              {"status_id": w.doing}, if_match=version)
+        assert moved.status_code == 200, moved.text
+        assert moved.json()["status_id"] == w.doing
+
+    async def test_a_field_change_still_gives_412(self, world):
+        """Read A, somebody changes a field, PATCH A with the old token: 412."""
+        w = world
+        async with _session(w.p) as call:
+            version = await _version(call, w)
+            first = await _as(call, w.other, "PATCH", f"/projects/tasks/{w.task_a}",
+                              {"title": "Somebody else's title"})
+            assert first.status_code == 200, first.text
+            late = await _as(call, w.me, "PATCH", f"/projects/tasks/{w.task_a}",
+                             {"title": "My title"}, if_match=version)
+            again = await _as(call, w.me, "GET", f"/projects/tasks/{w.task_a}")
+        assert late.status_code == 412, late.text
+        assert late.json()["detail"]["current"]["title"] == "Somebody else's title"
+        assert again.json()["title"] == "Somebody else's title"
+
+    async def test_a_field_change_then_a_comment_still_gives_412(self, world):
+        """The comment after the field change must not hide the field change."""
+        w = world
+        async with _session(w.p) as call:
+            version = await _version(call, w)
+            first = await _as(call, w.other, "PATCH", f"/projects/tasks/{w.task_a}",
+                              {"title": "Changed first"})
+            assert first.status_code == 200, first.text
+            said = await _as(call, w.other, "POST", f"/projects/tasks/{w.task_a}/comments",
+                             {"body": "And a note."})
+            assert said.status_code == 201, said.text
+            late = await _as(call, w.me, "PATCH", f"/projects/tasks/{w.task_a}",
+                             {"status_id": w.doing}, if_match=version)
+        assert late.status_code == 412, late.text
+
+    async def test_the_trigger_leaves_fields_at_on_a_bump(self, world):
+        """A comment moves ``updated_at`` and leaves ``fields_at``. A field
+        write moves both, to one value."""
+        w = world
+        before = _stamps(w.p, w.task_a)
+        assert before.fields_at is not None
+        async with _session(w.p) as call:
+            said = await _as(call, w.other, "POST", f"/projects/tasks/{w.task_a}/comments",
+                             {"body": "Only a comment."})
+            assert said.status_code == 201, said.text
+        bumped = _stamps(w.p, w.task_a)
+        assert bumped.updated_at > before.updated_at
+        assert bumped.fields_at == before.fields_at
+        async with _session(w.p) as call:
+            done = await _as(call, w.other, "PATCH", f"/projects/tasks/{w.task_a}",
+                             {"title": "A field this time"})
+            assert done.status_code == 200, done.text
+        changed = _stamps(w.p, w.task_a)
+        assert changed.updated_at > bumped.updated_at
+        assert changed.fields_at == changed.updated_at
+
+    async def test_the_now_stamp_is_monotonic_and_an_explicit_one_is_kept(self, world):
+        """The ``now()`` idiom never moves the stamp back. An explicit time does."""
+        w = world
+        ahead = datetime.now().astimezone() + timedelta(hours=1)
+        with w.p.admin_engine.begin() as c:
+            c.execute(text("UPDATE pm_tasks SET updated_at = :u WHERE id = CAST(:t AS uuid)"),
+                      {"u": ahead, "t": w.task_a})
+        with w.p.admin_engine.begin() as c:
+            c.execute(text("UPDATE pm_tasks SET updated_at = now() WHERE id = CAST(:t AS uuid)"),
+                      {"t": w.task_a})
+        lifted = _stamps(w.p, w.task_a)
+        assert lifted.updated_at == ahead + timedelta(microseconds=1)
+        back = ahead - timedelta(days=2)
+        with w.p.admin_engine.begin() as c:
+            c.execute(text("UPDATE pm_tasks SET updated_at = :u WHERE id = CAST(:t AS uuid)"),
+                      {"u": back, "t": w.task_a})
+        assert _stamps(w.p, w.task_a).updated_at == back
+
+    async def test_a_bump_then_a_field_in_one_transaction_stamps_fields_at(self, world):
+        """The claim's shape: a bump, then a field, both at one ``now()``.
+
+        The second statement does not move ``updated_at``, and it still
+        changed a field. The stamp of the request stays one instant.
+        """
+        w = world
+        with w.p.admin_engine.begin() as c:
+            stamp = c.execute(text("SELECT now()")).scalar()
+            c.execute(text("UPDATE pm_tasks SET updated_at = now() WHERE id = CAST(:t AS uuid)"),
+                      {"t": w.task_a})
+            c.execute(text(
+                "UPDATE pm_tasks SET title = 'Claimed', updated_at = now() "
+                "WHERE id = CAST(:t AS uuid)"), {"t": w.task_a})
+        after = _stamps(w.p, w.task_a)
+        assert after.updated_at == stamp
+        assert after.fields_at == stamp
+
+    async def test_a_write_with_no_stamp_keeps_the_current_token_good(self, world):
+        """A ``touch=False`` write leaves ``updated_at``, so the current token
+        still passes by equality, as on main. ``fields_at`` goes ABOVE
+        ``updated_at``: equality only, until the next stamped write."""
+        w = world
+        async with _session(w.p) as call:
+            version = await _version(call, w)
+            before = _stamps(w.p, w.task_a)
+            with w.p.admin_engine.begin() as c:
+                c.execute(text(
+                    "UPDATE pm_tasks SET recurrence_spawned_at = now() "
+                    "WHERE id = CAST(:t AS uuid)"), {"t": w.task_a})
+            after = _stamps(w.p, w.task_a)
+            assert after.updated_at == before.updated_at
+            assert after.fields_at > after.updated_at
+            done = await _as(call, w.me, "PATCH", f"/projects/tasks/{w.task_a}",
+                             {"title": "Still mine"}, if_match=version)
+        assert done.status_code == 200, done.text
+
+    async def test_a_tag_rename_then_a_comment_gives_412(self, world):
+        """Read A, rename a tag A wears (the sweep, with no stamp), comment
+        on A, PATCH A with the old token: 412. Under ``UPDATE OF updated_at``
+        the sweep did not fire the trigger, and the comment made the old
+        token pass. Main gave it 412."""
+        w = world
+        async with _session(w.p) as call:
+            tagged = await _as(call, w.me, "PATCH", f"/projects/tasks/{w.task_a}",
+                               {"tags": ["urgent"]})
+            assert tagged.status_code == 200, tagged.text
+            version = await _version(call, w)
+            with w.p.admin_engine.connect() as c:
+                tag = c.execute(text(
+                    "SELECT g.id FROM pm_tags g JOIN pm_tasks t "
+                    "  ON g.project_id = t.root_project_id "
+                    "WHERE t.id = CAST(:t AS uuid) AND lower(g.name) = 'urgent'"),
+                    {"t": w.task_a}).scalar()
+            renamed = await _as(call, w.me, "PATCH", f"/projects/tags/{tag}",
+                                {"name": "critical"})
+            assert renamed.status_code == 200, renamed.text
+            said = await _as(call, w.other, "POST", f"/projects/tasks/{w.task_a}/comments",
+                             {"body": "Bumped."})
+            assert said.status_code == 201, said.text
+            late = await _as(call, w.me, "PATCH", f"/projects/tasks/{w.task_a}",
+                             {"title": "My title"}, if_match=version)
+        assert late.status_code == 412, late.text
+        assert late.json()["detail"]["current"]["tags"] == ["critical"]
+
+    async def test_a_type_delete_then_a_comment_gives_412(self, world):
+        """Read A, delete the type A carries (FK ``ON DELETE SET NULL``, a
+        cascade under FORCE RLS), comment on A, PATCH A with the old token:
+        412. The cascade fires the trigger and does not fail."""
+        w = world
+        with w.p.admin_engine.begin() as c:
+            row = c.execute(text(
+                "SELECT project_id, organization_id FROM pm_tasks "
+                "WHERE id = CAST(:t AS uuid)"), {"t": w.task_a}).one()
+            kind = str(uuid.uuid4())
+            c.execute(text(
+                "INSERT INTO pm_task_types (id, organization_id, project_id, name) "
+                "VALUES (:id, :o, :p, 'Chore')"),
+                {"id": kind, "o": row.organization_id, "p": row.project_id})
+        async with _session(w.p) as call:
+            typed = await _as(call, w.me, "PATCH", f"/projects/tasks/{w.task_a}",
+                              {"type_id": kind})
+            assert typed.status_code == 200, typed.text
+            version = await _version(call, w)
+            gone = await _as(call, w.me, "DELETE", f"/projects/types/{kind}")
+            assert gone.status_code == 200, gone.text
+            assert gone.json()["tasks_untyped"] == 1
+            said = await _as(call, w.other, "POST", f"/projects/tasks/{w.task_a}/comments",
+                             {"body": "Bumped."})
+            assert said.status_code == 201, said.text
+            late = await _as(call, w.me, "PATCH", f"/projects/tasks/{w.task_a}",
+                             {"title": "My title"}, if_match=version)
+        assert late.status_code == 412, late.text
+        assert late.json()["detail"]["current"]["type_id"] is None
+
+    async def test_a_new_task_gets_fields_at_from_its_stamp(self, world):
+        w = world
+        made = _stamps(w.p, w.task_b)
+        assert made.fields_at == made.updated_at
+
+    async def test_a_subtask_promoted_by_a_parent_delete_gives_412(self, world):
+        """Read child C, delete its parent (C moves up a level), PATCH C with
+        the old token: 412. The lift stamps ``updated_at`` itself, so the
+        trigger sees the parent change. The touch that follows it saw none."""
+        w = world
+        child = _second_task(w.p, w.task_a, number=3, title="Clean the nozzle",
+                             parent=w.task_a)
+        async with _session(w.p) as call:
+            seen = await _as(call, w.me, "GET", f"/projects/tasks/{child}")
+            assert seen.status_code == 200, seen.text
+            version = seen.json()["updated_at"]
+            # The creator deletes it (`assert_may_delete_task`).
+            gone = await _as(call, w.me, "DELETE", f"/projects/tasks/{w.task_a}")
+            assert gone.status_code == 200, gone.text
+            assert gone.json()["cascaded"]["subtasks_promoted"] == 1
+            late = await _as(call, w.me, "PATCH", f"/projects/tasks/{child}",
+                             {"title": "Clean the nozzle today"}, if_match=version)
+        assert late.status_code == 412, late.text
+        assert late.json()["detail"]["current"]["parent_task_id"] is None
+        moved = _stamps(w.p, child)
+        assert moved.fields_at == moved.updated_at
+
+    async def test_a_subtask_moved_by_a_merge_gives_412(self, world):
+        """Read child C of task B, merge B into A (C moves under A), PATCH C
+        with the old token: 412."""
+        w = world
+        child = _second_task(w.p, w.task_a, number=3, title="Clean the nozzle",
+                             parent=w.task_b)
+        async with _session(w.p) as call:
+            seen = await _as(call, w.me, "GET", f"/projects/tasks/{child}")
+            assert seen.status_code == 200, seen.text
+            version = seen.json()["updated_at"]
+            merged = await _as(call, w.me, "POST", f"/projects/tasks/{w.task_a}/merge",
+                               {"sources": [w.task_b]})
+            assert merged.status_code == 200, merged.text
+            late = await _as(call, w.me, "PATCH", f"/projects/tasks/{child}",
+                             {"title": "Clean the nozzle today"}, if_match=version)
+        assert late.status_code == 412, late.text
+        assert late.json()["detail"]["current"]["parent_task_id"] == w.task_a
+
+    async def test_a_future_stamp_is_repaired_by_an_explicit_time(self, world):
+        """The known limit of the lift (migration header): a future stamp pins
+        each later ``now()`` write. ``SET updated_at = now()`` is lifted too.
+        The repair of the header, an explicit time below ``now()`` written to
+        both columns, is kept as written."""
+        w = world
+        ahead = datetime.now().astimezone() + timedelta(days=1)
+        with w.p.admin_engine.begin() as c:
+            c.execute(text(
+                "UPDATE pm_tasks SET updated_at = :u, fields_at = :u "
+                "WHERE id = CAST(:t AS uuid)"), {"u": ahead, "t": w.task_a})
+        with w.p.admin_engine.begin() as c:
+            c.execute(text("UPDATE pm_tasks SET updated_at = now() WHERE id = CAST(:t AS uuid)"),
+                      {"t": w.task_a})
+        assert _stamps(w.p, w.task_a).updated_at == ahead + timedelta(microseconds=1)
+        with w.p.admin_engine.begin() as c:
+            stamp = c.execute(text("SELECT now() - interval '1 microsecond'")).scalar()
+            c.execute(text(
+                "UPDATE pm_tasks SET updated_at = now() - interval '1 microsecond', "
+                "fields_at = now() - interval '1 microsecond' "
+                "WHERE id = CAST(:t AS uuid) AND updated_at > now()"), {"t": w.task_a})
+        repaired = _stamps(w.p, w.task_a)
+        assert repaired.updated_at == stamp
+        assert repaired.fields_at == stamp
+        # The next ordinary write stamps the clock again, not the old future.
+        async with _session(w.p) as call:
+            done = await _as(call, w.me, "PATCH", f"/projects/tasks/{w.task_a}",
+                             {"title": "Back on the clock"})
+            assert done.status_code == 200, done.text
+        after = _stamps(w.p, w.task_a)
+        assert stamp < after.updated_at < ahead
+        assert after.fields_at == after.updated_at
+
+    async def test_a_subtask_kept_by_a_partial_delete_gives_412(self, world):
+        """Read child K, delete its parent and only the OTHER subtask (K is
+        kept and moves up a level), PATCH K with the old token: 412. This is the
+        kept-move path of ``delete_task_in``, not the lift."""
+        w = world
+        kept = _second_task(w.p, w.task_a, number=3, title="Keep me", parent=w.task_a)
+        doomed = _second_task(w.p, w.task_a, number=4, title="Drop me", parent=w.task_a)
+        async with _session(w.p) as call:
+            seen = await _as(call, w.me, "GET", f"/projects/tasks/{kept}")
+            assert seen.status_code == 200, seen.text
+            version = seen.json()["updated_at"]
+            gone = await _as(call, w.me, "DELETE",
+                             f"/projects/tasks/{w.task_a}?delete_subtask_ids={doomed}")
+            assert gone.status_code == 200, gone.text
+            assert gone.json()["cascaded"]["subtasks_deleted"] == 1
+            late = await _as(call, w.me, "PATCH", f"/projects/tasks/{kept}",
+                             {"title": "Keep me today"}, if_match=version)
+        assert late.status_code == 412, late.text
+        assert late.json()["detail"]["current"]["parent_task_id"] is None
+
+    async def test_a_target_lifted_by_a_merge_gives_412(self, world):
+        """Read T, a subtask of B. Merge B into T, so T is lifted out of B's
+        subtree first. PATCH T with the old token: 412. No task has a
+        description, tags, priority or estimate, so the merge writes no field
+        of T but its parent."""
+        w = world
+        target = _second_task(w.p, w.task_a, number=3, title="The whole of it",
+                              parent=w.task_b)
+        async with _session(w.p) as call:
+            seen = await _as(call, w.me, "GET", f"/projects/tasks/{target}")
+            assert seen.status_code == 200, seen.text
+            version = seen.json()["updated_at"]
+            merged = await _as(call, w.me, "POST", f"/projects/tasks/{target}/merge",
+                               {"sources": [w.task_b]})
+            assert merged.status_code == 200, merged.text
+            late = await _as(call, w.me, "PATCH", f"/projects/tasks/{target}",
+                             {"title": "The whole of it, done"}, if_match=version)
+        assert late.status_code == 412, late.text
+        assert late.json()["detail"]["current"]["parent_task_id"] is None
+
+    @pytest.mark.parametrize("column", [
+        "title", "description", "importance", "leveraged", "estimate_mins",
+        "start_date", "due_at", "tags", "type_id", "custom_fields",
+    ])
+    async def test_a_field_change_by_someone_else_gives_412(self, world, column):
+        """Read A, somebody else changes ONE column, PATCH A with the old
+        token: 412. A guard on each user-visible column, so the trigger cannot
+        start to read one of them as a stamp."""
+        w = world
+        with w.p.admin_engine.begin() as c:
+            row = c.execute(text(
+                "SELECT project_id, organization_id FROM pm_tasks "
+                "WHERE id = CAST(:t AS uuid)"), {"t": w.task_a}).one()
+            kind = str(uuid.uuid4())
+            c.execute(text(
+                "INSERT INTO pm_task_types (id, organization_id, project_id, name) "
+                "VALUES (:id, :o, :p, 'Bug')"),
+                {"id": kind, "o": row.organization_id, "p": row.project_id})
+            c.execute(text(
+                "INSERT INTO pm_custom_fields (organization_id, project_id, field_key, "
+                "name, field_type, created_by) VALUES (:o, :p, 'site', 'Site', 'text', :e)"),
+                {"o": row.organization_id, "p": row.project_id, "e": ME})
+        change = {
+            "title": "Somebody else's title",
+            "description": "Somebody else's notes",
+            "importance": 3,
+            "leveraged": True,
+            "estimate_mins": 90,
+            "start_date": "2026-11-01",
+            "due_at": "2026-11-02T10:00:00+00:00",
+            "tags": ["urgent"],
+            "type_id": kind,
+            "custom_fields": {"site": "Pune"},
+        }[column]
+        async with _session(w.p) as call:
+            version = await _version(call, w)
+            first = await _as(call, w.other, "PATCH", f"/projects/tasks/{w.task_a}",
+                              {column: change})
+            assert first.status_code == 200, first.text
+            late = await _as(call, w.me, "PATCH", f"/projects/tasks/{w.task_a}",
+                             {"title": "My title"}, if_match=version)
+        assert late.status_code == 412, late.text

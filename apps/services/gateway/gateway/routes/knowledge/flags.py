@@ -1,0 +1,265 @@
+"""The Knowledge kill switch (WS-61 KB-1).
+
+Spec: ``project-docs/specs/knowledge_base.md`` §13.
+
+This module is the ONE reader in the gateway of the ten settings below.
+Nothing else in the gateway reads them.
+
+* ``KNOWLEDGE_ENABLED`` — the kill switch, default OFF.
+* ``KNOWLEDGE_ORGS`` — the organization ids that may reach ``/knowledge``,
+  with a comma between ids. ``*`` allows each organization with a bound
+  tenant. An empty list allows no organization.
+* ``KNOWLEDGE_EMBED`` (KB-3) — the organization ids whose chunks get a
+  vector, in the same grammar. Empty, the default, means no organization:
+  the index stays lexical and the embed door is never called.
+* ``KNOWLEDGE_EMBED_SWEEP`` (KB-3c) — the kill switch of the embed sweep,
+  default ON. The sweep does nothing for an org that ``KNOWLEDGE_EMBED``
+  does not name, so ON costs nothing until an org is named.
+* ``KNOWLEDGE_PROPOSAL_EXPIRY`` (KB-5c) — the kill switch of the proposal
+  expiry, default ON. The loop expires nothing for an org that Knowledge
+  does not serve, so ON costs nothing there.
+* ``KNOWLEDGE_PROPOSALS`` (KB-5a) — the assistant's proposals, default OFF.
+  Off, ``POST /knowledge/proposals`` answers 404 and the orchestrator holds
+  no proposal tool. The setting's one reader is
+  ``acb_skills.knowledge_tools.knowledge_propose_enabled``, so the gateway
+  and the orchestrator read one flag. It is not per organization, because
+  the orchestrator builds its tool list once and for every organization.
+* ``KNOWLEDGE_GAPS`` (KB-9a) — the organization ids whose
+  ``search_company`` reads with no Knowledge hit write a ``kb_gaps`` row, in
+  the grammar of ``KNOWLEDGE_ORGS``. Empty, the default, means no
+  organization. It also opens the gap routes and the ``kb_gap`` card.
+* ``KNOWLEDGE_SOURCES`` (KC-1a, ``knowledge_curation.md`` §17) — the
+  organization ids that may connect a company file source, in the same
+  grammar. Empty, the default, means no organization: every
+  ``/knowledge/sources`` route answers 404.
+* ``KNOWLEDGE_SOURCE_GOOGLE`` (KC-1a) — the organization ids that may connect
+  Google Drive, in the same grammar. It needs ``KNOWLEDGE_SOURCES`` too.
+  Empty, the default, means no organization: the Drive connect and callback
+  answer 404.
+* ``KNOWLEDGE_SYNC`` (KC-3, ``knowledge_curation.md`` §17) — the organization
+  ids whose ready sources the sync loop reads, in the same grammar. It needs
+  ``KNOWLEDGE_SOURCES`` too. Empty, the default, means no organization:
+  ``kb_sync/scheduler.start_kb_sync`` starts no task.
+
+:func:`require_knowledge_enabled` is the first router dependency in
+``core.py``. It runs BEFORE ``require_feature_router("knowledge")``, so an
+organization outside the list gets 404 and never 403. A dark feature does not
+announce itself.
+
+The organization comes from ``UserContext.organization_id``, which
+``acb_auth`` resolves on the server from the authenticated member. It never
+comes from a header, the query or the body (R5, R11).
+
+This module is a leaf. It imports nothing from its siblings. A flip for an
+organization is the owner's, gate ``enforcement-flip``. Fence:
+``tests/unit/test_kb_flags.py``.
+"""
+
+from __future__ import annotations
+
+import functools
+from typing import Annotated
+
+from acb_auth import UserContext, get_current_user
+from acb_common import get_settings
+from fastapi import Depends, HTTPException
+
+#: The value in ``KNOWLEDGE_ORGS`` that allows each organization with a bound
+#: tenant.
+ALL_ORGS = "*"
+
+
+def knowledge_enabled() -> bool:
+    """True when the kill switch is on. Default OFF."""
+    return get_settings().knowledge_enabled is True
+
+
+@functools.lru_cache(maxsize=16)
+def _parse_orgs(raw: str) -> frozenset[str]:
+    """The ids in *raw*, trimmed and in lower case. Cached on the raw value."""
+    return frozenset(p.strip().lower() for p in raw.split(",") if p.strip())
+
+
+def knowledge_orgs() -> frozenset[str]:
+    """The organization ids that may reach ``/knowledge``. Empty means none."""
+    return _parse_orgs(str(get_settings().knowledge_orgs or ""))
+
+
+def knowledge_org_allowed(organization_id: str | None) -> bool:
+    """True when the switch is on AND the organization is on the list.
+
+    No organization is false, also with ``*``. A caller with no bound tenant
+    has no Knowledge to reach.
+    """
+    if not knowledge_enabled() or not organization_id:
+        return False
+    org = str(organization_id).strip().lower()
+    if not org:
+        return False
+    orgs = knowledge_orgs()
+    return ALL_ORGS in orgs or org in orgs
+
+
+def knowledge_embed_orgs() -> frozenset[str]:
+    """The organization ids whose chunks get a vector. Empty means none."""
+    return _parse_orgs(str(get_settings().knowledge_embed or ""))
+
+
+def knowledge_embed_named() -> bool:
+    """True when the switch is on and ``KNOWLEDGE_EMBED`` names any org.
+
+    The sweep asks this before it reads the org list, so with no org named
+    it opens no session.
+    """
+    return knowledge_enabled() and bool(knowledge_embed_orgs())
+
+
+def knowledge_embed_sweep_enabled() -> bool:
+    """True when the embed sweep may start. Default ON (KB-3c)."""
+    return get_settings().knowledge_embed_sweep is not False
+
+
+def knowledge_proposal_expiry_enabled() -> bool:
+    """True when the proposal expiry may start. Default ON (KB-5c)."""
+    return get_settings().knowledge_proposal_expiry is not False
+
+
+def knowledge_embed_allowed(organization_id: str | None) -> bool:
+    """True when Knowledge serves the organization AND it is on ``KNOWLEDGE_EMBED``.
+
+    False means no call to the embed door: the write keeps a NULL vector,
+    and a search answers the lexical half with ``degraded``.
+    """
+    if not knowledge_org_allowed(organization_id):
+        return False
+    org = str(organization_id).strip().lower()
+    orgs = knowledge_embed_orgs()
+    return ALL_ORGS in orgs or org in orgs
+
+
+def knowledge_proposals_allowed(organization_id: str | None) -> bool:
+    """True when Knowledge serves the organization AND ``KNOWLEDGE_PROPOSALS`` is on."""
+    if not knowledge_org_allowed(organization_id):
+        return False
+    from acb_skills.knowledge_tools import knowledge_propose_enabled
+
+    return knowledge_propose_enabled()
+
+
+def knowledge_gaps_orgs() -> frozenset[str]:
+    """The organization ids that record gaps (KB-9a). Empty means none."""
+    return _parse_orgs(str(get_settings().knowledge_gaps or ""))
+
+
+def knowledge_gaps_allowed(organization_id: str | None) -> bool:
+    """True when Knowledge serves the organization AND ``KNOWLEDGE_GAPS`` names it.
+
+    False means no gap write, a 404 on each gap route, and no ``kb_gap``
+    card. No organization is false, also with ``*``.
+    """
+    if not knowledge_org_allowed(organization_id):
+        return False
+    org = str(organization_id).strip().lower()
+    orgs = knowledge_gaps_orgs()
+    return ALL_ORGS in orgs or org in orgs
+
+
+async def require_knowledge_gaps(
+    user: Annotated[UserContext, Depends(get_current_user)],
+) -> None:
+    """404 unless ``KNOWLEDGE_GAPS`` names the caller's organization (KB-9a).
+
+    The gap routes add it to the router's own dependencies. It reads
+    ``user.organization_id`` and nothing else from the request.
+    """
+    if not knowledge_gaps_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+def _named(raw: object, organization_id: str | None) -> bool:
+    """True when Knowledge serves the org AND the list *raw* names it or ``*``."""
+    if not knowledge_org_allowed(organization_id):
+        return False
+    org = str(organization_id).strip().lower()
+    orgs = _parse_orgs(str(raw or ""))
+    return ALL_ORGS in orgs or org in orgs
+
+
+def knowledge_sources_allowed(organization_id: str | None) -> bool:
+    """True when ``KNOWLEDGE_SOURCES`` names the organization (KC-1a).
+
+    False means a 404 on each ``/knowledge/sources`` route. No organization is
+    false, also with ``*``.
+    """
+    return _named(get_settings().knowledge_sources, organization_id)
+
+
+def knowledge_source_google_allowed(organization_id: str | None) -> bool:
+    """True when ``KNOWLEDGE_SOURCES`` AND ``KNOWLEDGE_SOURCE_GOOGLE`` name the org.
+
+    False means a 404 on the Google Drive connect and callback.
+    """
+    return knowledge_sources_allowed(organization_id) and _named(
+        get_settings().knowledge_source_google, organization_id)
+
+
+def knowledge_provider_allowed(organization_id: str | None, provider: str) -> bool:
+    """True when the flag of *provider* names the org (KC-3 review).
+
+    The sync loop asks this for each source, so an org off
+    ``KNOWLEDGE_SOURCE_GOOGLE`` gets no Google call. It reads no setting of
+    its own: it asks the reader of that provider. A provider with no reader
+    here is off for each org (OneDrive waits for KC-2).
+    """
+    if provider == "google_drive":
+        return knowledge_source_google_allowed(organization_id)
+    return False
+
+
+def knowledge_sync_named() -> bool:
+    """True when Knowledge is on and ``KNOWLEDGE_SYNC`` names any org (KC-3).
+
+    ``start_kb_sync`` asks this before it starts the loop, so with no org
+    named no task exists and no session opens.
+    """
+    return knowledge_enabled() and bool(_parse_orgs(str(get_settings().knowledge_sync or "")))
+
+
+def knowledge_sync_allowed(organization_id: str | None) -> bool:
+    """True when ``KNOWLEDGE_SOURCES`` AND ``KNOWLEDGE_SYNC`` name the org (KC-3).
+
+    False means the loop reads no source of the org and opens no session for
+    it. No organization is false, also with ``*``.
+    """
+    return knowledge_sources_allowed(organization_id) and _named(
+        get_settings().knowledge_sync, organization_id)
+
+
+async def require_knowledge_sources(
+    user: Annotated[UserContext, Depends(get_current_user)],
+) -> None:
+    """404 unless ``KNOWLEDGE_SOURCES`` names the caller's organization (KC-1a).
+
+    It reads ``user.organization_id`` and nothing else from the request.
+    """
+    if not knowledge_sources_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+async def require_knowledge_source_google(
+    user: Annotated[UserContext, Depends(get_current_user)],
+) -> None:
+    """404 unless both source flags name the caller's organization (KC-1a)."""
+    if not knowledge_source_google_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+async def require_knowledge_enabled(
+    user: Annotated[UserContext, Depends(get_current_user)],
+) -> None:
+    """404 unless the caller's organization may reach Knowledge.
+
+    It reads ``user.organization_id`` and nothing else from the request.
+    """
+    if not knowledge_org_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail="Not Found")

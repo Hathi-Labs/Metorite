@@ -6,8 +6,10 @@ import {
   FRESH_MS,
   MAX_ENTRIES,
   bindIdentity,
+  boundOrganization,
   cacheKey,
   clearAll,
+  guardedPut,
   identity,
   invalidate,
   isFresh,
@@ -175,6 +177,199 @@ describe("invalidate", () => {
   });
 });
 
+describe("🔴 a write that lands while a re-read is in flight (NS-3 review)", () => {
+  /**
+   * The order that broke My Day's Undo. Done drops the key, and the watcher
+   * starts a re-read. The Undo lands while that re-read is in flight. The key
+   * is not in the store, so the Undo's `invalidate` wakes nobody. Before the
+   * fix, the re-read then stored the pre-Undo answer as fresh, and the row
+   * the member had brought back stayed gone.
+   */
+  it("does not store the answer that predates the write, and reads again", async () => {
+    const key = cacheKey("projects/shell/needs", { limit: 30 });
+    put(key, "with-row");
+    invalidate("projects/"); // Done
+    expect(peek(key)).toBeUndefined();
+
+    let release: (v: string) => void = () => {};
+    let calls = 0;
+    const fetcher = vi.fn(() => {
+      calls += 1;
+      return calls === 1
+        ? new Promise<string>((res) => { release = res; })
+        : Promise.resolve("row-back");
+    });
+    const pending = read(key, fetcher); // the watcher's re-read
+    invalidate("projects/"); // Undo, while it is in flight
+    release("row-gone"); // the answer from before the Undo
+
+    await expect(pending).resolves.toBe("row-back");
+    expect(peek(key)?.data).toBe("row-back");
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("wakes the watcher with the fresh answer, never the stale one", async () => {
+    const key = cacheKey("projects/my/inbox");
+    const seen: unknown[] = [];
+    const off = subscribe(key, () => seen.push(peek(key)?.data));
+    let release: (v: string) => void = () => {};
+    let calls = 0;
+    const pending = read(key, () => {
+      calls += 1;
+      return calls === 1 ? new Promise<string>((res) => { release = res; }) : Promise.resolve("new");
+    });
+    invalidate("projects/");
+    release("old");
+    await pending;
+    off();
+    // The write wakes the watcher at once (with nothing stored yet), and the
+    // fresh answer wakes it again. The stale one never reaches it.
+    expect(seen).not.toContain("old");
+    expect(seen.at(-1)).toBe("new");
+  });
+
+  it("stores nothing from before a clearAll (a change of member)", async () => {
+    const key = cacheKey("projects/tree");
+    let release: (v: string) => void = () => {};
+    let calls = 0;
+    const pending = read(key, () => {
+      calls += 1;
+      return calls === 1 ? new Promise<string>((res) => { release = res; }) : Promise.resolve("member-b");
+    });
+    clearAll();
+    release("member-a");
+    await expect(pending).resolves.toBe("member-b");
+    expect(peek(key)?.data).toBe("member-b");
+  });
+
+  it("after the cap, the writes have woken the watcher, and its re-read stores the fresh answer", async () => {
+    // A board drag burst: every read meets a write. The read gives up and
+    // answers stale. Nothing may leave that stale answer on screen as current.
+    const key = cacheKey("projects/tree");
+    let burst = true;
+    let calls = 0;
+    const fetcher = async () => {
+      calls += 1;
+      await Promise.resolve();
+      if (burst) invalidate("projects/tree");
+      return burst ? `stale-${calls}` : "settled";
+    };
+    let wakes = 0;
+    const off = subscribe(key, () => {
+      wakes += 1;
+    });
+    await read(key, fetcher); // gives up after the cap, stores nothing
+    expect(peek(key)).toBeUndefined();
+    expect(wakes).toBeGreaterThan(0); // each bump woke the watcher
+    burst = false; // the writes stop; the watcher's coalesced re-read lands
+    await expect(read(key, fetcher)).resolves.toBe("settled");
+    expect(peek(key)?.data).toBe("settled");
+    off();
+  });
+
+  it("stops asking after a few writes in a row, and stores nothing stale", async () => {
+    const key = cacheKey("projects/busy");
+    let calls = 0;
+    const pending = read(key, async () => {
+      calls += 1;
+      await Promise.resolve();
+      invalidate("projects/busy"); // a write lands during every read
+      return `answer-${calls}`;
+    });
+    await expect(pending).resolves.toMatch(/^answer-/);
+    expect(calls).toBe(4);
+    expect(peek(key)).toBeUndefined();
+  });
+});
+
+describe("guardedPut — a value that another key's read carried (MD-1b)", () => {
+  /**
+   * My Day's feed answer carries the needs view, and its fetcher stores it
+   * under the needs key. A Done that lands while the feed read is in flight
+   * drops the Projects family. The feed's answer then predates the Done, and
+   * so does the needs view in it. It must not replace the needs entry.
+   *
+   * Mutation, run by hand (2026-10-13): make the returned put call `put`
+   * with no check, and the first, third and fourth tests fail.
+   */
+  const FEED = cacheKey("projects/shell/feed", { limit: 40 });
+  const NEEDS = cacheKey("projects/shell/needs", { limit: 30 });
+
+  /** A feed fetcher whose FIRST request waits for `release`. */
+  function feedFetcher() {
+    let release: (v: string) => void = () => {};
+    const stored: boolean[] = [];
+    let calls = 0;
+    const fetcher = () => {
+      calls += 1;
+      const putNeeds = guardedPut<string>(FEED, NEEDS);
+      if (calls > 1) {
+        stored.push(putNeeds("needs-after"));
+        return Promise.resolve("feed-after");
+      }
+      return new Promise<string>((res) => {
+        release = (v) => {
+          stored.push(putNeeds(`needs-of-${v}`));
+          res(v);
+        };
+      });
+    };
+    return { fetcher, stored, release: (v: string) => release(v) };
+  }
+
+  it("stores nothing when a write lands during the carrier's read", async () => {
+    const feed = feedFetcher();
+    const pending = read(FEED, feed.fetcher);
+    invalidate("projects/"); // a Done, while the feed read is in flight
+    feed.release("before-done");
+    await expect(pending).resolves.toBe("feed-after");
+    // The answer from before the Done stored nothing. The read asked again,
+    // and that answer, from after the Done, stored its needs view.
+    expect(feed.stored).toEqual([false, true]);
+    expect(peek(NEEDS)?.data).toBe("needs-after");
+  });
+
+  it("stores the carried value when no write lands, and wakes its watchers", async () => {
+    let woke = 0;
+    const off = subscribe(NEEDS, () => {
+      woke += 1;
+    });
+    await read(FEED, async () => {
+      const putNeeds = guardedPut<string>(FEED, NEEDS);
+      await Promise.resolve();
+      expect(putNeeds("needs-view")).toBe(true);
+      return "feed";
+    });
+    off();
+    expect(peek(NEEDS)?.data).toBe("needs-view");
+    expect(woke).toBe(1);
+  });
+
+  it("never replaces an answer newer than its own request", async () => {
+    let t = 1_000;
+    setClock(() => t);
+    await read(FEED, async () => {
+      const putNeeds = guardedPut<string>(FEED, NEEDS);
+      t += 10;
+      put(NEEDS, "newer-needs"); // the needs read landed first
+      t += 10;
+      expect(putNeeds("older-needs")).toBe(false);
+      return "feed";
+    });
+    expect(peek(NEEDS)?.data).toBe("newer-needs");
+  });
+
+  it("stores nothing from before a clearAll (a change of member)", async () => {
+    const feed = feedFetcher();
+    const pending = read(FEED, feed.fetcher);
+    clearAll();
+    feed.release("member-a");
+    await pending;
+    expect(feed.stored[0]).toBe(false);
+    expect(peek(NEEDS)?.data).not.toBe("needs-of-member-a");
+  });
+});
+
 describe("subscribe", () => {
   it("wakes on put and stops after unsubscribe", () => {
     const cb = vi.fn();
@@ -252,6 +447,35 @@ describe("⚠️ bindIdentity — the tenancy guard", () => {
   it("reports who it is holding rows for", () => {
     bindIdentity("who@example.com");
     expect(identity()).toBe("who@example.com");
+  });
+
+  // WS-53, 2026-10-19: one member saw two orgs in one tab, and org A's cached
+  // answers showed in org B.
+  it("EMPTIES the cache when the org changes and the member does not", () => {
+    bindIdentity("admin@example.com", "org-a");
+    put("crm:questions", { rows: ["org A's questions"] });
+    expect(bindIdentity("admin@example.com", "org-b")).toBe(true);
+    expect(peek("crm:questions")).toBeUndefined();
+    expect(boundOrganization()).toBe("org-b");
+  });
+
+  it("does not empty the cache when the org first becomes known", () => {
+    // The first load: the session answers before the access read does.
+    bindIdentity("first-load@example.com");
+    put("crm:questions", 1);
+    expect(bindIdentity("first-load@example.com", "org-a")).toBe(false);
+    expect(peek("crm:questions")?.data).toBe(1);
+  });
+
+  it("an unknown org changes nothing, and does not forget the last known org", () => {
+    bindIdentity("outage@example.com", "org-a");
+    put("crm:questions", 1);
+    // The access read failed, so the org is unknown for a moment.
+    expect(bindIdentity("outage@example.com", null)).toBe(false);
+    expect(peek("crm:questions")?.data).toBe(1);
+    // It comes back naming another org: that is a change.
+    expect(bindIdentity("outage@example.com", "org-b")).toBe(true);
+    expect(size()).toBe(0);
   });
 });
 

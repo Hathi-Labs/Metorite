@@ -11,7 +11,7 @@ Spec: `project-docs/specs/projects_ai_chat.md`.
 
 | File | What it holds |
 |---|---|
-| `manifest.py` | Every `/projects` route, mapped to a tool and a class, or excluded with a reason. `tests/unit/test_projects_chat_coverage.py` fails on a route that is neither |
+| `manifest.py` | Every `/projects` route, mapped to a tool and a class, or excluded with a reason. `tests/unit/test_projects_chat_coverage.py` fails on a route that is neither. `SENDS`, `FIELD_EXEMPT` and `FIELD_PLANNED` hold each request field of a mapped route, and `tests/unit/test_projects_field_parity.py` (F2) fails on a field in none of them |
 | `client.py` | The gateway client. It refuses a call with no acting user, a verb the manifest does not allow on that path, and a path the manifest excludes |
 | `reads.py` | The class A tools. Reads, no card |
 
@@ -33,9 +33,24 @@ Spec: `project-docs/specs/projects_ai_chat.md`.
    a reason.
 4. If the row names a tool that does not exist yet, add the tool to
    `PLANNED` with its slice.
+5. Run `uv run pytest tests/unit/test_projects_field_parity.py`. It names
+   each request field of the route that has no decision.
+6. Put each field in one table. `SENDS` takes the tool argument that sets
+   it. `FIELD_EXEMPT` takes a reason. `FIELD_PLANNED` takes the gap id of
+   `projects_agent_parity.md` §3.3.
+
+A new field on an old route follows steps 5 and 6.
 
 ## Output conventions
 
-Every row a tool prints carries `full_id: <uuid>` on the next line. The chat
-cards read that line. Titles and names are fenced in «guillemets», because
-they are data written by other people, never instructions.
+Each task or project row that a tool prints carries `full_id: <uuid>` on the
+next line. The chat cards read that line, and they open a task with it.
+Each tool fences titles and names in «guillemets», because other people wrote
+them. They are data, never instructions.
+
+A reminder is not a task (WS-66 RM-3). So a reminder row carries
+`reminder_id: <uuid>`, never `full_id:`. Only `promote_reminder` prints a
+`full_id:` line, for the task that it made.
+
+A line for the model only starts with the data legend (`reads.for_the_model`).
+The member's receipt card drops each line that starts with the legend.

@@ -2,7 +2,6 @@
 
 import Button from "@/components/ui/Button";
 import AppIcon, { themedIcon, type ThemedIcon } from "@/components/Icon";
-import { useRouter } from "next/navigation";
 import {
   useCallback,
   useEffect,
@@ -14,7 +13,6 @@ import {
 import FilterPills from "@/components/FilterPills";
 import { EmptyState } from "@/components/EmptyState";
 import { SkeletonRows } from "@/components/ui/Skeleton";
-import { taskDeepLink } from "@/app/projects/lib/card";
 import { clampCursor, stepCursor } from "@/lib/cursor";
 import {
   NO_SELECTION,
@@ -34,11 +32,7 @@ import {
 } from "../lib/utils";
 import {
   type InboxScope,
-  type InboxSource,
-  SOURCE_PILLS,
-  filterBySource,
   inboxKind,
-  inboxKindCounts,
   inboxRows,
   orderInbox,
 } from "../lib/inbox";
@@ -49,7 +43,6 @@ import {
   submitCaptureBox,
 } from "../lib/quickAdd";
 import { captureDestinations, destinations, useCompanyTree } from "../lib/companyTree";
-import { promoteAllowed } from "../lib/promote";
 import { inboxEmptyCopy } from "../lib/emptyState";
 import { DELETE_LABEL, MIXED_LABEL, REMOVE_LABEL } from "../lib/removal";
 import { InboxCard } from "./InboxCard";
@@ -57,8 +50,8 @@ import { InboxTable } from "./InboxTable";
 import { AttachmentComposer } from "./AttachmentComposer";
 import type { TaskAttachment } from "../lib/types";
 import { ClarifyModal } from "./ClarifyModal";
-import { openShortcutsSheet } from "./TasksShortcuts";
 import { CaptureProjectChip } from "./CaptureProjectChip";
+import { filterWord, shellBarOn } from "@/lib/shell/registry";
 
 const AGING_MS = 3 * 24 * 3600 * 1000; // GTD: empty regularly — flag stale items
 
@@ -96,19 +89,17 @@ type SortOrder = "newest" | "oldest";
 /**
  * The Inbox (my_tasks_cutover.md §5 S6g — one inbox).
  *
- * ONE list with ONE row component for both kinds of task: my captures and the
- * board rows a colleague put on my plate. Board rows come first, then the
- * captures, each block in the member's sort. `inbox.ts` is the rule for what
- * the list holds, and the sidebar badge reads the same rule, so the header's
- * "N to process" equals the badge. Search, the date pills, the source pills,
+ * ONE list of what I captured (D170, INB-1, 2026-11-03). Work a colleague
+ * assigned to me is in My tasks as New, not here. `inbox.ts` is the rule for
+ * what the list holds, and the sidebar badge reads the same rule, so the
+ * header's "N to process" equals the badge. Search, the date pills,
  * selection, the keyboard and "Clarify next" all walk this one list.
  *
  * ⚠️ The Inbox is NEVER scoped by an Area (S6b repair, 2026-09-23). A capture
  * lands in the personal ROOT, before any Area, so an Area scope would empty
  * this list. Clarify is where a capture gets its Area.
  */
-export function InboxView() {
-  const router = useRouter();
+export function InboxView({ embedded = false }: { embedded?: boolean } = {}) {
   const items = useTaskStore((s) => s.items);
   const loading = useTaskStore((s) => s.loading);
   const backend = useTaskStore((s) => s.backend);
@@ -119,7 +110,6 @@ export function InboxView() {
   const openQuickCapture = useTaskStore((s) => s.openQuickCapture);
   const lastCaptureIds = useTaskStore((s) => s.lastCaptureIds);
   const undoLastCapture = useTaskStore((s) => s.undoLastCapture);
-  const quickDispose = useTaskStore((s) => s.quickDispose);
   const bulkDispose = useTaskStore((s) => s.bulkDispose);
   const requestDelete = useTaskStore((s) => s.requestDelete);
   const undeferItem = useTaskStore((s) => s.undeferItem);
@@ -128,9 +118,6 @@ export function InboxView() {
   const processed = useTaskStore((s) => s.processedThisSession);
   const clarifyModalOpen = useTaskStore((s) => s.clarifyModalOpen);
   const quickCaptureOpen = useTaskStore((s) => s.quickCaptureOpen);
-  const sourceFilter = useTaskStore((s) => s.sourceFilter);
-  const setSourceFilter = useTaskStore((s) => s.setSourceFilter);
-  const fromProjectIds = useTaskStore((s) => s.fromProjectIds);
   const personalRootId = useTaskStore((s) => s.personalRootId);
   const areas = useTaskStore((s) => s.areas);
   const projects = useTaskStore((s) => s.projects);
@@ -143,24 +130,20 @@ export function InboxView() {
     [personalRootId, areaIds],
   );
   const kindOf = useCallback((i: MyTask) => inboxKind(i, scope), [scope]);
-  const allRows = useMemo(() => inboxRows(items, fromProjectIds), [items, fromProjectIds]);
-  const kindCounts = useMemo(() => inboxKindCounts(allRows, scope), [allRows, scope]);
-  const activeInbox = useMemo(
-    () => filterBySource(allRows, sourceFilter, scope),
-    [allRows, sourceFilter, scope],
-  );
-  // Tickler = deferred captures, and board rows whose start date is ahead.
+  const allRows = useMemo(() => inboxRows(items), [items]);
+  const activeInbox = allRows;
+  // Tickler = deferred captures.
   const tickler = useMemo(
     () =>
       items
         .filter(
           (i) =>
             !i.archivedAt &&
-            (i.disposition === "INBOX" || fromProjectIds.has(i.id)) &&
+            i.disposition === "INBOX" &&
             isTickled(i),
         )
         .sort((a, b) => (resurfacesAt(a) ?? "").localeCompare(resurfacesAt(b) ?? "")),
-    [items, fromProjectIds],
+    [items],
   );
 
   const oldest = useMemo(() => {
@@ -231,8 +214,8 @@ export function InboxView() {
       if (q && !i.title.toLowerCase().includes(q)) return false;
       return true;
     });
-    return orderInbox(filtered, scope, sortOrder);
-  }, [activeInbox, search, dateFilter, sortOrder, scope]);
+    return orderInbox(filtered, sortOrder);
+  }, [activeInbox, search, dateFilter, sortOrder]);
 
   const pills = [
     // "Any date", not "All": the source pills beside it already say All.
@@ -242,9 +225,6 @@ export function InboxView() {
     { id: "week", label: "This week", count: bucketCounts.week },
     { id: "older", label: "Older", count: bucketCounts.older },
   ].filter((p) => p.id === "all" || p.count > 0);
-  // S6g — the source filter, the store's `sourceFilter` (it had no setter
-  // anywhere before). Each pill says how many rows it holds.
-  const sourcePills = SOURCE_PILLS.map((p) => ({ ...p, count: kindCounts[p.id] }));
 
   // WS-27ad — the same transition /projects' board and the rest of /tasks use:
   // a plain pick toggles and becomes the anchor, a shift-pick adds the range
@@ -280,16 +260,15 @@ export function InboxView() {
       : REMOVE_LABEL
     : DELETE_LABEL;
 
-  // ── keyboard navigation + triage over the visible list ──
+  // ── keyboard navigation over the visible list ──
   //
-  // WS-27ad — the movement half is the SHARED cursor (`@/lib/cursor`). What
-  // stays local is TRIAGE — `e`/`x`/`t`/`s`/`r`/`2` are GTD dispositions, and
-  // S6g adds `m` (Move to project, a capture) and `o` (Open on board, a board
-  // row). They walk both kinds, because `visible` holds both.
+  // WS-27ad — the SHARED cursor (`@/lib/cursor`): arrows move, Enter
+  // clarifies, Escape clears. The triage letter keys (`e x t s r 2 m o`)
+  // were removed on 2026-10-13 (owner: unnecessary and complicated). Each is
+  // a button on the row. Fence: `lib/noLetterKeys.test.ts`.
   //
-  // The cursor is held as an ID here rather than an index because triage
-  // ADVANCES it: dispose the current item and the row under it is gone, so
-  // "the next id" has to be read before the list changes.
+  // The cursor is held as an ID rather than an index, so it stays on its row
+  // when a button on another row changes the list.
   useEffect(() => {
     if (showTickler) return;
     const onKey = (e: globalThis.KeyboardEvent) => {
@@ -307,26 +286,9 @@ export function InboxView() {
 
       const rows = visible.map((i) => i.id);
       const idx = visible.findIndex((i) => i.id === cursorId);
-      const cur = idx >= 0 ? visible[idx] : visible[0];
-      const curKind = kindOf(cur);
-      const disposeAdvance = (d: Disposition) => {
-        const nextId =
-          visible[idx + 1]?.id ?? visible[idx - 1]?.id ?? null;
-        quickDispose(cur.id, d);
-        setCursorId(nextId);
-      };
-      const removeAdvance = () => {
-        const nextId =
-          visible[idx + 1]?.id ?? visible[idx - 1]?.id ?? null;
-        // A board row: "Not mine", never a delete (see `bulkRemove`).
-        if (curKind === "board") quickDispose(cur.id, "TRASH");
-        else requestDelete([cur.id]);
-        setCursorId(nextId);
-      };
 
       // Arrows and Enter are the shared cursor's. `stepCursor` returns null for
-      // anything it does not own, so the triage switch below still sees every
-      // key it cares about and nothing is eaten twice.
+      // anything it does not own.
       const moved = stepCursor(
         rows,
         { cursor: clampCursor(rows.length, idx), anchor: null, selection: NOBODY },
@@ -342,51 +304,11 @@ export function InboxView() {
         return;
       }
 
-      switch (e.key) {
-        case "e":
-          // A board task's title is the team's. Edit it on the board.
-          if (curKind !== "personal") break;
-          e.preventDefault();
-          setEditingId(cur.id);
-          break;
-        case "x":
-          e.preventDefault();
-          toggleSelect(cur.id);
-          break;
-        case "t":
-          e.preventDefault();
-          removeAdvance();
-          break;
-        case "s":
-          e.preventDefault();
-          disposeAdvance("SOMEDAY");
-          break;
-        case "r":
-          e.preventDefault();
-          disposeAdvance("REFERENCE");
-          break;
-        case "2":
-          e.preventDefault();
-          disposeAdvance("DONE");
-          break;
-        case "m":
-          // Move to project — a capture only. A board row is on a board.
-          if (curKind !== "personal" || !promoteAllowed(cur)) break;
-          e.preventDefault();
-          openPromote(cur.id);
-          break;
-        case "o":
-          // Open on board — a board row only. A capture has no board.
-          if (curKind !== "board") break;
-          e.preventDefault();
-          router.push(taskDeepLink(cur));
-          break;
-        // `u` (undo) is handled globally by <UndoToast/> so it works in every
-        // view, not just the inbox.
-        case "Escape":
-          clearSelection();
-          setCursorId(null);
-          break;
+      // ⚠️ No letter keys (owner, 2026-10-13). Escape stays: it is not a
+      // shortcut.
+      if (e.key === "Escape") {
+        setSelection(NO_SELECTION);
+        setCursorId(null);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -399,13 +321,7 @@ export function InboxView() {
     clarifyModalOpen,
     quickCaptureOpen,
     promote,
-    openPromote,
-    kindOf,
-    router,
     openClarify,
-    quickDispose,
-    requestDelete,
-    toggleSelect,
   ]);
 
   const submit = () => {
@@ -436,6 +352,9 @@ export function InboxView() {
     setValue(next);
     // `#` at the start of a word opens the picker, filtered by what follows.
     if (openHashQuery(next) !== null) setChipOpen(true);
+    // Deleting the `#` closes the picker it opened. Left open, the picker
+    // would draw its own search box, and that box takes the caret.
+    else if (hashQuery !== null) setChipOpen(false);
   };
   const pickDest = (dest: CaptureDestination | null) => {
     setCaptureDest(dest);
@@ -450,9 +369,9 @@ export function InboxView() {
   return (
     <div className="flex h-full flex-col bg-background">
       {/* Mobile heading — the hero is hidden on mobile, so orient the user. */}
-      <div className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2.5 sm:hidden">
+      <div className={`flex shrink-0 items-center gap-2 border-b border-border px-4 py-2.5 sm:hidden${embedded ? " hidden" : ""}`}>
         <AppIcon name="Inbox" className="h-4 w-4 shrink-0 text-primary" />
-        <h2 className="text-sm font-medium text-foreground">Inbox</h2>
+        <h2 className="text-sm font-medium text-foreground">My task inbox</h2>
         <span className="text-[11px] text-muted-foreground">Capture now, clarify later</span>
       </div>
 
@@ -469,7 +388,7 @@ export function InboxView() {
         <div className="flex flex-wrap items-center gap-2.5 px-4 py-2.5">
           <div className="flex shrink-0 items-center gap-2">
             <AppIcon name="Inbox" className="h-4 w-4 text-primary" />
-            <h2 className="text-sm font-medium text-foreground">Inbox</h2>
+            <h2 className="text-sm font-medium text-foreground">My task inbox</h2>
           </div>
           {/* `overflow-hidden`: the chip's list is portalled (AnchoredPanel),
               so nothing inside needs to spill, and at 768 the chip used to. */}
@@ -501,7 +420,7 @@ export function InboxView() {
               onOpenChange={setChipOpen}
               query={hashQuery}
               areas={areas}
-              tree={tree}
+              roots={roots}
               projects={projects}
               onCreateArea={createArea}
             />
@@ -521,18 +440,6 @@ export function InboxView() {
           >
             <AppIcon name="Wind" className="h-3.5 w-3.5" />
             <span className="hidden lg:inline">Mind sweep</span>
-          </button>
-          {/* A pointer to the `?` sheet, which replaced the inline legend
-              (continuity P3). The sheet is printed from the key map in
-              `lib/shortcuts.ts`, so it cannot drift from the handlers. */}
-          <button
-            type="button"
-            onClick={openShortcutsSheet}
-            title="Keyboard shortcuts (?)"
-            aria-label="Keyboard shortcuts"
-            className="tech-transition inline-flex shrink-0 items-center rounded-md border border-border p-1.5 text-muted-foreground hover:border-primary/40 hover:text-foreground"
-          >
-            <AppIcon name="Keyboard" className="h-3.5 w-3.5" />
           </button>
         </div>
       </div>
@@ -689,16 +596,6 @@ export function InboxView() {
                 </span>
               )}
               {!showTickler && (
-                /* S6g — the source filter: both kinds, mine, or From
-                   Projects. It scrolls sideways on a phone, never the page. */
-                <FilterPills
-                  items={sourcePills}
-                  activeId={sourceFilter}
-                  onChange={(id) => setSourceFilter(id as InboxSource)}
-                  className="!min-w-0 max-w-full !shrink !border-0 !px-0 !py-0"
-                />
-              )}
-              {!showTickler && (
                 <FilterPills
                   items={pills}
                   activeId={dateFilter}
@@ -716,8 +613,9 @@ export function InboxView() {
                       <input
                         value={search}
                         onChange={(e) => setSearch(e.target.value)}
-                        placeholder="Search the inbox…"
-                        aria-label="Search the inbox"
+                        placeholder={`${filterWord()} my task inbox…`}
+                        aria-label={`${filterWord()} my task inbox`}
+                        data-page-filter={shellBarOn() ? "my task inbox" : undefined}
                         className="min-w-0 flex-1 bg-transparent text-base text-foreground placeholder:text-muted-foreground focus:outline-none sm:text-xs"
                       />
                     </div>
@@ -802,7 +700,7 @@ export function InboxView() {
             <InboxEmptyState empty={!hasRows} processed={processed} />
           ) : (
             <>
-              {(search || dateFilter !== "all" || sourceFilter !== "all") && (
+              {(search || dateFilter !== "all") && (
                 <p className="mb-2 text-[11px] text-muted-foreground">
                   Showing {visible.length} of {allRows.length}
                 </p>
@@ -880,7 +778,7 @@ function TicklerList({
   return (
     <>
       <p className="mb-3 text-[11px] text-muted-foreground">
-        Deferred items — hidden from the inbox until they resurface.
+        Deferred items — hidden from my task inbox until they resurface.
       </p>
       <div className="flex flex-col gap-2">
         {items.map((item) => (

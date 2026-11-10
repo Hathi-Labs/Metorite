@@ -54,12 +54,13 @@
 import Badge from "@/components/ui/Badge";
 import { useToast } from "@/components/ui/Toast";
 import { StatusChip } from "@/components/StatusChip";
-import { EditableTaskTitle, TaskHeaderRow } from "@/components/TaskPanelHeader";
+import { EditableTaskTitle, TaskHeaderRow, type TaskWhere } from "@/components/TaskPanelHeader";
 import { useEffect, useState } from "react";
 
 import { lensMyOverlay } from "@/app/tasks/lib/lens";
 import { filedByMe, focusPatch, lensPatchItem, overlayOf } from "@/app/tasks/lib/lens";
 import { MyFocusRow } from "./MyFocusRow";
+import { AgentPill } from "./AgentPill";
 import {
   type FieldRow,
   type StatusRow,
@@ -70,6 +71,13 @@ import {
 import { taskDeepLink, taskRef } from "../lib/card";
 import { PANEL_WIDTH_CLASS, type PanelMode, panelEscape } from "../lib/panelMode";
 import { TaskBody, resolveStatus } from "./TaskBody";
+import { useTaskUndo } from "./useTaskUndo";
+import { MineDispositionStrip } from "./MineDispositionStrip";
+import { MyWorkStrip } from "./MyWorkStrip";
+import { myWorkEnabled, pickMine, showMyWorkStrip, statusDrifted } from "../lib/myWork";
+import { useTaskStore } from "@/app/tasks/lib/taskStore";
+import { useAccess } from "@/components/AccessProvider";
+import { taskRefResolverFor } from "@/lib/taskRefs";
 
 interface Props {
   task: TaskRow;
@@ -111,6 +119,8 @@ interface Props {
   onMode?: (next: PanelMode) => void;
   /** See TaskBoard's prop of the same name. */
   personLabels?: ReadonlyMap<string, string>;
+  /** WS-55 EA-13d (EA3-50) — the viewer, so the pill reads "Needs you" to the run's member. */
+  me?: string;
   /**
    * Addresses this panel has seen that the board may not have.
    *
@@ -119,6 +129,23 @@ interface Props {
    * is the local part of their email.
    */
   onPeopleSeen?: (who: string[]) => void;
+  /**
+   * Where the task lives, from its space down to its project. The page owns
+   * it because the page holds the tree, and opening a crumb selects a node.
+   */
+  where?: TaskWhere;
+  /**
+   * WS-64 OP-2b (`one_projects_app.md` §4.3) — the panel was opened from a My
+   * work view. The overlay strip then sits above the fields. In a company view
+   * it shows only when I hold an overlay row.
+   */
+  myWork?: boolean;
+  /**
+   * WS-64 OP-11 fix round, item 9: the panel opened from My tasks. Its strip
+   * then writes to the server (`MineDispositionStrip`), never the store, so
+   * the My tasks rows move to the new chip after a pick.
+   */
+  serverOverlay?: boolean;
 }
 
 /** The viewer's own overlay on this task, or null when they hold none. */
@@ -136,8 +163,14 @@ export function TaskPanel({
   mode = "side",
   onMode,
   personLabels,
+  me,
   onPeopleSeen,
+  where,
+  myWork = false,
+  serverOverlay = false,
 }: Props) {
+  // A copied link names this organization, so it opens in the right account.
+  const orgId = useAccess().access.organization?.id ?? null;
   /**
    * Two columns, decided by the SURFACE rather than the viewport. `full` is
    * `max-w-3xl` (768px), the first stop with room for two readable columns.
@@ -145,10 +178,77 @@ export function TaskPanel({
   const twoColumn = mode === "full";
 
   const toast = useToast();
+  const taskUndo = useTaskUndo();
   // S6e — the way back (§4.8 point 4): what I filed this task as in My
   // Tasks. Null with the lens off, and null when I hold no overlay row.
   const [mine, setMine] = useState<MyOverlay>(null);
   const { current: currentStatus, tone: statusTone } = resolveStatus(task, statuses);
+  // OP-2b — the store's row for this task, when the one task store holds it.
+  // The strip writes through the store, so the My work list moves with it.
+  const stored = useTaskStore((s) => s.items.find((i) => i.id === task.id));
+  // Fix round 1 — the flag gates both. The store is a singleton that a
+  // `/tasks` visit hydrates, so holding the task proves nothing here.
+  const enabled = myWorkEnabled();
+  const strip = showMyWorkStrip({
+    enabled,
+    stored: !!stored,
+    myWork,
+    filedByMe: filedByMe(mine),
+    serverOverlay,
+  }) ? (
+    <MyWorkStrip taskId={task.id} />
+  ) : null;
+  // WS-64 OP-11 — opened from My tasks, the store does not hold the task (My
+  // tasks runs no hydrate). The same row then writes to the server, and the
+  // page reads the task again, so the My tasks rows follow the new chip.
+  const serverStrip =
+    !strip && enabled && myWork && mine ? (
+      <MineDispositionStrip
+        disposition={mine.disposition}
+        onPick={(next) => {
+          setMine((m) => (m ? { ...m, disposition: next, isTriaged: true } : m));
+          void lensPatchItem(task.id, { disposition: next })
+            .then((item) => {
+              setMine(overlayOf(item));
+              return projectsApi.task(task.id);
+            })
+            .then((fresh) => onChanged(fresh))
+            .catch((err: unknown) => {
+              // Say so, then show what the server holds (item 9).
+              toast.show({
+                variant: "error",
+                title: `Could not change the disposition. ${String((err as Error).message)}`,
+              });
+              void lensMyOverlay(task.id).then(setMine);
+            });
+        }}
+      />
+    ) : null;
+  const shownMine = pickMine({
+    myWork,
+    serverOverlay,
+    enabled,
+    stored,
+    mine,
+    fromStore: () => overlayOf(stored!),
+  });
+  // A strip write can move the status. The store learns the new one from the
+  // server's answer, and the panel's task is read again so its badge follows.
+  const drifted = strip !== null && statusDrifted(stored, task.status_id);
+  useEffect(() => {
+    if (!drifted) return;
+    let live = true;
+    void projectsApi
+      .task(task.id)
+      .then((fresh) => {
+        if (live) onChanged(fresh);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drifted, stored?.statusId, task.id]);
 
   /**
    * WS-27ab — hand the keyboard back on close.
@@ -192,7 +292,15 @@ export function TaskPanel({
    */
   async function rename(title: string) {
     try {
-      onChanged(await projectsApi.patchTask(task.id, { title }));
+      const prior = task;
+      const fresh = await projectsApi.patchTask(task.id, { title });
+      onChanged(fresh);
+      // UNDO-1 — a rename can be taken back.
+      taskUndo.edited(prior, { title }, fresh, {
+        label: `renamed ${prior.title}`,
+        receipt: "Task renamed",
+        after: async () => onChanged(await projectsApi.task(prior.id)),
+      });
     } catch {
       toast.show({
         key: `projects:task-title:${task.id}`,
@@ -207,9 +315,11 @@ export function TaskPanel({
     // arrangement and the reason the field cells below read as cards at all.
     // ⚠️ The root must stay an `<aside>`: `projects/page.tsx`'s phone branch
     // lifts the width cap with `[&>aside]:max-w-none`, and the `full` overlay
-    // rounds its corners the same way.
+    // rounds its corners the same way. In glass it is one opaque card
+    // surface: it lies over the board, and the board's text must not show
+    // through (owner, 2026-11-01).
     <aside
-      className={`flex h-full w-full ${PANEL_WIDTH_CLASS[mode]} flex-col border-l border-border bg-background`}
+      className={`flex h-full w-full ${PANEL_WIDTH_CLASS[mode]} flex-col border-l border-border bg-background glass:bg-card`}
       // Escape belongs to the panel, not to the window: a global listener
       // would also fire for the search palette and the four dialogs that can
       // be open over it, closing two things with one key.
@@ -230,8 +340,9 @@ export function TaskPanel({
             2026-09-23), hidden where the page passed no `onMode` (the phone,
             where the panel is always the whole screen). */}
         <TaskHeaderRow
+          where={where}
           taskRef={taskRef(task) ?? "Task"}
-          linkFor={() => taskDeepLink(task, window.location.origin)}
+          linkFor={() => taskDeepLink(task, window.location.origin, orgId)}
           expand={
             onMode
               ? {
@@ -244,7 +355,10 @@ export function TaskPanel({
         />
         {/* Wraps rather than truncates: the title is the one thing on the
             panel nobody can afford to have cut off. Click it to rename. */}
-        <EditableTaskTitle value={task.title} onSave={(t) => void rename(t)} />
+        {/* WS-57 TR-5 — a `#123` in it draws as the task pill, read in this
+            task's root only. */}
+        <EditableTaskTitle value={task.title} onSave={(t) => void rename(t)}
+          refResolver={taskRefResolverFor(task.root_project_id)} />
         {/* The chip row. The status is drawn through the shared `StatusChip`,
             in the accent `accentForStatus` resolves; the Details block in the
             body carries the CONTROL that changes it. */}
@@ -252,6 +366,16 @@ export function TaskPanel({
           {currentStatus ? (
             <StatusChip accent={statusTone} label={currentStatus.name} />
           ) : null}
+          {/* WS-55 EA-12c — the agent run's state. Nothing without a run. */}
+          <AgentPill
+            state={task.agent_state}
+            size="sm"
+            clientVia={task.agent_client_via}
+            memberEmail={task.agent_member_email}
+            note={task.agent_note}
+            viewerEmail={me}
+            labels={personLabels}
+          />
           {task.completed_at ? (
             <Badge tone="success" icon="Check">
               Completed
@@ -260,14 +384,14 @@ export function TaskPanel({
           {/* S6e — the viewer's OWN disposition in My Tasks, when they hold
               one. Never anybody else's: `/my/tasks/{id}` answers for the
               session's caller only. */}
-          {mine && filedByMe(mine) ? (
+          {shownMine && filedByMe(shownMine) ? (
             <Badge
               tone="neutral"
               icon="UserRound"
-              title="How you filed this task in My Tasks"
+              title="How you filed this task in My work"
             >
-              {mine.isTriaged ? mine.disposition : "Untriaged"}
-              {mine.context ? ` · ${mine.context}` : ""}
+              {shownMine.isTriaged ? shownMine.disposition : "Untriaged"}
+              {shownMine.context ? ` · ${shownMine.context}` : ""}
             </Badge>
           ) : null}
         </div>
@@ -305,6 +429,7 @@ export function TaskPanel({
         personLabels={personLabels}
         onPeopleSeen={onPeopleSeen}
         twoColumn={twoColumn}
+        above={strip ?? serverStrip}
       />
     </aside>
   );

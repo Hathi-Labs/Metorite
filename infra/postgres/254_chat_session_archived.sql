@@ -1,0 +1,21 @@
+-- ============================================================================
+-- 254_chat_session_archived.sql - a member archives a chat.
+--
+-- What: one nullable column, `chat_session.archived_at`. NULL is a chat in the
+--       list. A time is a chat the member archived, and the list shows it under
+--       "Archived". Nothing is deleted, and the chat opens again on a press.
+-- Why:  D99 (`project-docs/work_plan.md` §3). The member keeps sessions, not
+--       agents, and starts, reopens, renames and archives them, as Claude Code
+--       does in an editor (owner, 2026-10-12). `navigation_shell.md` §7.1.
+-- Depends on: 02_chat_history.sql (chat_session), 138 and 221 (who may see a
+--       chat, `SESSION_VISIBLE_SQL`).
+--
+-- Expand only (R6): one nullable column, no default, no rename, no drop. Old
+-- code names no new object, and it reads a NULL as "not archived". Idempotent:
+-- ADD COLUMN IF NOT EXISTS.
+-- Tenant scope (R5): the table already has `organization_id` and its policy.
+-- This column changes neither. A write goes through the same visibility
+-- predicate as the title (`routes/chat.py` `_patch_session`).
+-- ============================================================================
+
+ALTER TABLE chat_session ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;

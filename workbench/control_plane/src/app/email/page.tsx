@@ -1,46 +1,80 @@
 "use client";
 
+import { usePhoneBar, useSheetTab } from "@/lib/shell/phoneBarEvent";
 import Button from "@/components/ui/Button";
 import AppIcon, { themedIcon } from "@/components/Icon";
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { Suspense, useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useMobileDrawer } from "@/components/AppShell";
+import { AppTopBar } from "@/components/AppTopBar";
 import { AccountSidebar } from "./components/AccountSidebar";
 import { EmailList } from "./components/EmailList";
 import { EmailToolbar } from "./components/EmailToolbar";
 import { QuickFilters } from "./components/QuickFilters";
+import { ShellJob } from "@/lib/shell/doJob";
+import { OPEN_CHAT_JOB } from "@/lib/runActivity";
+import { openAssistant, useAssistantFacts } from "@/lib/shell/assistant";
+import { shellChatOn } from "@/lib/shell/chatFlag";
+import { emailAssistantFacts } from "./lib/assistantFacts";
+import { askRailSession } from "@/lib/railSessions";
+import { isTypingTarget } from "@/lib/keyboard";
 import { SearchBar } from "./components/SearchBar";
 import { MailboxActions } from "./components/MailboxActions";
 import { EmailDetail } from "./components/EmailDetail";
 import { EmailAssistantChat } from "./components/EmailAssistantChat";
 import { ComposePanel } from "./components/ComposePanel";
-import { CommandPalette, Command } from "./components/CommandPalette";
 import { TaskCaptureModal } from "./components/TaskCaptureModal";
 import { AutomationView } from "./components/automation/AutomationView";
 import { ConnectChoices } from "./components/ConnectChoices";
 import { ConnectEmptyState } from "./components/ConnectEmptyState";
 import { DisconnectDialog } from "./components/DisconnectDialog";
-import { FirstSyncBanner } from "./components/FirstSyncBanner";
+import { MailboxAvatar, MailboxChip } from "./components/MailboxChip";
+import { MailboxEditDialog, type MailboxEdit } from "./components/MailboxEditDialog";
+import { updateEmailAccount } from "./lib/api";
 import { OnboardingPanel } from "./components/OnboardingPanel";
 import { OnboardingRulesStep } from "./components/OnboardingRulesStep";
+import { RemoveOlderMailDialog } from "./components/RemoveOlderMailDialog";
+import { AutoRunNotice } from "./components/AutoRunNotice";
+import { StorageNotice } from "./components/StorageNotice";
+import { StorageStep } from "./components/StorageStep";
+import { SyncBanner } from "./components/SyncBanner";
+import { EmailDeepLink } from "./components/EmailDeepLink";
 import Modal from "@/components/ui/Modal";
-import { useEmailStore, isRealFolder } from "./lib/emailStore";
+import {
+  useEmailStore, isRealFolder, backfillKey, scopeBusy, ALL_INBOXES,
+} from "./lib/emailStore";
 import { Email, EmailAccount, AutomationFeature } from "./lib/types";
 import {
   connectQuery,
   emailSurface,
+  liveProviders,
   rangeStepProviderFrom,
   wantsConnectChoices,
   firstSyncTick,
   FIRST_SYNC_POLL_MS,
-  isFirstSyncPending,
-  reconnectProvider,
+  reconnectAction,
+  rememberMailboxesBeforeConnect,
   shouldPollFirstSync,
   type ConnectProviderId,
 } from "./lib/connect";
-import { firstSyncSurface, importProgress, onboardingStage } from "./lib/onboarding";
+import { importPanelShows, importProgress, onboardingStage, syncBanners } from "./lib/onboarding";
+import { pickSettingsMailbox } from "./lib/mailboxSettings";
 import { folderLabel } from "./lib/utils";
+import {
+  attentionMailbox,
+  ownAddresses,
+  pooledMailboxes,
+  removalMailbox,
+  replyRecipients,
+  storageMailbox,
+} from "./lib/mailbox";
+import { keepStorage, readStorageKept, withRemovalMeter } from "./lib/storage";
 import { isSearchActive } from "./lib/searchFilters";
+import { useLiveRefresh } from "@/lib/liveRefresh";
+import { tasksLink } from "@/app/projects/lib/tasksRedirect";
+
+/** D99: the chat bar's one assistant replaces this app's chat scene. */
+const ONE_ASSISTANT = shellChatOn();
 
 export default function EmailPage() {
   const { isMobile } = useViewMode();
@@ -49,9 +83,19 @@ export default function EmailPage() {
   const [leftOpen, setLeftOpen] = useState(true);
   const [listOpen, setListOpen] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
-  const [paletteOpen, setPaletteOpen] = useState(false);
   // The mailbox the disconnect dialog asks about. `null` closes the dialog.
   const [disconnecting, setDisconnecting] = useState<EmailAccount | null>(null);
+  // The mailbox whose name and colour the member edits (EM-T8b).
+  const [editingMailbox, setEditingMailbox] = useState<EmailAccount | null>(null);
+  // The id of the mailbox that "Remove older mail from Metorite" acts on
+  // (EM-T6e). The notice or the step that names a mailbox sets it, never the
+  // selection (D3). `null` closes the dialog.
+  const [removingId, setRemovingId] = useState<string | null>(null);
+  // The mailboxes that the member keeps at the storage limit ("Keep it as it
+  // is", D6). Ids only, from `localStorage`. Read once on the client: the
+  // step draws only after the first account read, so no server render
+  // shows it.
+  const [storageKept, setStorageKept] = useState<string[]>(() => readStorageKept());
 
   // Mobile-specific state
   const [mobileView, setMobileView] = useState<"inbox" | "detail">("inbox");
@@ -66,7 +110,8 @@ export default function EmailPage() {
   // other way into an automation view clears it too.
   const [processPastFrom, setProcessPastFrom] = useState<string | null>(null);
 
-  const { open: openDrawer, close: closeDrawer } = useMobileDrawer();
+  const { open: openDrawer, close: closeDrawer, isOpen: drawerOpen, shows: drawerShows } = useMobileDrawer();
+  const [sheetTab, markSheetTab] = useSheetTab(drawerOpen, drawerShows);
 
   // ── Zustand store ──
   const {
@@ -91,6 +136,7 @@ export default function EmailPage() {
     pendingSend,
     taskCaptureNotice,
     taskCapturePopupEmailId,
+    taskCapturePopupAccountId,
     closeTaskCapturePopup,
     notifyTaskCaptured,
     pendingChatPrompt,
@@ -116,12 +162,45 @@ export default function EmailPage() {
     sendEmail,
     softRefresh,
     replaceAccount,
+    viewAll,
+    selectAll,
+    allFolderCounts,
+    setInAllInboxes,
+    connectProviders,
+    fetchConnectProviders,
   } = useEmailStore();
+  // The mailbox that the composer sends from: the mailbox of the mail a
+  // reply answers, else the selected one (EM-T8a, D-EM-20). New mail in All
+  // inboxes goes from the default mailbox (D-EM-20, D-EM-25).
+  const defaultAccountId = accounts.find((a) => a.isDefault)?.id ?? null;
+  const composeAccountId =
+    composeDefaults?.accountId ||
+    (viewAll ? defaultAccountId || selectedAccountId : selectedAccountId);
 
-  // Fetch on mount
+  // Automation acts on one mailbox, and All inboxes names none. So opening it
+  // leaves All inboxes for the mailbox of the open mail, else the default, and
+  // the switcher names it. The open mail stays open (EM-T8d review F4, F5).
+  // The chat has its own All inboxes scope (EM-T8e-3), so it keeps the page in
+  // All inboxes and gets `ALL_INBOXES` as its scope, never the hidden mailbox.
+  useEffect(() => {
+    if (!automationFeature || automationFeature === "chat" || !viewAll) return;
+    const st = useEmailStore.getState();
+    const open = st.selectedEmailOverride ?? st.emails.find((e) => e.id === st.selectedEmailId);
+    const target = open?.accountId || defaultAccountId || st.selectedAccountId;
+    if (!target) return;
+    const keep = { selectedEmailId: st.selectedEmailId, selectedEmailOverride: st.selectedEmailOverride };
+    st.selectAccount(target);
+    if (open?.accountId === target) useEmailStore.setState(keep);
+  }, [automationFeature, viewAll, defaultAccountId]);
+
+  // Fetch on mount. The capability read of the connect flow runs beside the
+  // account read (WS-17 EM-G8): the connect choices wait on it.
   useEffect(() => {
     fetchAccounts();
   }, [fetchAccounts]);
+  useEffect(() => {
+    void fetchConnectProviders();
+  }, [fetchConnectProviders]);
 
   // /email?connect=1 opens the connect choices (the callback page's "Try
   // again" for a provider that is not live). With no mailbox, the empty state
@@ -130,11 +209,19 @@ export default function EmailPage() {
   // /email?connect=1&provider=microsoft opens the range step of that
   // provider at once. The callback page's "Try again" sends it, because that
   // retry is a first connect and must carry the range (EM-T6d fix round 1).
-  // Read once on the client. The connect choices mount only after the first
-  // account read, so no server render shows them.
-  const [rangeStepProvider, setRangeStepProvider] = useState<ConnectProviderId | null>(() =>
-    typeof window === "undefined" ? null : rangeStepProviderFrom(window.location.search)
+  // The query is read once on the client. The provider counts only when the
+  // capability read makes it live (EM-G8 item 2), and the connect choices
+  // mount only after that read and the first account read settle, so no
+  // server render shows them.
+  const [rangeStepQuery, setRangeStepQuery] = useState<string>(() =>
+    typeof window === "undefined" ? "" : window.location.search
   );
+  const rangeStepProvider: ConnectProviderId | null = rangeStepProviderFrom(
+    rangeStepQuery,
+    liveProviders(connectProviders),
+  );
+  // The live set of the capability read, for the reconnect banner (EM-G8-f1).
+  const liveConnect = liveProviders(connectProviders);
   useEffect(() => {
     if (connectParamRef.current || accounts.length === 0) return;
     if (!wantsConnectChoices(window.location.search)) return;
@@ -143,23 +230,10 @@ export default function EmailPage() {
   }, [accounts.length]);
 
   // Deep link: /email?account=<id>&email=<id> opens a SPECIFIC message —
-  // the link tasks put on email-origin items ("Open"). The account param is
-  // consumed by the store's initial-account pick; the email param is ours:
-  // open once the right account is active (openEmailById fetches the
-  // message even if it isn't in the loaded folder page).
-  const deepLinkedEmailRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!selectedAccountId) return;
-    let emailParam: string | null = null;
-    try {
-      emailParam = new URL(window.location.href).searchParams.get("email");
-    } catch {
-      return;
-    }
-    if (!emailParam || deepLinkedEmailRef.current === emailParam) return;
-    deepLinkedEmailRef.current = emailParam;
-    useEmailStore.getState().openEmailById(emailParam);
-  }, [selectedAccountId]);
+  // the link tasks put on email-origin items ("Open"), and the link the email
+  // assistant cites (`lib/emailLink.ts`). The account param is consumed by the
+  // store's initial-account pick. `<EmailDeepLink>` below reads the email
+  // param, and again each time it changes while the page is open.
 
   // Fetch emails when account or folder changes
   useEffect(() => {
@@ -185,13 +259,64 @@ export default function EmailPage() {
     };
   }, [selectedAccountId, softRefresh]);
 
+  // Task #124: the assistant wrote to the mailbox (a draft, a label, a send).
+  // Read the list now instead of at the next 20 s tick. The open thread has
+  // its own listener in `EmailDetail`.
+  useLiveRefresh(() => softRefresh(), "email");
+
   // Derived data
-  const selectedAccount = accounts.find((a) => a.id === selectedAccountId) ?? null;
+  const selectedAccount =accounts.find((a) => a.id === selectedAccountId) ?? null;
+  // The count of the header in All inboxes. A separate mailbox is not in All
+  // inboxes, so it does not count (EM-T8g-2 item 2).
+  const pooledCount = pooledMailboxes(accounts).length;
+  // The mailbox that the reconnect banner names: the selected one, or in All
+  // inboxes the first mailbox that needs it, so a second mailbox cannot fail
+  // out of sight (EM-T8d review). A separate mailbox counts too (EM-T8g-2).
+  const attentionAccount = attentionMailbox({ viewAll, selectedAccountId, accounts, authErrors });
+  // The guided setup of the mailbox in view, read ONCE for the storage step
+  // and the rules step (EM-T6d, EM-T6e D6).
+  const setupStage = selectedAccount
+    ? onboardingStage(selectedAccount, { storageKept: storageKept.includes(selectedAccount.id) })
+    : null;
+  // The mailbox that the storage notice names (EM-T6e, D3): the one in view,
+  // or in All inboxes the first pooled mailbox at the limit. The reconnect
+  // banner wins, and so does the storage step of the setup.
+  const storageAccount = storageMailbox({
+    viewAll,
+    selectedAccountId,
+    accounts,
+    attentionId: attentionAccount?.id ?? null,
+    storageStepId: setupStage === "storage" ? selectedAccountId : null,
+  });
+  // The live store copy of the mailbox of the removal dialog. A disconnect
+  // that takes the mailbox away closes the dialog. The page shortcuts read
+  // this value, never `removingId` (review round 1).
+  const removingAccount = removalMailbox(accounts, removingId);
+  // The dialog of a mailbox that left the list draws nothing, so its
+  // `onClose` never runs. Clear the id here, or a re-read that brings the
+  // mailbox back would open the dialog again. This is the adjustment of
+  // state during render that React documents. An effect would draw one
+  // stale frame first, and the lint rule `set-state-in-effect` refuses it.
+  if (removingId !== null && removingAccount === null) setRemovingId(null);
   // Prefer the loaded-list message; fall back to an out-of-list message opened
   // by id from a chat card (so "Open in inbox" works from any folder/view).
   const selectedEmail =
     emails.find((e) => e.id === selectedEmailId) ??
     (selectedEmailOverride?.id === selectedEmailId ? selectedEmailOverride : null);
+  // D99: the page tells the one assistant which mailbox and which message
+  // the member has open.
+  const assistantFacts = useMemo(
+    () =>
+      ONE_ASSISTANT
+        ? emailAssistantFacts({
+            viewAll,
+            account: accounts.find((a) => a.id === selectedAccountId) ?? null,
+            email: selectedEmail,
+          })
+        : null,
+    [viewAll, accounts, selectedAccountId, selectedEmail],
+  );
+  useAssistantFacts(assistantFacts);
   // Unread badge: for a real folder, count the mail that belongs to it; for a
   // pseudo-folder (All/Starred) or a search, the displayed list already spans
   // folders, so match against selectedFolder would count nothing — count every
@@ -203,19 +328,22 @@ export default function EmailPage() {
   ).length;
   // The provider can't page a pseudo-folder (there's no "all"/"starred" folder
   // to ask for older mail from), so never offer "load older" on those views.
+  // "Load older" pages one mailbox, so All inboxes offers none (EM-T8d).
   const canBackfillFolder =
-    isRealFolder(selectedFolder) && !backfillExhausted[selectedFolder];
+    !viewAll &&
+    isRealFolder(selectedFolder) &&
+    !backfillExhausted[backfillKey(selectedAccountId, selectedFolder)];
   // "processing" (the background rules/labels pipeline after H1) counts as busy
   // too, so the top-bar refresh button keeps spinning until it settles.
-  const syncing = selectedAccountId
-    ? syncStatus[selectedAccountId] === "syncing" ||
-      syncStatus[selectedAccountId] === "processing"
-    : false;
+  const syncing = scopeBusy({ viewAll, selectedAccountId, accounts, syncStatus });
 
-  // Reset mobile view when folder/account changes
+  // Reset mobile view when folder/account changes. A mail that "Open in
+  // inbox" opened in its OWN mailbox switches the account too, and it keeps
+  // the detail view: the override marks that case (EM-T8a review).
   useEffect(() => {
+    if (useEmailStore.getState().selectedEmailOverride) return;
     setMobileView("inbox");
-  }, [selectedFolder, selectedAccountId]);
+  }, [selectedFolder, selectedAccountId, viewAll]);
 
   // ── No mailbox yet ──
   // The empty state replaces the panes. There is no setup step for a member:
@@ -228,16 +356,12 @@ export default function EmailPage() {
   const noAccounts = surface === "empty";
 
   // Tell the mobile bottom bar, so it hides the email tabs that would open
-  // empty sheets (AppShell listens for `cc-email-empty`).
-  useEffect(() => {
-    window.dispatchEvent(new CustomEvent("cc-email-empty", { detail: noAccounts }));
-  }, [noAccounts]);
-  useEffect(
-    () => () => {
-      window.dispatchEvent(new CustomEvent("cc-email-empty", { detail: false }));
-    },
-    []
-  );
+  // empty sheets (`cc-phone-bar`, MOB-12). Write holds the compose button
+  // that the list toolbar drops on a phone.
+  usePhoneBar({
+    active: sheetTab,
+    hide: noAccounts ? ["email-accounts", "email-automation", "email-compose", "email-ai"] : [],
+  });
 
   // ── First sync ──
   // A new mailbox reports initial_sync_done=false until its first sync ends.
@@ -247,10 +371,12 @@ export default function EmailPage() {
   // request, and the poll ticks once when the tab comes back. The interval
   // stops when the page unmounts.
   const firstSyncPending = shouldPollFirstSync(accounts);
-  const pendingAccount =
-    (selectedAccount && isFirstSyncPending(selectedAccount) ? selectedAccount : null) ??
-    accounts.find(isFirstSyncPending) ??
-    null;
+  // The mailbox in view draws the import panel, with the detail of its first
+  // import. Each other import draws one row of the sync banner, in view or
+  // not (EM-S9, §14.4.6). The banner leaves out the mailbox of the panel.
+  const importPanelAccount =
+    !viewAll && selectedAccount && importPanelShows(selectedAccount) ? selectedAccount : null;
+  const syncRows = syncBanners(accounts, importPanelAccount?.id ?? null);
   useEffect(() => {
     if (!firstSyncPending) return;
     let cancelled = false;
@@ -294,6 +420,13 @@ export default function EmailPage() {
     [selectAccount, closeDrawer]
   );
 
+  // All inboxes (EM-T8d, D-EM-22).
+  const handleSelectAll = useCallback(() => {
+    selectAll();
+    setMobileView("inbox");
+    closeDrawer();
+  }, [selectAll, closeDrawer]);
+
   const handleFolderSelect = useCallback(
     (f: string) => {
       selectFolder(f);
@@ -327,6 +460,12 @@ export default function EmailPage() {
     // don't pre-encode or redirect_after ends up double-encoded and the
     // callback treats it as a relative path (→ /email/oauth/https%3A%2F%2F… 404).
     const query = connectQuery(window.location.href, loginHint, importMonths);
+    // An ADD (no hint) keeps the ids of the mailboxes, so the callback can
+    // tell a mailbox that was already connected (EM-T8c, §11.6 case 2). A
+    // deliberate reconnect names its mailbox and stores none.
+    if (!loginHint) {
+      rememberMailboxesBeforeConnect(useEmailStore.getState().accounts.map((a) => a.id));
+    }
     window.location.href = `/api/email/oauth/${provider}/authorize?${query}`;
   }, []);
 
@@ -338,6 +477,42 @@ export default function EmailPage() {
     [closeDrawer]
   );
 
+  // Rename and recolour a mailbox (EM-T8b, §11.7.2 item 5).
+  const handleEditMailbox = useCallback(
+    (account: EmailAccount) => {
+      setEditingMailbox(account);
+      closeDrawer();
+    },
+    [closeDrawer]
+  );
+
+  // The display label of ANOTHER mailbox can change with this one (§11.4: a
+  // default steps aside for a chosen label), so the accounts are read again.
+  const saveMailboxEdit = useCallback(
+    async (id: string, edit: MailboxEdit): Promise<string | null> => {
+      try {
+        await updateEmailAccount(id, {
+          ...(edit.label !== undefined ? { label: edit.label } : {}),
+          colorSlot: edit.colorSlot,
+        });
+      } catch (e) {
+        return e instanceof Error && e.message ? e.message : "The mailbox could not be saved.";
+      }
+      await refreshAccounts();
+      return null;
+    },
+    [refreshAccounts]
+  );
+
+  // "Keep separate" and "Show in All inboxes" (EM-T8g-2 item 1). The store
+  // sends the PATCH, and in All inboxes it reads the list again.
+  const toggleSeparate = useCallback(
+    (id: string, pooled: boolean) => {
+      void setInAllInboxes(id, pooled);
+    },
+    [setInAllInboxes]
+  );
+
   const handleAddAccount = useCallback(() => {
     setShowAddModal(true);
   }, []);
@@ -345,6 +520,12 @@ export default function EmailPage() {
   const handleOpenAutomation = useCallback(
     (feature: AutomationFeature) => {
       setProcessPastFrom(null);
+      // D99: the one assistant replaces the email chat scene.
+      if (feature === "chat" && ONE_ASSISTANT) {
+        openAssistant();
+        if (isMobile) closeDrawer();
+        return;
+      }
       setAutomationFeature(feature);
       if (isMobile) closeDrawer();
     },
@@ -374,6 +555,11 @@ export default function EmailPage() {
       onAddAccount={handleAddAccount}
       onSetDefault={setDefaultAccount}
       onDisconnect={handleDisconnectRequest}
+      onEditMailbox={handleEditMailbox}
+      onToggleSeparate={toggleSeparate}
+      viewAll={viewAll}
+      folderSums={allFolderCounts}
+      onSelectAll={handleSelectAll}
       showAutomation={false}
     />
   );
@@ -398,11 +584,20 @@ export default function EmailPage() {
     const handler = (e: Event) => {
       const tab = (e as CustomEvent<string>).detail;
       if (tab === "email-accounts" && accountsDrawerRef.current) {
-        // "Inbox" — folders/labels only (no automation section).
+        // "Mailboxes" — folders/labels only (no automation section).
+        markSheetTab("email-accounts");
         openDrawer(accountsDrawerRef.current);
       } else if (tab === "email-automation" && automationDrawerRef.current) {
         // "Automation" — the email-automation app list.
+        markSheetTab("email-automation");
         openDrawer(automationDrawerRef.current);
+      } else if (tab === "email-compose") {
+        // "Write" — the compose window. It holds the list toolbar's New button.
+        closeDrawer();
+        openCompose();
+      } else if (tab === "email-ai" && ONE_ASSISTANT) {
+        closeDrawer();
+        openAssistant();
       } else if (tab === "email-ai") {
         // "AI Chat" — jump straight to the email chat agent (a full scene,
         // like Assistant / Reply Zero), not a bottom drawer.
@@ -412,7 +607,7 @@ export default function EmailPage() {
     };
     window.addEventListener("cc-mobile-nav", handler);
     return () => window.removeEventListener("cc-mobile-nav", handler);
-  }, [openDrawer, closeDrawer]);
+  }, [openDrawer, closeDrawer, markSheetTab, openCompose]);
 
   // Opening an email from a chat card (EmailToolCards) must leave any open
   // automation scene — the full-screen Chat otherwise covers the inbox so the
@@ -435,8 +630,14 @@ export default function EmailPage() {
   // desktop, so open it the same way.
   useEffect(() => {
     if (!pendingChatPrompt) return;
-    setAutomationFeature("chat");
     closeDrawer();
+    // D99: the prompt waits in the one assistant's composer instead.
+    if (ONE_ASSISTANT) {
+      openAssistant({ draft: pendingChatPrompt });
+      useEmailStore.getState().setPendingChatPrompt(null);
+      return;
+    }
+    setAutomationFeature("chat");
   }, [pendingChatPrompt, closeDrawer]);
 
   const handleEmailSelect = useCallback(
@@ -463,10 +664,17 @@ export default function EmailPage() {
         case "mark-read":
           updateEmail(email.id, { isRead: true });
           break;
+        // A reply and a forward send from the mailbox of the mail, never from
+        // the selected view (EM-T8a, D-EM-19, edge case 25).
         case "reply": {
           const quoteSrc = email.bodyText || email.snippet || "";
+          const accts = useEmailStore.getState().accounts;
+          const { to } = replyRecipients(
+            email, "reply", ownAddresses(accts),
+            accts.find((a) => a.id === email.accountId)?.emailAddress);
           openCompose({
-            to: email.from.email,
+            accountId: email.accountId || undefined,
+            to: to.join(", "),
             subject: email.subject.startsWith("Re:") ? email.subject : `Re: ${email.subject}`,
             quote: `On ${email.receivedAt}, ${email.from.name} wrote:\n> ${quoteSrc.replace(/\n/g, "\n> ")}`,
             replyToMessageId: email.providerMessageId,
@@ -475,9 +683,15 @@ export default function EmailPage() {
         }
         case "reply-all": {
           const quoteSrc = email.bodyText || email.snippet || "";
-          const allTo = [email.from.email, ...(email.to || []).filter(t => t.email !== email.from.email).map(t => t.email)].join(", ");
+          // Each address of the member leaves the recipients (D-EM-27, MB-7).
+          const accts = useEmailStore.getState().accounts;
+          const { to, cc } = replyRecipients(
+            email, "reply-all", ownAddresses(accts),
+            accts.find((a) => a.id === email.accountId)?.emailAddress);
           openCompose({
-            to: allTo,
+            accountId: email.accountId || undefined,
+            to: to.join(", "),
+            cc: cc.length ? cc.join(", ") : undefined,
             subject: email.subject.startsWith("Re:") ? email.subject : `Re: ${email.subject}`,
             quote: `On ${email.receivedAt}, ${email.from.name} wrote:\n> ${quoteSrc.replace(/\n/g, "\n> ")}`,
             replyToMessageId: email.providerMessageId,
@@ -487,6 +701,7 @@ export default function EmailPage() {
         case "forward": {
           const quoteSrc = email.bodyText || email.snippet || "";
           openCompose({
+            accountId: email.accountId || undefined,
             to: "",
             subject: email.subject.startsWith("Fwd:") ? email.subject : `Fwd: ${email.subject}`,
             quote: `---------- Forwarded message ----------\nFrom: ${email.from.name} <${email.from.email}>\nDate: ${email.receivedAt}\nSubject: ${email.subject}\n\n${quoteSrc}`,
@@ -515,25 +730,12 @@ export default function EmailPage() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      // Command palette — works even while typing in a field.
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
-        e.preventDefault();
-        setPaletteOpen((v) => !v);
-        return;
-      }
-      if (e.key === "Escape") {
-        setPaletteOpen(false);
-        return;
-      }
+      // ⌘K belongs to the shell's command bar (D89). This page never
+      // listens for it.
       // Don't hijack typing, modifier combos, or when a modal owns the keys.
-      const t = e.target as HTMLElement | null;
-      const typing =
-        !!t &&
-        (t.tagName === "INPUT" ||
-          t.tagName === "TEXTAREA" ||
-          t.isContentEditable);
+      const typing = isTypingTarget(e.target as HTMLElement | null);
       if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
-      if (composeOpen || showAddModal || noAccounts || disconnecting || paletteOpen) return;
+      if (composeOpen || showAddModal || noAccounts || disconnecting || editingMailbox || removingAccount) return;
       // An automation scene (Assistant / Chat / Email Cleaner / …) replaces the
       // inbox panes and owns its own shortcuts — don't act on the background
       // selectedEmail while one is open.
@@ -582,37 +784,7 @@ export default function EmailPage() {
   }, [
     selectedEmail, navigateList, openCompose, handleToolbarAction,
     updateEmail, deleteEmail, composeOpen, showAddModal, noAccounts,
-    disconnecting, paletteOpen, automationFeature,
-  ]);
-
-  // Command palette entries (Cmd/Ctrl+K).
-  const commands = useMemo<Command[]>(() => {
-    const cmds: Command[] = [
-      { id: "compose", label: "Compose new email", hint: "C", run: () => openCompose() },
-    ];
-    const em = selectedEmail;
-    if (em) {
-      cmds.push(
-        { id: "reply", label: "Reply", hint: "R", run: () => handleToolbarAction("reply", em) },
-        { id: "reply-all", label: "Reply all", hint: "A", run: () => handleToolbarAction("reply-all", em) },
-        { id: "forward", label: "Forward", hint: "F", run: () => handleToolbarAction("forward", em) },
-        { id: "archive", label: "Archive", hint: "E", run: () => updateEmail(em.id, { folder: "archive" }) },
-        { id: "delete", label: "Delete", hint: "#", run: () => deleteEmail(em.id) },
-        { id: "star", label: em.isStarred ? "Remove star" : "Star", hint: "S", run: () => updateEmail(em.id, { isStarred: !em.isStarred }) },
-        { id: "read", label: em.isRead ? "Mark as unread" : "Mark as read", hint: "U", run: () => updateEmail(em.id, { isRead: !em.isRead }) },
-        { id: "flag", label: em.isFlagged ? "Clear flag" : "Flag / mark important", run: () => updateEmail(em.id, { isFlagged: !em.isFlagged }) },
-      );
-    }
-    for (const f of folders) {
-      cmds.push({ id: `go-${f.key}`, label: `Go to ${f.label}`, run: () => handleFolderSelect(f.key) });
-    }
-    if (selectedAccountId) {
-      cmds.push({ id: "sync", label: "Sync now", run: () => triggerSync(selectedAccountId) });
-    }
-    return cmds;
-  }, [
-    selectedEmail, folders, selectedAccountId, openCompose,
-    handleToolbarAction, updateEmail, deleteEmail, handleFolderSelect, triggerSync,
+    disconnecting, editingMailbox, removingAccount, automationFeature,
   ]);
 
   // ── Render ──
@@ -622,14 +794,101 @@ export default function EmailPage() {
       <ConnectEmptyState
         onConnect={(provider, importMonths) => handleConnect(provider, undefined, importMonths)}
         initialProvider={rangeStepProvider}
+        availability={connectProviders}
         loadError={error}
         onRetry={() => void fetchAccounts()}
       />
     );
   }
 
+  // `overflow-clip`, not `hidden`: a script cannot scroll a clip box, so no
+  // reveal or focus in the panes can shift the email layout (owner report,
+  // 2026-10-10).
   return (
-    <div className="flex h-full w-full bg-background overflow-hidden select-none">
+    <div className="flex h-full w-full flex-col bg-background overflow-clip select-none">
+      {/* The reader of `?email=<id>`. `useSearchParams` needs a Suspense
+          boundary, and this one holds only the reader, so the page still
+          renders on the server. */}
+      <Suspense fallback={null}>
+        <EmailDeepLink ready={!!selectedAccountId} />
+      </Suspense>
+      {/* NS-1: the command bar's "Write an email" opens a new message, once
+          the mailboxes it sends from have loaded. A filled job (NS-4b) brings
+          its fields; the member checks them and sends. */}
+      <ShellJob
+        id="compose"
+        ready={accounts.length > 0}
+        onOpen={(f) =>
+          openCompose({
+            to: f.to ?? "",
+            subject: f.subject ?? "",
+            aiFilled: ["to", "subject"].filter((k) => !!f[k]),
+          })
+        }
+      />
+      {/* WS-51 S3: a row of the activity panel opens its chat in the email
+          chat scene, which opens the asked chat once it has restored. */}
+      <ShellJob
+        id={OPEN_CHAT_JOB}
+        ungated
+        ready={surface !== "loading"}
+        onOpen={(f) => {
+          if (!f.session) return;
+          // D99: an old link opens the chat in the one assistant.
+          if (ONE_ASSISTANT) {
+            openAssistant({ sessionId: f.session });
+            return;
+          }
+          askRailSession("email-assistant", f.session);
+          setAutomationFeature("chat");
+          closeDrawer();
+        }}
+      />
+      {/* ═══ The app's title bar (owner, 2026-10-10) ═══
+          The accounts toggle, the app's name and the scope, then the app's
+          tools at the right end. It spans the whole app, over the accounts
+          rail too, and every Email scene keeps it. The list keeps its own
+          header below: the folder, its unread count and the filter.
+          On a phone the inbox draws its own compact bar further down, so
+          this one shows there only over an automation or chat scene. */}
+      {(!isMobile || automationFeature) && (
+        <AppTopBar
+          rail={{ open: leftOpen, onToggle: () => setLeftOpen((v) => !v), noun: "accounts" }}
+          title="My Email"
+          subtitle={
+            viewAll ? (
+              <>All inboxes · {pooledCount} mailboxes</>
+            ) : selectedAccount && accounts.length > 1 ? (
+              // The scope, for two or more mailboxes only (§11.4), as before.
+              <>
+                <MailboxChip account={selectedAccount} />{" "}
+                {selectedAccount.emailAddress}
+              </>
+            ) : null
+          }
+          tools={
+            <>
+              {/* The list toggle only where there is a list: never over an
+                  automation or chat scene, where it would do nothing. */}
+              {automationFeature ? null : (
+                <>
+                  <IconBtn
+                    icon={themedIcon("Columns2")}
+                    label={listOpen ? "Hide email list" : "Show email list"}
+                    onClick={() => setListOpen((v) => !v)}
+                    active={listOpen}
+                  />
+                  <div className="w-px h-4 bg-border" />
+                </>
+              )}
+              <MailboxActions selectedEmail={selectedEmail} />
+            </>
+          }
+        />
+      )}
+
+      {/* `overflow-clip` for the reason the root gives (#824). */}
+      <div className="flex min-h-0 flex-1 overflow-clip">
       {/* Loading overlay */}
       {surface === "loading" && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80">
@@ -671,6 +930,11 @@ export default function EmailPage() {
               onAddAccount={handleAddAccount}
               onSetDefault={setDefaultAccount}
               onDisconnect={handleDisconnectRequest}
+              onEditMailbox={handleEditMailbox}
+              onToggleSeparate={toggleSeparate}
+              viewAll={viewAll}
+              folderSums={allFolderCounts}
+              onSelectAll={handleSelectAll}
               onOpenAutomation={handleOpenAutomation}
               activeAutomation={automationFeature}
             />
@@ -683,7 +947,7 @@ export default function EmailPage() {
         // Chat is a full scene (like Assistant / Reply Zero), not a side rail.
         <div className="flex-1 min-w-0 overflow-hidden">
           <EmailAssistantChat
-            selectedAccountId={selectedAccountId}
+            pageScope={viewAll ? ALL_INBOXES : selectedAccountId}
             selectedEmailId={selectedEmailId}
             onClose={() => setAutomationFeature(null)}
           />
@@ -693,6 +957,19 @@ export default function EmailPage() {
           <AutomationView
             feature={automationFeature}
             accountId={selectedAccountId}
+            accounts={accounts}
+            onPickMailbox={(id) => {
+              // The header picker (EM-T8f-2, MB-11). It selects through the
+              // store, because RulesTab reads the folders of the selected
+              // mailbox. The Process past date belongs to the mailbox of the
+              // setup, so a pick clears it.
+              pickSettingsMailbox(id, {
+                accounts,
+                current: selectedAccountId,
+                selectAccount,
+                clearProcessPastFrom: () => setProcessPastFrom(null),
+              });
+            }}
             selectedEmailId={selectedEmailId}
             onClose={() => setAutomationFeature(null)}
             onArchived={fetchEmails}
@@ -712,6 +989,10 @@ export default function EmailPage() {
             onFilterLabel={(label) => {
               // Category chip → the inbox filtered to that label (same path a
               // label chip in the list uses), dropping back to the mailbox.
+              // A label belongs to the mailbox of the dashboard, so All inboxes
+              // opens that mailbox first (EM-T8d review).
+              const st = useEmailStore.getState();
+              if (st.viewAll && st.selectedAccountId) st.selectAccount(st.selectedAccountId);
               useEmailStore.getState().selectLabel(label);
               setAutomationFeature(null);
             }}
@@ -747,58 +1028,30 @@ export default function EmailPage() {
       <>
       {/* ═══ Main area ═══ */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        {/* ── DESKTOP top bar ──
-            Three tracks: identity (panes + folder) left, SEARCH centred, actions
-            right. Both side tracks are basis-0 + grow, so free space splits
-            evenly and the search sits on the bar's true centre.
-            The side tracks' minimums matter: the actions are fixed-size icons
-            that cannot shrink, so that track is min-w-fit and always reserves
-            its width — otherwise the expanded search bar squeezes the track and
-            the icons overflow ON TOP of it, swallowing its clicks. The left
-            track keeps min-w-0 so a long folder name truncates instead. When
-            space runs out the search bar gives way (it is the only shrinkable
-            track), so centring degrades gracefully rather than overlapping. */}
+        {/* ── DESKTOP: the list's header ──
+            The folder, its unread count and the list filter. A PANE header
+            under the app's title bar, so the folder is an h2. The two side
+            tracks are basis-0 and grow, so the filter sits on the true centre
+            of the list and the reading pane. The filter is the only track
+            that shrinks, so it gives way rather than overlap. */}
         {!isMobile && (
-          <div className="flex items-center gap-3 px-3 py-2 border-b border-border flex-shrink-0 bg-card">
+          <div data-email-list-header className="flex items-center gap-3 px-3 py-2 border-b border-border flex-shrink-0 bg-card">
             <div className="flex items-center gap-1.5 flex-1 basis-0 min-w-0">
-              <IconBtn
-                icon={leftOpen ? themedIcon("PanelLeftClose") : themedIcon("PanelLeftOpen")}
-                label={leftOpen ? "Hide accounts" : "Show accounts"}
-                onClick={() => setLeftOpen((v) => !v)}
-              />
-              <div className="w-px h-4 bg-border" />
-              <IconBtn
-                icon={themedIcon("Columns2")}
-                label={listOpen ? "Hide email list" : "Show email list"}
-                onClick={() => setListOpen((v) => !v)}
-                active={listOpen}
-              />
-              <div className="w-px h-4 bg-border" />
-              <div className="flex items-center gap-1.5 ml-1 min-w-0">
-                <h1 className="text-sm font-medium text-foreground truncate">
-                  {folderLabel(selectedFolder)}
-                </h1>
-                {unreadCount > 0 && (
-                  <span className="text-[10px] px-1.5 py-0.5 bg-primary/15 text-primary rounded-full flex-shrink-0">
-                    {unreadCount} unread
-                  </span>
-                )}
-              </div>
+              <h2 className="text-sm font-medium text-foreground truncate">
+                {folderLabel(selectedFolder)}
+              </h2>
+              {unreadCount > 0 && (
+                <span className="text-[10px] px-1.5 py-0.5 bg-primary/15 text-primary rounded-full flex-shrink-0">
+                  {unreadCount} unread
+                </span>
+              )}
             </div>
 
             <div className="flex justify-center flex-shrink min-w-0">
               <SearchBar />
             </div>
 
-            <div className="flex items-center gap-1 flex-1 basis-0 justify-end min-w-fit">
-              <MailboxActions selectedEmail={selectedEmail} />
-              <div className="w-px h-4 bg-border" />
-              <Button variant="ghost" size="none" radius="keep" layout="flex items-center" onClick={() => setPaletteOpen(true)} title="Command palette (Ctrl/Cmd+K)" className="gap-1 px-2 py-1 rounded">
-                <span className="text-[10px] border border-border rounded px-1 leading-tight">
-                  ⌘K
-                </span>
-              </Button>
-            </div>
+            <div className="flex-1 basis-0" aria-hidden />
           </div>
         )}
 
@@ -819,45 +1072,50 @@ export default function EmailPage() {
           </div>
         )}
 
-        {/* ── MOBILE: inbox top bar ── */}
+        {/* ── MOBILE: the inbox's compact title bar ──
+            The one bar of the phone (`AppTopBar`, round 2). Its title is what
+            you are looking at, the folder, and a tap opens the mailboxes.
+            The scope line and the unread count follow it. */}
         {isMobile && mobileView === "inbox" && (
-          <div className="flex items-center justify-between px-3 py-2 border-b border-border flex-shrink-0 bg-card">
-            <button
-              onClick={() => {
-                window.dispatchEvent(
-                  new CustomEvent("cc-mobile-nav", { detail: "email-accounts" })
-                );
-              }}
-              className="flex items-center gap-2 min-w-0 hover:opacity-80 transition-opacity"
-            >
-              {selectedAccount && (
-                <div
-                  className="w-7 h-7 rounded-full flex items-center justify-center text-white flex-shrink-0 text-[10px] font-semibold"
-                  style={{ backgroundColor: selectedAccount.color }}
-                >
-                  {selectedAccount.avatar}
-                </div>
-              )}
-              <div className="min-w-0">
-                <div className="text-xs font-medium text-foreground">
-                  {folderLabel(selectedFolder)}
-                </div>
-                <div className="text-[10px] text-muted-foreground truncate">
-                  {selectedAccount?.emailAddress ?? ""}
-                </div>
-              </div>
-            </button>
-            <div className="flex items-center gap-1">
-              {unreadCount > 0 && (
-                <span className="text-[10px] px-1.5 py-0.5 bg-primary/15 text-primary rounded-full">
-                  {unreadCount} unread
+          <AppTopBar
+            compact
+            title={
+              <button
+                onClick={() => {
+                  window.dispatchEvent(
+                    new CustomEvent("cc-mobile-nav", { detail: "email-accounts" })
+                  );
+                }}
+                className="inline-flex max-w-full items-center gap-2 align-middle hover:opacity-80 transition-opacity"
+              >
+                {/* `aria-hidden`: the mark is decoration, so the heading
+                    reads "Inbox", never "AInbox" (round 3). */}
+                <span aria-hidden data-mailbox-mark className="flex shrink-0">
+                  {viewAll ? (
+                    <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full border border-border bg-muted text-muted-foreground">
+                      <AppIcon name="Inbox" size={12} />
+                    </span>
+                  ) : selectedAccount ? (
+                    <MailboxAvatar account={selectedAccount} />
+                  ) : null}
                 </span>
-              )}
-              <Button variant="ghost" size="icon-sm" layout="" onClick={() => selectedAccountId && triggerSync(selectedAccountId)} disabled={!selectedAccountId || syncing} aria-label="Refresh" title="Refresh">
-                <AppIcon name="RefreshCw" size={16} className={syncing ? "animate-spin" : ""} />
-              </Button>
-            </div>
-          </div>
+                <span className="truncate">{folderLabel(selectedFolder)}</span>
+              </button>
+            }
+            subtitle={viewAll ? `All inboxes · ${pooledCount} mailboxes` : selectedAccount?.emailAddress}
+            tools={
+              <>
+                {unreadCount > 0 && (
+                  <span className="text-[10px] px-1.5 py-0.5 bg-primary/15 text-primary rounded-full">
+                    {unreadCount} unread
+                  </span>
+                )}
+                <Button variant="ghost" size="icon-sm" layout="" onClick={() => useEmailStore.getState().syncScope()} disabled={!selectedAccountId || syncing} aria-label="Refresh" title="Refresh">
+                  <AppIcon name="RefreshCw" size={16} className={syncing ? "animate-spin" : ""} />
+                </Button>
+              </>
+            }
+          />
         )}
 
         {/* ── MOBILE: search ──
@@ -869,26 +1127,29 @@ export default function EmailPage() {
           </div>
         )}
 
-        {/* ── Reconnect banner: account auth/sync is failing ── */}
-        {selectedAccount &&
-          (selectedAccount.syncStatus === "error" || authErrors[selectedAccount.id]) && (
+        {/* ── Reconnect banner: account auth/sync is failing ──
+            In All inboxes it names the first mailbox that needs it, so a
+            second mailbox cannot fail out of sight (EM-T8d review). */}
+        {attentionAccount && (
           <div className="flex items-start gap-2 px-3 py-2 border-b border-warning/30 bg-warning/10 flex-shrink-0">
             <AppIcon name="AlertCircle" size={14} className="text-warning mt-0.5 flex-shrink-0" />
             <div className="flex-1 min-w-0">
               <p className="text-xs text-foreground">
-                <span className="font-medium">{selectedAccount.emailAddress}</span>{" "}can&apos;t
+                <span className="font-medium">{attentionAccount.emailAddress}</span>{" "}can&apos;t
                 reach the provider — message bodies, folders and statuses may be stale.
               </p>
               <p className="text-[11px] text-muted-foreground mt-0.5 truncate">
-                {selectedAccount.syncError || authErrors[selectedAccount.id] || "The connection may have expired. Reconnect to restore full access."}
+                {attentionAccount.syncError || authErrors[attentionAccount.id] || "The connection may have expired. Reconnect to restore full access."}
               </p>
             </div>
             {(() => {
-              const provider = reconnectProvider(selectedAccount);
-              if (!provider) {
+              // EM-G8-f1: a Gmail mailbox gets no button while the capability
+              // read says Gmail is not live. Outlook keeps its button.
+              const action = reconnectAction(attentionAccount, liveConnect);
+              if (action.kind !== "button") {
                 return (
                   <span className="text-[11px] text-muted-foreground flex-shrink-0 max-w-[40%]">
-                    Disconnect it from the account menu, then connect it again.
+                    {action.text}
                   </span>
                 );
               }
@@ -898,32 +1159,72 @@ export default function EmailPage() {
                   size="sm"
                   icon="RefreshCw"
                   className="flex-shrink-0"
-                  onClick={() => handleConnect(provider, selectedAccount.emailAddress)}
+                  onClick={() => handleConnect(action.provider, attentionAccount.emailAddress)}
                 >
-                  {provider === "microsoft" ? "Reconnect Outlook" : "Reconnect Gmail"}
+                  {action.label}
                 </Button>
               );
             })()}
           </div>
         )}
 
-        {/* ── First sync of a new mailbox ──
-            The import panel draws only when the gateway reports progress
-            (`import_phase`, EM-T6b). Every other pending mailbox keeps the
-            banner: one from before EM-T6, or a gateway before EM-T6b. */}
-        {pendingAccount &&
-          (firstSyncSurface(pendingAccount) === "progress" ? (
-            <OnboardingPanel
-              address={pendingAccount.emailAddress}
-              progress={importProgress(pendingAccount, { now: new Date() })}
-            />
-          ) : (
-            <FirstSyncBanner address={pendingAccount.emailAddress} />
-          ))}
+        {/* ── The sync banner (EM-S9, §14.4.6, D-EM-58) ──
+            One row for each mailbox whose import runs, with its chip and a
+            percent or a count. A row goes away when its phase ends. */}
+        <SyncBanner rows={syncRows} />
+
+        {/* ── Storage notice (EM-T6e, D2 and D3) ──
+            Below the reconnect banner, which wins for its own mailbox. The
+            action opens the dialog for the mailbox that the notice NAMES. */}
+        {storageAccount && (
+          <StorageNotice
+            // A prefix: the rules step beside it keys on the bare id, and
+            // after "Keep it as it is" both draw for one mailbox.
+            key={`storage-notice-${storageAccount.id}`}
+            account={storageAccount}
+            named={accounts.length > 1}
+            onRemove={() => setRemovingId(storageAccount.id)}
+          />
+        )}
+
+        {/* ── Auto-run notice (task 2267, EM-G11c2) ──
+            For the Gmail mailbox in view that has an enabled rule and no
+            stored Auto-run choice. The rules step shows its own switch, so
+            the notice waits until the setup ends. */}
+        {selectedAccount && selectedAccount.provider === "gmail" && setupStage !== "rules" && (
+          <AutoRunNotice key={`auto-run-notice-${selectedAccount.id}`} account={selectedAccount} />
+        )}
+
+        {/* ── The first import of the mailbox in view ──
+            The panel draws only when the gateway reports progress
+            (`import_phase`, EM-T6b). The sync banner names each other
+            import. */}
+        {importPanelAccount && (
+          <OnboardingPanel
+            key={importPanelAccount.id}
+            address={importPanelAccount.emailAddress}
+            mailbox={accounts.length > 1 ? importPanelAccount : undefined}
+            progress={importProgress(importPanelAccount, { now: new Date() })}
+          />
+        )}
+
+        {/* ── The storage step of the guided setup (EM-T6e, D6) ──
+            For the mailbox in view, when its import stopped at the limit and
+            the meter is still at it. "Keep it as it is" moves it on to the
+            rules step. Not a modal. */}
+        {selectedAccount && setupStage === "storage" && (
+          <StorageStep
+            key={`storage-step-${selectedAccount.id}`}
+            account={selectedAccount}
+            named={accounts.length > 1}
+            onRemove={() => setRemovingId(selectedAccount.id)}
+            onKeep={() => setStorageKept(keepStorage(selectedAccount.id))}
+          />
+        )}
 
         {/* ── The rules step of the guided setup (EM-T6d items 8 to 11) ──
             For the mailbox in view, once its import ended. Not a modal. */}
-        {selectedAccount && onboardingStage(selectedAccount) === "rules" && (
+        {selectedAccount && setupStage === "rules" && (
           <OnboardingRulesStep
             key={selectedAccount.id}
             account={selectedAccount}
@@ -934,6 +1235,7 @@ export default function EmailPage() {
               replaceAccount(updated);
               void refreshAccounts();
             }}
+            mailboxes={accounts}
           />
         )}
 
@@ -1013,16 +1315,12 @@ export default function EmailPage() {
       </>
       )}
 
-      <CommandPalette
-        open={paletteOpen}
-        onClose={() => setPaletteOpen(false)}
-        commands={commands}
-      />
+      </div>
 
       {/* Add-to-Tasks clarify popup */}
       {taskCapturePopupEmailId && (() => {
         const popupEmail = emails.find((e) => e.id === taskCapturePopupEmailId);
-        const acctId = popupEmail?.accountId ?? selectedAccountId;
+        const acctId = taskCapturePopupAccountId ?? popupEmail?.accountId ?? selectedAccountId;
         if (!acctId) return null;
         return (
           <TaskCaptureModal
@@ -1056,14 +1354,14 @@ export default function EmailPage() {
             })
           : null;
         return (
-          <div className="fixed bottom-[calc(3.5rem+env(safe-area-inset-bottom,0px)+1rem)] sm:bottom-4 left-1/2 -translate-x-1/2 z-[80] flex items-center gap-3 bg-card border border-border shadow-xl rounded-lg px-4 py-2.5 text-xs">
+          <div className="fixed bottom-[calc(var(--phone-bar-h)+1rem)] sm:bottom-4 left-1/2 -translate-x-1/2 z-[80] flex items-center gap-3 bg-card border border-border shadow-xl rounded-lg px-4 py-2.5 text-xs">
             <span className="text-foreground">
               {isMessage ? (
                 n.title
               ) : n.created ? (
-                <>Captured to My Tasks: &ldquo;{n.title}&rdquo;</>
+                <>Captured to My work: &ldquo;{n.title}&rdquo;</>
               ) : (
-                <>Already in My Tasks: &ldquo;{n.title}&rdquo;</>
+                <>Already in My work: &ldquo;{n.title}&rdquo;</>
               )}
             </span>
             {n.created && disp && (
@@ -1072,8 +1370,8 @@ export default function EmailPage() {
                 {due ? ` · due ${due}` : ""}
               </span>
             )}
-            <a href="/tasks" className="text-primary font-medium hover:opacity-80">
-              Open My Tasks
+            <a href={tasksLink("/tasks")} className="text-primary font-medium hover:opacity-80">
+              Open My work
             </a>
             <button
               onClick={() => useEmailStore.getState().clearTaskCaptureNotice()}
@@ -1088,7 +1386,7 @@ export default function EmailPage() {
 
       {/* Undo-send toast — on mobile, sits above the fixed bottom nav bar */}
       {pendingSend && (
-        <div className="fixed bottom-[calc(3.5rem+env(safe-area-inset-bottom,0px)+1rem)] sm:bottom-4 left-1/2 -translate-x-1/2 z-[80] flex items-center gap-3 bg-card border border-border shadow-xl rounded-lg px-4 py-2.5 text-xs">
+        <div className="fixed bottom-[calc(var(--phone-bar-h)+1rem)] sm:bottom-4 left-1/2 -translate-x-1/2 z-[80] flex items-center gap-3 bg-card border border-border shadow-xl rounded-lg px-4 py-2.5 text-xs">
           <span className="text-foreground">Sending message…</span>
           <button
             onClick={() => useEmailStore.getState().undoSend()}
@@ -1102,23 +1400,27 @@ export default function EmailPage() {
       <ComposePanel
         open={composeOpen}
         onClose={closeCompose}
-        accountId={selectedAccountId ?? ""}
+        accountId={composeAccountId ?? ""}
+        defaultFromId={composeDefaults?.fromAccountId}
         onSend={async (params) => {
-          if (!selectedAccountId) return;
-          await sendEmail({
-            accountId: selectedAccountId,
-            ...params,
-          });
+          // The From row of the composer chose the mailbox (EM-T8c).
+          const sender = params.accountId || composeAccountId;
+          if (!sender) return;
+          await sendEmail({ ...params, accountId: sender });
         }}
         defaultTo={composeDefaults?.to}
         defaultSubject={composeDefaults?.subject}
         defaultCc={composeDefaults?.cc}
         replyToBody={composeDefaults?.replyToBody}
+        unsavedEdit={composeDefaults?.unsavedEdit}
+        aiFilled={composeDefaults?.aiFilled}
+        handOver={composeDefaults?.handOver}
         quote={composeDefaults?.quote}
         replyToMessageId={composeDefaults?.replyToMessageId}
         messageId={composeDefaults?.messageId}
         initialAttachments={composeDefaults?.attachments}
         initialArtifacts={composeDefaults?.artifacts}
+        initialSendError={composeDefaults?.sendError}
       />
 
       {/* Add a mailbox — the same choices as the empty state */}
@@ -1127,7 +1429,7 @@ export default function EmailPage() {
         onClose={() => {
           setShowAddModal(false);
           // The next "Add account" opens the list, not the retry's step.
-          setRangeStepProvider(null);
+          setRangeStepQuery("");
         }}
         title="Connect a mailbox"
         icon="Mail"
@@ -1140,12 +1442,38 @@ export default function EmailPage() {
               setShowAddModal(false);
               handleConnect(provider, undefined, importMonths);
             }}
+            onDone={() => setShowAddModal(false)}
+            availability={connectProviders}
           />
         </div>
       </Modal>
 
+      <MailboxEditDialog
+        account={editingMailbox}
+        onSave={saveMailboxEdit}
+        onClose={() => setEditingMailbox(null)}
+      />
+
+      {/* "Remove older mail from Metorite" (EM-T6e). Both routes take the id
+          of the mailbox that the notice or the step named (D3). */}
+      <RemoveOlderMailDialog
+        account={removingAccount}
+        named={accounts.length > 1}
+        onClose={() => setRemovingId(null)}
+        onRemoved={(id, result) => {
+          // The meter of the answer first, so a failed re-read still shows
+          // it (A14). The store is read at call time, because a removal can
+          // run for two minutes and the list can change meanwhile.
+          const current = useEmailStore.getState().accounts.find((a) => a.id === id);
+          if (current) replaceAccount(withRemovalMeter(current, result));
+          void refreshAccounts();
+        }}
+        onRefresh={async (id) => (await refreshAccounts())?.find((a) => a.id === id) ?? null}
+      />
+
       <DisconnectDialog
         account={disconnecting}
+        accounts={accounts}
         onDisconnect={deleteAccount}
         onClose={() => setDisconnecting(null)}
       />

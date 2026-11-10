@@ -3,9 +3,22 @@
 Spec: ``project-docs/specs/crm_app.md`` §7.1 (all seven sync bullets) ·
 D-CRM-6 · D-CRM-7 · D-CRM-8 · ticket WS-26b done-when 3, 4 and 5.
 
-    POST /crm/sync/zoho    run ONE cycle now (admin:access:manage), with or
-                           without the flag — a hand-run cycle is an explicit
-                           admin act, not a scheduled one.
+    ⚠️ **No route lives here any more** (WS-53 CRM-Z5). ``POST /crm/sync/zoho``
+    moved to ``routes/crm/sync.py``, and it starts the new read-only mirror
+    engine (``gateway/crm_sync/``). This file keeps the OLD two-way engine as
+    code that nothing reaches: no loop starts (``start_crm_zoho_sync``), and
+    no route calls ``run_cycle``. The broker handlers still use
+    ``execute_push`` and ``apply_push_result``, which write to Zoho only
+    after an approval, and which CRM-Z9 reopens. CRM-Z11 deletes the rest.
+
+⚠️ **OFF UNTIL CRM-Z5** (WS-53 CRM-T3, ``crm_platform.md`` §4.3). Migration
+241 put FORCE RLS on every ``crm_*`` table, and one cycle here opens one
+UNBOUND session, commits per phase and calls Zoho with it open. So
+:func:`start_crm_zoho_sync` starts no loop even with ``CRM_ZOHO_SYNC`` on, and
+``POST /crm/sync/zoho`` answers 409 with no session and no Zoho call. The
+engine below stays as it is: CRM-Z5 reuses it with one ``tenant_session(org)``
+per step. ``test_db_engine_seam.py`` keeps this file in ``H2_EXEMPT_FILES``
+for that reason alone.
 
 **One cycle = pull, then apply Zoho's deletes, then push.** In that order, on
 purpose: pulling first means a native row that lost a conflict is already
@@ -58,9 +71,7 @@ from datetime import UTC, datetime, timedelta
 from functools import partial
 from typing import Any
 
-from acb_auth import UserContext, get_current_user, require_permission
 from acb_common import get_logger, get_settings
-from fastapi import Depends, HTTPException
 from gateway.routes.crm.broker_handlers import broker_gate
 from gateway.routes.crm.core import (
     CONTACTS,
@@ -73,7 +84,6 @@ from gateway.routes.crm.core import (
     load_by_zoho_id,
     load_row,
     now,
-    router,
     savepoint,
     update_row,
 )
@@ -259,13 +269,18 @@ async def read_cursors(db: Any) -> dict[str, datetime | None]:
 async def write_cursor(
     db: Any, module: str, *, pulled_at: datetime | None, status: str,
 ) -> None:
-    """Persist one module's cursor. ``ON CONFLICT`` because it is a PK upsert."""
+    """Persist one module's cursor. ``ON CONFLICT`` because it is a PK upsert.
+
+    The key is ``(organization_id, module)`` since migration 241 (WS-53
+    CRM-T1). ``organization_id`` comes from the column DEFAULT, which is the
+    tenant the session bound.
+    """
     await db.execute(
         text(
             "INSERT INTO crm_sync_cursors "
             "(module, last_pulled_at, last_run_at, last_status) "
             "VALUES (:module, :last_pulled_at, :last_run_at, :last_status) "
-            "ON CONFLICT (module) DO UPDATE SET "
+            "ON CONFLICT (organization_id, module) DO UPDATE SET "
             "last_pulled_at = EXCLUDED.last_pulled_at, "
             "last_run_at = EXCLUDED.last_run_at, "
             "last_status = EXCLUDED.last_status"
@@ -713,7 +728,7 @@ async def build_payload(db: Any, entity: Entity, row: Any) -> dict[str, Any]:
     if entity is ORGANIZATIONS:
         return to_zoho_account(row)
     account_id = await _linked_zoho_id(
-        db, ORGANIZATIONS.table, getattr(row, "organization_id", None),
+        db, ORGANIZATIONS.table, getattr(row, "company_id", None),
     )
     if entity is CONTACTS:
         return to_zoho_contact(row, account_id=account_id)
@@ -1149,6 +1164,9 @@ async def _run_cycle_locked(actor_email: str) -> SyncCycleReport:
         owners = {}
         report.errors.append(f"owner mapping unavailable: {str(exc)[:200]}")
 
+    # ⚠️ UNREACHABLE UNTIL CRM-Z5 (WS-53 CRM-T3): no loop starts and the
+    # route answers 409, so nothing in production reaches this session.
+    #
     # H4, DELIBERATELY NOT H2 (`saas_multitenancy_handover.md`): one cycle is
     # a BACKGROUND engine run — the scheduled loop below fires it with no
     # request in flight, and the `POST /crm/sync/zoho` hand-run shares this
@@ -1231,17 +1249,45 @@ async def _sync_loop() -> None:
             await asyncio.wait_for(_stopping.wait(), timeout=interval)
 
 
+#: Why the loop and the hand-run cycle refuse until CRM-Z5 (WS-53 CRM-T3,
+#: ``crm_platform.md`` §4.3). One cycle opens ONE unbound session, commits per
+#: phase and per record, and calls Zoho while that session is open. Under
+#: FORCE RLS on every ``crm_*`` table (migration 241) it reads no row and
+#: every write fails. A correct binding is one ``tenant_session(org)`` per
+#: step, with no session open across a provider call. That is the CRM-Z5
+#: engine, so CRM-T3 does not build it twice.
+SYNC_OFF_UNTIL_CRM_Z5 = (
+    "The Zoho sync is off until CRM-Z5. The current engine opens no tenant "
+    "session, so under FORCE RLS it reads no row and writes nothing. CRM-Z5 "
+    "rebuilds it per connection, with one tenant session per step."
+)
+
+
 async def start_crm_zoho_sync() -> bool:
-    """Start the loop **only when ``CRM_ZOHO_SYNC`` is on**. Returns started?
+    """Start NO loop until CRM-Z5, whatever ``CRM_ZOHO_SYNC`` says.
 
     Called from the gateway lifespan. With the flag off — the default and the
     state of every environment — this registers nothing at all, which is the
-    OFF-state property WS-26b done-when 4 asserts.
+    OFF-state property WS-26b done-when 4 asserts. With the flag ON it also
+    registers nothing, and it logs ``crm.sync.off_until_crm_z5`` at WARNING
+    so the operator who flipped the flag can see why (WS-53 CRM-T3). See
+    :data:`SYNC_OFF_UNTIL_CRM_Z5`. :func:`_start_sync_task` keeps the start
+    for CRM-Z5 to call.
     """
-    global _sync_task
     if not sync_enabled():
         _log.info("crm.sync.disabled")
         return False
+    _log.warning("crm.sync.off_until_crm_z5", reason=SYNC_OFF_UNTIL_CRM_Z5)
+    return False
+
+
+async def _start_sync_task() -> bool:
+    """Start the supervised loop task. Idempotent. **No caller until CRM-Z5.**
+
+    The body :func:`start_crm_zoho_sync` ran before WS-53 CRM-T3, kept as-is
+    so CRM-Z5 reuses it and the stop path keeps its tests.
+    """
+    global _sync_task
     if _sync_task is not None and not _sync_task.done():
         return True
     _stopping.clear()
@@ -1295,42 +1341,12 @@ def sync_status() -> dict[str, Any]:
     }
 
 
-# ── The manual endpoint ─────────────────────────────────────────────────────
-
-@router.post(
-    "/sync/zoho",
-    response_model=SyncCycleReport,
-    dependencies=[require_permission("admin:access:manage")],
-)
-async def run_sync_cycle_now(
-    user: UserContext = Depends(get_current_user),
-) -> SyncCycleReport:
-    """Run ONE sync cycle now — **with or without ``CRM_ZOHO_SYNC``**.
-
-    §7.1: a hand-run cycle is an explicit admin act, so it does not need the
-    scheduling flag; the flag only decides whether the platform does this
-    unattended. Same ``admin:access:manage`` floor as the backfill, and the
-    same warning: against the production tenant this WRITES live Zoho and is
-    an OWNER-GATE act (``work_plan.md`` §6).
-
-    **409 while a cycle is already running.** Two overlapping cycles see the
-    same dirty rows and both create them upstream, and Zoho's API offers no
-    idempotency token to undo that. Refusing is the honest answer — the
-    scheduled loop, or a later click, will do the work.
-    """
-    from gateway.routes.crm.core import actor
-
-    try:
-        return await run_cycle(actor_email=actor(user))
-    except CycleAlreadyRunning as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-
 __all__ = [
     "MAX_PUSH_ATTEMPTS",
     "PUSHABLE_ACTIVITY_TYPES",
     "PUSH_BATCH_LIMIT",
     "SYNC_INTERVAL_SECS",
+    "SYNC_OFF_UNTIL_CRM_Z5",
     "CycleAlreadyRunning",
     "PushReport",
     "SyncCycleReport",

@@ -100,6 +100,18 @@ export function closableCount(progress: NodeProgress): number {
   return Math.max(0, (progress.tasks ?? 0) - (progress.cancelled ?? 0));
 }
 
+/**
+ * Open work in the subtree: tasks that are neither delivered nor abandoned.
+ * The tree row shows it as its muted count (`RailRow`'s `meta`).
+ *
+ * `null` when the row carries no roll-up. Only `/tree` stamps the counts,
+ * and a row from `/nodes` must not claim a confident zero.
+ */
+export function openCount(progress: NodeProgress): number | null {
+  if (progress.tasks == null) return null;
+  return Math.max(0, progress.tasks - (progress.done ?? 0) - (progress.cancelled ?? 0));
+}
+
 /** Whole percent, for the label a reader hovers to see. */
 export function completionPercent(progress: NodeProgress): number {
   return Math.round(completion(progress) * 100);

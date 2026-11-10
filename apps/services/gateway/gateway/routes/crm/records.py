@@ -7,6 +7,10 @@ Spec: ``project-docs/specs/crm_app.md`` §4 (``records.py`` row).
     GET    /crm/<entity>/{id}
     PATCH  /crm/<entity>/{id}
     DELETE /crm/<entity>/{id}                                 → what cascaded
+    GET    /crm/owners                                        → {owners}
+
+``search_records`` is no route. The command bar's CRM provider calls it
+(WS-53 CRM-X2), after the gates of this router.
 
 **Every path here is written out literally**, one route per entity, rather than
 served by a single ``/crm/{entity}`` template. That is not verbosity for its own
@@ -23,41 +27,63 @@ functions below, so there is exactly one implementation of each rule.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+from datetime import UTC, datetime
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
-from fastapi import Depends, HTTPException, Query
+from fastapi import Depends, HTTPException, Query, Request
 from gateway.routes.crm.core import (
     CLOSING_TYPES,
     CONTACTS,
     DEALS,
     LEADS,
     MAX_PAGE_SIZE,
+    OPEN_LEAD_SQL,
     ORGANIZATIONS,
     ContactIn,
+    CustomMerge,
     DealIn,
     Entity,
+    ExtraFilterInput,
     LeadIn,
+    ListQuery,
     ListResponse,
     OrganizationIn,
     _tenant_session,
     actor,
+    assert_writable,
+    attach_ext_urls,
     clean_payload,
     compute_lead_name,
     count_where,
+    current_tenant,
+    custom_pairs,
+    default_pipeline_id,
+    extra_filters,
+    from_jsonb,
     has_column,
     insert_row,
     lead_name_is_derived,
     list_contract,
-    load_default_status,
+    load_pipeline_start_status,
     now,
+    pipeline_takes_unset,
     record_zoho_tombstone,
+    related_filters,
+    require_deal_pipeline,
     require_row,
+    resolve_owner,
     router,
     row_to_dict,
     run_list,
     update_row,
     validate_source,
+)
+from gateway.routes.crm.field_studio import (
+    attach_lookup_names,
+    custom_for_create,
+    custom_for_patch,
 )
 from gateway.routes.crm.pipeline import (
     NO_EXISTING_RECORD,
@@ -66,6 +92,44 @@ from gateway.routes.crm.pipeline import (
 )
 from pydantic import BaseModel
 from sqlalchemy import text
+
+#: What a caller reads when a query name or value holds a NUL (CRM-Q25c).
+NUL_DETAIL = "A query name or value holds a NUL character."
+
+
+def refuse_nul(pairs: Iterable[tuple[str, str]]) -> None:
+    """A 422 for a NUL character in a query name or value (WS-53 CRM-Q25c).
+
+    Postgres text holds no NUL, so asyncpg refuses one later, and the route
+    answers 500. This is the ONE guard. Each CRM read that takes a query
+    string calls it before any SQL: :class:`ListParams` (the four lists and
+    the aggregate), ``export.ExportParams``, ``pipeline.get_pipeline``, the
+    module list and :func:`search_records`. Do not write a second copy.
+    Fence: ``tests/unit/test_crm_nul_guard_r8.py``.
+    """
+    for name, value in pairs:
+        if "\x00" in name or "\x00" in value:
+            raise HTTPException(status_code=422, detail=NUL_DETAIL)
+
+
+def refuse_nul_tree(node: Any) -> None:
+    """The one guard over a JSON body: every string key and value of the
+    tree (WS-53 CRM-Z10d). ``json.dumps`` writes a NUL as the six characters
+    ``\u0000``, so a dump would hide it. The walk reads the raw strings.
+    """
+    refuse_nul(_string_pairs(node))
+
+
+def _string_pairs(node: Any) -> Iterable[tuple[str, str]]:
+    if isinstance(node, str):
+        yield ("", node)
+    elif isinstance(node, dict):
+        for key, val in node.items():
+            yield (str(key), "")
+            yield from _string_pairs(val)
+    elif isinstance(node, (list, tuple)):
+        for item in node:
+            yield from _string_pairs(item)
 
 
 class ListParams:
@@ -89,7 +153,20 @@ class ListParams:
         owner: str | None = None,
         source: str | None = None,
         include_converted: bool = False,
+        pipeline_id: str | None = None,
+        company_id: str | None = None,
+        contact_id: str | None = None,
+        created_from: str | None = None,
+        created_to: str | None = None,
+        updated_from: str | None = None,
+        updated_to: str | None = None,
+        close_from: str | None = None,
+        close_to: str | None = None,
+        request: Request = None,  # type: ignore[assignment]
     ) -> None:
+        # CRM-Q25c: each name and value, before any of them reaches SQL.
+        if request is not None:
+            refuse_nul(request.query_params.multi_items())
         self.q = q
         self.sort = sort
         self.direction = direction
@@ -99,6 +176,21 @@ class ListParams:
         self.owner = owner
         self.source = source
         self.include_converted = include_converted
+        #: Deals only (WS-53 CRM-Q2). With none, a list behaves as it always did.
+        self.pipeline_id = pipeline_id
+        self.company_id = company_id
+        self.contact_id = contact_id
+        #: CRM-Q8. ISO dates. A bad one is a 422 before any SQL.
+        self.created_from = created_from
+        self.created_to = created_to
+        self.updated_from = updated_from
+        self.updated_to = updated_to
+        #: Deals only.
+        self.close_from = close_from
+        self.close_to = close_to
+        #: ``custom.<key>=<value>`` and ``custom.<key>.in=a,b``, read off the
+        #: request because the key names are not known up front.
+        self.custom = tuple(custom_pairs(request.query_params if request else None))
 
 
 class DeleteResponse(BaseModel):
@@ -115,29 +207,114 @@ class DeleteResponse(BaseModel):
 
 # ── Shared behaviour ────────────────────────────────────────────────────────
 
-async def _list(entity: Entity, params: ListParams) -> ListResponse:
+async def _list(
+    entity: Entity, params: ListParams, user: Any = None,
+) -> ListResponse:
+    async with _tenant_session() as db:
+        query = await list_query(db, entity, params, user)
+        found = await run_list(db, entity, query)
+        # CRM-C4a: the live name of each lookup value, one query for each
+        # target entity.
+        await attach_lookup_names(db, entity.slug, found.rows)
+        return found
+
+
+async def list_query(
+    db: Any, entity: Entity, params: Any, user: Any = None,
+) -> ListQuery:
+    """The ONE builder of a list's WHERE clause and its bound values.
+
+    *params* is a :class:`ListParams` or an ``export.ExportParams``. The list
+    routes, ``export.py`` and ``aggregate.py`` (WS-53 CRM-C7) all call it, so
+    an export and an aggregate cover exactly the rows that the list with the
+    same filters shows. Do not copy a filter into a caller.
+    """
     extra: tuple[str, ...] = ()
     if entity.hides_converted and not params.include_converted:
         # §3.3/B6 — a lead is "converted" while the deal it became still
         # exists. Keying on converted_at instead would strand the lead
         # invisibly forever if that deal were deleted (the FK SET-NULLs the
         # link; the timestamp survives as history).
-        extra = ("converted_deal_id IS NULL",)
-    query = list_contract(
+        extra = (OPEN_LEAD_SQL,)
+    extra_params: dict[str, Any] = {}
+    related_where, related_params = related_filters(
+        entity, company_id=params.company_id, contact_id=params.contact_id,
+    )
+    extra = (*extra, *related_where)
+    extra_params.update(related_params)
+    owner = resolve_owner(params.owner, user)
+    # CRM-Q8: the date ranges and the custom field filters. They validate
+    # first, so a bad value is a 422 before the list query runs.
+    more_where, more_params = await extra_filters(
+        db, entity, ExtraFilterInput(
+            created_from=params.created_from, created_to=params.created_to,
+            updated_from=params.updated_from, updated_to=params.updated_to,
+            close_from=params.close_from, close_to=params.close_to,
+            custom=params.custom,
+        ),
+    )
+    return list_contract(
         entity,
         q=params.q, sort=params.sort, direction=params.direction,
         page=params.page, page_size=params.page_size,
-        status_id=params.status_id, owner=params.owner, source=params.source,
-        extra_where=extra,
+        status_id=params.status_id, owner=owner, source=params.source,
+        pipeline_id=params.pipeline_id,
+        pipeline_takes_unset=(
+            entity is DEALS and await pipeline_takes_unset(db, params.pipeline_id)
+        ),
+        extra_where=(*extra, *more_where),
+        extra_params={**extra_params, **more_params},
     )
-    async with _tenant_session() as db:
-        return await run_list(db, entity, query)
 
 
 async def _get(entity: Entity, record_id: str) -> dict:
     async with _tenant_session() as db:
         row = await require_row(db, entity.table, record_id, entity.label)
-        return row_to_dict(row, entity.model)
+        wired = row_to_dict(row, entity.model)
+        await attach_ext_urls(db, entity.table, [wired])
+        await attach_lookup_names(db, entity.slug, [wired])
+        return wired
+
+
+async def _resolve_pipeline(db: Any, entity: Entity, values: dict[str, Any]) -> None:
+    """A deal names an existing pipeline, or joins the default one (CRM-Q2).
+
+    A stated ``pipeline_id`` must be a pipeline of this organization, else 404.
+    With none stated on a create, the deal joins the default pipeline when the
+    organization has one. An organization with no pipeline leaves it ``None``.
+    """
+    if entity is not DEALS:
+        return
+    stated = values.get("pipeline_id")
+    if stated:
+        # CRM-M4a: a lead pipeline is never the pipeline of a deal.
+        await require_deal_pipeline(db, str(stated))
+    elif "pipeline_id" not in values:
+        found = await default_pipeline_id(db)
+        if found:
+            values["pipeline_id"] = found
+
+
+async def _check_stage_in_pipeline(
+    db: Any, pipeline_id: Any, status_id: Any,
+) -> None:
+    """422 ``stage_not_in_pipeline`` when a pipeline lists stages and the deal's
+    stage is not one of them. A pipeline with no listed stage allows any."""
+    if not pipeline_id or not status_id:
+        return
+    row = (await db.execute(
+        text(
+            "SELECT count(*) AS total, "
+            "count(*) FILTER (WHERE status_id = CAST(:s AS uuid)) AS hit "
+            "FROM crm_pipeline_stages WHERE pipeline_id = CAST(:p AS uuid)"
+        ),
+        {"p": str(pipeline_id), "s": str(status_id)},
+    )).first()
+    if row is not None and int(row.total or 0) and not int(row.hit or 0):
+        raise HTTPException(status_code=422, detail={
+            "code": "stage_not_in_pipeline",
+            "message": "This stage is not in the deal's pipeline.",
+        })
 
 
 async def _resolve_status(
@@ -159,7 +336,7 @@ async def _resolve_status(
     has been claimed by nobody, and is never gated. Without that condition a
     requirement on the default lane would 422 ``QuickCreateModal`` (which sends
     no ``status_id``) and every lead conversion (``ConvertDeal`` has no such
-    field) — and ``organization_id`` is requirable while neither surface can
+    field) — and ``company_id`` is requirable while neither surface can
     supply one, so those leads would become permanently unconvertible.
 
     The permissive direction is deliberate and cheaply reversible: deleting the
@@ -171,7 +348,9 @@ async def _resolve_status(
     status = (
         await require_row(db, entity.status_table, str(chosen), "Status")
         if chosen
-        else await load_default_status(db, entity.status_table)
+        else await load_pipeline_start_status(
+            db, entity.status_table, values.get("pipeline_id"),
+        )
     )
     if status.type == "lost" and not values.get("lost_reason_id"):
         raise HTTPException(
@@ -205,9 +384,18 @@ async def _resolve_status(
 
 
 async def create_record(
-    entity: Entity, payload: BaseModel, user: UserContext,
+    entity: Entity, payload: BaseModel, user: UserContext, *, system: bool = False,
 ) -> dict:
+    """Create one record.
+
+    ``system=True`` is for a platform writer, such as the auto-lead step. It
+    fills the custom defaults and skips "required" (CRM-C4a, owner decision
+    of review round 1). A route never passes it.
+    """
     values = clean_payload(payload)
+    # CRM-C4a: `custom` is checked against the field definitions below, in
+    # the session, and never written as the caller sent it.
+    given_custom = values.pop("custom", None)
     validate_source(values)
     missing = [
         name for name in entity.required
@@ -227,7 +415,19 @@ async def create_record(
     values.setdefault("owner_email", actor(user))
 
     async with _tenant_session() as db:
+        await assert_writable(
+            db, current_tenant(), entity, values, creating=True,
+        )
+        chosen_stage = values.get("status_id")
+        await _resolve_pipeline(db, entity, values)
+        if entity is DEALS and chosen_stage:
+            await _check_stage_in_pipeline(db, values.get("pipeline_id"), chosen_stage)
         await _resolve_status(db, entity, values)
+        # CRM-C4a (§20.7 item 5): each value checked against its field, the
+        # defaults filled, and each required field present, or 422.
+        custom = await custom_for_create(db, entity.slug, given_custom, system=system)
+        if custom:
+            values["custom"] = custom
         row = await insert_row(db, entity.table, values)
         return row_to_dict(row, entity.model)
 
@@ -243,9 +443,37 @@ async def patch_record(
     on which endpoint moved the record.
     """
     values = clean_payload(payload)
+    given_custom = values.pop("custom", None)
     validate_source(values)
     async with _tenant_session() as db:
         record = await require_row(db, entity.table, record_id, entity.label)
+        await assert_writable(
+            db, current_tenant(), entity, values, row=record,
+        )
+        merge: CustomMerge | None = None
+        if given_custom:
+            # CRM-C4a (§20.7 item 5): checked before any other write, so a bad
+            # value moves no stage. One statement merges per key later, and a
+            # key that the PATCH does not name keeps its value.
+            stored = from_jsonb(getattr(record, "custom", None))
+            put, drop = await custom_for_patch(
+                db, entity.slug, given_custom, stored if isinstance(stored, dict) else {},
+            )
+            merge = CustomMerge(put=put, drop=drop)
+        if values.get("pipeline_id"):
+            await _resolve_pipeline(db, entity, values)
+        # Only a CHANGE is checked: a new stage, or a new pipeline. A deal that
+        # keeps its stage is never refused for it.
+        stage_changes = (
+            values.get("status_id") is not None
+            and str(values["status_id"]) != str(getattr(record, "status_id", "") or "")
+        )
+        if entity is DEALS and ("pipeline_id" in values or stage_changes):
+            await _check_stage_in_pipeline(
+                db,
+                values.get("pipeline_id", getattr(record, "pipeline_id", None)),
+                values.get("status_id", getattr(record, "status_id", None)),
+            )
         wanted = values.get("status_id")
         if wanted and str(getattr(record, "status_id", "") or "") != str(wanted):
             values.update(await apply_status_transition(
@@ -254,6 +482,8 @@ async def patch_record(
             ))
         if entity is LEADS:
             _recompute_lead_name(record, values)
+        if merge is not None and (merge.put or merge.drop):
+            values["custom"] = merge
         if not values:
             return row_to_dict(record, entity.model)
         row = await update_row(db, entity.table, record_id, values)
@@ -311,6 +541,7 @@ async def delete_record(
     """
     async with _tenant_session() as db:
         record = await require_row(db, entity.table, record_id, entity.label)
+        await assert_writable(db, current_tenant(), entity, None, row=record)
         cascaded: dict[str, int] = {}
         for table, column in entity.cascades:
             cascaded[table] = await count_where(db, table, column, record_id)
@@ -327,6 +558,133 @@ async def delete_record(
         )
 
 
+# ── Owners (WS-53 CRM-X1) ──────────────────────────────────────────────────
+
+#: The most owners one answer holds.
+MAX_OWNERS = 500
+
+#: The active members of the tenant, then each record owner that no active
+#: member holds. ``app_user`` and the four CRM tables force row level
+#: security, so the bound session reads the caller's tenant only. The member
+#: rule is the one ``rooms._directory`` uses.
+_OWNERS_SQL = """
+WITH members AS (
+    SELECT email, display_name AS name FROM app_user
+    WHERE COALESCE(status, 'active') = 'active'
+),
+record_owners AS (
+    SELECT DISTINCT lower(owner_email) AS email FROM (
+        SELECT owner_email FROM crm_leads
+        UNION ALL SELECT owner_email FROM crm_deals
+        UNION ALL SELECT owner_email FROM crm_contacts
+        UNION ALL SELECT owner_email FROM crm_companies
+    ) o
+    WHERE btrim(COALESCE(owner_email, '')) <> ''
+)
+SELECT email, name, member FROM (
+    SELECT email, name, true AS member FROM members
+    UNION ALL
+    SELECT r.email, NULL AS name, false AS member FROM record_owners r
+    WHERE NOT EXISTS (SELECT 1 FROM members m WHERE lower(m.email) = r.email)
+) owners
+ORDER BY lower(name) NULLS LAST, lower(email)
+LIMIT :limit
+"""
+
+
+class OwnerModel(BaseModel):
+    """One choice of the owner filter. It holds nothing else (R5)."""
+
+    email: str
+    name: str | None = None
+    member: bool
+
+
+class OwnersResponse(BaseModel):
+    owners: list[OwnerModel]
+
+
+@router.get("/owners", response_model=OwnersResponse)
+async def list_owners(
+    user: UserContext = Depends(get_current_user),
+) -> OwnersResponse:
+    """Each owner the filter offers, for the caller's tenant only.
+
+    A CRM route and not the member list of Chat, for two reasons: that list
+    needs ``feature:chat``, and it cannot name a Zoho owner who is not a
+    member. The router's kill switch, ``feature:crm`` and the access rule
+    apply here as on every ``/crm`` route.
+    """
+    async with _tenant_session() as db:
+        rows = (await db.execute(text(_OWNERS_SQL), {"limit": MAX_OWNERS})).fetchall()
+    return OwnersResponse(owners=[
+        OwnerModel(email=r.email, name=r.name, member=bool(r.member)) for r in rows
+    ])
+
+
+# ── The shell's search (WS-53 CRM-X2) ──────────────────────────────────────
+
+#: The entities the command bar searches, and the kind each one names in the
+#: answer. The order breaks a tie of ``last_activity_at``.
+SEARCH_KINDS: tuple[tuple[Entity, str], ...] = (
+    (DEALS, "deal"), (LEADS, "lead"), (CONTACTS, "contact"), (ORGANIZATIONS, "company"),
+)
+
+
+async def search_records(
+    user: UserContext, q: str, limit: int,
+) -> list[tuple[str, dict[str, Any]]]:
+    """The records that match *q*, newest activity first, as ``(kind, row)``.
+
+    Spec: ``crm_platform.md`` §19.6 and §19.10. The command bar's CRM provider
+    (``routes/shell/search.py::_crm``) calls it after the CRM router's gates,
+    so it writes no SQL of its own. Each entity is read with the list contract
+    of its route: the same ``?q=`` match, and the converted-lead rule of
+    ``_list``. The reads share one ``_tenant_session()``, so row level
+    security keeps them in the caller's tenant.
+
+    ⚠️ It builds no ``ListParams``. That class declares its defaults with
+    ``Query(...)``, so a direct call that leaves out an argument passes the
+    ``Query`` object itself. It also reads no next activity and no count
+    (``rows_only``), because the bar has 1.5 seconds for every app.
+    """
+    refuse_nul([("q", q or "")])
+    words = (q or "").strip()
+    if not words:
+        return []
+    found: list[tuple[str, dict[str, Any]]] = []
+    async with _tenant_session() as db:
+        for entity, kind in SEARCH_KINDS:
+            query = list_contract(
+                entity,
+                q=words, sort="last_activity_at", direction="desc",
+                page=1, page_size=limit,
+                extra_where=(OPEN_LEAD_SQL,) if entity.hides_converted else (),
+            )
+            answer = await run_list(db, entity, query, rows_only=True)
+            found += [(kind, row) for row in answer.rows]
+    # Newest first. A record with no activity yet goes last. `sort` is stable,
+    # so a tie keeps the order of `SEARCH_KINDS`.
+    found.sort(key=lambda pair: _activity_instant(pair[1]), reverse=True)
+    return found[:limit]
+
+
+def _activity_instant(row: dict[str, Any]) -> datetime:
+    """The row's ``last_activity_at`` as an instant, or the earliest one."""
+    value = row.get("last_activity_at")
+    if not value:
+        return _NO_ACTIVITY
+    try:
+        instant = datetime.fromisoformat(str(value))
+    except ValueError:
+        return _NO_ACTIVITY
+    return instant if instant.tzinfo else instant.replace(tzinfo=UTC)
+
+
+#: The sort key of a record with no activity: before every real instant.
+_NO_ACTIVITY = datetime.min.replace(tzinfo=UTC)
+
+
 # ── Leads ───────────────────────────────────────────────────────────────────
 
 @router.get("/leads", response_model=ListResponse)
@@ -335,7 +693,7 @@ async def list_leads(
     user: UserContext = Depends(get_current_user),
 ) -> ListResponse:
     """Leads, newest first. Converted leads are hidden unless asked for."""
-    return await _list(LEADS, params)
+    return await _list(LEADS, params, user)
 
 
 @router.post("/leads", status_code=201)
@@ -374,7 +732,7 @@ async def list_deals(
     params: ListParams = Depends(),
     user: UserContext = Depends(get_current_user),
 ) -> ListResponse:
-    return await _list(DEALS, params)
+    return await _list(DEALS, params, user)
 
 
 @router.post("/deals", status_code=201)
@@ -413,7 +771,7 @@ async def list_contacts(
     params: ListParams = Depends(),
     user: UserContext = Depends(get_current_user),
 ) -> ListResponse:
-    return await _list(CONTACTS, params)
+    return await _list(CONTACTS, params, user)
 
 
 @router.post("/contacts", status_code=201)
@@ -452,7 +810,7 @@ async def list_organizations(
     params: ListParams = Depends(),
     user: UserContext = Depends(get_current_user),
 ) -> ListResponse:
-    return await _list(ORGANIZATIONS, params)
+    return await _list(ORGANIZATIONS, params, user)
 
 
 @router.post("/organizations", status_code=201)

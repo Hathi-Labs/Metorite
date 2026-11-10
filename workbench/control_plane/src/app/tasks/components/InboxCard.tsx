@@ -97,7 +97,7 @@ export function InboxCard({
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
-  // Keep the keyboard cursor row visible as you navigate with j/k.
+  // Keep the keyboard cursor row visible as the arrow keys move it.
   useEffect(() => {
     if (cursor) rootRef.current?.scrollIntoView({ block: "nearest" });
   }, [cursor]);

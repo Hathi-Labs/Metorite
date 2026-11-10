@@ -21,8 +21,8 @@
  *   • Tier 4 — `react` node: an agent-authored React COMPONENT, bundled
  *     server-side (SandboxedReact) and run in that same isolated frame. Real
  *     state/hooks/effects for immersive artifacts, same zero authority.
- * There is NO in-tree raw-markup injection: an unknown `type` renders as an inert
- * labelled fallback, and neither the `html` nor `react` tier's code ever touches
+ * There is NO in-tree raw-markup injection: an unknown `type` renders its words
+ * as plain text (`GenUIFallback`), and neither the `html` nor `react` tier's code ever touches
  * our DOM/origin.
  *
  * Interactivity: `button` nodes carry an `action` string; clicking one calls
@@ -35,13 +35,30 @@
 import { createElement, useContext } from "react";
 
 import { EntityIndexContext } from "@/components/ChatEntityPill";
+import FencedText from "@/components/FencedText";
+import GenUiText from "@/components/GenUiText";
 import { MarkdownBody } from "@/components/MarkdownMessage";
 import SandboxedHtml from "@/components/SandboxedHtml";
+import { EmptyState } from "@/components/EmptyState";
 import Button from "@/components/ui/Button";
+import { Skeleton } from "@/components/ui/Skeleton";
+import { CollapsibleCardBody, CollapsibleCardHeader, useCardFold } from "@/components/ui/Collapsible";
 import SandboxedReact from "@/components/SandboxedReact";
-import { renderTemplate } from "@/components/genUITemplates";
+import { OWN_HEAD_TEMPLATES, renderTemplate } from "@/components/genUITemplates";
+import GenUIFallback from "@/components/GenUIFallback";
+import { isEmptyNode } from "@/lib/genUiFallback";
+import { plainTitle } from "@/lib/fencedText";
 import { tableCells, tableColumns, text } from "@/lib/genUiText";
 import { resolveIcon } from "@/lib/icons";
+import {
+  actionDisabled, boundView, bindsSource, canRetryRead, gridData, parseAction, parseSource, pressAction, sourceKey,
+  type BoundView, type Row, type StudioDataDoor,
+} from "@/lib/studio/dataDoor";
+import StudioTable from "@/components/studio/StudioTable";
+import StudioBoard from "@/components/studio/StudioBoard";
+import { StudioDataContext } from "@/lib/studio/dataContext";
+import { TypedActionButton } from "@/lib/studio/TypedActionButton";
+import { useCachedResource } from "@/lib/useCachedResource";
 import { type AccentHue, accentForHue } from "@/lib/statusAccent";
 
 // ─── Schema ────────────────────────────────────────────────────────────────
@@ -53,7 +70,9 @@ export interface GenUINode {
   children?: GenUINode[];
 }
 
-/** The whitelisted component kinds. Extend deliberately — each is inert data. */
+/** The whitelisted component kinds. Extend deliberately — each is inert data.
+ *  `GENUI_NODE_TYPES` in `write_artifact.py` is the copy the tool refuses
+ *  against, and `test_genui_catalog_lockstep.py` fails when the two differ. */
 const KNOWN_TYPES = new Set([
   "card", "stack", "row", "heading", "text", "markdown", "badge",
   "divider", "keyValue", "table", "list", "code", "link", "button", "callout",
@@ -103,37 +122,169 @@ const s = text;
 export function GenUiMarkdown({ content }: { content: string }) {
   const index = useContext(EntityIndexContext);
   return (
-    <MarkdownBody content={content} entityPills={index !== null} entityIndex={index ?? undefined} />
+    <MarkdownBody content={content} entityPills={index !== null} entityIndex={index ?? undefined} fences />
   );
 }
 
+/** Re-exported for its test. The component lives in `GenUiText.tsx`. */
+export { GenUiText };
+
+/**
+ * A node whose rows come from the page's door (STU-D1, `ai_studio.md` §5.2).
+ * A component of its own, because `Node` calls hooks before its guards and a
+ * conditional hook is unsafe. `Node` mounts it only when a door exists.
+ */
+/** The loading, error and empty states of a bound block. Words are plain. */
+export function BoundStatus({
+  view, onRetry, title, error,
+}: {
+  view: BoundView;
+  onRetry: () => void;
+  title?: string;
+  /** The sentence of a failed read, from the door. */
+  error?: string | null;
+}): React.ReactElement | null {
+  if (view === "loading") {
+    return (
+      <div className="space-y-2" aria-busy="true">
+        <Skeleton className="h-6 w-full" />
+        <Skeleton className="h-6 w-5/6" />
+        <Skeleton className="h-6 w-4/6" />
+      </div>
+    );
+  }
+  if (view === "error") {
+    // The door words the fault (`realDoor.ts`), so say its sentence once, and offer a retry only where one can help.
+    return (
+      <div className="flex items-center gap-2 text-xs text-destructive" role="alert">
+        <span>{error || "Could not load this list."}</span>
+        {canRetryRead(error) && <Button type="button" variant="secondary" size="sm" onClick={onRetry}>Try again</Button>}
+      </div>
+    );
+  }
+  if (view === "empty") {
+    return <EmptyState icon="Inbox" message={title ? `No ${title} yet` : "Nothing to show yet"} />;
+  }
+  return null;
+}
+
+function BoundSource({
+  node, door, onAction, answered, onDecline, depth,
+}: {
+  node: GenUINode;
+  door: StudioDataDoor;
+  onAction?: (action: string) => void;
+  answered?: string;
+  onDecline?: () => void;
+  depth: number;
+}): React.ReactElement | null {
+  const props = (node.props ?? {}) as Record<string, unknown>;
+  const source = parseSource(props.source);
+  const { data, loading, error, refresh } = useCachedResource<Row[]>(
+    source ? sourceKey(door, source) : null,
+    () => door.read(source as NonNullable<typeof source>),
+  );
+  const view = boundView({ data, loading, error });
+  if (view !== "rows") {
+    const title = s(props.title ?? (props.data as Record<string, unknown> | undefined)?.title, "");
+    return <BoundStatus view={view} onRetry={refresh} title={title} error={error} />;
+  }
+  const rows = data as Row[];
+  const { source: _drop, ...rest } = props;
+  void _drop;
+  // A board is not a template of the registry: it needs the door to move a card.
+  if (s(node.type) === "template" && props.name === "board") {
+    return <StudioBoard data={rest.data} rows={rows} door={door} />;
+  }
+  // A Table with inline edit needs the door to write a cell (STU-D2b).
+  const gridProps = (rest.data ?? {}) as Record<string, unknown>;
+  if (s(node.type) === "template" && props.name === "dataGrid" && gridProps.editable === true && source) {
+    return <StudioTable data={gridProps} rows={rows} door={door} source={source} />;
+  }
+  const bound: GenUINode = s(node.type) === "template"
+    ? {
+      ...node,
+      props: {
+        ...rest,
+        data: gridData((rest.data ?? {}) as Record<string, unknown>, rows),
+      },
+    }
+    : { ...node, props: { ...rest, rows } };
+  return <Node node={bound} onAction={onAction} answered={answered} onDecline={onDecline} depth={depth} />;
+}
+
 function Node({
-  node, onAction, depth = 0,
+  node, onAction, answered, onDecline, depth = 0,
 }: {
   node: GenUINode;
   onAction?: (action: string) => void;
+  /** The answer this card already got (`lib/askAnswers.ts`), or nothing. */
+  answered?: string;
+  /** "Not now" of a blocking card (`lib/declineAnswer.ts`), or nothing. */
+  onDecline?: () => void;
   depth?: number;
 }): React.ReactElement | null {
+  // The chat card this tree draws in, if it folds (`components/RollupCard`).
+  // Read before the guards below, so the hook runs on every render.
+  const fold = useCardFold();
+  // The page's data door, or null in chat. Read before the guards, for the
+  // same reason (STU-D1).
+  const door = useContext(StudioDataContext);
   // Depth guard — a pathological/looping tree can't blow the stack.
   if (depth > 20) return null;
   if (!node || typeof node !== "object") return null;
+  // A node that holds nothing draws nothing: no frame, no gap, no bar
+  // (`lib/genUiFallback.ts`). An empty callout drew a lone accent bar.
   const type = s(node.type);
   const props = (node.props ?? {}) as Record<string, unknown>;
+  // With a door, a bound node draws its loading, empty and error states, so
+  // it is not "empty" for want of rows.
+  if (door && bindsSource(type, props)) {
+    return (
+      <BoundSource node={node} door={door} onAction={onAction} answered={answered}
+        onDecline={onDecline} depth={depth} />
+    );
+  }
+  if (isEmptyNode(node)) return null;
   const kids = Array.isArray(node.children) ? node.children : [];
 
   const renderKids = () =>
-    kids.map((k, i) => <Node key={i} node={k} onAction={onAction} depth={depth + 1} />);
+    kids.map((k, i) => (
+      <Node key={i} node={k} onAction={onAction} answered={answered} onDecline={onDecline} depth={depth + 1} />
+    ));
 
   switch (type) {
-    case "card":
+    case "card": {
+      const title = props.title != null ? <GenUiText text={s(props.title)} /> : null;
+      // The root card of a chat card: its title row is the roll-up's one
+      // toggle, inside its own border (owner feedback, 2026-10-10). A card
+      // nested deeper sees no fold state (`CollapsibleCardBody`).
+      if (depth === 0 && fold) {
+        // The header is the fold's `<button>`: plain words, never a link
+        // (review of #945, P2, `plainTitle`).
+        return (
+          <div className="rounded-lg border border-border/60 bg-card/50 p-3 glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3 glass:glass-card-tile">
+            <CollapsibleCardHeader
+              title={title === null ? undefined : plainTitle(s(props.title))}
+              quiet={title === null}
+              className="text-sm"
+              titleClassName="font-semibold text-foreground glass:text-subhead"
+            />
+            <CollapsibleCardBody className={title !== null || fold.toggle ? "space-y-2 pt-2" : "space-y-2"}>
+              {renderKids()}
+            </CollapsibleCardBody>
+          </div>
+        );
+      }
       return (
-        <div className="rounded-lg border border-border/60 bg-card/50 p-3 space-y-2">
-          {props.title != null && (
-            <div className="text-sm font-semibold text-foreground">{s(props.title)}</div>
+        <div className="rounded-lg border border-border/60 bg-card/50 p-3 space-y-2 glass:rounded-[10px] glass:border-transparent glass:bg-secondary">
+          {title !== null && (
+            <div className="text-sm font-semibold text-foreground glass:text-subhead">{title}</div>
           )}
           {renderKids()}
         </div>
       );
+    }
 
     case "stack":
       return <div className="space-y-2">{renderKids()}</div>;
@@ -142,18 +293,18 @@ function Node({
       return <div className="flex flex-wrap items-center gap-2">{renderKids()}</div>;
 
     case "heading":
-      return <div className="text-sm font-semibold text-foreground">{s(props.text)}</div>;
+      return <div className="text-sm font-semibold text-foreground glass:text-subhead"><GenUiText text={s(props.text)} /></div>;
 
     case "text":
       return (
-        <p className={`text-[13px] leading-relaxed ${
+        <p className={`text-[13px] leading-relaxed glass:text-label ${
           props.muted ? "text-muted-foreground" : "text-foreground"
-        }`}>{s(props.text)}</p>
+        }`}><GenUiText text={s(props.text)} /></p>
       );
 
     case "markdown":
       return (
-        <div className="min-w-0 text-[13px] leading-relaxed text-foreground">
+        <div className="min-w-0 text-[13px] leading-relaxed text-foreground glass:text-label">
           {/* Pills only inside a Projects turn (WS-27bm S9): the names
               resolve against that turn's tools through `EntityIndexContext`.
               Anywhere else this is plain Markdown. */}
@@ -169,16 +320,16 @@ function Node({
       const hue = TONE_HUE[s(props.tone, "neutral")];
       if (!hue) {
         return (
-          <span className="inline-block text-[10px] font-medium px-1.5 py-0.5 rounded border border-border text-muted-foreground bg-secondary/50">
-            {s(props.text)}
+          <span className="inline-block text-[10px] font-medium px-1.5 py-0.5 rounded border border-border text-muted-foreground bg-secondary/50 glass:rounded-full glass:border-transparent glass:text-caption">
+            <FencedText text={s(props.text)} />
           </span>
         );
       }
       const accent = accentForHue(hue);
       return (
-        <span className={`inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded border border-transparent text-foreground ${accent.soft}`}>
+        <span className={`inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded border border-transparent text-foreground ${accent.soft} glass:rounded-full glass:text-caption`}>
           <span aria-hidden className={`size-1.5 shrink-0 rounded-full ${accent.dot}`} />
-          {s(props.text)}
+          <FencedText text={s(props.text)} />
         </span>
       );
     }
@@ -189,13 +340,13 @@ function Node({
     case "keyValue": {
       const pairs = Array.isArray(props.pairs) ? props.pairs : [];
       return (
-        <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-[12px]">
+        <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-[12px] glass:rounded-[10px] glass:bg-secondary glass:p-3 glass:text-footnote">
           {pairs.map((p, i) => {
             const pair = (p ?? {}) as Record<string, unknown>;
             return (
               <div key={i} className="contents">
-                <dt className="text-muted-foreground">{s(pair.key)}</dt>
-                <dd className="text-foreground">{s(pair.value)}</dd>
+                <dt className="text-muted-foreground"><FencedText text={s(pair.key)} pills={false} /></dt>
+                <dd className="min-w-0 break-words text-foreground"><GenUiText text={s(pair.value)} /></dd>
               </div>
             );
           })}
@@ -213,10 +364,10 @@ function Node({
       const cols = tableColumns(props.columns, rows);
       const hasHeader = cols.some((c) => c.label.trim());
       return (
-        <div className="overflow-x-auto rounded-md border border-border/60">
-          <table className="w-full text-left text-[12px]">
+        <div className="overflow-x-auto rounded-md border border-border/60 glass:rounded-[10px] glass:border-transparent glass:bg-secondary">
+          <table className="w-full text-left text-[12px] glass:text-footnote">
             {hasHeader && (
-              <thead className="bg-secondary/60">
+              <thead className="bg-secondary/60 glass:bg-transparent">
                 <tr>{cols.map((c, i) => (
                   <th key={i} className="px-2 py-1 font-medium text-muted-foreground">{c.label}</th>
                 ))}</tr>
@@ -224,9 +375,9 @@ function Node({
             )}
             <tbody>
               {rows.map((r, ri) => (
-                <tr key={ri} className="border-t border-border/60">
+                <tr key={ri} className="border-t border-border/60 glass:border-border">
                   {tableCells(r, cols).map((cell, ci) => (
-                    <td key={ci} className="px-2 py-1 text-foreground">{cell}</td>
+                    <td key={ci} className="px-2 py-1 text-foreground"><GenUiText text={cell} /></td>
                   ))}
                 </tr>
               ))}
@@ -241,17 +392,17 @@ function Node({
       const ordered = !!props.ordered;
       const Tag = ordered ? "ol" : "ul";
       return (
-        <Tag className={`ml-5 space-y-0.5 text-[13px] text-foreground ${
+        <Tag className={`ml-5 space-y-0.5 text-[13px] text-foreground glass:text-label ${
           ordered ? "list-decimal" : "list-disc"
         } list-outside marker:text-muted-foreground`}>
-          {items.map((it, i) => <li key={i}>{s(it)}</li>)}
+          {items.map((it, i) => <li key={i}><GenUiText text={s(it)} /></li>)}
         </Tag>
       );
     }
 
     case "code":
       return (
-        <pre className="rounded-md bg-muted border border-border p-2.5 overflow-x-auto text-[11px] text-foreground font-mono">
+        <pre className="rounded-md bg-muted border border-border p-2.5 overflow-x-auto text-[11px] text-foreground font-mono glass:rounded-[10px] glass:border-transparent glass:bg-secondary glass:text-caption">
           {s(props.text)}
         </pre>
       );
@@ -270,20 +421,26 @@ function Node({
     }
 
     case "button": {
-      const action = s(props.action);
+      // A string action is a sentence for the agent. An object action is typed
+      // (`{ id, args?, message? }`): a page runs it through its door, and chat
+      // sends `message ?? id` as the sentence (`generative_ui_2.md` §3).
+      const action = parseAction(props.action);
       const label = s(props.label, "Action");
       const tone = s(props.tone, "default");
       // The one control primitive (DESIGN_SYSTEM.md rule 3), so the button
       // wears the theme's focus ring and state layer in both modes.
       const variant =
         tone === "primary" ? "primary" : tone === "danger" ? "destructive" : "secondary";
+      if (door && action?.kind === "typed") {
+        return <TypedActionButton door={door} action={action} label={label} variant={variant} />;
+      }
       return (
         <Button
           type="button"
           variant={variant}
           size="sm"
-          disabled={!action || !onAction}
-          onClick={() => action && onAction?.(action)}
+          disabled={actionDisabled(action, door, onAction)}
+          onClick={() => pressAction(action, door, onAction)}
         >
           {label}
         </Button>
@@ -293,12 +450,12 @@ function Node({
     case "callout": {
       const accent = accentForHue(TONE_HUE[s(props.tone, "info")] ?? "blue");
       return (
-        <div className={`rounded-md border border-border border-l-2 px-3 py-2 space-y-1 ${accent.bar} ${accent.soft}`}>
+        <div className={`rounded-md border border-border border-l-2 px-3 py-2 space-y-1 glass:rounded-[10px] glass:border-transparent glass:border-l-0 ${accent.bar} ${accent.soft}`}>
           {props.title != null && (
-            <div className="text-[12px] font-semibold text-foreground">{s(props.title)}</div>
+            <div className="text-[12px] font-semibold text-foreground"><GenUiText text={s(props.title)} /></div>
           )}
           {props.text != null && (
-            <div className="text-[12px] text-muted-foreground">{s(props.text)}</div>
+            <div className="text-[12px] text-muted-foreground"><GenUiText text={s(props.text)} /></div>
           )}
           {renderKids()}
         </div>
@@ -333,7 +490,7 @@ function Node({
       // onAction channel buttons use, so their submits flow back to the agent.
       const name = s(props.name);
       const data = props.data;
-      return renderTemplate(name, data, { onAction });
+      return renderTemplate(name, data, { onAction, answered, onDecline });
     }
 
     case "html": {
@@ -374,14 +531,11 @@ function Node({
     }
 
     default:
-      // Unknown type → inert, labelled fallback. NEVER render raw props/markup.
-      if (!KNOWN_TYPES.has(type)) {
-        return (
-          <div className="rounded border border-dashed border-border/60 px-2 py-1 text-[11px] text-muted-foreground">
-            unsupported UI element{type ? `: ${type}` : ""}
-          </div>
-        );
-      }
+      // Unknown type → its words as text, never raw props or markup, and
+      // never "unsupported UI element" (`GenUIFallback.tsx`). The tool
+      // refuses an unknown type now (`genui_refusal`), so this draws the
+      // rows saved before that.
+      if (!KNOWN_TYPES.has(type)) return <GenUIFallback node={node} />;
       return null;
   }
 }
@@ -389,14 +543,48 @@ function Node({
 // ─── Public component ────────────────────────────────────────────────────
 
 /**
+ * Does the tree's root draw its own title row (a `card`)? The chat card then
+ * hands that row the roll-up toggle (`RollupCard` `header="own"`), so the
+ * title does not draw twice. Any other root has no title row, and the
+ * roll-up draws its own frame round it while it folds.
+ */
+export function genUiRootIsCard(spec: unknown): boolean {
+  if (!spec || typeof spec !== "object") return false;
+  const sp = spec as Record<string, unknown>;
+  const root = (sp.root ?? sp.view ?? sp) as GenUINode | null;
+  return !!root && typeof root === "object" && s(root.type) === "card";
+}
+
+/**
+ * Does the tree's root draw its own title row as the chat card's header?
+ * A `card` does, and so does a template that draws `TemplateHead`
+ * (`OWN_HEAD_TEMPLATES` in `genUITemplates.tsx`, owner report 2026-10-13).
+ * The chat card then passes `header="own"`, and the title draws once.
+ */
+export function genUiRootOwnsHead(spec: unknown): boolean {
+  if (genUiRootIsCard(spec)) return true;
+  if (!spec || typeof spec !== "object") return false;
+  const sp = spec as Record<string, unknown>;
+  const root = (sp.root ?? sp.view ?? sp) as GenUINode | null;
+  if (!root || typeof root !== "object" || s(root.type) !== "template") return false;
+  const props = (root.props ?? {}) as Record<string, unknown>;
+  return OWN_HEAD_TEMPLATES.has(s(props.name));
+}
+
+/**
  * Render a generative-UI tree (the value of a `generative_ui` CUSTOM event).
  * Accepts either a single node or `{ root: node }` / `{ view: node }` wrappers.
  */
 export default function GenerativeUINode({
-  spec, onAction,
+  spec, onAction, answered, onDecline,
 }: {
   spec: unknown;
   onAction?: (action: string) => void;
+  /** The answer a blocking card already got, so a remount keeps it locked. */
+  answered?: string;
+  /** "Not now" of a blocking card (`lib/declineAnswer.ts`). The host passes
+   *  it only for a card that parks a run. */
+  onDecline?: () => void;
 }): React.ReactElement | null {
   const root =
     spec && typeof spec === "object"
@@ -405,5 +593,5 @@ export default function GenerativeUINode({
         ?? spec)
       : spec;
   if (!root || typeof root !== "object") return null;
-  return <Node node={root as GenUINode} onAction={onAction} />;
+  return <Node node={root as GenUINode} onAction={onAction} answered={answered} onDecline={onDecline} />;
 }

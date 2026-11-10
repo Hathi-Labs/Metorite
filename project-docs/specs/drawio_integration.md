@@ -10,7 +10,7 @@
 > **Date:** 2026-06-29 · **Status:** Proposed — ready to schedule · **Owner:** TBD (backend + frontend)
 > **Interface contract (separate, freeze-gated):** [`drawio_diagram_svc_contract.md`](./drawio_diagram_svc_contract.md)
 > — the precise wire spec for `diagram-svc`, the `create_diagram` tool, and `DrawioEditor`.
-> **Related specs:** [`archive/artifact_viewer.md`](./archive/artifact_viewer.md), [`chat_ux.md`](./chat_ux.md), [`mcp_plugin_integration.md`](./mcp_plugin_integration.md).
+> **Related specs:** [`archive/artifact_viewer.md`](./archive/artifact_viewer.md), `chat_ux.md`, [`mcp_plugin_integration.md`](./mcp_plugin_integration.md).
 > **Reference repos studied:** `jgraph/drawio`, `jgraph/docker-drawio`, `jgraph/drawio-mcp`
 > (+ `lgazo/drawio-mcp-server`), draw.io embed-mode & diagram-generation docs.
 >

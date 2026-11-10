@@ -14,20 +14,53 @@
 
 import { create } from "zustand";
 import * as api from "./api";
-import { CrmError } from "./api";
-import { applyMove, toBoardLanes, type BoardLane, type DealMove } from "./board";
-import { exportQuery, listQuery } from "./filters";
+import { CrmError, TRY_AGAIN } from "./api";
+import {
+  applyLeadMove,
+  applyMove,
+  toBoardLanes,
+  toLeadLanes,
+  type BoardLane,
+  type DealMove,
+  type LeadLane,
+} from "./board";
+import { MIRROR_REFUSALS } from "./connect";
+import { NO_RELATED, RELATED_PAGE, type RelatedLists } from "./related";
+import {
+  LIST_PAGE_SIZE,
+  MAX_PAGE_SIZE,
+  appendLaneRows,
+  appendPage,
+  boardSearchQuery,
+  exportQuery,
+  extraQuery,
+  listQuery,
+  queryString,
+} from "./filters";
+import type { NewPipelineDraft, PipelineKind } from "./newPipeline";
+import type { SettingsDraft, VocabularyState } from "./settings";
+
+/** The New pipeline dialog of CRM settings (CRM-M3a), and its kind (CRM-M4a). */
+export type NewPipelineState = {
+  open: boolean;
+  draft: NewPipelineDraft | null;
+  /** `lead` for a lead pipeline. Absent or `deal`: a deal pipeline. */
+  kind?: PipelineKind;
+};
+import { cardSortQuery, type CardSort } from "./nextActivity";
 import {
   applyPatches,
+  orderWithNewStage,
   reorderFailureMessage,
   type PositionPatch,
 } from "./settings";
-import { isEntity, type CrmView } from "./urlState";
+import { isBoardView, isEntity, type CrmView } from "./urlState";
 import type {
   Contact,
   CrmReports,
   Deal,
   DealContact,
+  DealPipeline,
   EntitySlug,
   Lead,
   LostReason,
@@ -37,20 +70,84 @@ import type {
   StatusKind,
   TimelineEntry,
 } from "./types";
+import type { ConvertResult } from "./types";
 
 type Rows = Record<string, unknown>[];
 
+/** The record whose related lists were asked for last. */
+let latestRelated = "";
+// The record the card asked for last. With a docked card the member can click
+// A and then B, and A's slow answer must not draw over B: an edit would then go
+// to the record on screen, not the one in the URL (ORC-1).
+let latestRecord = "";
+
+/**
+ * The list read asked for last (CRM-X1). `loadList` counts up, and an answer
+ * for an older count is dropped, so a slow page of an old view never lands
+ * on the new one. The same latest-wins rule as `latestRelated`.
+ */
+let latestList = 0;
+
+/** One list view as a key: the entity and its request, page included. */
+function listKey(entity: EntitySlug, view: CrmView): string {
+  return `${entity}${queryString(listQuery(entity, view))}`;
+}
+
+/** The number of the last board read. A slower, older read never wins. */
+let latestBoard = 0;
+
+/** The deals board's query: its filters, the search and the card sort. */
+function boardQuery(view: CrmView & { cardSort?: CardSort }) {
+  return {
+    ...extraQuery("deals", view),
+    ...boardSearchQuery(view),
+    ...cardSortQuery(view.cardSort),
+  };
+}
+
+/**
+ * What makes two Deals board reads the same view: the owner, the pipeline,
+ * the filters, the search and the card sort. A re-read of the same view that
+ * fails keeps the lanes on screen (CRM-U15).
+ */
+function boardKey(view: (CrmView & { cardSort?: CardSort }) | null): string | null {
+  if (!view || view.tab !== "deals" || view.layout !== "board") return null;
+  return JSON.stringify([view.owner ?? null, view.pipelineId ?? null, boardQuery(view)]);
+}
+
 type CrmState = {
   lanes: BoardLane[];
+  /** The Leads board: one lane per Lead Status (CRM-Q3). */
+  leadLanes: LeadLane[];
+  related: RelatedLists;
   rows: Rows;
   total: number;
+  /** The last page of the list on screen (CRM-X1). `loadList` sets it to 1. */
+  page: number;
+  /** True while "Load more" reads the next page. The rows stay on screen. */
+  loadingMore: boolean;
+  /**
+   * The last read came back full, so another page can exist (CRM-X1 review).
+   * A short or empty page ends the list, even when `rows.length < total`:
+   * a sync can move a row between two reads, and `appendPage` drops it.
+   */
+  hasMore: boolean;
   dealStatuses: Status[];
   leadStatuses: Status[];
   lostReasons: LostReason[];
+  /**
+   * CRM-U17a: whether the vocabulary above has been read. The three lists
+   * start empty, and an empty list before the first read is not an empty
+   * answer. "failed" keeps the reason in `vocabularyError`.
+   */
+  vocabularyState: VocabularyState;
+  vocabularyError: string | null;
   /** Loaded lazily for the convert modal's match resolution. */
   contacts: Contact[];
   organizations: Organization[];
   record: Record<string, unknown> | null;
+  /** The read of the open record failed. The card says so, with a Retry. */
+  recordFailed: boolean;
   timeline: TimelineEntry[];
   dealContacts: DealContact[];
   /** The four WS-26g report blocks, or null before the tab has been opened. */
@@ -58,6 +155,27 @@ type CrmState = {
   loading: boolean;
   saving: boolean;
   error: string | null;
+  /**
+   * CRM-C4b: the last refusal of `createRecord` or `patchRecord`, with the
+   * field that it names. A form stays open after a refusal, and it shows the
+   * message beside that field. `null` at the start of each of the two writes.
+   */
+  refusal: CrmRefusal | null;
+  /**
+   * CRM-C1: the unsaved edits of the settings rows, by row key. A section
+   * change unmounts the rows, and this keeps the edits (`draftOf`).
+   */
+  settingsDrafts: Record<string, SettingsDraft>;
+  /** Keep a draft, or drop it with `null`. */
+  setSettingsDraft: (key: string, draft: SettingsDraft | null) => void;
+  /**
+   * WS-CRM CRM-M3a: the New pipeline dialog, open or shut, and its draft. In
+   * the store, because the page mounts another tree at the phone width, and
+   * the dialog must stay open with what the member typed. CRM-M4a: `kind`
+   * says which pipeline the one dialog makes. Absent: a deal pipeline.
+   */
+  newPipeline: NewPipelineState;
+  setNewPipeline: (next: Partial<NewPipelineState>) => void;
   /**
    * The view the visible collection was loaded for.
    *
@@ -73,10 +191,28 @@ type CrmState = {
   /** Re-read whichever collection is showing (board or list). */
   refreshCollection: () => Promise<void>;
   loadVocabulary: () => Promise<void>;
-  loadBoard: (view: CrmView) => Promise<void>;
+  /** `cardSort` orders the cards of each deal lane (CRM-X3). */
+  loadBoard: (view: CrmView & { cardSort?: CardSort }) => Promise<void>;
+  loadLeadBoard: (view: CrmView) => Promise<void>;
+  /** A lead dropped on a Lead Status lane. `move.dealId` holds the lead id. */
+  moveLead: (move: DealMove, extra?: Record<string, unknown>) => Promise<void>;
   /** WS-26g — the reports tab's read. All four blocks, in one pass. */
   loadReports: (view: CrmView) => Promise<void>;
-  loadList: (entity: EntitySlug, view: CrmView) => Promise<void>;
+  /**
+   * Page 1 of a view. With `keepDepth`, and the same view as on screen, it
+   * re-reads as many rows as the member loaded, up to `MAX_PAGE_SIZE`, so a
+   * write does not take the member back to the top (CRM-X1 review).
+   */
+  loadList: (entity: EntitySlug, view: CrmView, keepDepth?: boolean) => Promise<void>;
+  /** CRM-X1: the next page of the list on screen, added under its rows. */
+  loadMore: () => Promise<void>;
+  /**
+   * The next page of ONE deal lane, added under its cards ("Show more"). The
+   * board's filters, search and card sort ride along. The lane totals stay.
+   */
+  loadLaneMore: (statusId: string) => Promise<void>;
+  /** The lane whose next page is being read, or null. */
+  moreLane: string | null;
   /**
    * WS-26i-export — the visible list, as a CSV.
    *
@@ -88,6 +224,7 @@ type CrmState = {
    */
   exportList: (entity: EntitySlug, view: CrmView) => Promise<void>;
   loadRecord: (entity: EntitySlug, id: string) => Promise<void>;
+  loadRelated: (entity: EntitySlug, id: string) => Promise<void>;
   loadDirectories: () => Promise<void>;
   moveDeal: (move: DealMove, extra?: Record<string, unknown>) => Promise<void>;
   patchRecord: (
@@ -110,11 +247,14 @@ type CrmState = {
     entity: EntitySlug,
     id: string
   ) => Promise<void>;
+  /** The conversion, or null on a refusal. CRM-C6a reads its `skipped`. */
   convertLead: (
     leadId: string,
     body: Record<string, unknown>
-  ) => Promise<string | null>;
+  ) => Promise<ConvertResult | null>;
   setPrimaryContact: (dealId: string, contactId: string) => Promise<void>;
+  /** CRM-U16: attach a contact to a deal (not primary unless it is the first). */
+  attachContact: (dealId: string, contactId: string) => Promise<void>;
   detachContact: (dealId: string, contactId: string) => Promise<void>;
 
   // ── Pipeline settings (WS-26f f2) ───────────────────────────────────────
@@ -133,6 +273,24 @@ type CrmState = {
     kind: StatusKind,
     patches: PositionPatch[]
   ) => Promise<void>;
+  /** CRM-C3: the Metorite order of a Mirror kind, every id in order, in one request. */
+  orderStatuses: (kind: StatusKind, ids: string[]) => Promise<boolean>;
+  /** CRM-C3: "Reset order to Zoho". CRM-U11: the "Same as Zoho" choice. */
+  resetStatusOrder: (kind: StatusKind) => Promise<boolean>;
+  /**
+   * CRM-U11, Native mode: "Add stage". One create, then one order call that
+   * puts the stage before the first won or lost stage (D137 rule 4). The id
+   * of the new stage, or null when the create failed. When only the order
+   * failed, the stage stays at the end and the error says so.
+   */
+  addStageBeforeClosed: (kind: StatusKind, body: Record<string, unknown>) => Promise<string | null>;
+  /**
+   * WS-CRM CRM-M3a: create a deal pipeline. Null when it is made, else the
+   * words of the refusal. The dialog shows them, so the page banner does not.
+   * The stages re-read, because a create can make new ones, and
+   * `usePipelines` wakes through the api call.
+   */
+  createPipeline: (body: Record<string, unknown>) => Promise<string | null>;
   saveLostReason: (
     reasonId: string | null,
     body: Record<string, unknown>
@@ -143,35 +301,92 @@ type CrmState = {
   pullZohoStages: (apply: boolean) => Promise<StageMetadataReport | null>;
 };
 
-function message(err: unknown): string {
-  if (err instanceof CrmError) return err.message;
+/**
+ * Where a mirror-guard refusal goes (WS-53 CRM-Z7). The page registers a
+ * toast here. With no sink the refusal reads in the banner, as every other
+ * refusal does.
+ */
+let refusalSink: ((text: string) => void) | null = null;
+export function setRefusalSink(sink: ((text: string) => void) | null): void {
+  refusalSink = sink;
+}
+
+/**
+ * The words for a failure, or `null` when the toast said them already.
+ * A 409 `mirrored_record` is a rule of the mirror and not a fault, so it
+ * leaves no red banner behind.
+ */
+function message(err: unknown): string | null {
+  if (err instanceof CrmError) {
+    if (refusalSink && err.code && MIRROR_REFUSALS.has(err.code)) {
+      refusalSink(err.message);
+      return null;
+    }
+    return err.message;
+  }
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * A refused create or edit (CRM-C4b, the 422 rule). `field` is the key that
+ * `detail.field` names, or null. A form shows the message beside that field,
+ * or at its top when the field is null or not in the form.
+ */
+export type CrmRefusal = { message: string; field: string | null };
+
+/** The refusal of a create or an edit, or null when the toast said it already. */
+function refusalOf(err: unknown, text: string | null): CrmRefusal | null {
+  if (text === null) return null;
+  return { message: text, field: err instanceof CrmError ? (err.field ?? null) : null };
 }
 
 export const useCrmStore = create<CrmState>((set, get) => ({
   lanes: [],
+  leadLanes: [],
+  related: NO_RELATED,
   rows: [],
   total: 0,
+  page: 1,
+  loadingMore: false,
+  moreLane: null,
+  hasMore: false,
   dealStatuses: [],
   leadStatuses: [],
   lostReasons: [],
+  vocabularyState: "loading",
+  vocabularyError: null,
   contacts: [],
   organizations: [],
   record: null,
+  recordFailed: false,
   timeline: [],
   dealContacts: [],
   reports: null,
   loading: false,
   saving: false,
   error: null,
+  refusal: null,
   lastView: null,
+  settingsDrafts: {},
+  newPipeline: { open: false, draft: null },
 
   setError: (error) => set({ error }),
+  setNewPipeline: (next) => set((state) => ({ newPipeline: { ...state.newPipeline, ...next } })),
+  setSettingsDraft: (key, draft) =>
+    set((state) => {
+      const next = { ...state.settingsDrafts };
+      if (draft) next[key] = draft;
+      else delete next[key];
+      return { settingsDrafts: next };
+    }),
 
   async refreshCollection() {
     const view = get().lastView;
     if (!view) return;
-    if (view.tab === "board") await get().loadBoard(view);
+    if (isBoardView(view)) {
+      if (view.tab === "leads") await get().loadLeadBoard(view);
+      else await get().loadBoard(view);
+    }
     // The reports tab has no writes of its own, but the record sheet opens
     // OVER it (`?tab=reports&deal=<id>`) and moving a deal from there changes
     // every number behind the sheet. The store's one rule — a write re-reads
@@ -181,31 +396,115 @@ export const useCrmStore = create<CrmState>((set, get) => ({
     // `settings` is a tab with no collection behind it — its own writes
     // re-read the vocabulary directly. Falling through to `loadList` would
     // request `/crm/settings`.
-    else if (isEntity(view.tab)) await get().loadList(view.tab, view);
+    else if (isEntity(view.tab)) await get().loadList(view.tab, view, true);
   },
 
   async loadVocabulary() {
+    // A re-read after a write keeps "loaded": the rows stay on screen.
+    if (get().vocabularyState !== "loaded") set({ vocabularyState: "loading", vocabularyError: null });
     try {
       const [dealStatuses, leadStatuses, lostReasons] = await Promise.all([
         api.listStatuses("deal"),
         api.listStatuses("lead"),
         api.listLostReasons(),
       ]);
-      set({ dealStatuses, leadStatuses, lostReasons });
+      set({ dealStatuses, leadStatuses, lostReasons, vocabularyState: "loaded", vocabularyError: null });
     } catch (err) {
-      set({ error: message(err) });
+      set({ error: message(err), vocabularyState: "failed", vocabularyError: message(err) });
     }
   },
 
   async loadBoard(view) {
+    // `lastView` keeps `cardSort` too, so a re-read after a write keeps the
+    // member's lane order (CRM-X3).
+    const mine = ++latestBoard;
+    const sameView = boardKey(get().lastView) === boardKey(view);
     set({ loading: true, lastView: view });
     try {
-      const pipeline = await api.getPipeline(view.owner);
+      const extra = boardQuery(view);
+      const pipeline =
+        Object.keys(extra).length > 0
+          ? await api.getPipeline(view.owner, view.pipelineId, extra)
+          : await api.getPipeline(view.owner, view.pipelineId);
+      if (mine !== latestBoard) return;
       set({ lanes: toBoardLanes(pipeline), error: null });
     } catch (err) {
-      set({ error: message(err) });
+      if (mine !== latestBoard) return;
+      // CRM-U15: a failed read of ANOTHER view clears the old lanes, because they
+      // would be wrong under the banner. A failed re-read of the same view keeps them.
+      set(sameView ? { error: message(err) } : { lanes: [], error: message(err) });
+    } finally {
+      if (mine === latestBoard) set({ loading: false });
+    }
+  },
+
+  async loadLaneMore(statusId) {
+    const { lastView: view, lanes, moreLane } = get();
+    const lane = lanes.find((l) => l.status.id === statusId);
+    if (!view || !lane || moreLane || lane.rows.length >= lane.count) return;
+    const asked = latestBoard;
+    set({ moreLane: statusId });
+    try {
+      const page = await api.getPipeline(view.owner, view.pipelineId, {
+        ...boardQuery(view),
+        lane_status_id: statusId,
+        lane_offset: lane.rows.length,
+      });
+      // A reload of the board, or a newer view, ended this read.
+      if (asked !== latestBoard) return;
+      const next = page.lanes.find((l) => l.status.id === statusId)?.rows ?? [];
+      set({
+        lanes: get().lanes.map((l) => (l.status.id === statusId ? appendLaneRows(l, next) : l)),
+        error: null,
+      });
+    } catch (err) {
+      if (asked === latestBoard) set({ error: message(err) });
+    } finally {
+      set({ moreLane: null });
+    }
+  },
+
+  async loadLeadBoard(view) {
+    set({ loading: true, lastView: view });
+    try {
+      // The statuses come from the vocabulary when it is loaded, and from the
+      // gateway when it is not. One page of leads for each status: the lane
+      // count is the status total, as on the deals board.
+      const statuses =
+        get().leadStatuses.length > 0 ? get().leadStatuses : await api.listStatuses("lead");
+      const pages = await Promise.all(
+        statuses.map((status) =>
+          api.listRecords<Lead>("leads", {
+            status_id: status.id,
+            page_size: 50,
+            ...(view.owner ? { owner: view.owner } : {}),
+            ...extraQuery("leads", view),
+          }),
+        ),
+      );
+      const byStatus: Record<string, { rows: Lead[]; total: number }> = {};
+      statuses.forEach((status, i) => {
+        byStatus[status.id] = pages[i];
+      });
+      set({ leadLanes: toLeadLanes(statuses, byStatus), error: null });
+    } catch (err) {
+      set({ error: message(err), leadLanes: [] });
     } finally {
       set({ loading: false });
+    }
+  },
+
+  async moveLead(move, extra = {}) {
+    // Optimistic, like the deals board. A refusal puts the card back.
+    const previous = get().leadLanes;
+    set({ leadLanes: applyLeadMove(previous, move), saving: true, error: null });
+    try {
+      await api.patchRecord("leads", move.dealId, { status_id: move.toStatusId, ...extra });
+      await get().refreshCollection();
+    } catch (err) {
+      set({ leadLanes: previous, error: message(err) });
+    } finally {
+      set({ saving: false });
     }
   },
 
@@ -237,15 +536,62 @@ export const useCrmStore = create<CrmState>((set, get) => ({
     }
   },
 
-  async loadList(entity, view) {
-    set({ loading: true, lastView: view });
+  async loadList(entity, view, keepDepth = false) {
+    // A new view starts again at page 1 (CRM-X1). The same view after a
+    // write keeps the rows the member loaded, up to the largest page.
+    const asked = ++latestList;
+    const shown = get();
+    const same =
+      keepDepth &&
+      shown.lastView !== null &&
+      isEntity(shown.lastView.tab) &&
+      listKey(shown.lastView.tab, shown.lastView) === listKey(entity, view);
+    const size = same
+      ? Math.min(shown.page * LIST_PAGE_SIZE, MAX_PAGE_SIZE)
+      : LIST_PAGE_SIZE;
+    set({ loading: true, lastView: view, loadingMore: false });
+    if (!same) set({ page: 1 });
     try {
-      const page = await api.listRecords(entity, listQuery(entity, view));
-      set({ rows: page.rows, total: page.total, error: null });
+      const page = await api.listRecords(entity, listQuery(entity, view, 1, size));
+      if (asked !== latestList) return;
+      set({
+        rows: page.rows,
+        total: page.total,
+        // The next "Load more" asks for the page after these rows.
+        page: Math.max(1, Math.floor(size / LIST_PAGE_SIZE)),
+        hasMore: page.rows.length >= size,
+        error: null,
+      });
     } catch (err) {
-      set({ error: message(err), rows: [], total: 0 });
+      if (asked !== latestList) return;
+      set({ error: message(err), rows: [], total: 0, page: 1, hasMore: false });
     } finally {
-      set({ loading: false });
+      if (asked === latestList) set({ loading: false });
+    }
+  },
+
+  async loadMore() {
+    const { lastView: view, page, loadingMore, hasMore } = get();
+    if (!view || loadingMore || !hasMore || !isEntity(view.tab) || isBoardView(view)) return;
+    const entity = view.tab;
+    const asked = latestList;
+    set({ loadingMore: true });
+    try {
+      // The same `listQuery` as page 1, so the next page is of the same view.
+      const next = await api.listRecords(entity, listQuery(entity, view, page + 1));
+      if (asked !== latestList) return;
+      set({
+        rows: appendPage(get().rows, next.rows),
+        total: next.total,
+        page: page + 1,
+        // A short page, or an empty one, is the end of the list.
+        hasMore: next.rows.length >= LIST_PAGE_SIZE,
+      });
+    } catch (err) {
+      if (asked !== latestList) return;
+      set({ error: message(err) });
+    } finally {
+      if (asked === latestList) set({ loadingMore: false });
     }
   },
 
@@ -259,19 +605,66 @@ export const useCrmStore = create<CrmState>((set, get) => ({
   },
 
   async loadRecord(entity, id) {
-    set({ record: null, timeline: [], dealContacts: [] });
+    const asked = `${entity}:${id}`;
+    latestRecord = asked;
+    set({ record: null, recordFailed: false, timeline: [], dealContacts: [], related: NO_RELATED });
     try {
       const [record, timeline] = await Promise.all([
         api.getRecord<Record<string, unknown>>(entity, id),
         api.getTimeline(entity, id),
       ]);
+      if (latestRecord !== asked) return;
       set({ record, timeline: timeline.entries, error: null });
       if (entity === "deals") {
         const people = await api.listDealContacts(id);
+        if (latestRecord !== asked) return;
         set({ dealContacts: people.rows });
       }
     } catch (err) {
-      set({ error: message(err) });
+      if (latestRecord !== asked) return;
+      // With no record on screen the card says so. At the full stop a banner
+      // on the page behind it would stay out of sight, and the card would say
+      // "Loading…" for ever. A later read that failed keeps the banner.
+      if (get().record === null) set({ recordFailed: true });
+      else set({ error: message(err) });
+    }
+    if (latestRecord === asked) await get().loadRelated(entity, id);
+  },
+
+  async loadRelated(entity, id) {
+    // A company shows its contacts and deals. A contact shows its deals. Both
+    // are the existing list routes with a filter, so a related row is the same
+    // row the list shows.
+    //
+    // The latest request wins. Open company A and then B fast, and A's slow
+    // answer must not overwrite B's lists.
+    const asked = `${entity}:${id}`;
+    latestRelated = asked;
+    const page = (target: EntitySlug, query: Parameters<typeof api.listRecords>[1]) =>
+      api.listRecords(target, { page_size: RELATED_PAGE, ...query });
+    try {
+      let next: RelatedLists | null = null;
+      if (entity === "organizations") {
+        const [contacts, deals] = await Promise.all([
+          page("contacts", { company_id: id }),
+          page("deals", { company_id: id }),
+        ]);
+        next = {
+          ...NO_RELATED,
+          contacts: contacts.rows,
+          contactsTotal: contacts.total,
+          deals: deals.rows,
+          dealsTotal: deals.total,
+        };
+      } else if (entity === "contacts") {
+        const deals = await page("deals", { contact_id: id });
+        next = { ...NO_RELATED, deals: deals.rows, dealsTotal: deals.total };
+      }
+      if (next && latestRelated === asked) set({ related: next });
+    } catch {
+      // A failed read says so, with a Retry. An empty section would read as
+      // "no contacts".
+      if (latestRelated === asked) set({ related: { ...NO_RELATED, failed: true } });
     }
   },
 
@@ -325,7 +718,7 @@ export const useCrmStore = create<CrmState>((set, get) => ({
   },
 
   async patchRecord(entity, id, body) {
-    set({ saving: true, error: null });
+    set({ saving: true, error: null, refusal: null });
     try {
       const record = await api.patchRecord<Record<string, unknown>>(
         entity,
@@ -340,7 +733,8 @@ export const useCrmStore = create<CrmState>((set, get) => ({
       await get().refreshCollection();
       return true;
     } catch (err) {
-      set({ error: message(err) });
+      const text = message(err);
+      set({ error: text, refusal: refusalOf(err, text) });
       // Re-read on EVERY response, refusals included: a stale row after a 409
       // reads as success.
       await get().loadRecord(entity, id);
@@ -351,9 +745,23 @@ export const useCrmStore = create<CrmState>((set, get) => ({
   },
 
   async createRecord(entity, body) {
-    set({ saving: true, error: null });
+    set({ saving: true, error: null, refusal: null });
+    // CRM-U16: a new deal may name a contact. It is no column of the deal, so
+    // it leaves the body and is attached as the primary contact afterwards.
+    const { contact_id: pickedContact, ...rest } = body;
+    const contactId =
+      entity === "deals" && typeof pickedContact === "string" && pickedContact ? pickedContact : null;
+    const sent = entity === "deals" ? rest : body;
     try {
-      const created = await api.createRecord<{ id: string }>(entity, body);
+      const created = await api.createRecord<{ id: string }>(entity, sent);
+      if (contactId) {
+        try {
+          await api.addDealContact(created.id, { contact_id: contactId, is_primary: true });
+        } catch (err) {
+          // The deal exists, so the form still closes on it. The Related tab adds the contact.
+          set({ error: `The deal was saved, but its contact was not added. ${message(err)}` });
+        }
+      }
       // Nothing else re-fetches the collection: opening the new record's
       // sheet changes `view.record`, and the load effect keys on the tab and
       // the filters. Without this the record exists on the server and is
@@ -361,7 +769,8 @@ export const useCrmStore = create<CrmState>((set, get) => ({
       await get().refreshCollection();
       return created.id;
     } catch (err) {
-      set({ error: message(err) });
+      const text = message(err);
+      set({ error: text, refusal: refusalOf(err, text) });
       return null;
     } finally {
       set({ saving: false });
@@ -394,8 +803,7 @@ export const useCrmStore = create<CrmState>((set, get) => ({
   async convertLead(leadId, body) {
     set({ saving: true, error: null });
     try {
-      const result = await api.convertLead(leadId, body);
-      return result.deal.id;
+      return await api.convertLead(leadId, body);
     } catch (err) {
       set({ error: message(err) });
       return null;
@@ -411,6 +819,25 @@ export const useCrmStore = create<CrmState>((set, get) => ({
         contact_id: contactId,
         is_primary: true,
       });
+    } catch (err) {
+      set({ error: message(err) });
+    } finally {
+      set({ saving: false });
+      const people = await api.listDealContacts(dealId).catch(() => null);
+      if (people) set({ dealContacts: people.rows });
+    }
+  },
+
+  async attachContact(dealId, contactId) {
+    set({ saving: true, error: null });
+    try {
+      // The first contact of a deal is its primary one. Later ones are not.
+      const current = await api.listDealContacts(dealId).catch(() => null);
+      const rows = current?.rows ?? [];
+      // A contact that is on the deal already keeps its role and its star.
+      if (!rows.some((row) => row.contact.id === contactId)) {
+        await api.addDealContact(dealId, { contact_id: contactId, is_primary: rows.length === 0 });
+      }
     } catch (err) {
       set({ error: message(err) });
     } finally {
@@ -479,6 +906,77 @@ export const useCrmStore = create<CrmState>((set, get) => ({
       if (failures.length) {
         set({ error: reorderFailureMessage(failures, patches.length) });
       }
+    } finally {
+      set({ saving: false });
+      await get().loadVocabulary();
+    }
+  },
+
+  async orderStatuses(kind, ids) {
+    set({ saving: true, error: null });
+    try {
+      await api.orderStatuses(kind, ids);
+      return true;
+    } catch (err) {
+      set({ error: message(err) });
+      return false;
+    } finally {
+      set({ saving: false });
+      await get().loadVocabulary();
+    }
+  },
+
+  async resetStatusOrder(kind) {
+    set({ saving: true, error: null });
+    try {
+      await api.resetStatusOrder(kind);
+      return true;
+    } catch (err) {
+      set({ error: message(err) });
+      return false;
+    } finally {
+      set({ saving: false });
+      await get().loadVocabulary();
+    }
+  },
+
+  async addStageBeforeClosed(kind, body) {
+    set({ saving: true, error: null });
+    // The list before the create: every id of the kind but the new one.
+    const before = kind === "deal" ? get().dealStatuses : get().leadStatuses;
+    let created: Status;
+    try {
+      created = await api.createStatus(kind, body);
+    } catch (err) {
+      set({ saving: false, error: message(err) });
+      await get().loadVocabulary();
+      return null;
+    }
+    try {
+      const ids = orderWithNewStage(before, created.id);
+      if (ids) await api.orderStatuses(kind, ids);
+    } catch (err) {
+      const why = message(err);
+      set({
+        error:
+          `"${created.name}" was added at the end, because its place before Won and Lost did not save.` +
+          (why ? ` ${why}` : "") +
+          " Move it with its arrows.",
+      });
+    } finally {
+      set({ saving: false });
+      await get().loadVocabulary();
+    }
+    return created.id;
+  },
+
+  async createPipeline(body) {
+    set({ saving: true });
+    try {
+      await api.createPipeline(body);
+      return null;
+    } catch (err) {
+      return message(err) || TRY_AGAIN;
     } finally {
       set({ saving: false });
       await get().loadVocabulary();

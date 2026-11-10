@@ -1,0 +1,611 @@
+/**
+ * chatPlacement — where each element of an assistant turn goes.
+ *
+ * Spec: `project-docs/specs/projects_ai_chat.md` §24, the placement rule of
+ * record (owner, 2026-10-08). The owner's report: an option picker they had
+ * to answer "got lost above in the chat", under four read receipts that the
+ * turn drew after the answer. One of the four was a pipe-delimited dump.
+ *
+ * Every element of a turn is one of four kinds:
+ *
+ * 1. `ask` — NEEDS THE MEMBER: a confirmation card, an option picker, a
+ *    form, `ask_questions`. It stays in the flow, in order. While it waits,
+ *    the pin above the composer (`lib/askPin.ts`) keeps it in view.
+ * 2. `evidence` — the result of a READ. It draws INSIDE the working trail
+ *    (`ThinkingContainer`), under the step that made it, closed by default.
+ *    It never draws as a card after the answer.
+ * 3. `write` — the receipt of a WRITE: done, part done, unknown, refused. It
+ *    draws compact, in the flow, after the answer text.
+ * 4. `answer` — a card the model chose to draw: a plan, a board, a report, a
+ *    table. At most one per answer, after the text. The agent instructions
+ *    and `evals/projects_ops` hold the "one", not this file.
+ *
+ * **This map is the ONE place a tool name gets a placement.** The card files
+ * (`ProjectToolCards`, `TaskToolCards`, `EmailToolCards`) and the trail read
+ * it, and none of them guesses from a name. The client cannot see the tools'
+ * annotations, so the map is written out. Two fences hold it:
+ *
+ * - `src/lib/chatPlacement.test.ts` fails on a tool name that a card file
+ *   draws and this map does not name;
+ * - `tests/unit/test_chat_placement_classes.py` fails on a `skill-projects`
+ *   tool this map does not name, and on a tool whose placement disagrees
+ *   with its class in `skill_projects/manifest.py` (A is a read, B and C are
+ *   writes, H-236).
+ *
+ * A tool that no card file draws (a script run, `manage_todo_list`) has no
+ * receipt to place. It is a step row in the trail, as before. The CRM reads
+ * draw through `components/crm/CrmEvidence.tsx` since the follow-up of #716
+ * and #735, and `test_chat_placement_classes.py` holds them to the CRM
+ * agent's own annotations.
+ *
+ * Pure and framework-free, so the node-env vitest holds it.
+ */
+
+import { parseAction } from "@/lib/studio/dataDoor";
+import { bareToolName } from "@/lib/toolSteps";
+
+export type Placement = "ask" | "evidence" | "write" | "answer";
+
+/** Tools whose result the member must answer. The chat draws them itself
+ *  (`AgentChat`'s confirmation queue and question cards). The record writes
+ *  of AI Studio first ask, and their result is a request that waits: its
+ *  card is `components/studio/StudioToolCards.tsx` (STU-B2c-2c). */
+const ASK: readonly string[] = [
+  "request_confirmation",
+  "ask_questions",
+  "ask_user",
+  "studio_record_create",
+  "studio_record_update",
+  "studio_record_delete",
+];
+
+/**
+ * Tools that draw a card the model chose. `emit_generative_ui` is here, and
+ * its SPEC decides between `ask` and `answer` (see {@link genUiPlacement}).
+ */
+const ANSWER: readonly string[] = [
+  "emit_generative_ui",
+  // Projects views: each draws a template. Its text result is for the model.
+  "render_timeline",
+  "render_board",
+  "render_tasks",
+  "render_report",
+  "status_report",
+  // Email: the categorized board the agent builds from its reads.
+  "present_email_groups",
+  // Tasks: a day plan, with an Apply on a proposal.
+  "my_tasks_plan_day",
+  "my_tasks_replan_day",
+  "my_tasks_rollover",
+];
+
+/** Reads. Projects names are manifest class A (held by the Python fence). */
+const EVIDENCE: readonly string[] = [
+  // ── Projects (skill-projects, class A) ─────────────────────────────────
+  "projects_tree",
+  "project_summary",
+  "list_tasks",
+  "export_tasks",
+  "find_tasks",
+  "task_detail",
+  "task_dataset",
+  "my_work",
+  "my_task",
+  "my_contexts",
+  "my_led_projects",
+  "my_areas",
+  "people_for",
+  "vocabulary",
+  "calendar",
+  "intake_queue",
+  "notifications",
+  "watchers",
+  "project_access",
+  "project_authorities",
+  // WS-39 LP-1a: the updates of a project.
+  "list_project_updates",
+  // WS-39 TPL-1a: the templates of the organization.
+  "list_templates",
+  "my_decisions",
+  "project_views",
+  "recurrence",
+  "team_capacity",
+  "fit_for_task",
+  "rebalance",
+  "find_conflicts",
+  "get_plan",
+  "analytics_stuck",
+  "analytics_load",
+  "analytics_throughput",
+  "analytics_finished",
+  "analytics_outlook",
+  "report_list",
+  "report_recipients",
+  "waiting_agent_requests",
+  "needs_attention",
+  "report_render",
+  "open_in_app",
+  "show_view",
+  // WS-66 RM-3: the member's own reminders, a read.
+  "list_reminders",
+  // ── Tasks (skill-my-tasks) ─────────────────────────────────────────────
+  "my_tasks_list",
+  "my_tasks_list_schedule",
+  "my_tasks_inbox_insights",
+  "my_tasks_day_digest",
+  "my_tasks_estimate_stats",
+  "my_tasks_accounts",
+  "my_tasks_people",
+  "my_tasks_list_projects",
+  "my_tasks_subtasks",
+  "my_tasks_detail",
+  "my_tasks_clarify",
+  // ── Email (agent-email-assistant) ──────────────────────────────────────
+  "query_inbox",
+  "find_priority",
+  "get_important_emails",
+  "search_emails",
+  "find_urgent",
+  "find_needs_reply",
+  "read_email",
+  "read_thread",
+  "list_accounts",
+  "get_unread_count",
+  "list_labels",
+  "list_artifacts",
+  "get_sender_categories",
+  "list_senders",
+  "get_rules_and_settings",
+  "list_rule_history",
+  "list_knowledge",
+  "list_cold_senders",
+  "suggest_unsubscribes",
+  "get_account_overview",
+  "get_digest",
+  "test_rule_match",
+  "list_learned_patterns",
+  "list_rule_patterns",
+  "list_patterns",
+  // ── CRM (agent-crm, `read_only=True`) ──────────────────────────────────
+  "search_crm",
+  "get_pipeline",
+  "get_record",
+  "get_timeline",
+  // ── Every data agent (WS-48, `acb_skills/narrowing.py`) ────────────────
+  // `narrow_and_read` searches, picks and reads, and changes nothing. One
+  // name serves the email and the WhatsApp agents.
+  "narrow_and_read",
+];
+
+/** Writes. Projects names are manifest class B or C. */
+const WRITE: readonly string[] = [
+  // ── Projects (skill-projects, class B) ─────────────────────────────────
+  "create_task",
+  "create_tasks",
+  // H-273: several new tags or types, one card with rows.
+  "create_tags",
+  "create_types",
+  "update_task",
+  "assign",
+  "comment",
+  // WS-39 LP-1a: one update of a project, with its health.
+  "post_project_update",
+  "add_subtasks",
+  "link_tasks",
+  "unlink_tasks",
+  // WS-57 TR-3: a task's URL references.
+  "add_task_ref",
+  "remove_task_ref",
+  "move_task",
+  // Several tasks filed into their projects, one card with rows (2026-10-18).
+  "file_tasks",
+  // Several links between tasks, one card with rows (2026-10-19).
+  "link_tasks_batch",
+  // Several edits, a different change for each task, one card with rows.
+  "update_tasks",
+  "watch",
+  "complete",
+  "defer",
+  "unarchive_task",
+  "create_project",
+  "update_project",
+  "report_save",
+  "create_status",
+  "update_status",
+  "create_type",
+  "update_type",
+  "create_field",
+  "update_field",
+  "create_tag",
+  "update_tag",
+  "edit_comment",
+  "set_recurrence",
+  "create_personal_task",
+  "set_my_overlay",
+  "edit_task",
+  "edit_project",
+  "propose_plan",
+  "save_view",
+  "capture_intake",
+  "create_area",
+  "triage_intake",
+  "mark_notifications_read",
+  // ── Projects (class C, the guarded acts) ───────────────────────────────
+  "archive_project",
+  "unarchive_project",
+  "move_project",
+  "convert_folder_to_project",
+  "archive_task",
+  "delete_project",
+  "delete_task",
+  "merge_tasks",
+  "bulk_update",
+  "delete_comment",
+  "revert_activity",
+  "delete_status",
+  "set_status_set",
+  "delete_type",
+  "delete_field",
+  "delete_tag",
+  "merge_tags",
+  "delete_view",
+  "report_delete",
+  "delete_attachment",
+  "rename_area",
+  "delete_area",
+  "nudge_task",
+  "attach_to_task",
+  "grant_access",
+  "revoke_access",
+  "pin_authority",
+  "unpin_authority",
+  // WS-39 LP-1a: the delete of a project update, class C.
+  "delete_project_update",
+  // WS-39 TPL-1a: an org-wide template, and a project made from one.
+  "save_as_template",
+  "create_project_from_template",
+  "answer_decision",
+  "add_report_recipient",
+  "remove_report_recipient",
+  "set_report_schedule",
+  // WS-66 RM-3: the member's reminders. The promote is class C.
+  "set_reminder",
+  "update_reminder",
+  "resolve_reminder",
+  "reopen_reminder",
+  "reschedule_reminder",
+  "promote_reminder",
+  // ── Tasks ──────────────────────────────────────────────────────────────
+  "my_tasks_capture",
+  "my_tasks_capture_many",
+  "my_tasks_organize",
+  "my_tasks_update",
+  "my_tasks_complete",
+  "my_tasks_move",
+  "my_tasks_set_stage",
+  "my_tasks_delegate",
+  "my_tasks_add_subtasks",
+  "my_tasks_archive",
+  "my_tasks_schedule",
+  "my_tasks_unschedule",
+  "my_tasks_set_one_thing",
+  "my_tasks_sync",
+  "my_tasks_plan_project",
+  // ── Email ──────────────────────────────────────────────────────────────
+  // `digest` can send the digest, and `generate_writing_style` saves the
+  // style it derives: both receipts belong in the flow (review round 1).
+  "digest",
+  "generate_writing_style",
+  "draft_reply",
+  "draft_email",
+  "create_rule",
+  "update_rule",
+  "update_assistant_settings",
+  "create_rules_from_prompt",
+  "manage_inbox",
+  "apply_labels",
+  "move_to_folder",
+  "create_label",
+  "send_email",
+  // EM-CR: the reply card. Its card waits in the flow, and its receipt is a write.
+  "compose_reply",
+  "forward_email",
+  "send_reply",
+  "send_draft",
+  "delete_rule",
+  "reset_rules",
+  "run_rules_now",
+  "run_rules",
+  "update_rule_state",
+  "resolve_execution",
+  "learn_rule_pattern",
+  "install_default_rules",
+  "process_past_emails",
+  "approve_execution",
+  "reject_execution",
+  "undo_execution",
+  "import_artifact",
+  "add_knowledge",
+  "update_knowledge",
+  "save_knowledge",
+  "delete_knowledge",
+  "delete_learned_pattern",
+  "delete_rule_pattern",
+  "forget_pattern",
+  "find_follow_ups",
+  "mark_thread_done",
+  "reclassify_reply_zero",
+  "unsubscribe_sender",
+  "keep_newsletter",
+  "set_cold_sender",
+  "set_sender_status",
+  "categorize_senders",
+  "send_digest",
+  "sync_account",
+  "resync_account",
+  // ── CRM (agent-crm): each asks the member first ────────────────────────
+  "create_lead",
+  "update_deal_status",
+  "log_activity",
+  "convert_lead",
+  // WS-CRM CRM-M2b: a field of a record, and a task done or due.
+  "crm_update_record",
+  "crm_update_task",
+  // WS-CRM CRM-M3a: a new deal pipeline, on one card.
+  "crm_create_pipeline",
+  // ── The assistant profile (WS-63 PZ-6a): each acts at once, with Undo ──
+  "profile_remember",
+  "profile_forget",
+  "profile_set",
+  "profile_alias",
+  "profile_undo",
+  "profile_interview",
+];
+
+function build(): Readonly<Record<string, Placement>> {
+  const out: Record<string, Placement> = {};
+  const add = (names: readonly string[], p: Placement) => {
+    for (const n of names) {
+      // A name in two lists is a defect, and the test says which.
+      if (n in out) throw new Error(`chatPlacement: ${n} is both ${out[n]} and ${p}`);
+      out[n] = p;
+    }
+  };
+  add(ASK, "ask");
+  add(ANSWER, "answer");
+  add(EVIDENCE, "evidence");
+  add(WRITE, "write");
+  return Object.freeze(out);
+}
+
+/** Every classified tool, by bare name. Exported for the fences. */
+export const PLACEMENT: Readonly<Record<string, Placement>> = build();
+
+/**
+ * Where a tool's receipt goes, or `undefined` for a tool the map does not
+ * name. The caller decides what an unnamed tool does, and the two fences
+ * keep every tool a card file draws named.
+ */
+export function placementOf(name: string): Placement | undefined {
+  const bare = bareToolName(name);
+  return Object.hasOwn(PLACEMENT, bare) ? PLACEMENT[bare] : undefined;
+}
+
+/** True for a read: its receipt draws in the trail, under its step. */
+export function isEvidenceTool(name: string): boolean {
+  return placementOf(name) === "evidence";
+}
+
+// ── The five card families (spec §29, owner 2026-10-19) ───────────────────
+
+/**
+ * The family of a card in the chat. It decides where the card sits, whether
+ * it folds or closes, and what happens after it is answered:
+ *
+ * 1. `waits` — a question, a form, an option picker, a plan, an approval.
+ *    It sits where the reply asks, which is the end of the reply, because
+ *    the run stops there. "Not now" closes it (#1152). Answered or declined,
+ *    it folds to one line that says what happened (`lib/askOutcome.ts`).
+ * 2. `result` — a table, a board, a chart, a report, a timeline. It sits at
+ *    its place in the reply's text (`genUiFlow`). It folds and never
+ *    closes, because it is the record of the answer. A long one opens cut,
+ *    with "Show all" (`lib/cardRollup.ts` `clampShows`).
+ * 3. `receipt` — a write that happened. A compact line after the reply's
+ *    text, that opens for detail.
+ * 4. `notice` — information only. A slim line that the member dismisses.
+ * 5. `progress` — the to-do list and the tool steps, in the reply's step
+ *    area. The trail folds when the reply ends.
+ */
+export type CardFamily = "waits" | "result" | "receipt" | "notice" | "progress";
+
+export const CARD_FAMILIES: readonly CardFamily[] = ["waits", "result", "receipt", "notice", "progress"];
+
+/** The family of a tool's card, from its placement. A read is a result that
+ *  draws in its step, and a tool the map does not name has no card. */
+export function familyOf(name: string): CardFamily | undefined {
+  switch (placementOf(name)) {
+    case "ask":
+      return "waits";
+    case "answer":
+    case "evidence":
+      return "result";
+    case "write":
+      return "receipt";
+    default:
+      return undefined;
+  }
+}
+
+// ── Generative UI: an ask or an answer ─────────────────────────────────────
+
+/** The templates the member fills in and submits. */
+export const ASK_TEMPLATES: ReadonlySet<string> = new Set(["formCard", "optionPicker", "planCard"]);
+
+const MAX_DEPTH = 20;
+
+function hasControl(node: unknown, depth: number): boolean {
+  if (depth > MAX_DEPTH || !node || typeof node !== "object") return false;
+  const n = node as Record<string, unknown>;
+  const props = (n.props && typeof n.props === "object" ? n.props : {}) as Record<string, unknown>;
+  if (n.type === "button" && parseAction(props.action) !== null) return true;
+  if (n.type === "template" && typeof props.name === "string" && ASK_TEMPLATES.has(props.name)) {
+    return true;
+  }
+  const kids = Array.isArray(n.children) ? n.children : [];
+  return kids.some((k) => hasControl(k, depth + 1));
+}
+
+/**
+ * A `generative_ui` spec is an `ask` when the member must act on it: it
+ * blocks the run (`request_id`, from `"hitl": true`), or it holds a form, a
+ * picker, a plan to submit, or a button. Every other spec is an `answer`.
+ */
+export function genUiPlacement(spec: unknown): "ask" | "answer" {
+  if (!spec || typeof spec !== "object") return "answer";
+  const s = spec as Record<string, unknown>;
+  if (typeof s.request_id === "string" && s.request_id) return "ask";
+  const root = s.root ?? s.view ?? s;
+  return hasControl(root, 0) ? "ask" : "answer";
+}
+
+/** The words a waiting spec is known by: its title, else a plain name. */
+export function genUiTitle(spec: unknown): string {
+  if (!spec || typeof spec !== "object") return "";
+  const s = spec as Record<string, unknown>;
+  if (typeof s.title === "string" && s.title.trim()) return s.title.trim();
+  const root = (s.root ?? s.view ?? s) as Record<string, unknown>;
+  const props = (root?.props && typeof root.props === "object" ? root.props : {}) as Record<string, unknown>;
+  const data = (props.data && typeof props.data === "object" ? props.data : {}) as Record<string, unknown>;
+  for (const v of [data.title, props.title, props.text]) {
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return typeof props.name === "string" ? templateTitle(props.name, data) : "";
+}
+
+/**
+ * The title of a template that names itself by another field than `title`:
+ * a weather card by its place, a flight by its number. The template draws
+ * this as its one header (`TemplateHead` in `genUITemplates.tsx`), and the
+ * fold's toggle is named by it too, so the name a screen reader hears is the
+ * words on the row. Any other template reads `data.title`.
+ */
+export function templateTitle(name: string, data: Record<string, unknown>): string {
+  const t = (v: unknown) => (typeof v === "string" || typeof v === "number" ? String(v).trim() : "");
+  const join = (...parts: string[]) => parts.filter(Boolean).join(" ");
+  switch (name) {
+    case "weatherCard":
+      return t(data.location) || "Weather";
+    case "sparkTrend":
+      return t(data.label);
+    case "flightStatus":
+      return join(t(data.airline), t(data.flightNo));
+    case "trainStatus":
+      return join(t(data.operator), t(data.trainNo), t(data.line) ? `· ${t(data.line)}` : "");
+    default:
+      return t(data.title);
+  }
+}
+
+// ── Generative UI: its place in the order the turn streamed ─────────────────
+//
+// The owner's report of 2026-10-09: an orchestrator turn wrote its answer,
+// then parked on an option picker. The owner clicked an option, the run went
+// on, and its next words drew ABOVE the picker, between the old answer and
+// the card. The eye was on the card, and the card did not change, so the
+// click "did not seem to do anything".
+//
+// So each `generative_ui` event carries `segmentCutoff`: how many text
+// segments the turn held when the card arrived, the stamp a tool row already
+// carries. Three writers stamp it the same way: the live hook
+// (`hooks/useAgentChat.ts`), the chat proxy's checkpoint
+// (`app/api/agent/chat/route.ts`) and the gateway fold (`chat_fold.py`). A
+// segment at or past the stamp draws AFTER the card.
+
+/** The most characters of segment text that the local cache keeps for one
+ *  turn. The cache has no byte budget of its own, and a quota error skips the
+ *  WHOLE write (`sessions.ts`), so a big copy would cost every turn. */
+export const CACHED_SEGMENTS_MAX_CHARS = 32_000;
+
+/**
+ * The segments a cached copy of a turn keeps: only when a generative-UI card
+ * of the turn carries a stamp, because only `genUiFlow` needs them, and only under
+ * {@link CACHED_SEGMENTS_MAX_CHARS}. Else `undefined`, and the turn draws in
+ * the old layout from its `content` (review round 1, P1-a).
+ */
+export function segmentsForCache<E extends { name?: string; segmentCutoff?: number }>(
+  segments: readonly { id: string; text: string }[] | undefined,
+  customEvents: readonly E[] | undefined,
+): { id: string; text: string }[] | undefined {
+  if (!segments?.length) return undefined;
+  // Every CUSTOM event carries a stamp since round 1, so the stamp alone is
+  // no test. Only a generative-UI card places itself by it (round 2, P3).
+  const placed = (customEvents ?? []).some(
+    (e) => e.name === "generative_ui" && typeof e.segmentCutoff === "number");
+  if (!placed) return undefined;
+  const chars = segments.reduce((n, s) => n + s.text.length, 0);
+  return chars <= CACHED_SEGMENTS_MAX_CHARS ? [...segments] : undefined;
+}
+
+/** One block of the body of a turn, in the order it streamed. */
+export type FlowBlock =
+  | { kind: "text"; text: string }
+  | { kind: "cards"; indexes: number[] };
+
+/**
+ * The body of a turn as text and card blocks, in stream order, or `null`
+ * when no card carries a stamp, or when the turn holds no segment. `null`
+ * means "draw as before": all the text (`content`), then all the cards.
+ *
+ * ⚠️ A turn with stamps and NO segments is the local cache of an older build
+ * (review round 1, P1-a). Its stamps point into segments it does not hold,
+ * so a flow from them would draw the cards and drop the answer.
+ *
+ * ⚠️ A stamped card is in the flow from the moment it arrives, also before
+ * any text follows it. If the layout changed only when the follow-up began,
+ * React would remount the card at that moment, and an option picker would
+ * lose the choice it shows (`chatPlacement.test.ts` holds the block keys).
+ *
+ * `cutoffs[i]` is the stamp of the i-th card, or `undefined` for a card that
+ * has none (a row saved before the stamp, or a run with no segment ids).
+ * Such a card draws after all the text, as it always did. Empty segments
+ * make no block.
+ */
+export function genUiFlow(
+  segments: readonly { text: string }[] | undefined,
+  cutoffs: readonly (number | undefined)[],
+): FlowBlock[] | null {
+  const segs = segments ?? [];
+  const stamped = (c: number | undefined): c is number =>
+    typeof c === "number" && Number.isInteger(c) && c >= 0;
+  if (!cutoffs.some(stamped) || segs.length === 0) return null;
+
+  const blocks: FlowBlock[] = [];
+  const pushText = (text: string) => {
+    if (!text.trim()) return;
+    const last = blocks[blocks.length - 1];
+    if (last?.kind === "text") last.text = `${last.text}\n\n${text}`;
+    else blocks.push({ kind: "text", text });
+  };
+  const pushCards = (indexes: number[]) => {
+    if (indexes.length) blocks.push({ kind: "cards", indexes });
+  };
+  for (let j = 0; j <= segs.length; j++) {
+    // The cards that arrived when the turn held `j` segments come before
+    // segment `j`. A stamp past the end draws after the last segment.
+    pushCards(
+      cutoffs
+        .map((c, i) => [c, i] as const)
+        .filter(([c]) => stamped(c) && (j === segs.length ? c >= j : c === j))
+        .map(([, i]) => i),
+    );
+    if (j < segs.length) pushText(segs[j].text);
+  }
+  pushCards(cutoffs.map((c, i) => [c, i] as const).filter(([c]) => !stamped(c)).map(([, i]) => i));
+  return blocks;
+}
+
+/** The family of a generative-UI card: it waits when the member must act on
+ *  it (`genUiPlacement`), and it is a result otherwise. */
+export function genUiFamily(spec: unknown): "waits" | "result" {
+  return genUiPlacement(spec) === "ask" ? "waits" : "result";
+}

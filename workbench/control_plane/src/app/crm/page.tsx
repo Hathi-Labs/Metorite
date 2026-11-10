@@ -3,8 +3,14 @@
 /**
  * /crm — the native CRM (spec: project-docs/specs/crm_app.md §5).
  *
- * Five tabs over one dataset: the deals kanban (the landing tab) and a list
- * per entity on the shared list contract. The record sheet opens OVER
+ * Views over one dataset: Deals (the landing view, as a board or a list), Leads
+ * (a list or a board of Lead Status columns), and a list for Contacts and
+ * Companies on the shared list contract. CRM-Q3 removed the "Pipeline" row: the
+ * board is a layout of Deals, and a picker chooses the pipeline when the org
+ * has two or more. `?tab=pipeline` and `?tab=board` still open Deals as a board. Since WS-53 CRM-U1 the app opens
+ * with `AppTopBar`, and a rail of `RailRow`s (`components/CrmRail.tsx`)
+ * replaced the tab strip. The rail writes the same `?tab=` the tabs did, so
+ * every old link still opens its view. The record sheet opens OVER
  * whichever list is showing, driven by `?deal=`/`?lead=`/`?contact=`/
  * `?organization=` — v1 has no saved-views table, so view state lives in the
  * URL and canned views are code.
@@ -16,53 +22,152 @@
  */
 
 import Icon from "@/components/Icon";
-import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
-import FilterPills from "@/components/FilterPills";
-import Tabs from "@/components/Tabs";
+import { usePathname, useSearchParams } from "next/navigation";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { AppTopBar } from "@/components/AppTopBar";
+import { useMobileDrawer } from "@/components/AppShell";
 import Button from "@/components/ui/Button";
+import SelectButton from "@/components/ui/SelectButton";
+import { SkeletonRows } from "@/components/ui/Skeleton";
+import { useToast } from "@/components/ui/Toast";
+import { CARD_PAGE_ATTR } from "@/components/CardPanel";
+import { useViewMode } from "@/components/ViewModeProvider";
 import { useAccess } from "@/components/AccessProvider";
+import { ShellJob } from "@/lib/shell/doJob";
+import { focusPageFilter } from "@/lib/shell/pageFilter";
+import { NEW_DEAL_MIRROR, NEW_LEAD_MIRROR, refusalOf } from "./lib/access";
+import { CrmModeContext } from "./lib/modeContext";
+import {
+  CRM_JOB_IDS,
+  afterDialogsClose,
+  findRecordPlan,
+  focusAskFor,
+  logCallPlan,
+  type FocusAsk,
+  type JobPlan,
+} from "./lib/shellJobs";
 import { hasCapability } from "@/lib/access";
+import { railClass, useRailFold } from "@/lib/railFold";
+import { AccessSection } from "./components/AccessPanel";
+import SetupHubSection from "./components/SetupHub";
+import CrmBoundary from "./components/CrmBoundary";
 import ConvertModal from "./components/ConvertModal";
+import CrmRail, { type RailSettings } from "./components/CrmRail";
+import CrmViewBar from "./components/CrmViewBar";
+import FilterBar from "./components/FilterBar";
+import FirstOpen from "./components/FirstOpen";
+import { ImportProgress, MirrorNote, SetupLink, StalledBanner } from "./components/MirrorBanner";
 import KanbanBoard from "./components/KanbanBoard";
 import MoveModal from "./components/MoveModal";
+import ChangeHistoryCard from "./components/ChangeHistory";
 import PipelineSettings from "./components/PipelineSettings";
 import QuickCreateModal from "./components/QuickCreateModal";
 import RecordList from "./components/RecordList";
 import Reports from "./components/Reports";
 import RecordSheet from "./components/RecordSheet";
+import ModuleList from "./components/ModuleList";
+import ModuleRecordSheet from "./components/ModuleRecordSheet";
+import { moduleLabel, type ModuleLink } from "./lib/modules";
+import { openModuleRecord, selectModule } from "./lib/urlState";
+import { useCoreStates, useModules, useOverlays, useSourceLabels } from "./lib/useCrmMode";
+import { SlotSuggestionArea, useSuggestions } from "./components/Suggestions";
+import OpenQuestionsCard, { useQuestions } from "./components/OpenQuestions";
+import BusinessRulesCard, { useRules } from "./components/BusinessRules";
+import { openCount, railCount } from "./lib/questions";
+import { suggestionFor } from "./lib/suggestions";
+import * as api from "./lib/api";
+import { CrmError } from "./lib/api";
+import {
+  ADMIN_CAPABILITY,
+  canCreate,
+  returnTarget,
+  mirrorStalled,
+  NEW_DISABLED_REASON,
+  modeLine,
+  returnNotice,
+  startFailureMessage,
+  syncFailureMessage,
+  type ConnectionInfo,
+  type CrmMode,
+  type SyncStatus,
+} from "./lib/connect";
 import {
   boardTotals,
+  orderLanes,
   missingRequiredFields,
   needsLostReason,
   type DealMove,
   type RequireableField,
 } from "./lib/board";
-import { activeChip, applyChip, chipsFor } from "./lib/filters";
-import { compactMoney } from "./lib/format";
-import { useCrmStore } from "./lib/store";
+import { readShowEmpty, showEmptyStages, visibleLanes, writeShowEmpty } from "./lib/emptyStages";
+import { readCardSort, writeCardSort, type CardSort } from "./lib/nextActivity";
+import { chatScope } from "@/lib/sessions";
+import { chipsFor } from "./lib/filters";
+import { pickable, readColumns } from "./lib/fields";
+import { pruneFilters } from "./lib/filterBar";
+import {
+  isFiltered,
+  moduleScope,
+  resolveBareLink,
+  type ViewEntity,
+} from "./lib/savedViews";
+import { useAllSavedViews } from "./lib/useSavedViews";
+import { useViewActions } from "./lib/useViewActions";
+import {
+  orderedPipelines,
+  placesOf,
+  readRemembered,
+  remember,
+  resolvePipeline,
+  showPicker,
+} from "./lib/pipelines";
+import { plusLabel } from "./lib/reports";
+import { useCompactMoney } from "./lib/useCompactMoney";
+import { setRefusalSink, useCrmStore } from "./lib/store";
+import { invalidate } from "@/lib/dataCache";
+import { useLiveRefresh } from "@/lib/liveRefresh";
 import type { EntitySlug, Lead, Status } from "./lib/types";
 import {
   applySort,
   closeRecord,
+  hasBoard,
+  isBoardView,
   isEntity,
   openRecord,
   parseView,
+  selectLayout,
+  selectPipeline,
+  selectRecordTab,
+  selectSection,
   selectTab,
   viewHref,
   type CrmView,
   type SheetParam,
 } from "./lib/urlState";
-
-const TABS = [
-  { id: "board", label: "Pipeline", icon: "Kanban" },
-  { id: "deals", label: "Deals" },
-  { id: "leads", label: "Leads" },
-  { id: "contacts", label: "Contacts" },
-  { id: "organizations", label: "Organizations" },
-  { id: "reports", label: "Reports", icon: "BarChart3" },
-  { id: "settings", label: "Pipeline settings", icon: "Settings" },
-];
+import {
+  invalidateCrmMode,
+  useCrmMode,
+  useFieldDefs,
+  useFieldLayout,
+  useOwners,
+  useLeadPipelines,
+  usePipelineCreate,
+  usePipelines,
+  useSyncStatus,
+} from "./lib/useCrmMode";
+import { boundaryKey } from "./lib/boundary";
+import { pushView, replaceView } from "./lib/history";
+import {
+  sectionLabel,
+  sectionRedirect,
+  shownSection,
+  visibleSections,
+  withShownSection,
+  type SettingsSectionId,
+} from "./lib/settingsSections";
+import { convertSkippedNote } from "./lib/convertMapping";
+import { emptyListLine, landing, landingPlan, railEntries, viewLabel, type Landing } from "./lib/views";
+import { MORE_TAB, moduleOfTab, phoneNav, readNavDetail } from "./lib/phoneNav";
 
 /** Which URL parameter opens a record of each collection. */
 const PARAM_FOR: Record<EntitySlug, SheetParam> = {
@@ -72,8 +177,25 @@ const PARAM_FOR: Record<EntitySlug, SheetParam> = {
   organizations: "organization",
 };
 
-function CrmPageInner() {
-  const router = useRouter();
+/** What the page needs to know about the mode and the mirror (CRM-Z7). */
+type MirrorContext = {
+  mode: CrmMode;
+  /** `null` when the mirror is off. */
+  connection: ConnectionInfo | null;
+  sync: SyncStatus | null;
+  isAdmin: boolean;
+  /** The mode read failed, so `mode` may be a guess (CRM-C1 review). */
+  modeReadFailed: boolean;
+  connecting: boolean;
+  syncing: boolean;
+  onConnect: () => void;
+  onSyncNow: () => void;
+  onDisconnect: () => Promise<void>;
+};
+
+function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
+  const toast = useToast();
+  const compact = useCompactMoney();
   const searchParams = useSearchParams();
   const view = useMemo(
     () => parseView(searchParams.toString()),
@@ -81,25 +203,182 @@ function CrmPageInner() {
   );
 
   const store = useCrmStore();
+  // The generic modules, for the rail (CRM-Q6b). Mirror: each mirrored module.
+  // Native (CRM-U17a): each module that still holds records. The server
+  // decides which, so both modes read them.
+  const { modules, loading: modulesLoading } = useModules(true);
+  // CRM-Q17a-2 item 7: in Mirror mode, the source's names of the core
+  // entities. CRM-Z10g: in Native mode, the names that an admin stored. A
+  // CRM with no name, or a Mirror org off the list, keeps the CRM's names.
+  // ⚠️ Not gated on `ctx.mode`. A member of a Native org off the mirror list
+  // has no client mode (connection 404, settings 403), and the server serves
+  // the names by its own mode. A 403 or 404 reads as no names.
+  const labels = useSourceLabels(true);
+  // CRM-Q20-2 (option A): the Zoho module that each core list opens, for
+  // each member. With none, each list opens its own records.
+  const overlays = useOverlays(ctx.mode === "mirror");
+  // CRM-Q17b: whether each core entity holds records, and whether Zoho
+  // turned it off. Mirror mode, for an org on `CRM_FILL_RANK_ORGS` only.
+  const { states: coreStates, loading: statesLoading } = useCoreStates(ctx.mode === "mirror");
+  // CRM-Q20-2 item 5: the suggestion of an empty list, for an admin only.
+  const { list: suggestionList } = useSuggestions(ctx.isAdmin && ctx.mode === "mirror");
+  /** The Refresh button of a module list reads page 1 again. */
+  const [moduleReload, setModuleReload] = useState(0);
+  const { isMobile } = useViewMode();
+  // The deal pipelines (CRM-Q3). Null until read, and null when the gateway
+  // has no pipelines route: then there is one implicit pipeline and no picker.
+  const { pipelines, loading: pipelinesLoading } = usePipelines(true);
+  // CRM-M3a: "New pipeline" for an admin of a Native CRM on the flag.
+  const pipelineCreate = usePipelineCreate(ctx.isAdmin && ctx.mode === "native");
+  // CRM-M4a: the lead pipelines of a Native CRM, for the Lead statuses card
+  // of CRM settings. No other tab reads them yet.
+  const { pipelines: leadPipelines } = useLeadPipelines(
+    ctx.mode === "native" && view.tab === "settings",
+  );
+  const [remembered, setRemembered] = useState<string | null>(() => readRemembered());
+  /** The pipeline a request filters by, or null for "no filter". */
+  const pipelineId = resolvePipeline(pipelines, view.pipelineId, remembered);
+  /** The view the loaders read: the URL's view plus the pipeline in effect. */
+  /** The collection whose records the filters narrow: a list or a board. */
+  const filterEntity: EntitySlug | null = isEntity(view.tab) ? view.tab : null;
+  const { defs: filterDefs, loading: defsLoading } = useFieldDefs(filterEntity);
+  /** The owner filter's choices: every member and record owner (CRM-X1). */
+  const owners = useOwners(filterEntity !== null);
+  // A filter the gateway would refuse is dropped before the fetch (CRM-Q8):
+  // a saved view can name a custom field that is gone, and one 422 would
+  // empty the whole list.
+  const pruned = useMemo(
+    () => pruneFilters(view, filterDefs, ctx.mode === "mirror"),
+    [view, filterDefs, ctx.mode],
+  );
+  // The member, for the choices this browser keeps (`lib/emptyStages.ts`,
+  // `lib/nextActivity.ts`). Each is kept per member and organization.
   const { access } = useAccess();
+  const memberScope = chatScope(access.email, access.organization?.id);
+  // The order of the cards in a deal lane (CRM-X3): five orders (Board options, Sort cards).
+  const savedSort = useMemo(() => readCardSort(memberScope), [memberScope]);
+  const [pickedSort, setPickedSort] = useState<{ scope: string | null; sort: CardSort } | null>(
+    null
+  );
+  const cardSort: CardSort =
+    pickedSort && pickedSort.scope === memberScope ? pickedSort.sort : savedSort;
+  const loadView = useMemo(
+    () => ({ ...pruned.view, pipelineId, cardSort }),
+    [pruned.view, pipelineId, cardSort],
+  );
+  /** Custom filters wait for the definitions that check them. */
+  const hasCustom = Object.keys(view.custom).length > 0;
+  const waitingForDefs = defsLoading && hasCustom;
+  /** The definitions failed: the custom filters cannot be checked, so nothing is fetched. */
+  const unchecked = !defsLoading && pruned.unchecked;
+  const boardOn = isBoardView(view);
+  // Stable keys for the filters that are objects: the load effect watches them.
+  const rangesKey = JSON.stringify(loadView.ranges);
+  const customKey = JSON.stringify(loadView.custom);
+  // Saved views (CRM-Q8, CRM-U8): chips in row 1 of each list. A link that
+  // carries only `?view=<id>` needs the views of all four lists to find its tab.
+  const allViews = useAllSavedViews();
+  const savedList = useMemo(() => Object.values(allViews).flat(), [allViews]);
+  const { open: openDrawer, close: closeDrawer } = useMobileDrawer();
+  /** The rail of views: open from `lg` up, folded below, the member's call
+   *  inside a band. The one rule My Tasks uses (`lib/railFold.ts`). */
+  const rail = useRailFold();
   const [creating, setCreating] = useState<EntitySlug | null>(null);
   /** Local, not in the store: an in-flight download is this button's state,
    *  not the collection's, and reusing `saving` would grey out the sheet. */
   const [exporting, setExporting] = useState(false);
   const [converting, setConverting] = useState<Lead | null>(null);
+  /**
+   * Where the open record came from, for `j` and `k` (CRM-X4 item 5): the
+   * list on screen, or one lane of the board. Null for a record opened from
+   * a link, from Cmd-K or from a related list, which has no list behind it.
+   */
+  const [cameFrom, setCameFrom] = useState<
+    { param: SheetParam; lane: string | null } | null
+  >(null);
   /** A move the gateway would refuse as sent — held until the modal answers. */
   const [pendingMove, setPendingMove] = useState<{
+    entity: "deals" | "leads";
     move: DealMove;
     status: Status;
     needsReason: boolean;
     missing: RequireableField[];
   } | null>(null);
 
-  /** Every navigation in this app is a URL rewrite — Back closes the sheet. */
-  const go = useCallback(
-    (next: CrmView) => router.push(viewHref(next), { scroll: false }),
-    [router]
+  /**
+   * The view before a job link (CRM-X2). The command bar puts `/crm?do=<job>`
+   * in place of the whole query, so the open record is gone from the address
+   * when the job runs. This keeps the last view that named no job.
+   */
+  const viewBeforeJob = useRef<CrmView | null>(null);
+  useEffect(() => {
+    if (!searchParams.get("do")) viewBeforeJob.current = view;
+  }, [view, searchParams]);
+  /** A `log-call` ask for one record: its Timeline composer opens on Call. */
+  const [callAsk, setCallAsk] = useState<{ n: number; id: string } | null>(null);
+  /** The list whose search box a job asked to focus, once it is on screen. */
+  const focusFor = useRef<FocusAsk | null>(null);
+  const [focusAsk, setFocusAsk] = useState(0);
+  /** The hint of `log-call` with no record, for the Deals list it opened. */
+  const [jobHint, setJobHint] = useState<string | null>(null);
+
+  /** Every navigation in this app is a URL rewrite — Back closes the sheet.
+   *  ⚠️ `pushView`, never `router.push`: a router push waits on a server
+   *  request before the view changes, and a held request left the rail dead
+   *  (`lib/history.ts`). */
+  const go = useCallback((next: CrmView) => pushView(viewHref(next)), []);
+  // A click on the board or the list while a card is open shows that record in
+  // the same card. It replaces the URL, so Back closes the card, as a step of
+  // `j` or `k` does (ORC-1, D181).
+  const cardOpen = view.record !== null || view.moduleRecord !== null;
+  const openInCard = useCallback(
+    (next: CrmView) => (cardOpen ? replaceView : pushView)(viewHref(next)),
+    [cardOpen],
   );
+
+  // A link that carries only `?view=<id>` opens that view (CRM-Q8).
+  const search = searchParams.toString();
+  useEffect(() => {
+    const opened = resolveBareLink(search, savedList);
+    if (opened) replaceView(viewHref(opened));
+  }, [search, savedList]);
+
+  // CRM-Q17b item 3: a bare `/crm` opens on the first row that holds
+  // records (`lib/views.ts` `landing`). With no state from the gateway, only
+  // the overlays count: a module that plays Deals opens in place of the
+  // empty Deals board. Nothing loads until the answer is known, so the
+  // empty board never shows first. A replace, so Back leaves the CRM.
+  // ⚠️ ONCE for each mount (`landingPlan`). A bare `/crm` is also the Deals
+  // board, so the member's own click on Deals, or a read of the mode that
+  // comes again, must not land a second time (fix round 1, P1).
+  const [landed, setLanded] = useState(false);
+  const landingKnown = ctx.mode !== "mirror" || (!modulesLoading && !statesLoading);
+  const landingTo: Landing | null =
+    !landed && search === "" && ctx.mode === "mirror" && landingKnown
+      ? landing(railEntries(modules, labels, overlays, coreStates), coreStates, modules, overlays)
+      : null;
+  const landingHref = landingTo
+    ? viewHref(
+        landingTo.kind === "module"
+          ? selectModule(view, landingTo.module)
+          : selectTab(view, landingTo.tab),
+      )
+    : null;
+  const plan = landingPlan({
+    decided: landed,
+    search,
+    mirror: ctx.mode === "mirror",
+    known: landingKnown,
+    target: landingHref,
+    here: viewHref(view),
+  });
+  // State that follows the address: settled during the render, so no
+  // effect sets state (the React rule for derived state).
+  if (plan.decide) setLanded(true);
+  const landingPending = plan.pending;
+  useEffect(() => {
+    if (plan.redirect) replaceView(plan.redirect);
+  }, [plan.redirect]);
 
   useEffect(() => {
     store.loadVocabulary();
@@ -108,25 +387,43 @@ function CrmPageInner() {
   }, []);
 
   useEffect(() => {
-    if (view.tab === "board") store.loadBoard(view);
+    // CRM-Q17b item 3: a bare `/crm` waits for its first screen.
+    if (landingPending) return;
+    // Deals waits for the pipeline list, so the board loads once and not twice.
+    if (view.tab === "deals" && pipelinesLoading) return;
+    if (waitingForDefs || unchecked) return;
+    if (boardOn) {
+      if (view.tab === "leads") store.loadLeadBoard(loadView);
+      else store.loadBoard(loadView);
+    }
     // ⚠️ `settings` and `reports` are tabs and NOT collections:
     // `loadList("settings", …)` would request `/crm/settings` and empty the
     // screen with a 404. The vocabulary settings edits is loaded once, above;
     // reports has four reads of its own.
-    else if (view.tab === "reports") store.loadReports(view);
-    else if (isEntity(view.tab)) store.loadList(view.tab, view);
+    else if (view.tab === "reports") store.loadReports(loadView);
+    else if (isEntity(view.tab)) store.loadList(view.tab, loadView);
     // ⚠️ Every field `listQuery` reads has to be in this list, `sort`/`dir`
     // included: a filter the effect does not watch is a control that changes
     // its own appearance and issues no request.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     view.tab,
+    view.layout,
+    pipelineId,
+    pipelinesLoading,
     view.q,
     view.statusId,
     view.includeConverted,
     view.owner,
     view.sort,
     view.dir,
+    view.source,
+    rangesKey,
+    customKey,
+    waitingForDefs,
+    unchecked,
+    cardSort,
+    landingPending,
   ]);
 
   useEffect(() => {
@@ -134,17 +431,67 @@ function CrmPageInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view.record?.entity, view.record?.id]);
 
-  const listEntity: EntitySlug | null = isEntity(view.tab) ? view.tab : null;
+  /** The collection a LIST is showing. A board is not a list, so it is null there. */
+  const listEntity: EntitySlug | null = isEntity(view.tab) && !boardOn ? view.tab : null;
+  const listFieldDefs = filterDefs;
+  // How many fields the Columns dialog would offer. The button hides at 0.
+  const { layout: columnLayout } = useFieldLayout(filterEntity);
+  const columnChoices = pickable(
+    columnLayout?.studio === true ? columnLayout.fields : listFieldDefs,
+  ).length;
+
+  // A job asked for the search box of a list (CRM-X2). The address may change
+  // a render after the ask, so the ask waits here until that list is on screen.
+  // It also waits for the command bar to finish closing, or the bar takes the
+  // focus back (`afterDialogsClose`).
+  useEffect(() => {
+    const { focus, keep } = focusAskFor(focusFor.current, listEntity, Date.now());
+    focusFor.current = keep;
+    if (!focus) return;
+    return afterDialogsClose(() => void focusPageFilter());
+  }, [focusAsk, listEntity]);
+
+  /**
+   * Run the plan of a job (`lib/shellJobs.ts`). The address changes through
+   * `replaceView`, as `shell/doJob.tsx` does, so nothing waits on the
+   * server. A replace, not a push: the job link was the last entry, so Back
+   * returns to the view before it.
+   */
+  function runJob(plan: JobPlan): void {
+    replaceView(viewHref(plan.view));
+    const opened = plan.view.record;
+    if (plan.composeCall && opened) {
+      setCallAsk((ask) => ({ n: (ask?.n ?? 0) + 1, id: opened.id }));
+    }
+    if (plan.focusSearch && isEntity(plan.view.tab)) {
+      focusFor.current = { entity: plan.view.tab, at: Date.now() };
+      setFocusAsk((n) => n + 1);
+    }
+    setJobHint(plan.hint);
+  }
+  /** The hint shows on the Deals list it was given for, and nowhere else. */
+  const hintShown = jobHint && listEntity === "deals" && !view.record ? jobHint : null;
 
   /** What the Refresh button re-reads — one branch per kind of tab. */
   function reload(): void {
-    if (view.tab === "board") void store.loadBoard(view);
+    if (boardOn) {
+      if (view.tab === "leads") void store.loadLeadBoard(loadView);
+      else void store.loadBoard(loadView);
+    }
     // The settings tab's collection IS the vocabulary the whole app renders
     // from, so its re-read is the same call the page makes on mount.
     else if (view.tab === "settings") void store.loadVocabulary();
-    else if (view.tab === "reports") void store.loadReports(view);
-    else if (listEntity) void store.loadList(listEntity, view);
+    else if (view.tab === "reports") void store.loadReports(loadView);
+    else if (view.tab === "module") setModuleReload((n) => n + 1);
+    else if (listEntity) void store.loadList(listEntity, loadView);
   }
+  // Task #124: the assistant wrote a lead, a deal or an activity. Drop the
+  // cached CRM reads and re-read the tab the member looks at, with no click.
+  // `reload` is a fresh closure each render, so the hook keeps the latest.
+  useLiveRefresh(() => {
+    invalidate("crm:");
+    reload();
+  }, "crm");
   const statusesFor = (entity: EntitySlug | null): Status[] =>
     entity === "deals"
       ? store.dealStatuses
@@ -152,23 +499,125 @@ function CrmPageInner() {
         ? store.leadStatuses
         : [];
 
+  const barDefs = filterDefs;
+
+  /**
+   * The saved views of the list on screen (CRM-U8): one controller for a
+   * core list and for a module list. The scope is the key of the list. The
+   * default view keeps its columns in this browser. A saved view keeps them
+   * on the view (`lib/useViewActions.ts`).
+   */
+  const viewScope: ViewEntity | null =
+    filterEntity ?? (view.tab === "module" && view.module ? moduleScope(view.module) : null);
+  // A pick of the default view changes this browser's key, so the page draws again.
+  const [, setColumnsTick] = useState(0);
+  const viewActions = useViewActions({
+    scope: viewScope,
+    view,
+    pipelineId,
+    defaultColumns: viewScope ? readColumns(viewScope) : null,
+    go,
+    onError: store.setError,
+    onSaved: (made) =>
+      toast.show({ key: "crm-view", variant: "success", title: `Saved ${made.name}` }),
+  });
+  const activeSaved = viewActions.active;
+  /** The member picked columns: a saved view keeps them, the default view keeps them here. */
+  const onColumnsPicked = (keys: string[]) => {
+    if (activeSaved) viewActions.setColumns(keys);
+    else setColumnsTick((n) => n + 1);
+  };
+  const [choosingColumns, setChoosingColumns] = useState(false);
+
+  /** The rail rows of the generic modules (CRM-Q6b), and where a lookup opens. */
+  const railModules = {
+    modules,
+    active: view.tab === "module" ? (view.module ?? null) : null,
+    onSelect: (module: string) => {
+      go(selectModule(view, module));
+      if (isMobile) closeDrawer();
+    },
+  };
+  function openLink(link: ModuleLink): void {
+    if (link.kind === "record") openAlone(openRecord(view, PARAM_FOR[link.entity], link.id));
+    else openAlone(openModuleRecord(view, link.module, link.id));
+  }
+
+  // The places of the pipeline on screen. The chips, the stage menu and the
+  // board all read them (task #838).
+  const places = useMemo(() => placesOf(pipelines, pipelineId), [pipelines, pipelineId]);
+  // A deal sits in its own pipeline. One with none gets the default one.
+  const recordPipeline =
+    view.record?.entity === "deals"
+      ? (store.record as { pipeline_id?: string | null } | null)?.pipeline_id ?? null
+      : null;
+  const recordPlaces = useMemo(
+    // A deal with no pipeline is in the default one, not in the board's (CRM-M3).
+    () => placesOf(pipelines, view.record?.entity === "deals" ? recordPipeline : pipelineId),
+    [pipelines, recordPipeline, pipelineId, view.record?.entity],
+  );
   const chips = listEntity
-    ? chipsFor(listEntity, statusesFor(listEntity), view)
+    ? chipsFor(listEntity, statusesFor(listEntity), view, ctx.mode, places)
     : [];
+  /** CRM-Q20-2: the suggestion of the core list on screen, list or board. */
+  const slotSuggestion = isEntity(view.tab) ? suggestionFor(suggestionList, view.tab) : null;
 
   const totals = boardTotals(store.lanes);
+  const leadCount = store.leadLanes.reduce((n, lane) => n + lane.count, 0);
+  /** Every deal on the board, won and lost too, under the filters on screen. */
+  const dealCount = store.lanes.reduce((n, lane) => n + lane.count, 0);
+
+  /**
+   * CRM-Q17b item 4: why the collection on screen holds no record. A filter
+   * says "Nothing matches this view.", and with no filter the line says
+   * why: Zoho turned the module off, Zoho sent none, or none exists yet.
+   */
+  const emptyLineOf = (entity: EntitySlug): string =>
+    emptyListLine(viewLabel(entity, labels), {
+      filtered: isFiltered(view),
+      mirror: ctx.mode === "mirror",
+      turnedOff: coreStates?.[entity]?.turned_off === true,
+    });
+
+  // Empty stages on the Deals board (lib/emptyStages.ts). The member's choice
+  // is kept in this browser per member and organization. With no choice, the
+  // board hides them in Mirror mode and shows them in Native mode.
+  const savedEmpty = useMemo(() => readShowEmpty(memberScope), [memberScope]);
+  const [pickedEmpty, setPickedEmpty] = useState<{ scope: string | null; show: boolean } | null>(
+    null
+  );
+  const showEmpty = showEmptyStages(
+    ctx.mode,
+    pickedEmpty && pickedEmpty.scope === memberScope ? pickedEmpty.show : savedEmpty
+  );
+  // The one column order, for this mode (lib/board.ts `orderLanes`, D137).
+  // The places come from the pipeline on screen, or from the default one when
+  // the board sends no `pipeline_id`. CRM settings orders its list the same way.
+  const dealLanes = visibleLanes(orderLanes(store.lanes, ctx.mode, places), showEmpty);
+  const dealBoard = boardOn && view.tab === "deals";
+  const mayCreate = canCreate(ctx.mode);
 
   /** A board drop, or the status pill in the sheet. Same request either way. */
   async function moveDeal(move: DealMove, target: Status) {
+    await moveCard("deals", move, target);
+  }
+
+  /** The same move for a lead on the Leads board. `move.dealId` holds the lead id. */
+  async function moveCard(entity: "deals" | "leads", move: DealMove, target: Status) {
+    const onBoard: Array<Record<string, unknown>> =
+      entity === "deals"
+        ? store.lanes.flatMap((l) => l.rows)
+        : store.leadLanes.flatMap((l) => l.rows);
     const deal =
-      store.lanes.flatMap((l) => l.rows).find((d) => d.id === move.dealId) ??
+      onBoard.find((d) => d.id === move.dealId) ??
       (store.record as Record<string, unknown> | null);
     // Both gates read forward, in the gateway's own order. It refuses either
     // one BEFORE writing any of the transition's three effects, so a board
     // that discovered them from an error toast would have already animated the
     // card into the lane it is not allowed to be in.
     const needsReason = Boolean(deal && needsLostReason(deal, target));
-    const missing = deal ? missingRequiredFields(deal, target) : [];
+    // Entry requirements belong to deal stages. A lead status requires nothing.
+    const missing = deal && entity === "deals" ? missingRequiredFields(deal, target) : [];
     if (needsReason || missing.length > 0) {
       // The picker the organization requirement needs. Requested here rather
       // than on mount because the directory is a picker, not a mirror — and
@@ -176,235 +625,733 @@ function CrmPageInner() {
       // is idempotent and a branch on which field is missing is a branch that
       // gets it wrong once.
       store.loadDirectories();
-      setPendingMove({ move, status: target, needsReason, missing });
+      setPendingMove({ entity, move, status: target, needsReason, missing });
       return;
     }
-    await store.moveDeal(move);
+    if (entity === "leads") await store.moveLead(move);
+    else await store.moveDeal(move);
     if (view.record) store.loadRecord(view.record.entity, view.record.id);
+  }
+
+  /**
+   * The ids of the list the open record came from, in the order on screen.
+   * Null when no list is behind it, or when the list no longer holds it (a
+   * deal moved to another lane), so the arrows hide and the keys do nothing.
+   */
+  function recordOrder(): string[] | null {
+    if (!cameFrom || !view.record || cameFrom.param !== view.record.param) return null;
+    const rows: Array<Record<string, unknown>> =
+      cameFrom.lane === null
+        ? store.rows
+        : ((view.tab === "leads" ? store.leadLanes : dealLanes).find(
+            (lane) => lane.status.id === cameFrom.lane,
+          )?.rows ?? []);
+    const ids = rows.map((row) => String(row.id));
+    return ids.includes(view.record.id) ? ids : null;
+  }
+
+  /** Open a record and forget the list: it came from a link or a related row. */
+  function openAlone(next: CrmView): void {
+    setCameFrom(null);
+    go(next);
   }
 
   async function convert(body: Record<string, unknown>) {
     if (!converting) return;
-    const dealId = await store.convertLead(converting.id, body);
+    const result = await store.convertLead(
+      converting.id,
+      // The deal joins the pipeline on screen (CRM-M3). None: the default one.
+      pipelineId ? { ...body, pipeline_id: pipelineId } : body,
+    );
+    const dealId = result?.deal.id ?? null;
     setConverting(null);
+    // CRM-C6a: say which lead values the conversion mapping did not copy.
+    const note = convertSkippedNote(result?.skipped);
+    if (note) {
+      toast.show({ key: "crm-convert-skipped", variant: "success", title: "Lead converted", description: note });
+    }
     if (dealId) {
       // Land on the deal that was just made: the conversion's whole point is
       // that the work continues there.
-      go(openRecord(selectTab(view, "deals"), "deal", dealId));
+      openAlone(openRecord(selectTab(view, "deals"), "deal", dealId));
     }
   }
 
-  return (
-    <div className="flex h-full flex-col">
-      <header className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3 sm:px-6 sm:py-4">
-        <div>
-          <h1 className="text-base font-bold text-foreground sm:text-lg">CRM</h1>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            {view.tab === "board"
-              ? // Weighted sits next to the raw total rather than replacing it:
-                // "₹4.2Cr in the pipeline" is what is on the table and
-                // "₹1.6Cr weighted" is what the forecast believes, and a header
-                // that showed only one of them would be answering a different
-                // question from the one being asked.
-                `${totals.count} open deals · ${compactMoney(totals.amount)} in the pipeline · ${compactMoney(totals.weighted)} weighted`
-              : view.tab === "settings"
-                ? "Stages, statuses and lost reasons — the pipeline is data, not a deploy"
-                : view.tab === "reports"
-                  ? "Forecast, funnel, win rate and who is carrying what"
-                  : "Pipeline, leads and customers"}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {listEntity && (
-            // WS-26i-export — the filter that is on screen, as a CSV.
-            //
-            // ⚠️ Fetched rather than navigated to (see lib/api.exportRecords).
-            // The endpoint REFUSES a filter wider than its row cap, naming the
-            // matched count, and `window.location = …` would turn that refusal
-            // into a tab full of JSON instead of a sentence in the banner
-            // below.
-            //
-            // It is on the LISTS only: the board is a page of each lane and
-            // reports are aggregates, so neither has a row set an export could
-            // honestly claim to be "what you were looking at".
-            <Button
-              variant="secondary"
-              // `lg` is the New button's geometry beside it — two controls in
-              // one header at two sizes read as two products.
-              size="lg"
-              icon="Download"
-              loading={exporting}
-              onClick={async () => {
-                setExporting(true);
-                await store.exportList(listEntity, view);
-                setExporting(false);
-              }}
-            >
-              Export
-            </Button>
-          )}
-          <button
-            onClick={reload}
-            className="rounded-lg border border-border p-2 text-muted-foreground hover:bg-secondary tech-transition"
-            aria-label="Refresh"
-          >
-            <Icon name="RefreshCw" className={`w-4 h-4 ${store.loading ? "animate-spin" : ""}`} />
-          </button>
-          {view.tab !== "settings" && view.tab !== "reports" && (
-            <button
-              onClick={() => setCreating(listEntity ?? "deals")}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 tech-transition sm:px-4"
-            >
-              <Icon name="Plus" className="w-4 h-4" />
-              New
-            </button>
-          )}
-        </div>
-      </header>
+  // The settings section on screen (CRM-C1, crm_platform.md §20.4). A
+  // missing or unknown section goes to the caller's default through
+  // `replaceView`, so Back does not return to the bad URL. A known section
+  // the caller cannot open draws the default and keeps its URL. Nothing is
+  // rewritten while the access read loads or is stale, or while the mode
+  // read failed: then the caller is a guess, and an admin's link would be
+  // lost (`sectionRedirect`).
+  const { loading: accessLoading, stale: accessStale } = useAccess();
+  // CRM-C6a: the Native `field-mapping` section needs `studio_admin` of the
+  // layout. The read is shared with the Fields card, which reads leads first.
+  const studioProbe = useFieldLayout(ctx.isAdmin && ctx.mode !== "mirror" ? "leads" : null);
+  const studioAdmin = studioProbe.layout?.studio_admin === true;
+  // CRM-Q32-3 (§18.14.5): the open questions of an admin in Mirror mode. The
+  // read decides the section, the rail count and the default section. A 404
+  // `questions_off` hides all three.
+  const questions = useQuestions(ctx.isAdmin && ctx.mode === "mirror");
+  const questionsOpen = openCount(questions.read);
+  // CRM-Q33: the business rules of each member in Mirror mode. A 404
+  // `rules_off` hides the section.
+  const rules = useRules(ctx.mode === "mirror");
+  const sectionCtx = useMemo(
+    () => ({
+      isAdmin: ctx.isAdmin,
+      mode: ctx.mode,
+      studioAdmin,
+      questions: questions.gate,
+      openQuestions: questionsOpen,
+      rules: rules.gate,
+    }),
+    [ctx.isAdmin, ctx.mode, studioAdmin, questions.gate, questionsOpen, rules.gate],
+  );
+  const settingsSection = shownSection(view.section, sectionCtx);
+  // The default section reads the open count, so a bare settings URL waits
+  // for the read of the questions too.
+  const sectionTrusted =
+    !accessLoading && !accessStale && !ctx.modeReadFailed && questions.gate !== "unknown" &&
+    rules.gate !== "unknown";
+  useEffect(() => {
+    const redirect = sectionRedirect(view, sectionCtx, sectionTrusted);
+    if (redirect) replaceView(viewHref({ ...view, section: redirect }));
+  }, [view, sectionCtx, sectionTrusted]);
 
-      <Tabs
-        tabs={TABS}
-        activeTab={view.tab}
-        onTabChange={(id) => go(selectTab(view, id as CrmView["tab"]))}
-        variant="underline"
+  // The scope line beside the name. CRM-Z7 puts the mode here ("Native", or
+  // "Synced from Zoho · 4 min ago"). Until a mode exists, it says what the
+  // view on screen holds.
+  const viewLine =
+    boardOn && view.tab === "deals"
+      ? // Weighted sits next to the raw total rather than replacing it:
+        // "₹4.2Cr in the pipeline" is what is on the table and "₹1.6Cr
+        // weighted" is what the forecast believes, and a line that showed
+        // only one of them would be answering a different question.
+        `${totals.count} open deals · ${compact(totals.amount, totals.currency)} in the pipeline · ${compact(totals.weighted, totals.currency)} weighted${
+          totals.others.length > 0 ? ` · ${plusLabel(totals.others, (o) => o.amount)}` : ""
+        }`
+      : boardOn
+        ? `${leadCount} leads by status`
+        : view.tab === "settings"
+          ? `Settings · ${sectionLabel(settingsSection)}`
+          : view.tab === "reports"
+            ? "Forecast, funnel, win rate and who is carrying what"
+            : view.tab === "module"
+              ? moduleLabel(modules, view.module)
+              : // A list view names itself. With the rail folded, the four
+              // lists share one layout, and this line is all that tells
+              // Deals from Contacts.
+              viewLabel(view.tab, labels);
+  const mode = modeLine({ mode: ctx.mode, connection: ctx.connection, sync: ctx.sync });
+  // CRM-X0: the mode part links an admin to the setup hub.
+  const subtitle = mode ? (
+    <>
+      <SetupLink isAdmin={ctx.isAdmin}>{mode}</SetupLink>
+      {` · ${viewLine}`}
+    </>
+  ) : (
+    viewLine
+  );
+
+  /** A rail row, from the desktop column or the phone's drawer. */
+  function chooseView(tab: CrmView["tab"]): void {
+    // A click on the view on screen adds no history entry (CRM-C1 review).
+    const next = selectTab(view, tab);
+    if (next !== view) go(next);
+    if (isMobile) closeDrawer();
+  }
+
+  /** A settings section, from a child row of the rail (CRM-C1). */
+  function chooseSection(section: SettingsSectionId): void {
+    const next = selectSection(view, section);
+    if (next !== view) go(next);
+    if (isMobile) closeDrawer();
+  }
+  /** The child rows of the settings row: the sections this caller can open. */
+  const railSettings: RailSettings = {
+    sections: visibleSections(sectionCtx),
+    active: view.tab === "settings" ? settingsSection : null,
+    onSelect: chooseSection,
+    // CRM-Q32-3: the open count of an admin, on two rows. It hides at 0.
+    questions: questions.gate === "on" ? railCount(questionsOpen) : null,
+  };
+
+  /** The whole rail, in the shell's drawer. The title and "More" both open it. */
+  function openViews(): void {
+    openDrawer(
+      <nav aria-label="CRM views" className="p-2">
+        <CrmRail
+          tab={view.tab}
+          onSelect={chooseView}
+          modules={railModules}
+          settings={railSettings}
+          labels={labels}
+          overlays={overlays}
+          states={coreStates}
+        />
+      </nav>
+    );
+  }
+
+  // CRM-U10: the CRM's tabs in the phone's bottom bar. The page owns the list
+  // (mode, labels, rows the source turned off) and the shell draws it.
+  const navBadge = questions.gate === "on" ? railCount(questionsOpen) : null;
+  useEffect(() => {
+    if (!isMobile) return;
+    const detail = phoneNav(
+      railEntries(modules, labels, overlays, coreStates),
+      { tab: view.tab, module: view.module },
+      navBadge,
+      modules,
+      coreStates
+    );
+    window.dispatchEvent(new CustomEvent("cc-crm-nav", { detail }));
+  }, [isMobile, modules, labels, overlays, coreStates, view.tab, view.module, navBadge]);
+  useEffect(
+    () => () => {
+      window.dispatchEvent(new CustomEvent("cc-crm-nav", { detail: null }));
+    },
+    []
+  );
+  // A tap on a tab. The handler reads the latest closures through a ref, so
+  // the listener stays one for the life of the page.
+  const tabTap = useRef<(id: string) => void>(() => {});
+  tabTap.current = (id: string) => {
+    const module = moduleOfTab(id);
+    if (id === MORE_TAB) openViews();
+    else if (module) railModules.onSelect(module);
+    else chooseView(id as CrmView["tab"]);
+  };
+  useEffect(() => {
+    const h = (e: Event) => {
+      const id = readNavDetail((e as CustomEvent<unknown>).detail);
+      if (id) tabTap.current(id);
+    };
+    window.addEventListener("cc-mobile-nav", h);
+    return () => window.removeEventListener("cc-mobile-nav", h);
+  }, []);
+
+  // The app's verb sits next to its name, as Capture does in My Tasks. It is
+  // the quick-create entry the old header held, at the bar's size.
+  // In Mirror mode a record is made in Zoho. The verb stays, greyed out, and
+  // says why (spec §3.3, CRM-U15).
+  const actions =
+    view.tab !== "settings" && view.tab !== "reports" && view.tab !== "module" ? (
+      <Button
+        variant="secondary"
+        size="sm"
+        icon="Plus"
+        data-guide="crm.new"
+        disabled={!mayCreate}
+        title={mayCreate ? undefined : NEW_DISABLED_REASON}
+        onClick={() => setCreating(isEntity(view.tab) ? view.tab : "deals")}
+      >
+        New
+      </Button>
+    ) : null;
+
+  const picker =
+    view.tab === "deals" && showPicker(pipelines) && pipelines ? (
+      <SelectButton
+        label="Pipeline"
+        value={pipelineId ?? ""}
+        options={orderedPipelines(pipelines).map((p) => ({ value: p.id, label: p.name }))}
+        defaultValue=""
+        onChange={(id) => {
+          remember(id);
+          setRemembered(id);
+          go(selectPipeline(view, id));
+        }}
+        widthClass="w-40"
+      />
+    ) : null;
+
+  // Since CRM-U8 the app bar keeps Refresh only. The layout switch, the
+  // pipeline picker, the board toggles, Columns and Export are in row 1 of
+  // the toolbar (`CrmViewBar`).
+  const tools = (
+    <Button
+      variant="ghost"
+      size="icon-sm"
+      onClick={reload}
+      aria-label="Refresh"
+      title="Refresh"
+    >
+      <Icon name="RefreshCw" size={14} className={store.loading ? "animate-spin" : ""} />
+    </Button>
+  );
+
+  return (
+    // CRM-C2: the list, the reports and the status pill read the mode here.
+    <CrmModeContext.Provider value={ctx.mode}>
+    <div
+      {...{ [CARD_PAGE_ATTR]: "" }}
+      className="flex h-full w-full flex-col overflow-hidden bg-background"
+    >
+      {/* ═══ The app's title bar (AGENTS.md rule 11, CRM-U1) ═══
+          The rail toggle, the name and the scope, the New verb, then the
+          tools at the right end. On a phone `AppTopBar` draws the compact
+          bar by itself. There the title names the view on screen, and a tap
+          opens the views in the shell's drawer, as the Email inbox does. */}
+      <AppTopBar
+        rail={{ open: rail.open, onToggle: rail.toggle, noun: "the views" }}
+        title={
+          isMobile ? (
+            <button
+              type="button"
+              onClick={openViews}
+              className="inline-flex max-w-full items-center gap-1 align-middle tech-transition hover:opacity-80"
+            >
+              <span className="truncate">
+                {view.tab === "module" ? moduleLabel(modules, view.module) : viewLabel(view.tab, labels)}
+              </span>
+              <Icon name="ChevronDown" size={14} className="shrink-0 text-muted-foreground" />
+            </button>
+          ) : (
+            "CRM"
+          )
+        }
+        subtitle={subtitle}
+        actions={actions}
+        tools={tools}
       />
 
-      {chips.length > 0 && (
-        <FilterPills
-          items={chips}
-          activeId={activeChip(view)}
-          onChange={(id) => go(applyChip(view, id))}
-        />
-      )}
-
-      {store.error && (
-        // A refusal must surface: a control that silently no-ops reads as
-        // broken, and a stale row after a 409 reads as success.
-        <div className="flex shrink-0 items-start gap-2 border-b border-destructive/30 bg-destructive/10 px-4 py-2">
-          <p className="flex-1 text-xs text-destructive">{store.error}</p>
-          <button
-            onClick={() => store.setError(null)}
-            className="text-destructive/70 hover:text-destructive"
-            aria-label="Dismiss"
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        {/* The rail of views. It folds below `lg` and the toggle in the bar
+            opens it (`useRailFold`, the My Tasks rule). A phone has no
+            column: the views live in the drawer the title opens. */}
+        {!isMobile && rail.open ? (
+          <nav
+            aria-label="CRM views"
+            className={`w-56 shrink-0 overflow-y-auto border-r border-border bg-card p-2 ${railClass(rail.settled)}`}
           >
-            <Icon name="X" className="w-3.5 h-3.5" />
-          </button>
-        </div>
-      )}
+            <CrmRail
+              tab={view.tab}
+              onSelect={chooseView}
+              modules={railModules}
+              settings={railSettings}
+              labels={labels}
+              overlays={overlays}
+              states={coreStates}
+            />
+          </nav>
+        ) : null}
 
-      {view.tab === "board" ? (
-        <KanbanBoard
-          lanes={store.lanes}
-          loading={store.loading}
-          onMove={moveDeal}
-          onOpen={(id) => go(openRecord(view, "deal", id))}
-          onCreate={() => setCreating("deals")}
-        />
-      ) : view.tab === "reports" ? (
-        <Reports reports={store.reports} loading={store.loading} />
-      ) : view.tab === "settings" ? (
-        <PipelineSettings
-          dealStatuses={store.dealStatuses}
-          leadStatuses={store.leadStatuses}
-          lostReasons={store.lostReasons}
-          saving={store.saving}
-          // Hiding the pull is the courtesy half; the route is floored on the
-          // same capability server-side and refuses regardless.
-          canPullStages={hasCapability(access, "admin:access:manage")}
-          onSaveStatus={store.saveStatus}
-          onRemoveStatus={store.removeStatus}
-          onReorderStatuses={store.reorderStatuses}
-          onSaveLostReason={store.saveLostReason}
-          onRemoveLostReason={store.removeLostReason}
-          onReorderLostReasons={store.reorderLostReasons}
-          onPullStages={store.pullZohoStages}
-        />
-      ) : (
-        // `listEntity` is non-null here by construction — the three branches
-        // above are the only tabs that are not a collection — but it is read
-        // through the guard rather than cast, because the cast is what made
-        // `?tab=settings` render a list of nothing on the way in.
-        listEntity && (
-          <RecordList
-            entity={listEntity}
-            rows={store.rows}
-            total={store.total}
-            loading={store.loading}
-            sort={view.sort}
-            direction={view.dir}
-            onSort={(key) => go(applySort(view, key))}
-            onOpen={(id) => go(openRecord(view, PARAM_FOR[listEntity], id))}
-          />
-        )
-      )}
+        <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          {ctx.mode === "mirror" && <MirrorNote />}
+          {ctx.mode === "mirror" && mirrorStalled(ctx.connection) && (
+            // CRM-X0: the banner leads to the setup hub, which offers the fix.
+            <StalledBanner
+              isAdmin={ctx.isAdmin}
+              status={ctx.connection?.status ?? null}
+              onOpenSetup={() => chooseSection("setup")}
+            />
+          )}
+          {ctx.mode === "mirror" && ctx.sync?.state === "running" && (
+            <ImportProgress status={ctx.sync} />
+          )}
+          {/* The two-row toolbar (CRM-U8). Row 1: which view. Row 2: what is
+              filtered. It serves every list and board, and the module lists. */}
+          {filterEntity && !landingPending && (
+            <>
+              <CrmViewBar
+                allLabel={`All ${viewLabel(filterEntity, labels).toLowerCase()}`}
+                actions={viewActions}
+                isAdmin={ctx.isAdmin}
+                me={access.email}
+                picker={picker}
+                layout={
+                  hasBoard(view.tab)
+                    ? {
+                        mode: view.layout,
+                        label: `${viewLabel(view.tab, labels)} layout`,
+                        onPick: (next) => go(selectLayout(view, next)),
+                      }
+                    : null
+                }
+                board={
+                  dealBoard
+                    ? {
+                        showEmpty,
+                        onToggleEmpty: () => {
+                          const next = !showEmpty;
+                          writeShowEmpty(memberScope, next);
+                          setPickedEmpty({ scope: memberScope, show: next });
+                        },
+                        cardSort,
+                        onPickCardSort: (next) => {
+                          writeCardSort(memberScope, next);
+                          setPickedSort({ scope: memberScope, sort: next });
+                        },
+                      }
+                    : null
+                }
+                onColumns={
+                  listEntity && columnChoices > 0 ? () => setChoosingColumns(true) : null
+                }
+                onExport={
+                  listEntity
+                    ? async () => {
+                        // Fetched rather than navigated to (see lib/api.exportRecords).
+                        // The endpoint REFUSES a filter wider than its row cap, naming
+                        // the matched count, and a navigation would turn that refusal
+                        // into a tab full of JSON instead of a sentence in the banner.
+                        setExporting(true);
+                        await store.exportList(listEntity, loadView);
+                        setExporting(false);
+                      }
+                    : null
+                }
+                exporting={exporting}
+              />
+              <FilterBar
+                entity={filterEntity}
+                labels={labels}
+                view={view}
+                onChange={go}
+                owners={owners}
+                search={!boardOn || view.tab === "deals"}
+                stages={boardOn ? [] : chips}
+                fieldDefs={barDefs}
+                mirror={ctx.mode === "mirror"}
+                removed={waitingForDefs ? [] : pruned.removed}
+                unchecked={unchecked}
+                count={boardOn || store.loading ? null : store.total}
+              />
+            </>
+          )}
 
-      {view.record && (
-        <RecordSheet
-          entity={view.record.entity}
-          record={store.record}
-          statuses={statusesFor(view.record.entity)}
-          timeline={store.timeline}
-          dealContacts={store.dealContacts}
-          saving={store.saving}
-          onClose={() => go(closeRecord(view))}
-          onPatch={(body) =>
-            store.patchRecord(view.record!.entity, view.record!.id, body)
-          }
-          onMoveStatus={(statusId) => {
-            const target = statusesFor(view.record!.entity).find(
-              (s) => s.id === statusId
-            );
-            if (!target) return;
-            if (view.record!.entity === "deals") {
-              moveDeal(
-                {
-                  dealId: view.record!.id,
-                  fromStatusId: (store.record?.status_id as string) ?? null,
-                  toStatusId: statusId,
-                },
-                target
-              );
-            } else {
-              store.patchRecord(view.record!.entity, view.record!.id, {
-                status_id: statusId,
-              });
-            }
-          }}
-          onLog={(body) =>
-            store.logActivity(view.record!.entity, view.record!.id, body)
-          }
-          onToggleTask={(activityId, completed) =>
-            store.toggleTask(
-              activityId,
-              completed,
-              view.record!.entity,
-              view.record!.id
+          {store.error && (
+            // A refusal must surface: a control that silently no-ops reads as
+            // broken, and a stale row after a 409 reads as success.
+            <div className="flex shrink-0 items-start gap-2 border-b border-destructive/30 bg-destructive/10 px-4 py-2">
+              <p className="flex-1 text-xs text-destructive">{store.error}</p>
+              <Button variant="ghost" size="sm" icon="RefreshCw" onClick={reload}>
+                Retry
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                icon="X"
+                onClick={() => store.setError(null)}
+                aria-label="Dismiss"
+              />
+            </div>
+          )}
+
+          {hintShown && (
+            // `log-call` with no record open (CRM-X2): the next step, in one
+            // line. A record opened from this list takes the call.
+            <div className="flex shrink-0 items-center gap-2 border-b border-border bg-muted/40 px-4 py-2">
+              <Icon name="PhoneCall" size={14} className="shrink-0 text-muted-foreground" />
+              <p className="flex-1 text-xs text-muted-foreground">{hintShown}</p>
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                icon="X"
+                onClick={() => setJobHint(null)}
+                aria-label="Dismiss"
+              />
+            </div>
+          )}
+
+          {/* One boundary around the view. A throw ends on a sentence and a
+              Reload button, and the rail stays. The key clears it when the
+              member picks another view (CRM-Q3, spec section 18.6). */}
+          <CrmBoundary key={boundaryKey(withShownSection(view, sectionCtx), pipelineId)}>
+          {landingPending ? (
+            // CRM-Q17b item 3: the first screen is not known yet.
+            <SkeletonRows className="p-4" />
+          ) : slotSuggestion ? (
+            // CRM-Q20-2 item 5: the list is empty, and Metorite knows where
+            // its records are. The admin previews them first.
+            <SlotSuggestionArea
+              suggestion={slotSuggestion}
+              listLabel={viewLabel(view.tab, labels)}
+              labelOf={(slug) => viewLabel(slug, labels)}
+            />
+          ) : boardOn ? (
+            <KanbanBoard
+              entity={view.tab === "leads" ? "leads" : "deals"}
+              lanes={view.tab === "leads" ? store.leadLanes : dealLanes}
+              hiddenEmpty={view.tab === "leads" ? 0 : store.lanes.length - dealLanes.length}
+              loading={store.loading}
+              // CRM-Q17b item 4: a board with no record says why.
+              emptyNote={
+                (view.tab === "leads" ? leadCount : dealCount) === 0
+                  ? emptyLineOf(view.tab === "leads" ? "leads" : "deals")
+                  : undefined
+              }
+              readOnly={ctx.mode === "mirror"}
+              // CRM-C2: the lane colour reads the mode, and the card of the
+              // open record wears the cursor ring.
+              mode={ctx.mode}
+              cursorId={view.record?.id ?? null}
+              onMove={
+                view.tab === "leads"
+                  ? (move, target) => void moveCard("leads", move, target)
+                  : moveDeal
+              }
+              onOpen={(id) => {
+                // `j` and `k` walk the cards of this lane (CRM-X4 item 5).
+                const lanes = view.tab === "leads" ? store.leadLanes : dealLanes;
+                const lane = lanes.find((l) => l.rows.some((row) => row.id === id));
+                const param = view.tab === "leads" ? "lead" : "deal";
+                setCameFrom({ param, lane: lane?.status.id ?? null });
+                openInCard(openRecord(view, param, id));
+              }}
+              // The deals board pages a lane; the leads board reads by list.
+              onMore={view.tab === "deals" ? (id) => void store.loadLaneMore(id) : undefined}
+              moreLane={store.moreLane}
+              failed={store.error !== null}
+            />
+          ) : view.tab === "module" && view.module ? (
+            // A generic Zoho module (CRM-Q6b): the shared list, read only.
+            <ModuleList
+              module={view.module}
+              label={moduleLabel(modules, view.module)}
+              view={view}
+              onChange={go}
+              selectedId={view.moduleRecord?.id ?? null}
+              onOpen={(id) => {
+                setCameFrom(null);
+                openInCard(openModuleRecord(view, view.module!, id));
+              }}
+              reloadToken={moduleReload}
+              actions={viewActions}
+              isAdmin={ctx.isAdmin}
+              me={access.email}
+              onColumnsPicked={onColumnsPicked}
+            />
+          ) : view.tab === "reports" ? (
+            <Reports reports={store.reports} loading={store.loading} />
+          ) : view.tab === "settings" && settingsSection === "change-history" ? (
+            // WS-CRM CRM-M1: an admin section of its own. `shownSection` sends
+            // a member to the default, so only an admin reaches this card.
+            <ChangeHistoryCard />
+          ) : view.tab === "settings" ? (
+            <PipelineSettings
+              section={settingsSection}
+              setup={
+                // CRM-X0: the one setup hub. It holds the connection too.
+                ctx.isAdmin ? (
+                  <SetupHubSection
+                    mode={ctx.mode}
+                    connection={ctx.connection}
+                    sync={ctx.sync}
+                    syncing={ctx.syncing}
+                    connecting={ctx.connecting}
+                    onSyncNow={ctx.onSyncNow}
+                    onConnect={ctx.onConnect}
+                    onDisconnect={ctx.onDisconnect}
+                  />
+                ) : undefined
+              }
+              access={ctx.isAdmin ? <AccessSection /> : undefined}
+              questions={questions.gate === "on" ? <OpenQuestionsCard /> : undefined}
+              rules={rules.gate === "on" ? <BusinessRulesCard /> : undefined}
+              pipelines={pipelines}
+              leadPipelines={leadPipelines}
+              pipelineId={pipelineId}
+              showAdminCards={ctx.isAdmin}
+              pipelineCreate={ctx.isAdmin && pipelineCreate}
+              dealStatuses={store.dealStatuses}
+              leadStatuses={store.leadStatuses}
+              lostReasons={store.lostReasons}
+              vocabularyState={store.vocabularyState}
+              vocabularyError={store.vocabularyError}
+              onRetryVocabulary={() => void store.loadVocabulary()}
+              saving={store.saving}
+              readOnly={ctx.mode === "mirror"}
+              studioAdmin={studioAdmin}
+              onSaveStatus={store.saveStatus}
+              onRemoveStatus={store.removeStatus}
+              onSaveLostReason={store.saveLostReason}
+              onRemoveLostReason={store.removeLostReason}
+              onReorderLostReasons={store.reorderLostReasons}
+            />
+          ) : (
+            // `listEntity` is non-null here by construction — the branches
+            // above are the only views that are not a list — but it is read
+            // through the guard rather than cast, because the cast is what made
+            // `?tab=settings` render a list of nothing on the way in.
+            listEntity && (
+              <RecordList
+                entity={listEntity}
+                fieldDefs={listFieldDefs}
+                columnKeys={activeSaved ? viewActions.columns : undefined}
+                onColumnsChange={onColumnsPicked}
+                chooserOpen={choosingColumns}
+                onChooserClose={() => setChoosingColumns(false)}
+                rows={store.rows}
+                total={store.total}
+                loading={store.loading}
+                statuses={statusesFor(listEntity)}
+                onLoadMore={() => void store.loadMore()}
+                loadingMore={store.loadingMore}
+                hasMore={store.hasMore}
+                // CRM-Q17b item 4 (and CRM-Q20-2 item 5): an empty list says
+                // why. "Nothing matches this view." is for a filter only.
+                emptyNote={emptyLineOf(listEntity)}
+                sort={view.sort}
+                direction={view.dir}
+                onSort={(key) => go(applySort(view, key))}
+                selectedId={view.record?.id ?? null}
+                onOpen={(id) => {
+                  // `j` and `k` walk the rows of this list (CRM-X4 item 5).
+                  setCameFrom({ param: PARAM_FOR[listEntity], lane: null });
+                  openInCard(openRecord(view, PARAM_FOR[listEntity], id));
+                }}
+              />
             )
-          }
-          onConvert={() => {
-            store.loadDirectories();
-            setConverting(store.record as unknown as Lead);
-          }}
-          onSetPrimary={(contactId) =>
-            store.setPrimaryContact(view.record!.id, contactId)
-          }
-          onDetach={(contactId) =>
-            store.detachContact(view.record!.id, contactId)
-          }
-          onOpenContact={(contactId) => go(openRecord(view, "contact", contactId))}
-        />
-      )}
+          )}
+          </CrmBoundary>
+        </main>
+
+        {/* The record card (ORC-1, D181): one mount, here in the row. At the
+            side stop it is a column beside `<main>`. At the full stop and on
+            a phone it stands over the page, and it keeps its state. */}
+        {view.record && (
+          <RecordSheet
+            entity={view.record.entity}
+            id={view.record.id}
+            labels={labels}
+            record={store.record}
+            statuses={statusesFor(view.record.entity)}
+            places={recordPlaces}
+            timeline={store.timeline}
+            dealContacts={store.dealContacts}
+            saving={store.saving}
+            onClose={() => {
+              // The convert and move dialogs open OVER the sheet, and each one
+              // is its own `Modal`. Both hear one Escape, so the sheet keeps
+              // still while a dialog above it is up: that key, or a click on
+              // that dialog, closes the dialog and not the record.
+              if (converting || pendingMove) return;
+              setCameFrom(null);
+              setCallAsk(null);
+              go(closeRecord(view));
+            }}
+            tab={view.recordTab ?? "overview"}
+            // A tab replaces the URL, so Back still closes the sheet.
+            onTab={(tab) =>
+              replaceView(viewHref(selectRecordTab(view, tab)))
+            }
+            // No step while a dialog is open over the sheet.
+            order={converting || pendingMove ? null : recordOrder()}
+            // The step replaces the URL too: Back closes the sheet, and does not
+            // walk back through every record the keys passed.
+            onStep={(id) =>
+              replaceView(viewHref(openRecord(view, view.record!.param, id)))
+            }
+            onPatch={(body) =>
+              store.patchRecord(view.record!.entity, view.record!.id, body)
+            }
+            onMoveStatus={(statusId) => {
+              const target = statusesFor(view.record!.entity).find(
+                (s) => s.id === statusId
+              );
+              if (!target) return;
+              if (view.record!.entity === "deals") {
+                moveDeal(
+                  {
+                    dealId: view.record!.id,
+                    fromStatusId: (store.record?.status_id as string) ?? null,
+                    toStatusId: statusId,
+                  },
+                  target
+                );
+              } else {
+                store.patchRecord(view.record!.entity, view.record!.id, {
+                  status_id: statusId,
+                });
+              }
+            }}
+            onLog={(body) =>
+              store.logActivity(view.record!.entity, view.record!.id, body)
+            }
+            onToggleTask={(activityId, completed) =>
+              store.toggleTask(
+                activityId,
+                completed,
+                view.record!.entity,
+                view.record!.id
+              )
+            }
+            onConvert={() => {
+              store.loadDirectories();
+              setConverting(store.record as unknown as Lead);
+            }}
+            onSetPrimary={(contactId) =>
+              store.setPrimaryContact(view.record!.id, contactId)
+            }
+            onDetach={(contactId) =>
+              store.detachContact(view.record!.id, contactId)
+            }
+            onOpenContact={(contactId) => openAlone(openRecord(view, "contact", contactId))}
+            related={store.related}
+            // `log-call` asked for THIS record. Another record opens on Note.
+            callRequest={callAsk && callAsk.id === view.record.id ? callAsk.n : 0}
+            onRetryRelated={() => void store.loadRelated(view.record!.entity, view.record!.id)}
+            onOpenRelated={(entity, id) => openAlone(openRecord(view, PARAM_FOR[entity], id))}
+          />
+        )}
+
+        {view.moduleRecord && (
+          // A generic record (CRM-Q6b), on the same record page shell.
+          <ModuleRecordSheet
+            module={view.moduleRecord.module}
+            id={view.moduleRecord.id}
+            tab={view.recordTab ?? "overview"}
+            // A tab replaces the URL, so Back still closes the sheet (#914 idiom).
+            onTab={(tab) => replaceView(viewHref(selectRecordTab(view, tab)))}
+            onClose={() => go(closeRecord(view))}
+            onOpenLink={openLink}
+          />
+        )}
+      </div>
+
+      <ShellJob
+        id="new-lead"
+        onOpen={() => {
+          // Mirror mode: Zoho owns the leads, so the form cannot open.
+          if (mayCreate) setCreating("leads");
+          else toast.show({ key: "crm-new-lead", variant: "error", title: NEW_LEAD_MIRROR });
+        }}
+      />
+      {/* The other three CRM jobs (CRM-X2, spec section 19.6). Each opens a
+          form or a list, and none saves. */}
+      <ShellJob
+        id="new-deal"
+        onOpen={() => {
+          // Mirror mode: Zoho owns the deals, so the form cannot open.
+          if (mayCreate) setCreating("deals");
+          else toast.show({ key: "crm-new-deal", variant: "error", title: NEW_DEAL_MIRROR });
+        }}
+      />
+      {/* A call is Metorite-only data, so `log-call` works in Mirror mode too. */}
+      <ShellJob id="log-call" onOpen={() => runJob(logCallPlan(viewBeforeJob.current))} />
+      <ShellJob id="find-record" onOpen={() => runJob(findRecordPlan(viewBeforeJob.current))} />
 
       {creating && (
         <QuickCreateModal
           entity={creating}
           saving={store.saving}
+          refusal={store.refusal}
           onClose={() => setCreating(null)}
           onCreate={async (body) => {
             const entity = creating;
-            const id = await store.createRecord(entity, body);
+            // A new deal joins the pipeline on screen (CRM-M3). None: the default one.
+            const id = await store.createRecord(
+              entity,
+              entity === "deals" && pipelineId ? { ...body, pipeline_id: pipelineId } : body,
+            );
+            // The 422 rule (CRM-C4b): a refused save keeps the form open, with
+            // the typed values and the message beside its field.
+            if (!id) return;
             setCreating(null);
-            if (id) go(openRecord(view, PARAM_FOR[entity], id));
+            openAlone(openRecord(view, PARAM_FOR[entity], id));
           }}
         />
       )}
@@ -436,19 +1383,182 @@ function CrmPageInner() {
             // PATCH that either lands or does not, rather than two that can
             // half-apply, where the half that lands is the one that moved the
             // deal.
-            await store.moveDeal(move, payload);
+            if (pendingMove.entity === "leads") await store.moveLead(move, payload);
+            else await store.moveDeal(move, payload);
             if (view.record) store.loadRecord(view.record.entity, view.record.id);
           }}
         />
       )}
     </div>
+    </CrmModeContext.Provider>
+  );
+}
+
+/**
+ * The gate (WS-53 CRM-U5, CRM-Z7). It reads the mode and the connection,
+ * shows the first-open cards when no mode exists, handles the return from
+ * Zoho, and hands the pipeline its context. The pipeline loads nothing until
+ * the gate says "ready".
+ */
+function CrmGate(): ReactNode {
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const toast = useToast();
+  const { access, loading: accessLoading } = useAccess();
+  const isAdmin = hasCapability(access, ADMIN_CAPABILITY);
+
+  const { phase, mode, connection, readFailed } = useCrmMode(isAdmin, accessLoading);
+  const [watchToken, setWatchToken] = useState(0);
+  const sync = useSyncStatus(connection !== null && mode === "mirror", watchToken);
+  const [busy, setBusy] = useState<"native" | "zoho" | null>(null);
+  const [syncing, setSyncing] = useState(false);
+
+  // A mirror-guard refusal (409 mirrored_record) is a toast, not a banner.
+  useEffect(() => {
+    setRefusalSink((text) =>
+      toast.show({ key: "crm-mirror-refusal", variant: "error", title: text }),
+    );
+    return () => setRefusalSink(null);
+  }, [toast]);
+
+  // The return from Zoho: say how it went, clear the parameter, re-read.
+  const search = searchParams.toString();
+  const handled = useRef("");
+  useEffect(() => {
+    const notice = returnNotice(search);
+    if (!notice) {
+      handled.current = "";
+      return;
+    }
+    if (handled.current === search) return;
+    handled.current = search;
+    if (notice.kind === "connected") {
+      toast.show({ key: "crm-connect-return", variant: "success", title: "Zoho CRM connected" });
+      // The effect follows the URL, an external system, and starts a watch.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setWatchToken((n) => n + 1);
+    } else {
+      toast.show({ key: "crm-connect-return", variant: "error", title: notice.message });
+    }
+    invalidateCrmMode();
+    // CRM-X0: another Zoho account opens the setup hub (`returnTarget`).
+    const rest = returnTarget(search);
+    replaceView(rest ? `${pathname}?${rest}` : pathname);
+  }, [search, pathname, toast]);
+
+  async function connectZoho() {
+    setBusy("zoho");
+    try {
+      const { url } = await api.startZohoConnect();
+      window.location.assign(url);
+    } catch (err) {
+      const e = err instanceof CrmError ? err : null;
+      toast.show({
+        key: "crm-connect-return",
+        variant: "error",
+        title: startFailureMessage(e?.status ?? 0, e?.code),
+      });
+      setBusy(null);
+    }
+  }
+
+  async function chooseNative() {
+    setBusy("native");
+    try {
+      await api.chooseNativeMode();
+    } catch (err) {
+      // A 409 means the mode changed meanwhile. The re-read shows the truth.
+      toast.show({
+        key: "crm-mode",
+        variant: "error",
+        title: err instanceof CrmError ? err.message : "The CRM did not start. Try again.",
+      });
+    } finally {
+      setBusy(null);
+      invalidateCrmMode();
+    }
+  }
+
+  async function syncNow() {
+    setSyncing(true);
+    try {
+      await api.syncZohoNow();
+      toast.show({ key: "crm-sync", variant: "success", title: "Sync started" });
+      setWatchToken((n) => n + 1);
+    } catch (err) {
+      const e = err instanceof CrmError ? err : null;
+      toast.show({
+        key: "crm-sync",
+        variant: "error",
+        title: syncFailureMessage(e?.status ?? 0, e?.code),
+      });
+    } finally {
+      setSyncing(false);
+      invalidateCrmMode();
+    }
+  }
+
+  async function disconnect() {
+    try {
+      await api.disconnectCrm();
+      toast.show({ key: "crm-sync", variant: "success", title: "Zoho disconnected" });
+    } catch (err) {
+      toast.show({
+        key: "crm-sync",
+        variant: "error",
+        title: err instanceof CrmError ? err.message : "Zoho did not disconnect. Try again.",
+      });
+    } finally {
+      invalidateCrmMode();
+    }
+  }
+
+  if (phase !== "ready") {
+    // The CRM jobs land here too, and they must say why nothing opens.
+    const refusal = refusalOf(phase);
+    return (
+      <>
+        {refusal &&
+          // Every CRM job lands here too, and each must say why nothing opens.
+          CRM_JOB_IDS.map((id) => (
+            <ShellJob
+              key={id}
+              id={id}
+              onOpen={() => toast.show({ key: `crm-${id}`, variant: "error", title: refusal })}
+            />
+          ))}
+        <FirstOpen
+          phase={phase}
+          busy={busy}
+          onNative={chooseNative}
+          onConnectZoho={connectZoho}
+        />
+      </>
+    );
+  }
+
+  return (
+    <CrmPageInner
+      ctx={{
+        mode,
+        connection,
+        sync,
+        isAdmin,
+        modeReadFailed: readFailed,
+        connecting: busy === "zoho",
+        syncing,
+        onConnect: connectZoho,
+        onSyncNow: syncNow,
+        onDisconnect: disconnect,
+      }}
+    />
   );
 }
 
 export default function CrmPage() {
   return (
     <Suspense fallback={null}>
-      <CrmPageInner />
+      <CrmGate />
     </Suspense>
   );
 }

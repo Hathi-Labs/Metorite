@@ -12,7 +12,11 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
-from gateway.routes.projects.core import parse_precondition, require_precondition
+from gateway.routes.projects.core import (
+    parse_precondition,
+    precondition_holds,
+    require_precondition,
+)
 
 STAMP = datetime(2026, 8, 14, 9, 21, 49, 448124, tzinfo=UTC)
 
@@ -181,3 +185,71 @@ def test_touch_false_is_used_only_for_recurrence_bookkeeping() -> None:
         "recurrence.py",
         "recurrence.py",
     ], sites
+
+
+# ── WS-55 MCP-G7: a satellite bump does not stale the token ──────────────────
+#
+# ``touch_task`` moves ``updated_at`` for a comment, a link or an attachment.
+# Migration ``*_pm_tasks_fields_at.sql`` keeps ``fields_at``, the stamp of the
+# last FIELD change. A token from ``fields_at`` up to ``updated_at`` passes.
+# The R8 half is ``test_task_precondition_fields_at.py``.
+
+FIELDS = STAMP
+BUMPED = STAMP + timedelta(seconds=30)
+
+
+def _bumped_row(fields_at: datetime | None = FIELDS) -> SimpleNamespace:
+    """A row whose fields last changed at FIELDS, and a comment came after."""
+    return SimpleNamespace(updated_at=BUMPED, fields_at=fields_at)
+
+
+def test_a_token_from_before_a_comment_passes() -> None:
+    """The bug: a comment on the task broke every pending write with 412."""
+    require_precondition(_bumped_row(), FIELDS.isoformat(), {})
+
+
+def test_a_token_between_the_field_change_and_the_bump_passes() -> None:
+    """A second bump: the client read after the first comment, not the field."""
+    between = FIELDS + timedelta(seconds=10)
+    require_precondition(_bumped_row(), between.isoformat(), {})
+
+
+def test_the_current_stamp_still_passes() -> None:
+    require_precondition(_bumped_row(), BUMPED.isoformat(), {})
+
+
+def test_a_token_older_than_the_field_change_is_412() -> None:
+    """A real field change after the read still refuses the write."""
+    stale = FIELDS - timedelta(microseconds=1)
+    with pytest.raises(HTTPException) as exc:
+        require_precondition(_bumped_row(), stale.isoformat(), {"id": "t1"})
+    assert exc.value.status_code == 412
+    assert exc.value.detail["current"] == {"id": "t1"}
+
+
+def test_a_future_token_is_412() -> None:
+    """No read gave a token newer than ``updated_at``, so it is made up."""
+    future = BUMPED + timedelta(microseconds=1)
+    with pytest.raises(HTTPException) as exc:
+        require_precondition(_bumped_row(), future.isoformat(), {})
+    assert exc.value.status_code == 412
+
+
+def test_a_null_fields_at_narrows_nothing() -> None:
+    """A row with no ``fields_at`` keeps the equality rule of WS-27bi."""
+    with pytest.raises(HTTPException) as exc:
+        require_precondition(_bumped_row(fields_at=None), FIELDS.isoformat(), {})
+    assert exc.value.status_code == 412
+
+
+def test_the_fields_arm_compares_instants_not_strings() -> None:
+    """Rule 2 in the new arm: ``+05:30`` for an instant in the window passes."""
+    other = FIELDS.astimezone(timezone(timedelta(hours=5, minutes=30)))
+    require_precondition(_bumped_row(), other.isoformat(), {})
+
+
+def test_precondition_holds_is_the_one_rule() -> None:
+    """``agent_delete_task`` and ``require_precondition`` share it."""
+    assert precondition_holds(_bumped_row(), FIELDS)
+    assert not precondition_holds(_bumped_row(), FIELDS - timedelta(seconds=1))
+    assert precondition_holds(_row(), STAMP)

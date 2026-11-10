@@ -7,8 +7,10 @@ GET  /integrations/status?agent={name}
     Also returns setup guides (links, required env vars) for unconfigured ones.
 
 POST /integrations/configure
-    Writes one or more credentials to the .env file and hot-reloads Settings.
-    Restricted to admin/executive role.
+    Writes one or more credentials to the credential store of the caller's
+    organization. It writes nothing to ``os.environ`` or to the env file
+    (WS-54 IN-0, D96.3). It needs the executive or agent role and
+    ``integrations:manage``.
 
 GET  /integrations/test?service={name}
     Performs a lightweight connectivity check for a configured integration.
@@ -19,16 +21,27 @@ from __future__ import annotations
 import json
 import os
 import re
-import subprocess
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
 import httpx
-from acb_auth import UserContext, UserRole, get_current_user, require_feature_router, require_role
-from acb_common import get_logger, get_settings
+from acb_auth import (
+    UserContext,
+    UserRole,
+    get_current_user,
+    require_feature_router,
+    require_permission,
+    require_role,
+)
+from acb_common import env_guard, get_logger, get_settings
+from acb_llm.key_store import CUSTOM_INTEGRATION_TYPE, INTEGRATION_ENV_MAP
 from fastapi import APIRouter, Depends, HTTPException, status
-from gateway.db import current_tenant
-from pydantic import BaseModel
+from gateway import outbound_guard
+from gateway.connections import github as github_connection
+from gateway.connections import store as connection_store
+from gateway.db import current_tenant, tenant_session
+from pydantic import BaseModel, StrictBool, model_validator
 from sqlalchemy import text
 
 _log = get_logger("gateway.integrations")
@@ -37,6 +50,12 @@ router = APIRouter(
     prefix="/integrations", tags=["integrations"],
     dependencies=[require_feature_router("integrations")],
 )
+
+#: The gate of every route here that writes (WS-54 IN-0). A read stays on
+#: the router gate `feature:integrations`. `routes/oauth.py` uses the same
+#: permission. Fence: the route walk in `tests/unit/test_integrations_in0.py`.
+MANAGE_PERMISSION = "integrations:manage"
+_REQUIRE_MANAGE = require_permission(MANAGE_PERMISSION)
 
 # ── MT-1j slice 5 · the tenant on this surface ─────────────────────────
 #
@@ -58,18 +77,53 @@ router = APIRouter(
 # sole-org resolution and its fail-closed arm at org #2 are unchanged. What
 # changes is that an authenticated caller now resolves to THEIR organization.
 #
-# 🚫 **The `os.environ[...] = value` / `_upsert_env_var(env_path, ...)` halves of
-# `configure_integrations`, `put_integration_key` and `delete_integration_key`
-# are NOT tenantable and are a known cross-tenant write** — the same class as
-# `settings.py::_inject_env_into_litellm`. A process-global env var and a single
-# `.env` file have one value for the whole deployment, so org #2 saving
-# `ZOHO_CLIENT_ID` overwrites org #1's for every caller and every agent reading
-# it through `get_settings()`. Recorded here, deliberately NOT repaired: the fix
-# is per-request provider credentials, which is the same owner-gated
-# credential-scope change the H4 sites wait on (`work_plan.md` §6 gate (f)).
-# `_is_configured` and `missing_keys` below read those env vars, so
-# `/integrations/status`'s `configured` / `env-file` columns stay deployment-wide
-# too — only the `db_keys` / `encrypted-db` half is per organization.
+# 🔒 **No route in this module writes `os.environ` or the env file** (WS-54
+# IN-0, D96.3, 2026-10-11). A process env var and one `.env` file have one
+# value for the whole deployment. So when org #2 saved `ZOHO_CLIENT_ID`, it
+# replaced the value of org #1 for every caller. Configure, `PUT` and `DELETE
+# /integrations/keys` now write the store of the caller's organization only.
+# `connect-cli` and the GitHub device flow answer 410 (WS-54 GH-7), and the OAuth routes
+# of `routes/oauth.py` are retired. The fence is
+# `tests/unit/test_integrations_in0.py`, an AST scan of both files. Do not
+# restore an env write here, because it is a cross-tenant write.
+#
+# ⚠️ **The cost, and why it is small.** A key that a member saves here stops
+# reaching an agent until IN-3 gives the resolvers per-run credentials. The
+# startup copy (`ProviderKeyStore.configure_integrations`) stays until IN-5
+# (gate f). It reads untenanted, so with two or more organizations
+# `_resolve_org(None)` fails closed, and the copy reads nothing. Production
+# has more than one organization. On a box with one organization, that
+# organization is the only tenant, so the copy crosses no tenant line.
+# `_is_configured` and `missing_keys` below still read the env, so the
+# `configured` and `env-file` columns of `/integrations/status` stay
+# deployment-wide until IN-1. Two exceptions read the org's row in the
+# registry instead: GitHub (IN-7) and each tile in `APP_OWNED_SERVICES`,
+# which is Zoho CRM today.
+#
+# 🔒 **Every writer needs `integrations:manage`** (`_REQUIRE_MANAGE`, IN-0).
+# The router gate `feature:integrations` still covers each read. The fence is
+# the route walk in `tests/unit/test_integrations_in0.py`.
+#
+# 🔒 **Three layers check each key and value before the store write**
+# (security fix, 2026-10-05, round 1). They only remove ability. The rule for
+# A and B lives in ONE module, `acb_common.env_guard`.
+#   A. A key or a value with a control character or a line separator is 400.
+#      So is a value over 4096 bytes, and a value that the shell reads as
+#      code under `source`.
+#   B. A platform name (`env_guard.is_platform_env`) or an operator-only guide
+#      key (`OPERATOR_ONLY_ENV_KEYS`: a URL, host, domain, port or path) is
+#      403, on configure, put, delete, custom registration and the GitHub
+#      writers.
+#      The keys of the mail apps are platform names, so no tenant can aim
+#      the mail connect at a client of their own (WS-17 EM-G7, O-GM-5).
+#   C. THE GATE. Only a key in `BUILTIN_ENV_KEYS`, which a built-in guide
+#      declares, is stored as an `integration` row. A key that a custom
+#      integration declares is stored as a `custom` row. Any other key is
+#      422. The deny list of B can never be complete, so C does not depend
+#      on it.
+# The BYOK gate covers GITHUB_TOKEN on put, delete and the GitHub writers.
+# Each route checks the WHOLE request before its first write. The fence is
+# `tests/unit/test_integrations_env_hardening.py`.
 
 # ---------------------------------------------------------------------------
 # Static setup guides — one entry per registered integration.
@@ -77,17 +131,17 @@ router = APIRouter(
 # ---------------------------------------------------------------------------
 
 _SETUP_GUIDES: dict[str, dict[str, Any]] = {
+    # 🔒 The CRM owns the Zoho connect flow (D96.1, CRM-Z2). A customer never
+    # makes a Self Client or pastes a key, so this guide has no steps and no
+    # links. The status offers no form for it (`APP_OWNED_SERVICES`). The
+    # `env_vars` stay only because the key sets of layers B and C below are
+    # derived from them, and `test_integrations_env_hardening.py` pins those.
     "zoho-crm": {
         "label": "Zoho CRM",
         "description": "Deal management, contacts, accounts, and pipeline.",
-        "setup_url": "https://accounts.zoho.in/developerconsole",
-        "docs_url": "https://www.zoho.com/crm/developer/docs/api/v5/oauth-overview.html",
-        "instructions": (
-            "1. Go to Zoho Developer Console → Add Client → Self Client.\n"
-            "2. Generate a code with scope: ZohoCRM.modules.ALL,ZohoCRM.settings.ALL\n"
-            "3. Exchange the code for tokens (one-time). Copy the refresh_token.\n"
-            "4. Copy Client ID and Client Secret from the app settings."
-        ),
+        "setup_url": "",
+        "docs_url": "",
+        "instructions": "",
         "env_vars": [
             {"key": "ZOHO_CLIENT_ID", "label": "Client ID", "sensitive": False},
             {"key": "ZOHO_CLIENT_SECRET", "label": "Client Secret", "sensitive": True},
@@ -139,33 +193,11 @@ _SETUP_GUIDES: dict[str, dict[str, Any]] = {
             {"key": "INSTANTLY_API_KEY", "label": "API Key", "sensitive": True},
         ],
     },
-    "gmail": {
-        "label": "Gmail (Google Workspace)",
-        "description": "Read and send email via service-account impersonation.",
-        "setup_url": "https://console.cloud.google.com/iam-admin/serviceaccounts",
-        "docs_url": "https://developers.google.com/gmail/api/guides/",
-        "instructions": (
-            "1. Create a service account in Google Cloud Console.\n"
-            "2. Enable domain-wide delegation for the service account.\n"
-            "3. In Google Workspace Admin, grant the service account access to Gmail scopes.\n"
-            "4. Download the JSON key file and set its path below."
-        ),
-        "env_vars": [
-            {"key": "GMAIL_SA_JSON_PATH", "label": "Service Account Key Path", "sensitive": False},
-            {"key": "GMAIL_DEFAULT_USER", "label": "Default Mailbox (e.g. you@domain.com)", "sensitive": False},
-        ],
-    },
-    "gmail-send": {
-        "label": "Gmail (send only)",
-        "description": "Outbound email send via Google Workspace.",
-        "setup_url": "https://console.cloud.google.com/iam-admin/serviceaccounts",
-        "docs_url": "https://developers.google.com/gmail/api/guides/",
-        "instructions": "Same setup as Gmail — service account + domain-wide delegation.",
-        "env_vars": [
-            {"key": "GMAIL_SA_JSON_PATH", "label": "Service Account Key Path", "sensitive": False},
-            {"key": "GMAIL_DEFAULT_USER", "label": "Default Mailbox", "sensitive": False},
-        ],
-    },
+    # ⚠️ NO `gmail` AND NO `gmail-send` ENTRY (WS-17 EM-G11b, 2026-10-14).
+    # They were the service-account Gmail path, with a second set of Gmail
+    # scopes. A member connects Gmail in the Email app, and the app asks for
+    # `GMAIL_SCOPES` only (D-EM-31). Both ids stay reserved
+    # (`RETIRED_SERVICE_IDS`). Fence: `tests/unit/test_gmail_one_scope_set.py`.
     "whatsapp": {
         "label": "WhatsApp Business",
         "description": "Manage WhatsApp Business numbers via Meta's official "
@@ -191,7 +223,14 @@ _SETUP_GUIDES: dict[str, dict[str, Any]] = {
         "description": "Generic outbound email via SMTP.",
         "setup_url": "",
         "docs_url": "",
-        "instructions": "Set your SMTP server host, port, username, and password.",
+        "instructions": (
+            "The operator sets the SMTP host and port on the server.\n"
+            "Enter the username and the password here.\n"
+            "Paste an app password without its spaces (Google shows them in "
+            "groups of four).\n"
+            "A value cannot hold a space, a quote, a backslash, or any of "
+            "$ ` ; & | < > ( ). It cannot start with ~ or #."
+        ),
         "env_vars": [
             {"key": "SMTP_HOST", "label": "Host", "sensitive": False},
             {"key": "SMTP_PORT", "label": "Port (default 587)", "sensitive": False},
@@ -201,34 +240,29 @@ _SETUP_GUIDES: dict[str, dict[str, Any]] = {
     },
     "github": {
         "label": "GitHub",
-        "description": "Private agent repo cloning and Copilot LLM models (GPT-4o, Claude Sonnet, o3-mini).",
-        # Two ways to authenticate — device flow (OAuth) or a PAT.
-        # A PAT with copilot+repo scopes covers both repo access AND the Copilot Models API.
-        "uses": ["Repo access", "Models"],
-        "setup_url": "https://github.com/settings/tokens/new?scopes=copilot,repo",
-        "docs_url": "https://docs.github.com/en/copilot/using-github-copilot/ai-models",
+        # WS-54 GH-3 and GH-7 (github_integration.md §7). The GitHub card
+        # connects the Metorite GitHub App, and a pasted token is the
+        # Advanced path. The customer-made OAuth App and its client id are
+        # retired, so the guide declares the token only. ⚠️ Configure and
+        # `PUT /keys` refuse `GITHUB_TOKEN` with 422: its one writer is
+        # `PUT /integrations/github/token`.
+        "description": (
+            "Pull requests and checks on your tasks, through the Metorite "
+            "GitHub App. A personal access token is the advanced path, for "
+            "private agent repositories."
+        ),
+        "uses": ["Pull requests", "Checks", "Repo access"],
+        # No "Get credentials" link: the GitHub card is the way in (GH-7).
+        "setup_url": "",
+        "docs_url": "https://docs.github.com/en/apps/using-github-apps/installing-a-github-app-from-a-third-party",
         "instructions": (
-            "One token covers both repo access and Copilot LLM models.\n\n"
-            "Option A — Personal Access Token (recommended):\n"
-            "1. Open the link above → GitHub → Settings → Developer Settings\n"
-            "   → Personal Access Tokens → Tokens (classic).\n"
-            "2. Select scopes: `copilot` (LLM model API) and `repo` (private repos).\n"
-            "3. Click 'Generate token', paste the value (ghp_...) below.\n\n"
-            "Option B — OAuth Device Flow (no token entry needed):\n"
-            "1. Create a GitHub OAuth App (Settings → Developer Settings → OAuth Apps).\n"
-            "   Name: 'Metorite', Callback URL: http://localhost.\n"
-            "2. Paste the Client ID and click 'Connect GitHub Account'.\n"
-            "   Note: device-flow tokens may not include the `copilot` scope —\n"
-            "   use Option A if you want Copilot model access."
+            "Press Connect GitHub, pick the GitHub account and the "
+            "repositories, and confirm in Metorite.\n\n"
+            "Advanced: paste a personal access token with the `repo` scope "
+            "when an agent must read a private repository."
         ),
         "env_vars": [
-            # GITHUB_TOKEN (Option A — recommended): classic or fine-grained PAT
-            # with copilot + repo scopes.  Shown first because it's the simpler,
-            # self-contained path.
-            {"key": "GITHUB_TOKEN", "label": "Personal Access Token — copilot + repo scopes (recommended)", "sensitive": True},
-            # GITHUB_CLIENT_ID is used for the OAuth device flow (Option B).
-            # Only needed if you prefer the device-flow UX over a PAT.
-            {"key": "GITHUB_CLIENT_ID", "label": "OAuth App Client ID (Option B — device flow)", "sensitive": False},
+            {"key": "GITHUB_TOKEN", "label": "Personal access token (Advanced)", "sensitive": True},
         ],
     },
     "serpapi": {
@@ -273,57 +307,32 @@ _SETUP_GUIDES: dict[str, dict[str, Any]] = {
             {"key": "ANYMAILFINDER_API_KEY", "label": "API Key", "sensitive": True},
         ],
     },
-    "gmail-oauth": {
-        "label": "Gmail OAuth (user sign-in)",
-        "description": "Let users connect their personal Gmail accounts via Google sign-in. Required for the Email app.",
-        "setup_url": "https://console.cloud.google.com/apis/credentials",
-        "docs_url": "https://developers.google.com/gmail/api/guides/oauth-installed-app",
-        "instructions": (
-            "1. Go to Google Cloud Console → APIs & Services → Credentials.\n"
-            "2. Click 'Create Credentials' → 'OAuth client ID'.\n"
-            "3. Choose 'Web application'.\n"
-            "4. Add Authorized redirect URI:\n"
-            "   https://app.metorite.com/api/email/oauth/gmail/callback\n"
-            "   (or your workbench's public URL).\n"
-            "5. Copy the Client ID and Client Secret below.\n"
-            "6. Also enable the Gmail API under 'Enabled APIs & Services'."
-        ),
-        "env_vars": [
-            {"key": "GMAIL_OAUTH_CLIENT_ID", "label": "Client ID", "sensitive": False},
-            {"key": "GMAIL_OAUTH_CLIENT_SECRET", "label": "Client Secret", "sensitive": True},
-        ],
-    },
+    # ⚠️ NO `gmail-oauth` ENTRY (WS-17 EM-G7, O-GM-5). Metorite owns ONE
+    # Google mail app for every organization (D-EM-1, D-EM-5 amended), and an
+    # operator sets it in the env file of the box (`email_app_master_plan.md`
+    # §12.4). Layer B (`env_guard.is_platform_env`) refuses each
+    # `GMAIL_OAUTH_*`, `MSFT_OAUTH_*` and `AUTH_MICROSOFT_ENTRA_ID_*` key on
+    # every route here. The id stays reserved (`RESERVED_SERVICE_IDS`).
+    # `microsoft-oauth` stays for its status, which the banner of the
+    # Integrations page reads. It gives no setup step and no link.
     "microsoft-oauth": {
         "label": "Microsoft OAuth (Email)",
+        # WS-17 EM-G7 review round 1: no setup step and no link. Metorite owns
+        # this app (D-EM-1), and an operator sets it in the env file of the box
+        # (`email_app_master_plan.md` §10.5). The status route lists the three
+        # keys read-only under `operator_env_vars`, because layer B refuses
+        # each one. Fence: `tests/unit/test_integrations_mail_app_keys.py`.
         "description": (
-            "Let users connect their Outlook / Microsoft 365 accounts. "
-            "Reuses your existing sign-in Azure app registration (AUTH_MICROSOFT_ENTRA_ID_*) "
-            "— just add the Email redirect URI and Mail.ReadWrite permission to it."
+            "Outlook and Microsoft 365 mail. Metorite owns this app, and the "
+            "operator sets it on the server."
         ),
-        "setup_url": "https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade",
-        "docs_url": "https://learn.microsoft.com/en-us/graph/auth-v2-user",
-        "instructions": (
-            "If you already have a sign-in app registration (AUTH_MICROSOFT_ENTRA_ID_*), "
-            "you can reuse it — no separate registration needed. Just add these to it:\n\n"
-            "1. Go to Azure Portal → App registrations → your existing Metorite app.\n"
-            "2. Under 'Authentication', add Redirect URI (Web):\n"
-            "   https://app.metorite.com/api/email/oauth/microsoft/callback\n"
-            "3. Under 'API Permissions', add Microsoft Graph → Delegated:\n"
-            "   Mail.ReadWrite, User.Read\n"
-            "4. Click 'Grant admin consent' if tenant-restricted.\n\n"
-            "If you are NOT using the same app registration, create a new one:\n"
-            "1. App registrations → New registration.\n"
-            "2. Name: 'Metorite Email'. Supported account types: 'Any organizational directory and personal Microsoft accounts'.\n"
-            "3. Add Redirect URI (Web) as above.\n"
-            "4. Copy the Application (client) ID below.\n"
-            "5. Go to 'Certificates & secrets' → New client secret, copy it below.\n"
-            "6. Under 'API Permissions', add Microsoft Graph → Delegated:\n"
-            "   Mail.ReadWrite, User.Read"
-        ),
+        "setup_url": "",
+        "docs_url": "",
+        "instructions": "",
         "env_vars": [
-            {"key": "MSFT_OAUTH_CLIENT_ID", "label": "Application (client) ID (optional — falls back to AUTH_MICROSOFT_ENTRA_ID_ID)", "sensitive": False},
-            {"key": "MSFT_OAUTH_CLIENT_SECRET", "label": "Client Secret (optional — falls back to AUTH_MICROSOFT_ENTRA_ID_SECRET)", "sensitive": True},
-            {"key": "MICROSOFT_TENANT_ID", "label": "Directory (tenant) ID — required for single-tenant apps. Copy from Azure Overview tab. Leave blank for multi-tenant.", "sensitive": False},
+            {"key": "MSFT_OAUTH_CLIENT_ID", "label": "Application (client) ID", "sensitive": False},
+            {"key": "MSFT_OAUTH_CLIENT_SECRET", "label": "Client secret", "sensitive": True},
+            {"key": "MICROSOFT_TENANT_ID", "label": "Directory (tenant) ID", "sensitive": False},
         ],
     },
     "google-sheets": {
@@ -335,8 +344,7 @@ _SETUP_GUIDES: dict[str, dict[str, Any]] = {
             "1. Create a service account in Google Cloud Console.\n"
             "2. Enable the Google Sheets API for your project.\n"
             "3. Share your target Sheets with the service account email.\n"
-            "4. Download the JSON key file and set its path below.\n"
-            "   (You can reuse the same service account key as Gmail if already set up.)"
+            "4. Download the JSON key file and set its path below."
         ),
         "env_vars": [
             {"key": "GOOGLE_SHEETS_SA_JSON_PATH", "label": "Service Account Key Path (JSON file)", "sensitive": False},
@@ -351,14 +359,11 @@ _SETUP_GUIDES: dict[str, dict[str, Any]] = {
 
 _GUIDE_CATEGORIES: dict[str, str] = {
     "github":           "core",
-    "gmail-oauth":      "communication",
     "microsoft-oauth":  "communication",
     "zoho-crm":         "crm",
     "apollo":         "prospecting",
     "google-maps":    "prospecting",
     "instantly":      "email",
-    "gmail":          "email",
-    "gmail-send":     "email",
     "whatsapp":       "communication",
     "smtp":           "email",
     "serpapi":        "search",
@@ -378,15 +383,36 @@ async def _db_query(sql: str, **params: Any) -> list[dict[str, Any]]:
 # Helpers
 # ---------------------------------------------------------------------------
 
+#: The tiles whose connection an app owns (D96.1), and the registry key of
+#: that connection, ``(provider, owning_app)`` in ``integration_connections``.
+#: In the tile view (no ``agent``), such a tile is configured when the bound
+#: org holds that org row with the status ``connected``. The status offers no
+#: key form for it in either mode. AGENT mode keeps the env check of
+#: ``_is_configured``, because the agent runtime reads the env until IN-3. ``tests/unit/test_integrations_zoho_tile.py``
+#: pins the CRM key to ``routes/crm/connection.py``. The client mirror is
+#: ``APP_OWNED_TILES`` in ``src/app/integrations/lib/connections.ts``.
+APP_OWNED_SERVICES: dict[str, tuple[str, str]] = {
+    "zoho-crm": ("zoho", "crm"),
+}
+
+#: What the Zoho CRM test says when the org has no live CRM connection.
+ZOHO_CRM_NOT_CONNECTED = (
+    "Zoho is not connected for your organization. Connect it in CRM settings."
+)
+
+
 def _is_configured(service_name: str, settings: Any) -> bool:
     """Return True if all required env vars for *service_name* are non-empty."""
     checkers: dict[str, Any] = {
+        # ⚠️ Read in AGENT mode only (`integration_status(agent=...)`). The
+        # agent runtime (`acb_skills.integrations._zoho_crm`) still reads the
+        # operator's ZOHO_* env, so the agent gate must report what a run
+        # uses. IN-3 owns moving that runtime onto the org's CRM connection.
+        # The tile view reads the CRM row instead (`APP_OWNED_SERVICES`).
         "zoho-crm":      lambda s: bool(s.zoho_client_id and s.zoho_client_secret and s.zoho_refresh_token),
-        "apollo":        lambda s: bool(s.apollo_api_key),
+        "apollo":       lambda s: bool(s.apollo_api_key),
         "google-maps":   lambda s: bool(s.google_maps_api_key),
         "instantly":     lambda s: bool(s.instantly_api_key),
-        "gmail":           lambda s: bool(s.gmail_sa_json_path),
-        "gmail-send":      lambda s: bool(s.gmail_sa_json_path),
         "gmail-oauth":     lambda s: bool(s.gmail_oauth_client_id and s.gmail_oauth_client_secret),
         "microsoft-oauth": lambda s: bool(
             (s.msft_oauth_client_id and s.msft_oauth_client_secret)
@@ -399,18 +425,23 @@ def _is_configured(service_name: str, settings: Any) -> bool:
         "whatsapp":      lambda s: False,
 
         "smtp":          lambda s: bool(s.smtp_host and s.smtp_username),
-        "github":        lambda s: bool(s.github_token),
+        # IN-7: GitHub is a per-org connection. The deployment token is the
+        # operator's, so it never reads as "configured" for a customer.
+        # `integrations_status` and `/test` ask the org connection.
+        "github":        lambda s: False,
         "serpapi":       lambda s: bool(getattr(s, "serpapi_api_key", "") or os.getenv("SERPAPI_API_KEY", "")),
         "apify":         lambda s: bool(getattr(s, "apify_api_token", "") or os.getenv("APIFY_API_TOKEN", "")),
         "anymailfinder": lambda s: bool(getattr(s, "anymailfinder_api_key", "") or os.getenv("ANYMAILFINDER_API_KEY", "")),
+        # EM-G11b: its own key only. The Gmail service-account key is gone.
         "google-sheets": lambda s: bool(
             getattr(s, "google_sheets_sa_json_path", "") or os.getenv("GOOGLE_SHEETS_SA_JSON_PATH", "")
-            or getattr(s, "gmail_sa_json_path", "") or os.getenv("GMAIL_SA_JSON_PATH", "")
         ),
     }
     checker = checkers.get(service_name)
     if checker is None:
-        return True  # Unknown service — assume configured (don't block)
+        # IN-D8 (WS-54 IN-1): an unknown service is NOT configured. It used to
+        # answer True, so a typo or a service with no checker read as set up.
+        return False
     try:
         return checker(settings)
     except Exception:  # noqa: BLE001
@@ -421,29 +452,77 @@ def _is_configured(service_name: str, settings: Any) -> bool:
 # .env file writer (dev / bare-metal deployments)
 # ---------------------------------------------------------------------------
 
-# Allowed env var keys — only these may be written via the API.
-# Derived from all env_vars in _SETUP_GUIDES (business integrations) PLUS
-# the LLM provider keys used by Settings → Models.  This allows the
-# /integrations/configure endpoint to serve as the fallback write path for
-# LLM provider keys when the gateway is running code that predates the
-# /settings/llm/key endpoint's knowledge of those providers.
-_ALLOWED_ENV_KEYS: frozenset[str] = frozenset(
+# 🔒 Layer C: ONLY a built-in guide key reaches the env file (security fix
+# round 1, 2026-10-05). These three sets are derived from `_SETUP_GUIDES` and
+# pinned by `tests/unit/test_integrations_env_hardening.py`.
+#
+# * `GUIDE_ENV_KEYS`: every key that a built-in guide declares.
+# * `OPERATOR_ONLY_ENV_KEYS`: a guide key whose value is a URL, a host, a
+#   domain, a port, a file path or an endpoint. A tenant route refuses it
+#   with 403, and the operator sets it in the env file of the box. A
+#   redirected Zoho accounts URL or SMTP host receives the deployment's
+#   secrets on the next refresh. One key is named, not matched by a
+#   suffix. ZOHO_REGION picks the Zoho data-centre domain.
+#   GMAIL_DEFAULT_USER was the second named key (round 2). WS-17 EM-G11b
+#   removed the Gmail guides that declared it, and `env_guard` still
+#   refuses the name.
+# * `BUILTIN_ENV_KEYS`: the allowlist. The guide keys minus the operator-only
+#   keys minus the platform names (the mail-app keys). Configure and
+#   `PUT /integrations/keys` store these keys as `integration` rows of the
+#   organization. A key that a CUSTOM integration declares is stored as a
+#   `custom` row. No route here writes the env (IN-0).
+#   SMTP_USERNAME stays here on purpose. It is half of a credential pair with
+#   SMTP_PASSWORD, and it names an account on the host that the operator
+#   chose. It routes no request to a new host, and it selects no mailbox.
+# * `RESERVED_SERVICE_IDS`: no custom integration may take one of these ids
+#   (round 2). Configure stores a custom key under `custom:<service_id>:<key>`
+#   with credential_type 'custom', and startup loads only 'integration' rows.
+#
+# The LLM provider keys left this path. Their writer is the BYOK-gated
+# `POST /settings/llm/key` (`routes/settings.py`).
+GUIDE_ENV_KEYS: frozenset[str] = frozenset(
     var["key"]
     for guide in _SETUP_GUIDES.values()
     for var in guide["env_vars"]
-) | frozenset({
-    # LLM provider keys (Settings → Models page)
-    "GEMINI_API_KEY",
-    "OPENAI_API_KEY",
-    "ANTHROPIC_API_KEY",
-    "OPENROUTER_API_KEY",
-    "GROQ_API_KEY",
-    "MISTRAL_API_KEY",
-    "TOGETHER_API_KEY",
-    "VLLM_BASE_URL",
-    "LITELLM_MASTER_KEY",
-    "COPILOT_CHAT_MODEL",
-})
+)
+_OPERATOR_SUFFIXES = ("_URL", "_HOST", "_DOMAIN", "_PATH", "_ENDPOINT", "_DIR", "_PORT")
+_OPERATOR_NAMED = frozenset({"ZOHO_REGION"})
+OPERATOR_ONLY_ENV_KEYS: frozenset[str] = frozenset(
+    k for k in GUIDE_ENV_KEYS if k.endswith(_OPERATOR_SUFFIXES) or k in _OPERATOR_NAMED
+)
+BUILTIN_ENV_KEYS: frozenset[str] = frozenset(
+    k for k in GUIDE_ENV_KEYS
+    if k not in OPERATOR_ONLY_ENV_KEYS and not env_guard.is_platform_env(k)
+)
+#: Each built-in env var, and the ``(service, suffix)`` of its store row. It is
+#: read from ``acb_llm.key_store.INTEGRATION_ENV_MAP``, which the startup copy
+#: also reads, so a key that configure or ``PUT /keys`` stores lands under the
+#: one name that a reader uses (WS-54 IN-0 fix round 1). The old rule took the
+#: suffix from the guide key and stripped ``<service>_``. That never matched a
+#: service id with a hyphen, so ``ZOHO_CLIENT_ID`` went to
+#: ``zoho-crm:zoho_client_id`` and no reader found it. Fence:
+#: ``test_integrations_in0.py::test_configure_stores_the_name_the_startup_copy_reads``.
+BUILTIN_PROVIDER: dict[str, tuple[str, str]] = {
+    env: (svc, suffix)
+    for svc, key_map in INTEGRATION_ENV_MAP.items()
+    for suffix, env in key_map.items()
+    if env in BUILTIN_ENV_KEYS
+}
+#: The ids of the mail apps (WS-17 EM-G7, O-GM-5). No tile offers a key of
+#: either one, and the key store loads neither at startup. They stay
+#: reserved, so a custom integration cannot take the name of a mail app.
+MAIL_APP_SERVICE_IDS: frozenset[str] = frozenset({"gmail-oauth", "microsoft-oauth"})
+#: The ids of the retired service-account Gmail path (WS-17 EM-G11b). No
+#: guide, store row or resolver uses them now. They stay reserved, so a
+#: custom integration cannot take the name of a Gmail service.
+RETIRED_SERVICE_IDS: frozenset[str] = frozenset({"gmail", "gmail-send"})
+#: The ids of the built-in integrations: the setup guides, the services
+#: that the key store loads at startup, the mail apps and the retired ids.
+#: A custom integration may not take one.
+RESERVED_SERVICE_IDS: frozenset[str] = (
+    frozenset(_SETUP_GUIDES) | frozenset(INTEGRATION_ENV_MAP)
+    | MAIL_APP_SERVICE_IDS | RETIRED_SERVICE_IDS
+)
 
 
 def _find_env_file() -> Path:
@@ -466,8 +545,23 @@ def _find_env_file() -> Path:
 
 
 def _upsert_env_var(env_path: Path, key: str, value: str) -> None:
-    """Add or update KEY=VALUE in the .env file.  Creates the file if absent."""
-    lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+    """Add or update KEY=VALUE in the .env file.  Creates the file if absent.
+
+    🔒 It refuses first: ``env_guard.check_env_write`` raises
+    ``EnvWriteRefused`` for a bad key, a value the file cannot hold, or a
+    platform name. A route checks before this, to answer 400 or 403. This
+    second check means a caller that forgets still cannot write.
+
+    It splits the file on ``\\n`` only, and it reads and writes bytes, so no
+    newline translation runs. ``str.splitlines`` also splits on U+2028,
+    U+0085, ``\\r``, ``\\x0b`` and ``\\x0c``. With it, a line that already
+    holds one of them became two real lines on the next rewrite of any key.
+    """
+    env_guard.check_env_write(key, value)
+    text = env_path.read_bytes().decode("utf-8") if env_path.exists() else ""
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
     updated = False
     new_lines: list[str] = []
     for line in lines:
@@ -480,7 +574,152 @@ def _upsert_env_var(env_path: Path, key: str, value: str) -> None:
             new_lines.append(line)
     if not updated:
         new_lines.append(f"{key}={value}")
-    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    env_path.write_bytes(("\n".join(new_lines) + "\n").encode("utf-8"))
+
+
+# ---------------------------------------------------------------------------
+# Env-write hardening — layers A and B for a route, C for configure
+# ---------------------------------------------------------------------------
+
+#: What a caller reads when a write names a platform key (layer B).
+PLATFORM_KEY_REFUSAL = (
+    "These are platform settings of the deployment, and Integrations cannot "
+    "set or remove them for any organization: {keys}. An operator sets them "
+    "on the box."
+)
+
+
+def _refuse_unsafe_env_writes(
+    pairs: Iterable[tuple[str, str]], *, actor: str | None = None,
+) -> None:
+    """Refuse the whole request before any write. Layers A (400) and B (403).
+
+    ``pairs`` holds each ``(env var name, value)`` that the route would write.
+    Pass ``""`` as the value when the route writes no value (a delete, or a
+    custom registration). The detail and the log name the keys and a
+    character code, never a value, because a value is a credential.
+    """
+    pairs = [(str(k), str(v)) for k, v in pairs]
+    malformed: list[str] = []
+    for key, value in pairs:
+        problem = env_guard.control_problem(key)
+        where = "key"
+        if problem is None:
+            problem = env_guard.value_problem(value)
+            where = "value"
+        if problem:
+            malformed.append(f"{key!r} ({where}: {problem})")
+    if malformed:
+        _log.warning(
+            "integrations.env_write_refused", layer="A", refused=malformed, actor=actor,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "The env file cannot hold these writes: " + "; ".join(malformed)
+                + ". Use printable ASCII with no space, quote, backslash or "
+                "shell character."
+            ),
+        )
+    platform = sorted({
+        k.strip().upper() for k, _ in pairs
+        if env_guard.is_platform_env(k) or k.strip().upper() in OPERATOR_ONLY_ENV_KEYS
+    })
+    if platform:
+        _log.warning(
+            "integrations.env_write_refused", layer="B", refused=platform, actor=actor,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=PLATFORM_KEY_REFUSAL.format(keys=", ".join(platform)),
+        )
+
+
+#: WS-54 GH-7 (§7.6): the words of the 422 for a GitHub token sent to the
+#: generic writers. The one writer is ``PUT /integrations/github/token``.
+GITHUB_TOKEN_REFUSAL = "Connect GitHub in Integrations."
+
+
+def _refuse_github_token_here(names: Iterable[str]) -> None:
+    """422 when a configure or ``PUT /keys`` names ``GITHUB_TOKEN`` (GH-7).
+
+    It runs before every other check of the route, so the answer is the same
+    422 with BYOK on or off.
+    """
+    if any(str(n).strip().upper() == "GITHUB_TOKEN" for n in names):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=GITHUB_TOKEN_REFUSAL,
+        )
+
+
+def _refuse_provider_key_without_byok(names: Iterable[str]) -> None:
+    """403 while BYOK is off, when a write names an LLM provider variable.
+
+    The same guard as ``POST /settings/llm/key`` (``refuse_if_byok_disabled``).
+    ``GITHUB_TOKEN`` is in ``_PROVIDER_ENV_MAP``, because it also routes the
+    Copilot models, so the GitHub writers and ``PUT``/``DELETE`` take it too.
+    """
+    from gateway.routes.settings import _PROVIDER_ENV_MAP, refuse_if_byok_disabled
+
+    _provider_vars = {v for v in _PROVIDER_ENV_MAP.values() if v}
+    if any(str(n).strip().upper() in _provider_vars for n in names):
+        refuse_if_byok_disabled()
+
+
+def _guide_env_var(service: str, key_name: str) -> str | None:
+    """The env var that a setup guide maps ``key_name`` to, or None.
+
+    ``key_name`` is first read as a suffix of ``INTEGRATION_ENV_MAP``, the
+    name of the store row (``client_id`` for ``ZOHO_CLIENT_ID``). The old
+    guide suffix rule (``zoho_client_id``) still resolves, so a row that an
+    older write named that way can still be found and deleted.
+    """
+    mapped = INTEGRATION_ENV_MAP.get(service, {}).get(key_name)
+    guide_keys = {v["key"] for v in _SETUP_GUIDES.get(service, {}).get("env_vars", [])}
+    if mapped and mapped in guide_keys:
+        return str(mapped)
+    for var in _SETUP_GUIDES.get(service, {}).get("env_vars", []):
+        suffix = var["key"].lower().removeprefix(
+            f"{service}_".upper().lower()
+        ).replace("-", "_")
+        if suffix == key_name:
+            return var["key"]
+    return None
+
+
+async def _custom_key_services() -> dict[str, str]:
+    """Each key that a registered custom integration declares, and its service.
+
+    Layer C. A custom key goes to the per-organization store under
+    ``custom:<service_id>:<key in lower case>`` with credential_type
+    ``custom``, and NEVER to ``os.environ`` or the env file. When two
+    definitions declare one key, the oldest one names it. It runs the SAME
+    query as ``integration_status`` and ``list_custom_apis``. A failed read
+    answers an empty map, so a custom key is refused and never accepted on a
+    guess.
+
+    🔒 A row whose ``service_id`` is a built-in id (``RESERVED_SERVICE_IDS``)
+    is skipped (round 2). Registration refuses such an id, so only a row
+    written straight into the table, or before the fix, can hold one.
+    """
+    try:
+        rows = await _db_query(
+            "SELECT * FROM custom_api_definitions ORDER BY created_at"
+        )
+    except Exception as exc:
+        _log.warning("integrations.custom_keys_unreadable", error=str(exc))
+        return {}
+    services: dict[str, str] = {}
+    for row in rows:
+        if str(row.get("service_id", "")) in RESERVED_SERVICE_IDS:
+            _log.warning(
+                "integrations.custom_row_reserved_id", service_id=row.get("service_id"),
+            )
+            continue
+        for var in row.get("env_vars") or []:
+            if isinstance(var, dict) and isinstance(var.get("key"), str):
+                services.setdefault(var["key"], str(row.get("service_id", "")))
+    return services
 
 
 # ---------------------------------------------------------------------------
@@ -560,40 +799,70 @@ async def integration_status(
             if ":" in provider:
                 svc, suffix = provider.split(":", 1)
                 db_keys_by_service.setdefault(svc, []).append(suffix)
+        custom_keys_by_service = await _stored_custom_keys(store)
     except Exception:
         db_keys_by_service = {}
+        custom_keys_by_service = {}
 
     result = []
     for svc in services:
         guide = _SETUP_GUIDES.get(svc, {})
         configured = _is_configured(svc, settings)
-        # For GitHub, always compute missing_keys from actual env vars
-        # because the service can be "configured" via PAT (GITHUB_TOKEN)
-        # alone, but the OAuth device flow (Option B) needs
-        # GITHUB_CLIENT_ID separately.  Without this, a configured PAT
-        # hides the Client ID input and the device-flow start returns 422.
+        github_coverage: dict[str, Any] | None = None
         if svc == "github":
-            missing_keys = [
-                v["key"]
-                for v in guide.get("env_vars", [])
-                if not os.getenv(v["key"], "").strip()
-            ]
+            configured = await _github_connected()
+            # Fix round 1, item 3: "configured" is for each USE. The App reads
+            # pull requests and checks, but not a private agent repository
+            # (G-9). So the agent wizard asks: can this org read the agent's
+            # repository? Only a token row can.
+            github_coverage = {"pull_requests": configured}
+            if agent:
+                reach = await _github_agent_repo_reach()
+                github_coverage.update(reach)
+                configured = bool(reach["agent_repo"])
+        app_owned = svc in APP_OWNED_SERVICES
+        # The tile view reads the app's row. AGENT mode keeps the env check,
+        # because the agent runtime still reads the operator env until IN-3.
+        if app_owned and not agent:
+            configured = await _app_connected(svc)
+        # 🔒 A form offers only the keys that a tenant may write
+        # (`BUILTIN_ENV_KEYS`). The rest go to `operator_env_vars`, which the
+        # Integrations page shows read-only: the operator sets them on the box.
+        # Without the split, the agent wizard and the setup card, which save
+        # only when every field is filled, would send a key that layer B
+        # refuses, and the whole save would fail.
+        tenant_vars = [
+            v for v in guide.get("env_vars", []) if v["key"] in BUILTIN_ENV_KEYS
+        ]
+        operator_vars = [
+            {"key": v["key"], "label": v["label"]}
+            for v in guide.get("env_vars", []) if v["key"] not in BUILTIN_ENV_KEYS
+        ]
+        # GitHub connects through its card (WS-54 GH-3, GH-7), never a key
+        # form, so the tile names no missing key.
+        if svc == "github":
+            missing_keys = []
         else:
             missing_keys = (
                 []
                 if configured
                 else [
                     v["key"]
-                    for v in guide.get("env_vars", [])
+                    for v in tenant_vars
                     if not os.getenv(v["key"], "").strip()
                 ]
             )
+        # The app connects it, so the tile offers no key and names no key.
+        if app_owned:
+            tenant_vars, operator_vars, missing_keys = [], [], []
 
         # Determine which keys are stored in the encrypted DB
-        db_stored_keys = db_keys_by_service.get(svc, [])
+        db_stored_keys = [] if app_owned else db_keys_by_service.get(svc, [])
 
         # Determine storage source for display
-        if db_stored_keys:
+        if app_owned and not agent:
+            storage = "app" if configured else "none"
+        elif db_stored_keys:
             storage = "encrypted-db"
         elif configured:
             storage = "env-file"
@@ -611,12 +880,14 @@ async def integration_status(
                 "setup_url": guide.get("setup_url", ""),
                 "docs_url": guide.get("docs_url", ""),
                 "instructions": guide.get("instructions", ""),
-                "env_vars": guide.get("env_vars", []),
+                "env_vars": tenant_vars,
+                "operator_env_vars": operator_vars,
                 "missing_keys": missing_keys,
                 "db_keys": db_stored_keys,
                 "storage": storage,
                 "category": _GUIDE_CATEGORIES.get(svc, "custom"),
                 "is_custom": False,
+                **({"github_coverage": github_coverage} if github_coverage is not None else {}),
             }
         )
 
@@ -625,66 +896,113 @@ async def integration_status(
         custom_rows = await _db_query(
             "SELECT * FROM custom_api_definitions ORDER BY created_at"
         )
+        known = {r["service"] for r in result} | RESERVED_SERVICE_IDS
         for row in custom_rows:
-            svc = row["service_id"]
-            if any(r["service"] == svc for r in result):
+            if row["service_id"] in known:
                 continue  # skip if service_id conflicts with built-in
-            env_vars = row.get("env_vars") or []
-            configured = bool(
-                env_vars
-                and all(os.getenv(v.get("key", ""), "") for v in env_vars if v.get("key"))
-            )
-            missing = [
-                v["key"] for v in env_vars
-                if not os.getenv(v.get("key", ""), "")
-            ]
-            result.append({
-                "service": svc,
-                "label": row.get("label", svc),
-                "configured": configured,
-                "mandatory": False,
-                "description": row.get("description", ""),
-                "domain": row.get("domain", ""),
-                "uses": [],
-                "setup_url": row.get("setup_url", ""),
-                "docs_url": row.get("docs_url", ""),
-                "instructions": row.get("instructions", ""),
-                "env_vars": env_vars,
-                "missing_keys": missing,
-                "db_keys": [],
-                "storage": "none" if not configured else "env-file",
-                "category": row.get("category", "custom"),
-                "is_custom": True,
-            })
+            result.append(_custom_status_row(row, custom_keys_by_service))
     except Exception:
         pass  # graceful degradation if table doesn't exist yet
 
     return result
 
 
+async def _stored_custom_keys(store: Any) -> dict[str, list[str]]:
+    """The custom keys that this organization holds, by service id.
+
+    They are the rows of credential_type ``custom``, named
+    ``custom:<service_id>:<key in lower case>`` (round 2).
+    """
+    keys: dict[str, list[str]] = {}
+    rows = await store.get_by_type(CUSTOM_INTEGRATION_TYPE, organization_id=current_tenant())
+    for provider in rows:
+        parts = provider.split(":", 2)
+        if len(parts) == 3 and parts[0] == "custom":
+            keys.setdefault(parts[1], []).append(parts[2])
+    return keys
+
+
+def _custom_status_row(
+    row: dict[str, Any], custom_keys_by_service: dict[str, list[str]],
+) -> dict[str, Any]:
+    """The status of one custom integration.
+
+    🔒 A custom key lives in the store of the organization
+    (``custom:<service_id>:<key in lower case>``), and never in the env since
+    2026-10-05. A value that an older env write left still counts.
+    """
+    svc = row["service_id"]
+    env_vars = row.get("env_vars") or []
+    custom_db = custom_keys_by_service.get(svc, [])
+
+    def _held(key: str) -> bool:
+        return key.lower() in custom_db or bool(os.getenv(key, ""))
+
+    configured = bool(
+        env_vars and all(_held(v.get("key", "")) for v in env_vars if v.get("key"))
+    )
+    missing = [v["key"] for v in env_vars if not _held(v.get("key", ""))]
+    storage = "encrypted-db" if custom_db else ("env-file" if configured else "none")
+    return {
+        "service": svc,
+        "label": row.get("label", svc),
+        "configured": configured,
+        "mandatory": False,
+        "description": row.get("description", ""),
+        "domain": row.get("domain", ""),
+        "uses": [],
+        "setup_url": row.get("setup_url", ""),
+        "docs_url": row.get("docs_url", ""),
+        "instructions": row.get("instructions", ""),
+        "env_vars": env_vars,
+        "operator_env_vars": [],
+        "missing_keys": missing,
+        "db_keys": custom_db,
+        "storage": storage,
+        "category": row.get("category", "custom"),
+        "is_custom": True,
+    }
+
+
 @router.post(
     "/configure",
-    dependencies=[require_role(UserRole.EXECUTIVE, UserRole.AGENT)],
+    dependencies=[require_role(UserRole.EXECUTIVE, UserRole.AGENT), _REQUIRE_MANAGE],
 )
 async def configure_integrations(
     req: ConfigureRequest,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Write integration credentials to the encrypted DB credential store.
+    """Write integration credentials to the store of the caller's organization.
 
     Credentials are encrypted at rest with the same ACB_MASTER_KEY used
-    for LLM provider keys.  They are also set in os.environ for immediate
-    effect and written to .env as a bootstrap fallback.
+    for LLM provider keys. 🔒 Nothing goes to ``os.environ`` or to the env
+    file (WS-54 IN-0, D96.3). A failed store write answers 503, because the
+    store is the only place a value goes.
 
-    Only keys present in the allowed list (derived from _SETUP_GUIDES) may
-    be written — all others are rejected with 422.
+    🔒 Layers A (400), B (403) and C (422) refuse the WHOLE request before
+    any write (2026-10-05). A value is stored with its surrounding space
+    removed.
+
+    🔒 Layer C, round 1: a key in ``BUILTIN_ENV_KEYS`` is stored as an
+    ``integration`` row, and the answer lists it under ``written``. A key that
+    a registered CUSTOM integration declares is stored as a ``custom`` row,
+    and the answer lists it under ``store_only``. Any other key is 422.
+
+    WS-54 GH-7: ``GITHUB_TOKEN`` is 422 here, before any other check. The
+    one writer of a pasted token is ``PUT /integrations/github/token``.
     """
+    _refuse_github_token_here(v.key for v in req.vars)
+    # Layers A and B, over every key and value of the request.
+    _refuse_unsafe_env_writes(
+        ((v.key, v.value.strip()) for v in req.vars), actor=user.email,
+    )
+
     # Validate all keys — allow known keys OR any valid SCREAMING_SNAKE_CASE name
     # (custom APIs define their own env var names)
     _env_var_re = re.compile(r"^[A-Z][A-Z0-9_]{1,100}$")
     illegal = [
         v.key for v in req.vars
-        if v.key not in _ALLOWED_ENV_KEYS and not _env_var_re.match(v.key)
+        if v.key not in BUILTIN_ENV_KEYS and not _env_var_re.fullmatch(v.key)
     ]
     if illegal:
         raise HTTPException(
@@ -695,74 +1013,116 @@ async def configure_integrations(
             ),
         )
 
+    # Layer C: a key outside the built-in allowlist must be declared by a
+    # registered custom integration, and then it goes to the store only. The
+    # custom read runs only when a key is outside the allowlist.
+    custom_services: dict[str, str] = {}
+    if any(v.key not in BUILTIN_ENV_KEYS for v in req.vars):
+        custom_services = await _custom_key_services()
+    undeclared = sorted({
+        v.key for v in req.vars
+        if v.key not in BUILTIN_ENV_KEYS and v.key not in custom_services
+    })
+    if undeclared:
+        _log.warning(
+            "integrations.env_write_refused", layer="C", refused=undeclared,
+            actor=user.email,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"No integration declares these keys: {undeclared}. Register "
+                "a custom integration that declares a key before you set it."
+            ),
+        )
+
     # ── BYOK off: this is the SECOND door to a provider key ────────────────
     #
-    # `api/settings/llm/key/route.ts` falls back to THIS endpoint whenever
-    # `POST /settings/llm/key` answers "No env var for provider". Guarding
-    # only the front door would leave that fallback wide open, and the
-    # fallback writes an arbitrary env var by design.
+    # `POST /settings/llm/key` is the front door, and this endpoint is a
+    # second door to the same provider variables. The workbench route that
+    # once sent the front door's misses here (`api/settings/llm/key/route.ts`)
+    # was deleted in #145. A direct gateway call still reaches both doors, so
+    # guarding only the front door would leave this one open.
     #
     # Only the LLM provider variables are refused. Every other integration
     # credential (Slack, GitHub OAuth, WhatsApp and the rest) is untouched,
     # because BYOK is about who supplies the MODEL, not about integrations.
-    from gateway.routes.settings import _PROVIDER_ENV_MAP, refuse_if_byok_disabled
-
-    _provider_vars = {v for v in _PROVIDER_ENV_MAP.values() if v}
-    if any(v.key in _provider_vars for v in req.vars):
-        refuse_if_byok_disabled()
+    # One helper holds the rule for every route here
+    # (`_refuse_provider_key_without_byok`).
+    _refuse_provider_key_without_byok(v.key for v in req.vars)
 
 
-    # Build reverse mapping: env_var → (service, suffix)
-    _env_to_service_suffix: dict[str, tuple[str, str]] = {}
-    for svc, guide in _SETUP_GUIDES.items():
-        for var in guide["env_vars"]:
-            suffix = var["key"].lower().removeprefix(f"{svc}_".upper().lower()) \
-                .replace("-", "_")
-            _env_to_service_suffix[var["key"]] = (svc, suffix)
-
-    env_path = _find_env_file()
     written: list[str] = []
     db_written: list[str] = []
+    store_only: list[str] = []
+    from acb_llm.key_store import get_key_store
+    store = get_key_store()
 
     for var in req.vars:
-        if not var.value.strip():
+        value = var.value.strip()
+        if not value:
             continue  # skip empties
 
-        # 1. Write to encrypted DB store (primary persistence)
-        svc_suffix = _env_to_service_suffix.get(var.key)
-        if svc_suffix:
-            svc, suffix = svc_suffix
-            provider = f"{svc}:{suffix}"
+        # 0. A custom key: the store of this organization, as a `custom` row.
+        #    A failed put is an error, because the store is the only place
+        #    the value goes. The `custom:` name and the 'custom' type keep it
+        #    out of every built-in slot, and the startup load reads only
+        #    'integration' rows (round 2).
+        if var.key not in BUILTIN_ENV_KEYS:
+            custom_svc = custom_services[var.key]
+            provider = f"custom:{custom_svc}:{var.key.lower()}"
             try:
-                from acb_llm.key_store import get_key_store
-                store = get_key_store()
                 await store.put(
                     provider,
-                    var.value,
-                    credential_type="integration",
-                    service=svc,
+                    value,
+                    credential_type=CUSTOM_INTEGRATION_TYPE,
+                    service=custom_svc,
                     organization_id=current_tenant(),
                 )
-                db_written.append(provider)
             except Exception as exc:
                 _log.warning(
-                    "integrations.db_write_failed",
-                    key=var.key,
-                    provider=provider,
-                    error=str(exc),
+                    "integrations.custom_store_failed", key=var.key, error=str(exc),
                 )
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=f"Could not store {var.key} for this organization.",
+                ) from None
+            db_written.append(provider)
+            store_only.append(var.key)
+            _log.info("integrations.configure_custom", key=var.key, actor=user.email)
+            continue
 
-        # 2. Set in current process env (immediate effect)
-        # ⚠️ CROSS-TENANT WRITE, recorded and deliberately not repaired —
-        # see the MT-1j slice 5 block at the top of this module. Steps 2
-        # and 3 have one value for the whole deployment; only step 1 above
-        # is per organization.
-        os.environ[var.key] = var.value
-
-        # 3. Write to .env as bootstrap fallback (still useful for
-        #    bare-metal dev and first-boot before DB is available)
-        _upsert_env_var(env_path, var.key, var.value)
-
+        # 1. A built-in key: the store of this organization, as an
+        #    `integration` row. 🔒 IN-0: nothing goes to `os.environ` or the
+        #    env file, because each has one value for the whole deployment.
+        #    So a failed put answers 503. Before IN-0 it was swallowed, and
+        #    the env write carried the value. Now a swallowed failure would
+        #    answer 200 with nothing written. Layer C makes every key here a
+        #    built-in key, so `BUILTIN_PROVIDER` always holds it, under the
+        #    name that the startup copy reads. `GITHUB_TOKEN` never reaches
+        #    here: `_refuse_github_token_here` refused it above (GH-7).
+        svc, suffix = BUILTIN_PROVIDER[var.key]
+        provider = f"{svc}:{suffix}"
+        try:
+            await store.put(
+                provider,
+                value,
+                credential_type="integration",
+                service=svc,
+                organization_id=current_tenant(),
+            )
+        except Exception as exc:
+            _log.warning(
+                "integrations.db_write_failed",
+                key=var.key,
+                provider=provider,
+                error=str(exc),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Could not store {var.key} for this organization.",
+            ) from None
+        db_written.append(provider)
         written.append(var.key)
         _log.info(
             "integrations.configure",
@@ -770,19 +1130,11 @@ async def configure_integrations(
             actor=user.email,
         )
 
-    # Bust the settings LRU cache so the live process reads new values
-    from acb_common.settings import get_settings as _gs  # noqa: PLC0415
-    _gs.cache_clear()
-
     return {
         "written": written,
         "db_stored": db_written,
-        "env_file": str(env_path),
-        "reload": "Settings cache cleared — new values active immediately.",
-        "storage": (
-            "Credentials stored in encrypted Postgres (primary) + "
-            ".env (bootstrap fallback)."
-        ),
+        "store_only": store_only,
+        "storage": "Credentials stored in encrypted Postgres for this organization.",
     }
 
 
@@ -830,17 +1182,21 @@ async def list_integration_keys(
     }
 
 
-@router.put("/keys")
+@router.put("/keys", dependencies=[_REQUIRE_MANAGE])
 async def put_integration_key(
     req: IntegrationKeyRequest,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Store or update a single integration credential in the encrypted DB.
 
-    Also sets the corresponding os.environ variable for immediate effect
-    and writes to .env as a bootstrap fallback.
+    🔒 It writes the store of the caller's organization only, and never
+    ``os.environ`` or the env file (WS-54 IN-0, D96.3).
+
+    🔒 Layers A (400) and B (403) run before the store write (2026-10-05).
+    The value is written with its surrounding space removed.
     """
-    if not req.value.strip():
+    value = req.value.strip()
+    if not value:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="value cannot be empty",
@@ -858,21 +1214,12 @@ async def put_integration_key(
 
     # Find the env var for this key
     guide = _SETUP_GUIDES[req.service]
-    env_var = None
-    for var in guide["env_vars"]:
-        suffix = var["key"].lower().removeprefix(
-            f"{req.service}_".upper().lower()
-        ).replace("-", "_")
-        if suffix == req.key_name:
-            env_var = var["key"]
-            break
+    env_var = _guide_env_var(req.service, req.key_name)
 
     if env_var is None:
         known_keys = [
-            v["key"].lower().removeprefix(
-                f"{req.service}_".upper().lower()
-            ).replace("-", "_")
-            for v in guide["env_vars"]
+            BUILTIN_PROVIDER[v["key"]][1]
+            for v in guide["env_vars"] if v["key"] in BUILTIN_PROVIDER
         ]
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -882,46 +1229,34 @@ async def put_integration_key(
             ),
         )
 
-    # Store in encrypted DB
-    provider = f"{req.service}:{req.key_name}"
+    # WS-54 GH-7: a pasted GitHub token has ONE writer,
+    # `PUT /integrations/github/token`. Refused before any other check.
+    _refuse_github_token_here([env_var])
+    # Layers A and B, before the store write. Then the BYOK gate.
+    _refuse_unsafe_env_writes([(env_var, value)], actor=user.email)
+    _refuse_provider_key_without_byok([env_var])
+
+    # Store in encrypted DB, for this organization only. 🔒 IN-0: the env var
+    # and the env file are NOT written. Each has one value for the whole
+    # deployment, so that write replaced the key of every other organization.
+    # The row takes the name that the startup copy reads (`BUILTIN_PROVIDER`).
+    # Layer B passed, so `env_var` is a built-in key.
+    if env_var not in BUILTIN_PROVIDER:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"{env_var} is not a key that an integration can store.",
+        )
+    svc, suffix = BUILTIN_PROVIDER[env_var]
+    provider = f"{svc}:{suffix}"
     from acb_llm.key_store import get_key_store
     store = get_key_store()
     await store.put(
         provider,
-        req.value,
+        value,
         credential_type="integration",
-        service=req.service,
+        service=svc,
         organization_id=current_tenant(),
     )
-
-    # Set in current process env (immediate effect)
-    # ⚠️ CROSS-TENANT WRITE, recorded and deliberately not repaired — see the
-    # MT-1j slice 5 block at the top of this module. The store write above is
-    # per organization; these two are deployment-wide.
-    #
-    # ⚠️ And on THIS route they are newly REACHABLE, which is not true of the
-    # store half. Before the tenant was threaded, the untenanted `store.put`
-    # above raised (`_resolve_org` → "" → RuntimeError) the moment a second
-    # organization existed, so the handler 500'd BEFORE reaching these lines —
-    # an accidental fail-closed arm, not a design. Now the put succeeds for a
-    # tenant-bound caller and the process-global writes below RUN: env var,
-    # `.env` file, settings cache_clear. That is new in COUNT, not in kind —
-    # the same deployment-wide write is already reachable today via
-    # `POST /integrations/configure` (whose put failure is swallowed into
-    # `integrations.db_write_failed` and continues) and via
-    # `DELETE /integrations/keys` (whose `os.environ.pop` is unconditional).
-    # Fixing the reachability by re-breaking the write would be repairing the
-    # fail-closed contract in the wrong direction (D33 finding 3); the fix is
-    # per-request provider credentials — `work_plan.md` §6 gate (f).
-    os.environ[env_var] = req.value
-
-    # Write to .env as bootstrap fallback
-    env_path = _find_env_file()
-    _upsert_env_var(env_path, env_var, req.value)
-
-    # Bust settings cache
-    from acb_common.settings import get_settings as _gs  # noqa: PLC0415
-    _gs.cache_clear()
 
     _log.info(
         "integrations.key_put",
@@ -941,36 +1276,39 @@ async def put_integration_key(
     }
 
 
-@router.delete("/keys")
+@router.delete("/keys", dependencies=[_REQUIRE_MANAGE])
 async def delete_integration_key(
     req: IntegrationKeyDelete,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Remove a single integration credential from the encrypted DB."""
+    """Remove a single integration credential from the encrypted DB.
+
+    🔒 It deletes the row of the caller's organization only. It does not
+    unset the env var (WS-54 IN-0), because that unset the value for every
+    organization on the box.
+
+    🔒 Layer B (403) runs before the store delete (2026-10-05). A platform
+    name such as a mail-app key is refused, and nothing is deleted.
+    """
     if req.service not in _SETUP_GUIDES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unknown service: {req.service!r}",
         )
 
-    provider = f"{req.service}:{req.key_name}"
-    from acb_llm.key_store import get_key_store
-    store = get_key_store()
-    await store.delete(provider, organization_id=current_tenant())
+    popped = _guide_env_var(req.service, req.key_name)
+    if popped is not None:
+        _refuse_unsafe_env_writes([(popped, "")], actor=user.email)
+        _refuse_provider_key_without_byok([popped])
 
-    # Find and clear the env var
-    # ⚠️ CROSS-TENANT WRITE, recorded and deliberately not repaired — see the
-    # MT-1j slice 5 block at the top of this module. The delete above removes
-    # only this organization's row; the pop below unsets the variable for the
-    # whole process, i.e. for every other organization too.
-    guide = _SETUP_GUIDES[req.service]
-    for var in guide["env_vars"]:
-        suffix = var["key"].lower().removeprefix(
-            f"{req.service}_".upper().lower()
-        ).replace("-", "_")
-        if suffix == req.key_name:
-            os.environ.pop(var["key"], None)
-            break
+    provider = f"{req.service}:{req.key_name}"
+    if popped == "GITHUB_TOKEN":
+        # IN-7: the token is the org connection. This deletes it, and any old row.
+        await github_connection.disconnect(_github_org())
+    else:
+        from acb_llm.key_store import get_key_store
+        store = get_key_store()
+        await store.delete(provider, organization_id=current_tenant())
 
     _log.info(
         "integrations.key_deleted",
@@ -995,7 +1333,7 @@ class DiscoverRequest(BaseModel):
     query: str  # e.g. "Notion", "Slack", "HubSpot"
 
 
-@router.post("/discover")
+@router.post("/discover", dependencies=[_REQUIRE_MANAGE])
 async def discover_api(
     req: DiscoverRequest,
     user: UserContext = Depends(get_current_user),
@@ -1184,19 +1522,40 @@ async def list_custom_apis(
         raise HTTPException(500, f"DB error: {exc}") from exc
 
 
-@router.post("/custom")
+@router.post("/custom", dependencies=[_REQUIRE_MANAGE])
 async def create_custom_api(
     req: CustomApiDef,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Save a custom API definition (upsert on service_id)."""
+    """Save a custom API definition (upsert on service_id).
+
+    🔒 A definition declares the keys that layer C lets configure write. So a
+    key with a control character is 400, and a platform name is 403, before
+    the row is saved (2026-10-05).
+
+    🔒 A ``service_id`` that is a built-in id (``RESERVED_SERVICE_IDS``) is 400
+    (round 2). A custom ``github`` with the key ``TOKEN`` used to take the
+    slot ``github:token`` of the built-in GitHub token.
+    """
     import json as _json  # noqa: PLC0415
 
-    if not re.match(r"^[a-z][a-z0-9-]{0,60}$", req.service_id):
+    if not re.fullmatch(r"[a-z][a-z0-9-]{0,60}", req.service_id):
         raise HTTPException(
             400,
             "service_id must be lowercase letters, numbers, and hyphens.",
         )
+    if req.service_id in RESERVED_SERVICE_IDS:
+        _log.warning(
+            "integrations.custom_reserved_id", service_id=req.service_id, actor=user.email,
+        )
+        raise HTTPException(
+            400,
+            f"{req.service_id!r} is a built-in integration. Choose another service_id.",
+        )
+    _refuse_unsafe_env_writes(
+        ((str(v["key"]), "") for v in req.env_vars if v.get("key") is not None),
+        actor=user.email,
+    )
     try:
         await _db_query(
             """
@@ -1237,7 +1596,7 @@ async def create_custom_api(
         raise HTTPException(500, f"DB error: {exc}") from exc
 
 
-@router.delete("/custom/{service_id}")
+@router.delete("/custom/{service_id}", dependencies=[_REQUIRE_MANAGE])
 async def delete_custom_api(
     service_id: str,
     user: UserContext = Depends(get_current_user),
@@ -1258,6 +1617,167 @@ async def delete_custom_api(
         raise HTTPException(500, f"DB error: {exc}") from exc
 
 
+async def _github_connected() -> bool:
+    """True when the bound organization holds a live GitHub connection.
+
+    WS-54 GH-3: an ``app`` row answers from its ``status`` and makes no
+    installation token, because a status read must not spend a GitHub call.
+    """
+    try:
+        org = current_tenant()
+        if not org:
+            return False
+        row = await github_connection.connection(str(org))
+        if github_connection.is_app_row(row):
+            return github_connection.installation_of(row) is not None
+        return bool(await github_connection.token_or_none(str(org)))
+    except Exception as exc:
+        _log.warning("github.status_unreadable", error=type(exc).__name__)
+        return False
+
+
+async def _github_agent_repo_reach() -> dict[str, Any]:
+    """Can the bound org read a PRIVATE agent repository? (fix round 1, item 3)
+
+    ``{"auth": "app" | "token" | None, "agent_repo": bool}``. Only a ``token``
+    row can: the App asks for no Contents permission (G-9), and an org with no
+    connection reads public repositories only.
+    """
+    try:
+        org = current_tenant()
+        if not org:
+            return {"auth": None, "agent_repo": False}
+        row = await github_connection.connection(str(org))
+        if github_connection.is_app_row(row):
+            return {"auth": github_connection.AUTH_APP, "agent_repo": False}
+        token = await github_connection.stored_token_or_none(str(org))
+        auth = github_connection.AUTH_TOKEN if row is not None else None
+        return {"auth": auth, "agent_repo": bool(token)}
+    except Exception as exc:
+        _log.warning("github.reach_unreadable", error=type(exc).__name__)
+        return {"auth": None, "agent_repo": False}
+
+
+async def _test_github_app(row: Any, user: UserContext) -> dict[str, Any]:
+    """Test an ``app`` row (GH-3). GitHub refuses ``GET /user`` for an
+    installation token, so the test lists one repository of the installation."""
+    from gateway.connections import github_app
+
+    if not github_app.app_enabled():
+        # The kill switch (F5): no token is made while the flag is off.
+        return {"ok": False, "detail": "The GitHub App is turned off on this server."}
+    installation = github_connection.installation_of(row)
+    if installation is None:
+        return {"ok": False, "detail": github_connection.NOT_CONNECTED}
+    try:
+        answer = await github_app.installation_call(
+            installation, "GET", "/installation/repositories?per_page=1",
+        )
+    except github_app.GitHubAppNotConfigured:
+        return {"ok": False, "detail": "The GitHub App is not configured on this server."}
+    except github_app.GitHubCallFailed as exc:
+        return {"ok": False, "detail": f"GitHub did not answer ({exc.code})."}
+    _log.info("integrations.test", service="github", mode="app",
+              ok=answer.status == 200, actor=user.email)
+    if answer.status == 200:
+        login = row.provider_meta.get("account_login") or "?"
+        return {"ok": True, "detail": f"The Metorite GitHub App is installed on '{login}'."}
+    return {"ok": False, "detail": f"GitHub answered status {answer.status}."}
+
+
+async def _test_github(user: UserContext) -> dict[str, Any]:
+    """Test the GitHub token of the caller's organization. Never the operator's."""
+    org = _github_org()
+    try:
+        row = await github_connection.connection(org)
+        if github_connection.is_app_row(row):
+            return await _test_github_app(row, user)
+        token = await github_connection.token_or_none(org)
+    except Exception as exc:
+        _log.warning("github.test_unreadable", error=type(exc).__name__)
+        return {"ok": False, "detail": "The GitHub connection could not be read."}
+    if not token:
+        return {"ok": False, "detail": github_connection.NOT_CONNECTED}
+    async with httpx.AsyncClient(timeout=8) as client:
+        resp = await client.get(
+            "https://api.github.com/user",
+            headers={
+                "Authorization": f"token {token}",
+                "Accept": "application/vnd.github.v3+json",
+            },
+        )
+    _log.info("integrations.test", service="github", ok=resp.status_code == 200, actor=user.email)
+    if resp.status_code == 200:
+        login = resp.json().get("login", "?")
+        return {"ok": True, "detail": f"Authenticated as GitHub user '{login}'."}
+    return {"ok": False, "detail": f"GitHub answered status {resp.status_code}."}
+
+
+async def _app_connection(service: str) -> connection_store.Connection | None:
+    """The org row of an app-owned tile, read in the bound tenant's session.
+
+    ``None`` with no bound organization. The organization comes from the
+    authenticated session only (R5), never from the request.
+    """
+    org = current_tenant()
+    if not org:
+        return None
+    provider, owning_app = APP_OWNED_SERVICES[service]
+    async with tenant_session(str(org)) as db:
+        return await connection_store.get(db, str(org), provider, owning_app)
+
+
+async def _app_connected(service: str) -> bool:
+    """True when the bound org holds the app's org row with status connected."""
+    try:
+        row = await _app_connection(service)
+    except Exception as exc:
+        _log.warning("integrations.app_status_unreadable", service=service, error=type(exc).__name__)
+        return False
+    return bool(row and row.status == connection_store.STATUS_CONNECTED)
+
+
+_ZOHO_CRM_RECONNECT = "Zoho needs a new consent. Connect it again in CRM settings."
+
+
+async def _test_crm_zoho() -> dict[str, Any]:
+    """Test the org's CRM Zoho connection through the CRM's own credential path.
+
+    It reads the row first, so an org with no live row opens no lock and calls
+    no provider. A live row goes through ``fresh_zoho_credential``, which
+    refreshes the token only when it is due. The operator's ZOHO_* keys are
+    never read. No reply holds a token or a provider message.
+    """
+    try:
+        row = await _app_connection("zoho-crm")
+    except Exception as exc:
+        _log.warning("integrations.zoho_crm_test_unreadable", error=type(exc).__name__)
+        return {"ok": False, "detail": "The CRM Zoho connection could not be read."}
+    if row is None or row.status == connection_store.STATUS_DISCONNECTED:
+        return {"ok": False, "detail": ZOHO_CRM_NOT_CONNECTED}
+    if row.status != connection_store.STATUS_CONNECTED:
+        return {"ok": False, "detail": _ZOHO_CRM_RECONNECT}
+
+    from gateway.crm_sources.base import NeedsReconnect, SourceError
+    from gateway.routes.crm import connection as crm_connection
+
+    try:
+        credential = await crm_connection.fresh_zoho_credential(row.organization_id)
+    except NeedsReconnect:
+        return {"ok": False, "detail": _ZOHO_CRM_RECONNECT}
+    except HTTPException:
+        # `zoho_oauth_config` answers 503 when Metorite's own Zoho client is unset.
+        return {"ok": False, "detail": "This server has no Zoho client. An operator must set it."}
+    except SourceError:
+        return {"ok": False, "detail": "Zoho did not answer the token refresh. Try again later."}
+    except Exception as exc:
+        _log.warning("integrations.zoho_crm_test_failed", error=type(exc).__name__)
+        return {"ok": False, "detail": "The CRM Zoho connection could not be read."}
+    if credential is None:
+        return {"ok": False, "detail": ZOHO_CRM_NOT_CONNECTED}
+    return {"ok": True, "detail": "The CRM holds a live Zoho connection."}
+
+
 @router.get("/test")
 async def test_integration(
     service: str,
@@ -1268,6 +1788,30 @@ async def test_integration(
     Returns {service, ok, detail}.
     """
     settings = get_settings()
+
+    if service == "github":
+        # The test spends the token of the organization on a GitHub request, so it
+        # needs the same right as the writers (IN-7 review). Other services test
+        # the env of the deployment, which is not a customer token.
+        if not user.has_permission(MANAGE_PERMISSION):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Forbidden: missing permission(s) ['{MANAGE_PERMISSION}'].",
+            )
+        result = await _test_github(user)
+        return {"service": service, **result}
+
+    if service == "zoho-crm":
+        # The CRM owns Zoho. A refresh writes the org's row, so the test needs
+        # the manage right too, as GitHub's does.
+        if not user.has_permission(MANAGE_PERMISSION):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Forbidden: missing permission(s) ['{MANAGE_PERMISSION}'].",
+            )
+        result = await _test_crm_zoho()
+        _log.info("integrations.test", service=service, ok=result.get("ok"), actor=user.email)
+        return {"service": service, **result}
 
     if not _is_configured(service, settings):
         return {
@@ -1288,21 +1832,8 @@ async def test_integration(
 async def _run_test(service: str, settings: Any) -> dict[str, Any]:
     """Run a real connectivity check per integration."""
     async with httpx.AsyncClient(timeout=10) as client:
-        if service == "zoho-crm":
-            # Exchange refresh token for access token
-            resp = await client.post(
-                f"{settings.zoho_accounts_url}/oauth/v2/token",
-                data={
-                    "grant_type": "refresh_token",
-                    "client_id": settings.zoho_client_id,
-                    "client_secret": settings.zoho_client_secret,
-                    "refresh_token": settings.zoho_refresh_token,
-                },
-            )
-            if resp.status_code == 200 and "access_token" in resp.json():
-                return {"ok": True, "detail": "Token exchange succeeded."}
-            return {"ok": False, "detail": f"Token exchange failed: {resp.text[:200]}"}
-
+        # zoho-crm never reaches here: `test_integration` tests the CRM's
+        # connection, and the operator's ZOHO_* keys test no customer.
         if service == "apollo":
             resp = await client.get(
                 f"{settings.apollo_base_url}/auth/health",
@@ -1329,25 +1860,6 @@ async def _run_test(service: str, settings: Any) -> dict[str, Any]:
             )
             if resp.status_code == 200:
                 return {"ok": True, "detail": "Instantly API reachable."}
-            return {"ok": False, "detail": f"Status {resp.status_code}: {resp.text[:200]}"}
-
-        if service in ("gmail", "gmail-send"):
-            sa_path = Path(settings.gmail_sa_json_path)
-            if sa_path.exists():
-                return {"ok": True, "detail": "Service account key file found."}
-            return {"ok": False, "detail": f"Key file not found: {sa_path}"}
-
-        if service == "github":
-            resp = await client.get(
-                "https://api.github.com/user",
-                headers={
-                    "Authorization": f"token {settings.github_token}",
-                    "Accept": "application/vnd.github.v3+json",
-                },
-            )
-            if resp.status_code == 200:
-                login = resp.json().get("login", "?")
-                return {"ok": True, "detail": f"Authenticated as GitHub user '{login}'."}
             return {"ok": False, "detail": f"Status {resp.status_code}: {resp.text[:200]}"}
 
         if service == "gmail-oauth":
@@ -1432,104 +1944,318 @@ class McpServerRequest(BaseModel):
     headers: dict[str, str] = {}
     agent_scope: list[str] = ["*"]
     enabled: bool = True
+    #: H-300: every tool of the server needs the member's card, whatever its
+    #: hints say. A new server is set to always confirm unless the admin
+    #: says no.
+    #: Strict, as the PATCH is: "false", "off" or 0 is 422, never "off".
+    always_confirm: StrictBool = True
+    #: MCP-C2 (item 32): the admin says the key can only read, so no tool of
+    #: the server waits for the card. Off for a new server. A register is a
+    #: full register, so a body with no key turns it off. Strict too.
+    read_only_key: StrictBool = False
+
+
+class McpSwitchesRequest(BaseModel):
+    """The body of ``PATCH /integrations/mcp/{name}`` (H-300, MCP-C2).
+
+    Either switch, or both. A body with neither is 422, and so is a value
+    that is not a JSON boolean. A body with only ``always_confirm`` is the
+    H-300 body, and it behaves as it did."""
+
+    always_confirm: StrictBool | None = None
+    read_only_key: StrictBool | None = None
+
+    @model_validator(mode="after")
+    def _one_switch_at_least(self) -> McpSwitchesRequest:
+        if self.always_confirm is None and self.read_only_key is None:
+            raise ValueError("Send always_confirm, read_only_key, or both.")
+        return self
+
+
+def _mcp_switch_refusal(exc: Exception) -> HTTPException:
+    """The 422 of a write that ``gateway.connections.mcp.McpSwitchRefused``
+    refuses (MCP-C2, item 32). The words name the reason, and no value."""
+    from gateway.connections import mcp as mcp_registry
+
+    words = {
+        mcp_registry.SWITCHES_BOTH_ON: (
+            "A server cannot be set to always confirm and to a read-only key at the "
+            "same time. Turn one switch off."),
+        mcp_registry.SWITCHES_OAUTH: (
+            "This server is connected over OAuth. It acts as the admin who connected "
+            "it, so the read-only key switch does not apply to it."),
+    }
+    return HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        detail=words.get(getattr(exc, "reason", ""), "The switches of this server cannot change."),
+    )
+
+
+def audit_integration(
+    user: UserContext, org: str, target: str, *, action: str, **payload: Any,
+) -> None:
+    """One audit event of the console: who, what, when, which organization.
+
+    ``specs/integrations_console.md`` §4.4. The one helper of the Integrations
+    routes. A disconnect and the H-300 switch both write through it. A
+    payload holds no secret.
+    """
+    try:
+        from acb_audit import AuditEvent, record  # noqa: PLC0415
+
+        record(AuditEvent(
+            actor=f"user:{user.email}",
+            action=action,
+            target=target,
+            payload={"organization_id": org, **payload},
+            organization_id=org,
+        ))
+    except Exception as exc:  # an audit backend that is down must not block this
+        _log.warning("connections.audit_failed", error=type(exc).__name__)
+
+
+def mcp_out(server: Any) -> dict[str, Any]:
+    """One server of the MCP list. Header NAMES only, never a value (IN-0).
+
+    The shape stays as it was before IN-4, so the console needs no change.
+    No stdio server is stored (D85), so ``command`` is ``None`` and no env
+    var name is listed.
+    """
+    return {
+        "name": server.name, "label": server.label, "description": server.description,
+        "transport": server.transport, "command": None, "url": server.url,
+        "env_var_names": [], "header_names": list(server.header_names),
+        "agent_scope": list(server.agent_scope), "enabled": server.enabled,
+        "always_confirm": bool(server.always_confirm),
+        # MCP-C2: the one parse of the registry (``StoredServer``).
+        "read_only_key": bool(server.read_only_key),
+        "created_at": str(server.created_at) if server.created_at else None,
+        "updated_at": str(server.updated_at) if server.updated_at else None,
+    }
 
 
 @router.get("/mcp", summary="List registered MCP servers")
 async def list_mcp_servers(
     user: UserContext = Depends(get_current_user),
 ) -> list[dict[str, Any]]:
-    """Return all MCP servers (enabled + disabled)."""
+    """Return the MCP servers of the caller's organization (enabled + disabled).
+
+    🔒 WS-54 IN-4. The servers live in the connection registry. The read goes
+    through ``gateway.connections.mcp`` inside ``tenant_session(org)``, so row
+    level security binds the tenant. With no tenant bound, the answer is
+    empty, and no row of any organization is read. It returns the NAMES of
+    the headers, never a value, because a value is a credential (IN-0).
+    """
+    org = current_tenant()
+    if not org:
+        return []
     try:
-        from acb_graph import get_session  # noqa: PLC0415
-        with get_session() as s:
-            rows = s.execute(
-                text("SELECT name, label, description, transport, command, url, "
-                "env_vars, headers, agent_scope, enabled, created_at, updated_at "
-                "FROM mcp_servers ORDER BY created_at")
-            ).fetchall()
-        result: list[dict[str, Any]] = []
-        for r in rows:
-            result.append({
-                "name": r[0], "label": r[1], "description": r[2],
-                "transport": r[3], "command": r[4], "url": r[5],
-                "env_vars": r[6] or {}, "headers": r[7] or {},
-                "agent_scope": r[8] or ["*"], "enabled": r[9],
-                "created_at": str(r[10]) if r[10] else None,
-                "updated_at": str(r[11]) if r[11] else None,
-            })
-        return result
+        from gateway.connections import mcp as mcp_registry  # noqa: PLC0415
+
+        return [mcp_out(s) for s in await mcp_registry.list_servers(org)]
     except Exception as exc:
-        _log.warning("mcp.list_failed", error=str(exc))
-        raise HTTPException(500, f"DB error: {exc}") from exc
+        # The class of the error only: a DB message can echo a bound value.
+        _log.warning("mcp.list_failed", error=type(exc).__name__)
+        raise HTTPException(500, "The MCP servers could not be read.") from exc
+
+#: D85: an MCP server over stdio starts a process on the host.
+_MCP_STDIO_REFUSED = (
+    "Metorite does not run MCP servers over stdio. Use an http-sse server."
+)
 
 
-@router.post("/mcp", status_code=status.HTTP_201_CREATED, summary="Register or update an MCP server")
+@router.post(
+    "/mcp", status_code=status.HTTP_201_CREATED,
+    summary="Register or update an MCP server", dependencies=[_REQUIRE_MANAGE],
+)
 async def register_mcp_server(
     req: McpServerRequest,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Add or update an MCP server configuration."""
-    if not re.match(r"^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$", req.name):
+    """Add or update an MCP server of the caller's organization.
+
+    WS-54 IN-4. The server is one org row of the connection registry, keyed
+    ``mcp:<name>``. It is written through ``gateway.connections.mcp`` inside
+    ``tenant_session(org)``, and the headers go into the encrypted blob only.
+    Two orgs can hold one name, and a second register of a name updates the
+    row of the caller's org only. With no tenant bound, it is 403 and nothing
+    is written. Nothing goes to ``mcp_servers`` any more (R6 expand).
+
+    A stdio server starts a process on the host, so it is 422 (D85).
+    """
+    from gateway.connections import mcp as mcp_registry  # noqa: PLC0415
+
+    if not mcp_registry.NAME_RE.match(req.name):
         raise HTTPException(
             422,
             "MCP server name must be 2-50 lowercase letters, digits, "
             "or hyphens.",
         )
-    if req.transport == "stdio" and not req.command:
-        raise HTTPException(422, "stdio transport requires a 'command'.")
-    if req.transport == "http-sse" and not req.url:
+    if req.transport == "stdio":
+        raise HTTPException(422, _MCP_STDIO_REFUSED)
+    if req.transport not in ("http-sse", "http"):
+        raise HTTPException(422, "MCP transport must be 'http-sse'.")
+    if not req.url:
         raise HTTPException(422, "http-sse transport requires a 'url'.")
+    org = current_tenant()
+    if not org:
+        raise HTTPException(403, "No organization is bound to this session.")
+    # WS-8c review round 2 (P0): the URL is customer input, and a stored row
+    # reaches an agent. It passes the MCP rule of the one URL guard (https,
+    # port 443, public addresses only) before any row is written. The run
+    # checks it again and pins it, because DNS can change after this.
+    if req.url:
+        try:
+            await outbound_guard.check_mcp_url(req.url)
+        except outbound_guard.OutboundRefused as exc:
+            _log.warning(
+                "mcp.register_refused", name=req.name, host=exc.host, reason=exc.reason,
+                actor=user.email,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"Metorite does not connect to this URL: {exc.reason}.",
+            ) from None
 
     try:
-        from acb_graph import get_session  # noqa: PLC0415
-        with get_session() as s:
-            s.execute(
-                text("""INSERT INTO mcp_servers (name, label, description, transport, command, url,
-                   env_vars, headers, agent_scope, enabled, updated_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s,now())
-                   ON CONFLICT (name) DO UPDATE SET
-                   label=EXCLUDED.label, description=EXCLUDED.description,
-                   transport=EXCLUDED.transport, command=EXCLUDED.command,
-                   url=EXCLUDED.url, env_vars=EXCLUDED.env_vars,
-                   headers=EXCLUDED.headers, agent_scope=EXCLUDED.agent_scope,
-                   enabled=EXCLUDED.enabled, updated_at=now()"""),
-                (req.name, req.label or req.name, req.description,
-                 req.transport, req.command, req.url,
-                 json.dumps(req.env_vars), json.dumps(req.headers),
-                 json.dumps(req.agent_scope), req.enabled),
-            )
-            s.commit()
-        _log.info("mcp.registered", name=req.name, actor=user.email)
-        return {"ok": True, "name": req.name}
+        saved = await mcp_registry.save(
+            org, name=req.name, url=req.url or "", headers=req.headers,
+            connected_by=user.email, label=req.label or req.name,
+            description=req.description, transport=req.transport,
+            agent_scope=req.agent_scope, enabled=req.enabled,
+            always_confirm=req.always_confirm, read_only_key=req.read_only_key,
+        )
+    except mcp_registry.McpSwitchRefused as exc:
+        # MCP-C2: both switches on, or the read-only key on an OAuth row.
+        raise _mcp_switch_refusal(exc) from None
+    except mcp_registry.OAuthUrlChange:
+        # WS-54 IN-8a (review of #931): the token of an OAuth server is for
+        # its URL. A new URL is another server, so the admin disconnects it
+        # first. The row stays as it was.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This server is connected over OAuth. Disconnect it first "
+                   "to change its URL.",
+        ) from None
     except Exception as exc:
-        _log.warning("mcp.register_failed", name=req.name, error=str(exc))
-        raise HTTPException(500, f"DB error: {exc}") from exc
+        # The class of the error only: a DB message can echo a bound header.
+        _log.warning("mcp.register_failed", name=req.name, error=type(exc).__name__)
+        raise HTTPException(500, "The MCP server could not be saved.") from exc
+    # H-300: a register can turn the switch off, on a new server or on a
+    # re-POST of one that exists, so it writes an audit event as the PATCH
+    # does. The insert sets both stamps to one now(). An update keeps
+    # ``created_at``. No header and no url go into the payload.
+    # MCP-C2: the event records both switches, because a re-POST with no
+    # ``read_only_key`` turns that switch off too.
+    stamp = getattr(saved, "created_at", None)
+    created = stamp is not None and stamp == getattr(saved, "updated_at", None)
+    audit_integration(user, org, f"mcp:{req.name}", action="integration.mcp.registered",
+                      always_confirm=req.always_confirm, read_only_key=req.read_only_key,
+                      outcome="created" if created else "updated")
+    _log.info("mcp.registered", name=req.name, actor=user.email,
+              always_confirm=req.always_confirm, read_only_key=req.read_only_key)
+    return {"ok": True, "name": req.name}
 
 
-@router.delete("/mcp/{name}", summary="Remove an MCP server")
+@router.patch(
+    "/mcp/{name}", summary="Set the always-confirm and read-only-key switches of an MCP server",
+    dependencies=[_REQUIRE_MANAGE],
+)
+async def set_mcp_switches(
+    name: str,
+    req: McpSwitchesRequest,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Turn a switch of one server of the caller's org on or off.
+
+    H-300 (``agent_architecture.md`` §12.2 WS-8c, item 31): with "always
+    confirm" on, every tool of the server waits for the member's card,
+    whatever hints the server sends. MCP-C2 (item 32): with the read-only
+    key on, no tool of the server waits for the card. The body names either
+    switch or both. The change goes through ``gateway.connections.mcp``
+    inside ``tenant_session(org)``, so a name that another organization holds
+    is 404, and its row stays. It changes the named switches only: the
+    headers, the URL and the status stay. With no tenant bound, it is 404 and
+    nothing is written.
+
+    The gateway checks the row as it would be AFTER the change. A change
+    that would leave both switches on is 422, and so is the read-only key
+    on an OAuth row. Each named switch writes one audit event:
+    ``integration.mcp.always_confirm`` and ``integration.mcp.read_only_key``.
+    The answer names the switches of the body, so a body with only
+    ``always_confirm`` gets the H-300 answer.
+    """
+    org = current_tenant()
+    if not org:
+        raise HTTPException(404, f"MCP server '{name}' not found.")
+    from gateway.connections import mcp as mcp_registry  # noqa: PLC0415
+
+    try:
+        server = await mcp_registry.set_switches(
+            org, name, always_confirm=req.always_confirm, read_only_key=req.read_only_key,
+        )
+    except mcp_registry.McpSwitchRefused as exc:
+        _log.info("mcp.switches_refused", name=name, actor=user.email, reason=exc.reason)
+        raise _mcp_switch_refusal(exc) from None
+    except Exception as exc:
+        # The class of the error only: a DB message can echo a bound value.
+        _log.warning("mcp.always_confirm_failed", error=type(exc).__name__)
+        raise HTTPException(500, "The MCP server could not be changed.") from exc
+    if server is None:
+        raise HTTPException(404, f"MCP server '{name}' not found.")
+    out: dict[str, Any] = {"ok": True, "name": server.name}
+    if req.always_confirm is not None:
+        audit_integration(user, org, f"mcp:{server.name}",
+                          action="integration.mcp.always_confirm",
+                          always_confirm=server.always_confirm)
+        _log.info("mcp.always_confirm_set", name=server.name, actor=user.email,
+                  always_confirm=server.always_confirm)
+        out["always_confirm"] = server.always_confirm
+    if req.read_only_key is not None:
+        audit_integration(user, org, f"mcp:{server.name}",
+                          action="integration.mcp.read_only_key",
+                          read_only_key=server.read_only_key)
+        _log.info("mcp.read_only_key_set", name=server.name, actor=user.email,
+                  read_only_key=server.read_only_key)
+        out["read_only_key"] = server.read_only_key
+    return out
+
+
+@router.delete(
+    "/mcp/{name}", summary="Remove an MCP server", dependencies=[_REQUIRE_MANAGE],
+)
 async def remove_mcp_server(
     name: str,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Delete an MCP server from the registry."""
+    """Delete an MCP server of the caller's organization from the registry.
+
+    🔒 WS-54 IN-4. The delete runs inside ``tenant_session(org)``, so a name
+    that another organization holds is 404 here, and its row stays. The old
+    ``mcp_servers`` row of the caller's org goes too, or the next read would
+    move it back. With no tenant bound, it is 404 and nothing is deleted.
+    """
+    org = current_tenant()
+    if not org:
+        raise HTTPException(404, f"MCP server '{name}' not found.")
     try:
-        from acb_graph import get_session  # noqa: PLC0415
-        with get_session() as s:
-            result = s.execute(
-                text("DELETE FROM mcp_servers WHERE name = :name"), {"name": name},
-            )
-            s.commit()
-            if result.rowcount == 0:
-                raise HTTPException(404, f"MCP server '{name}' not found.")
-        _log.info("mcp.removed", name=name, actor=user.email)
-        return {"ok": True, "deleted": name}
-    except HTTPException:
-        raise
+        from gateway.connections import mcp as mcp_registry  # noqa: PLC0415
+
+        removed = await mcp_registry.remove(org, name)
     except Exception as exc:
-        raise HTTPException(500, f"DB error: {exc}") from exc
+        # The class of the error only: a DB message can echo a bound value.
+        _log.warning("mcp.remove_failed", error=type(exc).__name__)
+        raise HTTPException(500, "The MCP server could not be removed.") from exc
+    if not removed:
+        raise HTTPException(404, f"MCP server '{name}' not found.")
+    _log.info("mcp.removed", name=name, actor=user.email)
+    return {"ok": True, "deleted": name}
 
 
-@router.post("/mcp/test", summary="Test connectivity to an MCP server")
+@router.post(
+    "/mcp/test", summary="Test connectivity to an MCP server",
+    dependencies=[_REQUIRE_MANAGE],
+)
 async def test_mcp_server(
     req: McpServerRequest,
     user: UserContext = Depends(get_current_user),
@@ -1537,29 +2263,45 @@ async def test_mcp_server(
     """Perform a lightweight connectivity check for an MCP server.
 
     For http-sse: makes a GET to the URL to verify reachability.
-    For stdio: checks that the command is executable.
+    For stdio: 422, because Metorite runs no stdio server (D85, WS-8c).
     Returns {ok, detail}.
+
+    🔒 WS-54 IN-0. The URL is customer input, so the GET goes through the
+    gateway's one URL guard, ``gateway/outbound_guard.py``. A private,
+    loopback, link-local or metadata address is 422, and no request goes
+    out. A 3xx answer is a refusal too, because its target never passed the
+    check.
     """
     if req.transport == "http-sse" and req.url:
+        headers = dict(req.headers)
+        headers.setdefault("Accept", "application/json")
+        # The guard keeps raw bytes and decodes no content encoding.
+        headers["Accept-Encoding"] = "identity"
         try:
-            headers = dict(req.headers)
-            headers.setdefault("Accept", "application/json")
-            async with httpx.AsyncClient(timeout=8) as client:
-                resp = await client.get(req.url, headers=headers)
-                if resp.status_code < 500:
-                    return {"ok": True, "detail": f"Server reachable (HTTP {resp.status_code})."}
-                return {"ok": False, "detail": f"Server returned HTTP {resp.status_code}."}
+            answer = await outbound_guard.request("GET", req.url, headers=headers)
+        except outbound_guard.OutboundRefused as exc:
+            _log.warning(
+                "mcp.test_refused", host=exc.host, reason=exc.reason, actor=user.email,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"Metorite does not connect to this URL: {exc.reason}.",
+            ) from None
         except httpx.ConnectError:
             return {"ok": False, "detail": f"Could not connect to {req.url}."}
         except Exception as exc:
             return {"ok": False, "detail": str(exc)}
-    if req.transport == "stdio" and req.command:
-        import shutil  # noqa: PLC0415
-        exe = (req.command or "").split()[0]
-        if shutil.which(exe):
-            return {"ok": True, "detail": f"Command '{exe}' found on PATH."}
-        return {"ok": False, "detail": f"Command '{exe}' not found on PATH."}
-    return {"ok": False, "detail": "No URL or command to test."}
+        if answer.status_code < 500:
+            return {"ok": True, "detail": f"Server reachable (HTTP {answer.status_code})."}
+        return {"ok": False, "detail": f"Server returned HTTP {answer.status_code}."}
+    if req.transport == "stdio":
+        # D85 (WS-8c): no stdio server runs, so there is nothing to test, and
+        # a tenant may not probe the PATH of the host.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=_MCP_STDIO_REFUSED,
+        )
+    return {"ok": False, "detail": "No URL to test."}
 
 
 # ---------------------------------------------------------------------------
@@ -1570,14 +2312,43 @@ class PluginInstallRequest(BaseModel):
     manifest_url: str
 
 
+#: WS-8c (IN-D6): the upsert of ONE organization's plugin. Migration 158
+#: replaced ``plugins_name_key`` with the unique index ``plugins_org_name_key``
+#: on ``(organization_id, name)``, so that pair is the conflict key.
+_PLUGIN_INSTALL_SQL = (
+    "INSERT INTO plugins (organization_id, name, label, description, "
+    "manifest_url, openapi_url, logo_url, auth_type, auth_config, manifest, "
+    "openapi_spec, tools_generated, enabled, version, updated_at) VALUES "
+    "(:org, :name, :label, :description, :manifest_url, :openapi_url, "
+    ":logo_url, :auth_type, CAST(:auth_config AS jsonb), "
+    "CAST(:manifest AS jsonb), CAST(:openapi_spec AS jsonb), "
+    "CAST(:tools_generated AS jsonb), :enabled, :version, now()) "
+    "ON CONFLICT (organization_id, name) DO UPDATE SET "
+    "label = EXCLUDED.label, description = EXCLUDED.description, "
+    "manifest_url = EXCLUDED.manifest_url, openapi_url = EXCLUDED.openapi_url, "
+    "logo_url = EXCLUDED.logo_url, auth_type = EXCLUDED.auth_type, "
+    "auth_config = EXCLUDED.auth_config, manifest = EXCLUDED.manifest, "
+    "openapi_spec = EXCLUDED.openapi_spec, "
+    "tools_generated = EXCLUDED.tools_generated, "
+    "enabled = EXCLUDED.enabled, version = EXCLUDED.version, updated_at = now()"
+)
+
+
 @router.get("/plugins", summary="List installed plugins")
 async def list_plugins(
     user: UserContext = Depends(get_current_user),
 ) -> list[dict[str, Any]]:
-    """Return all installed plugins."""
+    """Return the plugins of the caller's organization.
+
+    H-201: ``plugins`` has FORCE RLS, so the read binds the tenant. With no
+    tenant the list is empty, and no unbound session opens.
+    """
+    org = current_tenant()
+    if not org:
+        return []
     try:
-        from acb_graph import get_session  # noqa: PLC0415
-        with get_session() as s:
+        from acb_graph import tenant_session as _graph_tenant_session  # noqa: PLC0415
+        with _graph_tenant_session(str(org)) as s:
             rows = s.execute(
                 text("SELECT id, name, label, description, manifest_url, openapi_url, "
                 "logo_url, auth_type, auth_config, manifest, openapi_spec, "
@@ -1604,7 +2375,8 @@ async def list_plugins(
 
 
 @router.post("/plugins/install", status_code=status.HTTP_201_CREATED,
-             summary="Install a plugin from a manifest URL")
+             summary="Install a plugin from a manifest URL",
+             dependencies=[_REQUIRE_MANAGE])
 async def install_plugin(
     req: PluginInstallRequest,
     user: UserContext = Depends(get_current_user),
@@ -1613,22 +2385,47 @@ async def install_plugin(
 
     The manifest URL should point to an ai-plugin.json file.
     The OpenAPI spec URL is read from the manifest's ``api.url`` field.
+
+    🔒 WS-54 IN-0. Both URLs are customer input, so both fetches go through
+    the gateway's one URL guard, ``gateway/outbound_guard.py``. A refused
+    manifest URL is 422, and no request goes out. A refused ``api.url`` is
+    logged and skipped. The guard keeps at most
+    ``outbound_guard.MAX_ANSWER_BYTES`` of an answer, so a longer spec does
+    not parse and is skipped too.
     """
     manifest_url = req.manifest_url.strip()
     if not manifest_url.startswith(("https://", "http://")):
         raise HTTPException(422, "Manifest URL must start with http:// or https://.")
+    # WS-8c (IN-D6): the row belongs to the caller's org. With no tenant, no
+    # fetch goes out and no row is written.
+    org = current_tenant()
+    if not org:
+        raise HTTPException(403, "No organization is bound to this session.")
 
     # 1. Fetch the manifest
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            manifest_resp = await client.get(manifest_url, headers={"Accept": "application/json"})
-            if manifest_resp.status_code != 200:
-                raise HTTPException(422, f"Failed to fetch manifest: HTTP {manifest_resp.status_code}")
-            manifest: dict[str, Any] = manifest_resp.json()
-    except HTTPException:
-        raise
+        manifest_resp = await outbound_guard.request(
+            "GET", manifest_url,
+            # The guard keeps raw bytes and decodes no gzip, so ask for none.
+            headers={"Accept": "application/json", "Accept-Encoding": "identity"},
+        )
+    except outbound_guard.OutboundRefused as exc:
+        _log.warning(
+            "plugins.manifest_refused", host=exc.host, reason=exc.reason, actor=user.email,
+        )
+        raise HTTPException(
+            422, f"Metorite does not fetch from this URL: {exc.reason}.",
+        ) from None
     except Exception as exc:
         raise HTTPException(422, f"Failed to fetch manifest: {exc}") from exc
+    if manifest_resp.status_code != 200:
+        raise HTTPException(422, f"Failed to fetch manifest: HTTP {manifest_resp.status_code}")
+    try:
+        manifest: dict[str, Any] = json.loads(manifest_resp.body)
+    except ValueError as exc:
+        raise HTTPException(422, f"Failed to fetch manifest: {exc}") from exc
+    if not isinstance(manifest, dict):
+        raise HTTPException(422, "The manifest is not a JSON object.")
 
     # 2. Validate required fields
     plugin_name = (manifest.get("name_for_model") or manifest.get("name") or "").strip()
@@ -1647,45 +2444,48 @@ async def install_plugin(
     tools_generated: list[dict[str, Any]] = []
     if api_url:
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                spec_resp = await client.get(api_url, headers={"Accept": "application/json, application/yaml"})
-                if spec_resp.status_code == 200:
-                    content_type = spec_resp.headers.get("content-type", "")
-                    if "yaml" in content_type:
-                        import yaml  # noqa: PLC0415
-                        openapi_spec = yaml.safe_load(spec_resp.text) or {}
-                    else:
-                        openapi_spec = spec_resp.json()
-                    # Generate tool definitions from OpenAPI paths
-                    tools_generated = _openapi_to_tool_defs(plugin_name, openapi_spec)
+            spec_resp = await outbound_guard.request(
+                "GET", str(api_url),
+                headers={
+                    "Accept": "application/json, application/yaml",
+                    "Accept-Encoding": "identity",
+                },
+            )
+            if spec_resp.status_code == 200:
+                # The guard gives no headers, so JSON first, then YAML.
+                try:
+                    openapi_spec = json.loads(spec_resp.body)
+                except ValueError:
+                    import yaml  # noqa: PLC0415
+                    openapi_spec = yaml.safe_load(spec_resp.body.decode("utf-8")) or {}
+                # Generate tool definitions from OpenAPI paths
+                tools_generated = _openapi_to_tool_defs(plugin_name, openapi_spec)
+        except outbound_guard.OutboundRefused as exc:
+            _log.warning(
+                "plugins.openapi_refused", name=plugin_name, host=exc.host, reason=exc.reason,
+            )
         except Exception as exc:
             _log.warning("plugins.openapi_fetch_failed", name=plugin_name, error=str(exc))
 
-    # 4. Store in DB
+    # 4. Store in DB. ``plugins`` has FORCE RLS (phase 4), so the write binds
+    # the tenant. An unbound session would write nothing once RLS applies.
     try:
-        from acb_graph import get_session  # noqa: PLC0415
-        with get_session() as s:
+        from acb_graph import tenant_session  # noqa: PLC0415
+        with tenant_session(org) as s:
             s.execute(
-                text("""INSERT INTO plugins (name, label, description, manifest_url, openapi_url,
-                   logo_url, auth_type, auth_config, manifest, openapi_spec,
-                   tools_generated, enabled, version, updated_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,
-                           %s::jsonb,%s,%s,now())
-                   ON CONFLICT (name) DO UPDATE SET
-                   label=EXCLUDED.label, description=EXCLUDED.description,
-                   manifest_url=EXCLUDED.manifest_url, openapi_url=EXCLUDED.openapi_url,
-                   logo_url=EXCLUDED.logo_url, auth_type=EXCLUDED.auth_type,
-                   auth_config=EXCLUDED.auth_config, manifest=EXCLUDED.manifest,
-                   openapi_spec=EXCLUDED.openapi_spec,
-                   tools_generated=EXCLUDED.tools_generated,
-                   enabled=EXCLUDED.enabled, version=EXCLUDED.version,
-                   updated_at=now()"""),
-                (plugin_name, label, description, manifest_url, api_url,
-                 logo_url, auth_type, json.dumps(manifest.get("auth", {}) or {}),
-                 json.dumps(manifest), json.dumps(openapi_spec),
-                 json.dumps(tools_generated), True, version),
+                text(_PLUGIN_INSTALL_SQL),
+                {
+                    "org": org, "name": plugin_name, "label": label,
+                    "description": description, "manifest_url": manifest_url,
+                    "openapi_url": api_url, "logo_url": logo_url,
+                    "auth_type": auth_type,
+                    "auth_config": json.dumps(manifest.get("auth", {}) or {}),
+                    "manifest": json.dumps(manifest),
+                    "openapi_spec": json.dumps(openapi_spec),
+                    "tools_generated": json.dumps(tools_generated),
+                    "enabled": True, "version": version,
+                },
             )
-            s.commit()
         _log.info("plugin.installed", name=plugin_name, actor=user.email)
         return {
             "ok": True, "name": plugin_name, "label": label,
@@ -1698,7 +2498,10 @@ async def install_plugin(
         raise HTTPException(500, f"DB error: {exc}") from exc
 
 
-@router.delete("/plugins/{plugin_id}", summary="Remove an installed plugin")
+@router.delete(
+    "/plugins/{plugin_id}", summary="Remove an installed plugin",
+    dependencies=[_REQUIRE_MANAGE],
+)
 async def remove_plugin(
     plugin_id: str,
     user: UserContext = Depends(get_current_user),
@@ -1709,11 +2512,15 @@ async def remove_plugin(
         pid = _uuid.UUID(plugin_id)
     except ValueError:
         raise HTTPException(422, "Invalid plugin ID format.") from None
+    # H-201: the delete binds the tenant. Another org's plugin is not visible,
+    # so it is 404. With no tenant it is 404 too, and nothing is deleted.
+    org = current_tenant()
+    if not org:
+        raise HTTPException(404, f"Plugin '{plugin_id}' not found.")
     try:
-        from acb_graph import get_session  # noqa: PLC0415
-        with get_session() as s:
+        from acb_graph import tenant_session as _graph_tenant_session  # noqa: PLC0415
+        with _graph_tenant_session(str(org)) as s:
             result = s.execute(text("DELETE FROM plugins WHERE id = :id"), {"id": pid})
-            s.commit()
             if result.rowcount == 0:
                 raise HTTPException(404, f"Plugin '{plugin_id}' not found.")
         _log.info("plugin.removed", id=plugin_id, actor=user.email)
@@ -1780,170 +2587,89 @@ def _openapi_to_tool_defs(plugin_name: str, spec: dict[str, Any]) -> list[dict[s
 # GitHub OAuth Device Flow
 # ---------------------------------------------------------------------------
 
-@router.post("/github/device/start")
+#: WS-54 GH-7 (§7.6): the device flow needed the customer's own OAuth App
+#: client id (an org row of the key store), and BYOK blocked its poll. The
+#: Metorite GitHub App replaces it, and a pasted token stays as the Advanced
+#: path (`PUT /integrations/github/token`). Both routes stay as a 410, so an
+#: old client gets a clear answer. Nothing reads the client id any more.
+DEVICE_FLOW_GONE = (
+    "The GitHub device flow is retired. Connect GitHub in Integrations, or "
+    "paste a personal access token under Advanced."
+)
+
+
+@router.post("/github/device/start", dependencies=[_REQUIRE_MANAGE])
 async def github_device_start(
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Initiate the GitHub OAuth Device Flow.
-
-    Returns the user_code and verification_uri to show in the UI.
-    The frontend polls /github/device/poll until the user approves.
-
-    Requires GITHUB_CLIENT_ID to be configured (via /configure first).
-    """
-    settings = get_settings()
-    client_id: str = getattr(settings, "github_client_id", "")
-    if not client_id.strip():
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="GITHUB_CLIENT_ID is not configured. Save it via /integrations/configure first.",
-        )
-
-    async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.post(
-            "https://github.com/login/device/code",
-            data={"client_id": client_id, "scope": "repo copilot"},
-            headers={"Accept": "application/json"},
-        )
-
-    data = resp.json()
-    if "error" in data:
-        raise HTTPException(
-            status_code=502,
-            detail=f"GitHub error: {data['error']} — {data.get('error_description', '')}",
-        )
-
-    _log.info("github.device.start", actor=user.email)
-    return {
-        "user_code": data["user_code"],
-        "verification_uri": data["verification_uri"],
-        "device_code": data["device_code"],
-        "expires_in": data["expires_in"],
-        "interval": data["interval"],
-    }
+    """Retired (WS-54 GH-7). It answers 410 and calls nothing."""
+    _log.info("github.device_start_retired", actor=user.email)
+    raise HTTPException(status_code=status.HTTP_410_GONE, detail=DEVICE_FLOW_GONE)
 
 
-@router.post("/github/device/poll")
+@router.post("/github/device/poll", dependencies=[_REQUIRE_MANAGE])
 async def github_device_poll(
     req: DevicePollRequest,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Poll GitHub to check if the user has approved the device flow.
-
-    Returns:
-        {status: "authorized", login: str}  — token saved to .env, Settings reloaded
-        {status: "pending"}                 — user hasn't approved yet, keep polling
-        {status: "slow_down", interval: int} — increase polling interval
-        {status: "expired"}                 — code expired, restart flow
-        {status: "denied"}                  — user denied access
-    """
-    settings = get_settings()
-    client_id: str = getattr(settings, "github_client_id", "")
-    if not client_id.strip():
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="GITHUB_CLIENT_ID is not configured.",
-        )
-
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.post(
-            "https://github.com/login/oauth/access_token",
-            data={
-                "client_id": client_id,
-                "device_code": req.device_code,
-                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-            },
-            headers={"Accept": "application/json"},
-        )
-
-    data = resp.json()
-
-    if "access_token" in data:
-        token: str = data["access_token"]
-        # Persist to .env and hot-reload
-        env_path = _find_env_file()
-        _upsert_env_var(env_path, "GITHUB_TOKEN", token)
-        os.environ["GITHUB_TOKEN"] = token
-        from acb_common.settings import get_settings as _gs  # noqa: PLC0415
-        _gs.cache_clear()
-
-        # Fetch the GitHub login name for a friendly confirmation message
-        login = "unknown"
-        try:
-            async with httpx.AsyncClient(timeout=5) as client:
-                ur = await client.get(
-                    "https://api.github.com/user",
-                    headers={
-                        "Authorization": f"token {token}",
-                        "Accept": "application/vnd.github.v3+json",
-                    },
-                )
-                if ur.status_code == 200:
-                    login = ur.json().get("login", "unknown")
-        except Exception:  # noqa: BLE001
-            pass
-
-        _log.info("github.device.authorized", login=login, actor=user.email)
-        return {"status": "authorized", "login": login}
-
-    error = data.get("error", "unknown")
-    if error == "slow_down":
-        return {"status": "slow_down", "interval": data.get("interval", 10)}
-    if error in ("expired_token", "access_denied"):
-        return {"status": error.replace("_", "-")}
-    # authorization_pending and anything else
-    return {"status": "pending"}
+    """Retired (WS-54 GH-7). It answers 410, calls nothing and stores nothing."""
+    _log.info("github.device_poll_retired", actor=user.email)
+    raise HTTPException(status_code=status.HTTP_410_GONE, detail=DEVICE_FLOW_GONE)
 
 
 # ---------------------------------------------------------------------------
 # GitHub account info & CLI import
 # ---------------------------------------------------------------------------
 
-def _parse_gh_status(output: str) -> dict[str, Any]:
-    """Parse `gh auth status` output into structured fields."""
-    result: dict[str, Any] = {
-        "authenticated": False,
-        "login": None,
-        "scopes": [],
-        "has_copilot": False,
-    }
-    if "Logged in to github.com" not in output:
-        return result
-    result["authenticated"] = True
-    login_m = re.search(r"account\s+(\S+)\s+\(", output)
-    if login_m:
-        result["login"] = login_m.group(1)
-    scope_line = next((ln for ln in output.splitlines() if "Token scopes:" in ln), "")
-    result["scopes"] = re.findall(r"'([^']+)'", scope_line)
-    result["has_copilot"] = "copilot" in result["scopes"]
-    return result
+def _github_org() -> str:
+    """The organization of the request, from the bound tenant (R5). 403 if none."""
+    org = current_tenant()
+    if not org:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="No organization is bound.",
+        )
+    return str(org)
 
 
 @router.get("/github/account")
 async def github_account(
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Return current GitHub account info: connected token details + gh CLI status.
+    """Return the GitHub connection of the caller's organization.
+
+    🔒 WS-54 IN-7 (IN-D18). It reads the org connection and nothing else. It
+    never reads the deployment ``GITHUB_TOKEN`` and never runs ``gh``, so a
+    member never sees the account of the operator. No token is in the answer.
 
     Response fields:
-        token_configured (bool)   — GITHUB_TOKEN is set in env
-        token_login      (str?)   — GitHub login resolved from the token
-        token_scopes     (list)   — OAuth scopes on the token (from X-OAuth-Scopes header)
-        token_has_copilot(bool)   — whether 'copilot' scope is present
-        gh_cli_available (bool)   — gh binary is on PATH
-        gh_cli_authenticated(bool)— gh has a logged-in account
-        gh_cli_login     (str?)   — account name from gh auth status
-        gh_cli_scopes    (list)   — scopes on the CLI token
-        gh_cli_has_copilot(bool)  — whether gh CLI token has 'copilot' scope
+        connected (bool)       — the organization holds a live connection
+        status (str)           — connected, needs_reconnect, disconnected or not_connected
+        login (str?)           — the GitHub user or org name
+        scopes (list)          — the token scopes
+        connected_by (str?)    — the member who connected it
+        token_configured, token_login, token_scopes, token_has_copilot —
+            the same facts under the names that the account badge reads
+        gh_cli_*               — always empty. The CLI import is retired.
     """
-    settings = get_settings()
-    token: str = getattr(settings, "github_token", "") or ""
+    from gateway.connections import github_app
 
-    info: dict[str, Any] = {
-        "token_configured": bool(token.strip()),
-        "token_login": None,
-        "token_scopes": [],
-        "token_has_copilot": False,
+    org = _github_org()
+    summary = await github_connection.account_summary(org)
+    scopes: list[str] = summary["scopes"]
+    try:
+        # WS-54 GH-3: the card offers Connect GitHub only when the App can run.
+        # SW-53: and only when GITHUB_APP_ORGS holds this org, so an org off
+        # the list never sees a button that the connect route refuses.
+        app_available = github_app.github_app_org_allowed(org) and bool(github_app.slug())
+    except github_app.GitHubAppNotConfigured:
+        app_available = False
+    return {
+        **summary,
+        "app_available": app_available,
+        "token_configured": summary["connected"],
+        "token_login": summary["login"],
+        "token_scopes": scopes,
+        "token_has_copilot": "copilot" in scopes,
         "gh_cli_available": False,
         "gh_cli_authenticated": False,
         "gh_cli_login": None,
@@ -1951,124 +2677,76 @@ async def github_account(
         "gh_cli_has_copilot": False,
     }
 
-    # Resolve info from current GITHUB_TOKEN via GitHub REST API
-    if token.strip():
-        try:
-            async with httpx.AsyncClient(timeout=8) as client:
-                resp = await client.get(
-                    "https://api.github.com/user",
-                    headers={
-                        "Authorization": f"token {token}",
-                        "Accept": "application/vnd.github.v3+json",
-                    },
-                )
-                if resp.status_code == 200:
-                    info["token_login"] = resp.json().get("login")
-                    scopes_header = resp.headers.get("X-OAuth-Scopes", "")
-                    info["token_scopes"] = [s.strip() for s in scopes_header.split(",") if s.strip()]
-                    info["token_has_copilot"] = "copilot" in info["token_scopes"]
-        except Exception:  # noqa: BLE001
-            pass
 
-    # Check gh CLI availability + auth state (non-blocking; failure is graceful)
-    try:
-        proc = subprocess.run(
-            ["gh", "auth", "status"],
-            capture_output=True,
-            text=True,
-            timeout=8,
-        )
-        output = proc.stdout + proc.stderr
-        parsed = _parse_gh_status(output)
-        info["gh_cli_available"] = True
-        info["gh_cli_authenticated"] = parsed["authenticated"]
-        info["gh_cli_login"] = parsed["login"]
-        info["gh_cli_scopes"] = parsed["scopes"]
-        info["gh_cli_has_copilot"] = parsed["has_copilot"]
-    except FileNotFoundError:
-        pass  # gh not installed
-    except Exception:  # noqa: BLE001
-        info["gh_cli_available"] = True  # binary found but errored
+@router.delete("/github", dependencies=[_REQUIRE_MANAGE])
+async def github_disconnect(
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Disconnect GitHub for the caller's organization.
 
-    return info
+    🔒 WS-54 IN-7. It deletes the stored token and sets ``disconnected``.
+    Metorite cannot revoke a pasted personal access token at GitHub, so the
+    answer says so (``revoked_at_github: false``) and names
+    https://github.com/settings/tokens. For an ``app`` row (GH-3, GH-E10) it
+    uninstalls nothing at GitHub and answers the installation page instead.
+    """
+    org = _github_org()
+    before = await github_connection.connection(org)
+    if github_connection.is_app_row(before):
+        # WS-54 GH-3 (§7.5, GH-E10): the row goes, and Metorite does NOT
+        # uninstall the App at GitHub. The answer gives the admin the link.
+        summary = await github_connection.account_summary(org)
+        removed = await github_connection.disconnect(org)
+        _log.info("github.disconnected", actor=user.email, removed=removed, mode="app")
+        return {
+            "disconnected": True,
+            "removed": removed,
+            "revoked_at_github": False,
+            "installation_url": summary.get("installation_url"),
+            "note": (
+                "Metorite no longer reads this GitHub account. The Metorite App "
+                "stays installed at GitHub. To remove it, open the installation "
+                "page and uninstall it there."
+            ),
+        }
+    removed = await github_connection.disconnect(org)
+    _log.info("github.disconnected", actor=user.email, removed=removed)
+    return {
+        "disconnected": True,
+        "removed": removed,
+        "revoked_at_github": False,
+        "note": (
+            "The token is deleted from Metorite. Metorite cannot revoke a "
+            "personal access token at GitHub, so revoke it at "
+            "https://github.com/settings/tokens."
+        ),
+    }
 
 
 @router.post(
     "/github/connect-cli",
-    dependencies=[require_role(UserRole.EXECUTIVE, UserRole.AGENT)],
+    dependencies=[require_role(UserRole.EXECUTIVE, UserRole.AGENT), _REQUIRE_MANAGE],
 )
 async def github_connect_cli(
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Import the active GitHub CLI token into GITHUB_TOKEN in .env.
+    """Retired (WS-54 IN-0). It answers 410 and runs no ``gh`` subprocess.
 
-    Reads the token via `gh auth token`, checks its scopes, writes to .env,
-    and returns the connected account details.
+    It read the token of the ``gh`` CLI on the box, which is the operator's
+    own GitHub identity, and wrote it to ``GITHUB_TOKEN`` for the whole
+    deployment. To store that token in a tenant row would give the
+    operator's identity to that tenant, so it writes nothing at all. A member
+    connects GitHub with the GitHub card (WS-54 GH-3, GH-7). It stays as a 410
+    so that an old client gets a clear answer.
 
-    If the token lacks the `copilot` scope, the import still succeeds (repo
-    cloning will work) but `has_copilot` is False and `refresh_command` is
-    returned so the user knows what to run to gain model access.
+    🔒 The BYOK gate still runs first, so the answer with BYOK off stays 403.
     """
-    # 1. Read token from gh CLI
-    try:
-        proc = subprocess.run(
-            ["gh", "auth", "token"],
-            capture_output=True,
-            text=True,
-            timeout=8,
-        )
-    except FileNotFoundError:
-        raise HTTPException(
-            status_code=400,
-            detail="GitHub CLI (gh) is not installed or not in PATH.",
-        )
-
-    if proc.returncode != 0 or not proc.stdout.strip():
-        raise HTTPException(
-            status_code=400,
-            detail="gh CLI is not authenticated. Run: gh auth login",
-        )
-
-    token = proc.stdout.strip()
-
-    # 2. Parse scopes + login from gh auth status
-    login = "unknown"
-    scopes: list[str] = []
-    try:
-        status_proc = subprocess.run(
-            ["gh", "auth", "status"],
-            capture_output=True,
-            text=True,
-            timeout=8,
-        )
-        parsed = _parse_gh_status(status_proc.stdout + status_proc.stderr)
-        login = parsed["login"] or "unknown"
-        scopes = parsed["scopes"]
-    except Exception:  # noqa: BLE001
-        pass
-
-    # 3. Save to .env and hot-reload settings
-    env_path = _find_env_file()
-    _upsert_env_var(env_path, "GITHUB_TOKEN", token)
-    os.environ["GITHUB_TOKEN"] = token
-    from acb_common.settings import get_settings as _gs  # noqa: PLC0415
-    _gs.cache_clear()
-
-    has_copilot = "copilot" in scopes
-    _log.info("github.connect_cli", login=login, has_copilot=has_copilot, actor=user.email)
-
-    return {
-        "ok": True,
-        "login": login,
-        "scopes": scopes,
-        "has_copilot": has_copilot,
-        "refresh_command": "gh auth refresh --scopes copilot,repo" if not has_copilot else None,
-        "message": (
-            f"Connected as @{login}."
-            + (
-                ""
-                if has_copilot
-                else " Token lacks 'copilot' scope — Copilot models unavailable until you refresh."
-            )
+    _refuse_provider_key_without_byok(["GITHUB_TOKEN"])
+    _log.info("github.connect_cli_retired", actor=user.email)
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail=(
+            "Import from the GitHub CLI is retired. Connect GitHub in "
+            "Integrations instead."
         ),
-    }
+    )

@@ -97,7 +97,7 @@ export default function PeopleOverviewPage() {
   return (
     <main className={PAGE_FRAME}>
       <PageHeader
-        title="People"
+        title="Overview"
         meta={`${res.total_people} on record`}
         subtitle={
           res.partial

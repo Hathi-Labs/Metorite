@@ -1,0 +1,2781 @@
+# The shell — how a member finds an app, a job or an answer
+
+**Status:** Specified 2026-10-05. Built so far: NS-1 slice 1, NS-2 slices 1
+and 2, NS-3 slices A, B and C, NS-4a, NS-4b, NS-6 slice 6a, NS-7, NS-10, NS-10b and NS-11. The shell bar is ON in production
+since 2026-10-08. NS-2 slice 1 is ON in production since 2026-10-09
+(`NEXT_PUBLIC_SHELL_NAV=1`, owner decision). Board row **WS-44**.
+
+**BUILT 2026-11-08, by owner direction (ASK-1, task 2242):** on a desktop,
+every page scrolls its last line clear of the floating Ask bar (§7.1, "The last
+line of a page scrolls clear of the Ask bar"). It has no flag, and it ships
+live.
+
+Email (2026-10-29, task #914): its own `CommandPalette`, its ⌘K listener and its
+`⌘K` button are gone. Its "Write an email" job is the one command that the shell
+carries. Fence: `src/app/email/emailShellSeam.test.ts`.
+
+NS-2 slice 2 (2026-10-09) adds three jobs and the job route fence. It rides
+the shell bar flag, which is on.
+
+**BUILT 2026-10-09, by owner direction:** the shell bar spans the full width
+and carries the organization's logo (§3.1). Organisation is an app in Admin,
+and it left the account menu (§3.2a item 4). Both ride the two shell flags,
+which are on in production.
+
+**BUILT 2026-10-10, by owner direction:** the shell bar is constant, and an
+app never renders into it. Every app opens with its own title bar,
+`AppTopBar`, under the shell bar (§3.1, §5.2 rule 3). This reverses NS-1's
+merged row and the default of §13.3 Q4. It rides the shell bar flag, which
+is on in production.
+
+Review round 2 added four rules to §3.1. The bar wraps,
+and a phone draws the compact bar. Chat on a phone has none, and the Settings
+sub-pages take the bar. Round 3 added a fifth: only the actions and the tools
+wrap, so a long name never parts the rail toggle from the name.
+
+NS-3 slice B (2026-10-09) builds My Day at `/`, behind `NEXT_PUBLIC_MY_DAY`.
+The owner turned it ON in production on 2026-10-10 (§13.1). NS-3 slice C
+(2026-10-10) adds Approvals to the needs feed and to My Day.
+
+**BUILT 2026-10-23 on the branch `one-assistant-email`, not merged: email
+through the one assistant** (§7.1.1). A working set of email ids for each
+chat, the mailboxes on every surface, email cards in the dock and a mailbox
+mark. No flag and no migration.
+
+**NS-6 slice 6b BUILT 2026-10-13, ON in production since 2026-10-13 (owner): the chat bar and the one
+assistant** (D99, §7.1). On 2026-10-14 the owner moved the one field into the
+shell bar, and the bar at the foot of the page is gone (D102, amended). It is behind `NEXT_PUBLIC_SHELL_CHAT`, and the flag
+counts as on only with both shell flags on. Migration 254 adds
+`chat_session.archived_at`. Only the owner turns the flag on in production
+(§13.1).
+
+**NS-6 slice 6a BUILT 2026-10-10, dark: the one bell** (§7.2). The shell draws
+"Needs you" at the right end of the shell bar, before Activity. It is behind
+`NEXT_PUBLIC_SHELL_DOCK`, which is off by default. With the flag on, Projects
+and My Tasks mount no bell of their own. The dock is slice 6b, and it is not
+built. Only the owner turns the flag on in production (§13.1).
+
+**BUILT 2026-10-10: NS-7, presets, pins and the first sign-in question.** It
+rides `NEXT_PUBLIC_SHELL_NAV`, which is on in production. So the merge is its
+release, by owner decision of 2026-10-10. §11 records this exception, and
+§8 holds the table that the owner approved.
+
+**BUILT 2026-10-14, by owner direction: the account returns to the
+sidebar's foot, with one menu.** With the shell bar on, the foot is the
+account row: the avatar, the name and the email. It opens ONE menu, in this
+order: the accounts, Add, You, Settings and sign-out. The bar's right end is
+the assistant, the bell and the activity control. The Metorite logo left the
+bar and the sidebar. **The Metorite mark signs the foot of the account menu
+(owner, 2026-10-14).** It rides the shell
+bar flag, which is on, so the merge is its release. §3.1 and §3.3 hold the
+shape.
+
+~~**BUILT 2026-10-12, by owner direction: the account moves to the top
+right.**~~ **Superseded on 2026-10-14.** That shape put the account at the
+bar's right end, and our comet and the word "Metorite" at the sidebar's
+foot.
+
+**BUILT 2026-10-11, by owner direction: the star model.** The sidebar has no
+"My apps" group now. Each category lists only the apps that the member
+starred. The first sign-in dialog has a second step to choose them. A row
+menu hides an app, and a category folds. It rides the same flag, so the
+merge is its release. §3.2b holds the model.
+
+**BUILT 2026-10-11, by owner direction: row counts.** Each app row in the
+sidebar and the phone drawer shows a quiet count of what needs the member
+there. The count comes from the needs feed of My Day and the bell. It rides
+the same flag, so the merge is its release. §3.2c holds the rules.
+
+Decisions **D87**, **D88** and **D89** (`work_plan.md` §3).
+**Verified against code on 2026-10-05** at `origin/main` `10ef419d6`.
+**Owner:** vjvarada.
+
+**Repair round 1, 2026-10-05.** The review found five P1 defects and six P2
+defects, and this version fixes them. Round 2 fixes what the verifier
+found: a wrong cap citation, three listener sites and five stale anchors.
+
+**Design record:** the concept page "Metorite Navigation Concepts", version 3,
+2026-10-05, private to the owner. It holds a clickable prototype for four
+people. Where the page and this spec disagree, this spec wins.
+
+**Single owner.** This spec owns the shell. That is the bar, the sidebar shape,
+Home, the command bar, the dock and the bell. It also owns the account menu,
+role presets and the app manifest.
+
+`launch_surface.md` keeps owning WHICH panes are live.
+`DESIGN_SYSTEM.md` keeps owning how a surface looks. Each app's own spec keeps
+owning what happens inside the app.
+
+---
+
+## 0. The answer in one screen
+
+The shell gets six parts that every app shares. Each app plugs into them
+through one manifest, and no app builds its own copy.
+
+1. **One shell bar, the same on every page.** It holds the logo, the command
+   bar and the shell's own controls, and nothing of an app. Each app opens
+   under it with its own title bar, `AppTopBar` (owner, 2026-10-10, §3.1).
+2. **My Day at `/`.** The personal rollup that Personal Center lacks today. It
+   replaces the "Welcome back" grid, which repeats the sidebar with no data.
+3. **One Home at three altitudes (D87).** Personal, a team, and all my teams.
+   One scope chip moves between them. A team view is a filter of one page. It
+   is never a Center destination.
+4. **One command bar (D88).** It is always visible. It answers in three tiers:
+   the registry at once, then record search, then AI. Tiers 0 and 1 are free.
+   Tier 2 is metered at the cheapest tier and shows no price.
+5. **One assistant dock and one bell.** The three per-app assistant rails
+   become one dock. The Projects bell becomes the shell's "Needs you".
+6. **One app manifest (D89).** Every app, built or future, declares its team,
+   purpose, jobs, search, "needs you" items, Home cards and agent. The shell
+   reads the manifest. An app that builds its own palette, bell, dock or ⌘K
+   handler fails a fence.
+
+---
+
+## 1. Scope and non-goals
+
+### 1.1 In scope
+
+- The shell bar, and the title bar each app opens with under it (§3.1).
+- The sidebar shape and the account menu (§3.2, §3.3).
+- Home at three altitudes, and the jobs of the Personal Center apps (§4).
+- The app manifest and its rules for every app (§5).
+- The command bar, its three tiers and its metering (§6).
+- The assistant dock and the bell (§7).
+- What a member sees while Metorite updates (§7.3).
+- Role presets, pins, Desk mode and the first sign-in question (§8).
+- The phone shell (§9).
+
+### 1.2 Non-goals — named so nobody builds them from this file
+
+- **No new app.** CRM, Finance and the other team apps keep their own specs.
+  This spec gives them a place to plug in.
+- **No change to grants or features.** `preview` is still not a permission
+  (`launch_surface.md` §3). A preset, a pin or an altitude never grants or
+  denies anything.
+- **No Center destination.** D49 stands. §4.2 lists the rules that keep a team
+  view from turning into one.
+- **No second look.** New parts use `src/components/ui/` and the tokens.
+  `DESIGN_SYSTEM.md` binds them.
+- **No second task store.** My Day reads the one lens (D53).
+- **No model picker.** The customer never chooses a model (D32.7).
+- **No second chat seam.** The dock mounts the shared `AgentChat`.
+- **No change to an app's search routes.** Only the palettes in the UI merge.
+- **No `/dashboard` build.** That surface is WS-15, parked by D49.
+
+---
+
+## 2. What exists today — measured 2026-10-05
+
+| Surface | Today | Anchor |
+|---|---|---|
+| Root page `/` | "Welcome back". It shows the nav panes as cards with no data. It already reads `visibleSections` | `src/app/page.tsx:20-29` |
+| `/dashboard` | A `ComingSoon` placeholder, and a `preview` pane | `src/app/dashboard/page.tsx` |
+| Desktop top bar | None in the shell. `AppShell` renders the sidebar and the page | `src/components/AppShell.tsx:158` |
+| App bar | `AppTopBar`, used by Projects and My Tasks. It holds "Search every project (⌘K)" | `src/components/AppTopBar.tsx` |
+| Search | Three palettes. Projects has `SearchPalette` and the command list `app/projects/lib/commands.ts`. My Tasks mounts the Projects palette. Email has its own `CommandPalette`. Three pages each hold a ⌘K listener | `app/projects/page.tsx:2635` · `app/tasks/page.tsx:180` · `app/email/page.tsx:692` · the key test `app/projects/lib/search.ts:143` |
+| Bell | `NotificationBell` belongs to Projects. Projects and My Tasks mount it. Approvals has no badge | `app/projects/components/NotificationBell.tsx` |
+| Assistant | Three rails on the shared `AgentChat`: `task-manager`, `projects-assistant` and `email-assistant` | `app/tasks/components/AssistantRail.tsx` · `app/projects/components/AssistantRail.tsx` · `app/email/components/EmailAssistantChat.tsx` |
+| Personal rollup | None. No spec defined its content before this one | — |
+| Live panes | **Eleven**, in four sections. Personal Center holds My Tasks, Calendar, My Profile, My Email and My WhatsApp. My Access left the sidebar on 2026-10-05, and it is a tab of the People app | `launch_surface.md` §2 · `src/lib/nav.ts` · `nav.test.ts` |
+| Who may see a team | `/auth/me` returns no groups. `reader_scope` and `subject_choices` already answer which people and teams a member may see, for the Reports app (`projects_reports.md` §7.1) | `routes/admin/me.py:197-228` · `routes/projects/report_scope.py:148`, `:332` |
+| Per-member settings | `user_settings`, read and written by `GET` and `PUT /tasks/settings`. That router requires `feature:tasks` | `infra/postgres/51_gtd_settings.sql` · `routes/tasks/settings.py:355` · `routes/tasks/core.py:41-44` |
+| First run | `WelcomeDialog`, mounted by `AppShell` | `AppShell.tsx:167` |
+| Calendar header | Its own `h1`, outside both shapes of `DESIGN_SYSTEM.md` §6a | `app/calendar/CalendarView.tsx:400` |
+| Projects by team | D22's grouping is not built. Only the `?center=` filter exists | `app/projects/lib/tree.ts` `filterByCenter` |
+
+**The pattern behind the gaps.** In each gap, one app solved a shell problem
+alone. Projects built a palette and a bell, and Email built a second palette.
+Three apps built three assistant rails. No app was wrong, because the shell
+had no seam to offer them.
+
+---
+
+## 3. The shell
+
+### 3.1 The shell bar
+
+One row across the top of every desktop surface, `h-11` tall.
+
+**The bar is constant. An app never renders into it** (owner, 2026-10-10).
+The owner's words: the top bar stays constant across all of Metorite, and no
+element of an app goes on it. The bar holds only shell things. So it draws the same
+pixels on every page, and the eye learns it once.
+
+**Every app opens with its own title bar, `AppTopBar`, under the shell bar.**
+The top bar is the product's frame. An app's name and tools belong to the app,
+where the eye looks for them, so the frame no longer changes from app to app.
+Left to right, the app bar holds:
+
+1. the app's rail toggle, when the app has a left rail. Email's toggle is the
+   model the owner named.
+2. the app's icon and its name. The name is the app's one `<h1>`.
+3. the scope line, such as "Every space you can see".
+4. the app's actions, such as Capture in My Tasks.
+5. the app's tools at the right end: refresh and settings. Until NS-9, the
+   app's own bell and assistant toggle sit here too. With
+   `NEXT_PUBLIC_SHELL_DOCK` on, Projects and My Tasks mount no bell (NS-6).
+
+The app bar is `h-10`, in one order and one look in every app. A pane may keep
+its own header under it when it titles a pane, as Email's list does with
+"Inbox" and its filter. That header is an `<h2>`, and it never repeats the
+bar's toggle or tools. `DESIGN_SYSTEM.md` §6a holds the shape.
+
+Five more rules, from the review of 2026-10-10:
+
+- **The row wraps when it runs out of room.** The tools go to a second line at
+  the right end, so no control leaves the screen. The subtitle gives way
+  first, then the name truncates with an ellipsis. The name never paints over
+  a control. A "More" menu was the other choice, and it lost: the tools carry
+  their own anchored popovers, and `src/components/ui/` has no menu to hold
+  them.
+- **Only the actions and the tools wrap.** The left group is one item that
+  never wraps: the rail toggle or the way back, the icon and the name. So a
+  long name never parts the toggle from the name (round 3).
+- **On a phone the app bar is the compact one,** with the subtitle muted after
+  the name. My Day, People, My Profile, WhatsApp, the Email inbox and its
+  scenes all draw it.
+- **Chat draws no bar on a phone.** It opens there with the chat's own row,
+  the agent and Share, and the Chats tab names the app. A bar above that row
+  stacks a third row on the smallest screen. It had no `<h1>` before either.
+- **A Settings sub-page opens with the bar too.** Teams, Roles, Billing and a
+  member's page each carry a `back` link at the left end, to Organisation.
+
+Fences: `src/lib/shell/appBar.test.ts` (source) and
+`e2e/app-title-bar.spec.ts`. The e2e counts one `<h1>` and one bar on each
+page at 1440 and 390. It checks Calendar at 1024, 960 and 800, and Email and
+Projects at 1024. It checks a long name in Chat and on a member page at 900
+and 1024.
+
+**This reverses NS-1's merged row.** From 2026-10-08 to 2026-10-10,
+`AppTopBar` portalled its contents into slots in this bar, and a page with no
+app bar printed its app's name here. Both are gone, with the slot API.
+
+**The bar spans the full width, and it carries the logo** (owner,
+2026-10-09). The sidebar and the page sit under the bar. Before, the logo sat
+in the sidebar's head and went away when the sidebar folded. Now a member
+sees whose workspace this is at all times (D51).
+
+- The brand zone is as wide as the open sidebar (`w-64`). It keeps that width
+  when the sidebar folds, so the logo does not move.
+- The zone holds the sidebar's fold control, then the logo on one line, 24px
+  tall. A logo-less organization shows our comet (`MetoriteMark`) and its own
+  name. The comet replaced a ⌘ glyph on 2026-10-11, and no accent recolours it.
+- The customer's logo stands alone, with no words of ours beside it (owner,
+  2026-10-11). It has the whole 176px slot (`BAR_LOCKUP`).
+- ~~Our comet signs the bar's right end~~ (owner, 2026-10-11,
+  `BarSignature`). **Superseded on 2026-10-12.** The bar draws no comet of
+  its own now.
+- ~~**The account is the bar's last item**~~ (owner, 2026-10-12,
+  `BarAccount`). **Superseded by the owner on 2026-10-14.** The bar holds no
+  account. Its right end is the assistant, the bell and the activity
+  control, in that order. The account is the sidebar's foot (§3.3).
+- **The Metorite logo is not in the shell** (owner, 2026-10-14). The owner
+  said: "Remove the Metorite logo. We'll figure out some other place to
+  place it appropriately in the UI later on." Its new place is an open
+  decision.
+- The right group keeps the width of its content, with no `min-w-0`. So the
+  bell never sits over the command bar. Where the room is short, the command
+  bar gives way and sits a little off centre. With `min-w-0`, a wide control
+  put the bell over the command bar at 1024px.
+- With no logo, the left end shows our comet, once. That is the workspace's
+  badge (`OurMark`), not our signature, so it stays.
+- The phone has no shell row, so it shows no account widget. Its drawer keeps
+  its account header and foot (§3.3). A phone drawer with no logo shows our
+  comet as its workspace badge, in the drawer's head.
+- Fences: `shellAccount.test.ts`, `metoriteMark.test.ts`,
+  `orgBrandLockup.mode.test.ts`, `e2e/shell-account.spec.ts` and
+  `e2e/shell-signature.spec.ts`.
+- The fold tip points up at the bar's control. The fold rules of §3.2 do not
+  change.
+
+**The frame since GL-12 (owner, 2026-11-01).** The shell bar draws no row.
+The one field is the Ask bar at the foot of the page column (`ChatBar.tsx`,
+`AskBar`). The bell is the sidebar's Needs you row, the activity control is
+the bar's "N running" pill and the Chat row's count, and the assistant opens
+from the bar. `glass_look.md` GL-12 has the detail. The paragraph below is
+the GL-11 frame it replaces. The Chat row also marks a message that Reach
+posted and the member has not opened (D177, `proactive_reach.md` §19.2).
+
+**A region the Ask bar never sits on (owner, 2026-11-06, task 1816).** A page
+marks such a region with the attribute `data-ask-clear`. The Email composers
+carry it. The bar takes the largest form that does not overlap the region, at
+any overlap. Inside the region each control counts at any scroll for the
+corner button. The shell names no app. Fence: `askBarRest.test.ts`.
+
+**The frame since 2026-11-01 (owner, GL-11).** The owner said: "the burger
+icon being outside the sidebar kind of puts me off". The sidebar now runs
+the full height, and it owns its head: the organization's lockup and the
+fold control, on the sidebar it folds. The shell bar sits over the page
+column only, and it holds no brand zone. The table below keeps the bar's
+other zones. A folded rail keeps the organization's mark in view, as the
+owner asked on 2026-10-09. `AppShell.tsx` holds the frame, and the shell
+e2e specs fence it.
+
+This frame needs both shell flags. With the shell bar alone, the bar sits
+over the page column, as NS-1 built it. `desktopFrame` in
+`src/lib/shell/shellNav.ts` holds the rule. Fences: `shellNav.test.ts`,
+`e2e/shell-bar.spec.ts` and `e2e/sidebar-fold.spec.ts`.
+
+| Zone | Owner | What it holds |
+|---|---|---|
+| Brand | The shell | The fold control and the organization's logo, on one line |
+| ~~Title~~ | — | Not in the bar. The app's name is in its own title bar (owner, 2026-10-10) |
+| Scope chip | The shell | Personal, a team, or all my teams (§4). A team app shows its own team, locked. Today the command bar's "in <App>" chip holds this place |
+| Command bar | The shell | Search, do or ask (§6). It sits in the centre and takes the free width |
+| ~~App actions~~ | — | Not in the bar. They are in the app's own title bar |
+| Activity | The shell | Every live assistant run, across apps (WS-51 S3), at the right end. It shows the running count and opens the list of runs. It stays here with `NEXT_PUBLIC_SHELL_CHAT` on (owner, 2026-10-14, §7.1) |
+| New | The shell | The jobs of the apps the member holds, in preset order (§8). Not built |
+| Bell | The shell | "Needs you", from every app (§7.2). BUILT in NS-6 slice 6a, dark behind `NEXT_PUBLIC_SHELL_DOCK`. It sits before Activity (owner, 2026-10-10, §13.3 Q7). An app's own bell never moves into this bar |
+| Assistant | The shell | The panel button, first of the right group, with `NEXT_PUBLIC_SHELL_CHAT` on. It opens the side panel and closes the assistant (owner, 2026-10-14, §7.1). From 2026-10-12 to 2026-10-14 the chat bar at the foot of the page opened it instead (D99) |
+| ~~Account~~ | — | Not in the bar since 2026-10-14 (owner). It is the sidebar's foot again (§3.3). From 2026-10-12 to 2026-10-14 it was the bar's last item (`BarAccount`) |
+
+**The command bar's "in <App>" chip stays.** It is the command bar's own
+scope (§6.4 rule 3), not the app's chrome. It is the one place the bar names
+an app.
+
+`AppShell` is the one importer of `src/lib/shell/ShellBar.tsx`, and it mounts
+`ShellFrame` only. Fence: `src/lib/shell/appBar.test.ts`. It fails on a slot
+API, and on a file outside `src/lib/shell/` that reaches into the bar. It
+fails on a live pane whose route does not render `AppTopBar`, and on an app
+name in the bar's markup. `e2e/shell-bar.spec.ts` checks the same rule in a
+browser.
+
+### 3.2 The sidebar
+
+Five groups, in this order:
+
+1. **My Day.** Home, at whichever altitude the member last chose.
+2. **Personal Center.** My Tasks, Calendar and Email. Notes and WhatsApp join
+   when they go live.
+3. **My apps.** The member's pins. A preset sets the first pins (§8).
+   ⚠️ **Superseded on 2026-10-11** by the star model (§3.2b). There is no
+   "My apps" group.
+4. **Across teams.** Projects, and Dashboards when it goes live.
+5. **All apps.** One button at the foot. It opens the launcher.
+
+The launcher lists every app the member holds, grouped by team. Each tile
+shows the name and the manifest's one-line purpose. A star shows the app in
+the sidebar or hides it (§3.2b).
+
+**Admin panes leave the sidebar.** Approvals and Organisation appear in the
+launcher under Admin, for a member who holds them. ⚠️ The owner reversed this
+for Organisation on 2026-10-09 (§3.2a item 4). Approvals' items reach every
+approver through the bell and My Day. ⚠️ Until NS-6 builds the bell,
+Approvals keeps its sidebar door (§3.2a item 2).
+Appearance is a personal preference, so it moves to every member's avatar
+menu.
+
+**The sidebar folds while you work.** Built 2026-10-06, by owner directive.
+A member opens an app from the sidebar. The first click or key press in that
+app folds the sidebar to its icon rail, so the app gets the width. The rule
+lives in `src/lib/sidebarFold.ts`:
+
+- Only a plain click on a sidebar link arms the fold. A click in the app with
+  no sidebar link first does nothing, so the sidebar never folds while a
+  member reads it.
+- The fold fires on `click`, not on the press. A fold on the press moves the
+  target before the release, and the click lands on nothing.
+- The width eases, and the expand button pulses three times in the accent. On
+  the first three folds, a tip names the button and offers "Keep it open".
+- A member who opens the sidebar again keeps it open until the next sidebar
+  link. Appearance → Sidebar turns the fold off. The folded state survives a
+  reload.
+
+Fence: `sidebarFold.test.ts` and `e2e/sidebar-fold.spec.ts`. The phone layout
+has no sidebar, so the fold does not apply there.
+
+⚠️ **The live set does not change.** §2 of `launch_surface.md` lists
+eleven live panes, and `nav.test.ts` counts eleven. This spec changes
+WHERE a live pane renders, not WHETHER it is live. Promotion stays an owner
+decision (**H-21**).
+
+### 3.2a What NS-2 slice 1 changed from §3.2, and why
+
+The owner asked on 2026-10-09 that every shell change be "genuinely a step
+ahead" for a member who is not technical. Slice 1 was measured against that
+on screen, before and after, and three parts of §3.2 changed. Each one waits
+on a ticket that is not built yet. When that ticket lands, the §3.2 shape
+applies. Item 4 is a later owner change, and it does not wait on a ticket.
+
+1. **No "My apps" group, and the top item is "Home".** Pins need NS-7, so
+   the group would be empty for every member. A heading over nothing costs
+   attention and gives nothing. `/` is still the "Welcome back" grid, so the
+   name "My Day" would promise a page that does not exist. NS-3 renames it.
+   Since NS-3 slice B, the item reads "My Day" when the My Day flag is on
+   (`homePane` in `shellNav.ts`). With the flag off, it still reads "Home".
+   ✅ **Since NS-7 (2026-10-10), "My apps" exists.** It comes first, after
+   Home and before Personal Center, by owner decision (§8.4 rule 4). §3.2
+   put it third. A pinned app moves into "My apps" and leaves its team's
+   group. So an app has one door only, as §3.3 asks. A member with no held
+   pin gets no "My apps" heading.
+   ⚠️ **Superseded on 2026-10-11.** The owner removed "My apps" (§3.2b).
+   Personal Center is first, after Home, and no app moves between groups.
+2. **Chat and Approvals keep a sidebar door.** §3.2 moves Approvals out,
+   because the bell and My Day carry its items. My Day carries them since
+   NS-3 slice C, and the bell is not built (NS-6). Until it is, Approvals is
+   an approver's only door to the queue from each app,
+   and Chat is the assistant itself. Both stay in their team's group: AI
+   Studio and Admin.
+   ✅ **Applied to the star model (2026-10-11).** Every answer stars
+   Approvals for a member who holds it, because the bell and My Day are
+   flags that are not reliably on. The member can still hide it.
+3. **One line per item.** The old sidebar printed a second line under each
+   item. In slice 1 that line was the manifest's purpose, and the sidebar grew
+   taller than a 900px screen. A member who opens the sidebar every day reads
+   that line once. The purpose now shows on hover. All apps prints it in
+   full, because a member goes there to find out what an app is.
+4. **Organisation is an app in Admin, in the sidebar** (owner, 2026-10-09).
+   Slice 1 put its door in the account menu, so an admin found it only by
+   opening their own account. An admin works in Organisation, so it is an
+   app and not a page about the member. ⚠️ This item does not wait on a
+   ticket. It replaces the §3.2 shape for Organisation.
+
+**Groups, in order:** Home, then Personal Center, Across teams, AI Studio
+and Admin, each only when it has a starred item (§3.2b). "Add apps" is the
+last item of the list. Admin holds
+Approvals, and Organisation for an admin. All apps and the account menu are
+at the foot. Since 2026-10-14, with the shell bar on, the foot holds All apps
+and the account row, which opens the one account menu (§3.3).
+
+`src/lib/shell/shellNav.ts` builds all of it from `visibleSections`.
+`shellNav.test.ts` pins five shapes. Two are a full admin and a plain member.
+The others are a member with three apps, one with none, and an unresolved
+viewer.
+
+### 3.2b The star model (owner, 2026-10-11)
+
+The owner said: "The higher-level categories should always remain in the
+left sidebar, unless there are no apps beneath them. Apps to display are
+enabled by clicking the star, or any other mechanism you provide." The owner
+then said that no "my apps" concept exists. Only the favourite apps show,
+each under its own category.
+
+**The model.**
+
+1. The sidebar shows the categories in `nav.ts` order. They are Personal
+   Center, Across teams, AI Studio and Admin.
+2. Each category lists only the apps that the member starred, in `nav.ts`
+   order. The star order does not change the order.
+3. The sidebar drops a category with no starred app. It shows every other
+   category.
+4. No app moves between categories, and no "My apps" group exists.
+5. Home always shows, and a member cannot star it away. My Profile and
+   Appearance stay in the account menu.
+6. A Center pane is never a star (D49). A star never grants: the list draws
+   only from `visibleSections`.
+
+**The storage.** `shell_prefs.pins` now holds the starred apps. The field
+keeps its NS-7 name, so no row and no migration changes (R6). A new field,
+`known`, holds the apps that the member could see at their last save. The
+gateway accepts the `nav.ts` hrefs only, and it caps `known` as it caps
+`pins`.
+
+**Four rules for what shows** (`starredHrefs` in `presets.ts`):
+
+1. **No stored list shows every held app.** `pins` is null when the member
+   never answered or skipped. `known` is null in every row that NS-7 saved,
+   and such a row shows every held app too. So the sidebar on the day of
+   the merge is the sidebar of the day before, for every member.
+   ⚠️ NS-7's pins were a "My apps" list on top of the whole sidebar, never
+   a filter. A member who pinned and then unpinned stored `pins: []`. To
+   read those pins as stars would hide apps that the member never chose to
+   hide. Fix round, 2026-10-11.
+2. **The first save of the star model writes `known`.** A star, a hide or
+   the dialog each write it. From then on the stars filter.
+3. **A starred app shows.**
+4. **A new app shows until a save covers it.** An app that is not in
+   `known` is new to the member, because an admin granted it, or it went
+   live, after their last save. Without this rule, a new app would hide
+   from every member who ever saved. Each save writes `known` as every app
+   that the member can see now.
+
+**The defaults** (owner, "Personal + preset"). An answer stars every
+Personal Center app that the member holds, and the preset's apps (§8.1).
+Every answer also stars Approvals for a member who holds it
+(`ALWAYS_STARRED`, orchestrator decision of 2026-10-11, §3.2a item 2).
+A skip stores no stars, so every app shows. The role's preset still orders
+My Day's cards and the jobs of the empty command bar.
+
+**Ways to change what shows.**
+
+- **The star in All apps.** An outline star means that the sidebar does not
+  show the app. A filled star means that it shows. The tooltips say "Show in sidebar" and
+  "Shown in sidebar". The names are "Show <App> in sidebar" and "Hide <App>
+  from sidebar". The change shows at once, and it goes back when the server
+  refuses it.
+- **A run on a hidden app** shows its badge on "Add apps", the door to the
+  hidden apps (`strayCount`). Before this, a run on a hidden app folded to
+  Chat, and with Chat hidden the badge had no row.
+- **The first frame.** With no browser copy, the skeleton holds the place
+  until the layout read answers. A failed read, or a wait longer than the
+  proxy's timeout of 6 seconds, draws every held app.
+- **"Add apps",** the last item of the sidebar list. It opens All apps with
+  the line "Star the apps you want in your sidebar." It always shows, so a
+  member who starred nothing still sees where to start. Its row has the
+  geometry of the sidebar's own rows, so its icon lines up with theirs.
+- **The row menu.** Hover or keyboard focus on a row shows a "···" at its
+  end, and a right-click opens the same menu. At rest the "···" takes no
+  width, and the run badge holds its place. On hover or focus, the "···"
+  takes the place of the badge, as a `RailRow` count does. The "···" stays
+  while its menu is open. The menu has the `menu` and `menuitem` roles, and
+  the arrow keys move through it. Undo puts back the layout from before the
+  hide. After a hide, the focus goes to the next row. The menu holds "Hide from
+  sidebar" and "Open in new tab". A hide shows a toast with Undo. The folded
+  rail has no "···", and a right-click there opens the menu. Home has no
+  menu. The phone drawer has no "···", so a phone member uses All apps.
+- **"Change my layout"** asks the question again (§8.4). It is in the
+  Settings group of the account menu at the sidebar's foot (§3.3).
+
+**Categories fold.** A category heading toggles its list, and a folded
+heading shows its count, such as "Across teams (2)". The browser keeps the
+folds for each account under `cc-sidebar-folds:<email>|<organizationId>`,
+and a sign-out clears them (`lib/shell/sidebarFolds.ts`). While the member
+is on one of a category's apps, its fold is off, and the heading says so.
+A press would otherwise seem to do nothing, because the current row stays. The sidebar never
+keeps the category of the current route folded. The folded rail does not fold
+categories. It draws a thin line between them.
+
+⚠️ **A decision taken here.** The heading keeps its own button, and it does
+not use the `Collapsible` primitive. The primitive draws a section title of
+another size, so it would change the look of the sidebar.
+
+Fences: `presets.test.ts` (the four rules, the defaults and the subset
+rule), `shellNav.test.ts` (the order and the dropped category),
+`sidebarFolds.test.ts`, `test_auth_me_shell.py` and
+`test_auth_me_shell_r8.py` (`known`), and `e2e/shell-presets.spec.ts`.
+
+### 3.2c Row counts (owner, 2026-10-11)
+
+The owner said: "Each app row shows what needs you there, from the same feed
+as My Day and the bell. A quiet number, never a red badge storm."
+
+**The source.** The count reads the needs feed (§7.2) through `useNeedsYou`,
+the hook of My Day and the bell. It uses the same cache key and the same
+fetch, so it adds no second route and no second poll. One poll serves the
+bell's host and the sidebar together (`joinNeedsPoll` in `ShellBell.tsx`).
+
+**How often the sidebar reads the feed** (`useNavNeeds`). The sidebar is
+mounted on every page, so it adds reads that My Day alone did not make.
+Before this, the feed was read on My Day only while the bell flag was off.
+
+1. Once when the sidebar mounts.
+2. Once a minute while the tab shows. A hidden tab reads nothing. When it
+   shows again after a missed minute, it reads once.
+3. At most once in 15 seconds because of writes elsewhere (`NAV_WAKE_MS`).
+   Each Projects write drops the feed's key (`NEEDS_CACHE`). With no limit,
+   a drag on a board would read the feed after each burst. The first write reads at
+   once. The writes after it in the window make one read at its end.
+4. On a window focus, when the answer is older than 5 seconds.
+
+An act in My Day or the bell needs no read. It takes the row out of the
+count through the one store (`needsActs.ts`).
+
+**Which row counts a feed row.** `NEEDS_APP_HREF` in `needs.ts` is the one
+map. The `email` rows count on My Email, `tasks` on My Tasks, `projects` on
+Projects and `approvals` on Approvals. A new provider adds one line there.
+A task row opens in Projects, but it counts on My Tasks, because it is the
+member's own due task.
+
+**The number** (`countsByApp`).
+
+1. The number comes from `totals` (§7.2), never from `items`. The cut to 30
+   can drop every reply, so a count from `items` would say that Email holds
+   nothing. Each list stops at 15, so `totals` sends the app's own count
+   where its read has one. Projects sends the bell's unread count, and a
+   mailbox whose list is full sends the digest's Needs-reply count. My
+   Tasks and Approvals have no count. So a full list of them is a FLOOR
+   (`capped`). The row shows "15+", and its name says "15 or more need you".
+2. The rows that an act took off do not count (`needsActs.ts`). So a Done
+   in My Day or the bell takes the task out of the count at once.
+3. A source that failed shows no number on its row. It never shows a 0,
+   and it never shows the last number. The whole read can fail too, with
+   a 500, a 502 or a 504. The cache then keeps the last answer. But each
+   row shows no number until a read succeeds. My Day keeps the last answer
+   with its own caveat line.
+4. A source with nothing shows nothing.
+5. An app that the member cannot open has no row, so its count does not
+   show in the sidebar. My Day and the bell still show its rows.
+
+**One slot** (`rowMeta` in `navNeeds.ts`).
+
+1. A run badge wins the slot. That is the amber, blue or green badge of
+   `runBadge`.
+2. Else the needs count shows, as a muted number with no fill.
+3. Else the slot is empty.
+4. On hover or keyboard focus, the "···" takes the slot, as a `RailRow`
+   count does (`rail-row-meta`).
+
+The run badge wins because it is live. It changes while the member looks,
+and the needs count is the quiet signal.
+
+**The words.** The link's name is "My Email, 3 need you" (`rowName`). It
+keeps the count when a run badge holds the slot. My Day's own words are
+"need you", so the row uses them. The number shows "99+" past 99, as the
+bell does (`bellBadge`).
+
+**The other forms.**
+
+- **Folded.** The icon shows a small muted dot. The link's name and its
+  tooltip hold the number.
+- **A hidden app.** Its count adds to "Add apps" (`strayCount`), as a run
+  does. Its name reads "Add apps, 2 need you in hidden apps". With a run
+  badge there too, the name says both: "Add apps, 1 assistant running, 2
+  need you in hidden apps" (`addAppsName`). The open and folded forms use
+  the same name.
+- **The phone drawer.** Its rows show the same counts, by the same rule.
+
+Fences: `src/lib/shell/navNeeds.test.ts` holds the map, the counts, the
+floor, the slot, the stray count and the cap. It also holds the one poll,
+the hidden tab and the write limit. `e2e/sidebar-row-counts.spec.ts` holds
+the browser cases. The `totals` and `capped` tests are in
+`test_shell_needs.py` and `test_shell_needs_r8.py`.
+
+### 3.3 The account menu
+
+**The shape since 2026-10-14, with the shell bar on** (owner direction).
+The owner said: "move the account selection and the UI element that shows
+the current account back to the bottom left where it was before. Combine it
+with the pop-up settings that show up for profile, access, appearance, light
+mode, layout change … Remove the Metorite logo."
+
+This shape supersedes ~~the shape of 2026-10-12~~. That shape put the account menu at the
+bar's top right (`BarAccount`), and a Metorite menu behind our comet at the
+sidebar's foot (`MetoriteFoot.tsx`). This change deletes both.
+
+1. **The sidebar's foot is the account row** (`AccountFoot` in
+   `src/components/AccountSwitcher.tsx`). Open, it shows the avatar, the
+   name, and the email in muted text under it. Both truncate. Folded, it
+   shows the avatar alone, on the rail's icon column. Its name is "Account
+   and settings: <email>", and its tip gives the name, the email and the
+   organization. It wears `cc-link`, the house focus ring.
+2. **The foot opens ONE menu, upward.** It holds, in this order:
+   - the current account, with a larger avatar, the name, the email, the
+     organization and a "Signed in" mark (`aria-current`)
+   - the other accounts this browser holds, each with its organization and
+     its own "Remove from this browser". A pick switches through `switchTo`.
+   - "Add another account"
+   - **You**: My Profile and My access
+   - **Settings**: Appearance, "Assistant settings" (when the profile is on
+     for the organization, WS-63 PZ-28), the colour mode and "Change my
+     layout" while the shell nav is on
+   - "Sign out". With one account it signs out. With more, it leaves this
+     account and lands on the next one (`signOutThis`: the `switch` action,
+     then `remove` of the same slot). "Sign out of all accounts" follows.
+   - our signature, the last row: the comet and the word "Metorite" (item 7)
+   With the switcher flag off, the menu shows the current account, You,
+   Settings and "Sign out". With the shell nav off, the rail itself lists My
+   Profile and Appearance, so the menu has no You group, and Settings holds
+   the colour mode only.
+3. **One list.** `accountMenu` in `src/lib/shell/shellNav.ts` builds every
+   group, and it reads `accountLinks`, so the menu lists a page once. A new
+   option is one line there.
+4. **The safety rules of 2026-10-12 move with it.** Sign-out fails closed.
+   The cover is held by the foot, outside the menu, so closing the menu
+   cannot take it down. `useDismiss` ignores Escape and an outside press
+   while the cover is up. Escape closes the menu and gives the focus back to
+   the foot.
+   - **The menu stays in the window** (review of 2026-10-14). `footBox`
+     caps its height by the room above the foot, less 8px, and a resize
+     measures again. The menu scrolls inside itself. The header is not
+     sticky, because in a short window it would take the room that the rows
+     need. The menu opens at its top, so the header shows first.
+   - **A member with no organization keeps the account acts** (review of
+     2026-10-14). The sidebar does not mount for that member, so the
+     org-less card in `AccessGate.tsx` draws `OrglessAccounts`. It holds the
+     current account, the other accounts, "Add another account" and
+     sign-out, with no You and no Settings, because those pages need an
+     organization. The same rules of sign-out and the cover hold there. The
+     card is the same on the desktop and on the phone.
+5. **No build version shows.** The browser can reach no version that a
+   member can read. `/api/health` carries the Next build id, a random name,
+   and the gateway's `/version` has no proxy. A version line waits on a
+   decision to expose one.
+6. **The classic frame and the phone do not change.** With the shell bar
+   off, the foot below stays as it was. The phone keeps its drawer.
+7. **The Metorite mark signs the foot of the account menu** (owner,
+   2026-10-14, "go ahead with your recommendation"). Notion, Slack and
+   Linear sign their app menus the same way. The customer's organization
+   owns the screen, and the product signs where a member looks for "about
+   this app".
+   - The row is the `brand` group, the last group of `accountMenu`, after
+     sign-out. `AccountFootMenu` draws it as a 14px comet (`MetoriteMark`)
+     and the word "Metorite", in `text-[11px] text-muted-foreground`. The
+     menu's own divider (`border-border`) sets it off from sign-out.
+   - It is not a control. It has no button, no link, no hover fill and no
+     focus stop. The comet is decorative (`aria-hidden`), so a screen reader
+     reads "Metorite" once, from the word.
+   - It is the end of the scroll content, and it is not sticky. In a short
+     window the member scrolls to it.
+   - Only the desktop menu shows it. The org-less card (`pages: false`) is
+     not the app menu, so it has none. The classic frame's
+     `SidebarAccountFooter` and the phone drawer have none.
+   - It holds no version and no link today. The `brand` group keeps a
+     one-line slot, so a later row (the version, Help, About, What's new)
+     is one line in `accountMenu`.
+
+Fences: `src/lib/shell/shellAccount.test.ts`, `src/lib/shell/shellNav.test.ts`,
+`src/lib/accountSwitch.test.ts` and `e2e/shell-account.spec.ts`. The text below is the shape of NS-2 slice
+1. It still binds the classic frame and the phone.
+
+It holds My Profile, My access, Appearance and sign-out. These pages describe
+the member. The member does not work in them, so they leave the sidebar.
+Organisation was in this menu until 2026-10-09. It is an app in Admin now
+(§3.2a item 4), so it has one door. The menu holds only the member's own
+pages. Fences: `shellNav.test.ts` and `e2e/account-switcher.spec.ts`.
+
+⚠️ **Approvals is NOT in this menu** (§3.2a item 2). It keeps its sidebar door
+until NS-6 builds the bell. The colour-mode toggle sits beside the foot's
+button, not inside the menu. Do not move either one from this paragraph alone.
+
+**The account switcher is in the sidebar foot** in the classic frame (MT-1k slice A2,
+`saas_multitenancy.md`, built 2026-10-07). It lists every account this browser
+is signed in to, with its organization, and switches with one click.
+
+✅ **NS-2 slice 1 (2026-10-09) puts this menu IN that foot, not in a new avatar
+at the top.** The owner asked for the switcher at the bottom left, beside
+sign-out. A second place for "you" at the top would split one idea in two.
+Slack, Notion and Linear put the menu in the same place.
+
+The foot's menu holds these rows, in order:
+
+1. the active account
+2. My Profile, My access and Appearance
+3. the other accounts
+4. "Add another account" and sign-out
+
+The colour-mode toggle stays beside the foot's button. With the switcher flag
+off, the foot still shows. It reads the session then, and it lists no other
+accounts.
+
+**On a phone, the menu puts each act where its frequency says** (owner review,
+2026-10-09: the menu was "very crowded").
+
+- **The header says who and where, and switches.** It shows the brand mark,
+  the organization that is open, and under it the address that is signed in.
+  A tap unfolds the other accounts, each one tap away with its own remove
+  control, and "Add another account". Nothing else.
+- **The apps come next,** because opening an app is the frequent act.
+- **The foot holds the rare acts,** under "Account and settings": My Profile,
+  My access, Appearance, Dark mode, Desktop view and sign-out. Organisation is
+  in the drawer's Admin group, with the apps.
+- The sheet is solid. A translucent sheet let the page's words read through.
+
+The phone has no account tab in the bottom bar. `DrawerAccountHeader` and
+`DrawerAccountFoot` in `AccountSwitcher.tsx` are the two parts, and
+`e2e/account-switcher.spec.ts` fences both.
+
+**My Access moved first, on 2026-10-05.** The owner moved it into the People
+app, as the ungated "My access" tab at `/people/access`, beside My profile. When
+NS-2 builds the account menu, the menu links to that tab. It holds no second copy
+of the page.
+
+---
+
+## 4. Home — one page at three altitudes (D87)
+
+### 4.1 The three altitudes
+
+| Altitude | Page title | Who sees it | Default for |
+|---|---|---|---|
+| **Personal** | My Day | Every member | Most members |
+| **A team** | The team's name | A team that `reader_scope` allows: a team the member leads, or every team for a reader of HR fields | A team lead |
+| **All my teams** | "Company" when `reader_scope` returns `everyone`, otherwise "All my teams" | A member whom `reader_scope` allows two teams or more | The founder |
+
+**One rule decides who sees a team, and it already exists.** `reader_scope`
+in `routes/projects/report_scope.py` is the rule the Reports app uses, and the
+shell reads it. The chip never offers a team and then refuses it
+(`projects_reports.md` §7.1 rule 1). D14 says that nothing may rely on
+`data:org:read`, and this spec does not use it.
+
+**A plain member of a team gets the personal altitude only.** That is the
+same rule as Team pulse. To widen it is a change to `projects_reports.md`
+§7.1, never a second rule in the shell.
+
+**One chip, one meaning.** The first value of the chip is "Personal", the same
+word as the sidebar section. Personal Center is the section of apps about the
+member, and it is the personal altitude of Home.
+
+### 4.2 Five rules that stop a team view growing back into a Center
+
+D87 keeps the team view. These five rules are the price of keeping it.
+
+1. **No route and no nav entry per team.** The scope rides on `/` as the query
+   value `scope=<slug>`, so Back and a shared link work.
+2. **No page built for one team.** A team view renders only the cards that apps
+   declare. No team gets its own layout or its own apps.
+3. **No rule of its own.** The team view reads `reader_scope`. It never
+   checks a `center.*` feature.
+4. **Nothing the member could not already open.** A card never shows a row
+   that its owning app would refuse the member. A private task stays private.
+5. **`/centers/<slug>` stays unlinked.** A later release may redirect it to
+   `/?scope=<slug>`. That change follows R6: add the redirect first, retire the
+   route later.
+
+**Fence (NS-5).** `src/lib/nav.test.ts` fails if a `live` pane's `href`
+starts with `/centers/`. The six `preview` Center panes stay (D49). A new `src/lib/shell/home.test.ts` fails if a
+Home file calls a `center.` feature check. A gateway test drives rule 4 with a
+private task of another member and asserts that no card returns it.
+
+### 4.2a The team scope contract (T-4, task 2535, replan 2026-11-09)
+
+Proposed, owner review in this pull request. The shell holds one scope value. The value is a team slug or the word "all". The scope rides on `scope=<slug>` as §4.2 rule 1 says. Every app reads this one value and builds no scope of its own.
+
+A scope never grants. It narrows a view and opens nothing that the member could not already open (§4.2 rule 4). A team is a group, and the shell shows no team object (D87). The rules of hidden spaces are in `project_management_app.md` §14.9.
+
+Fence: `src/lib/shell/teamScope.test.ts` (new) fails when the value takes a third form or when a scope opens a row. Until T-4 builds it, the rule is advisory (R7).
+
+### 4.3 Personal Center — three apps, three jobs
+
+My Tasks and Calendar already read the one task store. My Day joins them at
+the top. The risk is a third view of the same tasks, so each app gets one job.
+
+| App | Its job | The question | What it may change | What it hands on |
+|---|---|---|---|---|
+| **My Day** | Notice | "What needs me, across every app?" | One-click acts only: done, approve, snooze. A longer act opens the owning app | Planning goes to Calendar. Lists go to My Tasks |
+| **My Tasks** | Commit | "What have I promised, and what is next?" | Every task field, every list, capture | Time goes to Calendar |
+| **Calendar** | Place | "When will I do it?" | The schedule, focus blocks, the start and the end of the day | What to do goes to My Tasks |
+| **Email** | Reply | "Who waits for my answer?" | Its own threads | It feeds My Day through its manifest |
+
+**No second ritual.** Calendar has `StartupRitual`. The first open of My Day
+each day offers that ritual. My Day does not copy it.
+
+**What goes into the feed lives in `my_day_feed.md` (WS-58, ACTIVE
+2026-10-13).** That spec owns the signals, the cards, the order, the life of
+a card and the AI that prepares one. **D101 (owner, 2026-10-13) widens the
+acts in the table above for that feed:** a card acts in place, unless the act
+needs more context. `my_day_feed.md` §11 holds the rule. This spec keeps the
+page frame, the bell, the manifest and the flags.
+
+### 4.4 Cards
+
+An app declares its cards in its manifest (§5.1). Each card names the
+altitudes it supports.
+
+- **A card is a client component the app exports.** It reads the app's own
+  existing route and passes the scope value. A card adds a new route only
+  when its app has no read that answers the question.
+- **A card reads through `useCachedResource`** and shows `Skeleton` on a true
+  miss (`AGENTS.md` rule 9).
+- **A card names its source app** in its header, and links to that app at the
+  same scope.
+- **The member may hide and reorder cards.** The order is stored with the pins
+  (§8.2).
+
+### 4.5 The first cards — built from reads that exist today
+
+| Card | Altitudes | Source | Read |
+|---|---|---|---|
+| Today | Personal | Calendar | The lens, `scheduledStart` and `scheduledEnd` |
+| Next actions | Personal | My Tasks | The lens, `/projects/my/*` |
+| Needs reply | Personal | Email | Folded into Needs you. See the note below the table. As a card it would read `getDigest`, `app/email/lib/api.ts:2554`, which reads `GET /email/digest`, the route `get_digest` in `routes/email/digest.py` |
+| Needs you | Personal | Every app | `GET /shell/needs` (§7.2) |
+| Team pulse | Team, all my teams | Projects | Report template T1, "Team pulse" (`projects_reports.md`) |
+| At-risk work | Team, all my teams | Projects | The analytics reads under `projects_ai_chat.md` §13 |
+| Out today | Team | People | `people_absences` |
+| Waiting for you | Personal, for an approver | Approvals | `pending_actions` |
+
+**Needs reply is a group of Needs you, not a card** *(NS-3 slice B,
+2026-10-09)*. The needs feed already carries each mail thread that waits for
+a reply. So the Needs you card shows those threads as its last group,
+"Waiting for your reply". One thread in two cards teaches the eye to skip
+both cards. For the same reason, Next actions leaves out each task that
+Needs you already shows. Fence: `src/lib/shell/myDay.test.ts`.
+
+**Waiting for you is a group of Needs you, not a card** *(NS-3 slice C,
+2026-10-10)*. The rule is the one for Needs reply. The pending actions show
+under "Waiting for your approval", right after Overdue.
+
+**The approver is an org admin** *(owner decision, 2026-10-10)*. The feed
+sends approval rows only to an org admin who holds `approvals`. Any other
+member keeps the Approvals app if they hold it, and their My Day shows only
+their own work. A finer Approver role is a later option. So an admin with no
+other app gets the Needs you card, and every other member gets no approval
+row. At most five approval rows show before "Show all", so the admin's own
+work stays in view. Each row opens Approvals. Fences:
+`src/lib/shell/myDay.test.ts` and `src/lib/shell/myDayPage.test.ts`.
+
+**No second arithmetic.** A team card draws a number that a Projects read or a
+report section already computes. The shell computes nothing.
+
+**The all-teams view is honest about what exists.** Until Finance, CRM and the
+other team apps go live, it shows Projects, People and Approvals only. A
+placeholder card for an app that is not live is a defect.
+
+---
+
+## 5. The app manifest — the contract every app follows (D89)
+
+### 5.1 The fields
+
+The manifest extends `NavPane` in `src/lib/nav.ts`. One registry stays one
+registry.
+
+| Field | Type | Required | Who reads it |
+|---|---|---|---|
+| `href`, `label`, `launch`, `feature` | as today | yes | Every surface, through `visibleSections` |
+| `team` | `"personal"`, `"across"`, `"admin"`, `"studio"`, or a group slug | yes | The launcher, the scope chip |
+| `blurb` | one sentence, 60 characters at most, in job words | yes | The launcher, the command bar |
+| `keywords` | a list of words | no | The command bar, tier 0 |
+| `jobs` | a list of `{ id, label, keywords, href, fields }` | yes for a live app | The command bar, New, the dock |
+| `search` | the name of a server search provider | no | The command bar, tier 1 |
+| `needs` | the name of a server needs provider | no | The bell, My Day |
+| `cards` | a list of `{ id, title, altitudes, component }` | no | Home |
+| `agent` | an agent slug | no | The dock |
+| `door` | `"sidebar"` (the default) or `"account"` | no | The sidebar and the account menu (§3.2a, §3.3) |
+| `setting` | `true` for a preference about the member | no | All apps leaves it out |
+
+**A job opens a form.** `href` is the form's route. `fields` names the query
+values the form reads, so tier 2 may fill them (§6.6). A job never writes when
+it opens.
+
+**A job may be a link to the place where the work waits,** when the app has no
+form to open. "Plan my day", "Reply on WhatsApp" and "Review pending
+approvals" are links of this kind (owner decision, 2026-10-09). A link job
+still names its app, so the member sees it only when they hold that app.
+
+**Jobs live in two lists that a test holds as one.** The bar reads `JOBS` in
+`src/lib/shell/registry.ts`. The gateway reads its own `JOBS` in
+`gateway/routes/shell/intent.py`, because the gateway cannot import the
+workbench. Each job names the feature it needs, so the gateway filters jobs by
+the member's own features. The gateway never trusts a job list from the
+client (R5e).
+
+**The job of an `adminOnly` pane carries an admin gate.** Such a pane has no
+feature, so a feature gate alone offers its job to every member. The gateway
+offers it only to a member who holds `admin:members:read`. `GET /auth/me`
+reports that same test as `is_admin`, and the sidebar shows the pane on it.
+
+`test_shell_intent.py::TestOneJobList` reads both files and fails if an id, a
+label, a link or a gate drifts. NS-2 moves the jobs into each app's manifest.
+
+### 5.2 The rules for every app, built or future
+
+1. **An app joins the shell through its manifest.** It never edits the
+   sidebar, the launcher or Home by hand.
+2. **An app mounts no ⌘K handler, palette, bell or assistant dock.** It
+   declares jobs, search, needs and an agent, and the shell renders them.
+3. **An app opens with its own title bar, `AppTopBar`, and never renders into
+   the shell bar.** The bar holds its rail toggle, name, subtitle, actions and
+   tools (§3.1). The owner reversed this rule on 2026-10-10. Until then it
+   said that an app renders inside the shell bar through slots.
+4. **A team app declares its team. A cross-team app reads the scope chip** and
+   passes the value to its own routes. The server checks the grant on every
+   read. The chip's value is never trusted (R5e).
+5. **A job opens a form. A person saves it.** Tier 2 may fill the form. It
+   never saves.
+6. **A server provider runs on the request's session at the `get_db()` seam.**
+   No provider opens its own connection (R5b).
+7. **A provider calls its app's own authorized function.** It never writes a
+   visibility predicate of its own. The app already decides who may see a
+   row, and a second copy of that rule is a defect.
+8. **A `preview` app may carry a manifest.** Nothing renders it until the
+   owner promotes the app (**H-21**).
+
+**Fences.** From NS-2, `src/lib/nav.test.ts` will fail on a live pane with no
+`team` or `blurb`. It will also fail on a job whose `href` is no route.
+`src/lib/shell/seams.test.ts` exists since 2026-10-05, ahead of NS-1. It
+sweeps `src/` and fails on these four:
+
+- a ⌘K listener, in any of five spellings, with a modifier that is not negated
+- an import of `NotificationBell`, or a read of the notification list
+- an import of `AgentChat` or of a rail wrapper, except in `/chat`
+- an import of `SearchPalette` or `CommandPalette`
+
+Imports, not JSX: an import cannot hide in a ternary or a renamed tag. It is
+also how the fence sees one app reuse another app's rail.
+
+The sweep starts with a baseline of today's sites, 18 in 4 apps. The debt is
+keyed by app folder, because D89's unit is the app, so a move inside one app
+is free. The baseline only goes down, the same ratchet as `conformance.test.ts`.
+`src/lib/shell/` is exempt, because NS-1 builds the shell there. It may hold one
+file per seam, so it cannot become a place to move an app's debt.
+
+**The spec half is R9** (`work_plan.md` §1). An app spec carries a "Shell
+manifest" section, and the spec-auditor refuses one without it.
+
+### 5.3 How each app that exists today conforms
+
+| App | `team` | Jobs | `search` | `needs` | Cards | `agent` | Work owed |
+|---|---|---|---|---|---|---|---|
+| My Tasks | personal | New task | `GET /projects/search` (`routes/projects/search.py:221`). `app/tasks/lib/searchHit.ts` decides where a hit opens | due today, overdue | Next actions | `task-manager` | Stop mounting the Projects palette and bell |
+| Calendar | personal | Plan my day (built). Block focus time is a target | — | — | Today | `task-manager` | Done 2026-10-10: its name, its day arrows and its tools are in its `AppTopBar` |
+| Email | personal | Write an email | email search | needs reply | Needs reply | `email-assistant` | Its palette commands become jobs. Its ⌘K handler goes. Its heading drift closed on 2026-10-10, when it took `AppTopBar` |
+| My WhatsApp | personal | Reply on WhatsApp (a link) | — | — | — | — | None beyond the manifest |
+| Projects | across | New space | projects search | `pm_notifications` | Team pulse, At-risk work | `projects-assistant` | Its palette and bell move to the shell. `lib/chatDock.ts` becomes the dock's rule. Its tree groups by team (D22) |
+| People | people | Find a colleague (built). Request leave is a target | the directory | — | Out today | — | None beyond the manifest |
+| Knowledge | across | Find in Knowledge (a link) and Write a page (built 2026-10-18, WS-61 KB-12) | the Knowledge search, lexical only (`knowledge_base.md` §20.3) | — | — | — | None beyond the manifest. `knowledge_base.md` §11 owns the rest |
+| My Profile | personal | Update my profile | — | — | — | — | Move to the account menu |
+| My Access | personal | — | — | — | — | — | Done 2026-10-05: a People tab at `/people/access`. NS-2's account menu links to it |
+| Chat | studio | New chat | chat sessions | — | — | any | `/chat` stays. The dock shares its sessions |
+| Approvals | admin | Review pending approvals (a link) | — | `pending_actions` | Waiting for you | — | Its items feed the bell |
+| Organisation | admin | Invite a member | members | seat requests | — | — | An app in Admin, in the sidebar (§3.2a item 4) |
+| Appearance | personal | Change how Metorite looks | — | — | — | — | Moves to every member's account menu |
+
+A `preview` app writes its manifest in the pull request that promotes it.
+
+**The Projects job is "New space".** A root node of the Projects tree is a
+space (migration 193), so the label names the row that opens. The job id
+stays `new-project`. "New task" is the label of the My Tasks job `capture`.
+
+### 5.4 What a future app gets for free
+
+A new team app, such as Invoices in a Finance team, writes one manifest. Then:
+
+- it appears in All apps under its team, with its purpose
+- its jobs answer in the command bar and in New
+- its records answer in tier 1, if it names a search provider
+- its approvals and its waiting items reach the bell and My Day
+- its cards appear on Home at the altitudes it names
+- the dock opens its agent inside the app
+
+Nobody edits navigation, and no team gets a separate home.
+
+---
+
+## 6. The command bar (D88)
+
+### 6.1 Place and keys
+
+> ⚠️ **Amended again 2026-10-14 (D102, owner).** The one field is back in
+> the shell bar: `AskField`, in the middle of the row. The results drop below
+> it, Enter asks Metorite, and a highlighted result opens on Enter. ⌘K and
+> `/` put the cursor there. The modal opens only on a phone. The note below
+> records the place of 2026-10-13.
+
+> ⚠️ **Amended 2026-10-13 by D102.** With `NEXT_PUBLIC_SHELL_CHAT` on, the
+> command bar has no field in the shell bar. Its field is the chat bar at
+> the foot of the page (§7.1). The results rise above that field, Enter asks
+> Metorite, and a highlighted result opens on Enter. ⌘K and `/` put the
+> cursor there. The modal below opens only on a phone, and on a desktop
+> while the assistant is open.
+
+
+The command bar is always visible in the shell bar. `Ctrl K` and `⌘K` focus it
+from any surface. The shell holds the only listener (§5.2 rule 2).
+
+**`/` focuses the page's own filter when the page has one, and the command bar
+when it does not.** Owner decision, 2026-10-07. Gmail and GitHub use `/` this
+way, so a member who knows either already knows it. `⌘K` is never a filter.
+
+### 6.2 What it returns
+
+Four groups, in this order. A group with no result does not show.
+
+| Group | What it holds | Tier |
+|---|---|---|
+| **Do** | Jobs that match the words | 0 |
+| **Go to** | Apps and views the member holds | 0 |
+| **Find** | Records from each app's search provider | 1 |
+| **Ask** | An AI answer, a filled job, or a hand-off to the dock | 2 |
+
+With an empty query, the bar shows recent items, the preset's first jobs and
+six example questions.
+
+### 6.3 Three tiers
+
+**Amended 2026-10-15 by D105.** Tier 1's providers are a projection of the
+one retrieval registry in `gateway/retrieval/sources.py`
+(`knowledge_base.md` §20). The bar's budget, order and item shape do not
+change. The assistant's `search_company` reads the same registry.
+
+| Tier | Budget | Where it runs | What it costs |
+|---|---|---|---|
+| **0 — the registry** | 50 ms | In the browser | Nothing. No server call |
+| **1 — record search** | 300 ms typical, 1.5 s ceiling | One gateway route, `GET /shell/search`, which calls each provider in turn on the request's session | Nothing. No model |
+| **2 — AI intent** | 1.5 s | `POST /shell/intent`, through the Router | Credits, metered (§6.5) |
+
+Each tier adds results under the ones already shown. A tier never moves a
+result that the member can already see. The two hand-off rows, "Show all in"
+and "Ask", are not results. They stay last, so Find arrives above them and
+pushes them down. The bar holds the highlight by its row, not by its place, so
+a late answer never changes what `Enter` runs.
+
+**The tier 1 ceiling.** The providers run one after another, so the route
+holds one total deadline of 1.5 s (`TOTAL_BUDGET_S`) and gives each provider
+what is left. The browser's abort reaches the gateway too, so a request whose
+words the member changed stops at once.
+
+**Tier 2 runs only when one of these is true:**
+
+- the query holds two words or more, and the member paused for 900 ms
+
+`Enter` always has a row to run, because the bar always offers "Ask the
+assistant" for a sentence. So `Enter` never starts tier 2 by itself. A member
+who presses it before the pause gets the hand-off to the assistant.
+
+### 6.4 Six rules
+
+1. **The model sees only what the member can open.** The shell filters the
+   registry by grants first, then sends that list to the model.
+2. **A suggestion is not an act.** A job opens its form, filled in, and each
+   filled field says "filled by AI". The member saves. A larger act goes to the
+   dock, as the `confirmation` card of `generative_ui_2.md` §4.
+3. **Context is a visible token.** Inside an app, the bar shows "in CRM", and
+   that app's results rank first. `Backspace` on an empty query removes it.
+4. **Every answer has a way out.** "Continue in assistant" opens the dock with
+   the question and the answer. The member never retypes.
+5. **It learns the member, not the company.** Recent and frequent jobs rank
+   higher for each member. The ranking lives in the shell column of
+   `user_settings` (§8.2).
+6. **Scope is part of the question.** At the Sales altitude, "overdue
+   invoices" means Sales customers. The answer names the scope it used.
+
+### 6.5 Metering (D88)
+
+- **Tiers 0 and 1 are free.** They call no model.
+- **Tier 2 is metered** at the cheapest chat tier the operator sets. Today
+  that tier is `tier-fast`. The shell declares it as its default tier, the same
+  way an app does under D-AI-4. The customer never picks it (D32.7).
+- **The bar shows no price and no counter.** A member never weighs the cost of
+  one search.
+- **When the balance runs out, tier 2 stops.** The stop is the CP-6 balance gate, under `CUSTOMER_CONSOLE_SPEND_GATE`.
+  Tiers 0 and 1 keep working. The bar shows one line: "AI suggestions are
+  paused. Ask an admin to add credits."
+- **A repeat is free.** The same query, at the same scope, by the same member,
+  within 5 minutes returns the cached answer. The cache key holds the member,
+  because two members hold different grants. The key goes through the
+  tenant-prefix wrapper (R5c).
+
+⚠️ **Tier 2 waits on two things outside this spec.** **H-171**: the product's
+own AI is not metered today. **H-69**: `ROUTER_SERVING_ENABLED` is an owner
+flip. NS-4b builds tier 2 dark, and it stays dark until both are done.
+
+### 6.6 What tier 2 may return
+
+| Kind | Shape | What the bar does |
+|---|---|---|
+| `job` | the job id and the filled fields | Shows the fields, and opens the form on a click |
+| `answer` | a short text and its sources | Shows the text, names each source app, offers "Continue in assistant" |
+| `workflow_draft` | a trigger, a step list and the recipients | Opens Workflows with a draft, which runs nothing until a person turns it on |
+| `handoff` | nothing | Opens the dock with the query |
+
+An `answer` reads data only through the read tools that the app's agent
+already holds, such as the `skill-projects` reads. Tier 2 adds no data path.
+NS-4b ships `job` and `handoff`. NS-4c adds `answer` and `workflow_draft`.
+
+### 6.7 One bar searches. An app's bar only filters
+
+Owner decision, 2026-10-07. A member must never meet two boxes that both say
+"search", and wonder which one to use. So there are two kinds of box, and only
+two:
+
+| | The command bar (one, in the shell bar) | A list filter (an app may have one) |
+|---|---|---|
+| Its job | Find, go, do or ask, anywhere | Narrow the list on this page |
+| Where | The shell bar, in the centre, on every page | Inside the app, above its list |
+| Its words | ✦ "Search or ask anything" and `⌘K` | "Filter Inbox", "Filter tasks", with pills such as `from:alice` |
+| Its results | A panel of results from every app | The list itself changes. No panel opens |
+| AI | It answers, or hands off to the dock | Never |
+
+**Five rules:**
+
+1. **An app may have a filter. It never has a second search box, a palette or
+   a `⌘K` of its own** (§5.2 rule 2, D89). `seams.test.ts` fences the palette
+   and the key.
+2. **A filter says "Filter", never "Search".** Its placeholder names the list,
+   such as "Filter Inbox". The word "Search" belongs to the command bar.
+3. **They hand off. They never compete.** Inside an app, the command bar shows
+   the "in Email" token (§6.4 rule 3). Its last row is "Show all in your
+   Inbox", which puts the words into the app's filter. A filter that finds
+   nothing offers "Search everywhere for …", which opens the command bar with
+   the same words.
+4. **Asking happens in one place.** Only the command bar answers a question. A
+   longer talk goes to the dock, with the question and the answer carried over.
+5. **Plain words, for every member.** Each result says what it is and where it
+   opens: "Task · Projects", "Email · Inbox", "Open My Tasks". A result never
+   shows an id, a route or a field name.
+
+---
+
+## 7. The assistant dock and the bell
+
+### 7.1 One assistant, opened from the one field (D99)
+
+⚠️ **Amended on 2026-10-14 by the owner (D102).** The field moved into the
+shell bar, and no bar sits at the foot of the page. The text below says
+where each rule now lives.
+
+⚠️ **Amended on 2026-10-12 by D99.** The dock opened the app's own agent,
+and a toggle in the shell bar opened it. Now the member always talks to one
+general agent, and a chat bar at the foot of the page opens it. Flag
+`NEXT_PUBLIC_SHELL_CHAT`, default off.
+
+**The one field** (`AskField` in `ChatBar.tsx`).
+
+- **It is in the middle of the shell bar, on every desktop page.** The
+  shell bar sits above the assistant, so the field shows in every form of
+  it.
+- **It holds the field, the context chip and the key.** The field reads
+  "Ask Metorite, or search and open anything…". Enter opens the assistant
+  and sends the words. Enter on an empty field opens the assistant. The
+  chip names where the member is, for example "Projects · Website
+  relaunch".
+- **Words typed while the assistant is open go into the chat on screen**
+  (`AssistantAsk.join`). They never go into a room or an archived chat.
+- **The panel button** is first of the right group of the shell bar. It
+  opens the side panel, and closes the assistant when it is open.
+- **⌘J or Ctrl J** opens the assistant. With the assistant open, it puts
+  the cursor in the assistant. Pressed again in the assistant, it closes
+  the assistant. The shell's one listener in `ShellBar.tsx` holds the key
+  (§5.2 rule 2).
+- **The activity control stays in the shell bar.** It shows the running
+  count and opens the list of runs. A row opens its chat in the assistant.
+  The control never opens a chat by itself. The assistant itself may open
+  twice without a tap: the hello and Reach's pop (D177,
+  `proactive_reach.md` §19.3). Neither goes through this control.
+- **On a phone, an Ask tab replaces the bar** (owner, 2026-10-13). It sits
+  at the right end of the bottom nav on every page, so the thumb learns one
+  place. A tap opens the assistant as a full-screen sheet, with the cursor
+  in its composer. Its badge is the activity control: green while a chat
+  runs, amber when one waits on the member. A bar above the nav took a row
+  from every screen. A floating button met the Calendar, Focus and
+  recording buttons (§9).
+
+**Two forms, one chat.**
+
+- **The side panel.** A panel on the right of the page, 400 px wide by
+  default. The member drags its left edge between 320 px and 720 px, and the
+  width stays. The page beside it keeps working. Below 1280 px the panel
+  floats over the right of the page (owner, 2026-10-14). The width never
+  picks the form.
+- **Every open from closed is the side panel.** The full view opens only
+  when the member asks for it, and the next open does not start there. The
+  "Open" of a finished-run toast opens the chat in place too. A new tab or
+  a link to `/chat` opens the full view, because `/chat` is its address. A
+  stored form made one press open two different things (owner,
+  2026-10-14).
+- **The full view.** The assistant covers the page column, under the shell
+  bar and beside the sidebar. The page under it stays mounted and keeps its
+  state, and it takes no input until the full view closes. The session list
+  is at the left, as in ChatGPT and Claude. The chat's files are at the
+  right.
+- **A page the member opens makes the full view give way** (owner,
+  2026-10-13). An app picked in the sidebar would open out of sight. So
+  the full view becomes the side panel, on every desktop (`onPageChange`).
+- **The full view spans the whole width.** The chat centres its text and
+  its composer at a reading width, and its header and borders run edge to
+  edge, as ChatGPT and Claude draw them.
+- **Every chat says "Metorite".** An old chat with a specialist still runs
+  on that specialist, and it shows the one assistant's name.
+- **A switch keeps the chat.** The two forms are one element that changes
+  its shape, so a running reply, the draft and the scroll stay.
+- **`/chat` is the address of the full view.** A link to `/chat`, to
+  `/chat?q=…` or to the open-chat job opens the full view.
+
+**The agent.** Every new chat goes to `orchestrator` (D99). An old chat with
+a specialist opens with that specialist. The app's own agent is a tool of
+the general agent, and the manifest's `agent` names the specialist that
+knows the app best.
+
+**The context.** Each turn carries the app the member is in, and the facts
+that the app publishes through `useAssistantContext`. The facts are data.
+They name the open record and the view, and they never instruct.
+
+**Sessions stay shared with `/chat`.** The panel mounts the shared
+`AgentChat`. It adds no chat seam. `seams.test.ts` allows one file in
+`src/lib/shell/` to import it, `AssistantDock.tsx`.
+
+**The confirm cards must not change.** A specialist's card must reach the
+member through the general agent's run. `_tool_injection.py` says that each
+delegate's own `request_confirmation` gate still asks a human.
+
+The server half holds, and a test proves it (slice 6d, 2026-10-14).
+`tests/unit/test_delegated_confirmation_card.py` runs the real
+`orchestrator`, which calls projects-assistant, and projects-assistant calls
+its real `comment` tool. The card is an event of the parent's stream, and
+the parent's thread owns it. The executor refuses an answer for another
+thread. The member's answer opens the specialist's gate: APPROVE posts the
+comment, and REJECT posts nothing. A parent that shows no cards passes that
+on to the sub-run.
+
+⚠️ **Still unproven:**
+
+- **The browser.** Nobody has clicked Approve in the dock on a card of a
+  Projects write that goes through `orchestrator`. It needs the live stack.
+- **A Copilot SDK specialist** (`task-manager`, `app-builder`). Its native
+  `ask_user` parks through `_make_user_input_handler(<parent thread>)`, and
+  no test runs that path through `orchestrator`.
+
+**The last line of a page scrolls clear of the Ask bar** (owner, 2026-11-07,
+ASK-1, task 2242). The owner asked for "extra scroll down so that all the
+elements appear above the chat box across all of the apps". The bar floats over
+the page column and reserves no space, so `lib/shell/askBarClearance.ts` adds
+the room:
+
+- The bar measures the vertical scrollers that it overlaps. The innermost one
+  that reaches the foot of its holder gets the room. A list in the middle of a
+  page is content, so the page gets the room. A box that scrolls only sideways
+  never gets it.
+- The room is what the bar needs, less the padding that the scroller has.
+- The scan runs after the page changes, on a resize, and after a scroll stops.
+  It puts every scroll position back.
+- The scan adds no room on a phone, or while the bar is folded.
+
+A new app needs no code for this. Fences: `askBarClearance.test.ts` and
+`e2e/askbar-clearance.spec.ts`.
+
+### 7.1.1 Email through the one assistant (built 2026-10-23, branch `one-assistant-email`)
+
+**Status: BUILT on the branch `one-assistant-email`, not merged.** No flag,
+no migration and no new route. Owner directive of 2026-10-23, under D99.
+`email_app_master_plan.md` §22 points here.
+
+There is no separate email assistant. Each member talks to the one assistant,
+and email work runs in `email-assistant` by delegation. A delegated run gets
+one task string and no history. So "send it" on the next turn found no draft,
+and the member had to repeat the mailbox. These rules close that gap.
+
+**The rules.**
+
+1. **A working set for each chat.** The executor keeps the ids that the
+   chat's email sub-run worked on last. They are the mailbox, the email, the
+   thread and the draft. Only the sub-run's own tool calls write it, never the
+   model's text. It holds ids only, with no subject and no mail text. The
+   executor drops an id that is not a plain token. Module:
+   `acb_skills/email_chat_context.py`.
+   Only a tool of `DRAFT_LINE_TOOLS` gives a draft id. The executor reads it
+   from the one line where that tool prints it. A read holds a stranger's text, so the executor never takes a draft id
+   from it (review P2). When the mailbox read fails, a call that names a
+   mailbox keeps the old set.
+2. **The set goes into each later email sub-run.** It goes in as
+   `system_context`, not as the member's words. The orchestrator gets it in
+   its per-turn context too. The executor decides the held state of a sub-run
+   first, and the set does not change it. No code in `egress.py`, `held_card.py` or
+   `reply_card.py` changed.
+3. **The mailboxes are known on every surface.** The orchestrator's per-turn
+   context lists the member's mailboxes. Each line gives the label, the
+   address, the id, the default, All inboxes and "needs reconnecting". The
+   executor reads `GET /email/accounts` once per turn, as the verified member.
+   A shared room gets no list. When the member names no mailbox, a read uses
+   All inboxes and a write asks "which mailbox".
+4. **A mailbox named in words resolves.** `_one_mailbox` takes "Personal",
+   "my gmail" or "vj@…". An id wins first. Then an exact label, address or
+   provider wins, and then a unique prefix. Two matches, or an unknown label,
+   ask. One function does this, `email_chat_context.match_mailbox`, and the
+   working set uses it too. `create_rule` ends with a mailbox line that gives
+   the id it resolved. `read_thread` puts the same line second. The cards and
+   the working set read the id there first (review P3, `MAILBOX_LINE_TOOLS`).
+   They never use the model's words for the mailbox.
+5. **Email cards draw in the one assistant.** A batch MAF sub-run now sends
+   each tool call to the parent with its arguments and a capped result. The
+   orchestrator's specialist tool (`email_assistant`) counts as a hand-off,
+   live and in the saved turn. The card takes its account from the step's own
+   `account_id`. A read draws in the hand-off step, and a draft or a rule
+   result draws in the thread. A newer draft folds an older one (§24.10).
+   The delegated confirmation and reply cards stay as they were.
+6. **A mailbox mark.** When the email work moves to another mailbox, the
+   turn carries "Now working on <label>". The turn saves it, so a reload draws
+   it. The mark names the mailbox of all the work under it. So a turn that
+   worked in two mailboxes gets no mark. `compose_reply` ignores its
+   `account_id`, so that argument names no mailbox. There is no picker,
+   because the member sets nothing (D99).
+7. **The orchestrator's prompt.** It copies the working-set ids into each
+   task, with the draft_id for "send it". It sends a reply, a Cc and a send
+   that the member asked together as ONE task. It never sends the member to
+   the Email app, except to reconnect a mailbox.
+
+**Storage (R5).** The key is `cc:<org>:email-ws:<session>:<member hash>`,
+through the tenant Redis wrapper. The tenant and the session come from the
+run binding, never from input. The set lives 30 days after its last write. A
+batch session keeps it in the process only.
+
+**Fences (R7).**
+
+| Rule | Test |
+|---|---|
+| 1, 2 and 6 | `tests/unit/test_email_working_set.py` |
+| 3 and 4 | `tests/unit/test_email_mailbox_by_name.py`, `src/components/email/resolvedMailbox.test.ts` |
+| 5, server half | `tests/unit/test_one_assistant_email_cards.py` |
+| 5, browser half | `workbench/control_plane/src/lib/delegatedSteps.test.ts`, `toolSteps.test.ts` |
+| 6, browser half | `workbench/control_plane/src/lib/mailboxMark.test.ts` |
+| 7 | `tests/unit/test_orchestrator_email_prompt.py` |
+| All, end to end | `tests/unit/test_one_assistant_email.py` |
+
+`test_one_assistant_email.py` drives the real `orchestrator` run and the real
+email-assistant factory. Only the model wire and the email gateway are fakes,
+and the held state is real. It runs five turns in one chat off `/email`, with
+two mailboxes. It also proves that a delegated reply card and a confirmation
+card reach the parent's stream.
+
+The browser twin is `workbench/control_plane/e2e/one-assistant-email.spec.ts`.
+It draws a delegated draft card on the chat page with no email context, and
+the mark above the turn. Save then sends the draft in the step's mailbox.
+
+⚠️ **Not proven:** the live stack. Nobody has sent a delegated draft from the
+dock against a real gateway. The `needs_reconnect` field of
+`GET /email/accounts` came with PR #1252, and the mailbox list reads it.
+
+### 7.2 One bell
+
+- **One feed, `GET /shell/needs`.** It merges each app's needs provider and
+  returns one count and one list. My Day's "Needs you" card reads the same
+  feed.
+- **Each row names its app.** A one-click act runs in place. Any other act
+  opens the owning app.
+- **The stores stay.** `pm_notifications` keeps its read and unread rules.
+  `pending_actions` keeps its own state. The bell reads both and owns neither.
+- **The first providers, and the check each one reuses:**
+  - Projects: `pm_notifications`, through the Projects notification read.
+  - Approvals: `pending_actions`, only for a member who passes the gate of
+    `routes/actions.py`. The table has no approver column, so any other
+    member gets no row.
+  - Email: needs reply, only for the accounts the member owns, through the
+    owner check of the email routes.
+  - My Tasks: due today and overdue, through the lens.
+
+**Built in NS-3 slice A (2026-10-09, dark).** `gateway/routes/shell/needs.py`
+serves `GET /shell/needs` on the router of `search.py`. Slice A built three
+providers, and slice C (2026-10-10) built the fourth. Each one checks its
+feature, then calls the app's own read:
+
+| Source | Feature | Function |
+|---|---|---|
+| `tasks` | `feature:projects` | `my_due_tasks` in `routes/projects/personal.py` |
+| `approvals` | `feature:approvals` | `list_pending` in `action_broker/broker.py` |
+| `projects` | `feature:projects` | `list_notifications`, unread only |
+| `email` | `feature:email` | `list_accounts`, then `needs_reply_threads` in `routes/email/digest.py` for each mailbox |
+| `reminders` | `feature:projects` | `my_open_cards` in `routes/projects/reminders.py` (WS-66 RM-2b) |
+
+**Each read is one bounded query.** `my_due_tasks` reads the lens rows that
+are due before the member's tomorrow, in the member's zone. It gives the
+oldest deadline first, and 15 rows at most. `needs_reply_threads` gives the
+thread that waited longest first, and 15 rows at most.
+
+⚠️ **My Tasks needs `feature:projects`, not `feature:tasks`.** The lens
+routes are on the Projects router, and that router demands `projects`.
+
+**A Someday task never shows in the feed, also with a due date, but a Waiting
+task does.** The lens read leaves out each task that is not the member's to
+do now, and the provider checks the disposition of each row again.
+
+**A Reference task never shows in the feed either.** It is information, not an
+action. `NOT_NOW_DISPOSITIONS` in `routes/projects/personal.py` holds the two
+values, and the lens read and the feed both take them from it.
+
+**A snoozed or archived thread never shows in the feed.** The email read takes
+the rows that the Needs-reply count of the email app counts. So the feed
+leaves out a thread when the member snoozed its last message, or put it in
+the archive, junk or trash. Archive means "dealt with", and Reply Zero hides
+an archived thread too.
+
+**Approvals is slice C, built 2026-10-10 after H-201.** The provider checks
+two things. The first is `feature:approvals`, the feature that the router of
+`routes/actions.py` demands. The second is the admin test,
+`ADMIN_PERMISSION` in `routes/shell/intent.py`. `GET /auth/me` reports the
+same test as `is_admin`. A member who fails either check gets no row, and
+the broker is not called.
+
+**Why the admin test** *(owner decision, 2026-10-10)*. The feature alone is
+too wide. Migration 207 grants `feature:*` to `member` and `manager` in every
+org, and that covers `feature:approvals`. `pending_actions` has no approver
+column. So with the feature alone, each member's My Day would show the whole
+queue of the org, above their own work. The approver is an org admin. A
+finer Approver role is a later option.
+
+`GET /actions/pending` also demands `require_internal_auth`. That check is
+the transport, and the BFF sends the internal token on this call too. The
+broker binds the tenant of the request itself (H-201).
+
+**An approval row has no act** (`act` is null). To approve runs an outward
+write, such as a mail, a CRM push or a broadcast. The member must read the
+proposal first, so My Day never approves in one click. The row opens
+`/approvals`. Approvals reads no link to one action, so the row opens the
+queue.
+
+**An approval row says what the action does, in plain words.** The title
+comes from the action name, for example "Change a record in Zoho CRM". The
+detail names the proposer, for example "Proposed by the email assistant
+agent". Neither prints an id.
+
+**The approvals read is `read_pending`, and it is bounded.** It is a sibling
+of `list_pending` in `action_broker/broker.py`. It reads the pending rows of
+the bound tenant, the oldest first, and 50 rows at most. The feed asks for
+15. `list_pending` answers an empty list when the database fails, so a
+failure there would read `ok`. `read_pending` raises, so the `approvals`
+source reads `failed`.
+
+**Approvals never push the member's own work out.** An approval row takes
+only the room that the other rows leave inside `limit` (`YIELDING_KINDS` in
+`needs.py`). So 15 overdue tasks and 15 approvals at a limit of 30 still
+return the notifications and the replies. The approvals provider also runs
+last, so a slow pool cannot spend the time of the member's own sources. The
+display order stays as below.
+
+**The contract.** My Day and the bell read this shape:
+
+- `GET /shell/needs?limit=` gives 30 rows by default, and 50 at most.
+- The answer is `{count, total, items, sources}`. `count` is the length of
+  `items`. `total` is every row that the sources gave before the cut to
+  `limit` (NS-6). Each source gives 15 rows at most, so `total` is a floor.
+- Each item has `id`, `app`, `kind`, `title`, `detail`, `href`, `at`, `act`
+  and `act_ref`.
+- `id` is `tasks:<task id>`, `approvals:<pending action id>`,
+  `projects:<notification id>`, `email:<account id>:<thread id>` or
+  `reminders:<reminder id>`.
+- `kind` is `overdue`, `approval`, `due_today`, `notification`,
+  `needs_reply`, `reminder_due`, `reminder_check` or `reminder_unconfirmed`.
+  The three reminder kinds come last in `KIND_ORDER`, in that order.
+- `act` is `done`, `read` or null. `done` runs
+  `POST /projects/tasks/{act_ref}/complete`. `read` runs
+  `POST /projects/notifications/read` with the id in `ids`. An approval and
+  an email always have a null `act`.
+- `sources` gives each source as `ok`, `failed` or `absent`. `absent` means
+  that the member does not hold the feature.
+- `totals` gives how many need the member in each `ok` source (2026-10-11).
+  It is the app's own count where the read has one: the Projects bell's
+  unread count, and the digest's Needs-reply count for a full mailbox.
+  Else it is the rows that the source found. A source that failed or is
+  absent has no entry. The sidebar's row counts read it (§3.2c). An older
+  gateway leaves it out, and the client then counts the rows in `items`.
+- `capped` lists the sources whose `totals` entry is a floor: the read
+  stopped at 15 and has no count. Today that is `tasks` or `approvals` with
+  15 rows. It is also `email` when the count of a full mailbox failed, or
+  when one mailbox failed and the others answered.
+- `total` is unchanged. It counts the rows before the cut, so the bell's
+  number is still a floor of 60 at most.
+
+**The My Day feed reads the same providers (WS-58, ACTIVE 2026-10-13).**
+`my_day_feed.md` §4.4 owns the feed. This contract keeps its kinds. A
+new kind joins it only by an amendment of this section, in the PR that adds
+the kind.
+
+**The reminders source (WS-66 RM-2b, amended 2026-10-30).** This amendment
+adds the `reminders` row, the `reminders:<id>` item id and the three
+reminder kinds. The app of the source is `calendar`. The server keys
+`sources`, `totals` and `capped` by the source id `reminders`. The client
+maps a source id to its app through `NEEDS_SOURCE_APP` in `needs.ts`.
+
+The row
+is a link only, to `/chat?do=new-chat&reminder=<id>`. The source has no
+sidebar count (`calendar_events_reminders.md` RM-2b decision 5). A failed
+`reminders` source prints "Calendar did not answer, so its reminders may be
+missing."
+
+**The order.** Overdue rows come first, the oldest first. Then approvals,
+with the action that waited longest first, because the work of an agent
+waits on it. Then rows due today, then notifications with the newest first. Then needs-reply rows, with the
+person who waits longest first. Each source gives 15 rows at most, so one app
+cannot fill the feed. An approval takes only the room left inside `limit`.
+
+**Two rules from the email app apply.** A mailbox that the member keeps
+separate stays out of the feed (D-EM-30). The read of the mail never starts
+a backfill of the reply status.
+
+**A mailbox that fails costs only its own rows.** Each mailbox has a time
+limit of one second. The `email` source reads `failed` only when every
+mailbox failed.
+
+Fences: `tests/unit/test_shell_needs.py` holds the gate, the order, the caps,
+a failed source and the SQL of the two reads. It also holds the approvals
+gate, the admin test, each org's queue, the room rule and the plain words of
+each action. Its fake is the tenant session, so the real `read_pending`
+runs, and a database error reads `failed`. `tests/unit/test_shell_needs_r8.py`
+is R8, as the role with no privileges and with RLS forced. It also holds a snoozed thread, a junk thread and
+a member with more work than the cap. Its `TestTheApprovalsQueue` seeds a
+pending action in each org through `enqueue`. An admin sees the row of
+their own org and never the other. A member with the feature who is not an
+admin sees none, and a member without the feature sees none.
+
+**The bell, BUILT in NS-6 slice 6a (2026-10-10, dark).**
+`src/lib/shell/ShellBell.tsx` draws it behind `NEXT_PUBLIC_SHELL_DOCK`.
+`dockFlag.ts` reads the flag, and a dev build also reads
+`localStorage["cc-shell-dock"]`.
+
+- **Its place follows the activity control.** It sits at the right end of the
+  shell bar, before Activity. With the shell bar flag off, it sits in the
+  sidebar's head. On a phone, it sits in the head of the Menu drawer.
+- **The badge is the feed's `total`,** the number of rows that need the
+  member before the feed's cut to 30. It is not a sum of unread mail. Each
+  source gives 15 rows at most, so the number is a floor. It shows "99+"
+  past 99, and no badge at 0. The spoken name is "Needs you, N items".
+- **The panel draws `NeedsList`,** the same list as My Day's card. So the
+  groups, the rows and the acts are one code. The foot of the panel opens
+  My Day. When the feed was cut, the foot also says "Showing 30 of 45". The
+  panel is a `Modal`, as the activity panel beside it is, so Escape closes
+  it and focus goes back to the bell.
+- **Each act works as on My Day.** Done runs the store's own gesture, with
+  the subtask question and the Undo. Mark read runs the Projects route.
+- **A Done closes the panel.** The Undo is the shared toast. The toast sits
+  under a dialog's scrim, and `DESIGN_SYSTEM.md` §4a forbids a higher layer.
+  The dialog also hides the toast from a screen reader. So the panel closes,
+  and the Undo is in reach for each member. A Mark read has no Undo, so the
+  panel stays open.
+- **The marks of an act live in one store,** `src/lib/shell/needsActs.ts`.
+  So a Done in the bell takes the row off My Day's card too. The store
+  empties when the last reader unmounts. An answer that no longer holds a
+  row drops its marks. A mark ends 30 seconds after the act, so a task that
+  is open again shows again. A new member starts with no marks.
+- **The Undo shows on every page.** My Tasks, the Calendar and My Day mount
+  `UndoToast`, and no other page does. On each other page, Projects among
+  them, `UndoToastFallback` shows the Undo with no keys.
+- **The bell reads the feed each minute** while the tab shows, and each time
+  the panel opens. The Projects bell read its list each minute too.
+
+⚠️ **The bell is narrower than the Projects `NotificationBell`.** The owner
+must know this before the flag goes on:
+
+- It shows unread notifications only. The Projects bell also listed the read
+  rows.
+- It shows 15 rows from each source at most, and 30 in all. With four
+  sources, the badge counts 60 at most, and an org admin alone gets the
+  fourth (approvals). So "99+" cannot show until more sources join.
+- It has no "Mark all read".
+- It has no separate count of mentions.
+- A notification row opens its task at the feed's link. The Projects bell
+  opened the task in the page's own panel.
+
+Fences: `src/lib/shell/shellBell.test.ts`, `src/lib/shell/needsActs.test.ts`,
+`e2e/shell-bell.spec.ts`, and `test_total_counts_each_sources_capped_rows_before_the_cut`
+in `tests/unit/test_shell_needs.py`.
+
+---
+
+### 7.3 Updating, not broken
+
+**Owner directive, 2026-10-05.** The owner asked for a pop-up that says "The
+app is updating. Please wait a moment", in place of a 504. The owner then made
+it wider: every error that a database, backend or app update causes must leave
+the member calm.
+
+**What a deploy looks like from a browser.** Measured on the box on
+2026-10-05, from 04:05 to 04:08 UTC:
+
+- The gateway is down for 10 s.
+- Two minutes later, the workbench takes 7 s to stop. It is ready 140 ms after.
+- Caddy holds a request for up to 30 s (H-60).
+- `gatewayFetch` holds the workbench's own call to the gateway for up to 25 s
+  (H-194).
+
+Some requests still fail. A restart cuts an open stream, a hold can run out,
+and a route can answer 502 on its own.
+There was also no error page at all, so a crash showed React's raw
+"Application error". A tab that stayed open across a deploy produced exactly
+that crash the first time it loaded code that the new build had renamed.
+
+**Three layers, one message.**
+
+| Layer | When | What the member sees | Where |
+|---|---|---|---|
+| Caddy (NS-10b) | The workbench has not answered for the whole 30 s hold | A full page, "Metorite is updating". It checks `/api/health` every 3 s and reloads by itself | `deploy/hostinger/caddy/updating/index.html`, the `handle_errors` block of `app.metorite.com` |
+| The shell | A request to `/api/*` gets a 502, 503 or 504, or no answer, AND `/api/health` then says the gateway is down | The shared toast: "Metorite is updating", then "Metorite is back" with a Refresh button. "Metorite was updated" with a Reload button when the build changed. "You are offline" when the browser has no network | `lib/shell/UpdateNotice.tsx`, `lib/shell/serviceHealth.ts`, `app/api/health/route.ts` |
+| The error page | A page throws | "This page did not load" with Try again and Reload. A tab out of date after a deploy reloads itself once | `app/error.tsx`, `app/global-error.tsx`, `lib/shell/ErrorScreen.tsx`, `lib/shell/chunkReload.ts` |
+
+**Rules.**
+
+1. **One failed route is not an update.** The shell asks `/api/health` first.
+   A healthy answer ends it with no message, and the route shows its own
+   error.
+2. **The shell never reloads a page by itself**, except a tab whose code is
+   out of date. A reload can lose what the member is typing, so the member
+   decides. The one exception reloads at most once a minute, so a real bug
+   can never loop.
+3. **The words make no promise the page cannot keep.** "If something did not
+   save while it was updating, try it again." The shell does not know what
+   saved.
+4. **One message at a time.** Every state uses one toast key, so "updating"
+   turns into "back" in place.
+5. **`/api/health` is public**, so the sign-in page can say "updating" too. It
+   answers up or down and a build id, and reads nothing private.
+6. **An app never shows its own "server unavailable" banner.** It is the
+   shell's message, under D89.
+
+**A busy database (NS-11, 2026-10-06).** The owner saw "The server had an
+error (500). Nothing was saved." in Projects during a deploy, and no pop-up.
+The cause was not the restart. Supabase's session pooler allows 15 clients
+for the whole database, and one gateway could ask for 27:
+
+- the async pool of `acb_common.db`, 8 + 4.
+- the sync pool of `acb_graph.db`, on SQLAlchemy's default 5 + 10.
+
+The box logged about 590 refusals (`EMAXCONNSESSION`) in two days, during
+deploys and at busy moments. Each one became a 500, and the shell ignores a
+500 on purpose. NS-11 changes three things:
+
+1. **The budget.** PR #662 landed it the same day: async 7 + 2 and sync
+   2 + 1, so 12 for both pools. Its fence sums both pools. Three slots stay free. A migration run, the
+   backup and an operator's `psql` use them. So do a few bare
+   `psycopg.connect()` calls that are still outside both pools. H-250 moves those calls in.
+2. **The answer.** A refused connection is a 503 with `Retry-After` and the
+   code `db_busy` (`acb_common/db_busy.py`). Every other error keeps its 500.
+3. **The words.** The gateway's `/health` says `db: "busy"` for 15 s, from
+   memory. The shell shows "Metorite is busy" and then "Metorite has caught
+   up". A panel shows "Metorite is busy or updating. Wait a moment and try
+   again."
+
+**What it does not cover.** An open chat stream that a restart cuts still
+ends. NS-10 does not change how the chat reports that. A migration that holds a lock
+can make a request slow without failing it, so no layer sees it. R6 keeps
+old code working against the new schema, which is why a migration does not
+produce an error of its own.
+
+---
+
+## 8. Presets, pins, Desk mode and the first sign-in
+
+### 8.1 Presets
+
+A preset is data. It sets the starting altitude, the first pins, the card
+order, the order of New and the dock's agent on Home. **A preset never grants
+or denies.** Every item in a preset passes through `visibleSections` before it
+renders.
+
+The first version ships eight fixed presets in `src/lib/shell/presets.ts`.
+That is the default answer to Q5. The member's preset comes from the first
+sign-in question. Without an answer, the role picks it (§8.4 rule 2).
+
+**The eight presets** (owner, 2026-10-10, "Approve as drafted"). A preset
+arranges three things only. They are the pinned apps, the order of the My Day
+cards and the order of the jobs in the command bar. It never grants. Each pin
+passes through `visibleSections`. So a pin for an app that the member does
+not hold, or for an app that is not live yet, does not render.
+
+| Preset | Pinned apps | My Day card order | "New" jobs first |
+|---|---|---|---|
+| Founder | Projects, Approvals, My Email, Chat | Needs you, Today, Team pulse (NS-5) | new-project ("New space"), invite, capture |
+| Sales manager | My Email, My WhatsApp, Projects, CRM (preview, renders when live) | Needs you (needs_reply first), Today, Next actions | compose, whatsapp-reply, capture |
+| Marketing lead | Projects, My Email, Chat | Needs you, Next actions, Today | capture, new-chat, compose |
+| Finance manager | Approvals, My Email, Projects, Invoices (preview, renders when live). ⚠️ NS-7 does not pin Invoices yet, because `nav.ts` has no Invoices pane | Needs you (approval first), Today | review-approvals, compose |
+| Operations manager | Projects, People, Calendar | Needs you, Today, Next actions, Out today (NS-5) | new-project, capture, find-person |
+| Engineer | My Tasks, Projects, Calendar, Chat | Next actions, Today, Needs you | capture, plan-day, new-chat |
+| Accounts assistant | My Tasks, My Email | Needs you, Next actions | capture, compose |
+| New hire | My Tasks, People, Chat | Today, Next actions | edit-profile, find-person, new-chat |
+
+The Desk mode of the Accounts assistant waits on NS-8, which waits on a live
+data-entry app.
+
+⚠️ **Since 2026-10-11 the "Pinned apps" column is what an answer STARS**
+(§3.2b). An answer stars these apps and every Personal Center app that the
+member holds, by owner choice ("Personal + preset"). The column did not
+change. The owner first asked on that day to keep personal and admin apps
+out of the pins, and then replaced the pins with stars on the same day.
+So `presets.ts` keeps the table as it is above.
+
+**What NS-7 built from the table, and what it left out.**
+
+- **Invoices is not pinned.** No Invoices pane exists in `nav.ts`, so a pin
+  would be a guess at its href. The Finance manager gets the pin in the
+  pull request that adds the pane. The Sales manager DOES pin CRM, because
+  its `preview` pane exists. It renders when the owner promotes it (H-21).
+- **Team pulse and Out today wait on NS-5.** A preset names them, and My
+  Day draws only the cards that exist. A card that a preset does not name
+  follows the named cards. So a preset changes the order and never hides a
+  card.
+- **"needs_reply first" and "approval first"** put that group of Needs you
+  first, and the cut to seven rows follows that order. NS-3 slice C added
+  the `approval` kind, and its cap of five approvals still applies. Only an
+  org admin gets approval rows, so for any other member the order of the
+  server stays.
+- **Two lists of names, held as one.** The gateway checks the preset, pane,
+  card and job names (`routes/admin/me.py`). `presets.ts` owns what each
+  preset arranges. `test_auth_me_shell.py::TestOneVocabulary` fails when the
+  two lists differ.
+
+**Fence (NS-7).** `src/lib/shell/presets.test.ts` takes every preset and
+eight sets of grants, from none to partial to full, with and without the
+preview apps. For each pair, it asserts that what renders is a subset of
+`visibleSections` for those grants. That holds for the pins, the whole
+sidebar, the cards and the jobs. A pin for CRM renders only with the preview apps restored.
+Mutation, seen to fail first: let `pinnedPanes` read every pane, not
+`visibleSections`, and 97 cases fail.
+
+### 8.2 Pins
+
+- One new nullable column on `user_settings`, `shell_prefs`. It holds the
+  preset, the pins, the card order, the hidden cards and the job ranking.
+  Take the migration number at build time (R1).
+- It is nullable with no default value. A null means "use the preset" (R6).
+- **Its own route, `GET` and `PUT /auth/me/shell`.** `/tasks/settings`
+  requires `feature:tasks`, and a guest does not hold it. The shell route
+  needs only a signed-in member, the same as `/auth/me`. It reads and writes
+  the one `user_settings` row, so it adds no store. A `PUT` of null resets
+  the member to the preset.
+- **If the read fails, the shell uses the preset.** It never blanks the
+  sidebar (`launch_surface.md` §8.2).
+- `user_settings` is already tenant-scoped, so `test_tenant_coverage.py`
+  already covers it (R5a).
+- The ticket runs the migration and the route against a real Postgres (R8).
+
+**Built 2026-10-10 (NS-7).**
+
+- **Migration 240** adds `shell_prefs JSONB`, nullable, with no default.
+  Since 239 the key of the row is `(organization_id, user_id)`, so one
+  address keeps one layout in each of its organizations.
+- **The stored shape:** `preset`, `answered` (`"answered"`, `"skipped"` or
+  null), `pins`, `cardOrder` and `newOrder`. A null field means "use the
+  preset". A null `answered` means "never asked".
+- **The gateway applies no preset.** `GET` answers the stored layout, or all
+  nulls. The client applies the role's preset (`presetForRole`), so the
+  rule lives in one place.
+- **A failed read answers 503, never all nulls.** All nulls opens the first
+  sign-in question. So a fault must not look like "never asked".
+- **The first write keeps the calendar seed.** `/tasks/settings` reads "no
+  row" as "seed the day from the People schedule" (D-PC-16). So the shell's
+  first write puts that seed in the new row. Later writes change
+  `shell_prefs` only (`upsert_settings_sql`, its `update` argument).
+- ⚠️ **Two results of that first write, recorded and accepted.**
+  - The seed freezes at that moment. Before NS-7, a member with no row
+    followed each later change of their People schedule. After the first
+    shell write, the calendar keeps the hours of that day, as it does after
+    any first save of a setting.
+  - The member joins the rollover sweep. The sweep in
+    `routes/tasks/calendar.py` runs each 15 minutes over the
+    `user_settings` rows with `auto_rollover` on, and a new row has it on.
+    So an overdue block that is not done moves into the member's new day,
+    as it does for every member with a row.
+- **The first frame draws the last known layout** (round 2). The browser
+  keeps the layout that the server last confirmed, one copy for each account,
+  under `cc-shell-prefs:<email>|<organizationId>` (`shellCache.ts`). The
+  sidebar and My Day draw it at once, and the read confirms it or replaces
+  it. A refused write never reaches the copy. With no copy, "My apps" and the
+  My Day cards wait for the read, so nothing moves under the member's eye.
+- **The read starts beside the access read.** The route needs the session
+  only, so `AppShell` asks for it before access resolves.
+- **A sign-out clears the copy** with the chat caches, in
+  `clearSignedOutAccount` and `clearAccountNamespaces`. So no email outlives
+  its sign-out in a key name.
+- **A star shows only where the save can land.** `PINNABLE` in `presets.ts`
+  holds the panes that `nav.ts` declares by its own href. The six Center
+  panes are not in it, because D49 keeps them unlinked and the `PUT`
+  refuses them.
+- **The `PUT` refuses** an unknown preset, pane, card or job, an unknown
+  key, more than 24 pins, and an answer with no preset. The member and the
+  tenant come from the session only (R5).
+
+### 8.3 Desk mode
+
+A preset flag for data-entry staff. Home becomes one app's queue and its form.
+The sidebar hides All apps, which is the default answer to Q6. The command bar
+stays, so "Request leave" is still one search away.
+
+⚠️ **Desk mode waits for a live data-entry app.** None is live today. NS-8 is
+blocked until one is.
+
+### 8.4 The first sign-in question
+
+**Amended by D150 (2026-11-02).** The first visit skips "Choose the apps for
+your sidebar", and the founder's dialog has no invite step.
+`specs/onboarding.md` §4 owns the first-run path. "Change my layout" keeps
+both steps.
+
+`WelcomeDialog` already mounts in `AppShell`. It asks one question, "What will
+you do most here?", with six answers. The answer picks a preset. The member may
+skip it. The question changes the starting layout and nothing else.
+
+| Answer | Preset |
+|---|---|
+| Run the company | Founder |
+| Sell and look after customers | Sales manager |
+| Plan campaigns and content | Marketing lead |
+| Handle money and approvals | Finance manager |
+| Run projects and operations | Operations manager |
+| Build and ship the work | Engineer |
+
+**Four rules** (owner, 2026-10-10):
+
+1. **Every member sees the question on their first visit,** invited members
+   too. Before NS-7, `WelcomeDialog` opened only on `?welcome=new-org`.
+2. **A skip lets the role pick.** `owner` and `admin` get Founder. `manager`
+   gets Operations manager, and `member` gets New hire. `guest` gets New hire
+   with no pins. This rule replaces "Team lead" and "Personal", which are
+   not among the eight. A custom role reads as `member`.
+3. **`shell_prefs` stores "Skipped" as a choice.** So null means "never
+   asked", and the shell never asks a member twice. "Change my layout" in
+   the account menu asks again.
+4. **Pins show as a "My apps" group at the top of the sidebar.** A star in
+   All apps pins an app or unpins it. ⚠️ **Superseded on 2026-10-11** by the
+   star model (§3.2b).
+
+**Built 2026-10-10 (NS-7).**
+
+- **A write fault never holds the member in the question** (round 2). Skip,
+  Escape, the header's X and an answer each close the dialog first, and the
+  write follows. When the write fails, the choice holds for this page and
+  one toast says "Couldn't save that. We'll ask again next time." The server
+  still holds "never asked", so a later visit asks again. A latch in the page
+  stops a second ask in the same document.
+- **One dialog, never two.** A founder's `?welcome=new-org` asks the
+  question first, and then shows the invite step in the same dialog.
+- **The question opens only when the server answers "never asked".** A
+  failed read opens nothing, because only the server knows that fact.
+- **A close is a skip.** On the first visit, Escape and "Skip for now" both
+  store "skipped". When "Change my layout" asks again, the way out reads
+  "Keep my layout" and writes nothing.
+- **An answer resets the pins to the new preset's pins.** A skip keeps any
+  pin that the member set before. ⚠️ Superseded on 2026-10-11, below.
+- **Each answer names what it pins,** from the apps the member holds, such as
+  "Pins My Tasks, Projects, Calendar and Chat". ⚠️ Superseded on 2026-10-11,
+  below.
+
+**Built 2026-10-11: the second step** (owner direction).
+
+- **Step 1 is the question.** Its line reads "Tell us how you work, and
+  we'll set up your sidebar." Each answer names the apps that it adds, such
+  as "Your Personal Center, plus Projects and Chat".
+- **An answer opens step 2 in the same dialog,** "Choose the apps for your
+  sidebar". It lists every app that the member holds, by category, with a
+  box to tick (`Checkbox`). Home and the settings pages are not in it.
+- **The first ticks are the defaults:** every Personal Center app, and the
+  preset's apps. When "Change my layout" asks again and the member gives
+  the same answer, the ticks are their current stars. A different answer
+  gives that answer's defaults.
+- **The last line says where to change it later.** "You can change this any
+  time. Star apps in All apps (use + Add apps at the bottom of your
+  sidebar), or use Change my layout in your account menu."
+- **"Done" sends ONE `PUT`** with the answer, the preset, `pins` and
+  `known`. "Back" goes to step 1 and writes nothing.
+- **The X and Escape on step 2 keep the answer,** with the ticks it started
+  with, on a first visit. So an answer is never lost. When "Change my
+  layout" asks again, they close and write nothing, as "Keep my layout"
+  does.
+- **The dialog waits for access.** Before access resolves, step 2 would
+  list no app, and "Done" would save no star (`welcomeSteps.ts`).
+- **"Back" puts the focus on the chosen answer.**
+- **A skip at step 1 closes the dialog,** with no step 2. It stores no
+  stars, so every app shows.
+- **Round 2 still holds.** Each way out closes first, a failed write shows
+  the toast, and the page latch holds. A founder sees the question, then the
+  apps, then the invite step, in one dialog.
+- Fences: `presets.test.ts` holds the answer map and the role defaults.
+  `shellPrefs.test.ts` holds that only a real layout can say "never asked".
+  `e2e/shell-presets.spec.ts` holds the browser half.
+- Mutation, seen to fail first: let "Skip for now" close the dialog with no
+  write. The e2e then fails at the write, and again at the reload.
+
+---
+
+## 9. The phone
+
+The phone shell has no top bar. A bottom bar changes its tabs per app, and
+its Menu tab opens a drawer (`AppShell.tsx`, `MobileBottomNavInner`).
+
+- **The drawer takes the sidebar shape of §3.2.** My Day comes first.
+- **The Ask tab opens the assistant** (D99, §7.1). Since 2026-11-07 the
+  assistant opens as a sheet above the bar (§9.1), not over it.
+
+### 9.1 The bar always shows (owner, 2026-11-07, MOB-9, task 2002)
+
+The owner asked in chat: "have the bottom menu bar always show. currently the
+popup end up covering the menu."
+
+- **No overlay covers the bar.** The bar paints on `LAYER.bottomNav` (96).
+  That is above every sheet, drawer, card, dialog and panel. The guide (98),
+  a confirmation (`Modal` `alert`, 100) and a toast (110) paint above it.
+- **Each full-height layer ends at the bar's top edge.** One CSS rule in
+  `globals.css` does this under `:root[data-phone-nav]`, with the variable
+  `--phone-nav-h`. An overlay never sets that height itself. A sheet sized in
+  `vh` subtracts `--phone-nav-h`.
+- **A tab closes what is open, then does its job.** The shell sends one
+  bar-tap signal (`lib/phoneBarTap.ts`). Each overlay closes on it, and the
+  Focus room drops to its strip. A second tap on the tab that opened a sheet
+  closes the sheet. Ask opens and closes the assistant.
+- **A menu or a panel stops at the bar.** `AnchoredPanel` and
+  `lib/menuClamp.ts` measure the room to the bar's top edge.
+- **The bar's top edge is square, with a hairline** (owner, 2026-11-07). A
+  sheet ends on that edge. Round corners left two gaps where the sheet seemed
+  to run on behind the bar.
+- **The bar keeps space at its foot for an iPhone** (owner, 2026-11-07). The
+  foot (`--phone-bar-foot`) is the home-indicator inset, and never less than
+  0.75rem. The bar's height is `--phone-bar-h`, and every clearance of the
+  bar reads it. No file adds 3.5rem and the inset by hand.
+
+Fences: `layers.test.ts`, `phoneBarTap.test.ts`, `menuClamp.test.ts`,
+`AnchoredPanel.test.ts` and `e2e/phone-bar-always.spec.ts`.
+
+### 9.2 One rule for every bar (owner, 2026-11-07, MOB-12, task 2005)
+
+The owner asked that each bar make it "as obvious as possible to the user how
+to use the app". `src/lib/shell/phoneBar.ts` declares the bar of each app, and
+the shell draws it. `AppShell.tsx` holds no branch for one app.
+
+1. Menu comes first and Ask comes last. At most three app tabs go between
+   them.
+2. A place tab goes to a part of the app. While that part shows, its icon
+   sits in a tinted pill.
+3. An act tab does one thing. At most one act is the accent: the app's main
+   "new". Its icon sits in a filled circle.
+4. No tab opens an empty sheet. The page hides a tab that has nothing to do.
+5. No tab repeats a control that stays on the screen. On a phone, the page
+   drops the top control that the bar holds.
+6. An app with no places and no "new" declares no tabs, and it gives its
+   reason.
+
+A page tells the shell what shows with one event, `cc-phone-bar` (the selected
+tab, the tabs to hide, and the counts). CRM keeps its own list
+(`cc-crm-nav`), because its page knows the source's labels.
+
+| App | Tabs between Menu and Ask |
+|---|---|
+| My Day | None. One page. CC-9 (task 1977) puts Capture at the thumb |
+| Calendar | Today · Schedule (count) · Reminders (count, behind its flag). The floating button is gone |
+| People | Directory · Org chart · Find skills |
+| Projects | Projects · Capture · Search (`one_projects_app.md` MOB-10) |
+| CRM | The page's own list, then More |
+| Knowledge | Spaces · Search · New page |
+| Email | Mailboxes · Automation · Write |
+| WhatsApp | Triage (inbox only) · Sections |
+| Chat | None while Ask shows, because `/chat` then opens the assistant |
+| Studio | Library · Modules · New app |
+| Artifacts | Chats · Workspaces |
+| Approvals | None. One list, and each row holds Approve and Reject |
+| Organisation | Members · Requests (count) · Invite |
+| Appearance | None. One settings page |
+| Integrations | Views · Add |
+
+Fence: `phoneBar.test.ts`. It fails when a live pane has no declared bar,
+when a bar holds more than three tabs or two accents, or when no page answers
+a tab's event.
+
+---
+
+## 10. From today to the target
+
+| Today | Target | Ticket |
+|---|---|---|
+| `/` "Welcome back", a grid with no data | My Day at the personal altitude | NS-3 |
+| `/dashboard` "coming soon" | The all-teams altitude of Home. `/dashboard` stays for dashboards people build (WS-15) | NS-5 |
+| Search, bell and assistant inside each app's `AppTopBar` | One constant shell bar with the one search. Each app keeps its own `AppTopBar` under it, with its name and its tools (owner, 2026-10-10) | NS-1 |
+| Three palettes | One command bar. `app/projects/lib/commands.ts` seeds the job list | NS-1, NS-2 |
+| The Projects `NotificationBell`, and no Approvals badge | The shell's "Needs you" | NS-6 |
+| Three assistant rails | One dock | NS-6 |
+| My Profile and Appearance in the sidebar | The account menu | NS-2 |
+| My Access in the sidebar | ✅ The People app's "My access" tab, 2026-10-05 | — |
+| Calendar's own header | ✅ Calendar's `AppTopBar`, 2026-10-10 | — |
+| Projects shows "every space you can see" | Grouped by team (D22), driven by the scope chip | NS-5 |
+
+---
+
+## 11. Tickets
+
+Every ticket ships dark behind its flag, default off. With a flag off, every
+surface renders as it does today, because a merge to `main` is a deploy. Each
+flag stays off in production until the owner turns it on (§13). To build is
+AGENT-SAFE. To turn any flag on in production is OWNER-GATE.
+
+⚠️ **One exception, the owner's: NS-7.** NS-7 rides `NEXT_PUBLIC_SHELL_NAV`,
+which is on in production. The owner decided on 2026-10-10 that "merge is the
+release". So NS-7 is live for every organization when it merges, with no new
+flag.
+
+### NS-1 · The shell bar and the one ⌘K listener — AGENT-SAFE · slice 1 BUILT 2026-10-08, dark
+
+**Built in slice 1:**
+
+- `lib/shell/ShellBar.tsx` holds the bar and the ONE key
+  listener. Its two slots went on 2026-10-10 (owner, §3.1). `⌘K` is taken in the capture phase and stopped, so the three app
+  listeners never fire while the flag is on. `/` follows §6.1.
+- ~~`AppTopBar` portals its contents into the slots.~~ Reversed by the owner
+  on 2026-10-10. Every app now draws its own `AppTopBar` row under the shell
+  bar, and the shell bar names no app (§3.1).
+- `lib/shell/CommandBar.tsx` has Do, Go to, "In this page" (§6.7 rule 3) and
+  Ask. The Ask row opens `/chat?q=`, and Chat types the words in and does not
+  send them. NS-4b makes Ask answer in place.
+- `lib/shell/pageFilter.ts` reaches a page's filter for every page: `/`
+  focuses it, and "Show all in …" types into it as a keystroke does. A closed
+  filter (`data-page-filter-opener`) opens first. A page that needs more,
+  such as Email's pills, takes the words itself.
+- `lib/shell/registry.ts` holds the jobs and the ranking. It reads a sentence:
+  "new email to priya" finds Write an email. `lib/shell/doJob.tsx` is the job
+  door: a link `?do=<id>&fill.<field>=…` opens the app's form once.
+- Email's box, My Tasks' two boxes and Chat's conversation box say "Filter"
+  and carry `data-page-filter` (§6.7 rule 2). Email's old `⌘K` button hides.
+- The phone has no row. The Menu drawer opens the same bar (§9).
+- A dev or test build may turn the bar on per browser
+  (`localStorage["cc-shell-bar"]`), so `e2e/shell-bar.spec.ts` runs both
+  sides. A production build drops that branch.
+
+**Closed on 2026-10-10:** Calendar took `AppTopBar`, so its own header went.
+Email took `AppTopBar` too. It keeps its list header under the bar, on
+purpose: it holds the folder and the list filter, which §6.7 places above
+the list.
+
+✅ **NS-4a is built (2026-10-08), so the bar's Find group now holds what the
+three old searches found.** With the flag on, these searches go:
+
+- the Projects palette and its Search button
+- the My Tasks palette and its Search button, on desktop and on the phone
+- the Email palette and its `⌘K` button
+
+Find covers task titles, email subjects and senders, and colleagues by name,
+title or department. The old Projects palette also ran its own commands, such
+as view switches. Those live on the Projects page itself.
+
+Flag `NEXT_PUBLIC_SHELL_BAR`. Files: `src/components/AppShell.tsx`,
+`src/components/AppTopBar.tsx`, a new `src/lib/shell/`, and the pages of
+Projects, My Tasks, Calendar and Email.
+
+Done when:
+
+1. With the flag on, `AppShell` renders the shell bar on every desktop route.
+2. ~~Four apps fill the shell bar's slots and draw no bar of their own.~~ The
+   owner reversed this on 2026-10-10. Every live app draws its own
+   `AppTopBar` row under the shell bar (§3.1).
+3. The command bar answers tier 0 from the registry and from
+   `app/projects/lib/commands.ts`.
+4. `src/lib/shell/seams.test.ts` already exists (2026-10-05). NS-1 puts the
+   shell's parts in `src/lib/shell/`, and adds no budget to `SEAM_DEBT`.
+   With the flag on, only the shell's ⌘K listener fires. With the flag off,
+   the three listeners at `app/projects/page.tsx:2635`, `app/tasks/page.tsx:180`
+   and `app/email/page.tsx:692` run as today. NS-9 deletes them.
+   Two tests pin the My Tasks listener today, `app/tasks/lib/searchHit.test.ts`
+   and `app/tasks/lib/shortcuts.test.ts`. NS-1 keeps them green with the flag
+   off, and NS-9 rewrites them.
+5. With the flag off, every surface renders as it does today. A test pins the
+   nav order and the bar's absence.
+6. The visual review of `DESIGN_SYSTEM.md` §8 ran: light mode, compact density,
+   a changed accent, and the neighbouring app.
+
+### NS-2 · The manifest, All apps, the sidebar shape and the account menu — AGENT-SAFE · slices 1 and 2 BUILT 2026-10-09. Slice 1 is ON in production since 2026-10-09. Slice 2 rides the same flag, so it is live when it merges
+
+**Built in slice 1:**
+
+- `NavPane` carries `team`, `blurb`, `door` and `setting` (§5.1). Every pane
+  has a team. Every live pane has a purpose in job words, 60 characters or
+  fewer. The command bar prints it beside "Open …", in place of the operator
+  note.
+- `src/lib/shell/shellNav.ts` builds the sidebar, the account menu and All
+  apps from `visibleSections`. `AppLauncher.tsx` is All apps.
+- The sidebar, the folded rail and the phone drawer take the shape of §3.2a.
+  The account menu is the sidebar's foot (§3.3). With the shell bar on, it
+  was the bar's top right from 2026-10-12, and it is the foot again since
+  2026-10-14 (§3.3).
+- Fences: `nav.test.ts` and `shellNav.test.ts`. The first fails on a live
+  pane with no team or no purpose. It also fails when a page other than the
+  three member and organization pages opens from the account menu. The second
+  pins the shapes that four kinds of member see.
+
+**Built in slice 2:**
+
+- Three jobs, in `lib/shell/registry.ts` and in `intent.py`. "New space" opens
+  the draft row at the root of the Projects tree. "New chat" starts a
+  conversation in Chat. "Invite a member" opens the invite dialog of
+  Organisation.
+- The gateway's `Job` carries `admin`, and `held_jobs()` holds an admin job
+  for an admin only (§5.1). `TestOneJobList` fails if a job's admin gate
+  disagrees with `adminOnly` in `nav.ts`. A second test asserts that a member
+  who is not an admin does not hold `invite`.
+- Done-when 2's job route check. `nav.test.ts` fails on a job whose `href`
+  has no `page.tsx` under `src/app`.
+
+**Built in slice 3 (2026-10-09):** two link jobs, "Reply on WhatsApp" and
+"Review pending approvals", after the owner chose links. Every live pane now
+has a job, and `nav.test.ts` fails on a live pane with none.
+
+**Still open in NS-2:** done-when 1's "`NavPane` carries the §5.1 fields". The
+jobs still live in one list in `lib/shell/registry.ts`, and the next slice
+moves them onto each pane's manifest (`NavPane.jobs`, §5.1).
+
+Flag `NEXT_PUBLIC_SHELL_NAV`. Files: `src/lib/nav.ts`, `src/lib/nav.test.ts`,
+`src/components/Sidebar.tsx`, and a new launcher and account menu in
+`src/lib/shell/`.
+
+Done when:
+
+1. `NavPane` carries the §5.1 fields, and every live pane has `team`, `blurb`
+   and one job or more.
+2. `nav.test.ts` fails on a live pane with no `team` or `blurb`, and on a job
+   whose `href` is no route.
+3. The launcher renders `visibleSections(features, isAdmin)` and nothing else
+   (`launch_surface.md` §8.4).
+4. `nav.test.ts` counts eleven live panes, the set of `launch_surface.md` §2.
+5. With the flag on, the sidebar takes the §3.2 shape, and the account menu holds
+   the §3.3 items.
+
+### NS-3 · My Day and the needs feed — AGENT-SAFE (build), OWNER-GATE (turn on) · slice A BUILT 2026-10-09, live · slice B BUILT 2026-10-09, ON in production since 2026-10-10 (owner) · slice C BUILT 2026-10-10
+
+**Slice A is built.** `GET /shell/needs` serves three of the four providers
+of §7.2: My Tasks, Projects and Email. §7.2 records the contract. Done-when 2
+to 4 are met for those three, and the R8 run is in the pull request.
+
+**Slice C is built (2026-10-10).** It adds the fourth provider, Approvals,
+after H-201, and the "Waiting for your approval" group of Needs you (§4.5,
+§7.2). So done-when 2 now holds for the four providers, and done-when 3 for
+the four negative tests. Only an org admin with the approvals gate gets a
+pending action (owner decision, 2026-10-10). The R8 run is in the pull
+request.
+
+My Day itself (done-when 1 and 5) is slice B, below. The owner turned it on
+in production on 2026-10-10.
+
+Flag `NEXT_PUBLIC_MY_DAY`. Files: `src/app/page.tsx`, the card components each
+app exports, and `gateway/routes/shell/needs.py` with its providers.
+
+Done when:
+
+1. With the flag on, `/` renders My Day with the personal cards of §4.5.
+2. `GET /shell/needs` merges the four providers of §7.2 on the request's
+   session.
+3. Each of the four providers has its own negative test. Another member's
+   private task, notification and mail thread reach no card and no needs
+   row. Another organization's pending action reaches no card and no needs
+   row, and neither does any pending action for a member who is not an
+   admin. A member without the approvals gate gets no pending action.
+4. The needs SQL ran against a real Postgres (R8), and the run is in the pull
+   request.
+5. With the flag off, `/` renders "Welcome back" as it does today.
+
+**Slice B, built 2026-10-09, ON in production since 2026-10-10 (owner).** It
+builds My Day at `/`, behind `NEXT_PUBLIC_MY_DAY`. Done-when 1 and 5 hold for the page, and
+`src/lib/shell/myDayPage.test.ts` renders both branches. Done-when 2 to 4
+belong to slice A, the gateway feed.
+
+- **The cards.** `NeedsYouCard` is in `src/lib/shell/`. `TodayCard` is in
+  `app/calendar/components/`, and `NextActionsCard` is in
+  `app/tasks/components/`. Each card reads through `useCachedResource`.
+- **The feed's door.** `src/app/api/shell/needs/route.ts` sends the feed on
+  from the gateway. When the gateway is down, it answers 502. An empty feed
+  would say "Nothing needs you", and that is a claim, not a silence.
+- **The acts.** A one-click act runs through the code of the app that owns
+  it (`src/lib/shell/needs.ts`). My Day adds no write route. A done is the
+  My Tasks store's own gesture, `quickDispose`, through
+  `app/tasks/lib/completeFromHome.ts`. So a parent with open subtasks asks
+  the D-PM-38 question first, and Undo is the store's toast (D79). The first
+  done on a visit loads the store once. Before each later done, the store
+  reads that one task again (`refreshItem`). A task that the store never saw
+  makes it load again. While the question is up, the row stays on the card.
+  It leaves only when the answer completes the task. When the store's Undo
+  puts the task back from done, the row comes back too. The watch for a failed
+  write starts when the store writes, so it also sees a late answer. A
+  notification marked read has no Undo, because the Projects bell has no
+  route that marks it unread.
+- **The cache.** A write that lands while a read of the same key is in
+  flight makes that read's answer stale (`lib/dataCache.ts`). The read does
+  not store it, and it reads again. Before this, an Undo during the re-read
+  after a Done showed the state from before the Undo. Each such write also
+  wakes the key's watchers, so a read that gave up never stays on screen.
+- **Not yet in the manifest.** My Day imports its three cards directly. They
+  are not declared through the `cards` field of §5.1 yet. The manifest slice,
+  with NS-7, moves them there.
+- **Who gets a card.** A card asks for what the server asks for. Today and
+  Next actions read `/projects/my/*`, and the Projects router demands
+  `feature:projects`. So both cards need `tasks` and `projects`. Needs you
+  needs `projects` or `email`, or `approvals` for an org admin. These are
+  the features of its sources.
+- **One caveat, once.** When a source does not answer, the Needs you card
+  names the gap and offers Retry. An example is "Email did not answer, so
+  its replies may be missing". The summary then says nothing about needs.
+- **The sidebar.** With the flag on, the first item reads "My Day".
+
+### NS-4a · Tier 1, record search — AGENT-SAFE · BUILT 2026-10-08, dark
+
+**Built.** `gateway/routes/shell/search.py` serves `GET /shell/search`. It has
+three providers, and each calls its app's own function on the member:
+
+| Provider | Feature | Function |
+|---|---|---|
+| Tasks | `projects` | `search_tasks` |
+| Email | `email` | `search_messages` |
+| People | `people` | `list_directory` |
+
+⚠️ Each app checks its feature on its ROUTER, so a direct call skips that
+check. Each provider therefore checks the feature itself first. The providers
+run one after another. Each has a time limit of one second, and all of them
+share one deadline of 1.5 s (§6.3). A provider that fails is left out.
+
+The command bar's **Find** group shows the records under the rows already
+shown. The bar holds the highlighted row by its key, so a late answer never
+moves the member's choice.
+
+Fences:
+
+- `tests/unit/test_shell_search.py`: a negative case per provider, the member
+  passed unchanged, one provider at a time, and the email call in step with
+  its route.
+- `tests/unit/test_shell_search_r8.py`: R8 for tasks. Org B's task never
+  returns to a member of org A.
+- `tests/unit/test_shell_search_email_r8.py`: R8 for email, as the
+  non-privileged role with RLS forced. Another member's message and the
+  member's own separate mailbox never return.
+- `tests/unit/test_shell_search_people.py`: the people provider never matches
+  a colleague by a skill for a member without HR read.
+- Both R8 files ran on 2026-10-08 against a private ladder database, because
+  the shared one hits H-172.
+- `e2e/shell-bar.spec.ts`: the Find group.
+
+Flag `NEXT_PUBLIC_SHELL_BAR`. Files: `gateway/routes/shell/search.py` and one
+provider per app that has search today.
+
+Done when:
+
+1. `GET /shell/search?q=&scope=` returns grouped records from each provider.
+2. Every provider runs on the request's session, and calls its app's
+   existing search function. No provider opens a connection, and no
+   provider writes its own visibility predicate.
+3. Each provider has its own negative test: a record the member cannot read
+   never returns.
+4. The route ran against a real Postgres (R8).
+
+### NS-4b · Tier 2, filled jobs and the hand-off — AGENT-SAFE (build), OWNER-GATE (turn on) · BUILT 2026-10-08, dark
+
+**Built.** `gateway/routes/shell/intent.py` serves `POST /shell/intent`. The
+owner's words, 2026-10-07: *"a high-level coordination AI that enables us to
+quickly go to the appropriate app and workflow depending on our query."*
+
+1. **Pick.** The route makes one typed choice through `acb_llm.decide`, among
+   `held_jobs(user)` and "ask". The Console Router serves it and bills it.
+2. **Fill.** One completion through `completion_on_router` reads the job's own
+   fields. An email has `to` and `subject`, and a task has `title`. It
+   runs ONLY when `routing_is_on()` (H-69). Off, the job opens with an empty
+   form.
+3. **The answer** is one of these:
+   - `job`, with `fill.<field>` parameters for the job door (`doJob.tsx`)
+   - `handoff`, which opens `/chat?q=` with the words typed in
+   - `paused`, which shows the §6.5 line
+   - `off`, `none` or `unavailable`
+4. **Cache.** The route keeps each answer for five minutes. The key holds the
+   member, the scope and the words, through `acb_common.tenant_redis`.
+
+⚠️ **The job list is two files kept as one.** The server reads its own list,
+not a `jobs.json`, because the gateway cannot import the workbench.
+`test_shell_intent.py::TestOneJobList` fails if the ids, the links or the gates
+drift from `lib/shell/registry.ts`.
+Since NS-2 slice 2, an admin job also needs `admin:members:read` (§5.1).
+
+The server limits the pick and the fill to three seconds each. Uvicorn does not cancel
+a handler when the browser goes, so the limit must live on the server. A fill
+that fails or runs out of time is no fill. The job opens empty, and the answer
+is cached, so the pick is never billed twice. A caller with no address,
+such as the internal service, is no member and is never billed.
+
+The bar shows the pick as the first row of Ask: "New task · call the vendor",
+marked "Suggested by AI". Compose and Capture then say "Filled by AI" beside
+what the AI wrote (§6.4 rule 2). It waits for two words and a pause of 900 ms. Capture
+and Compose open with the filled words. The member checks them, and nothing is
+saved or sent until the member does so.
+
+**Not built: a limit per member.** Only the organization's credit cap stops a
+script that sends a new sentence on every call. Chat has the same exposure.
+
+**Two switches, both the owner's:** `COMMAND_BAR_AI` on the gateway turns the
+route on. `DECIDE_ENABLED`, which the email rules already use, serves the pick.
+The fill also needs `ROUTER_SERVING_ENABLED` (H-69).
+
+Fences: `tests/unit/test_shell_intent.py` (done-when 2 to 5), the
+`DELEGATED_ROUTERS` entry, and three e2e cases.
+
+**Done-when 3, read against the build.** A billed call writes its usage row
+in the Console, not in the gateway. So the test asserts the call, not the row:
+one `decide` call for a new intent, and none for a repeat.
+
+Flag `COMMAND_BAR_AI` on the gateway, default off. Files:
+`gateway/routes/shell/intent.py`.
+
+Done when:
+
+1. `POST /shell/intent` returns `job` or `handoff` (§6.6) through the Router.
+2. The prompt holds only the jobs the member can open. The server filters
+   its job list by the member's own features. One test asserts that a job
+   behind a missing feature is absent. A second test asserts that the server
+   ignores a job list from the client.
+3. Each call writes one usage row, and a test asserts it.
+4. At the hard cap, the route returns the paused state, and tiers 0 and 1 keep
+   working.
+5. The cache key holds the member and the scope, and goes through the
+   tenant-prefix wrapper.
+
+### NS-4c · Tier 2 answers and workflow drafts — AGENT-SAFE (build)
+
+Flag `COMMAND_BAR_AI`, the same flag as NS-4b. It waits on NS-4b.
+
+Done when:
+
+1. `POST /shell/intent` also returns `answer` and `workflow_draft` (§6.6).
+2. An `answer` reads data only through read tools that the app's agent
+   already holds. A test asserts that the route imports no SQL of its own.
+3. Each `answer` names its source apps, and a test asserts that a source
+   the member cannot open never appears.
+4. A `workflow_draft` opens Workflows with a draft that is off. A test
+   asserts that no workflow runs.
+
+### NS-5 · The scope chip and the team altitudes — AGENT-SAFE
+
+Flag `NEXT_PUBLIC_SHELL_SCOPE`. Files: a new `GET /shell/scopes` in
+`gateway/routes/shell/`, `routes/projects/report_scope.py` (read only), the
+chip in `src/lib/shell/`, the team cards, and the Projects tree.
+
+Done when:
+
+1. `GET /shell/scopes` returns the teams that `reader_scope` allows, and
+   whether it returns `everyone`. It adds no rule of its own. `/auth/me` does
+   not change.
+2. The chip lists Personal, each of those teams, and the top altitude when
+   `reader_scope` allows two teams or more. If the read fails, the chip shows
+   Personal only, and the page still renders.
+3. The route ran against a real Postgres (R8).
+4. The five rules of §4.2 hold, and their fences exist.
+5. Projects groups its tree by team, from the chip's value (D22).
+6. The server checks the grant on every scoped read. A test sends a scope the
+   member does not hold and gets nothing back.
+
+### NS-6 · One dock and one bell — AGENT-SAFE · slice 6a (the bell) BUILT 2026-10-10, dark · slice 6b (the chat bar, D99) BUILT 2026-10-13, ON in production since 2026-10-13 (owner) · slice 6d (the routing eval) BUILT 2026-10-14
+
+Flag `NEXT_PUBLIC_SHELL_DOCK`. Files: a new dock in `src/lib/shell/`, the three
+rails, `AssistantToggle`, and `NotificationBell`.
+
+Done when:
+
+1. The dock opens the manifest's agent, and shares sessions with `/chat`.
+2. With the flag on, the dock replaces the three rails, and the bell reads
+   `GET /shell/needs`.
+3. With the flag off, the three rails and `NotificationBell` render as today.
+   NS-9 deletes them.
+4. The Projects confirm cards pass their tests inside the dock.
+
+**Slice 6a, the bell, BUILT 2026-10-10.** It meets the bell half of item 2
+and all of item 3 (§7.2). The dock half of items 1, 2 and 4 is slice 6b.
+`SEAM_DEBT` does not change: with the flag off, both apps still mount
+`NotificationBell`, so the debt falls only when NS-9 deletes the mounts.
+
+⚠️ **D99 (2026-10-12) reshaped the dock half.** The dock half has its own
+flag, `NEXT_PUBLIC_SHELL_CHAT`, so the owner can turn on the bell without
+the assistant. Item 1 now reads: the assistant opens `orchestrator`, and it
+shares sessions with `/chat`. §7.1 holds the shape.
+
+**Slice 6b — the chat bar, the two forms and the context.** Files:
+`src/lib/shell/chatFlag.ts`, `assistant.ts`, `ChatBar.tsx`,
+`AssistantDock.tsx` and `chatHistory.ts`, then `AppShell`, `ShellBar`,
+`shellNav`, `ActivityControl`, `AgentChat` (one prop), `lib/sessions.ts`
+(rename), `/chat`, and the Projects, My Tasks and Email pages.
+
+Done when, with the flag on:
+
+1. Every desktop page draws the chat bar at the foot of the page column,
+   and every phone page draws an Ask tab in the bottom nav.
+2. From any app, one press or one Enter opens the assistant, and the first
+   turn names the app the member is in.
+3. The side panel and the full view switch, and a running reply survives
+   the switch.
+4. The side panel resizes between 320 px and 720 px, and the width stays.
+5. ⌘J and Ctrl J reach the bar, and the assistant, from the keyboard.
+6. The activity control sits in the bar, not in the shell bar, and a row
+   opens its chat in the assistant.
+7. Chat is not in the sidebar or the phone drawer, and `/chat` opens the
+   full view.
+8. Projects, My Tasks and Email mount no rail and no assistant toggle, and
+   Projects and My Tasks publish their facts.
+9. A member renames a chat, and the name reaches the server.
+
+With the flag off, every surface renders as it does today.
+
+**Built in slice 6b (2026-10-13).** Items 1 to 9 hold in code. The
+session picker follows Claude Code's (owner, 2026-10-12): a search, one list
+newest first with each chat's age, and "Archived chats" folded under its
+count. A row renames and archives, and an archived row restores or deletes.
+
+- **Only the owner** of a chat renames, archives, restores or deletes it in
+  the picker. The server refuses an archive from anybody else
+  (`_MAY_DELETE_SQL`). The archive is a column of the chat, so a room the
+  owner archives is archived for every member.
+- **The bar joins only the member's own private chat** (`barMayJoin`). It
+  sends the member's words and the facts of their page, so it never joins a
+  room or an archived chat. It joins a chat only while it is recent.
+- **The app switch fires only while the assistant is open.** A closed
+  assistant never moves the page.
+- **An archive alone does not move the chat to the top.**
+
+Fences: `src/lib/shell/assistant.test.ts`, `chatHistory.test.ts`,
+`assistantFacts.test.ts`, `activityControl.test.ts`, and
+`tests/unit/test_chat_session_archive_r8.py`, which is in the pr-check list
+of suites that must not skip. Three mutants of the archive SQL were killed.
+
+**Slice 6c — history and artifacts. BUILT 2026-10-13, live on merge.** The
+owner asked that a chat's files be "accessed via the artifacts app", and
+then said "do whatever it takes to go live". That is the H-21 decision for
+Artifacts.
+
+- **Artifacts is a live app** (`launch_surface.md` §2). It opens on the
+  member's chats, listed by the assistant's own picker (`SessionPicker.tsx`).
+  The files of the chosen chat show beside the list. `?session=<id>` picks a
+  chat, so a link opens it. The agents' own workspaces are the second tab.
+- **The files come from `/api/agent/workspace/{session}`.** That route
+  applies the tenant, room and thread rules. A read of
+  `agent_file_history` would skip them, so the app does not read it.
+- **The assistant's side panel has a Files button.** It opens the chat's
+  files in Artifacts, and the chat stays open beside them. The full view
+  keeps its own files column.
+- **Not a defect:** `write_artifact._notify` sends the parent chat's own
+  files root, because a delegated write goes to the parent
+  (`executor.py`, `delegation_target`). A tenant directory is refused with
+  a 422 in any case. `test_delegated_artifact_card.py` holds it.
+- **Still open:** the confirm-card check of §7.1 in a browser, through
+  `orchestrator`. It needs the live stack. Slice 6d closes the server half
+  (`test_delegated_confirmation_card.py`).
+
+Fences: `src/app/artifacts/lib/chatFiles.test.ts`, `nav.test.ts` (fourteen
+live panes), `appBar.test.ts` and `e2e/app-title-bar.spec.ts`.
+
+**Slice 6d — routing.** A test set of member questions, each with the
+specialist that should answer it, run against `orchestrator` in CI.
+
+**Built in slice 6d (2026-10-14).** `evals/routing/` holds 27 member
+questions. Each one has the app of the page, the facts of the page and the
+expected specialist. The expected answer is none when `orchestrator` must
+answer itself, or when it must ask the member first. Every specialist that
+`orchestrator` holds has a case, and so does each live app that names an
+agent. Six cases are cross-app.
+
+- **The scripted run, in CI.** The catalog checks read the real registry,
+  the real orchestrator agent and the shell's own source (`nav.ts`,
+  `assistant.ts`). Then one case of each expected answer runs through the
+  real `run_agent_stream("orchestrator")` with a scripted model. The run must
+  reach the expected specialist's real factory, with the member's words.
+- **A scripted run proves the path, never the choice.** The script makes the
+  choice. `--live` measures it on a local stack, through the Router, and
+  writes `evals/routing/baseline.json`. Nobody has run it yet, so there is
+  no accuracy figure.
+- **Task work goes to `projects-assistant` (2026-10-19).** Projects, My
+  Tasks and Calendar are one task store (D52, D53, D54). So T1 to T4 expect
+  `projects-assistant`, and `ALSO_SERVES` keeps the page in My Tasks or
+  Calendar when that agent works. `task-manager` runs on the retired
+  Copilot runtime. The orchestrator does not hold it as a specialist, and
+  the executor refuses a delegation to it (D84, D92, `maf_coding_engine.md`
+  §15.5). A live pane whose agent the orchestrator does not hold needs no
+  case. `task-manager` stays the agent of the My Tasks rail until its port
+  (WS-8i). `app-builder` stays a specialist until its port, by owner call
+  of 2026-10-19, so B1 still expects it, with the catalog check only.
+- **The confirm cards of §7.1.** The server half of item 4 of "Done when"
+  holds. The browser half is still open (§7.1).
+
+Fences: `tests/unit/test_routing_eval.py` (the scripted run, and a mutation
+that kills each check) and `tests/unit/test_delegated_confirmation_card.py`
+(two mutations of `_run_sub_agent_streaming`, each run red by hand). The
+`skill-eval.yml` job runs `python -m evals.routing.run --scripted`.
+
+Findings, not fixed here:
+
+- **No live pane names `whatsapp-assistant`.** My WhatsApp is live, and its
+  pane has no `agent`, so a delegation to it does not move the page.
+- **FIXED by #978: `_PULL_INSTRUCTIONS` named one customer.** No shared
+  prompt names a tenant now. Fence:
+  `tests/unit/test_no_tenant_name_in_prompts.py`.
+- **Two instructions may disagree.** `_PULL_INSTRUCTIONS` rule 2 says "Do not
+  ask the user which agent to use". `ASSISTANT_PERSONA` says to ask when
+  the record is not clear. The live run of the three `asks` cases measures
+  which one the model follows.
+
+### NS-7 · Presets, pins and the first sign-in — AGENT-SAFE · BUILT 2026-10-10, live on merge (owner)
+
+Flag `NEXT_PUBLIC_SHELL_NAV`, which is on in production. The owner decided
+that the merge is the release (§11). Files: `src/lib/shell/presets.ts`,
+migration 240, `GET` and `PUT /auth/me/shell` in `routes/admin/me.py`, and
+`WelcomeDialog`.
+
+Done when, all met on 2026-10-10:
+
+1. The eight presets exist, and `presets.test.ts` proves the subset rule of
+   §8.1.
+2. `shell_prefs` is nullable with no default, and `/auth/me/shell` reads and
+   writes it. A guest with no `feature:tasks` can save a pin.
+3. The migration and the route ran against a real Postgres (R8).
+4. `WelcomeDialog` asks the question, and the answer sets the preset.
+
+**Built:**
+
+- `src/lib/shell/presets.ts` holds the table, the answers and the role
+  defaults. `src/lib/shell/shellPrefs.ts` is the one client of the layout.
+  It reads through `dataCache`, and it writes at once and reverts on a
+  refusal.
+- "My apps" is first in the sidebar and in the phone drawer
+  (`shellSidebar`, §3.2a item 1). All apps has a star on each app.
+  ⚠️ Superseded on 2026-10-11 by the star model (§3.2b), which applies to
+  the sidebar and to the phone drawer.
+- My Day orders its cards by the preset. The empty command bar puts the
+  preset's jobs after the jobs of the app the member is in.
+- `WelcomeDialog` asks the question (§8.4). "Change my layout" in the account
+  menu, on the desktop and on the phone, asks again.
+- `src/app/api/auth/me/shell/route.ts` sends the layout on. A failure is a
+  502, never an empty layout.
+- R8: `tests/unit/test_auth_me_shell_r8.py` runs as the role with no
+  privilege. One address saves a layout in each of two organizations. A
+  guest saves a pin, a skip stays, a null `PUT` resets, and the first write
+  keeps the calendar seed. It is in the pr-check list of suites that must
+  not skip.
+
+**Not built:** the editor of a card order or a job order. The column and the
+route accept both, and no surface writes them yet.
+
+### NS-9 · Retire what the shell replaced — AGENT-SAFE, after the owner flip
+
+It starts when the NS-1 and NS-6 flags have been on in production for 7 days.
+
+Done when:
+
+1. The two app ⌘K handlers, the three rails, the `NotificationBell` mounts and
+   the per-app palette mounts are gone.
+2. Every row of the `seams.test.ts` baseline is zero.
+3. The flags of NS-1 and NS-6 are deleted from the code.
+
+### NS-10 · Updating, not broken: the app (§7.3) — AGENT-SAFE · BUILT 2026-10-05
+
+No release flag. The owner asked for this behaviour on 2026-10-05, so the
+merge is its release. It has a kill switch, because it wraps `window.fetch`:
+set `NEXT_PUBLIC_UPDATE_NOTICE=off` and rebuild.
+
+Done when, all met:
+
+1. A 502, 503 or 504 from `/api/*`, with the gateway down, shows "Metorite is
+   updating". The gateway's return shows "Metorite is back". A new build
+   shows "Metorite was updated". One failed route with a healthy gateway
+   shows nothing. A visual rig drove all four.
+2. A page that throws shows `ErrorScreen`, not React's raw error.
+3. Fences: `lib/shell/serviceHealth.test.ts` and `proxy.test.ts` (the public
+   probe). Each was seen to fail first. `e2e/toast.spec.ts` stubs the probe
+   as healthy, because CI runs no gateway.
+
+### NS-11 · A busy database is "busy", not a 500 (§7.3) — AGENT-SAFE · BUILT 2026-10-06
+
+Done when, all met:
+
+1. The budget of #662 holds: 12 for both pools, async 7 + 2 and sync 2 + 1.
+   NS-11 does not change it.
+2. A refused or timed-out database connection answers 503 with `Retry-After`
+   and the code `db_busy`, and the body names no pooler. Any other exception
+   keeps the bare 500.
+3. `/health` reports `db: "busy"` for 15 s after a refusal, with no database
+   call. `/api/health` passes it on as `gateway: "busy"`.
+4. The shell shows "Metorite is busy", then "Metorite has caught up".
+5. Fences, each seen red first. `test_db_engine_seam.py` sums both pools,
+   and refuses an engine on the default pool. `tests/unit/test_db_busy.py`
+   never counts a marker in the SQL or its parameters. Also:
+   `lib/shell/serviceHealth.test.ts` and `lib/apiError.test.ts`.
+
+### NS-10b · Updating, not broken: the Caddy page (§7.3) — BUILT 2026-10-06 (gate (a) approved by the owner)
+
+The page needs a `header` line and a `rewrite` line in the
+`app.metorite.com` block. The fence `tests/unit/test_caddy_auth_gate.py`
+treats every such line as a sign-in line, so the change needed the owner's
+approval (`work_plan.md` §6, gate (a)). The owner wrote this line in
+`.claude/OWNER_GRANTS.md` by hand on 2026-10-06:
+
+    CADDY-AUTH-APPROVED 3c8217ffb4fa3fc9d049ee170ec057c7f65fee739ba9a167573a96aaba5dce21
+
+⚠️ An agent must not edit `_BASELINE`, and must not swap in a directive the
+fence does not list, such as `try_files` for `rewrite`. Either one passes the
+test and defeats the gate. A LATER change to these lines changes the hash, and
+it needs a new approval line.
+
+Done when, all met:
+
+1. If the workbench has not answered for the 30 s hold, each path answers 503
+   with the updating page. It also sends `Cache-Control: no-store` and
+   `Retry-After: 10`. Measured on the box on 2026-10-05, with a throwaway
+   Caddy in front of a closed port.
+2. The page reloads with a plain GET, so a form is never sent again.
+3. Fence: `tests/unit/test_deploy_serialize.py::TestCaddyShowsTheUpdatingPage`,
+   seen to fail first.
+
+### NS-8 · Desk mode — BLOCKED (AGENT-SAFE when unblocked)
+
+It waits for a live data-entry app. When one exists, its spec names the queue,
+and this ticket gains acceptance.
+
+### Order
+
+NS-1 → NS-2 → NS-3 → NS-4a → NS-5 → NS-6 → NS-4b → NS-4c → NS-7 → NS-9 →
+NS-8.
+NS-1 to NS-3 change nothing about AI or cost. They give the product its shell
+first.
+
+---
+
+## 12. Verification commands
+
+```bash
+# Frontend — the whole gate
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run
+
+# The fences this spec adds, by name
+npx vitest run src/lib/nav.test.ts src/lib/shell/ src/lib/theme/
+npx vitest run src/components/AppTopBar.test.ts src/components/pageHeading.test.ts
+
+# The constant shell bar and each app's title bar, in a browser
+npx playwright test e2e/shell-bar.spec.ts --project=chromium
+
+# NS-7: presets, pins and the first sign-in question
+npx vitest run src/lib/shell/presets.test.ts src/lib/shell/shellPrefs.test.ts src/app/api/auth/me/shell/
+npx playwright test e2e/shell-presets.spec.ts --project=chromium
+uv run pytest tests/unit/test_auth_me_shell.py tests/unit/test_auth_me_shell_r8.py -q
+
+# The one bell (NS-6 slice 6a), in a browser
+npx playwright test e2e/shell-bell.spec.ts --project=chromium
+
+# Row counts (§3.2c)
+npx vitest run src/lib/shell/navNeeds.test.ts
+npx playwright test e2e/sidebar-row-counts.spec.ts --project=chromium
+
+# Gateway — needs a real database (R8)
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_shell_needs.py tests/unit/test_shell_needs_r8.py tests/unit/test_shell_search.py tests/unit/test_shell_intent.py -q
+uv run pytest tests/unit/test_tenant_coverage.py -q
+
+# This spec's prose
+node .claude/hooks/ste-lint.mjs project-docs/specs/navigation_shell.md
+```
+
+The visual check runs through the `visual-review` skill, in light mode, at
+compact density, under a changed accent, and beside the neighbouring app.
+
+---
+
+## 13. Owner gates and open questions
+
+### 13.1 Gates — refuse these by name
+
+| Act | Why it is the owner's | Gate id |
+|---|---|---|
+| Turn on any `NEXT_PUBLIC_SHELL_*` flag or `NEXT_PUBLIC_MY_DAY` in production. `NEXT_PUBLIC_SHELL_CHAT` (D99) is one of them | It changes what every customer sees on day one. The flags are build-time, so one flip reaches every organization at once, and it answers Q2 for all of them | Owner-only. The dev-phase window does NOT open it, and `enforcement-flip` does not cover it |
+| Turn on `COMMAND_BAR_AI` in production | It spends customer credits | Owner-only. The window does NOT open it (CLAUDE.md §3a rule 3) |
+| Promote a `preview` app so its manifest renders | It is the decision "this is finished enough to sell" | **H-21** |
+
+⚠️ **These two rows bind by prose only.** The `enforcement-flip` rule of
+`.claude/hooks/plan-guard.mjs` names eight fixed flags and none of these.
+A guard rule needs the `guard-write` grant. Until somebody adds one, this
+table is the only fence (R7, advisory).
+
+### 13.2 Taken on 2026-10-05
+
+- **Q1 → D87.** Keep the team view, as the middle altitude of one Home, with
+  the five rules of §4.2. The owner gave this call to the design.
+- **Q3 → D88.** Tiers 0 and 1 are free. Tier 2 is metered at the cheapest tier
+  and shows no price. The owner accepted the recommendation.
+- **Q2, answered by the owner on 2026-10-09.** Yes. `/` becomes My Day for
+  every member, behind `NEXT_PUBLIC_MY_DAY`. To turn the flag on in
+  production stays owner-only (§13.1). The owner turned it on in production
+  on 2026-10-10.
+- **Q7, answered by the owner on 2026-10-10.** Yes. The one bell and the one
+  assistant toggle sit at the right end of the shell bar. The owner's words:
+  "They belong to the whole product, not to an app." This amends the rule
+  that the shell bar holds nothing of an app (§3.1). The two are parts of the
+  shell, as Activity is. An app's own bell or tool still never goes there.
+
+### 13.3 Still open — each has a default an agent builds to
+
+| # | Question | Default |
+|---|---|---|
+| Q2 | Does `/` become My Day for every member? | Answered on 2026-10-09. See §13.2 |
+| Q4 | Does the shell bar take one shared row with each app's bar? | No. The owner reversed this on 2026-10-10. The shell bar is constant, and each app draws its own title bar under it (§3.1). Until then the default was one row, merged in NS-1 |
+| Q5 | Fixed presets, or an editor for each organization? | Eight fixed presets first. Add the editor when a second customer asks |
+| Q6 | Does Desk mode hide All apps? | Yes. The command bar stays |
+| Q7 | Do the bell and the dock toggle go in the shell bar? | Answered on 2026-10-10: yes, at its right end. See §13.2 |
+
+HANDOFF holds one owner entry for these questions (H-243).
+
+---
+
+## 14. Where the rest of the documentation points here
+
+Each document below links here and adds nothing of its own.
+
+- `work_plan.md` §2 row **WS-44**, §3 **D87** to **D89**, and §4's registry row.
+- `INDEX.md`, ACTIVE.
+- `launch_surface.md` §2 and §8.4: the live set is unchanged, and every shell
+  surface reads the one filter.
+- `department_centers.md`, its D49 banner: D22's three surfaces return as the
+  three altitudes of Home.
+- `workbench/control_plane/DESIGN_SYSTEM.md` §6a: the shell bar and the app
+  bar, and the rule between them.
+- `workbench/control_plane/AGENTS.md` rule 10: an app plugs into the shell and
+  never builds one. Rule 11: the shell bar is constant, and every app opens
+  with `AppTopBar`.
+- Root `CLAUDE.md` §2: one bullet.

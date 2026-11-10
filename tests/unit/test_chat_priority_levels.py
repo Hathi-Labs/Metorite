@@ -436,11 +436,13 @@ async def test_bulk_update_round_trips_a_level(monkeypatch, cell: str) -> None:
     fake_gateway(monkeypatch, store)
     await skill_projects.bulk_update(TID, priority=_odd_case(_label(cell)))
     assert shared.task_cell(store.task) == cell
-    impact = asked[0]["detail"]
+    # The change is on the card as fields the client labels, and the detail
+    # names no wire key (owner report, 2026-10-07).
+    card = asked[0]["context"]
     important, leveraged = shared.CELL_FLAGS[cell]
-    assert f"important → {'yes' if important else 'no'}" in impact
-    assert f"leveraged → {'yes' if leveraged else 'no'}" in impact
-    assert "importance" not in impact
+    assert f"important: «{'yes' if important else 'no'}»" in card
+    assert f"leveraged: «{'yes' if leveraged else 'no'}»" in card
+    assert "importance" not in card and "importance" not in asked[0]["detail"]
 
 
 @pytest.mark.parametrize("cell", LEVELS)

@@ -42,12 +42,17 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from email_ingestion import import_window
+from email_ingestion.llm_cap import automation_job
 from fastapi import BackgroundTasks, Depends, HTTPException, Query
+from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.automation.engine import (
     _load_rule_patterns,
     _pattern_hit,
 )
-from gateway.routes.email.automation.identity import resolve_org_domains
+from gateway.routes.email.automation.identity import (
+    SELF_ADDRESSES_SQL,
+    resolve_org_domains,
+)
 from gateway.routes.email.automation.jobs import JobTracker
 from gateway.routes.email.automation.senders import (
     _KNOWN_LABELS_LOWER,
@@ -55,12 +60,13 @@ from gateway.routes.email.automation.senders import (
     canonical_cleanup_category,
 )
 from gateway.routes.email.core import (
+    NOT_OUTBOUND_SQL,
     _assert_account_owner,
-    _tenant_session,
     _instantiate_provider,
     _log,
     _persist_rotated_creds,
     _provider_for_account_any,
+    _tenant_session,
     router,
 )
 from pydantic import BaseModel
@@ -347,11 +353,12 @@ async def _internal_domains(db: Any, account_id: str) -> frozenset[str]:
 # rules run, which has no scope limit. That is the one thing this trades away.
 _CLEANUP_SCOPE = f"""
     em.account_id = :aid AND {_NOT_DISPOSED}
-    AND LOWER(COALESCE(em.folder,'')) <> 'sent'
+    AND {NOT_OUTBOUND_SQL}
     AND COALESCE(em.from_address->>'email','') <> ''
-    -- Belt and braces: self-addressed mail can sit outside Sent.
-    AND LOWER(em.from_address->>'email') NOT IN (
-          SELECT LOWER(email_address) FROM email_accounts WHERE id = :aid)
+    -- Belt and braces: self-addressed mail can sit outside Sent. "Self" is
+    -- each mailbox of the member (D-EM-27, EM-T8e-1), so mail from another
+    -- mailbox of the member is never cleanup material.
+    AND LOWER(em.from_address->>'email') NOT IN ({SELF_ADDRESSES_SQL})
     AND (split_part(LOWER(em.from_address->>'email'), '@', 2) <> ALL(:internal)
          OR em.unsubscribe_link IS NOT NULL)
     AND NOT EXISTS (
@@ -488,11 +495,50 @@ def _taught_otherwise(
     return False
 
 
+async def _sweep_provider(
+    db: Any, account_id: str, owner: str, summary: dict[str, Any], *,
+    obey_auto_run: bool,
+) -> tuple[Any, Any] | None:
+    """The last step of phase 0 of a sweep that writes: the provider and its
+    key store, or None when the sweep must stop.
+
+    WS-17 EM-G11c2 (§12.3.13.7, G4): with ``obey_auto_run`` it first reads
+    the Auto-run choice through the one helper ``rules.auto_run_on``. With
+    Auto-run OFF it builds no provider, marks the summary
+    ``skipped: "auto_run_off"`` and returns None. A missing mailbox marks
+    ``error`` and returns None, as before.
+    """
+    if obey_auto_run:
+        from gateway.routes.email.automation.rules import auto_run_on
+
+        if not await auto_run_on(db, account_id):
+            summary["skipped"] = "auto_run_off"
+            _log.info("email.cleanup_sweep_skipped", account_id=account_id,
+                      owner=owner, reason="auto_run_off")
+            return None
+    try:
+        provider, store, _owner = await _provider_for_account_any(
+            db, account_id)
+    except HTTPException:
+        summary["error"] = "account not found"
+        return None
+    return provider, store
+
+
 async def sweep_uncategorized(
     account_id: str, limit: int, *, dry_run: bool, owner: str = "",
     max_apply: int | None = None, job_token: int | None = None,
+    obey_auto_run: bool = False,
 ) -> dict[str, Any]:
     """Project existing categorization onto uncategorized mail.
+
+    🔴 ``obey_auto_run`` (WS-17 EM-G11c2, §12.3.13.7, G4). The sweep of each
+    sync cycle passes True. Phase 0 then reads the Auto-run choice through the
+    one helper ``rules.auto_run_on`` (``_sweep_provider``). With Auto-run OFF
+    the sweep stops before it builds a provider: it writes no label and moves no mail, on each
+    provider. The summary says ``skipped: "auto_run_off"``. A sweep that a
+    member starts passes False, because the click is the member's choice.
+    Fence: ``tests/unit/test_email_background_writes.py``.
 
     Pages through the mailbox until it runs out of uncategorized mail or hits
     ``limit`` messages scanned. It does NOT stop after one page: a cleaner that
@@ -561,13 +607,14 @@ async def sweep_uncategorized(
                 # explicit auth/persist choreography — the auth-failure verdict
                 # goes into ``summary`` and the rotated-cred persist
                 # deliberately happens only on the success tail (see the end of
-                # this function).
-                try:
-                    provider, store, _owner = await _provider_for_account_any(
-                        db, account_id)
-                except HTTPException:
-                    summary["error"] = "account not found"
+                # this function). EM-G11c2 (G4): it also stops a sync-cycle
+                # sweep while Auto-run is OFF.
+                loaded = await _sweep_provider(
+                    db, account_id, owner, summary,
+                    obey_auto_run=obey_auto_run)
+                if loaded is None:
                     return summary
+                provider, store = loaded
 
         # The block above ended before the network round-trip. A session left
         # `idle in transaction` across a provider call holds ACCESS SHARE on
@@ -696,6 +743,7 @@ def _sweep_tick(account_id: str, applied: int, scanned: int = 0,
             job["scanned"] = scanned
 
 
+@automation_job  # EM-T4b: the cap and the daily budget bind its model calls
 async def _sweep_job(
     account_id: str, limit: int, owner: str, token: int | None = None,
 ) -> None:
@@ -862,6 +910,7 @@ async def _mark_history_held_back(
     return int(getattr(res, "rowcount", 0) or 0)
 
 
+@automation_job  # EM-T4b: the cap and the daily budget bind its model calls
 async def _backfill_and_clean_job(
     account_id: str, since: datetime | None, owner: str,
     token: int | None = None,
@@ -1060,6 +1109,8 @@ async def cleanup_status(
     user: UserContext = Depends(get_current_user),
 ):
     """Progress of the most recent auto-categorize sweep on this account."""
+    account_id = await resolve_account_filter(
+        None, account_id, user.email or "anonymous", required=True)
     job = _SWEEP_JOBS.get(account_id)
     if not job or job.get("owner") != (user.email or "anonymous"):
         return {"status": "idle"}
@@ -1083,7 +1134,9 @@ async def uncategorized_overview(
     cannot reach zero teaches the user to ignore the badge.
     """
     async with _tenant_session() as db:
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="read")
         internal_domains = await _internal_domains(db, account_id)
         params = _cleanup_scope_params(account_id, internal_domains)
         total = (await db.execute(text(

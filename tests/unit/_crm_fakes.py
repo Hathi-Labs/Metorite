@@ -65,6 +65,12 @@ _MAX_RE = re.compile(r"SELECT\s+max\((\w+)\)", re.I)
 #: which column falls back to which parameter, what it is divided by) rather
 #: than reproduced in Python: a mirror that hard-coded ``amount * probability``
 #: would keep agreeing after the route stopped inheriting the stage default.
+#: ``GROUP BY COALESCE(NULLIF(upper(trim(currency)), ''), 'INR')`` (task 887).
+_CURRENCY_GROUP = re.compile(
+    r"GROUP BY\s+COALESCE\(NULLIF\(upper\(trim\(currency\)\),\s*''\),\s*'INR'\)",
+    re.I,
+)
+
 _WEIGHTED_SUM_RE = re.compile(
     r"SUM\(\s*(\w+)\s*\*\s*COALESCE\(\s*(\w+)\s*,\s*:(\w+)\s*\)\s*/\s*([\d.]+)\s*\)",
     re.I,
@@ -85,6 +91,13 @@ _UUID_EQ = re.compile(r"(\w+)\s*=\s*CAST\(:(\w+)\s+AS\s+uuid\)", re.I)
 #: does. A reader that skipped the wrapper would agree with the bug.
 _LOWER_EQ = re.compile(
     r"lower\((?P<wrap>trim|btrim)?\(?\s*(?P<column>\w+)\s*\)?\)\s*=\s*:(?P<param>\w+)",
+    re.I,
+)
+#: The currency rule of ``currency.CURRENCY_SQL`` compared with a parameter. It is
+#: read as the EXPRESSION and then APPLIED (:func:`normalise_currency`), so a
+#: route that drops the ``upper(trim())`` or the INR default changes the answer.
+_CURRENCY_EQ = re.compile(
+    r"COALESCE\(NULLIF\(upper\(trim\(currency\)\),\s*''\),\s*'INR'\)\s*=\s*:(\w+)",
     re.I,
 )
 #: ``<col> = :param`` — never inside a lower() or a CAST.
@@ -111,7 +124,7 @@ _COALESCE_CMP = re.compile(
 #: ``<col> < :param`` — the attempt ceiling.
 _NUM_CMP = re.compile(r"\b(\w+)\s*(<=|<|>=|>)\s*:(\w+)")
 
-#: ``LEFT JOIN crm_organizations org ON org.id = base.organization_id`` — the
+#: ``LEFT JOIN crm_companies org ON org.id = base.company_id`` — the
 #: display-name projection ``core.project_joined`` wraps a list/board SELECT
 #: in. Read from the statement (which table, which alias, which foreign key)
 #: rather than hard-coded, so changing the join changes the answer here too.
@@ -124,6 +137,74 @@ _INNER_JOIN = re.compile(
 )
 #: ``org.name AS organization_name`` — one projected column.
 _ALIASED_COL = re.compile(r"\b(\w+)\.(\w+)\s+AS\s+(\w+)", re.I)
+#: ``COALESCE(s.ui_color, s.color) AS color`` — an overlay over a source column
+#: (CRM-C3). Both arguments are qualified columns, so ``COALESCE(SUM(x), 0)``
+#: and every other COALESCE of the package never match.
+_COALESCE_COLS = re.compile(
+    r"COALESCE\(\s*(\w+)\.(\w+)\s*,\s*(\w+)\.(\w+)\s*\)\s+AS\s+(\w+)", re.I,
+)
+
+# ── WS-53 CRM-T5: the settings upsert, the native seed, the caller's groups ─
+
+#: ``ON CONFLICT (organization_id, name) DO NOTHING`` and
+#: ``ON CONFLICT (organization_id) DO UPDATE SET mode = EXCLUDED.mode, ...``.
+#: Read so that a second seed adds no row and a second settings write updates
+#: the one row. A fake that ignored the arm would answer "17 more stages" for
+#: a write that Postgres turns into nothing, and the idempotency test would
+#: then prove the opposite of what it says.
+_ON_CONFLICT = re.compile(
+    r"\bON\s+CONFLICT\s*\(([^)]*)\)\s*DO\s+(NOTHING|UPDATE\s+SET\s+(.*?))"
+    r"(?:\s+RETURNING\b.*)?$",
+    re.I | re.S,
+)
+#: ``VALUES (`` — where the value expressions start. :func:`_value_exprs`
+#: reads them in column order, with brackets balanced. They are read only to
+#: see ``now()``. Each bound value still comes from the parameter that has
+#: the column's name.
+_VALUES_RE = re.compile(r"\bVALUES\s*\(", re.I)
+
+
+def _value_exprs(statement: str) -> list[str]:
+    """The expressions of the first ``VALUES ( ... )`` group, split at depth 0."""
+    start = _VALUES_RE.search(statement)
+    if start is None:
+        return []
+    parts: list[str] = []
+    depth, current = 0, ""
+    for char in statement[start.end():]:
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            if depth == 0:
+                parts.append(current.strip())
+                return parts
+            depth -= 1
+        elif char == "," and depth == 0:
+            parts.append(current.strip())
+            current = ""
+            continue
+        current += char
+    return []
+#: The caller's groups, ``routes/projects/core._MY_GROUPS_SQL``: org_group
+#: joined through org_group_member to app_user. Answered from three seeded
+#: tables rather than from a list of subjects, so the join keys and the
+#: ``status = 'active'`` filter are the fake's too.
+_MY_GROUPS_RE = re.compile(r"FROM\s+org_group\s+g\s+JOIN\s+org_group_member", re.I)
+#: ``core.attach_next_activity`` (WS-53 CRM-X3): ``SELECT DISTINCT ON (a.<col>)
+#: … FROM crm_activities a WHERE a.<col> = ANY(…)``. The target column is read
+#: off the statement.
+_NEXT_ACTIVITY_RE = re.compile(
+    r"^SELECT DISTINCT ON \(a\.(\w+)\).*\bFROM crm_activities a\b", re.I,
+)
+#: ``core.PIPELINE_CREATE_LOCK_SQL`` (CRM-M4a repair 2). One request runs at a
+#: time here, so the lock takes nothing.
+_ADVISORY_LOCK_RE = re.compile(r"^SELECT pg_advisory_xact_lock\(", re.I)
+#: ``core._HOLDERS_SQL`` (CRM-M4a repairs 2 to 4): the pipelines of one kind
+#: with an open change that names a status.
+_HOLDERS_RE = re.compile(
+    r"^SELECT p\.id, p\.name FROM crm_pipelines p WHERE p\.kind = :kind AND EXISTS "
+    r"\(SELECT 1 FROM crm_change_log c\b", re.I,
+)
 
 # ── WS-26d-email: the shapes the CRM timeline's email source emits ──────────
 #
@@ -374,7 +455,7 @@ def _now() -> datetime:
 #: Column defaults migration 144 declares. Kept here so a row read back after an
 #: INSERT looks like Postgres would have returned it.
 _DEFAULTS: dict[str, dict[str, Any]] = {
-    "crm_organizations": {"source": "manual"},
+    "crm_companies": {"source": "manual"},
     "crm_contacts": {"source": "manual"},
     "crm_leads": {"source": "manual"},
     "crm_deals": {"source": "manual", "currency": "INR", "probability": None},
@@ -384,6 +465,8 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
     },
     "crm_lost_reasons": {"position": 0},
     "crm_deal_contacts": {"is_primary": False},
+    # Migration 386 (CRM-M4a): a pipeline that names no kind is a deal one.
+    "crm_pipelines": {"kind": "deal", "feeds_pipeline_id": None},
     # Migration 145's retry trio on the activity queue.
     "crm_activities": {
         "zoho_push_attempts": 0, "zoho_push_error": None,
@@ -416,7 +499,7 @@ _ZOHO_TRACKED: dict[str, Any] = {
 
 #: Tables whose rows carry the timestamp trio.
 _TIMESTAMPED = {
-    "crm_organizations", "crm_contacts", "crm_leads", "crm_deals",
+    "crm_companies", "crm_contacts", "crm_leads", "crm_deals",
 }
 
 
@@ -537,6 +620,16 @@ class FakeCrmDB:
                 SimpleNamespace(**r) for r in self.rows("app_user")
                 if str(r.get("email") or "").lower() == wanted
             ])
+        if _MY_GROUPS_RE.search(statement):
+            return self._my_groups(args)
+        next_activity = _NEXT_ACTIVITY_RE.match(statement)
+        if next_activity:
+            return self._next_activity(next_activity.group(1), args)
+        if _ADVISORY_LOCK_RE.match(statement):
+            return _Result([])
+        holders = _HOLDERS_RE.match(statement)
+        if holders:
+            return self._holders(args)
         head = statement.split(None, 1)[0].upper()
         table = _table(statement)
         if head == "INSERT":
@@ -560,6 +653,28 @@ class FakeCrmDB:
             **_DEFAULTS.get(table, {}),
             **{c: args.get(c) for c in columns},
         }
+        expressions = _value_exprs(statement)
+        if len(expressions) == len(columns):
+            for column, expression in zip(columns, expressions, strict=True):
+                if expression.lower() == "now()":
+                    row[column] = _now()
+        conflict = _ON_CONFLICT.search(statement)
+        if conflict:
+            keys = [k.strip() for k in conflict.group(1).split(",")]
+            existing = [
+                r for r in self.tables.get(table, [])
+                if all(str(r.get(k)) == str(row.get(k)) for k in keys)
+            ]
+            if existing and conflict.group(2).upper() == "NOTHING":
+                return _Result([])
+            if existing:
+                target = existing[0]
+                for part in conflict.group(3).split(","):
+                    column, _, value = part.partition("=")
+                    value = value.strip()
+                    if value.lower().startswith("excluded."):
+                        target[column.strip()] = row.get(value.split(".", 1)[1])
+                return _Result([SimpleNamespace(**target)])
         if table in _TIMESTAMPED:
             row.setdefault("created_at", _now())
             row.setdefault("updated_at", _now())
@@ -621,6 +736,22 @@ class FakeCrmDB:
         matched = self._paged(statement, matched, args)
         upper = statement.upper()
 
+        if "COUNT(*) AS COUNT" in upper and _CURRENCY_GROUP.search(statement):
+            # The lane aggregate, grouped by the currency rule (task 887): one
+            # row per normalised code. The rule is written out here, as in
+            # `_matching`, so a model of the SQL does not import the route's.
+            groups: dict[str, list[dict]] = {}
+            for r in matched:
+                code = str(r.get("currency") or "").strip().upper() or "INR"
+                groups.setdefault(code, []).append(r)
+            return _Result([
+                SimpleNamespace(
+                    currency=code, count=len(rows),
+                    amount=sum(float(r.get("amount") or 0) for r in rows),
+                    weighted=_weighted(statement, rows, args),
+                )
+                for code, rows in groups.items()
+            ])
         if "COUNT(*) AS COUNT" in upper:
             total = sum(float(r.get("amount") or 0) for r in matched)
             return _Result([SimpleNamespace(
@@ -638,6 +769,46 @@ class FakeCrmDB:
             return _Result([], scalar=max(values) if values else None)
         matched = self._joined(statement, matched)
         return _Result([SimpleNamespace(**r) for r in matched])
+
+    # the next activity of each card (CRM-X3) ------------------------------
+    def _next_activity(self, column: str, args: dict) -> _Result:
+        """The rule of ``core.NEXT_ACTIVITY_SQL``, for the hermetic suites only.
+
+        ⚠️ This copy answers the route tests that never look at the chip. It
+        proves nothing about the SQL: ``test_crm_next_activity_r8.py`` runs the
+        real statement against Postgres, and that suite is the fence.
+        """
+        wanted = {str(v) for v in args.get("ids") or ()}
+        now = _now()
+        best: dict[str, tuple[tuple[Any, str], dict[str, Any]]] = {}
+        for row in self.tables.get("crm_activities", []):
+            record = row.get(column)
+            if record is None or str(record) not in wanted:
+                continue
+            if row.get("completed_at") is not None:
+                continue
+            kind, due, occurred = row.get("type"), row.get("due_at"), row.get("occurred_at")
+            dated_task = kind == "task" and due is not None
+            ahead = (
+                kind in ("call", "meeting")
+                and isinstance(occurred, datetime) and occurred > now
+            )
+            if not (dated_task or ahead):
+                continue
+            key = (_sortable(due if due is not None else occurred), str(row.get("id")))
+            held = best.get(str(record))
+            if held is None or key < held[0]:
+                best[str(record)] = (key, row)
+        return _Result([
+            SimpleNamespace(
+                record_id=record, id=row.get("id"), type=row.get("type"),
+                subject=row.get("subject"),
+                at=row.get("due_at") if row.get("due_at") is not None
+                else row.get("occurred_at"),
+                all_day=row.get("type") == "task",
+            )
+            for record, (_key, row) in best.items()
+        ])
 
     # newest-per-group ----------------------------------------------------
     def _distinct_on(self, derived: re.Match[str], args: dict) -> _Result:
@@ -715,7 +886,7 @@ class FakeCrmDB:
 
         Two shapes exist in this package and both are read here rather than
         special-cased: ``core.project_joined``'s display-name wrapper
-        (``LEFT JOIN crm_organizations org ON org.id = base.organization_id``
+        (``LEFT JOIN crm_companies org ON org.id = base.company_id``
         plus ``org.name AS organization_name``) and the deal-contacts read
         (``JOIN crm_contacts c ON c.id = dc.contact_id``, whose ``SELECT c.*``
         makes the CONTACT the row body). Change the join in the route and this
@@ -732,6 +903,21 @@ class FakeCrmDB:
         }
         joins.update(inner)
         projected = _ALIASED_COL.findall(statement)
+        overlaid = _COALESCE_COLS.findall(statement)
+        if overlaid and not joins:
+            # CRM-C3: `COALESCE(s.ui_probability, s.probability) AS probability`
+            # in `core.EFFECTIVE_STATUS_COLUMNS`. Read from the statement, so an
+            # effective rule that drifts changes the answer here too.
+            out_rows = []
+            for row in rows:
+                merged = dict(row)
+                for _alias, column, name in projected:
+                    merged[name] = row.get(column)
+                for _a, first, _b, second, name in overlaid:
+                    value = row.get(first)
+                    merged[name] = value if value is not None else row.get(second)
+                out_rows.append(merged)
+            return out_rows
         if not joins and not projected:
             return rows
 
@@ -756,6 +942,56 @@ class FakeCrmDB:
                 merged[name] = (source or {}).get(column)
             out.append(merged)
         return out
+
+    def _holders(self, args: dict) -> _Result:
+        """``core._HOLDERS_SQL``: the pipelines of ``:kind`` with an open change
+        (not undone, not an Undo) that names ``:s``: a create that lists it, a
+        stage add or a take-out. It reads the change log of this fake."""
+        wanted = str(args.get("s"))
+
+        def obj(value: Any) -> dict:
+            return json.loads(value) if isinstance(value, str) else dict(value or {})
+
+        def names(row: dict) -> bool:
+            area, action = row.get("area"), row.get("action")
+            if area == "pipeline" and action == "create":
+                return any(str(s.get("id")) == wanted for s in obj(row.get("after")).get("stages") or [])
+            if area == "pipeline_stage":
+                side = obj(row.get("after") if action == "create" else row.get("before"))
+                return str(side.get("status_id")) == wanted
+            return False
+
+        held = {
+            str(r.get("entity_id")) for r in self.rows("crm_change_log")
+            if r.get("undone_by") is None and r.get("undoes_id") is None and names(r)
+        }
+        return _Result([
+            SimpleNamespace(id=p.get("id"), name=p.get("name"))
+            for p in sorted(self.rows("crm_pipelines"),
+                            key=lambda r: (r.get("position") or 0, str(r.get("name"))))
+            if str(p.get("id")) in held and p.get("kind", "deal") == args.get("kind")
+        ])
+
+    def _my_groups(self, args: dict) -> _Result:
+        """``_MY_GROUPS_SQL``: the ``group:<slug>`` subjects of ``:email``.
+
+        The SQL compares the parameter with ``lower(au.email)``. The fake does
+        not fold the parameter, so a caller that forgets to fold it matches
+        nothing here too.
+        """
+        wanted = args.get("email")
+        users = {
+            str(u.get("id")) for u in self.rows("app_user")
+            if str(u.get("email") or "").lower() == wanted
+            and u.get("status") == "active"
+        }
+        groups = {str(g.get("id")): g for g in self.rows("org_group")}
+        subjects = sorted({
+            f"group:{groups[str(m.get('group_id'))].get('slug')}"
+            for m in self.rows("org_group_member")
+            if str(m.get("user_id")) in users and str(m.get("group_id")) in groups
+        })
+        return _Result([SimpleNamespace(subject=s) for s in subjects])
 
     def _by_id(self, table: str, value: Any) -> dict[str, Any] | None:
         if value is None:
@@ -851,6 +1087,15 @@ class FakeCrmDB:
                 r for r in rows
                 if r.get(column) is not None
                 and _normalized(str(r.get(column)), wrap) == want
+            ]
+        for param in _CURRENCY_EQ.findall(where):
+            seen = True
+            want = str(args.get(param))
+            # The rule, written out here on purpose: a model of the SQL that
+            # imported the route's helper would agree with the route's bug.
+            rows = [
+                r for r in rows
+                if (str(r.get("currency") or "").strip().upper() or "INR") == want
             ]
         for column, param in _PLAIN_EQ.findall(where):
             seen = True
@@ -1022,8 +1267,18 @@ def _sortable(value: Any) -> Any:
 
 # ── Principals ──────────────────────────────────────────────────────────────
 
-def crm_user(email: str = "vjvarada@fracktal.in", *, features: str = "*") -> Any:
-    """A caller holding ``feature:crm``.
+#: The organization of every :func:`crm_user` (WS-53 CRM-0). No CRM route
+#: reads it today. The kill switch reads it, and :func:`crm_switch_on` lists it.
+CRM_TEST_ORG = "0b0e8c1e-5c7a-4f6e-9a35-c3d0c0de0001"
+
+
+def crm_user(
+    email: str = "vjvarada@fracktal.in",
+    *,
+    features: str = "*",
+    organization_id: str | None = CRM_TEST_ORG,
+) -> Any:
+    """A caller holding ``feature:crm``, a member of :data:`CRM_TEST_ORG`.
 
     Built with the real ``build_access`` so the permission the routes are gated
     on is the one this principal actually resolves.
@@ -1032,7 +1287,23 @@ def crm_user(email: str = "vjvarada@fracktal.in", *, features: str = "*") -> Any
 
     return UserContext(
         email=email, role=UserRole.EMPLOYEE, access=build_access([features]),
+        organization_id=organization_id,
     )
+
+
+def crm_switch_on(monkeypatch: Any, orgs: str = CRM_TEST_ORG) -> None:
+    """Turn the CRM kill switch on for *orgs* (WS-53 CRM-0).
+
+    The ONE place a test opens the switch. A suite that mounts the ``/crm``
+    router calls it once. Without it, each ``/crm`` route answers 404. The
+    suites that call a route function directly do not run the router
+    dependencies, so they do not need it.
+    """
+    from acb_common import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "crm_enabled", True, raising=False)
+    monkeypatch.setattr(settings, "crm_orgs", orgs, raising=False)
 
 
 def bind_db(monkeypatch: Any, fake: FakeCrmDB, modules: tuple[Any, ...]) -> None:
@@ -1050,9 +1321,10 @@ def bind_db(monkeypatch: Any, fake: FakeCrmDB, modules: tuple[Any, ...]) -> None
     nothing here just as it commits nothing against Postgres. Transaction/GUC
     plumbing stays out of the mirror — ``test_tenant_session.py`` owns that.
 
-    The three H4 leaves (``sync_zoho``, ``auto_lead``, ``broker_handlers``)
-    deliberately stay on the unbound ``_get_db`` seam, so both names are
-    patched wherever a module carries them.
+    ``sync_zoho`` stays on the unbound ``_get_db`` seam until CRM-Z5, so both
+    names are patched wherever a module carries them. ``auto_lead`` and
+    ``broker_handlers`` open ``_tenant_session(org)`` since WS-53 CRM-T3, and
+    the fake ignores the tenant it is given.
     """
     @asynccontextmanager
     async def _tenant_session(organization_id: str | None = None) -> Any:

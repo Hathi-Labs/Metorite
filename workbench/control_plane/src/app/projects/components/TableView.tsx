@@ -41,7 +41,13 @@ import { Input } from "@/components/ui/Input";
 import SelectButton from "@/components/ui/SelectButton";
 import { useToast } from "@/components/ui/Toast";
 import { Checkbox } from "@/components/ui/Checkbox";
-import { TASK_SOURCES, type TaskSource, durationLabel, priorityChip } from "@/lib/taskCard";
+import {
+  TASK_SOURCES,
+  type TaskSource,
+  durationLabel,
+  priorityChip,
+  pullRequestChip,
+} from "@/lib/taskCard";
 import { useMemo, useRef, useState } from "react";
 
 import { accentForStatus } from "../lib/accent";
@@ -62,7 +68,7 @@ import {
   labelWith,
   toQuery,
 } from "../lib/grouping";
-import { dueInstantForDay, quickAddPrefill } from "../lib/quickAdd";
+import { dueDayOf, dueInstantForDay, quickAddPrefill } from "../lib/quickAdd";
 import {
   MATRIX_FLAG_OPTIONS,
   type MatrixFlags,
@@ -79,8 +85,10 @@ import {
 } from "../lib/table";
 import { type Fold, collapsedNow, subtaskSections, toggleFold } from "../lib/subtaskView";
 import { NO_CELL, clampCell, stepCell } from "../lib/tableCursor";
+import { ProjectPathChip } from "./ProjectPathChip";
 import { QuickAdd } from "./QuickAdd";
 import { useFlash } from "./useFlash";
+import { useTaskUndo } from "./useTaskUndo";
 import { useSubtaskComplete } from "./useSubtaskComplete";
 
 /** The columns whose cells open an editor on Enter (or a click). */
@@ -143,6 +151,21 @@ interface Props {
    * what every surface showed before 2026-09-21.
    */
   personLabels?: ReadonlyMap<string, string>;
+  /**
+   * WS-64 OP-11 — the path of the project a row sits in, and the statuses a
+   * row's status cell may pick from. My tasks passes both, because its rows
+   * come from many projects and each project has its own statuses. Absent,
+   * the table reads `statuses` for every row and draws no chip.
+   */
+  projectPath?: (task: TaskRow) => readonly string[] | null;
+  /** OP-12b — true when the task sits in the private space. The chip then wears a lock. */
+  projectPrivate?: (task: TaskRow) => boolean;
+  statusesFor?: (task: TaskRow) => readonly StatusRow[];
+  /**
+   * WS-64 OP-11 fix round. False hides the quick adds: My tasks spans many
+   * projects, so a group names no home for a new task. Default true.
+   */
+  canQuickAdd?: boolean;
 }
 
 export function TableView({
@@ -162,12 +185,18 @@ export function TableView({
   onReload,
   onSelect,
   personLabels,
+  projectPath,
+  projectPrivate,
+  statusesFor,
+  canQuickAdd = true,
 }: Props) {
   // WS-27ak(3) — a cell edit on a spreadsheet is the mutation furthest from
   // wherever the one inline error line is drawn; see `saveCell`.
   const toast = useToast();
   // D-PM-38 decision 2 (S5) — a status cell into Done asks about subtasks.
   const subtaskComplete = useSubtaskComplete();
+  // UNDO-1 — a cell edit offers Undo through the shared stack.
+  const taskUndo = useTaskUndo();
   // The collapse state, stamped with the filter it was made under
   // (`subtaskView.collapsedNow`).
   const [fold, setFold] = useState<Fold>({ key: "", ids: new Set() });
@@ -255,8 +284,11 @@ export function TableView({
     try {
       const keys = Object.keys(patch);
       if (keys.length === 1 && typeof patch.status_id === "string") {
+        // OP-11 fix round: the lanes of the ROW'S OWN project. My tasks holds
+        // rows of many projects, and a Done lane that no loaded row uses is
+        // not in the merged `statuses`, so the ask was skipped there.
         const asked = await subtaskComplete.changeStatus(
-          task, patch.status_id, statuses, () => onReload?.(),
+          task, patch.status_id, statusesFor?.(task) ?? statuses, () => onReload?.(),
         );
         if (asked) {
           onSaved(asked);
@@ -265,14 +297,23 @@ export function TableView({
           return;
         }
       }
+      // UNDO-1 (fix round 1, finding 5) — ONE toast: the Undo toast takes
+      // the key of the save toast, so it replaces it in place.
+      const toastKey = `projects:task-edit:${task.id}`;
       const fresh = await toast.promise(projectsApi.patchTask(task.id, patch), {
-        key: `projects:task-edit:${task.id}`,
+        key: toastKey,
         loading: "Saving…",
         success: (row) => `Saved “${row.title}”`,
         error: "Couldn't save that edit",
         errorAction: { label: "Retry", onClick: () => void saveCell(task, patch) },
       });
       onSaved(fresh);
+      taskUndo.edited(task, patch, fresh, {
+        label: `edited ${task.title}`,
+        receipt: `Saved “${fresh.title}”`,
+        after: () => onReload?.(),
+        toastKey,
+      });
       flash(task.id);
     } catch (err) {
       setError(String((err as Error).message));
@@ -285,6 +326,10 @@ export function TableView({
     try {
       const result = await projectsApi.setAssignees(task.id, parseAssignees(raw));
       onSaved({ ...task, assignees: result.assignees });
+      taskUndo.assigneesEdited(task.id, task.assignees ?? [], result.assignees, {
+        label: `changed assignees of ${task.title}`,
+        after: () => onReload?.(),
+      });
       flash(task.id);
     } catch (err) {
       setError(String((err as Error).message));
@@ -429,6 +474,10 @@ export function TableView({
       }
       case "blocked":
         return task.blocked_by_count ? String(task.blocked_by_count) : "—";
+      case "pr":
+        // WS-55 EA-13d. The chip's own words, from the ONE descriptor, so the
+        // column and the card cannot read the same pull request two ways.
+        return pullRequestChip(task.pr)?.label ?? "—";
       case "tags":
         return task.tags?.length ? task.tags.join(", ") : "—";
       case "attachments":
@@ -462,7 +511,7 @@ export function TableView({
           widthClass="w-full"
           value={task.status_id}
           onChange={(next) => void saveCell(task, { status_id: next })}
-          options={statuses.map((s) => ({ value: s.id, label: s.name }))}
+          options={(statusesFor?.(task) ?? statuses).map((s) => ({ value: s.id, label: s.name }))}
         />
       );
     }
@@ -505,7 +554,7 @@ export function TableView({
         <CellText
           label={`Due date of ${task.title}`}
           type="date"
-          defaultValue={task.due_at ? task.due_at.slice(0, 10) : ""}
+          defaultValue={task.due_at ? dueDayOf(task.due_at) : ""}
           onCommit={(value) =>
             // Noon local, the calendar quick-add's rule (`dueInstantForDay`),
             // so the chosen day survives every viewer's timezone.
@@ -596,11 +645,13 @@ export function TableView({
         <p className="mb-2 text-sm text-muted-foreground">No tasks here yet.</p>
         {/* No group to land in, so the UNSET sentinel: every axis maps it to
             the empty plan, and the server assigns the default status. */}
-        <QuickAdd
-          label="Add a task"
-          onAdd={(title) => quickAdd(title, UNSET)}
-          className="max-w-md"
-        />
+        {canQuickAdd ? (
+          <QuickAdd
+            label="Add a task"
+            onAdd={(title) => quickAdd(title, UNSET)}
+            className="max-w-md"
+          />
+        ) : null}
       </div>
     );
   }
@@ -736,6 +787,8 @@ export function TableView({
                           its parent. A nested row does not: the indent and
                           the mark above already say where it sits. */}
                       {row.crumb ? <ParentCrumb parent={task.parent} /> : null}
+                      {/* WS-64 OP-11 — My tasks names the project of each row. */}
+                      {projectPath ? <ProjectPathChip path={projectPath(task)} isPrivate={projectPrivate?.(task) ?? false} /> : null}
                       </span>
                     </td>
                     {columns.map((column, columnIndex) => {
@@ -766,15 +819,17 @@ export function TableView({
               })}
               {/* WS-27y machinery, per the ticket: a task added here lands in
                   THIS group, pre-filled by `quickAddPrefill`. */}
-              <tr>
-                <td colSpan={colCount} className="px-3 py-1">
-                  <QuickAdd
-                    label={groupBy === "none" ? "Add a task" : `Add to ${section.label}`}
-                    onAdd={(title) => quickAdd(title, section.key)}
-                    className="max-w-md"
-                  />
-                </td>
-              </tr>
+              {canQuickAdd ? (
+                <tr>
+                  <td colSpan={colCount} className="px-3 py-1">
+                    <QuickAdd
+                      label={groupBy === "none" ? "Add a task" : `Add to ${section.label}`}
+                      onAdd={(title) => quickAdd(title, section.key)}
+                      className="max-w-md"
+                    />
+                  </td>
+                </tr>
+              ) : null}
             </tbody>
           );
         })}

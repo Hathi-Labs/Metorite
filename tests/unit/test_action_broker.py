@@ -40,8 +40,9 @@ def _clean_handlers():
 # DB-free (also fixes the Windows "unit run hangs on a real connect" foot-gun).
 
 class _FakeResult:
-    def __init__(self, rows):
+    def __init__(self, rows, rowcount=0):
         self._rows = rows
+        self.rowcount = rowcount
 
     def mappings(self):
         return self
@@ -59,12 +60,16 @@ class _FakeSession:
     def __init__(self, select_rows=None):
         self.executed: list[tuple[str, dict | None]] = []
         self.select_rows = select_rows if select_rows is not None else []
+        #: What an UPDATE reports it changed. 0 models "no such pending row".
+        self.update_rowcount = 1
 
     def execute(self, stmt, params=None):
         sql = str(stmt)
         self.executed.append((sql, params))
         if sql.lstrip().upper().startswith("SELECT"):
             return _FakeResult(self.select_rows)
+        if sql.lstrip().upper().startswith("UPDATE"):
+            return _FakeResult([], rowcount=self.update_rowcount)
         return _FakeResult([])
 
     def add(self, *_a, **_k):  # acb_audit.record() calls sess.add(AuditRow)
@@ -83,13 +88,37 @@ class _FakeSession:
         return [p for s, p in self.executed if s.lstrip().upper().startswith(verb)]
 
 
+_ORG = "00000000-0000-0000-0000-0000000000a1"
+
+
 @pytest.fixture(autouse=True)
 def _fake_db(monkeypatch):
-    """Route every ``get_session()`` in the broker + audit to one fake session."""
+    """Route the broker's ``tenant_session`` and the audit's ``get_session``
+    to one fake session, with a tenant bound (H-201). The fake seam refuses
+    no tenant, as the real one does, and records each tenant it binds."""
+    from contextlib import contextmanager
+
     import acb_graph
+    from acb_common.db import bind_tenant, release_tenant
+    from acb_graph.db import TenantUnbound
+
     fake = _FakeSession()
+    fake.tenants = []
+
+    @contextmanager
+    def _tenant_session(org=None):
+        if not org:
+            raise TenantUnbound("no tenant")
+        fake.tenants.append(org)
+        yield fake
+
     monkeypatch.setattr(acb_graph, "get_session", lambda: fake)
-    return fake
+    monkeypatch.setattr(acb_graph, "tenant_session", _tenant_session)
+    token = bind_tenant(_ORG)
+    try:
+        yield fake
+    finally:
+        release_tenant(token)
 
 
 # ── Authority-tier policy ────────────────────────────────────────────────────
@@ -159,6 +188,41 @@ def test_execute_runs_registered_handler():
     assert res["ok"] is True
     assert res["result"] == "written"
     assert len(seen) == 1
+
+
+def test_execute_reports_a_refusal_of_the_handler_as_a_failure():
+    """H-328 part (b): the handler of ``workflow.resume_run`` answers
+    ``{"ok": False, "error": ...}`` for a run that it will not resume. That is a
+    refusal. ``execute`` used to wrap every answer as ``ok: True``, so the
+    approver saw a success when nothing ran."""
+
+    async def _handler(p: ActionProposal):
+        return {"ok": False, "error": "This run stopped at its gate."}
+
+    register_action_handler("clickup.comment", _handler)
+    res = asyncio.run(execute(_mk("clickup.comment", Disposition.AUTO_APPLY)))
+    assert res["ok"] is False
+    assert res["error"] == "This run stopped at its gate."
+    assert res["result"] == {"ok": False, "error": "This run stopped at its gate."}
+
+
+def test_execute_keeps_a_handler_answer_without_ok_false_as_a_success():
+    """Only an explicit ``ok: False`` is a refusal. The other handlers return
+    a result with no ``ok`` key, or ``ok: True``, and both stay a success."""
+
+    async def _handler(p: ActionProposal):
+        return {"sent": 0, "failed": 0, "total": 0}
+
+    register_action_handler("clickup.comment", _handler)
+    res = asyncio.run(execute(_mk("clickup.comment", Disposition.AUTO_APPLY)))
+    assert res == {"ok": True, "result": {"sent": 0, "failed": 0, "total": 0}}
+
+    async def _handler_ok(p: ActionProposal):
+        return {"ok": True, "pushed": 1}
+
+    register_action_handler("clickup.comment", _handler_ok)
+    res = asyncio.run(execute(_mk("clickup.comment", Disposition.AUTO_APPLY)))
+    assert res["ok"] is True and res["result"] == {"ok": True, "pushed": 1}
 
 
 # ── Approval queue: enqueue / submit routing / approve / reject ───────────────
@@ -248,6 +312,25 @@ def test_approve_runs_handler_and_marks_applied(_fake_db):
     assert any(p and p.get("status") == "applied" for p in updates)
 
 
+def test_approve_shows_the_approver_a_refusal_of_the_handler(_fake_db):
+    """H-328 part (b), the approval door. A paused run that the resume refuses
+    ran nothing. The approver must read that, and the row must not say
+    ``applied``."""
+    row = _pending_row()
+    _fake_db.select_rows = [row]
+
+    async def _h(p):
+        return {"ok": False, "error": "This run stopped at its gate."}
+
+    register_action_handler("clickup.comment", _h)
+    res = asyncio.run(approve(str(row["id"]), "user:vijay"))
+    assert res["ok"] is False and res["status"] == "failed"
+    assert res["error"] == "This run stopped at its gate."
+    updates = _fake_db.statements("UPDATE")
+    assert any(p and p.get("status") == "failed" for p in updates)
+    assert not any(p and p.get("status") == "applied" for p in updates)
+
+
 def test_approve_non_pending_is_refused(_fake_db):
     row = _pending_row()
     row["status"] = "applied"          # already handled
@@ -269,8 +352,107 @@ def test_reject_marks_rejected_and_never_executes(_fake_db):
     assert any(p and p.get("status") == "rejected" for p in updates)
 
 
+def test_reject_changes_only_a_row_that_is_still_pending(_fake_db):
+    reject("11111111-1111-1111-1111-111111111111", "user:vijay")
+    sql, params = next((s, p) for s, p in _fake_db.executed if s.lstrip().upper().startswith("UPDATE"))
+    assert "AND status = :only_from" in sql
+    assert params["only_from"] == "pending"
+
+
+def test_reject_of_no_pending_row_says_so(_fake_db):
+    # Another tenant's id, a missing id or an action already decided: the
+    # UPDATE changes nothing, and the answer must not claim it did.
+    _fake_db.update_rowcount = 0
+    res = reject("11111111-1111-1111-1111-111111111111", "user:vijay")
+    assert res["ok"] is False and "no pending action" in res["error"]
+
+
 def test_list_pending_returns_rows(_fake_db):
     _fake_db.select_rows = [_pending_row(), _pending_row("zoho.email")]
     rows = list_pending()
     assert len(rows) == 2
     assert {r["action"] for r in rows} == {"clickup.comment", "zoho.email"}
+
+
+def test_read_pending_is_bounded_and_the_longest_wait_first(_fake_db):
+    # The needs feed's read (NS-3 slice C). One query, oldest first, capped.
+    from action_broker import read_pending
+
+    _fake_db.select_rows = [_pending_row()]
+    assert len(read_pending(500)) == 1
+    sql, params = next((s, p) for s, p in _fake_db.executed if "pending_actions" in s)
+    assert "ORDER BY created_at ASC, id LIMIT :limit" in " ".join(sql.split())
+    assert params == {"limit": 50}
+    assert _fake_db.tenants == [_ORG]
+
+
+def test_read_pending_raises_where_list_pending_answers_empty(_fake_db, monkeypatch):
+    # The feed must tell "empty" from "broken". list_pending hides the error.
+    from action_broker import read_pending
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(_fake_db, "execute", _boom)
+    assert list_pending() == []
+    with pytest.raises(RuntimeError):
+        read_pending()
+
+
+def test_read_pending_with_no_tenant_reads_nothing(_fake_db):
+    from acb_common.db import clear_tenant, release_tenant
+    from action_broker import read_pending
+
+    token = clear_tenant()
+    try:
+        assert read_pending() == []
+    finally:
+        release_tenant(token)
+    assert _fake_db.tenants == []
+
+
+# ── H-201: the queue binds the tenant of the context, and only that one ──────
+
+def test_every_queue_call_binds_the_context_tenant(_fake_db):
+    _fake_db.select_rows = [_pending_row()]
+    list_pending()
+    enqueue(propose("agent:sales", "clickup.comment", "task:1", {}))
+    reject("11111111-1111-1111-1111-111111111111", "user:vijay")
+    asyncio.run(approve(str(_fake_db.select_rows[0]["id"]), "user:vijay"))
+    assert _fake_db.tenants and set(_fake_db.tenants) == {_ORG}
+
+
+def test_no_tenant_reads_empty_and_writes_nothing(_fake_db):
+    from acb_common.db import clear_tenant, release_tenant
+
+    _fake_db.select_rows = [_pending_row()]
+    called: list = []
+    register_action_handler("clickup.comment", lambda p: called.append(p))
+    token = clear_tenant()
+    try:
+        assert list_pending() == []
+        assert enqueue(propose("agent:sales", "clickup.comment", "task:1", {})) is None
+        res = asyncio.run(approve(str(_fake_db.select_rows[0]["id"]), "user:vijay"))
+        assert res["ok"] is False and not called
+        reject("11111111-1111-1111-1111-111111111111", "user:vijay")
+    finally:
+        release_tenant(token)
+    assert _fake_db.tenants == []
+    assert not _fake_db.statements("INSERT") and not _fake_db.statements("UPDATE")
+
+
+def test_the_queue_opens_no_unbound_session() -> None:
+    """The source fence. It reads the code, so it runs with no database."""
+    import inspect
+
+    from action_broker import broker
+
+    for fn in (broker.enqueue, broker.list_pending, broker.read_pending,
+               broker.read_decided, broker._load_proposal, broker._mark):
+        src = inspect.getsource(fn)
+        assert "get_session" not in src, fn.__name__
+        assert "tenant_session(" in src, fn.__name__
+    # The tenant comes from the bound context, never from an argument.
+    for fn in (broker.enqueue, broker.list_pending, broker.read_pending,
+               broker.read_decided, broker.approve, broker.reject):
+        assert "organization_id" not in inspect.signature(fn).parameters, fn.__name__

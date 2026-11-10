@@ -29,10 +29,18 @@ from typing import Any
 from uuid import UUID
 
 import httpx
+from acb_common.tool_refusals import (
+    DETAIL_MAX,
+    GatewayRefusal,
+    data,
+    response_body,
+    safe_detail,
+)
 
-from skill_projects.manifest import allowed
+from skill_projects.manifest import allowed, route_for
 
 __all__ = [
+    "DETAIL_MAX",
     "GatewayRefusal",
     "data",
     "delete",
@@ -40,8 +48,10 @@ __all__ = [
     "headers",
     "patch",
     "post",
+    "post_file",
     "put",
     "request",
+    "safe_detail",
     "uuid_of",
 ]
 
@@ -51,9 +61,9 @@ __all__ = [
 ACTOR_VIA = "chat:projects-assistant"
 
 
-class GatewayRefusal(RuntimeError):
-    """A call the client refused, or the gateway refused. The message is what
-    the agent relays to the member, so it is written for them."""
+# WS-46 P2: the refusal, the fence and the safe detail are the ONE seam of
+# `acb_common.tool_refusals`, which the CRM and email tools share. This
+# module re-exports them, so each old import keeps working.
 
 
 def gateway_url() -> str:
@@ -77,13 +87,9 @@ def internal_token() -> str:
         from acb_common import get_settings
 
         settings = get_settings()
-        return (
-            getattr(settings, "gateway_internal_token", "")
-            or getattr(settings, "litellm_master_key", "")
-            or "sk-local"
-        )
+        return (getattr(settings, "gateway_internal_token", "") or "").strip()
     except Exception:
-        return os.environ.get("LITELLM_MASTER_KEY", "sk-local")
+        return os.environ.get("GATEWAY_INTERNAL_TOKEN", "").strip()
 
 
 def headers() -> dict[str, str]:
@@ -92,7 +98,8 @@ def headers() -> dict[str, str]:
     if not user:
         raise GatewayRefusal(
             "No acting user for this run, so there is nobody to act as. "
-            "Refusing to call the gateway as the platform itself."
+            "Refusing to call the gateway as the platform itself.",
+            fixable=False,
         )
     return {
         "Authorization": f"Bearer {internal_token()}",
@@ -115,36 +122,30 @@ def uuid_of(value: Any, what: str = "id") -> str:
         ) from exc
 
 
-def data(value: Any) -> str:
-    """Fence a string other people wrote — a title, a name, a comment — so an
-    instruction inside it reads as data. Guillemets are a firmer boundary than
-    quotes, and any embedded ones are stripped so the fence stays unambiguous.
-
-    Line breaks collapse to one space, and that is not cosmetic. The cards
-    parse the tool output LINE BY LINE (``- #<n> «title»`` then ``full_id:``),
-    so a status name carrying a newline could forge a row that renders as a
-    real, clickable task. Inside one line the fence holds."""
-    text = str(value or "").replace("«", "").replace("»", "")
-    return "«" + " ".join(text.split()) + "»"
+def _template(method: str, path: str) -> str:
+    """The manifest template of ``method path``, or ``""``."""
+    route = route_for(method, path)
+    return route.path if route is not None else ""
 
 
 def _raise_if_error(resp: httpx.Response, method: str, path: str) -> None:
     if resp.status_code < 400:
         return
-    detail = ""
-    try:
-        body = resp.json()
-        if isinstance(body, dict):
-            detail = str(body.get("detail") or body.get("error") or "")
-    except Exception:
-        detail = (resp.text or "")[:200]
+    body = response_body(resp)
+    detail, fields = safe_detail(resp.status_code, body, member=current_user_email())
     if resp.status_code == 404:
         hint = "Not found, or not visible to you."
     elif resp.status_code == 403:
         hint = "Not permitted."
     else:
         hint = f"Failed ({resp.status_code})."
-    raise GatewayRefusal(f"Projects {method} {path}: {hint}" + (f" {detail}" if detail else ""))
+    raise GatewayRefusal(
+        f"Projects {method} {path}: {hint}" + (f" {detail}" if detail else ""),
+        status=resp.status_code,
+        detail=detail,
+        fields=fields,
+        route=_template(method, path),
+    )
 
 
 async def request(
@@ -158,10 +159,15 @@ async def request(
     exists, so a refused call never builds a client."""
     ok, why = allowed(method, path)
     if not ok:
-        raise GatewayRefusal(why)
+        raise GatewayRefusal(why, fixable=False, route=_template(method, path))
     # Both refusals come BEFORE the client exists: the manifest's, and the
     # no-acting-user one `headers()` raises. A refused call builds nothing.
-    sent = headers()
+    # The caller's headers go first, so the identity headers win (IMG-2 review).
+    sent = {**(kwargs.pop("headers", None) or {}), **headers()}
+    if "files" in kwargs:
+        # A multipart body sets its own Content-Type, with the boundary. The
+        # JSON header would break the upload (WS-64 OP-6c).
+        sent.pop("Content-Type", None)
     async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.request(
             method.upper(),
@@ -177,13 +183,41 @@ async def get(path: str, params: dict[str, Any] | None = None) -> Any:
     return (await request("GET", path, params=params or {})).json()
 
 
-async def post(path: str, payload: dict[str, Any] | None = None) -> Any:
-    resp = await request("POST", path, json=payload or {})
+async def post(
+    path: str, payload: dict[str, Any] | None = None, params: dict[str, Any] | None = None
+) -> Any:
+    """A POST. ``params`` is the query string, for a route that reads a flag
+    there (``include_subtasks`` on archive and complete, WS-46 P6)."""
+    resp = await request("POST", path, json=payload or {}, params=params or {})
     return resp.json() if resp.content else {}
 
 
-async def patch(path: str, payload: dict[str, Any]) -> Any:
-    return (await request("PATCH", path, json=payload)).json()
+async def post_file(
+    path: str,
+    field: str,
+    filename: str,
+    content: bytes,
+    content_type: str = "application/octet-stream",
+) -> Any:
+    """A multipart POST of one file (WS-64 OP-6c, ``attach_to_task``). The
+    manifest check, the acting member and the refusals are ``request``'s."""
+    resp = await request(
+        "POST", path, timeout=60.0, files={field: (filename, content, content_type)}
+    )
+    return resp.json() if resp.content else {}
+
+
+async def patch(
+    path: str,
+    payload: dict[str, Any],
+    params: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+) -> Any:
+    """A PATCH. ``params`` is the query string (``include_subtasks``, WS-46 P6).
+    ``headers`` adds to the usual ones, for ``If-Match`` (IMG-2)."""
+    return (
+        await request("PATCH", path, json=payload, params=params or {}, headers=headers)
+    ).json()
 
 
 async def put(path: str, payload: dict[str, Any] | None = None) -> Any:

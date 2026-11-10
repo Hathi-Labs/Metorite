@@ -37,6 +37,7 @@ import {
   spansMultipleProjects,
   subtreeIds,
   subtreeProjectDepth,
+  taskWhere,
 } from "./tree";
 
 const FOREST: ProjectNode[] = [
@@ -118,6 +119,24 @@ describe("subtreeIds / flatten / pathTo", () => {
 
   it("returns nothing for a project that is not in the forest", () => {
     expect(pathTo(FOREST, "nope")).toEqual([]);
+  });
+});
+
+describe("taskWhere — the task card's breadcrumb", () => {
+  it("names every node from the space down to the task's project", () => {
+    expect(taskWhere(FOREST, "lp")).toEqual([
+      { id: "sales", name: "Sales" },
+      { id: "q3", name: "Q3 campaign" },
+      { id: "lp", name: "Landing page" },
+    ]);
+  });
+
+  it("is empty for a project the tree does not hold, or no project", () => {
+    // A private project of mine is not in the company tree. The card then
+    // starts at the ref instead of drawing a wrong path.
+    expect(taskWhere(FOREST, "mine")).toEqual([]);
+    expect(taskWhere(FOREST, null)).toEqual([]);
+    expect(taskWhere([], "lp")).toEqual([]);
   });
 });
 

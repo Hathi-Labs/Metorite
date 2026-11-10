@@ -5,5 +5,26 @@
 *.sh            text eol=lf
 *.service       text eol=lf
 *.timer         text eol=lf
+# systemd drop-ins (WS-49 BH-7). A CRLF line here is parsed wrong too.
+deploy/hostinger/**/*.conf text eol=lf
+# dev_up.sh reads this line by line. A CRLF copy dropped every switch (LD-1).
+scripts/dev_up/*.env text eol=lf
 deploy/hostinger/caddy/Caddyfile text eol=lf
 deploy/hostinger/known_hosts text eol=lf
+# WS-49 BH-6: the root copy lists. root_env.sh reads the names file as root.
+deploy/hostinger/root_lib_files.txt text eol=lf
+deploy/hostinger/root_env_names.txt text eol=lf
+
+# WEB-3 file fixtures are bytes. A CRLF checkout would move the offsets of the PDF.
+tests/unit/fixtures/web/files/* binary
+tests/unit/fixtures/web/files/make_files.py -binary text eol=lf
+# CIV-20 slice 3: INDEX.md is an append-only list of spec rows. Two PRs that each
+# add a row used to conflict (8 of 21 BACK lines on 2026-11-07). Union keeps both.
+# Fence: tests/unit/test_index_union.py (no row is listed twice).
+project-docs/INDEX.md merge=union
+# CIV-25 item 3: two more append-only lists. HANDOFF.md gets one entry per ### H-<n>
+# heading, and .env.example gets one KEY= line per setting. Two PRs that each add one
+# used to conflict. Union keeps both. Fence: tests/unit/test_union_append_only.py
+# (no H-id and no env key repeats, and every union path is on its allow-list).
+project-docs/HANDOFF.md merge=union
+.env.example merge=union

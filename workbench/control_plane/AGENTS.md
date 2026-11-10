@@ -49,7 +49,9 @@ its number is part of your change**, not a follow-up.
 Type scale: `text-sm` / `text-xs` / `text-[11px]` / `text-[10px]`. Do not invent
 an off-grid size — `text-[12px]` is `text-xs` written the long way, and it also
 opts out of the user's density preference, because `--ui-scale` reaches rem and
-not px.
+not px. In a `style` object, take the size from `TYPE` in `src/lib/typeScale.ts`,
+which holds the same scale in rem. A generative-UI template never sets a font
+size in px (fence: `src/lib/typeScale.test.ts`).
 
 `npx vitest run src/lib/theme/` before you push.
 
@@ -72,7 +74,7 @@ the thing that used to EXPOSE a breach for free: one theme switch and every
 hardcoded value announced itself. The breach is still a breach. Nothing shows
 it to you now.
 
-Five rules on top of the three above. Each one exists because it was broken:
+Twelve rules on top of the three above. Each one exists because somebody broke it:
 
 4. **One vocabulary per concept, in `src/lib/` or `src/components/`, consumed by
    every app.** Status and lane colour is `src/lib/statusAccent.ts` — the single
@@ -103,17 +105,67 @@ Five rules on top of the three above. Each one exists because it was broken:
    layout and draws it as the email, as a Markdown file and as the HTML the
    gateway lays out as a PDF. `app/projects/lib/reportFiles.ts` is the one
    download path. Fences: `reportEmail.test.ts` and `reportFiles.test.ts`.
+   **`src/lib/numberFormat.mjs` is the one short-number formatter** (owner,
+   2026-10-19). It writes 12.5 L and 1.35 Cr by default, and 12.5M and 1.35B
+   for a member who chose the international system. The charts and the CRM's
+   `compactMoney` use it. Do not write a second "k/M" formatter. Fence:
+   `src/lib/numberFormat.test.ts`.
    **A report section draws with its Analytics panel** (WS-27bn R2b).
    `app/projects/lib/reportPanels.ts` maps a section to the panel's props
    and computes nothing. `Stat` in `AnalyticsPanels.tsx` is the one tile.
    Fence: `app/projects/components/reportVisuals.test.ts`.
+   **The KPI strip of the Overview has one home** (WS-27bn RA-2).
+   `app/projects/lib/kpiStrip.ts` holds the words and the rule of each of
+   its six tiles, and `Stat` draws each tile with its `detail` lines. The
+   tooltip of a tile is its rule. Fence: `app/projects/lib/kpiStrip.test.ts`.
+   **A report row opens its task through `OpenTaskContext`** in
+   `AnalyticsPanels.tsx` (WS-27bn RA-3). `ReportsView` provides the opener of
+   the page. A row is a `ControlLink` to `/projects?task=<id>`. Do not add a
+   second way for a panel to open a task. Fence:
+   `app/projects/components/waitingPanel.test.ts`.
+   **The "Agent runs" panel has one home** (WS-27bn RA-4).
+   `app/projects/lib/agentRunsReport.ts` holds its words, the rule of each
+   figure and the explicit ramp slot of each outcome. `AgentRunsPanel` draws
+   the server's figures, and an `InfoTip` gives each rule to a keyboard and
+   a touch. `overviewShown` hides the panel when the scope has no agent run,
+   by RA-3's rule. Fences: `app/projects/lib/agentRunsReport.test.ts` and
+   `app/projects/components/agentRunsPanel.test.ts`.
+   **The "Quality" panel has one home** (WS-27bn RA-5).
+   `app/projects/lib/qualityReport.ts` holds its words, the rule of each
+   figure and the explicit ramp slot of each mark. Agents and People keep the
+   slots of RA-2. `QualityPanel` draws the server's figures, and an `InfoTip`
+   gives each rule to a keyboard and a touch. `overviewShown` hides the panel
+   when the scope has no agent pull request, no reopen and no failed run.
+   No text calls 100% the goal, and `qualityCopy` lets a test scan the words.
+   Fences: `app/projects/lib/qualityReport.test.ts` and
+   `app/projects/components/qualityPanel.test.ts`.
+   **The forecast by count has one home** (WS-27bn RA-6).
+   `app/projects/lib/outlook.ts` holds its words, the rule of each verdict
+   (`forecastRule`), the band (`forecastBand`) and its explicit ramp slot
+   (`FORECAST_SLOT`). `app/projects/lib/needsOwner.ts` holds the words of
+   "Needs an owner". The server decides each figure and the order. Fences:
+   `app/projects/lib/outlook.test.ts`, `app/projects/lib/needsOwner.test.ts`
+   and `app/projects/components/forecastPanel.test.ts`.
    Since WS-27bn R5f round 1, `app/projects/lib/sectionIcons.ts` is the one
    icon map of the report sections. `app/projects/lib/sectionEmpty.ts` holds
    the one friendly line of a clear section, and the app, the email and the
    download read it. Fence: `app/projects/components/reportsRedesign.test.ts`.
+   **`ReportView` in `components/genUITemplates.tsx` is the one report
+   renderer** (owner directive, 2026-10-16). The chat card, the side panel,
+   the file viewer and `/artifacts` draw a report through it. A visual draws
+   through the template of its kind. Do not add a second chart or table for
+   a report. Fences: `src/components/reportView.test.ts` and
+   `src/lib/report.test.ts`.
    **`src/lib/autoOpenArtifact.ts` is the one rule** for a file a chat agent
    writes: `/chat` and the Projects rail both call it. Fence:
    `autoOpenArtifact.test.ts`.
+   **Only the composer sends the typed mark** (WS-63 D-PZ-37). The chat
+   composer, the shell's Ask field and the ⌘K draft send `typed: true`. A
+   link such as `/chat?q=` never does. A pill, a choice,
+   a card action, a feed starter, the Fix prompt, a retry and an edit send
+   none. Words that a program puts in the box take the mark away until the
+   box is empty. `src/lib/typedMark.ts` holds the rules. Fence:
+   `src/lib/typedMark.test.ts`.
    **`src/lib/assistantCheckpoint.ts` is the one row shape** the chat
    translator (`api/agent/chat/route.ts`) saves (WS-27bm S10). The live
    stream names the requested agent in `author_email`. An `@name` turn names
@@ -124,9 +176,133 @@ Five rules on top of the three above. Each one exists because it was broken:
    every prose colour at a token. **Chat Markdown has one renderer,**
    `MarkdownBody` in `MarkdownMessage.tsx`. Fence:
    `src/components/chatVisualReview.test.ts`.
+   **A remote image in agent Markdown loads only on a click.** Every
+   renderer of agent text uses `MarkdownImage` as its `img`, and a renderer
+   with `rehype-raw` also runs `rehypeGateRemoteMedia` after it. Both live in
+   `src/lib/markdownMedia.ts` and `src/components/MarkdownImage.tsx`. Fence:
+   `src/components/markdownImage.test.ts`.
+   Two same-origin API paths load at once (WS-57 TR-4). One is the
+   workspace file proxy. The other is one task attachment,
+   `/api/projects/attachments/<uuid>/<name>`. Every renderer uses
+   `MarkdownImage`, so that path draws at once in each of them. That
+   includes the task card, the chat, a document and the artifact viewer.
+   This is safe. The request stays on our origin. The gateway serves the
+   file only to a member who can see its task.
+   `app/projects/lib/inlineUploads.ts` builds the attachment URL of a pasted
+   image. The task card passes `plainEmails` to `MarkdownBody`, so an
+   @mention stays text. Fences: `markdownMedia.test.ts` and
+   `app/projects/lib/inlineUploads.test.ts`.
+   The task card draws `#123` as the task pill (WS-57 TR-5). It passes
+   `taskRefs` alone, so the plugin changes only the `#123`s, and
+   `taskRefResolverFor(root)`, so a number reads the task's own root
+   only. The chat's output stays the same. The card's Markdown layer and
+   the gateway's `prose_of` share the `markdown_cases` of
+   `tests/fixtures/task_ref_cases.json`. Fences:
+   `components/markdownChatGolden.test.ts` and `lib/taskRefs.test.ts`.
+   **Untrusted HTML has one DOMPurify policy,** `src/lib/untrustedHtml.ts`.
+   The email pane and the `.docx` viewer use it. A new raw-HTML sink
+   (`dangerouslySetInnerHTML`, an `innerHTML` write, a `srcdoc`) fails
+   `src/lib/htmlSinks.test.ts` until it is on that list with its gate.
    **An entity in chat text is one pill,** `src/components/ui/EntityPill.tsx`
    (WS-27bm S9). Do not draw a task, a project or a person as bold text or
    as a second chip. Fence: `src/components/ui/EntityPill.test.ts`.
+   **The pull request chip is one descriptor** (WS-55 EA-13d).
+   `pullRequestChip` in `src/lib/taskCard.ts` builds it from the `pr` of a
+   task row. `prChipTone` and `PR_STATES` in `src/lib/statusAccent.ts` give
+   its tone and glyph. `TaskMeta.tsx` draws it as a link. The link opens a
+   new tab, and it keeps the click, the key and the drag from the card.
+   The gateway picks the pull request (EA3-48), so the client never picks
+   one. A merged pull request alone takes the `success` tone.
+   The strip of the board is `AgentWorkStrip.tsx`. The "Agent work" filter
+   and "Ask an agent" (EA-13e) use the shared `Button`. Fence:
+   `app/projects/lib/agentCard.test.ts` and `agentOversight.test.ts`.
+   **A «mark» never reaches the member** (owner report, 2026-10-07). The
+   server keeps its data fence, and `src/lib/fencedText.ts` is the one
+   parser of it for display. Draw server text with `FencedText.tsx`, and a
+   generative-UI string with `GenUiText.tsx`. That is `MarkdownBody` in its
+   `inline` mode, never a second renderer. Fences: `fencedText.test.ts` and
+   `genUiInlineText.test.ts`.
+   **Each element of a chat turn has one place** (owner, 2026-10-08).
+   `src/lib/chatPlacement.ts` is the one map from a tool to its kind. Do not
+   guess a kind from a tool name in a card file. Add the name to the map.
+   The rule of record is `projects_ai_chat.md` §24.
+   - An element that needs the member stays in the flow, and `AskPin` keeps
+     it in view.
+   - **No card pins above the message box** (owner, 2026-10-23). Only a
+     one-line status sits outside the thread. A card holds no scroll box.
+     A long body uses `components/ui/ShowMore.tsx`. A typed message answers
+     the one waiting question. The rules are C1 to C8 in
+     `projects_ai_chat.md` §24.10. Fence: `src/lib/chatCardScroll.test.ts`.
+   - A read draws inside its step in the trail, closed, and never after the
+     answer.
+   - A write's receipt draws compact after the text. An answer card is one
+     at most, after the text.
+   - Fences: `chatPlacement.test.ts`, `askPin.test.ts`,
+     `datasetTable.test.ts` and `tests/unit/test_chat_placement_classes.py`.
+   - A card keeps its place in the stream (`projects_ai_chat.md` §24.9).
+     Each `generative_ui` event carries `segmentCutoff`, and `genUiFlow`
+     draws the text that came after a card below it. The live hook, the
+     chat proxy and `chat_fold.py` stamp it the same way.
+   - `components/RecommendedBadge.tsx` is the one mark of a recommended
+     option. Do not draw a star for it. Fences: `genUITemplates.test.ts`
+     and `elicitationCard.test.ts`.
+   - `src/lib/askAnswers.ts` is the one reader of the answer a blocking card
+     already got. A card that has one draws as sent after any remount.
+   - `src/lib/inAppLink.ts` holds the two rules of a chat link. Each in-app
+     click sends `IN_APP_LINK_EVENT`, and a link to another site shows its
+     host. Fence: `inAppLink.test.ts`.
+   - `isInAppPath` in the same file is the one rule of an in-app path. The
+     chat, the entity pill and the My Day feed use it. It refuses `//`, a
+     backslash, a control mark and a path to another origin. Do not write a
+     second check. Fences: `inAppLink.test.ts` and `feedHandled.test.ts`.
+   - A link to a workspace file opens the app's viewer, never the raw file
+     (owner report, 2026-10-16). `workspaceFileOfHref` in
+     `src/lib/artifactKind.ts` is the one parser of that link.
+     `artifactOpenSurface` in the same file is the one rule for the panel
+     or the full viewer, and the file card and `components/ArtifactLink.tsx`
+     both read it. `MessageBubble` provides the viewers. The link's `href`
+     is `artifactViewUrl`, the Artifacts app with `?file=`.
+   - A tab that opens a Markdown file address gets a 303 to that view
+     (`rendersAsPage`). A Download button names `download: true` in
+     `workspaceFileUrl`, so it always gets the raw bytes. Fences:
+     `components/artifactLink.test.ts` and `artifactLinkRoute.test.ts`.
+   **A send during a run steers it, through one seam,** `src/lib/chatSteer.ts`
+   (owner, 2026-10-12). The composer has ONE main control, Send or Stop,
+   and no send mode and no queue. Do not add a second send path. Fences:
+   `chatSteer.test.ts` and `e2e/chat-steer.spec.ts`.
+   **A long chat card rolls up through one seam,** `components/RollupCard.tsx`
+   (owner, 2026-10-10). `src/lib/cardRollup.ts` holds the rules. The newest
+   card stays open, unless it is a receipt (`receipt` prop, owner 2026-10-29): a
+   receipt of a write that worked opens folded. A card that waits on the member never
+   folds. A toggle by hand wins. A long card folds when it is not the newest. Wrap a new flow card in it, and do
+   not add a second fold. The transcript follows its bottom on each change
+   of size (`src/lib/stickToBottom.ts`). Fences: `cardRollup.test.ts`,
+   `stickToBottom.test.ts` and `e2e/chat-card-rollup.spec.ts`.
+   **Every chat card has one look** (owner, 2026-10-13). Its title row is
+   `RollupHeader` or `CollapsibleCardHeader`, with an icon of the set. A
+   template that has a title uses `TemplateHead`, so its title draws once.
+   No card draws an emoji or a text glyph as an icon. A card that waits,
+   such as a question or an approval, has a short title, and its text is in
+   the body. The server cuts a long text at a word, with an ellipsis.
+   Fences: `chatCardConformance.test.ts`, `elicitationCard.test.ts` and
+   `tests/unit/test_ask_questions_text.py`.
+   The body of a card has no hanging indent. It starts at the content
+   padding, in line with the chevron (owner, 2026-10-10). A listed row is
+   one line: number, title, status pill and open icon. Fence:
+   `src/lib/cardDenseLayout.test.ts`.
+   **A card key has one label,** in `CARD_FIELDS` in `src/lib/cardFields.ts`,
+   and its kind draws its value. ⚠️ Read the map through `ownSpec`
+   (`Object.hasOwn`) only. A key comes from tool and agent data, and
+   `constructor` or `__proto__` read the prototype chain and broke a card
+   (MCP-P1b-1 re-review P1). The Python fakes read that map and fail a
+   card test that prints a key with no label (`tests/unit/_card_words.py`).
+   A read result draws through `components/Readout.tsx`, with no
+   id and no `[key]`. That includes the email and CRM reads. Fences:
+   `cardFields.test.ts`, `readout.test.ts` and `readoutEmailCrm.test.ts`.
+   **A table draws by its column kinds.** `src/lib/dataGridLayout.ts` holds
+   the rules of the `dataGrid` template. A status is its chip, and the rows
+   stack in a narrow box. A category column that the data names hides beside
+   a status. Fence: `dataGridLayout.test.ts`.
    ⚠️ **The BOM trap binds at every hop, and "keep it a `Blob` in the client" is only
    half of it.** `Response.text()` is a UTF-8 *decode* and a UTF-8 decode strips a
    leading byte order mark, so **a BFF proxy that does `await res.text()` and rebuilds
@@ -238,7 +414,8 @@ Five rules on top of the three above. Each one exists because it was broken:
    ⚠️ **The cache is memory-only, and bound to the signed-in member.** Keys are
    request paths, and a path says nothing about who asked — so two members on
    one browser share every key. `bindIdentity` (called in `AppShell`) empties it
-   when the member changes. Never persist it to `localStorage`,
+   when the member changes, or when the org of the session changes (WS-53,
+   2026-10-19). An unknown org changes nothing. Never persist it to `localStorage`,
    `sessionStorage` or IndexedDB: that puts one member's tenant rows on the
    device for whoever opens the browser next, below the gateway, where no
    row-level security reaches.
@@ -250,6 +427,164 @@ Five rules on top of the three above. Each one exists because it was broken:
    Fences: `dataCache.test.ts` (including a source grep for the storage APIs)
    and `useCachedResource.test.ts`. **Advisory:** nothing tests that a NEW
    surface adopts the cache instead of a cold fetch.
+   **The chat caches in `localStorage` live in one namespace per account**
+   (PR #652). Build every chat key with `chatKey` in `lib/sessions.ts`. A
+   switch of accounts deletes nothing, and a sign-out clears that account
+   only. The design note is `project-docs/specs/projects_ai_chat.md` §23,
+   "Chat cache namespaces and multi-account". Fence:
+   `src/lib/railSessions.test.ts`, which greps for a raw chat key.
+   **The appearance keys are per account too** (owner bug, 2026-10-11).
+   Mode, density and accent live at `<key>:<email>|<orgId>`, and
+   `lib/theme/scope.ts` moves the pointer that the boot script reads. Read
+   and write them through `themeStorage`, never by a bare key. Fence:
+   `src/lib/theme/scope.test.ts`.
+   **The shell layout copy is per account too** (NS-7). It lives at
+   `cc-shell-prefs:<email>|<orgId>` and holds the starred hrefs (`pins`),
+   the `known` hrefs and preset names, never tenant rows. Only a layout that
+   the server confirmed goes in it, and a sign-out clears that account's
+   copy. Read and write it through `lib/shell/shellCache.ts`. Fence:
+   `src/lib/shell/shellCache.test.ts`.
+   **The sidebar folds are per account too** (owner, 2026-10-11). They live
+   at `cc-sidebar-folds:<email>|<orgId>`, and a sign-out clears them. Read
+   and write them through `lib/shell/sidebarFolds.ts`. Fence:
+   `src/lib/shell/sidebarFolds.test.ts`.
+10. **An app plugs into the shell. It never builds one.** *(D89, owner
+   directive 2026-10-05.)* The owner said: "Future applications … should also
+   follow the same UI/UX rules." The shell owns the top bar, the command bar,
+   the bell, the assistant dock, the launcher and Home.
+   An app declares a manifest on its `NavPane` in `src/lib/nav.ts`. The
+   manifest names its team, a one-line purpose and its jobs. It also names
+   its search, its "needs you" items, its Home cards and its agent.
+   Do not mount a ⌘K handler, a palette, a `NotificationBell` or an assistant
+   rail in an app. Declare a job or a provider instead. A job opens a form,
+   and a person saves it. The AI tier may fill the form, and it never saves.
+   `project-docs/specs/navigation_shell.md` §5 is the contract, and §5.3 maps
+   every live app onto it.
+   **Fence: `src/lib/shell/seams.test.ts`.** It fails on a ⌘K listener, and on
+   an import of a bell, an assistant rail or a palette. That includes an
+   import of another app's rail or palette. It reads every file outside
+   `src/lib/shell/`, and it allows one file per seam inside it. The debt sits
+   in `SEAM_DEBT` per app folder, and each number only goes down. A move
+   inside one app is free.
+   ⚠️ **Do not add a key to `SEAM_DEBT` to make a new app pass.** If the app
+   needs a missing shell part, build it once in `src/lib/shell/` (NS-1),
+   for every app.
+   From NS-2, `src/lib/nav.test.ts` will also fail on a live pane with no
+   team or purpose. Until then, the manifest half is advisory. R9 in
+   `work_plan.md` §1 binds the app's spec to declare it.
+   **A reminder looks and acts like a reminder** (RX-3, owner, 2026-11-01).
+   My Day draws it in the Reminders band (`src/lib/shell/RemindersBand.tsx`)
+   above the groups, with the Bell glyph and not the Calendar icon. The
+   groups leave the three reminder kinds out. `reminderBand.ts` holds every
+   rule of the band. `ReminderActs.tsx` draws Done and Snooze, and the band
+   and the bell both use it. The acts write the reminder row through
+   `reminderOpen.ts`, the one client of the routes, and never card state.
+   Fences: `reminderBand.test.ts`, `reminderActions.test.ts` and
+   `remindersBand.test.ts`.
+11. **The shell bar is constant. An app never renders into it. Every app
+   opens with `AppTopBar`, its one title bar: rail toggle, name, subtitle,
+   actions, tools.** *(Owner direction, 2026-10-10.)* The owner said: "I
+   don't want to have any of the individual apps' UI/UX elements be on the
+   top bar." The shell bar holds the fold control, the logo, the command bar,
+   the assistant, the bell and the activity control, and nothing else.
+   ~~**Amended by the owner, 2026-10-11:** our Metorite comet signs the right
+   end (`BarSignature`).~~ **Superseded by the owner, 2026-10-12.**
+   ~~**Amended by the owner, 2026-10-12:** the account is the right end's
+   last item (`BarAccount`), and our comet is the sidebar's foot
+   (`MetoriteFoot.tsx`).~~ **Superseded by the owner, 2026-10-14.**
+   **Amended by the owner, 2026-10-14:** the account is the sidebar's foot
+   again (`AccountFoot` in `src/components/AccountSwitcher.tsx`). Open, it
+   shows the avatar, the name and the muted email. Folded, it shows the
+   avatar alone. It opens ONE menu, upward: the current account, the other
+   accounts, Add, You, Settings and sign-out. The menu comes from ONE list
+   (`accountMenu` in `shellNav.ts`). Add a new option there, in one line.
+   The Metorite logo left the bar and the sidebar. **The Metorite mark signs
+   the foot of the account menu** (owner, 2026-10-14). The `brand` group
+   comes after sign-out: a 14px comet and the word "Metorite", in muted
+   text. It is not a control and not a focus stop. Only the desktop menu
+   shows it. A workspace with no logo keeps the comet as its badge. The
+   right group has no `min-w-0`, so it never spills over the command bar.
+   The classic frame and the phone keep their account surfaces. Fences:
+   `src/lib/shell/shellAccount.test.ts` and `e2e/shell-account.spec.ts`.
+   **Amended by the owner, 2026-10-10:** the shell's one bell and its one
+   assistant toggle sit at the bar's right end. The owner said
+   "they belong to the whole product, not to an app." The bell shows only while
+   `NEXT_PUBLIC_SHELL_DOCK` is on (NS-6 slice 6a, `src/lib/shell/ShellBell.tsx`).
+   The toggle follows in slice 6b. An app's own bell or tool never goes there.
+   Fences: `src/lib/shell/shellBell.test.ts` and `e2e/shell-bell.spec.ts`.
+   The app's bar sits under it, with the app's name as its one `<h1>`. The
+   rail toggle and the tools live in that bar, never in the rail and never
+   in the shell bar. A page under the bar titles itself with an `<h2>`.
+   When the row runs out of room, it wraps its tools to a second line.
+   `DESIGN_SYSTEM.md` §6a holds the shape. `navigation_shell.md` §5.2 rule 3
+   holds the rule.
+   **Fences.** `src/lib/shell/appBar.test.ts` reads source. It fails on a
+   slot API, and on a file outside `src/lib/shell/` that reaches into the
+   shell bar. It fails on a live pane or a Settings sub-page with no
+   `AppTopBar`. It fails on an app name in the shell bar's markup.
+   `e2e/app-title-bar.spec.ts` opens each live pane, My Day and the four
+   Settings sub-pages at 1440 and at 390. It fails unless each page shows one
+   `<h1>` and one app bar. Chat on a phone is the one named exception, with
+   its reason in the spec. The same spec fails on a bar control out of the
+   window or under the name. It checks Calendar at 1024, 960 and 800, and
+   Email and Projects at 1024. At 900 and 1024, a long name must not part
+   the rail toggle or the way back from the name.
+   `src/components/pageHeading.test.ts` holds `PageHeader` and
+   `SettingsHeader` to an `<h2>`. Add a new live pane to `APP_BAR_HOME` in
+   `appBar.test.ts` and to `PAGES` in the e2e, in the same PR.
+   `appBar.test.ts` fails when the two lists differ.
+12. **A rail of named items uses `RailRow`. A truncated label gets
+   `OverflowTip`.** *(Owner direction, 2026-10-10, with ClickUp's sidebar as
+   the reference.)* Both live in `src/components/ui/`.
+   - A row shows its actions on hover and on keyboard focus only. At rest
+     the actions take no width, and the row shows its muted count.
+   - The count gives way only on a row with actions, and only from sight.
+     It stays in the row's accessible name.
+   - A row that opens shows its chevron in the icon's slot on hover and on
+     keyboard focus. The toggle stays a labelled button, so Tab reaches it.
+   - On a phone the chevron has its own column, and the icon stays. Each
+     row shows its `phoneActions`, one "···" that opens the row's menu.
+   - A cut name shows whole in a dark tip after 400 ms. A name that fits
+     shows no tip, and no row adds a native `title` to its name.
+   - The Projects tree, the My Tasks rail, the Email folders and the
+     WhatsApp triage rail use it. Do not draw a rail row by hand.
+
+   **Fences.** `src/components/ui/RailRow.test.ts`,
+   `RailRow.phone.test.ts` and `OverflowTip.test.ts` hold the markup and
+   the tip's rules. `src/lib/railRows.test.ts` fails when a rail on its list
+   stops drawing `RailRow`.
+
+   Add a new rail to that test's `RAILS` list in the same PR. That step is
+   review, and no test holds it. `e2e/rail-rows.spec.ts` measures the hover,
+   the tip, the width and the phone drawer. `DESIGN_SYSTEM.md` §6b holds the
+   shape.
+13. **Every animation answers a member who asked for less motion.** An
+   entrance shows at once, and a decoration stops. Only a status loop may
+   stay. New motion uses the motion tokens and moves `transform` and
+   `opacity` only.
+
+   **Fence.** `src/lib/theme/motion.test.ts` fails when an `@keyframes` in
+   `globals.css` has no reduced-motion answer. Put an exception in its
+   `MOTION_EXEMPT`, with the reason. `DESIGN_SYSTEM.md` §4 holds the
+   rules, and §9 and §10 hold the advisory rules for states and words.
+14. **Every UI change passes the UI gate** (owner directive, 2026-10-27).
+   State the interaction in one sentence. Pass the ratchets. Put the four
+   captures on a "Visual review:" line of the PR body. The gate blocks in
+   build mode too. `DESIGN_SYSTEM.md` §11 holds the order and the rules.
+
+   **Fences.** `src/lib/theme/motion.test.ts` holds the motion gates G1 to
+   G4. `src/lib/uiGates.test.ts` holds G5 to G8: focus, drag, height and
+   images. Each gate keeps today's count of each file, and a new violation
+   fails.
+   The "Visual review line" step of the Frontend job in `pr-check.yml` fails
+   a PR body with no such line. `tests/unit/test_fence_lists.py` keeps that
+   step in the required job.
+15. **A new UI action needs a chat tool, or a row in the parity table**
+   (owner rule, 2026-11-01). The table is
+   `packages/acb_skills/acb_skills/chat_parity.py`, and the spec is
+   `project-docs/specs/chat_parity.md`. Send each request through a seam or
+   with a literal path, so the fence can read it.
+   **Fence: `tests/unit/test_chat_parity.py`.**
 
 **What CI cannot catch, and you must.** There is no structural or layout test in
 this tree: nothing asserts panel counts, shell adoption, mobile branches, or that

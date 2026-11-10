@@ -1,155 +1,202 @@
 # Orchestrator -- Agent Execution Engine
 
+History of this file is in git (git log -p).
+
 ## Purpose
 
 The orchestrator is the runtime engine for all agent execution in Metorite.
-It dynamically loads agents from GitHub repos or local folders, executes them
-via MAF, handles cross-agent delegation, triggers self-mutation on failure,
-and streams chat responses as AG-UI events.
+It loads agents from GitHub repos or local folders and runs them through MAF.
+It handles cross-agent delegation, starts self-mutation on failure, and streams
+chat responses as AG-UI events.
 
 ## Ownership
 
 - Owner: Metorite Core team
-- Path: apps/orchestrator/
+- Path: apps/services/orchestrator/
 
 ## Local Contracts
 
-1. executor.py is the single entry point for agent execution (streaming and batch). Injects platform tools, MCP server config from the registry, and integration credentials at runtime. Integration credentials are filtered by the ACTING MEMBER first (`_integration_authorizer` → `build_integrations(is_authorized=)`, org access control): an agent's config.json declares a want, not an entitlement, and the filter runs BEFORE the per-run env injection so an unauthorized credential never enters the run's environment. Runs with no attributable active member (cron, reconciler, webhooks) are deliberately unfiltered — see project-docs/specs/org_access_control.md §8a. ⚠️ Every `/v1` client here (agents.py, _model_resolution.py, code_session.py, mutation.py, the executor's BYOK provider config) MUST read `settings.llm_api_key` — never `gateway_internal_token`, which is the service identity and must not reach model-authored code (§8b). A test in tests/unit/test_service_identity_and_webhook_auth.py fails if one does.
-2. copilot_agent.py provides MetoriteCopilotAgent -- the MAF wrapper for Copilot SDK agents with BYOK + MCP server forwarding
-3. agents.py exports build_orchestrator_agent() -- the main orchestrator MAF Agent
-4. mutation.py handles Self_Mutation_Node -- spawns Docker sandbox on agent failure
-5. stream_relay.py buffers all SSE events to Redis Streams for fire-and-forget chat with live reconnection
-6. All agents must go through MAF -- no raw Copilot SDK paths for business execution
-7. mutation_runner.py runs inside the Docker sandbox -- uses Copilot SDK directly (by design)
-8. workflow_tools.py exposes published Workflows-app workflows to every agent as a three-tool trio (`list_workflows` / `run_workflow` / `get_workflow_run`) — the sibling of app_tools.py, injected through the same `_tool_injection` gated pipeline. Calls go in-process to `gateway.routes.workflows.service` (the same entrypoints the Run button and API use), so concurrency caps, run history, and the approval gates inside a workflow bind agent-triggered runs identically; a run paused at a Human-approval node reports itself as waiting in the approvals inbox — an agent cannot bypass the gate. Spec: project-docs/specs/workflows_app.md F13
-9. Run correlation is bound in **two** places in run_agent_stream, deliberately. `bind_run_context(run_id, thread_id, agent, user, source)` fires at the run boundary — BEFORE `load_agent`, so a failure during load is still correlated — and `_bind_run_instance(instance, run_id)` tops up `instance` (the tenant partition from `_resolve_agent_instance`) immediately after the load, because that value needs `loaded.config` and cannot exist earlier. H-201 part 4 adds a third, late top-up: once `_resolve_run_workspace` gives the store key, a shared run binds its `o:<org>` key, on the stream path (only when it differs from the manifest key) and on the batch path. Binds are additive. The single `clear_run_context()` in the `finally` unbinds every key. Do not "simplify" this into one bind: moving the first one late loses correlation on load failures, and dropping the second silently un-attributes every personal/team agent's spend. The same call patches the live presence key through `acb_common.refresh_run_presence` — the `phase="start"` event predates the load, so `/observability/active` and `/observability/roster` would otherwise never show a partition for any run. `_run_sub_agent_streaming` deliberately does **neither**: a delegated sub-run inherits the caller's `instance` (known asymmetry — spec §7 WS-6a) because `bind_context` cannot unbind and a correct fix needs save/restore around the sub-run. Spec: project-docs/specs/observability_e2.md §7 (WS-6a)
-9a. **The run's artifact context is a ContextVar, never a module dict** (H-201 part 4, `project-docs/specs/projects_ai_chat.md` §21.16). `acb_skills.write_artifact.artifact_context()` is the one reader. It holds an immutable mapping of `session_id`, `agent_name`, `run_id`, `workspace_root`, `instance`, `member`, `integrations`, `integration_warnings`, the gateway, and `permission_check_root` for a sandboxed session. `run_agent_stream` and `run_agent` bind it inside a token scope, so it ends with the run. `_run_sub_agent_streaming` derives its OWN copy and resets its token, so the parent's value never changes. A Copilot SDK agent's tool and permission callbacks start on the SDK's reader thread with no context, so every path calls `copilot_agent.carry_run_context(agent)` before the agent opens a session. With no context, every reader fails closed: no write, no emit, and no "single live run" guess in `resolve_run_queue` or `resolve_relay_thread_id`. A run that starts inside another run's context is a delegation, and `_delegated_instance` keys it by the parent's `member`. Fence: `tests/unit/test_h201_run_context.py`.
-10. _tool_injection.py's static tool collection lives in `_collect_injectable_platform_tools()` (WS-23 S1 — the exact import chain `_inject_agent_tools` always ran, extracted verbatim; injection behavior unchanged). It is the read-only introspection seam the skills catalog (`acb_skills.skill_families` + gateway `GET /integrations/skills`) builds on, and `tests/unit/test_skills_registry.py` drift-fails if an injected tool is missing from the family registry — register any newly injected tool there in exactly one family. WS-23 S2: `_resolve_injected_scope(tool_scope, disabled_families=…)` intersects admin skill toggles (`agent_skill_setting`, loaded once per run by `_load_disabled_skill_families` — same best-effort sync-DB mechanism as app grants/MCP) with the declared scope; the core floor survives anything, the `workflows` toggle is honored at the trio's append site, and NO rows means byte-identical pre-S2 behavior (`tests/unit/test_skill_toggle_enforcement.py` pins all three rules).
-11. **Tenant (`organization_id`) is threaded through the run boundary alongside the acting user** (WS-29 MT-1d / H4, `saas_multitenancy_handover.md`). `run_agent_stream` / `run_agent` and `stream_relay.run_detached` take an `organization_id` parameter; `run_agent_stream` stores it in the module-level run-keyed dict `_RUN_ORG` (the tenant twin of `_RUN_QUEUES`, cleared in the same `finally`) — this is what the SYNC `acb_graph` worker-thread writes read across the `loop.run_in_executor` hop, where contextvars do NOT propagate. It ALSO `acb_common.db.bind_tenant(org)`s the run's own event loop (and `run_detached` binds the detached drain task, covering `on_complete`). **The org is stamped SERVER-SIDE by the gateway chat route from `UserContext.organization_id`, NEVER from `event_payload`** — the payload is agent/client-visible, so sourcing the tenant from it is R11's tenant-spoofing hole. As of **slice 6a** the batch `run_agent`/`_run_agent_inner` path HONOURS its org param and the other run-based org SOURCES are threaded (see the slice-6a bullet); the remaining non-chat sources (email-automation, webhooks, workflow/schedule) are `TODO(WS-29 slice 6b/6c)`. Fence: `tests/unit/test_executor_org_threading.py` (`executor-run-carries-org`).
-   - **Slice 3 (dark, `ACB_GRAPH_TENANT_BIND`, default OFF = byte-identical):** the four `chat_session` touch points bind the tenant when the flag is ON — the two worker-thread writes `_store_session_id`/`_clear_stored_session_id` and the two reads `_get_stored_session_id`/`_session_workspace_override`. `_graph_session_opener(thread_id)` makes the choice **on the event-loop frame** (never in the worker thread, where `_RUN_ORG` and contextvars do not reach): flag OFF → the unbound `acb_graph.get_session`; flag ON + tenant → `acb_graph.tenant_session(org)`; flag ON + no tenant → `None`, and the caller **fails closed** (writes SKIP + log `executor.session_*_skipped_no_org`, never crash; reads fall back). The single flag reader is `acb_graph.tenant_bind_enabled()`. `_RUN_ORG`'s teardown is a **guarded pop** (`_guarded_pop_run_org`) so a superseded run's late `finally` cannot delete a newer same-thread run's org; and the missing-org warning is broadened to every source (`executor.run_missing_org`) plus `run_detached` (`stream_relay.detached_run_missing_org`), so the `/copilot/chat` and non-chat (email-automation) gaps are VISIBLE (org threading for those is slice 6). Fence: `tests/unit/test_acb_graph_chatsession_bind.py` (`chat-session-write-bound-under-rls`, `run-org-guarded-pop`, flag-OFF regression — R8 on the two-org phase-4 catalog).
-   - **Slice 4 (dark, same flag):** the `pending_commit` write/read follow the SAME opener discipline. `_detect_agent_commits(thread_id=…)` resolves `_graph_session_opener(thread_id)` **once, on its event-loop frame** (it runs before `run_agent_stream`'s finally pops `_RUN_ORG`) and reuses that one opener for BOTH the dedup `SELECT commit_sha FROM pending_commit` read AND every write — the write is `mutation._register_pending_commit(..., opener=…)`, which opens the passed opener instead of a hard-coded `get_session`. flag ON + tenant → the INSERT's phase-1 DEFAULT stamps the bound org (the statement names no `organization_id`); flag ON + no tenant → opener `None` → **fail closed** (read → empty dedup set; write → SKIP + log `mutation.pending_commit_skipped_no_org`, never unbound, never raise); flag OFF → the unbound `get_session`, byte-identical. `_register_pending_commit`'s `opener` defaults to a private `_OPENER_UNSET` sentinel so the still-unconverted self-mutation-sandbox caller (`attempt_self_mutation`) stays byte-identical (org threading for that batch path is slice 6). Fence: `tests/unit/test_acb_graph_pending_commit_bind.py` (`pending-commit-write-bound-under-rls`, flag-OFF regression — R8 on the two-org phase-4 catalog).
-   - **Slice 6a (dark — org SOURCES, not new writes):** threads the tenant for the run-based sources that resolve it from in-hand SERVER-SIDE identity, so the slice 3-5 writes get the right tenant for them too. (1) `/copilot/chat` (`gateway/main.py`) stamps `user.organization_id` and passes it to `run_detached` — that chat runs the MAF orchestrator DIRECTLY (not `run_agent_stream`), so `run_detached`'s tenant bind is what its async reads, `on_complete`, and delegated sub-agents resolve; NEVER from `input_data`/the message list (R11). (2) Sub-agent inheritance: `_run_sub_agent_streaming` passes `_resolve_sub_agent_org()` into `run_agent` — a sub-run acts in its PARENT's tenant, resolved on the caller's frame from `_RUN_ORG` keyed by the parent thread id (`_stream_relay_thread_id` / bound run context), falling back to the async bound tenant (`current_tenant`, for the `/copilot/chat` parent that binds but sets no `_RUN_ORG`); the resolver takes NO argument, so it cannot source the tenant from the delegated message. (3) The batch path `_run_agent_inner` now HONOURS `organization_id`: sets `_RUN_ORG[thread_id]` + `bind_tenant` (guarded pop + release in the `finally`, mirroring the stream path); `None` (workflow/schedule until 6c, self-mutation sandbox) stays byte-identical and logs `executor.run_missing_org`. After 6a the broadened missing-org warning no longer fires for `/copilot/chat`, sub-agent runs, or org-supplied batch runs. `TODO(WS-29 slice 6b)`: email-automation + inbound webhooks (RLS-scoped mailbox/account→org resolver); `TODO(WS-29 slice 6c)`: workflow cron scheduler / schedule sweep. Fence: `tests/unit/test_org_sources_run.py` (`copilot-run-carries-org`, `sub-agent-inherits-parent-org`, `batch-run-honours-org-param` — AST/behavioral, no DB; each RED-on-removal shown by mutation).
-   - **Slice 7 (dark, same flag — the agent-tool READS):** binds the reads an agent run makes through the `acb_graph` sync engine so they RETURN ROWS under FORCE RLS instead of silently reading 0 (an unbound read of a FORCE-RLS'd tenant table returns nothing post-cutover — the agent would lose its entity context, granted apps, and skill toggles). New seam `_graph_session_opener_current()` → `_current_run_org()` is the ambient-frame twin of `_graph_session_opener` for a converted read with NO `thread_id` in hand: it resolves the run's tenant SERVER-SIDE on the event-loop frame (`_RUN_ORG` keyed by `_stream_relay_thread_id`, else the async `current_tenant()`; NEVER tool args / the payload, R11) and hands it to the shared `_opener_for_org` — the ONE flag/opener construction now used by both the thread-keyed and ambient openers. `_resolve_sub_agent_org` (slice 6a) delegates to `_current_run_org` (one resolver, not two). The read site MUST resolve the opener BEFORE any `asyncio.to_thread` hop and close it over the worker-thread body. Sites converted: `agents.py` `retrieve_entity_context`/`retrieve_sales_context` (entity/sales retrieval tools), `app_tools.py` `_granted_live_apps` (apps⋈app_grants⋈app_versions), `_tool_injection.py` `_load_disabled_skill_families` (`agent_skill_setting`), and `agents/pull_agent.py`/`agents/sales_pull_agent.py` `answer()` (no live caller today). Each fails closed to empty when the flag is ON and no org resolves; flag OFF → the unbound `get_session`, byte-identical. `sales_views.py` reads a caller-supplied session → bound transitively, no change. **NOT RLS-bound (RLS-EXEMPT by design), but org-scoped at the APP level:** `_inject_mcp_servers` reads `mcp_servers`, which is RLS-EXEMPT (`gen_tenant_migration.EXEMPT`, "keyed (organization_id, name) by MT-0d/158") — not FORCE-RLS'd, so an unbound read does not collapse to 0 and a `tenant_session` bind would be a no-op. Instead, behind the SAME flag, the query gains `AND organization_id = :org` so an agent is only injected its OWN org's MCP servers (mcp_servers stays exempt — no migration, no policy). The org is resolved via the SAME `_current_run_org()` (server-side, never tool args, R11); `organization_id` is NOT NULL (158) so there is no global-server case — strict `= :org`, and flag-ON-no-org fails closed to EMPTY. flag OFF → no filter, byte-identical. Fence: `tests/unit/test_mcp_servers_org_scope.py` (`mcp-servers-scoped-to-run-org` — R8 on the two-org catalog: flag ON + orgA bound injects orgA's server not orgB's, RED-on-removal by dropping the filter; flag-OFF regression; flag-ON-no-org empty). Fence for the RLS-bound reads: `tests/unit/test_acb_graph_agenttool_reads_bind.py` (`agent-retrieval-reads-bound-return-rows` — R8 on the two-org phase-4 catalog: flag ON + orgA bound, the REAL `retrieve_entity_context` + `_granted_live_apps` RETURN orgA's rows, orgB sees nothing, and the SAME unbound `get_session()` read returns 0 rows → RED-on-removal; plus the opener matrix + flag-OFF regression).
+A bare test file name is under `tests/unit/`, and a bare spec name is under
+`project-docs/specs/`. Keep the item numbers, because specs cite them.
+
+1. executor.py is the single entry point for agent execution (streaming and batch). It injects platform tools, MCP server config and integration credentials at runtime.
+   - Credentials are filtered by the ACTING MEMBER first (`_integration_authorizer`), BEFORE the per-run env injection. A run with no member (cron, reconciler, webhooks) is unfiltered on purpose (spec `org_access_control.md` §8a).
+   - ⚠️ Every `/v1` client here MUST read `settings.llm_api_key`, never `gateway_internal_token`. Fence: `test_service_identity_and_webhook_auth.py`.
+2. copilot_agent.py provides MetoriteCopilotAgent, the MAF wrapper for Copilot SDK agents with BYOK and MCP server forwarding.
+   - ⚠️ It is the ONE builder of a spawning Copilot client. `child_env_client` builds every agent client with `env=copilot_env()`, and `install_child_env_guard` (installed by `orchestrator/__init__.py`) covers every path.
+   - Do not build a `CopilotClient` for an agent anywhere else. Fence: `test_copilot_child_env.py`.
+3. agents.py exports build_orchestrator_agent(), the main orchestrator MAF Agent.
+4. mutation.py handles Self_Mutation_Node. It starts a Docker sandbox on agent failure.
+5. stream_relay.py buffers all SSE events to Redis Streams for fire-and-forget chat with live reconnection.
+6. All agents must go through MAF. No raw Copilot SDK path for business execution.
+7. mutation_runner.py runs inside the Docker sandbox and uses the Copilot SDK directly (by design).
+8. workflow_tools.py gives published workflows to every agent as a trio: `list_workflows`, `run_workflow` and `get_workflow_run` (spec `workflows_app.md` F13). The gated `_tool_injection` pipeline injects it.
+   - Calls go in-process to `gateway.routes.workflows.service`, so the approval gates bind an agent run too.
+   - The trio binds the run's org from `executor._current_run_org()`. No tool takes an org argument. With no org, a tool returns `NO_ORG` and reads nothing.
+   - `run_workflow` refuses a workflow with a wait that can pause. Fence: `test_workflows_tool_rls_r8.py`.
+   - `run_workflow` refuses a workflow with a `pm_task` or `pm_lifecycle` node. A run writes those by primary key with no member check. Fence: `test_workflows_lifecycle_rls_r8.py`.
+9. Run correlation binds in **two** places in run_agent_stream, on purpose (spec `observability_e2.md` §7).
+   - `bind_run_context(...)` runs at the run boundary, BEFORE `load_agent`, so a load failure is still correlated. `_bind_run_instance(instance, run_id)` tops up `instance` after the load.
+   - Do not "simplify" this into one bind. The single `clear_run_context()` in the `finally` unbinds every key.
+   - `_run_sub_agent_streaming` does neither, so a delegated sub-run inherits the caller's `instance` (known asymmetry, WS-6a).
+9a. **The run's artifact context is a ContextVar, never a module dict** (spec `projects_ai_chat.md` §21.16).
+   - `acb_skills.write_artifact.artifact_context()` is the one reader. `_run_sub_agent_streaming` derives its OWN copy, so the parent's value never changes.
+   - Every Copilot path calls `copilot_agent.carry_run_context(agent)` before the agent opens a session. With no context, every reader fails closed. Fence: `test_h201_run_context.py`.
+   - The same carry takes the `no_person_present` mark onto the SDK thread (AUTO-7a). `resolve_user_input` refuses a marked run, so it answers no card of a live chat. Fence: `test_no_person_present.py`.
+10. `_tool_injection._collect_injectable_platform_tools()` holds the static tool collection. It is the read-only seam that the skills catalog builds on.
+   - Register a newly injected tool in exactly one family, or `test_skills_registry.py` fails. A tool pack is never injected.
+   - `_resolve_injected_scope(tool_scope, disabled_families=...)` intersects admin skill toggles with the declared scope. The core floor survives anything. Fence: `test_skill_toggle_enforcement.py`.
+11. **The tenant (`organization_id`) is threaded through the run boundary with the acting user.**
+   - `run_agent_stream`, `run_agent` and `stream_relay.run_detached` take `organization_id`. `_RUN_ORG` carries it across the `run_in_executor` hop, where contextvars do NOT propagate. Its teardown is the guarded pop `_guarded_pop_run_org`.
+   - **The gateway stamps the org SERVER-SIDE from `UserContext.organization_id`, NEVER from `event_payload`** (R11). A sub-run acts in its parent's tenant (`_resolve_sub_agent_org`).
+   - An `acb_graph` read or write resolves its opener on the event-loop frame (`_graph_session_opener`, `_graph_session_opener_current`), before any `asyncio.to_thread` hop. With `ACB_GRAPH_TENANT_BIND` on and no tenant, it fails closed.
+   - `_inject_mcp_servers` reads through `gateway.connections.mcp.servers_for_org`. Fences: `test_executor_org_threading.py`, `test_org_sources_run.py`, `test_acb_graph_chatsession_bind.py`, `test_acb_graph_agenttool_reads_bind.py`, `test_mcp_registry_r8.py`.
+12. **`Dockerfile.coding-sandbox` and `sandbox/requirements.txt` make the coding sandbox image** (spec `maf_coding_engine.md` §7.2). It holds no secret, no SDK and no CLI, and it runs as any non-root uid.
+   - Every pin stays. Fence: `test_coding_sandbox_image.py`. Building the image on the box is owner gate WS43-G2.
+   - To add a Python package, open a reviewed PR that edits `sandbox/requirements.in`, the lock, `_SANDBOX_MODULES` and the table of §7.2. Fence: `test_coding_sandbox_packages.py`.
+   - `sandbox/data_engine.py` is the only module that imports `duckdb`. Never set `allowed_directories` there. Fence: `test_data_engine.py`.
+13. **A native run's context rides a per-run MAF context provider**, behind `MAF_NATIVE_SESSIONS` (default off, spec `maf_coding_engine.md` §15.9).
+   - Call `run` on `_agent_for_run(agent, provider)`, never on the agent with the input alone. Never append a run's provider to the agent object itself. `agent_with_providers` is the one per-run copy.
+   - `native_session_store.py` is the one module that reads or writes `maf_agent_session`, through `tenant_session(organization_id)`. A session loads and saves ONLY in the actor's own thread.
+   - A failed load falls back to the text history and never fails the run. Fence: `test_native_session_persistence.py`.
+   - Each harness agent holds exactly one provider of history. Give it `native_session_store.SessionHistoryProvider`, the store's own, and the store then loads and saves its session. `agent_for_run` attaches no second provider with the same source id. Fence: `test_app_builder_engine.py`.
+14. **`sandbox_broker.py` is the one seam that runs `docker` for the coding sandbox** (D83, spec `maf_coding_engine.md` §7.1). A tool never calls `docker` itself.
+   - It keys one container on the org, the agent and the thread, from the run binding, so `acquire()` takes no argument. It never falls back to the host.
+   - The `app_builder` target (WS-43h, §7.8) mounts two read-only sources from code, and no other: a copy of the build scripts and `artifactUi.tsx` at `/opt/app-builder/build`, and the T2 vendor cache at `/opt/t2-vendor`. Never mount the agent dir or a clone.
+   - Before an `app_builder` start, `ensure_app_git` makes the app's `.git` and refuses a `.git` that is a link or a file, so the cover always covers it. After each command, the sweep removes each link in the app dir.
+   - `code_session.coding_harness_agent` is the one call of `create_harness_agent` (CA-14). `code_task` and app-builder both build their agent there.
+   - `copilot_sandbox.py` and `mutation.py` still run `docker`, on a legacy list that only shrinks.
+   - Fences: `test_sandbox_broker_seam.py`, `test_sandbox_broker_argv.py`, `test_sandbox_broker_tenant.py`, `test_sandbox_exec_hygiene.py`, `test_projects_sandbox_tools.py`, `test_run_data_hygiene.py`.
+15. **A shared agent runs no shell on the host** (D85, spec `maf_coding_engine.md` §7.9).
+   - `_withheld_shell_tools` withholds `code_task`, `run_script` and `install_dependency`. `_host_shell_refused` refuses the Copilot CLI's own shell, and a cover NEVER lifts it. `_d85_leaves_alone` decides the scope of both.
+   - Pass `agent_config=loaded.config` at every call of `_inject_agent_tools` and `materialize_skill_bodies_for_agent`. A call with no config reads as shared.
+   - Give a Copilot agent its handler through `_copilot_session._install_copilot_permission_handler` and nowhere else. Fence: `test_shared_agent_shell_tools.py`.
+16. **Only an admin of the first-party organization may run the root `metorite` agent** (spec `maf_coding_engine.md` §15.4).
+   - `_assert_may_run_agent(agent_name)` is the one gate. Each load site calls it once, before the load. Add no other load site without it.
+   - A refusal raises `AgentNotFound`, and the batch path catches it BEFORE the self-mutation clause. Fence: `test_root_agent_first_party.py`.
+17. **A covered run, and every run under it, sends nothing off the platform** (H-236, spec `maf_coding_engine.md` §16.3). It FAILS CLOSED.
+   - `_tool_injection._run_no_egress(agent_name, parent_ctx)` is the one decision. It never reads a request field or a tool argument. Each run start computes it ONCE and passes it by name to `_inject_agent_tools(no_egress=)`.
+   - A run that an `UNTRUSTED_INPUT_AGENTS` agent delegates to binds `no_egress`, and its answer marks the chat session.
+   - The control trusts a platform tool by IDENTITY. Each site that builds one registers it with `acb_skills.egress._register_platform_callable`. An unreadable agent shape raises `NoEgressRefused`.
+   - Fences: `test_delegation_no_egress.py`, `evals/email_injection/`.
+18. **A covered agent's run takes its tier from the policy** (D90, spec `ai_tier_routing.md` §4.5). The policy lives in `acb_skills.tier_policy`, and the executor holds only the glue.
+   - `_tier_policy_for_run` is the one entry. Fence: `test_tier_policy.py`.
+   - The parallel start (2026-10-30, §4.3) is dark behind `AI_TURN_KIND_PARALLEL`. Only the native Tier 1 stream of `run_agent_stream` uses it. The batch path, a sub-agent, a delegated run and a Copilot SDK agent still await the answer.
+   - The stream loop takes the answer only while a pull is in flight, so a cancel closes the request inside its stream. Each output of the loop calls `seal()` first. `_apply_parallel_tier` mirrors the tier site, so change both together. Fence: `test_turn_kind_parallel.py`.
+19. **A Mirror run gets no CRM record write** (spec `crm_platform.md` §20.10 item 4).
+   - `_drop_mirror_record_writes` runs right after `_apply_own_tool_scope`, at all three sites. In Mirror mode it drops `MIRROR_RECORD_WRITES`, and `log_activity` stays. Fence: `test_crm_mirror_run_tools.py`.
+20. **A self-anneal retry holds no tool that the first try did not hold.** Access is an intersection, never a union.
+   - `_assemble_batch_agents` is the one batch assembly. `_narrow_to_held` removes each tool outside the held set of `_BatchRunInputs`.
+   - Do not build or inject agents for a retry anywhere else. Fence: `test_anneal_retry_scope.py`.
+20b. **Each turn carries today's date.** `_context_preamble_parts` adds `acb_common.today.today_line()` LAST. Fence: `test_crm_answer_consistency.py`.
+21. **The orchestrator's per-turn context carries the Knowledge index block** (spec `knowledge_base.md` §6.5).
+   - Only the agent `orchestrator` gets it, behind `COMPANY_SEARCH_ENABLED`, `KNOWLEDGE_ENABLED` and `KNOWLEDGE_ORGS`. The org comes from `_current_run_org()` and the member from `_verified_run_member()`, never from the payload.
+   - Fences: `test_knowledge_index_block.py`, `test_company_search_recency.py`.
+22. **A run that holds a CRM tool gets the number check** (spec `crm_platform.md` §18.11.2).
+   - `_tool_injection._apply_answer_check` runs at the end of `_inject_agent_tools`. Read `agents` again after injection. Do not attach the provider anywhere else.
+   - Each new relay of a run queue must drop the hold beat (`_relayable`). Fences: `test_crm_answer_check.py`, `test_crm_answer_check_executor.py`.
+23. **A streamed run opens ONE holder of the CRM questions that it asks.** `run_agent_stream` calls `open_asks_for_run()` and `release_asks` in the same `finally`. Never give the ContextVar a mutable default. Fences: `test_crm_questions_chat.py`, `test_crm_agent.py`.
+24. **The orchestrator's per-turn context carries the member's own profile block** (spec `personalization.md` §5.1).
+   - It needs an org, `assistant_profile.enabled_for(org)`, a verified member and `_RUN_SOLO_ROOM` True. `enabled_for(org)` is the one reader.
+   - A delegated run cannot widen `_RUN_SOLO_ROOM`. Never read it from the payload. Fences: `test_executor_profile_block.py`, `test_executor_profile_block_r8.py` (R8), `test_assistant_profile_org_rollout.py`.
+   - A build that only measures the context runs inside `_interview_peek` (PZ-32). The token count of a native session and the fallback text are two such builds. So they leave `_INTERVIEW_SHOWN` as they found it.
+   - In `_compose_maf_run`, the context that the model reads is the first step after the peek, before any import. A failed import then still records the memo. Fences: `test_profile_pz32.py::test_native_session_keeps_interview_memo`, `test_the_model_reads_the_due_line_and_the_memo_records_it` and `test_an_import_fault_still_records_the_memo`.
+   - The persona gains the offer line of PZ-32 (`_PROFILE_CARD_SWAP`) only with `ASSISTANT_PROFILE_CARD_WRITES_ORGS` naming the org (`agents._profile_card_writes_enabled`). Fence: `test_profile_pz32.py::test_the_offer_line_follows_the_org`.
+   - PZ-20b: the "used your profile" mark leaves the stream only through `_ProfileMarkHold`. It goes right after the first event that alone makes the fold save a row (`_is_answer_event`). A turn with no output sends no mark, so the fold saves no row for it. Do not yield the mark anywhere else. Fence: `test_profile_used_event.py`.
+25. **The orchestrator's per-turn context carries the member's corrections and limits of the chat** (spec `one_assistant_context.md` §4).
+   - `_prime_chat_constraints` runs only for the agent `orchestrator`, with `CHAT_CONSTRAINTS` on, a solo room and a verified member. A delegated run inherits the list and never opens the tools.
+   - Fences: `test_chat_constraints.py`, `evals/trajectories/test_chat_constraints_trajectory.py`.
+26. **A pack tool acts as its owner acts in a sub-run of this chat** (spec `one_assistant_context.md` §4.2.3). `_tool_injection._pack_tools(slug, run_ctx)` is the one builder. Since OA-7c its live caller is `_apply_tool_packs` (contract 27).
+   - STRICT within a turn (the owner confirmed it on 2026-10-27): the first email call marks the chat. Each later call of the turn runs held. An egress tool then does not run, and it answers `egress.EGRESS_HELD_PACK_ANSWER`.
+   - The run check of each call keys on `tool_packs.PACK_RUN_KEY`, which the server mints for each run. It never keys on `run_id`, which a client can set.
+   - `_pack_held` fails closed. ⚠️ A held pack drops each tool that `_is_egress` names, and that drop is the only held-set control of a pack run.
+   - Do not copy the bodies of `_is_egress`, `_run_no_egress` or `_gate_injected_tool` into it. `_pack_owner_module` is the one loader of a pack owner. Fence: `test_pack_guards.py`.
+   - OA-8i: `_pack_call` asks `tool_packs.pack_write_refusal` before its first await. `_pack_delegation_refusal` asks with `starts=True`, because its one caller starts the hand-off.
+   - The `finally` of `_run_sub_agent_streaming` tells the calling run's record whether the hand-off finished (`_pack_handoff_ended`), before any await. Fence: `test_pack_no_double_write.py`.
+   - Task 1533: that call also passes the sub-run `run_id` and the calls that the sub-run reported. The record then refuses only a write of a kind that the hand-off did.
+27. **The packs of a turn load only in the member's own web chat with the orchestrator** (WS-67 OA-7c, `one_assistant_context.md` §4.2.2). It ships dark behind `TOOL_PACKS`.
+   - `_start_pack_turn` is the one caller of `tool_packs.packs_on`. It starts the read of the sticky packs as the first statement of the main try. The `finally` of that try cancels a read that the run did not await.
+   - No read starts for a shared room, a batch run (WhatsApp, D115) or a delegated run. No read starts with no card channel or no verified member. With the flag off, no pack state is read or written.
+   - `_apply_tool_packs` runs after `_apply_agent_md_overrides` and BEFORE `_inject_agent_tools`. It drops the specialist tool of each owner that a pack replaces. It swaps the owner's persona text for the rules, and adds the pack tools after the core tools. Each run builds its packs again. A run with no bound tenant loads no pack.
+   - The apply runs before `_apply_own_tool_scope`, so an `own_tool_scope` on the orchestrator would strip the pack tools. `test_the_orchestrator_has_no_own_tool_scope` fails when a change adds one.
+   - `PACK_RUN_KEY` and `PACKS_KEY` go into the run binding after `bind_artifact_context`. `_run_sub_agent_streaming` drops both from a child's context. A spawn child (the worker) gets the key of its own pack tools instead (OA-9c, `_job_pack_keys`), and the batch run binds it again. Fence: `test_spawn_subagents.py`.
+   - `tool_packs.delegation_refusal` is the ONE refusal rule. `_run_sub_agent_streaming`, `agent_tools.call_agent` and `call_agents_parallel` ask it. Do not add a refusal with a rule of its own. The "Delegatable agents" block leaves out an agent only while the run refuses the hand-off to it (`PACK_REFUSED_ATTR`).
+   - `_pack_base_count` reads the same scope and withheld names as `_inject_agent_tools`. Change both together. Pack names stay out of `run_tools`.
+   - `_record_pack_call` holds a lock of the chat around the email working set. Its event goes through `_emit_to_run_or_relay`.
+   - Fences: `test_tool_packs_choice.py`, `test_tool_packs_off.py`.
+
+27. **The packs of a turn load only in the member's own web chat with the orchestrator** (WS-67 OA-7c, `project-docs/specs/one_assistant_context.md` §4.2.2). It ships dark behind `TOOL_PACKS`.
+   - `_start_pack_turn` is the one caller of `tool_packs.packs_on`. It starts the read of the sticky packs as the first statement of the main try, beside the load. So the finally of that try cancels a read that the run did not await.
+   - These runs start no read: a shared room, a batch run (the WhatsApp path, D115) and a delegated run. A run with no card channel or no verified member starts none too. With the flag off it reads and writes no pack state.
+   - `_tool_injection._apply_tool_packs` applies the choice after `_apply_agent_md_overrides` and BEFORE `_inject_agent_tools`. It drops the specialist tool of each owner that a pack replaces. It swaps the owner's persona text for the rules, and it adds the pack tools after the core tools. Each run builds its packs again. A run with no bound tenant loads no pack.
+   - The apply runs before `_apply_own_tool_scope`, so an `own_tool_scope` on the orchestrator would strip the pack tools. The pin `test_the_orchestrator_has_no_own_tool_scope` fails when a change adds one.
+   - The run key (`tool_packs.PACK_RUN_KEY`) and the record (`tool_packs.PACKS_KEY`) go into the run binding after `bind_artifact_context`, which replaces the context. `_run_sub_agent_streaming` drops both from the context of a child. OA-9c: a spawn child gets the key that the spawn minted for its pack tools (`_job_pack_keys`), never the parent's key or the record.
+   - `_run_sub_agent_streaming` refuses a hand-off to an owner when the calling run holds every pack of that owner (`tool_packs.delegation_refusal`). With some packs only, the hand-off stays open for the rest. `agent_tools.call_agent` and `call_agents_parallel` ask the same rule first. Do not add a refusal with a rule of its own.
+   - The "Delegatable agents" block leaves out an agent only while the run refuses the hand-off to it (`PACK_REFUSED_ATTR`).
+   - `_pack_base_count` reads the same scope and withheld names as `_inject_agent_tools`. With no app grant the two counts agree, and a fence says so. Change both together.
+   - Pack names stay out of `run_tools`. OA-9c reads the record of the packs.
+   - `_record_pack_call` holds a lock of the chat around the email working set. Its event goes to the relay of a run with no queue (`_emit_to_run_or_relay`).
+   - Fences: `tests/unit/test_tool_packs_choice.py` and `tests/unit/test_tool_packs_off.py`.
+
+28. **`load_skill_tools` loads a pack in the middle of a turn** (WS-67 OA-7e, layer (b), `project-docs/specs/one_assistant_context.md` §4.2.2). It ships dark behind `TOOL_PACKS`.
+   - OA-7i: `_plan_pack_loader` asks `tool_packs.plan_loader` once for each run. `_offer_pack_loader` and the removal of a specialist read that one plan. `_mcp_may_attach` looks ahead at the registry and fails closed. Do not compute reachability anywhere else.
+   - `_offer_pack_loader` puts `tool_packs.LoadSkillToolsProvider` on a view of the run (`agent_with_providers`). Only `_apply_tool_packs` with `offer_loader` calls it, and only `executor._apply_pack_turn` passes that. Do not offer the loader on another path.
+   - The load builds through `_pack_tools` (`_build_pack_for_load`), with the run context of the call and the names of the live tool list. Do not build a pack a second way.
+   - A turn that loads no pack still returns a `PackApply` with no build. The executor then binds the run key and the record that a load needs.
+   - The load tool rides in each request of the run, so the cap of layer (a) counts it (`base += 1`).
+   - A load never takes a tool or a persona text away. `PackRun.replaced` and the "Delegatable agents" block keep the state of the run start.
+   - MCP rule: a load of a pack of the email assistant refuses when the live list holds an MCP tool. The catalog line says so. Precedence differs by layer. In layer (a) the email pack wins and `_inject_mcp_servers` attaches none. In layer (b) the MCP tool wins and the pack stays out.
+   - A load by the model makes its pack sticky (task 1747). A pack of layer (a) becomes sticky when one of its tools runs (`_pack_call`). The catalog offers only a pack that fits the cap.
+   - Task 1747: `_pack_left_block` puts `tool_packs.left_line` last in `_context_preamble_parts`, after the cache break. It names the sticky packs that left at the start of the turn. It reads the record of the packs from the run binding, so a delegated run gets no line. Fence: `test_pack_turn_keeps_used_packs.py`.
+   - Fence: `tests/unit/test_load_skill_tools.py`.
+
+29. **The orchestrator's per-turn context carries the briefing of the member's other chats** (WS-63 PZ-34, `project-docs/specs/personalization.md` §15.4). It ships dark behind `ASSISTANT_BRIEFING_ORGS`.
+   - `_prime_member_briefing` runs in `run_agent_stream` only, after `bind_artifact_context` and `_prime_chat_constraints`. The run awaits it once. Fence: `test_executor_briefing_block.py::test_1_the_stream_run_awaits_the_prime_once_after_the_binding`. It needs the agent `orchestrator`, `assistant_profile.briefing_for(org)`, a verified member and a solo room. The run must also show cards, and it must not be a batch run or a delegated run. So a WhatsApp run gets no block.
+   - The block goes into the run binding as `(run_id, org, member, text)`. `_member_briefing_block` checks each gate and the run id again, so a delegated run never gets the block of its parent. It reads no database and no Redis.
+   - The store is `tenant_redis.key("chat-briefing", session, member hash)`, 24 hours, and the empty marker counts. A stored block wins in its chat, also after a Forget, a Delete or a change of access (D-PZ-38).
+   - ⚠️ The build runs in its own task, within `_BRIEFING_TIMEOUT_S`. `acb_auth.deps.member_context` binds the member's org, and the task keeps that binding away from the run. A fault costs the block, never the turn. A failed identity or role read (`identity_read_failed()`, `role_read_failed()`) stops the build, so the store keeps nothing.
+   - The block sits right after the profile block. Each block above it keeps its bytes. Fences: `test_executor_briefing_block.py`, `test_executor_briefing_block_r8.py` (R8), `test_setup_laps.py`.
+30. **The per-turn context carries one celebration line** (WS-63 PZ-43, `personalization.md` §16.6). It ships dark behind `CELEBRATIONS_ORGS`. `_prime_celebrations` has the same gates as the briefing prime and reads ONE row (`celebrations.READ_SQL`). `_celebration_line` reads the run binding and asks the pure `celebrations.celebration_line`. The line comes in the first reply of the member's local day only, and it follows a profile block whose greeting is not `none`. Fence: `tests/unit/test_celebrations.py`.
 
 ## Work Guidance
 
 ### Adding a new agent runtime feature
 1. Feature goes in executor.py (streaming: run_agent_stream, batch: run_agent)
 2. If it touches Copilot SDK agents, modify MetoriteCopilotAgent in copilot_agent.py
-3. Ensure all Copilot SDK event types are translated to AG-UI SSE events
-4. Test with both github-copilot and maf agent types
-5. Run pytest tests/ before committing
+3. Translate all Copilot SDK event types to AG-UI SSE events
 
 ### Modifying the mutation layer
 1. mutation.py contains attempt_self_mutation() and prompt builders
-2. Agent purpose context (instructions.md, skills, trigger) is assembled in _build_telemetry()
-3. _stash_pull_before_mutation() syncs the clone (stash → fetch → rebase → pop stash)
-   before the Docker sandbox runs, preventing stale-code fixes and merge conflicts
-4. The Docker sandbox runs mutation_runner.py with MUTATION_PROMPT env var
-5. Commits are registered as pending_commit rows for inbox approval
-6. Local-only repos skip push on approval; use git reset HEAD~1 for rejection
-7. _pull_latest() in acb_skills.loader preserves local-only commits (pending approval)
-   via rebase instead of destructive reset --hard
+2. _build_telemetry() assembles the agent purpose context (instructions.md, skills, trigger)
+3. _stash_pull_before_mutation() syncs the clone before the Docker sandbox runs
+4. The Docker sandbox runs mutation_runner.py with the MUTATION_PROMPT env var
+5. Commits become pending_commit rows for inbox approval
+6. _pull_latest() in acb_skills.loader keeps local-only commits (pending approval) through a rebase, never reset --hard
 
-### Session continuity and stale-session recovery
-- Copilot SDK session IDs (service_session_id) are stored in-memory
-  (_copilot_session_store) AND in Postgres (chat_session.service_session_id).
-- On each run_agent_stream() call, _get_stored_session_id() looks up the ID;
-  if found, _resume_session() is used so the SDK preserves full history.
-- **Stale session after gateway restart**: When the Copilot CLI process dies,
-  resume_session() raises "Failed to create GitHub Copilot session". The
-  executor catches this via the _run_copilot_attempt() retry loop:
-  1. Detects "session"+"error" in the exception message and a stored session ID.
-  2. Calls _clear_stored_session_id() to NULL the Postgres record.
-  3. Injects prior conversation (messages[], last 20, 300 chars each) as text prefix.
-  4. Retries with session=None, creating a fresh Copilot SDK session.
-  Max 1 retry (_session_retry_attempted flag); second failure surfaces as RUN_ERROR.
-- _clear_stored_session_id() NULLs the Postgres row async via run_in_executor.
-- Model switch mid-thread: detected via _copilot_model_store; forces new session.
-
-### Streaming event flow
-1. run_agent_stream() creates MetoriteCopilotAgent patches on loaded agent
-2. agent.run(stream=True) returns AgentResponseUpdate objects via _run_copilot_attempt()
-3. Each update is translated to AG-UI SSE events (TEXT_MESSAGE_CONTENT, TOOL_CALL_*, etc.)
+### Session continuity
+- Copilot SDK session IDs live in memory (_copilot_session_store) AND in Postgres (chat_session.service_session_id).
+- After a gateway restart, _run_copilot_attempt() clears a stale stored ID. Then it tries once more with a fresh session and the prior messages as a text prefix.
 
 ### Prompt-cache sentinel convention (specs/llm_caching_memory.md)
-When the executor appends memory context to an agent's instructions /
-`system_message`, it inserts a `<!-- CACHE BREAK -->` sentinel
-(`acb_llm.prompt_cache.CACHE_BREAK`) at the stable/dynamic boundary — stable
-prefix (instructions + tool addendum) BEFORE the sentinel, dynamic memory
-AFTER. The single `apply_prompt_caching` transform (called at both completion
-choke points — `acb_llm.complete*` and gateway `/v1`) consumes it: Anthropic
-tiers get an explicit `cache_control` breakpoint at the seam + the tool array
-cached; every other provider has the sentinel stripped. **Keep the stable
-prefix first and never put per-request/per-turn content before the sentinel** —
-anything before it is treated as cacheable and byte-stability is required for a
-cache hit.
+The executor puts `acb_llm.prompt_cache.CACHE_BREAK` between the stable prefix and
+the dynamic memory. **Never put per-request or per-turn content before the
+sentinel.** A cache hit needs byte-stability before it.
 
-### Injected tools (auto-available to all agents)
-The executor's _inject_agent_tools() patches every loaded agent with cross-cutting
-tools so no agent repo needs to declare them:
-- call_agent / call_agents_parallel / call_agent_background  (agent_tools.py)
-- web_search / fetch_page                                  (web_tools.py)
-- write_artifact                                           (write_artifact.py)
-- remember / recall_timeline / save_memory / save_episode   (memory_tools.py)
-- manage_todo_list                                         (todo_tools.py)
-- ask_questions                                            (ask_tools.py)
-- get_errors                                               (error_tools.py)
-- save_note / recall_notes                                 (note_tools.py)
-- query_history                                            (history_tools.py)
-- github_search / github_repo_search                       (github_tools.py)
-Injection targets: _tools (GitHubCopilotAgent), tools (MAF Agent), _default_options.tools (legacy).
-Tool guidance is appended to _default_options.system_message via _build_injected_tools_addendum().
-User context (_set_memory_user_id) is set by gateway route agent.py before each run.
-4. DETACHED EXECUTION: the gateway wraps the generator in stream_relay.run_detached(),
-   which drains it in a background asyncio task pushing all events to Redis
-   (cc:stream:{thread_id}). The HTTP response is just a Redis subscriber --
-   client disconnects never kill the agent run.
-5. Every _sse() frame is teed to Redis via per-thread ORDERED push chains
-   (_tee_sse_line) so events land in exact emission order. Tier-1 MAF AG-UI
-   frames (which bypass _sse) are teed explicitly in the Tier-1 loop.
-6. RUN_FINISHED is emitted INSIDE the try block (before the finally tears down
-   the relay) and the finally awaits pending pushes before mark_inactive --
-   reconnecting clients always see the run end.
-7. mark_active(reset=True) clears the previous run's stream so replay-from-0
-   covers exactly the current run (prior turns live in Postgres).
-8. Reconnect endpoint (GET /agent/run/{thread_id}/reconnect) replays from the
-   cursor then subscribes live FROM THE REPLAY TAIL (no event gap).
+### Injected tools
+- `_inject_agent_tools()` gives every loaded agent the cross-cutting tools of `acb_skills`, so no agent repo declares them.
+- `_apply_voice()` puts `acb_llm.voice.voice_prompt(AGENT)` right after the agent's own instructions, on every runtime shape. floor_opt_out cannot remove it. Fence: `test_agent_voice.py`.
+- DETACHED EXECUTION: the gateway wraps the generator in `stream_relay.run_detached()`, so a client disconnect never kills the run.
+- Every `_sse()` frame goes to Redis through ordered per-thread push chains (`_tee_sse_line`). RUN_FINISHED is sent INSIDE the try block, before the relay teardown.
 
-### Reasoning / thinking stream (github-copilot runtime)
-- Copilot SDK sessions emit ASSISTANT_REASONING_DELTA token-by-token when
-  SessionConfig has streaming=True; copilot_agent.py translates them via
-  Content.from_text_reasoning(text=...) -- the kwarg is REQUIRED (keyword-only
-  API; positional calls raise TypeError silently swallowed by _on_event).
-- The final ASSISTANT_REASONING full-block event is SKIPPED when its
-  reasoning_id already streamed as deltas (prevents duplicated thinking text).
-- think_mode "thinking"/"max" sets default_options["reasoning_effort"]
-  (medium/high); _create_session forwards it to SessionConfig and retries
-  without it if the model rejects it.
-- Executor translates text_reasoning contents to THINKING_TEXT_MESSAGE_CONTENT
-  SSE frames; tool-role text frames (progress, partial output) become
-  TOOL_CALL_PARTIAL {toolCallId, delta} when the raw Copilot event
-  (TOOL_EXECUTION_PARTIAL_RESULT / TOOL_EXECUTION_PROGRESS) carries a
-  tool_call_id -- live terminal output streams into that tool's row in the
-  UI -- otherwise PROGRESS_UPDATE. Never TEXT_MESSAGE_CONTENT (would pollute
-  the visible answer). ASSISTANT_INTENT carries no text content; the raw
-  INTENT handler renders it as a timeline entry.
-
-### Todo-list tracking (VS Code Todos panel parity)
-- The Copilot CLI tracks the agent's plan with its built-in `sql` tool
-  against a `todos` table (INSERT INTO todos / UPDATE todos SET status).
-- executor._TodoTracker parses those queries from TOOL_CALL args and emits
-  TODO_LIST SSE frames ({todos: [{id,title,status}]}) on every change.
-- Frontend: route.ts maps TODO_LIST -> {type:"todos"}; useAgentChat stores
-  todos[] on the assistant ChatMessage; TodoPanel.tsx renders the
-  collapsible "Todos (n/m)" panel pinned above the chat input.
+### Reasoning stream (github-copilot runtime)
+- `Content.from_text_reasoning(text=...)` needs the keyword. A positional call raises TypeError, which `_on_event` swallows.
+- Send reasoning and tool text on their own frames, never as TEXT_MESSAGE_CONTENT.
 
 ## Verification
 
-- pytest tests/ -- all 154 tests must pass
+- `uv run pytest` on the fences of the items you touched
 - Gateway must start: uv run uvicorn gateway.main:app
 - Chat endpoint must stream: POST /agent/run/stream with model
-- Tool calling must work: web_search, call_agent visible in stream
 
 ## Child DOX Index
 

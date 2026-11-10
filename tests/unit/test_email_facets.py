@@ -90,7 +90,7 @@ async def test_facets_report_counts_per_label_plus_the_two_scalars() -> None:
     with patch("gateway.routes.email.transport.messages._tenant_session",
                bind_db(_facet_db(rows, totals))):
         res = await message_facets(
-            account_id="acc-1", folder="inbox",
+            account_id="a0000000-0000-4000-8000-000000000001", folder="inbox",
             user=MagicMock(email="u@x.io"))
 
     assert res["labels"] == {"newsletter": 1204, "reply": 7}
@@ -110,7 +110,7 @@ async def test_a_label_with_no_mail_in_this_folder_is_simply_absent() -> None:
                bind_db(_facet_db(
                    [], MagicMock(total=90, unread=0, uncategorized=90)))):
         res = await message_facets(
-            account_id="acc-1", folder="sent",
+            account_id="a0000000-0000-4000-8000-000000000001", folder="sent",
             user=MagicMock(email="u@x.io"))
 
     assert res["labels"] == {}
@@ -140,7 +140,7 @@ async def test_facets_tally_custom_rule_labels_too() -> None:
     with patch("gateway.routes.email.transport.messages._tenant_session",
                bind_db(_DB())):
         res = await message_facets(
-            account_id="acc-1", folder="inbox",
+            account_id="a0000000-0000-4000-8000-000000000001", folder="inbox",
             user=MagicMock(email="u@x.io"))
 
     label_sql = next(s for s in captured if "GROUP BY 1" in s)
@@ -159,7 +159,7 @@ async def test_facets_bind_the_shared_label_vocabulary() -> None:
     db = _facet_db([], MagicMock(total=1, unread=0, uncategorized=1))
     with patch("gateway.routes.email.transport.messages._tenant_session",
                bind_db(db)):
-        await message_facets(account_id="acc-1", folder="inbox",
+        await message_facets(account_id="a0000000-0000-4000-8000-000000000001", folder="inbox",
                              user=MagicMock(email="u@x.io"))
 
     assert db.last_params["known_labels"] is core.KNOWN_LABELS_LOWER

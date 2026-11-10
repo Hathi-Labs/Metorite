@@ -221,6 +221,13 @@ const COLOR_EXCEPTIONS: Record<string, string> = {
   "app/settings/appearance/page.tsx":
     "the theme picker: accent presets and swatches, i.e. colour as this page's DATA",
   "app/whatsapp/connect/page.tsx": "Meta brand blue on a 'Connect with Facebook' button",
+  "components/MetoriteMark.tsx":
+    "the Metorite comet's own fill, black or white, copied once from " +
+    "brand/metorite-logo.svg and its -dark twin. A brand mark keeps its colours " +
+    "under every accent, or it stops being the mark",
+  "app/manifest.ts":
+    "the web manifest's splash and frame colours: the browser reads this JSON " +
+    "outside the page, where no CSS token exists, so it can only take a literal",
   "app/email/lib/mockData.ts": "fixtures",
   "app/tasks/lib/mockData.ts": "fixtures",
 };
@@ -232,7 +239,6 @@ const COLOR_EXCEPTIONS: Record<string, string> = {
 const COLOR_DEBT: Record<string, number> = {
   "app/email/components/MessageContent.tsx": 5,
   "app/email/components/SignatureEditor.tsx": 1,
-  "app/email/lib/api.ts": 1,
   "app/notes/session/[id]/page.tsx": 1,
   "app/observability/page.tsx": 3,
   "app/calendar/components/StartupRitual.tsx": 1,
@@ -361,7 +367,14 @@ describe("solid controls go through the Button primitive", () => {
   // this ratchet only holds if a file that got better cannot keep its old
   // budget for the next regression to spend.
   // 24 since 2026-09-24: My Tasks' DeleteConfirmModal moved onto ConfirmDialog.
-  const SOLID_BUTTON_DEBT = 24;
+  // 23 since 2026-10-09: ElicitationCard's Submit is a `Button` now.
+  // 22 since 2026-10-09: the edit composer's own coral Send pill is gone. It
+  // draws the composer's one Send button (`components/ChatSendButton.tsx`).
+  // 21 since the same day: that Send button is the `Button` primitive now.
+  // 20 since 2026-10-12: the composer's split Send/Queue/Steer pill is gone.
+  // Send and Stop are one `ChatSendButton` (`lib/chatSteer.ts`).
+  // 19 since 2026-10-31: the Meeting copilot switch is a `Switch` now (GL-2).
+  const SOLID_BUTTON_DEBT = 19;
 
   function solidButtons(): Record<string, number> {
     const out: Record<string, number> = {};
@@ -424,10 +437,9 @@ describe("no raw Tailwind palette colours", () => {
   const PALETTE_DEBT: Record<string, number> = {
     "app/agents/page.tsx": 6,
     "app/artifacts/page.tsx": 13,
-    "app/chat/page.tsx": 5,
-    "app/email/components/ComposePanel.tsx": 1,
-    "app/email/components/EmailAssistantChat.tsx": 1,
-    "app/email/components/EmailDetail.tsx": 3,
+    // ComposePanel left, and EmailDetail went from 3 to 2, in WS-17 EM-G3c-2:
+    // the error of a send is `text-destructive`.
+    "app/email/components/EmailDetail.tsx": 2,
     "app/email/components/EmailList.tsx": 3,
     "app/email/components/MessageTimelineModal.tsx": 1,
     "app/email/components/automation/AISettingsView.tsx": 1,
@@ -439,17 +451,20 @@ describe("no raw Tailwind palette colours", () => {
     "app/email/components/automation/ai-settings/VoiceProfileDialog.tsx": 2,
     "app/email/components/automation/ai-settings/actionFormat.tsx": 50,
     "app/email/components/automation/ai-settings/common.tsx": 6,
-    "app/email/components/automation/ai-settings/fixDialog.tsx": 6,
-    "app/integrations/page.tsx": 87,
+    "app/email/components/automation/ai-settings/fixDialog.tsx": 2,
+    // 73 since WS-17 EM-G7: both OAuth chips left the banner (O-GM-5, and
+    // review round 1: the banner gives no setup link).
+    "app/integrations/components/ApiKeysView.tsx": 43,
+    "app/integrations/components/SkillsView.tsx": 6,
     "app/notes/components/BotIdentitySection.tsx": 4,
     "app/notes/components/LiveDock.tsx": 2,
     "app/observability/page.tsx": 26,
-    "app/tasks/components/AssistantRail.tsx": 1,
     // 24 since 2026-09-24: `CELL_TONE` went, and the level is the shared
     // PriorityChip. 16 since H-193 took the amber out of the Weight toggle and
     // the schedule suggestion. What is left is the other toggles and delegate.
     "app/tasks/components/PriorityControls.tsx": 16,
-    "app/whatsapp/connect/page.tsx": 10,
+    // 8 since WS-20 WA-C2: the Embedded Signup error is `text-destructive`.
+    "app/whatsapp/connect/page.tsx": 5,
     "app/whatsapp/numbers/page.tsx": 4,
     "app/whatsapp/page.tsx": 4,
     "app/whatsapp/settings/categories/page.tsx": 2,
@@ -458,19 +473,14 @@ describe("no raw Tailwind palette colours", () => {
     "app/workflows/components/ModuleStudio.tsx": 1,
     "app/workflows/lib/types.ts": 50,
     "components/AddAgentWizard.tsx": 15,
-    "components/AgentChat.tsx": 14,
+    // 13 since WS-17 EM-T8f-3: the mark of the mailbox picker is text-primary.
+    // 3 since 2026-10-12: the Send/Queue/Steer pill and its menu are gone,
+    // and the live spinner is text-primary (lib/chatSteer.ts).
+    "components/AgentChat.tsx": 3,
     "components/AgentStatusBar.tsx": 4,
-    "components/ArtifactCard.tsx": 5,
     "components/ArtifactSidebar.tsx": 11,
     "components/ArtifactViewerModal.tsx": 5,
-    "components/ChatErrorCard.tsx": 5,
-    "components/ConfirmationCard.tsx": 1,
-    "components/FileUploadButton.tsx": 8,
-    "components/GitHubAccountBadge.tsx": 1,
     "components/IntegrationSetup.tsx": 1,
-    "components/MarkdownMessage.tsx": 8, // S9: the link lost its palette blue
-    "components/ThinkingContainer.tsx": 31,
-    "components/TodoPanel.tsx": 1,
     "lib/providers.ts": 30,
   };
 
@@ -729,7 +739,6 @@ describe("checkboxes go through the Checkbox primitive", () => {
     "app/build/apps/[slug]/edit/page.tsx": 1,
     "app/build/apps/[slug]/page.tsx": 1,
     "app/calendar/components/CalendarSettings.tsx": 2,
-    "app/crm/components/PipelineSettings.tsx": 2,
     "app/email/components/automation/BulkUnsubscribeView.tsx": 3,
     "app/email/components/automation/ai-settings/RulesTab.tsx": 2,
     "app/email/components/automation/ai-settings/SettingsTab.tsx": 1,
@@ -856,15 +865,13 @@ describe("selects and file pickers go through the primitives", () => {
    */
   const SELECT_DEBT: Record<string, number> = {
     "app/artifacts/page.tsx": 3,
-    "app/crm/components/PipelineSettings.tsx": 2,
     "app/email/components/SignatureEditor.tsx": 1,
     "app/email/components/TaskCaptureModal.tsx": 2,
     "app/email/components/automation/DigestSettingsDialog.tsx": 2,
     "app/email/components/automation/ai-settings/HistoryTab.tsx": 1,
     "app/email/components/automation/ai-settings/RulesTab.tsx": 3,
-    "app/email/components/automation/ai-settings/SettingsTab.tsx": 3,
+    "app/email/components/automation/ai-settings/SettingsTab.tsx": 2, // D-EM-61 took the model select
     "app/email/components/automation/ai-settings/VoiceProfileDialog.tsx": 1,
-    "app/notes/components/FollowupEmailModal.tsx": 1,
     "app/notes/components/MeetingPrep.tsx": 1,
     "app/notes/components/NotesSettingsModal.tsx": 1,
     "app/notes/meeting/[id]/page.tsx": 1,
@@ -1177,6 +1184,13 @@ describe("the headless substrate is wrapped, not imported", () => {
     // panel and buttons, and no portalled picker inside.
     ...MY_TASKS_ALERT_LAYER,
     "app/tasks/components/TaskSettingsModal.tsx",
+    // CRM-U2 (WS-53, 2026-10-11) — the CRM overlays. The lost-reason delete
+    // is a `ConfirmDialog`. The record sheet left this list with ORC-1: it is
+    // a `CardPanel` now, and `crmCardPanel.test.ts` holds it.
+    "app/crm/components/ConvertModal.tsx",
+    "app/crm/components/MoveModal.tsx",
+    "app/crm/components/PipelineSettings.tsx",
+    "app/crm/components/QuickCreateModal.tsx",
   ];
 
   it("the converted /projects dialogs do not grow an overlay back by hand", () => {
@@ -1194,7 +1208,10 @@ describe("the headless substrate is wrapped, not imported", () => {
     // Guards the assertion above the two ways it can go vacuous: a renamed
     // file (read() throws, so this is the readable failure) and a dialog that
     // quietly stopped rendering the primitive while keeping a clean file.
-    const notWired = CONVERTED.filter((f) => !/from "@\/components\/ui\/Modal"/.test(read(f)));
+    // `ConfirmDialog` counts: it is a `Modal` with fixed words (CRM-U2).
+    const notWired = CONVERTED.filter(
+      (f) => !/from "@\/components\/ui\/(?:Modal|ConfirmDialog)"/.test(read(f)),
+    );
     expect(
       notWired,
       "These no longer import `Modal`, so the scan above fences nothing for " +
@@ -1218,7 +1235,9 @@ describe("the headless substrate is wrapped, not imported", () => {
     // moves onto `Modal`.
     const low = MY_TASKS_ALERT_LAYER.filter((f) => !/layer="alert"/.test(read(f)));
     expect(low, "These open under TaskFocusModal. Give them layer=\"alert\".").toEqual([]);
-    expect(read("app/tasks/components/TaskFocusModal.tsx")).toMatch(/fixed inset-0 z-\[80\]/);
+    // TC-1 (2026-11-03): the overlay now sits at the card layer (z-15, `lib/layers.ts`),
+    // below every dialog, so the alert layer stays safe and no longer needed.
+    expect(read("app/tasks/components/TaskFocusModal.tsx")).toContain("TASK_CARD_FRAME");
   });
 
   // ── The Toast primitive (WS-27ak item 3) ─────────────────────────────────

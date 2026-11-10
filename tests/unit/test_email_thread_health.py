@@ -77,5 +77,21 @@ def test_the_damage_definition_lives_in_exactly_one_place() -> None:
     assert "SELECT DISTINCT ts.account_id" not in script
 
 
+def test_the_move_rule_exists_never_correlates_to_the_thread_row() -> None:
+    # WS-17 EM-G3b-f7, review round 1. The MOVE_FOLDER ``EXISTS`` correlates to
+    # ``em`` only. A ``ts.`` reference in it (the Gmail provider check once read
+    # ``acct.id = ts.account_id``) stops Postgres from building a ``hashed
+    # SubPlan``, so the subplan runs once for each thread. The live Outlook
+    # health query then ran 2.2x to 3.1x slower (354 ms to 792 ms at 100k
+    # threads, non-privileged role, JIT off). An EXPLAIN fence is not stable
+    # on a small seed, so this reads the source.
+    sql = rz.DAMAGED_CONVERSATION_THREADS_SQL
+    inner = sql[sql.index("EXISTS (SELECT 1 FROM email_executed_rules"):]
+    assert "ts." not in inner
+    provider = inner[inner.index("FROM email_accounts acct"):]
+    provider = provider[:provider.index("acct.provider")]
+    assert "acct.id = em.account_id" in provider
+
+
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-q"])

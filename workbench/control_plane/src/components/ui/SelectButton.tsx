@@ -51,6 +51,7 @@ import Icon from "@/components/Icon";
 import AnchoredPanel, { type PanelLayer } from "@/components/ui/AnchoredPanel";
 import Input from "@/components/ui/Input";
 import { domClickWalk, shouldDismiss } from "@/lib/outsideClick";
+import { statusAccent } from "@/lib/statusAccent";
 
 /**
  * Which arrow the trigger wears — the one decision in this file worth a test.
@@ -162,6 +163,12 @@ export interface SelectOption {
   /** Drawn after the label, muted — a count, a hint, an address. */
   hint?: string;
   /**
+   * WS-41 I-10b. A muted second line UNDER the label, for an option whose
+   * meaning matters at the moment of choice, such as what a stage means.
+   * It wraps, so the panel stays inside a 390 px screen.
+   */
+  description?: string;
+  /**
    * WS-27bn R5b. Words the filter matches and the list never draws, such as
    * the address of a person whose row shows only the name.
    */
@@ -189,6 +196,48 @@ export interface SelectOption {
    * list keeps the caller's order, so the caller keeps each group together.
    */
   group?: string;
+  /**
+   * Task #417. An icon name, drawn with the shared `Icon` before the label.
+   * For a list whose options ARE icons, such as a task type's icon. The
+   * glyph is decoration, so the label stays the accessible name.
+   */
+  icon?: string;
+  /**
+   * Task #417. A colour NAME from `statusAccent` ("gray", "green" …), drawn
+   * as a solid dot before the label. For a list whose options ARE colours.
+   * It is a name and never a class or a value, so the dot follows the tokens.
+   */
+  swatch?: string;
+}
+
+/**
+ * The icon or the colour dot before an option's label (task #417).
+ *
+ * Drawn in the list row AND on the closed trigger, so the member sees the
+ * choice, not only its name. `aria-hidden`, because the label already says
+ * it. An option with neither field draws nothing, so the other callers
+ * render as before. The sizes are in `rem`, so they follow the density.
+ *
+ * The dot is `statusAccent`'s `dot` slot, the same solid fill the tag
+ * picker's `swatchClass` draws. A chip tint would be a grey smudge at this
+ * size.
+ */
+export function OptionMark({ option }: { option: Pick<SelectOption, "icon" | "swatch"> }) {
+  if (!option.icon && !option.swatch) return null;
+  return (
+    <>
+      {option.icon ? (
+        <Icon name={option.icon} size={14} aria-hidden className="h-3.5 w-3.5 shrink-0" />
+      ) : null}
+      {option.swatch ? (
+        <span
+          aria-hidden="true"
+          data-swatch={option.swatch}
+          className={`h-2.5 w-2.5 shrink-0 rounded-full ${statusAccent({ color: option.swatch }).dot}`}
+        />
+      ) : null}
+    </>
+  );
 }
 
 export interface SelectButtonProps {
@@ -248,7 +297,34 @@ export interface SelectButtonProps {
    * this. Absent: no filter box.
    */
   filterAbove?: number;
+  /**
+   * WS-41 I-10b. How tall the open list may get, in px. Absent: the panel's
+   * default of 256, so no other control changes. The import's stage picker
+   * needs more, because each stage carries its meaning on a second line.
+   */
+  panelMaxHeight?: number;
+  /**
+   * Which edge of the trigger the list hangs from (`AnchoredPanel`). `end`
+   * keeps a wide list inside the window for a trigger near the right edge.
+   */
+  align?: "start" | "end";
+  /**
+   * WS-53 CRM-C4p. The id of the trigger, so a `<label htmlFor>` names it.
+   * Absent: no id, as before.
+   */
+  id?: string;
+  /** WS-53 CRM-C4p. The ids of the help text and the error of a form field. */
+  describedBy?: string;
+  /** WS-53 CRM-C4p. The value of a form field is refused. */
+  invalid?: boolean;
 }
+
+/**
+ * GL-6. The trigger joins the glass field family of `Input sm`: 28 px, a
+ * capsule, the field fill and the input border. A touch screen gets 44 px.
+ */
+const GLASS_TRIGGER =
+  "glass:h-7 glass:rounded-full glass:border-input glass:bg-field glass:px-3 glass:text-footnote glass:hover:bg-field glass:pointer-coarse:h-11";
 
 export function SelectButton({
   label,
@@ -258,6 +334,7 @@ export function SelectButton({
   defaultValue = "",
   className = "",
   widthClass = "w-[9rem]",
+  align,
   disabled = false,
   autoOpen = false,
   onClose,
@@ -265,6 +342,10 @@ export function SelectButton({
   prefix,
   prompt,
   filterAbove,
+  panelMaxHeight,
+  id,
+  describedBy,
+  invalid = false,
 }: SelectButtonProps) {
   const [{ open, query }, dispatch] = useReducer(selectPanelReducer, {
     open: autoOpen,
@@ -338,15 +419,20 @@ export function SelectButton({
     <div ref={root} className={`relative ${widthClass}`}>
       <button
         ref={setTrigger}
+        id={id}
         type="button"
+        aria-describedby={describedBy}
+        aria-invalid={invalid || undefined}
         aria-label={prefix ? `${prefix} ${current?.label ?? prompt ?? label}` : label}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? listId : undefined}
         disabled={disabled}
         onClick={() => dispatch({ type: "toggle" })}
-        className={`cc-control flex h-7 w-full items-center gap-1 rounded-md border border-border bg-card px-2 text-left text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60 ${className}`}
+        className={`cc-control flex h-7 w-full items-center gap-1 rounded-md border border-border bg-card px-2 text-left text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60 ${GLASS_TRIGGER} ${className}`}
       >
+        {/* Task #417: the chosen icon or colour, before its name. */}
+        {current ? <OptionMark option={current} /> : null}
         <span className="min-w-0 flex-1 truncate pr-px">
           {prefix ? (
             <span className="text-muted-foreground">{prefix} </span>
@@ -371,6 +457,10 @@ export function SelectButton({
         anchor={trigger}
         open={open}
         layer={layer}
+        // The inline max-height `AnchoredPanel` sets beats the class, so
+        // `max-h-64` only stays as the fallback when no number is given.
+        maxHeight={panelMaxHeight}
+        align={align}
         className="max-h-64 w-max p-1"
         panelProps={structured ? undefined : { id: listId, role: "listbox", "aria-label": label }}
       >
@@ -408,7 +498,7 @@ function OptionRow({
       aria-disabled={option.disabled || undefined}
       disabled={option.disabled}
       onClick={() => onPick(option.value)}
-      className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs ${
+      className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs glass:rounded-lg ${
         option.disabled
           ? "cursor-not-allowed text-muted-foreground"
           : "hover:bg-muted"
@@ -419,7 +509,17 @@ function OptionRow({
         option.depth ? { paddingLeft: `${0.5 + option.depth * 0.75}rem` } : undefined
       }
     >
-      <span className="min-w-0 flex-1 truncate pr-px">{option.label}</span>
+      <OptionMark option={option} />
+      {option.description ? (
+        <span className="min-w-0 flex-1 pr-px">
+          <span className="block truncate">{option.label}</span>
+          <span className="block max-w-[16rem] whitespace-normal text-[11px] text-muted-foreground">
+            {option.description}
+          </span>
+        </span>
+      ) : (
+        <span className="min-w-0 flex-1 truncate pr-px">{option.label}</span>
+      )}
       {option.hint ? (
         <span className="shrink-0 text-[11px] text-muted-foreground">
           {option.hint}

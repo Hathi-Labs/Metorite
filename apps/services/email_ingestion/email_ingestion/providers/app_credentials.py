@@ -60,10 +60,15 @@ def _first(*values: str | None) -> str:
 def oauth_app(provider: str) -> OAuthApp:
     """The app credentials of ``provider`` from settings, at the time of use.
 
-    ``get_settings()`` is cached for the process. The key store writes a
-    credential that an operator saves in Integrations to ``os.environ`` at
-    run time, so the environment is read after settings. The names are the
-    ones the gateway read before EM-T3a. An unknown provider (IMAP) has none.
+    An operator sets these names in the env file of the box (gate
+    ``env-write``). systemd loads that file into the environment of the
+    process, and ``get_settings()`` reads it once, at the first call. No route
+    writes these names at run time: ``acb_common.env_guard`` (layer B) refuses
+    each one on every Integrations write, and the key store loads none of them
+    at startup (WS-17 EM-G7, O-GM-5). So a change of the app needs a restart.
+    The environment is still read after settings, as a second source of the
+    same file. The names are the ones the gateway read before EM-T3a. An
+    unknown provider (IMAP) has none.
     """
     settings = get_settings()
     env = os.environ.get

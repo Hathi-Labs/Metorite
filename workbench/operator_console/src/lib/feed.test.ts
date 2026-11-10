@@ -399,12 +399,12 @@ describe("freshness", () => {
   it("a fresh sync reads calm and names its source", () => {
     const f = freshness(FEED({}), now);
     expect(f.tone).toBe("ok");
-    expect(f.label).toBe("2716 models fetched today from the live litellm feed.");
+    expect(f.label).toBe("2716 models fetched today from the live vendor price list.");
   });
 
   it("names the offline snapshot when that is what answered", () => {
     const f = freshness(FEED({ source: "packaged:litellm" }), now);
-    expect(f.label).toContain("offline litellm snapshot");
+    expect(f.label).toContain("saved copy of the vendor price list");
   });
 
   it("warns past a week — litellm moves near-daily", () => {

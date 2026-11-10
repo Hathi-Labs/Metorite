@@ -189,3 +189,19 @@ describe("the two states are distinguishable", () => {
     expect(isFiltered({ ...EMPTY_FILTERS, overdue: true })).toBe(true);
   });
 });
+
+describe("a filter box holding text too short to search (D-PM-31)", () => {
+  it("says what to type, not that nothing matches", () => {
+    const copy = emptyStateCopy({ canvas: "list", filtered: true, query: " qa " });
+    expect(copy.message).toBe("Type at least 3 characters to search.");
+    expect(copy.hint).toBe("A task number works at any length: #7.");
+    expect(copy.filtered).toBe(true);
+  });
+
+  it("keeps the ordinary copy for a searchable query or a task number", () => {
+    for (const query of ["qa pass", "#7", ""]) {
+      const copy = emptyStateCopy({ canvas: "board", filtered: true, query });
+      expect(copy.message).toBe("No tasks match your filters.");
+    }
+  });
+});

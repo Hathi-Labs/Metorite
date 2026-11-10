@@ -51,6 +51,12 @@ describe("shouldAutoOpen", () => {
   it("never opens on mobile, where there is no side panel", () => {
     expect(shouldAutoOpen("outputs/status.md", true)).toBe(false);
   });
+
+  it("opens a report the agent made, and keeps any other JSON a card", () => {
+    expect(shouldAutoOpen("outputs/q3.report.json", false)).toBe(true);
+    expect(shouldAutoOpen("outputs/q3.report.json", true)).toBe(false);
+    expect(shouldAutoOpen("outputs/q3.json", false)).toBe(false);
+  });
 });
 
 describe("autoOpenArtifact", () => {

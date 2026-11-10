@@ -1,5 +1,7 @@
 # Customer Console — the subscription, seat and AI-metering engine (WS-31)
 
+> **Dated 2026-11-11, Aroh (D143 and D204.11).** Aroh is not a separate app. Task 2611 removes the Aroh seat kind from the Console. Read the Aroh text in this spec (lines 37 to 40 and 1994 to 2100) as history.
+
 *(Authored 2026-08-12 as the "Platform Control Plane"; renamed **Customer
 Console** by **D41**, 2026-08-18 — file was `platform_control_plane.md`. The
 path/env/package mapping is in D41.1.)*
@@ -11,6 +13,39 @@ main. CP-13d is the `decide` tool for every MAF agent. The facade and the tool
 are dark behind `DECIDE_ENABLED`.
 CP-13h, Jev through the AI/ML API reseller, is BUILT on branch `cp13-aimlapi`
 (2026-09-24). CP-13e to CP-13g are SPEC ONLY. **§6A.14** is the contract.
+
+🆕 **CP-EMB, the embedding door, is BUILT on branch `console-embed-door`
+(2026-10-17).** `POST /v1/embeddings` serves `tier-embed` on the AI/ML API
+account, and `kb_index` moves onto it. Migration 037 seeds the binding.
+**§6A.16** is the contract.
+
+🆕 **§4.3a is BUILT on branch `ai-call-attribution` (2026-10-10).** A
+background model call names its feature on the usage report, as
+`email.rule_match`. It has no flag, because it changes metadata only.
+
+🆕 **§6A.15 DSML is BUILT and live, with no flag (2026-10-15).** The Router
+turns DeepSeek's text tool calls into real tool calls. #851 added it, #1027
+made the stream linear, and #1047 found a long closing tag that a delta cut.
+On 2026-10-17 the marker became tolerant of other bars and spaces, and
+DeepSeek V3's token format became a region that never runs.
+
+🆕 **Member removal by an operator or an admin: BUILT on branch
+`member-remove` (2026-10-15, owner request).** The backend, the operator
+console surface and the control-plane roster change are all built. The
+amendment under CP-2g's non-goals holds the contract. When the removal takes
+the last registry owner, the acting admin inherits (P1-b, the owner's
+decision of 2026-10-15).
+
+🆕 **The Aroh app for an organization: BUILT on branch
+`mt-7d3489fd-aroh-seats` (2026-10-30, Metorite task 1105), not merged.** The
+operator gives an org Aroh with N seats, and "Connect Aroh" pushes the Aroh box
+key to the hub. Migration 038. The block "CP-APP · The Aroh app for an
+organization", under the CP-8 block in §6, holds the contract.
+
+🆕 **Org rename on both planes: BUILT on branch `org-rename` (2026-10-27,
+owner request), not merged.** One rename sets the tenant display name and the
+Console name. The block "CP-8 · Rename an organization", under the CP-8 ticket
+in §6, holds the contract.
 
 **Status:** ◐ **CP-0 · CP-1 · CP-2 · CP-2a · CP-2b · CP-3 · CP-4 BUILT · 🆕 **CP-10 MINTED 2026-08-26 (D56) — the operator
 model-management plane; CP-5 is re-scoped as its removal half · 🆕 **CP-11 MINTED
@@ -986,6 +1021,86 @@ done-when pins it.
 > recovered 2026-08-09, WS-25) and it is the **owner's** act. **An agent must not
 > perform it.**
 
+### 4.3a A background model call names its feature
+
+**Status: BUILT 2026-10-10, branch `ai-call-attribution`.** It ships with no
+flag. It changes metadata only: the `agent` value of a usage row. It changes no
+call, no price and no route.
+
+**The defect.** On production, the Operator dashboard showed 97% of the email
+model calls as "not attributed". In 7 days, about 8,500 email calls had `agent`
+NULL, and about 175 named `email-assistant`. The dashboard groups by
+`COALESCE(agent, 'unattributed')` (`store.py`). A background job bound a member
+and an app, and it bound no agent.
+
+**The rule.** Each model call names an agent, by these steps in order:
+
+1. An agent that the caller passes explicitly wins.
+2. A bound agent comes next. A chat agent, such as `email-assistant`, keeps its
+   own name. No automation name replaces it.
+3. A background call names its feature as `<app>.<feature>`, for example
+   `email.rule_match`. The feature name is a code constant and never member text (R5).
+4. A background call with no feature names `<app>.automation`.
+5. **The backstop.** A call with no agent bound and a known module reports
+   `<module>.automation`. A call with no module reports no agent. The backstop
+   never invents an app.
+
+**A chat agent cannot claim an automation name.** An agent name may hold a dot
+(`agent_paths.AGENT_NAME_RE`), and so may a MAF manifest slug. So a chat agent
+name of the shape `<app>.<feature>` reports as `agent:<name>`, unless the
+automation seam bound it. `acb_common.chat_agent_label` is the one rule.
+
+**The seams.** `chat_agent_label` serves every place that names a chat agent.
+
+- `acb_common.attributed_agent` uses it, and both readers use
+  `attributed_agent`. `acb_llm.routed.run_attribution` feeds the in-process
+  Router and `decide`. `acb_llm.attribution.attribution_headers` feeds the
+  HTTP agents.
+- `acb_llm.attribution.attributed_openai` applies it to the FIXED
+  `X-CC-Agent` header of each MAF client, because `_stamp` never overwrites
+  that header. `orchestrator/agents.py::_make_openai_client`, the four app
+  agents, `apis-config` and `code_session` all build their client there.
+  The Copilot session takes its headers from `attribution_headers`.
+- `acb_skills.system_one` and `acb_skills.decide_tools` apply it to the
+  calling agent of the run binding.
+- `acb_common.automation_agent_scope` binds a name for one block and restores
+  the earlier name on exit. `job_member_scope(agent=)`,
+  `llm_cap.automation_scope`, `acompletion_with_fallback(feature=)`,
+  `acompletion_stream_text(feature=)`, email `core._llm_json(feature=)` and
+  `decide_features.ask` and `shadow` all use it.
+
+**The names.** The email features are `rule_match`, `thread_status`,
+`cold_check`, `sender_pin`, `draft`, `compose_assist`, `draft_consult`,
+`reply_memory`, `voice_profile`, `digest`, `template_fill`, `rules_generate`
+and `insights_screen` (`core.EMAIL_AI_FEATURES`). The five `decide` features
+keep their names. The background jobs bind `email.automation`,
+`whatsapp.automation` and `workflows.automation`. WhatsApp names
+`whatsapp.draft`, `whatsapp.group_summary` and `whatsapp.nudge`. Tasks names
+`tasks.capture_email`. Notes, Shell and the custom apps rely on the backstop.
+
+**What it does not fix.** Three paths write no usage row at all, so no name
+can reach the dashboard. `HANDOFF.md` H-287 holds them.
+
+**Known limits (review P3, 2026-10-10). Not built.**
+
+1. **The vouch is an exact string match.** A member agent named
+   `workflows.automation` that runs inside a workflow job matches the name
+   that the job bound. So the readers do not prefix it. `attributed_openai`
+   prefixes a fixed MAF header in every case.
+2. **The scan matches a callee by its bare name.** An aliased import, or a
+   `functools.partial`, of `_llm_json` or `acompletion_with_fallback` escapes
+   it.
+3. **"automation" is approximate for an interactive call.** The backstop
+   names an interactive call in Notes, Tasks, Shell or a custom app
+   `<app>.automation`, although a member started it. The name says which app
+   spent the credits. It does not say that no person was present.
+
+**Fences.** `tests/unit/test_usage_attribution.py` holds the backstop, the
+scope, the chat-agent rules, the fixed MAF header and the scan. The scan fails when an email model
+call names no known feature and has no allowlist reason.
+`tests/unit/test_background_ai_member.py` holds the real seam, through
+`as_mailbox_owner` and `automation_scope` to the Router and `decide`.
+
 ### 4.4 The balance gate and failure semantics
 
 Pre-flight in Redis, ledger in Postgres — the gate is on the hot path of every
@@ -1756,6 +1871,269 @@ workbench can reach a cross-org read.
 > **OWNER-GATE go-live:** deploy the app · set the operator-token env · set
 > `OPERATOR_CONSOLE_DEFAULT_DEPLOYMENT_LABEL` on the box · provision a REAL
 > customer through the finished UI.
+
+**CP-8 · Rename an organization (owner request, 2026-10-27).**
+
+**Status: BUILT 2026-10-27 on branch `org-rename`, not merged.** The two
+gateway doors, the Console door, the admin mirror and the operator panel are
+built. The rename of the live DEWiN organization is not done. It waits for the
+merge and the deploy.
+
+**Non-goals.** No slug change. No `legal_name` column. No drift sweep. No logo
+change.
+
+**Gate: AGENT-SAFE to build.** The act on a live organization is not. Renaming
+the live DEWiN organization is a production write. Section 3a of `CLAUDE.md`
+allows it, because it is neither membership nor credit. The session reports it
+in the same message.
+
+**Why.** The DEWiN customer renamed its organization to "Shaurrya Tele" in the
+app. The Operator Console still shows "Dewin". The two planes each keep a name,
+and nothing connects them. The tenant name is `organization.display_name`
+(`infra/postgres/130_org_access_control.sql`). The Console name is
+`organization.name` (`infra/customer_console/001`, line 53).
+
+**Owner call, 2026-10-27.** One rename changes the display name on both planes.
+The slug does not change. A customer admin rename also updates the Console name.
+
+**Names.**
+- The Console `organization.name` is the only name the Console stores. It has no
+  legal-name column.
+- No invoice exists yet, so no printed document changes today.
+- When SC-5 builds the invoice, it adds a `legal_name` column and copies it onto
+  each invoice. A later rename then never changes a past invoice.
+
+**The operator path.** The operator BFF `POST /api/operator/orgs/rename`
+takes `{org_slug, name}`.
+- The Console session gives the rank. Rename needs EDITOR.
+- The route checks the tenant door first. If the door is not configured, it
+  answers 503 and changes nothing.
+- The tenant act runs before the Console act, as in member removal. The gateway
+  door is `PATCH /internal/operator/organizations/{slug}`. It uses the two tokens
+  of the org purge, and the slug comes from the path.
+- The Console act is the operator arm of one Console door,
+  `POST /registry/orgs/rename`. It writes `organization.name`.
+- A tenant refusal is relayed with its own status and `refused_by: "tenant"`.
+  If the Console gives no answer or a 5xx, the route answers 502 and the caller
+  can retry. A retry is safe, because both writes set the same value.
+
+**The admin path.** `PATCH /admin/organization` commits first. A post-commit
+mirror then calls the same Console door, deployment arm. The mirror is
+best-effort, like `apps/services/gateway/gateway/routes/admin/members.py:575`.
+- The deployment arm uses `_MEMBER_ADMIN_ROLES`. An admin with two organizations
+  on one deployment gets 409, and the mirror logs the refusal.
+- The gateway validates with `clean_display_name` on both paths, before any
+  write. The Console door checks only that the name is not empty and is 80
+  characters or fewer. The Console has no gateway dependency.
+- Both gateway doors call one shared UPDATE body.
+- The Console door reuses the `member_admin` capability. It adds no new one.
+
+**The drift rule.** A Console outage during an admin rename leaves the two names
+different. `reconcile()` sweeps only `console_mirrored_at IS NULL`, so it does
+not repair this. The rule is:
+- The admin mirror logs `org_rename_mirror_failed` with the slug and the name.
+  It logs only when the Console is wired and the call fails. When `is_wired()`
+  is false, it stays silent, so a dev box logs nothing.
+- The Console derives the org from the actor. An admin who is an active Console
+  member of a different org on the same deployment renames THAT org. So a 200
+  must name the slug that the tenant renamed. A different slug logs
+  `org_rename_mirror_wrong_org` at error, with both slugs, the name and the
+  name that the Console replaced (review round 2, 2026-10-27).
+- An operator rename repairs the drift, because it writes both planes.
+- A drift sweep is not built. Build it only if the log line ever fires.
+
+**The audit actor.** The Console half names the staff member (`staff.actor`).
+The gateway door writes the literal `operator`, as member removal does. The admin
+half calls `record_admin_change(admin.email, "org.renamed")`.
+
+**Tenancy.** No new connection site and no new HTTP client. The tenant comes
+from the path slug, never from the body. D64.5 allows the act: the organization
+name is a commercial-record field, and the purge and member-removal doors
+already write the tenant plane.
+
+**No migration.** Both columns exist (R6).
+
+**Done when.**
+1. In a test, an operator rename sets `organization.name` (Console R8) and
+   `organization.display_name` (gateway R8). The BFF test shows the tenant call
+   goes first.
+2. A customer admin rename updates both. With the Console down, it logs
+   `org_rename_mirror_failed` and the tenant rename still succeeds.
+3. The slug is the same before and after.
+4. A name that is empty, over the limit or not printable gets 422 on both paths.
+5. A viewer gets 403. An unknown slug gets 404.
+
+**Fences.**
+- Add `gateway/routes/admin/organization.py` to `_ALLOWED_CALLERS` in
+  `test_console_dependency_boundary.py`, with a reason.
+- Add an EDITOR row for the rename in `operator_roles.py`. The matrix fails
+  closed, and `test_operator_role_matrix_source.py` checks it.
+- Add the R8 suite `tests/unit/test_customer_console_org_rename.py` for the
+  Console door. It uses `_DB_GATE`. Add it to the `pr-check.yml` hand-list.
+- Add an order fence in the BFF `route.test.ts`: the tenant call comes first.
+
+**Verify with.**
+```
+eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_operator_door.py tests/unit/test_admin_organization_rename.py tests/unit/test_console_dependency_boundary.py tests/unit/test_operator_role_matrix_source.py tests/unit/test_customer_console_org_rename.py -q
+uv run ruff check . --select F821,F601,F602,F502,F7,B006
+cd workbench/operator_console && npx tsc --noEmit && npx vitest run src/lib/tenantDoor.test.ts src/app/api/operator/orgs/rename/route.test.ts
+```
+
+**Files.** All under `apps/services/` unless a path says otherwise.
+- `gateway/gateway/routes/operator.py`: the new tenant door.
+- `gateway/gateway/routes/admin/organization.py`: the admin path and the mirror.
+- `customer_console/customer_console/main.py` and `store.py`: the Console door.
+- `customer_console/customer_console/operator_roles.py`: the EDITOR row.
+- `packages/acb_auth/acb_auth/console_resolve.py`: the mirror call.
+- `workbench/operator_console/src/lib/tenantDoor.ts` and `src/lib/console.ts`.
+- `workbench/operator_console/src/app/api/operator/orgs/rename/route.ts`: the BFF.
+- `workbench/operator_console/src/app/customers/[slug]/Actions.tsx`: the button.
+- The model to copy is `src/app/api/operator/members/remove/route.ts`.
+
+**Board.** WS-31, CP-8. `organization_identity.md` OI-4 links here.
+
+**CP-APP · The Aroh app for an organization (Metorite task 1105, 2026-10-30).**
+
+**Status: BUILT 2026-10-30 on branch `mt-7d3489fd-aroh-seats`, not merged.**
+Nobody applied migration 038 to a real database or minted a real key.
+
+**Owner call, 2026-10-30.** The operator gives an organization the Aroh app
+with N seats, for example 2 Aroh users beside its Metorite users. A member of
+that organization signs in to Aroh with Metorite and gets a seat at once. There
+is no second approval. Aroh's AI use comes from the organization's own AI
+credits, so the operator gives no separate credits.
+
+**The model.** Each part reuses a seam that exists.
+- **The seat plan `aroh`** (kind `app`, inactive, price 0). An Aroh seat is a
+  `seat_assignment` row with `plan_slug = 'aroh'` and `source = 'app'`. The count
+  is the `seat_grant` sum for the plan. So `seats.py`, `lock_seat_capacity` and
+  the partial unique index serve it. The plan is inactive, so the checkout does
+  not sell it and the seat grid and the MRR do not count it.
+- **`deployment.app`** names the app a box serves. NULL is a Metorite box. A
+  unique partial index allows one box for each app.
+- **`org_app`** is the app twin of `org_placement`: the organization has the app
+  on a box, on or off. An organization keeps its ONE `org_placement` row on its
+  Metorite box. The Aroh box never takes that row.
+- **The Aroh box key** has `{resolve, seat_admin, serve}`. One key serves every
+  organization and every member.
+
+**The doors on the Aroh box.** The box the key belongs to decides the path,
+never a header. `customer_console/apps.py` holds the rules.
+- `POST /registry/resolve` reads `org_app`, not `org_placement`. It writes
+  nothing: no Core seat, no app seat, no promotion of an invited member. A
+  `removed` or `suspended` membership is invisible, because the Aroh box has no
+  tenant plane to refuse that person.
+- `POST /registry/seats` with `plan_slug: "aroh"` takes the member's seat. A
+  member acts on their OWN seat with any role. An active owner or admin acts on
+  any member's seat. `POST /registry/seats/release` frees a seat.
+- The Router (`serve`) charges the member's organization. It refuses a member
+  who holds no Aroh seat. When the box sends no `X-CC-Agent` or `X-CC-Module`,
+  the Router meters the call as `aroh` for both.
+- Every other door refuses an Aroh seat: the staff `POST /billing/seats` and the
+  seat door of a Metorite box answer 400. A Metorite box may still free one.
+
+**The hub contract.** The Aroh hub (`apps/hub` in the Aroh repo) calls these.
+The credential is the Aroh box key: `Authorization: Bearer cc_depl_…`.
+
+1. **Resolve.** `POST /registry/resolve`, body `{"email": "<member>"}`, with an
+   optional `display_name`. Do not send `org_slug` (400).
+   - 200, entitled: `{"identity_id", "app": "aroh", "organizations": [{
+     "organization_id", "slug", "placement": null, "status", "seat":
+     "already_held" | "not_allocated", "capabilities": {"sign_in",
+     "write_seats", "use_ai"}, "trial_ends_at", "app_seats": {"purchased",
+     "assigned", "available"}}]}`. The hub learns the org id here, from
+     `organizations[0].organization_id`. It never sends an org id.
+   - 200, **not entitled**: `{"organizations": [], "app": "aroh"}`. One answer
+     for "not a member", "the org has no Aroh" and "Aroh is off".
+   - 403 `organization is deleted`.
+   - More than one organization in the list: the Console takes no seat for the
+     hub. The hub shows a chooser or a refusal.
+2. **Take a seat.** `POST /registry/seats`, body `{"actor_email": "<member>",
+   "member_email": "<member>", "plan_slug": "aroh"}`. Send no `org_slug`. Leave
+   out `source`, or send `"app"` or the default `"alacarte"`. The door writes
+   `app`.
+   - 200 `{"assigned": true, "plan_slug": "aroh", "seat": "allocated" |
+     "already_held", "app_seats": {…}}`. It is idempotent.
+   - **403 org not entitled:** `{"detail": {"reason": "app_not_entitled", "app":
+     "aroh"}}`.
+   - **409 seats full:** `{"detail": {"reason": "seat_cap_exceeded",
+     "buy_more": {"plan_slug": "aroh", "purchased": 2, "assigned": 2,
+     "additional_seats_required": 1, "price_inr": null}}}`. The hub shows "All
+     2 Aroh seats are in use".
+   - 403 `organization is suspended; seats are locked`, 404 for a target who is
+     not a member, 409 for a member of two organizations with Aroh, 400 for a
+     body the door refuses.
+3. **Free a seat.** `POST /registry/seats/release`, the same body. 200
+   `{"released": true | false, "app_seats": {…}}`. The hub frees the seat of a
+   member by naming that member as `actor_email`.
+4. **AI.** `POST /v1/chat/completions` and the other serving doors, with
+   `X-CC-Member: <member>`, `X-CC-Member-Proven: 1` and `X-CC-Agent: aroh`.
+   The Router charges the call to the member's organization. 403 when the
+   member holds no Aroh seat.
+
+**The operator doors.**
+- `GET /orgs/apps?org_slug=` (`viewer`): the switch, the box, the seats, who
+  holds them, and the Aroh AI use (calls, credits, our cost, per member). A call
+  is Aroh use when `usage_event.agent = 'aroh'`.
+- `POST /orgs/apps` (`admin`, elevated), body `{org_slug, app, enabled, seats,
+  reason}`. The first ON takes the box that `deployment.app` names. A count
+  below the seats in use is a 409. OFF keeps the seats. A locked lifecycle is a
+  403. No box is a 409. It shares `_write_seat_count` with
+  `POST /billing/seats/count`.
+- The operator frees a seat with `POST /billing/seats/release` and
+  `plan_slug: "aroh"`.
+
+**Connect Aroh (owner request, 2026-10-30).** The owner assigns Aroh's router
+key from the Operator Console, on the `/aroh` page. `customer_console/app_hub.py`
+is the client. It is the one outbound call from the Console to a box, and only
+these operator doors call it.
+- **Settings.** `app_connection.base_url` (default
+  `https://aroh.dev.metorite.com`) and `app_connection.operator_token_enc`, the
+  hub's operator token encrypted with `CUSTOMER_CONSOLE_ENCRYPTION_KEY`. Door:
+  `POST /apps/connection/settings`, body `{app, base_url, operator_token}`.
+  No read returns the token. The page shows its last four characters.
+- **Connect, and Rotate.** `POST /apps/connection/connect`, body `{app,
+  confirm: "aroh"}`. The Console mints a new Aroh box key with exactly
+  `{resolve, seat_admin, serve}` and commits it. Then it sends
+  `PUT <base_url>/hub/api/router-key`, body `{"key": "cc_depl_…"}`, header
+  `Authorization: Bearer <hub operator token>`. If the hub accepts, the Console
+  revokes the key the hub held before. If the hub refuses, the Console revokes
+  the new key and answers 502.
+- **Disconnect.** `POST /apps/connection/disconnect`. The Console revokes the key
+  first, then sends `DELETE <base_url>/hub/api/router-key`.
+- **Status.** `GET /apps/connection?app=aroh&probe=true` reads
+  `GET /hub/api/router-key`. `app_hub.py` also has clients for
+  `GET /hub/api/orgs`, `GET /hub/api/seats?org=` and
+  `POST /hub/api/seats/{id}/suspend|resume|release`. No page uses them yet.
+- 🔴 **OWNER-GATE in the UI flow.** Settings, Connect and Disconnect each need
+  `admin` with an elevation window, and Connect and Disconnect need the typed
+  name `aroh`. These are the only HTTP routes that mint a deployment key, and
+  they mint only the Aroh box key with its fixed set.
+
+**The mint CLI.** `python -m customer_console.deployment_keys` mints a key for
+any box (`mint`) and adds capabilities to a live key (`grant`). The runbook
+`deploy/hostinger/CUSTOMER_CONSOLE.md` step 4 uses it.
+
+**Gate.** Building and testing all of it is AGENT-SAFE. Applying migration 038,
+minting a real key, growing a real key and turning Aroh on for a real
+organization are OWNER-GATE (§8 gates 4, 7 and 8).
+
+**Fences.**
+- `tests/unit/test_customer_console_aroh_app.py` (R8, in the `pr-check.yml`
+  must-run list): the migration, the operator doors, resolve, the seat, the
+  Router meter and the credit draw, the mint CLI, and Connect Aroh against a
+  mock hub.
+- `tests/unit/test_customer_console_apps.py`: the pure rules, the role matrix
+  rows and the static shape of 038.
+- `workbench/operator_console/src/lib/aroh.test.ts`: the Aroh tab and `/aroh`.
+
+**Verify with.**
+```
+export CUSTOMER_CONSOLE_DATABASE_URL=postgresql+psycopg://cc:cc@127.0.0.1:5442/cc_platform
+uv run pytest tests/unit/test_customer_console_aroh_app.py tests/unit/test_customer_console_apps.py -q
+cd workbench/operator_console && npx tsc --noEmit && npx vitest run src/lib/aroh.test.ts
+```
 
 **CP-9 · The payment-provider seam (Razorpay), and the money→entitlement path.**
 ◐ **SUBSTRATE HALF BUILT 2026-08-18** (minted the same day) — the ticket three
@@ -3407,7 +3785,8 @@ bearer.
 the callback returns, with copy added to
 `workbench/control_plane/src/app/signin/errorCopy.ts` — the one refusal-copy
 seam, keyed on the `?error=` value and already carrying a `default` arm, so an
-unmapped code degrades to `Authentication error: <code>` rather than crashing:
+unmapped code degrades to `Sign-in failed (<code>). Try again…` rather than crashing
+(task 1529 changed that text, and set `pages.error` to `/signin`):
 
 | Code | When | Copy (D33.1: never blame the person) |
 |---|---|---|
@@ -5969,6 +6348,9 @@ onboarding").** ◐ **Ships dark** — the tenant half answers 503
 until `GATEWAY_OPERATOR_TOKEN` is set on the box and the console env gains
 `GATEWAY_INTERNAL_URL` + `GATEWAY_INTERNAL_TOKEN` + the operator token.
 
+**The mailboxes of a purge.** `email_app_master_plan.md` §12.3.13.9.2 (WS-17 EM-G11f1b and
+EM-G11f1c) owns the teardown of each mailbox that the member door and the org purge delete.
+
 **What this is.** The lifecycle already ends at `deleted`, reachable only
 through `cancelled` (the export window) — `customer_console.lifecycle`'s graph
 enforces the doctrine by construction, and `POST /orgs/lifecycle` already walks
@@ -6088,10 +6470,112 @@ depth rather than the only wall.
 
 **Non-goals.** No customer-side self-delete (an org admin cannot destroy the
 org from inside the product) · no export bundle (the window keeps sign-in
-alive; a one-click export is future work) · no per-member operator delete —
+alive. A one-click export is future work) · ~~no per-member operator delete —
 member offboarding/purge stays the customer admin's door
-(`colleague_onboarding.md` N8), deliberately · no backup/restore integration:
+(`colleague_onboarding.md` N8), deliberately~~ · no backup/restore integration:
 a purge is forward-only, like every act on this platform (R6).
+
+**Amended 2026-10-15 (owner request in chat).** The owner asked: "give
+ability for operator (backend) and admins to remove/delete a person who's
+invited/logged in". That request overrides the per-member non-goal above.
+**BUILT on branch `member-remove` (2026-10-15): the backend, the operator
+console surface and the control-plane roster change.**
+
+**The operator BFF, `POST /api/operator/members/remove`.** The body is
+`{org_slug, email, mode, confirm}`, and `confirm` must equal the email.
+
+- The route checks the tenant door first. If the door is not configured, it
+  answers 503 and changes nothing.
+- The rank comes from the Console session. Remove needs EDITOR. Purge needs
+  ADMIN and an open elevation window.
+- The tenant act runs before the Console act, because the tenant act takes
+  the access away. An `already_absent` answer counts as success.
+- The route relays a tenant refusal with its own status and
+  `refused_by: "tenant"`.
+- The Console half runs last. If the Console gives no answer, or a 5xx, the
+  route answers 502 and the caller can retry. The route relays a Console
+  4xx with its own status.
+
+**The control plane.** The organisation roster gains "Revoke invite" for an
+invited member, and a "Removed" filter that shows removed members.
+
+**Frontend fences.** `operator_console/.../members/remove/route.test.ts`,
+`lib/memberRemove.test.ts` and `lib/tenantDoor.test.ts`. In the control plane,
+`settings/organization/lib/rosterView.test.ts`.
+
+- The gateway door is `DELETE /internal/operator/organizations/{slug}/members/{email}`.
+  It takes `?mode=remove|purge&confirm=<email>`, and `remove` is the default.
+  It uses the two tokens of the org purge. `confirm` must equal the email
+  verbatim, or the door answers 400. An unknown mode is 400, and an unknown
+  slug is 404.
+- An absent member gets 200 `{"already_absent": true, "email": ...}`. The
+  last owner gets 409. Remove answers
+  `{"status": "removed", "email", "tree_projects"}`, and purge answers the
+  admin purge shape.
+- The door runs the same in-transaction body as the admin routes:
+  `members.remove_member_rows` and `members.purge_member_rows`. It does not
+  call the Console. The operator BFF calls the Console itself.
+- The Console door is `POST /registry/members/remove`. It uses the
+  `member_admin` capability and both arms of `_admin_scheme_context`. It sets
+  the membership to `removed` and releases every live seat. It never mints an
+  identity: an unknown person gets 200 `{"found": false}`.
+- The Console door refuses a self-removal on the deployment arm (409). It
+  hands ownership on when the target is the last active registry owner (see
+  P1-b below). A `deleted` org gets 403. The operator matrix row is EDITOR.
+- Every answer of the Console door carries `owner_transferred_to`: the new
+  owner's email, or null. The `member.remove` audit payload carries it too.
+- The admin Remove and Purge routes now mirror onto the Console door after the
+  commit, as best-effort. The deployment resolve writes no seat for a
+  `removed` or `suspended` membership.
+- Fences: `test_operator_door.py`, `test_admin_member_offboarding.py` and
+  `test_admin_member_purge.py`. Also `test_customer_console_member_write.py`
+  (R8) and `test_operator_role_matrix_source.py`.
+
+**Review round 1, P1-a — FIXED.** A re-invite after a removal left the
+registry row `removed` for good. The tenant upsert (`_PROVISION_MEMBER_SQL`)
+moves `removed` to `invited`, but `store.add_invited_member` did nothing on a
+conflict. The person then signed in, the resolve wrote no seat, and they
+worked with no bill.
+
+The fix: the Console invite door now applies the tenant rule. Its
+conflict arm moves `removed` to `invited` and keeps the role. It does not
+change `active` or `suspended`. The first sign-in activates the row and
+allocates the seat. The invite mirror in the gateway logs
+`member_invite_console_status_mismatch` when the Console keeps a status other
+than `invited` or `active`. Fence:
+`TestRemoveThenReInviteIsBilledAgain` (R8).
+
+**Review round 1, P1-b — FIXED (owner decision 2026-10-15, in chat: "Acting
+admin inherits").** Only `provision` writes `org_membership.role`, so the
+founder is the only registry owner. The door used to refuse to remove the
+founder for good. A registry with no owner is not an option either, because
+the seat-admin doors (`/registry/seats`, `/registry/seats/release` and
+`/registry/seats/overview`) admit only an active `owner` or `admin`.
+
+The rule as built:
+
+- A transfer happens ONLY when the target is the last active registry owner.
+  In the same transaction, the door makes one active member the `owner`
+  (`store.make_owner`), and then it removes the target.
+- Deployment arm, the admin path through the gateway mirror: the heir is
+  `new_owner_email` if the body names one, else the ACTOR. The actor is
+  already an active member, and the self-removal 409 keeps them off the
+  target.
+- Operator arm: `new_owner_email` is required for this case. Without it the
+  door answers 409, and the detail says to name a new owner.
+- On both arms, a named heir must be an ACTIVE member of the org and not the
+  target. Otherwise the door answers 400 and writes nothing.
+- When the target is NOT the last active owner, the door IGNORES
+  `new_owner_email` and answers `owner_transferred_to: null`. The door does
+  not refuse it, because the operator BFF acts on the tenant plane first. A
+  400 after that act would leave the planes in disagreement.
+- The removed row keeps its `role`. `store.deployment_placed_orgs` now
+  returns one row for each org and puts the active owner first, because an
+  org can hold two `owner` rows after a transfer.
+- The gateway needs no new call: its mirror is the deployment arm, so the
+  acting admin inherits. It logs `member_remove_console_owner_transferred`.
+- Fence: `TestTheLastOwnerIsHandedOn` (R8). Its tests also prove that the
+  heir can open `/registry/seats/overview`.
 
 **CP-2d · Passwordless email OTP via Resend — MINTED + SLICE 1 BUILT 2026-08-22,
 SLICE 2 BUILT 2026-08-23, SLICE 2 REPAIRED (review rounds 1 and 2) 2026-08-23
@@ -8188,6 +8672,11 @@ customer to shape it, and guessing produces the wrong ceiling.
 
 ### 6A.10a The transcribe endpoint (H-46) — BUILT, 2026-08-31
 
+**Caller and Sarvam (2026-11-08).** The chat's voice input (`projects_ai_chat.md`
+§31 VOX-1, task 2261) is the first tenant caller of this door. VOX-2 (task 2262)
+adds a native Sarvam call beside the litellm path, because litellm 1.103.0 has
+no Sarvam transcription. §31 owns both slices.
+
 ✅ **BUILT on 2026-08-31, on branch `ws-31-h46-transcribe`.** The route is
 `main.py::audio_transcriptions`, and all ten clauses below hold.
 `tests/unit/test_customer_console_tasks.py` carries the seven fences.
@@ -8394,6 +8883,123 @@ eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_customer_console_tasks.py \
   tests/unit/test_customer_console_catalog.py -q
 ```
+
+#### VOX-2 · Sarvam, and the minutes of a WAV clip — BUILT 2026-11-08
+
+✅ **Built on branch `mt-4d2d1c72-vox2`** (task 2262). `projects_ai_chat.md`
+§31 VOX-2 owns the slice. This block records how the build changes the ten
+clauses above. Each other clause holds as written.
+
+1. **Clause 3, the quantity.** The door measures a WAV clip before any
+   provider call. It bills that length for every provider, a litellm step too.
+   - `customer_console/wav.py` walks the RIFF chunks with `struct`. It ignores
+     the declared `data` size, because that field can lie.
+   - It counts `(bytes after the data header) // block_align` frames. A size
+     of 0, `0xFFFFFFFF`, or a small or large number all bill the bytes present.
+   - A chunk after `data`, such as a trailing `LIST`, counts as audio by a few
+     bytes. The door bills the bytes it sends.
+   - A `fmt ` chunk with a zero block align, or a sample rate outside
+     1 000 to 384 000 Hz, is not a measurable WAV.
+   - The vendor figure never sets the quantity of a measurable WAV clip. A
+     litellm step bills the measured length too, whatever `verbose_json`
+     reports.
+   - A clip that is not a measurable WAV keeps the old rule: the
+     `verbose_json` duration, else zero with the log line
+     `router.unmeasured_quantity`.
+2. **Clause 6, the dispatch.** `native_sarvam` is in `KNOWN_INVOCATIONS` and
+   `SERVING_INVOCATIONS`, and it serves `transcribe` only.
+   - `customer_console/stt_sarvam.py` holds the handler.
+   - A native step gets a `TranscribePayload`: the clip, its name and the
+     key. A litellm step gets the same kwargs as before.
+3. **The prefix ties the verb.** A `sarvam/` model on `transcribe` takes
+   `native_sarvam` only, because litellm has no Sarvam transcription.
+   - The declare route refuses another verb with a 400.
+   - The mode is the last part of the id, as in `sarvam/saaras:v3/translit`.
+     The route refuses a mode that is not `translit`, `codemix`,
+     `transcribe` or `translate`. An id with no mode gets `translit`.
+4. **A new refusal, 415.** The Sarvam handler takes PCM WAV only.
+   - For any other clip, the door drops each Sarvam step from the chain.
+   - When no step is left, the door answers 415 before any provider call.
+   - The 415 writes no usage row, as the 413 writes none. Clause 10's three
+     walls do not change.
+5. **The 30-second limit.** Sarvam's REST call takes 30 seconds of audio at
+   most, and it answers 422 above that. A 422 does not fail over. So the
+   handler cuts a longer clip into parts of 29 seconds and joins the text.
+6. **The 600-second wall.** A measured WAV clip above 600 seconds answers 413
+   "audio above 600 seconds is refused", for every provider. The 413 comes
+   before any provider call and writes no usage row. One request makes at
+   most 21 Sarvam calls.
+7. **Failover.** A Sarvam 5xx, 429 or 403 falls to the next step, as a
+   litellm step does. A 200 with no transcript is terminal, because the
+   vendor has charged for it.
+8. **The accepted leak.** A failure on part N of M fails over the whole step.
+   Sarvam has charged for parts 1 to N-1, and the door never bills them. The
+   next step transcribes the whole clip and bills it once. The loss is bounded
+   at 20 parts for each request, by the 600-second wall. The handler logs
+   `stt_sarvam.partial_failure` with `parts_served` and `parts_total`.
+
+#### VOX-6 · AssemblyAI, beside Sarvam — BUILT 2026-11-08
+
+`native_assemblyai` is the second native verb for `transcribe`. It copies the
+`native_sarvam` pattern, and the clauses above apply to it with these changes.
+
+1. **The dispatch.** `native_assemblyai` is in `KNOWN_INVOCATIONS` and
+   `SERVING_INVOCATIONS`, and it serves `transcribe` only.
+   - `customer_console/stt_assemblyai.py` holds the handler.
+   - The credential provider is `assemblyai`.
+2. **The prefix ties the verb.** An `assemblyai/` model on `transcribe` takes
+   `native_assemblyai` only, because litellm cannot call the Sync API.
+3. **The id carries the languages.** The id is `assemblyai/universal-3-5-pro`
+   or `assemblyai/universal-3-5-pro/hi,en`.
+   - The declare route refuses an unknown model, an unknown code, a repeated
+     code and an empty part with a 400.
+   - The vendor takes 32 codes, listed in `stt_assemblyai.LANGUAGES`.
+   - An id with no codes sends no `config` part.
+4. **One request for each clip.** The Sync API takes 20 minutes, and the door
+   caps a WAV clip at 600 seconds. So the handler never cuts a clip.
+5. **The bill.** The door bills the seconds it measures from the WAV bytes.
+   The vendor field `audio_duration_ms` never sets a quantity.
+6. **The 415.** The handler takes PCM WAV only, so the door answers 415 for
+   any other clip when no step is left. The vendor takes more formats, but the
+   bill needs the measure.
+7. **Failover.** The handler passes the vendor status to the chain.
+   - A 5xx, a 504, a 429 and a network error fall to the next step.
+   - A 400 and a 413 stop the walk.
+   - A 401 says the key is bad. The walk strikes the vendor and takes the
+     next step (`router.CREDENTIAL_STATUSES`), as it does for a Sarvam 403.
+   - A 200 with no `text` is terminal.
+8. **The key stays private.** The handler sends the key in `Authorization`.
+   It logs the status only, and never the key, the audio or an error body.
+
+**The vendor facts for VOX-6.** We read them on 2026-11-08 at
+`https://www.assemblyai.com/docs/api-reference/sync-api/transcribe.md`.
+The endpoint is `POST https://sync.assemblyai.com/v1/transcribe`. The
+headers are `Authorization` and `X-AAI-Model: universal-3-5-pro`. The
+multipart parts are `audio` and `config`. The 200 body holds `text`, `words`, `confidence`,
+`audio_duration_ms`, `session_id` and `request_time_ms`. The handler uses the
+global host only.
+
+| Rule | Fence |
+|---|---|
+| The request carries the URL, both headers, the `audio` part, and a `config` part only when the id names languages | `test_customer_console_stt_assemblyai.py::TestTheRequestShape` |
+| The declare route refuses an unknown language | `test_customer_console_stt_assemblyai.py::TestTheIdSplit` |
+| A WAV clip bills the measured minutes, and the door writes one `transcribe` row | `test_customer_console_stt_assemblyai.py::TestAssemblyAIOnTheTranscribeDoor` (R8) |
+| A 5xx or 504 fails over, and a 400 does not | `test_customer_console_stt_assemblyai.py::TestTheFailures` |
+| The key never reaches a log line or an error | `test_customer_console_stt_assemblyai.py::TestTheKeyStaysOutOfEveryRecord` |
+
+**The vendor facts**, read on 2026-11-08 at
+`https://docs.sarvam.ai/api-reference-docs/speech-to-text/transcribe`:
+`POST https://api.sarvam.ai/speech-to-text`, the header
+`api-subscription-key`, and the multipart fields `file`, `model` and `mode`.
+The 200 body holds `transcript` and no duration.
+
+| Rule | Fence |
+|---|---|
+| A WAV clip bills the measured minutes, on a Sarvam step and on a litellm step | `test_customer_console_tasks.py::TestSarvamOnTheTranscribeDoor`, `::TestALitellmStepBillsTheMeasuredWav` (R8) |
+| The Sarvam request carries the header, the vendor model and the mode | `test_customer_console_stt_sarvam.py::TestTheRequestShape`, and the R8 class above |
+| A clip that is not WAV on a Sarvam-only chain answers 415 and writes no row | `test_customer_console_tasks.py::TestSarvamOnTheTranscribeDoor` (R8) |
+| A Sarvam 5xx fails over to the next step | `test_customer_console_tasks.py::TestSarvamOnTheTranscribeDoor` (R8), `test_customer_console_stt_sarvam.py::TestTheFailures` |
+| A `sarvam/` transcribe model takes `native_sarvam` only | `test_customer_console_stt_sarvam.py::TestTheNativeVerbForSpeech` |
 
 ### 6A.10b The handler seam (H-47) — BUILT 2026-09-23 by CP-13a
 
@@ -9418,8 +10024,8 @@ names the route and its fences.
 `DECIDE_ENABLED`. The "As built" note under CP-13c names the fences.
 
 ✅ **CP-13d is BUILT and on main (#444).** The `decide` tool is in
-the core floor of every MAF agent. It sends no member, and the "As built" note
-under CP-13d says why.
+the core floor of every MAF agent. Since H-165 (2026-11-05) it sends the
+session-proven member only, and the "As built" note under CP-13d says why.
 
 **CP-13e to CP-13g are not built.** Owner directive, 2026-09-23:
 
@@ -9690,6 +10296,10 @@ facts the table did not state:
   `native_*`. `POST /catalog/capabilities` answers 400 and names the rule.
   Without it, `(model, decide, acompletion)` would answer 502 on the first
   customer call.
+  📌 **VOX-2 changed the first half on 2026-11-08.** From that date, each
+  `native_*` verb serves the ONE task of its handler. `native_sarvam` and `native_assemblyai` serve `transcribe`, and a
+  System One verb still serves `decide` only. `decide` still takes a native
+  verb only (`catalog.NATIVE_ONLY_TASKS`). §6A.10a holds the transcribe half.
 - **A 200 that the handler cannot read STOPS the chain.** The vendor has
   already charged for it, so a second step would pay a second vendor for the
   same request. The handler raises `NativeProviderError` with
@@ -9832,12 +10442,47 @@ The streaming default in `src/lib/feed.ts:247` is an inline expression,
 - **The verb list on the page is a mirror.** `src/lib/invocation.ts` copies
   three constants from `catalog.py`. `test_operator_console_invocations.py`
   fails when the copies differ.
+  📌 VOX-2 (2026-11-08) added two more copies: `NATIVE_ONLY_TASKS`, and
+  `NATIVE_TASK_OF`, the task of each native verb. The same test reads both.
+  `/providers` gained a minimal `sarvam` card, and VOX-4 owns its full text.
+  📌 VOX-6 (2026-11-08) added `native_assemblyai` to the three mirrors and
+  to the `assemblyai` card. `test_operator_console_vendor_slugs.py` lets that
+  slug stay native while litellm lists it, because litellm cannot call it.
 - **The declare form follows the pairing rule.** `src/lib/invocation.ts`
   mirrors `check_invocation_for_task`, so `/models` offers only
   `native_typesafe` for `decide`, and never offers it for another job.
 - **The TypeSafe guide sits in a new "Decisions" section on `/providers`.**
 - `METERING_EXEMPTION` and `_CAPABILITY_GATED_ROUTES` did not change. The
   route reaches no credit write, and a deployment key meets 401 on it.
+
+**VOX-4 (2026-11-08): two more tries, by the same rule.** Spec:
+`projects_ai_chat.md` §31.5.
+
+- **The routes are `POST /catalog/transcribe/try` and `POST /catalog/vision/try`.**
+  Both take a multipart `file`. The vision route also takes a `question` of up
+  to 500 characters. Neither takes a tier. They try `tier-stt` on task
+  `transcribe` and `tier-vision` on task `vision`.
+- **The metering rule is the one above.** The platform key only, a call
+  through `router.call_chain`, and no `usage_event` row. One `control_audit`
+  row for each call that reached the vendor, with the action
+  `catalog.transcribe_try` or `catalog.vision_try`. The outcome is `served`,
+  `upstream_failed` or `unreadable`. `_audit_try` writes it, and it never raises.
+- **The speech route uses the door's helpers.** `_transcribe_attempts` picks the
+  steps. `_transcribe_kwargs` builds the call. `wav.py` measures a WAV clip
+  from its bytes, so a WAV clip answers the length that the Console measured.
+  A try takes 10 MB and 60 seconds. A try takes WAV only, and a clip that is
+  not WAV gets a 415 before the chain resolves.
+- **The vision route sends one chat call with one image part.** The door serves
+  `vision` with the chat verb. The route reads the format from the first
+  bytes (`image_sniff.py`) and decodes no pixel. It takes 4 MB. The system text
+  is the text of `analyze_image` in VOX-3.
+- **A vendor failure shows the vendor's words.** The door never echoes them.
+  A try does, because the operator needs them to fix a key. The Console removes
+  every credential it read and any text shaped like a key, and it cuts the text
+  to 300 characters. The status still goes through `_upstream_refusal`.
+- **The `MATRIX` rows are `admin`, with no elevation window.** `_PROBES` in
+  `test_operator_roles.py` and `NOT_COMMERCIAL` in `test_customer_console_catalog.py`
+  gained both routes. The suite is `test_customer_console_try_voice.py`.
 
 #### CP-13c · The tenant client
 
@@ -9923,6 +10568,8 @@ The tenant gateway reaches the Router for chat only today. A search for
   on this path) and `tests/unit/test_console_dependency_boundary.py`.
 
 #### CP-13d · The main chat gets a `decide` tool — not a sub-agent — BUILT 2026-09-24
+
+📌 **D90 (decided 2026-10-06) changes the engine of this tool.** The tool keeps its name. For an agent in `AI_TIER_ROUTING`, it runs an MAF agent on `tier-fast` and says `open_world=False`. `ai_tier_routing.md` §6 owns that design.
 
 The owner asked for "one of the sub agents that is called to decision making
 fast by the main chat". **The measured answer is a TOOL with that job, and
@@ -10010,39 +10657,58 @@ not an agent.**
   no member field. The core family holds 20 tools, so
   `test_skills_registry.py` and `test_integrations_skills_route.py` count 20.
   The addendum has a full "Fast decisions" section and a compact line.
-- 🔴 **The R11 finding: the tool sends NO member.** Each run's member comes
+- 🔴 **The R11 finding: the tool sends the PROVEN member only.** Each run's member comes
   from `event_payload["user_email"]` or `["user_id"]`. `executor._payload_user`
   reads it, and `_bind_run_identity` binds it for the run.
   - Server-bound paths. The email chat (`email/automation/chat.py`) and email
-    drafting set the member from the session or the account owner. Workflow
-    nodes, Projects agent dispatch and scheduled runs name nobody. A sub-agent
-    from `call_agent` inherits its parent's binding.
-  - Caller-chosen paths. `POST /agent/run/stream`, `POST /agent/run` and
-    `POST /agent/run/async` pass `req.payload` to the executor unchanged.
-    `POST /agent/webhook/{source}` spreads the signed sender's payload.
+    drafting set the member from the session or the account owner. A
+    workflow run, scheduled runs too, binds a verified billing member from
+    our tables (`_workflow_billing_member`, `job_member_scope`, H-152). A
+    Projects agent dispatch inherits that binding. A sub-agent from
+    `call_agent` inherits its parent's binding.
+  - Caller-chosen paths. Since H-337 (2026-10-30), `POST /agent/run/stream`,
+    `POST /agent/run` and `POST /agent/run/async` drop a signed-in member's
+    body claim (`_drop_identity_claims` in `routes/agent.py`). The two sync
+    doors keep a claim of the member's own address, set to the session's
+    address. A service caller keeps its claim. `POST /agent/webhook/{source}` spreads the signed
+    sender's payload. Since H-438 (2026-11-07, task 1127), `POST /pull`
+    calls the same helper before its Mem0 read.
   - The Control Plane chat proxy builds its own payload with no member, so a
-    browser cannot choose one today. But the gateway takes the member from the
-    body, and any holder of the internal token or the webhook secret can name
-    a member.
-  - In a shared room the run's member is the room compartment, not an email.
-  - A tool cannot tell a server-bound member from a claimed one. On the
-    deployment arm `X-CC-Member` selects the tenant. So the tool sends no
-    member on every path.
+    browser cannot choose one. Since H-337 the three `/agent/run*` doors take
+    a signed-in member from the session (`session_user`), not from the body.
+    A service caller and the webhook door still name a member by claim, and
+    that claim stays unverified.
+  - In a shared room only the memory id is the room compartment
+    (`room:<thread>`). The run's `user` is the signed-in poster.
+  - On the deployment arm `X-CC-Member` selects the tenant. So the tool sends
+    a member only when the run binding proves it (H-165, 2026-11-05). Only a
+    server-side fact binds `member_verified="1"` (H-73): a signed-in session,
+    or a member from our own tables. `job_member_scope`, a workflow run and
+    the WhatsApp link bind the second kind. A request body never sets it.
+    `decide_tools._proven_member` reads it through
+    `write_artifact._verified_member`. It also needs an "@" in the user. Every
+    other path sends `member=None, member_proven=False`. The tool never reads
+    the memory user id, which can be a `room:` id or a claim.
   - The result: an org-key box serves, because its key names the organization.
-    A deployment-key box refuses in the client with no request, and the tool
-    gives the unavailable text. `agent` and `run_id` still come from
+    A deployment-key box serves a proven member. With no proven member it
+    refuses in the client with no request, and the tool gives the unavailable
+    text. `agent` and `run_id` still come from
     `get_run_context()`, because they only attribute a call.
-  - ⚠️ `member=None` on this tool does not close the gap alone. The executor
-    also binds the payload's member as the run-context `user` (`_corr_user`
-    in `executor.py`). `acb_llm/routed.py::_attribution` sends that value as
-    `member` on every routed completion, and on the deployment arm it selects
-    the tenant. So the repair belongs at the `/agent/run*` and webhook doors.
+  - The routed completions hold the same line. The executor still binds a
+    payload claim as the run-context `user` (`_corr_user` in `executor.py`),
+    with no proof flag. `acb_llm/routed.py::_attribution` sets
+    `member_proven` only for a verified binding (H-73). On the deployment arm
+    `console_resolve._require_proven_member_on_deployment` refuses an unproven
+    member in the client. The Console refuses it too
+    (`customer_console/auth.py`). So a claim cannot select the tenant.
   - **Severity: a defence-in-depth P2** (the reviewer, 2026-09-24). Only a
     holder of the internal bearer or the webhook HMAC secret can reach it.
     Both can already assert any identity (`acb_auth/deps.py`, branch 1b). The
     browser path, the Control Plane chat proxy, cannot name a member.
-  - The tool can send a member again only when the gateway doors stop taking
-    one from the body. HANDOFF H-165 holds that work.
+  - H-337 closed the three `/agent/run*` doors, and H-165 Slice A made the
+    tool send the proven member. H-165 Slice B (2026-11-05) closed the
+    webhook door: `_webhook_run_payload` removes `user_email` and `user_id`,
+    so a webhook run has no member. Fence: `test_webhook_run_memberless.py`.
 - Fences: `tests/unit/test_decide_tool.py` (hermetic, because no SQL runs on
   this path), `test_core_tool_floor.py::test_floor_includes_decide` and
   `test_tool_schema_diet.py`.
@@ -10224,9 +10890,9 @@ add a second one.
 
 | Call | File | Shape | Why it is a separate slice |
 |---|---|---|---|
-| Commitment gate | `tasks/capture_email.py:1006` | boolean | It runs while the user waits after a send. Split the gate from the draft: `decide` asks "is there a commitment", and the LLM drafts only on yes |
+| Commitment gate | `tasks/capture_email.py:1005` | boolean | It runs while the user waits after a send. Split the gate from the draft: `decide` asks "is there a commitment", and the LLM drafts only on yes. It stays a WS-18/WS-39 slice, and EM-T16 does not take it |
 | Meeting copilot "act or stay silent" | `notes/copilot.py:191` | boolean with a 0.6 threshold today | It runs on every transcript window of a live meeting. The Router hop adds latency, so measure the full round trip first |
-| Draft consult plan | `email/automation/drafting.py:1049` | choice of 7, plus 2 booleans | The question text stays with the LLM |
+| Draft consult plan | `email/automation/drafting.py:1125` | choice of 7, plus 2 booleans | The question text stays with the LLM. WS-17 EM-T16 PR-D owns this row as `email.draft_consult` (`email_app_master_plan.md` §10.4.17) |
 
 **CP-13g · The Tasks decisions.** `tasks/ai.py:1320` (context and energy) and
 `tasks/ai.py:661` (clarify). Both mix decisions with drafted text, so the
@@ -10373,6 +11039,508 @@ uv run ruff check packages/acb_llm/acb_llm/decide.py \
 | **The multimodal promise** (image / speak) | ~~Yes — G-1 and G-2~~ → ✅ **both answered by D61.1/D61.2.** It is now build work, not design work |
 | Everything else | ✅ G-6 and G-7 answered, and each is one column. **G-8 deferred with a named trigger**, which is a decision rather than an omission |
 | **CP-13a to CP-13d** (the `decide` task, §6A.14) | **No, for the build.** Use a test key. The residency answer (§9 item 8) blocks every real-tenant call, the chat tool included |
+
+### 6A.15 DSML — DeepSeek's text tool calls — BUILT, live, no flag (#851, #1027, #1047)
+
+**What it is.** DeepSeek sometimes writes its own tool-call markup into
+`content`, where an OpenAI client expects `tool_calls`. The markup uses the
+fullwidth bar U+FF5C, as in `<｜DSML｜invoke name="update_task">`.
+`customer_console/dsml.py` reads that markup on `/v1/chat/completions` and
+turns it into real tool calls. It reads the buffered path and the streamed
+path. The Router owns this, because every chat completion crosses it.
+
+**The marker is tolerant (owner report, 2026-10-17).** A chat about
+outstanding payments showed `<｜｜DSML｜｜tool_calls>` to the member. That
+marker has TWO bars on each side. The parser knew only the one-bar form, so
+the text passed through and the two `crm_aggregate` calls never ran. Nobody
+could read the exact code points, so the parser now reads these forms:
+
+- One to three bars on each side of `DSML`, in any mix. A bar is U+FF5C,
+  `|`, U+2502, U+2223 or U+FFE8.
+- Up to two spaces or tabs after the `<` or `</`, and around each bar.
+- No space between the last bar and the tag name. `<｜DSML｜ is odd` stays
+  text.
+- `DSML` is case-sensitive.
+
+One grammar in `dsml.py` gives the marker regex, the holdback regex and the
+longest marker (26 characters). The input taint check reads the same forms,
+also when an encoder escaped the bar or a tab. A first tag gets
+`MAX_FIRST_TAG` characters, plus the characters its marker adds to the
+one-bar form.
+
+**DeepSeek V3's token format never runs.** DeepSeek V3 and R1 can write
+`<｜tool▁calls▁begin｜> … <｜tool▁calls▁end｜>`, where ▁ is U+2581. The Router
+removes such a region from the shown text and logs `foreign_format`. The
+region never runs, even when the request offered the tool. A fenced region is
+a quote and stays visible. The stream and the buffered path use the same
+machine for it. The renderer (`dsmlMarkup.ts`) hides the same forms in a
+stored message.
+
+**The parser's contract.**
+
+1. **A stream never runs a call that a whole feed does not run.** A stream
+   runs the same calls, shows the same text and logs the same drop lines as a
+   whole feed. The three `_TAG_HEAD_RE` cases below are the known exceptions.
+2. **The stream is linear in the reply length.** Each delta reads its own text
+   once. It reads at most 40 characters again for each delta. That is the
+   longest closing tag up to the end of its name, with the longest marker.
+3. **A closing tag may hold any amount of whitespace before its `>`.** The
+   closer regexes read `\s*` with no cap, as the block regex does. The stream
+   keeps a closing tag that has its name and waits for its `>`
+   (`_Region.waiting`). The next delta continues from the end of the text.
+4. **A whole feed never shows markup outside a code fence to the member.** A
+   stream holds the same rule, except in the three cases below.
+
+**The known gap: a first tag cut before its `>` (H-323).** `_TAG_HEAD_RE`
+decides whether an open first tag can still become a tag. It refuses a `/`
+or a `'` before the `>`. When a delta ends there, `_not_a_tag` releases the
+region as text. A whole feed reads the complete tag, so it never takes that
+path. Three cases, measured on 2026-10-15:
+
+| Case | Deltas | Whole feed | Stream |
+|---|---|---|---|
+| A | `On it. </｜DSML｜invoke/`, then `>` | Shows `On it. `, logs `stray_tag` | Shows the raw tag to the member |
+| B | `<｜DSML｜invoke name='create_task'`, then `>` and the rest | Hides the tag, logs `malformed_invoke`, runs nothing | Shows the raw tag, logs `stray_tag`, runs nothing |
+| C | A good block, then `</｜DSML｜calls` and a newline and `/`, then `>` | Runs the call, logs `stray_tag` | Shows the raw tag, logs `not_trailing`, runs nothing |
+
+**The gap fails closed for calls.** In each case the stream runs the same
+calls or fewer, and never more. All three cases show raw markup to the member.
+
+**The drop rules.** A call runs only when all five rules hold:
+
+1. The request offered the tool.
+2. No input message holds DSML.
+3. The block is outside a code fence.
+4. The block is the trailing content.
+5. The block parses.
+
+Each block that does not run logs `router.dsml_dropped` with one `dsml_reason`.
+
+| `dsml_reason` | What happened |
+|---|---|
+| `undeclared_tool` | The request did not offer the tool |
+| `echoed_input` | An input message holds DSML, so the answer may echo it |
+| `fenced` | The block is in a code fence. It stays visible as a quote |
+| `not_trailing` | Prose comes after the block |
+| `unterminated_block` | The text ends before the closing tag |
+| `stray_tag`, `malformed_block`, `malformed_invoke`, `block_without_invoke` | The markup does not parse |
+| `block_holds_text_outside_invokes` | The block holds text between its invokes. The invokes still run |
+| `parallel_disabled` | `parallel_tool_calls=false` keeps only the first call |
+| `foreign_format` | A DeepSeek V3 token region. The Router removes it, and it never runs |
+
+Two more log lines mark a failure that keeps the text. The buffered path logs
+`router.dsml_normalise_failed` and returns the response as it came. The stream
+logs `router.dsml_chunk_unreadable` and sends a minimal copy of the chunk.
+
+**The PRs.**
+
+- **#851** added the parser and its five rules (2026-10-11).
+- **#1027** (`d359553`) made `DsmlStream.feed` linear. A 400 KB call in
+  one-character deltas went from 18.9 s to 0.96 s.
+- **#1047** found a closing tag with a long run of whitespace that a delta
+  cut. Before it, the stream logged `unterminated_block` and ran nothing,
+  where a whole feed ran the call.
+- **This PR** made the marker tolerant and added `foreign_format`
+  (2026-10-17).
+
+**The fences.** The Router's fences are in
+`tests/unit/test_router_dsml_tool_calls.py`.
+
+- `TestTheOwnersDoubleBarText` holds the owner's text of 2026-10-17. It runs
+  the two calls on the buffered path, in one-character deltas and in byte
+  frames.
+- `TestTheHoldback` checks that `_MARK_PREFIX_RE` takes exactly the prefixes
+  of a marker, and pins `_MAX_MARK` and `_CLOSE_LOOKBACK`.
+- `TestDeepSeekV3TokensNeverRun` holds the V3 format.
+- `dsmlMarkup.test.ts` holds the renderer to the same forms.
+
+- `TestTheChunkingNeverChangesTheAnswer` feeds real-shaped replies whole, at
+  every cut, one character at a time, and in random chunks.
+- `test_the_LIMITS_give_the_same_answer_as_before` pins `_HEAD` and
+  `_CLOSE_LOOKBACK`. A lookback below 21 fails 22 tests.
+- `TestALongClosingTagIsFoundAtEveryCut` cuts closing tags with 0 to 200
+  whitespace characters at every position.
+- Five linear fences count the characters that the stream gives its regexes,
+  and they read no clock. Two of them hold a closing tag open with 200 KB of
+  whitespace.
+
+### 6A.16 CP-EMB · the embedding door — BUILT (2026-10-17)
+
+**Status:** BUILT 2026-10-17 on branch `console-embed-door`. Anchors
+verified against the code on 2026-10-17. Board row `WS-31`. Owner directive
+of 2026-10-16.
+
+**Built as.**
+
+- The route is `main.py::embeddings`, with `EmbeddingRequest` and
+  `EMBED_TASK`. It takes at most 128 texts, each 1 to 32,000 characters.
+  `dimensions` and `encoding_format` are a 422.
+- `router.litellm_target` holds the rewrite, and `router.embedding_vectors`
+  reads the answer. An answer it cannot read is a 502 after the row.
+- The migration is `037_embed_door.sql`. It seeds the binding with
+  `effective_from = now()` at the first deploy.
+- The client is `console_resolve.embeddings_on_console`, the eleventh
+  caller that `test_console_dependency_boundary.py` admits.
+- `kb_index/embed.py` sends the member that the run context holds. A
+  deployment-key box with no proven member sends nothing, and the caller
+  reads `None`.
+
+**The problem, in one line.** Production makes no vectors.
+`gateway/kb_index/embed.py` posts to the gateway's own `/v1/embeddings`.
+That route calls OpenAI with `OPENAI_API_KEY`, and production has no such key.
+So Knowledge search (WS-61) and CRM note search (CRM-Q27) both fail to embed.
+
+**The owner's call (2026-10-16).** Embeddings go through the AI/ML API
+account that Jev already uses (CP-13h, credential provider `aimlapi`). AI/ML
+API serves `text-embedding-3-small` at 1,536 dimensions, at an
+OpenAI-shaped `POST https://api.aimlapi.com/v1/embeddings`. This call is the
+commercial choice §6A.10c clause 4 keeps for the owner, so this ticket may
+seed the binding.
+
+**Scope.** Five items, and nothing else.
+
+1. **The door.** `aembedding` joins `router.SERVING_INVOCATIONS`. A new route,
+   `POST /v1/embeddings`, takes a TIER in `model` and resolves the `embed`
+   task. It uses `_serving_prelude`, so the auth, the org, the member rules
+   and the three walls are those of the image, speak and decide doors. It
+   reads the stored provider credential, and never an environment key. It
+   answers OpenAI-shaped vectors, and the answer names the tier and never the
+   model (D32.7).
+2. **The vendor host.** litellm knows no `aimlapi` provider for embeddings.
+   So the door sends `aimlapi/<model>` to litellm as `openai/<model>`, with
+   the host `https://api.aimlapi.com/v1`. `router.litellm_target` holds that
+   one rewrite, and the door is its only caller.
+3. **The meter.** Each served call writes one `usage_event` row with the
+   tokens the vendor reported, through `_record_completion`. The
+   `(tier-embed, embed)` card is `absorbed` (D19.2, G-4), so the call draws
+   no credit.
+4. **The seed.** The next free migration on the Console ladder seeds three
+   rows: the `tier-embed` binding to `aimlapi/text-embedding-3-small`, its
+   `model_capability` row with `aembedding`, and the `absorbed` tier card.
+   Each INSERT is guarded, so a replay changes nothing and never revives a
+   row the operator removed. Production gets the rows on deploy.
+5. **The client.** `kb_index/embed.py` posts to the Router door through the
+   one Console client, `acb_auth.console_resolve`. The function stays
+   `embed(texts, *, org, timeout)`, with 64-text batches and 1,536
+   dimensions. The member comes from the run context, as `acb_llm.routed`
+   reads it. No session stays open across the call.
+
+**Non-goals.**
+
+- The other embedding writers (`email_embeddings.py`, `wa_embeddings.py`,
+  `capability.py`, mem0) stay on the gateway's own `/v1/embeddings`. WS-45 S5
+  item 2 moves them, one at a time.
+- `infra/litellm/config.yaml` keeps its `text-embedding-3-small` route. This
+  ticket marks it unused by `kb_index` and deletes nothing.
+- No change to the balance wall. See the owner question below.
+- No chat or other task on an `aimlapi/` model through litellm.
+
+**Done when.** Each item names its fence (R7).
+
+| # | Done when | Fence |
+|---|---|---|
+| 1 | `aembedding` is in `SERVING_INVOCATIONS`, and the set stays inside `KNOWN_INVOCATIONS` | `test_customer_console_embed.py::test_aembedding_is_a_serving_verb` and `test_customer_console_tasks.py::test_the_operator_vocabulary_is_wider_than_the_serving_one` |
+| 2 | A served call answers one vector for each input, in order, and names the tier | `test_customer_console_embed.py::TestTheDoorServes` |
+| 3 | A bare model id, or an unbound tier, is a 400 with one `tier_unknown` refusal row | `test_customer_console_embed.py::TestTheDoorRefuses` |
+| 4 | The vendor call carries the stored `aimlapi` secret, `openai/<model>` and the AI/ML API host, and never an environment key | `test_customer_console_embed.py::test_the_vendor_call_uses_the_stored_credential` |
+| 5 | A served call writes one row with its tokens, `unit` `tokens` and 0 credits, and draws no ledger line | `test_customer_console_embed.py::TestTheMeterRecordsAndDrawsNothing` |
+| 6 | The ladder seeds the binding, the capability and the `absorbed` card, and a replay adds nothing | `test_customer_console_embed.py::TestTheSeed` |
+| 7 | A deployment-key call names its tenant through a proven member, as every door does | `test_customer_console_embed.py::test_the_deployment_key_serves_a_proven_member` |
+| 8 | `embed()` posts to the Console door with the run's member, in batches of 64 | `test_kb_chunk.py::test_embed_posts_to_the_console_door` and `::test_embed_sends_64_texts_at_most` |
+| 9 | A refusal, an outage, a timeout or an unwired box gives `[None] * len(texts)`, and never raises | `test_kb_chunk.py::test_every_failure_is_none_and_never_raises` |
+| 10 | The names the callers import stay: `BATCH`, `EMBED_DIMS`, `vector_literal`, `QUERY_EMBED_TIMEOUT_S` and the signature of `embed` | `test_kb_chunk.py::test_the_names_the_callers_import_stay` |
+| 11 | The route joins `METERING_EXEMPTION` with two edges | `test_customer_console_payments.py` |
+
+**Files.**
+
+- `apps/services/customer_console/customer_console/router.py`
+- `apps/services/customer_console/customer_console/main.py`
+- `infra/customer_console/<next free number>_embed_door.sql`
+- `packages/acb_auth/acb_auth/console_resolve.py`
+- `apps/services/gateway/gateway/kb_index/embed.py`
+- `infra/litellm/config.yaml` (one comment line)
+- Tests: `test_customer_console_embed.py` (new), `test_customer_console_tasks.py`,
+  `test_customer_console_decide.py`, `test_customer_console_payments.py`,
+  `test_customer_console_tier_pricing.py`, `test_kb_chunk.py`,
+  `test_kb_one_index.py`
+
+**Verify.** The Console suites are R8, so start a database first.
+
+```bash
+bash scripts/dev_db.sh
+eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_customer_console_embed.py \
+  tests/unit/test_customer_console_tasks.py \
+  tests/unit/test_customer_console_tier_pricing.py \
+  tests/unit/test_customer_console_payments.py \
+  tests/unit/test_customer_console_resolve.py \
+  tests/unit/test_kb_chunk.py tests/unit/test_kb_one_index.py \
+  tests/unit/test_kb_search_r8.py \
+  tests/unit/test_console_dependency_boundary.py -q
+```
+
+**Gate.** 🟢 AGENT-SAFE to build. The owner made the commercial call on
+2026-10-16. The `aimlapi` key is already on the Console (CP-13h). The deploy
+and the first live call follow the dev-phase window (root `CLAUDE.md` §3a).
+
+**Size.** Small. One route, one migration of three INSERTs, one client
+function, and one changed post in the gateway.
+
+**Owner decision (2026-10-17): the balance wall stays.** With
+`CUSTOMER_CONSOLE_SPEND_GATE` on, an org at zero credits gets a 402 on this
+door too, and its index degrades. The owner accepts this. A zero-credit org
+gets no embeddings, and the premium features of a zero-credit org are decided
+later. The door keeps the shared prelude. A page saved during the refusal
+keeps NULL vectors until its next edit.
+
+### 6A.17 Sampling values per step — BUILT (task 2450)
+
+The Router runs litellm with no `drop_params`. A step whose model refuses a sampling value would answer 400 for the whole request.
+
+- Measured on 2026-11-08, litellm 1.103.0: `claude-haiku-5-5`, `claude-sonnet-5-5`, `claude-opus-5-5` and `claude-opus-4-8` refuse `temperature=0.2`. The error reads "Only temperature=1 is supported."
+- `claude-sonnet-4-6` and `claude-haiku-4-5` take the value.
+- Metorite sends `temperature=0.2` by default, so Claude 5.5 failed on every chat tier and on `tier-vision`.
+- `reasoning.sampling_params_for(kwargs, model)` drops `temperature`, `top_p` and `top_k` for a refusing step. It keeps `temperature` when the value is 1.
+- For an Anthropic model, it asks litellm's own rule, `AnthropicModelInfo._supports_sampling_params`. For any provider, it also honours `supports_sampling_params: false` in `litellm.model_cost`.
+- A model that litellm cannot place keeps its values. The function never sets `drop_params`.
+- The last wall is a version rule. A Claude id at version 5 or later, or a Fable or Mythos id, takes no sampling value. It covers a Claude id that is newer than the litellm map, for example `claude-sonnet-5-6`. Claude 5 and later accept only `temperature=1`, so the drop is always safe for them.
+- The chat `_kwargs_for` calls it for each step, beside `reasoning_params_for` (task 1128). A chain with Claude 5.5 first and Gemini second gives each step its own body. The stream path and the image path use the same `_kwargs_for`.
+- A drop writes one INFO line, `router.sampling_params_dropped`, with the model and the dropped names. It never logs message content.
+- The line fires once per pair of model and dropped names in each process, so a busy chat writes no line per call. A set of at most 256 pairs holds the memory.
+- A test fails when litellm renames `_supports_sampling_params`, because the import guard would hide the rename.
+- Fences: `test_customer_console_sampling_params.py` and `test_customer_console_router.py::TestSamplingPerStep` (R8).
+
+### 6A.18 Model setup in one step (MS) — MS-1 BUILT, MS-2 TO MS-4 SPEC ONLY (2026-11-09, Metorite epic task 2458)
+
+**Gate: AGENT-SAFE to build.** MS-1 and MS-2 are HIGH tier, because they write credentials and tier chains. The owner approved the preview and all six owner calls on 2026-11-09. The Opus review ran on 2026-11-09 (owner call 6). Its verdict was "GO after spec edits", and this text holds those edits.
+
+**Slice tasks:** MS-1 is task 2481, MS-2 is task 2482, MS-3 is task 2483 and MS-4 is task 2484. MS-5 stays closed (owner call 4).
+
+**Status, 2026-11-09:** MS-1 is built on branch `mt-312becee-ms1` (task 2481), and it waits for review and merge. MS-2, MS-3 and MS-4 are spec only. "MS-1 as built" below the slice table lists what the build changed in this text.
+
+#### The problem, with the production facts
+
+The owner said on 2026-11-08 that model setup is confusing. The owner had to learn the provider prefix, the verb and the model grammar. The console accepted every wrong value. Read through the operator API at 23:00 UTC on 2026-11-08:
+
+- The Sarvam key sits under `sarvam.ai`. The Router finds a key by the exact prefix of the model id (`router.py` `provider = :provider`, and the speech door splits the id at the first `/`). The prefix of `sarvam.ai/saaras:v4` is `sarvam.ai`, so this key matches that id. The Router never applies an alias.
+- The owner declared `sarvam.ai/saaras:v4` with `acompletion`. That is a chat verb on a speech model, and this is the fault. The id has no mode, and the Sarvam handler needs `sarvam/saaras:v4/translit`. The prefix of that id is `sarvam`, so it needs a key under `sarvam`, and none exists.
+- `assemblyai/nano` and `assemblyai/best` are async v2 models on `atranscription`. The door cannot call them. `MAX_CHAIN_ATTEMPTS` is 3, so the whole `tier-stt` chain of 3 steps cannot serve a request.
+- The only working path was set by an agent. `tier-vision` points at `anthropic/claude-haiku-4-5`.
+
+Four facts cause this. Each is a gap in the Console, not an owner error:
+
+1. Two spellings name one provider, and nothing joins them.
+2. Declare checks the shape of the verb, not whether the pair is callable for that job.
+3. Nothing lists the models a provider offers, so the owner types ids from memory.
+4. Nothing proves the setup works until a customer call fails.
+
+#### The design, in five rules
+
+1. **One registry, in the Console.** The new file is `customer_console/provider_registry.py`. It holds, for each provider, the id, the aliases, the key page URL and the key check. It also holds the curated models. The operator console reads it through `GET /catalog/providers`. No second TypeScript copy exists. `providerGuides.ts` folds into it in MS-4.
+2. **Connect is one call.** The operator gives a provider and a key. The Console does the rest.
+3. **Set up is one call.** The operator picks models, and the Console declares, tries and binds them. It binds only a model that passed its Try.
+4. **Health is a list.** Every entry that cannot work shows with a reason and a fix.
+5. **The words on screen are jobs.** The screen says "Speech to text", "Image understanding" and "Chat". It never says a verb, a prefix or a model grammar. The raw forms stay under "Advanced".
+
+⚠️ **Every key goes through the Console.** No tenant service and no script takes a provider key directly. The Console writes the credential through the existing path (`POST /providers/credentials`, Fernet at rest, insert only). The new routes call the same store function. They add no second write path (R5, one DB seam).
+
+#### The jobs
+
+| Job (on screen) | `task` | Verbs it may take |
+|---|---|---|
+| Chat | `chat` | `acompletion` |
+| Image understanding | `vision` (tier `tier-vision`) | `acompletion` |
+| Speech to text | `transcribe` | `atranscription`, `native_sarvam`, `native_assemblyai` |
+| Speech out | `speak` | `aspeech` |
+| Image creation | `image` | `aimage_generation` |
+| Embeddings | `embed` | `aembedding` |
+| Decisions | `decide` | `native_typesafe`, `native_aimlapi` |
+
+The registry stores the job and the verb for each model. The operator never chooses a verb in the new flow.
+
+⚠️ **Image understanding is the task `vision`, not `chat`.** Migration 016 maps `tier-vision` to `vision`, and the image door serves that task. A chat tier reads an image only when `model_profile.reads_images` is true. MS does not write `model_profile`.
+
+#### The registry schema
+
+```python
+@dataclass(frozen=True)
+class RegistryModel:
+    id: str            # the exact Console id, for example "sarvam/saaras:v4/translit"
+    label: str         # "Saaras v4, Roman script"
+    job: str           # a task slug, or "vision"
+    invocation: str    # a member of KNOWN_INVOCATIONS
+    streams: bool
+    languages: tuple[str, ...]
+    price_hint: str    # "about INR 0.49 per minute", from the vendor feed when it has the model
+    recommended_for: tuple[str, ...]   # jobs this model is the default for
+    retires: date | None
+    verified: bool     # False for a (K) item the build could not confirm. Never shown as a badge
+
+@dataclass(frozen=True)
+class RegistryProvider:
+    id: str                       # the litellm provider id, or a native vendor id
+    label: str
+    aliases: tuple[str, ...]
+    key_url: str
+    key_check: KeyCheck           # a list-models call, or one cheap call
+    models: tuple[RegistryModel, ...]
+```
+
+**Alias rule.** `normalise(provider)` lowercases the text, strips spaces, and looks it up in the alias table. `sarvam.ai` becomes `sarvam`. `assembly.ai` becomes `assemblyai`. `google` becomes `gemini`. `claude` becomes `anthropic`. An unknown value passes through unchanged, so the "Something else" card still works. Fence: a test checks that every registry id is a litellm provider or a native vendor, and that no alias collides.
+
+⚠️ **An alias applies only in the Console's own write paths:** the connect id, the H2 fix and H6. The Router never applies an alias, and MS does not change that. A model id and its key must carry the same exact provider string. So an alias can never make the key of one provider serve the model of another.
+
+#### The first providers and models
+
+(K) means the item comes from model knowledge, not from a fetched document. The build must verify each (K) item with the live list, and must drop an item it cannot confirm where a list exists. For a provider with no list, the item stays and the screen says so once (see the status rules). Source: the research file of 2026-11-08 (task 2458 comments).
+
+| Provider | Job: model id (verb) | Note |
+|---|---|---|
+| `sarvam` | Speech to text: `sarvam/saaras:v4/translit` (`native_sarvam`), recommended. Also `sarvam/saaras:v4/codemix` and `sarvam/saaras:v3/translit` | About INR 0.49 per minute. No list call, so the key check is one tiny request |
+| `sarvam` | Chat: `sarvam/sarvam-105b` (`acompletion`) (K) | litellm `openai_like`, base `https://api.sarvam.ai/v1`. ⚠️ Connect stores no `api_base` for Sarvam. The speech handler adds `/speech-to-text` to the host, so a stored `/v1` base breaks speech |
+| `sarvam` | Speech out: `bulbul:v4-flash`, `bulbul:v3` | No handler. Shown as "coming" until MS-5 |
+| `assemblyai` | Speech to text: `assemblyai/universal-3-5-pro/en` (`native_assemblyai`), recommended. Also `assemblyai/universal-3-5-pro/hi,en`, which writes Hindi in Devanagari script | Key check: `GET /v2/transcript?limit=1` (K). Async models are not offered |
+| `anthropic` | Chat and Image understanding: `anthropic/claude-haiku-5-5` (cheap, recommended), `claude-sonnet-5-5`, `claude-opus-5-5` (`acompletion`) | $0.10 and $0.50, $2 and $10, $4 and $20 per million tokens. List call `GET /v1/models` (K) |
+| `gemini` | Chat and Image understanding: `gemini/gemini-3.6-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-pro-preview` (K) | `gemini-2.5-*` ids retire on 2026-12-01 |
+| `gemini` | Image creation: `gemini/gemini-3.1-flash-image` (K). Embeddings: `gemini/gemini-embedding-2` (K). Speech out: `gemini/gemini-3.8-flash-tts` (K) | |
+| `openai` | Speech to text: `openai/gpt-4o-transcribe`, `openai/whisper-1` (K). Speech out: `openai/tts-1` (K). Chat ids: verify with the live list | |
+| `groq` | Speech to text: `groq/whisper-large-v3-turbo` (K), about $0.04 per hour. Chat: `groq/openai/gpt-oss-120b` (K) | The id has two slashes. The registry removes the need to type it |
+| `deepseek` | Chat: `deepseek/deepseek-flash`, `deepseek/deepseek-v4-pro` (K) | No stable vision model |
+| `elevenlabs` | Speech to text: `elevenlabs/scribe_v2` (K). Speech out: `eleven_flash_v2_5` (K) | Speech out needs a voice id. Not offered until the voice setting exists |
+| `deepgram` | Speech to text: `deepgram/nova-3` (K) | Aura speech out is not offered |
+| `mistral`, `openrouter` | Chat (K) | `openrouter/<vendor>/<model>` |
+
+A Claude 5 model takes only `temperature=1`. Section 6A.17 handles it in the Router. The registry needs no note for it.
+
+#### API shapes
+
+All routes are staff-gated. The write routes need the same `admin` role and elevation as `POST /providers/credentials`.
+
+**`GET /catalog/providers`** returns the registry. Per provider, it adds `connected: bool` and the label of the live credential.
+
+**`POST /catalog/providers/{id}/connect`** takes `{ "secret": "...", "label": "...", "org_slug": null }`.
+
+1. It normalises `id`. An id that is not in the registry after `normalise` returns 400 and names the closest registry id. The "Something else" card uses the raw install path (`POST /providers/credentials`), which takes any id.
+2. It runs the key check live, with a 10 second limit. A bad key returns 400 with the vendor's words. The Console stores nothing. The vendor's words go through `_try_provider_text` first, so no part of the key comes back.
+3. It stores the credential through the existing write path.
+4. It returns `{ provider, rotated, models: [...] }`. Each model carries `job`, `label`, `price_hint`, `recommended_for` and `status`.
+
+⚠️ **Connect takes no `api_base`.** The key-check host comes from the registry only, so no operator input steers the check to another host.
+
+⚠️ **A connect with `org_slug` stores a key for that one org, and ends at the Key step.** Tier chains are platform-wide (`tier_binding` has no org column), and every Try reads platform keys only. So adopt, `connected`, the fix rule and H8 count platform rows only (`organization_id IS NULL`).
+
+`status` is `known` for a curated model, shown as "Known to Metorite". When a list exists, the live list must show the model, or the status is `gone` and the model stays hidden. A live list proves that a model exists. It does not prove that the verb can call it (AssemblyAI showed this). Only a passed Try proves that. A live model that the registry does not know comes back as `{ id, status: "unknown" }`, shown as "Not in Metorite's list yet". The operator can adopt it only through "Advanced". No status says "not checked".
+
+A provider with no list call has `no_list: true` in its registry entry. Sarvam and AssemblyAI are two. The response carries it, and the Models step says once under its title: "Sarvam publishes no model list. Metorite checks the key with one short test call."
+
+The response never holds the key. The audit row records the provider and the label only, as `provider.credential.install` does.
+
+**`POST /catalog/providers/{id}/adopt`** takes `{ "models": [{ "id": "...", "tiers": ["tier-stt"] }], "dry_run": false }`. For each picked model:
+
+1. It declares the capability with the registry's verb and `streams`. It calls `check_invocation_for_task` and `check_model_for_invocation`, so the same checks bind.
+2. **It tries the new model alone, before any bind,** with the platform key. The Try does not walk the chain. When the new model fails, no old step answers in its place, so a pass proves the new model. `/catalog/transcribe/try` uses a bundled WAV of 3 seconds of Hindi-English speech. `/catalog/vision/try` uses a bundled image. Chat uses a one-line prompt.
+3. **It binds only a model whose Try passed.** For each tier named, it writes the whole chain in one insert at one `effective_from`. The new model goes first. The old steps stay after it. A model whose Try failed stays declared and unbound, and the result says why.
+4. It returns `{ declared, bound, tries: [{ job, model, ok, said, error }] }`. `model` is the model that answered. `said` holds the first 80 characters of the answer. `error` holds the vendor's words.
+
+Why the Try comes first: a 400 or a 404 is terminal in the Router. A bad first step with one of those statuses stops the walk, so the whole tier fails for every org.
+
+**The Try helpers.** The existing tries walk the chain (`router.py` `_try_chain`). MS adds a single-model mode to them. Chat, image creation, embeddings and speech out have no Try today. MS-2 adds one for each job it offers, by the CP-13b rule: the platform key, an audit row, and no `usage_event` row. A job with no Try is not offered in the connect flow.
+
+**The window.** `MAX_CHAIN_ATTEMPTS` is 3. The doors count the 3 tries after they drop the steps that have no key, no capability, or a WAV-only verb on a non-WAV clip. The chat door and the vision door drop a step for a missing key only, because they call `acompletion` with or without a capability row. When a prepend pushes a working step to position 4 or below in that count, the result says so by name.
+
+**One writer at a time.** Adopt, a fix and Undo each read a chain and then write it. Each one takes `pg_advisory_xact_lock` on `(tier, task)` first, so two writes to one chain cannot lose one.
+
+**Undo.** Undo writes the chain from before the adopt back as a new row (section 6A.5, insert only). It writes only when the newest chain row still carries the `effective_from` that the adopt wrote. When a later write moved the chain, Undo returns 409 and changes nothing. A declare is an upsert of the `(model, task)` row (`main.py` declare route), so Undo restores a chain, never a verb. `dry_run` returns what the call would write and runs no write.
+
+**`GET /catalog/health`** returns `{ entries, chains }`. Each entry holds `kind`, `rules`, `tier`, `task`, `job`, `rank`, `model`, `model_label`, `invocation`, `reason`, `fix` and `help`. `fix` is `null` or `{ action, model, invocation, label, same_as }`, and `action` is `replace` or `remove`. Each `chains` line is one chain with an entry (rule H5). It holds the entry count, `window_blocked`, the banner text and the H5 fix.
+
+**`POST /catalog/health/fix`** takes `{ entries: [{ tier, task, model }] }`. Each entry must name `model`. A `model` of `null` selects the H5 chain fix, and only when that line has a fix. It writes each fix as a new declare and a new chain row. The Console judges each chain again under its lock, and it never takes a fix from the request. A stale entry answers 409. An entry with no fix answers 400.
+
+#### Health rules
+
+Each rule maps to one reason in plain words and, where the registry knows it, one fix.
+
+| Rule | Reason shown | Fix |
+|---|---|---|
+| H1. The verb does not fit the job, by the jobs table above (`vision` included) | "This model needs a different call type for Speech to text" | The registry verb for the model |
+| H2. The provider id is neither a native vendor nor a litellm provider | "No key or handler matches 'sarvam.ai'" | The alias target, for example `sarvam` |
+| H3. `native_verb_for(prefix, task)` (`handlers.py`) names a native verb, and the declared verb differs | "This model needs Metorite's own handler" | That native verb. `sarvam/sarvam-105b` on `chat` gets no H3, because no native verb serves chat |
+| H4. A model id lacks its mode, or fails `native_model_refusal` | "Saaras needs a mode" | The registry default, for example `/translit` |
+| H5. The first 3 steps of a chain cannot serve the job, counted as the doors count them (see "The window") | "3 entries on Speech to text cannot work" | Drop the dead steps, and move the first working step to the front. A second entry with the same fix shows as "Remove: same as the fix above" |
+| H6. A credential sits under an alias | "The key is saved as 'sarvam.ai'" | When a live platform key already sits under `sarvam`, revoke the alias row only. Otherwise run the key check on the old secret, then copy the secret and its org scope to a new row under `sarvam`, write the audit row, and revoke the alias row. The fix never revokes a fresh key |
+| H7. A model has a `retires` date within 30 days, or past | "This model retires on 2026-12-01" | The registry successor |
+| H8. A bound model has no live credential | "No key for 'groq'" | Open "Connect a provider" |
+
+**A fix names a connected provider only.** The registry may offer a fix only when a live platform key (`organization_id IS NULL`) sits under the EXACT provider string of the fixed model id. The Router matches that string exactly, so an alias does not count here. In the production state of 2026-11-08 the platform keys are `anthropic`, `assemblyai`, `deepseek`, `sarvam.ai` and `aimlapi`. So `assemblyai/best` never gets a Groq fix. If no connected provider has a fix, the entry shows "Connect a provider to fix this" (H8). Two entries that map to the same fix count as one fix. The second shows "Remove: same as the fix above", and its button removes the entry.
+
+**The Sarvam case.** The fix of `sarvam.ai/saaras:v4` is `sarvam/saaras:v4/translit`. Its prefix is `sarvam`, and no key sits under `sarvam`. So the entry shows the H6 reason, "The key is saved as 'sarvam.ai'", and holds its model fix until the key sits under `sarvam`. MS-1 shows this reason. MS-2 adds the H6 fix button. Until then the operator can connect Sarvam again.
+
+**The order of fixes.** Each fix gives a model id and a verb. The fixes compose in this order: H2 (the provider), then H4 (the id and its mode), then H1 and H3 (the verb). So `sarvam.ai/saaras:v4` on `acompletion` becomes `sarvam/saaras:v4/translit` on `native_sarvam` in one fix. `assemblyai/nano` fails `native_model_refusal`, so H4 gives the registry default `assemblyai/universal-3-5-pro/en`, and H3 then gives `native_assemblyai`. When the chain already has the fixed model, the entry is a remove: "Remove: the chain already has this model". A fix never writes a second copy of a model.
+
+This section absorbs the guards of task 2457. H1 to H4 also run at declare time and bind time. The Console refuses a bad pair, and the 400 body carries the reason and the fix. Today it refuses the shape only.
+
+⚠️ **A chain write is a new row, never an update** (section 6A.5). A declare is an upsert of the `(model, task)` row. A fix writes a new model id where it can, so the old declare stays as it was. "Fix all" runs in one transaction for each tier, so a half-fixed chain never serves. Today the declare route and the bind route each open their own transaction. MS-1 moves each write into a function that takes one connection, and the routes call those functions.
+
+#### The UI flow
+
+The operator console is a staff tool and keeps its own look (D35.4). It reuses the tokens in `globals.css`.
+
+1. **Providers page.** A "Connect a provider" button opens a four-step panel. The steps are Pick, Key, Models and Set up.
+2. **Pick.** One card for each registry provider. Each card shows the label and the jobs it offers. A search box takes an alias.
+3. **Key.** One field and one link, "Get a key at the provider page". After the operator presses Check, the panel shows "Key works" or the vendor's words.
+4. **Models.** A list grouped by job. The recommended model is on. Each row shows the plain name large (for example "Sarvam Saaras v4 · Hinglish in Roman script"), the id small and grey under it, the price hint and the status chip. Each job has a switch named for its tier, for example "Use for Speech to text".
+
+   **Connecting never replaces a working model by default.** The switch is on only when that job has no working model today. It is also on when the new model is the registry default for the job and the current chain has no working step. Otherwise it is off, and a note says what serves the job now, for example "Chat already works with DeepSeek". In the demo state, Sarvam turns on Speech to text and leaves Chat off. `adopt` applies the same rule when a caller sends no `tiers` for a model.
+5. **Set up.** A summary, then the button. The result shows one line for each job, with a tick or a cross and the provider's words.
+6. **Tiers page.** A health banner shows the count, for example "3 entries on Speech to text cannot work". It lists each entry with its plain name large, the id small under it, and the plain reason. "Fix" repairs one entry. "Fix all" repairs the list.
+7. **Advanced.** The raw declare form and the raw bind form move under "Advanced". They keep working and keep their checks.
+
+The preview file is `workbench/control_plane/ux-shots/ms-connect/index.html`. It is not in git.
+
+#### Slices
+
+| Slice | Content | Tier | Done when | Fence (R7) |
+|---|---|---|---|---|
+| **MS-1** (task 2481) | `provider_registry.py`, the alias table, `GET /catalog/providers`, `GET /catalog/health`, `POST /catalog/health/fix`, rules H1 to H5 and H8, the H6 reason (no button), the fix order, the exact-key rule, the per-tier lock, and the declare and bind writes moved into functions that take one connection | HIGH | The production state of 2026-11-08 gives three Speech to text entries. `assemblyai/nano` gets the fix `assemblyai/universal-3-5-pro/en` on `native_assemblyai`. `assemblyai/best` shows "Remove: same as the fix above". `sarvam.ai/saaras:v4` shows the H6 reason and no model fix. `anthropic/claude-haiku-4-5` on `tier-vision` gives no entry | `test_provider_registry.py` (ids, aliases and verbs against `KNOWN_INVOCATIONS`) and `test_catalog_health_r8.py` (R8, real database) |
+| **MS-2** (task 2482) | `connect` and `adopt`, the live key check, the single-model Try before the bind, the new Try helpers, Undo with its 409, rules H6 (the button) and H7, the declare-time and bind-time guards | HIGH | A fake key returns 400 and stores nothing. On the dev stack with a mocked vendor, adopt declares, tries and then binds. A failed Try binds nothing. Undo restores the old chain, and returns 409 after a later write. A connect with `org_slug` binds nothing | `test_catalog_connect_adopt_r8.py` (R8). A fence asserts that no response, log line or audit row holds the key |
+| **MS-3** (task 2483) | Operator console UI: the connect panel, the health banner, "Advanced" | STANDARD | The owner approved the preview on 2026-11-09. The owner runs Flow 1 on the dev stack | `vitest` for the flow state machine. A fence that no string on the page holds `acompletion`, `atranscription` or `native_` outside "Advanced" |
+| **MS-4** (task 2484) | Fold `providerGuides.ts` into the registry. The page reads `GET /catalog/providers` | LOW | `providerGuides.ts` is gone. `test_operator_console_vendor_slugs.py` reads the registry | The same slug test, pointed at the registry |
+| **MS-5** (closed, owner call 4) | A Sarvam speech-out handler, `native_sarvam_tts`, for `bulbul` | HIGH | Only if the owner wants speech out. A Try plays 2 seconds of Hindi audio | `test_handlers_sarvam_tts.py` |
+
+#### MS-1 as built (2026-11-09, task 2481)
+
+The build is on branch `mt-312becee-ms1`. Its fences are `tests/unit/test_provider_registry.py` and `tests/unit/test_catalog_health_r8.py` (R8). Both are in the must-run lists of `pr-check.yml` and `deploy.yml`, and the first is a safety fence in `tests/fences.json`. The build changed this text in these places:
+
+- **H4.** An id with no mode works by itself, because the Sarvam handler adds `translit`. So it makes no entry alone. A fix still writes the registry id that names the mode. Only a provider with a default mode gets this step, so an AssemblyAI id with no languages keeps its meaning.
+- **H2.** `sarvam` is not in `litellm.provider_list`. litellm loads it from its OpenAI-like `providers.json`. The registry reads both lists, then the native vendors.
+- **H5 is a chain line, not a step entry.** The done-when asks for three Speech to text entries, so H5 adds no fourth one. It gives the banner text and, when a working step sits past the window, the chain of working steps.
+- **The reason an entry shows.** It is the first rule in the fix order, then H8. When the exact-key rule blocks a fix, the entry shows H6 if a platform key sits under an alias, and H8 if not.
+- **A fix writes the working steps first.** A 400 is terminal in the Router, so a dead first step stops the walk. The dead steps that the operator did not pick stay after the working ones. The H5 chain fix drops them.
+- **A fix never writes a chain in which no step works.** It answers 400, "No entry on this job can work. Connect a provider first.", and it writes nothing.
+- **`model` is a required field of a fix entry.** `model: null` names the H5 chain line, and it is legal only when that line has a fix. An entry with no fix answers 400.
+- **The chain lock.** A bind, an unbind and a fix take `pg_advisory_xact_lock` on `(tier, task)`. A fix waits 5 seconds for it, then answers 409. A deadlock (40P01) and a serialization failure (40001) answer 409 too. A chain and a tombstone take their date from `clock_timestamp()` after the lock. An unbind and a fix read the chain at `statement_timestamp()`. With `now()`, a writer that waited would date its write before the chain it waited for. The first MS-1 build left `now()` in the unbind, and the verifier proved that a bind queued ahead of it stayed on the air. A source fence now refuses `now()` in any `INSERT INTO tier_binding` in `main.py`.
+- **The AssemblyAI default is `assemblyai/universal-3-5-pro/en`, not `hi,en`.** Owner call 1 named `hi,en`. On production on 2026-11-09, at about 07:02 UTC, `/catalog/transcribe/try` sent an 8 second English clip. `hi,en` answered in Devanagari script. `/en`, and the id with no languages, answered in clean English in about 1.2 seconds. Production `tier-stt` is now `[assemblyai/universal-3-5-pro/en]`. The change follows that evidence. `hi,en` stays in the registry, with a label that says it writes Hindi in Devanagari script.
+- **The alias rule has a fence.** `test_provider_registry.py::test_the_router_never_applies_an_alias` fails when `router.py` imports the registry or calls `normalise`.
+- **The registry.** Mistral and OpenRouter carry no model, because this section names no model id for them. The live list at connect time (MS-2) adds them. Speech-out items with no handler are not in the registry.
+- **No flag.** The VOX-4 tries shipped with a matrix row and no flag. MS-1 does the same: two VIEWER reads, and a fix with the bind's gate (ADMIN and a window).
+
+**Deferred to MS-2:**
+
+- The H6 button, H7, and the declare-time and bind-time guards.
+- A credential entry for a key under an alias that no chain uses.
+- ⚠️ **A fix can move BYOK customers to a platform key.** Health counts platform keys only. So a step that only a customer's own key (BYOK) serves is a dead step to it. A fix that drops or moves that step sends those customers to a platform key. MS-2 must show that before the write.
+- `providerGuides.ts` still tells the operator to declare `hi,en` for AssemblyAI. MS-4 folds that file into the registry, which holds `/en`.
+
+#### Owner calls
+
+**ANSWERED 2026-11-09 on task 2458:** the owner approved all six recommendations. So the defaults are as in call 1, adopt prepends, the Try runs with its cost shown, MS-5 stays closed, and "Fix all" needs elevation. Call 6 ran on 2026-11-09, because Opus was available again.
+
+1. **Defaults by job.** The spec proposes Speech to text `sarvam/saaras:v4/translit`, with `assemblyai/universal-3-5-pro/hi,en` second and `groq/whisper-large-v3-turbo` third. Chat and Image understanding use `anthropic/claude-haiku-5-5`. Is that the order the owner wants? *(MS-1, 2026-11-09: the second default is now `assemblyai/universal-3-5-pro/en`, from production evidence. "MS-1 as built" records it.)*
+2. **Adopt prepends or replaces.** The spec proposes prepend, with the old steps kept behind. "Replace the chain" is a checkbox. The owner may want replace as the default.
+3. **Do the Try calls cost money?** Each adopt spends a few cents. The spec proposes to run them and show the cost before the button. The owner may want an off switch.
+4. **Is Sarvam speech out wanted (MS-5)?** If not, the slice stays closed.
+5. **Does "Fix all" need an elevation window?** The spec proposes yes, as bind does today.
+6. **Opus review.** Run an Opus review of this section after 2026-11-12, before MS-1 starts.
 
 ## 6B. CP-11 in detail — credits, keys, and the hop that makes them real
 
@@ -10562,7 +11730,9 @@ uv run pytest tests/unit/test_customer_console_seats.py tests/unit/test_customer
               tests/unit/test_customer_console_catalog.py \
               tests/unit/test_customer_console_decide.py \
               tests/unit/test_customer_console_billing_reads.py \
-              tests/unit/test_customer_console_billing_checkout.py
+              tests/unit/test_customer_console_billing_checkout.py \n              tests/unit/test_customer_console_aroh_app.py
+# The `_aroh_app.py` line is CP-APP (task 1105, 2026-10-30): the Aroh app and
+# "Connect Aroh", with its `pr-check.yml` entry.
 # The `_billing_reads.py` line is H-152's billing suite, added 2026-09-28 in
 # the PR that created it. It proves each `billing_read` door answers what its
 # organization-key twin answers, and that org A never reads org B.
@@ -10727,6 +11897,11 @@ surface, against fixtures.
 7. **Issuing a `cc_depl_` deployment key and setting it in a live deployment's
    env** (CP-2b, added 2026-08-18) — a credential issuance *and* a deployment env
    write. Minting keys against fixtures is AGENT-SAFE; a real one is not.
+   **Added 2026-10-30 (CP-APP): the "Connect Aroh" doors under
+   `/apps/connection` mint and revoke the Aroh box key from the Operator
+   Console.** The owner presses the button: it needs `admin`, an elevation
+   window and the typed name `aroh`. An agent tests it against a mock hub and
+   never presses it on a live Console.
    **And, extended 2026-08-18 by the F1 repair: setting
    `CUSTOMER_CONSOLE_RESOLVE_ENABLED=true` on a live deployment.** It is the
    Next-side switch that arms the sign-in hop, and turning it on converts every

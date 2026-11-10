@@ -327,7 +327,11 @@ class _PmLens(ItemSource):
         vis = await resolve_visibility_for(db, uid.lower())
         rows = (await db.execute(
             text(_ASSIGNEE_LOAD_SQL
-                 + " AND " + vis.project_clause("t.root_project_id")
+                 # WS-64 OP-9 (D-OP-15): scoped on the task's OWN node. A team node under
+                 # a personal root is visible, and its tasks carry that root as
+                 # ``root_project_id``, so a root scope would hide them. Both arms hold
+                 # every visible node at any depth, so this is the task read's own set.
+                 + " AND " + vis.project_clause("t.project_id")
                  + " GROUP BY 1"),
             dict(vis.params),
         )).fetchall()

@@ -1,10 +1,19 @@
-"""pr-check must run on `push`, not only on `pull_request` (H-10, R7).
+"""Two triggers, two files: pr-check on pull_request, push-check on push (R7).
 
-The defect this fences: `pull_request` builds check out `refs/pull/N/merge`, and
-GitHub does not compute that ref while a PR is conflicted. PR #439 sat `dirty`
-and reported `check_runs: 0` — no jobs at all — so the window in which a
-cross-branch migration-number collision is most likely is exactly the window in
-which `test_migration_prefixes.py` never runs.
+Two defects, and each one is the other's opposite:
+
+* H-10. `pull_request` builds check out `refs/pull/N/merge`, and GitHub does
+  not compute that ref while a PR is conflicted. PR #439 sat `dirty` and
+  reported `check_runs: 0`, so `test_migration_prefixes.py` never ran in the
+  window where a cross-branch migration-number collision is most likely. A
+  push build closes it.
+* #1077 (2026-10-16). The push build lived in pr-check.yml. Its push run made
+  a SKIPPED "Unit tests" check on the PR's head SHA, and GitHub counts a
+  skipped check as passed. So a PR with a failed shard read as mergeable for
+  about 7 minutes.
+
+So pr-check.yml has no push trigger, and push-check.yml runs only the R1
+guard, under a job name that no required check uses.
 
 These are assertions about the TRIGGER, not about any job: a job that never
 starts cannot fail, which is the whole shape of the bug.
@@ -15,54 +24,63 @@ from pathlib import Path
 import yaml
 
 _ROOT = Path(__file__).resolve().parents[2]
-_WORKFLOW = _ROOT / ".github/workflows/pr-check.yml"
+_WORKFLOWS = _ROOT / ".github/workflows"
+_WORKFLOW = _WORKFLOWS / "pr-check.yml"
+_PUSH = _WORKFLOWS / "push-check.yml"
 
 
-def _triggers() -> dict:
+def _doc(path: Path) -> dict:
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def _triggers(path: Path = _WORKFLOW) -> dict:
     """The `on:` block, around PyYAML's oldest trap.
 
     YAML 1.1 resolves the bare key `on` to the BOOLEAN True, so
     `doc["on"]` raises KeyError on a file that plainly contains `on:`.
-    A test that looked it up by name would fail for a reason having
-    nothing to do with CI, so look it up the way the parser stored it.
     """
-    doc = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
+    doc = _doc(path)
     return doc.get("on", doc.get(True))
 
 
-def test_pr_check_runs_on_push_as_well_as_pull_request() -> None:
+def test_pr_check_runs_on_pull_request_only() -> None:
     on = _triggers()
     assert "pull_request" in on, "the PR trigger must stay — it is the one GitHub shows on the PR"
-    assert "push" in on, (
-        "pr-check must also trigger on `push`. Without it a CONFLICTED PR runs "
-        "zero jobs (refs/pull/N/merge does not exist while a PR is dirty) and "
-        "GitHub renders that identically to 'nothing failing'."
+    assert "push" not in on, (
+        "a push run of pr-check makes a SKIPPED twin of each required check on "
+        "the PR head SHA, and GitHub counts a skipped check as passed"
     )
+
+
+def test_push_check_runs_the_migration_prefix_guard_on_push() -> None:
+    on = _triggers(_PUSH)
+    assert "push" in on
+    run = "\n".join(
+        step.get("run", "") for job in _doc(_PUSH)["jobs"].values() for step in job["steps"]
+    )
+    assert "pytest tests/unit/test_migration_prefixes.py" in run
 
 
 def test_the_push_trigger_is_not_narrowed_back_to_nothing() -> None:
     """`branches-ignore` is the only narrowing allowed, and only for published refs.
 
     A `branches:` allow-list would reintroduce the bug for every branch somebody
-    forgot to name — which is how the `pull_request` trigger acquired its own
-    "deliberately NOT restricted" comment after stacked PRs ran no checks.
-
-    The ignore-list is pinned exactly rather than merely checked for `main`: each
-    name on it is a ref where this workflow does NOT run, so an addition is a
-    fence removed. The three allowed are the ones already checked upstream of the
-    push — `main` by deploy.yml, `release` because deploy.yml's `publish-release`
-    only ever fast-forwards it to a SHA that has been on `main`, and `staging`
-    for the same reason once T-6/T-7 land the ladder.
+    forgot to name. Each name on the ignore-list is a ref where the guard does
+    NOT run, so an addition is a fence removed.
     """
-    push = _triggers()["push"]
+    push = _triggers(_PUSH)["push"]
     assert "branches" not in push, (
         "an allow-list silently excludes every branch not named in it; "
         "use branches-ignore so new branches are covered by default"
     )
-    assert push.get("branches-ignore") == ["main", "release", "staging"], (
-        "main is covered by deploy.yml and release/staging are published refs "
-        "fast-forwarded to already-checked SHAs; every other branch must run"
-    )
+    assert push.get("branches-ignore") == ["main", "release", "staging"]
+
+
+def test_no_push_job_shares_a_name_with_a_pr_check_job() -> None:
+    """A push job named like a required check twins it on the same SHA."""
+    pr_names = {j.get("name") for j in _doc(_WORKFLOW)["jobs"].values()}
+    push_names = {j.get("name") for j in _doc(_PUSH)["jobs"].values()}
+    assert not pr_names & push_names
 
 
 def test_the_secret_scan_range_survives_a_push_event() -> None:
@@ -70,12 +88,16 @@ def test_the_secret_scan_range_survives_a_push_event() -> None:
 
     Left unguarded it yields RANGE="..HEAD", which git reads as the whole
     history — precisely the historical leak (BO-8) the scan is scoped to skip.
+    The scan runs on pull_request today. The guard stays for any trigger
+    added later.
     """
     body = _WORKFLOW.read_text(encoding="utf-8")
-    assert 'if [ "${{ github.event_name }}" = "pull_request" ]' in body, (
-        "the secret scan must branch on the event; the PR-only base sha is "
-        "empty under the push trigger"
-    )
-    assert "git merge-base origin/main HEAD" in body, (
-        "a push build needs a base to measure its commit range against"
-    )
+    assert 'if [ "${{ github.event_name }}" = "pull_request" ]' in body
+    assert "git merge-base origin/main HEAD" in body
+
+
+def test_a_new_push_cancels_the_older_run_of_the_same_pr() -> None:
+    """On a 20-job runner cap, a superseded run holds runners the newer run needs."""
+    concurrency = _doc(_WORKFLOW)["concurrency"]
+    assert concurrency["cancel-in-progress"] is True
+    assert "github.event.pull_request.number" in concurrency["group"]

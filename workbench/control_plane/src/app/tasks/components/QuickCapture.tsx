@@ -1,17 +1,21 @@
 "use client";
 
+import { useCloseOnBarTap } from "@/lib/phoneBarTap";
 import Button from "@/components/ui/Button";
 import AppIcon, { themedIcon, type ThemedIcon } from "@/components/Icon";
 import { useEffect, useRef, useState } from "react";
 import { useTaskStore } from "../lib/taskStore";
 import { apiAtomize } from "../lib/api";
-import { snoozeOptions, detectDateHint, matchWhere } from "../lib/utils";
+import { snoozeOptions, detectDateHint, matchWhere, browserTimeZone } from "../lib/utils";
 import { CAPTURE_TRIGGERS } from "../lib/mockData";
 import { AttachmentComposer } from "./AttachmentComposer";
 import type { TaskAttachment } from "../lib/types";
 import { useVisualViewport } from "../lib/useVisualViewport";
 import { captureDestinations, destinations, useCompanyTree } from "../lib/companyTree";
 import { parseProjectToken } from "../lib/quickAdd";
+import { dueInstantForDay } from "@/app/projects/lib/quickAdd";
+import { PAST_FIELD_WORDS, gridZone, instantIso } from "@/lib/reminderClock";
+import { createReminder, createdWords } from "@/lib/reminderWrite";
 
 // Ubiquitous capture (C2) + Mind Sweep (C3/C4). A global palette openable from
 // any Tasks view via a hotkey (C) or a button. Single mode = rapid-fire
@@ -56,12 +60,18 @@ function QuickCapturePanel() {
 
   const vp = useVisualViewport();
   const [mode, setMode] = useState<"single" | "sweep">(storeMode);
-  const [value, setValue] = useState("");
+  // The coordinator's words, when it opened Capture (NS-4b). Read once, as
+  // the box opens; the member edits them before anything is filed.
+  const [value, setValue] = useState(() => useTaskStore.getState().quickCaptureSeed ?? "");
+  const seedFromAI = useState(() => useTaskStore.getState().quickCaptureSeedFromAI)[0];
   const [added, setAdded] = useState(0);
   const [pendingAtts, setPendingAtts] = useState<TaskAttachment[]>([]);
-  // Optional capture-time date: a "remind" tickler (defer_until — hidden until
-  // then, resurfaces in the inbox) or a "due" deadline (due_at + hard date).
+  // Optional capture-time date: a "remind" (RX-6: a REAL reminder at a date and
+  // a time, on the Calendar, and no task) or a "due" deadline (due_at + hard
+  // date). A due date is a day. A reminder is a moment.
   const [dateIso, setDateIso] = useState("");
+  const [remindError, setRemindError] = useState("");
+  const [remindSaving, setRemindSaving] = useState(false);
   const [dateKind, setDateKind] = useState<"remind" | "due">("remind");
   // Sweep has a review gate: write → review the parsed items → add.
   const [phase, setPhase] = useState<"write" | "review">("write");
@@ -89,6 +99,9 @@ function QuickCapturePanel() {
     setSplitFromSingle(false);
   };
 
+  // A tap on a tab of the phone's bar closes it, and the tab then acts.
+  useCloseOnBarTap(close);
+
   // Escape closes.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -103,14 +116,48 @@ function QuickCapturePanel() {
     .map((l) => l.trim())
     .filter(Boolean).length;
 
+  // "Remind me" makes a real reminder through the reminder route (RX-6). The
+  // line is its title, and no task is made. The time is read in the browser
+  // zone, as the Calendar reads it. A refusal stays in the box, with the words.
+  const setReminderFrom = async (t: string) => {
+    const ms = Date.parse(dateIso);
+    if (Number.isNaN(ms) || ms <= Date.now()) {
+      setRemindError(PAST_FIELD_WORDS);
+      return;
+    }
+    if (t.length > 200) {
+      setRemindError("Keep the title to 200 characters.");
+      return;
+    }
+    const zone = gridZone(browserTimeZone());
+    setRemindSaving(true);
+    setRemindError("");
+    const got = await createReminder({ title: t, kind: "action", fireAt: instantIso(ms, zone), tz: zone });
+    setRemindSaving(false);
+    if (!got.ok) {
+      setRemindError(got.words);
+      return;
+    }
+    if (got.already) {
+      // RX-7: a repeat wrote nothing. Say so, and keep the line, so the member
+      // does not think a second reminder was made.
+      setRemindError(createdWords(got, { ms }, zone));
+      return;
+    }
+    setValue("");
+    setDateIso("");
+    setAdded((a) => a + 1);
+    inputRef.current?.focus();
+  };
+
   const doCaptureSingle = (t: string) => {
-    // A captured date rides along: "remind" → tickler (defer_until); "due" →
-    // deadline (due_at + hard date). No date → pure capture, unchanged.
-    const dates = dateIso
-      ? dateKind === "remind"
-        ? { deferUntil: dateIso }
-        : { dueAt: dateIso, isHardDate: true }
-      : undefined;
+    if (dateIso && dateKind === "remind") {
+      void setReminderFrom(t);
+      return;
+    }
+    // A captured "due" date rides along (due_at + hard date). No date → pure
+    // capture, unchanged.
+    const dates = dateIso ? { dueAt: dateIso, isHardDate: true } : undefined;
     captureLine(t, {
       targets,
       attachments: pendingAtts.length ? pendingAtts : undefined,
@@ -156,7 +203,7 @@ function QuickCapturePanel() {
 
   const submitSingle = () => {
     const t = value.trim();
-    if (!t || verifying) return;
+    if (!t || verifying || remindSaving) return;
     // Multi-task detection only when it's worth it: live backend, no per-item
     // date/attachment already chosen (those signal a single item), and the text
     // reads like several actions. Everything else files instantly.
@@ -249,6 +296,13 @@ function QuickCapturePanel() {
 
         {mode === "single" ? (
           <div className="p-4">
+            {/* §6.4 rule 2: a filled field says who filled it. */}
+            {seedFromAI ? (
+              <p className="mb-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+                <AppIcon name="Sparkles" className="h-3.5 w-3.5 shrink-0 text-primary" />
+                Filled by AI. Check it, then press Enter to add it.
+              </p>
+            ) : null}
             <div className="tech-transition flex items-center gap-3 rounded-xl border border-border bg-background/60 px-4 py-3 focus-within:border-primary/50">
               <AppIcon name="Plus" className="h-5 w-5 shrink-0 text-muted-foreground" />
               <input
@@ -262,15 +316,15 @@ function QuickCapturePanel() {
                   }
                 }}
                 autoFocus
-                placeholder="Capture to inbox… (# for a project)"
-                aria-label="Capture to inbox"
+                placeholder="Capture to my task inbox… (# for a project)"
+                aria-label="Capture to my task inbox"
                 className="flex-1 bg-transparent text-base text-foreground placeholder:text-muted-foreground focus:outline-none"
               />
               <button
                 type="button"
                 onClick={submitSingle}
                 disabled={!value.trim() || verifying}
-                aria-label="Add to inbox"
+                aria-label="Add to my task inbox"
                 className={[
                   "tech-transition inline-flex shrink-0 items-center gap-1 rounded-md px-2.5 py-1.5 text-xs font-medium",
                   value.trim() && !verifying
@@ -304,6 +358,7 @@ function QuickCapturePanel() {
               iso={dateIso}
               kind={dateKind}
               hint={detectDateHint(value)}
+              error={remindError}
               onChange={(iso, k) => { setDateIso(iso); setDateKind(k); }}
               onClear={() => setDateIso("")}
             />
@@ -482,7 +537,7 @@ function QuickCapturePanel() {
                 ].join(" ")}
               >
                 <AppIcon name="ListPlus" className="h-4 w-4" />
-                Add {reviewCount} to inbox
+                Add {reviewCount} to my task inbox
               </button>
             </div>
           </div>
@@ -520,28 +575,39 @@ function ModeTab({
   );
 }
 
-// Optional capture-time date (GTD tickler / deadline). "Remind me" sets a
-// defer_until so the item is hidden until then and resurfaces in the inbox;
-// "Due date" sets a hard due_at that shows on the Calendar. Capture stays fast:
-// this is tucked below the input and never required. A detected date phrase in
-// the title surfaces a one-tap hint.
+// Optional capture-time date. "Remind me" makes a REAL reminder at a date and a
+// time (RX-6): it shows on the Calendar, it asks the member at that moment, and
+// it makes no task. "Due date" sets a hard due_at, a day, on a task. Capture
+// stays fast: this is tucked below the input and never required. A detected
+// date phrase in the title surfaces a one-tap hint.
+/** "HH:MM" on the browser's wall clock, for the time field. */
+function clockOf(iso: string): string {
+  const d = new Date(iso);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
 function CaptureWhen({
   iso,
   kind,
   hint,
+  error,
   onChange,
   onClear,
 }: {
   iso: string;
   kind: "remind" | "due";
   hint: string | null;
+  /** The words of a refused reminder, under the controls. */
+  error: string;
   onChange: (iso: string, kind: "remind" | "due") => void;
   onClear: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const opts = snoozeOptions();
   const dateLabel = iso
-    ? new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" })
+    ? kind === "remind"
+      ? new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+      : new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" })
     : "";
 
   if (iso && !open) {
@@ -569,7 +635,7 @@ function CaptureWhen({
           onClick={() => setOpen(true)}
           className="tech-transition inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-[11px] font-medium text-muted-foreground hover:border-primary/40 hover:text-foreground"
         >
-          <AppIcon name="Bell" className="h-3 w-3" /> Remind me / due date
+          <AppIcon name="Bell" className="h-3 w-3" /> Remind me at a time / due date
         </button>
         {hint && (
           <button
@@ -629,18 +695,38 @@ function CaptureWhen({
           value={iso ? iso.slice(0, 10) : ""}
           onChange={(e) => {
             if (!e.target.value) return onClear();
-            const d = new Date(e.target.value);
+            const d = new Date(dueInstantForDay(e.target.value));
             d.setHours(9, 0, 0, 0);
             onChange(d.toISOString(), kind);
           }}
-          className="rounded-md border border-border bg-background/60 px-2 py-1 text-[11px] text-foreground focus:border-primary/50 focus:outline-none"
+          className="rounded-md border border-border bg-background/60 px-2 py-1 text-[11px] text-foreground focus:border-primary/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         />
+        {kind === "remind" && iso && (
+          <input
+            type="time"
+            aria-label="Time"
+            value={clockOf(iso)}
+            onChange={(e) => {
+              const m = /^(\d{2}):(\d{2})$/.exec(e.target.value);
+              if (!m) return;
+              const d = new Date(iso);
+              d.setHours(Number(m[1]), Number(m[2]), 0, 0);
+              onChange(d.toISOString(), kind);
+            }}
+            className="rounded-md border border-border bg-background/60 px-2 py-1 text-[11px] text-foreground focus:border-primary/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          />
+        )}
       </div>
       <p className="text-[10px] text-muted-foreground">
         {kind === "remind"
-          ? "Hidden from the inbox until this date, then it resurfaces."
-          : "A deadline — shows on the Calendar and flags when it's due."}
+          ? "A reminder at this date and time. It shows on your Calendar and makes no task."
+          : "A deadline — a day. It shows on the Calendar and flags when it's due."}
       </p>
+      {error && (
+        <p role="alert" className="text-[11px] text-destructive">
+          {error}
+        </p>
+      )}
     </div>
   );
 }

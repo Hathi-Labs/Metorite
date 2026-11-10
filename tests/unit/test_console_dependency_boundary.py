@@ -367,6 +367,59 @@ _THE_APPROVE_CALLER = "apps/services/gateway/gateway/routes/admin/access_request
 #: a body, a query parameter or a path segment. The entry is NARROWED by
 #: ``test_the_billing_proxy_touches_only_the_billing_read_client`` below.
 _THE_BILLING_CALLER = "apps/services/gateway/gateway/routes/billing.py"
+#: ⚠️ **The ELEVENTH entry — the embed door, CP-EMB, 2026-10-17 — and the
+#: argument, because this list's own rule is that a new entry states one.**
+#:
+#: ``gateway/kb_index/embed.py`` is the ONE function that makes a vector for
+#: Knowledge and for CRM note search. It calls ``embeddings_on_console`` and
+#: **allocates no seat**. The door it reaches serves vectors and nothing else,
+#: and it never touches ``resolve_for_signin``.
+#:
+#: **Why it had to be added.** The gateway's own ``/v1/embeddings`` needs an
+#: OpenAI key that production does not hold, so no vector was made
+#: (``customer_console.md`` §6A.16). The Router door serves the vectors on the
+#: account the Console holds.
+#:
+#: 📌 Like the in-product AI hop, it names the member from the RUN CONTEXT
+#: (``acb_llm.routed.run_attribution``), never from a request body. The entry
+#: is NARROWED by ``test_the_embed_door_touches_only_the_embed_client`` below.
+_THE_EMBED_CALLER = "apps/services/gateway/gateway/kb_index/embed.py"
+#: ⚠️ **The TWELFTH entry — the admin org rename, CP-8, 2026-10-27 — and the
+#: argument, because this list's own rule is that a new entry states one.**
+#:
+#: ``PATCH /admin/organization`` renames the tenant plane and commits. A
+#: post-commit mirror then calls ``rename_org_on_console``, so the Console's
+#: ``organization.name`` follows. That door writes one name and **allocates no
+#: seat**. It never touches ``resolve_for_signin``.
+#:
+#: **Why it had to be added.** The two planes each kept a name and nothing
+#: connected them. A customer admin renamed their org in the app, and the
+#: Operator Console still showed the old name (``customer_console.md`` CP-8
+#: "Rename an organization").
+#:
+#: 📌 It is a **session-email-only** route like the member doors: the actor is
+#: ``admin.email`` from the authenticated context (R11), and the Console derives
+#: the org from placement and membership. The entry is NARROWED by
+#: ``test_the_rename_mirror_touches_only_the_rename_client`` below.
+_THE_RENAME_CALLER = "apps/services/gateway/gateway/routes/admin/organization.py"
+#: ⚠️ **The THIRTEENTH entry — the chat's voice input, VOX-1, 2026-11-08 —
+#: and the argument, because this list's own rule is that a new entry states
+#: one.**
+#:
+#: ``POST /chat/transcribe`` sends one spoken clip to the Console's metered
+#: transcribe door (``customer_console.md`` §6A.10a) and answers the text. It
+#: calls ``transcribe_on_console`` and **allocates no seat**. The door serves
+#: a transcript and nothing else, and it never touches ``resolve_for_signin``.
+#:
+#: **Why it had to be added.** The door had no tenant caller (§6A.10a clause
+#: 7), and ``projects_ai_chat.md`` §31 VOX-1 is that caller. A direct litellm
+#: call from the gateway would bill nothing (§31.3 item 5).
+#:
+#: 📌 It is a **session-email-only** route: the member is ``user.email`` from
+#: the authenticated context (R11), and it is proven only by the run context
+#: that the session bound. The entry is NARROWED by
+#: ``test_the_voice_route_touches_only_the_transcribe_client`` below.
+_THE_TRANSCRIBE_CALLER = "apps/services/gateway/gateway/routes/chat_transcribe.py"
 _ALLOWED_CALLERS = (
     _THE_IN_PRODUCT_AI_CALLER,
     _THE_ONE_CALLER,
@@ -378,10 +431,25 @@ _ALLOWED_CALLERS = (
     _THE_DECIDE_CALLER,
     _THE_APPROVE_CALLER,
     _THE_BILLING_CALLER,
+    _THE_EMBED_CALLER,
+    _THE_RENAME_CALLER,
+    _THE_TRANSCRIBE_CALLER,
 )
+
+#: The ONLY names ``routes/admin/organization.py`` may read from
+#: ``console_resolve``: the rename client and the wiring question. The mirror
+#: asks ``is_wired`` first, so an unwired box makes no call and logs nothing.
+_RENAME_ALLOWED_NAMES = frozenset({"rename_org_on_console", "is_wired"})
 
 #: The ONLY names ``acb_llm/decide.py`` may read from ``console_resolve``.
 _DECIDE_ALLOWED_NAMES = frozenset({"decide_on_console", "ConsoleRouterUnavailable"})
+
+#: The ONLY name ``kb_index/embed.py`` may read from ``console_resolve``.
+_EMBED_ALLOWED_NAMES = frozenset({"embeddings_on_console"})
+
+#: The ONLY names ``routes/chat_transcribe.py`` may read from
+#: ``console_resolve``: the transcribe client and its outage type.
+_TRANSCRIBE_ALLOWED_NAMES = frozenset({"transcribe_on_console", "ConsoleRouterUnavailable"})
 
 #: The ONLY names ``routes/billing.py`` may read from ``console_resolve``: the
 #: billing READ client, the three CHECKOUT clients (H-152's second half), their
@@ -480,6 +548,36 @@ def test_the_decide_facade_touches_only_the_decide_client() -> None:
     )
 
 
+def test_the_embed_door_touches_only_the_embed_client() -> None:
+    """``kb_index/embed.py`` is on the list for ONE name, and this pins it.
+
+    The list admits the FILE. This admits only the embeddings client, so a
+    later edit cannot call ``resolve_for_signin`` or a seat write from the
+    index.
+    """
+    used, imported = _console_resolve_names(_tree(_REPO / _THE_EMBED_CALLER))
+    assert used or imported, "the embed door no longer reaches console_resolve"
+    assert (used | imported) <= _EMBED_ALLOWED_NAMES, (
+        f"kb_index/embed.py reads {sorted((used | imported) - _EMBED_ALLOWED_NAMES)} "
+        "from console_resolve. It may read only the embeddings client."
+    )
+
+
+def test_the_voice_route_touches_only_the_transcribe_client() -> None:
+    """``routes/chat_transcribe.py`` is on the list for TWO names (VOX-1).
+
+    The list admits the FILE. This admits only the transcribe client and its
+    outage type, so a later edit cannot reach a seat write or the resolve.
+    """
+    used, imported = _console_resolve_names(_tree(_REPO / _THE_TRANSCRIBE_CALLER))
+    assert used or imported, "the voice route no longer reaches console_resolve"
+    assert (used | imported) <= _TRANSCRIBE_ALLOWED_NAMES, (
+        f"routes/chat_transcribe.py reads "
+        f"{sorted((used | imported) - _TRANSCRIBE_ALLOWED_NAMES)} from "
+        f"console_resolve, beyond {sorted(_TRANSCRIBE_ALLOWED_NAMES)}"
+    )
+
+
 def test_the_billing_proxy_touches_only_the_billing_read_client() -> None:
     """``routes/billing.py`` is on the list for SEVEN names, and this pins them.
 
@@ -492,6 +590,22 @@ def test_the_billing_proxy_touches_only_the_billing_read_client() -> None:
     assert (used | imported) <= _BILLING_ALLOWED_NAMES, (
         f"routes/billing.py reads {sorted((used | imported) - _BILLING_ALLOWED_NAMES)} "
         "from console_resolve. It may read only the billing read client."
+    )
+
+
+def test_the_rename_mirror_touches_only_the_rename_client() -> None:
+    """``routes/admin/organization.py`` is on the list for TWO names.
+
+    The list admits the FILE. This admits only the rename client and the
+    wiring question, so a later edit cannot call ``resolve_for_signin`` or a
+    seat write from the rename route.
+    """
+    used, imported = _console_resolve_names(_tree(_REPO / _THE_RENAME_CALLER))
+    assert used or imported, "the rename mirror no longer reaches console_resolve"
+    assert (used | imported) <= _RENAME_ALLOWED_NAMES, (
+        f"routes/admin/organization.py reads "
+        f"{sorted((used | imported) - _RENAME_ALLOWED_NAMES)} from "
+        "console_resolve. It may read only the rename client and is_wired."
     )
 
 
@@ -538,6 +652,11 @@ def test_resolve_is_reachable_only_from_the_signin_path() -> None:
     SEVEN → EIGHT by WS-31 CP-13c (2026-09-24): ``acb_llm/decide.py``
     (``decide_on_console``, the ``decide`` facade). Each argument is written
     beside its name above.
+
+    ⚠️ The approve door, the billing proxy and, on 2026-10-17, CP-EMB's
+    ``kb_index/embed.py`` (``embeddings_on_console``) took the list to
+    ELEVEN. On 2026-10-27 CP-8's admin rename (``rename_org_on_console``)
+    took it to TWELVE. Each argument is written beside its name above.
 
     What stays forbidden is unchanged: wiring any of them behind
     ``resolve_access`` (six callers, one a room fan-out) = farmable seat burn.

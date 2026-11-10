@@ -132,6 +132,14 @@ _PROBES: dict[tuple[str, str], dict] = {
     ("POST", "/billing/seats/release"): {"json": {"org_slug": "nope",
                                                   "email": "a@b.c",
                                                   "plan_slug": "core"}},
+    # 2026-10-15 — the member-REMOVE door. EDITOR, like the seat release
+    # above. An unknown org answers 404 past the gate, so nothing is written.
+    ("POST", "/registry/members/remove"): {"json": {"org_slug": "nope",
+                                                    "member_email": "a@b.c"}},
+    # CP-8, 2026-10-27 — the org-rename door. EDITOR. An unknown org answers
+    # 404 past the gate, so nothing is written, and a viewer gets 403.
+    ("POST", "/registry/orgs/rename"): {"json": {"org_slug": "nope",
+                                                 "name": "X"}},
     ("POST", "/credits/grant"): {"json": {"org_slug": "nope", "credits": "1",
                                           "reason": "manual"}},
     ("POST", "/keys"): {"json": {"org_slug": "nope", "label": "t"}},
@@ -139,6 +147,15 @@ _PROBES: dict[tuple[str, str], dict] = {
     # CP-13b. No questions, so an admin meets clause 13's 400 before the
     # chain resolves. No vendor is ever called from this probe.
     ("POST", "/catalog/decide/try"): {"json": {"state": "x", "questions": {}}},
+    # VOX-4. A body that is no clip and no image, so an admin meets the
+    # route's own refusal before any vendor is called.
+    ("POST", "/catalog/transcribe/try"): {"files": {"file": ("x.wav", b"x")}},
+    ("POST", "/catalog/vision/try"): {"files": {"file": ("x.png", b"x")}},
+    # MS-1. Two reads, and a fix whose empty list an admin meets as a 422
+    # before any chain is read.
+    ("GET", "/catalog/providers"): {},
+    ("GET", "/catalog/health"): {},
+    ("POST", "/catalog/health/fix"): {"json": {"entries": []}},
 }
 
 _CELLS = [

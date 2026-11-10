@@ -24,8 +24,8 @@ A member can still change colour mode, density and accent at Settings →
 Appearance. Those three axes adjust the one look. They do not replace it. This
 skill is not how you reach them.
 
-*Metorite note, added at adoption. A refresh from `skills/upstream/anthropics/`
-removes this block. Put it back. See `skills/upstream/README.md`.*
+*Metorite note, added at adoption. A refresh from github.com/anthropics/skills
+removes this block. Put it back.*
 
 
 

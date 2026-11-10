@@ -15,6 +15,10 @@
 // `/tasks`-only file. `/email` carried the identical defect, and a second
 // copy of this test would have been a second place to remember. When a third
 // surface grows a model picker, add a row; do not add a file.
+//
+// ⚠️ **The /email row left on 2026-10-09 (D-EM-61).** The owner withdrew the
+// email tier choice, so the email settings have no picker to fence here.
+// `app/email/lib/noTierChoice.test.ts` fences that the picker stays gone.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -28,12 +32,6 @@ const SURFACES = [
   {
     name: "/tasks (LIVE — one of the nine)",
     path: join(APP, "tasks", "components", "TaskSettingsModal.tsx"),
-  },
-  {
-    name: "/email (preview — WS-17)",
-    path: join(
-      APP, "email", "components", "automation", "ai-settings", "SettingsTab.tsx",
-    ),
   },
 ] as const;
 
@@ -73,9 +71,10 @@ describe.each(SURFACES)("$name offers tiers only", ({ path }) => {
 });
 
 describe("the fence covers every picker that exists", () => {
-  it("names both known surfaces", () => {
+  it("names the one known surface", () => {
     // A table-driven fence silently shrinks if a row is deleted. Pinning the
     // count means removing a surface is a decision somebody makes on purpose.
-    expect(SURFACES).toHaveLength(2);
+    // The /email row left on purpose with D-EM-61 (2026-10-09).
+    expect(SURFACES).toHaveLength(1);
   });
 });

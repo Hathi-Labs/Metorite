@@ -6,6 +6,7 @@ import { Email } from "../lib/types";
 import { getEmail } from "../lib/api";
 import { fullDateLabel } from "../lib/utils";
 import { MessageContent } from "./MessageContent";
+import { remoteHtmlId } from "../lib/htmlPrefetch";
 
 /**
  * A lightweight, closable email preview. Fetches the full message by id and
@@ -91,21 +92,10 @@ export function EmailPreviewModal({
           </button>
         </div>
         <div className="overflow-y-auto px-4 py-3 flex-1">
-          {loading && !e ? (
-            <div className="flex items-center gap-2 text-xs text-muted-foreground py-6">
-              <Icon name="Loader2" className="animate-spin" size={14} /> Loading…
-            </div>
-          ) : err ? (
-            <div className="text-xs text-destructive">{err}</div>
-          ) : e && (e.bodyHtml || e.bodyText) ? (
-            <MessageContent html={e.bodyHtml} text={e.bodyText} />
-          ) : (
-            <div className="text-xs text-muted-foreground italic py-2">
-              No preview text.
-            </div>
-          )}
+          {/* The files sit above the body, as in the reading pane (owner,
+              2026-11-06). */}
           {(e?.attachments?.length ?? 0) > 0 && (
-            <div className="mt-3 flex flex-wrap gap-1.5">
+            <div className="mb-3 flex flex-wrap gap-1.5">
               {e!.attachments!.map((a) => (
                 <span
                   key={a.id}
@@ -114,6 +104,19 @@ export function EmailPreviewModal({
                   <Icon name="Paperclip" size={10} /> {a.filename}
                 </span>
               ))}
+            </div>
+          )}
+          {loading && !e ? (
+            <div className="flex items-center gap-2 text-xs text-muted-foreground py-6">
+              <Icon name="Loader2" className="animate-spin" size={14} /> Loading…
+            </div>
+          ) : err ? (
+            <div className="text-xs text-destructive">{err}</div>
+          ) : e && (e.bodyHtml || e.bodyText) ? (
+            <MessageContent html={e.bodyHtml} text={e.bodyText} remoteId={remoteHtmlId(e)} messageId={e.id} />
+          ) : (
+            <div className="text-xs text-muted-foreground italic py-2">
+              No preview text.
             </div>
           )}
         </div>

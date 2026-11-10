@@ -21,8 +21,9 @@ DELETE /agent/workspace/{session_id}/file?path=<rel_path>
     Delete a file from the workspace.
 
 POST /agent/workspace/{session_id}/upload
-    Upload one or more files (multipart/form-data).  Files land in .tmp/
-    under the workspace root.  Returns the list of created FileEntry objects.
+    Upload one or more files (multipart/form-data).  Files land in the
+    session's attachment folder: ``inputs/<thread slug>/`` in a shared agent's
+    tenant dir, else ``inputs/`` (H-229).  Returns the created FileEntry objects.
 
 PATCH /agent/workspace/{session_id}
     Set or update the workspace_path for a session (called by write_artifact tool).
@@ -38,15 +39,25 @@ GET /agent/workspace/{session_id}/events
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import mimetypes
 import os
+import stat as _stat_mod
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user
 from acb_common import get_logger
+
+# The excluded dirs, the secret and junk names and the blocked-path rule are
+# ONE rule in ``acb_skills.agent_paths`` since 2026-10-11, because
+# ``package_artifacts`` must leave out the same files. These names are aliases.
+from acb_skills.agent_paths import EXCLUDED_DIRS as _EXCLUDED_DIRS
+from acb_skills.agent_paths import is_blocked_rel as _is_blocked_path
+from acb_skills.agent_paths import is_hidden_or_secret_name as _is_hidden_or_secret_file
+from acb_skills.agent_paths import is_thread_package_rel
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
@@ -116,6 +127,8 @@ async def _mirror_gateway_write(
     action: str,
     session_id: str | None,
     organization_id: str | None = None,
+    owner_email: str | None = None,
+    via: str = "upload",
 ) -> None:
     """Write-through a gateway file write into the authoritative blob store.
 
@@ -125,9 +138,14 @@ async def _mirror_gateway_write(
 
     *organization_id* is the caller's tenant, from the authenticated identity
     (H-201 part 2). ``None`` falls back to the tenant the request bound.
+
+    *owner_email* and *via* are the provenance of the registry row (WS-60
+    AM-1): the member who uploaded or saved the file, and the door
+    (``upload`` or ``app``). With no owner, no row is registered.
     """
     try:
         from acb_memory import is_stored_path, put_file
+        from acb_memory.artifacts import Provenance
     except ImportError:
         return
     rel = rel_path.replace("\\", "/")
@@ -137,11 +155,15 @@ async def _mirror_gateway_write(
 
     mime = _mt.guess_type(rel)[0] or "application/octet-stream"
     agent, instance = _blob_key_for_workspace(workspace)
+    prov = (
+        Provenance(owner_email=owner_email, made_by="member", via=via, session_id=session_id)
+        if owner_email else None
+    )
     try:
         await put_file(
             agent, rel, data,
             mime_type=mime, action=action, session_id=session_id, actor="user",
-            instance=instance, organization_id=organization_id,
+            instance=instance, organization_id=organization_id, provenance=prov,
         )
     except Exception as exc:
         _log.warning("workspace.blob_mirror_failed", path=rel, error=str(exc)[:200])
@@ -149,12 +171,18 @@ async def _mirror_gateway_write(
 
 async def _faultin_from_store(
     workspace: Path, rel_path: str, organization_id: str | None = None,
+    *, accept: Any = None,
 ) -> bool:
     """Restore a file missing from the disk cache from the authoritative store.
 
     Returns True and writes the file to disk if the store had it, else False.
     Only applies to the three backed folders; a no-op otherwise.
     *organization_id* is the caller's tenant (see :func:`_mirror_gateway_write`).
+
+    *accept* is an async check on the stored bytes, made BEFORE anything is
+    written (H-227). A loose file of a shared agent's tenant dir restores
+    only for a session that the blob history shows wrote those bytes
+    (:func:`_session_owns_loose`). A refused file is never written to disk.
 
     H-201 part 3 (``projects_ai_chat.md`` §21.15):
 
@@ -188,9 +216,20 @@ async def _faultin_from_store(
         data = await get_file(agent, rel, instance="", organization_id=organization_id)
     if data is None:
         return False
-    dest = _safe_resolve(workspace, rel)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(data)
+    if accept is not None and not await accept(data):
+        return False
+    from acb_skills import safe_open
+
+    # WS-43d (§7.5 rule B): the blob goes back into the dir through the safe
+    # opener, so a link that a container planted cannot point the write at a
+    # host file.
+    try:
+        await asyncio.to_thread(
+            safe_open.write_bytes, workspace, _open_rel(workspace, rel), data,
+        )
+    except (safe_open.UnsafePath, OSError) as exc:
+        _log.warning("workspace.faultin_refused", agent=agent, path=rel, error=str(exc)[:200])
+        return False
     _log.info("workspace.faulted_in", agent=agent, path=rel)
     return True
 
@@ -245,20 +284,31 @@ def _app_workspace_for(
     The ``apps`` read runs in the caller's tenant, so an app of another
     tenant is not found. A write also needs edit rights on that app, the
     same rule the app routes use (``_common.can_edit``).
+
+    ⚠️ A Studio package (``format = 'manifest'``, WS-STU A3) is not an app
+    here, and it stores ``workspace_path = ''``. ``Path('')`` resolves to the
+    working directory of the process, so a package would bind a session to
+    that whole folder. Two guards: the query skips a package, and
+    ``workspace_dir`` refuses an empty or blank path. Fences:
+    ``test_studio_packages_r8.py`` and ``test_studio_packages_store.py``.
     """
     from acb_auth import UserContext as _UC
     from acb_auth.roles import UserRole
     from acb_graph import tenant_session
-    from gateway.routes.apps._common import can_edit
+    from gateway.routes.apps._common import can_edit, workspace_dir
     from sqlalchemy import text
 
     with tenant_session(organization_id) as s:
         apps = s.execute(text(
             "SELECT id, owner_email, workspace_path FROM apps "
-            "WHERE workspace_path IS NOT NULL")).fetchall()
+            "WHERE workspace_path IS NOT NULL "
+            "AND format IS DISTINCT FROM 'manifest'")).fetchall()
         for app in apps:
+            folder = workspace_dir(app.workspace_path)
+            if folder is None:
+                continue
             try:
-                ws = Path(str(app.workspace_path)).resolve(strict=True)
+                ws = folder.resolve(strict=True)
             except OSError:
                 continue
             if not _is_under(resolved, ws):
@@ -385,6 +435,21 @@ def _refuse_shared_clone_write(workspace: Path) -> None:
         )
 
 
+#: The names of a chat session that mean the default agent. The chat proxy
+#: (`app/api/agent/chat/route.ts`) runs each of them as the orchestrator, from
+#: `DEFAULT_AGENT_NAMES` in `workbench/control_plane/src/lib/chatMemorySave.ts`.
+#: This set mirrors that one. Fence: `src/lib/chatUpload.test.ts` compares them.
+_DEFAULT_CHAT_AGENT_ALIASES: frozenset[str] = frozenset({
+    "orchestrator", "default", "metorite", "",
+})
+
+
+def _chat_agent_name(name: str | None) -> str:
+    """The agent that runs a chat session named *name*, as the proxy maps it."""
+    clean = str(name or "").strip()
+    return "orchestrator" if clean.lower() in _DEFAULT_CHAT_AGENT_ALIASES else clean
+
+
 def _get_workspace_path(
     session_id: str, user_email: str | None, organization_id: str | None,
 ) -> Path | None:
@@ -445,9 +510,15 @@ def _get_workspace_path(
             )
 
         # ── 2. Derive from agent clone directory ────────────────────────────
-        agent_name: str = row.agent_name or ""
-        if not agent_name or agent_name in ("orchestrator", "default"):
-            return None
+        # The orchestrator is a shared agent like any other (2026-10-09). Its
+        # runs work in its tenant dir (`executor._resolve_run_workspace`), so
+        # its sessions resolve that dir here too. This line returned None for
+        # it from June 2026, when the main chat had no agent clone, so every
+        # upload into a new main chat answered 404. The chat proxy runs each
+        # alias of the default agent as the orchestrator, so a legacy session
+        # named "metorite" or "default" resolves the same dir.
+        # Fence: tests/unit/test_orchestrator_upload.py.
+        agent_name: str = _chat_agent_name(row.agent_name)
 
         # H-201 part 3: a personal agent gives the viewer's own folder, and a
         # shared agent the viewer's tenant dir. Neither is ever the clone.
@@ -759,6 +830,766 @@ def _safe_resolve(root: Path, rel: str) -> Path:
     return resolved
 
 
+# ---------------------------------------------------------------------------
+# The safe opener (WS-43d, maf_coding_engine.md §7.5 rule B)
+# ---------------------------------------------------------------------------
+# A sandbox container can write anything in the dir it mounts: a link, or a
+# part that turns into a link while the host reads it. So every route that
+# reads or writes a workspace file by path opens it with
+# ``acb_skills.safe_open``. ``_safe_resolve`` still answers 400 for an escape,
+# and the opener then refuses a link at any depth, which reads as absent.
+
+
+def _odd_name_form(rel: str) -> bool:
+    """True for a path form that a case-insensitive file system folds onto
+    another name (H-227, the PR #616 verifier).
+
+    NTFS and the default file system of macOS read ``INPUTS/`` as ``inputs/``,
+    and Windows drops a dot or a space at the end of a name. So on such a dev
+    box, ``INPUTS/<thread slug>/x`` or ``outputs/<thread slug>./x`` reaches the
+    folder of a thread while the thread rule reads another name. A head that
+    is ``inputs`` or ``outputs`` in any case but lower, and any name that ends
+    in a dot or a space, is refused. Production runs on Linux, where such a
+    path names another file, and the refusal costs nothing there.
+    """
+    from acb_skills.agent_paths import THREAD_HEADS
+
+    parts = [p for p in str(rel or "").replace("\\", "/").split("/") if p not in ("", ".")]
+    if parts and parts[0] not in THREAD_HEADS and parts[0].lower() in THREAD_HEADS:
+        return True
+    # A Windows dev box reads ``AGENT-~1`` (an 8.3 short name) and
+    # ``skills::$INDEX_ALLOCATION`` (an NTFS stream) as real folders, which no
+    # rule here names (WS-43v review). Linux names other files with them.
+    if os.name == "nt" and any(":" in p or "~" in p for p in parts):
+        return True
+    # The skill rule reads ``agent-data/skills/`` in lower case too (WS-43v).
+    if parts and parts[0].lower() == "agent-data" and (
+        parts[0] != "agent-data" or (
+            len(parts) > 1 and parts[1].lower() == "skills" and parts[1] != "skills"
+        )
+    ):
+        return True
+    return any(p.endswith((".", " ")) for p in parts)
+
+
+def _open_rel(root: Path, rel: str) -> str:
+    """*rel* as the safe opener takes it, after the containment check.
+
+    A path form that a case-insensitive file system would fold onto a thread
+    folder answers as absent (:func:`_odd_name_form`), in every route.
+
+    That check runs BEFORE the containment check (fix round 3 of PR #616).
+    Windows resolves a missing ``a /x`` or ``a../x`` outside the root, so the
+    containment check answered 400 for a missing file and 404 for a real one.
+    """
+    from acb_skills import safe_open
+
+    clean = rel.replace("\\", "/").lstrip("/.")
+    if _odd_name_form(clean):
+        raise HTTPException(status_code=404, detail="File not found")
+    _safe_resolve(root, rel)
+    try:
+        return "/".join(safe_open.split_rel(clean))
+    except safe_open.UnsafePath as exc:
+        raise HTTPException(status_code=400, detail="Path traversal not allowed") from exc
+
+
+def _safe_stat(root: Path, rel: str) -> os.stat_result | None:
+    """The stat of a regular file reached with no link, or ``None``."""
+    from acb_skills import safe_open
+
+    try:
+        return safe_open.stat_file(root, rel)
+    except (safe_open.UnsafePath, OSError):
+        return None
+
+
+def _safe_chunks(root: Path, rel: str):
+    """Yield the bytes of ``root/rel``, opened with the safe opener."""
+    from acb_skills import safe_open
+
+    fh = safe_open.open_read(root, rel)
+    if fh is None:
+        return
+    with fh:
+        while chunk := fh.read(65536):
+            yield chunk
+
+
+def _safe_write(root: Path, rel: str, data: bytes) -> None:
+    """Write ``root/rel`` with the safe opener. A link answers 400."""
+    from acb_skills import safe_open
+
+    try:
+        safe_open.write_bytes(root, rel, data)
+    except safe_open.UnsafePath as exc:
+        raise HTTPException(status_code=400, detail="That path is not a plain file.") from exc
+
+
+def _safe_upload(root: Path, folder: str, name: str, data: bytes) -> str:
+    """Write an upload under *folder* with a free name. Returns its rel path.
+
+    The exclusive create picks the name in the same call that writes, so two
+    uploads of one name never overwrite each other.
+    """
+    from acb_skills import safe_open
+
+    stem, ext = Path(name).stem, Path(name).suffix
+    candidate, counter = name, 1
+    while True:
+        rel = f"{folder}/{candidate}"
+        try:
+            safe_open.write_bytes(root, rel, data, exclusive=True)
+            return rel
+        except FileExistsError:
+            candidate = f"{stem} ({counter}){ext}"
+            counter += 1
+        except safe_open.UnsafePath as exc:
+            raise HTTPException(status_code=400, detail="That folder is not a plain dir.") from exc
+
+
+# ---------------------------------------------------------------------------
+# The thread's own folders (WS-43d and H-227, maf_coding_engine.md §16.3, D12)
+# ---------------------------------------------------------------------------
+# Every session of a shared agent in one organization opens the same tenant
+# dir. A run writes its outputs to its thread's own folder,
+# ``outputs/<thread slug>/``, and an upload lands in ``inputs/<thread slug>/``.
+# So for a session of a shared agent, the routes list and serve, under
+# ``outputs/`` and ``inputs/``, only the folders of THAT session's thread.
+# The folder of another thread is hidden and answers 404. The room check stays.
+#
+# H-227: a LOOSE file, one in ``inputs/`` or ``outputs/`` but in no thread
+# folder, comes from before the thread folders: an S8 document or an upload.
+# It is listed and served only to a session that the blob history shows
+# wrote those exact bytes (:func:`_session_owns_loose`). For any other
+# session it is absent.
+
+
+def _own_thread_slug(
+    workspace: Path, session_id: str, organization_id: str | None,
+) -> str | None:
+    """This session's thread slug in a shared agent's tenant dir, else ``None``.
+
+    ``None`` means the rule does not apply: a personal agent's own dir or an
+    app workspace holds no other member's thread.
+
+    ⚠️ The tenant dir is told from its PATH and the caller's own tenant, and
+    never from its ``.cc-instance`` marker. A container writes the dir it
+    mounts, so a marker it rewrote would switch this rule off.
+    """
+    if not organization_id:
+        return None
+    from acb_skills.agent_paths import instance_slug, state_root, tenant_instance
+
+    try:
+        ws = workspace.resolve()
+        root = state_root().resolve()
+    except (OSError, RuntimeError):
+        return None
+    if ws.parent.parent != root or ws.name != instance_slug(tenant_instance(organization_id)):
+        return None
+    return instance_slug(str(session_id or ""))
+
+
+def _is_other_thread_path(rel: str, own_slug: str | None) -> bool:
+    """True when *rel* lies in the output or upload folder of a thread that is
+    not *own_slug*.
+
+    ``None`` (no tenant dir) never matches. The rule is
+    ``agent_paths.is_other_thread_rel``, the one rule of every writer.
+    """
+    if own_slug is None:
+        return False
+    from acb_skills.agent_paths import is_other_thread_rel
+
+    return is_other_thread_rel(rel, own_slug)
+
+
+def _is_loose_path(rel: str, own_slug: str | None) -> bool:
+    """True when *rel* is a loose file of a shared agent's tenant dir (H-227).
+
+    ``None`` (no tenant dir) never matches: a personal agent's own dir holds
+    only its member's files, so its flat ``inputs/`` and ``outputs/`` stay.
+    """
+    if own_slug is None:
+        return False
+    from acb_skills.agent_paths import is_loose_rel
+
+    return is_loose_rel(rel)
+
+
+def _skill_top(rel: str, own_slug: str | None) -> str | None:
+    """The skill folder of *rel* in a shared agent's tenant dir, else ``None``.
+
+    ``None`` (no tenant dir) never matches: a personal agent's own dir holds
+    only its member's skills, and they carry no author marker.
+    """
+    if own_slug is None:
+        return None
+    from acb_skills.agent_paths import skill_top_rel
+
+    return skill_top_rel(rel)
+
+
+def _not_my_skill(workspace: Path, top: str, member: str | None) -> bool:
+    """True unless the skill folder *top* is *member*'s own (WS-43v).
+
+    Another member's folder, an unreadable marker, and a folder with no
+    marker are all not the member's, so the rule fails closed.
+    """
+    from acb_skills.agent_paths import SKILL_MINE, skill_owner
+
+    return skill_owner(workspace, top, member) != SKILL_MINE
+
+
+async def _hide_skill(
+    workspace: Path, top: str, user: UserContext, *, faultin: bool = False,
+) -> bool:
+    """True when a route must answer as if *top* did not exist (WS-43v).
+
+    With *faultin*, a folder with no marker on the disk first gets its marker
+    back from the store, so the author still reads a folder that the disk
+    cache lost. Only the marker comes back, never a file of the folder.
+    """
+    from acb_skills.agent_paths import (
+        SKILL_AUTHOR_MARKER,
+        SKILL_MINE,
+        SKILL_UNCLAIMED,
+        skill_owner,
+    )
+
+    owner = await asyncio.to_thread(skill_owner, workspace, top, user.email)
+    if owner == SKILL_UNCLAIMED and faultin and await _faultin_from_store(
+        workspace, f"{top}/{SKILL_AUTHOR_MARKER}", organization_id=user.organization_id,
+    ):
+        owner = await asyncio.to_thread(skill_owner, workspace, top, user.email)
+    return owner != SKILL_MINE
+
+
+async def _restore_skill_marker(workspace: Path, top: str, user: UserContext) -> None:
+    """Bring a skill folder's marker back from the store when the disk lost it.
+
+    The write rules call it first. Else a member could write into a folder
+    whose marker only the store still holds, take it, and read its files
+    through the fault-in (WS-43v review). Only the marker comes back.
+    """
+    from acb_skills.agent_paths import SKILL_AUTHOR_MARKER, SKILL_UNCLAIMED, skill_owner
+
+    owner = await asyncio.to_thread(skill_owner, workspace, top, user.email)
+    if owner == SKILL_UNCLAIMED:
+        await _faultin_from_store(
+            workspace, f"{top}/{SKILL_AUTHOR_MARKER}", organization_id=user.organization_id,
+        )
+
+
+def _hidden_skills(
+    workspace: Path, paths: list[str], own_slug: str | None, member: str | None,
+) -> set[str]:
+    """The skill folders among *paths* that are not *member*'s own. One read per folder."""
+    tops = {t for p in paths if (t := _skill_top(p, own_slug)) is not None}
+    return {t for t in tops if _not_my_skill(workspace, t, member)}
+
+
+def _history_time(row: dict) -> Any:
+    """When a history row was written. A row with no readable time sorts last."""
+    from datetime import UTC, datetime
+
+    try:
+        when = datetime.fromisoformat(str(row.get("created_at") or ""))
+    except ValueError:
+        return datetime.max.replace(tzinfo=UTC)
+    return when if when.tzinfo else when.replace(tzinfo=UTC)
+
+
+def _session_wrote(rows: list[dict], session_id: str, sha256: str) -> bool:
+    """THE history rule of a loose file (H-227): this session owns these bytes.
+
+    *rows* are the history rows of ONE path, of every session. Two things
+    must hold:
+
+    1. **This session began the path.** Its row is the oldest row there that
+       writes bytes. So ownership never moves to a second session: a later
+       write of another session does not make that session the owner (PR
+       #616 review, P1, the ``save_note`` takeover).
+    2. **This session wrote these exact bytes.** One of its rows that writes
+       names this sha256. So when another session wrote the bytes that lie
+       there now, the file has no owner, and it opens for nobody.
+
+    A ``delete`` row proves nothing. An upload (``user``), an edit in the
+    file manager (``user``) and a document of the run (``agent``) all count.
+    A path that a batch run began has no owner (:func:`_batch_readable`).
+    ``read_attachment`` keeps its narrower form of the rule, an upload only
+    (H-229).
+    """
+    if _first_writer(rows) != session_id:
+        return False
+    return any(
+        r.get("session_id") == session_id and r.get("sha256") == sha256
+        and r.get("action") != "delete"
+        for r in rows
+    )
+
+
+def _first_write(rows: list[dict]) -> dict | None:
+    """The oldest row that writes bytes at a path, or ``None``."""
+    writes = [r for r in rows if r.get("action") != "delete"]
+    return min(writes, key=_history_time) if writes else None
+
+
+def _last_write(rows: list[dict]) -> dict | None:
+    """The newest row that writes bytes at a path, or ``None``."""
+    writes = [r for r in rows if r.get("action") != "delete"]
+    return max(writes, key=_history_time) if writes else None
+
+
+def _is_batch_row(row: dict) -> bool:
+    """True for a row that a batch run wrote (the H-227 decision, PR #616).
+
+    Two marks, and a request can make neither. The actor is ``batch``, which
+    only ``write_artifact`` sets, and only when the executor minted the
+    thread of a run with no chat and no parent. The session is that minted
+    thread, ``<agent>:<run id>``, so it ends with the row's own run id.
+
+    An OLDER row (fix round 3 of PR #616): before H-227 the executor wrote a
+    batch document with the actor ``agent``. Its session is exactly
+    ``<agent>:<run id>``, with the row's own agent and run id. No new chat can
+    take an id with a colon (``chat.refuse_run_shaped_id``), so no chat can
+    forge that form. ``acb_memory.blob_store._RUN_ROW`` is the same rule in
+    SQL, and the purge never deletes such a row.
+    """
+    session, run = str(row.get("session_id") or ""), str(row.get("run_id") or "")
+    if not run:
+        return False
+    if row.get("actor") == "batch":
+        return session.endswith(f":{run}")
+    agent = str(row.get("agent") or "")
+    return row.get("actor") == "agent" and bool(agent) and session == f"{agent}:{run}"
+
+
+def _first_writer(rows: list[dict]) -> str | None:
+    """The session that began the path: the session of its oldest row that
+    writes bytes. ``None`` when no row writes, or when a batch run began the
+    path, because a batch document has no owner."""
+    first = _first_write(rows)
+    if first is None or _is_batch_row(first):
+        return None
+    return first.get("session_id")
+
+
+def _batch_readable(rows: list[dict], sha256: str) -> bool:
+    """True when a batch run began the path and wrote these exact bytes.
+
+    The H-227 decision (PR #616): a document of a run with no chat belongs
+    to the organization, as it did before H-227. So every member may list,
+    open and read the history of such a loose file. Nobody may change,
+    delete or promote it, because :func:`_first_writer` names no owner.
+    """
+    first = _first_write(rows)
+    if first is None or not _is_batch_row(first):
+        return False
+    return any(
+        _is_batch_row(r) and r.get("session_id") == first.get("session_id")
+        and r.get("sha256") == sha256
+        for r in rows
+    )
+
+
+def _may_read_loose(rows: list[dict], session_id: str, sha256: str) -> bool:
+    """True when this session may read a loose file with these bytes: it owns
+    the file, or a batch run wrote it."""
+    if _batch_readable(rows, sha256):
+        return True
+    return bool(session_id) and _session_wrote(rows, session_id, sha256)
+
+
+async def _tenant_history(
+    workspace: Path, organization_id: str | None, *,
+    path: str | None = None, session_id: str | None = None,
+    run_rows: bool = False,
+) -> list[dict]:
+    """Rows of a tenant dir's blob history: of one *path*, one *session_id*,
+    or of the runs with no chat (*run_rows*, ``blob_store._RUN_ROW``).
+
+    Call it only when :func:`_own_thread_slug` is not ``None``, so the
+    workspace IS the caller's tenant dir. So the store key comes from the
+    path and the caller's tenant, never from the ``.cc-instance`` marker.
+    It reads the tenant key ``o:<org>`` and this tenant's older rows
+    (``instance=''``), from before the tenant dir existed (§21.15). The read
+    is in the caller's tenant. A missing store or an error gives ``[]``, so
+    the rule fails closed.
+    """
+    try:
+        from acb_memory import file_history
+    except ImportError:
+        return []
+    from acb_skills.agent_paths import tenant_instance
+
+    if not organization_id or not (path or session_id or run_rows):
+        return []
+    agent = workspace.resolve().parent.name
+    rows: list[dict] = []
+    for key in (tenant_instance(organization_id), ""):
+        rows += await file_history(
+            agent, path, 1000, instance=key,
+            organization_id=organization_id, session_id=session_id, run_rows=run_rows,
+        )
+    return rows
+
+
+async def _session_owns_loose(
+    workspace: Path, rel: str, data: bytes, session_id: str,
+    organization_id: str | None,
+) -> bool:
+    """True when the history shows that *session_id* owns *data* at *rel*."""
+    import hashlib
+
+    if not session_id:
+        return False
+    rows = await _tenant_history(workspace, organization_id, path=rel)
+    return _session_wrote(rows, session_id, hashlib.sha256(data).hexdigest())
+
+
+async def _session_may_read_loose(
+    workspace: Path, rel: str, data: bytes, session_id: str,
+    organization_id: str | None,
+) -> bool:
+    """True when *session_id* may read *data* at *rel*: it owns the bytes, or a
+    batch run wrote them (:func:`_may_read_loose`)."""
+    import hashlib
+
+    rows = await _tenant_history(workspace, organization_id, path=rel)
+    return _may_read_loose(rows, session_id, hashlib.sha256(data).hexdigest())
+
+
+class ThreadPurgeFailed(RuntimeError):
+    """The files of a chat could not all be removed. The chat must stay."""
+
+
+async def purge_thread_files(
+    session_id: str, organization_id: str | None, *, best_effort: bool = False,
+    member: str | None = None,
+) -> None:
+    """Delete the files of a chat that its owner deletes (H-227, PR #616 review).
+
+    A client chooses the id of a chat session (``POST /chat/sessions`` takes
+    ``id`` from the body). So after a delete, any member who knows the id can
+    make a new session with it, and the thread rule would hand that session
+    the folders and the loose files of the old chat. So the delete route calls
+    this BEFORE it deletes the row (fix round 2): a failure raises
+    :class:`ThreadPurgeFailed`, the chat stays, and the member can try again.
+    After the row is gone the route calls it once more with *best_effort*,
+    for a file that a run wrote in between. Every door that makes a NEW chat
+    calls it too, before the first row (fix round 3,
+    ``chat.prepare_new_session``). So a chat that a member deleted before
+    this purge existed hands its files to nobody. It removes, in every tenant
+    dir of the caller's organization:
+
+    * ``inputs/<thread slug>/`` and ``outputs/<thread slug>/`` on disk, with
+      the safe opener, and their rows in the blob store and its history;
+    * each loose file that this chat began (:func:`_first_writer`), on disk
+      and in the store, so its ownership cannot move to another session.
+      ⚠️ Not when another session wrote its newest bytes (fix round 3). That
+      file and its other rows stay, and only this chat's rows go;
+    * every other history row of this chat under ``inputs/`` and ``outputs/``.
+      A row of a run with no chat stays (``blob_store._RUN_ROW``);
+    * the zips of ``package_artifacts`` in the chat's own working dir, also a
+      personal or a team one (2026-10-11). A zip is never in the blob store,
+      so ``session_paths`` cannot find it. It lies at
+      ``agent_paths.thread_package_rel``, and the dir is the session's
+      ``workspace_path``, resolved for *member* (:func:`_get_workspace_path`).
+      The delete route passes the member who deletes. A new chat has no row
+      yet, so it has no such dir.
+
+    The organization is the caller's, from the authenticated identity. A
+    failure is logged as ``workspace.thread_purge_failed``.
+    """
+    if not session_id or not organization_id:
+        return
+    try:
+        await _purge_thread_files(session_id, organization_id, member=member)
+    except Exception as exc:
+        _log.warning(
+            "workspace.thread_purge_failed", session_id=session_id[:12],
+            error=str(exc)[:200], best_effort=best_effort,
+        )
+        if not best_effort:
+            raise ThreadPurgeFailed(str(exc)[:200]) from exc
+
+
+def _tenant_dirs(organization_id: str) -> list[Path]:
+    """The tenant dir of every shared agent of one organization, links left out."""
+    from acb_skills.agent_paths import (
+        instance_slug,
+        is_valid_agent_name,
+        state_root,
+        tenant_instance,
+    )
+
+    root = state_root()
+    if not root.is_dir():
+        return []
+    name = instance_slug(tenant_instance(organization_id))
+    found = []
+    for agent_dir in sorted(root.iterdir()):
+        ws = agent_dir / name
+        if (
+            is_valid_agent_name(agent_dir.name) and not agent_dir.is_symlink()
+            and not ws.is_symlink() and ws.is_dir()
+        ):
+            found.append(ws)
+    return found
+
+
+async def _purge_thread_files(
+    session_id: str, organization_id: str, *, member: str | None = None,
+) -> None:
+    """Read first, then change (fix round 2 of PR #616). Every read that can
+    fail runs before the first removal, so a failure changes nothing. The
+    disk goes before the store, so a retry still finds the rows it needs."""
+    from acb_memory import file_history, purge_files, session_paths
+    from acb_skills import safe_open
+    from acb_skills.agent_paths import (
+        THREAD_HEADS,
+        is_loose_rel,
+        tenant_instance,
+        thread_slug,
+    )
+
+    key = tenant_instance(organization_id)
+    try:
+        slug: str | None = thread_slug(session_id)
+    except ValueError:
+        slug = None  # an id that names no folder has no thread folders
+    # 1. The reads. `session_paths` raises on a database error.
+    began: list[tuple[str, str]] = []
+    for agent, path in await session_paths(
+        session_id, instance=key, organization_id=organization_id,
+    ):
+        if not is_loose_rel(path):
+            continue
+        rows: list[dict] = []
+        for instance in (key, ""):
+            rows += await file_history(
+                agent, path, 1000, instance=instance, organization_id=organization_id,
+            )
+        if not rows:
+            # The chat wrote at this path, so its history cannot be empty: the
+            # read failed. Stop before anything goes.
+            raise ThreadPurgeFailed(f"no history read for {path[:120]}")
+        if _first_writer(rows) != session_id:
+            continue
+        newest = _last_write(rows)
+        if newest is not None and newest.get("session_id") != session_id:
+            # Fix round 3: another session wrote the bytes that lie there now
+            # (main let any session change a loose file). They are not this
+            # chat's to delete. Only this chat's rows go, in step 3.
+            continue
+        began.append((agent, path))
+    dirs = {ws.parent.name: ws for ws in await asyncio.to_thread(_tenant_dirs, organization_id)}
+    # The chat's own working dir, for its zips (a read, so it comes first).
+    chat_dir = await _chat_dir(session_id, member, organization_id, slug)
+    # 2. The disk.
+    if slug:
+        for ws in dirs.values():
+            for head in THREAD_HEADS:
+                try:
+                    await asyncio.to_thread(safe_open.remove_tree, ws, f"{head}/{slug}")
+                except safe_open.UnsafePath:
+                    _log.warning("workspace.thread_purge_link", path=f"{head}/{slug}")
+        await asyncio.to_thread(_purge_packages, chat_dir, session_id, slug)
+    for agent, path in began:
+        if agent in dirs:
+            try:
+                await asyncio.to_thread(safe_open.unlink, dirs[agent], path)
+            except (safe_open.UnsafePath, IsADirectoryError, OSError):
+                _log.warning("workspace.thread_purge_unlink_failed", path=path[:200])
+    # 3. The store.
+    gone = await purge_files(
+        instance=key, organization_id=organization_id,
+        prefixes=tuple(f"{head}/{slug}/" for head in THREAD_HEADS) if slug else (),
+        paths=tuple(began), session_id=session_id,
+    )
+    _log.info(
+        "workspace.thread_purged", session_id=session_id[:12],
+        dirs=len(dirs), loose=len(began), rows=gone,
+    )
+
+
+async def _chat_dir(
+    session_id: str, member: str | None, organization_id: str, slug: str | None,
+) -> Path | None:
+    """The chat's own working dir, resolved for *member*, or ``None``."""
+    if not (slug and member):
+        return None
+    return await asyncio.to_thread(_get_workspace_path, session_id, member, organization_id)
+
+
+def _purge_packages(workspace: Path | None, session_id: str, slug: str) -> int:
+    """Remove the zips of ``package_artifacts`` in ``outputs/<slug>/`` of *workspace*.
+
+    Only a ``.zip`` right in the folder goes (``is_thread_package_rel``), and
+    the folder too when it is then empty. Links are never followed. Returns
+    how many zips went.
+    """
+    from acb_skills import safe_open
+
+    if workspace is None:
+        return 0
+    folder = f"outputs/{slug}"
+    try:
+        entries = safe_open.list_dir(workspace, folder)
+    except safe_open.UnsafePath:
+        _log.warning("workspace.thread_purge_link", path=folder)
+        return 0
+    gone = 0
+    for name, kind in entries or []:
+        rel = f"{folder}/{name}"
+        if kind == "file" and is_thread_package_rel(rel, session_id):
+            try:
+                gone += bool(safe_open.unlink(workspace, rel))
+            except (safe_open.UnsafePath, OSError):
+                _log.warning("workspace.thread_purge_unlink_failed", path=rel[:200])
+    if entries is not None and not safe_open.list_dir(workspace, folder):
+        with contextlib.suppress(safe_open.UnsafePath, OSError):
+            safe_open.remove_tree(workspace, folder)
+    return gone
+
+
+def _safe_sha256(root: Path, rel: str) -> str | None:
+    """The sha256 of the regular file ``root/rel``, read with the safe opener."""
+    import hashlib
+
+    from acb_skills import safe_open
+
+    try:
+        fh = safe_open.open_read(root, rel)
+    except (safe_open.UnsafePath, OSError):
+        return None
+    if fh is None:
+        return None
+    digest = hashlib.sha256()
+    with fh:
+        while chunk := fh.read(65536):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+async def _session_owns_disk_file(
+    workspace: Path, rel: str, session_id: str, organization_id: str | None,
+) -> bool:
+    """:func:`_session_owns_loose` for the file on disk. An absent file is not owned."""
+    if not session_id:
+        return False
+    sha = await asyncio.to_thread(_safe_sha256, workspace, rel)
+    if sha is None:
+        return False
+    rows = await _tenant_history(workspace, organization_id, path=rel)
+    return _session_wrote(rows, session_id, sha)
+
+
+async def _session_may_read_disk_file(
+    workspace: Path, rel: str, session_id: str, organization_id: str | None,
+) -> bool:
+    """:func:`_session_may_read_loose` for the file on disk. An absent file reads as absent."""
+    sha = await asyncio.to_thread(_safe_sha256, workspace, rel)
+    if sha is None:
+        return False
+    rows = await _tenant_history(workspace, organization_id, path=rel)
+    return _may_read_loose(rows, session_id, sha)
+
+
+async def _keep_owned_loose(
+    workspace: Path, files: list[FileEntry], session_id: str,
+    organization_id: str | None,
+) -> list[FileEntry]:
+    """*files* without the loose files that this session may not read (H-227).
+
+    One history read per store key finds the paths that this session wrote,
+    and one more finds the paths that a batch run wrote. Only those paths
+    cost a read of their whole history, which the rule needs to find the
+    session that began the path.
+    """
+    from acb_skills.agent_paths import is_loose_rel
+
+    loose = [f for f in files if is_loose_rel(f.path)]
+    if not loose:
+        return files
+    rows = await _tenant_history(workspace, organization_id, run_rows=True)
+    if session_id:
+        rows += await _tenant_history(workspace, organization_id, session_id=session_id)
+    candidates = {str(r.get("path") or "") for r in rows}
+    kept: set[str] = set()
+    for f in loose:
+        if f.path not in candidates:
+            continue  # neither this session nor a batch run wrote it, so no read
+        sha = await asyncio.to_thread(_safe_sha256, workspace, f.path)
+        if sha is not None and _may_read_loose(
+            await _tenant_history(workspace, organization_id, path=f.path), session_id, sha,
+        ):
+            kept.add(f.path)
+    return [f for f in files if not is_loose_rel(f.path) or f.path in kept]
+
+
+async def _apply_write_rules(
+    workspace: Path, rel: str, user: UserContext, session_id: str, *, claim: bool,
+) -> None:
+    """The write rules of ``agent_paths.refused_write``, and the skill author.
+
+    WS-43d (review P1, fix round 1). The skill author marker is reserved
+    (400), and a skill folder that another member made is theirs (403). In a
+    shared agent's tenant dir, the first member who writes into a skill folder
+    becomes its author, and the marker goes to the blob store too. The marker
+    holds an opaque member id (``agent_paths.skill_author_id``), never the
+    address (WS-43v). A sandboxed run loads, and runs the scripts of, only its
+    own member's skills.
+    """
+    from acb_skills.agent_paths import (
+        SKILL_AUTHOR_MARKER,
+        SkillNameRefused,
+        claim_skill,
+        refused_write,
+    )
+
+    if rel.rsplit("/", 1)[-1] == SKILL_AUTHOR_MARKER:
+        raise HTTPException(status_code=400, detail="That file name is reserved.")
+    own = _own_thread_slug(workspace, session_id, user.organization_id)
+    top = _skill_top(rel, own)
+    if top is not None:
+        await _restore_skill_marker(workspace.resolve(), top, user)
+    reason = await asyncio.to_thread(
+        refused_write, workspace.resolve(), rel, member=user.email, thread_id=session_id,
+    )
+    if reason and "member" in reason:
+        raise HTTPException(status_code=403, detail="That skill belongs to another member.")
+    if reason:
+        raise HTTPException(status_code=404, detail="File not found")
+    if not claim or own is None:
+        return
+    from acb_skills.agent_paths import SkillOwnedElsewhere
+
+    try:
+        claimed = await asyncio.to_thread(claim_skill, workspace.resolve(), rel, user.email)
+    except SkillNameRefused as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except SkillOwnedElsewhere:
+        # Another member claimed the folder between the check and the claim.
+        raise HTTPException(
+            status_code=403, detail="That skill belongs to another member.",
+        ) from None
+    except ValueError:
+        # No member id: no member, or no usable session secret. A skill folder
+        # with no author would go to the next member who writes into it, with
+        # this member's files in it, so the write is refused (WS-43v).
+        raise HTTPException(
+            status_code=403, detail="This server cannot record the author of a skill.",
+        ) from None
+    if claimed is not None:
+        await _mirror_gateway_write(
+            workspace, claimed[0], claimed[1], action="create", session_id=session_id,
+            organization_id=user.organization_id,
+        )
+
+
 # The three "special" workspace directories.  Agents are encouraged to write
 # deliverables to outputs/ (uploads land in inputs/, reference data in
 # agent-data/), and these are always created up-front so they show in the UI.
@@ -768,40 +1599,24 @@ def _safe_resolve(root: Path, rel: str) -> Path:
 # below).  These three are kept only for up-front creation and categorisation.
 _VISIBLE_WORKSPACE_DIRS = frozenset({"inputs", "outputs", "agent-data"})
 
-# Directories excluded from traversal: VCS, dependency, build, and cache noise.
-# Pruned wherever they appear so a whole-repo clone (e.g. the dev agent that
-# clones the entire monorepo) doesn't flood the UI with node_modules/.git/etc.
-_EXCLUDED_DIRS = frozenset({
-    "__pycache__", "node_modules", ".git", ".mypy_cache", ".pytest_cache",
-    ".ruff_cache", ".venv", "venv", ".next", ".turbo", ".cache", "dist",
-    "build", ".idea", ".vscode", "coverage", ".nyc_output", "test-results",
-    "playwright-report", ".pnpm-store", ".gradle", ".terraform",
-    "site-packages", ".egg-info",
-})
+# Directories excluded from traversal (``_EXCLUDED_DIRS``, imported above):
+# VCS, dependency, build, and cache noise. Pruned wherever they appear so a
+# whole-repo clone doesn't flood the UI with node_modules/.git/etc.
 
-# File suffixes never surfaced (compiled junk + key/cert material).
-_EXCLUDED_FILE_SUFFIXES = (".pid", ".pem", ".key", ".crt", ".pyc", ".pyo")
+#: The answer for a package of THIS chat that is gone from the disk. A zip
+#: is derived and never in the blob store (``package_artifacts``), so a disk
+#: wipe ends it, and the member asks for it again. HTTP 410 Gone.
+PACKAGE_EXPIRED = (
+    "This package expired. Ask the assistant to zip the files again."
+)
 
-# Substrings that mark a file as secret/credential material to hide from the UI.
-_SECRET_FILE_MARKERS = ("token_cache", "credential", "secret", "id_rsa", "id_ed25519")
+# A zip is served as application/zip on every box. A Windows registry can
+# map .zip to application/x-zip-compressed, and the file card reads the type
+# (package_artifacts, 2026-10-11).
+mimetypes.add_type("application/zip", ".zip")
 
 # Hard cap on files returned per workspace walk — bounds huge monorepo clones.
 _MAX_TREE_FILES = 4000
-
-
-def _is_hidden_or_secret_file(name: str) -> bool:
-    """True if *name* is a dotfile, secret/credential, or compiled-junk file.
-
-    Dotfiles (``.env``, ``.zoho_token_cache.json``, ``.git-credentials`` …)
-    are hidden wholesale — this is the primary guard against leaking secrets
-    that live in an agent's working-directory root into the file browser.
-    """
-    if name.startswith("."):
-        return True
-    if name.endswith(_EXCLUDED_FILE_SUFFIXES):
-        return True
-    low = name.lower()
-    return any(m in low for m in _SECRET_FILE_MARKERS)
 
 
 def _ensure_workspace_dirs(root: Path) -> None:
@@ -840,8 +1655,15 @@ def _walk_tree(root: Path) -> list[FileEntry]:
                     continue
                 fpath = dp / fname
                 try:
-                    stat = fpath.stat()
-                    rel_path = str((rel_dir / fname)).replace("\\", "/")
+                    # WS-43d (§7.5 rule B): a link is never listed, so the
+                    # tree never shows the size of a host file.
+                    if fpath.is_symlink():
+                        continue
+                    stat = fpath.lstat()
+                    # A FIFO, a socket or a device is never a workspace file.
+                    if not _stat_mod.S_ISREG(stat.st_mode):
+                        continue
+                    rel_path = str(rel_dir / fname).replace("\\", "/")
                     mime, _ = mimetypes.guess_type(fname)
                     entries.append(FileEntry(
                         path=rel_path,
@@ -875,22 +1697,10 @@ def _is_visible_workspace_path(rel_path: str) -> bool:
     )
 
 
-def _is_blocked_path(rel_path: str) -> bool:
-    """True if *rel_path* points into excluded/secret territory.
-
-    The file browser now lists the whole working tree, so the raw-file
-    endpoints must independently refuse anything the walkers hide — otherwise
-    a crafted ``?path=.env`` would still stream a secret that never appeared
-    in any listing.  Blocks excluded/dot directories anywhere in the path and
-    secret/dot/junk basenames.
-    """
-    parts = [p for p in rel_path.replace("\\", "/").split("/") if p not in ("", ".")]
-    if not parts:
-        return True
-    for seg in parts[:-1]:
-        if seg.startswith(".") or seg in _EXCLUDED_DIRS:
-            return True
-    return _is_hidden_or_secret_file(parts[-1])
+# ``_is_blocked_path`` (``acb_skills.agent_paths.is_blocked_rel``, imported
+# above): the file browser lists the whole working tree, so the raw-file
+# endpoints must refuse anything the walkers hide. Otherwise a crafted
+# ``?path=.env`` would stream a secret that never appeared in any listing.
 
 
 async def _room_for(session_id: str, user: UserContext) -> Any:
@@ -921,10 +1731,12 @@ async def _refuse_unless_room(
     if send:
         if not room.can_send:
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
+                status_code=room.refusal_status,
                 detail=room.denied("change its files"),
             )
     elif not room.can_read:
+        if room.resolve_failed:
+            raise HTTPException(status_code=503, detail=room.denied("read its files"))
         raise HTTPException(status_code=404, detail="Workspace not found for session")
 
 
@@ -963,6 +1775,18 @@ async def get_workspace_tree(
         return WorkspaceTree(session_id=session_id, root="", files=[])
 
     files = await loop.run_in_executor(None, _walk_tree, workspace)
+    # WS-43d (§16.3) and H-227: another thread's output and upload folders
+    # are not listed, and a loose file only for the session that wrote it.
+    own = _own_thread_slug(workspace, session_id, _user.organization_id)
+    files = [f for f in files if not _is_other_thread_path(f.path, own)]
+    if own is not None:
+        files = await _keep_owned_loose(workspace, files, session_id, _user.organization_id)
+        # WS-43v: a skill folder that is not this member's is not listed, not
+        # even by name.
+        hidden = await asyncio.to_thread(
+            _hidden_skills, workspace, [f.path for f in files], own, _user.email,
+        )
+        files = [f for f in files if _skill_top(f.path, own) not in hidden]
     return WorkspaceTree(session_id=session_id, root=str(workspace), files=files)
 
 
@@ -994,52 +1818,80 @@ async def get_workspace_file(
 
     if _is_blocked_path(path):
         raise HTTPException(status_code=404, detail="File not found")
-    file_path = _safe_resolve(workspace, path)
-    if not file_path.exists() or not file_path.is_file():
+    rel = _open_rel(workspace, path)
+    # WS-43d (§16.3): another thread's output folder answers as absent, and
+    # BEFORE the fault-in, so the store cannot restore it either.
+    org = _user.organization_id
+    own = _own_thread_slug(workspace, session_id, org)
+    if _is_other_thread_path(rel, own):
+        raise HTTPException(status_code=404, detail="File not found")
+    # WS-43v: a skill folder that is not this member's answers as absent, and
+    # BEFORE the fault-in, so the store cannot restore it either.
+    top = _skill_top(rel, own)
+    if top is not None and await _hide_skill(workspace, top, _user, faultin=True):
+        raise HTTPException(status_code=404, detail="File not found")
+    # H-227: a loose file (an S8 document or an upload from before the thread
+    # folders) opens only for the session that wrote it. That keeps its old
+    # link working for that thread, and for no other session.
+    loose = _is_loose_path(rel, own)
+    st = await asyncio.to_thread(_safe_stat, workspace, rel)
+    if st is None:
         # Fault-in: the store is authoritative, so a file missing from the disk
         # cache may still live in the blob store (e.g. after a volume wipe before
         # the agent has re-run). Restore it on demand, then serve.
-        restored = await _faultin_from_store(
-            workspace, path, organization_id=_user.organization_id,
-        )
-        if not restored:
-            raise HTTPException(status_code=404, detail="File not found")
+        async def _owned(data: bytes) -> bool:
+            return await _session_may_read_loose(workspace, rel, data, session_id, org)
 
-    file_size = file_path.stat().st_size
+        restored = await _faultin_from_store(
+            workspace, path, organization_id=org, accept=_owned if loose else None,
+        )
+        st = await asyncio.to_thread(_safe_stat, workspace, rel) if restored else None
+        if st is None:
+            # A package of THIS session's own thread folder says why it is
+            # gone. The room check and the other-thread check ran first, so
+            # any other caller got the plain 404 above.
+            if is_thread_package_rel(rel, session_id):
+                raise HTTPException(status_code=410, detail=PACKAGE_EXPIRED)
+            raise HTTPException(status_code=404, detail="File not found")
+    elif loose and not await _session_may_read_disk_file(workspace, rel, session_id, org):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    file_size = st.st_size
+    name = rel.rsplit("/", 1)[-1]
     if format_ == "pdf":
         # The member is the authenticated caller, never request input.
-        return await _file_as_pdf(file_path, file_size, member=_user.email or "")
+        return await _file_as_pdf(
+            workspace, rel, name, file_size, member=_user.email or "",
+        )
     if file_size > _MAX_FILE_BYTES:
         raise HTTPException(
             status_code=413,
             detail=f"File too large ({file_size} bytes). Maximum is {_MAX_FILE_BYTES} bytes.",
         )
 
-    mime, _ = mimetypes.guess_type(file_path.name)
+    mime, _ = mimetypes.guess_type(name)
     media_type = mime or "application/octet-stream"
 
-    def _iter_file():
-        with open(file_path, "rb") as f:
-            while chunk := f.read(65536):
-                yield chunk
-
     return StreamingResponse(
-        _iter_file(),
+        _safe_chunks(workspace, rel),
         media_type=media_type,
         headers={
-            "Content-Disposition": f'inline; filename="{file_path.name}"',
+            "Content-Disposition": f'inline; filename="{name}"',
             "Content-Length": str(file_size),
         },
     )
 
 
-async def _file_as_pdf(file_path: Path, file_size: int, *, member: str) -> Response:
+async def _file_as_pdf(
+    workspace: Path, rel: str, name: str, file_size: int, *, member: str,
+) -> Response:
     """A workspace document as a PDF download (WS-27bm S8, spec §14).
 
     The type check comes before the size check and before any read, so a
     refused type costs nothing. The read runs in a thread, and the layout
     runs in a child process (``pdf_render.render_pdf``).
     """
+    from acb_skills import safe_open
     from gateway.db import current_tenant
     from gateway.pdf_render import (
         MAX_SOURCE_BYTES,
@@ -1050,7 +1902,7 @@ async def _file_as_pdf(file_path: Path, file_size: int, *, member: str) -> Respo
         render_pdf,
     )
 
-    kind = SOURCE_KINDS.get(file_path.suffix.lower())
+    kind = SOURCE_KINDS.get(Path(name).suffix.lower())
     if kind is None:
         raise HTTPException(
             status_code=415,
@@ -1061,9 +1913,15 @@ async def _file_as_pdf(file_path: Path, file_size: int, *, member: str) -> Respo
             status_code=413,
             detail=f"File too large for a PDF ({file_size} bytes). Maximum is {MAX_SOURCE_BYTES} bytes.",
         )
-    source = await asyncio.to_thread(
-        file_path.read_text, encoding="utf-8", errors="replace"
-    )
+    try:
+        raw = await asyncio.to_thread(
+            safe_open.read_bytes, workspace, rel, limit=MAX_SOURCE_BYTES,
+        )
+    except (safe_open.UnsafePath, OSError) as exc:
+        raise HTTPException(status_code=404, detail="File not found") from exc
+    if raw is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    source = raw.decode("utf-8", errors="replace")
     try:
         # Out of process, with a timeout: a MuPDF crash or hang is a refusal
         # here, never the gateway's death (fix round 1).
@@ -1073,7 +1931,7 @@ async def _file_as_pdf(file_path: Path, file_size: int, *, member: str) -> Respo
     return Response(
         content=pdf,
         media_type="application/pdf",
-        headers={"Content-Disposition": attachment_disposition(pdf_filename(file_path.name))},
+        headers={"Content-Disposition": attachment_disposition(pdf_filename(name))},
     )
 
 
@@ -1143,6 +2001,8 @@ class ArtifactEvent(BaseModel):
     path: str
     sha256: str | None = None
     size: int | None = None
+    #: The registry row (WS-60 AM-1). None for a write with no row.
+    artifact_id: str | None = None
 
 
 @router.post("/workspace/{session_id}/events", status_code=status.HTTP_204_NO_CONTENT)
@@ -1192,7 +2052,7 @@ async def stream_artifact_events(
                 try:
                     payload = await asyncio.wait_for(q.get(), timeout=30.0)
                     yield f"data: {json.dumps({'type': 'custom', 'name': payload['name'], 'data': payload})}\n\n"
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     # heartbeat keep-alive
                     yield ": keep-alive\n\n"
         finally:
@@ -1221,9 +2081,15 @@ async def stream_artifact_events(
 from fastapi import UploadFile
 
 _MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB per file
+#: Every kind that ``read_attachment`` reads must be here, ``.htm`` too
+#: (2026-10-09). The chat's file picker mirrors this list exactly
+#: (``CHAT_UPLOAD_ACCEPT``). Fences:
+#: ``workbench/control_plane/src/lib/chatUpload.test.ts`` and
+#: ``tests/unit/test_attachment_formats.py``.
 _ALLOWED_EXTENSIONS = {
-    ".md", ".txt", ".pdf", ".docx", ".pptx", ".xlsx", ".csv",
-    ".json", ".yaml", ".yml", ".xml", ".html", ".css", ".js", ".ts",
+    ".md", ".txt", ".pdf", ".docx", ".pptx", ".xlsx", ".csv", ".tsv",
+    ".odt", ".ods", ".odp", ".rtf",
+    ".json", ".yaml", ".yml", ".xml", ".html", ".htm", ".css", ".js", ".ts",
     ".py", ".sh", ".ps1", ".toml", ".ini", ".cfg",
     ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico",
     ".mp3", ".wav", ".mp4", ".webm",
@@ -1232,18 +2098,35 @@ _ALLOWED_EXTENSIONS = {
 }
 
 
+def _refuse_legacy_office(ext: str) -> None:
+    """Refuse an older binary Office file at upload, with the sentence that
+    says how to fix it. No reader takes it, so the member hears it at once,
+    and not after a chat turn (``attachment_text.LEGACY_OFFICE``)."""
+    from acb_skills.attachment_text import LEGACY_OFFICE, unsupported_sentence
+
+    if ext in LEGACY_OFFICE:
+        raise HTTPException(status_code=400, detail=unsupported_sentence(ext))
+
+
 @router.post("/workspace/{session_id}/upload")
 async def upload_files(
     session_id: str,
     files: list[UploadFile],
     _user: UserContext = Depends(get_current_user),
 ) -> list[FileEntry]:
-    """Upload one or more files into the session workspace .tmp/ directory.
+    """Upload one or more files into the session's attachment folder.
 
-    Files are stored under ``{workspace_root}/.tmp/`` and are automatically
-    tracked by Git.  The agent receives a system message with the list of
-    uploaded files and their paths so it can reference them.
+    The folder is ``acb_skills.agent_paths.upload_dir_rel`` (H-229). A shared
+    agent's tenant dir is one folder for every member of the organization, so
+    there a file lands in ``inputs/<thread slug>/``, the folder of this
+    session's thread. ``read_attachment`` reads it only in a run of that
+    thread (D12). Since H-227 the session file routes, the sandbox file store
+    and the container also keep to the session's own thread folder. Any other
+    workspace keeps ``inputs/``. The browser tells the agent the names and the
+    paths in the next message.
     """
+    from acb_skills.agent_paths import upload_dir_rel
+
     await _refuse_unless_room(session_id, _user, send=True)
     workspace = await asyncio.get_event_loop().run_in_executor(
         None, _get_workspace_path, session_id, _user.email,
@@ -1257,14 +2140,24 @@ async def upload_files(
         )
     _refuse_shared_clone_write(workspace)
 
-    # Upload to inputs/ (visible workspace directory) — not .tmp/
-    upload_dir = workspace / "inputs"
+    # The session id is the thread id, and the room check above admitted the
+    # caller to it. The rule is shared with the tool that reads the folder.
+    # The tenant dir is told from its PATH and the caller's own tenant, as
+    # `_own_thread_slug` tells it, never from the `.cc-instance` marker that
+    # a container could rewrite.
+    from acb_skills.agent_paths import tenant_instance
+
+    org = _user.organization_id
+    tenant_key = (
+        tenant_instance(org)
+        if _own_thread_slug(workspace, session_id, org) is not None else ""
+    )
     try:
-        upload_dir.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
+        upload_rel = upload_dir_rel(tenant_key, session_id)
+    except ValueError as exc:
         raise HTTPException(
-            status_code=500,
-            detail=f"Cannot create inputs directory: {exc}",
+            status_code=400,
+            detail="This chat cannot take an upload: its id is not a plain thread id.",
         ) from exc
 
     uploaded: list[FileEntry] = []
@@ -1272,6 +2165,7 @@ async def upload_files(
         # Validate filename
         safe_name = Path(f.filename or "untitled").name
         ext = Path(safe_name).suffix.lower()
+        _refuse_legacy_office(ext)
         if ext not in _ALLOWED_EXTENSIONS:
             raise HTTPException(
                 status_code=400,
@@ -1288,31 +2182,29 @@ async def upload_files(
                        f"({len(content)} bytes). Max is {_MAX_UPLOAD_BYTES}.",
             )
 
-        # Avoid overwrites: append (1), (2), etc.
-        dest = upload_dir / safe_name
-        counter = 1
-        stem, ext2 = Path(safe_name).stem, Path(safe_name).suffix
-        while dest.exists():
-            dest = upload_dir / f"{stem} ({counter}){ext2}"
-            counter += 1
-
-        # Write
-        dest.write_bytes(content)
+        # Avoid overwrites: append (1), (2), etc. WS-43d (§7.5 rule B): the
+        # name is taken and written in one exclusive create, with no link.
+        rel_path = await asyncio.to_thread(
+            _safe_upload, workspace, upload_rel, safe_name, content,
+        )
+        dest_name = rel_path.rsplit("/", 1)[-1]
 
         # Build response entry
-        stat = dest.stat()
+        stat = await asyncio.to_thread(_safe_stat, workspace, rel_path)
+        if stat is None:
+            raise HTTPException(status_code=500, detail="The upload was not stored.")
         mime, _ = mimetypes.guess_type(safe_name)
-        rel_path = str(dest.relative_to(workspace)).replace("\\", "/")
 
         # Write-through: a user upload (inputs/) is durable state too.
         await _mirror_gateway_write(
             workspace, rel_path, content, action="create", session_id=session_id,
             organization_id=_user.organization_id,
+            owner_email=_user.email, via="upload",
         )
 
         uploaded.append(FileEntry(
             path=rel_path,
-            name=dest.name,
+            name=dest_name,
             size=stat.st_size,
             modified_at=__import__("datetime").datetime.fromtimestamp(
                 stat.st_mtime, tz=__import__("datetime").timezone.utc
@@ -1387,23 +2279,20 @@ async def upload_artifact(
                 detail=f"File '{safe_name}' too large "
                        f"({len(content)} bytes). Max is {_MAX_UPLOAD_BYTES}.",
             )
-        dest = upload_dir / safe_name
-        counter = 1
-        stem, ext2 = Path(safe_name).stem, Path(safe_name).suffix
-        while dest.exists():
-            dest = upload_dir / f"{stem} ({counter}){ext2}"
-            counter += 1
-        dest.write_bytes(content)
-        stat = dest.stat()
+        # WS-43d (§7.5 rule B): one exclusive create, with no link followed.
+        rel_path = await asyncio.to_thread(_safe_upload, workspace, cat, safe_name, content)
+        stat = await asyncio.to_thread(_safe_stat, workspace, rel_path)
+        if stat is None:
+            raise HTTPException(status_code=500, detail="The upload was not stored.")
         mime, _ = mimetypes.guess_type(safe_name)
-        rel_path = str(dest.relative_to(workspace)).replace("\\", "/")
         # Write-through to the authoritative blob store.
         await _mirror_gateway_write(
             workspace, rel_path, content, action="create", session_id=None,
             organization_id=_user.organization_id,
+            owner_email=_user.email, via="upload",
         )
         uploaded.append(FileEntry(
-            path=rel_path, name=dest.name, size=stat.st_size,
+            path=rel_path, name=rel_path.rsplit("/", 1)[-1], size=stat.st_size,
             modified_at=__import__("datetime").datetime.fromtimestamp(
                 stat.st_mtime, tz=__import__("datetime").timezone.utc
             ).isoformat(),
@@ -1441,28 +2330,46 @@ async def delete_workspace_file(
         )
     _refuse_shared_clone_write(workspace)
 
-    file_path = _safe_resolve(workspace, path)
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="File not found")
-    if file_path.is_dir():
-        raise HTTPException(
-            status_code=400, detail="Cannot delete directories"
-        )
+    from acb_skills import safe_open
 
+    rel = _open_rel(workspace, path)
+    # WS-43d (§16.3) and H-227: another thread's folders answer as absent,
+    # and so does a loose file that this session did not write.
+    own = _own_thread_slug(workspace, session_id, _user.organization_id)
+    if _is_other_thread_path(rel, own):
+        raise HTTPException(status_code=404, detail="File not found")
+    if _is_loose_path(rel, own) and not await _session_owns_disk_file(
+        workspace, rel, session_id, _user.organization_id,
+    ):
+        raise HTTPException(status_code=404, detail="File not found")
+    # WS-43v: a skill folder that is not this member's answers as absent.
+    top = _skill_top(rel, own)
+    if top is not None and await _hide_skill(workspace, top, _user):
+        raise HTTPException(status_code=404, detail="File not found")
     # Only allow deletion of files within the visible workspace dirs.
-    rel = str(file_path.relative_to(workspace)).replace("\\", "/")
     if not _is_visible_workspace_path(rel):
         raise HTTPException(
             status_code=400,
             detail="Deletion is restricted to inputs/, outputs/, and agent-data/.",
         )
-
-    file_path.unlink()
+    await _apply_write_rules(workspace, rel, _user, session_id, claim=False)
+    try:
+        # WS-43d (§7.5 rule B): no part of the path is followed as a link.
+        deleted = await asyncio.to_thread(safe_open.unlink, workspace, rel)
+    except IsADirectoryError as exc:
+        if rel.startswith("agent-data/skills/"):
+            # A skill folder answers as a missing file, so a DELETE never tells
+            # whether a skill name exists (WS-43v review).
+            raise HTTPException(status_code=404, detail="File not found") from exc
+        raise HTTPException(status_code=400, detail="Cannot delete directories") from exc
+    except safe_open.UnsafePath as exc:
+        raise HTTPException(status_code=404, detail="File not found") from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="File not found")
     # Write-through the delete to the authoritative store (records a delete
     # version in history).
-    rel_del = str(file_path.relative_to(workspace)).replace("\\", "/")
     await _mirror_gateway_delete(
-        workspace, rel_del, session_id=session_id,
+        workspace, rel, session_id=session_id,
         organization_id=_user.organization_id,
     )
     _log.info(
@@ -1505,21 +2412,39 @@ async def promote_input_to_agent_data(
     src_rel = body.path.replace("\\", "/").lstrip("/")
     if not src_rel.startswith("inputs/"):
         raise HTTPException(status_code=400, detail="only inputs/ files can be promoted")
-    src = _safe_resolve(workspace, src_rel)
-    if not src.exists() or not src.is_file():
-        raise HTTPException(status_code=404, detail="source file not found")
+    from acb_skills import safe_open
 
-    dest_rel = (body.dest or f"agent-data/{src.name}").replace("\\", "/").lstrip("/")
+    # WS-43d (§7.5 rule B): the read, the write and the unlink all go
+    # through the safe opener. A link reads as absent.
+    src_rel = _open_rel(workspace, src_rel)
+    # H-227: another thread's upload, and a loose file that this session did
+    # not write, are absent here too. Else a member could move a colleague's
+    # upload into the shared agent-data/.
+    own = _own_thread_slug(workspace, session_id, _user.organization_id)
+    if _is_other_thread_path(src_rel, own):
+        raise HTTPException(status_code=404, detail="source file not found")
+    try:
+        data = await asyncio.to_thread(safe_open.read_bytes, workspace, src_rel)
+    except (safe_open.UnsafePath, OSError):
+        data = None
+    if data is None or (
+        _is_loose_path(src_rel, own) and not await _session_owns_loose(
+            workspace, src_rel, data, session_id, _user.organization_id,
+        )
+    ):
+        raise HTTPException(status_code=404, detail="source file not found")
+    src_name = src_rel.rsplit("/", 1)[-1]
+
+    dest_rel = (body.dest or f"agent-data/{src_name}").replace("\\", "/").lstrip("/")
     if not dest_rel.startswith("agent-data/"):
         raise HTTPException(status_code=400, detail="destination must be under agent-data/")
-    dest = _safe_resolve(workspace, dest_rel)
-    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest_rel = _open_rel(workspace, dest_rel)
+    await _apply_write_rules(workspace, dest_rel, _user, session_id, claim=True)
+    await asyncio.to_thread(_safe_write, workspace, dest_rel, data)
+    await asyncio.to_thread(safe_open.unlink, workspace, src_rel)
+    dest_name = dest_rel.rsplit("/", 1)[-1]
 
-    data = src.read_bytes()
-    dest.write_bytes(data)
-    src.unlink()
-
-    mime, _ = mimetypes.guess_type(dest.name)
+    mime, _ = mimetypes.guess_type(dest_name)
     mime = mime or "application/octet-stream"
     # Store: record the new agent-data version (promote) + the inputs delete.
     await _mirror_gateway_write(
@@ -1531,11 +2456,13 @@ async def promote_input_to_agent_data(
         organization_id=_user.organization_id,
     )
 
-    stat = dest.stat()
+    stat = await asyncio.to_thread(_safe_stat, workspace, dest_rel)
+    if stat is None:
+        raise HTTPException(status_code=500, detail="The promoted file was not stored.")
     _log.info("workspace.promoted", session_id=session_id, src=src_rel, dest=dest_rel)
     return FileEntry(
         path=dest_rel,
-        name=dest.name,
+        name=dest_name,
         size=stat.st_size,
         modified_at=__import__("datetime").datetime.fromtimestamp(
             stat.st_mtime, tz=__import__("datetime").timezone.utc
@@ -1574,11 +2501,49 @@ async def get_workspace_history(
     except ImportError:
         return {"history": []}
     agent, instance = _blob_key_for_workspace(workspace)
+    own = _own_thread_slug(workspace, session_id, _user.organization_id)
+    if path and (_is_other_thread_path(path, own) or _odd_name_form(path)):
+        return {"history": []}
+    # WS-43v: no row of a skill folder that is not this member's, not even its
+    # name. The rule reads the folder's marker on the disk.
+    skill = _skill_top(path, own) if path else None
+    if skill is not None and await _hide_skill(workspace, skill, _user):
+        return {"history": []}
     rows = await file_history(
         agent, path, limit, instance=instance,
         organization_id=_user.organization_id,
     )
-    return {"history": rows}
+    # WS-43d (§16.3) and H-227: the files of another thread's folders are not
+    # listed, not even by name. A row of a loose file shows only when this
+    # session wrote that row AND began the path (:func:`_first_writer`), so
+    # another session's versions stay hidden, and a later write of this
+    # session on a colleague's file shows nothing either.
+    rows = [r for r in rows if not _is_other_thread_path(str(r.get("path") or ""), own)]
+    hidden = await asyncio.to_thread(
+        _hidden_skills, workspace, [str(r.get("path") or "") for r in rows], own,
+        _user.email,
+    )
+    rows = [r for r in rows if _skill_top(str(r.get("path") or ""), own) not in hidden]
+    firsts: dict[str, dict | None] = {}
+    kept = []
+    for r in rows:
+        rel = str(r.get("path") or "")
+        if _is_loose_path(rel, own):
+            if rel not in firsts:
+                firsts[rel] = _first_write(await _tenant_history(
+                    workspace, _user.organization_id, path=rel,
+                ))
+            first = firsts[rel]
+            if first is None:
+                continue
+            if _is_batch_row(first):
+                # A batch document: every member reads the rows of its run.
+                if not (_is_batch_row(r) and r.get("session_id") == first.get("session_id")):
+                    continue
+            elif not (first.get("session_id") == session_id == r.get("session_id")):
+                continue
+        kept.append(r)
+    return {"history": kept}
 
 
 # ---------------------------------------------------------------------------
@@ -1620,43 +2585,50 @@ async def write_workspace_file(
         )
     _refuse_shared_clone_write(workspace)
 
-    file_path = _safe_resolve(workspace, path)
+    rel = _open_rel(workspace, path)
     # Only allow writes within the visible workspace dirs (inputs/, outputs/,
     # agent-data/).  The agent itself can write anywhere, but the frontend
     # user is restricted to the three visible folders.
-    if not file_path.is_relative_to(workspace):
-        raise HTTPException(
-            status_code=400, detail="Path escapes workspace root"
-        )
-    rel = str(file_path.relative_to(workspace)).replace("\\", "/")
     if not _is_visible_workspace_path(rel):
         raise HTTPException(
             status_code=400,
             detail="Writes are restricted to inputs/, outputs/, and agent-data/.",
         )
+    # WS-43d (§16.3) and H-227: another thread's folders answer as absent.
+    # A loose file can change only from the session that wrote it. A new
+    # loose path gets the same answer, so the answer tells no one which loose
+    # file exists. A new file goes in the thread's own folder.
+    own = _own_thread_slug(workspace, session_id, _user.organization_id)
+    if _is_other_thread_path(rel, own):
+        raise HTTPException(status_code=404, detail="File not found")
+    if _is_loose_path(rel, own) and not await _session_owns_disk_file(
+        workspace, rel, session_id, _user.organization_id,
+    ):
+        raise HTTPException(status_code=404, detail="File not found")
+    await _apply_write_rules(workspace, rel, _user, session_id, claim=True)
 
-    # Create parent directories if needed
-    _existed = file_path.exists()
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Write content
-    if body.encoding == "base64":
-        data = base64.b64decode(body.content)
-        file_path.write_bytes(data)
-    else:
-        data = body.content.encode("utf-8")
-        file_path.write_text(body.content, encoding="utf-8")
+    _existed = await asyncio.to_thread(_safe_stat, workspace, rel) is not None
+    data = (
+        base64.b64decode(body.content) if body.encoding == "base64"
+        else body.content.encode("utf-8")
+    )
+    # WS-43d (§7.5 rule B): parent dirs and the file, with no link followed.
+    await asyncio.to_thread(_safe_write, workspace, rel, data)
 
     # Build response
-    stat = file_path.stat()
-    mime, _ = mimetypes.guess_type(file_path.name)
-    rel_path = str(file_path.relative_to(workspace)).replace("\\", "/")
+    stat = await asyncio.to_thread(_safe_stat, workspace, rel)
+    if stat is None:
+        raise HTTPException(status_code=500, detail="The file was not stored.")
+    file_name = rel.rsplit("/", 1)[-1]
+    mime, _ = mimetypes.guess_type(file_name)
+    rel_path = rel
 
     # Write-through to the authoritative blob store.
     await _mirror_gateway_write(
         workspace, rel_path, data,
         action="modify" if _existed else "create", session_id=session_id,
         organization_id=_user.organization_id,
+        owner_email=_user.email, via="app",
     )
 
     _log.info(
@@ -1668,7 +2640,7 @@ async def write_workspace_file(
 
     return FileEntry(
         path=rel_path,
-        name=file_path.name,
+        name=file_name,
         size=stat.st_size,
         modified_at=__import__("datetime").datetime.fromtimestamp(
             stat.st_mtime, tz=__import__("datetime").timezone.utc
@@ -1731,8 +2703,7 @@ def _discover_agent_workspaces(
 
     # ── 2. Dynamic registry (Postgres-backed) — live agents only ──────────
     try:
-        from gateway.routes.agent import \
-            _load_dynamic_agents
+        from gateway.routes.agent import _load_dynamic_agents
         for entry in _load_dynamic_agents():
             name = entry.get("name")
             if name and entry.get("status", "live") == "live":
@@ -1817,7 +2788,7 @@ def _walk_agent_artifacts(
             name=cat,
             size=0,
             modified_at=_dt.datetime.fromtimestamp(
-                mtime, tz=_dt.timezone.utc,
+                mtime, tz=_dt.UTC,
             ).isoformat(),
             mime_type="inode/directory",
             category=cat,
@@ -1854,7 +2825,7 @@ def _walk_agent_artifacts(
                 dstat = dpath.stat()
             except OSError:
                 continue
-            rel_dpath = str((rel_dir / dname)).replace("\\", "/")
+            rel_dpath = str(rel_dir / dname).replace("\\", "/")
             if rel_dpath in emitted_dirs:
                 continue  # already emitted as a synthetic special folder
             emitted_dirs.add(rel_dpath)
@@ -1864,7 +2835,7 @@ def _walk_agent_artifacts(
                 name=dname,
                 size=0,
                 modified_at=_dt.datetime.fromtimestamp(
-                    dstat.st_mtime, tz=_dt.timezone.utc,
+                    dstat.st_mtime, tz=_dt.UTC,
                 ).isoformat(),
                 mime_type="inode/directory",
                 category=_category_for(rel_dpath),
@@ -1880,7 +2851,7 @@ def _walk_agent_artifacts(
                 stat = fpath.stat()
             except OSError:
                 continue
-            rel_path = str((rel_dir / fname)).replace("\\", "/")
+            rel_path = str(rel_dir / fname).replace("\\", "/")
             mime, _ = mimetypes.guess_type(fname)
             entries.append(ArtifactEntry(
                 agent_name=agent_name,
@@ -1888,7 +2859,7 @@ def _walk_agent_artifacts(
                 name=fname,
                 size=stat.st_size,
                 modified_at=_dt.datetime.fromtimestamp(
-                    stat.st_mtime, tz=_dt.timezone.utc,
+                    stat.st_mtime, tz=_dt.UTC,
                 ).isoformat(),
                 mime_type=mime or "application/octet-stream",
                 category=_category_for(rel_path),
@@ -1980,18 +2951,20 @@ async def get_artifact_file(
 
     if _is_blocked_path(path):
         raise HTTPException(status_code=404, detail="File not found")
-    file_path = _safe_resolve(workspace, path)
-    if not file_path.exists() or not file_path.is_file():
+    rel = _open_rel(workspace, path)
+    st = await _asyncio.to_thread(_safe_stat, workspace, rel)
+    if st is None:
         # Fault-in: the store is authoritative, so a file missing from the disk
         # cache may still live in the blob store (e.g. after a volume wipe before
         # the agent has re-run). Restore it on demand, then serve.
         restored = await _faultin_from_store(
             workspace, path, organization_id=_user.organization_id,
         )
-        if not restored:
+        st = await _asyncio.to_thread(_safe_stat, workspace, rel) if restored else None
+        if st is None:
             raise HTTPException(status_code=404, detail="File not found")
 
-    file_size = file_path.stat().st_size
+    file_size = st.st_size
     if file_size > _MAX_FILE_BYTES:
         raise HTTPException(
             status_code=413,
@@ -1999,19 +2972,15 @@ async def get_artifact_file(
                    f"Maximum is {_MAX_FILE_BYTES} bytes.",
         )
 
-    mime, _ = mimetypes.guess_type(file_path.name)
+    name = rel.rsplit("/", 1)[-1]
+    mime, _ = mimetypes.guess_type(name)
     media_type = mime or "application/octet-stream"
 
-    def _iter_file():
-        with open(file_path, "rb") as f:
-            while chunk := f.read(65536):
-                yield chunk
-
     return StreamingResponse(
-        _iter_file(),
+        _safe_chunks(workspace, rel),
         media_type=media_type,
         headers={
-            "Content-Disposition": f'inline; filename="{file_path.name}"',
+            "Content-Disposition": f'inline; filename="{name}"',
             "Content-Length": str(file_size),
         },
     )
@@ -2044,37 +3013,36 @@ async def write_artifact_file(
             status_code=404, detail=f"Agent workspace not found: {agent}"
         )
 
-    file_path = _safe_resolve(workspace, path)
+    rel = _open_rel(workspace, path)
     # Restrict writes to visible workspace dirs
-    rel = str(file_path.relative_to(workspace)).replace("\\", "/")
     if not _is_visible_workspace_path(rel):
         raise HTTPException(
             status_code=400,
             detail="Writes are restricted to inputs/, outputs/, and agent-data/.",
         )
 
-    # Create parent directories if needed
-    _existed = file_path.exists()
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Write content
-    if body.encoding == "base64":
-        data = base64.b64decode(body.content)
-        file_path.write_bytes(data)
-    else:
-        data = body.content.encode("utf-8")
-        file_path.write_text(body.content, encoding="utf-8")
+    _existed = await _asyncio.to_thread(_safe_stat, workspace, rel) is not None
+    data = (
+        base64.b64decode(body.content) if body.encoding == "base64"
+        else body.content.encode("utf-8")
+    )
+    # WS-43d (§7.5 rule B): parent dirs and the file, with no link followed.
+    await _asyncio.to_thread(_safe_write, workspace, rel, data)
 
     # Build response
-    stat = file_path.stat()
-    mime, _ = mimetypes.guess_type(file_path.name)
-    rel_path = str(file_path.relative_to(workspace)).replace("\\", "/")
+    stat = await _asyncio.to_thread(_safe_stat, workspace, rel)
+    if stat is None:
+        raise HTTPException(status_code=500, detail="The file was not stored.")
+    file_name = rel.rsplit("/", 1)[-1]
+    mime, _ = mimetypes.guess_type(file_name)
+    rel_path = rel
 
     # Write-through to the authoritative blob store (agent = the explicit target).
     await _mirror_gateway_write(
         workspace, rel_path, data,
         action="modify" if _existed else "create", session_id=None,
         organization_id=_user.organization_id,
+        owner_email=_user.email, via="app",
     )
 
     # Determine category from path
@@ -2094,7 +3062,7 @@ async def write_artifact_file(
     return ArtifactEntry(
         agent_name=agent,
         path=rel_path,
-        name=file_path.name,
+        name=file_name,
         size=stat.st_size,
         modified_at=__import__("datetime").datetime.fromtimestamp(
             stat.st_mtime, tz=__import__("datetime").timezone.utc

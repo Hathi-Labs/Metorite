@@ -9,7 +9,11 @@
 // because a shared list component is what would send it. So the chips a list
 // offers are derived from the entity, and the query is built from the chips.
 
-import type { CrmView } from "./urlState";
+import { orderStageList } from "./board";
+import { pickable } from "./emptyStages";
+import type { CrmMode } from "./connect";
+import type { CardSort } from "./nextActivity";
+import { RANGE_KEYS, type CrmView } from "./urlState";
 import type { EntitySlug, Status } from "./types";
 
 /** Entities with a status pipeline. Sending `status_id` for any other is a
@@ -22,6 +26,9 @@ export function hasPipeline(entity: EntitySlug): boolean {
 
 export const MAX_PAGE_SIZE = 100;
 
+/** The rows of one list page, and of each "Load more" (CRM-X1). */
+export const LIST_PAGE_SIZE = 50;
+
 export type ListQuery = {
   q?: string;
   sort?: string;
@@ -32,7 +39,66 @@ export type ListQuery = {
   owner?: string;
   source?: string;
   include_converted?: boolean;
+  /** Deals only (CRM-Q2). Sent only when the org has two pipelines or more. */
+  pipeline_id?: string;
+  /** Related lists (CRM-Q3): the contacts and deals of one company. */
+  company_id?: string;
+  /** Related lists (CRM-Q3): the deals one contact is attached to. */
+  contact_id?: string;
+  /** CRM-Q8: the date ranges. ISO dates. */
+  created_from?: string;
+  created_to?: string;
+  updated_from?: string;
+  updated_to?: string;
+  /** Deals only. */
+  close_from?: string;
+  close_to?: string;
+  /** CRM-X3, the board only: the order of the cards in a deal lane. */
+  card_sort?: CardSort;
+  /** The board only: read ONE lane from `lane_offset` ("Show more"). */
+  lane_status_id?: string;
+  lane_offset?: number;
+  /** CRM-Q8: `custom.<key>.in` = the chosen options, joined by commas. */
+  [custom: `custom.${string}`]: string | undefined;
 };
+
+/**
+ * The search of a board (CRM-X1). The deals board takes the `?q=` of the list,
+ * and the gateway applies the one search predicate to every lane.
+ */
+export function boardSearchQuery(view: CrmView): ListQuery {
+  const q = view.q.trim();
+  return q ? { q } : {};
+}
+
+/**
+ * The lane ids and the new rows of a "Show more" answer: the rows on screen,
+ * then the next page's rows that are not on screen. The totals are the lane's
+ * own and never change with a page.
+ */
+export function appendLaneRows<L extends { rows: { id?: unknown }[] }>(
+  lane: L,
+  next: readonly { id?: unknown }[],
+): L {
+  return { ...lane, rows: appendPage(lane.rows, next) };
+}
+
+/** The filters that are the same on a list and on a board (CRM-Q8). */
+export function extraQuery(entity: EntitySlug, view: CrmView): ListQuery {
+  const query: ListQuery = {};
+  if (view.source) query.source = view.source;
+  for (const key of RANGE_KEYS) {
+    const value = view.ranges[key];
+    if (!value) continue;
+    // A close date belongs to a deal. The gateway refuses it on the rest.
+    if (key.startsWith("close_") && entity !== "deals") continue;
+    query[key] = value;
+  }
+  for (const [key, items] of Object.entries(view.custom)) {
+    if (items.length > 0) query[`custom.${key}.in`] = items.join(",");
+  }
+  return query;
+}
 
 /**
  * The view's filters as the list endpoint's query parameters.
@@ -51,7 +117,7 @@ export function listQuery(
   entity: EntitySlug,
   view: CrmView,
   page = 1,
-  pageSize = 50
+  pageSize = LIST_PAGE_SIZE
 ): ListQuery {
   const query: ListQuery = {
     page,
@@ -60,6 +126,8 @@ export function listQuery(
   if (view.q.trim()) query.q = view.q.trim();
   if (view.statusId && hasPipeline(entity)) query.status_id = view.statusId;
   if (view.owner) query.owner = view.owner;
+  Object.assign(query, extraQuery(entity, view));
+  if (entity === "deals" && view.pipelineId) query.pipeline_id = view.pipelineId;
   if (entity === "leads" && view.includeConverted) {
     query.include_converted = true;
   }
@@ -68,6 +136,25 @@ export function listQuery(
     query.dir = view.dir;
   }
   return query;
+}
+
+/**
+ * The rows on screen, then the rows of the next page that are not on screen
+ * (CRM-X1 "Load more").
+ *
+ * A record can move up between two reads, for example when somebody touches
+ * it, and then it shows on both pages. The row already on screen stays, and
+ * the copy on the next page is dropped. Pure, so the vitest setup tests it.
+ */
+export function appendPage<T extends { id?: unknown }>(shown: readonly T[], next: readonly T[]): T[] {
+  const seen = new Set(shown.map((row) => String(row.id)));
+  const added = next.filter((row) => {
+    const id = String(row.id);
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+  return [...shown, ...added];
 }
 
 /**
@@ -125,11 +212,16 @@ export type Chip = { id: string; label: string; count?: number };
 export function chipsFor(
   entity: EntitySlug,
   statuses: Status[],
-  view: CrmView
+  view: CrmView,
+  mode: CrmMode = null,
+  places?: ReadonlyMap<string, number>
 ): Chip[] {
   if (!hasPipeline(entity)) return [];
   const chips: Chip[] = [{ id: "all", label: "All" }];
-  for (const status of [...statuses].sort((a, b) => a.position - b.position)) {
+  // CRM-C3: a hidden stage has no chip, unless the view is filtered to it.
+  // Task #838: the board's order (`orderStageList`), not the raw `position`.
+  const sorted = orderStageList(entity, statuses, mode, places);
+  for (const status of pickable(sorted, view.statusId)) {
     chips.push({ id: status.id, label: status.name });
   }
   if (entity === "leads") {
@@ -183,7 +275,7 @@ export const SORTS: Record<EntitySlug, { key: string; label: string }[]> = {
     { key: "last_activity_at", label: "Last touched" },
   ],
   organizations: [
-    { key: "name", label: "Organization" },
+    { key: "name", label: "Company" },
     { key: "owner_email", label: "Owner" },
     { key: "last_activity_at", label: "Last touched" },
   ],

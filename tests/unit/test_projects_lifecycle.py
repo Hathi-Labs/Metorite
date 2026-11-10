@@ -730,7 +730,7 @@ def test_the_service_binding_sweeps_as_the_workflow_and_commits(
     """`_pm_lifecycle_sweeper` mirrors `_pm_task_updater`: closure import, the
     workflow's identity bound in, one commit around the whole sweep."""
     wf_service, fake = _sweeper_world(monkeypatch)
-    result = run(wf_service._pm_lifecycle_sweeper(WF_ID)())
+    result = run(wf_service._pm_lifecycle_sweeper(WF_ID, None)())
     assert result["archived"] == 1
     assert fake.committed == 1
     assert fake.closed is True
@@ -749,8 +749,23 @@ def test_the_sweeper_binds_the_workflow_owners_organization_explicitly(
     fails here as `[None]`.
     """
     wf_service, fake = _sweeper_world(monkeypatch)
-    run(wf_service._pm_lifecycle_sweeper(WF_ID)())
+    run(wf_service._pm_lifecycle_sweeper(WF_ID, None)())
     assert fake.bound_tenants == [ORG]
+
+
+def test_the_sweeper_takes_the_runs_organization_and_opens_no_resolver(
+    monkeypatch,
+) -> None:
+    """H-328 part (a): a run that carries an org never reaches the old
+    resolver. ORG_B proves that the run's org wins over the owner's org."""
+    wf_service, fake = _sweeper_world(monkeypatch)
+
+    async def _no_resolver():
+        raise AssertionError("a run with an org opened an unbound session")
+
+    monkeypatch.setattr(wf_service, "_get_db", _no_resolver)
+    run(wf_service._pm_lifecycle_sweeper(WF_ID, ORG_B)())
+    assert fake.bound_tenants == [ORG_B]
 
 
 def test_the_sweeper_refuses_a_workflow_whose_owner_has_no_organization(
@@ -763,7 +778,7 @@ def test_the_sweeper_refuses_a_workflow_whose_owner_has_no_organization(
     """
     wf_service, fake = _sweeper_world(monkeypatch, owner_org=None)
     with pytest.raises(NodeExecutionError):
-        run(wf_service._pm_lifecycle_sweeper(WF_ID)())
+        run(wf_service._pm_lifecycle_sweeper(WF_ID, None)())
     assert fake.bound_tenants == []
     assert fake.activities("system") == []
 
@@ -771,13 +786,13 @@ def test_the_sweeper_refuses_a_workflow_whose_owner_has_no_organization(
 def test_the_sweeper_refuses_a_workflow_it_cannot_find(monkeypatch) -> None:
     wf_service, fake = _sweeper_world(monkeypatch)
     with pytest.raises(NodeExecutionError):
-        run(wf_service._pm_lifecycle_sweeper("22222222-0000-4000-8000-00000000000f")())
+        run(wf_service._pm_lifecycle_sweeper("22222222-0000-4000-8000-00000000000f", None)())
     assert fake.bound_tenants == []
 
 
 def test_build_node_services_carries_the_sweep_seam() -> None:
     from gateway.routes.workflows.service import build_node_services
 
-    services = build_node_services("workflow", "wf-1")
+    services = build_node_services("workflow", "wf-1", ORG)
     assert services.run_lifecycle_sweep is not None
     assert services.update_task is not None

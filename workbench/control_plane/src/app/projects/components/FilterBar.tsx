@@ -79,7 +79,7 @@ import { CATEGORY_LABEL, EDITABLE_CATEGORIES } from "@/lib/statusCategory";
  * "Stage", never "status": this filters by the CATEGORY, which is what the
  * "Group by stage" option below calls it. A status is a lane's own name.
  */
-const CATEGORIES: Array<[string, string]> = [
+export const CATEGORIES: Array<[string, string]> = [
   ["", "Any stage"],
   ...EDITABLE_CATEGORIES.map((c): [string, string] => [c, CATEGORY_LABEL[c]]),
 ];
@@ -93,7 +93,7 @@ const CATEGORIES: Array<[string, string]> = [
  * lived in a `<label>` that the flex row then had to carry. Folding the verb
  * into the option text removes two elements from the busiest row in the app.
  */
-const GROUP_OPTION_LABELS: Record<GroupBy, string> = {
+export const GROUP_OPTION_LABELS: Record<GroupBy, string> = {
   status: "Group by status",
   // "Stage", never "category". The database column is `category`; the word a
   // member uses for Backlog / To do / In progress / Done is a stage, which is
@@ -103,16 +103,18 @@ const GROUP_OPTION_LABELS: Record<GroupBy, string> = {
   project: "Group by project",
   importance: "Group by priority",
   tag: "Group by tag",
+  agent: "Group by agent state",
   none: "No grouping",
 };
 
-const LANE_OPTION_LABELS: Record<GroupBy, string> = {
+export const LANE_OPTION_LABELS: Record<GroupBy, string> = {
   status: "Lanes by status",
   category: "Lanes by stage",
   assignee: "Lanes by assignee",
   project: "Lanes by project",
   importance: "Lanes by priority",
   tag: "Lanes by tag",
+  agent: "Lanes by agent state",
   none: "No lanes",
 };
 
@@ -145,10 +147,10 @@ const LANE_OPTION_LABELS: Record<GroupBy, string> = {
  * `font-weight` from `--label-weight` in unlayered CSS, which beats a utility
  * class.
  */
-const AT_DEFAULT = "";
+export const AT_DEFAULT = "";
 
 
-interface Props {
+export interface Props {
   filters: Filters;
   onFilters: (next: Filters) => void;
   /**
@@ -224,6 +226,21 @@ interface Props {
    * project rather than the view.
    */
   onExport: () => Promise<void>;
+  /**
+   * WS-55 EA-12c — the "Waiting on me" filter: tasks whose agent waits for
+   * the viewer. Absent while the agent-run routes are off, and then the bar
+   * draws no button. It is page state, not a saved-view key: this slice
+   * filters the loaded rows in the browser (`agentRuns.isWaitingOnMe`).
+   */
+  waitingOnMe?: boolean;
+  onWaitingOnMe?: (next: boolean) => void;
+  /**
+   * WS-55 EA-13e (EA3-43, EA3-49) — the "Agent work" filter: tasks that an
+   * agent worked on, by the rule of `agent_worked.py`. Page state like
+   * "Waiting on me", and it shows with it.
+   */
+  agentWork?: boolean;
+  onAgentWork?: (next: boolean) => void;
 }
 
 export function FilterBar({
@@ -253,6 +270,10 @@ export function FilterBar({
   onUpdateView,
   canSave,
   onExport,
+  waitingOnMe = false,
+  onWaitingOnMe,
+  agentWork = false,
+  onAgentWork,
 }: Props) {
   const subGroupBy = lanes.subGroupBy;
 
@@ -267,7 +288,10 @@ export function FilterBar({
    * not back, which is exactly the availability the tree describes.
    */
   const axisOffered = (option: GroupBy, current: GroupBy): boolean =>
-    option !== "project" || spansProjects || current === "project";
+    (option !== "project" || spansProjects || current === "project") &&
+    // WS-55 EA-13e: the agent axis is offered while the agent routes are on,
+    // or when it is already the current value (a saved view is honoured).
+    (option !== "agent" || Boolean(onWaitingOnMe) || current === "agent");
   // The search box is held locally and pushed up on a delay. Refetching on
   // every keystroke turns a five-letter word into five round trips, and the
   // board flickering through four wrong answers reads as a broken filter.
@@ -481,6 +505,30 @@ export function FilterBar({
         >
           Watching
         </Button>
+        {onWaitingOnMe ? (
+          <Button
+            variant={waitingOnMe ? "primary" : "secondary"}
+            size="sm"
+            icon="MessageCircleQuestion"
+            aria-pressed={waitingOnMe}
+            title="Tasks where an agent waits for your answer"
+            onClick={() => onWaitingOnMe(!waitingOnMe)}
+          >
+            Waiting on me
+          </Button>
+        ) : null}
+        {onAgentWork ? (
+          <Button
+            variant={agentWork ? "primary" : "secondary"}
+            size="sm"
+            icon="Bot"
+            aria-pressed={agentWork}
+            title="Tasks that an agent worked on: a run, or an act through an agent"
+            onClick={() => onAgentWork(!agentWork)}
+          >
+            Agent work
+          </Button>
+        ) : null}
         {/*
           The archive, as a place you can go. Owner request, 2026-09-20.
 

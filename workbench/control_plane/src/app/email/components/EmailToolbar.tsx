@@ -1,9 +1,10 @@
 "use client";
 
 import Button from "@/components/ui/Button";
+import AnchoredPanel from "@/components/ui/AnchoredPanel";
 import AppIcon, { themedIcon } from "@/components/Icon";
 import { useState } from "react";
-import { useEmailStore, isRealFolder } from "../lib/emailStore";
+import { useEmailStore, isRealFolder, foldersInScope, checkedRows } from "../lib/emailStore";
 import { LabelMenu } from "./LabelMenu";
 
 /**
@@ -25,7 +26,7 @@ export function EmailToolbar() {
     emails, emailsTotal, selectedEmailId, selectedIds, folders,
     updateEmail, deleteEmail, openCompose,
     bulkUpdateSelected, bulkDeleteSelected, clearEmailSelection,
-    setViewerCommand,
+    setViewerCommand, viewAll,
   } = useEmailStore();
 
   const selectedEmail = emails.find((e) => e.id === selectedEmailId) ?? null;
@@ -33,13 +34,22 @@ export function EmailToolbar() {
   const [showMove, setShowMove] = useState(false);
   const [showLabel, setShowLabel] = useState(false);
   const [showMore, setShowMore] = useState(false);
+  // The bar scrolls sideways (`overflow-x-auto`), and that clips anything that
+  // hangs below it. So each menu draws in an AnchoredPanel, portalled to the
+  // body, and the wrapper of its trigger is the anchor (`TBtn` has no ref).
+  const [moveAnchor, setMoveAnchor] = useState<HTMLDivElement | null>(null);
+  const [labelAnchor, setLabelAnchor] = useState<HTMLDivElement | null>(null);
+  const [moreAnchor, setMoreAnchor] = useState<HTMLDivElement | null>(null);
 
   // ── Bulk mode: checkbox multi-selection ──
-  if (selectedIds.size > 0) {
+  // The count is the checked rows of the list on screen, the ids that a bulk
+  // act reaches (EM-T8g-2 review round 2).
+  const checkedCount = checkedRows({ emails, selectedIds }).length;
+  if (checkedCount > 0) {
     return (
       <div className="flex items-center gap-1 px-3 py-2.5 border-b border-border flex-shrink-0 bg-primary/10 overflow-x-auto scrollbar-hide">
         <span className="text-xs font-medium text-foreground px-1">
-          {selectedIds.size} selected
+          {checkedCount} selected
         </span>
         <div className="flex-1" />
         <TBtn icon={themedIcon("MailOpen")} label="Mark read" onClick={() => bulkUpdateSelected({ isRead: true })} />
@@ -62,14 +72,17 @@ export function EmailToolbar() {
 
       {selectedEmail ? (
         <>
-          <Divider />
+          {/* The actions below act on the open email, which reads in the
+              right-hand pane, so they sit at the right edge. Only New, which
+              needs no open email, stays at the left (owner, 2026-10-09). */}
+          <div className="flex-1" />
           <TBtn icon={themedIcon("ReplyAll")} label="Reply All" onClick={() => setViewerCommand("reply-all")} />
           <TBtn icon={themedIcon("Reply")} label="Reply" onClick={() => setViewerCommand("reply")} />
           <TBtn icon={themedIcon("Forward")} label="Forward" onClick={() => setViewerCommand("forward")} />
 
           <TBtn
             icon={themedIcon("ListChecks")}
-            label="Add to My Tasks"
+            label="Add to My work"
             onClick={() => captureEmailToTasks(selectedEmail.id)}
           />
 
@@ -78,14 +91,14 @@ export function EmailToolbar() {
           <TBtn icon={themedIcon("Archive")} label="Archive" onClick={() => updateEmail(selectedEmail.id, { folder: "archive" })} />
           <TBtn icon={themedIcon("Trash2")} label="Delete" onClick={() => deleteEmail(selectedEmail.id)} />
           {/* Move to folder */}
-          <div className="relative flex-shrink-0">
+          <div ref={setMoveAnchor} className="relative flex-shrink-0">
             <TBtn icon={themedIcon("FolderInput")} label="Move to folder" active={showMove} onClick={() => setShowMove((v) => !v)} />
             {showMove && (
               <>
                 <div className="fixed inset-0 z-10" onClick={() => setShowMove(false)} />
-                <div className="absolute left-0 top-full mt-1 z-20 bg-popover border border-border rounded-lg shadow-xl py-1 w-44 max-h-64 overflow-y-auto">
+                <AnchoredPanel anchor={moveAnchor} open={showMove} align="end" className="w-44 py-1">
                   <div className="px-3 py-1 text-[10px] uppercase tracking-wide text-muted-foreground">Move to</div>
-                  {folders
+                  {foldersInScope(folders, viewAll)
                     .filter((f) => isRealFolder(f.key) && f.key !== selectedEmail.folder)
                     .map((f) => (
                       <button
@@ -99,7 +112,7 @@ export function EmailToolbar() {
                         {f.label}
                       </button>
                     ))}
-                </div>
+                </AnchoredPanel>
               </>
             )}
           </div>
@@ -125,14 +138,14 @@ export function EmailToolbar() {
             onClick={() => updateEmail(selectedEmail.id, { isRead: !selectedEmail.isRead })}
           />
           {/* Label */}
-          <div className="relative flex-shrink-0">
+          <div ref={setLabelAnchor} className="relative flex-shrink-0">
             <TBtn icon={themedIcon("Tag")} label="Label" active={showLabel} onClick={() => setShowLabel((v) => !v)} />
             {showLabel && (
               <>
                 <div className="fixed inset-0 z-10" onClick={() => setShowLabel(false)} />
-                <div className="absolute left-0 top-full mt-1 z-20">
-                  <LabelMenu email={selectedEmail} />
-                </div>
+                <AnchoredPanel anchor={labelAnchor} open={showLabel} maxHeight={360} align="end" className="w-60 py-1">
+                  <LabelMenu email={selectedEmail} embedded />
+                </AnchoredPanel>
               </>
             )}
           </div>
@@ -141,12 +154,12 @@ export function EmailToolbar() {
 
           <TBtn icon={themedIcon("Printer")} label="Print" onClick={() => window.print()} />
           {/* More */}
-          <div className="relative flex-shrink-0">
+          <div ref={setMoreAnchor} className="relative flex-shrink-0">
             <TBtn icon={themedIcon("MoreHorizontal")} label="More options" active={showMore} onClick={() => setShowMore((v) => !v)} />
             {showMore && (
               <>
                 <div className="fixed inset-0 z-10" onClick={() => setShowMore(false)} />
-                <div className="absolute left-0 top-full mt-1 z-20 bg-popover border border-border rounded-lg shadow-xl py-1 w-44">
+                <AnchoredPanel anchor={moreAnchor} open={showMore} align="end" className="w-44 py-1">
                   {[
                     { label: "Mark as spam", run: () => updateEmail(selectedEmail.id, { folder: "junk" }) },
                     { label: "Report phishing", run: () => updateEmail(selectedEmail.id, { folder: "junk" }) },
@@ -164,12 +177,10 @@ export function EmailToolbar() {
                       {item.label}
                     </button>
                   ))}
-                </div>
+                </AnchoredPanel>
               </>
             )}
           </div>
-
-          <div className="flex-1" />
         </>
       ) : (
         <>

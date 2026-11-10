@@ -35,8 +35,7 @@ correct in the UI and silently empties the timeline — the CRM learned this in
 from __future__ import annotations
 
 import json
-import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -44,7 +43,9 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from acb_auth import UserContext, require_feature_router
+from acb_auth import AgentScope, UserContext, require_feature_router
+from acb_auth.agent_oauth import ACTOR_VIA_PATTERN
+from acb_auth.permissions import normalize_grant_subject
 from acb_common import get_logger
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
@@ -57,8 +58,9 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query
 # `TenantUnbound` rather than defaulting: fail closed, never "the usual org".
 # ⚠️ It reads as UNUSED inside this module — it is a re-export. `ruff --fix`
 # deletes it and takes 25 test modules with it; do not let a linter "tidy" it.
-from gateway.db import tenant_session as _tenant_session
 from pydantic import BaseModel, field_validator
+from gateway.db import tenant_session as _tenant_session
+from skill_projects.hues import hue_of
 from sqlalchemy import text
 
 _log = get_logger("gateway.projects")
@@ -75,8 +77,9 @@ _log = get_logger("gateway.projects")
 #: The value is bounded by :data:`ACTOR_VIA_PATTERN` so a header cannot put a
 #: sentence into a JSONB column the timeline renders. An absent or malformed
 #: header binds ``""``, which stamps nothing — the human path is unchanged.
+#: The pattern lives in ``acb_auth.agent_oauth`` (WS-55 EA-3a), because branch
+#: 0 of the auth dependency checks the ``mcp:`` stamp with it. One copy.
 ACTOR_VIA: ContextVar[str] = ContextVar("projects_actor_via", default="")
-ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
 
 
 async def capture_actor_via(
@@ -264,6 +267,23 @@ def is_runnable(project: Any) -> bool:
     return get("status") in RUNNABLE_STATUSES and get("archived_at") is None
 
 
+def _ancestor_chain_sql(seed: str) -> str:
+    """The CTE ``chain``: each project that *seed* selects, and every project
+    above it. The verdict of :data:`_ANCESTOR_RUNNABLE_SQL` and the paths of
+    :func:`visible_project_paths` read this one text (§12.8 of
+    ``external_agent_access.md``, "it adds no third walk").
+    """
+    return f"""
+WITH RECURSIVE chain AS (
+    SELECT id, parent_project_id, status, archived_at
+      FROM pm_projects WHERE {seed}
+    UNION ALL
+    SELECT p.id, p.parent_project_id, p.status, p.archived_at
+      FROM pm_projects p JOIN chain c ON p.id = c.parent_project_id
+)
+"""
+
+
 #: One project's ancestor chain, itself included, reduced to a single verdict.
 #:
 #: `bool_and` over the chain: the whole chain must be runnable for the answer to
@@ -271,14 +291,7 @@ def is_runnable(project: Any) -> bool:
 #: NULL-safe — `bool_and` of an empty chain is NULL, which :func:`
 #: is_runnable_with_ancestors` reads as False, so a project id that resolves to
 #: nothing fails closed rather than running work in a project nobody can find.
-_ANCESTOR_RUNNABLE_SQL = """
-WITH RECURSIVE chain AS (
-    SELECT id, parent_project_id, status, archived_at
-      FROM pm_projects WHERE id = CAST(:pid AS uuid)
-    UNION ALL
-    SELECT p.id, p.parent_project_id, p.status, p.archived_at
-      FROM pm_projects p JOIN chain c ON p.id = c.parent_project_id
-)
+_ANCESTOR_RUNNABLE_SQL = _ancestor_chain_sql("id = CAST(:pid AS uuid)") + """\
 SELECT bool_and(status = 'active' AND archived_at IS NULL) FROM chain
 """
 
@@ -315,9 +328,45 @@ async def is_runnable_with_ancestors(db: Any, project_id: Any) -> bool:
 #: colour are the owner's; this is what completion, the personal mirror (§6.1)
 #: and automation gates (§6.3) key off. `triage` (WS-27u, migration 164) is the
 #: parked-at-the-front-door value that :func:`triage_exclusion_clause` keys off.
+#: Triage sits LAST here, which is what the list sort by Status shows
+#: (``_CATEGORY_RANK_ARRAY``).
+#:
+#: This is the ONE written list of stages (task 1792). ``_LIFECYCLE`` and
+#: ``STATUS_STAGE_ORDER`` derive from it. Keep it a literal:
+#: ``projectToolRows.test.ts`` reads this line and compares it with
+#: ``STATUS_CATEGORIES`` in ``statusCategory.ts``.
 STATUS_CATEGORIES: tuple[str, ...] = (
     "backlog", "todo", "in_progress", "done", "cancelled", "triage",
 )
+
+#: The five stages in lifecycle order: every category but triage.
+_LIFECYCLE: tuple[str, ...] = tuple(c for c in STATUS_CATEGORIES if c != "triage")
+
+#: The order a BOARD draws its lanes (task 1792): triage first, then the
+#: lifecycle. ONE rule orders status lanes everywhere: stage rank, then
+#: ``position``, then ``name``. Position orders lanes INSIDE a stage and never
+#: moves a lane into another stage, so a Done row with the lowest position
+#: still draws after In progress. Mirrors ``STATUS_CATEGORIES`` in
+#: ``workbench/control_plane/src/lib/statusCategory.ts``. An unknown stage
+#: sorts last.
+STATUS_STAGE_ORDER: tuple[str, ...] = ("triage", *_LIFECYCLE)
+
+
+def status_order_sql(alias: str = "") -> str:
+    """The ONE SQL ``ORDER BY`` body for status lanes: stage, position, name.
+
+    ``alias`` is the table alias with no dot (``"n"`` gives ``n.category``).
+    The stage names are constants, never request input.
+    """
+    a = f"{alias}." if alias else ""
+    whens = " ".join(
+        f"WHEN '{c}' THEN {i}" for i, c in enumerate(STATUS_STAGE_ORDER)
+    )
+    return (
+        f"CASE {a}category {whens} ELSE {len(STATUS_STAGE_ORDER)} END, "
+        f"{a}position, {a}name"
+    )
+
 
 #: The one category the default list reads exclude (WS-27u). A constant rather
 #: than a literal in the clause below so the vocabulary word and the predicate
@@ -360,14 +409,34 @@ STARTED_CATEGORY = "in_progress"
 #: they monkeypatch ``record_activity`` and so never exercised the vocabulary
 #: it guards. A tuple that mirrors a migration by hand needs a test that reads
 #: the migration; anything else is a comment claiming to be an invariant.
+#:
+#: `cycle_transfer` (WS-39 SP-1, the cycle migration): the logged move of one
+#: unfinished task at the close of a cycle (`cycles.close_cycle`).
 ACTIVITY_TYPES: tuple[str, ...] = (
     "comment", "status_change", "field_change", "link", "assignment",
     "agent_run", "sync", "system", "attachment", "mention", "merge",
+    "cycle_transfer",
 )
 
 #: `pm_projects.source` / `pm_tasks.source`. Tasks carry two extra origins.
 PROJECT_SOURCES: tuple[str, ...] = ("manual", "import", "agent")
-TASK_SOURCES: tuple[str, ...] = ("manual", "import", "email", "agent", "automation")
+#: The values that the CHECK on `pm_tasks.source` accepts (migration 146,
+#: widened by the EA-6d migration with `mcp`). `test_projects_migration.py`
+#: reads the migrations and holds this tuple equal to the last CHECK.
+TASK_SOURCES: tuple[str, ...] = (
+    "manual", "import", "email", "agent", "automation", "mcp",
+)
+#: WS-55 EA-6d. The sources that only the server stamps. `mcp` marks a task
+#: that an outside agent made through the MCP edge, and `tasks.create_task`
+#: sets it from `UserContext.agent`, never from a request body.
+#: The one spelling of the agent stamp (``pm_tasks.source``, migration 265).
+AGENT_TASK_SOURCE = "mcp"
+SERVER_TASK_SOURCES: tuple[str, ...] = (AGENT_TASK_SOURCE,)
+#: The sources that a request body may name. A body that names `mcp` gets 422.
+#: Each route that reads a source from a request checks it against THIS tuple.
+CLIENT_TASK_SOURCES: tuple[str, ...] = tuple(
+    s for s in TASK_SOURCES if s not in SERVER_TASK_SOURCES
+)
 
 #: Node kinds in the projects tree (migration 193). Mirrors the CHECK the
 #: migration adds — test_projects_node_kind.py reads the SQL file, because a
@@ -462,6 +531,73 @@ def assert_run_state_allowed(level: str) -> None:
     )
 
 
+def is_team_space(node: Any) -> bool:
+    """True when ``node`` is a team SPACE: a team root of kind project.
+
+    A personal root is a root too, and it is NOT a space here. It is the
+    member's own tree, and it holds the Inbox by design
+    (``personal.create_personal_task``). A folder is never a root.
+    """
+    if getattr(node, "parent_project_id", None) is not None:
+        return False
+    if getattr(node, "personal_owner", None):
+        return False
+    return node_kind(getattr(node, "kind", None)) == "project"
+
+
+def assert_not_archived(node: Any, *, then: str) -> None:
+    """Refuse a NEW placement under an archived project (WS-64).
+
+    A child filed under an archived parent kept ``archived_at`` NULL, so it
+    showed in the lists the archive hides. ``then`` finishes the advice, for
+    example ``"Create the task in"``. It must read before
+    ``" an active project, or unarchive this one first."``.
+
+    Call it AFTER the visibility load, as :func:`assert_holds_tasks` is, so a
+    caller who cannot see the node gets 404 (R5). It judges a NEW placement
+    only. Reads, edits, and moves OUT of an archived project still work.
+    """
+    if getattr(node, "archived_at", None) is not None:
+        name = str(getattr(node, "name", "") or "").strip() or "This project"
+        raise HTTPException(
+            status_code=422,
+            detail=f"{name} is archived. {then} an active project, or "
+                   f"unarchive this one first.",
+        )
+
+
+def assert_holds_tasks(node: Any, *, then: str) -> None:
+    """Refuse a task placed on a node that holds no tasks (one rule, D-PM).
+
+    ``project_management_app.md`` §"What each level does": a space and a
+    folder hold no tasks. A space shows a dashboard of its subtree and no
+    board, so a task filed on one sits where no project view draws it.
+    Measured 2026-10-26: the chat filed six tasks on a space, and the member
+    found none of them.
+
+    ``then`` finishes the advice, for example ``"Create the task in"``. It
+    must read before ``" a project inside it."``.
+
+    Call it AFTER the visibility load, so a caller who cannot see the node
+    gets 404 and never learns from a 422 that it exists (R5). It judges a
+    NEW placement only. A task that already sits on a space still reads,
+    edits and moves out, because none of those place it.
+    """
+    if node_kind(getattr(node, "kind", None)) == "folder":
+        raise HTTPException(
+            status_code=422,
+            detail=f"A folder holds projects, not tasks. {then} a project "
+                   f"inside it.",
+        )
+    if is_team_space(node):
+        name = str(getattr(node, "name", "") or "").strip() or "This node"
+        raise HTTPException(
+            status_code=422,
+            detail=f"{name} is a space. A space holds projects, not tasks. "
+                   f"{then} a project inside it.",
+        )
+
+
 def assert_node_grammar(
     *,
     kind: str,
@@ -511,6 +647,81 @@ def assert_node_grammar(
                    "projects. Break the work down with tasks and subtasks.",
         )
 
+
+def assert_folder_converts(
+    *,
+    parent_kind: str | None,
+    parent_generation: int,
+    children: list[tuple[str, int]],
+    kept: frozenset[str] = frozenset(),
+) -> None:
+    """May a folder become a project where it sits? (WS-64 OP-10, D-OP-16.)
+
+    ``children`` holds each project directly inside the folder, as
+    ``(name, depth)``. ``depth`` is the longest project chain in that
+    child's subtree, the child included. A folder cannot hold a folder, so
+    each direct child is a project.
+
+    :func:`assert_node_grammar` decides, as for a create and a move: the
+    converted node is a project whose ``subtree_depth`` is 1 plus the
+    deepest child. This function adds only the words. When the grammar
+    refuses, the 422 names each child project that is too deep, so the
+    member knows what to move. Pure, so the hermetic suite tests each case.
+
+    ``kept`` holds the names of the children that are team nodes, which
+    migration 297 kept under a personal tree. The owner of the tree cannot
+    move one, so the 422 says who can (OP-10 fix round 1).
+    """
+    depth = 1 + max((d for _, d in children), default=0)
+    try:
+        assert_node_grammar(
+            kind="project",
+            parent_kind=parent_kind,
+            parent_generation=parent_generation,
+            subtree_depth=depth,
+        )
+    except HTTPException as refused:
+        # The project chain that may sit below the new project.
+        room = MAX_PROJECT_GENERATIONS - parent_generation - 1
+        blockers = sorted(name for name, d in children if d > room)
+        if not blockers:
+            raise
+        names = ", ".join(f"'{n}'" for n in blockers)
+        team = [n for n in blockers if n in kept]
+        if team:
+            mine = ", ".join(f"'{n}'" for n in blockers if n not in kept)
+            head = (
+                "This folder is inside a project, so as a project it would "
+                "be a subproject, and a subproject cannot hold projects."
+                if room <= 0 else
+                f"{names} have sub-projects of their own, and those would go "
+                f"below the lowest level."
+            )
+            parts = [head]
+            if mine:
+                parts.append(f"Move {mine} out of the folder first.")
+            parts.extend(
+                f"'{n}' is team work. A lead of '{n}' or a Projects admin "
+                f"can move it." for n in team
+            )
+            raise HTTPException(
+                status_code=422, detail=" ".join(parts),
+            ) from refused
+        if room <= 0:
+            detail = (
+                f"This folder is inside a project, so as a project it would "
+                f"be a subproject, and a subproject cannot hold projects. "
+                f"Move {names} out of the folder first."
+            )
+        else:
+            detail = (
+                f"{names} have sub-projects of their own, and those would go "
+                f"below the lowest level. Move their sub-projects out first, "
+                f"or move the project out of the folder."
+            )
+        raise HTTPException(status_code=422, detail=detail) from refused
+
+
 #: The one system task type. Its only rule — an Epic cannot have a parent —
 #: makes it structurally the root level (§3.4). There is deliberately no
 #: 'Subtask' type: a subtask is a task with a parent.
@@ -544,6 +755,27 @@ ORG_READ = "data:org:read"
 #: category — an administrative act wearing an editor's clothes.
 SETTINGS_WRITE = "projects:settings:write"
 
+#: The words of the 403 a settings write answers. ``describe_status_set``
+#: returns the same words as ``edit_refusal``, so a chat tool that checks
+#: before its card quotes the server and never writes its own (owner
+#: directive 2026-10-07, ``projects_agent_parity.md`` §16).
+SETTINGS_REFUSAL = (
+    "Changing a project's settings needs the "
+    f"'{SETTINGS_WRITE}' permission. Ask an organization admin to "
+    "grant it to your role."
+)
+
+
+def can_manage_settings(user: UserContext | None) -> bool:
+    """May *user* change a project's settings? THE one predicate.
+
+    :func:`assert_can_manage_settings` (the write) and ``may_edit`` on
+    ``GET /nodes/{id}/status-set`` (the read a tool asks before its card)
+    both call this, so the answer before the card is the answer of the write.
+    Fence: ``tests/unit/test_projects_agent_grants.py`` (R8, both ways).
+    """
+    return user is not None and user.has_permission(SETTINGS_WRITE)
+
 
 def assert_can_manage_settings(user: UserContext) -> None:
     """Refuse a settings write to a caller without :data:`SETTINGS_WRITE`.
@@ -553,16 +785,9 @@ def assert_can_manage_settings(user: UserContext) -> None:
     hiding the endpoint would only tell them the same thing less clearly.
     Naming the permission is what lets them ask their admin for it by name.
     """
-    if user is not None and user.has_permission(SETTINGS_WRITE):
+    if can_manage_settings(user):
         return
-    raise HTTPException(
-        status_code=403,
-        detail=(
-            "Changing a project's settings needs the "
-            f"'{SETTINGS_WRITE}' permission. Ask an organization admin to "
-            "grant it to your role."
-        ),
-    )
+    raise HTTPException(status_code=403, detail=SETTINGS_REFUSAL)
 
 
 #: What a caller whose email the directory does not know is told when they try
@@ -586,6 +811,11 @@ class ProjectModel(BaseModel):
     #: 'project' or 'folder' (migration 193). NULL rows read as 'project' —
     #: resolve through `node_kind`, never `row.kind` directly.
     kind: str | None = None
+    #: Migration 196 — this node keeps its own status set, rather than reading
+    #: the nearest owner's above it. Sent so a "Copy statuses from" picker can
+    #: refuse a node that only borrows lanes (owner ask, 2026-10-10). Already in
+    #: every row: the reads are `SELECT *`. None from a row that predates it.
+    owns_statuses: bool | None = None
     #: Migration 194 — a themed icon NAME and a categorical ramp SLOT (1..8),
     #: never a colour. Meaningful on a space; NULL = the level's default.
     icon: str | None = None
@@ -693,6 +923,33 @@ class TaskModel(BaseModel):
     #: ⚠️ `row_to_dict` FILTERS through this model, so a column added to the
     #: SELECT and not to the model is dropped without a word.
     view_position: float | None = None
+    #: MCP-G5. The depth of the row under the parent that `GET /projects/tasks`
+    #: was asked about with `include_descendants` (1 = a direct child). A JOIN
+    #: PRODUCT, like `view_position`: `None` on every other read.
+    depth: int | None = None
+    #: WS-55 EA-12a (external_agent_access.md §12.1, EA12-10). The derived
+    #: state of the task's newest open agent run: ``queued``, ``working``,
+    #: ``awaiting``, ``answered``, ``stopping``, ``stale`` or ``failed``.
+    #: ``None`` with no open run. A JOIN PRODUCT, like ``view_position``:
+    #: ``filters.attach_agent_state`` fills it on the list rows and on
+    #: ``GET /projects/tasks/{id}``. Every other read leaves it ``None``.
+    agent_state: str | None = None
+    #: The same run's client stamp (``mcp:<slug>``) and member, for the pill
+    #: text ("Waiting for <member>", "<client> working"). ``None`` with no run.
+    agent_client_via: str | None = None
+    agent_member_email: str | None = None
+    #: WS-55 EA-13d (EA3-41). The first line of the newest `thought`,
+    #: `response` or `elicitation` of that run, at most 140 characters, for the
+    #: hover of the pill. Filled by ``attach_agent_state``, as the three above.
+    agent_note: str | None = None
+    #: WS-55 EA-13d (EA3-48). The ONE pull request chip of the task:
+    #: ``{repo, number, state, checks_state, checks_summary, url, title,
+    #: merged_at, more}``, or ``None``. ``filters.attach_pr_chip`` fills it in
+    #: the same call as the agent state, one batched query for the list.
+    pr: dict | None = None
+    #: WS-55 EA-13e (EA3-49). True when the agent-worked rule of
+    #: ``agent_worked.py`` holds now. ``filters.attach_agent_worked`` fills it.
+    agent_worked: bool | None = None
 
     @field_validator("leveraged", mode="before")
     @classmethod
@@ -718,6 +975,18 @@ class TaskIn(BaseModel):
     tags: list[str] | None = None
     custom_fields: dict | None = None
     source: str | None = None
+
+
+class TaskPatchIn(TaskIn):
+    """The body of ``PATCH /tasks/{id}``: :class:`TaskIn`, and a done date.
+
+    ``completed_at`` is a PATCH-only key (UNDO-1 round 2). Undo of a Reopen
+    sends the task back to its done lane with the date it held. The server
+    honours it ONLY when the same write moves the task INTO a closing
+    category (``apply_status_transition``). ``POST /tasks`` does not take it.
+    """
+
+    completed_at: str | None = None
 
 
 class StatusModel(BaseModel):
@@ -1008,9 +1277,31 @@ def actor(user: Any) -> str:
     return email or "anonymous"
 
 
+async def reader_day_start(db: Any, email: str) -> datetime:
+    """The instant that *email*'s own today started: the value of
+    ``:day_start`` in ``due_day.overdue_sql`` (RX-5). *email* is the reader, so
+    a card and the count of a shared board agree for the one who reads them.
+    ``personal`` imports this module, so the import waits for the call."""
+    from gateway.routes.projects.personal import member_day_start
+
+    return await member_day_start(db, email)
+
+
 def now() -> datetime:
     """The one clock this package reads, so tests can freeze it in one place."""
     return datetime.now(UTC)
+
+
+def hue_values(values: dict[str, Any]) -> dict[str, Any]:
+    """Map a colour in a status, type or tag body to one of the six hues (PJP-1).
+
+    The map is ``skill_projects.hues``, the one the chat tools use, so the app
+    and the chat store the same value. An empty or null colour stays as it is:
+    null clears the field, and the create route keeps its default.
+    """
+    if values.get("color"):
+        values["color"] = hue_of(values["color"])
+    return values
 
 
 def clean_payload(payload: BaseModel) -> dict[str, Any]:
@@ -1058,10 +1349,22 @@ WHERE lower(au.email) = :email AND au.status = 'active'
 #: allows is owner-only and LOGGED. An unrestricted clause that skipped this
 #: filter would be exactly the invisible act — `data:org:read` is the widest
 #: grant in the product, and the People Center holds it.
+#:
+#: ⚠️ **A member's personal space binds the reader too** (WS-64 OP-9,
+#: D-OP-15). A task in a personal tree is shown to its owner only. The
+#: ``personal_owner`` line keeps every other member's personal node out of
+#: this set, so ``data:org:read`` reads no personal task of somebody else.
+#: Migration 297 and ``tree.create_node`` stamp ``personal_owner`` on every
+#: node of a personal tree, and leave a TEAM node under it unstamped, so the
+#: node's own column is the whole test and a team node stays in. The owner's
+#: own nodes stay in, so the owner's reads do not change. Every read that
+#: ``project_clause`` or ``task_visibility_clause`` builds takes this line.
+#: Fence: ``tests/unit/test_personal_privacy_r8.py``.
 _TENANT_PROJECTS_SQL = """
 SELECT id FROM pm_projects
 WHERE organization_id = CAST(:vis_org AS uuid)
   AND sealed_at IS NULL
+  AND (personal_owner IS NULL OR lower(personal_owner) = :vis_email)
 """
 
 #: Projects the caller may see: those carrying a matching grant, plus everything
@@ -1096,6 +1399,16 @@ WHERE organization_id = CAST(:vis_org AS uuid)
 #: Filtering the recursive step as well is not redundant. It stops the closure
 #: descending THROUGH a sealed Area into anything beneath it, and it means a
 #: subtree can be sealed without sealing its parent.
+#:
+#: ⚠️ **A personal node is its owner's only, on BOTH arms too** (WS-64 OP-9,
+#: D-OP-15). A stray ``org``, ``group:`` or email grant on a personal tree,
+#: written before OP-6b, shows the tree to nobody but its owner. The seed
+#: drops such a grant, and the recursive step stops at any personal node of
+#: somebody else. A team node under a personal root carries no
+#: ``personal_owner``, so its own grant still seeds it. The seed's line sits
+#: AFTER the subject bracket, so nothing but ``AND`` stands between the
+#: tenant and that bracket (``test_projects_tenancy.py``).
+#: Fence: ``tests/unit/test_personal_privacy_r8.py``.
 _VISIBLE_PROJECTS_SQL = """
 WITH RECURSIVE granted AS (
     SELECT DISTINCT g.project_id AS id
@@ -1106,15 +1419,106 @@ WITH RECURSIVE granted AS (
       AND (g.subject = 'org'
            OR lower(g.subject) = :vis_email
            OR g.subject = ANY(:vis_groups))
+      AND (gp.personal_owner IS NULL OR lower(gp.personal_owner) = :vis_email)
     UNION
     SELECT p.id
     FROM pm_projects p
     JOIN granted a ON p.parent_project_id = a.id
     WHERE p.organization_id = CAST(:vis_org AS uuid)
       AND p.sealed_at IS NULL
+      AND (p.personal_owner IS NULL OR lower(p.personal_owner) = :vis_email)
 )
 SELECT id FROM granted
 """
+
+#: The projects an outside agent may reach (WS-55 EA-3a, external_agent_access
+#: §7.3). :func:`_narrow_for_agent` ANDs a project column into this set, over
+#: BOTH arms of :func:`task_visibility_clause`, so a task that the member sees
+#: only as its assignee is narrowed too. A sealed tree is always out, so a D63
+#: hand-over task stays hidden from an agent even when its member holds it.
+#: ``personal_owner`` and ``sealed_at`` are stamped on every node of a tree
+#: (personal.py, seal.py), so the task's own project is enough to check.
+_AGENT_PROJECTS_SQL = """
+SELECT id FROM pm_projects
+WHERE organization_id = CAST(:vis_org AS uuid)
+  AND sealed_at IS NULL"""
+
+#: Added when the connection's ``include_personal`` is false (D-EA-4).
+_AGENT_NOT_PERSONAL_SQL = """
+  AND personal_owner IS NULL"""
+
+#: Added when the connection has pins or a left-out list (WS-55 EA-17a,
+#: D-EA-12, external_agent_access §10.8). The reach follows the nearest mark.
+#:
+#: * It starts at each pin. With no pin, it starts at each root of the
+#:   organization (:data:`_AGENT_REACH_FROM_ROOTS`), so the reach is every
+#:   project less each left-out subtree.
+#: * It walks down ``parent_project_id`` and stops at a left-out project, so
+#:   that project and every project beneath it stay out.
+#: * A pin beneath a left-out project is a start of its own, so the nearest
+#:   mark wins. A project that is a pin and left out stays out.
+#: * Each step filters by ``:vis_org``. So a pin or a left-out id of another
+#:   organization changes nothing, and so does a left-out id that no start
+#:   reaches. ``UNION`` ends the walk on a cycle.
+#:
+#: The walk can only narrow. The seal and the personal switch of
+#: :data:`_AGENT_PROJECTS_SQL` still apply to each project it reaches, so a
+#: mark on a sealed project, or on a personal one with the switch off,
+#: changes nothing. A POSITIVE ``IN``, never ``NOT IN``, because one NULL
+#: makes ``NOT IN`` match nothing. The left-out test is a ``NOT (= ANY)`` on
+#: one row: a NULL there stops the walk, so it fails closed. ``:vis_pins``
+#: and ``:vis_left_out`` bind as ``uuid[]``.
+_AGENT_REACH_SQL = """
+  AND id IN (
+    WITH RECURSIVE reach AS (
+        SELECT pp.id FROM pm_projects pp
+        WHERE pp.organization_id = CAST(:vis_org AS uuid)
+          AND {start}
+          AND NOT (pp.id = ANY(CAST(:vis_left_out AS uuid[])))
+        UNION
+        SELECT c.id FROM pm_projects c
+        JOIN reach q ON c.parent_project_id = q.id
+        WHERE c.organization_id = CAST(:vis_org AS uuid)
+          AND NOT (c.id = ANY(CAST(:vis_left_out AS uuid[])))
+    )
+    SELECT id FROM reach
+  )"""
+
+#: The starts of :data:`_AGENT_REACH_SQL`: the pins, or with no pin, the
+#: roots of the organization.
+_AGENT_REACH_FROM_PINS = "pp.id = ANY(CAST(:vis_pins AS uuid[]))"
+_AGENT_REACH_FROM_ROOTS = "pp.parent_project_id IS NULL"
+
+
+def _agent_has_marks(agent: AgentScope) -> bool:
+    """True when the connection has pins or a left-out list (D-EA-12 rule 8).
+
+    The ONE test of when :data:`_AGENT_REACH_SQL` runs and its two binds go
+    in. ``_refuse_pinned_space`` (``tree.py``) and the pinned branch of the
+    edge test the pins alone, on purpose: a connection with only a left-out
+    list reaches wide.
+    """
+    return bool(agent.pinned_projects or agent.left_out_projects)
+
+
+def _narrow_for_agent(clause: str, column: str, agent: AgentScope | None) -> str:
+    """*clause*, ANDed with the agent's project set when *agent* is set.
+
+    ⚠️ With ``agent`` None this returns *clause* itself, so every string is
+    byte-identical to the human path (fence: ``test_mcp_edge_authority.py``).
+    """
+    if agent is None:
+        return clause
+    projects = _AGENT_PROJECTS_SQL
+    if not agent.include_personal:
+        projects += _AGENT_NOT_PERSONAL_SQL
+    if _agent_has_marks(agent):
+        start = (
+            _AGENT_REACH_FROM_PINS if agent.pinned_projects
+            else _AGENT_REACH_FROM_ROOTS
+        )
+        projects += _AGENT_REACH_SQL.replace("{start}", start)
+    return f"({clause} AND {column} IN ({projects}\n))"
 
 
 @dataclass(frozen=True)
@@ -1144,24 +1548,42 @@ class Visibility:
     #: a service identity that was never onboarded, and the wrong answer to give
     #: by accident, so it is stated here.
     organization_id: str | None = None
+    #: An outside agent's narrowing (WS-55 EA-3a). ``resolve_visibility``
+    #: copies ``user.agent``. ``None`` leaves every clause as it was.
+    agent: AgentScope | None = None
 
     @property
     def params(self) -> dict[str, Any]:
         # `vis_org` is bound even when unrestricted, because the unrestricted
-        # clause is no longer `TRUE` — it is the tenant.
+        # clause is no longer `TRUE` — it is the tenant. `vis_email` is bound
+        # too, because the unrestricted task clause has the assignee arm
+        # (H-304): the D63 hand-over reaches an admin who is the assignee.
         if self.unrestricted:
-            return {"vis_org": self.organization_id}
-        return {
-            "vis_email": self.email,
-            "vis_groups": list(self.groups),
-            "vis_org": self.organization_id,
-        }
+            params: dict[str, Any] = {
+                "vis_email": self.email,
+                "vis_org": self.organization_id,
+            }
+        else:
+            params = {
+                "vis_email": self.email,
+                "vis_groups": list(self.groups),
+                "vis_org": self.organization_id,
+            }
+        if self.agent is not None and _agent_has_marks(self.agent):
+            params["vis_pins"] = [str(p) for p in self.agent.pinned_projects]
+            params["vis_left_out"] = [
+                str(p) for p in self.agent.left_out_projects]
+        return params
 
     def project_clause(self, column: str = "id") -> str:
         """A predicate restricting ``column`` (a project id) to the visible set."""
         if self.unrestricted:
-            return f"{column} IN ({_TENANT_PROJECTS_SQL})"
-        return f"{column} IN ({_VISIBLE_PROJECTS_SQL})"
+            clause = f"{column} IN ({_TENANT_PROJECTS_SQL})"
+        else:
+            clause = f"{column} IN ({_VISIBLE_PROJECTS_SQL})"
+        # Strict `.agent` on purpose: a Visibility-like object without the
+        # field raises rather than read as "no narrowing" (fails closed).
+        return _narrow_for_agent(clause, column, self.agent)
 
 
 async def resolve_organization_id(db: Any, email: str) -> str | None:
@@ -1195,10 +1617,15 @@ async def resolve_visibility(db: Any, user: UserContext) -> Visibility:
     """
     email = actor(user).lower()
     organization_id = await resolve_organization_id(db, email)
+    # WS-55 EA-3a: an outside agent's narrowing rides on the caller. Only
+    # THIS resolver copies it; `resolve_visibility_for` resolves another
+    # person and never does.
+    agent = getattr(user, "agent", None)
     if user is not None and user.has_permission(ORG_READ):
+        # The email rides along for the task clause's assignee arm (H-304).
         return Visibility(
-            unrestricted=True, email="", groups=(),
-            organization_id=organization_id,
+            unrestricted=True, email=email, groups=(),
+            organization_id=organization_id, agent=agent,
         )
     rows = (await db.execute(text(_MY_GROUPS_SQL), {"email": email})).fetchall()
     return Visibility(
@@ -1206,6 +1633,7 @@ async def resolve_visibility(db: Any, user: UserContext) -> Visibility:
         email=email,
         groups=tuple(r.subject for r in rows if getattr(r, "subject", None)),
         organization_id=organization_id,
+        agent=agent,
     )
 
 
@@ -1268,7 +1696,7 @@ async def resolve_visibility_for(db: Any, email: str) -> Visibility:
     # matching, one implementation.
     if access.has(ORG_READ):
         return Visibility(
-            unrestricted=True, email="", groups=(),
+            unrestricted=True, email=clean, groups=(),
             organization_id=organization_id,
         )
     group_rows = (await db.execute(
@@ -1318,9 +1746,20 @@ async def require_organization_of(db: Any, email: str) -> str:
 
 
 async def load_visible_project(
-    db: Any, vis: Visibility, project_id: str,
+    db: Any, vis: Visibility, project_id: str, *, lock_share: bool = False,
 ) -> Any:
     """One project the caller may see, or 404.
+
+    ``lock_share`` reads the row ``FOR SHARE``, the lock idiom of
+    ``tree._lock_ancestor_chain``. A write that places a task on this
+    project passes it (review of 2026-10-26). ``move_node`` takes the moved
+    row ``FOR UPDATE`` and then counts its tasks before it makes the project
+    a space. Without the share lock, a task insert could pass the
+    ``assert_holds_tasks`` guard on the old shape and land on the new space.
+    With it, the move waits for the insert to commit and then sees the task.
+    The lock lasts to the end of the caller's transaction, so call it inside
+    the transaction that inserts. Postgres re-reads the row after a wait,
+    so the guard sees the row the move left.
 
     404 and not 403 (R5): "no such project" and "not yours" must be the same
     answer, or the error code becomes an oracle for what exists in another
@@ -1330,12 +1769,53 @@ async def load_visible_project(
         text(
             f"SELECT * FROM pm_projects "
             f"WHERE id = CAST(:project_id AS uuid) AND {vis.project_clause()}"
+            + (" FOR SHARE" if lock_share else "")
         ),
         {"project_id": project_id, **vis.params},
     )).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Project not found")
     return row
+
+
+async def visible_project_paths(
+    db: Any, vis: Visibility, project_ids: Iterable[Any],
+) -> dict[str, list[dict[str, str]]]:
+    """For each project, ``[{id, name}, ...]`` from the root down to it, in
+    the projects the reader can see (WS-55 EA-18a, spec §12.8).
+
+    The walk is :func:`_ancestor_chain_sql`. The name of a project comes back
+    only when ``Visibility.project_clause`` keeps it. The climb then stops at
+    the first parent that is not there, so a hidden name never shows, and a
+    visible grandparent above a hidden parent does not show either. A project
+    that the reader cannot see itself, such as the project of a task they only
+    hold as its assignee, has an empty path.
+    """
+    wanted = sorted({str(p) for p in project_ids if p})
+    if not wanted:
+        return {}
+    rows = (await db.execute(
+        text(
+            _ancestor_chain_sql("id = ANY(CAST(:path_leaves AS uuid[]))")
+            + "SELECT DISTINCT c.id, c.parent_project_id, p.name"
+            "  FROM chain c JOIN pm_projects p ON p.id = c.id"
+            f" WHERE {vis.project_clause('c.id')}"
+        ),
+        {"path_leaves": wanted, **vis.params},
+    )).fetchall()
+    seen = {str(row.id): row for row in rows}
+    paths: dict[str, list[dict[str, str]]] = {}
+    for leaf in wanted:
+        path: list[dict[str, str]] = []
+        current: str | None = leaf
+        # MAX_DEPTH bounds the climb, as `root_project_id` bounds its own.
+        while current in seen and len(path) < MAX_DEPTH:
+            row = seen[current]
+            path.append({"id": current, "name": row.name})
+            current = str(row.parent_project_id) if row.parent_project_id else None
+        path.reverse()
+        paths[leaf] = path
+    return paths
 
 
 async def load_visible_task(db: Any, vis: Visibility, task_id: str) -> Any:
@@ -1472,6 +1952,26 @@ async def assert_project_move_keeps_privacy(
     # A move to the top level is a move OUT of whatever held it. For a personal
     # node that is promotion into the open, which is the same refusal.
     destination = owners.get(str(new_parent_id)) if new_parent_id else None
+    # WS-64, task #304, fix round 1. The two sides read differently, and on
+    # purpose.
+    #
+    # The MOVED side reads the node's OWN column (above). Migration 297 leaves
+    # a team node (one with a grant to someone other than the tree owner)
+    # unstamped under a personal node, so that the team keeps it. The owner or
+    # a lead must be able to move that node OUT to a team space, so it is not
+    # "personal" here even though its ancestor is.
+    #
+    # The DESTINATION side walks up (`personal_tree_owner`, the one walk). A
+    # parent that is any node of a private tree, stamped or not, is a
+    # personal destination. The walk stops at a team node as 297 does, so a
+    # node of the team subtree that 297 kept is a team destination. The
+    # direct column alone let a team root sit under an unstamped legacy
+    # child, which is the shape that 297 must then skip.
+    #
+    # ⚠️ Added lines only: `test_github_merge_r8.py::test_d11_core_py_has_no_diff`
+    # refuses a removed line in this file, so the walk overrides the read above.
+    if new_parent_id:
+        destination = await personal_tree_owner(db, str(new_parent_id))
 
     if moved == destination:
         return  # team to team, or one of my Areas to another place of mine
@@ -1496,9 +1996,74 @@ async def assert_project_move_keeps_privacy(
     )
 
 
+async def grant_personal_owner(db: Any, project_id: str, email: str) -> None:
+    """The grant every personal node carries — root and child alike.
+
+    The grant is what the visibility model reads; `personal_owner` is only the
+    fast path to finding it. Both, so neither is load-bearing alone.
+    """
+    await db.execute(
+        text(
+            "INSERT INTO pm_project_grants (project_id, subject, created_by) "
+            "VALUES (CAST(:pid AS uuid), :who, :who) "
+            "ON CONFLICT (project_id, subject) DO NOTHING"
+        ),
+        {"pid": project_id, "who": email},
+    )
+
+
+#: THE walk of a private tree (WS-64, task #304, fix round 2). The node and
+#: each ancestor, nearest first, up to and with the nearest stamped node. The
+#: climb stops there, because that node names the tree owner. The owner counts
+#: ONLY when no UNSTAMPED node below it on the path carries a grant to a
+#: subject other than that owner. Such a node is a team node, which
+#: migration 297 leaves unstamped on purpose, so it and its subtree are team
+#: work. `depth < 64` ends a cycle.
+PERSONAL_TREE_OWNER_SQL = (
+    "WITH RECURSIVE anc AS ("
+    "  SELECT id, parent_project_id, personal_owner, 0 AS depth"
+    "    FROM pm_projects WHERE id = CAST(:pid AS uuid)"
+    "  UNION ALL"
+    "  SELECT p.id, p.parent_project_id, p.personal_owner, a.depth + 1"
+    "    FROM pm_projects p JOIN anc a ON p.id = a.parent_project_id"
+    "   WHERE a.depth < 64 AND a.personal_owner IS NULL"
+    "), top AS ("
+    "  SELECT personal_owner, depth FROM anc"
+    "   WHERE personal_owner IS NOT NULL ORDER BY depth LIMIT 1"
+    ") SELECT top.personal_owner FROM top"
+    " WHERE NOT EXISTS ("
+    "   SELECT 1 FROM anc a JOIN pm_project_grants g ON g.project_id = a.id"
+    "    WHERE a.depth < top.depth"
+    "      AND lower(g.subject) <> lower(top.personal_owner))"
+)
+
+
+async def personal_tree_owner(db: Any, node_id: str) -> str | None:
+    """The lower-case owner of the private tree that holds *node_id*, or None.
+
+    WS-64, task #304. THE one walk of a private tree, with the stop rule of
+    migration 297 (:data:`PERSONAL_TREE_OWNER_SQL`). A node that carries
+    ``personal_owner`` answers with it. Else the nearest stamped ancestor
+    names the owner, unless a team node (an unstamped node with a grant to
+    another subject) sits between them. Then the answer is None: team work.
+
+    Every door that asks "is this node in a private tree" calls this, and no
+    door has a copy: ``tree.create_node`` (the stamp on a new child), the
+    destination side of :func:`assert_project_move_keeps_privacy`, and
+    ``authority.in_personal_tree`` and ``authority.personal_tree_owner``
+    (the grant writes and the revoke). It lives here and not in
+    ``authority.py`` because ``authority`` imports this module.
+    """
+    row = (await db.execute(
+        text(PERSONAL_TREE_OWNER_SQL), {"pid": str(node_id)},
+    )).fetchone()
+    owner = getattr(row, "personal_owner", None) if row is not None else None
+    return (owner or "").strip().lower() or None
+
+
 async def assert_move_keeps_privacy(
     db: Any, task: Any, new_project_id: str,
-) -> None:
+) -> str | None:
     """A task may only move INTO a personal project it already lives in.
 
     The rule in one sentence, covering all five combinations:
@@ -1529,6 +2094,11 @@ async def assert_move_keeps_privacy(
     incoherent whoever performs it. Phrasing it on the two PROJECTS rather than
     on the actor is also what lets an admin tidy somebody's own tree without a
     special case.
+
+    Answers the lower-case owner of the project that the task leaves, or None
+    for a team project. The read is here anyway, so ``tasks.move_task_in``
+    takes it to see a promotion (WS-ALN ALN-1) and adds no statement. A caller
+    that only guards ignores the answer. Fence: ``test_align_trigger.py``.
     """
     rows = (await db.execute(
         text(
@@ -1538,11 +2108,12 @@ async def assert_move_keeps_privacy(
         {"old": str(task.project_id), "new": str(new_project_id)},
     )).fetchall()
     owners = {str(r.id): (r.personal_owner or "").lower() or None for r in rows}
+    source = owners.get(str(task.project_id))
     destination = owners.get(str(new_project_id))
     if destination is None:
-        return  # moving into team work is always fine
-    if owners.get(str(task.project_id)) == destination:
-        return  # already inside that same person's private tree
+        return source  # moving into team work is always fine
+    if source == destination:
+        return source  # already inside that same person's private tree
     raise HTTPException(
         status_code=422,
         detail=(
@@ -1578,17 +2149,27 @@ def task_visibility_clause(vis: Visibility, alias: str = "t") -> str:
     separately.
     """
     tenant = f"{alias}.organization_id = CAST(:vis_org AS uuid)"
-    if vis.unrestricted:
-        # `data:org:read` is the whole portfolio OF ONE ORGANIZATION. This
-        # answered the literal `TRUE` before WS-29b.
-        return tenant
-    return (
+    # `data:org:read` is the whole portfolio OF ONE ORGANIZATION (WS-29b), and
+    # it has the SAME two arms as everybody else (H-304, D63). The grant arm is
+    # `_TENANT_PROJECTS_SQL`, the set `project_clause` already gives this
+    # caller, so it leaves out a departed member's closed tree. The assignee
+    # arm is the hand-over: a task in that tree that was assigned to the
+    # reader stays visible to the reader. Until H-304 this branch was the
+    # tenant alone, so an admin read the whole closed tree.
+    projects = _TENANT_PROJECTS_SQL if vis.unrestricted else _VISIBLE_PROJECTS_SQL
+    clause = (
         f"({tenant}"
-        f" AND ({alias}.project_id IN ({_VISIBLE_PROJECTS_SQL})"
+        f" AND ({alias}.project_id IN ({projects})"
         f"      OR EXISTS (SELECT 1 FROM pm_task_assignees a"
         f"                 WHERE a.task_id = {alias}.id"
         f"                   AND lower(a.assignee) = :vis_email)))"
     )
+    # WS-55 EA-3a: ONE `AND` over both arms, so the assignee arm is narrowed
+    # by the agent's pins, its personal opt-out and the seal too (§7.3).
+    # Strict `vis.agent` on purpose: a Visibility-like stand-in without the
+    # field raises AttributeError, so a future duck-typed scope cannot drop
+    # the agent narrowing by leaving the field out (fails closed).
+    return _narrow_for_agent(clause, f"{alias}.project_id", vis.agent)
 
 
 def triage_exclusion_clause(alias: str = "t") -> str:
@@ -1618,6 +2199,84 @@ def triage_exclusion_clause(alias: str = "t") -> str:
         f" WHERE s_triage.id = {alias}.status_id"
         f" AND s_triage.category = '{TRIAGE_CATEGORY}')"
     )
+
+
+# ── "Mine" — one definition (WS-64 OP-11) ───────────────────────────────────
+
+#: The arms of :func:`mine_clause`. ``"assigned"`` alone is the read of
+#: ``/projects/assigned-to-me``, whose contract is "assigned to me" only.
+MINE_ARMS: tuple[str, ...] = ("assigned", "personal", "waiting")
+
+
+def mine_clause(alias: str = "t", *, arm: str | None = None) -> str:
+    """The task ``alias`` is the member's own. The ONE definition of "mine".
+
+    A task is mine when one of three arms is true (`one_projects_app.md`
+    §9 OP-11, item 3):
+
+    * ``assigned`` — I am an assignee of the task;
+    * ``personal`` — the task sits in my personal tree;
+    * ``waiting`` — my overlay on the task says WAITING, and the task's
+      root is inside MY grant closure. The overlay narrows and never widens
+      (`personal.MY_TASKS_FROM` carries the reason).
+
+    ``arm`` names one arm. ``None`` is all three, joined by ``OR``.
+
+    ⚠️ **The tenant is NOT in this fragment, on purpose.** Each caller ANDs
+    it in once: ``MY_TASKS_FROM`` composes ``t.organization_id = :vis_org``
+    above the arms, and the board reads AND ``task_visibility_clause``,
+    which carries the tenant. The fragment never runs alone.
+
+    ⚠️ **Identity comes from the session.** It binds ``:who``, and the
+    WAITING arm binds the closure's ``:vis_org``, ``:vis_email`` and
+    ``:vis_groups``. :func:`mine_binds` assembles all four from the member,
+    never from request input (R5, R11).
+
+    Each arm is a self-contained subquery, so a reader that has no overlay
+    join or project join can use it. The aliases ``a``, ``proj`` and ``p``
+    shadow any outer alias of the same name, which is legal SQL and keeps
+    the text the hermetic fakes read.
+    """
+    arms = {
+        "assigned": (
+            f"EXISTS (SELECT 1 FROM pm_task_assignees a"
+            f" WHERE a.task_id = {alias}.id AND lower(a.assignee) = :who)"
+        ),
+        "personal": (
+            f"EXISTS (SELECT 1 FROM pm_projects proj"
+            f" WHERE proj.id = {alias}.project_id"
+            f" AND lower(proj.personal_owner) = :who)"
+        ),
+        "waiting": (
+            f"(EXISTS (SELECT 1 FROM pm_task_personal p"
+            f" WHERE p.task_id = {alias}.id AND lower(p.member_email) = :who"
+            f" AND p.disposition = 'WAITING')"
+            f" AND {alias}.root_project_id IN ({_VISIBLE_PROJECTS_SQL}))"
+        ),
+    }
+    if arm is not None:
+        if arm not in arms:
+            raise ValueError(f"Unknown arm '{arm}'. One of: {list(MINE_ARMS)}.")
+        return arms[arm]
+    return "(" + "\n     OR ".join(arms[name] for name in MINE_ARMS) + ")"
+
+
+async def mine_binds(db: Any, email: str) -> dict[str, Any]:
+    """Every bind :func:`mine_clause` needs, for one member, assembled once.
+
+    ``email`` is the member of the session. The tenant and the groups come
+    from the directory. The groups are the member's OWN, also for a holder
+    of ``data:org:read``: that permission widens the board, and it does not
+    widen the WAITING arm (`personal.MY_TASKS_FROM`).
+    """
+    who = (email or "").strip().lower()
+    groups = (await db.execute(text(_MY_GROUPS_SQL), {"email": who})).fetchall()
+    return {
+        "who": who,
+        "vis_org": await resolve_organization_id(db, who),
+        "vis_email": who,
+        "vis_groups": [r.subject for r in groups if getattr(r, "subject", None)],
+    }
 
 
 # ── SQL helpers ─────────────────────────────────────────────────────────────
@@ -1718,6 +2377,36 @@ async def require_row(db: Any, table: str, record_id: str, what: str) -> Any:
 # ``updated_at`` on every write that matters, and a second monotonic fact about
 # one row is the CLAUDE.md §5 defect.
 #
+# ``updated_at`` stays the ONE token and the ONE feed stamp: a client reads it,
+# sends it back, and the delta cursor pages on it.
+#
+# WS-55 MCP-G7 (spec §9.10.3, migration ``*_pm_tasks_fields_at.sql``).
+# ``touch_task`` moves ``updated_at`` for every comment, link, attachment and
+# assignee, because the feed must see them. So equality alone gave 412 to an
+# agent whose task somebody had only commented on or mentioned. The trigger of
+# that migration keeps ``pm_tasks.fields_at``: the ``updated_at`` of the last
+# write that changed a FIELD of the row. It is not a second version. Nobody
+# sends it, no reply carries it, and it never refuses a token that equality
+# passes. It only narrows what a mismatch means: a token from ``fields_at`` up
+# to ``updated_at`` names a snapshot whose fields are still current, so the
+# write goes ahead. The trigger makes the ``now()`` stamp monotonic, so a
+# writer that waited on the row lock cannot stamp a field change OLDER than a
+# token a client already holds. A NULL ``fields_at`` narrows nothing.
+#
+# The trigger fires on every UPDATE. A field write that did not move
+# ``updated_at`` (a tag rename, a status remap, an FK ``SET NULL``) sets
+# ``fields_at`` ABOVE ``updated_at``. The range below is then empty, so only
+# equality passes: the token that was current still works, and after the next
+# bump it gets 412, as on main. The promote paths
+# (``lift_subtasks_to_grandparent``, ``merge._reparent_children``, the kept
+# subtasks of ``tasks.delete_task_in``) also stamp ``updated_at`` in the same
+# statement, as defence in depth. Each one has its own R8 case in
+# ``test_task_precondition_fields_at.py`` (M5 to M8).
+#
+# ``tasks.agent_delete_task`` keeps STRICT equality and does not call
+# :func:`precondition_holds`. A delete is one-way, and ``fields_at`` does not
+# see a subtask moved under the task, so any change after the read stales it.
+#
 # ⚠️ The two rules below are not stylistic — both were MEASURED against a real
 # database (spec §9.10.1), and both are cases where the obvious implementation
 # reports a safety it does not have:
@@ -1756,8 +2445,29 @@ def parse_precondition(token: str) -> datetime:
     return parsed
 
 
+def precondition_holds(row: Any, expected: datetime) -> bool:
+    """True when a write with the token *expected* may go ahead on *row*.
+
+    Two arms (see the block above). The token equals ``updated_at``: the rule
+    of WS-27bi, unchanged. Or the token lies from ``fields_at`` up to
+    ``updated_at``: only a satellite bump moved the stamp since the client read
+    the row. The upper bound refuses a made-up future token, which no read ever
+    gave. A ``fields_at`` above ``updated_at`` (a field write with no stamp)
+    leaves the range empty, so only equality passes. Rule 2 holds in both arms:
+    parsed instants, never strings.
+    """
+    stamp = row.updated_at
+    if stamp == expected:
+        return True
+    fields_at = getattr(row, "fields_at", None)
+    return fields_at is not None and fields_at <= expected <= stamp
+
+
 def require_precondition(row: Any, if_match: str | None, current: dict) -> None:
     """Enforce ``If-Match`` against ``row.updated_at``.
+
+    Since WS-55 MCP-G7 the rule is :func:`precondition_holds`, which also reads
+    ``row.fields_at``.
 
     An ABSENT header still succeeds (D-PM-20): advisory now, mandatory in a later
     release. Made compulsory on day one it would break every existing caller at
@@ -1772,15 +2482,18 @@ def require_precondition(row: Any, if_match: str | None, current: dict) -> None:
     if not isinstance(if_match, str):
         return
     expected = parse_precondition(if_match)
-    if row.updated_at != expected:          # rule 2: instants, never strings
-        raise HTTPException(
-            status_code=412,
-            detail={
-                "error": "precondition_failed",
-                "message": "This row changed since you loaded it.",
-                "current": current,
-            },
-        )
+    # MCP-G7: the one rule. A token that it passes goes ahead, and each other
+    # token is a mismatch. Rule 2 holds inside it: instants, never strings.
+    if precondition_holds(row, expected):
+        return
+    raise HTTPException(
+        status_code=412,
+        detail={
+            "error": "precondition_failed",
+            "message": "This row changed since you loaded it.",
+            "current": current,
+        },
+    )
 
 
 async def count_where(db: Any, table: str, column: str, value: str) -> int:
@@ -2301,6 +3014,72 @@ async def status_scope_ids(db: Any, project_id: str) -> list[str]:
     return [str(r.id) for r in rows]
 
 
+#: How many projects use each set in ``:owners``, with the owner left out. It
+#: is ``used_by`` of ``GET /nodes/{id}/status-set`` (projects_settings.md §9.4,
+#: PST-1).
+#:
+#: The walk of :data:`_STATUS_SCOPE_SQL`, from many owners at once, with one
+#: count for each owner. So a list of N owners costs one query, not N.
+#:
+#: ⚠️ The ``NOT p.owns_statuses`` sits in the RECURSIVE arm, as it does in
+#: :data:`_STATUS_SCOPE_SQL`. A nested owner and every node under it use
+#: another set, so the walk must not go through it. A test at the end would
+#: count the children of a nested owner. Fence:
+#: ``tests/unit/test_projects_status_set_read_r8.py``.
+#:
+#: ⚠️ The walk goes THROUGH a folder, so a project under a folder counts. The
+#: count leaves the folder out, because a folder holds no lanes (the rule of
+#: :func:`node_kind`, and of ``hasStatusSet`` in the frontend ``tree.ts``). A
+#: NULL kind reads as a project (R6 expand).
+#:
+#: It counts every row that the tenant session reads, and Postgres RLS binds
+#: that session to one organization. A project that the caller cannot see
+#: still counts, because an edit changes its lanes too.
+_STATUS_USERS_SQL = """
+WITH RECURSIVE status_users AS (
+    SELECT id AS owner_id, id, kind FROM pm_projects
+     WHERE id = ANY(CAST(:owners AS uuid[]))
+    UNION ALL
+    SELECT u.owner_id, p.id, p.kind FROM pm_projects p
+      JOIN status_users u ON p.parent_project_id = u.id
+     WHERE NOT p.owns_statuses
+)
+SELECT owner_id,
+       count(*) FILTER (
+           WHERE id <> owner_id AND COALESCE(kind, 'project') <> 'folder'
+       ) AS used_by
+  FROM status_users GROUP BY owner_id
+"""
+
+
+def holds_lanes(node: Any) -> bool:
+    """True when ``node``'s own board shows lanes, so a status edit reaches it.
+
+    A folder holds no lanes (:func:`node_kind`). A team space holds no task and
+    shows no board (:func:`is_team_space`, owner directive 2026-08-31). A
+    personal root holds the Inbox, so it counts. The reach of a status edit
+    (PST-1, §9.5) adds the owner only when this is true.
+    """
+    return (
+        node_kind(getattr(node, "kind", None)) != "folder"
+        and not is_team_space(node)
+    )
+
+
+async def status_users(db: Any, owner_ids: list[str]) -> dict[str, int]:
+    """``{owner id: projects that use its set, the owner left out}``.
+
+    One grouped query for every owner in ``owner_ids``. An id that has no row
+    in the tenant is not in the answer.
+    """
+    if not owner_ids:
+        return {}
+    rows = (await db.execute(
+        text(_STATUS_USERS_SQL), {"owners": list(owner_ids)},
+    )).fetchall()
+    return {str(r.owner_id): int(r.used_by) for r in rows}
+
+
 #: Where a task lands when its lane is not in the set it now resolves to.
 #:
 #: Name first, then the same category, then the first lane that is not triage.
@@ -2320,9 +3099,9 @@ COALESCE(
   (SELECT n.id FROM pm_task_statuses n
     WHERE n.project_id = CAST(:owner AS uuid)
       AND n.category <> :triage
-    ORDER BY n.position, n.name LIMIT 1)
+    ORDER BY __ORDER__ LIMIT 1)
 )
-"""
+""".replace("__ORDER__", status_order_sql("n"))
 
 
 async def remap_task_statuses(
@@ -2629,7 +3408,7 @@ async def reserve_task_numbers(db: Any, root_id: str, count: int) -> int:
 async def load_default_status(
     db: Any, root_id: str, category: str | None = None,
 ) -> Any:
-    """The status a task lands in: the FIRST lane, by position.
+    """The status a task lands in: the first OPEN lane in stage order.
 
     ⚠️ **There is no "default status" setting any more** (owner directive
     2026-09-06). ``is_default`` used to be consulted first and the position was
@@ -2643,8 +3422,9 @@ async def load_default_status(
     four category columns therefore had no flagged answer at all and fell
     through to the position anyway. The fallback was doing the work.
 
-    So position IS the rule, and position is a thing people already see and
-    already drag. The column stays on the table under R6 and goes in a later
+    So the lane order IS the rule: stage, then position, then name
+    (:func:`status_order_sql`, task 1792). Position is a thing people already
+    see and already drag, and it orders lanes inside a stage. The column stays on the table under R6 and goes in a later
     release; nothing reads it for a status any more. Task TYPES keep their own
     ``is_default`` — a type list has no order to read the answer out of.
 
@@ -2665,29 +3445,35 @@ async def load_default_status(
         clauses.append("category = :category")
         params["category"] = category
     else:
-        clauses.append("category <> :triage")
+        # Task 1792. A new task never starts in a closed lane. Stage rank
+        # orders the rest, so a Done row at position 1 cannot win.
+        closed = ", ".join(f"'{c}'" for c in sorted(CLOSING_CATEGORIES))
+        clauses.append(f"category <> :triage AND category NOT IN ({closed})")
         params["triage"] = TRIAGE_CATEGORY
     row = (await db.execute(
         text(
             "SELECT * FROM pm_task_statuses WHERE "
             + " AND ".join(clauses)
-            + " ORDER BY position, name LIMIT 1"
+            + f" ORDER BY {status_order_sql()} LIMIT 1"
         ),
         params,
     )).fetchone()
     if row is not None:
         return row
-    if category is not None:
+    if category is None:
         raise HTTPException(
             status_code=422,
             detail=(
-                f"This project has no {category.replace('_', ' ')} status; "
-                "add one first."
+                "This project has no open status for a new task. Add a "
+                "Backlog, To do or In progress status first."
             ),
         )
     raise HTTPException(
         status_code=422,
-        detail="No task statuses are configured for this project; create one first.",
+        detail=(
+            f"This project has no {category.replace('_', ' ')} status; "
+            "add one first."
+        ),
     )
 
 
@@ -2777,9 +3563,48 @@ async def require_status_in_project(db: Any, root_id: str, status_id: str) -> An
     return row
 
 
+def parse_completed_at(raw: str | None) -> datetime | None:
+    """A ``completed_at`` the client sent → an aware datetime, or 422.
+
+    A bad stamp is refused whatever the status does, so a typo never hides
+    behind a write that happens not to close the task.
+    """
+    if raw is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail="The done date is not a valid date and time. "
+                   "Send it as an ISO 8601 stamp, or leave it out.",
+        ) from None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _checked_completed_at(task: Any, when: datetime) -> datetime:
+    """Refuse a done date in the future or before the task existed."""
+    if when > now():
+        raise HTTPException(
+            status_code=422,
+            detail="The done date is in the future. Leave it out to use the "
+                   "current time, or send a date that has passed.",
+        )
+    created = getattr(task, "created_at", None)
+    if isinstance(created, datetime):
+        created = created if created.tzinfo else created.replace(tzinfo=UTC)
+        if when < created:
+            raise HTTPException(
+                status_code=422,
+                detail="The done date is before the task was created. Leave "
+                       "it out to use the current time, or send a later date.",
+            )
+    return when
+
+
 async def apply_status_transition(
     db: Any, task: Any, new_status_id: str, *, created_by: str,
-    automation: bool = False,
+    automation: bool = False, completed_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Move a task to a new status. **Three effects, one helper.**
 
@@ -2793,6 +3618,11 @@ async def apply_status_transition(
     Every mutator that can move a status calls this — the PATCH route today, the
     sync and the automation action later — because a write that sets only the
     column looks right in the UI and silently empties the timeline.
+
+    ``completed_at`` (UNDO-1 round 2) is honoured ONLY on the crossing INTO a
+    closing category: Undo of a Reopen passes the date the task held. It may
+    not be in the future or before ``task.created_at`` (422). Every other
+    caller leaves it ``None`` and gets the stamp ``now()``.
     """
     old_status = await require_row(
         db, "pm_task_statuses", str(task.status_id), "Status",
@@ -2809,7 +3639,10 @@ async def apply_status_transition(
     was_closed = old_status.category in CLOSING_CATEGORIES
     is_closed = new_status.category in CLOSING_CATEGORIES
     if is_closed and not was_closed:
-        values["completed_at"] = now()
+        values["completed_at"] = (
+            _checked_completed_at(task, completed_at)
+            if completed_at is not None else now()
+        )
     elif was_closed and not is_closed:
         values["completed_at"] = None
 
@@ -2849,6 +3682,42 @@ async def apply_status_transition(
     }
 
 
+# ── The task row lock of a claim (WS-55 EA-6b) ──────────────────────────────
+
+#: The row lock of ``tasks.claim_task``, and of nothing else. ⚠️ **Do not call
+#: it from a member path.** Fix round 2 locked `set_assignees`, `move_task_in`
+#: and the bulk edit with it too, and each of those locks moved a deadlock to
+#: another member writer (the merge, the bulk move). The member writers of
+#: assignee rows take the row and the key in different orders today. That is
+#: an open follow-up of its own (`external_agent_access.md` §17).
+#:
+#: The claim takes this lock AFTER its assignee key and before its watcher
+#: key, in the order of `set_assignees` (fix round 3, option A). So the claim adds no lock
+#: order that a member path does not already have.
+#:
+#: NO KEY, as `admin._LOCK_STATUS_SET_SQL` explains: it does not conflict with
+#: the FOR KEY SHARE of a foreign key check, and it still queues a second
+#: claim. Fence: `tests/unit/test_mcp_edge_claim.py`, `TestTheClaimRace`.
+_LOCK_TASK_SQL = (
+    "SELECT * FROM pm_tasks WHERE id = CAST(:tid AS uuid) FOR NO KEY UPDATE"
+)
+
+
+async def lock_task(db: Any, task_id: str) -> Any:
+    """Lock one task row until the transaction ends, and return the row as
+    the lock read it. Only ``claim_task`` calls it. The claim has passed its
+    visibility load, so the lock reads by id only. 404 when a delete crossed
+    that load."""
+    # WS-55 EA-6h: `tasks.agent_delete_task` calls it too, after its own
+    # visibility load, so the version and title checks hold until the delete.
+    # WS-55 MCP-G9 (fix round 3): `activities._load_agent_comment` calls it
+    # too, so no new comment on the task commits during the last-word check.
+    row = (await db.execute(text(_LOCK_TASK_SQL), {"tid": str(task_id)})).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return row
+
+
 # ── The satellite bump (WS-27ae / P-27) ─────────────────────────────────────
 
 async def touch_task(db: Any, *task_ids: Any) -> None:
@@ -2886,6 +3755,9 @@ async def lift_subtasks_to_grandparent(db: Any, task_id: str) -> list[str]:
 
     Returns the ids that moved. The caller bumps them with :func:`touch_task`,
     because ``parent_task_id`` changes and ``updated_at`` does not.
+    (Since WS-55 MCP-G7 the UPDATE stamps ``updated_at`` itself, so the
+    trigger of migration 304 moves ``fields_at``. The caller's bump stays,
+    and it is a no-op at the same ``now()``.)
 
     ⚠️ **Why this exists.** The FK is ``ON DELETE SET NULL``, so until
     2026-09-26 deleting a subtask that had subtasks of its own made them
@@ -2913,6 +3785,11 @@ async def lift_subtasks_to_grandparent(db: Any, task_id: str) -> list[str]:
     moved = (await db.execute(
         text(
             "UPDATE pm_tasks SET parent_task_id = CAST(:grandparent AS uuid) "
+            # WS-55 MCP-G7: the stamp makes the trigger see the parent change,
+            # so `fields_at` moves and an old token of a promoted task is 412.
+            # Without it the caller's touch came second, saw no field change,
+            # and the old token passed the `fields_at` arm.
+            "    , updated_at = now() "
             "WHERE parent_task_id = CAST(:tid AS uuid) RETURNING id"
         ),
         {
@@ -3255,39 +4132,68 @@ async def emit(event_type: str, payload: dict[str, Any]) -> None:
 
 
 def validate_grant_subject(subject: str) -> str:
-    """The grant subject vocabulary, and nothing else.
+    """The grant subject vocabulary, and nothing else, as an HTTP 422.
 
     ``org`` | ``group:<slug>`` | an email address — exactly what
     ``tenancy_and_visibility.md`` §3.2 already shipped for rooms, and §3.2 is
     binding: a second vocabulary would mean two answers to "who can see this".
 
-    Lives here for WS-27a. WS-14 C1's done-when 5 names
-    ``packages/acb_auth/acb_auth/permissions.py`` as the shared home for the
-    same validator; whichever ticket lands second should lift this rather than
-    keep a copy — two validators is how the two vocabularies begin.
+    The grammar lives in ``acb_auth.permissions.normalize_grant_subject``
+    (pure, no FastAPI), moved there by WS-61 KB-1 as WS-14 C1's done-when 5
+    asked. This wrapper only turns its ``ValueError`` into the 422 that
+    Projects, the CRM access rule and Knowledge answer with.
     """
-    value = (subject or "").strip()
-    if not value:
-        raise HTTPException(status_code=422, detail="A grant subject is required.")
-    if value == "org":
-        return value
-    if value.startswith("group:"):
-        slug = value[len("group:"):].strip()
-        if not slug:
-            raise HTTPException(
-                status_code=422, detail="A group subject must name a group.",
-            )
-        return f"group:{slug.lower()}"
-    if "@" in value:
-        # R10 — stored folded, because every read compares folded.
-        return value.lower()
-    raise HTTPException(
-        status_code=422,
-        detail=(
-            f"Unknown grant subject '{subject}'. "
-            "One of: 'org', 'group:<slug>', or an email address."
-        ),
-    )
+    try:
+        return normalize_grant_subject(subject)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+
+
+#: The groups of one organization, for the grant routes (WS-64 OP-6b, fix
+#: round 1). ``org_group`` has no row security, so the statement names the
+#: organization, as ``report_scope`` does.
+_ORG_GROUPS_SQL = (
+    "SELECT slug, display_name FROM org_group "
+    " WHERE organization_id = CAST(:org AS uuid) ORDER BY slug"
+)
+
+
+async def org_groups(db: Any, organization_id: Any) -> list[dict[str, str]]:
+    """Each group of the organization as ``{"slug", "display_name"}``.
+
+    ``GET /nodes/{id}/grants`` gives the list, so the chat can refuse an
+    unknown group before its card. ``POST /nodes/{id}/grants`` reads it to
+    refuse one at the route.
+    """
+    if not organization_id:
+        return []
+    rows = (await db.execute(text(_ORG_GROUPS_SQL), {"org": str(organization_id)})).fetchall()
+    return [{"slug": str(r.slug), "display_name": str(r.display_name or r.slug)} for r in rows]
+
+
+def unknown_group_sentence(slug: str, groups: list[dict[str, str]]) -> str:
+    """The 422 words for a ``group:<slug>`` that names no group."""
+    if not groups:
+        return f"There is no group called {slug}. This organization has no groups."
+    listed = ", ".join(f"{g['display_name']} (group:{g['slug']})" for g in groups)
+    return f"There is no group called {slug}. The groups are: {listed}."
+
+
+async def assert_grant_group_exists(db: Any, organization_id: Any, subject: str) -> None:
+    """422 when *subject* is ``group:<slug>`` and the organization has no such group.
+
+    *subject* is already in the stored form of ``validate_grant_subject``.
+    ``org`` and an email address pass. A grant to a group that does not
+    exist lets nobody in, and reads as if it worked. The importer refuses the
+    same thing (``imports.GROUP_EXISTS_SQL``).
+    """
+    if not subject.startswith("group:"):
+        return
+    slug = subject.split(":", 1)[1]
+    groups = await org_groups(db, organization_id)
+    if any(g["slug"].lower() == slug.lower() for g in groups):
+        return
+    raise HTTPException(status_code=422, detail=unknown_group_sentence(slug, groups))
 
 
 def validate_choice(value: str | None, allowed: tuple[str, ...], what: str) -> None:
@@ -3339,7 +4245,7 @@ def validate_lifecycle_settings(values: dict[str, Any]) -> None:
 
         try:
             ZoneInfo(str(name))
-        except (ZoneInfoNotFoundError, ValueError, KeyError):
+        except (ZoneInfoNotFoundError, ValueError, KeyError, OSError):
             raise HTTPException(
                 status_code=422,
                 detail=(
@@ -3347,3 +4253,24 @@ def validate_lifecycle_settings(values: dict[str, Any]) -> None:
                     f"Asia/Kolkata"
                 ),
             ) from None
+
+
+#: SQLSTATEs that mean "try this transaction again": a deadlock (40P01), a
+#: serialization failure (40001), a lock that timed out (55P03). The import
+#: writer retries on them, and the tree routes answer them with a 409 (WS-64
+#: OP-10, fix round 2). One set, so the two cannot disagree.
+TRANSIENT_SQLSTATES = frozenset({"40P01", "40001", "55P03"})
+
+
+def is_transient(err: BaseException) -> bool:
+    """True when ``err``, or the driver error under it, carries a transient
+    SQLSTATE. SQLAlchemy wraps asyncpg twice, so walk the chain."""
+    seen: BaseException | None = err
+    for _ in range(5):
+        if seen is None:
+            return False
+        code = getattr(seen, "sqlstate", None) or getattr(seen, "pgcode", None)
+        if code in TRANSIENT_SQLSTATES:
+            return True
+        seen = getattr(seen, "orig", None) or seen.__cause__
+    return False

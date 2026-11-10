@@ -45,8 +45,20 @@ import Link from "next/link";
 import FilterPills from "@/components/FilterPills";
 import Tabs from "@/components/Tabs";
 import { useAccess } from "@/components/AccessProvider";
+import { useViewMode } from "@/components/ViewModeProvider";
+import { usePhoneBar } from "@/lib/shell/phoneBarEvent";
+import { ShellJob } from "@/lib/shell/doJob";
 import { rowActions } from "./lib/selfGuard";
 import { purgeConfirmed } from "./lib/confirmPurge";
+import {
+  ROSTER_URL,
+  emptyLine,
+  purgeAlternative,
+  removeCopy,
+  rowsFor,
+  splitRoster,
+  type CopyPart,
+} from "./lib/rosterView";
 // D63 / H-49 slice 2. The WORDING is the policy, so it lives in a pure module
 // with its own tests rather than inline in the dialog's JSX.
 import {
@@ -75,7 +87,7 @@ import type {
   PurgeResult,
   Role,
 } from "@/app/settings/members/types";
-import SettingsHeader from "@/components/SettingsHeader";
+import { AppTopBar } from "@/components/AppTopBar";
 
 const STATUS_STYLES: Record<Member["status"], string> = {
   active: "text-success",
@@ -117,11 +129,32 @@ const PURGE_LABELS: Record<string, string> = {
   room_participations: "room membership",
   app_grants: "app grant",
   app_tool_grants: "remembered tool approval",
+  // H-375: a send that the member scheduled for later.
+  scheduled_sends: "scheduled send",
+  // WS-65: the member's own grants on a shared mailbox. The mailbox stays.
+  mailbox_grants: "shared mailbox grant",
+  mailbox_member_prefs: "shared mailbox setting",
   email_accounts: "connected mailbox",
   whatsapp_accounts: "connected WhatsApp number",
   task_accounts: "connected task workspace",
   private_chat_sessions: "private chat session",
   sign_in_requests: "sign-in request",
+  // WS-53 CRM-Q33: the member's own business rules of the CRM.
+  crm_member_rules: "own CRM business rule",
+  // WS-CRM CRM-M1: a Change history row that only the member reads.
+  crm_private_changes: "private CRM change record",
+  // WS-61 KB-2f: the member's starred Knowledge pages.
+  knowledge_favorites: "starred Knowledge page",
+  // WS-66 RM-1: the member's private reminders, with their ledger.
+  reminders: "private reminder",
+  // WS-BRIEF BR-4: a brief or close-out of the member, with its claims.
+  brief_runs: "daily brief",
+  // WS-STU F1: the member's own AI Studio skills, with their versions.
+  studio_skills: "AI Studio skill",
+  // WS-63 PZ-9: the member's settings row, with the assistant profile.
+  member_settings: "personal settings record",
+  // WS-66 PN-1: a browser or Home Screen app that gets the member's pushes.
+  push_devices: "notification device",
   audit_entries: "app audit entry",
   audit_events: "audit event",
   agent_runs: "agent run trace",
@@ -129,6 +162,12 @@ const PURGE_LABELS: Record<string, string> = {
   apps: "app",
   workflows: "workflow",
   meetings: "meeting",
+  // WS-61 KB-5a: an edit the assistant proposed for the member, kept.
+  knowledge_proposals: "proposed Knowledge edit",
+  // WS-55 SW-10a: a nudge or a recovery record of the member's agent run, kept.
+  agent_run_strands: "stranded agent run record",
+  // WS-39 SP-1: the member's review minutes in a started cycle's capacity snapshot, kept.
+  cycle_capacity: "cycle capacity record",
 };
 
 function purgeLabel(key: string, n: number): string {
@@ -175,6 +214,12 @@ function when(iso: string): string {
 export default function OrganizationAdmin() {
   const { access, refresh: refreshAccess } = useAccess();
   const [members, setMembers] = useState<Member[]>([]);
+  /**
+   * The people an admin removed (owner request, 2026-10-15). They come from
+   * the same roster read, and `splitRoster` keeps them out of `members`, so
+   * the Seats tab and every count read what they read before.
+   */
+  const [removed, setRemoved] = useState<Member[]>([]);
   const [requests, setRequests] = useState<AccessRequest[]>([]);
   const [roles, setRoles] = useState<Role[]>([]);
   const [loading, setLoading] = useState(true);
@@ -201,6 +246,30 @@ export default function OrganizationAdmin() {
   const [tab, setTab] = useState("members");
   const [filter, setFilter] = useState("all");
   const [inviting, setInviting] = useState(false);
+  // The phone bar (MOB-12) holds Members, Requests and Invite. The page keeps
+  // the other tabs in its strip, and the top Invite tool leaves. Invite hides
+  // where the page hides it: above the branding, seats and email forms.
+  const { isMobile } = useViewMode();
+  const rosterTab = !(tab === "branding" || tab === "seats" || tab === "email");
+  // A member who is not an admin sees the admin-only card, so no tab shows.
+  const notAdmin = !access.is_admin && !loading;
+  usePhoneBar({
+    active: tab === "members" ? "org-members" : tab === "requests" ? "org-requests" : null,
+    hide: notAdmin
+      ? ["org-members", "org-requests", "org-invite"]
+      : rosterTab ? [] : ["org-invite"],
+    counts: { "org-requests": queueError ? 0 : requests.length },
+  });
+  useEffect(() => {
+    const h = (e: Event) => {
+      const t = (e as CustomEvent<string>).detail;
+      if (t === "org-members") setTab("members");
+      else if (t === "org-requests") setTab("requests");
+      else if (t === "org-invite") setInviting(true);
+    };
+    window.addEventListener("cc-mobile-nav", h);
+    return () => window.removeEventListener("cc-mobile-nav", h);
+  }, []);
   /**
    * The person an off-boarding is being confirmed for. Removal drops every
    * role assignment and is not a toggle — Activate does not undo it — so it
@@ -228,7 +297,7 @@ export default function OrganizationAdmin() {
       // effect — clearing the error afterwards is equivalent and avoids a
       // cascading render.
       const [m, r, q] = await Promise.all([
-        fetch("/api/admin/members", { cache: "no-store" }),
+        fetch(ROSTER_URL, { cache: "no-store" }),
         fetch("/api/admin/roles", { cache: "no-store" }),
         fetch("/api/admin/members/requests", { cache: "no-store" }),
       ]);
@@ -237,7 +306,9 @@ export default function OrganizationAdmin() {
         const body = await m.json().catch(() => ({}));
         throw new Error(body.detail ?? `Failed to load members (${m.status})`);
       }
-      setMembers(await m.json());
+      const roster = splitRoster(await m.json());
+      setMembers(roster.members);
+      setRemoved(roster.removed);
       if (r.ok) setRoles(await r.json());
       // A deployment whose migration has not run yet still shows the roster —
       // the queue is additive and must never take the page down with it — but
@@ -276,13 +347,14 @@ export default function OrganizationAdmin() {
       active: members.filter((m) => m.status === "active").length,
       invited: members.filter((m) => m.status === "invited").length,
       suspended: members.filter((m) => m.status === "suspended").length,
+      removed: removed.length,
     }),
-    [members]
+    [members, removed]
   );
 
   const shown = useMemo(
-    () => (filter === "all" ? members : members.filter((m) => m.status === filter)),
-    [members, filter]
+    () => rowsFor(filter, members, removed),
+    [members, removed, filter]
   );
 
   const setStatus = async (email: string, status: Member["status"]) => {
@@ -426,50 +498,64 @@ export default function OrganizationAdmin() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="shrink-0 border-b border-border px-4 py-3 sm:px-6 sm:py-4">
-        <SettingsHeader
-          title="Organisation"
-          subtitle={
+      {/* NS-2: the command bar's "Invite a member" opens the invite dialog on
+          the Members tab, once the roles it offers have loaded. Only an admin
+          reaches this far, and the gateway authorizes the invite itself. */}
+      <ShellJob
+        id="invite"
+        ready={access.is_admin && !loading}
+        onOpen={() => {
+          setTab("members");
+          setInviting(true);
+        }}
+      />
+      {/* The app's title bar (owner, 2026-10-10). It replaced a
+          SettingsHeader: the pane has no back link, so the bar carries the
+          name, the scope line and the roster's controls. */}
+      <AppTopBar
+        title="Organisation"
+        subtitle={
+          <>
+            {access.organization?.display_name ?? "Organization"} ·{" "}
+            {counts.active} active of {counts.all}
+          </>
+        }
+        tools={
+          /* Roster controls, on the roster tabs only. Teams/Roles/Invite make
+             no sense above the branding form, and an Invite button that is
+             always there is one an admin eventually clicks on the wrong
+             screen. */
+          !rosterTab ? null : (
             <>
-              {access.organization?.display_name ?? "Organization"} ·{" "}
-              {counts.active} active of {counts.all}
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                icon="RefreshCw"
+                onClick={() => void load()}
+                title="Refresh"
+                aria-label="Refresh"
+              />
+              <Link
+                href="/settings/groups"
+                className="rounded-lg border border-border px-2.5 py-1 text-xs text-muted-foreground tech-transition hover:border-primary/30 hover:text-foreground"
+              >
+                Teams
+              </Link>
+              <Link
+                href="/settings/roles"
+                className="rounded-lg border border-border px-2.5 py-1 text-xs text-muted-foreground tech-transition hover:border-primary/30 hover:text-foreground"
+              >
+                Roles
+              </Link>
+              {!isMobile && (
+                <Button size="sm" icon="Plus" onClick={() => setInviting(true)}>
+                  Invite
+                </Button>
+              )}
             </>
-          }
-          actions={
-        /* Roster actions, on the roster tabs only. Teams/Roles/Invite make no
-           sense above the branding form, and an Invite button that is always
-           there is one an admin eventually clicks on the wrong screen. */
-        <div
-          className="flex items-center gap-2"
-          hidden={tab === "branding" || tab === "seats" || tab === "email"}
-        >
-          <button
-            onClick={() => void load()}
-            className="rounded-lg border border-border p-2 text-muted-foreground tech-transition hover:bg-secondary"
-            title="Refresh"
-          >
-            <Icon name="RefreshCw" size={16} />
-          </button>
-          <Link
-            href="/settings/groups"
-            className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground tech-transition hover:border-primary/30 hover:text-foreground"
-          >
-            Teams
-          </Link>
-          <Link
-            href="/settings/roles"
-            className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground tech-transition hover:border-primary/30 hover:text-foreground"
-          >
-            Roles
-          </Link>
-          <Button size="lg" layout="flex items-center" onClick={() => setInviting(true)}>
-            <Icon name="Plus" size={15} />
-            Invite
-          </Button>
-        </div>
-          }
-        />
-      </div>
+          )
+        }
+      />
 
       <Tabs
         variant="underline"
@@ -511,7 +597,7 @@ export default function OrganizationAdmin() {
             icon: "Mail",
             note: "Approve Microsoft 365 for all members, and see how many connected a mailbox",
           },
-        ]}
+        ].filter((t) => !(isMobile && (t.id === "members" || t.id === "requests")))}
       />
 
       {tab === "members" && (
@@ -522,6 +608,7 @@ export default function OrganizationAdmin() {
               { id: "active", label: "Active", count: counts.active },
               { id: "invited", label: "Invited", count: counts.invited },
               { id: "suspended", label: "Suspended", count: counts.suspended },
+              { id: "removed", label: "Removed", count: counts.removed },
             ]}
             activeId={filter}
             onChange={setFilter}
@@ -584,7 +671,7 @@ export default function OrganizationAdmin() {
             failed={Boolean(queueError)}
           />
         ) : shown.length === 0 ? (
-          <p className="text-xs text-muted-foreground">No members here yet.</p>
+          <p className="text-xs text-muted-foreground">{emptyLine(filter)}</p>
         ) : (
           <div className="flex flex-col gap-2">
             {shown.map((m) => (
@@ -723,38 +810,41 @@ function MemberRow({
         </span>
       </div>
 
-      <div className="flex items-center gap-2">
+      {/* `flex-wrap` on the group and `whitespace-nowrap` on each control: at
+          390px the group wraps as a whole, and no label breaks inside its
+          own button (round 3). */}
+      <div className="flex flex-wrap items-center gap-2">
         <Link
           href={`/settings/members/${encodeURIComponent(member.email)}`}
-          className="rounded-lg border border-border px-2.5 py-1.5 text-[11px] text-muted-foreground tech-transition hover:border-primary/30 hover:text-foreground"
+          className="whitespace-nowrap rounded-lg border border-border px-2.5 py-1.5 text-[11px] text-muted-foreground tech-transition hover:border-primary/30 hover:text-foreground glass:rounded-full glass:px-3"
         >
           Manage access
         </Link>
         {actions.isSelf && (
           <span
-            className="rounded-lg border border-dashed border-border px-2.5 py-1.5 text-[11px] text-muted-foreground"
+            className="whitespace-nowrap rounded-lg border border-dashed border-border px-2.5 py-1.5 text-[11px] text-muted-foreground glass:rounded-full glass:px-3"
             title="You cannot suspend or remove your own access. Another owner or admin can."
           >
             This is you
           </span>
         )}
         {actions.canActivate && (
-          <Button variant="secondary" size="none" layout="" onClick={() => void setStatus(member.email, "active")} className="px-2.5 py-1.5 text-[11px]">
+          <Button variant="secondary" size="none" layout="" onClick={() => void setStatus(member.email, "active")} className="whitespace-nowrap px-2.5 py-1.5 text-[11px]">
             Activate
           </Button>
         )}
         {actions.canSuspend && (
-          <Button variant="destructive" size="none" layout="" onClick={() => void setStatus(member.email, "suspended")} className="px-2.5 py-1.5 text-[11px]">
+          <Button variant="destructive" size="none" layout="" onClick={() => void setStatus(member.email, "suspended")} className="whitespace-nowrap px-2.5 py-1.5 text-[11px]">
             Suspend
           </Button>
         )}
         {actions.canRemove && (
           <button
             onClick={() => onRemove(member)}
-            className="flex items-center gap-1 rounded-lg border border-destructive/30 px-2.5 py-1.5 text-[11px] text-destructive tech-transition hover:bg-destructive/10"
+            className="flex items-center gap-1 whitespace-nowrap rounded-lg border border-destructive/30 px-2.5 py-1.5 text-[11px] text-destructive tech-transition hover:bg-destructive/10 glass:rounded-full glass:px-3"
           >
             <Icon name="UserMinus" size={12} />
-            Remove
+            {actions.removeLabel}
           </button>
         )}
         {/* Visually distinct from Remove on purpose: Remove is an outline, this
@@ -764,7 +854,7 @@ function MemberRow({
           <button
             onClick={() => onPurge(member)}
             title="Delete this person and every credential and access grant they hold. Their work and the audit trail are kept."
-            className="flex items-center gap-1 rounded-lg bg-destructive px-2.5 py-1.5 text-[11px] font-medium text-destructive-foreground tech-transition hover:opacity-90"
+            className="flex items-center gap-1 whitespace-nowrap rounded-lg bg-destructive px-2.5 py-1.5 text-[11px] font-medium text-destructive-foreground tech-transition hover:opacity-90 glass:rounded-full glass:bg-destructive/15 glass:px-3 glass:text-destructive glass:hover:bg-destructive/25 glass:hover:opacity-100"
           >
             <Icon name="Trash2" size={12} />
             Delete permanently
@@ -776,12 +866,37 @@ function MemberRow({
 }
 
 /**
+ * One sentence from `rosterView`, in parts. A part with `em` names a control
+ * on the screen, and it gets the `text-foreground` emphasis. The words stay
+ * in `rosterView`, and this only draws them.
+ */
+function CopyLine({ parts }: { parts: CopyPart[] }) {
+  return (
+    <>
+      {parts.map((part, i) =>
+        part.em ? (
+          <span key={i} className="text-foreground">
+            {part.text}
+          </span>
+        ) : (
+          <span key={i}>{part.text}</span>
+        )
+      )}
+    </>
+  );
+}
+
+/**
  * Confirm an off-boarding, by name.
  *
  * Remove is not the loud version of Suspend: it drops every role assignment
  * and the way back is a fresh invite plus an activation, not a click on this
  * screen. Suspend is the reversible one, and the copy says so — an admin who
  * wanted the reversible act should be able to notice before, not after.
+ *
+ * For an invited person the same request revokes the invite, and the dialog
+ * says that instead (owner request, 2026-10-15). `removeCopy` holds both sets
+ * of words, and its test is the fence.
  */
 function RemoveDialog({
   member,
@@ -804,8 +919,14 @@ function RemoveDialog({
    * removing somebody mid-fetch must not claim their tree is empty.
    */
   const [seal, setSeal] = useState<SealPreview | null | undefined>(undefined);
+  // An invited person never signed in, so the copy is about the invitation
+  // and there is no workspace to seal (`rosterView.removeCopy`).
+  const copy = removeCopy(member);
 
   useEffect(() => {
+    // No seal preview for an invite: nobody signed in, so nothing is sealed,
+    // and "Checking what their personal workspace holds…" would be untrue.
+    if (!copy.showSeal) return;
     let alive = true;
     // A READ. It seals nothing, so an admin who opens this dialog and cancels
     // has changed nothing — which is what makes showing it before the click
@@ -820,10 +941,10 @@ function RemoveDialog({
     return () => {
       alive = false;
     };
-  }, [member.email]);
+  }, [member.email, copy.showSeal]);
 
-  const sealLine = describeSeal(seal ?? null);
-  const handoverLine = describeHandover(seal ?? null);
+  const sealLine = copy.showSeal ? describeSeal(seal ?? null) : null;
+  const handoverLine = copy.showSeal ? describeHandover(seal ?? null) : null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -831,18 +952,14 @@ function RemoveDialog({
       <div className="relative w-full max-w-md rounded-xl border border-border bg-card p-5 shadow-2xl">
         <h2 className="flex items-center gap-2 text-sm font-semibold text-foreground">
           <Icon name="UserMinus" size={15} className="text-destructive" />
-          Remove {member.display_name || member.email}?
+          {copy.title}
         </h2>
         <p className="mt-2 text-xs text-muted-foreground">
-          <span className="font-mono text-foreground">{member.email}</span> loses
-          access immediately and every role assignment they hold is dropped.
-          Their record is kept, because the rest of the system refers to people
-          by address.
+          <span className="font-mono text-foreground">{member.email}</span>{" "}
+          {copy.effect}
         </p>
         <p className="mt-2 text-xs text-muted-foreground">
-          This is not a toggle — bringing them back means inviting them again
-          and activating the invitation. If you only want to pause their access,
-          use <span className="text-foreground">Suspend</span> instead.
+          <CopyLine parts={copy.after} />
         </p>
 
         {/*
@@ -851,7 +968,7 @@ function RemoveDialog({
           workspace closing, and the sentence's own job is to say that nothing
           is deleted.
         */}
-        {seal === undefined && (
+        {copy.showSeal && seal === undefined && (
           <p className="mt-3 text-xs text-muted-foreground">
             Checking what their personal workspace holds…
           </p>
@@ -886,7 +1003,7 @@ function RemoveDialog({
             className="flex items-center gap-1.5 rounded-lg bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground tech-transition hover:opacity-90 disabled:opacity-50"
           >
             {busy && <Icon name="Loader2" size={14} className="animate-spin" />}
-            Remove
+            {copy.confirm}
           </button>
         </div>
       </div>
@@ -926,6 +1043,7 @@ function PurgeDialog({
   // The rule lives in `confirmPurge.ts` and is unit-tested there. Inline, it
   // was fenced only by a grep for the surrounding copy, and `= true` passed.
   const confirmed = purgeConfirmed(typed, member.email);
+  const alternative = purgeAlternative(member);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -952,6 +1070,7 @@ function PurgeDialog({
             task and project that came from the task workspace.
           </li>
           <li>Their private chat sessions, and any sign-in request on record</li>
+          <li>Their personal settings, and what the assistant remembered about them</li>
         </ul>
 
         <p className="mt-3 text-[11px] font-medium text-success">Kept</p>
@@ -971,10 +1090,10 @@ function PurgeDialog({
           </li>
         </ul>
 
+        {/* The line names a control the row really has: Remove, Revoke
+            invite, or none for a removed person (`rosterView.purgeAlternative`). */}
         <p className="mt-3 text-xs text-muted-foreground">
-          If you only want to end their access, use{" "}
-          <span className="text-foreground">Remove</span> — that one is
-          recoverable.
+          <CopyLine parts={alternative} />
         </p>
 
         <label className="mt-4 mb-1 block text-[11px] font-medium text-muted-foreground">

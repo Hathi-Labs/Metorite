@@ -3,6 +3,13 @@ automation layer via a deferred import)."""
 
 from __future__ import annotations
 
+import smtplib
+import ssl
+import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
+
 from acb_auth import UserContext, get_current_user
 from fastapi import BackgroundTasks, Depends, HTTPException
 from gateway.routes.email.core import (
@@ -10,9 +17,31 @@ from gateway.routes.email.core import (
     provider_session,
     router,
 )
-from pydantic import BaseModel
+from gateway.routes.email.mailbox_access import mailbox_predicate
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 
+#: The words of a send that the member's own mail server (IMAP/SMTP) did not
+#: take. The provider's own text names the host and the reason, never the
+#: password, so it shows as it is (review of the IMAP connect branch, P3).
+MAIL_SERVER_REFUSED_PREFIX = "The mail server did not send this mail. "
+
+
+@contextmanager
+def _mail_server_refused(provider: object) -> Iterator[None]:
+    """Answer 502 with words when an IMAP mailbox's SMTP send fails.
+
+    Before this, a refused address, a bad certificate or the 60 s deadline
+    reached the member as a bare 500. Only the IMAP provider is mapped: the
+    Gmail and Microsoft errors keep their own paths."""
+    try:
+        yield
+    except (OSError, ssl.SSLError, smtplib.SMTPException) as exc:
+        if type(provider).__name__ != "IMAPProvider":
+            raise
+        reason = str(exc).strip() or type(exc).__name__
+        raise HTTPException(
+            status_code=502, detail=MAIL_SERVER_REFUSED_PREFIX + reason[:300]) from None
 
 class SendAttachment(BaseModel):
     filename: str
@@ -45,29 +74,40 @@ class SendEmailRequest(BaseModel):
     attachments: list[SendAttachment] | None = None
     # Workspace artifacts to attach (resolved to bytes server-side).
     artifacts: list[ArtifactAttachment] | None = None
+    # H-392: Metorite files that the member can see, each with the digest
+    # that its card showed (``metorite_files.resolve_metorite_files``).
+    metorite_files: list[MetoriteFileRef] | None = None
 
 
-def load_artifact_attachments(
-    refs: "list[ArtifactAttachment] | None",
-    user_email: str | None = None,
-) -> list[dict]:
-    """Resolve workspace-artifact references to ``[{filename, content,
-    mime_type}]`` for a provider. Reads each ref from the sending member's OWN
-    workspace of its source agent (default ``email-assistant``).
+class MetoriteFileRef(BaseModel):
+    """One Metorite file of a send: its reference and the SHA-256 of the bytes
+    that the card named. A file that changed since then sends nothing."""
 
-    H-201 part 2 (``projects_ai_chat.md`` §21.14). The source is only
+    ref: str = Field(max_length=600)
+    digest: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+
+
+SendEmailRequest.model_rebuild()
+
+
+def resolve_artifact_path(ref: ArtifactAttachment, user_email: str | None) -> Path:
+    """THE resolver of one workspace file of a send: its path, or a 422.
+
+    The file must be in the sending member's OWN workspace of its source
+    agent (default ``email-assistant``). H-201 part 2
+    (``projects_ai_chat.md`` §21.14): the source is only
     ``workspace._member_agent_workspace``, so a shared agent's clone is never
     read. The path goes through ``_safe_resolve``, and ``_is_blocked_path``
     refuses ``.env``, ``.git/`` and every other secret name.
 
-    H-201 part 3 (§21.15, the P1 of the part 2 review): a ref that is refused
-    FAILS the send with 422, and a warning names it. The old rule skipped it,
-    so the mail went out without the file the member asked for, and nobody
-    was told. This fails closed."""
-    if not refs:
-        return []
-    import mimetypes
+    H-201 part 3 (§21.15, the P1 of the part 2 review): a refused ref FAILS
+    the send with 422, and a warning names it. The old rule skipped it, so
+    the mail went out without the file that the member asked for.
 
+    Task 2491: :func:`load_artifact_attachments` (the send) and
+    :func:`refused_artifacts` (the check before a card) both call this, so
+    the check and the send keep one rule. Fence:
+    ``tests/unit/test_email_files_before_card.py``."""
     from acb_common import get_logger
     from gateway.routes.workspace import (
         _is_blocked_path,
@@ -75,27 +115,63 @@ def load_artifact_attachments(
         _safe_resolve,
     )
 
-    log = get_logger("gateway.email.send")
+    agent = (ref.agent or "email-assistant").strip() or "email-assistant"
+    rel = (ref.path or "").strip()
+    ws = _member_agent_workspace(agent, user_email) if rel else None
+    full = None
+    if ws is not None and not _is_blocked_path(rel):
+        try:
+            full = _safe_resolve(ws, rel)
+        except HTTPException:
+            full = None
+    if full is None or not full.is_file():
+        get_logger("gateway.email.send").warning(
+            "email.artifact_ref_refused", agent=agent[:80], path=rel[:200])
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"The attachment '{rel[:200]}' is not a file in your own "
+                "workspace, so nothing was sent."
+            ),
+        )
+    return full
+
+
+def refused_artifacts(
+    refs: list[ArtifactAttachment], user_email: str | None,
+) -> list[str]:
+    """The path of each ref that a send refuses, as the ref gives it.
+
+    Task 2491. A check before a card: it runs :func:`resolve_artifact_path`,
+    the rule of the send, on each ref. It reads no bytes and sends nothing.
+    A card that names a file that the send refuses costs the member an
+    approval for a mail that cannot go."""
+    refused: list[str] = []
+    for ref in refs:
+        try:
+            resolve_artifact_path(ref, user_email)
+        except HTTPException as exc:
+            if exc.status_code != 422:
+                raise
+            refused.append(ref.path)
+    return refused
+
+
+def load_artifact_attachments(
+    refs: "list[ArtifactAttachment] | None",
+    user_email: str | None = None,
+) -> list[dict]:
+    """Resolve workspace-artifact references to ``[{filename, content,
+    mime_type}]`` for a provider. Each ref resolves through
+    :func:`resolve_artifact_path`, and a refused ref fails the whole send
+    with 422 (H-201 part 3). This fails closed."""
+    if not refs:
+        return []
+    import mimetypes
+
     out: list[dict] = []
     for ref in refs:
-        agent = (ref.agent or "email-assistant").strip() or "email-assistant"
-        rel = (ref.path or "").strip()
-        ws = _member_agent_workspace(agent, user_email) if rel else None
-        full = None
-        if ws is not None and not _is_blocked_path(rel):
-            try:
-                full = _safe_resolve(ws, rel)
-            except HTTPException:
-                full = None
-        if full is None or not full.is_file():
-            log.warning("email.artifact_ref_refused", agent=agent[:80], path=rel[:200])
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    f"The attachment '{rel[:200]}' is not a file in your own "
-                    "workspace, so nothing was sent."
-                ),
-            )
+        full = resolve_artifact_path(ref, user_email)
         mime, _ = mimetypes.guess_type(full.name)
         out.append({
             "filename": ref.name or full.name,
@@ -111,12 +187,22 @@ async def send_email(
     background: BackgroundTasks,
     user: UserContext = Depends(get_current_user),
 ):
-    """Send a new email from a connected account."""
+    """Send a new email from a connected account.
+
+    A reply names the mail it answers in ``reply_to_message_id``, as its
+    provider id or as its local id. That mail must be in the sending mailbox
+    of the member, or the route answers 404 before any provider call, the
+    sign-in of the provider too (EM-T8a, D-EM-19, MB-6). A local id becomes
+    the provider id here, so a chat reply threads (MB-5).
+    """
+    owner = user.email or "anonymous"
     async with _tenant_session() as db:
+        reply_pmid, reply_thread_id = await _reply_target(
+            db, req.account_id, req.reply_to_message_id, owner)
         # Ownership check + auth + rotated-cred persist all live in the session
         # helper (401 on auth failure, 404 on a foreign account).
         async with provider_session(
-            db, user.email or "anonymous", account_id=req.account_id,
+            db, owner, account_id=req.account_id,
         ) as sess:
             attachments: list[dict] | None = None
             if req.attachments:
@@ -141,45 +227,60 @@ async def send_email(
             artifact_atts = load_artifact_attachments(req.artifacts, user.email)
             if artifact_atts:
                 attachments = (attachments or []) + artifact_atts
+            # H-392: each Metorite file resolves again as the member, and it
+            # goes only while its bytes are the bytes that the card named.
+            if req.metorite_files:
+                from gateway.routes.email.transport.metorite_files import (
+                    check_digests,
+                    resolve_metorite_files,
+                )
+
+                files = await resolve_metorite_files(
+                    user, [m.ref for m in req.metorite_files])
+                check_digests(files, {m.ref: m.digest for m in req.metorite_files})
+                attachments = (attachments or []) + [
+                    {"filename": f.name, "content": f.content, "mime_type": f.mime}
+                    for f in files]
 
             # Append the account's HTML signature once, here at the single send
             # choke point (with a plain-text fallback), so every reply / new
             # message carries it. The drafter no longer bakes it into the body.
-            from gateway.routes.email.signature import build_signed_bodies
-            sig_row = (await db.execute(text(
-                "SELECT signature FROM email_assistant_settings "
-                "WHERE account_id = :aid"
-            ), {"aid": req.account_id})).fetchone()
-            send_text, send_html = build_signed_bodies(
-                (sig_row.signature if sig_row else "") or "",
-                req.body_text, req.body_html)
-
-            # Resolve the conversation id of the message being replied to so the
-            # provider threads the reply. ``reply_to_message_id`` from the client
-            # is a provider *message* id; Gmail needs the *thread* id (passing a
-            # message id as threadId fails to thread — the "separate email"
-            # bug), while Outlook still replies via the message id. Look it up
-            # once and hand both to the provider, which uses whichever it needs.
-            reply_thread_id: str | None = None
-            if req.reply_to_message_id:
-                trow0 = (await db.execute(text(
-                    "SELECT thread_id FROM email_messages "
-                    "WHERE account_id = :aid AND provider_message_id = :pmid"
-                ), {"aid": req.account_id,
-                    "pmid": req.reply_to_message_id})).fetchone()
-                reply_thread_id = trow0.thread_id if trow0 else None
-
-            msg_id = await sess.provider.send_message(
-                to=req.to,
-                subject=req.subject,
-                body_text=send_text,
-                body_html=send_html,
-                cc=req.cc,
-                bcc=req.bcc,
-                reply_to_message_id=req.reply_to_message_id,
-                attachments=attachments,
-                thread_id=reply_thread_id,
+            # WS-17 SG-2 (D-EM-66): the resolver gives it, with the kind of
+            # this mail. A body that holds the form a draft path wrote keeps
+            # that form, so the mail carries one signature.
+            from gateway.routes.email.signature import (
+                build_signed_bodies,
+                resolve_signature_for_send,
             )
+            signature = await resolve_signature_for_send(
+                db, req.account_id, "reply" if req.reply_to_message_id else "new",
+                req.body_text)
+            send_text, send_html = build_signed_bodies(
+                signature, req.body_text, req.body_html)
+
+            # ``_reply_target`` resolved the conversation id of the message
+            # being replied to, so the provider threads the reply. Gmail needs
+            # the *thread* id (passing a message id as threadId fails to
+            # thread — the "separate email" bug), while Outlook still replies
+            # via the message id. Both go to the provider, which uses whichever
+            # it needs.
+            # A mail that Gmail cannot take answers 413 (EM-G3c-1 item 7).
+            # ``drafting`` imports this module, so the mapper comes in here.
+            from gateway.routes.email.automation.drafting import (
+                _mail_too_large,
+            )
+            with _mail_too_large(), _mail_server_refused(sess.provider):
+                msg_id = await sess.provider.send_message(
+                    to=req.to,
+                    subject=req.subject,
+                    body_text=send_text,
+                    body_html=send_html,
+                    cc=req.cc,
+                    bcc=req.bcc,
+                    reply_to_message_id=reply_pmid,
+                    attachments=attachments,
+                    thread_id=reply_thread_id,
+                )
 
         # Commit the rotated-cred persist the session wrote on clean exit.
 
@@ -191,6 +292,11 @@ async def send_email(
                     _learn_from_sent,
                     _mark_thread_replied,
                 )
+                # Trash the AI draft left in the thread (EM-G11c2, G7).
+                # FIRST: `_learn_from_sent` deletes the `email_ai_drafts`
+                # row that tells a Metorite draft from the member's own.
+                background.add_task(
+                    _cleanup_thread_drafts, req.account_id, reply_thread_id)
                 background.add_task(
                     _learn_from_sent, req.account_id, reply_thread_id,
                     req.body_text)
@@ -200,13 +306,85 @@ async def send_email(
                 background.add_task(
                     _mark_thread_replied, req.account_id, reply_thread_id,
                     req.body_text, req.subject)
-                # Trash leftover drafts in the thread (AI draft / auto-save).
-                background.add_task(
-                    _cleanup_thread_drafts, req.account_id, reply_thread_id)
             except Exception:
                 pass
 
-        return {"id": msg_id, "ok": True}
+        # §21.15 review P1: the recipients that the mail server refused. Only
+        # the SMTP path can tell. A caller reports a person as sent only when
+        # the server did not refuse that person.
+        refused = sorted(getattr(sess.provider, "last_refused", None) or ())
+        return {"id": msg_id, "ok": True, **({"refused": refused} if refused else {})}
+
+
+#: The 404 of a reply whose mail is not in the sending mailbox (EM-T8a).
+REPLY_NOT_IN_MAILBOX = (
+    "The mail this reply answers is not in the sending mailbox. "
+    "Reply from the mailbox that received it."
+)
+
+
+def _as_uuid(value: str) -> str | None:
+    try:
+        return str(uuid.UUID(value))
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
+def reply_row_match(
+    reply_to: str, alias: str = "",
+) -> tuple[str, dict[str, str]]:
+    """The WHERE arm and the params that find the mail a reply answers.
+
+    ``reply_to`` is the local row id or the provider id of the mail. ``id``
+    is a uuid and ``provider_message_id`` is text, so each one gets its own
+    typed parameter. One parameter for both made Postgres raise ``operator
+    does not exist: text = uuid`` (live defect, 2026-10-11,
+    ``email_app_master_plan.md`` §17.11). A value that is not a UUID can only
+    be a provider id. ``drafting.upsert_draft`` uses it too. Fence:
+    ``tests/unit/test_email_reply_draft_save.py``."""
+    col = f"{alias}." if alias else ""
+    local_id = _as_uuid(reply_to)
+    if local_id is None:
+        return f"{col}provider_message_id = :rid", {"rid": reply_to}
+    return (f"({col}id = CAST(:lid AS uuid) OR "
+            f"{col}provider_message_id = :rid)",
+            {"lid": local_id, "rid": reply_to})
+
+
+async def _reply_target(
+    db, account_id: str, reply_to: str | None, owner: str,
+) -> tuple[str | None, str | None]:
+    """The provider id and the thread id of the mail a send answers.
+
+    ``reply_to`` is the provider id or the local id of a mail IN THE SENDING
+    MAILBOX, and that mailbox must belong to ``owner``. Anything else answers
+    404, so a reply never asks the provider to answer a mail of another
+    mailbox (EM-T8a, D-EM-19, MB-6). The route calls this BEFORE the provider
+    session, so a refused reply makes no provider call at all. A new message
+    has no ``reply_to`` and gets ``(None, None)``.
+
+    Each arm of the match uses an index: the primary key for a local id, and
+    the unique ``(account_id, provider_message_id)`` for a provider id. A
+    cast ``id::text`` would read every row of the mailbox.
+    """
+    if not reply_to:
+        return None, None
+    aid = _as_uuid(account_id)
+    if aid is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+    match, params = reply_row_match(reply_to, "em")
+    params.update(aid=aid, uid=owner)
+    row = (await db.execute(text(
+        "SELECT em.provider_message_id, em.thread_id FROM email_messages em "
+        "JOIN email_accounts ea ON ea.id = em.account_id "
+        "WHERE em.account_id = CAST(:aid AS uuid) AND "
+        + mailbox_predicate("ea", uid="uid", level="send") + " "
+        f"AND {match} "
+        "ORDER BY (em.provider_message_id = :rid) DESC LIMIT 1"
+    ), params)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail=REPLY_NOT_IN_MAILBOX)
+    return row.provider_message_id, row.thread_id
 
 
 class ImportArtifactRequest(BaseModel):

@@ -3,9 +3,10 @@
 Layout assumption (ADR-013 / WBS 0.5.1):
     skills/<domain>/<skill_id>/SKILL.md     # production skills
     skills/examples/<skill_id>/SKILL.md     # demo/sanity skills
-    skills/upstream/<vendor>/.../SKILL.md   # mirrored, do not run unreviewed
 
 Anything under `upstream/` is excluded from the production registry by default.
+The vendored mirror that once sat at `skills/upstream/` was deleted on
+2026-10-27, and the filter stays so a copy that comes back cannot run unreviewed.
 """
 from __future__ import annotations
 

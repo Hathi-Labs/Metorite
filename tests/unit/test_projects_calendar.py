@@ -209,12 +209,32 @@ NOT_ON_THE_CALENDAR = {
     # The window IS the shape; a calendar has no pages, no sort key and no
     # parent-task drill-down.
     "page", "sort", "direction", "parent_task_id",
+    # MCP-G5. An outside agent reads a subtree in one call. A calendar has no
+    # parent-task drill-down, so it has no subtree either.
+    "include_descendants",
     # ⚠️ **`view_id` is an ORDERING join, not a filter** (H-64). It reads one
     # saved view's hand-arranged `pm_view_task_positions` so a board column can
     # honour a drag. A calendar is laid out by DATE — there is no column for a
     # hand order to be an order OF, so accepting it would declare a parameter
     # the endpoint could not act on. Excluded rather than added, deliberately.
     "view_id",
+    # EA-14a. An AGENT's filter: the MCP `list_tasks` sends it to find a task
+    # no other AI session holds. The board never sends it, so the calendar
+    # cannot drop it silently.
+    "unheld",
+    # Task #986. The board's agent filters (the strip's focus and "Agent
+    # work"). They were browser filters over the loaded board rows, and the
+    # calendar never applied them. Moving them to SQL leaves the calendar as it
+    # was; a calendar filter is a separate slice.
+    "agent_focus", "agent_worked",
+    # #918. Not a filter: it asks the list to also answer the size of each
+    # status lane for the board's column heads. The rows are the same.
+    "with_status_counts",
+    # MCP-G19a. The audit filters of the agent door (`list_tasks` and
+    # `board_stats`). The board never sends them, so the calendar cannot drop
+    # them silently. `compact` is a row shape, not a filter.
+    "has_parent", "is_epic", "assigned", "updated_before", "updated_after",
+    "created_after", "title_prefix", "compact",
 }
 
 

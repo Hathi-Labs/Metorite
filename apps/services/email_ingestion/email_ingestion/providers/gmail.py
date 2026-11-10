@@ -12,12 +12,29 @@ import asyncio
 import base64
 import json
 import logging
-from datetime import datetime, timezone
+import mimetypes
+import random
+import re
+import secrets
+import time
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterator
+from datetime import UTC, datetime, timezone
+from email import encoders, message_from_bytes
+from email import policy as mail_policy
+from email.errors import HeaderParseError
+from email.header import decode_header, make_header
+from email.message import Message
+from email.mime.base import MIMEBase
+from email.mime.message import MIMEMessage
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.utils import getaddresses, parsedate_to_datetime
 from typing import Any
+from urllib.parse import unquote
 
 import httpx
 
+from ..persist import MAX_BODY_HTML_BYTES, MAX_BODY_TEXT_BYTES
 from .app_credentials import OAuthApp, token_fields
 from .base import (
     Attachment,
@@ -25,16 +42,25 @@ from .base import (
     EmailAddress,
     EmailFolder,
     EmailMessage,
+    EstimateCallback,
+    InlineImage,
+    InlineRead,
+    ProviderMailTooLarge,
+    ProviderRateLimited,
     RefreshingBearer,
     SyncResult,
     canonical_folder,
     find_unsubscribe_link_in_html,
+    normalize_content_id,
+    received_key,
 )
 
 logger = logging.getLogger(__name__)
 
-# Gmail label IDs → canonical folder keys.  A message can carry several labels;
-# the first match (in this priority order) wins.
+# Gmail system label IDs → canonical folder keys (D-EM-33). A message can carry
+# several labels, and the first match in this order wins. A message with none of
+# them is archived mail, so it files as ``archive`` (GM-5, WS-17 EM-G2 item 7).
+# A user label never sets the folder (O-GM-1). It lands in ``categories`` only.
 _GMAIL_LABEL_TO_FOLDER = [
     ("TRASH", "trash"),
     ("SPAM", "junk"),
@@ -43,13 +69,25 @@ _GMAIL_LABEL_TO_FOLDER = [
     ("INBOX", "inbox"),
 ]
 
+#: Gmail has no ``archive`` label. The Archive folder is the mail outside the
+#: Inbox, Sent and Drafts (D-EM-33, GM-6). ``messages.list`` leaves out spam
+#: and trash by default, so the query needs no ``-in:spam`` or ``-in:trash``.
+GMAIL_ARCHIVE_QUERY = "-in:inbox -in:sent -in:drafts"
+
 
 def _gmail_folder_from_labels(label_ids: list[str]) -> str:
     labels = set(label_ids or [])
     for label, folder in _GMAIL_LABEL_TO_FOLDER:
         if label in labels:
             return folder
-    return "inbox"
+    # ⚠️ Not ``inbox``. The old fallback showed archived mail in the Inbox,
+    # and ``tests/unit/test_email_folders.py`` pins ``archive`` on purpose.
+    return "archive"
+
+
+def _is_archive_key(name: str | None) -> bool:
+    """True when a folder name or a folder key means the Archive folder."""
+    return bool(name) and canonical_folder(name) == "archive"
 
 
 def _gmail_part_header(part: dict, name: str) -> str:
@@ -79,6 +117,37 @@ def _gmail_part_is_inline(part: dict) -> bool:
     return False
 
 
+def _iter_gmail_parts(
+    part: dict, *, descend: Callable[[dict], bool] | None = None,
+) -> Iterator[dict]:
+    """Each part of a Gmail payload tree, at any depth, the root first.
+
+    The ONE walk of the MIME tree. The attachment list and the body walk both
+    use it. ``descend`` returns false for a part whose child parts the walk
+    skips. With no ``descend``, the walk reads each part.
+    """
+    yield part
+    if descend is not None and not descend(part):
+        return
+    for sub in part.get("parts", []) or []:
+        yield from _iter_gmail_parts(sub, descend=descend)
+
+
+def _gmail_part_is_inline_image(part: dict) -> bool:
+    """An inline part with an ``image/*`` type: a ``cid:`` picture.
+
+    ``_gmail_part_is_inline`` alone also takes a PDF that a sender gave a
+    ``Content-ID``, and the inline read must never download a real file.
+    """
+    kind = str(part.get("mimeType") or "").lower()
+    return kind.startswith("image/") and _gmail_part_is_inline(part)
+
+
+def _gmail_opens_part(part: dict) -> bool:
+    """False for an attached mail: the inline walk never reads its parts."""
+    return not str(part.get("mimeType") or "").lower().startswith("message/")
+
+
 def _collect_gmail_attachments(part: dict, msg_id: str) -> list[Attachment]:
     """Walk a Gmail payload tree and collect real (non-inline) attachments.
 
@@ -89,8 +158,7 @@ def _collect_gmail_attachments(part: dict, msg_id: str) -> list[Attachment]:
     ``attachmentId`` (the handle used to download its bytes).
     """
     out: list[Attachment] = []
-
-    def _walk(p: dict) -> None:
+    for p in _iter_gmail_parts(part):
         body = p.get("body", {}) or {}
         att_id = body.get("attachmentId")
         filename = p.get("filename")
@@ -102,11 +170,118 @@ def _collect_gmail_attachments(part: dict, msg_id: str) -> list[Attachment]:
                 size_bytes=int(body.get("size", 0) or 0),
                 provider_attachment_id=att_id,
             ))
-        for sub in p.get("parts", []) or []:
-            _walk(sub)
-
-    _walk(part)
     return out
+
+
+def _gmail_part_is_file(part: dict) -> bool:
+    """True when a part is a file and not the body of the mail.
+
+    A file has a name, or its disposition is ``attachment``. An attached mail
+    (``message/rfc822``) is a file too, so its body never becomes the body of
+    the mail that carries it.
+    """
+    if part.get("filename"):
+        return True
+    if str(part.get("mimeType", "")).lower().startswith("message/"):
+        return True
+    disposition = _gmail_part_header(part, "Content-Disposition")
+    return disposition.strip().lower().startswith("attachment")
+
+
+def _gmail_part_charset(part: dict) -> str:
+    """The ``charset`` of the ``Content-Type`` of a part, else UTF-8."""
+    content_type = _gmail_part_header(part, "Content-Type")
+    if content_type:
+        holder = Message()
+        holder["Content-Type"] = content_type
+        charset = holder.get_content_charset()
+        if charset:
+            return charset
+    return "utf-8"
+
+
+def _decode_gmail_part(part: dict, data: str) -> str:
+    """The text of one body part (WS-17 EM-G2 item 3).
+
+    Gmail sends the bytes as base64url. The charset of the part decodes them,
+    and UTF-8 decodes them when the part names no charset or an unknown one.
+    The padding is added, because base64url can come without it.
+
+    ⚠️ A sender picks the charset. ``idna``, ``punycode`` and ``undefined``
+    are real codecs, and each raises ``UnicodeError`` even with
+    ``errors="replace"``. A raise here fails the parse, and
+    ``list_messages`` then skips the mail at each sync. So a codec that
+    raises falls back to UTF-8 too (EM-G2 review round 1, P3a).
+    """
+    raw = base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))
+    try:
+        return raw.decode(_gmail_part_charset(part), errors="replace")
+    except (LookupError, UnicodeError):
+        return raw.decode("utf-8", errors="replace")
+
+
+def _gmail_bodies(payload: dict) -> tuple[str, str | None]:
+    """The text body and the HTML body of a Gmail payload (EM-G2 items 1-3).
+
+    The walk reads the tree at any depth, so it finds the
+    ``multipart/alternative`` inside a ``multipart/mixed`` (GM-3). It takes the
+    first ``text/plain`` part and the first ``text/html`` part that hold data.
+    It skips each file and each part below a file. A single-part HTML mail
+    fills only the HTML body, as Outlook does, and ``body_backfill`` derives
+    the text later.
+    """
+    found: dict[str, str] = {}
+    for part in _iter_gmail_parts(
+            payload, descend=lambda p: not _gmail_part_is_file(p)):
+        if _gmail_part_is_file(part):
+            continue
+        mime = str(part.get("mimeType", "")).lower()
+        if mime not in ("text/plain", "text/html") or mime in found:
+            continue
+        data = (part.get("body") or {}).get("data")
+        if data:
+            found[mime] = _decode_gmail_part(part, data)
+    return found.get("text/plain", ""), found.get("text/html")
+
+
+def _gmail_message_id(headers: dict[str, str]) -> str | None:
+    """The Message-ID in the form in which Graph gives ``internetMessageId``.
+
+    The value is trimmed, and it keeps its angle brackets and its case
+    (EM-G2 item 5). ``automation/identity.py`` compares the column with
+    ``=``, so one mail in a Gmail and an Outlook mailbox must have one value.
+    ``headers`` has lower-case keys (``_parse_headers``).
+    """
+    return headers.get("message-id", "").strip() or None
+
+
+def _decode_display_name(name: str) -> str:
+    """Decode the RFC 2047 encoded words of one display name.
+
+    A name that does not decode stays as it came.
+    """
+    if "=?" not in name:
+        return name
+    try:
+        return str(make_header(decode_header(name)))
+    except (LookupError, ValueError, HeaderParseError):
+        return name
+
+
+def _split_addresses(header: str) -> list[tuple[str, str]]:
+    """The ``(name, address)`` pairs of one raw address header.
+
+    ``getaddresses`` runs with ``strict=False``. Since the fix of
+    CVE-2023-27043 the strict parser refuses a whole header for one defect,
+    so ``a@x.org, b@x.org,`` gave no address at all. The lenient parser keeps
+    each real address. It also splits on ``;`` and keeps a quoted ``;``
+    inside its name. A Python with no ``strict`` keyword parses leniently
+    already (EM-G2 review round 1, P3b).
+    """
+    try:
+        return getaddresses([header], strict=False)
+    except TypeError:  # a Python from before the CVE-2023-27043 fix
+        return getaddresses([header])
 
 
 def _parse_list_unsubscribe(header: str) -> str | None:
@@ -135,7 +310,963 @@ def _parse_list_unsubscribe(header: str) -> str | None:
 
 
 GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1"
-GMAIL_SCOPES = ["https://mail.google.com/"]
+#: D-EM-31 (WS-17 EM-G7). The callback refuses a grant that lacks either one.
+GMAIL_SCOPES = [
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/gmail.settings.basic",
+]
+
+# ── Rate limits (WS-17 EM-G4a, GM-9) ─────────────────────────────────────
+# ``email_app_master_plan.md`` §12.3.5.1. Fence: test_gmail_rate_limits.py.
+
+#: The tries of one request that Gmail refuses for a rate limit (item 9).
+GMAIL_MAX_TRIES = 3
+#: The longest single wait. A ``Retry-After`` that asks more ends the tries,
+#: because a shorter wait gets one more refusal.
+GMAIL_MAX_WAIT_SECS = 30.0
+#: The sum of the waits of one client. One provider serves one sync cycle,
+#: so a cycle waits this long at most for rate limits.
+GMAIL_WAIT_BUDGET_SECS = 60.0
+#: The first back-off when Gmail sends no ``Retry-After``. It doubles.
+_GMAIL_BACKOFF_SECS = 1.0
+#: The two reasons of a 403 that are a rate limit (item 8). Every other 403
+#: is a refusal, such as a missing scope, and a second try cannot help it.
+_RATE_LIMIT_REASONS = frozenset({"rateLimitExceeded", "userRateLimitExceeded"})
+#: The methods that RFC 9110 calls idempotent.
+_REPEATABLE_METHODS = frozenset({"GET", "HEAD", "PUT", "DELETE"})
+#: The POST actions that set a state, so a second try changes nothing.
+_REPEATABLE_POST_ACTIONS = ("/modify", "/batchModify", "/trash", "/untrash")
+
+# -- The quota of a mailbox (WS-17 EM-G4b-f3) ---------------------------------
+# ``email_app_master_plan.md`` §12.3.12.9. Fence: test_gmail_rate_limits.py.
+# The numbers come from the usage limits of Google:
+# https://developers.google.com/workspace/gmail/api/reference/quota
+
+#: The limit of one mailbox in one project, in quota units for each minute.
+#: A project created after 2026-05-01 gets this limit.
+GMAIL_USER_UNITS_PER_MINUTE = 6000
+#: The units that a sync cycle spends in a minute, which is 80 full reads. The
+#: other units stay free for the member, who opens mail and sends with no wait.
+GMAIL_PACED_UNITS_PER_MINUTE = GMAIL_USER_UNITS_PER_MINUTE * 4 // 5
+#: The formats that make a read cost ``_GMAIL_FULL_READ_UNITS``.
+_GMAIL_FULL_FORMATS = frozenset({"full", "raw", "html"})
+_GMAIL_FULL_READ_UNITS = 60
+_GMAIL_READ_UNITS = 20
+_GMAIL_SEND_UNITS = 100
+_GMAIL_LIST_UNITS = 5
+_GMAIL_HISTORY_UNITS = 2
+#: ``getProfile`` and ``labels.list``.
+_GMAIL_SMALL_READ_UNITS = 1
+#: The time at which the next paced call of each mailbox can go. One uvicorn
+#: worker runs acb-gateway, so a dict in this process sees each cycle, as the
+#: mailbox locks of the scheduler do. A second process would need Redis.
+_gmail_next_slot: dict[str, float] = {}
+
+
+class GmailRateLimited(httpx.HTTPStatusError, ProviderRateLimited):
+    """Gmail refused a request for a rate limit, and the helper sends it no
+    more (EM-G4a item 9). The scheduler stops the cycle, and the next cycle
+    comes soon (EM-G4b-f3).
+
+    It is an ``httpx.HTTPStatusError``, so each caller that handles an HTTP
+    failure handles it too. It is a ``ProviderRateLimited``, so the
+    scheduler never degrades it (EM-G4b review round 1, F2)."""
+
+    def __init__(self, response: httpx.Response, *, tries: int) -> None:
+        request = response.request
+        super().__init__(
+            f"Gmail rate limit: {response.status_code} on {request.method} "
+            f"{request.url.path} after {tries} tries",
+            request=request, response=response)
+        self.tries = tries
+
+
+def _repeatable(request: httpx.Request) -> bool:
+    """True when a second try of *request* cannot change the mailbox.
+
+    Each answer of Google proves that the request reached Google, so a send
+    must go once only. ``messages.send``, ``drafts.create``, ``drafts.send``
+    and each other POST are not repeatable."""
+    if request.method in _REPEATABLE_METHODS:
+        return True
+    return (request.method == "POST"
+            and request.url.path.endswith(_REPEATABLE_POST_ACTIONS))
+
+
+async def _is_rate_limit(response: httpx.Response) -> bool:
+    """True for a 429, and for a 403 whose reason is a rate limit.
+
+    A 5xx is not a rate limit (§12.3.5.1). It goes back to the caller."""
+    if response.status_code == 429:
+        return True
+    if response.status_code != 403:
+        return False
+    await response.aread()
+    try:
+        errors = response.json()["error"]["errors"]
+        return any(e.get("reason") in _RATE_LIMIT_REASONS for e in errors)
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return False
+
+
+#: The longest part of Google's message that the log line keeps.
+_REFUSAL_MESSAGE_CHARS = 200
+
+
+def _refusal(response: httpx.Response) -> str:
+    """Google's reason and message of a refusal, for the log line of a rate
+    limit (EM-G4b-f2). The message can say when the limit ends, so a reader
+    of the log need not guess which limit it was."""
+    try:
+        error = response.json()["error"]
+        reasons = [e.get("reason") for e in error.get("errors") or []]
+        message = str(error.get("message") or "")
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return "reason=None message=''"
+    reason = next((r for r in reasons if r), None)
+    return f"reason={reason} message={message[:_REFUSAL_MESSAGE_CHARS]!r}"
+
+
+def _retry_after(response: httpx.Response) -> float | None:
+    """The seconds that ``Retry-After`` asks for, or None with no value.
+
+    The value is a count of seconds or an HTTP date."""
+    value = response.headers.get("Retry-After", "").strip()
+    if not value:
+        return None
+    try:
+        return max(float(value), 0.0)
+    except ValueError:
+        pass
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    return max((when - datetime.now(UTC)).total_seconds(), 0.0)
+
+
+def _raise_rate_limit(exc: BaseException) -> None:
+    """Raise *exc* again when it is a rate limit whose tries are spent.
+
+    A sweep skips a label that fails, and the history path records a fetch
+    that fails. A rate limit must fail the sync instead, so the loop backs
+    off and the cursor stays (EM-G4a item 9). On the history path,
+    ``_history_sync`` catches it after a finished page and keeps the work of
+    the finished pages (EM-G4b-f1, D-G4b-f1-2)."""
+    if isinstance(exc, GmailRateLimited):
+        raise exc
+
+
+async def _wait(seconds: float) -> None:
+    """Wait for a rate limit. The tests replace it, so no test sleeps."""
+    await asyncio.sleep(seconds)
+
+
+def _clock() -> float:
+    """The time of the meter. The tests replace it, with ``_wait``."""
+    return time.monotonic()
+
+
+def _quota_units(request: httpx.Request) -> int:
+    """The quota units of one Gmail call, from the table of Google.
+
+    A read with no ``format`` is a full read, because Google sets ``full``
+    by default. A call with no line here is a write of 5 units.
+
+    The table covers the calls of a sync cycle only. It does not price
+    ``trash``, ``batchModify``, ``insert``, ``import``, ``watch`` or
+    ``threads``, because only a member's provider sends them, and a member's
+    provider sets no ``quota_mailbox``."""
+    parts = request.url.path.split("/users/me/", 1)[-1].split("/")
+    if request.method != "GET":
+        return _GMAIL_SEND_UNITS if parts[-1] == "send" else _GMAIL_LIST_UNITS
+    if parts[0] in ("profile", "labels"):
+        return _GMAIL_SMALL_READ_UNITS
+    if parts[0] == "history":
+        return _GMAIL_HISTORY_UNITS
+    if len(parts) == 1:
+        return _GMAIL_LIST_UNITS
+    if "attachments" in parts:
+        return _GMAIL_READ_UNITS
+    fmt = request.url.params.get("format", "full")
+    return (_GMAIL_FULL_READ_UNITS if fmt in _GMAIL_FULL_FORMATS
+            else _GMAIL_READ_UNITS)
+
+
+def _book_units(mailbox: str, units: int) -> float:
+    """Book *units* on the meter of *mailbox*, and return the seconds to wait.
+
+    The calls go one after the other, evenly spaced at
+    ``GMAIL_PACED_UNITS_PER_MINUTE``, so a burst cannot fill a window. The
+    function has no await, so the parallel fetches of a page each get their
+    own slot."""
+    now = _clock()
+    slot = max(now, _gmail_next_slot.get(mailbox, now))
+    _gmail_next_slot[mailbox] = slot + units * 60 / GMAIL_PACED_UNITS_PER_MINUTE
+    return slot - now
+
+
+def forget_quota_mailbox(mailbox: str) -> None:
+    """Drop the meter of a mailbox that left. *mailbox* is the key that the
+    scheduler sets in ``quota_mailbox``."""
+    _gmail_next_slot.pop(mailbox, None)
+
+
+# ── The history cursor (WS-17 EM-G4b, spec §12.3.5.2) ─────────────────────────
+
+#: The history types that the cursor reads (GM-17).
+_HISTORY_TYPES = ["messageAdded", "messageDeleted", "labelAdded", "labelRemoved"]
+#: The history events that put a message into the fetch set (items 1 to 3). A
+#: label event fetches the message in full, as an added message does, so the
+#: upsert applies its new folder, read mark, star and labels.
+_HISTORY_FETCH_EVENTS = ("messagesAdded", "labelsAdded", "labelsRemoved")
+#: A fetch on the history path that a later cycle can fix (a 5xx or a
+#: transport error) holds the cursor at its old position. The cursor counts
+#: the cycles that it was held. On the cycle that reaches this count, it moves
+#: on past each message that still fails (EM-G4a-f2, review round 1 F1).
+GMAIL_FETCH_HOLD_CYCLES = 3
+#: The name of the sweep after a stale cursor in ``catch_up_folders``. The
+#: scheduler puts it into the ``sync_error`` note of a short catch-up.
+GMAIL_RESET_SWEEP_NAME = "all mail"
+
+
+def _json_or_empty(resp: httpx.Response) -> Any:
+    """The JSON body of a Gmail read, or ``{}`` for an empty body.
+
+    Google can answer 200 with an EMPTY body (production, 2026-11-08, task
+    2268). An empty or blank body, and a JSON ``null``, both give ``{}``.
+    A body that is not empty and not JSON still raises ``ValueError``
+    (``json.JSONDecodeError``), so a real fault reaches the log.
+
+    Four reads use it, and each one is safe on ``{}``: ``list_filters``
+    (a mailbox with no filter), ``_history_page`` (no record and no token,
+    so the cursor stays and the next cycle reads again),
+    ``_draft_id_for`` (no draft found) and ``fetch_label_assignments`` (one
+    label must not abort a restore).
+
+    Every other read keeps ``.json()``, so an empty body raises. That holds
+    for a read whose answer is never empty: the labels list always holds
+    the system labels, and the profile always holds ``historyId``. It also
+    holds where an empty list ends a job: the message lists of an import or
+    a sweep would end as complete with 0 messages. A JSON value that is not
+    an object passes through unchanged."""
+    if not resp.content.strip():
+        return {}
+    data = resp.json()
+    return {} if data is None else data
+
+
+class _StaleCursor(Exception):
+    """``history.list`` answered 404. Gmail holds no history after the
+    cursor, so the provider seeds again and sweeps (item 5)."""
+
+
+def _is_history_id(text: str) -> bool:
+    """True for a Gmail history id: ASCII digits only. ``str.isdigit`` also
+    takes other digits, such as Arabic-Indic digits (review round 1 F5)."""
+    return bool(text) and text.isascii() and text.isdigit()
+
+
+def _parse_cursor(raw: Any) -> tuple[str, int] | None:
+    """The history id of a stored cursor, and the cycles that it was held.
+
+    The cursor is a plain history id, or JSON while a failed fetch holds it:
+    ``{"held_cycles": <n>, "history_id": "<id>", "v": 1}``. Text that is
+    neither is no cursor, so the sync seeds again and does not send text to
+    Gmail that it refuses on each cycle."""
+    text = str(raw or "").strip()
+    if _is_history_id(text):
+        return text, 0
+    try:
+        data = json.loads(text)
+        history_id = str(data["history_id"])
+        held_cycles = max(int(data.get("held_cycles", 0)), 0)
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return None
+    return (history_id, held_cycles) if _is_history_id(history_id) else None
+
+
+#: The labels that the first sweep reads before the user labels, and after
+#: them (EM-G4b-f2, §12.3.12.8). The inbox fills first.
+_SWEEP_FIRST = ("INBOX", "SENT", "DRAFT")
+_SWEEP_LAST = ("SPAM", "TRASH")
+
+#: One label of the first sweep: its id, and its ``canonical_override``.
+SweepLabel = tuple[str, str | None]
+#: The seed of a reset sweep, and the time range that it still has to read.
+ResetPoint = tuple[str, datetime | None, datetime | None]
+
+
+def _parse_sweep(raw: Any) -> tuple[str, list[SweepLabel]] | None:
+    """The seed and the labels left of a first sweep that a rate limit cut
+    short (EM-G4b-f2), or None for each other text.
+
+    The form is ``{"v": 1, "seed": "<id>", "sweep": [[<label>, <canon>]]}``.
+    It has no ``history_id``, so ``_parse_cursor`` reads it as no cursor. An
+    older process then sweeps again from the start, and loses nothing."""
+    text = str(raw or "").strip()
+    if not text.startswith("{"):
+        return None
+    try:
+        data = json.loads(text)
+        seed = str(data["seed"])
+        labels = [(str(label), None if canon is None else str(canon))
+                  for label, canon in data["sweep"]]
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return None
+    return (seed, labels) if _is_history_id(seed) else None
+
+
+def _parse_reset(raw: Any) -> ResetPoint | None:
+    """The seed and the bounds of a reset sweep that stopped early
+    (EM-G4b-f3), or None for each other text.
+
+    The form is ``{"v": 1, "seed": "<id>", "reset": [<after>, <until>]}``,
+    with epoch seconds or null. It has no ``history_id``, so ``_parse_cursor``
+    reads it as no cursor. An older process then sweeps from the start."""
+    text = str(raw or "").strip()
+    if not text.startswith("{"):
+        return None
+    try:
+        data = json.loads(text)
+        seed = str(data["seed"])
+        after, until = (None if at is None else datetime.fromtimestamp(int(at), UTC)
+                        for at in data["reset"])
+    except (ValueError, TypeError, KeyError, AttributeError, OverflowError, OSError):
+        return None
+    return (seed, after, until) if _is_history_id(seed) else None
+
+
+def _format_reset(
+    seed: str, after: datetime | None, until: datetime | None,
+) -> str:
+    """The stored form of a reset sweep that stopped early."""
+    bounds = [None if at is None else int(_utc(at).timestamp())
+              for at in (after, until)]
+    return json.dumps({"reset": bounds, "seed": seed, "v": 1},
+                      sort_keys=True, separators=(",", ":"))
+
+
+def _format_sweep(seed: str, labels: list[SweepLabel]) -> str:
+    """The stored form of a first sweep that a rate limit cut short. It
+    holds label ids and no message id, so its size has the bound of the
+    label count."""
+    return json.dumps({"v": 1, "seed": seed,
+                       "sweep": [list(label) for label in labels]},
+                      sort_keys=True, separators=(",", ":"))
+
+
+def _format_cursor(history_id: str, held_cycles: int) -> str:
+    """The stored form of a cursor: the plain id, or JSON with the count of
+    held cycles. It holds no message id, so its size never grows (review
+    round 1 F7)."""
+    if held_cycles <= 0:
+        return history_id
+    return json.dumps({"v": 1, "history_id": history_id,
+                       "held_cycles": held_cycles},
+                      sort_keys=True, separators=(",", ":"))
+
+
+def _collect_history(
+    records: list[dict[str, Any]], fetch: dict[str, None],
+    deleted: dict[str, None],
+) -> None:
+    """Add the message ids of one history page to the fetch set and to the
+    delete set. Dicts keep the order of the history."""
+    for record in records:
+        for event in _HISTORY_FETCH_EVENTS:
+            for change in record.get(event) or []:
+                mid = (change.get("message") or {}).get("id")
+                if mid:
+                    fetch[mid] = None
+        for change in record.get("messagesDeleted") or []:
+            mid = (change.get("message") or {}).get("id")
+            if mid:
+                deleted[mid] = None
+
+
+def _deleted_marker(message_id: str) -> EmailMessage:
+    """The ``[DELETED]`` marker of a message that Gmail deleted (item 4).
+    ``scheduler._write_messages`` moves its row to trash, and deletes a row
+    in ``drafts`` (E-B2)."""
+    return EmailMessage(provider_message_id=message_id, thread_id=None,
+                        folder="TRASH", labels=["TRASH"], subject="[DELETED]",
+                        deletion_marker=True)
+
+
+def _transient(exc: BaseException) -> bool:
+    """True for a failed fetch that a later cycle can fix: a 5xx or a
+    transport error (EM-G4a-f2). A 404 means that the message is gone, and
+    a parse error or another 4xx stays the same, so none of them holds the
+    cursor."""
+    if isinstance(exc, httpx.TransportError):
+        return True
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    return isinstance(status, int) and status >= 500
+
+
+def _page_end(records: list[dict[str, Any]], position: str) -> str:
+    """The position at the end of one finished page (WS-17 EM-G4b-f1,
+    D-G4b-f1-4).
+
+    It is the ``id`` of the last history record of the page, never the
+    ``historyId`` of the answer. Gmail gives the ``historyId`` of the whole
+    mailbox in each answer, so that id is past the records of the later
+    pages, and a cursor set to it loses them (GM-17). A page with no record
+    id keeps *position*, so the next read starts earlier, never later. The
+    end of the last page goes through ``_read_end`` too."""
+    for record in reversed(records):
+        record_id = str(record.get("id") or "")
+        if _is_history_id(record_id):
+            return record_id
+    return position
+
+
+def _read_end(last_record: str, first_answer: Any) -> str:
+    """The cursor at the end of a full read (EM-G4b-f1 fix round 1, the
+    amendment of D-G4b-f1-4).
+
+    It is the larger of *last_record*, the ``id`` of the last record that
+    the read saw, and *first_answer*, the ``historyId`` of the FIRST answer.
+    Each page fetches before the next page is read, so a read can last
+    minutes. The ``historyId`` of the last answer is the mailbox id at that
+    later time, and it can be past a change that no page carried. So the
+    cursor never goes past the first answer, unless a record of the read
+    is past it. A read of one page ends at the ``historyId`` of its answer,
+    as before, because no record is past it."""
+    first = str(first_answer or "")
+    if not _is_history_id(first):
+        return last_record
+    return max(last_record, first, key=int)
+
+
+def _cursor_after_read(
+    hold_at: str, last_id: str, held_cycles: int, failed: list[str],
+    errors: list[str],
+) -> str:
+    """The cursor after one read of the history (item 2, EM-G4a-f2,
+    EM-G4b-f1 D-G4b-f1-5).
+
+    *last_id* is the end of the last finished page: the ``historyId`` of the
+    last answer, or the page position of ``_page_end`` when a rate limit
+    stopped the read. *hold_at* is the end of the last page before the first
+    page with a fetch that a later cycle can fix, or the start of the read
+    when that page is page 1.
+
+    With no such fetch, the cursor is *last_id*, and the count of held
+    cycles goes back to 0. With one, the cursor holds at *hold_at*, and the
+    count goes up by 1. The count belongs to the cursor, not to a message,
+    so a new failure on each cycle cannot hold the cursor longer (review
+    round 1 F1). On the cycle that reaches ``GMAIL_FETCH_HOLD_CYCLES``, the
+    cursor moves to *last_id*. Each message that still fails gets a log line
+    and a record in ``errors``, with its id only. A message that succeeds is
+    not in them."""
+    if not failed:
+        return last_id
+    cycles = held_cycles + 1
+    if cycles < GMAIL_FETCH_HOLD_CYCLES:
+        return _format_cursor(hold_at, cycles)
+    for mid in failed:
+        logger.warning("gmail.fetch_abandoned message_id=%s held_cycles=%d",
+                       mid, cycles)
+        errors.append(f"gmail.fetch_abandoned id={mid} held_cycles={cycles}")
+    return last_id
+
+
+def _reset_sweep_after(
+    catch_up: datetime | None, since: datetime | None,
+) -> datetime | None:
+    """How far back the sweep after a stale cursor reads (item 6): the
+    catch-up watermark, or the floor with no watermark. The floor binds
+    each sync (EM-T6a), so the later of the two wins."""
+    dates = [d if d.tzinfo else d.replace(tzinfo=UTC)
+             for d in (catch_up, since) if d is not None]
+    return max(dates) if dates else None
+
+
+# ── The import (WS-17 EM-G5a, spec §12.3.6.1) ────────────────────────────────
+# Fence: tests/unit/test_gmail_import.py.
+
+#: The fetches of one import page that run at once (item 4).
+GMAIL_IMPORT_FETCHES = 10
+#: ``messages.list`` gives 500 ids at most on one page.
+_GMAIL_LIST_MAX = 500
+
+
+def _utc(value: datetime) -> datetime:
+    """*value* with a time zone. A naive value is read as UTC."""
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _import_query(since: datetime | None, until: datetime | None) -> str | None:
+    """The ``q`` of the import list, in epoch seconds (items 1 and 3).
+
+    ``after:`` is the floor. ``before:`` is the whole second of ``until``
+    plus 1 second (E-G5-3), as ``_received_filter`` in ``outlook.py`` does.
+    So a resume reads the second that it reached again, and the upsert makes
+    the overlap harmless. A message of that second that is newer than
+    ``until`` drops in ``_in_import_window``."""
+    terms = []
+    if since is not None:
+        terms.append(f"after:{int(_utc(since).timestamp())}")
+    if until is not None:
+        terms.append(f"before:{int(_utc(until).timestamp()) + 1}")
+    return " ".join(terms) or None
+
+
+def _index_of_failure(
+    messages: list[EmailMessage], start: int, ids: list[str], failed_id: str,
+) -> int:
+    """The index in *messages* of the first mail that the list named at or
+    after *failed_id*. *ids* is the list of the page that starts at *start*.
+    The mail before that index is newer than the failed mail."""
+    tail = set(ids[ids.index(failed_id):])
+    return next((index for index in range(start, len(messages))
+                 if messages[index].provider_message_id in tail), len(messages))
+
+
+def _in_import_window(
+    msg: EmailMessage, since: datetime | None, until: datetime | None,
+) -> bool:
+    """True when *msg* is in the window of the import (item 2).
+
+    A message newer than ``until`` drops, as in the base. A message older
+    than the floor drops too. A message with no date stays, as in the base,
+    and the core decides on it (EM-T6a)."""
+    if msg.received_at is None:
+        return True
+    at = received_key(msg)
+    if until is not None and at > _utc(until):
+        return False
+    return since is None or at >= _utc(since)
+
+
+def _estimate_of(data: dict[str, Any]) -> int | None:
+    """The ``resultSizeEstimate`` of one list answer, or None when it has
+    none (item 5, D-EM-16)."""
+    try:
+        value = int(data["resultSizeEstimate"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
+
+
+def _fresh_ids(data: dict[str, Any], seen: set[str]) -> list[str]:
+    """The ids of one list page that the import has not read yet (item 4).
+
+    A list can give one id again at a page edge, for example when new mail
+    arrives during the import. Each id goes into ``seen``, so the import
+    fetches each message once."""
+    fresh: list[str] = []
+    for ref in data.get("messages") or []:
+        mid = ref.get("id")
+        if mid and mid not in seen:
+            seen.add(mid)
+            fresh.append(mid)
+    return fresh
+
+
+# ── The reconcile (WS-17 EM-G5b, spec §12.3.6.2) ─────────────────────────────
+# Fence: tests/unit/test_gmail_import.py, and the R8 cases in
+# ``TestTheImportOnARealDatabase`` of tests/unit/test_email_import_batches.py.
+
+#: The form of a Gmail message id that the confirm puts into a path. Gmail
+#: gives hex ids. Other text, such as a ``/``, a ``?`` or a ``#``, can send
+#: the read to another resource, so the confirm refuses it (item 10).
+_GMAIL_MESSAGE_ID = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def _says_not_found(response: httpx.Response) -> bool:
+    """True when a Gmail error body gives the reason ``notFound`` (item 10,
+    C2). Google sends ``{"error": {"errors": [{"reason": "notFound"}]}}``
+    for a deleted message. A 404 with any other body, or with no body, is
+    not a proof of a delete, so the confirm raises for it."""
+    try:
+        errors = response.json()["error"]["errors"]
+        return any(isinstance(e, dict) and e.get("reason") == "notFound"
+                   for e in errors)
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return False
+
+
+class GmailBearer(RefreshingBearer):
+    """The bearer of the Gmail client, with the rate limits of Gmail.
+
+    WS-17 EM-G4a (``email_app_master_plan.md`` §12.3.5.1). ``_get_client``
+    sets it, so each Gmail call gets the rule, and no call site changes.
+
+    * A 429, or a 403 with a rate-limit reason, waits for ``Retry-After``
+      or a back-off. Then the same request goes again, at most
+      ``GMAIL_MAX_TRIES`` times in all.
+    * The tries end at once for a wait longer than ``GMAIL_MAX_WAIT_SECS``,
+      or for a wait past the budget of this client. Then, and after the last
+      try, the flow raises :class:`GmailRateLimited`.
+    * A request that is not :func:`_repeatable` goes back to the caller with
+      its answer. So a send never goes out twice.
+    * Each try runs the flow of :class:`RefreshingBearer`, so a 401 still
+      refreshes once. A rate limit and a 401 in one call cost one refresh.
+    * A provider with a ``quota_mailbox`` waits for its slot before each try
+      (EM-G4b-f3). Only a cycle of the scheduler sets it, so only the sync
+      waits. The call of a member never waits behind an import.
+    """
+
+    def __init__(self, provider: Any) -> None:
+        super().__init__(provider)
+        #: The seconds that this client waited for rate limits.
+        self.waited = 0.0
+
+    def _next_wait(self, response: httpx.Response, tries: int) -> float | None:
+        """The wait before the next try, or None when the tries end."""
+        if tries >= GMAIL_MAX_TRIES:
+            return None
+        asked = _retry_after(response)
+        wait = (asked if asked is not None
+                else _GMAIL_BACKOFF_SECS * 2 ** (tries - 1) + random.uniform(0, 1))
+        if wait > GMAIL_MAX_WAIT_SECS or self.waited + wait > GMAIL_WAIT_BUDGET_SECS:
+            return None
+        return wait
+
+    async def async_auth_flow(
+        self, request: httpx.Request,
+    ) -> AsyncGenerator[httpx.Request, httpx.Response]:
+        tries = 0
+        while True:
+            tries += 1
+            mailbox = getattr(self._provider, "quota_mailbox", None)
+            if mailbox is not None:
+                slot_wait = _book_units(mailbox, _quota_units(request))
+                if slot_wait > 0:
+                    await _wait(slot_wait)
+            # One try: the flow of RefreshingBearer, with its one refresh.
+            flow = super().async_auth_flow(request)
+            try:
+                response = yield await flow.__anext__()
+                while True:
+                    try:
+                        follow = await flow.asend(response)
+                    except StopAsyncIteration:
+                        break
+                    response = yield follow
+            finally:
+                await flow.aclose()
+            if not _repeatable(request) or not await _is_rate_limit(response):
+                return
+            # Read the answer, so the connection goes back to the pool and
+            # the error keeps its body.
+            await response.aread()
+            wait = self._next_wait(response, tries)
+            if wait is None:
+                logger.warning(
+                    "gmail.rate_limit_gave_up method=%s path=%s status=%s "
+                    "tries=%d waited=%.1f %s", request.method, request.url.path,
+                    response.status_code, tries, self.waited,
+                    _refusal(response))
+                raise GmailRateLimited(response, tries=tries)
+            self.waited += wait
+            logger.info(
+                "gmail.rate_limited method=%s path=%s status=%s try=%d wait=%.1f",
+                request.method, request.url.path, response.status_code, tries, wait)
+            await _wait(wait)
+
+
+# ── Send and drafts (WS-17 EM-G3a, GM-10 to GM-13) ───────────────────────
+# ``email_app_master_plan.md`` §12.3.3. Fence: test_gmail_send_and_drafts.py.
+
+#: ``drafts.list`` gives 500 drafts at most on one page.
+GMAIL_DRAFT_PAGE_SIZE = 500
+#: The pages of one draft lookup, so a lookup has a bound. 20 pages hold
+#: 10,000 drafts.
+GMAIL_DRAFT_MAX_PAGES = 20
+#: The send route gives this type when the caller gives none, so it counts
+#: as no type (item 2).
+_OCTET_STREAM = "application/octet-stream"
+#: The parent read of a reply asks for these two headers only (item 4).
+_PARENT_PARAMS: dict[str, Any] = {
+    "format": "metadata", "metadataHeaders": ["Message-ID", "References"]}
+
+
+class GmailDraftNotFound(LookupError):
+    """Gmail holds no draft with this message id (EM-G3a item 7).
+
+    ``update_draft`` and ``send_draft`` take the message id that the local
+    row holds (O-GM-2). A message id that is no draft raises this error, and
+    never an HTTP 400 of Gmail."""
+
+    def __init__(self, message_id: str) -> None:
+        super().__init__(f"Gmail has no draft with the message id {message_id}")
+        self.message_id = message_id
+
+
+def _attachment_type(att: dict[str, Any]) -> tuple[str, str]:
+    """The MIME type of one attachment (EM-G3a item 2, GM-12).
+
+    The type that the caller gives wins. Else the type comes from the file
+    name (``mimetypes.guess_type``), else it is ``application/octet-stream``.
+    """
+    given = str(att.get("mime_type") or "").split(";", 1)[0].strip().lower()
+    if given and given != _OCTET_STREAM:
+        main, _, sub = given.partition("/")
+        if main and sub:
+            return main, sub
+    guessed, _ = mimetypes.guess_type(str(att.get("filename") or ""))
+    if guessed:
+        main, _, sub = guessed.partition("/")
+        return main, sub
+    return "application", "octet-stream"
+
+
+def _attachment_part(att: dict[str, Any]) -> Message:
+    """One attachment of a send or a draft (EM-G3a items 2 and 3).
+
+    An attached mail (``message/*``) goes in as ONE mail part, with the mail
+    inside it, because RFC 2046 §5.2 gives such a part no base64. So a
+    forwarded mail stays one file (review round 2, P3-4)."""
+    main, sub = _attachment_type(att)
+    content = att.get("content") or b""
+    part: Message
+    if main == "message":
+        raw = content if isinstance(content, bytes) else str(content).encode()
+        part = MIMEMessage(message_from_bytes(raw), sub)
+    else:
+        part = MIMEBase(main, sub)
+        part.set_payload(content)
+        encoders.encode_base64(part)
+    # ``add_header`` writes the name with RFC 2231 when it needs it, so a
+    # quote or a letter outside ASCII survives (item 3).
+    part.add_header("Content-Disposition", "attachment",
+                    filename=str(att.get("filename") or "attachment"))
+    return part
+
+
+def _content_id(part: Message) -> str:
+    """The ``Content-ID`` of a part, with no angle brackets, else ``""``."""
+    return str(part.get("Content-ID") or "").strip().strip("<>").strip()
+
+
+def _is_inline_part(part: Message) -> bool:
+    """A part that the HTML of a mail shows in place (EM-G3a-f7 item 1).
+
+    It has a ``Content-ID`` and no ``attachment`` disposition. A container
+    and an attached mail are never inline parts."""
+    if part.is_multipart() or part.get_content_maintype() == "message":
+        return False
+    return (bool(_content_id(part))
+            and part.get_content_disposition() != "attachment")
+
+
+def _inline_parts(part: Message) -> Iterator[Message]:
+    """Each inline part of a raw mail, at any depth, in mail order.
+
+    The walk never opens an attached mail (``message/*``), because the
+    parts in it belong to that mail, and the builder puts it in as one
+    file (review round 2, P3-4)."""
+    if part.get_content_maintype() == "message":
+        return
+    if part.is_multipart():
+        for sub in part.get_payload():
+            yield from _inline_parts(sub)
+    elif _is_inline_part(part):
+        yield part
+
+
+#: A ``cid:`` reference in HTML, up to the end of its attribute value. A
+#: comma ends it too, so each entry of ``srcset="cid:a,cid:b 2x"`` counts. A
+#: Content-ID holds no comma, and a cid URL encodes one as ``%2C``.
+_CID_REFERENCE = re.compile(r"""cid:([^"'\s<>),]+)""", re.IGNORECASE)
+
+
+def _named_cids(body_html: str) -> set[str]:
+    """Each ``Content-ID`` that the HTML names with ``cid:``, in lower case.
+
+    RFC 2392 encodes a cid URL with ``%`` escapes, so each name decodes."""
+    return {unquote(m.group(1)).lower()
+            for m in _CID_REFERENCE.finditer(body_html)}
+
+
+def _inline_mime_part(att: dict[str, Any]) -> Message:
+    """One inline part of a draft, with its ``Content-ID`` (EM-G3a-f7)."""
+    main, sub = _attachment_type(att)
+    part = MIMEBase(main, sub)
+    part.set_payload(att.get("content") or b"")
+    encoders.encode_base64(part)
+    part.add_header("Content-ID", f"<{att['content_id']}>")
+    if att.get("filename"):
+        part.add_header("Content-Disposition", "inline",
+                        filename=str(att["filename"]))
+    else:
+        part.add_header("Content-Disposition", "inline")
+    return part
+
+
+def _build_gmail_mail(
+    *,
+    to: list[str] | None,
+    subject: str | None,
+    body_text: str | None,
+    body_html: str | None,
+    cc: list[str] | None = None,
+    bcc: list[str] | None = None,
+    attachments: list[dict[str, Any]] | None = None,
+    reply_headers: dict[str, str] | None = None,
+    inline_parts: list[dict[str, Any]] | None = None,
+) -> bytes:
+    """The RFC 5322 bytes of a send or a draft.
+
+    The ONE builder of ``send_message``, ``create_draft`` and
+    ``update_draft`` (EM-G3a item 1, GM-10). With ``body_html`` the body is
+    ``multipart/alternative``, with the text part first. With attachments the
+    body sits inside ``multipart/mixed`` (item 2). ``reply_headers`` holds
+    ``In-Reply-To`` and ``References`` of a reply (item 4).
+
+    A header is written only when its value is given, so an update that
+    names no ``Cc`` writes none.
+
+    EM-G3c item 1: the builder gives bytes. The plain URI wraps them in
+    base64url with :func:`_gmail_raw`, and the upload URI sends them as they
+    are. So the two forms come from one builder.
+
+    EM-G3a-f7 (D-G3a-f7-4): ``inline_parts`` are the inline parts of a draft,
+    each with its ``content_id``. Only the parts whose cid ``body_html`` names
+    go back, inside ``multipart/related`` with the body. With no
+    ``body_html``, no inline part goes back, and none becomes a file.
+    """
+    text_part = MIMEText(body_text or "", "plain", "utf-8")
+    body: Message
+    if body_html:
+        body = MIMEMultipart("alternative")
+        body.attach(text_part)
+        body.attach(MIMEText(body_html, "html", "utf-8"))
+        named = _named_cids(body_html) if inline_parts else set()
+        kept = [p for p in inline_parts or []
+                if str(p.get("content_id") or "").lower() in named]
+        if kept:
+            related = MIMEMultipart("related")
+            related.attach(body)
+            for part in kept:
+                related.attach(_inline_mime_part(part))
+            body = related
+    else:
+        body = text_part
+    msg: Message
+    if attachments:
+        msg = MIMEMultipart("mixed")
+        msg.attach(body)
+        for att in attachments:
+            msg.attach(_attachment_part(att))
+    else:
+        msg = body
+    if to is not None:
+        msg["To"] = ", ".join(a for a in to if a)
+    for name, addresses in (("Cc", cc), ("Bcc", bcc)):
+        listed = [a for a in (addresses or []) if a]
+        if listed:
+            msg[name] = ", ".join(listed)
+    if subject is not None:
+        msg["Subject"] = subject
+    for name, value in (reply_headers or {}).items():
+        msg[name] = value
+    return msg.as_bytes()
+
+
+def _gmail_raw(mail: bytes) -> str:
+    """The ``raw`` value of a write on the plain URI: the mail of
+    :func:`_build_gmail_mail` in base64url (EM-G3c item 1)."""
+    return base64.urlsafe_b64encode(mail).decode()
+
+
+def _newest_parent(thread: dict[str, Any]) -> dict[str, Any] | None:
+    """The newest message of a thread that is not a draft (EM-G3a item 5).
+
+    Gmail lists a thread oldest first, so a tie keeps the later message."""
+    newest: dict[str, Any] | None = None
+    newest_at = -1
+    for message in thread.get("messages") or []:
+        if "DRAFT" in (message.get("labelIds") or []):
+            continue
+        try:
+            at = int(message.get("internalDate") or 0)
+        except (TypeError, ValueError):
+            at = 0
+        if at >= newest_at:
+            newest, newest_at = message, at
+    return newest
+
+
+def _reply_headers_of(parent: dict[str, Any] | None) -> dict[str, str]:
+    """``In-Reply-To`` and ``References`` that answer ``parent`` (item 4).
+
+    ``References`` is the ``References`` of the parent, then its
+    ``Message-ID`` (RFC 5322 §3.6.4). A parent with no ``Message-ID`` gives
+    no header, because no header can name it."""
+    if not parent:
+        return {}
+    headers = GmailProvider._parse_headers(
+        (parent.get("payload") or {}).get("headers", []))
+    message_id = _gmail_message_id(headers)
+    if not message_id:
+        return {}
+    references = headers.get("references", "").split()
+    if message_id not in references:
+        references.append(message_id)
+    return {"In-Reply-To": message_id, "References": " ".join(references)}
+
+
+# ── The size of a mail (WS-17 EM-G3c-1, EM-G3a-f8) ───────────────────────
+# ``email_app_master_plan.md`` §12.3.3b, items 1 to 8. Fence:
+# test_gmail_mail_size.py.
+
+#: The base of the upload URI of the three writes (item 3). The Gmail
+#: discovery document names ``/upload/gmail/v1/users/{userId}/...`` as the
+#: ``simple`` media upload of ``messages.send``, ``drafts.create`` and
+#: ``drafts.update``.
+GMAIL_UPLOAD_BASE = "https://gmail.googleapis.com/upload/gmail/v1"
+#: The most bytes of one built mail (item 5). It is the ``maxSize`` of the
+#: media upload of the three writes in the discovery document (revision
+#: 20260928, read 2026-10-05). A larger mail raises before its write.
+GMAIL_MAIL_MAX_BYTES = 36_700_160
+#: A mail with no file and at most this many bytes keeps the plain URI and
+#: ``raw`` (item 2). Google documents no limit for the plain request, so a
+#: larger mail goes to the upload URI.
+GMAIL_PLAIN_MAX_BYTES = 1_048_576
+
+#: The most bytes of one body part that ``get_message`` fetches by
+#: ``attachmentId`` (WS-17 EM-G2-f1, §12.3.12.3). It is two times the larger
+#: storage cap of ``persist``, so 4 MiB today. Each stored body and each
+#: gateway read cuts a body at that cap, so a larger part buys nothing that
+#: is kept. The cap bounds the memory of acb-gateway: each label event
+#: fetches a message again, and the import runs 10 fetches at once. A larger
+#: part gets no fetch, and its body stays empty.
+GMAIL_FILL_MAX_BYTES = 2 * max(MAX_BODY_TEXT_BYTES, MAX_BODY_HTML_BYTES)
+
+
+class GmailMailTooLarge(ProviderMailTooLarge):
+    """Gmail cannot take this mail (EM-G3c item 6).
+
+    The write raises it before its request when the built mail is over
+    :data:`GMAIL_MAIL_MAX_BYTES`. A 413 from Google raises it too. The
+    write reads only the status code of that answer, because Google can
+    answer a 413 with HTML. The text holds two sizes and no URL."""
+
+
+def _upload_body(meta: dict[str, Any], mail: bytes) -> tuple[bytes, str]:
+    """The body and the ``Content-Type`` of one upload write (items 3, 4).
+
+    The body is ``multipart/related``. Part 1 is the metadata in JSON. Part
+    2 is the mail as ``message/rfc822``, in its raw bytes and not in
+    base64url. The boundary is random, and it never occurs in the mail."""
+    boundary = f"metorite-{secrets.token_hex(16)}"
+    while boundary.encode() in mail:
+        boundary = f"metorite-{secrets.token_hex(16)}"
+    head = (f"--{boundary}\r\n"
+            "Content-Type: application/json; charset=UTF-8\r\n\r\n"
+            f"{json.dumps(meta)}\r\n"
+            f"--{boundary}\r\n"
+            "Content-Type: message/rfc822\r\n\r\n").encode()
+    tail = f"\r\n--{boundary}--\r\n".encode()
+    # One join, so no temporary ``head + mail`` copy (review note 2).
+    return b"".join((head, mail, tail)), f"multipart/related; boundary={boundary}"
 
 
 class GmailProvider(BaseEmailProvider):
@@ -166,6 +1297,28 @@ class GmailProvider(BaseEmailProvider):
         # fetching the whole label list once per label per message.
         self._label_ids_by_name: dict[str, str] | None = None   # lower name → id
         self._label_names_by_id: dict[str, str] = {}            # id → display name
+        #: The record of each message that a fetch could not read, for the
+        #: life of this instance (EM-G4a item 10). No entry names content.
+        self.fetch_failures: list[str] = []
+        #: The draft id of each draft message that this instance saw, by the
+        #: message id (EM-G3a item 7). One provider serves one request, so
+        #: the cache never spans two saves.
+        self._draft_ids: dict[str, str] = {}
+        #: True after one lookup read each page of ``drafts.list``.
+        self._drafts_listed = False
+        #: The message id of each draft that ``trash_message`` discarded. The
+        #: caller deletes the local row of each one (EM-G3a, E-A5).
+        self.discarded_drafts: set[str] = set()
+        #: True when the last ``import_batches`` stopped at
+        #: ``IMPORT_MAX_PAGES``. The scheduler then runs no reconcile, because
+        #: the mail below the cap stays unread (WS-17 EM-G5b item 12, C5).
+        self.import_capped = False
+        #: The mailbox whose meter this instance waits on (EM-G4b-f3). The
+        #: scheduler sets it for a cycle. It stays None for a member's call.
+        self.quota_mailbox: str | None = None
+        #: The mails that this instance read. One instance serves one cycle,
+        #: so the import and each sweep spend one share (EM-G4b-f3).
+        self.mails_read = 0
 
     def credentials_dirty(self) -> bool:
         return self._creds_dirty
@@ -183,17 +1336,63 @@ class GmailProvider(BaseEmailProvider):
         }
 
     async def _get_client(self) -> httpx.AsyncClient:
-        # No Authorization header here. RefreshingBearer sets the current
-        # token on each request, and refreshes once on a 401 (EM-T4c).
+        # No Authorization header here. GmailBearer is a RefreshingBearer: it
+        # sets the current token on each request, and refreshes once on a 401
+        # (EM-T4c). It also waits out a rate limit (EM-G4a), so each Gmail
+        # call through this client gets one rule.
         if self._http is None:
             await self.authenticate()
             self._http = httpx.AsyncClient(
                 base_url=GMAIL_API_BASE,
                 headers={"Content-Type": "application/json"},
-                auth=RefreshingBearer(self),
+                auth=GmailBearer(self),
                 timeout=30.0,
             )
         return self._http
+
+    def _record_fetch_failure(self, message_id: Any, exc: BaseException) -> str:
+        """Log and count one message that a fetch could not read (EM-G4a
+        item 10), and return its record.
+
+        The record names the message id, the class of the error and the HTTP
+        status. It never names a subject or an address."""
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        note = (f"gmail.fetch_failed id={message_id} "
+                f"error={type(exc).__name__} status={status}")
+        self.fetch_failures.append(note)
+        logger.warning("gmail.fetch_failed message_id=%s error=%s status=%s",
+                       message_id, type(exc).__name__, status)
+        return note
+
+    def _record_body_part_failure(
+        self, message_id: Any, part_id: Any, exc: BaseException,
+    ) -> None:
+        """Log and count one body part that a fetch could not read (WS-17
+        EM-G2-f1, D-G2-f1-5). The record goes into ``fetch_failures``, as
+        the record of a failed message does. It names the message id, the
+        part id, the class of the error and the HTTP status, and never a
+        subject or an address."""
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        self.fetch_failures.append(
+            f"gmail.body_part_failed id={message_id} part={part_id} "
+            f"error={type(exc).__name__} status={status}")
+        logger.warning(
+            "gmail.body_part_failed message_id=%s part_id=%s error=%s "
+            "status=%s", message_id, part_id, type(exc).__name__, status)
+
+    def _record_body_part_too_large(
+        self, message_id: Any, part_id: Any, size: int,
+    ) -> None:
+        """Log and count one body part over ``GMAIL_FILL_MAX_BYTES`` that the
+        fill does not fetch (WS-17 EM-G2-f1, review P2). The record names the
+        message id, the part id and the size, and never a subject or an
+        address."""
+        self.fetch_failures.append(
+            f"gmail.body_part_too_large id={message_id} part={part_id} "
+            f"size={size}")
+        logger.warning(
+            "gmail.body_part_too_large message_id=%s part_id=%s size=%d",
+            message_id, part_id, size)
 
     async def _refresh_access_token(self) -> None:
         """Refresh the OAuth access token using the refresh token."""
@@ -273,18 +1472,28 @@ class GmailProvider(BaseEmailProvider):
         page_token: str | None = None,
         canonical_override: str | None = None,
     ) -> tuple[list[EmailMessage], str | None]:
-        """List messages carrying ``folder`` (a Gmail label ID).
+        """List the messages that carry ``folder`` (a Gmail label ID).
 
-        ``canonical_override`` forces the stored folder key (used when syncing a
-        user label whose *name* — not its opaque ID — is the UI folder key).
+        Each message keeps the folder of its parse, from its system labels
+        (WS-17 EM-G2 item 8, D-EM-33). ``canonical_override`` never sets the
+        folder. So a page of a user label files its Inbox mail as ``inbox``
+        and its other mail as ``archive`` (GM-7, O-GM-1).
+
+        Gmail has no ``archive`` label. The folder key ``archive`` sends
+        ``GMAIL_ARCHIVE_QUERY`` and the query of the caller, and no
+        ``labelIds`` (item 9, GM-6). A ``canonical_override`` of ``archive``
+        does the same, so a user label named Archive never takes the place of
+        the folder (item 10).
         """
         client = await self._get_client()
-        params: dict[str, Any] = {
-            "maxResults": min(max_results, 500),
-            "labelIds": [folder],
-        }
-        if query:
-            params["q"] = query
+        params: dict[str, Any] = {"maxResults": min(max_results, 500)}
+        if _is_archive_key(folder) or _is_archive_key(canonical_override):
+            params["q"] = (f"{GMAIL_ARCHIVE_QUERY} {query}" if query
+                           else GMAIL_ARCHIVE_QUERY)
+        else:
+            params["labelIds"] = [folder]
+            if query:
+                params["q"] = query
         if page_token:
             params["pageToken"] = page_token
 
@@ -292,16 +1501,18 @@ class GmailProvider(BaseEmailProvider):
         resp.raise_for_status()
         data = resp.json()
 
-        canon = canonical_override or canonical_folder(folder)
         messages: list[EmailMessage] = []
         for msg_ref in data.get("messages", []):
             # Fetch full message
             try:
-                msg = await self.get_message(msg_ref["id"])
-                msg.folder = canon
-                messages.append(msg)
-            except Exception:
-                continue
+                messages.append(await self.get_message(msg_ref["id"]))
+            except GmailRateLimited:
+                # The tries are spent. The sync fails and backs off, and the
+                # next cycle reads this message (EM-G4a item 9).
+                raise
+            except Exception as exc:
+                # No silent skip (item 10). The other messages still parse.
+                self._record_fetch_failure(msg_ref.get("id"), exc)
 
         next_token = data.get("nextPageToken")
         return messages, next_token
@@ -330,7 +1541,11 @@ class GmailProvider(BaseEmailProvider):
                     resp.raise_for_status()
                 except httpx.HTTPError:
                     break  # one bad label must not abort the whole restore
-                data = resp.json()
+                data = _json_or_empty(resp)
+                if not data:
+                    # An empty body skips this label, and the restore goes on.
+                    # The line makes the partial restore visible (task 2434).
+                    logger.warning("gmail.label_restore_empty_page label_id=%s", lid)
                 for ref in data.get("messages", []) or []:
                     mid = ref.get("id")
                     if mid:
@@ -355,7 +1570,12 @@ class GmailProvider(BaseEmailProvider):
         except Exception:  # noqa: BLE001 — labels are optional for a sync
             pass
 
+    def _share_spent(self) -> bool:
+        """True when this cycle read its ``IMPORT_CYCLE_MAILS`` (EM-G4b-f3)."""
+        return self.mails_read >= self.IMPORT_CYCLE_MAILS
+
     async def get_message(self, provider_message_id: str) -> EmailMessage:
+        self.mails_read += 1
         client = await self._get_client()
         await self._ensure_label_names()
         resp = await client.get(
@@ -363,7 +1583,90 @@ class GmailProvider(BaseEmailProvider):
             params={"format": "full"},
         )
         resp.raise_for_status()
-        return self._parse_gmail_message(resp.json())
+        raw = resp.json()
+        # The one place of the fill (EM-G2-f1, D-G2-f1-2): each caller of
+        # the parse, the HTML route of §14 too, comes through here.
+        await self._fill_attachment_bodies(client, raw)
+        return self._parse_gmail_message(raw)
+
+    async def get_reply_to(
+        self, provider_message_id: str, *,
+        folder: str | None = None, message_id: str | None = None,
+    ) -> list[str]:
+        """The Reply-To of one message, from its metadata (EM-CR). One read of
+        the one header, with no body. A Gmail id is unique in the mailbox, so
+        *folder* and *message_id* change nothing."""
+        client = await self._get_client()
+        resp = await client.get(
+            f"/users/me/messages/{provider_message_id}",
+            params={"format": "metadata", "metadataHeaders": "Reply-To"},
+        )
+        resp.raise_for_status()
+        headers = self._parse_headers(
+            ((resp.json() or {}).get("payload") or {}).get("headers") or [])
+        return [a for _n, a in getaddresses([headers.get("reply-to", "")]) if "@" in a]
+
+    async def _fill_attachment_bodies(
+        self, client: httpx.AsyncClient, raw: dict[str, Any],
+    ) -> None:
+        """Fetch the body parts that Gmail sent by ``attachmentId`` (WS-17
+        EM-G2-f1, ``email_app_master_plan.md`` §12.3.12.3).
+
+        Gmail can leave a large ``text/plain`` or ``text/html`` part out of
+        ``format=full``. The part then has ``body.attachmentId`` and no
+        ``body.data``, and the parse gives an empty body. This step runs one
+        ``users.messages.attachments.get`` for such a part, and writes the
+        base64url answer into ``body.data``. The parse then decodes it with
+        the charset of the part (D-G2-f1-4). The parse stays synchronous
+        (D-G2-f1-1).
+
+        The walk skips each file and each part below a file, as
+        ``_gmail_bodies`` does, so a file never gets a fetch (D-G2-f1-3).
+
+        Two bounds keep the memory of acb-gateway small (review P2,
+        D-G2-f1-7). Only the FIRST part of each type that holds data or an
+        ``attachmentId`` is a candidate, because the parse reads only that
+        part. So one message gets two fetches at most. A candidate over
+        ``GMAIL_FILL_MAX_BYTES`` gets no fetch. It logs
+        ``gmail.body_part_too_large`` and leaves one record, and its body
+        stays empty.
+
+        A message with no such part makes no request. A failed fetch leaves
+        that body empty and one record (D-G2-f1-5). A rate limit whose tries
+        are spent raises (D-G2-f1-6)."""
+        payload = raw.get("payload") or {}
+        seen: set[str] = set()
+        for part in _iter_gmail_parts(
+                payload, descend=lambda p: not _gmail_part_is_file(p)):
+            if _gmail_part_is_file(part):
+                continue
+            mime = str(part.get("mimeType", "")).lower()
+            if mime not in ("text/plain", "text/html") or mime in seen:
+                continue
+            body = part.get("body") or {}
+            attachment_id = body.get("attachmentId")
+            if not attachment_id and not body.get("data"):
+                continue
+            seen.add(mime)
+            if body.get("data"):
+                continue
+            size = int(body.get("size") or 0)
+            if size > GMAIL_FILL_MAX_BYTES:
+                self._record_body_part_too_large(
+                    raw.get("id"), part.get("partId"), size)
+                continue
+            try:
+                resp = await client.get(
+                    f"/users/me/messages/{raw.get('id')}"
+                    f"/attachments/{attachment_id}")
+                resp.raise_for_status()
+                data = resp.json()["data"]
+            except Exception as exc:
+                _raise_rate_limit(exc)
+                self._record_body_part_failure(
+                    raw.get("id"), part.get("partId"), exc)
+                continue
+            part["body"] = {**body, "data": data}
 
     async def send_message(
         self,
@@ -377,47 +1680,26 @@ class GmailProvider(BaseEmailProvider):
         attachments: list[dict[str, Any]] | None = None,
         thread_id: str | None = None,
     ) -> str:
-        # Build RFC 2822 message — multipart when file attachments are present.
-        msg: Any
-        if attachments:
-            from email import encoders  # noqa: PLC0415
-            from email.mime.base import MIMEBase  # noqa: PLC0415
-            from email.mime.multipart import MIMEMultipart  # noqa: PLC0415
-            msg = MIMEMultipart()
-            msg.attach(MIMEText(body_text, "plain" if not body_html else "html"))
-            for att in attachments:
-                part = MIMEBase("application", "octet-stream")
-                part.set_payload(att.get("content") or b"")
-                encoders.encode_base64(part)
-                part.add_header(
-                    "Content-Disposition",
-                    f'attachment; filename="{att.get("filename", "attachment")}"',
-                )
-                msg.attach(part)
-        else:
-            msg = MIMEText(body_text, "plain" if not body_html else "html")
-        msg["To"] = ", ".join(to)
-        msg["Subject"] = subject
-        if cc:
-            msg["Cc"] = ", ".join(cc)
-        if bcc:
-            msg["Bcc"] = ", ".join(bcc)
+        """Send a mail (``messages.send``) and return its message id.
 
-        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
-
-        body: dict[str, Any] = {"raw": raw}
+        ``_build_gmail_mail`` builds the body, the attachments and the reply
+        headers (WS-17 EM-G3a items 1 to 4). A reply also keeps ``threadId``.
+        The rate-limit helper sends this POST once only (EM-G4a), on the
+        plain URI and on the upload URI (EM-G3c item 8).
+        """
+        mail = _build_gmail_mail(
+            to=to, subject=subject, body_text=body_text, body_html=body_html,
+            cc=cc, bcc=bcc, attachments=attachments,
+            reply_headers=await self._reply_headers(
+                reply_to_message_id, thread_id))
         # Gmail threads by threadId. Prefer the real conversation id
         # (``thread_id``); fall back to ``reply_to_message_id`` only when a caller
         # passes a message id as the thread anchor. Passing a non-thread message
         # id here would fail to thread — the "reply shows as a separate email" bug.
-        tid = thread_id or reply_to_message_id
-        if tid:
-            body["threadId"] = tid
-
-        client = await self._get_client()
-        resp = await client.post("/users/me/messages/send", json=body)
-        resp.raise_for_status()
-        data = resp.json()
+        data = await self._write_mail(
+            "POST", "/messages/send", mail,
+            thread_id=thread_id or reply_to_message_id,
+            has_files=bool(attachments), draft=False)
         return data["id"]
 
     async def create_draft(
@@ -431,43 +1713,28 @@ class GmailProvider(BaseEmailProvider):
         attachments: list[dict[str, Any]] | None = None,
         cc: list[str] | None = None,
         bcc: list[str] | None = None,
+        *,
+        exact_to: bool = False,
     ) -> str:
-        """Create a Gmail draft (drafts.create); threads it when a thread id is
-        given so the reply lands in the right conversation. Adds file
-        attachments via a MIME multipart message when provided."""
-        msg: Any
-        if attachments:
-            from email.mime.multipart import MIMEMultipart  # noqa: PLC0415
-            from email.mime.base import MIMEBase  # noqa: PLC0415
-            from email import encoders  # noqa: PLC0415
-            msg = MIMEMultipart()
-            msg.attach(MIMEText(body_text, "plain" if not body_html else "html"))
-            for att in attachments:
-                part = MIMEBase("application", "octet-stream")
-                part.set_payload(att.get("content") or b"")
-                encoders.encode_base64(part)
-                part.add_header(
-                    "Content-Disposition",
-                    f'attachment; filename="{att.get("filename", "attachment")}"',
-                )
-                msg.attach(part)
-        else:
-            msg = MIMEText(body_text, "plain" if not body_html else "html")
-        msg["To"] = ", ".join(to)
-        if cc:
-            msg["Cc"] = ", ".join(a for a in cc if a)
-        if bcc:
-            msg["Bcc"] = ", ".join(a for a in bcc if a)
-        msg["Subject"] = subject
-        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
-        message: dict[str, Any] = {"raw": raw}
-        tid = thread_id or reply_to_message_id
-        if tid:
-            message["threadId"] = tid
-        client = await self._get_client()
-        resp = await client.post("/users/me/drafts", json={"message": message})
-        resp.raise_for_status()
-        return resp.json().get("id", "")
+        """Create a Gmail draft (``drafts.create``) and return the MESSAGE id
+        of the draft (EM-G3a item 6, O-GM-2).
+
+        The local row holds that id, which is the id that the sync finds. So
+        one draft keeps one row (GM-13). A reply keeps ``threadId`` and gets
+        ``In-Reply-To`` and ``References`` (item 4).
+
+        ``exact_to`` changes nothing here. The builder puts ``to`` into the
+        mail, so the To of a Gmail draft is always ``to`` (EM-T10 item 6).
+        """
+        mail = _build_gmail_mail(
+            to=to, subject=subject, body_text=body_text, body_html=body_html,
+            cc=cc, bcc=bcc, attachments=attachments,
+            reply_headers=await self._reply_headers(
+                reply_to_message_id, thread_id))
+        return self._remember_draft(await self._write_mail(
+            "POST", "/drafts", mail,
+            thread_id=thread_id or reply_to_message_id,
+            has_files=bool(attachments), draft=True))
 
     async def update_draft(
         self,
@@ -481,59 +1748,279 @@ class GmailProvider(BaseEmailProvider):
         bcc: list[str] | None = None,
         attachments: list[dict[str, Any]] | None = None,
     ) -> str:
-        """Replace a Gmail draft's content in place (drafts.update). Returns the
-        (unchanged) draft id so the editor keeps tracking the same draft.
+        """Replace a Gmail draft (``drafts.update``) and return its NEW message
+        id (EM-G3a items 6 and 7, O-GM-2).
 
-        When ``body_html`` is given the draft is written as HTML (so a signed
-        HTML body survives the update); otherwise it stays plain text. When
-        ``attachments`` are supplied the draft is rebuilt as a MIME multipart so
-        the files ride along (Gmail replaces the whole draft on update)."""
-        body_part = MIMEText(
-            body_html or body_text or "", "html" if body_html else "plain")
-        if attachments:
-            from email.mime.multipart import MIMEMultipart  # noqa: PLC0415
-            from email.mime.base import MIMEBase  # noqa: PLC0415
-            from email import encoders  # noqa: PLC0415
-            msg: Any = MIMEMultipart()
-            msg.attach(body_part)
-            for att in attachments:
-                part = MIMEBase("application", "octet-stream")
-                part.set_payload(att.get("content") or b"")
-                encoders.encode_base64(part)
-                part.add_header(
-                    "Content-Disposition",
-                    f'attachment; filename="{att.get("filename", "attachment")}"',
-                )
-                msg.attach(part)
-        else:
-            msg = body_part
-        if to is not None:
-            msg["To"] = ", ".join(to)
-        if cc is not None:
-            msg["Cc"] = ", ".join(a for a in cc if a)
-        if bcc is not None:
-            msg["Bcc"] = ", ".join(a for a in bcc if a)
-        if subject is not None:
-            msg["Subject"] = subject
-        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
-        message: dict[str, Any] = {"raw": raw}
-        # threadId MUST be re-supplied on update — Gmail drops the draft's thread
-        # otherwise, so the sent reply would start a new conversation.
-        if thread_id:
-            message["threadId"] = thread_id
-        client = await self._get_client()
-        resp = await client.put(
-            f"/users/me/drafts/{draft_id}", json={"message": message}
-        )
-        resp.raise_for_status()
-        return resp.json().get("id", draft_id)
+        ``draft_id`` keeps the name of the base class, but it is the MESSAGE
+        id that the local row holds. The draft id comes from ``drafts.list``.
+        Gmail gives the draft a new message id at each update, so the caller
+        moves its local row to the id that this returns (item 8, E-A2).
+
+        Gmail replaces the whole draft. So the update builds the whole mail
+        again with the one builder, and it sets ``In-Reply-To`` and
+        ``References`` again from the newest message of the thread (item 5).
+        ``threadId`` MUST be sent again too, or Gmail drops the draft from its
+        conversation, and the sent reply starts a new one.
+
+        ``attachments`` are files to ADD, as the base class says. The files
+        that the draft holds stay: the update reads them from the draft first
+        and builds them in again (review round 1, F1). Metorite keeps no bytes
+        of a draft file, so Gmail is the one source of them.
+
+        EM-G3c item 2: the files AFTER the read-back decide the URI, not
+        ``attachments``. So an autosave that adds no file still goes to the
+        upload URI when the draft holds one.
+
+        EM-G3a-f7: the inline parts of the draft go back only when
+        ``body_html`` names their cid (D-G3a-f7-4).
+        """
+        gmail_draft_id = await self._draft_id_for(draft_id)
+        kept_files, inline = await self._draft_files(draft_id)
+        files = [*kept_files, *(attachments or [])]
+        mail = _build_gmail_mail(
+            to=to, subject=subject, body_text=body_text, body_html=body_html,
+            cc=cc, bcc=bcc, attachments=files or None,
+            reply_headers=await self._reply_headers(None, thread_id),
+            inline_parts=inline)
+        data = await self._write_mail(
+            "PUT", f"/drafts/{gmail_draft_id}", mail,
+            thread_id=thread_id, has_files=bool(files), draft=True)
+        return self._remember_draft(data, old_message_id=draft_id)
 
     async def send_draft(self, draft_id: str) -> str | None:
-        """Send an existing Gmail draft natively (drafts.send) — Drafts → Sent."""
+        """Send a Gmail draft natively (``drafts.send``): Drafts → Sent.
+
+        ``draft_id`` is the MESSAGE id of the draft, as the local row holds it
+        (EM-G3a item 7). A draft made in Gmail web has only that id, and it
+        now sends. Returns the id of the sent message.
+        """
+        gmail_draft_id = await self._draft_id_for(draft_id)
         client = await self._get_client()
-        resp = await client.post("/users/me/drafts/send", json={"id": draft_id})
+        resp = await client.post(
+            "/users/me/drafts/send", json={"id": gmail_draft_id})
         resp.raise_for_status()
+        self._draft_ids.pop(draft_id, None)
         return (resp.json() or {}).get("id")
+
+    async def get_draft_recipients(self, draft_id: str) -> dict[str, list[str]]:
+        """The To, Cc and Bcc headers of a Gmail draft (``format=metadata``).
+
+        WS-17 EM-T13b-1 review round 2. ``draft_id`` is the MESSAGE id of the
+        draft, as the local row holds it. Gmail keeps the Bcc header on a
+        draft. Each header of a name counts, so a second To header cannot
+        hide an address."""
+        client = await self._get_client()
+        resp = await client.get(
+            f"/users/me/messages/{draft_id}",
+            params={"format": "metadata", "metadataHeaders": ["To", "Cc", "Bcc"]},
+        )
+        resp.raise_for_status()
+        headers = ((resp.json() or {}).get("payload") or {}).get("headers") or []
+        out: dict[str, list[str]] = {"to": [], "cc": [], "bcc": []}
+        for h in headers:
+            key = str(h.get("name", "")).lower()
+            if key in out:
+                out[key] += [a.email for a in self._parse_address_list(
+                    str(h.get("value", ""))) if a.email]
+        return out
+
+    async def _reply_headers(
+        self, reply_to_message_id: str | None, thread_id: str | None,
+    ) -> dict[str, str]:
+        """``In-Reply-To`` and ``References`` of a reply (EM-G3a items 4, 5).
+
+        The parent is the message that ``reply_to_message_id`` names. With
+        only ``thread_id``, it is the newest message of the thread that is not
+        a draft. The two headers come from Gmail (``format=metadata``), never
+        from the local row. With neither id, there is no parent.
+
+        A read that fails gives no header, and the mail still goes (E-A3).
+        The log line names the kind and the id only, never a subject or an
+        address.
+        """
+        if not (reply_to_message_id or thread_id):
+            return {}
+        kind, ref = (("message", reply_to_message_id) if reply_to_message_id
+                     else ("thread", thread_id))
+        try:
+            client = await self._get_client()
+            resp = await client.get(f"/users/me/{kind}s/{ref}",
+                                    params=_PARENT_PARAMS)
+            resp.raise_for_status()
+            data = resp.json()
+            parent = data if kind == "message" else _newest_parent(data)
+            return _reply_headers_of(parent)
+        except Exception as exc:  # E-A3: a failed read never fails the send
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            logger.warning(
+                "gmail.parent_read_failed kind=%s id=%s error=%s status=%s",
+                kind, ref, type(exc).__name__, status)
+            return {}
+
+    async def _write_mail(
+        self, method: str, path: str, mail: bytes, *,
+        thread_id: str | None, has_files: bool, draft: bool,
+    ) -> dict[str, Any]:
+        """Send one write of a built mail, and return the answer of Gmail.
+
+        WS-17 EM-G3c-1, items 2 to 6. ``path`` is the path of the write
+        under ``/users/me``. ``draft`` puts the mail inside ``message``, as
+        ``drafts.create`` and ``drafts.update`` need. With no ``thread_id``
+        the write sends no ``threadId``, on either URI.
+
+        * A mail over :data:`GMAIL_MAIL_MAX_BYTES` raises
+          :class:`GmailMailTooLarge` before the request (item 5).
+        * A mail with a file, or over :data:`GMAIL_PLAIN_MAX_BYTES`, goes to
+          the upload URI as ``multipart/related`` (items 2 to 4). The client
+          is still ``_get_client()``, so ``GmailBearer`` and its rate-limit
+          rule stay. ``Content-Type`` replaces the JSON type of the client.
+        * Each other mail keeps the plain URI and ``raw``, as before.
+        * A 413 raises :class:`GmailMailTooLarge`, read from the status
+          code only (item 6).
+        """
+        size = len(mail)
+        if size > GMAIL_MAIL_MAX_BYTES:
+            raise GmailMailTooLarge(size, GMAIL_MAIL_MAX_BYTES)
+        meta: dict[str, Any] = {"threadId": thread_id} if thread_id else {}
+        client = await self._get_client()
+        write = client.post if method == "POST" else client.put
+        if has_files or size > GMAIL_PLAIN_MAX_BYTES:
+            body, content_type = _upload_body(
+                {"message": meta} if draft else meta, mail)
+            resp = await write(
+                f"{GMAIL_UPLOAD_BASE}/users/me{path}",
+                params={"uploadType": "multipart"}, content=body,
+                headers={"Content-Type": content_type})
+        else:
+            message = {"raw": _gmail_raw(mail), **meta}
+            resp = await write(f"/users/me{path}",
+                               json={"message": message} if draft else message)
+        if resp.status_code == 413:
+            # Google refused it under the local limit, so name no limit.
+            raise GmailMailTooLarge(size, None)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def _draft_files(
+        self, message_id: str,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """The files and the inline parts of a draft, in the shape of
+        ``attachments``.
+
+        WS-17 EM-G3a review round 1, F1. ``drafts.update`` replaces the whole
+        draft, so an update that leaves out the files drops them. A read that
+        fails raises, because an update with no read loses files.
+
+        Review round 2, P3-4: the read takes the draft as one RFC 5322 mail
+        (``format=raw``). With ``format=full`` Gmail opens an attached mail
+        into its parts and gives no bytes for it, so an update lost it, or
+        put its inner files at the top. ``iter_attachments`` of the standard
+        library gives each file of the top level once and never opens one.
+        An attached mail stays one file: the mail, with its name, else
+        ``attached.eml``. The body parts are no files, so they stay out.
+
+        EM-G3a-f7 item 1 (``email_app_master_plan.md`` §12.3.12.5): an inline
+        part is no file. It has a ``Content-ID`` and no ``attachment``
+        disposition, and the read finds it at any depth, but never inside an
+        attached mail. Each one keeps its bytes, its type and its
+        ``content_id``. With ``multipart/related`` at the top, the image used
+        to come back as a plain file. Under ``multipart/mixed`` it was lost.
+        """
+        client = await self._get_client()
+        resp = await client.get(f"/users/me/messages/{message_id}",
+                                params={"format": "raw"})
+        resp.raise_for_status()
+        raw = str((resp.json() or {}).get("raw") or "")
+        if not raw:
+            return [], []
+        mail = message_from_bytes(
+            base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)),
+            policy=mail_policy.default)
+        inline = [{"filename": part.get_filename() or "",
+                   "content": part.get_payload(decode=True) or b"",
+                   "mime_type": part.get_content_type(),
+                   "content_id": _content_id(part)}
+                  for part in _inline_parts(mail)]
+        files: list[dict[str, Any]] = []
+        for part in mail.iter_attachments():
+            if _is_inline_part(part):
+                continue
+            if part.get_content_maintype() == "message":
+                inner = part.get_payload()
+                content = (inner[0].as_bytes()
+                           if isinstance(inner, list) and inner else b"")
+                name = part.get_filename() or "attached.eml"
+            else:
+                content = part.get_payload(decode=True) or b""
+                name = part.get_filename() or "attachment"
+            files.append({"filename": name, "content": content,
+                          "mime_type": part.get_content_type()})
+        return files, inline
+
+    def _remember_draft(
+        self, data: dict[str, Any], *, old_message_id: str | None = None,
+    ) -> str:
+        """Cache the pair of one draft answer, and return its message id.
+
+        ``drafts.create`` and ``drafts.update`` answer with the draft id and
+        the message of the draft (EM-G3a item 6). An update gives the draft a
+        new message id, so the old one leaves the cache."""
+        message_id = str((data.get("message") or {}).get("id") or "")
+        gmail_draft_id = str(data.get("id") or "")
+        if not message_id or not gmail_draft_id:
+            raise ValueError(
+                "Gmail answered a draft write with no draft id or message id")
+        if old_message_id and old_message_id != message_id:
+            self._draft_ids.pop(old_message_id, None)
+        self._draft_ids[message_id] = gmail_draft_id
+        return message_id
+
+    async def _draft_id_for(
+        self, message_id: str, *, required: bool = True,
+    ) -> str | None:
+        """The draft id of the draft whose message id is ``message_id``.
+
+        EM-G3a item 7 (O-GM-2). The local row holds the message id, and
+        ``drafts.list`` maps it to the draft id. The cache lives for this
+        instance. A lookup reads one page at a time, and it stops at the page
+        that holds the id, or after ``GMAIL_DRAFT_MAX_PAGES`` pages.
+
+        ``required`` (``update_draft`` and ``send_draft``): a miss of the
+        cache reads ``drafts.list`` again, and a message id that is no draft
+        raises :class:`GmailDraftNotFound`. Not ``required``
+        (``trash_message``): a miss after one full read answers None, so
+        many trashes cost one read.
+        """
+        if message_id in self._draft_ids:
+            return self._draft_ids[message_id]
+        if not required and self._drafts_listed:
+            return None
+        client = await self._get_client()
+        token: str | None = None
+        for _ in range(GMAIL_DRAFT_MAX_PAGES):
+            params: dict[str, Any] = {"maxResults": GMAIL_DRAFT_PAGE_SIZE}
+            if token:
+                params["pageToken"] = token
+            resp = await client.get("/users/me/drafts", params=params)
+            resp.raise_for_status()
+            data = _json_or_empty(resp)
+            for draft in data.get("drafts") or []:
+                mid = (draft.get("message") or {}).get("id")
+                if mid and draft.get("id"):
+                    self._draft_ids[str(mid)] = str(draft["id"])
+            token = data.get("nextPageToken")
+            if not token or message_id in self._draft_ids:
+                break
+        found = self._draft_ids.get(message_id)
+        # The cache holds each draft after the last page, or after the bound
+        # of pages. A stop at the page of the id reads the rest later.
+        if not token or not found:
+            self._drafts_listed = True
+        if found:
+            return found
+        if required:
+            raise GmailDraftNotFound(message_id)
+        return None
 
     async def modify_message(
         self,
@@ -555,11 +2042,43 @@ class GmailProvider(BaseEmailProvider):
         resp.raise_for_status()
 
     async def trash_message(self, provider_message_id: str) -> None:
+        """Move a message to Trash, or discard a draft (WS-17 EM-G3a, E-A5).
+
+        A draft goes through ``drafts.delete``, which is "Discard draft" in
+        Gmail. It removes the draft for good, as Gmail itself does, and the
+        scope ``gmail.modify`` allows it. Its message id goes into
+        ``discarded_drafts``, so a caller that moves rows deletes the local
+        row instead. Each other message goes to Trash (``messages.trash``).
+        """
+        draft_id = await self._draft_id_for_trash(provider_message_id)
         client = await self._get_client()
+        if draft_id:
+            resp = await client.delete(f"/users/me/drafts/{draft_id}")
+            resp.raise_for_status()
+            self._draft_ids.pop(provider_message_id, None)
+            self.discarded_drafts.add(provider_message_id)
+            return
         resp = await client.post(
             f"/users/me/messages/{provider_message_id}/trash"
         )
         resp.raise_for_status()
+
+    async def _draft_id_for_trash(self, provider_message_id: str) -> str | None:
+        """The draft id for a trash, or None when the id is no draft.
+
+        A lookup that fails for a reason other than a rate limit trashes the
+        message as before, so a failed ``drafts.list`` never blocks the trash
+        of a mail. A rate limit raises, as each Gmail call does (EM-G4a)."""
+        try:
+            return await self._draft_id_for(provider_message_id, required=False)
+        except GmailRateLimited:
+            raise
+        except (httpx.HTTPError, ValueError) as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            logger.warning(
+                "gmail.draft_lookup_failed message_id=%s error=%s status=%s",
+                provider_message_id, type(exc).__name__, status)
+            return None
 
     async def apply_flags(
         self,
@@ -611,7 +2130,10 @@ class GmailProvider(BaseEmailProvider):
         archiving a 40k-message newsletter backlog costs 40 calls, not 40,000.
 
         ``failed_out`` collects ids the per-message fallback could not apply, so
-        the caller can retry them (see the base contract).
+        the caller can retry them (see the base contract). A rate limit whose
+        tries are spent makes no per-message call. The ids of its chunk and of
+        each later chunk go into ``failed_out``, and the act returns
+        (EM-G4a-f1).
 
         Gmail never re-keys a message id, so the return is always empty.
         """
@@ -631,6 +2153,20 @@ class GmailProvider(BaseEmailProvider):
             try:
                 resp = await client.post("/users/me/messages/batchModify", json=body)
                 resp.raise_for_status()
+            except GmailRateLimited:
+                # The tries and the wait budget of the client are spent, so
+                # each ``modify`` of a fallback stops at its first refusal.
+                # No call goes out for each message. This chunk and each later
+                # chunk fail, and the caller retries them with a back-off
+                # (EM-G4a-f1, D-G4a-f1-1).
+                left = provider_message_ids[i:]
+                logger.warning(
+                    "gmail.batch_modify_rate_limited action=%s size=%d left=%d",
+                    action, len(chunk), len(left),
+                )
+                if failed_out is not None:
+                    failed_out.extend(left)
+                return {}
             except Exception as exc:  # noqa: BLE001
                 # A whole chunk failing is worth a retry one message at a time:
                 # batchModify is all-or-nothing, so one stale id would otherwise
@@ -642,21 +2178,96 @@ class GmailProvider(BaseEmailProvider):
                 await super().bulk_apply(chunk, action, failed_out)
         return {}
 
+    # ── A move to a user label (WS-17 EM-G3b, GM-14, D-EM-33) ─────────────
+    # ``email_app_master_plan.md`` §12.3.4, items 1 to 5. A user label is a
+    # label and never a folder (O-GM-1), so a move to one files the message
+    # as ``archive``. Fence: test_gmail_move_and_filters.py.
+
+    #: The folder keys that a move reaches through a system label.
+    _MOVE_SYSTEM_KEYS = frozenset({"inbox", "archive", "trash", "junk"})
+    #: The folder keys that a move never reaches. Gmail sets ``SENT`` and
+    #: ``DRAFT`` itself, on a send and on a draft save (E-M2).
+    _MOVE_REFUSED_KEYS = frozenset({"sent", "drafts"})
+    #: A move to a user label or to Archive removes these, so a move out of
+    #: Trash or Spam leaves ``archive`` (D-EM-33, E-M5, review round 1).
+    _LABEL_MOVE_REMOVES = ("INBOX", "TRASH", "SPAM")
+    #: A move to Junk removes these, so a move out of Trash leaves ``junk``
+    #: (review round 1). Gmail ranks ``TRASH`` before ``SPAM``.
+    _JUNK_MOVE_REMOVES = ("INBOX", "TRASH")
+
+    def _is_system_label_name(self, name: str) -> bool:
+        """True when ``name`` names a reserved system label or a ``CATEGORY_*``
+        label (E-M3). Without this rule, "Starred" stars the message."""
+        upper = (name or "").strip().upper()
+        return upper in self._GMAIL_RESERVED or upper.startswith("CATEGORY_")
+
+    def folder_after_move(self, name: str) -> str | None:
+        """The folder key after a move to ``name`` (EM-G3b item 5).
+
+        The key for inbox, archive, trash and junk, with each alias of
+        ``canonical_folder``. ``None`` for sent, drafts and a system label
+        name, because the move refuses them. ``archive`` for a user label."""
+        key = canonical_folder(name)
+        if key in self._MOVE_SYSTEM_KEYS:
+            return key
+        if key in self._MOVE_REFUSED_KEYS or self._is_system_label_name(name):
+            return None
+        return "archive"
+
+    async def _user_label_id_for_move(self, name: str) -> str:
+        """The id of the USER label ``name``, made when it is new (E-M2 to E-M4).
+
+        ``_ensure_label_id`` maps every label, system labels too, so the move
+        checks the result against the user labels. A label that Gmail could
+        not make raises, so no caller stores ``archive`` for a move that did
+        not occur. The name goes to Google unchanged, also with a "/"."""
+        if self._is_system_label_name(name):
+            raise ValueError(f"Gmail cannot move a message to the system label {name!r}")
+        label_id = await self._ensure_label_id(name)
+        if not label_id:
+            raise ValueError(f"Could not create Gmail label: {name!r}")
+        if label_id not in self._label_names_by_id:
+            raise ValueError(f"Gmail cannot move a message to the system label {name!r}")
+        return label_id
+
     async def move_to_folder(self, provider_message_id: str, folder: str) -> None:
-        """Move via Gmail label mutation (Gmail has labels, not folders)."""
-        folder = (folder or "").lower()
-        if folder == "trash":
+        """Move via Gmail label mutation (Gmail has labels, not folders).
+
+        ``canonical_folder`` reads the name, so "Bin", "Deleted Items" and
+        "Junk Email" reach the system branch (E-M1). Sent and drafts raise
+        ``ValueError`` (E-M2). Each other name is a user label: one
+        ``modify`` adds it and removes ``INBOX``, ``TRASH`` and ``SPAM``. Gmail
+        keeps the id, so the move returns ``None``.
+
+        Archive removes ``INBOX``, ``TRASH`` and ``SPAM`` too, and Junk adds
+        ``SPAM`` and removes ``INBOX`` and ``TRASH``. Gmail ranks ``TRASH``
+        first, so a move out of Trash that kept it left the message in Trash
+        (review round 1)."""
+        name = (folder or "").strip()
+        key = canonical_folder(name)
+        if key in self._MOVE_REFUSED_KEYS:
+            raise ValueError(f"Gmail cannot move a message to {key}")
+        if key == "trash":
             await self.trash_message(provider_message_id)
-        elif folder == "archive":
-            # Archiving in Gmail = removing the INBOX label.
-            await self.modify_message(provider_message_id, remove_labels=["INBOX"])
-        elif folder == "inbox":
+        elif key == "archive":
+            # Archiving in Gmail = no INBOX, and out of Trash and Spam too.
+            await self.modify_message(
+                provider_message_id, remove_labels=list(self._LABEL_MOVE_REMOVES)
+            )
+        elif key == "inbox":
             await self.modify_message(
                 provider_message_id, add_labels=["INBOX"], remove_labels=["TRASH", "SPAM"]
             )
-        elif folder in ("junk", "spam"):
+        elif key == "junk":
             await self.modify_message(
-                provider_message_id, add_labels=["SPAM"], remove_labels=["INBOX"]
+                provider_message_id, add_labels=["SPAM"],
+                remove_labels=list(self._JUNK_MOVE_REMOVES),
+            )
+        else:
+            label_id = await self._user_label_id_for_move(name)
+            await self.modify_message(
+                provider_message_id, add_labels=[label_id],
+                remove_labels=list(self._LABEL_MOVE_REMOVES),
             )
 
     # ── Labels ───────────────────────────────────────────────────────────
@@ -834,6 +2445,81 @@ class GmailProvider(BaseEmailProvider):
         if resp.status_code not in (200, 204, 404):
             resp.raise_for_status()
 
+    async def list_filters(self) -> list[dict[str, Any]]:
+        """Read the Gmail settings filters for the rules screen (GM-15).
+
+        WS-17 EM-G3b items 12 to 15 (§12.3.4). Each filter maps to the shape
+        of ``OutlookProvider.list_filters``. ``users.settings.filters.list``
+        answers with the key ``filter``, which is singular, and with ``{}``
+        for a mailbox with no filter (E-F1). A plain 403, such as a missing
+        ``gmail.settings.basic`` scope, gives ``[]``. ``GmailRateLimited``
+        passes up, and the caller answers ``provider_rules_supported: false``
+        for it (E-F5)."""
+        client = await self._get_client()
+        resp = await client.get("/users/me/settings/filters")
+        if resp.status_code == 403:
+            return []
+        resp.raise_for_status()
+        # An EMPTY 200 body means no filter, the same as {} (task 2268).
+        filters = _json_or_empty(resp).get("filter") or []
+        if any(self._filter_user_label_ids(f) for f in filters):
+            # Fills ``_label_names_by_id`` with the names of the user labels.
+            await self._label_name_id_map()
+        return [self._filter_view(f) for f in filters]
+
+    def _filter_user_label_ids(self, gmail_filter: dict[str, Any]) -> list[str]:
+        """The ids of the user labels that a filter adds. A system label id is
+        an action of its own (star, trash), or the map ignores it."""
+        action = gmail_filter.get("action") or {}
+        return [lid for lid in action.get("addLabelIds") or []
+                if not self._is_system_label_name(lid)]
+
+    def _filter_view(self, gmail_filter: dict[str, Any]) -> dict[str, Any]:
+        """One Gmail filter as ``{id, name, enabled, from_addresses, summary}``.
+
+        A Gmail filter is always enabled. The name is ``From <from>``, else
+        the query, else the subject. ``from_addresses`` holds ``criteria.from``
+        as one whole string, because it is a Gmail query such as "a OR b"
+        (E-F4). The summary tokens keep the order of item 14 (E-F2, E-F3)."""
+        criteria = gmail_filter.get("criteria") or {}
+        action = gmail_filter.get("action") or {}
+        added = action.get("addLabelIds") or []
+        removed = action.get("removeLabelIds") or []
+        sender = criteria.get("from") or ""
+        summary: list[str] = []
+        if criteria.get("subject"):
+            summary.append(f"subject contains “{criteria['subject']}”")
+        if criteria.get("to"):
+            summary.append(f"to contains “{criteria['to']}”")
+        if criteria.get("query"):
+            summary.append(f"matches “{criteria['query']}”")
+        if criteria.get("hasAttachment"):
+            summary.append("has attachment")
+        label_ids = self._filter_user_label_ids(gmail_filter)
+        if label_ids:
+            # An unknown id shows as it is (E-F3).
+            summary.append("label: " + ", ".join(
+                self._label_names_by_id.get(lid, lid) for lid in label_ids))
+        if "INBOX" in removed:
+            summary.append("skip inbox")
+        if "UNREAD" in removed:
+            summary.append("mark read")
+        if "STARRED" in added:
+            summary.append("star")
+        if action.get("forward"):
+            summary.append("forward")
+        if "TRASH" in added:
+            summary.append("trash")
+        name = (f"From {sender}" if sender
+                else criteria.get("query") or criteria.get("subject") or "")
+        return {
+            "id": gmail_filter.get("id", ""),
+            "name": name,
+            "enabled": True,
+            "from_addresses": [sender] if sender else [],
+            "summary": summary,
+        }
+
     async def set_labels(
         self,
         provider_message_id: str,
@@ -859,9 +2545,29 @@ class GmailProvider(BaseEmailProvider):
                 remove_labels=remove_ids or None,
             )
 
-    # Deep initial sync page ceiling per label (×500/page). The after:-query
-    # window normally exhausts well before this.
+    # Deep initial sync page ceiling per label. A page holds ``max_results``
+    # messages, 100 from the scheduler. The after:-query window normally
+    # exhausts well before this. The sweep after a stale cursor uses the same
+    # ceiling (EM-G4b E-B1).
     DEEP_SYNC_MAX_PAGES = 50
+    #: The pages of one import (WS-17 EM-G5a, E-G5-6). One list reads all
+    #: mail, so the cap is far above the deep sweep. It only guards against a
+    #: list that never ends. At the cap the import ends and logs
+    #: ``gmail.import_capped``. The model is ``OutlookProvider.IMPORT_MAX_PAGES``.
+    IMPORT_MAX_PAGES = 5000
+    #: The mail that one cycle reads before it gives the mailbox lock back
+    #: (EM-G4b-f3). At the paced rate this is about 5 minutes. A read stops at
+    #: its next page or label after that, so a cycle stays under
+    #: ``SYNC_LOCK_WAIT_SECS``. The next cycle goes on from there.
+    IMPORT_CYCLE_MAILS = 400
+    #: The import reads all mail back to the floor, so the deep sync of a
+    #: member act reconciles the deletions from it (WS-17 EM-G5b item 7).
+    #: ``message_gone`` confirms each candidate by its id before a trash.
+    import_full_snapshot = True
+    #: Gmail gives a draft a new message id at each update (O-GM-2), so the
+    #: reconcile leaves out each row in drafts (EM-G5b item 9, C3). The
+    #: history removes an old draft row (EM-G4b E-B2).
+    import_reconcile_skips_drafts = True
 
     async def _sweep_label(
         self,
@@ -891,131 +2597,652 @@ class GmailProvider(BaseEmailProvider):
         max_results: int = 100,
         deep: bool = False,
         since: datetime | None = None,
+        catch_up: datetime | None = None,
+        *,
+        delta_shadow: bool = False,
     ) -> SyncResult:
-        client = await self._get_client()
+        """One sync of a Gmail mailbox (WS-17 EM-G4b, spec §12.3.5.2).
 
+        * ``deep`` pages each label back to ``since``, and it returns no
+          cursor. The import does not use it since EM-G5a (E-G5-8):
+          ``import_batches`` reads one list of all mail.
+        * With a cursor, the sync reads ``history.list`` from it, page by
+          page, and fetches each page before it reads the next (items 2 to
+          4, EM-G4b-f1). The new cursor is the ``historyId`` of the last
+          answer. A fetch that a later cycle can fix holds the cursor at the
+          end of the page before its page (EM-G4a-f2,
+          ``_cursor_after_read``). A rate limit after a finished page keeps
+          the finished pages and sets ``rate_limited`` (D-G4b-f1-2).
+        * With no cursor, ``users.getProfile`` gives the seed FIRST. The
+          sweep then reads the newest page of each label and returns the
+          seed (item 1). So the next history read gets each change made
+          during the sweep. A rate limit after a finished label keeps the
+          finished labels, and the next cycle goes on from the label that
+          the limit cut (EM-G4b-f2, ``_first_sweep``).
+        * A stale cursor (404) seeds again and sweeps back to the catch-up
+          watermark (items 5 and 6). A sweep that stops short returns no
+          cursor, so the stale one stays (E-B1). A sweep that read its share
+          returns ``_format_reset``, and the next cycle goes on (EM-G4b-f3).
+
+        ``catch_up`` is unused with a cursor, because the history reads each
+        change since the cursor (item 7, D-EM-13). Gmail keeps its history
+        for about one week, often longer. After a longer pause the cursor is
+        stale, and the sweep of item 6 is the catch-up. ``delta_shadow`` is
+        the Graph delta of Outlook, and Gmail ignores it (EM-T4d).
+        """
+        await self._get_client()
+        # The fetch records of this call go into ``SyncResult.errors``
+        # (EM-G4a item 10). A failed label still skips. A rate limit whose
+        # tries are spent raises instead, so the sync fails (item 9).
+        first_failure = len(self.fetch_failures)
         if deep:
-            # One-time deep backfill: page every label back to ``since`` (incl.
-            # SENT/DRAFT). User labels first so system labels win the upsert.
-            deep_messages: list[EmailMessage] = []
-            try:
-                folders = await self.list_folders()
-            except Exception:
-                folders = []
-            for f in folders:
-                if f.type != "user":
-                    continue
-                canon = canonical_folder(f.name)
-                if canon in ("inbox", "sent", "drafts", "trash", "junk", "archive"):
-                    continue
-                try:
-                    deep_messages.extend(await self._sweep_label(
-                        f.provider_folder_id, max_results, since, canon
-                    ))
-                except Exception:
-                    continue
-            for label in ("INBOX", "SENT", "DRAFT", "SPAM", "TRASH"):
-                try:
-                    deep_messages.extend(
-                        await self._sweep_label(label, max_results, since)
-                    )
-                except Exception:
-                    continue
-            return SyncResult(
-                messages_synced=len(deep_messages), messages=deep_messages,
-                new_history_id=None,
-            )
+            return await self._deep_sweep(max_results, since, first_failure)
+        sweep = _parse_sweep(history_id) if history_id else None
+        if sweep is not None:
+            return await self._first_sweep(max_results, first_failure, sweep)
+        reset = _parse_reset(history_id) if history_id else None
+        if reset is not None:
+            return await self._recover_stale_cursor(
+                max_results, since, catch_up, resume=reset)
+        cursor = _parse_cursor(history_id) if history_id else None
+        if cursor is not None:
+            return await self._history_sync(cursor, max_results, since, catch_up)
+        return await self._first_sweep(max_results, first_failure)
 
-        if history_id:
-            # Incremental sync via history.list
-            params: dict[str, Any] = {
-                "startHistoryId": history_id,
-                "maxResults": max_results,
-                "historyTypes": ["messageAdded", "messageDeleted", "labelAdded", "labelRemoved"],
-            }
-            resp = await client.get("/users/me/history", params=params)
+    async def seed_cursor(self) -> str | None:
+        """The history id of the mailbox now, from ``users.getProfile``
+        (WS-17 EM-G4b item 1, E-B3).
+
+        The call goes through the client seam, so a rate limit raises
+        ``GmailRateLimited``. Each other failure raises too. The scheduler
+        and the sweeps catch it (``_try_seed``), so a failed seed never
+        stops new mail."""
+        client = await self._get_client()
+        resp = await client.get("/users/me/profile")
+        resp.raise_for_status()
+        history_id = resp.json().get("historyId")
+        return str(history_id) if history_id else None
+
+    async def _try_seed(self) -> str | None:
+        """``seed_cursor`` for a sweep. A failure never stops new mail (owner
+        answer Q2): it logs ``gmail.seed_failed`` and gives None, so the
+        sweep still runs and the next cycle seeds again. A rate limit whose
+        tries are spent raises, so the sync fails (EM-G4a item 9)."""
+        try:
+            return await self.seed_cursor()
+        except Exception as exc:
+            _raise_rate_limit(exc)
+            logger.warning("gmail.seed_failed error=%s status=%s",
+                           type(exc).__name__, getattr(
+                               getattr(exc, "response", None),
+                               "status_code", None))
+            return None
+
+    async def _fetch_into(self, ids: list[str], result: SyncResult) -> list[str]:
+        """Fetch each message of *ids* in full into *result* (items 3 and 6).
+
+        A rate limit whose tries are spent raises (EM-G4a item 9). The
+        caller decides what it does: a sweep fails, and the history read
+        keeps its finished pages (EM-G4b-f1). Each other failure leaves its
+        record in ``result.errors`` (item 10). The record of a body part that
+        ``get_message`` could not fill goes there too (EM-G2-f1,
+        D-G2-f1-5). Returns the ids whose failure a later cycle can fix
+        (``_transient``)."""
+        failed: list[str] = []
+        for mid in ids:
+            first = len(self.fetch_failures)
+            try:
+                message = await self.get_message(mid)
+            except Exception as exc:
+                _raise_rate_limit(exc)
+                self._record_fetch_failure(mid, exc)
+                result.errors.extend(self.fetch_failures[first:])
+                if _transient(exc):
+                    failed.append(mid)
+                continue
+            result.errors.extend(self.fetch_failures[first:])
+            result.messages.append(message)
+            result.messages_synced += 1
+        return failed
+
+    async def _history_page(
+        self, client: httpx.AsyncClient, params: dict[str, Any],
+    ) -> dict[str, Any]:
+        """One page of ``history.list``. A 404 raises ``_StaleCursor`` (item
+        5). A rate limit whose tries are spent raises ``GmailRateLimited``
+        through the client seam. Any other failure raises, so the sync
+        fails and the cursor stays."""
+        resp = await client.get("/users/me/history", params=params)
+        if resp.status_code == 404:
+            raise _StaleCursor
+        resp.raise_for_status()
+        return _json_or_empty(resp)
+
+    async def _apply_history_page(
+        self, records: list[dict[str, Any]], marked: set[str],
+        result: SyncResult,
+    ) -> list[str]:
+        """Put one history page into *result*: its ``[DELETED]`` markers,
+        then its fetches (EM-G4b-f1 scope items 1 and 2).
+
+        An id that one page names two times is fetched once. An id that an
+        EARLIER page fetched is fetched again when a later page names it
+        (fix round 1, the amendment of scope item 2). The read can last
+        minutes, so the later event can be newer than the earlier fetch, and
+        a skip leaves the read mark or the folder of the row stale. The later
+        fetch comes later in ``messages``, so the upsert keeps the newer
+        state. An id that an earlier page marked gets no second marker and
+        no fetch, because Gmail deleted it. Returns the ids whose fetch a
+        later cycle can fix (``_fetch_into``)."""
+        fetch: dict[str, None] = {}
+        deleted: dict[str, None] = {}
+        _collect_history(records, fetch, deleted)
+        markers = [mid for mid in deleted if mid not in marked]
+        for mid in markers:
+            result.messages.append(_deleted_marker(mid))
+        marked.update(markers)
+        result.messages_synced += len(markers)
+        ids = [mid for mid in fetch if mid not in deleted and mid not in marked]
+        return await self._fetch_into(ids, result)
+
+    async def _history_sync(
+        self, cursor: tuple[str, int], max_results: int,
+        since: datetime | None, catch_up: datetime | None,
+    ) -> SyncResult:
+        """The sync from a cursor, one page at a time (items 2 to 5,
+        EM-G4a-f2, EM-G4b-f1).
+
+        Each page fetches its messages before the loop reads the next page
+        (D-G4b-f1-1). So each finished page moves ``position`` to the ``id``
+        of its last history record. After the last page, the cursor is the
+        larger of that id and the ``historyId`` of the FIRST answer
+        (``_read_end``, D-G4b-f1-4 as amended in fix round 1).
+
+        * A fetch that a later cycle can fix holds the cursor at the end of
+          the page before its page. The read goes on (D-G4b-f1-5).
+        * A rate limit on page 1 raises, so the sync fails (D-G4b-f1-3).
+        * A rate limit on a later page, from ``history.list`` or from a
+          fetch, ends the read (D-G4b-f1-2). The result holds the finished
+          pages only. The messages that the stopped page fetched before the
+          limit drop, and the next cycle fetches them again from the page
+          position. It sets ``rate_limited`` and logs
+          ``gmail.history_partial`` with the count of finished pages.
+        * After the share of the cycle, the read ends at the finished page
+          in the same way, so the mailbox lock comes back (EM-G4b-f3). The
+          first page always runs, so a long import cannot stop new mail.
+        * A 404 on any page runs the reset sweep, and the messages of the
+          finished pages stay in its result (scope item 6)."""
+        start, held_cycles = cursor
+        client = await self._get_client()
+        params: dict[str, Any] = {"startHistoryId": start,
+                                  "maxResults": max_results,
+                                  "historyTypes": _HISTORY_TYPES}
+        result = SyncResult()
+        marked: set[str] = set()
+        failed: list[str] = []
+        position = start
+        first_answer: Any = None
+        hold_at: str | None = None
+        pages = 0
+        while True:
+            kept = (len(result.messages), result.messages_synced,
+                    len(result.errors))
+            try:
+                data = await self._history_page(client, params)
+                if not pages:
+                    first_answer = data.get("historyId")
+                records = data.get("history") or []
+                page_failed = await self._apply_history_page(
+                    records, marked, result)
+            except _StaleCursor:
+                return await self._recover_stale_cursor(
+                    max_results, since, catch_up, result)
+            except GmailRateLimited:
+                if not pages:
+                    raise
+                del result.messages[kept[0]:]
+                result.messages_synced = kept[1]
+                del result.errors[kept[2]:]
+                logger.warning("gmail.history_partial pages=%d", pages)
+                result.rate_limited = True
+                break
+            pages += 1
+            if page_failed and hold_at is None:
+                hold_at = position
+            failed.extend(page_failed)
+            position = _page_end(records, position)
+            token = data.get("nextPageToken")
+            if not token:
+                position = _read_end(position, first_answer)
+                break
+            if self._share_spent():
+                logger.warning("gmail.history_partial pages=%d", pages)
+                result.rate_limited = True
+                break
+            params["pageToken"] = token
+        result.new_history_id = _cursor_after_read(
+            position if hold_at is None else hold_at, position, held_cycles,
+            failed, result.errors)
+        return result
+
+    async def _recover_stale_cursor(
+        self, max_results: int, since: datetime | None,
+        catch_up: datetime | None, result: SyncResult | None = None,
+        *, resume: ResetPoint | None = None,
+    ) -> SyncResult:
+        """A stale cursor (items 5 and 6, E-B1). Seed FIRST, then sweep all
+        mail back to the watermark.
+
+        A sweep that reads to the end returns the seed as the new cursor. A
+        sweep that stops short returns no new cursor, so the stale one
+        stays, and sets ``catch_up_incomplete``. The scheduler then keeps the
+        watermark, and the next cycle sweeps again. ``reseed_history_id``
+        always holds the seed, and the scheduler writes it only when it
+        abandons the catch-up (``CATCH_UP_MAX_MISSES``). A failed seed makes
+        the sweep short too, because it has no cursor to return.
+        ``cursor_reset`` tells the scheduler to log the reset with the
+        mailbox id, also when the seed failed (review round 1 F6).
+
+        *result* holds the history pages that finished before the 404
+        (EM-G4b-f1 scope item 6), so their messages stay. With no *result*,
+        the sweep starts a new one.
+
+        A sweep that read its share, or that a rate limit cut after a
+        finished page, sets ``rate_limited`` and returns ``_format_reset``
+        (EM-G4b-f3). The next cycle passes it as *resume*: it reads no seed,
+        and it reads on from the oldest mail that the sweep reached. The
+        seed stays the one of the first cycle, so the history read that
+        follows gets each change made during the sweep."""
+        if resume is None:
+            seed = await self._try_seed()
+            after, until = _reset_sweep_after(catch_up, since), None
+        else:
+            seed, after, until = resume
+        result = result if result is not None else SyncResult()
+        result.reseed_history_id = seed
+        result.cursor_reset = True
+        complete = await self._sweep_after_reset(
+            max_results, after, until, seed, result)
+        if result.rate_limited:
+            return result
+        if complete and seed is not None:
+            result.new_history_id = seed
+        else:
+            result.catch_up_incomplete = True
+            result.catch_up_folders = [GMAIL_RESET_SWEEP_NAME]
+        return result
+
+    async def _sweep_after_reset(
+        self, max_results: int, after: datetime | None, until: datetime | None,
+        seed: str | None, result: SyncResult,
+    ) -> bool:
+        """Page all mail after *after* and before *until* into *result* (item
+        6, E-B1).
+
+        One list with ``q=after:<epoch seconds>``, ``includeSpamTrash`` and
+        no ``labelIds``. It reads ``DEEP_SYNC_MAX_PAGES`` pages at most.
+        Returns True when it read to the end. A page that fails, the page
+        cap, or a fetch that a later cycle can fix makes it short. A rate
+        limit on the first page raises.
+
+        After a finished page, the share of the cycle or a rate limit ends
+        the sweep through ``_cut_reset`` (EM-G4b-f3). A fetch that a later
+        cycle can fix does not lift the share. The list runs newest first, so
+        ``held_at`` keeps the bound at the mail before the failed one, and
+        the next cycle reads the failed mail again. With no seed the sweep
+        reads on, because a cursor could not hold the point that it reached."""
+        client = await self._get_client()
+        params: dict[str, Any] = {"maxResults": max_results,
+                                  "includeSpamTrash": "true"}
+        query = _import_query(after, until)
+        if query:
+            params["q"] = query
+        first = len(result.messages)
+        complete = True
+        held_at: int | None = None
+        for page in range(self.DEEP_SYNC_MAX_PAGES):
+            kept = (len(result.messages), result.messages_synced,
+                    len(result.errors))
+            try:
+                resp = await client.get("/users/me/messages", params=params)
+                resp.raise_for_status()
+                data = resp.json()
+                ids = [ref["id"] for ref in data.get("messages") or []
+                       if ref.get("id")]
+                failed = await self._fetch_into(ids, result)
+            except GmailRateLimited:
+                if not page or seed is None:
+                    raise
+                del result.messages[kept[0]:]
+                result.messages_synced = kept[1]
+                del result.errors[kept[2]:]
+                return self._cut_reset(seed, after, until,
+                                       result.messages[first:held_at], result)
+            except Exception as exc:
+                logger.warning("gmail.reset_sweep_failed error=%s status=%s",
+                               type(exc).__name__, getattr(
+                                   getattr(exc, "response", None),
+                                   "status_code", None))
+                return False
+            if failed:
+                complete = False
+                if held_at is None:
+                    held_at = _index_of_failure(result.messages, kept[0], ids,
+                                                failed[0])
+            token = data.get("nextPageToken")
+            if not token:
+                return complete
+            if self._share_spent() and seed is not None:
+                return self._cut_reset(seed, after, until,
+                                       result.messages[first:held_at], result)
+            params["pageToken"] = token
+        return False
+
+    def _cut_reset(
+        self, seed: str, after: datetime | None, until: datetime | None,
+        read: list[EmailMessage], result: SyncResult,
+    ) -> bool:
+        """Stop a reset sweep at the oldest mail of *read*, and return False
+        for a sweep that did not move.
+
+        The bound is the whole second of that mail, and the next cycle reads
+        that second again, so the upsert makes the overlap harmless. A sweep
+        that cannot move the bound counts as short, and the stored cursor
+        stays. That is a page whose mail all has one second, or a failed
+        fetch at the top of the read. The scheduler abandons the sweep after
+        ``CATCH_UP_MAX_MISSES``, so a mail that always fails cannot stop it
+        from ending."""
+        dates = [m.received_at for m in read if m.received_at is not None]
+        oldest = min(dates, default=until)
+        if oldest is None or (until is not None
+                              and int(_utc(oldest).timestamp())
+                              >= int(_utc(until).timestamp())):
+            return False
+        logger.warning("gmail.reset_partial read=%d", len(read))
+        result.new_history_id = _format_reset(seed, after, oldest)
+        result.rate_limited = True
+        return True
+
+    async def _deep_sweep(
+        self, max_results: int, since: datetime | None, first_failure: int,
+    ) -> SyncResult:
+        """The deep sync: page each label back to ``since``. It returns no
+        cursor. The import does not call it since EM-G5a (E-G5-8), and a
+        fence in ``test_gmail_import.py`` proves it. It stays for a direct
+        call of ``sync_messages(deep=True)``."""
+        # One-time deep backfill: page every label back to ``since`` (incl.
+        # SENT/DRAFT). The order of the labels does not set the folder:
+        # each message keeps the folder of its parse (WS-17 EM-G2 item 8).
+        deep_messages: list[EmailMessage] = []
+        try:
+            folders = await self.list_folders()
+        except Exception as exc:
+            _raise_rate_limit(exc)
+            folders = []
+        for f in folders:
+            if f.type != "user":
+                continue
+            canon = canonical_folder(f.name)
+            if canon in ("inbox", "sent", "drafts", "trash", "junk", "archive"):
+                continue
+            try:
+                deep_messages.extend(await self._sweep_label(
+                    f.provider_folder_id, max_results, since, canon
+                ))
+            except Exception as exc:
+                _raise_rate_limit(exc)
+                continue
+        for label in ("INBOX", "SENT", "DRAFT", "SPAM", "TRASH"):
+            try:
+                deep_messages.extend(
+                    await self._sweep_label(label, max_results, since)
+                )
+            except Exception as exc:
+                _raise_rate_limit(exc)
+                continue
+        return SyncResult(
+            messages_synced=len(deep_messages), messages=deep_messages,
+            new_history_id=None,
+            errors=self.fetch_failures[first_failure:],
+        )
+
+    async def _first_sweep(
+        self, max_results: int, first_failure: int,
+        resume: tuple[str, list[SweepLabel]] | None = None,
+    ) -> SyncResult:
+        """The sync with no cursor (item 1). Seed FIRST from
+        ``users.getProfile``, then read the newest page of each label, and
+        return the seed as the new cursor. The next history read then gets
+        each change made during the sweep. A failed seed returns no cursor,
+        and the next cycle seeds again (``_try_seed``).
+
+        A rate limit after a finished label ends the sweep with the finished
+        labels kept, and sets ``rate_limited`` (EM-G4b-f2, §12.3.12.8). The
+        cursor is then ``_format_sweep``: the seed, and the labels left from
+        the label that the limit cut. The next cycle passes it in as
+        *resume*, and reads no seed and no label list. Before that fix, the
+        sweep kept nothing, and a mailbox whose sweep took more than one
+        rate-limit window never synced. A rate limit before a finished label
+        raises, so the cycle fails and the stored cursor stays.
+
+        The sweep also ends in this way after ``IMPORT_CYCLE_MAILS`` mails
+        (EM-G4b-f3), so a paced sweep gives the mailbox lock back. With no
+        seed it reads on, because a cursor could not hold the labels left."""
+        if resume is None:
+            seed = await self._try_seed()
+            plan = await self._sweep_plan()
+        else:
+            seed, plan = resume
+        # The order does not set the folder: ``list_messages`` keeps the
+        # folder of the parse, from the system labels only (WS-17 EM-G2
+        # item 8, D-EM-33). A message that two labels carry comes twice,
+        # and both copies have one folder.
+        messages: list[EmailMessage] = []
+        for done, (label, canon) in enumerate(plan):
+            try:
+                found, _ = await self.list_messages(
+                    folder=label, max_results=max_results,
+                    canonical_override=canon,
+                )
+            except GmailRateLimited:
+                if not done:
+                    raise
+                return self._cut_sweep(messages, seed, plan, done, first_failure)
+            except Exception:
+                continue
+            messages.extend(found)
+            finished = done + 1
+            if seed and finished < len(plan) and self._share_spent():
+                return self._cut_sweep(
+                    messages, seed, plan, finished, first_failure)
+
+        return SyncResult(
+            messages_synced=len(messages),
+            messages=messages,
+            new_history_id=seed,
+            errors=self.fetch_failures[first_failure:],
+        )
+
+    def _cut_sweep(
+        self, messages: list[EmailMessage], seed: str | None,
+        plan: list[SweepLabel], finished: int, first_failure: int,
+    ) -> SyncResult:
+        """The result of a first sweep that stops after *finished* labels."""
+        left = plan[finished:]
+        logger.warning("gmail.sweep_partial labels=%d left=%d",
+                       finished, len(left))
+        return SyncResult(
+            messages_synced=len(messages),
+            messages=messages,
+            new_history_id=_format_sweep(seed, left) if seed else None,
+            errors=self.fetch_failures[first_failure:],
+            rate_limited=True,
+        )
+
+    async def _sweep_plan(self) -> list[SweepLabel]:
+        """The labels of the first sweep, in order: INBOX, SENT and DRAFT,
+        then each user label, then SPAM and TRASH (EM-G4b-f2).
+
+        A user label is there so archived mail with a user label syncs. Such
+        a message files as ``archive``, and its labels go to ``categories``
+        (O-GM-1). No label of this sweep reaches archived mail with no user
+        label (GM-8). The import reads that mail since EM-G5a, and the
+        history cursor reads each later change. Known limit EM-G5-f1 records
+        it (``email_app_master_plan.md`` §12.3.6.1, E-G5-7). A rate limit on
+        the label list raises, and each other failure leaves the user
+        labels out."""
+        try:
+            folders = await self.list_folders()
+        except Exception as exc:
+            _raise_rate_limit(exc)
+            folders = []
+        users: list[SweepLabel] = []
+        for f in folders:
+            if f.type != "user":
+                continue
+            canon = canonical_folder(f.name)
+            # Skip anything that collapses onto a system folder key.
+            if canon in ("inbox", "sent", "drafts", "trash", "junk", "archive"):
+                continue
+            users.append((f.provider_folder_id, canon))
+        return ([(label, None) for label in _SWEEP_FIRST] + users
+                + [(label, None) for label in _SWEEP_LAST])
+
+    async def import_batches(
+        self,
+        since: datetime | None,
+        until: datetime | None = None,
+        size: int = 100,
+        *,
+        on_estimate: EstimateCallback | None = None,
+    ) -> AsyncIterator[list[EmailMessage]]:
+        """The import of all mail, newest first (WS-17 EM-G5a, spec §12.3.6.1).
+
+        One ``messages.list`` pages all mail, with ``q=after:<since>
+        before:<bound>`` in epoch seconds, ``includeSpamTrash=true`` and no
+        ``labelIds`` (item 1). So archived mail with no label comes too
+        (GM-8), and a message with two labels comes once. Gmail lists the
+        newest mail first, so each page is one batch, sorted again newest
+        first (item 2). A message newer than ``until`` or older than
+        ``since`` drops (``_in_import_window``).
+
+        * A resume passes ``until``, and the bound is its whole second plus
+          1 second (item 3, E-G5-3).
+        * Each page fetches its ids in parallel, ``GMAIL_IMPORT_FETCHES`` at
+          once, through the client seam, and each id once (item 4). The page
+          gathers each fetch before it yields, so the storage limit closes
+          the import with no fetch in flight (E-G5-5, ``_fetch_page``).
+        * A fetch that a later cycle can fix fails the import, so the resume
+          reads it again. A fetch that stays failed leaves its record, and
+          the batch goes on (E-G5-4, ``_import_fetch``).
+        * ``on_estimate`` is awaited once, with the ``resultSizeEstimate`` of
+          the first answer, before the first fetch (item 5, D-EM-16).
+        * ``IMPORT_MAX_PAGES`` pages at most. At the cap the import ends,
+          logs ``gmail.import_capped`` (E-G5-6) and sets ``import_capped``,
+          so the scheduler runs no reconcile (EM-G5b item 12).
+
+        It never calls ``sync_messages(deep=True)`` (E-G5-8). A failed list
+        page and a rate limit whose tries are spent raise, and the next
+        cycle resumes from the point that the import reached."""
+        self.import_capped = False
+        size = max(size, 1)
+        client = await self._get_client()
+        await self._ensure_label_names()
+        params: dict[str, Any] = {"maxResults": min(size, _GMAIL_LIST_MAX),
+                                  "includeSpamTrash": "true"}
+        query = _import_query(since, until)
+        if query:
+            params["q"] = query
+        seen: set[str] = set()
+        for page in range(1, self.IMPORT_MAX_PAGES + 1):
+            resp = await client.get("/users/me/messages", params=params)
             resp.raise_for_status()
             data = resp.json()
+            if page == 1 and on_estimate is not None:
+                await on_estimate(_estimate_of(data))
+            fetched = await self._fetch_page(_fresh_ids(data, seen))
+            batch = [m for m in fetched if _in_import_window(m, since, until)]
+            if batch:
+                batch.sort(key=received_key, reverse=True)
+                yield batch
+            token = data.get("nextPageToken")
+            if not token:
+                return
+            params["pageToken"] = token
+        self.import_capped = True
+        logger.warning("gmail.import_capped pages=%d messages=%d",
+                       self.IMPORT_MAX_PAGES, len(seen))
 
-            result = SyncResult(new_history_id=data.get("historyId"))
-            message_ids_to_fetch: set[str] = set()
-            message_ids_deleted: set[str] = set()
+    async def _fetch_page(self, ids: list[str]) -> list[EmailMessage]:
+        """Fetch each message of *ids* in full, ``GMAIL_IMPORT_FETCHES`` at
+        once (item 4, E-G5-5).
 
-            for history in data.get("history", []):
-                for msg_added in history.get("messagesAdded", []):
-                    mid = msg_added.get("message", {}).get("id")
-                    if mid:
-                        message_ids_to_fetch.add(mid)
-                for msg_deleted in history.get("messagesDeleted", []):
-                    mid = msg_deleted.get("message", {}).get("id")
-                    if mid:
-                        message_ids_deleted.add(mid)
+        The call gathers every fetch before it returns, so the import never
+        yields with a fetch in flight. When one fetch raises, the call
+        cancels the other fetches of the page, waits for them to end, and
+        raises. A fetch that stays failed gives None, and drops here."""
+        gate = asyncio.Semaphore(GMAIL_IMPORT_FETCHES)
+        tasks = [asyncio.create_task(self._import_fetch(mid, gate)) for mid in ids]
+        try:
+            found = await asyncio.gather(*tasks)
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        return [m for m in found if m is not None]
 
-            # Mark deleted messages as such
-            for mid in message_ids_deleted:
-                result.messages.append(EmailMessage(
-                    provider_message_id=mid,
-                    folder="TRASH",
-                    labels=["TRASH"],
-                    subject="[DELETED]",
-                ))
+    async def _import_fetch(
+        self, message_id: str, gate: asyncio.Semaphore,
+    ) -> EmailMessage | None:
+        """One fetch of the import, through the client seam (E-G5-4).
 
-            # Fetch full message for each added/updated message
-            for mid in message_ids_to_fetch:
-                try:
-                    msg = await self.get_message(mid)
-                    result.messages.append(msg)
-                    result.messages_synced += 1
-                except Exception as e:
-                    result.errors.append(f"Failed to fetch message {mid}: {e}")
-
-            result.messages_synced += len(message_ids_deleted)
-            return result
-        else:
-            # Initial full sync. User labels are fetched FIRST and the system
-            # labels LAST: the persistence layer upserts in list order, so when a
-            # message carries both INBOX and a user label the system folder wins
-            # and the message still shows in the inbox (Gmail labels are
-            # many-to-many, our ``folder`` column is single-valued).
-            messages: list[EmailMessage] = []
-
-            # User labels — so the user's own folders aren't empty in the UI.
+        A rate limit whose tries are spent raises (EM-G4a item 9). Each other
+        failure leaves its record (EM-G4a item 10). A failure that a later
+        cycle can fix, a 5xx or a transport error, then raises too, so the
+        import fails and the resume reads the message again. A failure that
+        stays, such as a 404 or a parse error, gives None."""
+        async with gate:
             try:
-                folders = await self.list_folders()
-            except Exception:
-                folders = []
-            for f in folders:
-                if f.type != "user":
-                    continue
-                canon = canonical_folder(f.name)
-                # Skip anything that collapses onto a system folder key.
-                if canon in ("inbox", "sent", "drafts", "trash", "junk", "archive"):
-                    continue
-                try:
-                    user_msgs, _ = await self.list_messages(
-                        folder=f.provider_folder_id,
-                        max_results=max_results,
-                        canonical_override=canon,
-                    )
-                    messages.extend(user_msgs)
-                except Exception:
-                    continue
+                return await self.get_message(message_id)
+            except Exception as exc:
+                _raise_rate_limit(exc)
+                self._record_fetch_failure(message_id, exc)
+                if _transient(exc):
+                    raise
+                return None
 
-            # System labels last (so they win the upsert on shared messages).
-            for label in ("INBOX", "SENT", "DRAFT", "SPAM", "TRASH"):
-                try:
-                    label_msgs, _ = await self.list_messages(
-                        folder=label, max_results=max_results
-                    )
-                    messages.extend(label_msgs)
-                except Exception:
-                    continue
+    async def message_gone(self, provider_message_id: str) -> bool:
+        """True when Gmail deleted the message *provider_message_id* (WS-17
+        EM-G5b items 6 and 10, C1 and C2).
 
-            return SyncResult(
-                messages_synced=len(messages),
-                messages=messages,
-                new_history_id=None,  # will be set after first history call
-            )
+        The reconcile of a member-act import asks this before it trashes a
+        row (``scheduler._confirm_gone``). Gmail never changes the id of a
+        message, so the provider id is the key. ``message_exists`` of Outlook
+        asks by the Message-ID, and Gmail has no such method on purpose: one
+        Message-ID can be on two Gmail messages.
+
+        * A 404 whose body gives the reason ``notFound`` gives True.
+        * A 200 gives False, also for a message in ``TRASH`` or ``SPAM``,
+          because the import read both.
+        * Each other answer raises, and that includes a 404 with no
+          ``notFound`` reason. The caller then keeps the row. A rate limit
+          whose tries are spent raises ``GmailRateLimited``, and the caller
+          stops the confirm (item 11).
+        * An id that is not a plain Gmail id raises ``ValueError``, and no
+          request goes out.
+
+        The read goes through ``_get_client``, so the rules of EM-G4a apply.
+        It sends ``format=minimal`` only, so no body of the mail comes back."""
+        if not _GMAIL_MESSAGE_ID.fullmatch(provider_message_id or ""):
+            raise ValueError("the confirm takes a Gmail message id only")
+        client = await self._get_client()
+        resp = await client.get(f"/users/me/messages/{provider_message_id}",
+                                params={"format": "minimal"})
+        if resp.status_code == 404 and _says_not_found(resp):
+            return True
+        # Each answer that is not a 2xx raises here, a bare 404 too.
+        resp.raise_for_status()
+        return False
 
     async def get_attachment(
         self, provider_message_id: str, provider_attachment_id: str
@@ -1028,31 +3255,99 @@ class GmailProvider(BaseEmailProvider):
         data = resp.json()
         return base64.urlsafe_b64decode(data["data"])
 
+    async def get_inline_images(
+        self, provider_message_id: str, *, max_count: int, max_bytes: int,
+        max_total: int,
+    ) -> InlineRead:
+        """The inline pictures of one message (WS-17, the inline images fix).
+
+        One read of the whole MIME tree (``format=full``). Then each part
+        that is an inline picture: ``_gmail_part_is_inline`` and an
+        ``image/*`` type (review P2-3). So a PDF with a ``Content-ID`` is
+        never downloaded. A small part carries its bytes in the tree, and a
+        larger one is read by its ``attachmentId``. The parts marked
+        ``inline`` come first. The choice stops at *max_count* parts, and it
+        skips a part that would take the sizes over *max_total*. A skip makes
+        the read incomplete (review P3-a).
+
+        The walk never opens an attached mail, because its parts belong to
+        that mail. A failed read of one part skips that part and makes the
+        read incomplete (review P2-4). A rate limit raises.
+        """
+        client = await self._get_client()
+        resp = await client.get(
+            f"/users/me/messages/{provider_message_id}", params={"format": "full"},
+        )
+        resp.raise_for_status()
+        payload = resp.json().get("payload", {}) or {}
+        # The parts with an ``inline`` disposition first, then the parts
+        # with a Content-ID and no disposition. A part over the budget is
+        # skipped, and a smaller one after it can still fit. Each candidate
+        # is a picture that the body can name, so a skip makes the read
+        # incomplete (review P3-a).
+        candidates = [
+            p for p in _iter_gmail_parts(payload, descend=_gmail_opens_part)
+            if not p.get("parts") and _gmail_part_is_inline_image(p)
+        ]
+        candidates.sort(key=lambda p: not _gmail_part_header(
+            p, "Content-Disposition").strip().lower().startswith("inline"))
+        out: list[InlineImage] = []
+        chosen = 0
+        complete = True
+        for part in candidates:
+            if len(out) >= max_count:
+                complete = False
+                break
+            cid = normalize_content_id(_gmail_part_header(part, "Content-ID"))
+            body = part.get("body", {}) or {}
+            size = int(body.get("size", 0) or 0)
+            if not cid or size > max_bytes:
+                continue
+            if chosen + size > max_total:
+                complete = False
+                continue
+            chosen += size
+            try:
+                if body.get("data"):
+                    raw = str(body["data"])
+                    content = base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4))
+                elif body.get("attachmentId"):
+                    content = await self.get_attachment(
+                        provider_message_id, str(body["attachmentId"]))
+                else:
+                    continue
+            except ProviderRateLimited:
+                raise
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 429:
+                    raise
+                complete = False
+                continue
+            except Exception:  # one part fails, and the rest still show
+                complete = False
+                continue
+            if content and len(content) <= max_bytes:
+                out.append(InlineImage(
+                    content_id=cid, content=content,
+                    mime_type=str(part.get("mimeType") or ""),
+                ))
+        return InlineRead(images=out, complete=complete)
+
     # ── Helpers ──────────────────────────────────────────────────────────
 
     def _parse_gmail_message(self, raw: dict[str, Any]) -> EmailMessage:
-        """Parse a Gmail API message into our normalized EmailMessage."""
-        headers = self._parse_headers(raw.get("payload", {}).get("headers", []))
+        """Parse a Gmail API message into our normalized EmailMessage.
 
-        # Extract body
-        body_text = ""
-        body_html = None
-        payload = raw.get("payload", {})
-        if "parts" in payload:
-            for part in payload["parts"]:
-                mime = part.get("mimeType", "")
-                data = part.get("body", {}).get("data", "")
-                if data:
-                    decoded = base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
-                    if mime == "text/plain":
-                        body_text = decoded
-                    elif mime == "text/html":
-                        body_html = decoded
-        else:
-            data = payload.get("body", {}).get("data", "")
-            if data:
-                decoded = base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
-                body_text = decoded
+        WS-17 EM-G2 (``email_app_master_plan.md`` §12.3.2). The body walk
+        reads the MIME tree at any depth. Each header name reads in any case.
+        The Message-ID keeps the form of Graph. The address headers split on
+        the raw text. The folder comes from the system labels only.
+        """
+        payload = raw.get("payload", {}) or {}
+        headers = self._parse_headers(payload.get("headers", []))
+
+        # Extract body — the whole tree, each part in its own charset.
+        body_text, body_html = _gmail_bodies(payload)
 
         # Snippet
         snippet = raw.get("snippet", "")
@@ -1081,22 +3376,20 @@ class GmailProvider(BaseEmailProvider):
         ]
 
         unsubscribe_link = _parse_list_unsubscribe(
-            headers.get("List-Unsubscribe", "")
+            headers.get("list-unsubscribe", "")
         ) or find_unsubscribe_link_in_html(body_html)
 
         return EmailMessage(
             provider_message_id=raw["id"],
             thread_id=raw.get("threadId"),
             folder=_gmail_folder_from_labels(label_ids),
+            internet_message_id=_gmail_message_id(headers),
             labels=label_ids,
-            from_address=EmailAddress(
-                name=headers.get("From", "").split("<")[0].strip(),
-                email=self._extract_email(headers.get("From", "")),
-            ),
-            to_addresses=self._parse_address_list(headers.get("To", "")),
-            cc_addresses=self._parse_address_list(headers.get("Cc", "")),
-            bcc_addresses=self._parse_address_list(headers.get("Bcc", "")),
-            subject=headers.get("Subject", "(no subject)"),
+            from_address=self._parse_from(headers.get("from", "")),
+            to_addresses=self._parse_address_list(headers.get("to", "")),
+            cc_addresses=self._parse_address_list(headers.get("cc", "")),
+            bcc_addresses=self._parse_address_list(headers.get("bcc", "")),
+            subject=headers.get("subject", "(no subject)"),
             body_text=body_text,
             body_html=body_html,
             snippet=snippet[:200] if snippet else body_text[:200],
@@ -1128,12 +3421,17 @@ class GmailProvider(BaseEmailProvider):
 
     @staticmethod
     def _parse_headers(headers: list[dict]) -> dict[str, str]:
+        """The headers of a message, keyed by the LOWER-CASE name.
+
+        A header name has no case (RFC 5322). Senders write ``Message-ID``,
+        ``Message-Id`` and ``message-id``, so each read uses the lower-case
+        name (WS-17 EM-G2 item 4, GM-1). The first value of a name wins.
+        """
         result: dict[str, str] = {}
-        for h in headers:
-            name = h.get("name", "")
-            value = h.get("value", "")
-            if name not in result:
-                result[name] = value
+        for h in headers or []:
+            name = str(h.get("name", "")).lower()
+            if name and name not in result:
+                result[name] = str(h.get("value", ""))
         return result
 
     @staticmethod
@@ -1145,19 +3443,45 @@ class GmailProvider(BaseEmailProvider):
 
     @staticmethod
     def _parse_address_list(header: str) -> list[EmailAddress]:
-        """Parse a comma-separated list of addresses."""
+        """Each address of one address header (WS-17 EM-G2 item 6, GM-4).
+
+        ``_split_addresses`` splits the RAW header, so a quoted comma, as in
+        ``"Doe, John" <j@x.com>``, stays inside its name. The encoded words of
+        each name decode AFTER the split, because a decoded name can hold a
+        comma with no quotes.
+
+        An entry with no ``@`` is left out. A comma outside quotes, as in
+        ``Doe, John <j@x.com>``, splits off the fragment ``Doe``, and a
+        fragment must never become a recipient (review round 1, P2).
+        """
         if not header:
             return []
         addresses: list[EmailAddress] = []
-        for part in header.split(","):
-            part = part.strip()
-            if not part:
-                continue
-            if "<" in part:
-                name = part.split("<")[0].strip()
-                email = part.split("<")[1].split(">")[0].strip()
-            else:
-                name = ""
-                email = part
-            addresses.append(EmailAddress(name=name, email=email))
+        for name, email in _split_addresses(header):
+            email = email.strip()
+            if "@" in email:
+                addresses.append(EmailAddress(
+                    name=_decode_display_name(name.strip()), email=email))
         return addresses
+
+    @classmethod
+    def _parse_from(cls, header: str) -> EmailAddress:
+        """The sender: the first address of ``From``.
+
+        A comma outside quotes, as in ``Doe, John <j@x.com>``, makes the
+        first entry the fragment ``Doe``, with no ``@`` (review round 1, P2).
+        Then the old reading holds: the address is the text inside the angle
+        brackets, and the name is the text before them. A header with no
+        angle brackets keeps its text as the address, so the sender never
+        goes blank.
+        """
+        pairs = _split_addresses(header) if header else []
+        name, email = pairs[0] if pairs else ("", "")
+        if "@" in email:
+            return EmailAddress(
+                name=_decode_display_name(name.strip()), email=email.strip())
+        if "<" in header and ">" in header:
+            before = header.split("<", 1)[0].strip().strip('"').strip()
+            return EmailAddress(name=_decode_display_name(before),
+                                email=cls._extract_email(header))
+        return EmailAddress(name="", email=header.strip())

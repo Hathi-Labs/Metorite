@@ -112,6 +112,17 @@ class RoomAccess:
         """
         return self.role is not None
 
+    @property
+    def refusal_status(self) -> int:
+        """The HTTP status of a refusal: 503 when the lookup failed, else 403.
+
+        An outage and a refusal must never share an answer. A client that
+        restored a chat id from storage drops that id on a refusal
+        (``lib/railSessions.ts``), and a pool blip (EMAXCONNSESSION) answered
+        as a refusal made it drop the member's own chat.
+        """
+        return 503 if self.resolve_failed else 403
+
     def denied(self, action: str) -> str:
         """A refusal that names the room rule, not just 'forbidden'."""
         if self.resolve_failed:
@@ -125,6 +136,33 @@ class RoomAccess:
             f"You are a {self.role or 'viewer'} in this room, which cannot "
             f"{action}. Ask an owner to change your role."
         )
+
+
+def room_is_solo(room: RoomAccess | None) -> bool:
+    """True when only the member can read what a run in this room writes.
+
+    ``personalization.md`` §5.1 and §7 (D-PZ-3): the member's own profile
+    block goes only into a solo room. ``is_shared`` counts participants, and
+    that is not enough. A room of one with visibility ``org`` or ``people``
+    is readable by other members (:func:`_capabilities`), so it is not solo.
+    An empty visibility counts as ``private``. ``None`` is no room at all
+    (no thread, no email), which is the member's own ephemeral chat.
+
+    The one member must also BE the member who chats. ``members`` does not
+    expand a ``group:`` or ``org`` subject (:func:`_expand_members`), so a
+    room whose only participant row is ``group:eng`` counts as one member,
+    and every member of eng reads it (PZ-2 repair round 2, P1). So the rule
+    is: visibility ``private``, and ``members`` is exactly the actor
+    (``room.email``), case-blind. An empty list is never solo. Fences:
+    ``tests/unit/test_executor_profile_block.py`` and
+    ``tests/unit/test_profile_block_room_route.py``.
+    """
+    if room is None:
+        return True
+    if (room.visibility or "private") != "private":
+        return False
+    me = (room.email or "").strip().lower()
+    return bool(me) and [str(m).strip().lower() for m in room.members] == [me]
 
 
 def _capabilities(role: str | None, *, visibility: str) -> tuple[bool, bool, bool, bool, bool]:
@@ -522,6 +560,60 @@ SESSION_VISIBLE_SQL = """
             AND EXISTS (
                 SELECT 1 FROM app_user u
                 WHERE u.email = :uid AND COALESCE(u.status, 'active') = 'active'
+            )
+        )
+    )
+"""
+
+
+#: The chat ``s`` is solo for its own member, ``s.user_id``: the rule of
+#: :func:`room_is_solo`, as SQL (``personalization.md`` §15.3, PZ-33a).
+#:
+#: The job of PZ-33b selects its chats with it, and then checks
+#: ``room_is_solo(resolve_room_access(id, user_id, ...))`` before it writes.
+#: So the two forms must agree on each row. The rule, part by part:
+#:
+#: * a NULL or empty visibility reads as ``private``, and only ``private``
+#:   is solo. The compare is exact, as in :func:`room_is_solo`;
+#: * the member, ``s.user_id`` with no outer space, is not empty;
+#: * with no participant row, the chat is solo when ``s.user_id`` holds an
+#:   ``@``, because :func:`_expand_members` then names only ``user_id``;
+#: * with participant rows, the chat is solo when they hold ONE subject, and
+#:   that subject is ``s.user_id``, with no outer space and case-blind. A
+#:   ``group:`` or ``org`` row, or a row of another member, is another party.
+#:
+#: It binds no parameter. A caller adds it to a statement whose
+#: ``chat_session`` alias is ``s``, as :data:`SESSION_VISIBLE_SQL` is added.
+#: It uses no ``%`` and no backslash, so it is safe in each driver. Fence:
+#: ``tests/unit/test_chat_summary_r8.py`` (parity with
+#: :func:`room_is_solo`, R8).
+SOLO_ROOM_SQL = """
+    (
+        COALESCE(NULLIF(s.visibility, ''), 'private') = 'private'
+        AND regexp_replace(COALESCE(s.user_id, ''),
+                           '^[[:space:]]+|[[:space:]]+$', '', 'g') <> ''
+        AND (
+            (
+                strpos(s.user_id, '@') > 0
+                AND NOT EXISTS (
+                    SELECT 1 FROM chat_session_participant sp0
+                    WHERE sp0.session_id = s.id
+                )
+            )
+            OR (
+                (
+                    SELECT count(DISTINCT sp1.subject)
+                    FROM chat_session_participant sp1
+                    WHERE sp1.session_id = s.id
+                ) = 1
+                AND NOT EXISTS (
+                    SELECT 1 FROM chat_session_participant sp2
+                    WHERE sp2.session_id = s.id
+                      AND lower(regexp_replace(sp2.subject,
+                                '^[[:space:]]+|[[:space:]]+$', '', 'g'))
+                          <> lower(regexp_replace(s.user_id,
+                                   '^[[:space:]]+|[[:space:]]+$', '', 'g'))
+                )
             )
         )
     )

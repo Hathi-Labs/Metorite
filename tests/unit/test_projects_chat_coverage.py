@@ -131,6 +131,17 @@ def test_a_tool_has_one_class() -> None:
     assert not mixed, f"a tool with two classes has two ceremonies: {mixed}"
 
 
+#: Class A tools that write a file of the chat, never a Projects row. The
+#: class names the routes a tool reaches, and these reach only reads. The
+#: annotation names the side effect, so an edited turn does not run one again
+#: unseen (``chat_supersede.is_side_effect_tool``). ``status_report`` makes
+#: the report card and its PDF with make_report=true (``projects_ai_chat.md``
+#: §14.10, review of #1064).
+#: ``render_report`` joined on the same terms (§14.10.9, slice B3).
+#: ``export_tasks`` joined in WS-64 OP-6c: it saves one CSV into the chat.
+CHAT_FILE_WRITERS = frozenset({"status_report", "render_report", "export_tasks"})
+
+
 def test_built_read_tools_are_annotated_read_only() -> None:
     from acb_skills.tool_annotations import TOOL_ANNOTATIONS
 
@@ -139,7 +150,10 @@ def test_built_read_tools_are_annotated_read_only() -> None:
         assert cls is not None, f"{name} has no class in the manifest"
         hints = TOOL_ANNOTATIONS.get(name)
         assert hints is not None, f"{name} carries no risk annotation"
-        if cls == "A":
+        if cls == "A" and name in CHAT_FILE_WRITERS:
+            assert hints["read_only"] is False and hints["idempotent"] is False, name
+            assert hints["destructive"] is False and hints["open_world"] is False, name
+        elif cls == "A":
             assert hints["read_only"] is True, f"{name} is class A and not read_only"
             assert hints["destructive"] is False
         elif cls == "C":
@@ -154,12 +168,15 @@ def test_every_excluded_route_carries_a_reason() -> None:
             assert row.reason.strip(), f"{row.method} {row.path} is excluded with no reason"
 
 
-def test_the_two_hard_deletes_are_excluded_by_d_pm_35() -> None:
-    """D-PM-35. The day WS-40 lands, this test is what somebody edits."""
-    for path in ("/projects/nodes/{project_id}", "/projects/tasks/{task_id}"):
+def test_the_two_hard_deletes_are_guarded_tools() -> None:
+    """Owner, 2026-10-22, over D-PM-35: the chat deletes, one card per act."""
+    for path, tool in (
+        ("/projects/nodes/{project_id}", "delete_project"),
+        ("/projects/tasks/{task_id}", "delete_task"),
+    ):
         row = next(r for r in m.MANIFEST if r.method == "DELETE" and r.path == path)
-        assert row.cls == "X"
-        assert "D-PM-35" in row.reason
+        assert row.cls == "C"
+        assert row.tool == tool
 
 
 # ── The client against the manifest ─────────────────────────────────────────
@@ -168,10 +185,10 @@ def test_the_two_hard_deletes_are_excluded_by_d_pm_35() -> None:
 @pytest.mark.parametrize(
     ("method", "path"),
     [
-        ("DELETE", "/projects/nodes/0f8fad5b-d9cb-469f-a165-70867728950e"),
-        ("DELETE", "/projects/tasks/0f8fad5b-d9cb-469f-a165-70867728950e"),
-        ("POST", "/projects/nodes/0f8fad5b-d9cb-469f-a165-70867728950e/grants"),
-        ("PATCH", "/projects/reports/0f8fad5b-d9cb-469f-a165-70867728950e/schedule"),
+        # The grant POST left class X in WS-64 OP-6b. The planner stays X.
+        ("POST", "/projects/my/calendar/plan"),
+        # The schedule PATCH left class X in WS-64 OP-6d. The import apply stays X.
+        ("POST", "/projects/import/runs/0f8fad5b-d9cb-469f-a165-70867728950e/apply"),
     ],
 )
 async def test_an_excluded_route_never_builds_a_request(

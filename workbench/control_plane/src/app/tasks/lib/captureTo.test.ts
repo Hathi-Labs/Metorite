@@ -364,7 +364,7 @@ describe("captureTo", () => {
     await vi.runAllTimersAsync();
     const s = useTaskStore.getState();
     expect(s.items.find((i) => i.id === "new-3")?.projectId).toBe("root-1");
-    expect(s.syncFailure?.message).toMatch(/Couldn't move it to Printer v3: You cannot see that project\. It stays in your Inbox\./);
+    expect(s.syncFailure?.message).toMatch(/Couldn't move it to Printer v3: You cannot see that project\. It stays in My task inbox\./);
   });
 
   it("an Area is a move inside my tree, sent at once", async () => {
@@ -519,9 +519,11 @@ describe("one promote path (S6g)", () => {
     expect(src).toMatch(/const IDLE_DEFS: FieldDef\[\] = \[\];/);
   });
 
-  it("Clarify's company list is the dialog's tree, folders disabled", () => {
+  it("Clarify's company list is the dialog's tree, drawn by the one picker", () => {
     expect(clarify).toMatch(/useCompanyTree\(backend === "live"\)/);
-    expect(clarify).toMatch(/tree=\{tree\}/);
+    // The roots go to `WherePicker`, which draws `ProjectPicker`, the Move
+    // dialog's own list (owner, 2026-10-10).
+    expect(clarify).toMatch(/roots=\{roots\}/);
     expect(dialog).toMatch(/useCompanyTree\(backend === "live", true\)/);
   });
 });

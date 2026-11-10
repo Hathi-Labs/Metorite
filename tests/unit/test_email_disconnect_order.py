@@ -63,6 +63,7 @@ from acb_auth.roles import UserContext, UserRole
 from acb_common.db import bind_tenant, release_tenant
 from email_ingestion.providers.outlook import GRAPH_API_BASE, OutlookProvider
 from fastapi import HTTPException
+from gateway.routes.email import teardown
 from gateway.routes.email.transport import accounts
 from sqlalchemy import exc as sa_exc
 from sqlalchemy import text
@@ -112,10 +113,17 @@ class _Ledger:
 
 
 class _Result:
-    def __init__(self, row: Any) -> None:
+    def __init__(self, row: Any, rows: list[Any] | None = None) -> None:
         self._row = row
+        self._rows = rows or []
 
     def fetchone(self) -> Any:
+        return self._row
+
+    def fetchall(self) -> list[Any]:
+        return self._rows
+
+    def scalar(self) -> Any:
         return self._row
 
 
@@ -138,10 +146,14 @@ class _FakeDB:
 
     def __init__(self, ledger: _Ledger, rows: dict[str, dict[str, Any]],
                  delete_fails: BaseException | None,
-                 delete_gate: asyncio.Event | None = None) -> None:
+                 delete_gate: asyncio.Event | None = None,
+                 shared: Any = False) -> None:
         self.ledger = ledger
         self.rows = rows
         self.delete_fails = delete_fails
+        # EM-G11f1: the answer of migration 263's shared-grant function, or
+        # "raise" for a check that fails.
+        self.shared = shared
         # When set, the DELETE waits on this event, so a test can cancel the
         # route while the DELETE runs.
         self.delete_gate = delete_gate
@@ -149,11 +161,22 @@ class _FakeDB:
     async def execute(self, stmt: Any, params: dict[str, Any] | None = None):
         sql = " ".join(str(stmt).split())
         p = params or {}
-        if sql.startswith("SELECT organization_id FROM email_accounts"):
+        if sql.startswith("SELECT organization_id, provider, credentials_encrypted"):
+            # EM-G11f1b: the ownership read is ``teardown.MAILBOX_PLAN_SQL``.
             self.ledger.events.append(("read", self.ledger.open))
             row = self.rows.get(p["id"])
             owned = row is not None and row["user_id"] == p["uid"]
-            return _Result(SimpleNamespace(organization_id=row["org"]) if owned else None)
+            return _Result(SimpleNamespace(
+                organization_id=row["org"], provider=row["provider"],
+                credentials_encrypted=row["creds"], user_id=row["user_id"],
+                email_address=row.get("email", "box@em-t4f.test"),
+                webhook_subscription_id=row["sub"]) if owned else None)
+        if sql.startswith("SELECT n.auto_archive_filter_id"):
+            # EM-G11f1: the Gmail filter ids, in the block of the ownership read.
+            self.ledger.events.append(("filter_read", self.ledger.open))
+            row = self.rows.get(p["id"])
+            ids = row.get("filters", []) if row and row["user_id"] == p["uid"] else []
+            return _Result(None, [SimpleNamespace(fid=f) for f in ids])
         if sql.startswith("SET LOCAL lock_timeout"):
             self.ledger.events.append(("lock_timeout", self.ledger.open, sql))
             return _Result(None)
@@ -172,9 +195,24 @@ class _FakeDB:
                 provider=row["provider"],
                 credentials_encrypted=row["creds"],
                 webhook_subscription_id=row["sub"],
+                email_address=row.get("email", "box@em-t4f.test"),
             ))
+        if sql.startswith("SELECT public.email_gmail_grant_shared"):
+            self.ledger.events.append(("grant_check", self.ledger.open, p))
+            if self.shared == "raise":
+                raise RuntimeError("function email_gmail_grant_shared does not exist")
+            return _Result(self.shared)
         if sql.startswith("UPDATE email_accounts SET is_default = true"):
             self.ledger.events.append(("reelect", self.ledger.open))
+            return _Result(None)
+        if sql.startswith("INSERT INTO email_mailbox_purges"):
+            # EM-G11f2: the purge row, in the block of the DELETE.
+            self.ledger.events.append(
+                ("purge_row", self.ledger.open, p["owner"], p["aid"]))
+            return _Result(None)
+        if sql.startswith("UPDATE email_mailbox_purges"):
+            # EM-G11f2: the purge task closes its row.
+            self.ledger.events.append(("purge_done", self.ledger.open, p["aid"]))
             return _Result(None)
         raise AssertionError(f"unexpected SQL: {sql[:80]}")
 
@@ -223,9 +261,39 @@ class _RecordingLog:
 
 
 def _row(*, user_id: str = OWNER, provider: str = "microsoft",
-         sub: str | None = "sub-em-t4f-1", is_default: bool = True) -> dict[str, Any]:
+         sub: str | None = "sub-em-t4f-1", is_default: bool = True,
+         filters: tuple[str, ...] = ()) -> dict[str, Any]:
     return {"user_id": user_id, "provider": provider, "sub": sub,
-            "is_default": is_default, "creds": "blob-em-t4f", "org": ROW_ORG}
+            "is_default": is_default, "creds": "blob-em-t4f", "org": ROW_ORG,
+            "filters": list(filters)}
+
+
+class _NoKeys:
+    """A tenant Redis double with no key. EM-G11f1 deletes the mailbox keys
+    after the Graph call, and a hermetic test reaches no real Redis."""
+
+    def __init__(self) -> None:
+        self.deleted: list[Any] = []
+
+    async def scan_iter(self, pattern: Any, *, count: int = 200):
+        for _ in ():
+            yield _
+
+    async def delete(self, *keys: Any) -> int:
+        self.deleted.extend(keys)
+        return len(keys)
+
+
+def _stub_teardown_network(monkeypatch, record) -> None:
+    """EM-G11f1: no hermetic test reaches Google or Redis. ``record`` gets
+    the token of each revoke POST."""
+
+    async def _post(token: str) -> int:
+        record(token)
+        return 200
+
+    monkeypatch.setattr(teardown, "_post_revoke", _post)
+    monkeypatch.setattr(teardown, "_redis", _NoKeys)
 
 
 @pytest.fixture()
@@ -239,13 +307,17 @@ def wired(monkeypatch):
     def _setup(rows: dict[str, dict[str, Any]], *, graph: Any = "ok",
                stop_raises: bool = False, decrypt_raises: bool = False,
                delete_fails: BaseException | None = None,
-               loops: tuple[str, ...] = ("acc-1",),
+               loops: tuple[str, ...] = ("a0000000-0000-4000-8000-000000000001",),
                fake_scheduler: bool = True,
-               delete_gate: asyncio.Event | None = None):
+               delete_gate: asyncio.Event | None = None,
+               shared: Any = False):
         ledger = _Ledger()
-        db = _FakeDB(ledger, rows, delete_fails, delete_gate)
+        db = _FakeDB(ledger, rows, delete_fails, delete_gate, shared)
         monkeypatch.setattr(accounts, "_tenant_session", _watched_session(ledger, db))
         monkeypatch.setattr(accounts, "_log", _RecordingLog(ledger))
+        # EM-G11f1b: the stop and the Graph call live in ``teardown.py`` now,
+        # so its log lines land in the same ledger.
+        monkeypatch.setattr(teardown, "_log", _RecordingLog(ledger))
 
         if fake_scheduler:
             async def _remove(account_id: str) -> None:
@@ -276,7 +348,9 @@ def wired(monkeypatch):
             ledger.events.append(("build", ledger.open, name, creds))
             return provider
 
-        monkeypatch.setattr(accounts, "_instantiate_provider", _build)
+        monkeypatch.setattr(teardown, "_instantiate_provider", _build)
+        _stub_teardown_network(monkeypatch, lambda token: ledger.events.append(
+            ("revoke", ledger.open)))
         return ledger
 
     return _setup
@@ -311,11 +385,11 @@ def _order_violations(events: list[tuple[Any, ...]]) -> list[str]:
 class TestTheLoopStopsFirstWithNoSessionOpen:
 
     async def test_the_loop_stops_after_the_read_and_before_the_delete(self, wired):
-        ledger = wired({"acc-1": _row()})
-        result = await accounts.delete_account("acc-1", user=_user())
+        ledger = wired({"a0000000-0000-4000-8000-000000000001": _row()})
+        result = await accounts.delete_account("a0000000-0000-4000-8000-000000000001", user=_user())
         assert result is None
         assert _order_violations(ledger.events) == []
-        assert ledger.first("stop") == ("stop", 0, "acc-1")
+        assert ledger.first("stop") == ("stop", 0, "a0000000-0000-4000-8000-000000000001")
         assert ledger.first("delete")[1] == 1, "the DELETE ran outside a block"
         assert "restart" not in ledger.kinds(), "a good disconnect restarted the loop"
 
@@ -328,19 +402,19 @@ class TestTheLoopStopsFirstWithNoSessionOpen:
         assert any("DELETE ran before" in p for p in problems)
 
     async def test_each_phase_is_its_own_block(self, wired):
-        ledger = wired({"acc-1": _row()})
-        await accounts.delete_account("acc-1", user=_user())
+        ledger = wired({"a0000000-0000-4000-8000-000000000001": _row()})
+        await accounts.delete_account("a0000000-0000-4000-8000-000000000001", user=_user())
         opens = [e for e in ledger.events if e[0] == "open"]
         assert len(opens) == 2, "expected one block to read and one to delete"
         assert all(e[1] == 1 for e in opens), "a block opened inside another"
 
     async def test_a_failed_stop_still_deletes_and_is_logged(self, wired):
-        rows = {"acc-1": _row()}
+        rows = {"a0000000-0000-4000-8000-000000000001": _row()}
         ledger = wired(rows, stop_raises=True)
-        await accounts.delete_account("acc-1", user=_user())
-        assert "acc-1" not in rows
+        await accounts.delete_account("a0000000-0000-4000-8000-000000000001", user=_user())
+        assert "a0000000-0000-4000-8000-000000000001" not in rows
         assert ("warning", "email.disconnect.stop_sync_failed",
-                {"account_id": "acc-1", "error": "RuntimeError"}) in ledger.logs
+                {"account_id": "a0000000-0000-4000-8000-000000000001", "error": "RuntimeError"}) in ledger.logs
 
     def test_the_route_answers_204(self):
         routes = [r for r in accounts.router.routes
@@ -356,13 +430,13 @@ class TestTheLoopStopsFirstWithNoSessionOpen:
 class TestOwnershipComesBeforeTheStop:
 
     @pytest.mark.parametrize("rows", [
-        {"acc-1": _row(user_id=OTHER)},
+        {"a0000000-0000-4000-8000-000000000001": _row(user_id=OTHER)},
         {},
     ], ids=["another-members-mailbox", "no-such-mailbox"])
     async def test_a_non_owner_gets_404_and_stops_no_loop(self, wired, rows):
         ledger = wired(rows)
         with pytest.raises(HTTPException) as err:
-            await accounts.delete_account("acc-1", user=_user(OWNER))
+            await accounts.delete_account("a0000000-0000-4000-8000-000000000001", user=_user(OWNER))
         assert err.value.status_code == 404
         assert "stop" not in ledger.kinds(), "a non-owner stopped a sync loop"
         assert "delete" not in ledger.kinds()
@@ -395,15 +469,16 @@ def _real_outlook(status: int | None, seen: list[httpx.Request]) -> OutlookProvi
 class TestTheGraphSubscriptionIsDeleted:
 
     async def test_a_microsoft_row_with_a_subscription_gets_the_delete(self, wired):
-        ledger = wired({"acc-1": _row(sub="sub-abc")})
-        await accounts.delete_account("acc-1", user=_user())
+        ledger = wired({"a0000000-0000-4000-8000-000000000001": _row(sub="sub-abc")})
+        await accounts.delete_account("a0000000-0000-4000-8000-000000000001", user=_user())
         assert ledger.first("graph_delete") == ("graph_delete", 0, "sub-abc")
         assert ledger.first("decrypt") == ("decrypt", 0, "blob-em-t4f")
         build = ledger.first("build")
         assert build[1] == 0 and build[2] == "microsoft"
         assert ledger.index("graph_delete") > ledger.index("delete"), (
             "the Graph call must read the subscription id after the loop stopped")
-        assert ledger.logs[-1][:2] == ("info", "email.disconnect.subscription_deleted")
+        assert ("info", "email.disconnect.subscription_deleted") in [
+            log[:2] for log in ledger.logs]
 
     @pytest.mark.parametrize("status,level,event", [
         (204, "info", "email.disconnect.subscription_deleted"),
@@ -415,10 +490,10 @@ class TestTheGraphSubscriptionIsDeleted:
         self, wired, status, level, event,
     ):
         seen: list[httpx.Request] = []
-        rows = {"acc-1": _row(sub="sub-real")}
+        rows = {"a0000000-0000-4000-8000-000000000001": _row(sub="sub-real")}
         ledger = wired(rows, graph=_real_outlook(status, seen))
-        assert await accounts.delete_account("acc-1", user=_user()) is None
-        assert "acc-1" not in rows
+        assert await accounts.delete_account("a0000000-0000-4000-8000-000000000001", user=_user()) is None
+        assert "a0000000-0000-4000-8000-000000000001" not in rows
         assert [(r.method, r.url.path) for r in seen] == [
             ("DELETE", "/v1.0/subscriptions/sub-real")]
         graph_logs = [log for log in ledger.logs if "subscription" in log[1]]
@@ -429,8 +504,8 @@ class TestTheGraphSubscriptionIsDeleted:
 
     async def test_a_transport_error_of_the_real_provider_is_logged(self, wired):
         seen: list[httpx.Request] = []
-        ledger = wired({"acc-1": _row()}, graph=_real_outlook(None, seen))
-        assert await accounts.delete_account("acc-1", user=_user()) is None
+        ledger = wired({"a0000000-0000-4000-8000-000000000001": _row()}, graph=_real_outlook(None, seen))
+        assert await accounts.delete_account("a0000000-0000-4000-8000-000000000001", user=_user()) is None
         [failed] = [log for log in ledger.logs if "subscription" in log[1]]
         assert failed[:2] == ("warning", "email.disconnect.subscription_delete_failed")
         assert failed[2]["error"] == "ConnectError"
@@ -457,28 +532,28 @@ class TestTheGraphSubscriptionIsDeleted:
     async def test_a_failed_graph_call_still_gives_204(
         self, wired, monkeypatch, graph, decrypt_raises, error,
     ):
-        monkeypatch.setattr(accounts, "SUBSCRIPTION_DELETE_TIMEOUT_S", 0.05)
-        rows = {"acc-1": _row()}
+        monkeypatch.setattr(teardown, "SUBSCRIPTION_DELETE_TIMEOUT_S", 0.05)
+        rows = {"a0000000-0000-4000-8000-000000000001": _row()}
         ledger = wired(rows, graph=graph, decrypt_raises=decrypt_raises)
         started = time.monotonic()
-        result = await accounts.delete_account("acc-1", user=_user())
+        result = await accounts.delete_account("a0000000-0000-4000-8000-000000000001", user=_user())
         assert result is None
         assert time.monotonic() - started < 5, "the bound did not hold"
-        assert "acc-1" not in rows, "the mailbox was not deleted"
+        assert "a0000000-0000-4000-8000-000000000001" not in rows, "the mailbox was not deleted"
         warnings = [log for log in ledger.logs if log[0] == "warning"]
         assert [w[1] for w in warnings] == [
             "email.disconnect.subscription_delete_failed"]
         assert warnings[0][2]["error"] == error
-        assert warnings[0][2]["account_id"] == "acc-1"
+        assert warnings[0][2]["account_id"] == "a0000000-0000-4000-8000-000000000001"
 
     async def test_no_log_line_holds_a_token(self, wired):
-        ledger = wired({"acc-1": _row()}, graph="raise")
-        await accounts.delete_account("acc-1", user=_user())
+        ledger = wired({"a0000000-0000-4000-8000-000000000001": _row()}, graph="raise")
+        await accounts.delete_account("a0000000-0000-4000-8000-000000000001", user=_user())
         assert ledger.logs, "expected a log line"
         assert TOKEN not in repr(ledger.logs)
 
     def test_the_bound_is_five_seconds(self):
-        assert accounts.SUBSCRIPTION_DELETE_TIMEOUT_S == 5.0
+        assert teardown.SUBSCRIPTION_DELETE_TIMEOUT_S == 5.0
 
 
 # ── hermetic: d. no Graph call without a subscription ────────────────────────
@@ -493,11 +568,15 @@ class TestNoGraphCallWithoutASubscription:
         ("imap", None),
     ], ids=["microsoft-no-sub", "microsoft-empty-sub", "gmail", "imap"])
     async def test_no_provider_is_built(self, wired, provider, sub):
-        rows = {"acc-1": _row(provider=provider, sub=sub)}
+        rows = {"a0000000-0000-4000-8000-000000000001": _row(provider=provider, sub=sub)}
         ledger = wired(rows)
-        await accounts.delete_account("acc-1", user=_user())
-        assert "acc-1" not in rows
-        for kind in ("decrypt", "build", "graph_delete"):
+        await accounts.delete_account("a0000000-0000-4000-8000-000000000001", user=_user())
+        assert "a0000000-0000-4000-8000-000000000001" not in rows
+        # EM-G11f1: a Gmail row decrypts its grant for the revoke. It still
+        # builds no provider, because it has no filter and no subscription.
+        kinds = (("build", "graph_delete") if provider == "gmail"
+                 else ("decrypt", "build", "graph_delete"))
+        for kind in kinds:
             assert kind not in ledger.kinds(), f"{kind} ran for {provider}"
 
 
@@ -507,8 +586,8 @@ class TestNoGraphCallWithoutASubscription:
 class TestAFailedDeleteStartsTheLoopAgain:
 
     async def test_the_delete_runs_under_a_lock_timeout(self, wired):
-        ledger = wired({"acc-1": _row()})
-        await accounts.delete_account("acc-1", user=_user())
+        ledger = wired({"a0000000-0000-4000-8000-000000000001": _row()})
+        await accounts.delete_account("a0000000-0000-4000-8000-000000000001", user=_user())
         bound = ledger.first("lock_timeout")
         assert bound[1] == 1, "SET LOCAL ran outside the delete block"
         assert bound[2] == "SET LOCAL lock_timeout = '5s'"
@@ -516,35 +595,35 @@ class TestAFailedDeleteStartsTheLoopAgain:
         assert ledger.index("lock_timeout") > ledger.index("stop")
 
     async def test_a_lock_timeout_answers_409_and_restarts_the_loop(self, wired):
-        rows = {"acc-1": _row()}
+        rows = {"a0000000-0000-4000-8000-000000000001": _row()}
         ledger = wired(rows, delete_fails=_lock_timeout_error())
         with pytest.raises(HTTPException) as err:
-            await accounts.delete_account("acc-1", user=_user())
+            await accounts.delete_account("a0000000-0000-4000-8000-000000000001", user=_user())
         assert err.value.status_code == 409
         assert err.value.detail == accounts.DISCONNECT_BUSY_DETAIL
-        assert "acc-1" in rows, "a refused disconnect deleted the mailbox"
-        assert ledger.first("restart") == ("restart", 0, "acc-1", ROW_ORG), (
+        assert "a0000000-0000-4000-8000-000000000001" in rows, "a refused disconnect deleted the mailbox"
+        assert ledger.first("restart") == ("restart", 0, "a0000000-0000-4000-8000-000000000001", ROW_ORG), (
             "the loop must start again, with the org of the row and no block open")
         assert ledger.index("restart") > ledger.index("delete")
         assert "graph_delete" not in ledger.kinds()
         assert "email.disconnect.busy" in ledger.log_names()
 
     async def test_any_failed_delete_restarts_the_loop_and_raises(self, wired):
-        rows = {"acc-1": _row()}
+        rows = {"a0000000-0000-4000-8000-000000000001": _row()}
         ledger = wired(rows, delete_fails=RuntimeError("connection reset"))
         with pytest.raises(RuntimeError, match="connection reset"):
-            await accounts.delete_account("acc-1", user=_user())
-        assert "acc-1" in rows
-        assert ledger.first("restart") == ("restart", 0, "acc-1", ROW_ORG)
+            await accounts.delete_account("a0000000-0000-4000-8000-000000000001", user=_user())
+        assert "a0000000-0000-4000-8000-000000000001" in rows
+        assert ledger.first("restart") == ("restart", 0, "a0000000-0000-4000-8000-000000000001", ROW_ORG)
         assert "graph_delete" not in ledger.kinds()
 
     async def test_no_restart_when_no_loop_ran_before(self, wired):
         # Sync off, or EMAIL_SYNC_ENABLED off: a failed disconnect must not
         # start a loop that did not run.
-        rows = {"acc-1": _row()}
+        rows = {"a0000000-0000-4000-8000-000000000001": _row()}
         ledger = wired(rows, delete_fails=_lock_timeout_error(), loops=())
         with pytest.raises(HTTPException) as err:
-            await accounts.delete_account("acc-1", user=_user())
+            await accounts.delete_account("a0000000-0000-4000-8000-000000000001", user=_user())
         assert err.value.status_code == 409
         assert "restart" not in ledger.kinds()
 
@@ -569,21 +648,21 @@ class TestAFailedDeleteStartsTheLoopAgain:
         monkeypatch.setattr(sched, "_account_sync_loop", _sleeper)
         monkeypatch.setattr(sched, "_get_account_sync_interval", _interval)
         old = asyncio.create_task(asyncio.sleep(3600))
-        monkeypatch.setitem(sched._scheduler_tasks, "acc-1", old)
-        rows = {"acc-1": _row()}
+        monkeypatch.setitem(sched._scheduler_tasks, "a0000000-0000-4000-8000-000000000001", old)
+        rows = {"a0000000-0000-4000-8000-000000000001": _row()}
         wired(rows, delete_fails=RuntimeError("connection reset"),
               fake_scheduler=False)
         try:
             with pytest.raises(RuntimeError):
-                await accounts.delete_account("acc-1", user=_user())
+                await accounts.delete_account("a0000000-0000-4000-8000-000000000001", user=_user())
             await asyncio.sleep(0)
             assert old.cancelled(), "step 2 did not stop the old loop"
-            new = sched._scheduler_tasks.get("acc-1")
+            new = sched._scheduler_tasks.get("a0000000-0000-4000-8000-000000000001")
             assert new is not None and new is not old and not new.done(), (
                 "a failed DELETE left the mailbox with no running loop")
-            assert started == [("acc-1", 300, ROW_ORG)]
+            assert started == [("a0000000-0000-4000-8000-000000000001", 300, ROW_ORG)]
         finally:
-            await sched.remove_account_sync("acc-1")
+            await sched.remove_account_sync("a0000000-0000-4000-8000-000000000001")
             if not old.done():
                 old.cancel()
 
@@ -595,7 +674,7 @@ class TestAFailedDeleteStartsTheLoopAgain:
         the route a second time while the restart runs. The restart must
         still finish."""
         gate = asyncio.Event()
-        rows = {"acc-1": _row()}
+        rows = {"a0000000-0000-4000-8000-000000000001": _row()}
         ledger = wired(rows, delete_gate=gate)
         restart_began = asyncio.Event()
         restarted: list[str | None] = []
@@ -606,7 +685,7 @@ class TestAFailedDeleteStartsTheLoopAgain:
             restarted.append(organization_id)
 
         monkeypatch.setattr(sched, "refresh_account_sync", _slow_refresh)
-        route = asyncio.create_task(accounts.delete_account("acc-1", user=_user()))
+        route = asyncio.create_task(accounts.delete_account("a0000000-0000-4000-8000-000000000001", user=_user()))
         while "delete" not in ledger.kinds():
             await asyncio.sleep(0)
         route.cancel()
@@ -618,7 +697,7 @@ class TestAFailedDeleteStartsTheLoopAgain:
             asyncio.gather(*accounts._RESTARTS), timeout=5)
         assert restarted == [ROW_ORG], (
             "the second cancel stopped the restart, so the mailbox has no loop")
-        assert "acc-1" in rows, "the cancelled DELETE removed the mailbox"
+        assert "a0000000-0000-4000-8000-000000000001" in rows, "the cancelled DELETE removed the mailbox"
         assert not accounts._RESTARTS, "a finished restart kept its task"
 
 
@@ -636,17 +715,32 @@ def _assert_non_priv(app_eng) -> None:
 
 
 def _seed_account(admin, *, org: str, owner: str, default: bool,
-                  sub: str | None) -> str:
+                  sub: str | None, provider: str = "microsoft",
+                  email: str | None = None) -> str:
     with admin.begin() as c:
         return str(c.execute(text(
             "INSERT INTO email_accounts (user_id, provider, email_address, "
             "credentials_encrypted, is_default, webhook_subscription_id, "
             "created_at, organization_id) "
-            "VALUES (:u, 'microsoft', :m, 'blob-r8', :d, :s, "
+            "VALUES (:u, :p, :m, 'blob-r8', :d, :s, "
             "now() - CAST(:age AS interval), CAST(:o AS uuid)) RETURNING id"),
-            {"u": owner, "m": f"box-{uuid.uuid4().hex[:8]}@em-t4f.test",
+            {"u": owner, "p": provider,
+             "m": email or f"box-{uuid.uuid4().hex[:8]}@em-t4f.test",
              "d": default, "s": sub, "age": "1 hour" if default else "1 minute",
              "o": org}).scalar_one())
+
+
+def _seed_newsletter(admin, *, org: str, account_id: str,
+                     filter_id: str | None) -> None:
+    """One sender row of a mailbox. ``filter_id`` is the Gmail filter that
+    Metorite made for it (``senders.py::_create_block_filter``)."""
+    with admin.begin() as c:
+        c.execute(text(
+            "INSERT INTO email_newsletters (account_id, email, status, "
+            "auto_archive_filter_id, organization_id) VALUES (CAST(:a AS uuid), "
+            ":e, 'AUTO_ARCHIVED', :f, CAST(:o AS uuid))"),
+            {"a": account_id, "e": f"news-{uuid.uuid4().hex[:8]}@sender.test",
+             "f": filter_id, "o": org})
 
 
 def _seed_message(admin, *, org: str, account_id: str) -> None:
@@ -659,6 +753,30 @@ def _seed_message(admin, *, org: str, account_id: str) -> None:
             {"a": account_id, "pm": f"pm-{uuid.uuid4().hex[:12]}",
              "f": json.dumps({"email": "s@sender.test"}),
              "t": json.dumps([{"email": "to@em-t4f.test"}]), "o": org})
+
+
+class _TeardownLog:
+    """Records the log lines of ``teardown.py``."""
+
+    def __init__(self) -> None:
+        self.lines: list[tuple[str, str, dict[str, Any]]] = []
+
+    def info(self, event: str, **kw: Any) -> None:
+        self.lines.append(("info", event, kw))
+
+    def warning(self, event: str, **kw: Any) -> None:
+        self.lines.append(("warning", event, kw))
+
+
+def _grant_check_to_app_role(admin) -> None:
+    """Migration 263 grants its function to ``acb_app`` only. The rehearsal
+    role has a suite-private name, so it gets the same grant here."""
+    from tests.unit.test_h3_rls_promotion_rehearsal import _APP_ROLE
+
+    with admin.begin() as c:
+        c.execute(text(
+            "GRANT EXECUTE ON FUNCTION public.email_gmail_grant_shared(text, uuid) "
+            f"TO {_APP_ROLE}"))
 
 
 def _admin_read(admin, sql: str, **params: Any) -> list[Any]:
@@ -682,8 +800,10 @@ def r8_doubles(monkeypatch):
     monkeypatch.setattr(sched, "remove_account_sync", _remove)
     monkeypatch.setattr(key_store_mod, "get_key_store", lambda: SimpleNamespace(
         decrypt=lambda blob: json.dumps({"access_token": TOKEN})))
-    monkeypatch.setattr(accounts, "_instantiate_provider",
+    monkeypatch.setattr(teardown, "_instantiate_provider",
                         lambda name, creds: _Graph())
+    seen["revoke"] = []
+    _stub_teardown_network(monkeypatch, seen["revoke"].append)
     return seen
 
 
@@ -725,6 +845,213 @@ class TestTheDisconnectUnderForceRLS:
         finally:
             release_tenant(token)
             with p.admin_engine.begin() as c:
+                c.execute(text("DELETE FROM email_accounts WHERE user_id = :u"),
+                          {"u": owner})
+
+    async def test_the_filter_ids_are_read_under_force_rls_before_the_delete(
+        self, promoted, app_engine, r8_doubles, monkeypatch,  # noqa: F811
+    ):
+        """EM-G11f1 (§12.3.13.9, gap D2). The ownership read of a Gmail row
+        reads its filter ids as the non-privileged role, under FORCE RLS. A
+        sender row of the mailbox that carries ANOTHER organization stays out
+        of the read. The ids live through the cascade, so each filter goes at
+        Gmail after the DELETE commits (review round 1). With no other row of
+        the address, migration 263 answers false, and the revoke runs."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        _grant_check_to_app_role(p.admin_engine)
+        owner = f"member-{uuid.uuid4().hex[:8]}@em-t4f.test"
+        acc = _seed_account(p.admin_engine, org=p.org_b, owner=owner,
+                            default=True, sub=None, provider="gmail")
+        _seed_newsletter(p.admin_engine, org=p.org_b, account_id=acc,
+                         filter_id="flt-r8-one")
+        _seed_newsletter(p.admin_engine, org=p.org_b, account_id=acc,
+                         filter_id="flt-r8-two")
+        _seed_newsletter(p.admin_engine, org=p.org_b, account_id=acc,
+                         filter_id=None)
+        # A row that names the mailbox but carries org A: RLS must hide it.
+        _seed_newsletter(p.admin_engine, org=p.org_a, account_id=acc,
+                         filter_id="flt-r8-other-org")
+        removed: list[tuple[str, bool]] = []
+
+        class _Gmail:
+            async def delete_filter(self, filter_id: str) -> None:
+                still_there = _admin_read(
+                    p.admin_engine,
+                    "SELECT 1 FROM email_accounts WHERE id = CAST(:a AS uuid)",
+                    a=acc) != []
+                removed.append((filter_id, still_there))
+
+        monkeypatch.setattr(teardown, "_instantiate_provider",
+                            lambda name, creds: _Gmail())
+        user = UserContext(email=owner, role=UserRole.EMPLOYEE,
+                           organization_id=p.org_b)
+        app_dsn = p.app_url.render_as_string(hide_password=False)
+        token = bind_tenant(p.org_b)
+        try:
+            async with tenant_engine_scope(app_dsn):
+                assert await accounts.delete_account(acc, user=user) is None
+            assert sorted(removed) == [("flt-r8-one", False), ("flt-r8-two", False)], (
+                "the filters were not read under RLS, or went before the commit")
+            assert r8_doubles["revoke"] == [TOKEN], "the Gmail grant was not revoked"
+            assert r8_doubles["graph"] == [], "a Gmail row reached Graph"
+            assert _admin_read(p.admin_engine,
+                               "SELECT 1 FROM email_accounts WHERE id = CAST(:a AS uuid)",
+                               a=acc) == []
+            assert _admin_read(p.admin_engine,
+                               "SELECT 1 FROM email_newsletters "
+                               "WHERE account_id = CAST(:a AS uuid)", a=acc) == []
+        finally:
+            release_tenant(token)
+            with p.admin_engine.begin() as c:
+                c.execute(text("DELETE FROM email_accounts WHERE user_id = :u"),
+                          {"u": owner})
+
+    @pytest.mark.parametrize("sibling_org", ["same", "other"])
+    async def test_a_shared_gmail_grant_is_not_revoked(
+        self, promoted, app_engine, r8_doubles, sibling_org,  # noqa: F811
+    ):
+        """Review round 1, P1. Google keeps ONE grant for a Gmail account and
+        the app. Member A of org B disconnects ``shared@``, and another row of
+        that address lives in the same org (a second member) or in org A.
+        The real function, called as the non-privileged role, sees the other
+        row through RLS, so the revoke is skipped. The row of A still goes."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        _grant_check_to_app_role(p.admin_engine)
+        address = f"Shared-{uuid.uuid4().hex[:8]}@em-g11f1.test"
+        owner = f"member-{uuid.uuid4().hex[:8]}@em-t4f.test"
+        other = f"member-{uuid.uuid4().hex[:8]}@em-t4f.test"
+        acc = _seed_account(p.admin_engine, org=p.org_b, owner=owner,
+                            default=True, sub=None, provider="gmail",
+                            email=address.lower())
+        kept = _seed_account(
+            p.admin_engine, org=p.org_b if sibling_org == "same" else p.org_a,
+            owner=other, default=True, sub=None, provider="gmail",
+            email=address.upper())
+        user = UserContext(email=owner, role=UserRole.EMPLOYEE,
+                           organization_id=p.org_b)
+        app_dsn = p.app_url.render_as_string(hide_password=False)
+        token = bind_tenant(p.org_b)
+        try:
+            async with tenant_engine_scope(app_dsn):
+                assert await accounts.delete_account(acc, user=user) is None
+            assert r8_doubles["revoke"] == [], (
+                "a disconnect revoked a grant that another mailbox uses")
+            assert _admin_read(p.admin_engine,
+                               "SELECT 1 FROM email_accounts WHERE id = CAST(:a AS uuid)",
+                               a=acc) == []
+            assert _admin_read(p.admin_engine,
+                               "SELECT 1 FROM email_accounts WHERE id = CAST(:a AS uuid)",
+                               a=kept) != []
+        finally:
+            release_tenant(token)
+            with p.admin_engine.begin() as c:
+                c.execute(text("DELETE FROM email_accounts WHERE user_id IN (:u, :o)"),
+                          {"u": owner, "o": other})
+
+    def test_the_shared_grant_function_answers_one_bit_to_the_app_role_only(
+        self, promoted, app_engine,  # noqa: F811
+    ):
+        """Migration 263: a SECURITY DEFINER function with a fixed search_path,
+        a boolean result, no grant to PUBLIC, and EXECUTE for the app role.
+        Bound to org B, the app role reads no row of org A, and the function
+        still answers true for the address of that row. It leaks one bit."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        _grant_check_to_app_role(p.admin_engine)
+        from tests.unit.test_h3_rls_promotion_rehearsal import _APP_ROLE
+
+        [(definer, result, config, acl, args)] = _admin_read(
+            p.admin_engine,
+            "SELECT prosecdef, prorettype::regtype::text, proconfig, proacl::text, "
+            "pg_get_function_identity_arguments(oid) FROM pg_proc "
+            "WHERE proname = 'email_gmail_grant_shared'")
+        assert definer is True
+        assert result == "boolean", "the function must return one bit, never a row"
+        assert args == "p_email text, p_exclude uuid"
+        assert any(c.startswith("search_path=pg_catalog") for c in config or [])
+        entries = (acl or "").strip("{}").split(",")
+        assert not [e for e in entries if e.startswith("=")], acl
+        assert f"{_APP_ROLE}=X/" in acl
+        address = f"hidden-{uuid.uuid4().hex[:8]}@em-g11f1.test"
+        owner = f"member-{uuid.uuid4().hex[:8]}@em-t4f.test"
+        hidden = _seed_account(p.admin_engine, org=p.org_a, owner=owner,
+                               default=True, sub=None, provider="gmail",
+                               email=address)
+        try:
+            with app_engine.connect() as c, c.begin():
+                c.execute(text("SELECT set_config('app.tenant_id', :o, true)"),
+                          {"o": p.org_b})
+                assert c.execute(text(
+                    "SELECT count(*) FROM email_accounts WHERE id = CAST(:a AS uuid)"),
+                    {"a": hidden}).scalar() == 0, "RLS let org B read a row of org A"
+                ask = text("SELECT public.email_gmail_grant_shared(:e, CAST(:x AS uuid))")
+                assert c.execute(ask, {"e": address.upper(), "x": None}).scalar() is True
+                assert c.execute(ask, {"e": address, "x": hidden}).scalar() is False
+                assert c.execute(ask, {"e": "", "x": None}).scalar() is None
+        finally:
+            with p.admin_engine.begin() as c:
+                c.execute(text("DELETE FROM email_accounts WHERE user_id = :u"),
+                          {"u": owner})
+
+    async def test_a_function_that_cannot_see_through_rls_skips_the_revoke(
+        self, promoted, app_engine, r8_doubles, monkeypatch,  # noqa: F811
+    ):
+        """Owned by a role that cannot bypass RLS, the function answers NULL.
+        NULL is "cannot tell", so the revoke is skipped. It fails safe toward
+        a mailbox of another member. Review round 2: the test reads the NULL
+        straight from the function as the app role, and the route logs
+        ``owner_blind`` with no ``grant_check_failed`` line, so an error
+        cannot pass for a blind owner."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        _grant_check_to_app_role(p.admin_engine)
+        from tests.unit.test_h3_rls_promotion_rehearsal import _APP_ROLE
+
+        [(prior,)] = _admin_read(
+            p.admin_engine,
+            "SELECT pg_get_userbyid(proowner) FROM pg_proc "
+            "WHERE proname = 'email_gmail_grant_shared'")
+        owner = f"member-{uuid.uuid4().hex[:8]}@em-t4f.test"
+        acc = _seed_account(p.admin_engine, org=p.org_b, owner=owner,
+                            default=True, sub=None, provider="gmail")
+        user = UserContext(email=owner, role=UserRole.EMPLOYEE,
+                           organization_id=p.org_b)
+        app_dsn = p.app_url.render_as_string(hide_password=False)
+        with p.admin_engine.begin() as c:
+            c.execute(text(
+                "ALTER FUNCTION public.email_gmail_grant_shared(text, uuid) "
+                f"OWNER TO {_APP_ROLE}"))
+        log = _TeardownLog()
+        monkeypatch.setattr(teardown, "_log", log)
+        token = bind_tenant(p.org_b)
+        try:
+            with app_engine.connect() as c, c.begin():
+                c.execute(text("SELECT set_config('app.tenant_id', :o, true)"),
+                          {"o": p.org_b})
+                assert c.execute(text(
+                    "SELECT public.email_gmail_grant_shared(:e, NULL)"),
+                    {"e": "any@em-g11f1.test"}).scalar() is None, (
+                    "a blind owner must answer NULL, not raise and not guess")
+            async with tenant_engine_scope(app_dsn):
+                assert await accounts.delete_account(acc, user=user) is None
+            assert r8_doubles["revoke"] == [], "a check that cannot tell still revoked"
+            assert ("warning", "email.revoke_skipped",
+                    {"account_id": acc, "provider": "gmail",
+                     "reason": "owner_blind"}) in log.lines
+            assert "email.disconnect.grant_check_failed" not in [
+                name for _lvl, name, _kw in log.lines], (
+                "the check raised, so the skip came from an error, not a blind owner")
+            assert _admin_read(p.admin_engine,
+                               "SELECT 1 FROM email_accounts WHERE id = CAST(:a AS uuid)",
+                               a=acc) == []
+        finally:
+            release_tenant(token)
+            with p.admin_engine.begin() as c:
+                c.execute(text(
+                    "ALTER FUNCTION public.email_gmail_grant_shared(text, uuid) "
+                    f'OWNER TO "{prior}"'))
                 c.execute(text("DELETE FROM email_accounts WHERE user_id = :u"),
                           {"u": owner})
 
@@ -779,7 +1106,7 @@ class TestTheDisconnectUnderForceRLS:
             await asyncio.sleep(3600)
 
         monkeypatch.setattr(sched, "_account_sync_loop", _sleeper)
-        monkeypatch.setattr(accounts, "_instantiate_provider", lambda *_a: pytest.fail(
+        monkeypatch.setattr(teardown, "_instantiate_provider", lambda *_a: pytest.fail(
             "a refused disconnect reached Graph"))
         owner = f"member-{uuid.uuid4().hex[:8]}@em-t4f.test"
         acc = _seed_account(p.admin_engine, org=p.org_b, owner=owner,

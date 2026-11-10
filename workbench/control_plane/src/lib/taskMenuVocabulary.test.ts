@@ -11,7 +11,11 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { TASK_MENU_ACTIONS, type TaskMenuContext } from "@/app/projects/lib/taskMenu";
+import {
+  PROJECTS_ONLY_ACTS,
+  TASK_MENU_ACTIONS,
+  type TaskMenuContext,
+} from "@/app/projects/lib/taskMenu";
 import { MY_TASK_ONLY_ACTS, cardMenuActs } from "@/app/tasks/lib/cardMenu";
 
 import {
@@ -36,10 +40,20 @@ const CTX = {
 } as unknown as TaskMenuContext;
 
 describe("the shared order", () => {
-  it("every Projects menu action is a shared act", () => {
+  it("every Projects menu action is a shared act or a Projects-only act", () => {
+    const known = [...SHARED_TASK_ACTS, ...PROJECTS_ONLY_ACTS] as readonly string[];
     for (const action of TASK_MENU_ACTIONS) {
-      expect(SHARED_TASK_ACTS as readonly string[]).toContain(actOf(action.id));
+      expect(known).toContain(actOf(action.id));
     }
+  });
+
+  it("a Projects-only act is never a shared one, and it comes after every shared act", () => {
+    for (const act of PROJECTS_ONLY_ACTS) {
+      expect(SHARED_TASK_ACTS as readonly string[]).not.toContain(act);
+    }
+    const ids = TASK_MENU_ACTIONS.map((a) => actOf(a.id));
+    const firstOnly = ids.findIndex((id) => (PROJECTS_ONLY_ACTS as readonly string[]).includes(id));
+    expect(firstOnly).toBeGreaterThan(ids.lastIndexOf("delete"));
   });
 
   it("the Projects registry is declared in the shared order", () => {

@@ -66,8 +66,10 @@ OUTPUTS_VISIBILITY_VALUES = ("instance", "room", "org")
 #: Tools that execute arbitrary code.  Holding any of these puts the agent in the
 #: container tier regardless of how it was authored — see
 #: ``agent_platform_hardening_2026-07.md`` Part 1.  The isolation boundary is the
-#: resolved tool surface, NOT declarative-vs-code.
-SHELL_TOOLS = frozenset({"code_task", "run_script", "install_dependency"})
+#: resolved tool surface, NOT declarative-vs-code.  ``run_command`` (WS-43d,
+#: ``maf_coding_engine.md`` §7.4) runs in the sandbox broker, and it is still a
+#: shell tool: an agent that holds it derives T2.
+SHELL_TOOLS = frozenset({"code_task", "run_script", "install_dependency", "run_command"})
 
 #: Tools that write files or reach declared integrations.  Confined in-process
 #: (T1) rather than merely observational (T0).

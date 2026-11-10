@@ -9,9 +9,10 @@ from acb_auth import (UserContext, UserRole, get_current_user,
                       identity_read_failed, require_authenticated,
                       require_role)
 from acb_common import configure_logging, get_logger, get_settings
+from acb_common import db_busy
 from acb_common.db import TenantUnbound, clear_tenant, release_tenant
 from fastapi import BackgroundTasks, Depends, FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from gateway.build_info import applied_marker, build_sha
@@ -56,12 +57,21 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     os.environ.setdefault("PYTHONUTF8", "1")
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
+    # A stopping gateway must not ride through its OWN restart: its agents
+    # call this process's port, and each wait holds the old process up
+    # (acb_llm.ride_through, review of the 2026-10-08 fix). uvicorn holds its
+    # signal handlers by now, so the hook chains them.
+    try:
+        from acb_llm.ride_through import install_stop_hook
+        install_stop_hook()
+    except Exception:  # noqa: BLE001 - a missing hook is a slower restart only
+        pass
+
     # Expose the gateway's venv to every child process (the Copilot CLI, agent
-    # shells, install_dependency).  `uv pip install` needs a target venv; the
-    # service env often lacks VIRTUAL_ENV, so a bare `uv pip install` from an
-    # agent would have nowhere to install.  Point VIRTUAL_ENV at this venv and
-    # put its bin first on PATH so runtime dependency installs land here and are
-    # importable in-process.
+    # shells).  Point VIRTUAL_ENV at this venv and put its bin first on PATH, so
+    # a child finds the venv's python and tools.  Agent dependency installs do
+    # NOT land here: `install_dependency` and the loader install into agent-site
+    # (WS-49 BH-7, acb_skills/agent_site.py).
     try:
         import sys as _sys
         from pathlib import Path as _Path
@@ -80,6 +90,15 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     configure_logging(settings.log_level)
     _log.info("gateway.startup", env=settings.acb_env)
+
+    # A flag flip is a SIGHUP, not a restart (gateway/flag_reload.py). After
+    # the logging set-up, so its lines are formatted. `/version` reports it.
+    try:
+        from gateway import flag_reload
+        if flag_reload.install():
+            _log.info("flags.reload_installed")
+    except Exception as exc:  # noqa: BLE001 - without it, a flip restarts, as before
+        _log.warning("flags.reload_not_installed", error=type(exc).__name__)
 
     # Ownership bootstrap: if NO member holds `owner`, provision the first
     # EXECUTIVE_EMAILS address (creating its app_user row). Startup is the
@@ -110,34 +129,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:  # pragma: no cover
         _log.warning("gateway.runtime_check_failed", error=str(exc))
 
-    # Pre-warm the Copilot model list cache so /api/models/all returns instantly.
-    async def _warmup_copilot_models() -> None:
-        try:
-            _gh = getattr(settings, "github_token", "") or os.environ.get("GITHUB_TOKEN", "")
-            if not _gh:
-                return
-            os.environ.setdefault("GITHUB_TOKEN", _gh)
-            import time as _t
-
-            from copilot import CopilotClient as _CC
-            _c = _CC(github_token=_gh); await _c.start()  # SDK 1.0: keywords (H-181)
-            try:
-                _m = await _c.list_models()
-            finally:
-                await _c.stop()
-            if _m:
-                _copilot_models_cache["data"] = {
-                    "models": [{"id": x.id, "label": x.name, "model_picker_enabled": True}
-                               for x in _m if not x.policy or x.policy.state == "enabled"],
-                    "source": "live",
-                }
-                _copilot_models_cache["ts"] = _t.monotonic()
-                _log.info("gateway.copilot_models_cache_warmed", count=len(_m))
-        except Exception as _e:
-            _log.warning("gateway.copilot_models_warmup_failed", error=str(_e))
-
     import asyncio as _asyncio
-    _asyncio.ensure_future(_warmup_copilot_models())
 
     # Sweep any `cc-copilot-*` sandbox containers (BO-7 phase 2 —
     # copilot_sandbox.py) left running by a prior crashed gateway process.
@@ -152,12 +144,35 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
     _asyncio.ensure_future(_sweep_copilot_sandboxes())
 
+    # WS-43c: the sandbox broker's startup sweep (orchestrator/sandbox_broker.py,
+    # maf_coding_engine.md §7.1 rule 13). It ALWAYS runs, whatever
+    # MAF_CODING_SCOPE holds: a restart ends every run, so every container
+    # labelled metorite.sandbox=1 goes, also one an earlier scope left. With no
+    # Docker it logs one line and the gateway starts. The task runs in the
+    # background, and the broker's acquire() waits for it.
+    try:
+        from orchestrator.sandbox_broker import start_sandbox_broker
+
+        start_sandbox_broker()
+    except Exception as exc:
+        _log.warning("gateway.sandbox_broker_start_failed", error=str(exc)[:200])
+
     # Warm-clone every live agent that has a source (GitHub repo or local path)
     # but no clone on disk yet.  Clones are created lazily on first run, so a
     # reboot/deploy that wiped the cache leaves registered agents invisible in
     # the Files/Artifacts viewers until they happen to run again.  This restores
     # them on startup so their workspace is browsable without a manual pull.
     async def _warm_clone_agents() -> None:
+        # H-363: scrub every clone FIRST. An older loader wrote the token into
+        # each clone's remote URL, and a clone keeps it until it loads again.
+        # This takes it out of every clone before any run starts, and it logs
+        # an error for a config that still holds one. It never logs a value.
+        try:
+            from acb_skills.loader import scrub_clone_credentials
+
+            await _asyncio.to_thread(scrub_clone_credentials, settings)
+        except Exception as exc:
+            _log.warning("gateway.clone_scrub_failed", error=str(exc)[:200])
         try:
             from acb_skills.loader import _install_agent_deps, load_agent
 
@@ -188,9 +203,18 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
                 except Exception:
                     continue
                 if _ws is not None:
+                    # H-363: pin the clone's repo from the registry, so a
+                    # push or a credentialed read after this restart goes to
+                    # the agent's own repo.
+                    try:
+                        from gateway.routes.agent import _pin_registry_clone
+
+                        _pin_registry_clone(name, _ws)
+                    except Exception:
+                        pass
                     # Already cloned — ensure its declared deps are installed
-                    # into the shared venv (idempotent; no-op when unchanged),
-                    # so all its tools work without waiting for the next run.
+                    # into agent-site (WS-49 BH-7; idempotent, a no-op when
+                    # unchanged), so its tools work before the next run.
                     try:
                         await _asyncio.to_thread(
                             _install_agent_deps, _ws, settings
@@ -301,6 +325,16 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.import_sweep_skipped", error=str(exc))
 
+    # WS-47 WAC-3: the WhatsApp bot's sweep. It reads the kill switch on each
+    # pass, so a dark channel runs nothing (whatsapp_assistant_channel.md §5.4).
+    try:
+        from gateway.routes.whatsapp_channel.bot_run import (
+            start_sweep as start_whatsapp_bot_sweep,
+        )
+        await start_whatsapp_bot_sweep()
+    except Exception as exc:
+        _log.warning("gateway.whatsapp_bot_sweep_skipped", error=str(exc))
+
     # Workflow scheduling subsystem — the orphan-run reconcile sweep and the
     # cron schedule scanner. Both carry a default-ON launch-defang kill-switch
     # (WORKFLOW_SCHEDULER_ENABLED) INSIDE their own functions (WS-29); one flag
@@ -366,6 +400,204 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.crm_zoho_sync_skipped", error=str(exc))
 
+    # Start the CRM mirror sync loop (gateway/crm_sync/scheduler.py; spec
+    # crm_platform.md §5.4, WS-53 CRM-Z5). It READS Zoho into the mirror and
+    # writes nothing back. Dark by default: with CRM_MIRROR or CRM_ENABLED off
+    # it starts no task and logs once. Each run binds one tenant_session(org)
+    # for each step.
+    try:
+        from gateway.crm_sync.scheduler import start_crm_mirror_sync
+        crm_mirror_started = await start_crm_mirror_sync()
+        _log.info("gateway.crm_mirror_sync", started=crm_mirror_started)
+    except Exception as exc:
+        _log.warning("gateway.crm_mirror_sync_skipped", error=str(exc))
+
+    # Start the Knowledge sync loop (gateway/kb_sync/scheduler.py; spec
+    # knowledge_curation.md §7.2 and §22, WS-61 KC-3). It READS the Drive
+    # change feed of each ready source into kb_source_nodes, metadata only.
+    # Dark by default: with KNOWLEDGE_SYNC empty it starts no task and logs
+    # once. The gate lives inside the start function.
+    try:
+        from gateway.kb_sync.scheduler import start_kb_sync
+        kb_sync_started = await start_kb_sync()
+        _log.info("gateway.kb_sync", started=kb_sync_started)
+    except Exception as exc:
+        _log.warning("gateway.kb_sync_skipped", error=str(exc))
+
+    # Start the My Day loop (gateway/my_day_loop.py; spec my_day_feed.md §8.4,
+    # WS-58 MD-5b). It trims the active set of each org and sweeps old card
+    # state once a day. Dark by default: with MY_DAY_LOOP_ENABLED off it
+    # starts no task and logs once. The gate lives inside the start function.
+    try:
+        from gateway.my_day_loop import start_my_day_loop
+        my_day_started = await start_my_day_loop()
+        _log.info("gateway.my_day_loop", started=my_day_started)
+    except Exception as exc:
+        _log.warning("gateway.my_day_loop_skipped", error=str(exc))
+
+    # Start the GitHub reconcile poll (gateway/github_reconcile_loop.py; spec
+    # github_integration.md §11, WS-54 GH-5). It repairs what a missed webhook
+    # left stale, every 10 minutes. Dark by default: with GITHUB_APP_ENABLED
+    # off it starts no task and logs once. The gate lives inside the start
+    # function.
+    try:
+        from gateway.github_reconcile_loop import start_github_reconcile_loop
+        github_reconcile_started = await start_github_reconcile_loop()
+        _log.info("gateway.github_reconcile_loop", started=github_reconcile_started)
+    except Exception as exc:
+        _log.warning("gateway.github_reconcile_loop_skipped", error=str(exc))
+
+    # Start the Reach loop (gateway/reach/loop.py; spec proactive_reach.md,
+    # WS-59 RE-1a). It messages an allowlisted member first on WhatsApp. Dark
+    # by default: with REACH_ENABLED off it starts no task and logs once.
+    try:
+        from gateway.reach.loop import start_reach_loop
+        reach_started = await start_reach_loop()
+        _log.info("gateway.reach_loop", started=reach_started)
+    except Exception as exc:
+        _log.warning("gateway.reach_loop_skipped", error=str(exc))
+
+    # KG-9 (task 786): the memory layer refuses to start while two or more
+    # organizations exist, because the Mem0 and Graphiti stores have no org
+    # scope. The gateway still starts. Only Mem0 and Graphiti stay down, and
+    # each call asks the guard again. With MEM0_ENABLED and GRAPHITI_ENABLED
+    # off this reads two settings and opens no session.
+    # Fence: tests/unit/test_memory_tenant_guard.py.
+    try:
+        from acb_memory.tenant_guard import MemoryTenancyRefused, check_memory_tenancy
+        try:
+            await check_memory_tenancy()
+        except MemoryTenancyRefused as exc:
+            _log.error("gateway.memory_refused", error=str(exc)[:300])
+    except Exception as exc:
+        _log.warning("gateway.memory_tenancy_check_skipped", error=str(exc)[:200])
+
+    # Start the mailbox purge loop (routes/email/memory_purge.py; spec
+    # email_app_master_plan.md §12.3.13.9, WS-17 EM-G11f2). It finishes each
+    # Mem0 purge that a disconnect owes. No flag: with Mem0 off a tick ends
+    # before any database read. Fence: test_email_mailbox_purge_durable.py.
+    try:
+        from gateway.routes.email.memory_purge import start_purge_loop
+        await start_purge_loop()
+    except Exception as exc:
+        _log.warning("gateway.email_purge_loop_skipped", error=str(exc))
+
+    # Start the send-later job (routes/email/automation/send_later.py; spec
+    # email_app_master_plan.md §19, H-375). Every 60 s it sends the drafts
+    # that are due. Dark by default: with EMAIL_SEND_LATER off it starts no
+    # task. Fence: test_email_send_later.py.
+    try:
+        from gateway.routes.email.automation.send_later import start_send_later_loop
+        _log.info("gateway.email_send_later_loop", started=await start_send_later_loop())
+    except Exception as exc:
+        _log.warning("gateway.email_send_later_loop_skipped", error=str(exc))
+
+    # Start the reminder loop (gateway/reminders/loop.py; spec
+    # calendar_events_reminders.md §5.4, WS-66 RM-2). Every 60 s it fires the
+    # reminders that are due, checks back, and reschedules. Dark by default:
+    # with CALENDAR_REMINDERS off it starts no task. Fence:
+    # test_reminder_loop.py.
+    try:
+        from gateway.reminders.loop import start_reminder_loop
+        _log.info("gateway.reminder_loop", started=await start_reminder_loop())
+    except Exception as exc:
+        _log.warning("gateway.reminder_loop_skipped", error=str(exc))
+
+    # Start the shared job worker (gateway/jobs/worker.py; reference
+    # docs/job_queue.md, WS-BRIEF BR-1a). Every 15 s it claims and runs the
+    # due jobs of each org. Dark by default: with JOB_QUEUE off it starts no
+    # task. Fence: test_job_queue.py.
+    try:
+        # The brief's kinds and hooks register at import (WS-BRIEF BR-2a-1,
+        # gateway/brief/run.py), so the worker holds them from its first tick.
+        # Its own try: an import error loses the brief, never the queue.
+        import gateway.brief.monitor  # noqa: F401  (BR-2d)
+        import gateway.brief.run  # noqa: F401
+    except Exception as exc:
+        _log.warning("gateway.brief_jobs_skipped", error=str(exc))
+    try:
+        # The chat summary kind and its seed hook register at import (WS-63
+        # PZ-33b, gateway/chat_summary_job.py). Dark: the seed needs
+        # ASSISTANT_CHAT_SUMMARY_ORGS and the Router on. Its own try, as above.
+        from gateway import chat_summary_job  # noqa: F401
+    except Exception as exc:
+        _log.warning("gateway.chat_summary_jobs_skipped", error=str(exc))
+    try:
+        # The stub of `align.check` registers at import (WS-ALN ALN-1,
+        # gateway/align/check.py). Its own try, for the reason above.
+        from gateway.align import check as _align_check  # noqa: F401
+    except Exception as exc:
+        _log.warning("gateway.align_jobs_skipped", error=str(exc))
+    try:
+        # The headless turn (WS-AUTO AUTO-8a, gateway/jobs/headless_turn.py)
+        # registers `auto.turn` at import, only with JOB_QUEUE on. Dark: no
+        # code enqueues it, and HEADLESS_TURN_ORGS ships empty.
+        from gateway.jobs import headless_turn as _headless_turn  # noqa: F401
+    except Exception as exc:
+        _log.warning("gateway.headless_turn_jobs_skipped", error=str(exc))
+    try:
+        # The graph sweep kind and its seed hook register at import (WS-KG
+        # KG-4, gateway/kb_entities/graph.py). Dark: the seed needs
+        # GRAPH_SWEEP_ORGS. Its own try, for the reason above.
+        from gateway.kb_entities import graph as _kg_graph  # noqa: F401
+    except Exception as exc:
+        _log.warning("gateway.graph_jobs_skipped", error=str(exc))
+    try:
+        from gateway.jobs.worker import start_job_worker
+        _log.info("gateway.job_worker", started=await start_job_worker())
+    except Exception as exc:
+        _log.warning("gateway.job_worker_skipped", error=str(exc))
+
+    # Start the Knowledge embed sweep (gateway/kb_index/sweep.py; spec
+    # knowledge_base.md §6.4, WS-61 KB-3c). Every 120 s it embeds the chunks
+    # that have no vector, for each org on KNOWLEDGE_EMBED. The kill switch
+    # KNOWLEDGE_EMBED_SWEEP (default on) lives inside the start function.
+    # With no org on KNOWLEDGE_EMBED a tick reads nothing.
+    try:
+        from gateway.kb_index.sweep import start_kb_embed_sweep
+        kb_sweep_started = await start_kb_embed_sweep()
+        _log.info("gateway.kb_embed_sweep", started=kb_sweep_started)
+    except Exception as exc:
+        _log.warning("gateway.kb_embed_sweep_skipped", error=str(exc))
+
+    # Start the Knowledge proposal expiry (spec knowledge_base.md §8.4, WS-61
+    # KB-5c). Every hour it expires a proposal that waited 14 days. The kill
+    # switch KNOWLEDGE_PROPOSAL_EXPIRY (default on) lives inside the start
+    # function.
+    try:
+        from gateway.routes.knowledge.proposal_expiry import start_kb_proposal_expiry
+        kb_expiry_started = await start_kb_proposal_expiry()
+        _log.info("gateway.kb_proposal_expiry", started=kb_expiry_started)
+    except Exception as exc:
+        _log.warning("gateway.kb_proposal_expiry_skipped", error=str(exc))
+
+    # Start the sweep of stranded agent runs (gateway/agent_run_sweep.py;
+    # spec external_agent_access.md §12.6, WS-55 SW-10a). Every 5 minutes it
+    # nudges the member of a stranded run once, and later opens one recovery
+    # record. Dark by default: with AGENT_RUN_SWEEP_ENABLED off it starts no
+    # task and logs once. The gate lives inside the start function.
+    try:
+        from gateway.agent_run_sweep import start_agent_run_sweep
+        agent_run_sweep_started = await start_agent_run_sweep()
+        _log.info("gateway.agent_run_sweep", started=agent_run_sweep_started)
+    except Exception as exc:
+        _log.warning("gateway.agent_run_sweep_skipped", error=str(exc))
+
+    # Chat-run liveness (incident 2026-10-09). This process beats a heartbeat
+    # key, so a run it holds reads as alive and a run of a dead process reads
+    # as dead. The loop also sweeps: each run a dead process left is closed,
+    # and its partial reply is saved with an "interrupted by an update" marker
+    # (gateway.chat_recovery). The first sweep runs in the loop, so startup
+    # never waits on it. Fence: tests/unit/test_chat_deploy_recovery.py.
+    try:
+        from orchestrator.run_liveness import start_instance_heartbeat
+
+        from gateway.chat_recovery import persist_interrupted
+
+        start_instance_heartbeat(on_interrupted=persist_interrupted)
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("gateway.run_liveness_skipped", error=str(exc)[:200])
+
     # Anthropic prompt-cache warming (specs/llm_caching_memory.md Phase 6).
     # Fire the orchestrator's stable prefix at any Anthropic-backed tier with
     # max_tokens=0 so the first real user request is a cache HIT, not a cold
@@ -374,6 +606,15 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     _asyncio.ensure_future(_prewarm_prompt_cache())
 
     yield
+
+    # First on the way out: delete this process's heartbeat key, so the next
+    # process sees the chat runs this one held as dead at once, and closes
+    # them, rather than after the key's TTL.
+    try:
+        from orchestrator.run_liveness import stop_instance_heartbeat
+        await stop_instance_heartbeat()
+    except Exception:
+        pass
 
     # Stop background email sync scheduler
     try:
@@ -395,12 +636,112 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception:
         pass
 
+    try:
+        from gateway.routes.whatsapp_channel.bot_run import (
+            stop_sweep as stop_whatsapp_bot_sweep,
+        )
+        await stop_whatsapp_bot_sweep()
+    except Exception:
+        pass
+
     # Stop the CRM ⟷ Zoho sync loop. Unconditional, like every other
     # supervised loop here: a flag-gated loop that never started is still
     # stopped, so the shutdown path never has to know why it is absent.
     try:
         from gateway.routes.crm.sync_zoho import stop_crm_zoho_sync
         await stop_crm_zoho_sync()
+    except Exception:
+        pass
+
+    # Stop the CRM mirror sync loop and wait for a run in progress.
+    try:
+        from gateway.crm_sync.scheduler import stop_crm_mirror_sync
+        await stop_crm_mirror_sync()
+    except Exception:
+        pass
+
+    # Stop the Knowledge sync loop. Unconditional, like the CRM mirror stop.
+    try:
+        from gateway.kb_sync.scheduler import stop_kb_sync
+        await stop_kb_sync()
+    except Exception:
+        pass
+
+    # Stop the My Day loop. Unconditional, like the CRM mirror stop above.
+    try:
+        from gateway.my_day_loop import stop_my_day_loop
+        await stop_my_day_loop()
+    except Exception:
+        pass
+
+    # Stop the GitHub reconcile poll. Unconditional, like the My Day stop.
+    try:
+        from gateway.github_reconcile_loop import stop_github_reconcile_loop
+        await stop_github_reconcile_loop()
+    except Exception:
+        pass
+
+    # Stop the Reach loop. Unconditional, like the My Day stop above.
+    try:
+        from gateway.reach.loop import stop_reach_loop
+        await stop_reach_loop()
+    except Exception:
+        pass
+
+    # Stop the mailbox purge loop and wait for a tick in progress.
+    try:
+        from gateway.routes.email.memory_purge import stop_purge_loop
+        await stop_purge_loop()
+    except Exception:
+        pass
+
+    # Stop the send-later job and wait for a tick in progress.
+    try:
+        from gateway.routes.email.automation.send_later import stop_send_later_loop
+        await stop_send_later_loop()
+    except Exception:
+        pass
+
+    # Stop the reminder loop and wait for a tick in progress.
+    try:
+        from gateway.reminders.loop import stop_reminder_loop
+        await stop_reminder_loop()
+    except Exception:
+        pass
+
+    # Stop the shared job worker and wait for a tick in progress.
+    try:
+        from gateway.jobs.worker import stop_job_worker
+        await stop_job_worker()
+    except Exception:
+        pass
+
+    # Stop the Knowledge embed sweep and wait for a tick in progress.
+    try:
+        from gateway.kb_index.sweep import stop_kb_embed_sweep
+        await stop_kb_embed_sweep()
+    except Exception:
+        pass
+
+    # Stop the Knowledge proposal expiry and wait for a tick in progress.
+    try:
+        from gateway.routes.knowledge.proposal_expiry import stop_kb_proposal_expiry
+        await stop_kb_proposal_expiry()
+    except Exception:
+        pass
+
+    # Stop the sweep of stranded agent runs and wait for a tick in progress.
+    try:
+        from gateway.agent_run_sweep import stop_agent_run_sweep
+        await stop_agent_run_sweep()
+    except Exception:
+        pass
+
+    # Stop the sandbox broker's reaper (WS-43c). The next startup sweeps every
+    # labelled container, so shutdown removes none.
+    try:
+        from orchestrator.sandbox_broker import stop_sandbox_broker
+        await stop_sandbox_broker()
     except Exception:
         pass
 
@@ -434,6 +775,25 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
         from ingestion.consumer import stop_ingestion_consumer
         await stop_ingestion_consumer()
+    except Exception:
+        pass
+
+    # Cancel the Projects agent runs that are still going. Each one writes an
+    # "interrupted by a restart" row first, so no task keeps a "started" row
+    # that nothing closes. Before the audit drain, so their audit rows flush.
+    try:
+        from gateway.routes.projects.agent_dispatch import stop_runs
+        await stop_runs()
+    except Exception:
+        pass
+
+    # WS-47 WAC-3: cancel the WhatsApp bot's live runs. Each row stays
+    # `running`, and the next process's sweep runs it again.
+    try:
+        from gateway.routes.whatsapp_channel.bot_run import (
+            stop_runs as stop_whatsapp_bot_runs,
+        )
+        await stop_whatsapp_bot_runs()
     except Exception:
         pass
 
@@ -575,6 +935,11 @@ PUBLIC_ROUTES: frozenset[str] = frozenset({
     # contain.
     "/webhooks/gmail",
     "/webhooks/zoho",
+    # WS-54 GH-4 — the Metorite GitHub App. HMAC-SHA256 of the raw body
+    # (X-Hub-Signature-256, hmac.compare_digest) after a 5 MiB stream cap,
+    # and the org comes only from the SECURITY DEFINER installation lookup.
+    # With GITHUB_APP_ENABLED off it answers 404. routes/github/webhook.py.
+    "/webhooks/github",
 
     # Agent dispatch — HMAC-SHA256 over the raw body (X-CC-Signature), and it
     # fails closed when unconfigured. See routes/agent.verify_webhook_signature.
@@ -590,6 +955,14 @@ PUBLIC_ROUTES: frozenset[str] = frozenset({
     # Microsoft Graph change notification — validationToken echo, then the
     # signed `org` in the URL, then clientState inside that tenant.
     "/email/webhook/microsoft",
+
+    # WS-17 SG-1 (D-EM-68) — a hosted signature image. Every reader of a mail
+    # fetches it with no session. The 256-bit token in the URL IS the
+    # credential: the route checks the org is a UUID, binds
+    # tenant_session(org) and reads the one row whose token matches, under
+    # RLS. Every miss is the same 404. It serves image bytes only, with
+    # nosniff and `default-src 'none'`. routes/email/signature_images.py.
+    "/email/signature-image/{org}/{token}.{ext}",
 
     # Meta webhook — verify-token on GET, signature on POST.
     "/whatsapp/webhook",
@@ -702,6 +1075,9 @@ async def _tenant_unbound(request: Request, exc: TenantUnbound) -> JSONResponse:
         },
     )
     if unreachable:
+        # `/health` says "db busy" for a moment, so the shell's update notice
+        # can explain this to the member (navigation_shell.md §7.3).
+        db_busy.mark()
         # ⚠️ **503, and it is checked BEFORE `identified`.** This is our
         # fault, it is retryable, and saying so is the entire point: the
         # advice the 403 gives — ask an administrator — could not have fixed
@@ -751,6 +1127,42 @@ async def _tenant_unbound(request: Request, exc: TenantUnbound) -> JSONResponse:
             "code": "tenant_unbound",
         },
     )
+
+
+# ── A refused database connection is a 503, not a 500 (2026-10-06) ─────────
+# Measured on the box: about 590 EMAXCONNSESSION refusals from Supabase's
+# pooler in two days, during deploys and at busy moments. Each one reached a
+# member as "The server had an error (500). Nothing was saved." A connection
+# that could not be had is not a defect in the route. It is the service being
+# briefly unavailable, so the answer is 503 with a short Retry-After. The
+# workbench then says "Metorite is busy or updating" (`lib/apiError.ts`), and
+# the shell's notice shows "Metorite is busy" (navigation_shell.md §7.3).
+#
+# ⚠️ Every OTHER exception keeps exactly the old answer: a bare 500, and
+# Starlette's ServerErrorMiddleware still logs the traceback, because it
+# raises the exception again after this handler answers.
+# ⚠️ The driver's message is NOT echoed. It names the pooler host and limits.
+# Fence: tests/unit/test_db_busy.py.
+@app.exception_handler(Exception)
+async def _db_unavailable(request: Request, exc: Exception):
+    if db_busy.is_db_unavailable(exc):
+        db_busy.mark()
+        _log.warning(
+            "db.unavailable",
+            extra={"db_path": request.url.path, "db_error": type(exc).__name__},
+        )
+        return JSONResponse(
+            status_code=503,
+            headers={"Retry-After": "3"},
+            content={
+                "detail": (
+                    "Metorite is busy for a moment, often during an update."
+                    " Try again in a moment."
+                ),
+                "code": "db_busy",
+            },
+        )
+    return PlainTextResponse("Internal Server Error", status_code=500)
 
 
 # ── Tenant scope (MT-1c / H2) ── every HTTP request runs inside its own tenant
@@ -889,8 +1301,11 @@ if _HAS_MAF:
                 "",
             )
 
-            # Build per-request agent (cheap — tools are closures, no network I/O)
-            agent = build_orchestrator_agent(with_history=False)
+            # Build per-request agent (cheap — tools are closures, no network I/O).
+            # PZ-25: the org of the server-side UserContext decides the
+            # profile tools, because this build comes before run_detached binds.
+            agent = build_orchestrator_agent(
+                with_history=False, organization_id=_organization_id)
 
             # thread_id (also derived below for the Redis relay) — pass it into
             # memory enrichment so the memory block is session-cached and stays
@@ -909,12 +1324,17 @@ if _HAS_MAF:
                 if isinstance(opts, dict) and enriched:
                     opts["instructions"] = enriched
 
-            # Apply thinking mode to agent options
+            # Apply thinking mode to agent options. The orchestrator is a
+            # native MAF agent, so it may get ``reasoning_effort`` only:
+            # ``_apply_thinking_mode`` writes ``model_params``/``thinking``,
+            # which ``AsyncCompletions.create()`` refuses (PR #585 review).
             think_mode = input_data.get("think_mode", "auto")
             if think_mode and think_mode != "auto":
-                opts = agent.default_options
-                if isinstance(opts, dict):
-                    _apply_thinking_mode(opts, think_mode)
+                from orchestrator._model_resolution import (
+                    _apply_thinking_mode_for_agent,
+                )
+
+                _apply_thinking_mode_for_agent(agent, think_mode)
 
             # ── Resolve the selected LiteLLM tier and pin it on the agent ──
             # Native MAF agents read their model from default_options["model"]; if
@@ -948,9 +1368,13 @@ if _HAS_MAF:
                 except Exception as exc:
                     _log.exception("copilot_chat.stream_error")
                     try:
+                        # A code from the run-error vocabulary, which the
+                        # chat maps to words (acb_llm.run_errors). It was the
+                        # class name until 2026-10-08.
+                        from acb_llm.run_errors import classify_run_error
                         yield encoder.encode(_RunErrorEvent(
                             message="Internal error during agent run",
-                            code=type(exc).__name__,
+                            code=classify_run_error(exc),
                         ))
                     except Exception:
                         pass
@@ -985,6 +1409,17 @@ if _HAS_MAF:
                 _mem_last_user = last_user_msg
 
                 async def _persist_cb() -> None:  # type: ignore[misc]
+                    # WS-17 EM-G11f3 (W3): ONE answer of the mail predicate,
+                    # asked before the fold, with the run's session and member.
+                    # run_detached bound the run's tenant. A fault reads as mail.
+                    try:
+                        from acb_skills.egress import run_holds_mail
+                        _holds_mail = await run_holds_mail(
+                            "orchestrator",
+                            {"session_id": _thread_id, "member": user_id},
+                        )
+                    except Exception:  # fail closed: the run holds mail
+                        _holds_mail = True
                     folded = await persist_final_assistant_message(
                         _thread_id, assistant_message_id,
                         user_id=user_id, agent_name="orchestrator",
@@ -992,6 +1427,7 @@ if _HAS_MAF:
                         model=(_resolved_model or model),
                         # S15 (§21): the fold binds the server-side tenant.
                         organization_id=_organization_id,
+                        holds_mail=_holds_mail,
                     )
                     # Memory extraction at the SAME run boundary (P1-9): fires on
                     # finish/error/cancel/reconnect via run_detached's finally,
@@ -999,7 +1435,14 @@ if _HAS_MAF:
                     # to Mem0 — and it now includes the FOLDED ANSWER (the old
                     # background_tasks path saw only the input messages and never
                     # the assistant turn). route.ts no longer extracts for this
-                    # orchestrator path. Best-effort.
+                    # orchestrator path. Best-effort. A run that holds mail
+                    # writes to neither store (section 12.3.13.9.1, item 3).
+                    if _holds_mail:
+                        _log.info(
+                            "copilot_chat.run_end_memory_extraction_skipped_mail",
+                            thread_id=_thread_id[:12],
+                        )
+                        return
                     if not (user_id and _mem_conv_in):
                         return
                     try:
@@ -1024,7 +1467,8 @@ if _HAS_MAF:
                                 name=f"chat:{user_id[:20]}",
                                 content=_mem_last_user[:500],
                                 source_description="copilot_chat",
-                                group_id=user_id,
+                                # KG-9: the episode's group is its org.
+                                organization_id=_organization_id,
                             )
                     except ImportError:
                         pass
@@ -1044,9 +1488,18 @@ if _HAS_MAF:
             import time as _obs_time
             _obs_run_id = assistant_message_id or _thread_id or None
             _obs_started = _obs_time.monotonic()
+            # H-201c: the feed is keyed for each tenant. Capture the org of
+            # the request NOW, because the end event fires from the detached
+            # on_complete, which may run after the middleware released it.
+            try:
+                from acb_common.db import current_tenant as _obs_tenant
+                _obs_org = _obs_tenant()
+            except Exception:
+                _obs_org = None
             try:
                 from acb_common import publish_activity
                 publish_activity(
+                    organization_id=_obs_org,
                     kind="agent", phase="start", agent="orchestrator",
                     run_id=_obs_run_id, thread_id=_thread_id or None,
                     user=user_id or None, model=(_resolved_model or model or None),
@@ -1065,6 +1518,7 @@ if _HAS_MAF:
                     try:
                         from acb_common import publish_activity
                         publish_activity(
+                            organization_id=_obs_org,
                             kind="agent", phase="end", agent="orchestrator",
                             run_id=_obs_run_id, thread_id=_thread_id or None,
                             status="completed",
@@ -1121,33 +1575,9 @@ if _HAS_MAF:
                     async for line in event_generator():
                         yield line
 
-            # Fallback memory extraction ONLY for the degraded no-thread_id /
-            # no-message-id case (no run boundary to hook): fires on the
-            # response lifecycle and sees only the input messages. The normal
-            # path extracts at the run boundary inside _persist_cb above (P1-9),
-            # with the folded answer included — so skip here to avoid double
-            # extraction when that callback is wired.
-            if _persist_cb is None:
-                try:
-                    from acb_memory import (
-                        add_episode,
-                        add_memories_background,
-                    )
-                    if last_user_msg and messages:
-                        conv = [
-                            {"role": m.get("role", "user"), "content": m.get("content", "")}
-                            for m in messages if m.get("content")
-                        ]
-                        background_tasks.add_task(add_memories_background, user_id, conv)
-                        # Also populate the bi-temporal knowledge graph (Graphiti)
-                        background_tasks.add_task(add_episode,
-                            name=f"chat:{user_id[:20]}",
-                            content=last_user_msg[:500],
-                            source_description="copilot_chat",
-                            group_id=user_id,
-                        )
-                except ImportError:
-                    pass
+            # The degraded case with no thread_id or no message id has no run
+            # boundary and no session, so it cannot read a mail mark. It writes
+            # no memory (WS-17 EM-G11f3, section 12.3.13.9.1 item 3, W4).
 
             return StreamingResponse(
                 relayed_generator() if _thread_id else event_generator(),
@@ -1189,6 +1619,58 @@ try:
     from gateway.routes.integrations import router as _integrations_router
 
     app.include_router(_integrations_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-54 IN-1 — the Integrations console read model and its writes.
+    from gateway.routes.integrations_connections import router as _connections_router
+
+    app.include_router(_connections_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-54 IN-8a — MCP OAuth for an org connection. Dark: with
+    # MCP_OAUTH_ENABLED off, each of its routes answers 404.
+    from gateway.routes.integrations_mcp_oauth import router as _mcp_oauth_router
+
+    app.include_router(_mcp_oauth_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-54 GH-3 — the connect flow of the Metorite GitHub App
+    # (github_integration.md §7). Dark: with GITHUB_APP_ENABLED off, each of
+    # its routes answers 404. The callback runs behind the member session
+    # through the BFF, so it is NOT in PUBLIC_ROUTES.
+    from gateway.routes.github.connect import router as _github_connect_router
+    from gateway.routes.github.connect import token_router as _github_token_router
+
+    app.include_router(_github_connect_router)
+    # WS-54 GH-7 — PUT /integrations/github/token, the Advanced token. NOT
+    # behind the App flag: it is the path for an org with no App install.
+    app.include_router(_github_token_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-54 GH-4 — POST /webhooks/github, in PUBLIC_ROUTES above. It
+    # authenticates itself with the HMAC of github_integration.md §8.2.
+    from gateway.routes.github.webhook import router as _github_webhook_router
+
+    app.include_router(_github_webhook_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-55 EA-4b — every agent connection of the org, for an admin of the
+    # Integrations app (external_agent_access.md §5.4). Gated on
+    # feature:integrations AND integrations:manage at the router. With
+    # `agent_access_enabled` off, each route answers 404.
+    from gateway.routes.integrations_agents import router as _integrations_agents_router
+
+    app.include_router(_integrations_agents_router)
 except Exception:  # pragma: no cover
     pass
 
@@ -1255,6 +1737,25 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # WS-53 CRM-Q32-5 — the org-facts read seam, `GET /org/facts`
+    # (crm_platform.md §18.14.4). Each app registers one provider in
+    # `gateway/org_facts.py`, and each provider applies its own access rule.
+    from gateway.routes.org_facts import router as _org_facts_router
+
+    app.include_router(_org_facts_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-61 — the Knowledge app (spec: project-docs/specs/knowledge_base.md).
+    # Spaces and pages, dark behind KNOWLEDGE_ENABLED and KNOWLEDGE_ORGS.
+    from gateway.routes.knowledge import router as _knowledge_router
+
+    app.include_router(_knowledge_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     # WS-27 — native project management (spec:
     # project-docs/specs/project_management_app.md). Departments, projects,
     # subprojects, tasks and subtasks, grant-scoped into every Center.
@@ -1287,6 +1788,48 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # NS-4a — the command bar's "Find" (navigation_shell.md §6.3). One route
+    # that calls each app's OWN search on the member, behind that app's own
+    # feature check. No router-level feature gate: the member's apps decide
+    # which groups come back, and an app they lack is left out, not refused.
+    from gateway.routes.shell import router as _shell_router
+
+    app.include_router(_shell_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-61 KR-1 — company retrieval, `GET /search/company`
+    # (knowledge_base.md §20.4). It asks each source of
+    # `gateway.retrieval.sources.REGISTRY`, and each source checks its own
+    # app's feature, as the command bar does. No router-level feature gate.
+    from gateway.retrieval.company import router as _company_search_router
+
+    app.include_router(_company_search_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-59 RE-1a — Reach: `/reach/preview` and `/reach/brief`
+    # (proactive_reach.md). Gated on `feature:chat`, as the WhatsApp channel
+    # is. With REACH_ENABLED off, or the member off the allowlist, both 404.
+    from gateway.reach.routes import router as _reach_router
+
+    app.include_router(_reach_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-66 PN-1 — web push: `/push/public-key`, `/push/subscriptions` and
+    # `/push/test` (calendar_events_reminders.md §10.2). Gated on
+    # `feature:chat`, as `/reach` is. With WEB_PUSH_ENABLED off, each 404.
+    from gateway.push.routes import router as _push_router
+
+    app.include_router(_push_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     from gateway.routes.settings import router as _settings_router
 
     app.include_router(_settings_router)
@@ -1302,6 +1845,14 @@ try:
     app.include_router(_operator_router)
 except Exception:  # pragma: no cover
     pass
+
+# The restart drain (routes/drain.py). The unit's ExecStop= reads it before
+# the stop signal. Not in a try: a gateway without it restarts with no wait.
+from gateway.routes.drain import AfterResponseCounter  # noqa: E402
+from gateway.routes.drain import router as _drain_router  # noqa: E402
+
+app.include_router(_drain_router)
+app.add_middleware(AfterResponseCounter)
 
 try:
     # BO-1 / A2 — Action Broker approval inbox over the pending_actions queue.
@@ -1339,6 +1890,58 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # WS-62 CF-5 — the day's brief as the first turn of a fresh chat on a
+    # phone (`chat_first_surface.md` §4.6). Shares /chat's prefix, in its own
+    # module, as the rooms do.
+    from gateway.routes.chat_brief import router as _chat_brief_router
+
+    app.include_router(_chat_brief_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # projects_ai_chat.md §31 VOX-1 — the chat's voice input, a clip to the
+    # Console's metered transcribe door. Shares /chat's prefix, in its own
+    # module, as the brief does. Dark behind CHAT_VOICE_ORGS.
+    from gateway.routes.chat_transcribe import router as _chat_transcribe_router
+
+    app.include_router(_chat_transcribe_router)
+except Exception:  # pragma: no cover
+    pass
+
+# Task 2432 (F1 of STU-L0) — the rate limit of the React artifact compile.
+# The workbench takes one slot here before it starts esbuild. The counter
+# lives in the tenant Redis wrapper. No `try`: the module needs only
+# acb_auth, acb_common and fastapi, and a router that silently failed to
+# import would answer 404, which the workbench reads as an outage.
+# Fence: `test_artifact_compile_slot.py::test_the_real_gateway_app_serves_both_routes`.
+from gateway.routes.artifact_compile import router as _artifact_compile_router  # noqa: E402
+
+app.include_router(_artifact_compile_router)
+
+try:
+    # WS-66 RM-4 — a tap on a reminder link opens the chat with a first
+    # message that code built (`calendar_events_reminders.md` §5.7). Shares
+    # /chat's prefix, in its own module, as the brief does.
+    from gateway.routes.chat_reminder import router as _chat_reminder_router
+
+    app.include_router(_chat_reminder_router)
+
+    # WS-BRIEF BR-2c-1 — `GET /brief/today`, the member's stored brief
+    # (`core_brief.md` §5 item 3). Dark: `BRIEF_IN_APP` off answers 404.
+    from gateway.routes.brief_today import router as _brief_today_router
+
+    app.include_router(_brief_today_router)
+
+    # WS-BRIEF BR-2d — `GET /admin/brief/health`, the delivery stats of the org
+    # (`core_brief.md` §7). Dark: the brief off for the org answers 404.
+    from gateway.routes.admin_brief_health import router as _brief_health_router
+
+    app.include_router(_brief_health_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     # Rooms share /chat's prefix — a room IS a chat session — but live in their
     # own module because membership, presence, and the live room stream are a
     # different concern from history CRUD.
@@ -1352,6 +1955,15 @@ try:
     from gateway.routes.workspace import router as _workspace_router
 
     app.include_router(_workspace_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-60 AM-1 — the artifact registry reads. Dark behind
+    # ARTIFACT_REGISTRY_ENABLED (both routes answer 404 with it off).
+    from gateway.routes.artifacts import router as _artifacts_router
+
+    app.include_router(_artifacts_router)
 except Exception:  # pragma: no cover
     pass
 
@@ -1385,6 +1997,19 @@ try:
     # Separate router: the feature gate's dependency needs an HTTP Request,
     # which FastAPI never supplies to a WebSocket route. See core.ws_router.
     app.include_router(_whatsapp_ws_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-47 WAC-1 — Chat on WhatsApp, the member's link code
+    # (whatsapp_assistant_channel.md §5.2). A router of its own, gated on
+    # `feature:chat`, and NOT on the `/whatsapp` router above, whose
+    # `feature:whatsapp` gate belongs to the inbox app. Ships dark behind
+    # WHATSAPP_ASSISTANT_ENABLED + WHATSAPP_ASSISTANT_ORGS: off ⇒ 404, nothing
+    # written. `test_wac_link_code.py` fails if this mount is lost.
+    from gateway.routes.whatsapp_channel import router as _whatsapp_channel_router
+
+    app.include_router(_whatsapp_channel_router)
 except Exception:  # pragma: no cover
     pass
 
@@ -1427,6 +2052,29 @@ try:
     except Exception:  # pragma: no cover - ingestion optional in some deploys
         pass
 except Exception:  # pragma: no cover
+    pass
+
+try:
+    # AI Studio (project-docs/specs/ai_studio.md): STU-B1, the read-only
+    # action catalog (prefix /studio). Dark behind STUDIO_ORGS.
+    from gateway.routes.studio import router as _studio_router
+
+    app.include_router(_studio_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-58 MD-5a — the My Day change sink (my_day_feed.md §8.2, §8.4 items 1
+    # and 20). A `pm.*` event bumps the org's feed version with one Redis
+    # increment, and runs no SQL. Its OWN try, apart from the workflows block,
+    # so a failed workflows import does not drop it. MY_DAY_CACHE gates it
+    # inside the sink, never here.
+    from ingestion.event_hooks import register_event_sink as _register_my_day_sink
+
+    from gateway.routes.shell.cache import on_event as _my_day_sink
+
+    _register_my_day_sink(_my_day_sink)
+except Exception:  # pragma: no cover - ingestion optional in some deploys
     pass
 
 try:
@@ -1519,11 +2167,84 @@ try:
 except Exception:  # pragma: no cover
     pass
 
+try:
+    # WS-55 EA-2a — the authenticated half of the outside-agent authorization
+    # server (external_agent_access.md §15). Authenticated by the app-wide
+    # `require_authenticated` above and deliberately NOT in PUBLIC_ROUTES; the
+    # consent page reaches it through a BFF. The public half (metadata, token,
+    # revoke) is the separate edge unit `apps/services/agent_edge`. Ships dark
+    # — `agent_access_enabled` off ⇒ every route 404.
+    from gateway.routes.agent_access import router as _agent_access_router
+
+    app.include_router(_agent_access_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-MCP MCP-P1a — the two list routes of the app door
+    # (external_agent_access.md §19.4): `GET /agent-access/apps` and
+    # `GET /agent-access/apps/{app}`. A signed agent of branch 0 reads them,
+    # and nobody else. Ships dark: 404 while `agent_door_apps` names no app.
+    from gateway.routes.agent_apps import router as _agent_apps_router
+
+    app.include_router(_agent_apps_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-MCP MCP-P1b-1 — the routes of an app request
+    # (external_agent_access.md §19.5): the ask of an agent, the member's list,
+    # one read and the member's decision. The store is
+    # `gateway/app_requests.py`. Ships dark: 404 while `agent_access_enabled`
+    # is off. No pair is in `MCP_ROUTES` yet (MCP-P1b-2).
+    from gateway.routes.agent_requests import router as _agent_requests_router
+
+    app.include_router(_agent_requests_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-MCP SW-31a — the org's written rules for agents
+    # (agent_coordination.md SW-31): the save, the history, the blocks that
+    # apply to a task, and the refs for `my_work`. Ships dark: 404 while
+    # `AGENT_GUIDANCE_ORGS` does not hold the caller's org.
+    from gateway.routes.agent_guidance import router as _agent_guidance_router
+
+    app.include_router(_agent_guidance_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-ALN ALN-5a — the rules of a project (project_alignment.md §4.2), on
+    # the one guidance store: create, accept, edit, retire, the level, the
+    # list and the history. Ships dark: 404 while `PROJECT_RULES_ORGS` does
+    # not hold the caller's org.
+    from gateway.routes.project_rules import router as _project_rules_router
+
+    app.include_router(_project_rules_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-ALN ALN-5b — Mira proposes the rules of one pinned page
+    # (project_alignment.md §4.2): one model call with no tools, each quote
+    # checked, at most 12 proposals for each page version. Ships dark behind
+    # the same `PROJECT_RULES_ORGS` (404 while the org is not listed).
+    from gateway.routes.project_rules_propose import router as _project_rules_propose_router
+
+    app.include_router(_project_rules_propose_router)
+except Exception:  # pragma: no cover
+    pass
+
 # ---------- Health ----------
 
 class Health(BaseModel):
     status: str
     env: str
+    #: "busy" when the database refused a connection in the last few
+    #: seconds, from memory: this route never opens a connection, so a probe
+    #: adds no load at the moment there is none to spare (db_busy.py).
+    db: str = "ok"
 
 
 class Version(BaseModel):
@@ -1549,15 +2270,35 @@ class Version(BaseModel):
     #: Null when the box holds no readable marker.
     applied_sha: str | None = None
     applied_at: str | None = None
+    #: WS-66 PN-1. The gateway's `WEB_PUSH_ENABLED`, the ONE switch of web
+    #: push, so `curl` shows whether a box serves it. The browser has no
+    #: build-time flag: My Profile asks `/push/public-key`, which answers 404
+    #: with the switch off. It names the switch only, never a key
+    #: (calendar_events_reminders.md §10.2 item 2).
+    web_push: bool = False
+    #: WS-66 RM-1 (`calendar_events_reminders.md` §9). The gateway's
+    #: `CALENDAR_REMINDERS` flag, the ONE switch of reminders, so `curl`
+    #: shows whether a box serves them. With it off, every reminder route
+    #: answers 404. Off by default.
+    calendar_reminders: bool = False
+    #: WS-CAL CE-4 (`calendar_events_reminders.md` §9). The gateway's
+    #: `CALENDAR_EVENTS` flag, the ONE switch of the event store, so `curl`
+    #: shows whether a box serves it. With it off, every entry route
+    #: answers 404 and the calendar read has no `entries` key. Off by default.
+    calendar_events: bool = False
+    #: True when a SIGHUP reloads the flags of this process with no restart
+    #: (`gateway/flag_reload.py`). Check it BEFORE a SIGHUP: a gateway
+    #: without the handler ends on that signal. `flags_reloaded_at` is the
+    #: last reload that applied its keys, or null.
+    flag_reload: bool = False
+    flags_reloaded_at: str | None = None
 
 
 def _runtime_checks() -> dict[str, dict]:
-    """Validate the GitHub Copilot SDK (Tier 1.5) sandbox prerequisites.
+    """Report the Tier 1.5 sandbox prerequisites that remain, plus the Router.
 
-    Checks (M2.6 cloud-sandbox requirements):
-      - copilot SDK importable (bundled copilot.exe present)
-      - pwsh on PATH (copilot.exe shell tool backend)
-      - GITHUB_TOKEN configured (Copilot auth)
+    WS-43o: no check imports the Copilot SDK. ``pwsh`` and ``github_token``
+    stay until WS-43q removes the executor Copilot path.
 
     Returns ``{check_name: {"ok": bool, "detail": str}}``. Never raises.
     """
@@ -1566,13 +2307,22 @@ def _runtime_checks() -> dict[str, dict]:
     settings = get_settings()
     checks: dict[str, dict] = {}
 
-    # copilot SDK importable
+    # The Router (Console) is how the model list and chat are served.
     try:
-        import copilot  # noqa: F401
+        from acb_llm.routed import router_wired
 
-        checks["copilot_sdk"] = {"ok": True, "detail": "importable"}
+        wired = router_wired()
+        # With Router serving on, chat needs the wiring (D57.7), so an unwired
+        # Router is a failed check. With serving off, the tier slate still lists.
+        serving = bool(getattr(settings, "router_serving_enabled", False))
+        checks["router"] = {
+            "ok": bool(wired) or not serving,
+            "detail": "wired" if wired else (
+                "NOT wired, and Router serving is on: chat fails" if serving
+                else "not wired (the tier slate still lists)"),
+        }
     except Exception as exc:
-        checks["copilot_sdk"] = {"ok": False, "detail": f"import failed: {exc}"}
+        checks["router"] = {"ok": False, "detail": f"router check failed: {exc}"}
 
     # pwsh on PATH
     pwsh = shutil.which("pwsh") or shutil.which("powershell")
@@ -1595,7 +2345,11 @@ def _runtime_checks() -> dict[str, dict]:
 
 @app.get("/health", response_model=Health, tags=["meta"])
 async def health() -> Health:
-    return Health(status="ok", env=get_settings().acb_env)
+    return Health(
+        status="ok",
+        env=get_settings().acb_env,
+        db="busy" if db_busy.recently_busy() else "ok",
+    )
 
 
 @app.get("/version", response_model=Version, tags=["meta"])
@@ -1636,7 +2390,15 @@ async def version() -> Version:
     visible with `curl`. Both flags are retired, and the one task store is the
     only store. The key stays for one release so the monitoring that reads it
     does not break. S9 may drop it.
+
+    `web_push` is the gateway's `WEB_PUSH_ENABLED` (WS-66 PN-1), through
+    its one reader, `gateway.push.flags`.
     """
+    from gateway import flag_reload
+    from gateway.push import flags as push_flags
+    from gateway.routes.projects.reminders import reminders_enabled
+    from gateway.routes.tasks.entries import events_enabled
+
     applied_sha, applied_at = applied_marker()
     return Version(
         sha=build_sha(),
@@ -1644,12 +2406,17 @@ async def version() -> Version:
         tasks_lens=True,
         applied_sha=applied_sha,
         applied_at=applied_at,
+        web_push=push_flags.enabled(),
+        calendar_reminders=reminders_enabled(),
+        calendar_events=events_enabled(),
+        flag_reload=flag_reload.installed(),
+        flags_reloaded_at=flag_reload.last_reload(),
     )
 
 
 @app.get("/health/runtime", tags=["meta"])
 async def health_runtime() -> dict:
-    """Report Tier 1.5 sandbox readiness (copilot SDK, pwsh, GITHUB_TOKEN)."""
+    """Report runtime readiness (Router, pwsh, GITHUB_TOKEN). No Copilot SDK check."""
     checks = _runtime_checks()
     return {"ok": all(c["ok"] for c in checks.values()), "checks": checks}
 
@@ -1682,7 +2449,15 @@ async def embeddings(
         from openai import OpenAI
         client = OpenAI(api_key=oai_key)
         inputs = req.input if isinstance(req.input, list) else [req.input]
-        resp = client.embeddings.create(model=req.model, input=inputs)
+        # The client is synchronous. A worker thread keeps one embed from
+        # stalling the event loop for every tenant, because the gateway also
+        # calls this route over loopback on each Knowledge search and publish
+        # (WS-61 KB-3 review, 2026-10-16).
+        import asyncio as _asyncio
+
+        resp = await _asyncio.to_thread(
+            client.embeddings.create, model=req.model, input=inputs,
+        )
         return resp.model_dump()
     # No embedding provider configured → return a zero vector so Mem0's add()
     # can still complete, but WARN loudly: semantic search is silently degraded
@@ -1711,135 +2486,24 @@ async def embeddings(
 
 
 
-# ---------- Copilot models ----------
-# Returns the list of models available via the GitHub Copilot SDK.
-# The UI at /api/models/all calls this to populate the Copilot SDK model group.
-# If GITHUB_TOKEN is not set, returns the static fallback list so the UI still
-# works without blocking.
-
-_COPILOT_MODELS_STATIC = [
-    {"id": "claude-sonnet-4.6",    "label": "Claude Sonnet 4.6"},
-    {"id": "claude-sonnet-4.5",    "label": "Claude Sonnet 4.5"},
-    {"id": "claude-haiku-4.5",     "label": "Claude Haiku 4.5"},
-    {"id": "claude-opus-4.6",      "label": "Claude Opus 4.6"},
-    {"id": "claude-opus-4.6-fast", "label": "Claude Opus 4.6 (fast mode)"},
-    {"id": "claude-opus-4.5",      "label": "Claude Opus 4.5"},
-    {"id": "gpt-5.4",              "label": "GPT-5.4"},
-    {"id": "gpt-5-mini",           "label": "GPT-5 mini"},
-]
-
-
-def _copilot_ctx(model_id: str) -> int:
-    """Curated context-window (tokens) for a Copilot SDK model id.
-
-    Used as a fallback when the SDK model object doesn't expose its limits.
-    Substring match so version variants (claude-sonnet-4.5/4.6, gpt-5.4/5.5)
-    resolve to the right family.
-    """
-    mid = (model_id or "").lower()
-    if "claude" in mid:
-        return 200_000
-    if "gpt-5" in mid or "gpt5" in mid:
-        return 400_000
-    if "gpt-4.1" in mid:
-        return 1_000_000
-    if "gpt-4o" in mid or "gpt-4" in mid:
-        return 128_000
-    if mid.startswith(("o1", "o3", "o4")) or "-o3" in mid or "-o1" in mid:
-        return 200_000
-    if "gemini-3" in mid or "gemini-2.5" in mid or "gemini" in mid:
-        return 1_000_000
-    # DeepSeek V4 via Copilot CLI: docs configure an 840K prompt limit
-    # (https://api-docs.deepseek.com/quick_start/agent_integrations/copilot_cli);
-    # native DeepSeek API context is 1M but Copilot CLI caps the prompt budget.
-    if "deepseek-v4" in mid or "deepseek/deepseek-v4" in mid:
-        return 840_000
-    if "deepseek" in mid:
-        return 128_000
-    return 0
-
-
-def _sdk_ctx(model: object) -> int:
-    """Best-effort extraction of a Copilot SDK model's context window.
-
-    The GitHub Copilot models API exposes
-    capabilities.limits.max_context_window_tokens; the SDK may surface it as
-    nested attributes or a dict.  Returns 0 when unavailable (caller falls back
-    to the curated map)."""
-    caps = getattr(model, "capabilities", None)
-    # Dict form
-    if isinstance(caps, dict):
-        lim = caps.get("limits") or {}
-        if isinstance(lim, dict):
-            v = lim.get("max_context_window_tokens") or lim.get("max_prompt_tokens")
-            if isinstance(v, int) and v > 0:
-                return v
-    # Attribute form
-    lim = getattr(caps, "limits", None)
-    for attr in ("max_context_window_tokens", "max_prompt_tokens"):
-        v = getattr(lim, attr, None)
-        if isinstance(v, int) and v > 0:
-            return v
-    return 0
-
-import time as _time
-
-_copilot_models_cache: dict = {"data": None, "ts": 0.0}
-_COPILOT_MODELS_CACHE_TTL = 300
-
+# ---------- Model list (WS-43o, D84) ----------
+# The Copilot SDK model list is gone. The model picker reads the Router tier
+# slate through the Control Plane at /api/models/all. This route stays so an
+# old caller gets a clear answer and not a 404.
 
 @app.get("/copilot/models", tags=["copilot"])
 async def copilot_models() -> dict:
-    """Return Copilot SDK models with 5-min TTL cache."""
-    _now = _time.monotonic()
-    if _copilot_models_cache["data"] is not None and (_now - _copilot_models_cache["ts"]) < _COPILOT_MODELS_CACHE_TTL:
-        return _copilot_models_cache["data"]
-    settings = get_settings()
-    github_token: str = (
-        os.environ.get("COPILOT_GITHUB_TOKEN", "")
-        or getattr(settings, "github_token", "")
-        or os.environ.get("GITHUB_TOKEN", "")
-    )
-    if github_token:
-        try:
-            os.environ.setdefault("GITHUB_TOKEN", github_token)
-            from copilot import CopilotClient
-            _sdk = CopilotClient(github_token=github_token)  # SDK 1.0: keywords (H-181)
-            await _sdk.start()
-            try:
-                _models = await _sdk.list_models()
-            finally:
-                await _sdk.stop()
-            if _models:
-                result = {
-                    "models": [
-                        {
-                            "id": m.id,
-                            "label": m.name,
-                            "model_picker_enabled": True,
-                            # Real context window from the provider (SDK) when
-                            # exposed; curated fallback otherwise.
-                            "context_window": _sdk_ctx(m) or _copilot_ctx(m.id),
-                        }
-                        for m in _models if not m.policy or m.policy.state == "enabled"
-                    ],
-                    "source": "live",
-                }
-                _copilot_models_cache["data"] = result
-                _copilot_models_cache["ts"] = _now
-                return result
-        except Exception as _e:
-            _log.warning("gateway.copilot_models_failed", error=str(_e))
-    static = {
+    """Retired (WS-43o). Answers the Router tier slate, never the Copilot SDK."""
+    from acb_llm.routed import PICKER_WIRE_IDS
+
+    return {
         "models": [
-            dict(m, model_picker_enabled=False, context_window=_copilot_ctx(m["id"]))
-            for m in _COPILOT_MODELS_STATIC
+            {"id": wire, "label": slate, "model_picker_enabled": True}
+            for wire, slate in PICKER_WIRE_IDS.items()
         ],
-        "source": "static",
+        "source": "router",
+        "retired": "Use /api/models/all. The Copilot SDK list is removed.",
     }
-    _copilot_models_cache["data"] = static
-    _copilot_models_cache["ts"] = _now - (_COPILOT_MODELS_CACHE_TTL - 30)
-    return static
 
 
 # ---------- Pull mode (Phase 0 stub) ----------
@@ -1858,17 +2522,29 @@ class PullResponse(BaseModel):
 @app.post("/pull", response_model=PullResponse, tags=["pull"])
 async def pull(req: PullRequest, _user: UserContext = Depends(get_current_user)) -> PullResponse:
     """Phase-0 pull Q&A: routes through the MAF orchestrator agent."""
-    import asyncio
     import uuid
 
     from acb_llm.guardrails import CITATION_RE  # local import to avoid cold-start cost
 
     trace_id = uuid.uuid4().hex
-    user_id: str = req.user_email or getattr(_user, "email", "") or "anonymous"
+    # H-438 (task 1127): the session names the member, never the body. The
+    # member keys the Mem0 read below. The run doors' own helper drops a
+    # signed-in member's claim of another person, and keeps an own claim in
+    # any case as the session's address. A service caller keeps its claim.
+    # Lazy import, as the router mount does. Fence:
+    # tests/unit/test_chat_payload_identity_claims.py.
+    from gateway.routes.agent import _drop_identity_claims
+
+    claims: dict[str, str | None] = {"user_email": req.user_email} if req.user_email else {}
+    _drop_identity_claims(claims, _user, keep_own=True)
+    user_id: str = claims.get("user_email") or getattr(_user, "email", "") or "anonymous"
     _log.info("pull.received", query=req.query, user=user_id, trace_id=trace_id)
     try:
         from orchestrator.agents import build_orchestrator_agent, enrich_instructions_with_memory
-        agent = build_orchestrator_agent(with_history=False)
+        # PZ-25: the org of the server-side UserContext, never of the body.
+        agent = build_orchestrator_agent(
+            with_history=False,
+            organization_id=getattr(_user, "organization_id", None))
         # Inject Mem0 + Graphiti context for this user + query (no-op if disabled)
         enriched = await enrich_instructions_with_memory(agent, user_id, req.query)
         opts = agent.default_options
@@ -1883,25 +2559,8 @@ async def pull(req: PullRequest, _user: UserContext = Depends(get_current_user))
             answer=f"[agent error] {type(exc).__name__}: {exc}", citations=[], trace_id=trace_id
         )
     citations = sorted({m.group(0) for m in CITATION_RE.finditer(text)})
-    # Background: extract facts from this exchange into Mem0
-    try:
-        from acb_memory import (
-            add_episode,
-            add_memories_background,
-        )
-        messages = [
-            {"role": "user", "content": req.query},
-            {"role": "assistant", "content": text},
-        ]
-        asyncio.create_task(add_memories_background(user_id, messages))
-        asyncio.create_task(add_episode(
-            name=f"pull:{trace_id[:8]}",
-            content=f"Q: {req.query}\nA: {text[:500]}",
-            source_description="pull_endpoint",
-            group_id=user_id,
-        ))
-    except ImportError:
-        pass
+    # No memory write: a pull has no session, so it cannot read a mail mark,
+    # and its answer can quote mail (WS-17 EM-G11f3, section 12.3.13.9.1, W5).
     return PullResponse(answer=text, citations=citations, trace_id=trace_id)
 
 

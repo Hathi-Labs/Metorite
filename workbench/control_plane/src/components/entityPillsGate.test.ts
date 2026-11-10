@@ -47,8 +47,11 @@ describe("another agent's reply", () => {
     expect(html).toContain(">alice.wong@acme.com</a>");
   });
 
-  it("keeps «» as plain text and draws no pill", () => {
-    expect(html).toContain("«Notification engine for projects»");
+  // Owner report, 2026-10-07: the marks never reach the member. Without a
+  // pill, the name is a quiet emphasis that resolves against nothing.
+  it("draws the name as a quiet emphasis, with no marks and no pill", () => {
+    expect(html).toMatch(/data-fenced-name[^>]*>.*Notification engine for projects<\/span>/);
+    expect(html).not.toContain("«");
     expect(html).not.toContain(`/projects?task=${TASK5_ID}`);
   });
 });
@@ -97,7 +100,9 @@ describe("AgentChat gates the prop by agent name", () => {
 describe("a generative-UI markdown node", () => {
   it("draws no pill outside a Projects provider", () => {
     const html = renderToStaticMarkup(createElement(GenUiMarkdown, { content: TEXT }));
-    expect(html).toContain("«Notification engine for projects»");
+    expect(html).toMatch(/data-fenced-name[^>]*>.*Notification engine for projects<\/span>/);
+    expect(html).not.toContain("«");
+    expect(html).not.toContain(`/projects?task=${TASK5_ID}`);
     expect(html).toContain("mailto:alice.wong@acme.com");
   });
 

@@ -78,6 +78,48 @@ export function coalesce(
 }
 
 /**
+ * A throttle for the wake: at most one run in each `everyMs` window.
+ *
+ * The first trigger runs at once. A trigger inside the window after it runs
+ * nothing at once. It books ONE trailing run at the end of the window, and
+ * every later trigger in that window joins it. So a burst of any length
+ * costs two runs at most: one now, and one with the state after the burst.
+ *
+ * For a reader that stays mounted on every page and whose read is heavy, such
+ * as the sidebar's needs counts (`useNavNeeds`). Each Projects write drops
+ * the needs key, so with no throttle a drag on a board read the whole feed
+ * after each burst of 150 ms. `clock` is for the fence.
+ */
+export function throttle(
+  run: () => void,
+  everyMs: number,
+  clock: () => number = Date.now,
+): { trigger: () => void; cancel: () => void } {
+  let last = -Infinity;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return {
+    trigger() {
+      const wait = last + everyMs - clock();
+      if (wait <= 0) {
+        last = clock();
+        run();
+        return;
+      }
+      if (timer) return;
+      timer = setTimeout(() => {
+        timer = undefined;
+        last = clock();
+        run();
+      }, wait);
+    },
+    cancel() {
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+    },
+  };
+}
+
+/**
  * The state a component starts in, given what the cache already holds.
  *
  * A hit means the very first paint is real content, and `loading` is false
@@ -127,7 +169,16 @@ export function applyRefreshing<T>(prev: ResourceState<T>): ResourceState<T> {
 export function useCachedResource<T>(
   key: CacheKey | null,
   fetcher: () => Promise<T>,
-  opts?: { ttl?: number; revalidateOnFocus?: boolean }
+  opts?: {
+    ttl?: number;
+    revalidateOnFocus?: boolean;
+    /**
+     * At most one read in this many ms because of a write elsewhere
+     * (`throttle`). Absent, each burst of writes reads once, as before. The
+     * mount read, a focus read and `refresh` are not throttled.
+     */
+    wakeEveryMs?: number;
+  }
 ): CachedResource<T> {
   const [state, setState] = useState<ResourceState<T>>(() =>
     initialState<T>(key ? peek<T>(key) : undefined)
@@ -170,6 +221,7 @@ export function useCachedResource<T>(
   });
 
   const ttl = opts?.ttl;
+  const wakeEveryMs = opts?.wakeEveryMs;
 
   const load = useCallback(
     /**
@@ -243,13 +295,19 @@ export function useCachedResource<T>(
      * entry answers our read with no request at all, so N watchers of one key
      * cost one round trip between them rather than N.
      */
-    const settle = coalesce(() => load(false));
+    // ⚠️ Only a DROPPED key goes through the throttle. A `put` wakes every
+    // watcher too, and that wake is a cache hit that costs nothing. Deferred
+    // by the throttle, it would land after the fresh window and read the
+    // network, and that read puts again: a poll every `wakeEveryMs`.
+    const wake = wakeEveryMs ? throttle(() => load(false), wakeEveryMs) : null;
+    const settle = coalesce(() => (wake && !peek(key) ? wake.trigger() : load(false)));
     const off = subscribe(key, settle.trigger);
     return () => {
       settle.cancel();
+      wake?.cancel();
       off();
     };
-  }, [key, load]);
+  }, [key, load, wakeEveryMs]);
 
   const wantsFocus = opts?.revalidateOnFocus ?? true;
   useEffect(() => {

@@ -6,7 +6,7 @@ permission, and how grants + per-user overrides combine into a yes/no. The
 DB-backed side lives in :mod:`acb_auth.access`; the request-time side in
 :mod:`acb_auth.deps`.
 
-Spec: ``project-docs/specs/org_access_control.md`` §3.3–§3.4.
+Spec: ``project-docs/specs/org_access_control.md`` §3.3-§3.4.
 
 Grammar
 -------
@@ -54,8 +54,8 @@ other.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
-from typing import Iterable
+from collections.abc import Iterable
+from dataclasses import dataclass
 
 # ── Vocabulary ──────────────────────────────────────────────────────────────
 
@@ -98,6 +98,11 @@ FEATURES: tuple[str, ...] = (
     # restricted by `admin:members:read`, a projection WS-24 N4 already shipped
     # and which this feature must NOT re-implement.
     "people",
+    # The Knowledge app — spaces, pages and connected folders
+    # (270_knowledge_feature.sql, category `apps`, sort_order 58: after People).
+    # `is_default true`, and migration 207's `feature:*` reaches every role
+    # except `guest` (specs/knowledge_base.md §5.2, WS-61 KB-0).
+    "knowledge",
     "dashboard",
     "observability",
     "artifacts",
@@ -106,6 +111,17 @@ FEATURES: tuple[str, ...] = (
     "approvals",
     "integrations",
     "workflows",
+    # AI Studio, the one library pane. Its `feature_catalog` row is in the
+    # migration named `*_studio_feature.sql` (category `apps`, sort_order 96,
+    # after Workflows). The router of `/studio` checks it (WS-STU J1,
+    # specs/ai_studio.md §9). `is_default true`, and migration 207's
+    # `feature:*` reaches every role except `guest`. ⚠️ One edge: a member
+    # with a `feature:workflows` DENY override got 403 on each Studio route
+    # before J1. After J1-1 that member gets Studio, because the deny does
+    # not match `feature:studio` and `feature:*` decides. The owner accepted
+    # this on 2026-11-06 (task 1199, D180). An admin can deny
+    # `feature:studio` to that member by hand.
+    "studio",
     "build.agents",
     "build.apps",
     # Departmental Centers (140_center_features.sql, category `centers`). Order
@@ -160,6 +176,28 @@ CAPABILITIES: tuple[str, ...] = (
     "memory:read_org",
     "memory:write_org",
     "data:org:read",
+    # The Knowledge app's admin verb: make and remove spaces, change their
+    # grants, archive, and connect an org-wide source. Writing a page needs a
+    # space grant, not this. Argued in specs/knowledge_base.md §5.2. The owner
+    # holds it through `*`. KB-1's migration (`kb_spaces` and its seed) grants
+    # it to `admin` in every organization and in provision_org_roles.
+    "knowledge:manage",
+    # The Email app's shared-mailbox admin verb: make a mailbox shared and
+    # change its grants. Reading or sending from a shared mailbox needs a
+    # mailbox grant, not this. Argued in specs/shared_mailbox.md Q-SM-2. The
+    # owner holds it through `*`. SM-1's migration (`email_mailbox_grants` and
+    # its seed) grants it to `admin` in every organization and in
+    # provision_org_roles.
+    "email:shared:manage",
+    # AI Studio's share verb (WS-STU J1, specs/ai_studio.md §9). It is the
+    # right to share a package or a skill with other people, and to approve
+    # the manifest diff of that share (J2). A member builds and publishes a
+    # private app for themselves with `feature:studio` and ownership only
+    # (STU-Q4b). Before J2 one route checks this verb: the org and group
+    # install of WS-PKG PKG-8b (`routes/studio/packages.install_package`), a
+    # share to others (D180.3). The owner holds it through `*`. Its seed on
+    # `admin` is J1-2 (Metorite task 1707).
+    "studio:publish",
 )
 
 #: System role slugs seeded by migration 128. `agent_service` is never
@@ -241,6 +279,49 @@ def validate_permission(raw: str) -> str:
         if not _SEGMENT_RE.match(seg):
             raise InvalidPermission(f"'{raw}': invalid segment '{seg}'")
     return p
+
+
+# ── Grant subjects ──────────────────────────────────────────────────────────
+
+#: An email subject: one ``@``, no whitespace, text on each side. The CHECK on
+#: ``kb_space_grants.subject`` (migration 272) refuses the same shapes, so a
+#: value this lets through cannot fail there as a 500.
+_EMAIL_SUBJECT = re.compile(r"[^@\s]+@[^@\s]+")
+
+def normalize_grant_subject(subject: str) -> str:
+    """The one grant subject grammar (D12), normalised, or ``ValueError``.
+
+    ``org`` | ``group:<slug>`` | an email address. It is the grammar of
+    ``tenancy_and_visibility.md`` §3.2, which rooms, Projects and the CRM
+    access rule already use. A second grammar would give two answers to "who
+    can see this".
+
+    The value is stored folded (R10), because every read compares folded.
+    This function is pure. ``gateway.routes.projects.core.validate_grant_subject``
+    wraps it as the HTTP 422, and Knowledge (``knowledge_base.md`` §5.1) calls
+    the same wrapper. Fence: ``tests/unit/test_grant_subject_grammar.py``.
+    """
+    value = (subject or "").strip()
+    if not value:
+        raise ValueError("A grant subject is required.")
+    if value == "org":
+        return value
+    if value.startswith("group:"):
+        slug = value[len("group:"):].strip()
+        if not slug:
+            raise ValueError("A group subject must name a group.")
+        return f"group:{slug.lower()}"
+    if "@" in value:
+        if not _EMAIL_SUBJECT.fullmatch(value):
+            raise ValueError(
+                f"'{subject}' is not an email address. An email subject has one "
+                "'@', no space, and text on each side."
+            )
+        return value.lower()
+    raise ValueError(
+        f"Unknown grant subject '{subject}'. "
+        "One of: 'org', 'group:<slug>', or an email address."
+    )
 
 
 # ── Matching ────────────────────────────────────────────────────────────────
@@ -372,7 +453,7 @@ class EffectiveAccess:
         """The feature slugs this principal may reach, in catalog order."""
         return tuple(f for f in FEATURES if self.can_use_feature(f))
 
-    def intersect(self, other: "EffectiveAccess") -> "EffectiveAccess":
+    def intersect(self, other: EffectiveAccess) -> EffectiveAccess:
         """Narrow this access by ``other`` — used for agent runs.
 
         An agent acts on behalf of a member and must never exceed them, so

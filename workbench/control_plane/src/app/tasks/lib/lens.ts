@@ -217,6 +217,7 @@ export function mapLensItem(raw: Raw): MyTask {
     keptMine: tri(raw.kept_mine),
 
     projectId: text(raw.project_id),
+    rootProjectId: text(raw.root_project_id),
     taskNumber: num(raw.task_number),
     projectName: text(raw.project_name),
     isTriaged: tri(raw.is_triaged),
@@ -404,6 +405,8 @@ const MY_ROUTES: Readonly<Record<string, string>> = {
   // The same path as `task`, with DELETE. Never `tasks/{id}`, which admits
   // anybody who can see the task and so deletes a team task for everyone.
   purge: "my/tasks/{task_id}",
+  // WS-64 OP-2 — my date and my zone, for the Today rule (`today.ts`).
+  today: "my/today",
 };
 
 const at = (template: string, id: string): string =>
@@ -478,6 +481,41 @@ export async function lensGetItem(id: string): Promise<MyTask> {
  */
 export async function lensFetchUntriaged(): Promise<MyTask[]> {
   return (await fetchAll(MY_ROUTES.inbox, "untriaged=true")).map(mapLensItem);
+}
+
+/**
+ * My scheduled tasks in a window, `[start, end)`, earliest first.
+ * `GET /projects/my/calendar`, the Calendar's one read (D54). The route is
+ * unpaged on purpose, because the window is the bound. My Day's Today card
+ * reads it for one day (NS-3).
+ */
+export async function lensFetchScheduled(start: string, end: string): Promise<MyTask[]> {
+  const q = new URLSearchParams({ start, end });
+  const res = await projectsCall<ListResponse>(`my/calendar?${q}`);
+  return res.rows.map(mapLensItem);
+}
+
+/**
+ * My first next actions, in the inbox's own order. One page of
+ * `GET /projects/my/inbox?disposition=NEXT`. The route filters BEFORE it
+ * pages, so `limit` rows are the first `limit` next actions. My Day's Next
+ * actions card reads it (NS-3), and it never needs the whole list.
+ */
+export async function lensFetchNext(limit = 20): Promise<MyTask[]> {
+  const size = Math.max(1, Math.min(limit, PAGE_SIZE));
+  const res = await projectsCall<ListResponse>(
+    `${MY_ROUTES.inbox}?disposition=NEXT&page=1&page_size=${size}`,
+  );
+  return res.rows.map(mapLensItem);
+}
+
+/**
+ * My date and my zone, as `GET /projects/my/today` answers them. The Today
+ * rule (`today.ts`) reads this date, because the gateway computes it from
+ * `user_settings.timezone`, the zone the member stores.
+ */
+export async function lensFetchToday(): Promise<{ today: string; timezone: string }> {
+  return projectsCall<{ today: string; timezone: string }>(MY_ROUTES.today);
 }
 
 /** A project I lead, as `/projects/my/led` answers it. */

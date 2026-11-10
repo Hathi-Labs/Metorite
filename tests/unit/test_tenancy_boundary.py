@@ -1,6 +1,6 @@
 """The tenant boundary, as a ratchet (WS-29).
 
-⚠️ **114 of Metorite's 147 tables still carry no tenant key.** That is not
+⚠️ **113 of Metorite's 148 tables still carry no tenant key.** That is not
 a bug list — it is the honest state of a system built for one organisation. The
 bug would be adding the 147th.
 
@@ -28,15 +28,17 @@ It never looks at what an existing `organization_id` actually *references*.
 This file matches the **foreign key's target**, and that distinction is not
 hypothetical:
 
-    crm_contacts.organization_id  REFERENCES crm_organizations   -- a CUSTOMER
+    crm_contacts.organization_id  REFERENCES crm_companies   -- a CUSTOMER
     pm_tasks.organization_id      REFERENCES organization        -- the TENANT
 
-Three CRM tables carry the first kind. A name-based check reads them as scoped;
-they are not scoped at all. That mistake was in the first version of THIS file
+Three CRM tables carried the first kind until WS-53 CRM-T1 (2026-10-11, D95.2).
+Now 144_crm.sql calls the customer company `company_id`, and migration 241
+gives all 13 `crm_*` tables the tenant key. A name-based check read them as
+scoped while they were not scoped at all. That mistake was in the first version of THIS file
 too — it published "6 tables scoped" when the answer was 3 — and matching the FK
 target is what corrected it. The same blind spot then turned out to be live in
 MT-1b's generator, which would have emitted `UPDATE crm_contacts SET
-organization_id = <tenant>` into a column whose FK points at `crm_organizations`
+organization_id = <tenant>` into a column whose FK points at `crm_companies`
 and aborted phase 2 in the maintenance window. `HOMONYM_BLOCKED` is the fix;
 the assertions below are what stop it coming back.
 
@@ -98,6 +100,12 @@ def _generator():
 #: Tables that carry a tenant key today. Not a baseline — the goal state.
 EXPECTED_SCOPED = {
     "app_user",
+    # Migration 234: the logo and the default look, keyed per organization
+    # after two uploads failed on an unbound connection (2026-10-08).
+    "org_settings",
+    # Migration 239 (H-256): one settings row for each organization of a
+    # member, keyed `(organization_id, user_id)`.
+    "user_settings",
     "org_group",
     "org_role",
     # WS-29a — the whole Projects app, keyed while it was empty (17 tables,
@@ -112,6 +120,59 @@ EXPECTED_SCOPED = {
     "pm_task_links", "pm_task_personal", "pm_task_statuses",
     "pm_task_types", "pm_task_watchers",
     "pm_tasks", "pm_view_task_positions", "pm_views",
+    # WS-53 CRM-T1 (2026-10-11): migration 241 gives every `crm_*` table the
+    # tenant key, FORCE row level security and per-tenant unique keys.
+    "crm_activities", "crm_auto_lead_cursors", "crm_companies",
+    "crm_contacts", "crm_deal_contacts", "crm_deal_statuses", "crm_deals",
+    "crm_field_defs",
+    "crm_lead_statuses", "crm_leads", "crm_lost_reasons",
+    "crm_status_changes", "crm_sync_cursors", "crm_zoho_tombstones",
+    # WS-53 CRM-T5 (2026-10-11): migration 243, one settings row for each
+    # organization, keyed on the tenant `organization_id`, FORCE RLS.
+    "crm_settings",
+    # WS-53 CRM-Z2 (2026-10-11): the registry of external connections.
+    "integration_connections",
+    # WS-53 CRM-Z4/Z5 (2026-10-11): one row for each run of the mirror sync.
+    "crm_sync_runs",
+    # WS-53 CRM-Q1/Q2 (2026-10-12): the source profile and the deal pipelines.
+    "crm_source_profiles",
+    "crm_pipelines",
+    "crm_pipeline_stages",
+    # WS-CRM CRM-M4a (2026-11-08): migration 386, the lead statuses of each
+    # lead pipeline.
+    "crm_lead_pipeline_stages",
+    # WS-53 CRM-Q8 (2026-10-12): the saved views of the lists and boards.
+    "crm_views",
+    # WS-53 CRM-Q6a (2026-10-12): the generic record store of the mirror.
+    "crm_module_records",
+    # WS-53 CRM-Q7a (2026-10-12): the field rules of the Field map.
+    "crm_field_rules",
+    # WS-53 CRM-C4a (2026-10-13): the sections of the field studio.
+    "crm_field_sections",
+    # WS-53 CRM-C6a (2026-10-14): the lead-conversion mapping.
+    "crm_convert_mappings",
+    # WS-57 TR-1 (2026-10-13): the URL references of a task.
+    "pm_task_refs",
+    # WS-55 EA-12a (2026-10-14): agent runs on a task and their activities.
+    "pm_agent_runs", "pm_agent_run_activities",
+    # WS-55 SW-10a (2026-10-25): the strands of agent runs (the fingerprint
+    # of a nudge, and the recovery record).
+    "pm_agent_run_strands",
+    # WS-STU C1 (2026-11-01): migration 323 puts `apps.organization_id` on
+    # the numbered ladder, because an object's foreign key names
+    # `apps (organization_id, id)`. Production has the column already. The
+    # migration 324 (WS-PKG PKG-4, 321 at build) holds the same block.
+    "apps",
+    # H-201d (2026-11-07, task 1719): migration 354 puts
+    # `agent_avatars.organization_id` on the numbered ladder, because the
+    # per-tenant unique index needs it, as 223 did for `email_accounts`.
+    "agent_avatars",
+    # WS-39 SP-1 (2026-11-08): the cycle store, keyed at CREATE time.
+    "pm_cycles", "pm_cycle_tasks", "pm_cycle_committed", "pm_cycle_capacity",
+    # WS-39 LP-1a (2026-11-08): the updates of a project, keyed at CREATE time.
+    "pm_project_updates",
+    # WS-39 TPL-1a (2026-11-08): the template store, keyed at CREATE time.
+    "pm_templates", "pm_template_applies",
 }
 
 #: ⚠️ FROZEN at 113 — it was 114 until 2026-09-21, when `people`
@@ -134,13 +195,13 @@ BASELINE_UNSCOPED = {
 # action_*
     "action_item",
 # agent_*
-    "agent_avatars", "agent_blob", "agent_file_history", "agent_run",
+    # ⚠️ `agent_avatars` LEFT this list on 2026-11-07. Migration 354 (H-201d)
+    # put `organization_id` on the numbered ladder for the per-tenant key.
+    "agent_blob", "agent_file_history", "agent_run",
     "agent_skill_setting",
 # app_*
     "app_audit", "app_data", "app_files", "app_grants", "app_pins",
     "app_tool_grants", "app_versions",
-# apps_*
-    "apps",
 # audit_*
     "audit_event",
 # chat_*
@@ -148,21 +209,9 @@ BASELINE_UNSCOPED = {
     "chat_session_participant",
 # copilot_*
     "copilot_config", "copilot_event",
-# crm_* — ⚠️ `crm_activities`, `crm_contacts` and `crm_deals` are NOT here.
-    # They carry a column called `organization_id` that REFERENCES
-    # crm_organizations, a CUSTOMER COMPANY, so they are neither scoped nor
-    # ordinary debt: they are BLOCKED in `gen_tenant_migration.HOMONYM_BLOCKED`
-    # until the column is renamed, because a generator that scopes by name
-    # would corrupt a business column.
-    # crm_auto_lead_cursors (migration 163): per-MAILBOX cursor state, one row
-    # per email_accounts id with an ON DELETE CASCADE FK — its tenant derives
-    # transitively through email_accounts (org-scoped by the generated RLS
-    # set), and a direct organization_id would be a second copy of a derivable
-    # fact that the purge cascade already treats as mailbox-owned.
-    "crm_auto_lead_cursors",
-    "crm_deal_contacts", "crm_deal_statuses", "crm_lead_statuses",
-    "crm_leads", "crm_lost_reasons", "crm_organizations",
-    "crm_status_changes", "crm_sync_cursors", "crm_zoho_tombstones",
+# crm_*
+#   — all 13 left this baseline in WS-53 CRM-T1 (migration 241). They are
+#     asserted as scoped by `EXPECTED_SCOPED` above.
 # custom_*
     "custom_api_definitions",
 # customer_*
@@ -192,7 +241,10 @@ BASELINE_UNSCOPED = {
     # `gtd_*` task store: gtd_items, gtd_waiting, gtd_projects, gtd_spaces,
     # gtd_folders and gtd_contexts. The three survivors carry their new names.
     "my_tasks_horizons", "people_resumes",
-    "my_tasks_reviews", "calendar_rollover_log", "user_settings",
+    # ⚠️ `user_settings` LEFT this list on 2026-10-10. Migration 239 (H-256)
+    # put `organization_id` on the numbered ladder and keyed the table on
+    # `(organization_id, user_id)`.
+    "my_tasks_reviews", "calendar_rollover_log",
 # live_*
     "live_session",
 # meeting_*
@@ -202,7 +254,7 @@ BASELINE_UNSCOPED = {
 # notes_*
     "notes_glossary",
 # org_*
-    "org_group_member", "org_role_permission", "org_settings",
+    "org_group_member", "org_role_permission",
 # pending_*
     "pending_actions", "pending_commit",
 # person_*
@@ -247,7 +299,7 @@ def _references_the_tenant(body: str) -> bool:
     ⚠️ **This function exists because the first version of this file was wrong,
     and wrong in the direction that flatters.** It matched the column NAME, so
     it counted `crm_activities`, `crm_contacts` and `crm_deals` as tenant-scoped
-    on the strength of an `organization_id` that `REFERENCES crm_organizations`
+    on the strength of an `organization_id` that `REFERENCES crm_companies`
     — a CUSTOMER COMPANY, not the tenant root. The published figure was six
     scoped tables; it was three.
 
@@ -435,4 +487,15 @@ def test_the_frozen_count_matches_the_baseline() -> None:
     Putting it here as well was the first attempt, and
     `test_every_table_lands_in_exactly_one_bucket` rejected it — correctly.
     """
-    assert len(BASELINE_UNSCOPED) == 106
+    # 92 since 2026-11-07: `agent_avatars` left with migration 354 (H-201d,
+    # the per-tenant key of an avatar override).
+    # 93 since 2026-11-01: `apps` left with migrations 324 (WS-PKG PKG-4) and
+    # 323 (WS-STU C1), the target of the composite foreign keys of
+    # `package_install` and `studio_objects`.
+    # 94 since 2026-10-11: ten `crm_*` tables left with migration 241 (WS-53
+    # CRM-T1). The other three were blocked as homonyms, never in this list.
+    # 104 since 2026-10-10: `user_settings` left with migration 239 (H-256,
+    # one settings row for each organization of a member).
+    # 105 since 2026-10-09: `org_settings` left with migration 234 (the logo
+    # and the default look, keyed per organization).
+    assert len(BASELINE_UNSCOPED) == 92

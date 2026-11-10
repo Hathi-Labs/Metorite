@@ -211,13 +211,25 @@ def test_the_slate_ships_unpriced(db):
 
     Scoped to the slate's own tiers so another suite's test rates cannot
     fail it: the claim is 'the MIGRATION prices nothing', not 'the table
-    is empty'."""
+    is empty'.
+
+    📌 **ONE card is seeded, and it is not a price** (CP-EMB, §6A.16,
+    2026-10-17). `(tier-embed, embed)` is `absorbed` with every rate zero,
+    because D19.2 absorbs embeddings into the seat price. So the claim
+    narrows by exactly that row: no other slate card, and that one never
+    `priced` and never non-zero."""
     with db.begin() as c:
-        n = c.execute(
-            text("SELECT COUNT(*) FROM tier_rate_card "
-                 "WHERE tier = ANY(:slate)"),
-            {"slate": list(SLATE)}).scalar_one()
-    assert n == 0
+        rows = c.execute(
+            text("SELECT tier, task, pricing_mode, credits_per_unit, "
+                 "       input_credits_per_1m, output_credits_per_1m, "
+                 "       cached_input_credits_per_1m "
+                 "FROM tier_rate_card WHERE tier = ANY(:slate)"),
+            {"slate": list(SLATE)}).all()
+    assert [(r.tier, r.task, r.pricing_mode) for r in rows] == [
+        ("tier-embed", "embed", "absorbed")]
+    assert (rows[0].credits_per_unit, rows[0].input_credits_per_1m,
+            rows[0].output_credits_per_1m,
+            rows[0].cached_input_credits_per_1m) == (0, 0, 0, 0)
 
 
 # ── D67's headline: the price follows the TIER ──────────────────────────────

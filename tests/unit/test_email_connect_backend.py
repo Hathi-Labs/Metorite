@@ -61,6 +61,13 @@ _APP_ENV = (
 def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     s = get_settings()
     monkeypatch.setattr(s, "gateway_session_secret", SECRET, raising=False)
+    # The Gmail connect is dark by default since EM-G7. These cases test
+    # the connect itself, so the flag is on. test_email_gmail_connect.py
+    # fences the dark state.
+    monkeypatch.setattr(s, "email_gmail_connect", True, raising=False)
+    # An empty member list lets each member through (EM-G7b), so a list in
+    # the developer's own environment cannot change these cases.
+    monkeypatch.setattr(s, "email_gmail_connect_members", "", raising=False)
     for name in ("msft_oauth_client_id", "gmail_oauth_client_id"):
         monkeypatch.setattr(s, name, SETTINGS_ID, raising=False)
     for name in ("msft_oauth_client_secret", "gmail_oauth_client_secret"):
@@ -74,6 +81,14 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     ):
         monkeypatch.setenv(name, TENANT_GUID)
     monkeypatch.setenv("WORKBENCH_PUBLIC_URL", "https://app.example.test")
+
+    # The authorize leg asks the database whether the member already has a
+    # mailbox (EM-T8a). These tests run with no database, so the member has
+    # none. ``test_email_multi_inbox.py`` fences the other answer.
+    async def _no_mailbox(org, member, provider):
+        return False
+
+    monkeypatch.setattr(oauth, "_member_has_mailbox", _no_mailbox)
 
 
 def _no_app_in_settings(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -375,7 +390,8 @@ async def test_a_consent_error_lands_on_its_reason(error, description, shown) ->
     assert f"{url.scheme}://{url.netloc}{url.path}" == (
         "https://app.example.test/email/oauth/callback"
     )
-    assert parse_qs(url.query) == {"error": [shown]}
+    # EM-G7 item 6: each bounce names its provider.
+    assert parse_qs(url.query) == {"error": [shown], "provider": ["microsoft"]}
     for fragment in ("Trace", "Correlation", "admin approval", "AADSTS", "script"):
         assert fragment not in location
 
@@ -394,6 +410,7 @@ async def test_a_description_with_no_error_is_still_invalid_state() -> None:
     )
     assert parse_qs(urlparse(resp.headers["location"]).query) == {
         "error": ["invalid_state"],
+        "provider": ["microsoft"],  # EM-G7 item 6
     }
 
 

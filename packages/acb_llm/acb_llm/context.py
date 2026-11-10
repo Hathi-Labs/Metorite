@@ -21,6 +21,8 @@ emails. The fitting + fallback logic lives here so every in-gateway LLM call
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import sys
 from collections.abc import Callable
 from contextvars import ContextVar
@@ -29,6 +31,7 @@ from typing import Any
 from acb_common import get_logger
 
 from acb_llm.message_compress import compress_message_content
+from acb_llm.message_hygiene import strip_placeholder_lines
 from acb_llm.model_limits import get_limits
 
 # Stats from the most recent assemble_run_context() call in THIS async
@@ -170,7 +173,19 @@ def fit_messages_to_context(
     repeatedly trimmed (keeping a head + tail around a marker) until the prompt
     fits. System/developer messages are protected: they are only trimmed when
     no other message has trimmable content left (a degraded persona beats a
-    provider 4xx, but only as the last resort — audit CX5)."""
+    provider 4xx, but only as the last resort — audit CX5).
+
+    This is also the last stop before ``acompletion`` for ``acb_llm.client``,
+    so it applies the shared message hygiene (task 1787): no empty text block,
+    and no litellm placeholder line in a stored turn. It does NOT set the
+    empty content of a tool-call turn. That value depends on the vendor, and
+    the gateway and the Router own it. A list that is already clean comes back
+    as the same object."""
+    from acb_llm.message_hygiene import clean_model_messages
+
+    _cleaned = clean_model_messages(messages, set_tool_call_content=False)
+    if _cleaned != messages:
+        messages = _cleaned
     budget = context_window_for(model) - max_output_tokens - safety_margin
     if budget < 1024:
         # Pathologically small window (or huge max_tokens): the requested
@@ -246,6 +261,8 @@ async def acompletion_with_fallback(
     max_tokens: int = 1024,
     temperature: float = 0.2,
     source: str | None = None,
+    feature: str | None = None,
+    job: str | None = None,
     **extra: Any,
 ) -> tuple[Any, str]:
     """Run a chat completion on ``model``, fitting the input to its context
@@ -265,7 +282,51 @@ async def acompletion_with_fallback(
     it, so stack inspection can only ever resolve the shared package name
     (``"apps"``), never the individual app. Passing ``source=f"app:{slug}"``
     explicitly is the only way to get per-app cost attribution.
+
+    ``feature`` names this call for the usage report, as ``email.draft``
+    (AI-call attribution, 2026-10-10). It is a code constant of the shape
+    ``<app>.<feature>``, and it binds the run context's ``agent`` for this
+    call alone, through ``acb_common.automation_agent_scope``. A chat agent
+    the task already holds keeps its own name. It never reaches litellm or
+    the Router payload.
+
+    ``job`` names the kind of work: ``structured``, ``writing`` or
+    ``judgement`` (task 1128). :mod:`acb_llm.jobs` turns it into the
+    request settings, and its docstring holds the table. A ``thinking`` or
+    ``reasoning_effort`` that the caller sends itself wins. Two guards run
+    for every call, with a job or not: JSON mode gets the word "json"
+    (:func:`acb_llm.jobs.ensure_json_word`), and an empty answer logs
+    ``acb_llm.empty_answer`` (:func:`acb_llm.jobs.note_empty_answer`).
     """
+    _source = source if source is not None else _infer_app_source()
+    if not feature:
+        return await _complete_with_fallback(
+            model=model, fallback_model=fallback_model, messages=messages,
+            max_tokens=max_tokens, temperature=temperature, source=_source,
+            job=job, extra=extra,
+        )
+    from acb_common._log import automation_agent_scope
+
+    with automation_agent_scope(feature):
+        return await _complete_with_fallback(
+            model=model, fallback_model=fallback_model, messages=messages,
+            max_tokens=max_tokens, temperature=temperature, source=_source,
+            job=job, extra=extra,
+        )
+
+
+async def _complete_with_fallback(
+    *,
+    model: str,
+    fallback_model: str,
+    messages: list[dict[str, Any]],
+    max_tokens: int,
+    temperature: float,
+    source: str | None,
+    extra: dict[str, Any],
+    job: str | None = None,
+) -> tuple[Any, str]:
+    """The body of :func:`acompletion_with_fallback`, with ``source`` resolved."""
     import litellm as _litellm
     from litellm import acompletion
 
@@ -274,8 +335,18 @@ async def acompletion_with_fallback(
         _ensure_keys_loaded,
         ensure_model_registered,
     )
+    from acb_llm.jobs import (
+        apply_job,
+        ensure_json_word,
+        note_empty_answer,
+        params_for_model,
+    )
 
-    _source = source if source is not None else _infer_app_source()
+    _source = source
+    # Task 1128: the job sets thinking and the cap floor, before the fit,
+    # because the fit reserves the cap. Both arms then send the same request.
+    max_tokens, extra = apply_job(job, max_tokens=max_tokens, extra=extra)
+    messages = ensure_json_word(messages, extra.get("response_format"))
 
     # ── H-171: our own Router bills this, or nobody does ────────────────
     #
@@ -301,6 +372,9 @@ async def acompletion_with_fallback(
         fitted_for_router, _ = fit_messages_to_context(
             messages, model, max_output_tokens=max_tokens,
         )
+        # The Console drops a thinking parameter that a chain step's model
+        # does not take (`customer_console/reasoning.py`), and the Router arm
+        # logs an empty answer.
         return await completion_on_router(
             tier=model,
             messages=fitted_for_router,
@@ -308,6 +382,7 @@ async def acompletion_with_fallback(
             temperature=temperature,
             source=_source,
             extra=extra,
+            job=job,
         )
 
     _litellm.drop_params = True
@@ -329,11 +404,14 @@ async def acompletion_with_fallback(
         try:
             resp = await acompletion(
                 model=resolved, messages=fitted,
-                temperature=temperature, max_tokens=max_tokens, **extra,
+                temperature=temperature, max_tokens=max_tokens,
+                # A thinking parameter only for a model that takes it.
+                **params_for_model(extra, resolved),
             )
             if is_fallback:
                 _log.info("acb_llm.fallback_succeeded",
                           model=resolved, truncated=was_truncated)
+            note_empty_answer(resp, model=resolved, job=job, max_tokens=max_tokens)
             # Usage + cost + live activation. This is the completion path email
             # and the task manager use (client.complete covers agent runs), so
             # emitting here is what makes those apps observable. Best-effort.
@@ -357,6 +435,61 @@ async def acompletion_with_fallback(
     raise last_exc or RuntimeError("LLM completion failed (no attempts made)")
 
 
+# ── The three bounds of a model stream (WS-17 EM-T17 PR-A) ─────────────────
+# `email_app_master_plan.md` §17.3.7. Before them a stream had no timeout: a
+# provider that sent no chunk, or stopped half-way, held the email composer
+# open with no end (§17.1.3, cause S1). The Router's 120 s bound does not
+# cover this path, because it calls litellm directly (H-287).
+#
+# A test makes a bound short by setting the constant. `_stream_text` reads
+# each one at call time for that reason. Fence: tests/unit/test_llm_stream_bounds.py.
+
+#: No chunk at all, counted from the call. Reason `model_slow`.
+STREAM_FIRST_CHUNK_S = 45.0
+#: A gap between two chunks. ANY chunk resets it, a `reasoning_content` chunk
+#: too, because a reasoning model thinks before it writes. Reason `model_stalled`.
+STREAM_IDLE_S = 30.0
+#: The whole stream, counted from the call. Reason `model_timeout`.
+STREAM_TOTAL_S = 150.0
+
+
+class StreamTimeout(TimeoutError):
+    """A model stream passed one of its three bounds.
+
+    ``reason`` is the code that the email route sends to the composer, and
+    ``bound`` names the bound. Both are code constants, never model text.
+    """
+
+    reason = "model_timeout"
+    bound = "total"
+
+    def __init__(self, bound_s: float, *, model: str = "") -> None:
+        super().__init__(f"model stream passed its {self.bound} bound of {bound_s}s")
+        self.bound_s = bound_s
+        self.model = model
+
+
+class StreamFirstChunkTimeout(StreamTimeout):
+    """No chunk arrived inside ``STREAM_FIRST_CHUNK_S``."""
+
+    reason = "model_slow"
+    bound = "first_chunk"
+
+
+class StreamIdleTimeout(StreamTimeout):
+    """No chunk arrived inside ``STREAM_IDLE_S`` after the one before."""
+
+    reason = "model_stalled"
+    bound = "idle"
+
+
+class StreamTotalTimeout(StreamTimeout):
+    """The stream ran past ``STREAM_TOTAL_S``."""
+
+    reason = "model_timeout"
+    bound = "total"
+
+
 async def acompletion_stream_text(
     *,
     model: str,
@@ -364,6 +497,11 @@ async def acompletion_stream_text(
     max_tokens: int = 1024,
     temperature: float = 0.2,
     on_delta: Any = None,
+    feature: str | None = None,
+    first_chunk_s: float | None = None,
+    idle_s: float | None = None,
+    total_s: float | None = None,
+    job: str | None = None,
     **extra: Any,
 ) -> tuple[str, str]:
     """Streaming counterpart of :func:`acompletion_with_fallback` for callers
@@ -382,6 +520,84 @@ async def acompletion_stream_text(
 
     Usage is emitted post-stream via ``litellm.stream_chunk_builder`` so
     streamed calls stay visible in observability like non-streamed ones.
+
+    ``feature`` names the call, as :func:`acompletion_with_fallback` takes it.
+
+    ``job`` names the kind of work (:mod:`acb_llm.jobs`, task 1128), as on
+    :func:`acompletion_with_fallback`. It sets thinking and the cap floor,
+    adds the word "json" to a JSON-mode request, and drops a thinking
+    parameter that the model does not take. A stream that ends with no text
+    logs ``acb_llm.empty_answer``, and the caller keeps its own rule for it.
+
+    ``first_chunk_s``, ``idle_s`` and ``total_s`` bound the stream. ``None``
+    takes the module constant. A stream past a bound raises a
+    :class:`StreamTimeout` subclass, and the caller decides what to do.
+    """
+    _source = _infer_app_source()
+    bounds = {"first_chunk_s": first_chunk_s, "idle_s": idle_s, "total_s": total_s}
+    if not feature:
+        return await _stream_text(
+            model=model, messages=messages, max_tokens=max_tokens,
+            temperature=temperature, on_delta=on_delta, source=_source,
+            extra=extra, job=job, **bounds,
+        )
+    from acb_common._log import automation_agent_scope
+
+    with automation_agent_scope(feature):
+        return await _stream_text(
+            model=model, messages=messages, max_tokens=max_tokens,
+            temperature=temperature, on_delta=on_delta, source=_source,
+            extra=extra, job=job, **bounds,
+        )
+
+
+def _stream_timed_out(
+    cls: type[StreamTimeout], bound_s: float, *, model: str, chunks: int,
+    started: float,
+) -> StreamTimeout:
+    """Log the bound that a stream passed, and build its typed timeout.
+
+    The line holds the bound, the model and counts. It holds no prompt and no
+    model text, because both are tenant text.
+    """
+    elapsed_ms = int((asyncio.get_running_loop().time() - started) * 1000)
+    _log.warning(
+        "acb_llm.stream_timeout", bound=cls.bound, bound_s=bound_s,
+        reason=cls.reason, model=model, chunks=chunks, elapsed_ms=elapsed_ms,
+    )
+    return cls(bound_s, model=model)
+
+
+async def _close_stream(response: Any) -> None:
+    """Close a stream that passed a bound. Best-effort, and bounded too."""
+    close = getattr(response, "aclose", None)
+    if close is None:
+        return
+    # The timeout is the answer, so a close that fails changes nothing.
+    with contextlib.suppress(Exception):
+        await asyncio.wait_for(close(), timeout=1.0)
+
+
+async def _stream_text(
+    *,
+    model: str,
+    messages: list[dict[str, Any]],
+    max_tokens: int,
+    temperature: float,
+    on_delta: Any,
+    source: str | None,
+    extra: dict[str, Any],
+    first_chunk_s: float | None = None,
+    idle_s: float | None = None,
+    total_s: float | None = None,
+    job: str | None = None,
+) -> tuple[str, str]:
+    """The body of :func:`acompletion_stream_text`, with ``source`` resolved.
+
+    Three bounds end a stream that hangs (§17.3.7). ``first_chunk_s`` counts
+    from the call to the first chunk, and the open of the stream is part of
+    it. ``idle_s`` counts from each chunk to the next. ``total_s`` counts from
+    the call to the end. ``None`` takes the module constant at call time.
     """
     import litellm as _litellm
     from litellm import acompletion
@@ -391,25 +607,77 @@ async def acompletion_stream_text(
         _ensure_keys_loaded,
         ensure_model_registered,
     )
+    from acb_llm.jobs import (
+        apply_job,
+        ensure_json_word,
+        is_empty_answer,
+        note_empty_answer,
+        params_for_model,
+    )
 
-    _source = _infer_app_source()
+    _source = source
+    # Task 1128: the job sets thinking and the cap floor, before the fit.
+    max_tokens, extra = apply_job(job, max_tokens=max_tokens, extra=extra)
+    messages = ensure_json_word(messages, extra.get("response_format"))
     _litellm.drop_params = True
     _litellm.suppress_debug_info = True
     await _ensure_keys_loaded()
 
     resolved = resolve_underlying_model(model)
     ensure_model_registered(resolved)
+    extra = params_for_model(extra, resolved)
     fitted, _was_truncated = fit_messages_to_context(
         messages, model, max_output_tokens=max_tokens,
     )
-    response = await acompletion(
-        model=resolved, messages=fitted,
-        temperature=temperature, max_tokens=max_tokens,
-        stream=True, **extra,
-    )
+    first_s = STREAM_FIRST_CHUNK_S if first_chunk_s is None else first_chunk_s
+    gap_s = STREAM_IDLE_S if idle_s is None else idle_s
+    whole_s = STREAM_TOTAL_S if total_s is None else total_s
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    total_deadline = started + whole_s
+    # The open of the stream counts against the first-chunk bound: a provider
+    # that never sends its headers is a model that never sends a chunk.
+    open_deadline = min(started + first_s, total_deadline)
+    try:
+        response = await asyncio.wait_for(
+            acompletion(
+                model=resolved, messages=fitted,
+                temperature=temperature, max_tokens=max_tokens,
+                stream=True, **extra,
+            ),
+            timeout=max(0.0, open_deadline - loop.time()),
+        )
+    except TimeoutError:
+        cls = StreamTotalTimeout if total_deadline <= started + first_s \
+            else StreamFirstChunkTimeout
+        raise _stream_timed_out(
+            cls, whole_s if cls is StreamTotalTimeout else first_s,
+            model=resolved, chunks=0, started=started) from None
     content_parts: list[str] = []
     chunks: list[Any] = []
-    async for chunk in response:
+    stream = response.__aiter__()
+    # The bound of the next wait: the first chunk, then the gap after each one.
+    phase_deadline, phase_cls, phase_s = started + first_s, StreamFirstChunkTimeout, first_s
+    while True:
+        deadline = min(phase_deadline, total_deadline)
+        try:
+            chunk = await asyncio.wait_for(
+                stream.__anext__(), timeout=max(0.0, deadline - loop.time()))
+        except StopAsyncIteration:
+            break
+        except TimeoutError:
+            await _close_stream(response)
+            if total_deadline <= phase_deadline:
+                raise _stream_timed_out(
+                    StreamTotalTimeout, whole_s, model=resolved,
+                    chunks=len(chunks), started=started) from None
+            raise _stream_timed_out(
+                phase_cls, phase_s, model=resolved, chunks=len(chunks),
+                started=started) from None
+        # ANY chunk is a sign of life: a reasoning chunk, a role chunk, or a
+        # chunk with no choices. Each one resets the gap.
+        phase_deadline = loop.time() + gap_s
+        phase_cls, phase_s = StreamIdleTimeout, gap_s
         chunks.append(chunk)
         try:
             delta = chunk.choices[0].delta
@@ -431,13 +699,22 @@ async def acompletion_stream_text(
                     pass
     # Rebuild a response object from the chunks so usage/cost accounting fires
     # for streamed calls too. Best-effort — never fail the draft over it.
+    rebuilt = None
     try:
         rebuilt = _litellm.stream_chunk_builder(chunks, messages=fitted)
         if rebuilt is not None:
             _emit_usage(resolved, "", rebuilt, source=_source)
     except Exception:  # noqa: BLE001
         pass
-    return "".join(content_parts), resolved
+    text = "".join(content_parts)
+    if not text.strip():
+        # A blank stream is a failure that the caller reads as "no draft".
+        # Log it, as the non-streaming arm does.
+        note_empty_answer(
+            rebuilt if rebuilt is not None and is_empty_answer(rebuilt)
+            else {"model": resolved},
+            model=resolved, job=job, max_tokens=max_tokens)
+    return text, resolved
 
 
 # ── Server-side run-context assembler (C2) ──────────────────────────────────
@@ -477,6 +754,7 @@ def assemble_run_context(
     max_output_tokens: int = 1024,
     history_loader: Callable[[], list[dict[str, Any]]] | None = None,
     max_turns: int = 50,
+    reserve_tokens: int = 0,
 ) -> list[dict[str, Any]]:
     """Assemble a token-budgeted OpenAI-format ``messages`` list for a run.
 
@@ -495,10 +773,16 @@ def assemble_run_context(
        fitting REPLACES the old blind count caps (``max_turns`` remains only as
        a cheap upper bound applied before the token pass).
 
+    ``reserve_tokens`` is input room that the caller sends outside these
+    messages: the agent's instructions and its tool schemas. The fit takes it
+    off the budget, so the request still fits when those are added.
+    Fence: tests/unit/test_context_assembly.py.
+
     Pure function: DB access is injected via ``history_loader`` so ``acb_llm``
     keeps no dependency on the gateway. Never raises for empty inputs — returns
     at least the current user turn (and system, if any).
     """
+    reserve_tokens = max(0, int(reserve_tokens or 0))
     src = list(history or [])
     if not src and history_loader is not None:
         try:
@@ -517,7 +801,12 @@ def assemble_run_context(
     hist_turns: list[dict[str, Any]] = []
     for m in src[-max_turns:]:
         role = str(m.get("role") or "user")
-        content = str(m.get("content") or "").strip()
+        content = str(m.get("content") or "")
+        if role == "assistant":
+            # A stored turn may hold litellm's placeholder line. Drop it, so
+            # the model does not copy it (task 1787).
+            content = strip_placeholder_lines(content)
+        content = content.strip()
         if content and role in ("user", "assistant", "system"):
             hist_turns.append({"role": role, "content": content})
 
@@ -544,7 +833,7 @@ def assemble_run_context(
     # fits, THEN let fit_messages_to_context handle any remaining oversized
     # single message (e.g. one giant pasted block). System context + the
     # current turn are never dropped — only historical turns.
-    budget = context_window_for(model) - max_output_tokens - 512
+    budget = context_window_for(model) - max_output_tokens - 512 - reserve_tokens
     budget = max(1024, budget)
     dropped = 0
     while hist_turns:
@@ -556,7 +845,7 @@ def assemble_run_context(
 
     assembled = messages + hist_turns + ([current_turn] if current_turn else [])
     fitted, truncated = fit_messages_to_context(
-        assembled, model, max_output_tokens=max_output_tokens,
+        assembled, model, max_output_tokens=max_output_tokens + reserve_tokens,
     )
     last_fit_stats.set({"dropped_turns": dropped, "char_truncated": truncated})
     if truncated or dropped:

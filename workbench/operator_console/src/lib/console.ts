@@ -133,6 +133,39 @@ export async function callConsole(
   return { status: res.status, body: await res.text() };
 }
 
+// A multipart call: the body is a `FormData`, and `fetch` writes the
+// `Content-Type` with its boundary. The JSON content type is therefore
+// removed, and the rest of the headers are the ones `callConsole` sends.
+// ⚠️ The same credential rule as `callConsole`: the caller's session replaces
+// the shared token, and nothing here puts either in a response.
+export type FormFetchLike = (
+  url: string,
+  init: { method: string; headers: Record<string, string>; body: FormData },
+) => Promise<FetchResponse>;
+
+export async function callConsoleForm(
+  path: string,
+  form: FormData,
+  deps: { env?: ConsoleEnv; fetchImpl?: FetchLike; authToken?: string } = {},
+): Promise<ConsoleResult> {
+  const env = deps.env ?? readConsoleEnv();
+  const headers = deps.authToken
+    ? sessionHeaders(env, deps.authToken)
+    : operatorHeaders(env);
+  delete headers["Content-Type"];
+  // `FetchLike` carries a string body for every JSON call. A multipart call
+  // sends the same shape of request with a `FormData`, so the type is widened
+  // here and nowhere else.
+  const fetchImpl = (deps.fetchImpl ??
+    (globalThis.fetch as unknown)) as unknown as FormFetchLike;
+  const res = await fetchImpl(`${env.url}${path}`, {
+    method: "POST",
+    headers,
+    body: form,
+  });
+  return { status: res.status, body: await res.text() };
+}
+
 // ── The operator API surface the console consumes ───────────────────────────
 //
 // Reuse the Console routes that already exist and are PROVEN LIVE — never a
@@ -163,16 +196,18 @@ export const billingSummary = (orgSlug: string, d?: Deps) =>
 // caller's OWN token must be passed — a shared token reaches the Console as
 // `breakglass` and bypasses the role matrix.
 
-export const orgUsage = (days: number, d?: Deps) =>
+/** `rangeQ` is `lib/range.ts`'s `consoleQuery`: "days=N" or "from=…&to=…".
+ *  It replaces the `days` query when given (WS-50 slice 7). */
+export const orgUsage = (days: number, d?: Deps, rangeQ?: string) =>
   callConsole(
-    `/admin/usage/orgs?days=${encodeURIComponent(String(days))}`,
+    `/admin/usage/orgs?${rangeQ ?? `days=${encodeURIComponent(String(days))}`}`,
     { method: "GET" },
     d ?? {},
   );
 
-export const usageDaily = (days: number, orgSlug?: string, d?: Deps) =>
+export const usageDaily = (days: number, orgSlug?: string, d?: Deps, rangeQ?: string) =>
   callConsole(
-    `/admin/usage/daily?days=${encodeURIComponent(String(days))}` +
+    `/admin/usage/daily?${rangeQ ?? `days=${encodeURIComponent(String(days))}`}` +
       (orgSlug ? `&org_slug=${encodeURIComponent(orgSlug)}` : ""),
     { method: "GET" },
     d ?? {},
@@ -180,9 +215,9 @@ export const usageDaily = (days: number, orgSlug?: string, d?: Deps) =>
 
 /** One customer's spend by app, agent and person, with OUR cost. Usage
  *  slice 2. `admin`-door (VIEWER), like the two usage reads above it. */
-export const usageBreakdown = (days: number, orgSlug: string, d?: Deps) =>
+export const usageBreakdown = (days: number, orgSlug: string, d?: Deps, rangeQ?: string) =>
   callConsole(
-    `/admin/usage/breakdown?days=${encodeURIComponent(String(days))}` +
+    `/admin/usage/breakdown?${rangeQ ?? `days=${encodeURIComponent(String(days))}`}` +
       `&org_slug=${encodeURIComponent(orgSlug)}`,
     { method: "GET" },
     d ?? {},
@@ -207,6 +242,40 @@ export const setSeatCount = (body: unknown, d?: Deps) =>
 export const releaseSeat = (body: unknown, d?: Deps) =>
   callConsole("/billing/seats/release", { method: "POST", body }, d ?? {});
 
+// ── CP-APP · the Aroh app (task 1105) ──────────────────────────────────────
+// One org's apps: the switch, the seats, who holds them, and the app's AI use
+// (`viewer`). A seat is freed through `releaseSeat` with `plan_slug: "aroh"`.
+export const orgApps = (orgSlug: string, d?: Deps) =>
+  callConsole(
+    `/orgs/apps?org_slug=${encodeURIComponent(orgSlug)}`,
+    { method: "GET" },
+    d ?? {},
+  );
+
+// Body {org_slug, app, enabled, seats, reason}. `admin` with an elevation
+// window, the gate of the seat count.
+export const setOrgApp = (body: unknown, d?: Deps) =>
+  callConsole("/orgs/apps", { method: "POST", body }, d ?? {});
+
+// "Connect Aroh" (owner request, 2026-10-30). The Console stores the hub's
+// operator token ENCRYPTED and answers with `token_set` and the last four
+// characters only. The box key it mints goes to the hub, never back here.
+export const appConnection = (app: string, probe: boolean, d?: Deps) =>
+  callConsole(
+    `/apps/connection?app=${encodeURIComponent(app)}${probe ? "&probe=true" : ""}`,
+    { method: "GET" },
+    d ?? {},
+  );
+
+export const saveAppConnection = (body: unknown, d?: Deps) =>
+  callConsole("/apps/connection/settings", { method: "POST", body }, d ?? {});
+
+export const connectApp = (body: unknown, d?: Deps) =>
+  callConsole("/apps/connection/connect", { method: "POST", body }, d ?? {});
+
+export const disconnectApp = (body: unknown, d?: Deps) =>
+  callConsole("/apps/connection/disconnect", { method: "POST", body }, d ?? {});
+
 export const grantCredits = (body: unknown, d?: Deps) =>
   callConsole("/credits/grant", { method: "POST", body }, d ?? {});
 
@@ -219,6 +288,22 @@ export const setLifecycle = (body: unknown, d?: Deps) =>
 // financial record. Body {org_slug, confirm} where confirm must echo the slug.
 export const purgeOrgRegistry = (body: unknown, d?: Deps) =>
   callConsole("/orgs/purge", { method: "POST", body }, d ?? {});
+
+// The registry half of removing one member (owner request, 2026-10-15). Body
+// {org_slug, member_email}. The Console marks the membership removed and
+// releases the person's seats. It is idempotent: a second call answers
+// {found: false} or the same row again, so a retry after a half-failure is
+// safe. The BFF calls it only AFTER the tenant plane took access away.
+export const removeRegistryMember = (body: unknown, d?: Deps) =>
+  callConsole("/registry/members/remove", { method: "POST", body }, d ?? {});
+
+// The registry half of renaming an organization (CP-8, 2026-10-27). Body
+// {org_slug, name}. The Console writes `organization.name`, the only name it
+// stores, and never the slug. A repeat with the same name writes the same
+// value, so a retry is safe. The BFF calls it only AFTER the tenant plane
+// answered 200.
+export const renameRegistryOrg = (body: unknown, d?: Deps) =>
+  callConsole("/registry/orgs/rename", { method: "POST", body }, d ?? {});
 
 // Provision a new organization (create-only): the Console POST /orgs/provision
 // under the `Operator` scheme creates the org + its owner + Core seats, PLACES
@@ -391,6 +476,15 @@ export const setModelProfile = (body: unknown, d?: Deps) =>
 export const tryDecision = (body: unknown, d?: Deps) =>
   callConsole("/catalog/decide/try", { method: "POST", body }, d ?? {});
 
+// "Try speech to text" and "Try image analysis" (VOX-4, §31.5). Admin, no
+// window, the same rule as "Try a decision": the PLATFORM key, one audit row,
+// no usage row. The body is multipart: a `file`, and for vision a `question`.
+export const tryTranscription = (form: FormData, d?: Deps) =>
+  callConsoleForm("/catalog/transcribe/try", form, d ?? {});
+
+export const tryVision = (form: FormData, d?: Deps) =>
+  callConsoleForm("/catalog/vision/try", form, d ?? {});
+
 // Pull the vendor feed (migration 014) — litellm's price map — into
 // `vendor_price_feed` NOW. Reference data only: nothing billing reads moves.
 export const syncVendorFeed = (d?: Deps) =>
@@ -437,8 +531,8 @@ export const listProviderCreds = (includeRevoked: boolean, d?: Deps) =>
  * ⚠️ Read server-side with the caller's own token, like the credential list
  * beside it. It is an operator-wide money figure and belongs on no path the
  * browser can replay. */
-export const providerSpend = (d?: Deps) =>
-  callConsole("/providers/spend", { method: "GET" }, d ?? {});
+export const providerSpend = (d?: Deps, rangeQ?: string) =>
+  callConsole(`/providers/spend${rangeQ ? `?${rangeQ}` : ""}`, { method: "GET" }, d ?? {});
 
 /** Can each vendor account serve? The balance each vendor reported, and the
  * refusals the Router saw (owner request, 2026-09-28). No secret in it: the

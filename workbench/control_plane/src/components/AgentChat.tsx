@@ -10,8 +10,9 @@
 
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
-import { useState, useRef, useEffect, useCallback, useMemo, useSyncExternalStore } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo, useReducer, useSyncExternalStore } from "react";
 import React from "react";
+import { createPortal } from "react-dom";
 import Link from "next/link";
 import { useAgentChat } from "@/hooks/useAgentChat";
 import type { ArtifactEntry, ChatMessage } from "@/hooks/useAgentChat";
@@ -22,32 +23,157 @@ import ArtifactViewerModal from "@/components/ArtifactViewerModal";
 import { subscribe as subscribeSidePanel, getOpenDocsForSession, openGenUI } from "@/lib/sidePanelStore";
 import type { FileEntry } from "@/components/ArtifactSidebar";
 import FileUploadButton from "@/components/FileUploadButton";
+import VoiceInputButton, { type VoiceControls } from "@/components/VoiceInputButton";
+import { useVoiceAvailability } from "@/hooks/useVoiceDictation";
+import { insertAtCaret, type VoicePhase } from "@/lib/voiceDictation";
+import { wordsOfMessage } from "@/lib/chatUpload";
+import { PendingChips, workspaceFileUrl } from "@/components/ChatAttachmentChips";
+import { useChatAttachments } from "@/hooks/useChatAttachments";
+import {
+  canSend as canSendMessage,
+  composeMessage,
+  editStart,
+  hasFailed,
+  hasFiles,
+  isUploading,
+  readyFiles,
+} from "@/lib/chatAttachments";
 import { AgentAvatar, useAgentAvatars } from "@/components/AgentAvatar";
-import SuggestionPills from "@/components/SuggestionPills";
-import ConfirmationCard from "@/components/ConfirmationCard";
+import SuggestionPills, { type SuggestionItem } from "@/components/SuggestionPills";
+import InterviewOffer from "@/components/profile/InterviewOffer";
+import { starterPills } from "@/lib/starterPills";
+import { chatFirstOn } from "@/lib/shell/chatFlag";
+import { type FeedAnswer, feedAppIcon, feedKey, fetchFeed } from "@/lib/shell/feed";
+import { holdsOnlyBrief } from "@/lib/shell/briefTurn";
+import { announceHelloOnce, isHelloRow } from "@/lib/shell/buddyHello";
+import { useCachedResource } from "@/lib/useCachedResource";
+import ConfirmationQueue, { type ConfirmationAnswer } from "@/components/ConfirmationQueue";
+import ConfirmationReceipts from "@/components/ConfirmationReceipts";
+import AskPin from "@/components/AskPin";
+import { scrollToEnd } from "@/lib/scrollWithin";
+import { HITL_TARGET, pendingAsk, waitingTargets } from "@/lib/askPin";
+import {
+  genUiAnswersFromTurns,
+  parseCardAnswerEnvelope,
+  resendOutcomeOfSteer,
+  resendPlan,
+  STEER_UNSUPPORTED_CARD,
+  type ResendOutcome,
+} from "@/lib/cardAnswer";
+import RollupCard, { RollupContext, type RollupScope } from "@/components/RollupCard";
+import { noActionOf } from "@/components/email/EmailToolCards";
+import { DraftPinContext, draftPin, draftsOf } from "@/lib/pinnedDraft";
+import { withEmailSteps } from "@/lib/delegatedSteps";
+import { mailboxMarksOf } from "@/lib/mailboxMark";
+import MailboxMark from "@/components/MailboxMark";
+import ContinueOffer from "@/components/ContinueOffer";
+import { newestOfferId, type ContinueOpened } from "@/lib/chatContinue";
+import { ANSWER_CAPTION, typedAnswers, typedAnswerTarget } from "@/lib/typedAnswer";
+import { RollupRegistry, TURN_ATTR, turnThenArrival } from "@/lib/cardRollup";
+import { attachStickToBottom, nearAfterScroll, showJumpToBottom } from "@/lib/stickToBottom";
+import { segmentsForCache } from "@/lib/chatPlacement";
+import {
+  CONFIRMATION_RESOLVED,
+  EMPTY_CONFIRMATIONS,
+  NO_EDITS,
+  confirmationReducer,
+  formEditsReducer,
+  liveCards,
+  liveEdits,
+  receiptLabel,
+  settleAnswer,
+  type FormEdits,
+  type PendingConfirmation,
+} from "@/lib/confirmationQueue";
+import type { NewMailEdits } from "@/lib/replyCard";
+import {
+  UNCHANGED_CLOSE_MS,
+  changingLine,
+  pickCardDrafts,
+  type CardDraft,
+  type KeptDraft,
+  type SentVersion,
+} from "@/lib/redraftCard";
+import { sendRespondInputResult } from "@/lib/respondInput";
+import { createRejectHold } from "@/lib/rejectHold";
+import { cardsToRestore, cardsToSettle, fetchPendingAsksOrNull } from "@/lib/pendingAsks";
+import { planCardRedraw } from "@/lib/cardReplay";
+import { identity as boundIdentity } from "@/lib/dataCache";
+import { useChatOpen, useThreadNeedsInput } from "@/hooks/useActiveSessions";
+import { CONTINUE_TEXT, interruptedTurn } from "@/lib/chatRecovery";
+import { coverOutage, uncoverOutage } from "@/lib/shell/serviceHealth";
+import { ErrorCardView } from "@/components/ChatErrorCard";
 import ElicitationCard from "@/components/ElicitationCard";
 import type { ElicitationQuestion, ElicitationAnswers } from "@/components/ElicitationCard";
+import {
+  ASK_USER_HEADER,
+  answerSummary,
+  blockingAnswer,
+  formattedAnswers,
+  userInputAnswer,
+} from "@/lib/elicitationAnswer";
+import { DECLINED_ANSWER, declineBody } from "@/lib/declineAnswer";
 import TodoPanel from "@/components/TodoPanel";
 import ContextRing from "@/components/ContextRing";
+import RunStatusRow, { useSteadyRunView } from "@/components/RunStatusRow";
+import { isLivePhase, isRunActiveForUi } from "@/lib/runStatus";
+import { dispatchRun, getCardLog, getSessionState, noteCardAnswered } from "@/lib/chatStore";
+import { PHONE_MAX_WIDTH, composerCap, composerHeight, offerExpand } from "@/lib/composerHeight";
 import { PROJECTS_AGENT } from "@/lib/projectsAgent";
+import { saveConversationOnUnmount } from "@/lib/chatMemorySave";
 import MessageBubble from "@/components/MessageBubble";
+import PushPromptSheet from "@/components/PushPromptSheet";
+import ChatMoreMenu from "@/components/ChatMoreMenu";
+import ChatSendButton from "@/components/ChatSendButton";
+import {
+  STEER_CAPTION,
+  STEER_UNSUPPORTED,
+  isSteered,
+  lastNonSteer,
+  primaryAction,
+  sendRoute,
+  enterSends, touchKeyboard,
+  takeLeftoverQueue,
+} from "@/lib/chatSteer";
+import { canRetry, retryPlan } from "@/lib/chatRetry";
+import { mergeCappedText } from "@/lib/chatTurnFailure";
+import { EDIT_LOADING, editableLastUserId, submitEdit, withoutSuperseded, type EditOutcome } from "@/lib/chatEdit";
+import { describeToolStep } from "@/lib/toolSteps";
 import { RoomHeader } from "@/components/room/RoomHeader";
+import { ShareSheet } from "@/components/room/ShareSheet";
 import { PresenceRail } from "@/components/room/PresenceRail";
 import { useRoom } from "@/hooks/useRoom";
 import { peopleOf } from "@/lib/rooms";
-import { getMessages, saveMessages, fetchMessagesFromDb, getQueue, saveQueue, type PersistedMessage } from "@/lib/sessions";
+import { getMessages, saveMessages, fetchMessagesFromDb, cacheMessages, type PersistedMessage } from "@/lib/sessions";
 import { computeContextUsage, activeContextSlice, isCompactionCheckpoint } from "@/lib/tokenCount";
 import { serializeReasoning } from "@/lib/chatStream";
 import { useAgentEvents } from "@/lib/agentEvents";
 import { buildFrontendToolsAddendum, runFrontendToolEvent } from "@/hooks/useFrontendTool";
 import { isInterruptedReply } from "@/lib/chatInterrupted";
 import { missingAgentIntegrations, missingIntegrationsText } from "@/lib/missingIntegrations";
+import { EMPTY_BOX, composerTyped, edited, filled, type ComposerMark } from "@/lib/typedMark";
+import type { AskOutcome } from "@/lib/shell/assistant";
+import {
+  composerControls,
+  composerModelPlan,
+  forgetModelChoice,
+  getLastModel,
+  getModelUsage,
+  incrementModelUsage,
+  modelMemoryStep,
+  sentThinkMode,
+  setLastModel,
+  tierRoutingUiOn,
+  type ThinkMode,
+} from "@/lib/tierRouting";
 
 // Unified model fallback — shown while /api/models/all is loading.
 // Always includes the tiers (always accessible) and Gemini models (default provider).
 // Provider-specific models for other providers are added dynamically after fetch.
 const MODELS_FALLBACK: UnifiedModel[] = [
-  { id: "auto",              label: "auto (SDK picks)",     runtime: "copilot", group: "GitHub Copilot SDK" },
+  // "copilot" is the name of the agent-executor mode (the MAF tool path), not the SDK.
+  // The name retires with WS-43q (task 2285).
+  { id: "auto",              label: "Auto (the assistant picks)", runtime: "copilot", group: "Assistant" },
   { id: "tier-fast",     label: "Tier 1 (fast / cheap)", runtime: "litellm", group: "LiteLLM — Tiers" },
   { id: "tier-balanced", label: "Tier 2 (balanced)",     runtime: "litellm", group: "LiteLLM — Tiers" },
   { id: "tier-powerful", label: "Tier 3 (powerful)",     runtime: "litellm", group: "LiteLLM — Tiers" },
@@ -60,20 +186,12 @@ const MODELS_FALLBACK: UnifiedModel[] = [
 // scroll-up.
 const HISTORY_PAGE_SIZE = 30;
 const HISTORY_LOADER_DELAY_MS = 300;
-
-type SendMode = "send" | "queue" | "steer";
-
-const SEND_MODE_LABELS: Record<SendMode, string> = {
-  send: "Send",
-  queue: "Queue",
-  steer: "Steer",
-};
-
-const SEND_MODE_DESCRIPTIONS: Record<SendMode, string> = {
-  steer: "Interrupt current reply and send now",
-  send:  "Send when idle, queue if busy (default)",
-  queue: "Wait for current reply, then send",
-};
+/**
+ * CF-8: on a phone the context ring joins the composer from this share of
+ * the window. It is the floor of the auto-compaction band (75 to 80 %), so
+ * the ring shows where the member may want to act on it, and nowhere else.
+ */
+export const PHONE_RING_PCT = 75;
 
 // ── Suggestion pills (CopilotKit-style starter prompts) ─────────────────
 
@@ -101,7 +219,7 @@ const AGENT_SUGGESTIONS: Record<string, string[]> = {
     "Create a new high-priority task",
     "What's due this week?",
   ],
-  "sales-assistant": [
+  "crm-assistant": [
     "Show pipeline summary",
     "Create a new lead",
     "What deals are closing this month?",
@@ -115,39 +233,19 @@ const AGENT_SUGGESTIONS: Record<string, string[]> = {
 };
 
 // ── Per-agent model memory ──────────────────────────────────────────────
-
-const MODEL_PREF_KEY = (agent: string) => `cc-model-${agent}`;
-const MODEL_USAGE_KEY = "cc-model-usage";
-
-function getLastModel(agentName: string): string | null {
-  try {
-    return localStorage.getItem(MODEL_PREF_KEY(agentName));
-  } catch { return null; }
-}
-
-function setLastModel(agentName: string, modelId: string): void {
-  try { localStorage.setItem(MODEL_PREF_KEY(agentName), modelId); } catch { /* noop */ }
-}
-
-function getModelUsage(): Record<string, number> {
-  try {
-    const raw = localStorage.getItem(MODEL_USAGE_KEY);
-    return raw ? JSON.parse(raw) as Record<string, number> : {};
-  } catch { return {}; }
-}
-
-function incrementModelUsage(modelId: string): void {
-  if (modelId === "auto") return; // don't track auto
-  try {
-    const usage = getModelUsage();
-    usage[modelId] = (usage[modelId] ?? 0) + 1;
-    localStorage.setItem(MODEL_USAGE_KEY, JSON.stringify(usage));
-  } catch { /* noop */ }
-}
+// The helpers and the `localStorage` keys live in `lib/tierRouting.ts`
+// (WS-45 S3), so a covered agent reads no stored choice and a test can
+// prove it.
 
 interface AgentChatProps {
   agentName: string;
   sessionId: string;
+  /**
+   * False while a parent keeps the chat mounted but hidden, as the Projects
+   * dock does under a task (WS-51 S5). A hidden chat is not "open": a run
+   * that ends in it marks it unread and may raise a toast. Default true.
+   */
+  visible?: boolean;
   agentDescription?: string;
   /** Integration statuses passed from the parent. If absent, fetched on mount. */
   integrationStatuses?: IntegrationStatus[];
@@ -155,6 +253,9 @@ interface AgentChatProps {
   availableAgents?: AgentEntry[];
   /** Persona / system prompt injected as system context (e.g. Metorite brain). */
   persona?: string;
+  /** WS-67 OA-7d: the app slug of the pane (`email`). Only the assistant dock
+   *  sets it. It goes in the request as `surface`, a hint for the tool packs. */
+  surface?: string | null;
   /** Persistent memory lines (Mem0) injected as system context. */
   memories?: string[];
   /** When set, the conversation is saved to Mem0 on unmount under this userId. */
@@ -193,12 +294,23 @@ interface AgentChatProps {
    * — rather than something inherited silently from whatever the inbox happened
    * to be showing — is what stops "which inbox is it talking about?" from being
    * unanswerable, and the switch is marked in the transcript when it happens.
+   *
+   * `accent` is optional: the class of a colour dot beside the label, from the
+   * categorical ramp (`mailboxAccent(a).dot` in the email app, EM-T8f-3).
+   * Never a hex value or a raw palette class. `/chat` sends none, and then
+   * the picker draws as before.
    */
-  mailboxes?: { id: string; label: string }[];
+  mailboxes?: { id: string; label: string; accent?: string }[];
   /** The mailbox currently in force. Controlled by the parent. */
   activeMailboxId?: string | null;
   /** Raised when the user picks a different mailbox in the composer. */
   onMailboxChange?: (id: string) => void;
+  /**
+   * One note above the composer, with an optional dismiss. The email chat
+   * sends one when the mailbox of its scope leaves (EM-T8f-3, §11.6 case 17).
+   * Optional: every other caller omits it, and nothing draws.
+   */
+  notice?: { text: string; onDismiss?: () => void } | null;
   /**
    * Force the model this chat runs on (e.g. the email app's assistant
    * `chat_model` setting). When set it overrides the per-agent localStorage
@@ -219,21 +331,93 @@ interface AgentChatProps {
    */
   compact?: boolean;
   /**
+   * The full view's header slot (CO-0, owner 2026-11-02: one header row).
+   * A solo chat draws its Share there, in the dock's own header, and no
+   * agent row: the dock's title already names the chat. A room keeps its
+   * rows, because its people and its room toggle need them.
+   */
+  headSlot?: HTMLElement | null;
+  /**
+   * The chat's chrome on a phone (WS-62 CF-8, `chat_first_surface.md` §4.8).
+   * The host draws the one header row, so the agent row and the Share row
+   * go. The composer keeps the field, Attach and Send, and the effort
+   * choice, the context ring and the model picker move into one "…" control
+   * (`ChatMoreMenu`). Share and the status live there too. Unlike `compact`,
+   * it keeps the room on, because Share is a room act.
+   */
+  phoneChrome?: boolean;
+  /**
+   * CF-8: acts the host lends to the phone's "…" control, such as the
+   * dock's "This chat's files". Read only with `phoneChrome`.
+   */
+  moreActs?: readonly { icon: string; label: string; onClick: () => void }[];
+  /**
+   * WS-OB GD-4: a line the shell lends, drawn above the message box (the guide's
+   * step card). The chat knows nothing of it.
+   */
+  aboveComposer?: React.ReactNode;
+  /**
    * One-shot text to drop into the composer (not auto-sent) — used by the email
    * Assistant's "Fix" flow to hand a correction prompt to the user for review.
    * Changing this value injects it; `onPendingInputConsumed` fires once applied.
    */
   pendingInput?: string;
+  /**
+   * WS-63 D-PZ-37: true only when `pendingInput` holds the member's own typed
+   * words (the command bar's Ask). Missing or false, the words are not
+   * typed: a send of them from the box carries no typed mark. The Fix prompt
+   * passes nothing (`lib/typedMark.ts`).
+   */
+  pendingInputTyped?: boolean;
   onPendingInputConsumed?: () => void;
+  /**
+   * Words to SEND once, as the member's turn (D99: the shell's chat bar).
+   * Unlike `pendingInput`, the member already pressed Enter in the bar. It
+   * waits until the history has loaded, sends each `seq` once, and then
+   * calls `onAutoSendConsumed` with `sent`, or with `kept` when the chat
+   * refused the send and the words wait in the composer. A steer that the
+   * server refuses later calls it again with `kept` (STU-B2c-2c).
+   */
+  autoSend?: { seq: number; text: string; typed?: boolean } | null;
+  onAutoSendConsumed?: (seq: number, outcome: AskOutcome) => void;
+  /**
+   * D99: the one assistant's name, "Metorite". The member talks to one
+   * assistant and never picks an agent, so with this set the chat shows the
+   * name in place of the agent's, and it offers no agent switch.
+   */
+  assistantName?: string;
+  /**
+   * The server refused this SESSION on send (another org, or a room the member
+   * is not in). Return true to take the turn: no error card is drawn, and the
+   * parent opens a new chat. Pass it ONLY for a session restored from storage
+   * (`useAgentSessions` in hooks/useChatSessions.ts). A chat the member opened
+   * on purpose omits it, and its refusal shows as an error.
+   */
+  onSessionRefused?: (pendingText: string) => boolean;
+  /**
+   * The shell opens the fresh chat that the pill "Continue in a fresh chat"
+   * made (`lib/chatContinue.ts`, `one_assistant_context.md` §9 WT-2). Pass it
+   * only from the shell's dock. A host that omits it draws no pill. The new
+   * chat gets `text` in its composer, and nothing is sent.
+   */
+  onContinueHeld?: (opened: ContinueOpened) => void;
 }
+
+/** The `answer` of a resolved card that closed with no answer. */
+const CARD_CLOSED_UNANSWERED: ReadonlySet<string> = new Set(["TIMEOUT", "CANCELLED"]);
+
+/** The one line a member reads when compaction fails. Nothing was removed. */
+const COMPACT_FAILED_NOTICE = "Could not shorten this chat. Every message is kept.";
 
 export default function AgentChat({
   agentName,
   sessionId,
+  visible = true,
   agentDescription,
   integrationStatuses: externalStatuses,
   availableAgents: externalAgents,
   persona,
+  surface,
   memories,
   memoryUserId,
   onActivity,
@@ -243,16 +427,32 @@ export default function AgentChat({
   mailboxes,
   activeMailboxId,
   onMailboxChange,
+  notice,
   model: forcedModel,
   lockModel,
   compact,
+  headSlot = null,
+  phoneChrome = false,
+  moreActs,
+  aboveComposer,
   pendingInput,
+  pendingInputTyped,
   onPendingInputConsumed,
+  autoSend,
+  onAutoSendConsumed,
+  assistantName,
+  onSessionRefused,
+  onContinueHeld,
 }: AgentChatProps) {
   // Active agent / model can change mid-chat (VS Code Copilot style).
   const [currentAgentName, setCurrentAgentName] = useState(agentName);
+  // WS-45 S3: the UI flag. Off, the model picker works as it always did.
+  const tierUi = tierRoutingUiOn();
   const [currentModel, setCurrentModel] = useState(
-    () => forcedModel || getLastModel(agentName) || "auto",
+    // With the UI flag on, the stored choice is read only once the agent is
+    // known to keep its picker (the persist effect below), never for a
+    // covered agent.
+    () => forcedModel || (tierUi ? null : getLastModel(agentName)) || "auto",
   );
   // Conform to an externally-governed model (e.g. the email assistant's
   // `chat_model` setting) and re-sync if it changes.
@@ -269,14 +469,57 @@ export default function AgentChat({
     useState<{ afterId: string; label: string }[]>([]);
   const activeMailbox = mailboxes?.find((m) => m.id === activeMailboxId);
   // ── Thinking mode ──────────────────────────────────────────────────
-  type ThinkMode = "auto" | "thinking" | "max";
   const [thinkMode, setThinkMode] = useState<ThinkMode>("auto");
   const [showAgentMenu, setShowAgentMenu] = useState(false);
   const [agents, setAgents] = useState<AgentEntry[]>(externalAgents ?? []);
+  // True once the agent list has answered (or the parent passed one). The
+  // UI flag reads coverage from it, so nothing is decided before it lands.
+  const [agentsKnown, setAgentsKnown] = useState(!!externalAgents);
   const [models, setModels] = useState<UnifiedModel[]>(MODELS_FALLBACK);
 
-  // Fetch the unified model list (Copilot SDK + LiteLLM) on mount.
+  // ────────────────────────────────────────────────────────────────────────
+
+  // Resolve the selected model's routing runtime (copilot SDK vs gateway BYOK).
+  const selectedModel = models.find((m) => m.id === currentModel);
+  const currentRuntime = selectedModel?.runtime ?? "copilot";
+
+  // Resolve the active agent's metadata (runtime classification, repo link, etc.)
+  // NOTE: computed here (before useAgentChat) so we can override the routing mode.
+  const currentAgentEntry = agents.find((a) => a.name === currentAgentName);
+  // WS-45 S3 (D90): for an agent that the backend flag covers, the platform
+  // picks the tier. No picker, no models fetch, no stored choice and no
+  // `model` field. The gateway stamps `tier_routed` on the agent list entry,
+  // so nothing here names an agent. UI flag off: every field is as today.
+  // The orchestrator (Metorite) is the one agent with an agent selector.
+  const isOrchestrator = currentAgentName === "orchestrator" || currentAgentName === "metorite";
+  // Coverage reads the entry of the agent that serves the run. A legacy
+  // "metorite" session runs on the orchestrator, so it reads that entry
+  // (review P3). UI flag off: no plan reads the entry.
+  const coverageEntry = currentAgentEntry
+    ?? (isOrchestrator ? agents.find((a) => a.name === "orchestrator") : undefined);
+  const modelPlan = composerModelPlan({
+    uiOn: tierUi,
+    agentsKnown,
+    entry: coverageEntry,
+  });
+  // The member chooses no effort and no agent for a covered agent (owner,
+  // 2026-10-07, amendment of D90 §5 and §7). UI flag off: both as today.
+  // Computed before the memos below, which read `modelPlan`.
+  const routed = composerControls({
+    uiOn: tierUi,
+    agentsKnown,
+    entry: coverageEntry,
+    isOrchestrator,
+  });
+  // D99: the one assistant offers no agent switch.
+  const controls = assistantName ? { ...routed, showAgentSwitch: false } : routed;
+
+  // Fetch the unified model list (Copilot SDK + LiteLLM) once the picker is
+  // live. UI flag off: on mount, as before.
+  const modelsFetchedRef = useRef(false);
   useEffect(() => {
+    if (!modelPlan.fetchModels || modelsFetchedRef.current) return;
+    modelsFetchedRef.current = true;
     fetch("/api/models/all")
       .then((r) => r.json())
       .then((data: unknown) => {
@@ -286,26 +529,53 @@ export default function AgentChat({
         }
       })
       .catch(() => {}); // Keep fallback list on error
-  }, []);
+  }, [modelPlan.fetchModels]);
 
   // Persist model preference per agent + track usage count.
   // Only count usage on an ACTUAL model change (not on mount or agent switch),
   // otherwise every session open inflates the "Frequently Used" ranking.
   const prevModelRef = useRef<string | null>(null);
+  // UI flag on: the agent whose stored choice this mount already read.
+  const restoredForRef = useRef<string | null>(null);
   useEffect(() => {
     // Don't persist/track an externally-forced model — it's governed by its own
     // setting and would otherwise overwrite the agent's own picker default.
-    if (forcedModel) return;
+    // A covered agent keeps no choice (WS-45 S3, §8). With the UI flag on,
+    // the first live render of an agent restores its choice and writes
+    // nothing over it. `modelMemoryStep` decides which, and says why.
+    const step = modelMemoryStep({
+      forced: !!forcedModel,
+      remember: modelPlan.rememberModel,
+      tierUi,
+      agent: currentAgentName,
+      model: currentModel,
+      restoredFor: restoredForRef.current,
+      readStored: () => getLastModel(currentAgentName),
+    });
+    restoredForRef.current = step.restoredFor;
+    if (step.kind === "skip") return;
+    if (step.kind === "restore") {
+      prevModelRef.current = step.model;
+      setCurrentModel(step.model);
+      return;
+    }
     setLastModel(currentAgentName, currentModel);
     if (prevModelRef.current !== null && prevModelRef.current !== currentModel) {
       incrementModelUsage(currentModel);
     }
     prevModelRef.current = currentModel;
-  }, [currentModel, currentAgentName, forcedModel]);
+  }, [currentModel, currentAgentName, forcedModel, tierUi, modelPlan.rememberModel]);
+
+  // A covered agent's stored choice goes, once per mount (§8).
+  useEffect(() => {
+    if (!modelPlan.covered) return;
+    forgetModelChoice(currentAgentName, agents);
+  }, [modelPlan.covered, currentAgentName, agents]);
 
   // ── Model sorting: frequently used models float to the top ──────────────
   const sortedModels = useMemo(() => {
-    const usage = getModelUsage();
+    // A covered agent reads no stored counts (WS-45 S3). UI flag off: always read.
+    const usage = modelPlan.showPicker ? getModelUsage() : {};
     const topIds = Object.entries(usage)
       .sort(([, a], [, b]) => b - a)
       .slice(0, 4)
@@ -322,20 +592,11 @@ export default function AgentChat({
       ...frequent.map((m) => withGroup(m, "Frequently Used")),
       ...rest,
     ];
-  }, [models]);
-  // ────────────────────────────────────────────────────────────────────────
-
-  // Resolve the selected model's routing runtime (copilot SDK vs gateway BYOK).
-  const selectedModel = models.find((m) => m.id === currentModel);
-  const currentRuntime = selectedModel?.runtime ?? "copilot";
-
-  // Resolve the active agent's metadata (runtime classification, repo link, etc.)
-  // NOTE: computed here (before useAgentChat) so we can override the routing mode.
-  const currentAgentEntry = agents.find((a) => a.name === currentAgentName);
+  }, [models, modelPlan.showPicker]);
   const agentRuntime: string = currentAgentEntry?.agent_runtime ?? "maf";
   // Friendly display name (alias) for UI labels only — dispatch, localStorage
   // and routing keep using the canonical `currentAgentName`.
-  const currentAgentLabel = currentAgentEntry?.display_name || currentAgentName;
+  const currentAgentLabel = assistantName || currentAgentEntry?.display_name || currentAgentName;
   // Assigned pixel-art avatars (name → libraryId) for the agent switcher/header.
   const agentAvatars = useAgentAvatars();
 
@@ -345,8 +606,9 @@ export default function AgentChat({
   // its tools + instructions even when using a custom model.
   // The orchestrator (Metorite) still uses model-driven routing for
   // fast stateless chat when LiteLLM models are selected.
-  const isOrchestrator = currentAgentName === "orchestrator" || currentAgentName === "metorite";
-  const effectiveRuntime = isOrchestrator ? currentRuntime : "copilot";
+  // A covered orchestrator takes the executor path too: the direct LiteLLM
+  // path would skip the tier policy (WS-45 S3).
+  const effectiveRuntime = isOrchestrator && !modelPlan.covered ? currentRuntime : "copilot";
 
   // Documents the user currently has open in the side-panel editor — folded
   // into the agent's context so it knows what the user is looking at / editing
@@ -393,14 +655,55 @@ export default function AgentChat({
       ),
     [sessionId],
   );
-  const { messages, isLoading, error, sendMessage, stopGeneration, setMessages, recovering, runStatus } = useAgentChat({
+  // The composer is declared below the hook, so the run-cap restore reaches
+  // it through this ref (WS-51 D-3).
+  const restoreCappedRef = useRef<(text: string, typed: boolean) => void>(() => {});
+  const restoreCappedText = useCallback(
+    (text: string, typed: boolean) => restoreCappedRef.current(text, typed), []);
+  // WS-63 D-PZ-37: whether a send from the box carries the typed mark. Words
+  // that a program puts in the box take it away until the box is empty
+  // (`lib/typedMark.ts`). A ref: only the send reads it.
+  const boxMarkRef = useRef<ComposerMark>(EMPTY_BOX);
+  // §18.11 step 1: the member's version of each open new-mail card that
+  // they edited, by card key (`lib/redraftCard.ts`). Each steer takes the
+  // newest one. The queue is declared below the hook, so its cards and its
+  // dispatch reach the steer through refs.
+  const cardDraftsRef = useRef(new Map<string, KeptDraft>());
+  const draftSeqRef = useRef(0);
+  const cardsRef = useRef<readonly PendingConfirmation[]>([]);
+  const markSentRef = useRef<(key: string, version: SentVersion) => void>(() => {});
+  const takeCardDraft = useCallback((): CardDraft[] => {
+    // P2: one version for EACH open new-mail card, an unedited card too.
+    const drafts = pickCardDrafts(cardsRef.current, cardDraftsRef.current);
+    // Each card keeps what went, so its next draft can say what changed,
+    // people included.
+    for (const d of drafts) {
+      markSentRef.current(d.request_id, { subject: d.subject, body: d.body, to: d.to, cc: d.cc, bcc: d.bcc });
+    }
+    return drafts;
+  }, []);
+  const {
+    messages, isLoading, error, sendMessage, steerMessage, stopGeneration, setMessages,
+    stopping, stopError,
+    outage, retryHeld, run,
+  } = useAgentChat({
     agentName: currentAgentName,
     threadId: sessionId,
-    model: currentModel,
+    // `null` sends no `model` field for a covered agent (WS-45 S3).
+    model: modelPlan.sendModel ? currentModel : null,
     mode: effectiveRuntime,
     systemContext,
-    thinkMode,
+    surface,
+    // A covered agent sends "auto", and the executor reads the effort from
+    // the member's words (`tier_policy.turn_kind`).
+    thinkMode: sentThinkMode(modelPlan.covered, thinkMode),
     onArtifact,
+    // WS-51 D-3: the run cap refused the send. The words come back to the
+    // composer, unless the member already typed something new.
+    onRunCapped: restoreCappedText,
+    // §18.11: a steer carries the member's version of each open new-mail card.
+    cardDraft: takeCardDraft,
+    onSessionRefused,
     // Load the FULL persisted history into memory so the context sent to the
     // model and the context-usage estimate are both accurate.  We only window
     // the RENDERING (below) for performance — not the data.
@@ -446,6 +749,47 @@ export default function AgentChat({
     return () => clearTimeout(t);
   }, [loadingHistory]);
 
+  // The hello comes without a click, so a screen reader hears its words once
+  // (DESIGN_SYSTEM.md §11 M9). The line is always in the page, empty until
+  // the row is there: a live region that arrives with its text is missed.
+  const helloWords = messages.find((m) => isHelloRow(m.id))?.content ?? "";
+  const [helloSaid, setHelloSaid] = useState("");
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- said once, from the row
+    if (helloWords && announceHelloOnce(sessionId)) setHelloSaid(helloWords);
+  }, [helloWords, sessionId]);
+
+  // ── The starter pills (WS-62 CF-4, chat_first_surface.md §4.6) ──────────
+  // With the chat-first flag on, the empty chat of the one assistant draws
+  // its three pills from the member's My Day feed, through the feed's OWN
+  // cache key. My Day reads the same key (`useFeed` in FeedCard.tsx), so a
+  // feed the page already loaded costs the chat no request, and a feed the
+  // chat loaded first answers My Day. The key is null until the empty state
+  // shows, so a chat with messages, or another agent's chat, never reads the
+  // feed. The flag is read once, as the dock reads it. No model writes a
+  // starter pill: `starterPills` is the one pure rule. My Day owns the poll
+  // and the focus read, so the chat only looks.
+  const [chatFirst] = useState(() => chatFirstOn());
+  // CF-4b: a fresh chat is empty, or holds only the day's brief (a phone's
+  // first turn, CF-5) with no word from the member. The brief row has its own
+  // id (`holdsOnlyBrief`), so a chat that a reminder opens is not a fresh chat.
+  const briefOnly = holdsOnlyBrief(messages);
+  const starterFeedWanted =
+    chatFirst && isOrchestrator && !loadingHistory && (messages.length === 0 || briefOnly);
+  const starterFeed = useCachedResource<FeedAnswer>(starterFeedWanted ? feedKey() : null, () => fetchFeed(), {
+    revalidateOnFocus: false,
+  });
+  const starterFeedCards = starterFeed.data?.cards;
+  const starters = useMemo<SuggestionItem[]>(
+    () =>
+      starterPills({
+        chatFirst: starterFeedWanted,
+        cards: starterFeedCards,
+        fallback: AGENT_SUGGESTIONS[currentAgentName] ?? DEFAULT_SUGGESTIONS,
+      }).map((p) => ({ label: p.label, message: p.message, icon: p.app ? feedAppIcon(p.app) : undefined })),
+    [starterFeedWanted, starterFeedCards, currentAgentName],
+  );
+
   // On mount, fetch the authoritative FULL message history from Postgres and
   // sync into memory if it's richer than the local cache (more messages OR
   // longer content — refresh-recovery where persistAssistantMessage grew the
@@ -458,14 +802,30 @@ export default function AgentChat({
       if (cancelled || remoteRaw.length === 0) return;
       // Drop stale __ERROR__ system messages persisted by older builds —
       // transient errors must never resurface on reload.
-      const remote = (remoteRaw as ChatMessage[]).filter(
+      // An edit in this page removed some rows. A load that answered before
+      // the gateway deleted them must not bring them back (lib/chatEdit.ts).
+      const remote = withoutSuperseded(sessionId, (remoteRaw as ChatMessage[]).filter(
         (m) => !(m.role === "system" && m.content?.startsWith("__ERROR__")),
-      );
+      ));
       if (remote.length === 0) return;
-      const local = messages;
+      // The store NOW, not the render that started this load: that render
+      // held no messages yet, so every load replaced the thread, and a reply
+      // that had re-attached meanwhile vanished (owner report, 2026-10-19:
+      // "a thinking container for a fleeting moment before it disappears").
+      const cur = getSessionState(sessionId);
+      const local = cur.messages;
+      // The reply of a live run is the stream's own: the saved row lags it.
+      const liveId = isLivePhase(cur.run.phase) ? cur.run.messageId : null;
+      const mine = liveId ? local.find((m) => m.id === liveId) : undefined;
+      const withLive = (rows: ChatMessage[]): ChatMessage[] => {
+        if (!mine) return rows;
+        return rows.some((m) => m.id === mine.id)
+          ? rows.map((m) => (m.id === mine.id ? mine : m))
+          : [...rows, mine];
+      };
       // Quick check: more messages → definitely use DB.
       if (remote.length > local.length) {
-        setMessages(remote as ChatMessage[]);
+        setMessages(withLive(remote as ChatMessage[]));
         return;
       }
       // Same count but maybe richer content?  Compare total content length,
@@ -485,7 +845,7 @@ export default function AgentChat({
         remoteToolCount > localToolCount ||
         remoteCustomCount > localCustomCount
       ) {
-        setMessages(remote as ChatMessage[]);
+        setMessages(withLive(remote as ChatMessage[]));
       }
     }).catch(() => {}).finally(() => {
       if (!cancelled) setLoadingHistory(false);
@@ -503,7 +863,10 @@ export default function AgentChat({
     const settled = messages.filter(
       (m) =>
         (!m.streaming || m.content.trim().length > 0) &&
-        !(m.role === "system" && m.content.startsWith("__ERROR__")),
+        !(m.role === "system" && m.content.startsWith("__ERROR__")) &&
+        // A turn the server has not answered yet (WS-51 D-3). A send that
+        // the run cap refuses must leave no row.
+        !m.awaitingServer,
     );
     if (settled.length === 0) return;
     const toSave: PersistedMessage[] = settled.map((m) => ({
@@ -518,6 +881,8 @@ export default function AgentChat({
       agentState: m.agentState,
       customEvents: m.customEvents,
       todos: m.todos,
+      // The cards of the turn draw in stream order from these (P1-a).
+      segments: segmentsForCache(m.segments, m.customEvents),
       // Carried so a run this browser watched is attributed to the agent that
       // produced it. The server owns human attribution — it stamps the
       // authenticated caller — so a human author sent here would be ignored.
@@ -530,68 +895,92 @@ export default function AgentChat({
   }, [messages, sessionId]);
 
   const [input, setInput] = useState("");
-  const [sendMode, setSendMode] = useState<SendMode>("send");
-  const [showSendMenu, setShowSendMenu] = useState(false);
-  // The send-queue is persisted per-session (localStorage) so a queued/steered
-  // message survives a page refresh or an agent/session switch.  Initialise from
-  // the persisted queue for this session; a session-change effect reloads it.
-  const [queuedCount, setQueuedCount] = useState(() => getQueue(sessionId).length);
-  const queueRef = useRef<string[]>(getQueue(sessionId));
+  // One plain note under the box: a steer the server refused, or a model
+  // that cannot take one. The words are back in the box when it shows.
+  const [composerNotice, setComposerNotice] = useState<string | null>(null);
 
-  // A run is "active" whenever the agent is streaming, recovering after a page
-  // reload, or the server run is still going.  The Stop control must appear in
-  // ALL of these — gating only on isLoading hid Stop during recovery (isLoading
-  // is false then), which is why the Stop button sometimes never showed up and
-  // appeared to vanish when the input was cleared (it fell back to the idle
-  // Send button, which greys out without text).
-  const isRunActive =
-    isLoading || recovering || (!!runStatus && runStatus !== "idle");
+  // A run is "active" while the ONE run state says it may still run
+  // (`lib/runStatus.ts`, owner report 2026-10-19): starting, working, waiting
+  // for the member, or finishing while the server answers. The server is the
+  // source of truth, so a long silent tool call, a delegation, a reload and a
+  // stream the proxy cut all keep it active until the run really ends. The
+  // composer's Stop, the placeholder, the header dot and the status row all
+  // read this one value. No indicator decides on its own.
+  // A remount's "checking" offers no Stop and no "working…" until the
+  // server lists the run (`isRunActiveForUi`, re-review of #1171).
+  const isRunActive = isRunActiveForUi(run);
+  // §18.11: a message goes as a steer now, the one path that carries the
+  // member's version of a card (`cardDraft`). A plain send carries none.
+  const steerOpen = sendRoute({ runActive: isRunActive, mode: effectiveRuntime }) === "steer";
+  // Glass (GL-10b): the colour edge around the composer is always drawn. Its
+  // state says what the run is doing, and the caller's CSS keys on it.
+  const glowState = isRunActive ? (run.phase === "waiting_for_you" ? "waiting" : "live") : "rest";
+  const [composerFocused, setComposerFocused] = useState(false);
+  const runView = useSteadyRunView(run);
 
-  // ── Live working message (rotates at the bottom of the chat) ──────────
-  // Mirrors VS Code Copilot / Claude: the "thinking" indicator is always
-  // visible at the bottom of the output, not buried inside the thinking
-  // container where it disappears when the container is collapsed.
-  const _WM = [
-    "Working on it", "Thinking it through", "Processing",
-    "Crunching the details", "Pulling the data", "Putting it together",
-  ];
-  const _FM = ["Bribing the hamster", "Reticulating splines", "Summoning Clippy"];
-  const [liveWorkingMsg, setLiveWorkingMsg] = useState<string>(() =>
-    Math.random() < 1 / 12 ? _FM[Math.floor(Math.random() * _FM.length)] : _WM[Math.floor(Math.random() * _WM.length)]
-  );
-  useEffect(() => {
-    if (!isRunActive) return;
-    const t = setInterval(() => {
-      const pool = Math.random() < 1 / 12 ? _FM : _WM;
-      setLiveWorkingMsg(pool[Math.floor(Math.random() * pool.length)]);
-    }, 3000);
-    return () => clearInterval(t);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isRunActive]);
-
-  // Current running tool name — shown in the live indicator when a tool is in flight.
-  const liveToolName = useMemo(() => {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const m = messages[i];
-      if (m.role !== "assistant" || !m.streaming) break;
-      const running = m.toolEvents?.find((t) => t.status === "running");
-      if (running) return running.name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-    }
-    return null;
-  }, [messages]);
-  const prevLoadingRef = useRef(false);
-  // Guards the queue-drain effect against re-entrancy: a second isLoading→false
-  // edge (e.g. a poll clearing a stale flag right as a steer lands) must not
-  // shift+send a second queued message while the first drained send is starting.
-  const drainingRef = useRef(false);
-  const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // VOX-1 (projects_ai_chat §31): the mic beside Attach. The flag decides
+  // whether it shows. The transcript goes in at the caret, and the member
+  // sends it. Enter and Escape in the box stop or cancel a recording.
+  const voiceAvailability = useVoiceAvailability();
+  const voiceRef = useRef<VoiceControls>(null);
+  const [voicePhase, setVoicePhase] = useState<VoicePhase>("idle");
+  const putDictation = useCallback((text: string) => {
+    const el = inputRef.current;
+    const prev = el?.value ?? "";
+    const next = insertAtCaret(prev, el?.selectionStart ?? prev.length, el?.selectionEnd ?? prev.length, text);
+    // D-PZ-37: the member spoke these words and did not type them. A program
+    // put them in the box, so a send of the box carries no typed mark.
+    boxMarkRef.current = filled(boxMarkRef.current, false);
+    setInput(next.value);
+    setComposerNotice(null);
+    requestAnimationFrame(() => {
+      const box = inputRef.current;
+      if (!box) return;
+      box.focus();
+      box.setSelectionRange(next.caret, next.caret);
+    });
+  }, [setInput, setComposerNotice]);
+  // IMG-1 (projects_ai_chat §30.4): a file is a chip until the member sends.
+  const att = useChatAttachments(sessionId);
+  const attRef = useRef(att);
+  attRef.current = att;
+  const [dragOver, setDragOver] = useState(false);
+  const hasReadyFiles = readyFiles(att.items).length > 0;
+
+  // ── The composer's height (owner request, 2026-10-09) ─────────────────────
+  // It grows with the message up to a cap, and goes back to one line when the
+  // message is sent. ⚠️ An `onInput` handler alone missed the send: clearing
+  // the text is not an input event, so the box stayed tall. So the height
+  // follows `input` itself. A message past the cap offers a taller editor.
+  const [composerExpanded, setComposerExpanded] = useState(false);
+  const [composerOverflow, setComposerOverflow] = useState(false);
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    const cap = composerCap(window.innerHeight, composerExpanded, window.innerWidth < PHONE_MAX_WIDTH);
+    el.style.height = "auto";
+    el.style.maxHeight = `${cap}px`;
+    el.style.height = `${composerHeight(el.scrollHeight, cap)}px`;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- measured from the DOM
+    setComposerOverflow(offerExpand(el.scrollHeight, cap, composerExpanded));
+  }, [input, composerExpanded]);
+  // A sent (emptied) message closes the taller editor too.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- follows the text
+    if (!input) setComposerExpanded(false);
+    // D-PZ-37: an empty box starts clean, so new typed words carry the mark.
+    boxMarkRef.current = edited(boxMarkRef.current, input);
+  }, [input]);
 
   // Inject one-shot external text into the composer (e.g. the email Assistant's
   // "Fix" flow hands a correction prompt here for the user to review & send).
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (pendingInput && pendingInput.trim()) {
+      // D-PZ-37: the words replace the box. They carry the typed mark only
+      // when the surface says that the member typed them.
+      boxMarkRef.current = filled(EMPTY_BOX, pendingInputTyped === true);
       setInput(pendingInput);
       inputRef.current?.focus();
       onPendingInputConsumed?.();
@@ -599,6 +988,19 @@ export default function AgentChat({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingInput]);
   /* eslint-enable react-hooks/set-state-in-effect */
+  // WS-51 D-3: a send the run cap refused gives its words back. Text the
+  // member typed since then keeps its place, and the refused words follow
+  // it, so nothing they wrote is lost (`mergeCappedText`).
+  useEffect(() => {
+    restoreCappedRef.current = (text: string, typed: boolean) => {
+      boxMarkRef.current = filled(boxMarkRef.current, typed);
+      // The words go in the box and the files come back as chips, never the note.
+      const back = editStart(text, (p) => workspaceFileUrl(sessionIdRef.current, p));
+      setInput((prev) => mergeCappedText(prev, back.words));
+      if (back.items.length) attRef.current.restore(back.items);
+      inputRef.current?.focus();
+    };
+  }, []);
   const [bannerDismissed, setBannerDismissed] = useState(false);
   const [statuses, setStatuses] = useState<IntegrationStatus[]>(externalStatuses ?? []);
   const [viewerEntry, setViewerEntry] = useState<FileEntry | null>(null);
@@ -631,10 +1033,13 @@ export default function AgentChat({
   // Real per-model context window (dynamically loaded from the gateway via
   // /api/models/all).  Falls back to the static estimate when unknown.
   const currentModelContextWindow = selectedModel?.contextWindow;
+  // A covered agent has no chosen model, so the ring estimates on the
+  // default window and names no model (WS-45 S3).
+  const ringModel = modelPlan.covered ? "auto" : currentModel;
   const contextUsage = useMemo(
-    () => computeContextUsage(activeMessages, currentModel, systemContext, currentModelContextWindow),
+    () => computeContextUsage(activeMessages, ringModel, systemContext, currentModelContextWindow),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [settledContentLen, activeMessages.length, currentModel, systemContext, currentModelContextWindow],
+    [settledContentLen, activeMessages.length, ringModel, systemContext, currentModelContextWindow],
   );
   const [compacting, setCompacting] = useState(false);
   // Armed = allowed to auto-compact.  Disarmed after a compaction fires and
@@ -671,8 +1076,15 @@ export default function AgentChat({
         // subsumes any earlier checkpoint it contains.
         body: JSON.stringify({ messages: active, keepLast: KEEP_LAST }),
       });
-      const data = (await res.json()) as { messages?: ChatMessage[]; compacted?: boolean };
+      const data = (await res.json().catch(() => ({}))) as {
+        messages?: ChatMessage[]; compacted?: boolean; error?: string;
+      };
       if (forSession !== sessionIdRef.current) return false; // session switched
+      if (!res.ok || data.error) {
+        // The route kept every message. Say so in one plain line (task 1128).
+        setComposerNotice(COMPACT_FAILED_NOTICE);
+        return false;
+      }
       if (!data.compacted || !Array.isArray(data.messages)) return false;
       const summaryMsg = data.messages.find((m) => isCompactionCheckpoint(m));
       if (!summaryMsg) return false;
@@ -685,6 +1097,7 @@ export default function AgentChat({
       });
       return true;
     } catch {
+      if (forSession === sessionIdRef.current) setComposerNotice(COMPACT_FAILED_NOTICE);
       return false;
     } finally {
       setCompacting(false);
@@ -722,15 +1135,61 @@ export default function AgentChat({
     void applyCompaction();
   }, [compacting, isLoading, applyCompaction]);
 
-  // ── HITL (Human-in-the-Loop) confirmation state ────────────────────────
-  // When requestId is set the tool is blocking (the agent is parked on a
-  // Future — e.g. confirm-before-send); Approve/Reject POST to
-  // /api/agent/respond-input to resume the SAME stream.  Without requestId the
-  // legacy non-blocking path sends APPROVE/REJECT as a new chat message.
-  const [confirmation, setConfirmation] = useState<{
-    id: string; title: string; detail?: string; context?: string;
-    requestId?: string;
-  } | null>(null);
+  // ── HITL (Human-in-the-Loop) confirmation queue ────────────────────────
+  // A turn can park many gated tools at once, each on its own card, so this
+  // is a QUEUE keyed by request_id (`lib/confirmationQueue.ts`), never one
+  // slot. A blocking card (requestId) answers by POST to
+  // /api/agent/respond-input, which resumes the SAME stream. Without
+  // requestId the legacy non-blocking path sends APPROVE/REJECT as a new
+  // chat message.
+  const [confirmations, dispatchConfirmation] = useReducer(
+    confirmationReducer,
+    EMPTY_CONFIRMATIONS,
+  );
+  // §18.11: the steer reads the queue's cards, and marks what it carried.
+  useEffect(() => { cardsRef.current = confirmations.cards; }, [confirmations.cards]);
+  useEffect(() => {
+    markSentRef.current = (key, version) => dispatchConfirmation({ type: "memberVersion", key, version });
+  }, []);
+  // A new-mail card reports the member's version after each edit, or null
+  // when it shows its own start again.
+  // Fix round 5: the member's edits of each new-mail form, by key. The CHAT
+  // holds them, and not the queue, because the queue mounts again on each new
+  // message and when its last card leaves. A ref: the form reads them once,
+  // when it mounts. `liveEdits` drops the entry of a card that closed for good.
+  const formEditsRef = useRef<FormEdits>(NO_EDITS);
+  const onFormEdits = useCallback((key: string, value: NewMailEdits) => {
+    formEditsRef.current = formEditsReducer(formEditsRef.current, { key, value });
+  }, []);
+  const savedFormEdits = useCallback((key: string) => formEditsRef.current.get(key), []);
+  useEffect(() => {
+    formEditsRef.current = liveEdits(formEditsRef.current, confirmations);
+  }, [confirmations]);
+  const onCardDraft = useCallback((key: string, draft: CardDraft | null) => {
+    if (draft) cardDraftsRef.current.set(key, { draft, seq: ++draftSeqRef.current });
+    else cardDraftsRef.current.delete(key);
+  }, []);
+  // §18.11 step 7: "The draft did not change." shows for a moment, and the
+  // slot then closes, as a card that closed with no answer does.
+  const hasUnchanged = confirmations.cards.some((c) => c.redraft === "unchanged");
+  useEffect(() => {
+    if (!hasUnchanged) return;
+    const t = setTimeout(() => dispatchConfirmation({ type: "closeUnchanged" }), UNCHANGED_CLOSE_MS);
+    return () => clearTimeout(t);
+  }, [hasUnchanged]);
+  // Rejects held for Undo (`lib/rejectHold.ts`). A session switch or an
+  // unmount sends every held REJECT at once: the rule that keeps a run from
+  // parking. The cleanup runs before `sessionIdRef` moves on.
+  const [rejectHold] = useState(() => createRejectHold());
+  const heldCardsRef = useRef(new Map<string, PendingConfirmation>());
+  useEffect(() => () => { rejectHold.flushAll(); }, [sessionId, rejectHold]);
+  // A closed tab inside the window sends the held REJECT too. The POST is
+  // `keepalive`, so the browser finishes it after the page is gone.
+  useEffect(() => {
+    const flush = () => rejectHold.flushAll();
+    window.addEventListener("pagehide", flush);
+    return () => window.removeEventListener("pagehide", flush);
+  }, [rejectHold]);
 
   // ── HITL elicitation state (VS Code ask_questions parity) ────────────
   // When requestId is set the tool is blocking (MAF Tier 2 path — the
@@ -741,6 +1200,13 @@ export default function AgentChat({
   const [elicitation, setElicitation] = useState<{
     questions: ElicitationQuestion[];
     requestId?: string;
+    /** The member answered and the run took it: the one line the card
+     *  shows (`answerSummary`). The card waits no more. The run's end
+     *  clears it, as it clears a waiting card. */
+    answered?: string;
+    /** The member pressed "Not now" (`lib/declineAnswer.ts`). The card
+     *  locks and reads "Not answered". The run's end clears it. */
+    declined?: boolean;
   } | null>(null);
 
   // ── Native ask_user state (Copilot SDK on_user_input_request) ────────
@@ -751,27 +1217,48 @@ export default function AgentChat({
     question: string;
     choices: string[];
     allowFreeform: boolean;
+    /** As for `elicitation`: the answer, once the run took it. */
+    answered?: string;
+    /** As for `elicitation`: the member pressed "Not now". */
+    declined?: boolean;
   } | null>(null);
 
-  // Subscribe to agent events for HITL detection
-  useAgentEvents({
+  // The words of each answer this session sent to a blocking generative-UI
+  // card, by `request_id`, so a card that remounts keeps its choice and stays
+  // locked (`lib/askAnswers.ts`, review round 1 P2-c).
+  const [askAnswers, setAskAnswers] = useState<ReadonlyMap<string, string>>(() => new Map());
+
+  // Subscribe to agent events for HITL detection. The subscriber is kept in a
+  // ref too, so a card the server hands back (WS-51 S2, below) takes the SAME
+  // path as a card from the stream.
+  const hitlSubscriber: Parameters<typeof useAgentEvents>[0] = {
     onCustomEvent: ({ name, value, threadId }) => {
       // The subscriber registry is global — ignore events from any session
       // other than the one this chat is showing, so a background run on a
       // different agent never injects its question card / HITL state here.
       if (threadId && threadId !== sessionId) return;
-      if (name === "confirmation_requested" && value && typeof value === "object") {
-        const v = value as Record<string, unknown>;
-        const reqId = v.request_id ? String(v.request_id) : undefined;
-        setConfirmation({
-          // Static fallback id — only one confirmation card renders at a time
-          // (state replace), and Date.now() here trips react-hooks/purity.
-          id: String(v.id ?? v.request_id ?? "confirmation"),
-          title: String(v.title ?? "Confirm action"),
-          detail: v.detail ? String(v.detail) : undefined,
-          context: v.context ? String(v.context) : undefined,
-          requestId: reqId,
-        });
+      if (name === "confirmation_requested") {
+        dispatchConfirmation({ type: "requested", value });
+      }
+      // The server closed a card: answered, timed out or cancelled. A replay
+      // carries this too, so an answered card never comes back.
+      if (name === CONFIRMATION_RESOLVED && value && typeof value === "object") {
+        const rid = (value as Record<string, unknown>).request_id;
+        const answer = (value as Record<string, unknown>).answer;
+        // The closing answer goes with it: a new-mail card that a chat
+        // message closed (REVISED) stays as the slot of its new draft (§18.11).
+        if (rid) {
+          dispatchConfirmation({
+            type: "resolved", requestId: String(rid),
+            ...(typeof answer === "string" ? { answer } : {}),
+          });
+        }
+        // An answer from anywhere (another tab, another member of a room)
+        // locks the blocking card too. A timeout or a cancel is no answer:
+        // that card stays open, and a click on it goes out as a message.
+        if (rid && typeof answer === "string" && answer && !CARD_CLOSED_UNANSWERED.has(answer)) {
+          setAskAnswers((prev) => new Map(prev).set(String(rid), answer));
+        }
       }
       if (name === "elicitation_requested" && value && typeof value === "object") {
         const v = value as Record<string, unknown>;
@@ -836,11 +1323,19 @@ export default function AgentChat({
           postRespondInput(
             { request_id: reqId, answer: message, was_freeform: true },
             () => submitText(message),
+            // Any failure sends the answer as a message, so it is never lost.
+            (outcome) => { if (outcome === "drop") submitText(message); },
           );
         } else {
           submitText(message);
         }
       }
+    },
+    // §18.11 step 7: any end of a run ends a slot of a redraft, and a blocking
+    // card stays as it is (`runRested`).
+    onRunRested: ({ threadId }) => {
+      if (threadId && threadId !== sessionId) return;
+      dispatchConfirmation({ type: "runRested" });
     },
     onRunFinalized: ({ threadId }) => {
       if (threadId && threadId !== sessionId) return;
@@ -848,21 +1343,37 @@ export default function AgentChat({
       // run can never be waiting on input anymore.  Only clear a BLOCKING
       // confirmation (requestId, parked on a Future): a non-blocking one must
       // persist until the user answers (its answer is a new chat message).
-      setConfirmation((prev) => prev && prev.requestId ? null : prev);
+      dispatchConfirmation({ type: "runFinalized" });
       // Only clear elicitation when the agent was BLOCKED on a Future
       // (requestId present, MAF Tier 2 path).  For the Copilot SDK
       // non-blocking path (no requestId), the card must persist until
       // the user submits — clearing here makes it vanish mid-interaction.
       setElicitation((prev) => prev && prev.requestId ? null : prev);
       setUserInput((prev) => prev && prev.requestId ? null : prev);
+      // A run that PARKED on a card also ends here (WS-51 S2). While the
+      // thread still needs the member, ask the server again for its cards.
+      setPendingAskTick((n) => n + 1);
     },
-  });
+  };
+  useAgentEvents(hitlSubscriber);
 
   // Keep a live ref to messages so the unmount handler can save the latest.
   const messagesRef = useRef<ChatMessage[]>(messages);
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+
+  // The latest sendMessage, for callbacks that must not re-create on each
+  // render (the card answer path above).
+  const sendMessageRef = useRef(sendMessage);
+  useEffect(() => { sendMessageRef.current = sendMessage; }, [sendMessage]);
+  // The steer and the route, for a card answer's resend (review of #942).
+  const steerMessageRef = useRef(steerMessage);
+  useEffect(() => { steerMessageRef.current = steerMessage; }, [steerMessage]);
+  const resendRouteRef = useRef({ runActive: isRunActive, mode: effectiveRuntime });
+  useEffect(() => {
+    resendRouteRef.current = { runActive: isRunActive, mode: effectiveRuntime };
+  }, [isRunActive, effectiveRuntime]);
 
   // Live ref to the current sessionId so async callbacks (e.g. /compact) can
   // bail if the user switched sessions while the request was in flight.
@@ -871,58 +1382,209 @@ export default function AgentChat({
     sessionIdRef.current = sessionId;
   }, [sessionId]);
 
+  const hitlRef = useRef(hitlSubscriber);
+  useEffect(() => { hitlRef.current = hitlSubscriber; });
+
+  // A chat that mounts again (the Email pane, a rail, the dock) draws the
+  // cards of the run in flight again (`getCardLog`, CI regression of
+  // #1171). The run still waits on them, and the stream that read them may
+  // still read the run, so no replay comes. The queue keys each card by its
+  // request id, so a card never draws twice.
+  //
+  // A card redraws as WAITING only when nothing says it is settled
+  // (`planCardRedraw`, review of #1171, P1). An answered card draws as
+  // answered, with the answer. A question the run moved past draws nothing:
+  // another tab answered it. And where the server keeps pending asks, a card
+  // it does not list settles (the effect below).
+  const redrawnRef = useRef<{ all: Set<string>; waiting: Set<string> }>({ all: new Set(), waiting: new Set() });
+  useEffect(() => {
+    const all = new Set<string>();
+    const waiting = new Set<string>();
+    redrawnRef.current = { all, waiting };
+    const emit = (name: string, value: unknown) =>
+      hitlRef.current.onCustomEvent?.({ name, value, threadId: sessionId });
+    for (const c of planCardRedraw(getCardLog(sessionId))) {
+      if (c.kind === "confirmation") {
+        all.add(c.requestId);
+        emit("confirmation_requested", c.value);
+        if (c.waiting) waiting.add(c.requestId);
+        else emit(CONFIRMATION_RESOLVED, { request_id: c.requestId, ...(c.answer ? { answer: c.answer } : {}) });
+        continue;
+      }
+      // Settled elsewhere, with no answer of this tab to show: nothing waits.
+      if (!c.waiting && c.answer === undefined && !c.declined) continue;
+      all.add(c.requestId);
+      if (c.waiting) waiting.add(c.requestId);
+      emit(c.kind === "elicitation" ? "elicitation_requested" : "user_input_requested", c.value);
+      if (c.waiting) continue;
+      const settled = { answered: c.declined ? undefined : c.answer, declined: c.declined || undefined };
+      if (c.kind === "elicitation") {
+        setElicitation((prev) => (prev?.requestId === c.requestId ? { ...prev, ...settled } : prev));
+      } else {
+        setUserInput((prev) => (prev?.requestId === c.requestId ? { ...prev, ...settled } : prev));
+      }
+    }
+  }, [sessionId]);
+
+  // ── A durable "needs input" (WS-51 S2, `lib/pendingAsks.ts`) ─────────
+  // The cards of this chat that still wait on the server: a run that parked,
+  // a run a restart killed, or a reload. Fetched ONLY while the shared poller
+  // says this thread needs the member, and again when a run ends then. The
+  // server says that only with `CHAT_DURABLE_ASKS` on, so with the flag off
+  // this sends no request at all (review of #813).
+  // A card that comes back answers through `postRespondInput`, and the
+  // gateway's 409 `run_restarted` turns the answer into a new run.
+  const [pendingAskTick, setPendingAskTick] = useState(0);
+  // WS-51 S5: this chat shows, so it is read. A run that ends here while the
+  // tab shows marks nothing, and raises no toast (`lib/runSignals.ts`).
+  useChatOpen(visible ? sessionId : null);
+  const threadNeedsInput = useThreadNeedsInput(sessionId);
+  useEffect(() => {
+    if (!sessionId || !threadNeedsInput) return;
+    let stale = false;
+    const forSession = sessionId;
+    void fetchPendingAsksOrNull(forSession).then((asks) => {
+      if (stale || sessionIdRef.current !== forSession) return;
+      for (const card of cardsToRestore(asks ?? [])) {
+        hitlRef.current.onCustomEvent?.({ name: card.name, value: card.value, threadId: forSession });
+      }
+      // The server is the authority on what waits: a card redrawn from the
+      // log as waiting that its real list does not hold settles.
+      for (const id of cardsToSettle(asks, redrawnRef.current.waiting)) {
+        redrawnRef.current.waiting.delete(id);
+        dispatchConfirmation({ type: "resolved", requestId: id });
+        setElicitation((prev) => (prev?.requestId === id && prev.answered === undefined ? null : prev));
+        setUserInput((prev) => (prev?.requestId === id && prev.answered === undefined ? null : prev));
+      }
+    });
+    return () => { stale = true; };
+  }, [sessionId, threadNeedsInput, pendingAskTick]);
+
   // HITL cards are per-session component state — clear them on a session
   // switch so a question raised in session A never renders in (or gets its
   // answer routed from) session B.  The event subscriber above already
   // filters incoming events by threadId; this handles the card that was
   // ALREADY showing when the user switched.  Reset-during-render (not an
   // effect) — React's "adjusting state when a prop changes" pattern.
+  // The `request_id`s of blocking generative-UI asks the member answered in
+  // this session. The pin above the composer reads it (`lib/askPin.ts`), so
+  // an answered picker stops waiting before the run's next event lands.
+  const [answeredAsks, setAnsweredAsks] = useState<ReadonlySet<string>>(() => new Set());
+
   const [hitlSession, setHitlSession] = useState(sessionId);
   if (hitlSession !== sessionId) {
     setHitlSession(sessionId);
-    setConfirmation(null);
+    dispatchConfirmation({ type: "reset" });
     setElicitation(null);
     setUserInput(null);
+    setAnsweredAsks(new Set());
+    setAskAnswers(new Map());
   }
 
-  // POST a blocking-HITL answer to /api/agent/respond-input.  On failure the
-  // card is RESTORED so the user can retry — the agent is still parked on its
-  // Future server-side, and the old fire-and-forget `.catch(() => {})` left a
-  // blocked run with no card and no error (a dead conversation).
+  // POST a blocking-HITL answer to /api/agent/respond-input.
+  //
+  // A failure that can pass on a retry (a network fault, a 5xx) RESTORES the
+  // card: the agent is still parked on its Future server-side, and the old
+  // fire-and-forget `.catch(() => {})` left a blocked run with no card and no
+  // error (a dead conversation). A 4xx does NOT restore it. A 409 says no
+  // question waits on that id, and a restored card got a 409 on every click
+  // (2026-10-06). `settle` hears "ok" or "drop" (`lib/respondInput.ts`).
+  //
+  // A 409 `run_restarted` (incident 2026-10-09): the run that asked died
+  // with an app update. The gateway hands back the question and the answer
+  // as ONE message, and this sends it, with a notice that says why. The
+  // caller then hears "resent" and sends nothing of its own.
   const postRespondInput = useCallback(
     (
-      payload: { request_id: string; answer: string; was_freeform: boolean },
-      restoreCard: () => void,
+      payload: { request_id: string; answer: string; was_freeform: boolean; declined?: boolean },
+      restoreCard: (reason?: string) => void,
+      settle?: (outcome: "ok" | "drop" | "resent", reason?: string) => void,
+      /** A held Reject sends for the session that held it (`lib/rejectHold.ts`). */
+      sessionOverride?: string,
     ) => {
-      const forSession = sessionIdRef.current;
-      void fetch("/api/agent/respond-input", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        // thread_id lets the gateway route a HITL answer to whichever worker
-        // owns the parked run (P1-2 cross-worker control bus).
-        body: JSON.stringify({ ...payload, thread_id: forSession }),
-      })
-        .then(async (r) => {
-          if (!r.ok) {
-            throw new Error(await r.text().catch(() => `status ${r.status}`));
+      const forSession = sessionOverride ?? sessionIdRef.current;
+      // The account this tab drew the card for. The route refuses the answer
+      // when the browser is signed in to another account now (WS-51 S2).
+      const drawnFor = boundIdentity();
+      void sendRespondInputResult({ ...payload, thread_id: forSession, as: drawnFor }).then(({ outcome, resend, display, otherAccount, reason }) => {
+        // Only touch the cards if the user is still on the session that asked.
+        if (sessionIdRef.current !== forSession) return;
+        if (otherAccount) {
+          setMessages((prev) => [...prev.filter((m) => m.id !== `other-account-${payload.request_id}`), {
+            id: `other-account-${payload.request_id}`,
+            role: "system",
+            content: `__ERROR__${JSON.stringify({ code: "answer_in_other_account", ref: null, raw: otherAccount })}`,
+            timestamp: Date.now(),
+          }]);
+        }
+        // The card says why, beside its buttons (UXD-3). An other-account
+        // refusal has its own notice above.
+        if (outcome === "retry") { restoreCard(otherAccount ? undefined : reason); return; }
+        if (resend) {
+          // The model reads the envelope. The member reads the answered
+          // card (owner report, 2026-10-13, `lib/cardAnswer.ts`). An old
+          // gateway sends no display, so the envelope is parsed instead.
+          // The notice and the card follow what became of the send, so the
+          // notice never says "went" for an answer that did not go
+          // (review of #942, `resendPlan`).
+          const cardAnswer = display ?? parseCardAnswerEnvelope(resend);
+          const finish = (outcome: ResendOutcome) => {
+            if (sessionIdRef.current !== forSession) return;
+            const plan = resendPlan(outcome);
+            if (plan.notice) {
+              const code = plan.notice;
+              setMessages((prev) => [...prev.filter((m) => m.id !== `restarted-${payload.request_id}`), {
+                id: `restarted-${payload.request_id}`,
+                role: "system",
+                content: `__ERROR__${JSON.stringify({ code, ref: null, raw: "" })}`,
+                timestamp: Date.now(),
+              }]);
+            }
+            if (plan.card === "keep") restoreCard();
+            else settle?.("resent");
+          };
+          // A run is live in this thread (#920): the answer STEERS it, the
+          // same path as the composer's Send, so the live run reads it now.
+          // The server folds it in, or starts a run when that one has ended.
+          const steer = () => {
+            void steerMessageRef.current(resend, { cardAnswer }).then((out) => {
+              if (out.kind === "refused" && sessionIdRef.current === forSession) setComposerNotice(out.notice);
+              finish(resendOutcomeOfSteer(out.kind));
+            });
+          };
+          const route = sendRoute(resendRouteRef.current);
+          if (route === "steer") { steer(); return; }
+          if (route === "unsupported") {
+            // The direct model path takes no steer. The card stays open.
+            setComposerNotice(STEER_UNSUPPORTED_CARD);
+            finish("refused");
+            return;
           }
-        })
-        .catch((err: unknown) => {
-          console.error("respond-input failed — restoring HITL card", err);
-          // Only restore if the user is still on the session that asked.
-          if (sessionIdRef.current === forSession) restoreCard();
-        });
+          void sendMessageRef.current(resend, {
+            cardAnswer,
+            // A run that started between the route and the send: steer it.
+            onSettled: (outcome) => (outcome === "busy" ? steer() : finish(outcome)),
+          });
+          return;
+        }
+        settle?.(outcome, reason);
+      });
     },
-    [],
+    [setMessages],
   );
 
-  // Reload the persisted send-queue when switching sessions/agents so a message
-  // queued on another session doesn't leak in and a queue left on THIS session
-  // is restored.  queueRef + queuedCount are the live mirror of the stored queue.
+
+  // The send queue is gone (owner, 2026-10-12): a message sent during a run
+  // steers it. A browser can still hold words an older build queued for this
+  // session. They go into the box ONCE and the stored queue is cleared, so
+  // nothing the member typed is lost and nothing sends by itself.
   useEffect(() => {
-    const q = getQueue(sessionId);
-    queueRef.current = q;
-    setQueuedCount(q.length);
+    const left = takeLeftoverQueue(sessionId);
+    if (!left) return;
+    // An older build queued them, and no mark came with them (D-PZ-37).
+    boxMarkRef.current = filled(boxMarkRef.current, false);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- a one-time move out of storage
+    setInput((prev) => mergeCappedText(prev, left));
   }, [sessionId]);
 
   // Save messages on beforeunload so partial streams survive browser close.
@@ -946,6 +1608,7 @@ export default function AgentChat({
         agentState: m.agentState,
         customEvents: m.customEvents,
         todos: m.todos,
+        segments: segmentsForCache(m.segments, m.customEvents),
       }));
       // Use sendBeacon for reliable delivery during page unload
       const payload = toSave.map((m) => ({
@@ -969,10 +1632,8 @@ export default function AgentChat({
           JSON.stringify(payload)
         );
       } catch { /* best-effort */ }
-      // Also save to localStorage synchronously
-      try {
-        localStorage.setItem(`cc-msgs-${sessionId}`, JSON.stringify(toSave));
-      } catch { /* quota exceeded */ }
+      // Also save to the local cache synchronously, in the member's namespace.
+      cacheMessages(sessionId, toSave);
     };
     window.addEventListener("beforeunload", handleUnload);
     window.addEventListener("pagehide", handleUnload);
@@ -1003,44 +1664,19 @@ export default function AgentChat({
     ).length;
     if (counted === 0) return;
     onActivityRef.current({
-      firstUserMessage: firstUser?.content,
+      firstUserMessage: firstUser ? wordsOfMessage(firstUser.content) : undefined,
       lastPreview: lastAssistant?.content,
       messageCount: counted,
     });
   }, [messages]);
 
-  // Drain the queue when a generation finishes (Queue / Steer send modes).
-  useEffect(() => {
-    if (prevLoadingRef.current && !isLoading && queueRef.current.length > 0 && !drainingRef.current) {
-      drainingRef.current = true;
-      const next = queueRef.current.shift();
-      setQueuedCount(queueRef.current.length);
-      saveQueue(sessionIdRef.current, queueRef.current);
-      // Clear the guard only once this send settles, so a second isLoading edge
-      // mid-send can't drain another item; sequential drains still work because
-      // the next edge fires after this promise (and the guard) resolves.
-      if (next) void sendMessage(next).finally(() => { drainingRef.current = false; });
-      else drainingRef.current = false;
-    }
-    prevLoadingRef.current = isLoading;
-  }, [isLoading, sendMessage]);
-
-  // Persist the conversation to Mem0 on unmount (default / Metorite agent).
+  // Persist the DEFAULT agent's turns to Mem0 on unmount (H-236 follow-up).
+  // Each turn names its own agent, so a switch mid-chat changes nothing. The
+  // gateway extracts every named agent's turns at the run's end, and it skips
+  // a covered run. See lib/chatMemorySave.ts.
   useEffect(() => {
     return () => {
-      if (!memoryUserId) return;
-      const payload = messagesRef.current
-        .filter((m) => (m.role === "user" || m.role === "assistant") && m.content.trim())
-        .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
-      if (payload.length === 0) return;
-      fetch("/api/chat/memories", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        // No userId: the scope is the signed-in member, resolved server-side.
-        // Sending one here would be a claim the route no longer accepts.
-        body: JSON.stringify({ messages: payload }),
-        keepalive: true,
-      }).catch(() => {});
+      saveConversationOnUnmount({ memoryUserId, messages: messagesRef.current });
     };
   }, [memoryUserId]);
 
@@ -1055,11 +1691,13 @@ export default function AgentChat({
 
   // Fetch available agents for the switcher if not provided by parent
   useEffect(() => {
-    if (externalAgents) { setAgents(externalAgents); return; }
+    if (externalAgents) { setAgents(externalAgents); setAgentsKnown(true); return; }
     fetch("/api/agent/list")
       .then((r) => r.json())
       .then((data: unknown) => { if (Array.isArray(data)) setAgents(data as AgentEntry[]); })
-      .catch(() => {});
+      .catch(() => {})
+      // Known on an error too: the static fallback marks no agent covered.
+      .finally(() => setAgentsKnown(true));
   }, [externalAgents]);
 
   // Refresh statuses once a NEW assistant message has SETTLED (credentials may
@@ -1068,7 +1706,7 @@ export default function AgentChat({
   // unguarded version fired this request dozens of times per response.
   const lastStatusKeyRef = useRef<string>("");
   useEffect(() => {
-    const last = messages[messages.length - 1];
+    const last = lastNonSteer(messages);
     if (last?.role !== "assistant" || last.streaming) return;
     const key = `${last.id}:${currentAgentName}`;
     if (lastStatusKeyRef.current === key) return;
@@ -1088,7 +1726,7 @@ export default function AgentChat({
   const lastSuggestedForRef = useRef<string>("");
   useEffect(() => {
     if (isLoading) return;
-    const last = messages[messages.length - 1];
+    const last = lastNonSteer(messages);
     if (last?.role !== "assistant" || !last.content.trim() || last.streaming) return;
     if (lastSuggestedForRef.current === last.id) return; // already fetched
     lastSuggestedForRef.current = last.id;
@@ -1124,11 +1762,13 @@ export default function AgentChat({
   useEffect(() => {
     const el = threadRef.current;
     if (!el) return;
+    let lastTop = el.scrollTop;
     const onScroll = () => {
-      const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
-      const nearBottom = dist < 80;
+      // Only a scroll up leaves the bottom (`lib/stickToBottom.ts`).
+      const nearBottom = nearAfterScroll(isNearBottomRef.current, lastTop, el);
+      lastTop = el.scrollTop;
       isNearBottomRef.current = nearBottom;
-      setShowScrollBtn(!nearBottom && el.scrollHeight > el.clientHeight + 200);
+      setShowScrollBtn(showJumpToBottom(nearBottom));
       // Near the top → lazy-load the previous page of history.
       if (el.scrollTop < 140) loadOlderHistoryRef.current();
     };
@@ -1136,12 +1776,38 @@ export default function AgentChat({
     return () => el.removeEventListener("scroll", onScroll);
   }, []);
 
+  // Stick to the bottom on every change of size, not only on a new message
+  // (`lib/stickToBottom.ts`, owner 2026-10-10). An approval card comes from
+  // the confirmation queue, not from `messages`, so the effect below never
+  // saw it: the card drew below the fold of a member who sat at the bottom,
+  // and the pin then pointed at it. A fold by hand keeps its place.
+  const contentRef = useRef<HTMLDivElement>(null);
+  const lastManualToggleRef = useRef(Number.NEGATIVE_INFINITY);
+  useEffect(() => {
+    const thread = threadRef.current;
+    const content = contentRef.current;
+    if (!thread || !content) return;
+    return attachStickToBottom(thread, content, {
+      getNearBottom: () => isNearBottomRef.current,
+      // The button follows the flag, as `onScroll` keeps it (review round 1):
+      // a fold by hand can leave the bottom with no scroll event.
+      setNearBottom: (near) => {
+        isNearBottomRef.current = near;
+        setShowScrollBtn(showJumpToBottom(near));
+      },
+      lastManualToggleAt: () => lastManualToggleRef.current,
+    });
+  }, []);
+
   // Auto-scroll only when the user is near the bottom.  Use "auto" (instant),
   // NOT "smooth": this fires on every streamed token, and queuing a smooth-
   // scroll animation per token causes visible stutter during long responses.
+  // Each of these scrolls the thread only. `scrollIntoView` also scrolled each
+  // box above the thread, and so it could shift the page (owner report,
+  // 2026-10-10, `src/lib/scrollWithin.ts`).
   useEffect(() => {
     if (isNearBottomRef.current) {
-      bottomRef.current?.scrollIntoView({ behavior: "auto" });
+      scrollToEnd(threadRef.current, "auto");
     }
   }, [messages]);
 
@@ -1154,11 +1820,11 @@ export default function AgentChat({
   useEffect(() => {
     if (userMessageCount === 0) return;
     isNearBottomRef.current = true;
-    bottomRef.current?.scrollIntoView({ behavior: "auto" });
+    scrollToEnd(threadRef.current, "auto");
   }, [userMessageCount]);
 
   const scrollToBottom = useCallback(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    scrollToEnd(threadRef.current, "smooth");
   }, []);
 
   // ── Reveal older history (scroll-up) — expand the render window ────────────
@@ -1190,58 +1856,122 @@ export default function AgentChat({
     () => (messages.length > renderLimit ? messages.slice(-renderLimit) : messages),
     [messages, renderLimit],
   );
+  // WT-2: the newest settled turn that the server marked as held.
+  const continueOfferId = useMemo(() => newestOfferId(visibleMessages), [visibleMessages]);
 
-  const enqueue = useCallback((text: string, front = false) => {
-    if (front) queueRef.current.unshift(text);
-    else queueRef.current.push(text);
-    setQueuedCount(queueRef.current.length);
-    saveQueue(sessionIdRef.current, queueRef.current);
+  // A steer the server refused gives its words back, and says why. Text the
+  // member typed since then keeps its place (`mergeCappedText`).
+  const giveBack = useCallback((text: string, notice: string, typed: boolean) => {
+    boxMarkRef.current = filled(boxMarkRef.current, typed);
+    const back = editStart(text, (p) => workspaceFileUrl(sessionIdRef.current, p));
+    setInput((prev) => mergeCappedText(prev, back.words));
+    if (back.items.length) attRef.current.restore(back.items);
+    setComposerNotice(notice);
+    inputRef.current?.focus();
   }, []);
 
-  /** Submit honouring the active send mode (Send / Queue / Steer). */
+  // §18.10 (owner, 2026-11-03): a chip of a new-mail card puts its words in
+  // the box and focuses it. It sends nothing. A program put the words there,
+  // so they carry no typed mark (D-PZ-37). Words the member typed stay.
+  const suggestToComposer = useCallback((text: string) => {
+    boxMarkRef.current = filled(boxMarkRef.current, false);
+    setInput((prev) => mergeCappedText(prev, text));
+    inputRef.current?.focus();
+  }, []);
+
+  /**
+   * Send words. While a run is live they STEER it (owner, 2026-10-12,
+   * `lib/chatSteer.ts`): the run goes on, its partial reply stays, and no
+   * second stream opens. Returns false when the words were not taken, so
+   * the box keeps them.
+   *
+   * WS-63 D-PZ-37: `opts.typed` is the ONE typed mark. Only the composer's
+   * send and the shell's Ask field (one box with the composer) pass it. A
+   * pill, a choice, a card action, a feed starter, a retry and the Fix
+   * prompt call this with no mark (`lib/typedMark.test.ts`).
+   */
   const submitText = useCallback(
-    (text: string) => {
+    // `opts.onKept` (STU-B2c-2c): a steer that the server refuses later gives
+    // the words back to the box, and this tells the sender so.
+    (text: string, opts?: { typed?: boolean; onKept?: () => void }): boolean => {
       const trimmed = text.trim();
       // Guard ALL senders (suggestion pills, MCQ choices, HITL card submits,
       // the email "Fix" flow) — not just the textarea form — against sending
       // while history is still hydrating from Postgres, which would clobber the
       // about-to-be-replaced messages array.
-      if (!trimmed || loadingHistory) return;
-      if (!isLoading) {
-        void sendMessage(trimmed);
-        return;
+      if (!trimmed || loadingHistory) return false;
+      setComposerNotice(null);
+      const route = sendRoute({ runActive: isRunActive, mode: effectiveRuntime });
+      const typed = opts?.typed === true;
+      if (route === "send") {
+        void (typed ? sendMessage(trimmed, { typed: true }) : sendMessage(trimmed));
+        return true;
       }
-      // A generation is in flight — branch on send mode.
-      if (sendMode === "steer") {
-        // Drop the incomplete assistant message so history is clean when the
-        // steer text is sent — mirrors VS Code Copilot Chat behaviour.
-        setMessages((prev) => {
-          const last = prev[prev.length - 1];
-          return last?.streaming ? prev.slice(0, -1) : prev;
-        });
-        stopGeneration();
-        enqueue(trimmed, true); // jump the queue, sent as soon as the stream stops
-      } else {
-        enqueue(trimmed); // queue (also the fallback for "send" while busy)
+      if (route === "unsupported") {
+        setComposerNotice(STEER_UNSUPPORTED);
+        return false;
       }
+      void (typed ? steerMessage(trimmed, { typed: true }) : steerMessage(trimmed)).then((out) => {
+        if (out.kind === "refused") giveBack(trimmed, out.notice, typed);
+        if (out.kind === "refused") opts?.onKept?.();
+      });
+      return true;
     },
-    [isLoading, loadingHistory, sendMode, sendMessage, stopGeneration, enqueue, setMessages]
+    [isRunActive, effectiveRuntime, loadingHistory, sendMessage, steerMessage, giveBack]
   );
 
-  /** Explicit Stop — also clears the queue so steered/queued messages don't
-   *  auto-send when the run halts (the drain effect fires on isLoading→false). */
+  // D99: the chat bar's words, sent once each, after the history loads. The
+  // ref holds the last seq sent, so a re-render or a remount of the same
+  // chat never sends it twice (the store also drops it, `consumeAsk`).
+  const autoSentRef = useRef(0);
+  useEffect(() => {
+    if (!autoSend || loadingHistory) return;
+    if (autoSend.seq <= autoSentRef.current) return;
+    autoSentRef.current = autoSend.seq;
+    // Refused (a live run that cannot take a steer): the words wait in the
+    // composer with the notice, as a refused steer does. The field that sent
+    // them has already cleared, so they must not vanish (review, 2026-10-14).
+    // D-PZ-37: the Ask field is one box with the composer, so its typed
+    // words carry the mark. A start pill of the field sends none.
+    const askTyped = autoSend.typed === true;
+    // STU-B2c-2c: the sender learns what became of the words. A card says
+    // "Sent to the chat" only after a send, never while they wait in the box.
+    const seq = autoSend.seq;
+    const onKept = () => onAutoSendConsumed?.(seq, "kept");
+    const sent = submitText(autoSend.text, askTyped ? { typed: true, onKept } : { onKept });
+    if (!sent) {
+      boxMarkRef.current = filled(boxMarkRef.current, askTyped);
+      setInput((prev) => mergeCappedText(prev, autoSend.text));
+    }
+    onAutoSendConsumed?.(seq, sent ? "sent" : "kept");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoSend?.seq, loadingHistory]);
+
+  /** Stop: it halts the run. There is no "stop and send". */
   const handleStop = useCallback(() => {
-    queueRef.current = [];
-    setQueuedCount(0);
-    saveQueue(sessionIdRef.current, queueRef.current);
-    stopGeneration();
-  }, [stopGeneration]);
+    // One cancel at a time: Esc during "Stopping" does not send a second.
+    if (stopping) return;
+    void stopGeneration();
+  }, [stopGeneration, stopping]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || loadingHistory) return;
-    submitText(input);
-    setInput("");
+    if (loadingHistory || !canSendMessage(input, att.items)) return;
+    // `answerTyped` is defined below, where the question state is read. A
+    // submit runs after the render, so it is in scope.
+    // WS-63 D-PZ-37: the ONE send that sets the typed mark, unless words
+    // that the member did not type sit in the box (`boxMarkRef`).
+    const typed = composerTyped(boxMarkRef.current);
+    // A message with files is the member's words, then the note that names the
+    // files (`composeMessage`). It never answers a question card.
+    const withFiles = att.items.length > 0;
+    const sent =
+      (!withFiles && answerTyped(input)) ||
+      submitText(withFiles ? composeMessage(input, att.items) : input, typed ? { typed: true } : undefined);
+    if (sent) {
+      setInput("");
+      att.clear();
+    }
     inputRef.current?.focus();
   };
 
@@ -1259,12 +1989,30 @@ export default function AgentChat({
   }, [input]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // Enter inserts a newline (the textarea default) — sending is the Send
-    // button's job, so a mid-thought Enter never fires the prompt early.
-    // Ctrl/Cmd+Enter stays as the deliberate keyboard send.
-    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+    // VOX-1: while the mic records, Enter stops it and Escape cancels it.
+    // Neither sends: the transcript goes in the box first.
+    if (voicePhase === "recording" && e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      voiceRef.current?.stop();
+      return;
+    }
+    if ((voicePhase === "recording" || voicePhase === "asking") && e.key === "Escape") {
+      e.preventDefault();
+      voiceRef.current?.cancel();
+      return;
+    }
+    // Enter sends and Shift+Enter is a new line (owner, 2026-10-31). On a
+    // touch keyboard Enter stays a new line (`enterSends`, lib/chatSteer.ts).
+    if (enterSends({ ...e, isComposing: e.nativeEvent.isComposing }, touchKeyboard())) {
       e.preventDefault();
       handleSubmit(e as unknown as React.FormEvent);
+      return;
+    }
+    // Esc stops a live run, only from an empty box: with text, Esc keeps its
+    // usual meaning and the words stay (owner, 2026-10-12).
+    if (e.key === "Escape" && primaryAction({ runActive: isRunActive && !loadingHistory, hasText: !!input.trim() || hasReadyFiles }) === "stop") {
+      e.preventDefault();
+      handleStop();
     }
   };
 
@@ -1282,30 +2030,104 @@ export default function AgentChat({
    *  back to sending the answer as a normal message so it's never lost. */
   const handleGenUiHitl = useCallback(
     (requestId: string, answer: string) => {
+      setAnsweredAsks((prev) => {
+        const next = new Set(prev);
+        next.add(requestId);
+        return next;
+      });
+      setAskAnswers((prev) => new Map(prev).set(requestId, answer));
       postRespondInput(
         { request_id: requestId, answer, was_freeform: true },
         () => submitText(answer),
+        (outcome) => { if (outcome === "drop") submitText(answer); },
       );
     },
     [postRespondInput, submitText]
+  );
+
+  // "Not now" on a blocking generative-UI card (`lib/declineAnswer.ts`). The
+  // card reads the decline from the answer map, so it stays declined on a
+  // remount. A decline that cannot pass now (a network fault, a 5xx) opens
+  // the card again. A 4xx keeps it declined: no run waits on it, and a
+  // decline sends nothing as a message.
+  const handleGenUiDecline = useCallback(
+    (requestId: string) => {
+      setAnsweredAsks((prev) => new Set(prev).add(requestId));
+      setAskAnswers((prev) => new Map(prev).set(requestId, DECLINED_ANSWER));
+      postRespondInput(declineBody(requestId), () => {
+        setAnsweredAsks((prev) => {
+          const next = new Set(prev);
+          next.delete(requestId);
+          return next;
+        });
+        setAskAnswers((prev) => {
+          const next = new Map(prev);
+          next.delete(requestId);
+          return next;
+        });
+      });
+    },
+    [postRespondInput]
   );
 
   // Stable callbacks for MessageBubble so React.memo can skip re-rendering
   // unchanged messages (per-message closures used to defeat the memoization —
   // every message re-ran ReactMarkdown on every streamed token).
   const handleFileOpen = useCallback((entry: FileEntry) => setViewerEntry(entry), []);
-  const handleResend = useCallback((content: string) => { submitText(content); }, [submitText]);
+  // An edit REPLACES the last user message (owner, 2026-10-09). It stops a
+  // run in flight and waits for the stop, then starts one new run that takes
+  // the old message's place. It never appends and never steers, so the thread
+  // has no fork (`lib/chatEdit.ts`, `gateway/chat_supersede.py`).
+  const runActiveRef = useRef(isRunActive);
+  useEffect(() => { runActiveRef.current = isRunActive; }, [isRunActive]);
+  // Resolves with null when the server accepted the edit, or the reason it
+  // refused. The composer stays open with the text on a refusal.
+  const handleEditLast = useCallback(async (messageId: string, content: string): Promise<string | null> => {
+    // A silent null here closed the composer as if the edit had gone through,
+    // and nothing happened (task 1653). Say why, and keep the text.
+    if (loadingHistory) return EDIT_LOADING;
+    const out = await submitEdit(
+      {
+        threadId: sessionId,
+        getMessages: () => messagesRef.current,
+        isRunning: () => runActiveRef.current,
+        stop: stopGeneration,
+        send: (text, opts) => new Promise<EditOutcome>((resolve) => {
+          void sendMessage(text, { ...opts, onEditOutcome: resolve });
+        }),
+      },
+      messageId,
+      content,
+    );
+    return out.ok ? null : out.reason;
+  }, [loadingHistory, sessionId, stopGeneration, sendMessage]);
+  // The ONE retry path (`lib/chatRetry.ts`): an answer's "Retry" and a failed
+  // turn's error-card "Retry" both land here.
   const handleRetryMessage = useCallback((m: ChatMessage) => {
-    const all = messagesRef.current;
-    const idx = all.findIndex((x) => x.id === m.id);
-    if (idx < 0) return;
-    const prevUser = [...all.slice(0, idx)].reverse().find((x) => x.role === "user");
-    if (!prevUser) return;
-    // Regenerate: drop this assistant turn AND its prompt, then re-send — no
-    // duplicate user+assistant pair on top of the old (rejected) answer.
-    setMessages((prev) => prev.filter((x) => x.id !== m.id && x.id !== prevUser.id));
-    submitText(prevUser.content);
+    const plan = retryPlan(messagesRef.current, m.id);
+    if (!plan) return;
+    // Regenerate: drop this turn AND its prompt, then re-send — no duplicate
+    // user+assistant pair on top of the old (rejected or failed) turn.
+    setMessages((prev) => prev.filter((x) => !plan.drop.includes(x.id)));
+    submitText(plan.resend);
   }, [submitText, setMessages]);
+
+  // While the chat shows its own "Metorite is updating" notice, the shell's
+  // toast stands down, so the member reads it once (review of #797).
+  useEffect(() => {
+    if (!outage) return;
+    const id = `chat:${sessionId}`;
+    coverOutage(id);
+    return () => uncoverOutage(id);
+  }, [outage, sessionId]);
+
+  // The last answer an app update cut, if the member has not moved on.
+  const interruptedId = useMemo(() => interruptedTurn(messages), [messages]);
+  // Continue: a fresh run picks up where the cut one stopped. The gateway
+  // writes the note the model reads, from the saved partial reply.
+  const handleContinue = useCallback(() => {
+    void sendMessage(CONTINUE_TEXT, { resume: true });
+  }, [sendMessage]);
 
   /** Ask the agent to help configure a specific integration. */
   const handleAskAgentConfigure = (svc: IntegrationStatus) => {
@@ -1319,9 +2141,11 @@ export default function AgentChat({
   /** Switch the active agent mid-chat. History is retained and passed as context. */
   const handleSwitchAgent = useCallback((entry: AgentEntry) => {
     setCurrentAgentName(entry.name);
-    setCurrentModel(getLastModel(entry.name) ?? "auto");
+    // UI flag on: the persist effect restores the stored choice, and only
+    // for an agent that keeps its picker (WS-45 S3).
+    setCurrentModel(tierUi ? "auto" : (getLastModel(entry.name) ?? "auto"));
     setShowAgentMenu(false);
-  }, []);
+  }, [tierUi]);
 
   const currentModelLabel =
     sortedModels.find((m) => m.id === currentModel)?.label ?? currentModel;
@@ -1339,7 +2163,6 @@ export default function AgentChat({
   const [showModelMenu, setShowModelMenu] = useState(false);
   const [showThinkMenu, setShowThinkMenu] = useState(false);
   const modelMenuRef = useRef<HTMLDivElement>(null);
-  const sendMenuRef = useRef<HTMLDivElement>(null);
 
   // Close model menu on outside click
   useEffect(() => {
@@ -1353,18 +2176,6 @@ export default function AgentChat({
     return () => document.removeEventListener("mousedown", handleOutside);
   }, [showModelMenu]);
 
-  // Close send-mode menu on outside click (works on touch devices too)
-  useEffect(() => {
-    if (!showSendMenu) return;
-    const handleOutside = (e: MouseEvent) => {
-      if (sendMenuRef.current && !sendMenuRef.current.contains(e.target as Node)) {
-        setShowSendMenu(false);
-      }
-    };
-    document.addEventListener("mousedown", handleOutside);
-    return () => document.removeEventListener("mousedown", handleOutside);
-  }, [showSendMenu]);
-
   const THINK_MODES: { mode: ThinkMode; label: string; title: string }[] = [
     { mode: "auto", label: "Auto", title: "Let the model decide" },
     { mode: "thinking", label: "Thinking", title: "Enable chain-of-thought reasoning" },
@@ -1376,97 +2187,186 @@ export default function AgentChat({
   // reference behaviour), not detached at the bottom of the message list. The
   // agent is parked mid-turn, so the card belongs with that turn's bubble.
   // Returns null when nothing is pending.
+  // Answer ONE confirmation card. Only that card leaves the queue.
+  const answerConfirmation = (card: PendingConfirmation, answer: ConfirmationAnswer) => {
+    if (!card.requestId) {
+      dispatchConfirmation({ type: "dismiss", key: card.key });
+      submitText(`${answer}: ${card.key}`);
+      return;
+    }
+    const requestId = card.requestId;
+    const rejecting = answer === "REJECT";
+    // The card leaves with a word: one line says "Applying", then what
+    // became of the answer (UXD-3). It draws under the newest message.
+    dispatchConfirmation({
+      type: "answering",
+      key: card.key,
+      label: receiptLabel(card),
+      intent: rejecting ? "rejected" : "approved",
+      afterId: visibleMessages.length ? visibleMessages[visibleMessages.length - 1].id : null,
+      ...(rejecting ? { undo: true } : {}),
+    });
+    const heldFor = sessionId;
+    const send = () => {
+      dispatchConfirmation({ type: "released", key: card.key });
+      noteCardAnswered(sessionId, requestId, answer);
+      postRespondInput(
+        { request_id: requestId, answer, was_freeform: false },
+        (reason) => dispatchConfirmation(settleAnswer(card, "retry", reason)),
+        // "resent": the run died with an update and the answer went out as a
+        // message. The card leaves, as on any answer no run can take, and its
+        // line goes with it: the notice of the resend says what happened.
+        (outcome, reason) => dispatchConfirmation(
+          outcome === "resent" ? settleAnswer(card, "drop") : settleAnswer(card, outcome, reason)),
+        heldFor,
+      );
+    };
+    if (!rejecting) { send(); return; }
+    // Undo for 5 s (#916). The REJECT waits, and a session switch or an
+    // unmount sends it at once (the effect below), so a run never stays parked.
+    heldCardsRef.current.set(card.key, card);
+    rejectHold.start(card.key, () => { heldCardsRef.current.delete(card.key); send(); });
+  };
+  const undoReject = (key: string) => {
+    const card = heldCardsRef.current.get(key);
+    if (!rejectHold.undo(key) || !card) return;
+    heldCardsRef.current.delete(key);
+    dispatchConfirmation({ type: "restore", card });
+  };
+  const hasConfirmations = confirmations.cards.length > 0;
+  // No card pins above the composer (owner report, 2026-10-23). A reply
+  // card, a draft and a question card each draw in the thread, at the foot
+  // of the live turn, and scroll with it. A pin above the box hid the chat
+  // on a phone, and an answered card stayed stuck there. `AskPin` brings a
+  // waiting card back into view, and `hitlAnchorId` keeps the newest card
+  // below the member's latest message.
+
+  // A question card that the run took an answer for waits no more. It
+  // stays in view with its answer until the run ends (owner, 2026-10-13).
+  const elicitationWaits = !!elicitation && elicitation.answered === undefined && !elicitation.declined;
+  const userInputWaits = !!userInput && userInput.answered === undefined && !userInput.declined;
+  // A card's answer, from its own Submit or from the composer.
+  // `giveBack` puts typed words back in the box when the answer did not
+  // reach the run, so they are never lost (review of this change, P2).
+  const answerElicitation = (answers: ElicitationAnswers, giveBack?: () => void) => {
+    if (!elicitation) return;
+    if (elicitation.requestId) {
+      // The wire shape is `lib/elicitationAnswer.ts`, unchanged.
+      const { answer, wasFreeform } = blockingAnswer(elicitation.questions, answers);
+      const card = elicitation;
+      const reqId = card.requestId!;
+      const summary = answerSummary(card.questions, answers);
+      setElicitation({ ...card, answered: summary });
+      noteCardAnswered(sessionId, reqId, summary);
+      postRespondInput(
+        { request_id: reqId, answer, was_freeform: wasFreeform },
+        () => { setElicitation(card); giveBack?.(); },
+        // A 4xx says no question waits on this id (a stale card).
+        // The answer goes out as a message, as the genUI path
+        // does, so it is never lost (2026-10-09). The message
+        // carries the answer, so the card leaves.
+        (outcome) => {
+          if (outcome === "ok") return;
+          setElicitation((prev) => (prev?.requestId === reqId ? null : prev));
+          // A card redrawn from the log may be one the run already
+          // took an answer for: a refusal then is no lost answer,
+          // and a steer would send it twice (review of #1171, P1).
+          if (outcome !== "drop") return;
+          if (!redrawnRef.current.all.has(reqId)) submitText(answer);
+          else giveBack?.();
+        },
+      );
+    } else {
+      submitText(formattedAnswers(answers));
+      setElicitation(null);
+    }
+  };
+  const answerUserInput = (answers: ElicitationAnswers, giveBack?: () => void) => {
+    if (!userInput) return;
+    const { answer, wasFreeform } = userInputAnswer(answers);
+    const card = userInput;
+    setUserInput({ ...card, answered: answer });
+    noteCardAnswered(sessionId, card.requestId, answer);
+    postRespondInput(
+      { request_id: card.requestId, answer, was_freeform: wasFreeform },
+      () => { setUserInput(card); giveBack?.(); },
+      (outcome) => {
+        if (outcome === "ok") return;
+        setUserInput((prev) => (prev?.requestId === card.requestId ? null : prev));
+        if (outcome !== "drop" || !answer) return;
+        if (!redrawnRef.current.all.has(card.requestId)) submitText(answer);
+        else giveBack?.();
+      },
+    );
+  };
+  // A message typed while one question waits answers it
+  // (`lib/typedAnswer.ts`, owner report 2026-10-23). Else it steers.
+  const typedTarget = typedAnswerTarget({ userInput, elicitation });
+  const answerTyped = (text: string): boolean => {
+    // D-PZ-37: the words go back with the mark that the box had.
+    const was = boxMarkRef.current;
+    const giveBack = () => {
+      boxMarkRef.current = filled(boxMarkRef.current, composerTyped(was));
+      setInput((prev) => (prev.trim() ? prev : text));
+    };
+    if (typedTarget === "userInput") answerUserInput(typedAnswers("userInput", text), giveBack);
+    else if (typedTarget === "elicitation") answerElicitation(typedAnswers("elicitation", text, elicitation?.questions), giveBack);
+    else return false;
+    return true;
+  };
   const renderHitlCards = (): React.ReactNode => {
-    if (!confirmation && !elicitation && !userInput) return null;
+    if (!hasConfirmations && !elicitation && !userInput) return null;
+    // One mark for the group: the pin above the composer scrolls here
+    // while a card waits (`lib/askPin.ts`, spec §24 rule 1). It is a card of
+    // the transcript too: its arrival rolls up the long cards above it, and
+    // it never rolls up itself (`components/RollupCard.tsx`). The group
+    // draws no title row of its own. Each card in it draws its own, and an
+    // answered question card folds by itself (`ElicitationCard`).
     return (
-      <>
-        {confirmation && (
-          <ConfirmationCard title={confirmation.title} detail={confirmation.detail} context={confirmation.context}
-            onApprove={() => {
-              const card = confirmation;
-              const reqId = card.requestId;
-              setConfirmation(null);
-              if (reqId) {
-                postRespondInput(
-                  { request_id: reqId, answer: "APPROVE", was_freeform: false },
-                  () => setConfirmation(card),
-                );
-              } else {
-                submitText(`APPROVE: ${card.id}`);
-              }
-            }}
-            onReject={() => {
-              const card = confirmation;
-              const reqId = card.requestId;
-              setConfirmation(null);
-              if (reqId) {
-                postRespondInput(
-                  { request_id: reqId, answer: "REJECT", was_freeform: false },
-                  () => setConfirmation(card),
-                );
-              } else {
-                submitText(`REJECT: ${card.id}`);
-              }
-            }} />
+      <RollupCard id={HITL_TARGET} title="Waiting for you" pending>
+      <div data-chat-ask={HITL_TARGET} className="space-y-2 outline-none">
+        {hasConfirmations && (
+          <ConfirmationQueue
+            cards={confirmations.cards}
+            errors={confirmations.errors}
+            onAnswer={answerConfirmation}
+            onSuggest={suggestToComposer}
+            onDraftChange={onCardDraft}
+            carriesEdits={steerOpen}
+            savedEdits={savedFormEdits}
+            onEdits={onFormEdits}
+          />
         )}
 
         {elicitation && (
           <ElicitationCard
+            // A new question is a new card (review of #945, P1). The answered
+            // card stays mounted, so with no key the next question took its
+            // picks and its typed text. A retry keeps its id, and its picks.
+            key={elicitation.requestId ?? "questions"}
+            id={`ask:${elicitation.requestId ?? "questions"}`}
             questions={elicitation.questions}
-            onSubmit={(answers: ElicitationAnswers) => {
-              if (elicitation.requestId) {
-                const formatted = Object.entries(answers)
-                  .map(([header, ans]) => {
-                    const parts: string[] = [`[${header}]`];
-                    if (ans.selected && ans.selected.length > 0) {
-                      parts.push(`Selected: ${ans.selected.join(", ")}`);
-                    }
-                    if (ans.freeform) {
-                      parts.push(`Answer: ${ans.freeform}`);
-                    }
-                    return parts.join("\n");
-                  })
-                  .join("\n\n");
-                const single = elicitation.questions.length === 1;
-                const firstHeader = elicitation.questions[0]?.header ?? "Question";
-                const a = answers[firstHeader] ?? {};
-                const freeform = a.freeform?.trim();
-                const selectedJoined = (a.selected ?? []).join(", ");
-                const answer = single
-                  ? (freeform || selectedJoined || formatted)
-                  : formatted;
-                const wasFreeform = single && !!freeform && !selectedJoined;
-                const card = elicitation;
-                const reqId = card.requestId!;
-                setElicitation(null);
-                postRespondInput(
-                  { request_id: reqId, answer, was_freeform: wasFreeform },
-                  () => setElicitation(card),
-                );
-              } else {
-                const formatted = Object.entries(answers)
-                  .map(([header, ans]) => {
-                    const parts: string[] = [`[${header}]`];
-                    if (ans.selected && ans.selected.length > 0) {
-                      parts.push(`Selected: ${ans.selected.join(", ")}`);
-                    }
-                    if (ans.freeform) {
-                      parts.push(`Answer: ${ans.freeform}`);
-                    }
-                    return parts.join("\n");
-                  })
-                  .join("\n\n");
-                submitText(formatted);
-                setElicitation(null);
-              }
-            }}
+            answered={elicitation.answered}
+            declined={elicitation.declined}
+            // Only a blocking card parks a run, so only it can be declined.
+            // A decline that cannot pass now opens the card again. A 4xx
+            // keeps it declined: no run waits, and nothing goes as a message.
+            onDecline={elicitation.requestId ? () => {
+              const card = elicitation;
+              setElicitation({ ...card, declined: true });
+              noteCardAnswered(sessionId, card.requestId!, "", true);
+              postRespondInput(declineBody(card.requestId!), () => setElicitation(card));
+            } : undefined}
+            onSubmit={answerElicitation}
           />
         )}
 
         {userInput && (
           <ElicitationCard
+            key={userInput.requestId}
+            id={`ask:${userInput.requestId}`}
             questions={[{
-              header: "Question",
+              header: ASK_USER_HEADER,
               question: userInput.question,
               multiSelect: false,
               allowFreeformInput: userInput.allowFreeform,
@@ -1474,33 +2374,99 @@ export default function AgentChat({
                 ? userInput.choices.map((c) => ({ label: c }))
                 : null,
             }]}
-            onSubmit={(answers: ElicitationAnswers) => {
-              const a = answers["Question"] ?? {};
-              const selected = a.selected?.[0];
-              const freeform = a.freeform?.trim();
-              const answer = freeform || selected || "";
-              const wasFreeform = !!freeform && !selected;
+            answered={userInput.answered}
+            declined={userInput.declined}
+            onDecline={() => {
               const card = userInput;
-              setUserInput(null);
-              postRespondInput(
-                { request_id: card.requestId, answer, was_freeform: wasFreeform },
-                () => setUserInput(card),
-              );
+              setUserInput({ ...card, declined: true });
+              noteCardAnswered(sessionId, card.requestId, "", true);
+              postRespondInput(declineBody(card.requestId), () => setUserInput(card));
             }}
+            onSubmit={answerUserInput}
           />
         )}
-      </>
+      </div>
+      </RollupCard>
     );
   };
 
+  // The element that waits on the member, for the pin above the composer
+  // (spec §24 rule 1). It reads the queue and the question state above, and
+  // keeps none of its own.
+  // The room: read here, before the card answers below, which count only
+  // the viewer's own turns (review of #942). The room layer is further down.
+  const viewerEmail = memoryUserId ?? "";
+  const { room, shared: isRoom, presence, timeline, refresh: refreshRoom } =
+    useRoom(sessionId, viewerEmail, { enabled: !compact });
+  // The member's own assistant, not a room: the push prompt asks only here (OB-8).
+  const ownAssistantChat = isOrchestrator && !isRoom;
+  // A blocking generative-UI card whose answer went as a new message after a
+  // restart: its run died before its tool result recorded the answer, so the
+  // answer comes from the member's turn (`lib/cardAnswer.ts`). The card then
+  // stays answered after a reload too. Keyed on the text, so a streamed
+  // token makes no new map and every bubble keeps its memo.
+  const restartAnswersKey = JSON.stringify([...genUiAnswersFromTurns(messages, viewerEmail || undefined, isRoom)]);
+  const cardAskAnswers = useMemo<ReadonlyMap<string, string>>(() => {
+    const fromTurns = JSON.parse(restartAnswersKey) as [string, string][];
+    return fromTurns.length === 0 ? askAnswers : new Map([...fromTurns, ...askAnswers]);
+  }, [askAnswers, restartAnswersKey]);
+  const askSources = {
+    // A slot of a redraft (§18.11) waits on nobody.
+    confirmations: liveCards(confirmations.cards),
+    elicitation: elicitationWaits ? elicitation : null,
+    userInput: userInputWaits ? userInput : null,
+    messages,
+    runActive: isRunActive,
+    answered: cardAskAnswers.size === askAnswers.size
+      ? answeredAsks
+      : new Set([...answeredAsks, ...cardAskAnswers.keys()]),
+  };
+  const waiting = pendingAsk(askSources);
+  // A card that waits on the member is the run's "waiting for you"
+  // (`lib/runStatus.ts`). The run state, not the card, decides the status.
+  const cardWaits = !!waiting;
+  useEffect(() => {
+    dispatchRun(sessionId, { type: "card", at: Date.now(), open: cardWaits });
+  }, [sessionId, cardWaits]);
+
+  // The transcript's cards, for the roll-up (`lib/cardRollup.ts`): which one
+  // is the newest, and which ones wait. Keyed on the targets' text, so the
+  // context changes only when what waits changes, not on every token.
+  const [rollupRegistry] = useState(() => new RollupRegistry<Element>(turnThenArrival));
+  const waitingKey = JSON.stringify([...waitingTargets(askSources)]);
+  const onManualToggle = useCallback(() => {
+    lastManualToggleRef.current = performance.now();
+  }, []);
+  // The newest email draft draws in full in the thread, and a draft that a
+  // revision replaced folds to one line (`lib/pinnedDraft.ts`). No draft
+  // pins above the composer (owner report, 2026-10-23).
+  // A draft of a delegated email run counts too (§7.1.1 rule 5).
+  const drafts = useMemo(
+    () => draftsOf(messages.map((m) => ({ toolEvents: withEmailSteps(m.toolEvents) })), (e) => !noActionOf(e.result)),
+    [messages],
+  );
+  const pinScope = useMemo(
+    () => ({ pinnedId: null, superseded: draftPin(drafts, null).superseded }),
+    [drafts],
+  );
+
+  const rollupScope = useMemo<RollupScope>(
+    () => ({
+      registry: rollupRegistry,
+      waiting: new Set(JSON.parse(waitingKey) as string[]),
+      onManualToggle,
+    }),
+    [rollupRegistry, waitingKey, onManualToggle],
+  );
+
   // The assistant turn the HITL card anchors to = the last assistant message
   // (the parked run streams into it). Used to render the card inline there.
+  // The cards draw after the LAST message of the thread, so a steer the
+  // member sent while a card waits sits above it, never below it (owner
+  // report, 2026-10-22). Before any message, they draw at the list tail.
   const hitlAnchorId = (() => {
-    if (!confirmation && !elicitation && !userInput) return null;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === "assistant") return messages[i].id;
-    }
-    return null;
+    if (!hasConfirmations && !elicitation && !userInput) return null;
+    return visibleMessages.length ? visibleMessages[visibleMessages.length - 1].id : null;
   })();
 
   // ── The room layer ────────────────────────────────────────────────────
@@ -1508,27 +2474,72 @@ export default function AgentChat({
   // nothing: `shared` is false, so no rail, no banner, no stream, no
   // heartbeat. Everything below keys off `shared` rather than off the room
   // object, so solo chat is exactly the surface it has always been.
-  const viewerEmail = memoryUserId ?? "";
-  const { room, shared: isRoom, presence, timeline, refresh: refreshRoom } =
-    useRoom(sessionId, viewerEmail, { enabled: !compact });
+  // `viewerEmail` and `isRoom` are read above, by the card answers.
   const [railOpen, setRailOpen] = useState(false);
+  // CF-8: Share from the phone's "…" control. The Share row's own sheet
+  // is gone on a phone, so the chat raises the same sheet here.
+  const [sharing, setSharing] = useState(false);
   const roomPeople = useMemo(() => (room ? peopleOf(room) : []), [room]);
+  // Only the member's OWN last user message offers Edit (lib/chatEdit.ts).
+  // An earlier one would fork, and another person's is not theirs to edit.
+  // While the saved history loads, the thread on screen is the browser's
+  // cache. It can end at an older turn than the server's, so its last message
+  // is not yet THE last one: no message offers Edit until the load ends (task
+  // 1653). It showed Edit under an older message, and a Send from it did
+  // nothing.
+  const lastUserId = useMemo(
+    () => (loadingHistory ? null : editableLastUserId(messages, viewerEmail || undefined, isRoom)),
+    [messages, viewerEmail, isRoom, loadingHistory],
+  );
   // A watcher reads the room and cannot drive its agents. The composer says so
   // instead of failing the send with a 403 after they have typed a paragraph.
   const canSend = room ? room.you.canSend : true;
+  // Stop while a run is live and the box is empty, else Send (lib/chatSteer.ts).
+  const primary = primaryAction({ runActive: isRunActive && !loadingHistory, hasText: !!input.trim() || hasReadyFiles });
+  const uploadingFiles = isUploading(att.items);
+  const failedFiles = hasFailed(att.items);
+  // The box's bar always holds Attach and the one primary control. These
+  // controls join it only when the agent has them (owner, 2026-10-12).
+  const hasComposerControls =
+    controls.showAgentSwitch ||
+    (mailboxes?.length ?? 0) > 0 ||
+    (!lockModel && modelPlan.showPicker) ||
+    controls.showEffort;
+  // CF-8: on the phone the ring shows in the composer only once it matters,
+  // at 75 %, where the compaction band begins. Below that it waits in the
+  // "…" control. The row above the box goes when it has nothing to say.
+  const ringInComposer = !phoneChrome || contextUsage.pct >= PHONE_RING_PCT;
+  const steerShown = primary === "send" && isRunActive && !!input.trim();
+  // §18.11 step 7: while a new-mail card is open and a message goes as a
+  // steer, the composer names the emails that a message changes ("Changing:
+  // Email to Kim", "Changing: 2 emails"). After a Stop, it claims nothing.
+  const changing = steerOpen ? changingLine(confirmations.cards) : null;
+  const composerRowShown = !phoneChrome || !!runView || ringInComposer || composerOverflow || steerShown || !!changing;
+  // The phone's tap size, on Attach and on Send (CF-8).
+  const tap = phoneChrome ? "h-11 w-11" : "h-8 w-8";
+  // A new chat in the full view centres its composer, with the greeting
+  // above it (CO-0, owner 2026-11-02). Two equal spaces, one above the
+  // greeting and one under the composer, hold it there.
+  const emptyHero = !loadingHistory && messages.length === 0 && !compact && !phoneChrome;
 
   return (
-    <div className="flex h-full bg-background">
-    <div className="flex flex-col h-full flex-1 min-w-0 bg-background">
+    <div className="flex h-full bg-background glass:bg-card">
+    <div className="flex flex-col h-full flex-1 min-w-0 bg-background glass:bg-card">
       {/* Agent header — VS Code-style minimal bar (hidden in compact embeds,
-          where the host provides its own toolbar). */}
-      {!compact && (
-      <div className="flex items-center gap-2 h-9 px-4 border-b border-border bg-card/40 shrink-0">
-        <div className={`w-2 h-2 rounded-full shrink-0 ${isLoading ? "bg-warning animate-pulse" : "bg-success"}`} />
+          where the host provides its own toolbar, and on a phone with the
+          chat-first flag on, where the "…" control carries the status). */}
+      {/* Glass (owner, 2026-10-31): the agent row and the room row are one
+          line on the thread's own column (50rem less the 16 px gutters is the
+          thread's 48rem), so the name and Share line up with the messages.
+          Classic keeps its two full-width rows: the wrapper is `contents`. */}
+      {!compact && !phoneChrome && !(headSlot && !isRoom) && (
+      <div data-chat-head="" className="contents glass:mx-auto glass:flex glass:w-full glass:max-w-[50rem] glass:shrink-0 glass:items-center glass:gap-2 glass:px-4">
+      <div data-chat-agent-row="" className="flex items-center gap-2 h-9 px-4 border-b border-border bg-card/40 shrink-0 glass:min-w-0 glass:flex-1 glass:px-0 glass:border-transparent glass:bg-transparent glass:h-11">
+        <div className={`w-2 h-2 rounded-full shrink-0 ${isRunActive ? "bg-warning motion-safe:animate-pulse" : "bg-success"}`} />
         <AgentAvatar libraryId={agentAvatars[currentAgentName]} size={20} fallback={null} />
-        <span className="text-xs font-medium text-foreground truncate">{currentAgentLabel}</span>
-        {isLoading && (
-          <span className="hidden sm:inline text-[10px] text-warning animate-pulse">thinking…</span>
+        <span className="text-xs font-medium text-foreground truncate glass:text-label glass:font-semibold">{currentAgentLabel}</span>
+        {isRunActive && (
+          <span className="hidden sm:inline text-[10px] text-warning glass:text-caption">working…</span>
         )}
         {agentRuntime === "github-copilot" && currentAgentEntry?.repo_url && (
           <a href={currentAgentEntry.repo_url} target="_blank" rel="noopener noreferrer"
@@ -1540,20 +2551,27 @@ export default function AgentChat({
           </a>
         )}
         {isRoom && (
-          <Button variant="ghost" size="none" radius="keep" layout="" onClick={() => setRailOpen((v) => !v)} className="ml-auto shrink-0 rounded-md px-1.5 py-0.5 text-[11px] lg:hidden">
+          <Button variant="ghost" size="none" radius="keep" layout="" onClick={() => setRailOpen((v) => !v)} className="ml-auto shrink-0 rounded-md px-1.5 py-0.5 text-[11px] lg:hidden glass:glass-chrome glass:glass-press glass:rounded-full glass:px-3 glass:py-1 glass:text-caption">
             {railOpen ? "Hide room" : "Room"}
           </Button>
         )}
       </div>
-      )}
-
       {/* Who is in this conversation, and what it costs the agents. Renders a
           lone Share button while you are alone — see RoomHeader. */}
-      {!compact && (
-        <div className="shrink-0 border-b border-border bg-card/20 px-4 py-2">
+        <div data-chat-room-row="" className="shrink-0 border-b border-border bg-card/20 px-4 py-2 glass:border-transparent glass:bg-transparent glass:px-0 glass:py-0">
           <RoomHeader room={room} presence={presence} onChanged={refreshRoom} />
         </div>
+      </div>
       )}
+
+      {!compact && !phoneChrome && headSlot && !isRoom
+        ? createPortal(
+            <div data-chat-head="slot" className="flex items-center">
+              <RoomHeader room={room} presence={presence} onChanged={refreshRoom} />
+            </div>,
+            headSlot,
+          )
+        : null}
 
       {/* Missing integrations banner (compact) */}
       {!bannerDismissed && missingMandatory.length > 0 && (
@@ -1565,11 +2583,12 @@ export default function AgentChat({
       )}
 
       {/* Message thread */}
-      <div ref={threadRef} className="flex-1 overflow-y-auto px-3 sm:px-4 py-4 relative scrollbar-thin">
+      {/* CF-8: a 16 px gutter on the phone sheet, the full width between. */}
+      <div ref={threadRef} className={`${emptyHero ? "flex flex-[1_1_0%] flex-col justify-end" : "flex-1"} overflow-y-auto ${phoneChrome ? "px-4" : "px-3 sm:px-4"} py-4 relative scrollbar-thin`}>
         {/* Scroll-to-bottom floating button */}
         {showScrollBtn && (
           <button onClick={scrollToBottom}
-            className="sticky bottom-3 left-1/2 -translate-x-1/2 z-10 w-8 h-8 rounded-full bg-card border border-border text-foreground shadow-lg flex items-center justify-center hover:bg-secondary hover:text-foreground tech-transition"
+            className="sticky bottom-3 left-1/2 -translate-x-1/2 z-10 w-8 h-8 rounded-full bg-card border border-border text-foreground shadow-lg flex items-center justify-center hover:bg-secondary hover:text-foreground tech-transition glass:glass-chrome glass:glass-press glass:border-transparent"
             aria-label="Scroll to bottom">
             <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M4 6l4 4 4-4" />
@@ -1577,34 +2596,13 @@ export default function AgentChat({
           </button>
         )}
 
-        <div className="max-w-3xl mx-auto space-y-5">
-          {/* Stream recovery / agent status indicator */}
-          {recovering || runStatus === "running" ? (
-            <div role="status" aria-live="polite" className="rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-[12px] text-primary/90 flex items-center gap-2">
-              <span className={[
-                "w-2.5 h-2.5 rounded-full shrink-0",
-                runStatus === "running" ? "bg-green-500 animate-pulse" : "bg-primary animate-pulse",
-              ].join(" ")} />
-              <span className="font-medium">
-                {runStatus === "running" ? "Agent running…" : "Reconnecting…"}
-              </span>
-              <span className="text-primary/60">
-                {runStatus === "running"
-                  ? "The agent is still working. Content will appear as it's produced."
-                  : runStatus === "recovering"
-                    ? "Recovering your stream from the server"
-                    : "Checking agent status…"}
-              </span>
-            </div>
-          ) : !isLoading && messages.length > 0 && (() => {
-            const last = messages[messages.length - 1];
-            const wasInterrupted = isInterruptedReply(last) && !!last?.content;
-            return wasInterrupted ? (
-              <div className="rounded-lg border border-warning/20 bg-warning/5 px-3 py-2 text-[11px] text-warning">
-                ⚡ Stream was interrupted. Messages are saved — you can continue chatting below.
-              </div>
-            ) : null;
-          })()}
+        <DraftPinContext.Provider value={pinScope}>
+        <RollupContext.Provider value={rollupScope}>
+        <div ref={contentRef} className="max-w-3xl mx-auto space-y-5">
+          {/* The old "Agent running… / Reconnecting…" banner sat at the TOP of
+              the thread and read its own flags. The one run state draws the
+              status now: in the thread where the reply will appear (below),
+              and above the composer. */}
           {/* One indicator only: skeleton bubbles in the shape of a thread,
               with one caption. It used to stack a spinner, two lines of text
               and the bubbles, centred in half the viewport, beside a second
@@ -1627,25 +2625,28 @@ export default function AgentChat({
             </div>
           )}
           {!loadingHistory && messages.length === 0 && (
-            <div className="flex flex-col items-center justify-center min-h-[50vh] gap-3 text-center">
+            <div className={`flex flex-col items-center justify-center gap-3 text-center ${emptyHero ? "pb-2" : "min-h-[50vh]"}`}>
               <AgentAvatar
                 libraryId={agentAvatars[currentAgentName]}
                 size={48}
                 className="tech-glow"
                 fallback={
-                  <div className="w-12 h-12 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center tech-glow">
+                  <div className="w-12 h-12 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center tech-glow glass:rounded-[10px] glass:border-transparent glass:bg-secondary">
                     <div className="w-2.5 h-2.5 rounded-full bg-success" />
                   </div>
                 }
               />
-              <div className="text-muted-foreground text-sm font-medium">
+              <div className="text-muted-foreground text-sm font-medium glass:text-headline glass:font-semibold">
                 Chat with <span className="text-foreground">{currentAgentLabel}</span>
               </div>
               {agentDescription && currentAgentName === agentName && (
-                <div className="text-muted-foreground/60 text-xs max-w-sm leading-relaxed">{agentDescription}</div>
+                <div className="text-muted-foreground/60 text-xs max-w-sm leading-relaxed glass:text-muted-foreground glass:text-subhead">{agentDescription}</div>
               )}
+              {/* PZ-27: the "Get to know me" offer. It shows only when its own rule holds. */}
+              <InterviewOffer isOrchestrator={isOrchestrator} messageCount={messages.length} isRoom={isRoom} />
+              {/* CF-4: the feed's headlines with the flag on, else the fixed list (`starters`). */}
               <SuggestionPills
-                suggestions={AGENT_SUGGESTIONS[currentAgentName] ?? DEFAULT_SUGGESTIONS}
+                suggestions={starters}
                 onPick={handleChoice}
               />
             </div>
@@ -1669,14 +2670,15 @@ export default function AgentChat({
             const prevMsg = i > 0 ? visibleMessages[i - 1] : null;
             // Find the preceding user message for retry (walk back to the
             // most recent user message before this assistant message).
+            // An error card retries too (owner report, 2026-10-08).
             const prevUserMsg =
-              msg.role === "assistant"
+              canRetry(msg)
                 ? [...visibleMessages.slice(0, i)].reverse().find((m) => m.role === "user")
                 : null;
             const showDateDivider = prevMsg &&
               new Date(msg.timestamp).toDateString() !== new Date(prevMsg.timestamp).toDateString();
             return (
-              <div key={msg.id} className="animate-fade-in">
+              <div key={msg.id} className="animate-fade-in" {...{ [TURN_ATTR]: "" }}>
                 {showDateDivider && (
                   <div className="flex items-center gap-3 my-4">
                     <div className="flex-1 h-px bg-border" />
@@ -1686,15 +2688,26 @@ export default function AgentChat({
                     <div className="flex-1 h-px bg-secondary" />
                   </div>
                 )}
+                {/* The one assistant's mailbox mark (§7.1.1 rule 6): the email
+                    work of this turn moved to another mailbox. Saved with the
+                    turn, so a reload draws it in the same place. */}
+                {msg.role === "assistant" &&
+                  mailboxMarksOf(msg.customEvents).map((label, k) => (
+                    <MailboxMark key={`mbx-run-${msg.id}-${k}`} label={label} />
+                  ))}
                 <MessageBubble message={msg} sessionId={sessionId} onChoice={handleChoice}
                   onHitlRespond={handleGenUiHitl}
+                  onHitlDecline={handleGenUiDecline}
+                  askAnswers={cardAskAnswers}
                   emailContext={emailContext}
                   onFileOpen={handleFileOpen}
-                  onResend={handleResend}
+                  onEditLast={msg.id === lastUserId ? handleEditLast : undefined}
                   viewerEmail={viewerEmail}
                   participants={isRoom ? roomPeople : undefined}
                   // Entity pills for the Projects assistant only (S9).
                   entityPills={currentAgentName === PROJECTS_AGENT}
+                  // Bare `#171` task links, for the task agents (2026-10-13).
+                  taskRefAgent={currentAgentName}
                   onRetryMessage={prevUserMsg ? handleRetryMessage : undefined} />
                 {/* Mailbox switch — everything below this line is about a
                     different inbox, and the assistant's per-account
@@ -1702,14 +2715,18 @@ export default function AgentChat({
                 {mailboxMarks
                   .filter((mk) => mk.afterId === msg.id)
                   .map((mk, k) => (
-                    <div key={`mbx-${msg.id}-${k}`} className="flex items-center gap-2 my-3">
-                      <div className="flex-1 h-px bg-primary/25" />
-                      <span className="flex items-center gap-1 text-[10px] text-primary/80 font-medium shrink-0">
-                        <Icon name="Mail" size={10} /> Now working on {mk.label}
-                      </span>
-                      <div className="flex-1 h-px bg-primary/25" />
-                    </div>
+                    <MailboxMark key={`mbx-${msg.id}-${k}`} label={mk.label} />
                   ))}
+                {/* What became of each answered approval card (UXD-3). */}
+                <ConfirmationReceipts
+                  receipts={confirmations.receipts.filter((r) => r.afterId === msg.id)}
+                  onUndo={undoReject}
+                />
+                {/* WT-2: the server marked this held turn, and the shell can open
+                    the fresh chat. Under the newest marked turn only. */}
+                {onContinueHeld && msg.id === continueOfferId && (
+                  <ContinueOffer sessionId={sessionId} onOpened={onContinueHeld} />
+                )}
                 {/* Inline HITL card — anchored to the asking assistant turn. */}
                 {msg.id === hitlAnchorId && renderHitlCards()}
               </div>
@@ -1719,10 +2736,31 @@ export default function AgentChat({
           {/* Fallback: a HITL prompt arrived before any assistant bubble exists
               (rare — e.g. a tool asks before any text streamed). Render at the
               list tail so the card is never lost. */}
+          {/* A line whose message is gone (a reload or a checkpoint swap gave
+              it a new id) draws at the tail, so it is never lost (UXD-3). A
+              message above the shown slice keeps its line in the history. */}
+          <ConfirmationReceipts
+            onUndo={undoReject}
+            receipts={confirmations.receipts.filter(
+              (r) => !r.afterId || !messages.some((m) => m.id === r.afterId),
+            )}
+          />
           {hitlAnchorId === null && renderHitlCards()}
 
-          {!isLoading && messages.length > 0 && (() => {
-            const last = messages[messages.length - 1];
+          {/* No follow-up pills under a cut answer or during an update: the
+              notice below is the next step, and it sits right under the answer. */}
+          {/* CF-4b: under the day's brief the starter pills show, not the follow-ups. */}
+          {briefOnly && starterFeedWanted && !isLoading && (
+            <SuggestionPills
+              suggestions={starters}
+              onPick={handleChoice}
+              align="start"
+            />
+          )}
+          {!isLoading && !outage && !interruptedId && messages.length > 0 && !(briefOnly && starterFeedWanted) && (() => {
+            const last = lastNonSteer(messages);
+            // No follow-ups under the hello: its chips are the next step (BUD-1).
+            if (last && isHelloRow(last.id)) return null;
             if (last?.role === "assistant" && last.content.trim() && !last.streaming) {
               return (
                 <SuggestionPills
@@ -1738,51 +2776,133 @@ export default function AgentChat({
           {/* Turn errors render once, inline in the thread, via the __ERROR__
               system message (see MessageBubble). The old bottom banner here was
               a duplicate and lingered after recovery, so it was removed. */}
+
+          {/* An app update (incident 2026-10-09, lib/chatRecovery.ts). ONE
+              status at a time, in the error card's own idiom: "Metorite is
+              updating" while a send is held, else "interrupted" with
+              Continue on the last answer that an update cut. */}
+          {outage ? (
+            <div className="chat-fade-in" data-chat-notice="updating">
+              <ErrorCardView error={{ code: "updating", ref: null, raw: "" }} onRetry={retryHeld} />
+            </div>
+          ) : interruptedId && !isRunActive ? (
+            <div className="chat-fade-in" data-chat-notice="interrupted">
+              <ErrorCardView error={{ code: "interrupted", ref: null, raw: "" }} onRetry={handleContinue} />
+            </div>
+          ) : null}
         </div>
-        <div ref={bottomRef} />
+        </RollupContext.Provider>
+        </DraftPinContext.Provider>
       </div>
 
       {/* ── Input area + VS Code-style bottom bar ─────────────────────── */}
-      <form onSubmit={handleSubmit} className="shrink-0 border-t border-border bg-card/40 px-3 sm:px-4 pt-2 pb-safe-full">
+      <form onSubmit={handleSubmit} className={`shrink-0 border-t border-border bg-card/40 glass:border-transparent glass:bg-transparent ${phoneChrome ? "px-4" : "px-3 sm:px-4"} pt-2 pb-safe-full`}>
         {/* VS Code-style Todos panel — latest assistant turn's todo list */}
         {(() => {
           for (let i = messages.length - 1; i >= 0; i--) {
             const m = messages[i];
             if (m.role === "assistant" && m.todos && m.todos.length > 0) {
-              return <TodoPanel todos={m.todos} running={!!m.streaming} />;
+              return <TodoPanel todos={m.todos} running={!!m.streaming} startOpen={!phoneChrome} />;
             }
+            if (isSteered(m)) continue; // a steer is part of the live turn
             if (m.role === "user") break; // only the current turn's todos
           }
           return null;
         })()}
-        {queuedCount > 0 && (
-          <div className="max-w-3xl mx-auto mb-2 flex items-center gap-2 text-[11px] text-warning">
-            <span className="w-1.5 h-1.5 rounded-full bg-warning animate-pulse" />
-            {queuedCount} message{queuedCount > 1 ? "s" : ""} queued
-            <button type="button" onClick={() => { queueRef.current = []; setQueuedCount(0); saveQueue(sessionIdRef.current, queueRef.current); }}
-              className="text-muted-foreground hover:text-foreground underline">clear</button>
-          </div>
-        )}
-
+        {/* The element that waits on the member, while it is out of view. */}
+        <AskPin ask={waiting} threadRef={threadRef} />
         {/* Live working indicator — always visible at bottom of output while
             agent is active. Mirrors Claude / GitHub Copilot style: status is
             always in view regardless of scroll position or whether the
             ThinkingContainer is expanded or collapsed. */}
-        {isRunActive && (
-          <div className="max-w-3xl mx-auto mb-2 flex items-center gap-2 text-[11px] text-muted-foreground chat-fade-in">
-            <Icon name="LoaderCircle" className="text-sky-400 animate-spin shrink-0" size={12} strokeWidth={1.5} />
-            <span className="italic truncate">
-              {liveToolName ? `Running ${liveToolName}…` : `${liveWorkingMsg}…`}
-            </span>
-            <span className="flex items-center gap-0.5 shrink-0" aria-hidden="true">
-              <span className="chat-typing-dot" />
-              <span className="chat-typing-dot" />
-              <span className="chat-typing-dot" />
-            </span>
+        {/* The composer's header row (owner request, 2026-10-09): the live
+            status on the left, and the context ring always on the right, in
+            one place. It used to sit in a second row INSIDE the message box,
+            and took its bottom from the message. */}
+        {composerRowShown && (
+        <div className="max-w-3xl mx-auto mb-1.5 flex min-h-5 items-center gap-2 text-[11px] text-muted-foreground glass:text-caption">
+          {/* The status starts at its own width and can shrink, so a long
+              step cuts its words and the ring stays in the row. The
+              "Changing:" line keeps its width up to 60% of the row, so the
+              email's name stays readable at 390 px, and the status gives way
+              first (fix round 3). */}
+          <div className="flex min-w-0 flex-auto items-center gap-2">
+            {runView ? (
+              <RunStatusRow view={runView} placement="composer" />
+            ) : null}
+            {/* The keys moved to Send's tooltip (CO-0): a line of hints
+                under every message box read as clutter. */}
           </div>
+          {/* A send during a run adds to the reply, or answers the one
+              question that waits (`lib/typedAnswer.ts`). Said once, short. */}
+          {/* §18.11: a message while a new-mail card is open changes that
+              email, so the line names it, typed or not. A typed answer to
+              the one waiting question still says so. */}
+          {changing && !(steerShown && typedTarget) ? (
+            <span data-redraft-changing="" className="max-w-[60%] shrink-0 truncate text-[10px] text-primary">
+              {changing}
+            </span>
+          ) : steerShown && (
+            <span data-steer-caption className="shrink-0 text-[10px] text-primary">
+              {typedTarget ? ANSWER_CAPTION : STEER_CAPTION}
+            </span>
+          )}
+          {composerOverflow && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              icon={composerExpanded ? "Minimize2" : "Maximize2"}
+              onClick={() => {
+                setComposerExpanded((v) => !v);
+                inputRef.current?.focus();
+              }}
+              aria-label={composerExpanded ? "Make the message box smaller" : "Make the message box taller"}
+              title={composerExpanded ? "Make the message box smaller" : "Make the message box taller"}
+              className="shrink-0"
+            />
+          )}
+          {ringInComposer && (
+          <span className="shrink-0" data-chat-composer-ring="">
+            <ContextRing
+              pct={contextUsage.pct}
+              usedTokens={contextUsage.usedTokens}
+              totalTokens={contextUsage.totalTokens}
+              compacting={compacting}
+              onCompact={handleCompact}
+              modelId={modelPlan.covered ? undefined : currentModel}
+            />
+          </span>
+          )}
+        </div>
         )}
 
         <div className="max-w-3xl mx-auto">
+          <p role="status" aria-live="polite" className="sr-only" data-hello-status="">{helloSaid}</p>
+          {/* One note from the parent, for example the email chat after the
+              mailbox of its scope left (EM-T8f-3). A status, so a screen
+              reader hears it once. */}
+          {notice && (
+            <div
+              role="status"
+              className="mb-2 flex items-start gap-2 rounded-lg border border-border bg-muted px-3 py-2 text-[11px] text-muted-foreground"
+            >
+              <Icon name="Info" size={12} className="mt-0.5 shrink-0" />
+              <span className="min-w-0 flex-1">{notice.text}</span>
+              {notice.onDismiss && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  icon="X"
+                  onClick={notice.onDismiss}
+                  aria-label="Dismiss note"
+                  title="Dismiss note"
+                  className="shrink-0"
+                />
+              )}
+            </div>
+          )}
           {/* A watcher reads the room and cannot drive its agents. Saying so
               here is the difference between a boundary and a bug: the
               alternative is a 403 after they have typed a paragraph. */}
@@ -1792,132 +2912,93 @@ export default function AgentChat({
               contributor if you need to send turns to its agents.
             </div>
           )}
-          {/* Input pill — textarea + inline controls, unified container */}
-          <div className={[
-            "rounded-2xl border border-border bg-secondary/50 focus-within:border-primary/40 tech-transition",
+          {/* OB-8: asks a phone member to turn on push. It docks above the
+              message box, as the notes above do. The member's own assistant
+              only, after the first turn, and never during a run. The server's
+              `prompt` flag decides whether it draws at all. */}
+          {aboveComposer}
+          <PushPromptSheet
+            ownChat={ownAssistantChat}
+            messageCount={messages.length}
+            streaming={isLoading}
+            visible={visible}
+            onClosed={() => inputRef.current?.focus()}
+          />
+          {/* The message box (owner, 2026-10-12: "it looks quite untidy").
+              The message takes the whole width, with no gutter. One bar inside
+              the box holds the quiet tools at the left and ONE round control
+              at the right: Send, or Stop while a run is live and the box is
+              empty. There is no send mode: a send during a run steers it
+              (`lib/chatSteer.ts`). */}
+          {/* Glass only (GL-4): while a run is live, a spectrum turns round
+              the capsule. The glow is a SIBLING of the composer, never an
+              ancestor, so its filter cannot flatten the composer's blur. It
+              is `hidden` in classic. */}
+          <div className="relative">
+          <div aria-hidden data-testid="working-glow" data-glow={glowState} data-glow-focus={composerFocused ? "true" : "false"} className="hidden glass:block glass:glass-working-glow absolute -inset-1 rounded-[24px]">
+            <div className="glass:glass-glow-ring" />
+          </div>
+          <div data-guide="chat.message-field" data-chat-composer data-drop={dragOver ? "over" : undefined}
+            onDragOver={(e) => { if (canSend && hasFiles(e.dataTransfer?.types)) { e.preventDefault(); setDragOver(true); } }}
+            onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragOver(false); }}
+            onDrop={(e) => {
+              setDragOver(false);
+              if (!canSend || !hasFiles(e.dataTransfer?.types)) return;
+              e.preventDefault();
+              att.add(Array.from(e.dataTransfer.files));
+              inputRef.current?.focus();
+            }}
+            onFocus={() => setComposerFocused(true)} onBlur={() => setComposerFocused(false)} className={[
+            dragOver ? "rounded-2xl border border-primary bg-primary/10 tech-transition glass:ring-2 glass:ring-primary glass:bg-primary/10" : "rounded-2xl border border-border bg-secondary/50 focus-within:border-primary/40 tech-transition",
+            "glass:relative glass:z-10 glass:rounded-[20px] glass:border-transparent glass:focus-within:border-transparent glass:glass-chrome glass:glass-spectrum-edge",
             canSend ? "" : "pointer-events-none opacity-40",
           ].join(" ")}>
-            {/* Row 1: upload + textarea + send */}
-            <div className="flex items-end gap-2 px-2 pt-2 pb-1">
+            <PendingChips items={att.items} onRemove={(id) => { att.remove(id); inputRef.current?.focus(); }} onRetry={att.retry} />
+            <textarea ref={inputRef} value={input}
+              onChange={(e) => { setInput(e.target.value); if (composerNotice) setComposerNotice(null); }}
+              onPaste={(e) => {
+                // A pasted image goes the same way as an attach. Pasted text
+                // stays text: a copy from a page can carry a picture as well.
+                const cd = e.clipboardData;
+                if (!cd || !hasFiles(cd.types) || cd.getData("text/plain")) return;
+                e.preventDefault();
+                att.add(Array.from(cd.files), { pasted: true });
+              }}
+              onKeyDown={handleKeyDown} rows={1}
+              disabled={loadingHistory}
+              aria-label={`Message ${currentAgentLabel}`}
+              placeholder={
+                loadingHistory
+                  ? "Loading previous messages…"
+                  : isRunActive
+                    ? `Add to the reply of ${currentAgentLabel}…`
+                    : `Message ${currentAgentLabel}…`
+              }
+              className="block w-full resize-none bg-transparent px-3 pt-2.5 pb-1 text-[16px] sm:text-sm text-foreground placeholder-muted-foreground focus:outline-none overflow-y-auto scrollbar-thin disabled:opacity-50 disabled:cursor-not-allowed glass:px-[18px] glass:pt-3.5"
+              style={{ minHeight: "36px" }} />
+            {/* Glass: the capsule's corner is 20 px, so the text sits 18 px in
+                and the bar 10 px in, clear of the corner (owner, 2026-10-31:
+                the text was too close to the rounded corner). */}
+
+            {/* The bar: tools at the left, the one primary control at the
+                right. On a phone the agent's controls take a row of their
+                own above Attach and the primary control, so neither row wraps
+                into a staircase (visual review, 2026-10-12, 390 px). */}
+            <div className="flex flex-wrap items-end gap-1 px-1.5 pb-1.5 glass:px-2.5 glass:pb-2.5">
               <FileUploadButton sessionId={sessionId}
-                onUploadComplete={(files) => {
-                  const names = files.map((f) => f.name).join(", ");
-                  const paths = files.map((f) => `\`${f.path}\``).join(", ");
-                  const ctx = `📎 Uploaded ${files.length} file(s): ${names}\n\nThese files are available in the workspace at:\n${paths}\n\nYou can read them with the read_file tool. Refer to them whenever I mention the uploaded content.`;
-                  setInput((prev) => prev.trim() ? `${prev}\n\n${ctx}` : ctx);
-                  inputRef.current?.focus();
-                }}
-                className="shrink-0 self-end mb-1" />
-
-              <textarea ref={inputRef} value={input}
-                onChange={(e) => setInput(e.target.value)} onKeyDown={handleKeyDown} rows={1}
-                disabled={loadingHistory}
-                aria-label={`Message ${currentAgentLabel}`}
-                placeholder={
-                  loadingHistory
-                    ? "Loading previous messages…"
-                    : isLoading
-                      ? `${SEND_MODE_LABELS[sendMode]} a follow-up to ${currentAgentLabel}…`
-                      : `Message ${currentAgentLabel}…`
-                }
-                className="flex-1 resize-none bg-transparent px-1 py-1.5 text-[16px] sm:text-sm text-foreground placeholder-muted-foreground focus:outline-none max-h-40 overflow-y-auto scrollbar-thin disabled:opacity-50 disabled:cursor-not-allowed"
-                style={{ minHeight: "32px" }}
-                onInput={(e) => { const t = e.currentTarget; t.style.height = "auto"; t.style.height = `${Math.min(t.scrollHeight, 160)}px`; }} />
-
-              {/* Contextual send / stop button */}
-              {/* While history loads, the send button stays in place and is
-                  disabled. It showed a second spinner, beside the one in the
-                  thread, which read as two separate things loading. */}
-              {isRunActive && !loadingHistory ? (
-                <div className="shrink-0 flex items-stretch self-end" ref={sendMenuRef}>
-                  {/* Stop button — always visible while a run is active */}
-                  <button type="button" onClick={handleStop}
-                    className="h-9 w-9 rounded-xl bg-destructive/10 border border-destructive/30 text-destructive flex items-center justify-center hover:bg-destructive/20 tech-transition"
-                    aria-label="Stop generation" title="Stop generation">
-                    <Icon name="Square" size={15} strokeWidth={2.5} fill="currentColor" />
-                  </button>
-                  {/* Send/Queue/Steer — unified pill: button + dropdown toggle merged */}
-                  {input.trim() && (
-                    <div className="relative ml-1.5">
-                      <div className={`flex items-stretch rounded-xl overflow-hidden border ${
-                        sendMode === "steer" ? "bg-cat-12 border-cat-12" :
-                        sendMode === "queue" ? "bg-sky-600 border-sky-500" :
-                        "bg-primary border-primary"
-                      }`}>
-                        {/* Main send action */}
-                        <button type="submit"
-                          className={`h-9 pl-3 pr-2 text-white font-semibold text-xs flex items-center gap-1.5 hover:brightness-110 tech-transition ${
-                            sendMode === "steer" ? "bg-cat-12" :
-                            sendMode === "queue" ? "bg-sky-600" :
-                            "bg-primary"
-                          }`}
-                          aria-label={SEND_MODE_LABELS[sendMode]}
-                          title={`${SEND_MODE_LABELS[sendMode]} — Ctrl+Enter`}>
-                          {sendMode === "steer" ? <Icon name="CornerDownRight" size={14} strokeWidth={2} /> :
-                           sendMode === "queue" ? <Icon name="ListOrdered" size={14} strokeWidth={2} /> :
-                           <Icon name="ArrowUp" size={14} strokeWidth={2.5} />}
-                          <span className="hidden sm:inline text-[11px]">{SEND_MODE_LABELS[sendMode]}</span>
-                        </button>
-                        {/* Dropdown toggle — divider + chevron */}
-                        <button type="button"
-                          onClick={(e) => { e.preventDefault(); setShowSendMenu((v) => !v); }}
-                          className={`h-9 w-7 flex items-center justify-center border-l hover:brightness-110 tech-transition ${
-                            sendMode === "steer" ? "bg-cat-12 border-cat-12" :
-                            sendMode === "queue" ? "bg-sky-600 border-sky-500" :
-                            "bg-primary border-primary-foreground/20"
-                          }`}
-                          aria-label="Change send mode" title="Change how messages are sent">
-                          <Icon name="ChevronDown" size={14} strokeWidth={2.5} className="text-white/80" />
-                        </button>
-                      </div>
-                      {/* Dropdown menu */}
-                      {showSendMenu && (
-                        <div className="absolute bottom-full right-0 mb-1.5 w-56 rounded-xl border border-border bg-popover shadow-2xl z-50 py-1.5 tech-glass-subtle"
-                          onMouseLeave={() => setShowSendMenu(false)}>
-                          <div className="px-3 pb-1 text-[9px] text-muted-foreground/60 uppercase tracking-wider font-semibold">Send mode</div>
-                          {(["steer", "send", "queue"] as SendMode[]).map((m) => (
-                            <button key={m} type="button"
-                              onClick={() => { setSendMode(m); setShowSendMenu(false); }}
-                              className={`w-full text-left px-3 py-2 text-xs hover:bg-secondary tech-transition ${m === sendMode ? "text-foreground bg-secondary/60" : "text-muted-foreground"}`}>
-                              <div className="flex items-center justify-between gap-2">
-                                <span className="font-medium flex items-center gap-2">
-                                  <span className={`w-6 h-6 rounded-lg flex items-center justify-center ${
-                                    m === "steer" ? "bg-cat-12/15 text-cat-12" :
-                                    m === "queue" ? "bg-sky-500/15 text-sky-400" :
-                                    "bg-primary/15 text-primary"
-                                  }`}>
-                                    {m === "steer" ? <Icon name="CornerDownRight" size={13} strokeWidth={2} /> :
-                                     m === "queue" ? <Icon name="ListOrdered" size={13} strokeWidth={2} /> :
-                                     <Icon name="ArrowUp" size={13} strokeWidth={2.5} />}
-                                  </span>
-                                  {m === "steer" ? "Steer" : m === "queue" ? "Queue" : "Send"}
-                                </span>
-                                {m === sendMode && <Icon name="CheckCircle" size={13} className="text-emerald-400 shrink-0" />}
-                              </div>
-                              <div className="text-muted-foreground mt-0.5 text-[10px] ml-8">
-                                {SEND_MODE_DESCRIPTIONS[m]}
-                              </div>
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <button type="submit" disabled={!input.trim() || loadingHistory}
-                  className="shrink-0 self-end h-9 w-9 rounded-xl bg-primary text-primary-foreground flex items-center justify-center disabled:opacity-25 disabled:cursor-not-allowed hover:opacity-90 tech-transition"
-                  aria-label="Send" title="Send message">
-                  <Icon name="ArrowUp" size={16} strokeWidth={2.5} />
-                </button>
+                onPick={(files) => { att.add(files); inputRef.current?.focus(); }}
+                className={`shrink-0 flex ${tap} items-center justify-center`} />
+              {voiceAvailability.shown && (
+                <VoiceInputButton ref={voiceRef} availability={voiceAvailability}
+                  onText={putDictation} onNotice={setComposerNotice} onPhase={setVoicePhase}
+                  className={`shrink-0 flex ${tap} items-center justify-center`} />
               )}
-            </div>
-
-            {/* Row 2: control bar inside the pill — wraps on narrow screens */}
-            <div className="flex items-center gap-1 px-2 pb-1.5 text-[11px] text-muted-foreground flex-wrap" ref={modelMenuRef}>
+            {hasComposerControls && !phoneChrome && (
+            <div data-chat-pickers="" className="order-first flex min-w-0 basis-full flex-wrap items-center gap-1 text-[11px] text-muted-foreground sm:order-none sm:basis-auto sm:flex-initial sm:self-center" ref={modelMenuRef}>
+            <>
               {/* Agent selector — only the orchestrator can switch agents mid-session.
                   Specialised agents lock you into their session for clean history. */}
-              {isOrchestrator && (
+              {controls.showAgentSwitch && (
                 <div className="relative">
                   <button onClick={() => setShowAgentMenu((v) => !v)}
                     className="flex items-center gap-1.5 px-2 py-1 rounded-md hover:bg-secondary hover:text-foreground tech-transition">
@@ -1949,7 +3030,7 @@ export default function AgentChat({
                 </div>
               )}
 
-              {isOrchestrator && <span className="w-px h-3.5 bg-border shrink-0" />}
+              {controls.showAgentSwitch && <span className="w-px h-3.5 bg-border shrink-0" />}
 
               {/* Mailbox picker — the email assistant only. Which inbox the
                   assistant acts on is a per-conversation choice, so it belongs
@@ -1971,7 +3052,16 @@ export default function AgentChat({
                       aria-expanded={showMailboxMenu}
                       className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-secondary hover:text-foreground tech-transition truncate max-w-[120px] sm:max-w-[170px]"
                     >
-                      <Icon name="Mail" size={11} className="shrink-0 text-muted-foreground/70" />
+                      {/* The dot of the mailbox in force, when the parent
+                          sends one (EM-T8f-3). Else the mail glyph. */}
+                      {activeMailbox?.accent ? (
+                        <span
+                          className={`h-1.5 w-1.5 shrink-0 rounded-full ${activeMailbox.accent}`}
+                          aria-hidden="true"
+                        />
+                      ) : (
+                        <Icon name="Mail" size={11} className="shrink-0 text-muted-foreground/70" />
+                      )}
                       <span className="truncate">
                         {activeMailbox?.label ?? "Pick mailbox"}
                       </span>
@@ -2013,9 +3103,19 @@ export default function AgentChat({
                                   : "text-muted-foreground hover:bg-secondary"
                               }`}
                             >
-                              <span className="truncate">{mb.label}</span>
+                              <span className="flex min-w-0 items-center gap-1.5">
+                                {/* The dot always sits beside the label, so
+                                    the hue is never the only signal. */}
+                                {mb.accent && (
+                                  <span
+                                    className={`h-1.5 w-1.5 shrink-0 rounded-full ${mb.accent}`}
+                                    aria-hidden="true"
+                                  />
+                                )}
+                                <span className="truncate">{mb.label}</span>
+                              </span>
                               {mb.id === activeMailboxId && (
-                                <span className="text-emerald-400 text-[10px] shrink-0">✓</span>
+                                <span className="text-primary text-[10px] shrink-0">✓</span>
                               )}
                             </button>
                           ))}
@@ -2028,8 +3128,9 @@ export default function AgentChat({
               )}
 
               {/* Model selector — hidden when the model is governed externally
-                  (e.g. the email Assistant's chat_model setting). */}
-              {!lockModel && (
+                  (e.g. the email Assistant's chat_model setting), and for an
+                  agent the tier policy covers (WS-45 S3, D90). */}
+              {!lockModel && modelPlan.showPicker && (
               <div className="relative">
                 <button onClick={() => setShowModelMenu((v) => !v)}
                   className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-secondary hover:text-foreground tech-transition truncate max-w-[110px] sm:max-w-[150px]">
@@ -2058,9 +3159,13 @@ export default function AgentChat({
               </div>
               )}
 
-              <span className="w-px h-3.5 bg-secondary/60 shrink-0" />
+              {/* The picker's divider goes with it (WS-45 S3). */}
+              {modelPlan.showPicker && <span className="w-px h-3.5 bg-secondary/60 shrink-0" />}
 
-              {/* Thinking mode — compact dropdown (saves space, easier tap on mobile) */}
+              {/* Thinking mode — compact dropdown (saves space, easier tap on mobile).
+                  A covered agent has none: the executor reads the effort from
+                  the member's words (owner, 2026-10-07). */}
+              {controls.showEffort && (
               <div className="relative">
                 <Button variant="ghost" size="none" radius="keep" layout="flex items-center" type="button" onClick={() => setShowThinkMenu((v) => !v)} title={THINK_MODES.find((t) => t.mode === thinkMode)?.title} className="gap-1 px-2 py-1 rounded-md">
                   <span>{THINK_MODES.find((t) => t.mode === thinkMode)?.label ?? "Auto"}</span>
@@ -2083,33 +3188,80 @@ export default function AgentChat({
                   </div>
                 )}
               </div>
+              )}
 
-              <span className="w-px h-3.5 bg-secondary/60 shrink-0" />
-
-              {/* Context-window ring — always visible inline */}
-              <ContextRing
-                pct={contextUsage.pct}
-                usedTokens={contextUsage.usedTokens}
-                totalTokens={contextUsage.totalTokens}
-                compacting={compacting}
-                onCompact={handleCompact}
-                modelId={currentModel}
-                isLoading={isLoading}
+            </>
+            </div>
+            )}
+              <span className="flex-1" aria-hidden="true" />
+              {/* CF-8: the phone's one "…" control, at the composer's end.
+                  The status, Share, the effort choice, the context window
+                  and the model picker live in it. */}
+              {phoneChrome && (
+                <ChatMoreMenu
+                  status={{ label: currentAgentLabel, active: isRunActive }}
+                  acts={moreActs}
+                  share={room ? { shared: isRoom, onOpen: () => setSharing(true) } : null}
+                  roomRail={isRoom ? { open: railOpen, onToggle: () => setRailOpen((v) => !v) } : null}
+                  effort={controls.showEffort ? { current: thinkMode, options: THINK_MODES, onPick: setThinkMode } : null}
+                  context={{
+                    pct: contextUsage.pct,
+                    usedTokens: contextUsage.usedTokens,
+                    totalTokens: contextUsage.totalTokens,
+                    compacting,
+                    onCompact: handleCompact,
+                    modelId: modelPlan.covered ? undefined : currentModel,
+                  }}
+                  model={!lockModel && modelPlan.showPicker
+                    ? { label: currentModelLabel, current: currentModel, groups: modelGroups, models: sortedModels, onPick: setCurrentModel }
+                    : null}
+                />
+              )}
+              {/* While history loads, the button stays in place and is
+                  disabled. It showed a second spinner, beside the one in the
+                  thread, which read as two separate things loading. */}
+              <ChatSendButton
+                action={primary}
+                onClick={primary === "stop" ? handleStop : undefined}
+                // A Stop waits for the server's answer (UXD-4).
+                loading={primary === "stop" ? stopping : uploadingFiles}
+                label={primary === "stop" ? (stopping ? "Stopping the reply" : undefined) : uploadingFiles ? "Uploading…" : undefined}
+                title={
+                  primary === "stop"
+                    ? stopping ? "Stopping…" : undefined
+                    : uploadingFiles
+                      ? "Uploading…"
+                      : failedFiles
+                        ? "Retry or remove the file that failed, then send."
+                        : undefined
+                }
+                disabled={primary === "send" ? !canSendMessage(input, att.items) || loadingHistory : stopping}
+                large={phoneChrome}
               />
-
-              {isRunActive && sendMode !== "send" && (
-                <span className="text-cat-12 text-[10px] font-medium">
-                  {sendMode === "queue" ? "⏱ Queued" : "⤳ Steering"}
-                </span>
-              )}
-
-              {!compact && (
-                <span className="hidden sm:inline text-muted-foreground text-[10px] ml-auto">
-                  <kbd className="text-muted-foreground">⏎</kbd> send · <kbd className="text-muted-foreground">⇧⏎</kbd> newline
-                </span>
-              )}
             </div>
           </div>
+          </div>
+
+          {/* A Stop that did not stop the run: it is still live, and the
+              next Stop (or Esc) tries again (UXD-4). */}
+          {stopError && isRunActive && !stopping && (
+            <p role="alert" data-chat-stop-error className="mt-1.5 flex items-start gap-1.5 px-1 text-[11px] text-destructive">
+              <Icon name="AlertCircle" size={12} className="mt-0.5 shrink-0" />
+              <span className="min-w-0">{stopError}</span>
+              <Button type="button" variant="text" size="none" onClick={handleStop} className="shrink-0 font-medium">
+                Retry
+              </Button>
+            </p>
+          )}
+
+          {/* A steer the server refused, or a model that cannot take one.
+              The words are back in the box. */}
+          {composerNotice && (
+            <p role="status" data-chat-composer-notice className="mt-1.5 flex items-start gap-1.5 px-1 text-[11px] text-muted-foreground">
+              <Icon name="Info" size={12} className="mt-0.5 shrink-0" />
+              <span className="min-w-0">{composerNotice}</span>
+            </p>
+          )}
 
           {/* Disclaimer */}
           {!compact && (
@@ -2119,11 +3271,18 @@ export default function AgentChat({
           )}
         </div>
       </form>
+      {emptyHero ? <div aria-hidden data-chat-hero-space="" className="flex-[1_1_0%]" /> : null}
 
       {/* Artifact viewer modal */}
       {viewerEntry && (
-        <ArtifactViewerModal sessionId={sessionId} entry={viewerEntry}
+        <ArtifactViewerModal origin="workspace" sessionId={sessionId} entry={viewerEntry}
           onClose={() => setViewerEntry(null)} onDelete={() => setViewerEntry(null)} />
+      )}
+
+      {/* CF-8: the Share sheet, raised from the phone's "…" control. The
+          Share row raises the same sheet on a desktop (RoomHeader). */}
+      {phoneChrome && sharing && room && (
+        <ShareSheet room={room} onClose={() => setSharing(false)} onChanged={refreshRoom} />
       )}
     </div>
 
@@ -2148,4 +3307,3 @@ export default function AgentChat({
     </div>
   );
 }
-

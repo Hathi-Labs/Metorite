@@ -28,6 +28,7 @@
  */
 
 import { ParentCrumb, TaskMeta } from "@/components/TaskMeta";
+import { AgentPill } from "./AgentPill";
 import Button from "@/components/ui/Button";
 import { useMemo, useState } from "react";
 
@@ -85,6 +86,8 @@ interface Props {
   /** WS-27bh — the root's task types, so a card can name what it IS. */
   taskTypes?: readonly TaskTypeRow[];
   projectId: string;
+  /** WS-64 OP-11 fix round. False hides the per-day quick add. Default true. */
+  canQuickAdd?: boolean;
   onCreated: (task: TaskRow) => void;
   onSelect: (task: TaskRow) => void;
   onMove: (task: TaskRow, patch: Record<string, string | null>) => void;
@@ -104,6 +107,7 @@ export function CalendarView({
   truncated,
   today,
   projectId,
+  canQuickAdd = true,
   shownFields,
   tags,
   taskTypes,
@@ -302,6 +306,13 @@ export function CalendarView({
                       </span>
                       {/* D-PM-38 — a subtask chip names its parent. */}
                       <ParentCrumb parent={task.parent} />
+                      {/* WS-55 EA-12c — the agent run's state. */}
+                      <AgentPill
+                        state={task.agent_state}
+                        clientVia={task.agent_client_via}
+                        memberEmail={task.agent_member_email}
+                        note={task.agent_note}
+                      />
                       <TaskMeta
                         chips={visibleChips(
                           task,
@@ -338,12 +349,14 @@ export function CalendarView({
                 </Button>
               ) : null}
               {/* WS-27y — a title typed here is due THIS day. */}
-              <QuickAdd
-                compact
-                label={`Add a task due ${day}`}
-                onAdd={(title) => quickAdd(title, day)}
-                className="mt-1"
-              />
+              {canQuickAdd ? (
+                <QuickAdd
+                  compact
+                  label={`Add a task due ${day}`}
+                  onAdd={(title) => quickAdd(title, day)}
+                  className="mt-1"
+                />
+              ) : null}
               {over === day && refusal ? (
                 <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-background/85 p-2 text-center text-[11px] font-medium text-destructive">
                   {refusal}

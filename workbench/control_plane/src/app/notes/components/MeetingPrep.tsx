@@ -18,6 +18,7 @@
  */
 
 import Button from "@/components/ui/Button";
+import Switch from "@/components/ui/Switch";
 import Icon from "@/components/Icon";
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -490,25 +491,12 @@ export default function MeetingPrep({ meeting, onChanged, onSendBot }: Props) {
                   : "Off — it won't run for this meeting."}
               </p>
             </div>
-            <button
-              onClick={onToggleCopilot}
-              role="switch"
-              aria-checked={copilotOn}
-              aria-label="Meeting copilot"
-              className={`relative h-5 w-9 shrink-0 rounded-full border transition-colors ${
-                copilotOn
-                  ? "border-primary bg-primary/30"
-                  : "border-border bg-secondary"
-              }`}
-            >
-              <span
-                className={`absolute top-0.5 h-3.5 w-3.5 rounded-full transition-all ${
-                  copilotOn
-                    ? "left-[calc(100%-1.125rem)] bg-primary"
-                    : "left-0.5 bg-muted-foreground"
-                }`}
-              />
-            </button>
+            <Switch
+              checked={copilotOn}
+              onChange={() => void onToggleCopilot()}
+              label="Meeting copilot"
+              classic="outlined"
+            />
           </section>
         </div>
       </div>

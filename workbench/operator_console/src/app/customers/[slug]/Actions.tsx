@@ -1,9 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { Fragment, useState } from "react";
+import { formatInr, type Price } from "@/lib/money";
 import {
   canActivate,
   isSeated,
+  seatControl,
   lifecycleActions,
   formatPaise,
   memberTally,
@@ -15,6 +17,15 @@ import {
   type KeyRow,
   type SeatRow,
 } from "@/lib/format";
+import {
+  isSoleOwner,
+  ownerCandidates,
+  refusedBy,
+  removeLabel,
+  removePrompt,
+  type MemberRemoveMode,
+} from "@/lib/memberRemove";
+import { renameBlocked } from "@/lib/orgRename";
 
 // The management ACTIONS for one customer. Every action POSTs to a server-side
 // `/api/operator/*` BFF route that holds the operator token; NOTHING here holds
@@ -22,9 +33,9 @@ import {
 // 409, the double-grant 409, an illegal lifecycle transition 409) — this UI
 // relays whatever it answers rather than pre-judging it.
 
-type Result = { ok: boolean; text: string } | null;
+export type Result = { ok: boolean; text: string } | null;
 
-async function post(path: string, body: unknown): Promise<Result> {
+export async function post(path: string, body: unknown): Promise<Result> {
   // ⚠️ This helper must not THROW. Every caller sets a busy flag before the
   // await and clears it after — a rejected fetch used to skip the clear and
   // leave the button on "…ing…" forever, with no message. A network drop is
@@ -46,40 +57,98 @@ async function post(path: string, body: unknown): Promise<Result> {
 }
 
 // A refusal is relayed VERBATIM (the Console is the authority); the framing
-// line just tells the operator whose voice the raw text is in.
-function ResultLine({ result }: { result: Result }) {
+// line just tells the operator whose voice the raw text is in. `who` is for
+// the member remove and delete only, where the gateway can refuse too.
+export function ResultLine({
+  result,
+  who = "The Console",
+}: {
+  result: Result;
+  who?: string;
+}) {
   if (!result) return null;
   if (result.ok) return <div className="result ok">✓ Done</div>;
   return (
     <div className="result err">
-      The Console refused:
+      {who} refused:
       {"\n"}
       {result.text}
     </div>
   );
 }
 
-export default function Actions({
+// WS-50 slice 3: the management acts, split by the customer page's tabs. One
+// section per tab, so each act sits beside the figures it changes: the paid
+// plan and the credits beside the money, the seats beside the people, and
+// access, keys and the purge together at the end.
+
+/** "Billing & credits": start the paid plan, add credits. */
+export function BillingActions({
   slug,
   status,
   subscriptionStatus,
   plans,
+  price,
+}: {
+  slug: string;
+  status: string;
+  subscriptionStatus: string | null;
+  plans: CatalogPlan[];
+  /** The saved credit price, for the rupee value of a grant. */
+  price: Price | null;
+}) {
+  return (
+    <div className="row">
+      {canActivate(subscriptionStatus) && (
+        <StartPaidPlanPanel slug={slug} plans={plans} status={status} />
+      )}
+      <CreditsPanel slug={slug} price={price} />
+    </div>
+  );
+}
+
+/** "People & seats": who is seated, how many seats they hold. */
+export function PeopleActions({
+  slug,
+  plans,
   members,
   membersError,
-  keys,
-  keysError,
   seats = [],
 }: {
   slug: string;
-  /** Purchased and assigned seats per plan, from the org row. */
-  seats?: SeatRow[];
-  status: string;
-  subscriptionStatus: string | null;
   plans: CatalogPlan[];
   /** The customer's roster with seat state (LS-9). Empty = none arrived. */
   members: MemberRow[];
   /** Why the roster is empty, or null when it arrived. */
   membersError: string | null;
+  /** Purchased and assigned seats per plan, from the org row. */
+  seats?: SeatRow[];
+}) {
+  return (
+    <>
+      {/* The roster comes FIRST. An operator should see who is unseated and
+          click, rather than type an address (launch_surface.md §7). */}
+      <MembersPanel slug={slug} plans={plans} members={members} membersError={membersError} />
+      <div className="row">
+        <SeatCountPanel slug={slug} plans={plans} seats={seats} />
+        <SeatsPanel slug={slug} plans={plans} />
+      </div>
+    </>
+  );
+}
+
+/** "Access & keys": the name, account state, API keys, and the purge. */
+export function AccessActions({
+  slug,
+  name,
+  status,
+  keys,
+  keysError,
+}: {
+  slug: string;
+  /** The organization's name on the Console (`organization.name`). */
+  name: string;
+  status: string;
   /** The org's `cc_live_` keys, metadata only (CP-11 s1). */
   keys: KeyRow[];
   /** Why the key list is empty, or null when it arrived. */
@@ -87,29 +156,12 @@ export default function Actions({
 }) {
   return (
     <>
-      <h2>Manage this customer</h2>
-      {/* The roster comes FIRST, above the by-email form. An operator should be
-          able to see who is unseated and click, rather than being asked for an
-          address they have to be told (launch_surface.md §7). */}
-      <MembersPanel
-        slug={slug}
-        plans={plans}
-        members={members}
-        membersError={membersError}
-      />
-      <div className="row">
-        {canActivate(subscriptionStatus) && (
-          <ActivatePanel slug={slug} plans={plans} />
-        )}
-        <SeatCountPanel slug={slug} plans={plans} seats={seats} />
-        <SeatsPanel slug={slug} plans={plans} />
-        <CreditsPanel slug={slug} />
-        <LifecyclePanel slug={slug} status={status} />
-      </div>
+      {/* A deleted org's tenant plane is gone or about to go, so there is
+          nothing left to rename. */}
+      {status !== "deleted" && <RenamePanel slug={slug} name={name} />}
+      <LifecyclePanel slug={slug} status={status} />
       <KeysPanel slug={slug} keys={keys} keysError={keysError} />
-      {status === "deleted" && !TOMBSTONE_RE.test(slug) && (
-        <DangerPanel slug={slug} />
-      )}
+      {status === "deleted" && !TOMBSTONE_RE.test(slug) && <DangerPanel slug={slug} />}
     </>
   );
 }
@@ -128,6 +180,14 @@ export default function Actions({
  * who is not already a member is refused Console-side (no identity, no
  * membership), and we are not adding a door that creates people inside a
  * customer's directory with no customer in the loop.
+ *
+ * **Removing a member is an operator act (owner request, 2026-10-15).** Each
+ * row offers "Remove" ("Revoke invite" for an invited person) and "Delete
+ * permanently". Both go to `/api/operator/members/remove`, which takes access
+ * away on the tenant plane first and then updates the registry. A removed row
+ * keeps only "Delete permanently". The delete arms only when the operator
+ * types the address, the same protocol as the purge's typed slug. On the row
+ * of the only active owner, both confirm steps also need a new billing owner.
  */
 function MembersPanel({
   slug,
@@ -146,6 +206,14 @@ function MembersPanel({
   // hardcoded, so this follows the catalog if a second plan ever returns.
   const plan = plans[0]?.slug ?? "core";
   const counts = memberTally(members);
+  // The one row whose remove or delete waits for a confirmation.
+  const [confirming, setConfirming] = useState<{
+    email: string;
+    mode: MemberRemoveMode;
+  } | null>(null);
+  const [typed, setTyped] = useState("");
+  // The new billing owner, when the person removed is the only active owner.
+  const [newOwner, setNewOwner] = useState("");
 
   async function act(email: string, path: string) {
     setBusy(email);
@@ -153,6 +221,30 @@ function MembersPanel({
     setResult(r);
     setBusy("");
     if (r?.ok) reload();
+  }
+
+  async function removeMember(email: string, mode: MemberRemoveMode) {
+    setBusy(email);
+    const r = await post("/api/operator/members/remove", {
+      org_slug: slug,
+      email,
+      mode,
+      confirm: email,
+      ...(newOwner ? { new_owner_email: newOwner } : {}),
+    });
+    setResult(r);
+    setBusy("");
+    setConfirming(null);
+    setTyped("");
+    setNewOwner("");
+    if (r?.ok) reload();
+  }
+
+  function ask(email: string, mode: MemberRemoveMode) {
+    setResult(null);
+    setTyped("");
+    setNewOwner("");
+    setConfirming({ email, mode });
   }
 
   return (
@@ -181,50 +273,125 @@ function MembersPanel({
               <tbody>
                 {members.map((m) => {
                   const seated = isSeated(m);
+                  const seat = seatControl(m);
+                  const label = removeLabel(m.status);
+                  const open = confirming?.email === m.email ? confirming : null;
                   return (
-                    <tr key={m.email}>
-                      <td>
-                        {m.email}
-                        {m.status !== "active" ? ` (${m.status})` : ""}
-                      </td>
-                      <td>{m.role}</td>
-                      <td>
-                        <strong>{seated ? "Seated" : "Unassigned"}</strong>
-                        {seated && m.seats.length > 1
-                          ? ` · ${m.seats.join(", ")}`
-                          : ""}
-                      </td>
-                      <td>
-                        <button
-                          type="button"
-                          className={seated ? "secondary" : undefined}
-                          title={
-                            busy === m.email
-                              ? "Working on this person now."
-                              : seated
-                                ? "Take this person's seat back. They keep " +
-                                  "their account and lose the paid plan."
-                                : "Give this person a seat from the " +
-                                  "purchased pool."
-                          }
-                          disabled={busy === m.email}
-                          onClick={() =>
-                            act(
-                              m.email,
-                              seated
-                                ? "/api/operator/seats/release"
-                                : "/api/operator/seats",
-                            )
-                          }
-                        >
-                          {busy === m.email
-                            ? "…"
-                            : seated
-                              ? "Release"
-                              : "Assign seat"}
-                        </button>
-                      </td>
-                    </tr>
+                    <Fragment key={m.email}>
+                      <tr>
+                        <td>
+                          {m.email}
+                          {m.status !== "active" ? ` (${m.status})` : ""}
+                        </td>
+                        <td>{m.role}</td>
+                        <td>
+                          <strong>{seated ? "Seated" : "Unassigned"}</strong>
+                          {seated && m.seats.length > 1
+                            ? ` · ${m.seats.join(", ")}`
+                            : ""}
+                        </td>
+                        <td>
+                          {/* Buttons keep their words on one line, and each
+                              group wraps as a whole (round 3). The seat
+                              button is full size and the remove pair is
+                              `.linklike`, so they are two groups: one row of
+                              mixed sizes is what `actionrow.test.ts` refuses. */}
+                          <div className="rowactions">
+                            {seat !== null && (
+                              <button
+                                type="button"
+                                className={seated ? "secondary" : undefined}
+                                title={
+                                  busy === m.email
+                                    ? "Working on this person now."
+                                    : seated
+                                      ? "Take this person's seat back. They " +
+                                        "keep their account and lose the paid plan."
+                                      : "Give this person a seat from the " +
+                                        "purchased pool."
+                                }
+                                disabled={busy === m.email}
+                                onClick={() =>
+                                  act(
+                                    m.email,
+                                    seated
+                                      ? "/api/operator/seats/release"
+                                      : "/api/operator/seats",
+                                  )
+                                }
+                              >
+                                {busy === m.email
+                                  ? "…"
+                                  : seated
+                                    ? "Release"
+                                    : "Assign seat"}
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                        <td>
+                          {/* `nowrap`: the pair stays on one line (round 4). */}
+                          <div className="rowactions nowrap">
+                            {label !== null && (
+                              <button
+                                type="button"
+                                className="linklike"
+                                title={
+                                  m.status === "invited"
+                                    ? "Cancel this invitation. The person " +
+                                      "cannot accept it after this."
+                                    : "Take this person's access away at " +
+                                      "once. Their work stays."
+                                }
+                                disabled={busy !== "" || open !== null}
+                                onClick={() => ask(m.email, "remove")}
+                              >
+                                {label}
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              className="linklike danger"
+                              title={
+                                "Remove this person and delete their own " +
+                                "data. This cannot be undone."
+                              }
+                              disabled={busy !== "" || open !== null}
+                              onClick={() => ask(m.email, "purge")}
+                            >
+                              Delete permanently
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                      {open && (
+                        // The confirm step gets a row of its own under the
+                        // person, so its warning has the full width to wrap
+                        // in (round 3, the cut-off text at 390px).
+                        <tr className="confirmrow">
+                          <td colSpan={5}>
+                            <ConfirmRemove
+                              email={m.email}
+                              mode={open.mode}
+                              label={label ?? "Remove"}
+                              prompt={removePrompt(m.status, m.email, slug)}
+                              typed={typed}
+                              setTyped={setTyped}
+                              candidates={
+                                isSoleOwner(members, m.email)
+                                  ? ownerCandidates(members, m.email)
+                                  : null
+                              }
+                              newOwner={newOwner}
+                              setNewOwner={setNewOwner}
+                              busy={busy === m.email}
+                              onConfirm={() => removeMember(m.email, open.mode)}
+                              onCancel={() => setConfirming(null)}
+                            />
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                   );
                 })}
               </tbody>
@@ -232,8 +399,142 @@ function MembersPanel({
           </div>
         </>
       )}
-      <ResultLine result={result} />
+      {/* `refusedBy` reads the BFF's mark: the tenant plane, the operator
+          console itself, or else the Console. A seat answer carries no mark,
+          so it keeps "The Console refused". */}
+      <ResultLine
+        result={result}
+        who={result ? refusedBy(result.text) : undefined}
+      />
     </form>
+  );
+}
+
+/**
+ * The confirmation for one row's remove or delete. A remove asks once. A
+ * delete arms only when the operator types the address, because it destroys
+ * the person's data and nothing brings it back. The BFF and the gateway door
+ * check the same address again.
+ *
+ * **The only active owner** (owner decision, 2026-10-15: "the acting admin
+ * inherits"). `candidates` is non-null for that row. The operator must pick
+ * the new billing owner from the other active members before the button
+ * arms. With nobody to pick, the block says why and offers only Cancel. The
+ * BFF checks the same rule on the registry roster before any write.
+ */
+function ConfirmRemove({
+  email,
+  mode,
+  label,
+  prompt,
+  typed,
+  setTyped,
+  candidates,
+  newOwner,
+  setNewOwner,
+  busy,
+  onConfirm,
+  onCancel,
+}: {
+  email: string;
+  mode: MemberRemoveMode;
+  label: string;
+  /** The remove or revoke question, which names the person (`removePrompt`). */
+  prompt: string;
+  typed: string;
+  setTyped: (v: string) => void;
+  /** Who may take over billing, or null when this is not the only owner. */
+  candidates: string[] | null;
+  newOwner: string;
+  setNewOwner: (v: string) => void;
+  busy: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const cancel = (
+    <button type="button" className="linklike" onClick={onCancel}>
+      Cancel
+    </button>
+  );
+  if (candidates !== null && candidates.length === 0) {
+    return (
+      <div className="confirmblock">
+        <div className="field-hint warn">
+          {email} is the only active owner, and no other active member can
+          take over billing. Activate or invite another member first.
+        </div>
+        <div className="rowactions">{cancel}</div>
+      </div>
+    );
+  }
+  const ownerPicked = candidates === null || newOwner !== "";
+  const typedOk = mode === "remove" || typed === email;
+  return (
+    <div className="confirmblock">
+      {mode === "remove" && <div className="field-hint">{prompt}</div>}
+      {candidates !== null && (
+        <>
+          <label htmlFor={`new-owner-${email}`}>New billing owner</label>
+          <select
+            id={`new-owner-${email}`}
+            required
+            value={newOwner}
+            onChange={(e) => setNewOwner(e.target.value)}
+          >
+            <option value="">Choose an active member…</option>
+            {candidates.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+          <div className="field-hint">
+            {email} is the only active owner. The person you choose becomes
+            the billing owner.
+          </div>
+        </>
+      )}
+      {mode === "purge" && (
+        <>
+          <div className="field-hint">
+            This deletes {email} and their own data. There is no undo. Type the
+            address to arm the button.
+          </div>
+          <input
+            value={typed}
+            placeholder={email}
+            aria-label={`Type ${email} to confirm`}
+            onChange={(e) => setTyped(e.target.value)}
+          />
+        </>
+      )}
+      <div className="rowactions">
+        <button
+          type="button"
+          className="danger"
+          disabled={busy || !ownerPicked || !typedOk}
+          title={
+            !ownerPicked
+              ? "Choose the new billing owner first."
+              : !typedOk
+                ? "Type the exact address above to unlock this."
+                : mode === "purge"
+                  ? "Delete this person permanently."
+                  : undefined
+          }
+          onClick={onConfirm}
+        >
+          {busy
+            ? mode === "purge"
+              ? "Deleting…"
+              : "…"
+            : mode === "purge"
+              ? "Delete for good"
+              : `${label} now`}
+        </button>
+        {cancel}
+      </div>
+    </div>
   );
 }
 
@@ -278,13 +579,32 @@ function reload() {
   window.location.reload();
 }
 
-function ActivatePanel({ slug, plans }: { slug: string; plans: CatalogPlan[] }) {
+/**
+ * Start the paid plan — WS-50 slice 3. It replaced "Activate subscription".
+ *
+ * 🔴 **One act, not two.** Recording the payment used to leave the account
+ * marked "trial", and a second button with almost the same name ("Activate
+ * account") ended the trial. Operators did the first and not the second. Now,
+ * when the account is on trial, a successful start also ends the trial.
+ */
+function StartPaidPlanPanel({
+  slug,
+  plans,
+  status,
+}: {
+  slug: string;
+  plans: CatalogPlan[];
+  status: string;
+}) {
   const [plan, setPlan] = useState(plans[0]?.slug ?? "");
   const [seats, setSeats] = useState("5");
   const [credits, setCredits] = useState("");
   const [reference, setReference] = useState("");
   const [result, setResult] = useState<Result>(null);
   const [busy, setBusy] = useState(false);
+  // Set once the plan has started, so a second press cannot send a second
+  // start (the Console would answer 409 already_active).
+  const [started, setStarted] = useState(false);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -297,6 +617,28 @@ function ActivatePanel({ slug, plans }: { slug: string; plans: CatalogPlan[] }) 
     if (credits.trim()) body.credits = credits.trim();
     if (reference.trim()) body.reference = reference.trim();
     const r = await post("/api/operator/activate", body);
+    if (r?.ok) setStarted(true);
+    if (r?.ok && status === "trial") {
+      // The second half of the same act: end the trial on the account.
+      const life = await post("/api/operator/lifecycle", {
+        org_slug: slug,
+        target: "active",
+        reason: "paid plan started",
+      });
+      if (!life?.ok) {
+        // Ending the trial needs an ADMIN, and starting a plan needs only an
+        // editor, so an editor can stop half way. Say who can finish it.
+        setResult({
+          ok: false,
+          text:
+            "The paid plan started, but the account is still marked trial. " +
+            "Ending the trial needs an admin: ask one to press End the trial " +
+            "on the Access & keys tab. Reload to see the plan.\n" + (life?.text ?? ""),
+        });
+        setBusy(false);
+        return;
+      }
+    }
     setResult(r);
     setBusy(false);
     if (r?.ok) reload();
@@ -304,10 +646,10 @@ function ActivatePanel({ slug, plans }: { slug: string; plans: CatalogPlan[] }) 
 
   return (
     <form className="panel" onSubmit={submit}>
-      <h2 style={{ marginTop: 0 }}>Activate subscription</h2>
+      <h2 style={{ marginTop: 0 }}>Start paid plan</h2>
       <p className="muted">
-        The customer has paid you (e.g. bank transfer) — record it and switch
-        them from trial to their paid plan.
+        The customer has paid you, for example by bank transfer. Record the
+        payment and their seats here.{status === "trial" ? " This also ends the trial." : ""}
       </p>
       <label>Plan</label>
       <PlanPicker plans={plans} value={plan} onChange={setPlan} showPrice />
@@ -336,11 +678,11 @@ function ActivatePanel({ slug, plans }: { slug: string; plans: CatalogPlan[] }) 
         title={
           !plan
             ? "Choose a plan first."
-            : "End the trial and start charging for this plan."
+            : "Record the payment, set the seats and end the trial."
         }
-        disabled={busy || !plan}
+        disabled={busy || !plan || started}
       >
-        {busy ? "Activating…" : "Activate"}
+        {busy ? "Starting…" : started ? "Started" : "Start paid plan"}
       </button>
       <ResultLine result={result} />
     </form>
@@ -462,11 +804,11 @@ function SeatsPanel({ slug, plans }: { slug: string; plans: CatalogPlan[] }) {
 
   return (
     <form className="panel" onSubmit={(e) => e.preventDefault()}>
-      <h2 style={{ marginTop: 0 }}>Seats</h2>
+      <h2 style={{ marginTop: 0 }}>Seat a person by email</h2>
       <p className="muted">
-        Assign a seat so a specific person can sign in; release it to free the
-        seat for someone else. The customer&apos;s own admin can also do this
-        inside the app.
+        For a member who is not in the list above. Assign a seat so they can
+        sign in, or release it to free the seat. The customer&apos;s own admin
+        can also do this in the app.
       </p>
       <label>Plan</label>
       <PlanPicker plans={plans} value={plan} onChange={setPlan} />
@@ -509,10 +851,19 @@ function SeatsPanel({ slug, plans }: { slug: string; plans: CatalogPlan[] }) {
   );
 }
 
-function CreditsPanel({ slug }: { slug: string }) {
+function CreditsPanel({ slug, price }: { slug: string; price: Price | null }) {
   const [credits, setCredits] = useState("");
   const [reason, setReason] = useState("grant");
   const [ref, setRef] = useState("");
+  // WS-50 slice 3: what the customer paid, so the lot records it. Without it
+  // the console can only guess what those credits earned.
+  const [paid, setPaid] = useState("");
+  const n = Number(credits);
+  const worth = price && Number.isFinite(n) && n > 0 ? n * price.inrPerCredit : null;
+  const paidValid =
+    reason !== "manual" ||
+    paid.trim() === "" ||
+    (/^\d+(\.\d{1,2})?$/.test(paid.trim()) && Number.isFinite(n) && n > 0);
   const [result, setResult] = useState<Result>(null);
   const [busy, setBusy] = useState(false);
 
@@ -525,6 +876,7 @@ function CreditsPanel({ slug }: { slug: string }) {
       reason,
     };
     if (ref.trim()) body.ref = ref.trim();
+    if (reason === "manual" && paid.trim()) body.price_paid_inr = paid.trim();
     const r = await post("/api/operator/credits", body);
     setResult(r);
     setBusy(false);
@@ -535,8 +887,8 @@ function CreditsPanel({ slug }: { slug: string }) {
     <form className="panel" onSubmit={submit}>
       <h2 style={{ marginTop: 0 }}>Add AI credits</h2>
       <p className="muted">
-        Top up the balance the customer&apos;s AI usage draws from. Additions
-        are logged; a correction is another entry, never an edit.
+        Top up the balance the customer&apos;s AI calls spend. Every addition
+        is logged. A correction is another entry, never an edit.
       </p>
       <label>Credits to add</label>
       <input
@@ -544,12 +896,41 @@ function CreditsPanel({ slug }: { slug: string }) {
         placeholder="e.g. 100"
         onChange={(e) => setCredits(e.target.value)}
       />
-      <label>Reason</label>
+      <div className="field-hint">
+        {worth !== null
+          ? `Worth ${formatInr(worth)} at the current price of ${formatInr(price!.inrPerCredit)} a credit.`
+          : price
+            ? "Type a number of credits to see what they are worth."
+            : "No credit price is saved, so their rupee value is unknown."}
+      </div>
+      <label>Is this paid or free?</label>
       <select value={reason} onChange={(e) => setReason(e.target.value)}>
-        <option value="grant">grant — included with their plan</option>
-        <option value="manual">manual — they paid (bank transfer / offline)</option>
-        <option value="adjustment">adjustment — correcting a mistake</option>
+        <option value="grant">Free: included with their plan, or a goodwill top-up</option>
+        <option value="manual">Paid: they paid us (bank transfer or offline)</option>
+        <option value="adjustment">Correction: fixing an earlier mistake</option>
       </select>
+      <div className="field-hint">
+        {reason === "grant"
+          ? "Free credits earn nothing. Their AI cost shows as Given away on the Money page."
+          : reason === "manual"
+            ? "Paid credits count toward We charged when the customer uses them."
+            : "A correction adds or removes credits. Credits it adds count as free, so they earn nothing."}
+      </div>
+      {reason === "manual" && (
+        <>
+          <label>Amount they paid (₹)</label>
+          <input
+            inputMode="decimal"
+            value={paid}
+            placeholder={worth !== null ? `e.g. ${Math.round(worth)}` : "e.g. 5000"}
+            onChange={(e) => setPaid(e.target.value)}
+          />
+          <div className="field-hint">
+            Recorded on the credits, so the Money page shows what they really
+            earned. Leave it empty only if you do not know.
+          </div>
+        </>
+      )}
       <label>
         {reason === "manual"
           ? "Payment reference (required)"
@@ -589,6 +970,8 @@ function CreditsPanel({ slug }: { slug: string }) {
         title={
           !credits.trim()
             ? "Type how many credits to add."
+            : !paidValid
+              ? "Type the amount they paid in rupees, with at most two decimals, for a positive number of credits."
             : reason === "manual" && !ref.trim()
               ? "A manual payment needs its bank reference. It is what stops " +
                 "the same transfer being credited twice."
@@ -596,12 +979,63 @@ function CreditsPanel({ slug }: { slug: string }) {
                 "a correction is another entry rather than an edit."
         }
         disabled={
-          busy || !credits.trim() || (reason === "manual" && !ref.trim())
+          busy || !credits.trim() || (reason === "manual" && !ref.trim()) || !paidValid
         }
       >
         {busy ? "Adding…" : "Add credits"}
       </button>
       <ResultLine result={result} />
+    </form>
+  );
+}
+
+/**
+ * Rename the organization — CP-8 "Rename an organization" (2026-10-27).
+ *
+ * One rename changes the display name on both planes: the tenant plane
+ * first, then the Console. The slug never changes. The gateway is the one
+ * judge of the name, so a name it refuses comes back here as its 422, named
+ * as the tenant plane's refusal. If the Console half fails after the tenant
+ * half, the result line says so and says whether a retry is safe.
+ */
+function RenamePanel({ slug, name }: { slug: string; name: string }) {
+  const [typed, setTyped] = useState(name);
+  const [result, setResult] = useState<Result>(null);
+  const [busy, setBusy] = useState(false);
+  const blocked = renameBlocked(typed, name);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (blocked !== null) return;
+    setBusy(true);
+    const r = await post("/api/operator/orgs/rename", {
+      org_slug: slug,
+      name: typed,
+    });
+    setResult(r);
+    setBusy(false);
+    if (r?.ok) reload();
+  }
+
+  return (
+    <form className="panel" onSubmit={submit}>
+      <h2 style={{ marginTop: 0 }}>Organization name</h2>
+      <p className="muted">
+        The name the customer and our staff see. The change shows in the
+        customer&apos;s app and in this console. The short ID{" "}
+        <strong>{slug}</strong> does not change.
+      </p>
+      <label>Name</label>
+      <input value={typed} onChange={(e) => setTyped(e.target.value)} />
+      <p className="muted small">Needs an editor.</p>
+      <button
+        type="submit"
+        title={blocked ?? "Rename the organization on both planes."}
+        disabled={busy || blocked !== null}
+      >
+        {busy ? "Renaming…" : "Rename"}
+      </button>
+      <ResultLine result={result} who={result ? refusedBy(result.text) : undefined} />
     </form>
   );
 }
@@ -647,16 +1081,12 @@ function LifecyclePanel({ slug, status }: { slug: string; status: string }) {
 
   return (
     <form className="panel" onSubmit={(e) => e.preventDefault()}>
-      <h2 style={{ marginTop: 0 }}>Access</h2>
+      <h2 style={{ marginTop: 0 }}>Account access</h2>
       <p className="muted">
-        Whether this customer&apos;s account is live. Activating takes them off
-        trial. Suspending (e.g. non-payment) locks AI and seat changes while
-        sign-in keeps working, so they can still pay. Their data is kept
-        either way, and resuming restores access instantly.
-      </p>
-      <p className="muted">
-        Separate from their subscription — activating a plan records the money
-        and leaves the account where it is.
+        Whether this customer can use Metorite. Suspending (for example, for
+        non-payment) locks AI and seat changes, and sign-in keeps working so
+        they can still pay. Their data is kept either way, and resuming
+        restores access at once.
       </p>
       <label>Reason (optional, kept in the log)</label>
       <input
@@ -941,7 +1371,7 @@ function KeysPanel({
       {keysError ? (
         <p className="muted">{keysError}</p>
       ) : live.length === 0 ? (
-        <p className="muted">No live keys. This customer cannot call the Router.</p>
+        <p className="muted">No live keys. This customer cannot use AI.</p>
       ) : (
         <div className="tablewrap">
           {/* ⚠️ A wide table must scroll INSIDE its own box. Without this the

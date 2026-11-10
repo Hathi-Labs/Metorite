@@ -11,6 +11,8 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
+import { LAYER } from "@/lib/layers";
+
 const SRC = fileURLToPath(new URL("../..", import.meta.url));
 const read = (rel: string) => readFileSync(join(SRC, rel), "utf8").replace(/\r\n/g, "\n");
 
@@ -32,6 +34,10 @@ const fixedLayers = (): { file: string; z: number }[] => {
   const out: { file: string; z: number }[] = [];
   for (const file of tsxFiles()) {
     if (file === "components/ui/Modal.tsx") continue;
+    // The toast viewport is not a dialog: it takes no focus and no pointer
+    // events outside its toasts, and it sits above every modal on purpose.
+    // `toastViewport.test.ts` pins that order.
+    if (file === "components/ui/Toast.tsx") continue;
     // Double quotes and template literals, one line at most. Single quotes
     // are skipped: an apostrophe in a comment would pair with the wrong one.
     for (const m of read(file).matchAll(/"([^"\n]*)"|`([^`]*)`/g)) {
@@ -52,11 +58,22 @@ const alertLayer = () => {
 
 describe("a confirmation paints above every overlay", () => {
   it("the scan sees the overlays it has to beat", () => {
-    // Guards the check below against going vacuous: My Tasks' focus view is
-    // the overlay a delete is most often confirmed from.
+    // Guards the check below against going vacuous. The scan must still find
+    // a real body of raw `fixed` overlays, and the registry must be non-empty.
     const layers = fixedLayers();
-    expect(layers.some((l) => l.file === "app/tasks/components/TaskFocusModal.tsx" && l.z === 80)).toBe(true);
     expect(layers.length).toBeGreaterThan(20);
+    expect(Object.keys(LAYER).length).toBeGreaterThan(0);
+  });
+
+  it("Modal's alert layer is above every layer in the registry (lib/layers.ts)", () => {
+    // TC-1 keeps the task card, the assistant and the nav in one registry.
+    // Those layers are not all raw `fixed` strings, so the scan cannot see them.
+    const top = Math.max(...Object.values(LAYER));
+    expect(
+      alertLayer(),
+      `lib/layers.ts holds a layer at z-${top}. A confirmation opened over it ` +
+        "would sit behind it. Raise LAYERS.alert.",
+    ).toBeGreaterThan(top);
   });
 
   it("Modal's alert layer is above the highest fixed overlay in the tree", () => {

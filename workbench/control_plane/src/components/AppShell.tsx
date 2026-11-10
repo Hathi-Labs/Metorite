@@ -15,7 +15,7 @@
 
 import Button from "@/components/ui/Button";
 import AppIcon, { themedIcon, type ThemedIcon } from "@/components/Icon";
-import OrgBrandLockup from "@/components/OrgBrandLockup";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -23,13 +23,18 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
-import { useSession, signOut } from "next-auth/react";
-import Sidebar from "@/components/Sidebar";
+import { useSession } from "next-auth/react";
+import { useChatScope, useChatSignOutClear } from "@/hooks/useChatSessions";
+import Sidebar, { NeedsCount } from "@/components/Sidebar";
 import { useViewMode } from "@/components/ViewModeProvider";
-import { useActiveSessions } from "@/hooks/useActiveSessions";
+import { useRunActivity } from "@/hooks/useActiveSessions";
+import NavBadge from "@/components/NavBadge";
+import { runBadge } from "@/lib/runActivity";
 import { bindIdentity } from "@/lib/dataCache";
 import { isChromeless, visibleSections } from "@/lib/nav";
 import AccessGate from "@/components/AccessGate";
@@ -37,6 +42,44 @@ import AccountStateBanner from "@/components/AccountStateBanner";
 import WelcomeDialog from "@/components/WelcomeDialog";
 import { useAccess } from "@/components/AccessProvider";
 import { ThemeToggleMenuItem } from "@/components/ThemeToggle";
+import { DrawerAccountFoot, DrawerAccountHeader } from "@/components/AccountSwitcher";
+import { clearSignOutNotice, useAccountTabSync } from "@/lib/accountSwitch";
+import { ShellFrame } from "@/lib/shell/ShellBar";
+import { OPEN_COMMAND_BAR, shellBarOn } from "@/lib/shell/registry";
+import { ActivityControl, ActivityHost } from "@/lib/shell/ActivityControl";
+import { shellDockOn } from "@/lib/shell/dockFlag";
+import { useInstallNav } from "@/lib/shell/packageManifest";
+import { ShellBell, ShellBellHost } from "@/lib/shell/ShellBell";
+import { AgentPill, RunSignalsHost } from "@/lib/shell/RunSignals";
+import { shellChatOn } from "@/lib/shell/chatFlag";
+import { AssistantWorkArea } from "@/lib/shell/ChatBar";
+import { ChatNudge, useChatFirstLanding } from "@/lib/shell/ChatNudge";
+import { closeAssistant, openAssistant, useAssistant } from "@/lib/shell/assistant";
+// D99: the one assistant, loaded on demand, so a shell with the flag off
+// never carries the chat in its bundle.
+const AssistantDock = dynamic(() => import("@/lib/shell/AssistantDock"), { ssr: false });
+// WS-OB GD-4: the guide runner's one host. It is a shell part, so no app mounts it.
+const GuideHost = dynamic(() => import("@/lib/shell/GuideHost"), { ssr: false });
+import AppLauncher from "@/lib/shell/AppLauncher";
+import { GUIDE_MENU_EVENT } from "@/lib/shell/guide";
+import {
+  ADD_APPS_HINT,
+  accountLinks,
+  desktopFrame,
+  homePane,
+  isActive,
+  launcherGroups,
+  shellNavOn,
+  shellSidebar,
+} from "@/lib/shell/shellNav";
+import { useAssistantProfileEnabled } from "@/lib/useAssistantProfileEnabled";
+import { rowMeta, rowName } from "@/lib/shell/navNeeds";
+import { useNavNeeds } from "@/lib/shell/useNavNeeds";
+import { canUseFeature, hasCapability, shouldPollWorkspace } from "@/lib/access";
+import { useSaveZone } from "@/lib/shell/saveZone";
+import { useShellPending, useShellPrefs } from "@/lib/shell/shellPrefs";
+import OrgBrandLockup from "@/components/OrgBrandLockup";
+import { SidebarFoldProvider } from "@/components/SidebarFold";
 // The task manager's Focus Mode session (room + minimizable timer dock). Lives
 // in the SHELL so the running timer stays visible across every app in the
 // control plane; renders nothing when no focus session is active.
@@ -45,23 +88,34 @@ import { SubtaskPromptHost } from "@/app/tasks/components/SubtaskPromptHost";
 // The note-taker's live recording dock — same shell-level pattern, so an
 // in-progress meeting recording follows the user across every app (spec §5.2).
 import { LiveDock } from "@/app/notes/components/LiveDock";
+import { navDetail, type PhoneNav } from "@/app/crm/lib/phoneNav";
+import { sendBarTap } from "@/lib/phoneBarTap";
+import { hrefSelected, phoneBarFor, resolvePhoneTabs } from "@/lib/shell/phoneBar";
+import { PHONE_BAR_EVENT, currentPhoneBarReport, type PhoneBarReport } from "@/lib/shell/phoneBarEvent";
 import { RecordingDock } from "@/app/notes/components/RecordingDock";
+import { LAYER_CLASS } from "@/lib/layers";
 // ---------------------------------------------------------------------------
 // Mobile drawer context — lets child pages inject content into the hamburger
 // drawer without AppShell needing to know about sessions or filters.
 // ---------------------------------------------------------------------------
 
+/** What the open drawer shows: the shell's Menu, or a page's own sheet. */
+type DrawerKind = "menu" | "sheet";
+
 type MobileDrawerCtx = {
   /** True when the drawer is currently open. */
   isOpen: boolean;
+  /** What the open drawer shows. A page's `open(content)` is a `sheet`. */
+  shows: DrawerKind;
   /** Open the drawer with the given React content. */
-  open: (content: ReactNode) => void;
+  open: (content: ReactNode, kind?: DrawerKind) => void;
   /** Close the drawer. */
   close: () => void;
 };
 
 const MobileDrawerCtx = createContext<MobileDrawerCtx>({
   isOpen: false,
+  shows: "sheet",
   open: () => {},
   close: () => {},
 });
@@ -69,6 +123,18 @@ const MobileDrawerCtx = createContext<MobileDrawerCtx>({
 export function useMobileDrawer(): MobileDrawerCtx {
   return useContext(MobileDrawerCtx);
 }
+
+/**
+ * The page of the full frame. In glass (GL-10c) it is ONE rounded card on the
+ * grouped frame, so every app draws inside one surface and its inner panes
+ * clip to the card's corners. The margins match the rail's 8px inset.
+ * `overflow-auto` clips to the radius, so the card still scrolls its page.
+ * ⚠️ No `backdrop-filter`, `filter`, `transform`, `opacity` or `mask` here:
+ * each one makes the card the containing block of every fixed modal and menu
+ * inside an app (`globals.css`, the blur and containing-block note).
+ */
+const FULL_MAIN =
+  "min-h-0 min-w-0 flex-1 overflow-auto glass:mt-2 glass:mr-2 glass:mb-2 glass:rounded-2xl glass:bg-card glass:shadow-card";
 
 // ---------------------------------------------------------------------------
 // AppShell
@@ -78,8 +144,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const { isMobile, isNarrow, forceDesktop, toggleView } = useViewMode();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerContent, setDrawerContent] = useState<ReactNode>(null);
+  const [drawerKind, setDrawerKind] = useState<DrawerKind>("sheet");
   const pathname = usePathname();
-  const { loading: accessLoading } = useAccess();
+  const { access, loading: accessLoading } = useAccess();
 
   /**
    * ⚠️ Bind the read cache to whoever is signed in.
@@ -96,12 +163,54 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
    */
   const { data: cacheSession } = useSession();
   const signedInAs = cacheSession?.user?.email ?? null;
+  // ⚠️ The organization binds too (WS-53, 2026-10-19). An email alone let a
+  // cached answer of org A, such as a CRM gate that was off, hide org B's
+  // section in the same tab. An unknown org (the access read has not
+  // answered) changes nothing, so the first load does not empty it twice.
+  const cacheOrg = access.organization?.id ?? null;
   useEffect(() => {
-    bindIdentity(signedInAs);
-  }, [signedInAs]);
+    bindIdentity(signedInAs, cacheOrg);
+  }, [signedInAs, cacheOrg]);
+  // ⚠️ A switch (or a sign-in as someone else) in ANOTHER tab changes the
+  // cookie under this one. This reloads the tab, so it never writes as an
+  // account it does not show (`lib/accountSwitch.ts`).
+  useAccountTabSync(signedInAs);
+  // A signed-in shell means any "we signed out of all accounts" notice is
+  // over, shown or not. Without this, a member who left `/signin` early kept
+  // the flag, and a later `/signin?add=1` told them a false story (review of
+  // 2026-10-12). The sign-in pages are chromeless, so they keep it.
+  const inShell = !isChromeless(pathname ?? "");
+  useEffect(() => {
+    if (signedInAs && inShell) clearSignOutNotice();
+  }, [signedInAs, inShell]);
+  // RX-5: a member who stays on My Day still gets a saved zone. It replaces the
+  // UTC default only. RX-7: the route needs no app feature, so every member gets it.
+  useSaveZone(inShell ? signedInAs : null, cacheOrg);
+  // The chat caches follow the same rule (PR #652): one namespace per account.
+  // `useChatScope` binds the member's namespace, and a switch deletes nothing.
+  // `useChatSignOutClear` clears the namespace of an account that signed out,
+  // by any path, never on a sign-out button alone.
+  useChatScope();
+  useChatSignOutClear();
+  // NS-7: the layout read starts here, beside the access read, because the
+  // route needs only the session. The sidebar mounts once access resolves,
+  // and by then the answer is often in memory (`shellPrefs.ts`).
+  useShellPrefs();
+  // WS-62 CF-2: a phone that lands on `/` opens the assistant, once per
+  // browser session, with the chat-first flag on. Off, it does nothing.
+  useChatFirstLanding(isMobile);
 
-  const openDrawer = useCallback((content: ReactNode) => {
+  // The shell nav flag, read once as the Sidebar reads it: the dev override
+  // must not flip mid-session, and the two must agree on the frame.
+  const [navOn] = useState(() => shellNavOn());
+  // NS-6: the one bell, behind its own flag. Read once, as above.
+  const [dockOn] = useState(() => shellDockOn());
+  // D99: the chat bar and the one assistant, behind their own flag.
+  const [chatOn] = useState(() => shellChatOn());
+
+  const openDrawer = useCallback((content: ReactNode, kind: DrawerKind = "sheet") => {
     setDrawerContent(content);
+    setDrawerKind(kind);
     setDrawerOpen(true);
   }, []);
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
@@ -114,7 +223,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   // factors.
   if (isChromeless(pathname ?? "")) {
     return (
-      <main className="h-screen overflow-auto bg-background">{children}</main>
+      <main className="h-dvh overflow-auto bg-background">{children}</main>
     );
   }
 
@@ -153,18 +262,89 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   // ── Desktop layout ───────────────────────────────────────────────────────
   if (!isMobile) {
+    // Three frames (`desktopFrame`, fenced in `shellNav.test.ts`). `full` is
+    // the owner's of 2026-10-09: one bar across the whole width, then the
+    // sidebar and the page under it. The other two are exactly as before.
+    const frame = desktopFrame(shellBarOn(), navOn);
+    // The shell root is `relative` and `overflow-clip` (owner report,
+    // 2026-10-10). `relative` makes it the containing block of each absolute
+    // box that no page positions, so no such box can make the document taller
+    // than the window. `clip`, not `hidden`, because a script can scroll a
+    // `hidden` box, and a reveal or a focus then shifts the whole shell.
+    // Fence: `src/lib/scrollWithin.test.ts` and `e2e/email-composer-scroll.spec.ts`.
+    // The sidebar runs the full height and owns its head: the organization's
+    // logo and the fold control, on the thing it folds (owner, 2026-11-01,
+    // "Full-height sidebar"). The shell bar sits over the page column only.
+    // It replaces the full-width bar of 2026-10-09, whose fold control sat
+    // outside the sidebar.
     return (
-      <div className="flex h-screen overflow-hidden">
-        <Sidebar />
+      <SidebarFoldProvider placement="rail">
+      <div data-app-shell="" className="relative flex h-dvh overflow-clip glass:bg-grouped">
+        <GuideHost />
+        {frame === "full" ? (
+          <>
+            <Sidebar />
+            <div className="flex min-w-0 flex-1 flex-col">
+              <ShellFrame row={false}>
+                <div className="flex min-h-0 flex-1">
+                  {/* D99: with the chat flag on, the assistant sits beside the
+                      page or over it. Its field is in the shell bar above (D102,
+                      2026-10-14). Only this frame carries it: production runs
+                      both shell flags. */}
+                  {chatOn ? (
+                    <AssistantWorkArea assistant={<AssistantDock />}>
+                      <main className={FULL_MAIN}>
+                        <AccountStateBanner />
+                        <AccessGate>{children}</AccessGate>
+                      </main>
+                    </AssistantWorkArea>
+                  ) : (
+                    <main className={FULL_MAIN}>
+                      <AccountStateBanner />
+                      <AccessGate>{children}</AccessGate>
+                    </main>
+                  )}
+                </div>
+              </ShellFrame>
+            </div>
+          </>
+        ) : (
+          <Sidebar />
+        )}
         {/* CP-2j: the banner sits INSIDE the scrolling column, above the page,
             so it scrolls away rather than eating vertical space on every
             screen. It renders nothing for an `active` org, which is the
             overwhelmingly common case. */}
-        <main className="flex-1 min-w-0 overflow-auto">
-          <AccountStateBanner />
-          <AccessGate>{children}</AccessGate>
-        </main>
+        {/* NS-1: with the shell bar on, one constant row across the top
+            holds the command bar. Each app draws its own title bar under it
+            (`AppTopBar`, owner 2026-10-10). Off, the page column is exactly
+            as it was. */}
+        {frame === "column" ? (
+          <div className="flex min-w-0 flex-1 flex-col">
+            <ShellFrame>
+              <main className="min-h-0 min-w-0 flex-1 overflow-auto">
+                <AccountStateBanner />
+                <AccessGate>{children}</AccessGate>
+              </main>
+            </ShellFrame>
+          </div>
+        ) : frame === "classic" ? (
+          <main className="flex-1 min-w-0 overflow-auto">
+            <AccountStateBanner />
+            <AccessGate>{children}</AccessGate>
+          </main>
+        ) : null}
         <WelcomeDialog />
+        {/* WS-51 S3: the one activity panel, in every frame. Under the shell
+            bar's right end when the bar is on. Near the top, beside the
+            sidebar head that holds the control, when it is off. */}
+        <ActivityHost placement={frame === "column" ? "end" : "top"} />
+        {/* NS-6 slice 6a: the one bell's panel, placed as the activity panel
+            is. With the flag off it is not mounted at all. */}
+        {dockOn ? <ShellBellHost placement={frame === "column" ? "end" : "top"} /> : null}
+        {/* WS-51 S5: unread marks, the finished toast, and the hidden tab's
+            title and favicon. It draws nothing. */}
+        <RunSignalsHost />
         <FocusSession />
         {/* D-PM-38 (S5) — the store's subtask question. Global, like the
             store: Focus Mode and the Calendar complete tasks too. */}
@@ -183,28 +363,65 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           </button>
         )}
       </div>
+      </SidebarFoldProvider>
     );
   }
 
   // ── Mobile layout ────────────────────────────────────────────────────────
   return (
     <MobileDrawerCtx.Provider
-      value={{ isOpen: drawerOpen, open: openDrawer, close: closeDrawer }}
+      value={{ isOpen: drawerOpen, shows: drawerKind, open: openDrawer, close: closeDrawer }}
     >
+      <PhoneNavFlag />
       {/* No top app bar on mobile — every screen is reachable from the bottom
           nav, so pages get the full viewport. pt-safe on the shell keeps
           content out of the notch/status bar. */}
-      <div className="flex flex-col overflow-hidden bg-background pt-safe" style={{ height: "100dvh" }}>
+      {/* `relative overflow-clip` for the reason of the desktop root above. */}
+      <div data-app-shell="" className="relative flex flex-col overflow-clip bg-background glass:bg-grouped pt-safe" style={{ height: "100dvh" }}>
         {/* Page content — pb-nav reserves the fixed bottom bar's FULL height
             (content + safe-area inset), so nothing hides under it */}
-        <main className="flex-1 min-h-0 overflow-y-auto pb-nav">
-          <AccountStateBanner />
-          <AccessGate>{children}</AccessGate>
-        </main>
+        {shellBarOn() ? (
+          // The same command bar, and its keys, with no row on the phone.
+          <ShellFrame bar={false}>
+            <main className="flex-1 min-h-0 overflow-y-auto pb-nav">
+              <AccountStateBanner />
+              <AccessGate>{children}</AccessGate>
+            </main>
+          </ShellFrame>
+        ) : (
+          <main className="flex-1 min-h-0 overflow-y-auto pb-nav">
+            <AccountStateBanner />
+            <AccessGate>{children}</AccessGate>
+          </main>
+        )}
+        <GuideHost phone />
         <WelcomeDialog />
+        {/* WS-51 S3: the one activity panel, as a bottom sheet. The Menu
+            drawer holds the control, with the shell bar flag on or off. */}
+        <ActivityHost placement="sheet" />
+        {/* NS-6 slice 6a: the bell's panel, as a bottom sheet. */}
+        {dockOn ? <ShellBellHost placement="sheet" /> : null}
+        {/* WS-51 S5: the same signals, and the agent pill above the bottom
+            nav while a run goes on. */}
+        <RunSignalsHost />
+        {/* D99: the bottom nav's Ask tab takes the pill's place, and its
+            badge carries the pill's count. */}
+        {chatOn ? null : <AgentPill />}
 
-        {/* Bottom navigation bar — fixed at viewport bottom, never scrolls. pb-safe lifts it above the iOS home indicator */}
-        <div className="fixed bottom-0 inset-x-0 z-50 border-t border-border bg-card/90 backdrop-blur pb-safe">
+        {/* Bottom navigation bar — fixed at viewport bottom, never scrolls.
+            MOB-9: it is `--phone-bar-h` tall (3.5rem plus its foot), and it paints above every
+            overlay (`LAYER_CLASS.bottomNav`). `globals.css` ends each full-height fixed layer at
+            its top edge while `data-phone-nav` is on <html>.
+            The foot (`--phone-bar-foot`) is the home-indicator inset and never less than 0.75rem,
+            so the labels keep clear of a rounded iPhone corner (owner, 2026-11-07).
+            The top edge is SQUARE and keeps its hairline, in the glass look too: a sheet ends on
+            that edge, and round corners with no line left two gaps where the sheet seemed to run
+            on behind the bar (owner, 2026-11-07, on the Calendar Schedule sheet). Fence:
+            `layers.test.ts`. */}
+        <div data-phone-nav-bar="" className={`fixed bottom-0 inset-x-0 box-border h-[var(--phone-bar-h)] ${LAYER_CLASS.bottomNav} border-t border-border bg-card/90 backdrop-blur pb-[var(--phone-bar-foot)] glass:glass-chrome`}>
+          {/* CF-2: one nudge above the Ask tab, for a member who never wrote
+              to the assistant. Behind the chat-first flag. */}
+          {chatOn ? <ChatNudge placement="tab" /> : null}
           <MobileBottomNavInner pathname={pathname} toggleView={toggleView} />
         </div>
 
@@ -217,15 +434,23 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         <RecordingDock />
         {/* Server-side "live now" presence (bot calls / other devices). */}
         <LiveDock />
+        {/* D99: the one assistant, as a full-height sheet that ends at the nav's top edge (MOB-9). */}
+        {chatOn ? <AssistantDock phone /> : null}
 
-        {/* Unified drawer (slide-up panel for bottom-nav tab content) */}
+        {/* Unified drawer (slide-up panel for bottom-nav tab content). It ends at the bar's top
+            edge (MOB-9), so every tab stays in reach. */}
         {drawerOpen && (
           <div className="fixed inset-0 z-[70]">
             <div
               className="absolute inset-0 bg-black/60"
               onClick={closeDrawer}
             />
-            <aside className="absolute inset-x-0 bottom-0 flex max-h-[85%] flex-col rounded-t-2xl border-t border-border bg-card shadow-2xl chat-fade-in tech-glass-subtle">
+            {/* Solid, not glass: the page's words read through a translucent
+                sheet and made every menu look broken (owner, 2026-10-09).
+                Glass keeps the reason: the sheet takes the menu material, the
+                near-opaque one (95%) that is made to read over anything, so
+                no word of the page shows through it (D143, GL-3). */}
+            <aside className="absolute inset-x-0 bottom-0 flex max-h-[85%] flex-col rounded-t-2xl border-t border-border bg-card shadow-2xl chat-fade-in glass:border-t-0 glass:glass-menu-flat">
               {/* Drag handle */}
               <div className="flex justify-center pt-2 pb-1">
                 <div className="w-10 h-1 rounded-full bg-muted-foreground/30" />
@@ -242,6 +467,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 }
 
 // ---------------------------------------------------------------------------
+// The full-width bar's first zone: the fold control and the logo
+// ---------------------------------------------------------------------------
+
+
+// ---------------------------------------------------------------------------
 // Mobile bottom navigation bar — ChatGPT/DeepSeek-style 3-tab bar
 // ---------------------------------------------------------------------------
 
@@ -252,10 +482,19 @@ function MobileBottomNavInner({
   pathname: string | null;
   toggleView: () => void;
 }) {
-  const { isOpen, open, close } = useMobileDrawer();
-  const { data: session } = useSession();
-  const activeRunIds = useActiveSessions();
-  const activeCount = activeRunIds.size;
+  const { isOpen, shows, open, close } = useMobileDrawer();
+  const menuOpen = isOpen && shows === "menu";
+  // MOB-9: the assistant's sheet is open when it is open and not the strip.
+  const assistantSt = useAssistant();
+  const sheetOpen = assistantSt.open && assistantSt.mode !== "peek";
+  // The tab whose tap opened the sheet that shows now, for the second tap.
+  // `pendingTab` holds a tab for a moment after its tap. The drawer that
+  // opens in that moment is that tab's.
+  const openedBy = useRef<string | null>(null);
+  const pendingTab = useRef<string | null>(null);
+  useEffect(() => {
+    openedBy.current = isOpen ? pendingTab.current : null;
+  }, [isOpen]);
   // Same access filter as the desktop Sidebar — the two navs must agree, or a
   // pane hidden on desktop reappears in the phone drawer. Same unresolved rule
   // too: `null` yields nothing and the skeleton below holds the space.
@@ -264,27 +503,97 @@ function MobileBottomNavInner({
     accessLoading ? null : access.features,
     access.is_admin,
   );
+  // The shell nav (NS-2): the drawer takes the sidebar's shape (§9).
+  const [shellNav] = useState(() => shellNavOn());
+  // WS-63 PZ-25: the "Assistant settings" account row, only with the profile on for this org.
+  const assistant = useAssistantProfileEnabled();
+  // "Home", or "My Day" with that flag on (NS-3). Read once, as above.
+  // ⚠️ Read in `useState`, as `shellNavOn` is: with the dev-only
+  // `localStorage` override the server and the browser can disagree, and
+  // React warns once. Production reads the build-time flag on both sides,
+  // so it never disagrees. `app/page.tsx` needs `useSyncExternalStore`
+  // because it swaps the whole page; a label here does not.
+  const [home] = useState(() => homePane());
+  // NS-6: the one bell sits beside the activity control here, as on the bar.
+  const [dockOn] = useState(() => shellDockOn());
+  // D99: the chat bar replaces each app's own assistant tab.
+  const [chatOn] = useState(() => shellChatOn());
+  const [launcherOpen, setLauncherOpen] = useState(false);
+  const [launcherHint, setLauncherHint] = useState<string | undefined>(undefined);
+  // The member's stars (owner, 2026-10-11), the same model as the desktop
+  // sidebar: each category lists only the apps they starred.
+  const shell = useShellPrefs();
+  // PKG-8a: the panes of the installs join "Apps" here too, through the hook that
+  // the desktop sidebar calls, so the phone shows the same installs.
+  const drawerSections = useInstallNav(
+    shellNav ? shellSidebar(navSections, shell.loading ? undefined : shell.layout) : navSections,
+    access.features,
+  );
+  // The skeleton holds the place while the first layout read is out, as on
+  // the desktop sidebar (`useShellPending`).
+  const shellPending = useShellPending(shellNav && shell.loading);
+  const navWaiting = accessLoading || shellPending;
+  // The run badge (WS-51 S1), from the one shared poller. Each drawer link
+  // shows its app's count. The bottom bar shows the total on every page: on
+  // the Chats tab on /chat, and on the Menu tab everywhere else, because the
+  // Chats tab exists on /chat only.
+  const drawerKey = drawerSections.map((s) => s.items.map((p) => p.href).join(",")).join("|");
+  const drawerHrefs = useMemo(
+    () => new Set(drawerKey.split(/[|,]/).filter(Boolean)),
+    [drawerKey],
+  );
+  const {
+    total: activeCount, byApp: runCounts, needsTotal, needsByApp: needsCounts,
+    unreadTotal, unreadByApp: unreadCounts,
+  } = useRunActivity(drawerHrefs);
+  // One rule for every run badge (WS-51 S2, S5): a run that waits on the
+  // member turns it amber, an unread reply blue, and a running count green
+  // (`lib/runActivity.ts`).
+  const drawerBadge = (href: string) => runBadge(runCounts[href] ?? 0, needsCounts[href] ?? 0, unreadCounts[href] ?? 0);
+  // What needs the member in each app, as on the desktop sidebar: the one
+  // feed and the one slot rule (`useNavNeeds`, `rowMeta`).
+  const heldHrefs = navSections.flatMap((s) => s.items.map((p) => p.href));
+  // The same gate as the desktop sidebar: no workspace, no read.
+  const navNeeds = useNavNeeds(shellNav && shouldPollWorkspace(access, accessLoading), heldHrefs);
+  const appNeeds = navNeeds.counts;
+  // "Add apps" carries no count (owner, 2026-11-01): My Day counts what
+  // waits in an app the drawer does not show, as on the desktop sidebar.
 
   const menuContent = (
     <>
-      <div className="flex items-center justify-between border-b border-border px-4 py-3">
-        {/* Branding doubles as the way home — the mobile shell has no top bar.
-            Same component as the desktop sidebar on purpose: a brand mark that
-            differs by window width is worse than no brand mark. */}
-        <OrgBrandLockup fallbackCaption="Home" onNavigate={close} maxWidth={180} />
-        <button
-          onClick={close}
-          className="rounded-lg p-1.5 text-muted-foreground hover:bg-secondary"
-          aria-label="Close"
-        >
-          <AppIcon name="X" size={16} />
-        </button>
+      {/* The header is the account surface (owner, 2026-10-09): the mark and
+          the organization, the signed-in address under it, and a tap opens
+          the other accounts and the account actions. */}
+      <DrawerAccountHeader onClose={close} />
+      {/* NS-1 on the phone: the one search. Beside it, the activity control
+          (WS-51 S3), as on the desktop bar: the phone draws no shell row, so
+          the drawer opens the shell's one panel, as a sheet. The control shows
+          with the shell bar flag off too. With NS-6's flag on, the one bell
+          sits before it, as on the bar. */}
+      <div className="flex items-center gap-2 border-b border-border px-3 py-2">
+        {shellBarOn() ? (
+          <button
+            type="button"
+            onClick={() => {
+              close();
+              window.dispatchEvent(new CustomEvent(OPEN_COMMAND_BAR, { detail: { query: "" } }));
+            }}
+            className="flex h-10 min-w-0 flex-1 items-center gap-2 rounded-lg border border-border bg-background px-3 text-left text-sm text-muted-foreground"
+          >
+            <AppIcon name="Sparkles" size={16} className="shrink-0 text-primary" />
+            Search or ask anything
+          </button>
+        ) : (
+          <span className="min-w-0 flex-1 px-1 text-sm text-muted-foreground">Assistants</span>
+        )}
+        {dockOn ? <ShellBell onBeforeOpen={close} className="h-10 w-10 shrink-0" /> : null}
+        <ActivityControl onBeforeOpen={close} className="h-10 w-10 shrink-0" />
       </div>
-      <nav className="flex flex-col overflow-y-auto">
+      <nav data-guide="home.app-list" className="flex flex-col overflow-y-auto">
         {/* Same rule as the desktop rail (§8.1): an unresolved viewer gets
             placeholders, never the full list. The drawer opens on tap, so a
             list that rearranges under the thumb is worse here than on desktop. */}
-        {accessLoading ? (
+        {navWaiting ? (
           <div className="px-2 py-3" aria-hidden data-testid="nav-skeleton">
             {[0, 1, 2, 3, 4, 5].map((row) => (
               <div key={row} className="mb-1 flex items-center gap-2.5 px-3 py-2.5">
@@ -294,297 +603,442 @@ function MobileBottomNavInner({
             ))}
           </div>
         ) : null}
-        {navSections.map((section) => (
-          <div key={section.id} className="px-2 pt-1 pb-1.5">
+        {shellNav && !navWaiting && (
+          <div className="px-2 pt-2">
+            <Link
+              href={home.href}
+              onClick={close}
+              className={`rounded-lg glass:rounded-row px-3 py-2.5 tech-transition flex items-center gap-2.5 ${
+                isActive(pathname, home.href)
+                  ? "bg-primary/10 text-primary"
+                  : "text-muted-foreground hover:bg-secondary hover:text-foreground"
+              }`}
+            >
+              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-secondary text-muted-foreground glass:bg-transparent glass:text-primary">
+                <AppIcon name={home.icon} size={15} />
+              </span>
+              <span className="text-sm font-medium glass:text-subhead">{home.label}</span>
+            </Link>
+          </div>
+        )}
+        {!navWaiting && drawerSections.map((section) => (
+          <div key={section.id} className="px-2 pt-1 pb-1.5" data-nav-section={section.id}>
             <div
               className={
                 section.sub
-                  ? "px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60"
-                  : "px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground"
+                  ? "px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60 glass:normal-case glass:tracking-normal glass:text-caption"
+                  : "px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground glass:normal-case glass:tracking-normal glass:text-footnote"
               }
             >
               {section.label}
             </div>
             <div className="flex flex-col gap-0.5">
               {section.items.map((p) => {
-                const active = pathname?.startsWith(p.href);
+                const active = shellNav ? isActive(pathname, p.href) : pathname?.startsWith(p.href);
+                // One slot: the run badge wins it, else the needs count (`rowMeta`).
+                const b = drawerBadge(p.href);
+                const floor = navNeeds.floors.has(p.href);
+                const meta = rowMeta(b?.count, appNeeds[p.href], floor);
                 return (
                   <Link
                     key={p.href}
                     href={p.href}
                     onClick={close}
-                    className={`rounded-lg px-3 py-2.5 tech-transition flex items-center gap-2.5 ${
+                    aria-label={rowName(p.label, appNeeds[p.href], b?.label, floor)}
+                    className={`rounded-lg glass:rounded-row px-3 py-2.5 tech-transition flex items-center gap-2.5 ${
                       active
                         ? "bg-primary/10 text-primary"
                         : "text-muted-foreground hover:bg-secondary hover:text-foreground"
                     }`}
                   >
-                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-secondary text-muted-foreground">
+                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-secondary text-muted-foreground glass:bg-transparent glass:text-primary">
                       <AppIcon name={p.icon} size={15} strokeWidth={active ? 2.5 : 2} />
                     </span>
-                    <span className="text-sm font-medium">{p.label}</span>
+                    <span className="text-sm font-medium glass:text-subhead">{p.label}</span>
+                    {b ? (
+                      <NavBadge count={b.count} tone={b.tone} label={b.label} />
+                    ) : meta?.kind === "needs" ? (
+                      <NeedsCount text={meta.text} />
+                    ) : null}
                   </Link>
                 );
               })}
             </div>
           </div>
         ))}
-      </nav>
-      <div className="mt-auto border-t border-border p-3 space-y-2">
-        <ThemeToggleMenuItem onClick={close} />
-        <Button variant="ghost" size="none" layout="flex items-center" onClick={() => { toggleView(); close(); }} className="w-full gap-3 px-3 py-2.5 text-sm">
-          <AppIcon name="Monitor" size={16} className="shrink-0" />
-          Desktop view
-        </Button>
-        {session?.user && (
-          <Button variant="ghost" size="none" layout="flex items-center" onClick={() => signOut({ callbackUrl: "/signin" })} className="w-full gap-3 px-3 py-2.5 text-sm">
-            <AppIcon name="LogOut" size={16} className="shrink-0" />
-            Sign out
-          </Button>
-        )}
-        {session?.user && (
-          <div className="px-3 pt-1">
-            <div className="truncate text-[11px] font-medium text-muted-foreground">
-              {session.user.name ?? session.user.email}
-            </div>
+        {/* "Add apps" (owner, 2026-10-11): the last item of the list, always,
+            as on the desktop sidebar. The drawer closes first. It and All
+            apps wear `cc-link`, the house focus ring of the account foot. */}
+        {shellNav && !navWaiting && (
+          <div className="px-2 pb-1">
+            <button
+              type="button"
+              onClick={() => {
+                close();
+                setLauncherHint(ADD_APPS_HINT);
+                setLauncherOpen(true);
+              }}
+              aria-haspopup="dialog"
+              data-nav-add-apps=""
+              className="cc-link flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-muted-foreground hover:bg-secondary hover:text-foreground tech-transition"
+            >
+              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground">
+                <AppIcon name="Plus" size={15} />
+              </span>
+              <span className="text-sm">Add apps</span>
+            </button>
           </div>
         )}
+        {/* All apps (NS-2), only when it would list something. The drawer
+            closes first, so one overlay shows. */}
+        {shellNav && !navWaiting && launcherGroups(navSections).length > 0 && (
+          <div className="px-2 pb-2">
+            <button
+              type="button"
+              onClick={() => {
+                close();
+                setLauncherHint(undefined);
+                setLauncherOpen(true);
+              }}
+              data-nav-all-apps=""
+              className="cc-link flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-muted-foreground hover:bg-secondary hover:text-foreground tech-transition"
+            >
+              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-secondary text-muted-foreground">
+                <AppIcon name="LayoutGrid" size={15} />
+              </span>
+              <span className="text-sm font-medium">All apps</span>
+            </button>
+          </div>
+        )}
+      </nav>
+      {/* The rare acts, after the apps: the member's pages, the settings and
+          sign-out, in one list (owner review, 2026-10-09). */}
+      <div className="mt-auto border-t border-border px-2 py-3">
+        <DrawerAccountFoot you={shellNav ? accountLinks(navSections, { assistant }) : undefined} onNavigate={close}>
+          <ThemeToggleMenuItem onClick={close} />
+          <Button variant="ghost" size="none" layout="flex items-center" onClick={() => { toggleView(); close(); }} className="w-full gap-3 px-3 py-2.5 text-sm">
+            <AppIcon name="Monitor" size={16} className="shrink-0" />
+            Desktop view
+          </Button>
+        </DrawerAccountFoot>
       </div>
     </>
   );
 
-  const isChatPage = pathname?.startsWith("/chat") ?? false;
-  const isEmailPage = pathname?.startsWith("/email") ?? false;
-  const isTasksPage = pathname?.startsWith("/tasks") ?? false;
-  // Notes actions live on the library page; the meeting/session sub-pages have
-  // their own in-view controls, so scope the context tabs to the list.
-  const isNotesPage = pathname === "/notes";
-  // WhatsApp: "Sections" (the app sub-nav) applies across every /whatsapp page;
-  // "Triage" (the stream filter) is inbox-only. Both open bottom drawers.
-  const isWhatsAppPage = pathname?.startsWith("/whatsapp") ?? false;
-  const isWhatsAppInbox = pathname === "/whatsapp";
-  // App Workshop editor: chat and the preview/code/tests pane are full-screen
-  // alternatives on mobile (desktop shows both side by side) — the page owns
-  // the "workshop-*" cc-mobile-nav detail values.
-  const isAppWorkshopEditPage =
-    (pathname?.startsWith("/build/apps/") && pathname?.endsWith("/edit")) ?? false;
-  // Projects: three things the desktop layout owns have no home on a phone —
-  // the project tree (a 240px rail), the five view modes (a toolbar row) and
-  // ⌘K search (a keyboard). Each becomes a tab here; the page turns the first
-  // two into drawer sheets and the third into its own overlay. Notifications
-  // stay in the page's own title row: the bell is self-anchored and has no
-  // external open control, so a tab could not raise it.
-  const isProjectsPage = pathname?.startsWith("/projects") ?? false;
-
-  // Tasks: the bottom bar reflects which My Tasks section you're in. The page emits
-  // `cc-tasks-section` whenever the active view changes.
-  const [tasksSection, setTasksSection] = useState("inbox");
+  const tabBadge = runBadge(activeCount, needsTotal, unreadTotal);
+  // The bar of this app (MOB-12): the registry names the tabs by the path
+  // (`lib/shell/phoneBar.ts`), and the page tells the shell, in ONE event,
+  // which tab is selected, which tabs to hide and which counts to draw.
+  const bar = phoneBarFor(pathname);
+  const [report, setReport] = useState<PhoneBarReport | null>(null);
   useEffect(() => {
-    const h = (e: Event) =>
-      setTasksSection((e as CustomEvent<string>).detail || "inbox");
-    window.addEventListener("cc-tasks-section", h);
-    return () => window.removeEventListener("cc-tasks-section", h);
+    /* eslint-disable react-hooks/set-state-in-effect -- a page that painted first left its report in the store */
+    setReport(currentPhoneBarReport());
+    /* eslint-enable react-hooks/set-state-in-effect */
+    const h = (e: Event) => setReport((e as CustomEvent<PhoneBarReport | null>).detail ?? null);
+    window.addEventListener(PHONE_BAR_EVENT, h);
+    return () => window.removeEventListener(PHONE_BAR_EVENT, h);
+  }, []);
+  // The member's access gates a tab. While access resolves, a gated tab waits,
+  // so the bar does not draw a tab and then take it back.
+  const barTabs = resolvePhoneTabs(bar, pathname ?? "", {
+    ask: chatOn,
+    hide: report?.hide,
+    allowed: (t) =>
+      (!t.feature || (!accessLoading && canUseFeature(access, t.feature))) &&
+      (!t.capability || (!accessLoading && hasCapability(access, t.capability))),
+  });
+  const barDefault = bar && "tabs" in bar.entry ? bar.entry.defaultActive : undefined;
+  const selectedTab = report?.active ?? barDefault ?? null;
+  // On a page with a Chats tab, that tab carries the run badge. Elsewhere the
+  // Menu tab does (when the Ask tab is absent).
+  const chatsTab = barTabs.some((t) => t.runBadge);
+  // CRM (CRM-U10): the one dynamic bar. The page names the lists of the bar
+  // and the one on screen, because it knows the mode, the source's labels and
+  // the rows Zoho turned off. It emits `cc-crm-nav`, and `null` when it
+  // unmounts.
+  const hasDynamicBar = !!bar && "dynamic" in bar.entry;
+  const [crmNav, setCrmNav] = useState<PhoneNav | null>(null);
+  useEffect(() => {
+    const h = (e: Event) => setCrmNav((e as CustomEvent<PhoneNav | null>).detail ?? null);
+    window.addEventListener("cc-crm-nav", h);
+    return () => window.removeEventListener("cc-crm-nav", h);
   }, []);
 
-  // Email: with no mailbox the page shows only "Connect your email", so the
-  // Inbox / Automation / AI Chat tabs would open empty sheets. The page emits
-  // `cc-email-empty` (true while the empty state shows, false otherwise and on
-  // unmount), and the tabs hide while it is true (WS-17 EM-T3b).
-  const [emailEmpty, setEmailEmpty] = useState(false);
+  // WS-OB GD-4: the guide opens and closes the Menu drawer, which holds the
+  // phone's app list (`GuideHost` sends the event). The ref keeps the content
+  // current, so the listener binds once.
+  const menuRef = useRef(menuContent);
+  menuRef.current = menuContent;
   useEffect(() => {
-    const h = (e: Event) => setEmailEmpty((e as CustomEvent<boolean>).detail === true);
-    window.addEventListener("cc-email-empty", h);
-    return () => window.removeEventListener("cc-email-empty", h);
-  }, []);
+    const h = (e: Event) => {
+      if ((e as CustomEvent<string>).detail === "open") open(menuRef.current, "menu");
+      else close();
+    };
+    window.addEventListener(GUIDE_MENU_EVENT, h);
+    return () => window.removeEventListener(GUIDE_MENU_EVENT, h);
+  }, [open, close]);
 
+  // MOB-9 (task 2002): a tap on a bar tab first closes what is open, then
+  // does its job. The assistant's sheet always closes. The drawer closes too,
+  // and the event goes one tick later, so the page sees the closed drawer
+  // before it answers. The exception is a second tap on the tab that opened
+  // the sheet that shows: that tap closes it and sends nothing.
   const dispatchNav = (detail: string) => {
-    window.dispatchEvent(new CustomEvent("cc-mobile-nav", { detail }));
+    // Every overlay that is not the drawer or the assistant gives way first.
+    sendBarTap(detail);
+    if (sheetOpen) closeAssistant();
+    if (isOpen && shows === "sheet" && openedBy.current === detail) {
+      close();
+      return;
+    }
+    pendingTab.current = detail;
+    window.setTimeout(() => {
+      if (pendingTab.current === detail) pendingTab.current = null;
+    }, 600);
+    const send = () => window.dispatchEvent(new CustomEvent("cc-mobile-nav", { detail }));
+    if (isOpen) {
+      close();
+      window.setTimeout(send, 0);
+    } else {
+      send();
+    }
+  };
+
+  // A link tab: the same first step as a tab with an event, then the route.
+  const goLink = (id: string) => {
+    sendBarTap(id);
+    pendingTab.current = null;
+    if (sheetOpen) closeAssistant();
+    if (isOpen) close();
   };
 
   return (
-    <nav className="flex items-stretch justify-around gap-0.5 py-1 px-1">
+    <>
+    <nav className="flex h-full items-stretch justify-around gap-0.5 px-2 py-1">
         <button
-          onClick={() => { open(menuContent); }}
-          className={`flex flex-1 min-w-0 flex-col items-center gap-0.5 px-1 py-1 rounded-lg transition-colors ${
-            isOpen ? "text-primary" : "text-muted-foreground hover:text-foreground"
-          }`}
+          onClick={() => {
+            // A second tap on Menu closes it. A page's sheet gives way to the Menu.
+            sendBarTap("menu");
+            pendingTab.current = null;
+            if (sheetOpen) closeAssistant();
+            if (menuOpen) close();
+            else open(menuContent, "menu");
+          }}
+          aria-pressed={menuOpen}
+          className={`relative ${BAR_TAB}`}
         >
-          <AppIcon name="Menu" size={20} />
-          <span className="text-[10px] font-medium leading-none">Menu</span>
+          <BarIcon look={menuOpen ? "selected" : "idle"}>
+            <AppIcon name="Menu" size={20} strokeWidth={menuOpen ? 2.4 : 2} />
+            {!chatsTab && !chatOn && tabBadge && (
+              <NavBadge count={tabBadge.count} tone={tabBadge.tone} label={tabBadge.label} placement="tab" />
+            )}
+          </BarIcon>
+          <span className={`pb-0.5 text-[10px] leading-none ${BAR_LABEL[menuOpen ? "selected" : "idle"]}`}>Menu</span>
         </button>
-        {isEmailPage && !emailEmpty && (
+        {barTabs.map((tab) => {
+          // Menu and Ask each draw their own pill while open. A place tab gives
+          // its pill up then, so two pills never show (MOB-12).
+          const selected =
+            tab.kind === "place" &&
+            !menuOpen &&
+            !sheetOpen &&
+            (hrefSelected(tab, pathname) || selectedTab === tab.id);
+          const count = report?.counts?.[tab.id] ?? 0;
+          return (
+            <TaskTab
+              key={tab.id}
+              href={tab.href}
+              active={selected}
+              onClick={tab.href ? () => goLink(tab.id) : () => dispatchNav(tab.event ?? tab.id)}
+              icon={themedIcon(tab.icon)}
+              label={tab.label}
+              accent={tab.accent}
+              badge={count > 0 && tab.countLabel ? count : null}
+              badgeLabel={tab.countLabel ? `${count} ${tab.countLabel}` : undefined}
+              runBadge={tab.runBadge ? tabBadge : null}
+            />
+          );
+        })}
+        {hasDynamicBar && crmNav && (
           <>
-            <Button variant="text" size="none" layout="flex items-center" onClick={() => dispatchNav("email-accounts")} className="flex-1 min-w-0 flex-col gap-0.5 px-1 py-1">
-              <AppIcon name="Mail" size={20} />
-              <span className="text-[10px] font-medium leading-none">Inbox</span>
-            </Button>
-            <Button variant="text" size="none" layout="flex items-center" onClick={() => dispatchNav("email-automation")} className="flex-1 min-w-0 flex-col gap-0.5 px-1 py-1">
-              <AppIcon name="Zap" size={20} />
-              <span className="text-[10px] font-medium leading-none">Automation</span>
-            </Button>
-            <Button variant="text" size="none" layout="flex items-center" onClick={() => dispatchNav("email-ai")} className="flex-1 min-w-0 flex-col gap-0.5 px-1 py-1">
-              <AppIcon name="MessageCircle" size={20} />
-              <span className="text-[10px] font-medium leading-none">AI Chat</span>
-            </Button>
-          </>
-        )}
-        {isChatPage && (
-          <>
-            <Button variant="text" size="none" layout="flex items-center" onClick={() => dispatchNav("chats")} className="relative flex-1 min-w-0 flex-col gap-0.5 px-1 py-1">
-              <AppIcon name="MessageCircle" size={20} />
-              {activeCount > 0 && (
-                <span className="absolute -top-0.5 right-2 flex items-center justify-center min-w-[16px] h-4 px-1 rounded-full bg-success text-success-foreground text-[9px] font-bold animate-pulse">
-                  {activeCount}
-                </span>
-              )}
-              <span className="text-[10px] font-medium leading-none">Chats</span>
-            </Button>
-            <Button variant="text" size="none" layout="flex items-center" onClick={() => dispatchNav("files")} className="flex-1 min-w-0 flex-col gap-0.5 px-1 py-1">
-              <AppIcon name="FolderOpen" size={20} />
-              <span className="text-[10px] font-medium leading-none">Files</span>
-            </Button>
-          </>
-        )}
-        {isTasksPage && (
-          <>
+            {crmNav.tabs.map((tab) => (
+              <TaskTab
+                key={tab.id}
+                active={crmNav.active === tab.id}
+                onClick={() => dispatchNav(navDetail(tab.id))}
+                icon={themedIcon(tab.icon)}
+                label={tab.label}
+              />
+            ))}
             <TaskTab
-              active={tasksSection === "inbox"}
-              onClick={() => dispatchNav("tasks-inbox")}
-              icon={themedIcon("Inbox")}
-              label="Inbox"
-            />
-            <TaskTab
-              active={tasksSection !== "inbox"}
-              onClick={() => dispatchNav("tasks-lists")}
-              icon={themedIcon("ListChecks")}
-              label="Lists"
-            />
-            <TaskTab
-              onClick={() => dispatchNav("tasks-capture")}
-              icon={themedIcon("Plus")}
-              label="Capture"
-              accent
-            />
-            <TaskTab
-              onClick={() => dispatchNav("tasks-assistant")}
-              icon={themedIcon("Sparkles")}
-              label="Assistant"
-            />
-          </>
-        )}
-        {isProjectsPage && (
-          <>
-            <TaskTab
-              onClick={() => dispatchNav("projects-tree")}
-              icon={themedIcon("FolderKanban")}
-              label="Projects"
-            />
-            <TaskTab
-              onClick={() => dispatchNav("projects-views")}
+              active={crmNav.active === "more"}
+              onClick={() => dispatchNav(navDetail("more"))}
               icon={themedIcon("LayoutGrid")}
-              label="Views"
-            />
-            <TaskTab
-              onClick={() => dispatchNav("projects-search")}
-              icon={themedIcon("Search")}
-              label="Search"
+              label="More"
+              badge={crmNav.badge}
             />
           </>
         )}
-        {isNotesPage && (
-          <>
-            <TaskTab
-              onClick={() => dispatchNav("notes-record")}
-              icon={themedIcon("Mic")}
-              label="Record"
-              accent
-            />
-            <TaskTab
-              onClick={() => dispatchNav("notes-join")}
-              icon={themedIcon("Video")}
-              label="Join call"
-            />
-            <TaskTab
-              onClick={() => dispatchNav("notes-upload")}
-              icon={themedIcon("Upload")}
-              label="Upload"
-            />
-            <TaskTab
-              onClick={() => dispatchNav("notes-glossary")}
-              icon={themedIcon("BookMarked")}
-              label="Glossary"
-            />
-          </>
-        )}
-        {isWhatsAppInbox && (
-          <TaskTab
-            onClick={() => dispatchNav("wa-triage")}
-            icon={themedIcon("Filter")}
-            label="Triage"
-          />
-        )}
-        {isWhatsAppPage && (
-          <TaskTab
-            onClick={() => dispatchNav("wa-sections")}
-            icon={themedIcon("LayoutGrid")}
-            label="Sections"
-          />
-        )}
-        {isAppWorkshopEditPage && (
-          <>
-            <TaskTab
-              onClick={() => dispatchNav("workshop-chat")}
-              icon={themedIcon("Sparkles")}
-              label="Chat"
-              accent
-            />
-            <TaskTab
-              onClick={() => dispatchNav("workshop-preview")}
-              icon={themedIcon("Play")}
-              label="Preview"
-            />
-            <TaskTab
-              onClick={() => dispatchNav("workshop-code")}
-              icon={themedIcon("FileCode")}
-              label="Code"
-            />
-            <TaskTab
-              onClick={() => dispatchNav("workshop-tests")}
-              icon={themedIcon("FlaskConical")}
-              label="Tests"
-            />
-          </>
+        {/* D99 on the phone: the one assistant is a tab of its own, at the
+            right end of every page's bar, so the thumb learns one place.
+            It opens the assistant as a full-screen sheet with the keyboard
+            in its composer, and its badge is the activity control: green
+            while a chat runs, amber when one waits on the member. A bar
+            above the nav cost every screen a row, and a floating button
+            collided with the Calendar and Focus buttons (owner, 2026-10-13). */}
+        {chatOn && (
+          <button
+            type="button"
+            onClick={() => {
+              // A second tap on Ask closes the sheet (MOB-9).
+              sendBarTap("ask");
+              pendingTab.current = null;
+              if (sheetOpen) {
+                closeAssistant();
+                return;
+              }
+              close();
+              openAssistant({ mode: "full" });
+            }}
+            aria-label={tabBadge ? `Ask Metorite, ${tabBadge.label}` : "Ask Metorite"}
+            aria-pressed={sheetOpen}
+            data-ask-tab=""
+            data-guide="home.ask"
+            className={`relative ${BAR_TAB}`}
+          >
+            {/* Ask keeps the brand's sparkle in the primary colour, idle or
+                open, so the thumb finds it. Its pill shows while it is open. */}
+            <BarIcon look={sheetOpen ? "selected" : "idle"}>
+              <AppIcon name="Sparkles" size={20} strokeWidth={2.4} className="text-primary" />
+              {tabBadge && (
+                <NavBadge count={tabBadge.count} tone={tabBadge.tone} label={tabBadge.label} placement="tab" />
+              )}
+            </BarIcon>
+            <span className={`pb-0.5 text-[10px] leading-none ${BAR_LABEL[sheetOpen ? "selected" : "idle"]}`}>Ask</span>
+          </button>
         )}
     </nav>
+    {shellNav && (
+      <AppLauncher
+        open={launcherOpen}
+        onClose={() => setLauncherOpen(false)}
+        sections={navSections}
+        pathname={pathname}
+        hint={launcherHint}
+      />
+    )}
+    </>
+  );
+}
+
+/**
+ * MOB-9: the phone layout is on screen. `data-phone-nav` on <html> turns on
+ * the rule in `globals.css` that ends every full-height fixed layer at the
+ * bar's top edge. It goes with the layout: the member who switches to the
+ * desktop view, or a route with no chrome, gets no attribute.
+ */
+function PhoneNavFlag() {
+  useEffect(() => {
+    const root = document.documentElement;
+    root.setAttribute("data-phone-nav", "");
+    return () => root.removeAttribute("data-phone-nav");
+  }, []);
+  return null;
+}
+
+/**
+ * The one look of a bar tab (MOB-12, owner 2026-11-07: the bar must make it
+ * "as obvious as possible" how to use the app).
+ *
+ * - `selected`: a place that shows now. Its icon sits in a tinted pill.
+ * - `accent`: the app's one "new". Its icon sits in a filled circle.
+ * - `idle`: every other tab, bare and muted.
+ *
+ * Before this, a selected place, the accent and Ask all drew in the same
+ * blue, so on Studio and Organisation three tabs looked chosen at once.
+ * Menu and Ask take the same wells. Fence: `phoneBar.test.ts`.
+ */
+type BarLook = "idle" | "selected" | "accent";
+
+const BAR_TAB =
+  "flex flex-1 min-w-0 flex-col items-center gap-0.5 rounded-lg px-1 py-1 text-muted-foreground transition-colors hover:text-foreground";
+
+const BAR_LABEL: Record<BarLook, string> = {
+  idle: "font-medium",
+  selected: "font-semibold text-foreground",
+  accent: "font-medium text-foreground",
+};
+
+function BarIcon({ look, children }: { look: BarLook; children: ReactNode }) {
+  return (
+    <span
+      data-bar-look={look}
+      className={`flex h-7 w-12 items-center justify-center rounded-full transition-colors ${
+        look === "selected" ? "bg-primary/15 text-primary" : ""
+      }`}
+    >
+      {look === "accent" ? (
+        <span className="relative flex h-7 w-7 items-center justify-center rounded-full bg-primary text-primary-foreground">
+          {children}
+        </span>
+      ) : (
+        <span className="relative flex items-center justify-center">{children}</span>
+      )}
+    </span>
   );
 }
 
 function TaskTab({
   active,
   onClick,
+  href,
   icon: Icon,
   label,
   accent,
+  badge,
+  badgeLabel,
+  runBadge: run,
 }: {
   active?: boolean;
   onClick: () => void;
+  /** A route: the tab is a link, and `onClick` is its first step. */
+  href?: string;
   icon: ThemedIcon;
   label: string;
   accent?: boolean;
+  /** A count that waits for the member, drawn on the icon. */
+  badge?: number | null;
+  /** The words of that count, for a screen reader. */
+  badgeLabel?: string;
+  /** The run badge (`runBadge`): the Chats tab carries it. */
+  runBadge?: ReturnType<typeof runBadge>;
 }) {
+  const look: BarLook = accent ? "accent" : active ? "selected" : "idle";
+  const inner = (
+    <>
+      <BarIcon look={look}>
+        <Icon size={look === "accent" ? 16 : 20} strokeWidth={look === "idle" ? 2 : 2.4} />
+        {badge ? (
+          <NavBadge count={badge} tone="info" label={badgeLabel ?? `${badge} waiting`} placement="tab" />
+        ) : run ? (
+          <NavBadge count={run.count} tone={run.tone} label={run.label} placement="tab" />
+        ) : null}
+      </BarIcon>
+      <span className={`w-full truncate pb-0.5 text-center text-[10px] leading-none ${BAR_LABEL[look]}`}>{label}</span>
+    </>
+  );
+  const cls = BAR_TAB;
+  if (href) {
+    return (
+      <Link href={href} onClick={onClick} aria-current={active ? "page" : undefined} className={cls}>
+        {inner}
+      </Link>
+    );
+  }
   return (
-    <button
-      onClick={onClick}
-      className={`flex flex-1 min-w-0 flex-col items-center gap-0.5 rounded-lg px-1 py-1 transition-colors ${
-        accent
-          ? "text-primary"
-          : active
-            ? "text-primary"
-            : "text-muted-foreground hover:text-foreground"
-      }`}
-    >
-      <Icon size={20} strokeWidth={active || accent ? 2.4 : 2} />
-      <span className="text-[10px] font-medium leading-none">{label}</span>
+    <button onClick={onClick} aria-current={active ? "page" : undefined} className={cls}>
+      {inner}
     </button>
   );
 }

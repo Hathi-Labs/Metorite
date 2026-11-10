@@ -27,20 +27,33 @@ import {
   REPLY_RULE_NAMES,
   REPLY_SYSTEM_TYPES,
   RULES_STEP_COPY,
-  firstSyncSurface,
   hasEnabledReplyRule,
+  importPanelShows,
   importProgress,
   installRecommendedRules,
   installedLine,
   isReplyRule,
   onboardingStage,
   processPastFrom,
+  readAutoRunSwitch,
   readDraftSwitch,
+  saveAutoRunDefault,
+  PROCESS_PAST_MAX_SPAN_DAYS,
+  SORT_POLL_MS,
+  readSortEstimate,
+  readSortState,
   rulesStepPhase,
+  setAutoRun,
   setDraftReplies,
+  settingsSaver,
+  sortEstimateView,
+  sortPollDelay,
+  sortSpanDays,
+  syncBanners,
   type RulesStepApi,
+  type SortEstimate,
 } from "./onboarding";
-import type { AssistantSettings, EmailAccount } from "./types";
+import type { AssistantSettings, AssistantSettingsSave, EmailAccount } from "./types";
 
 const EMAIL_APP = join(__dirname, "..");
 
@@ -93,16 +106,16 @@ describe("a mailbox with sync off shows no frozen panel (EM-T6b review)", () => 
     expect(isFirstSyncPending(running)).toBe(true);
   });
 
-  it("firstSyncSurface never draws the progress panel for sync off", () => {
-    expect(firstSyncSurface({ ...running, syncEnabled: false })).toBe("banner");
-    expect(firstSyncSurface(running)).toBe("progress");
+  it("importPanelShows never draws the progress panel for sync off", () => {
+    expect(importPanelShows({ ...running, syncEnabled: false })).toBe(false);
+    expect(importPanelShows(running)).toBe(true);
   });
 
-  it("the page draws a pending surface only through isFirstSyncPending", () => {
+  it("the sync banner draws no row for sync off (EM-S9)", () => {
     const page = codeOnly(read("page.tsx"));
-    expect(page).toMatch(
-      /pendingAccount =\s*\(selectedAccount && isFirstSyncPending\(selectedAccount\) \? selectedAccount : null\) \?\?\s*accounts\.find\(isFirstSyncPending\)/,
-    );
+    expect(page).toContain("const syncRows = syncBanners(accounts, importPanelAccount?.id ?? null);");
+    expect(syncBanners([{ ...running, id: "a", syncEnabled: false }], null)).toEqual([]);
+    expect(syncBanners([{ ...running, id: "a" }], null).map((r) => r.account.id)).toEqual(["a"]);
   });
 });
 
@@ -177,9 +190,36 @@ function fakeApi(settings: AssistantSettings) {
       calls.push(["finishOnboarding", id]);
       return { id, onboardingDone: true } as EmailAccount;
     },
+    // EM-T8f-2: the copy of rules. `mailboxSettings.test.ts` fences it.
+    copyRules: async (from, to) => {
+      calls.push(["copyRules", [from, to]]);
+      return { copied: [], renamed: [], leftOut: [] };
+    },
+    // EM-S10: the count before the sort.
+    estimateSort: async (id, from) => {
+      calls.push(["estimateSort", [id, from]]);
+      return { ...ESTIMATE };
+    },
+    // EM-S10 fix round 1: the run status, read before the estimate.
+    sortStatus: async (id) => {
+      calls.push(["sortStatus", id]);
+      return { status: "idle" as const };
+    },
   };
   return { api, calls };
 }
+
+/** An estimate of 340 messages, all of them in one run (EM-S10). */
+const ESTIMATE = {
+  in_range: 400,
+  eligible: 340,
+  already_processed: 60,
+  held_back: 0,
+  will_process: 340,
+  capped: false,
+  limit: 1000,
+  max_span_days: 366,
+};
 
 const SETTINGS = {
   account_id: "acc-1",
@@ -187,9 +227,6 @@ const SETTINGS = {
   signature: "Ravi",
   auto_run: true,
   cold_email_blocker: "OFF",
-  draft_model: "tier-powerful",
-  compose_model: "tier-fast",
-  chat_model: "tier-powerful",
   digest_frequency: "WEEKLY",
   personal_instructions: "Keep it short.",
   writing_style: "Plain",
@@ -211,6 +248,8 @@ describe("the drafting switch (item 10, D-EM-6)", () => {
     expect(calls.map((c) => c[0])).toEqual(["getAssistantSettings", "saveAssistantSettings"]);
     const saved = calls[1][1] as Record<string, unknown>;
     expect(saved).toEqual({ ...SETTINGS, draft_replies: true });
+    // Task 2305: a save of the drafting switch records no Auto-run choice.
+    expect("auto_run_choice" in saved).toBe(false);
     for (const k of Object.keys(SETTINGS)) {
       if (k !== "draft_replies") expect(saved[k], k).toEqual((SETTINGS as unknown as Record<string, unknown>)[k]);
     }
@@ -260,6 +299,110 @@ describe("the drafting switch (item 10, D-EM-6)", () => {
   });
 });
 
+describe("the Auto-run switch (WS-17 EM-G11c2, G2)", () => {
+  it("turning it on saves auto_run: true and changes no other field", async () => {
+    const { api, calls } = fakeApi({ ...SETTINGS, auto_run: false });
+    await setAutoRun(api, "acc-1", true);
+    expect(calls.map((c) => c[0])).toEqual(["getAssistantSettings", "saveAssistantSettings"]);
+    // Task 2305: the member's own act carries the marker of the choice.
+    expect(calls[1][1]).toEqual({ ...SETTINGS, auto_run: true, auto_run_choice: true });
+  });
+
+  it("a move to OFF is a choice too, and sends the marker (task 2305)", async () => {
+    const { api, calls } = fakeApi({ ...SETTINGS, auto_run: true });
+    await setAutoRun(api, "acc-1", false);
+    expect(calls[1][1]).toEqual({ ...SETTINGS, auto_run: false, auto_run_choice: true });
+  });
+
+  it("draws the stored value, and only a stored true reads ON", async () => {
+    for (const stored of [true, false]) {
+      const { api, calls } = fakeApi({ ...SETTINGS, auto_run: stored });
+      expect(await readAutoRunSwitch(api, "acc-1")).toEqual({ state: "ready", on: stored });
+      expect(calls.map((c) => c[0])).toEqual(["getAssistantSettings"]);
+    }
+    const { api } = fakeApi({ ...SETTINGS, auto_run: undefined } as unknown as AssistantSettings);
+    expect(await readAutoRunSwitch(api, "acc-1")).toEqual({ state: "ready", on: false });
+  });
+
+  it("a failed read is 'failed', never a guess", async () => {
+    const { api } = fakeApi(SETTINGS);
+    api.getAssistantSettings = async () => {
+      throw new Error("503");
+    };
+    expect(await readAutoRunSwitch(api, "acc-1")).toEqual({ state: "failed" });
+  });
+
+  it("the step reads it once ready, and writes it only when the switch moves", () => {
+    const src = codeOnly(read("components/OnboardingRulesStep.tsx"));
+    expect(src).toMatch(
+      /readAutoRunSwitch\(RULES_API, account\.id\)\.then\(\(a\) => live && setAutoRunState\(a\)\);[\s\S]*?\}, \[phase, account\.id\]\);/,
+    );
+    expect(src.match(/setAutoRun\(/g)).toHaveLength(1);
+    expect(src).toMatch(/const changeAutoRun = async \(on: boolean\) => \{[\s\S]*?await setAutoRun\(RULES_API, account\.id, on\);/);
+    expect(src).toContain("onAutoRunChange={(on) => void changeAutoRun(on)}");
+  });
+});
+
+describe("the Auto-run switch starts ON with no stored choice (task 2267)", () => {
+  const NO_CHOICE = { ...SETTINGS, auto_run: false, auto_run_chosen: false } as AssistantSettings;
+
+  it("no stored choice: the switch starts ON, and loading saves nothing", async () => {
+    const { api, calls } = fakeApi(NO_CHOICE);
+    expect(await readAutoRunSwitch(api, "acc-1")).toEqual({ state: "ready", on: true, unsaved: true });
+    expect(calls.map((c) => c[0])).toEqual(["getAssistantSettings"]);
+  });
+
+  it("Done saves auto_run: true through the existing save", async () => {
+    const { api, calls } = fakeApi(NO_CHOICE);
+    const sw = await readAutoRunSwitch(api, "acc-1");
+    expect(await saveAutoRunDefault(api, "acc-1", sw)).toBe(true);
+    expect(calls.map((c) => c[0])).toEqual(["getAssistantSettings", "getAssistantSettings", "saveAssistantSettings"]);
+    expect((calls[2][1] as AssistantSettings).auto_run).toBe(true);
+    // Task 2305: Done is the member's act, so the server stamps the choice.
+    expect((calls[2][1] as AssistantSettingsSave).auto_run_choice).toBe(true);
+  });
+
+  it("OFF before Done: the move saves false, and Done then saves nothing new", async () => {
+    const { api, calls } = fakeApi(NO_CHOICE);
+    await setAutoRun(api, "acc-1", false);
+    expect((calls[1][1] as AssistantSettings).auto_run).toBe(false);
+    // The step now holds { ready, on: false } with no `unsaved` mark.
+    const before = calls.length;
+    expect(await saveAutoRunDefault(api, "acc-1", { state: "ready", on: false })).toBe(false);
+    expect(calls).toHaveLength(before);
+  });
+
+  it("a stored false shows OFF, and Done saves nothing new", async () => {
+    const { api, calls } = fakeApi({ ...SETTINGS, auto_run: false, auto_run_chosen: true } as AssistantSettings);
+    const sw = await readAutoRunSwitch(api, "acc-1");
+    expect(sw).toEqual({ state: "ready", on: false });
+    expect(await saveAutoRunDefault(api, "acc-1", sw)).toBe(false);
+    expect(calls.map((c) => c[0])).toEqual(["getAssistantSettings"]);
+  });
+
+  it("a stored true shows ON and Done saves nothing", async () => {
+    const { api, calls } = fakeApi({ ...SETTINGS, auto_run: true, auto_run_chosen: true } as AssistantSettings);
+    const sw = await readAutoRunSwitch(api, "acc-1");
+    expect(sw).toEqual({ state: "ready", on: true });
+    expect(await saveAutoRunDefault(api, "acc-1", sw)).toBe(false);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("only Done saves the default: Skip does not, and a failed save keeps the step open", () => {
+    const src = codeOnly(read("components/OnboardingRulesStep.tsx"));
+    expect(src.match(/saveAutoRunDefault\(/g)).toHaveLength(1);
+    expect(src).toContain("onSkip={() => void finish()}");
+    expect(src).toMatch(/if \(saveDefault\) \{[\s\S]*?await saveAutoRunDefault\(RULES_API, account\.id, autoRun\);[\s\S]*?\}\s*const updated/);
+  });
+
+  it("the ON title and body read right for the default", () => {
+    const out = view({ phase: "ready", autoRun: { state: "ready", on: true, unsaved: true } });
+    expect(out).toContain(">Your AI rules are on<");
+    expect(out).toMatch(/role="switch"[^>]*aria-checked="true"[\s\S]*Run my rules on new mail/);
+    expect(RULES_STEP_COPY.autoRunOffBody).toMatch(/sort no new mail/);
+  });
+});
+
 describe("Done (item 11)", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -284,7 +427,7 @@ describe("Done (item 11)", () => {
     const src = codeOnly(read("components/OnboardingRulesStep.tsx"));
     expect(src).toContain("finishOnboarding: (accountId) => updateEmailAccount(accountId, { onboardingDone: true }),");
     expect(src).toContain("onSkip={() => void finish()}");
-    expect(src).toContain("onDone={() => void finish()}");
+    expect(src).toContain("onDone={() => void finish(true)}");
     expect(src).toMatch(
       /const updated = await RULES_API\.finishOnboarding\(account\.id\);\s*setFinished\(true\);\s*onFinished\(updated\);/,
     );
@@ -305,8 +448,9 @@ function view(over: Partial<RulesStepViewProps>): string {
     error: null,
     replyRule: true,
     draft: { state: "ready", on: false },
-    draftBusy: false,
+    settingsBusy: false,
     pastFrom: "2026-07-05",
+    sort: { state: "ready", estimate: ESTIMATE },
     onRecommended: noop,
     onChooseOwn: noop,
     onSkip: noop,
@@ -326,6 +470,92 @@ function buttons(markup: string): Array<{ text: string; attrs: string }> {
     text: m[2].replace(/<[^>]*>/g, "").trim(),
   }));
 }
+
+describe("one save at a time for both switches (EM-G11c2 fix round 1)", () => {
+  it("refuses a second save while the first runs, then takes the next", async () => {
+    const saver = settingsSaver();
+    let release: () => void = () => {};
+    const calls: string[] = [];
+    const first = saver.run(
+      () => new Promise<void>((done) => {
+        calls.push("first");
+        release = done;
+      }),
+    );
+    expect(saver.busy()).toBe(true);
+    expect(await saver.run(async () => void calls.push("second"))).toBe(false);
+    release();
+    expect(await first).toBe(true);
+    expect(saver.busy()).toBe(false);
+    expect(await saver.run(async () => void calls.push("third"))).toBe(true);
+    expect(calls).toEqual(["first", "third"]);
+  });
+
+  it("a failed save frees the guard and passes the failure up", async () => {
+    const saver = settingsSaver();
+    await expect(saver.run(async () => {
+      throw new Error("503");
+    })).rejects.toThrow("503");
+    expect(saver.busy()).toBe(false);
+  });
+
+  it("one busy flag disables both switches", () => {
+    const out = view({ phase: "ready", settingsBusy: true, autoRun: { state: "ready", on: false } });
+    const sw = buttons(out).filter((b) => b.attrs.includes('role="switch"'));
+    expect(sw).toHaveLength(2);
+    for (const s of sw) expect(s.attrs).toMatch(/disabled=""/);
+    const idle = view({ phase: "ready", settingsBusy: false, autoRun: { state: "ready", on: false } });
+    for (const s of buttons(idle).filter((b) => b.attrs.includes('role="switch"'))) {
+      expect(s.attrs).not.toMatch(/disabled=""/);
+    }
+  });
+
+  it("both handlers save through the one guard", () => {
+    const src = codeOnly(read("components/OnboardingRulesStep.tsx"));
+    expect(src).toContain("const [saver] = useState(() => settingsSaver());");
+    expect(src.match(/await saveSetting\(/g)).toHaveLength(2);
+    expect(src).not.toMatch(/draftBusy|autoRunBusy/);
+  });
+});
+
+describe("the Auto-run switch draws (G2)", () => {
+  it("OFF: the title says the rules are ready, not on", () => {
+    const out = view({ phase: "ready", autoRun: { state: "ready", on: false } });
+    expect(out).toContain(">Your AI rules are ready<");
+    expect(out).not.toContain(">Your AI rules are on<");
+    expect(out).toContain(RULES_STEP_COPY.autoRunOffBody.replace(/"/g, "&quot;"));
+  });
+
+  it("ON: the title says the rules are on", () => {
+    const out = view({ phase: "ready", autoRun: { state: "ready", on: true } });
+    expect(out).toContain(">Your AI rules are on<");
+    expect(out).not.toContain(">Your AI rules are ready<");
+  });
+
+  it("while the value loads, or after a failed read, the title claims no ON", () => {
+    for (const autoRun of [{ state: "loading" }, { state: "failed" }] as const) {
+      expect(view({ phase: "ready", autoRun })).toContain(">Your AI rules are ready<");
+    }
+  });
+
+  it("OFF: the switch reads OFF, and the body says the rules sort no new mail", () => {
+    const out = view({ phase: "ready", autoRun: { state: "ready", on: false } });
+    expect(out).toMatch(/<label[^>]*>[\s\S]*role="switch"[^>]*aria-checked="false"[\s\S]*Run my rules on new mail<\/label>/);
+    expect(out).toContain(RULES_STEP_COPY.autoRunOffBody.replace(/"/g, "&quot;"));
+    expect(out).not.toContain(RULES_STEP_COPY.readyBody);
+  });
+
+  it("ON: the switch reads ON, and the body of main stands", () => {
+    const out = view({ phase: "ready", autoRun: { state: "ready", on: true } });
+    expect(out).toMatch(/role="switch"[^>]*aria-checked="true"[\s\S]*Run my rules on new mail/);
+    expect(out).toContain(RULES_STEP_COPY.readyBody);
+  });
+
+  it("a failed read keeps the switch disabled and says so", () => {
+    const out = view({ phase: "ready", autoRun: { state: "failed" } });
+    expect(out).toContain(RULES_STEP_COPY.autoRunReadFailed);
+  });
+});
 
 describe("the rules step draws (items 8 to 11)", () => {
   it("choose: the title, the sort line and the three actions", () => {
@@ -415,7 +645,8 @@ describe("the handlers of the view", () => {
     expect(find("COPY.recommended")[0]).toContain("onClick={p.onRecommended}");
     expect(find("COPY.chooseOwn")[0]).toContain("onClick={p.onChooseOwn}");
     expect(find("COPY.skipForNow")[0]).toContain("onClick={p.onSkip}");
-    expect(find("COPY.processPast")[0]).toContain("onClick={p.onProcessPast}");
+    // EM-S10: the sort action's text comes from the estimate view.
+    expect(find("sort.action")[0]).toContain("onClick={p.onProcessPast}");
     expect(find("COPY.insights")[0]).toContain("onClick={p.onInsights}");
     expect(find("COPY.done")[0]).toContain("onClick={p.onDone}");
     expect(find("aria-label={COPY.skipSetup}")[0]).toContain("onClick={p.onSkip}");
@@ -443,9 +674,13 @@ describe("the page wiring", () => {
 
   it("draws the rules step for the mailbox in view, where the import panel drew", () => {
     expect(page).toMatch(
-      /\{selectedAccount && onboardingStage\(selectedAccount\) === "rules" && \(\s*<OnboardingRulesStep\s+key=\{selectedAccount\.id\}\s+account=\{selectedAccount\}\s+onOpenAutomation=\{openFromSetup\}\s+onFinished=\{\(updated\) => \{\s*replaceAccount\(updated\);\s*void refreshAccounts\(\);\s*\}\}/,
+      /\{selectedAccount && setupStage === "rules" && \(\s*<OnboardingRulesStep\s+key=\{selectedAccount\.id\}\s+account=\{selectedAccount\}\s+onOpenAutomation=\{openFromSetup\}\s+onFinished=\{\(updated\) => \{\s*replaceAccount\(updated\);\s*void refreshAccounts\(\);\s*\}\}/,
     );
-    expect(page.indexOf("<OnboardingRulesStep")).toBeGreaterThan(page.indexOf("<FirstSyncBanner address"));
+    // "<OnboardingPanel" alone: an indexOf of -1 would pass this check with
+    // no panel at all. Since EM-S9 the panel is the one first-import surface
+    // in the mail pane, and FirstSyncBanner is gone.
+    expect(page.indexOf("<OnboardingPanel")).toBeGreaterThan(-1);
+    expect(page.indexOf("<OnboardingRulesStep")).toBeGreaterThan(page.indexOf("<OnboardingPanel"));
     expect(page.indexOf("<OnboardingRulesStep")).toBeLessThan(page.indexOf("<EmailToolbar />"));
   });
 
@@ -612,5 +847,237 @@ describe("no sort action when nothing was imported (fix round 1, item 7)", () =>
 
   it("before EM-T6b (no phase): only the one-day rule applies", () => {
     expect(processPastFrom({ importSince: since }, NOW)).toBe("2026-07-05");
+  });
+});
+
+// ── EM-S10: the count before the sort (§14.4.7, §14.6.10, D-EM-59) ─────────
+
+describe("the estimate line before the sort (EM-S10)", () => {
+  const ready = (over: Partial<typeof ESTIMATE> = {}): SortEstimate => ({
+    state: "ready",
+    estimate: { ...ESTIMATE, ...over },
+  });
+  const sortButton = (out: string) =>
+    buttons(out).find(
+      (b) =>
+        b.text === "Sort my imported mail" ||
+        b.text.startsWith("Sort the next") ||
+        b.text === RULES_STEP_COPY.sortChooseRange,
+    );
+
+  it("shows the count of AI calls with the sort action", () => {
+    const out = view({ phase: "ready", sort: ready() });
+    expect(out).toContain("Sorting it takes 340 AI calls, one for each message.");
+    expect(sortButton(out)!.attrs).not.toMatch(DISABLED);
+    expect(sortEstimateView(ready({ will_process: 1, eligible: 1 })).line).toBe("Sorting it takes 1 AI call.");
+  });
+
+  it("the member sees the count before any sort starts: the action waits for the read", () => {
+    const out = view({ phase: "ready", sort: { state: "loading" } });
+    expect(out).toContain(RULES_STEP_COPY.sortCounting);
+    expect(sortButton(out)!.attrs).toMatch(DISABLED);
+    expect(out).not.toMatch(/AI calls?,/);
+    // The container reads the status and the estimate for the import range,
+    // and the button is disabled unless the view enables it.
+    const src = codeOnly(read("components/OnboardingRulesStep.tsx"));
+    expect(src).toContain("readSortState(RULES_API, account.id, pastFrom, new Date())");
+    expect(src).toContain("estimateSort: (accountId, startDate) => processPastEstimate({ accountId, startDate })");
+    expect(src).toContain("sortStatus: getProcessPastStatus");
+    expect(src).toContain("disabled={locked || !sort.enabled}");
+    expect(src).toMatch(/useEffect\(\(\) => \{\s*if \(phase !== "ready" \|\| !pastFrom\) return;/);
+  });
+
+  it("a failed count keeps the action disabled and offers Count again (fix round 1, G1)", async () => {
+    const failing = { estimateSort: async () => Promise.reject(new Error("503")) };
+    expect(await readSortEstimate(failing, "acc-1", "2026-07-05")).toEqual({ state: "failed" });
+    const v = sortEstimateView({ state: "failed" });
+    expect(v.enabled).toBe(false);
+    expect(v.retry).toBe(true);
+    let tries = 0;
+    const out = view({ phase: "ready", sort: { state: "failed" }, onRetrySort: () => (tries += 1) });
+    expect(out).toContain(RULES_STEP_COPY.sortCountFailed);
+    expect(sortButton(out)!.attrs).toMatch(DISABLED);
+    const retry = buttons(out).find((b) => b.text === RULES_STEP_COPY.sortRetry);
+    expect(retry).toBeDefined();
+    expect(retry!.attrs).not.toMatch(DISABLED);
+    // Only `failed` draws the retry.
+    expect(buttons(view({ phase: "ready", sort: ready() })).map((b) => b.text)).not.toContain(RULES_STEP_COPY.sortRetry);
+    const src = codeOnly(read("components/OnboardingRulesStep.tsx"));
+    expect(src).toContain("onRetrySort={() => setSortTry((n) => n + 1)}");
+    expect(src).toMatch(/\[phase, account\.id, pastFrom, sortTry\]/);
+    expect(tries).toBe(0);
+  });
+
+  it("only a count enables the action: no state without one does", () => {
+    const states: SortEstimate[] = [{ state: "loading" }, { state: "failed" }, { state: "running" }];
+    for (const s of states) expect(sortEstimateView(s).enabled, s.state).toBe(false);
+    expect(sortEstimateView(ready()).enabled).toBe(true);
+  });
+
+  it("reads the status first, then the estimate from the start of the import", async () => {
+    const { api, calls } = fakeApi(SETTINGS);
+    expect(await readSortState(api, "acc-1", "2026-07-05", NOW)).toEqual({ state: "ready", estimate: ESTIMATE });
+    expect(calls).toEqual([
+      ["sortStatus", "acc-1"],
+      ["estimateSort", ["acc-1", "2026-07-05"]],
+    ]);
+    // A failed status read counts as no run: the route refuses a second run.
+    const noStatus = { ...api, sortStatus: async () => Promise.reject(new Error("503")) };
+    expect((await readSortState(noStatus, "acc-1", "2026-07-05", NOW)).state).toBe("ready");
+  });
+
+  it("a run that is still going shows Sorting with no offer, and polls (fix round 1, G2)", async () => {
+    const v = sortEstimateView({ state: "running" });
+    expect(v.line).toBe(RULES_STEP_COPY.sortRunning);
+    expect(v.line.startsWith("Sorting…")).toBe(true);
+    expect(v.action).toBeNull();
+    const out = view({ phase: "ready", sort: { state: "running" } });
+    expect(out).toContain("Sorting…");
+    expect(sortButton(out)).toBeUndefined();
+    expect(sortPollDelay({ state: "running" })).toBe(SORT_POLL_MS);
+    for (const s of [{ state: "loading" }, { state: "failed" }, ready()] as SortEstimate[]) {
+      expect(sortPollDelay(s)).toBeNull();
+    }
+  });
+
+  it("when the run turns done, the next read gives the estimate again", async () => {
+    const statuses = ["running", "running", "done"];
+    const calls: string[] = [];
+    const api = {
+      sortStatus: async () => {
+        calls.push("status");
+        return { status: statuses.shift() as "running" | "done" };
+      },
+      estimateSort: async () => {
+        calls.push("estimate");
+        return { ...ESTIMATE, eligible: 120, will_process: 120 };
+      },
+    };
+    const reads: SortEstimate[] = [];
+    let s = await readSortState(api, "acc-1", "2026-07-05", NOW);
+    reads.push(s);
+    while (sortPollDelay(s) !== null) {
+      s = await readSortState(api, "acc-1", "2026-07-05", NOW);
+      reads.push(s);
+    }
+    expect(reads.map((r) => r.state)).toEqual(["running", "running", "ready"]);
+    expect(calls).toEqual(["status", "status", "status", "estimate"]);
+    expect(sortEstimateView(s).line).toBe("Sorting it takes 120 AI calls, one for each message.");
+    // The container polls on that delay and clears the timer.
+    const src = codeOnly(read("components/OnboardingRulesStep.tsx"));
+    expect(src).toContain("const wait = sortPollDelay(s);");
+    expect(src).toContain("if (wait !== null) timer = setTimeout(read, wait);");
+    expect(src).toContain("if (timer) clearTimeout(timer);");
+  });
+
+  it("capped: says what one run sorts, and offers the next run after this one", () => {
+    const capped = ready({ eligible: 2500, will_process: 1000, capped: true, limit: 1000 });
+    const v = sortEstimateView(capped, "en-US");
+    expect(v.line).toBe("Sorting it takes 1,000 AI calls, one for each message.");
+    expect(v.capLine).toBe(
+      "One run sorts 1,000 messages, the oldest first. " +
+        "1,500 more wait. After this run ends, this step offers the next run.",
+    );
+    expect(v.action).toBe("Sort the next 1,000 messages");
+    const out = view({ phase: "ready", sort: capped });
+    expect(out).toContain("One run sorts");
+    const b = buttons(out).find((x) => x.text.startsWith("Sort the next"));
+    expect(b).toBeDefined();
+    expect(b!.attrs).not.toMatch(DISABLED);
+  });
+
+  it("after a capped run, the next read offers the rest", () => {
+    const after = sortEstimateView(ready({ eligible: 1500, will_process: 1000, capped: true, limit: 1000 }), "en-US");
+    expect(after.action).toBe("Sort the next 1,000 messages");
+    expect(after.capLine).toContain("500 more wait.");
+    const last = sortEstimateView(ready({ eligible: 500, will_process: 500, capped: false }), "en-US");
+    expect(last.action).toBe(RULES_STEP_COPY.processPast);
+    expect(last.capLine).toBeNull();
+  });
+
+  it("the size of a run comes from the answer, never from a constant", () => {
+    const v = sortEstimateView(ready({ eligible: 3000, will_process: 2000, capped: true, limit: 2000 }), "en-US");
+    expect(v.capLine).toContain("One run sorts 2,000 messages");
+    expect(v.capLine).toContain("1,000 more wait");
+  });
+
+  it("a range wider than one run says so before the dialog opens (fix round 1, G4)", async () => {
+    expect(sortSpanDays("2026-10-03", NOW)).toBe(1);
+    expect(sortSpanDays("2025-10-03", NOW)).toBe(366);
+    expect(sortSpanDays("2025-10-02", NOW)).toBe(367);
+    const { api, calls } = fakeApi(SETTINGS);
+    expect(await readSortState(api, "acc-1", "2025-10-03", NOW)).toEqual({ state: "ready", estimate: ESTIMATE });
+    calls.length = 0;
+    expect(await readSortState(api, "acc-1", "2025-10-02", NOW)).toEqual({ state: "tooWide", days: 367 });
+    // No count is read for a range that the dialog would refuse.
+    expect(calls).toEqual([["sortStatus", "acc-1"]]);
+    const v = sortEstimateView({ state: "tooWide", days: 400 }, "en-US");
+    expect(v.line).toContain("Your imported mail covers 400 days. One run covers at most 366 days.");
+    expect(v.line).not.toMatch(/AI calls?,/);
+    expect(v.action).toBe(RULES_STEP_COPY.sortChooseRange);
+    const out = view({ phase: "ready", sort: { state: "tooWide", days: 400 } });
+    expect(out).toContain("One run covers at most 366 days");
+  });
+
+  it("the cap mirrors runner.py, and the dialog reads the same constant", () => {
+    const runner = readFileSync(
+      join(__dirname, "../../../../../../apps/services/gateway/gateway/routes/email/automation/runner.py"),
+      "utf-8",
+    );
+    const m = runner.match(/^_PROCESS_PAST_MAX_SPAN_DAYS = (\d+)$/m);
+    expect(m).not.toBeNull();
+    expect(PROCESS_PAST_MAX_SPAN_DAYS).toBe(Number(m![1]));
+    const tab = codeOnly(read("components/automation/ai-settings/RulesTab.tsx"));
+    expect(tab).toContain("const PAST_MAX_SPAN_DAYS = PROCESS_PAST_MAX_SPAN_DAYS;");
+  });
+
+  it("nothing left to sort: no sort action, and a plain line", () => {
+    const done = view({ phase: "ready", sort: ready({ eligible: 0, will_process: 0 }) });
+    expect(sortButton(done)).toBeUndefined();
+    expect(done).toContain(RULES_STEP_COPY.sortDone);
+    const none = view({ phase: "ready", sort: ready({ in_range: 0, eligible: 0, will_process: 0 }) });
+    expect(none).toContain(RULES_STEP_COPY.sortNothing);
+  });
+
+  it("no estimate line without imported mail, and no word names a model", () => {
+    const out = view({ phase: "ready", pastFrom: null, sort: { state: "loading" } });
+    expect(out).not.toContain(RULES_STEP_COPY.sortCounting);
+    const states: SortEstimate[] = [
+      { state: "loading" },
+      { state: "failed" },
+      { state: "running" },
+      { state: "tooWide", days: 500 },
+      ready(),
+      ready({ capped: true, eligible: 5000, will_process: 1000 }),
+      ready({ eligible: 0, will_process: 0 }),
+    ];
+    for (const s of states) {
+      const v = sortEstimateView(s);
+      expect([v.line, v.capLine, v.action].join(" ")).not.toMatch(/model/i);
+    }
+  });
+});
+
+// ── EM-S10 fix round 1 (G1): the Process past emails dialog ────────────────
+
+describe("the Process past emails dialog never starts without a count (G1)", () => {
+  const tab = codeOnly(read("components/automation/ai-settings/RulesTab.tsx"));
+  const dialog = tab.slice(tab.indexOf("function ProcessPastEmailsDialog("));
+
+  it("the Process button is disabled while no count shows", () => {
+    expect(dialog).toContain("disabled={busy || tooWide || !start || estimating || !estimate}");
+    // One run button in the dialog, and it calls `run`.
+    expect(dialog.match(/onClick=\{run\}/g)).toHaveLength(1);
+  });
+
+  it("a failed count says so and offers Count again", () => {
+    expect(dialog).toContain("setEstimateFailed(true);");
+    expect(dialog).toMatch(/estimateFailed \? \([\s\S]*?Count again/);
+    expect(dialog).toContain("onClick={() => setEstimateTry((n) => n + 1)}");
+    expect(dialog).toMatch(/\[accountId, start, end, includeRead, skipProcessed, tooWide, estimateTry\]/);
+  });
+
+  it("the number shows on the Process button", () => {
+    expect(dialog).toMatch(/`Process \$\{estimate\.will_process\.toLocaleString\(\)\} email/);
   });
 });

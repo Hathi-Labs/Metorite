@@ -47,6 +47,9 @@ async def test_docker_run_includes_hardening_flags(monkeypatch):
         return _FakeProc()
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+    # H-363: the container never gets github_token. A Copilot-only token
+    # starts it.
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "fake-copilot-only-token")
 
     settings = types.SimpleNamespace(
         github_token="fake-token",
@@ -83,6 +86,9 @@ async def test_docker_run_hardening_uses_settings_overrides(monkeypatch):
         return _FakeProc()
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+    # H-363: the container never gets github_token. A Copilot-only token
+    # starts it.
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "fake-copilot-only-token")
 
     settings = types.SimpleNamespace(
         github_token="fake-token",

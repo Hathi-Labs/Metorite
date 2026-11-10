@@ -10,13 +10,17 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import {
+  BRIEF_PILLS_LABEL,
   TEMPLATE_CATALOG,
   TEMPLATE_REGISTRY,
   isDateCell,
+  reportCardPills,
   shownDelta,
   taskHref,
 } from "./genUITemplates";
 import { PROJECTS_CHANGED_EVENT } from "./projects/ProjectToolCards";
+import { RowEditor } from "./PlanCardBody";
+import { planRowsFrom } from "@/app/projects/lib/planCard";
 import { CELL_META, type PriorityCell } from "@/app/tasks/lib/priority";
 
 const ID = "0f8fad5b-d9cb-469f-a165-70867728950e";
@@ -50,6 +54,38 @@ describe("the catalog and the registry", () => {
     for (const name of ["timeline", "taskBoard", "dataGrid", "reportCard", "planCard"]) {
       expect(names.has(name)).toBe(true);
     }
+  });
+});
+
+// ── WS-62 CF-5 — the day's brief as a reportCard with pills ─────────────────
+
+describe("the report card's pills (CF-5)", () => {
+  const brief = {
+    title: "Your day, Thu 22 Oct",
+    pills: ['Reply to Priya Shah: "Q3 pricing" (waiting 40 min)', "Overdue: Send the deck (2 days late)", " ", 7],
+    note: "+2 more on My Day",
+  };
+
+  it("reads the lines, trimmed, and drops an empty one", () => {
+    expect(reportCardPills(brief)).toEqual([
+      'Reply to Priya Shah: "Q3 pricing" (waiting 40 min)',
+      "Overdue: Send the deck (2 days late)",
+      "7",
+    ]);
+    expect(reportCardPills({ title: "Report" })).toEqual([]);
+  });
+
+  it("draws each line as one pill of the one pill component, with the note under them", () => {
+    const html = renderToStaticMarkup(createElement(() => TEMPLATE_REGISTRY.reportCard(brief, { onAction: () => {} })));
+    expect(html).toContain("Your day, Thu 22 Oct");
+    expect(html).toContain(BRIEF_PILLS_LABEL);
+    expect(html).toContain(">Overdue: Send the deck (2 days late)</button>");
+    expect(html).toContain("+2 more on My Day");
+    // The brief is not a saved report: no Reports link on its title.
+    expect(html).not.toContain('href="/projects?view=reports');
+    // A report with no pills draws as before: no label, no pills.
+    const plain = renderToStaticMarkup(createElement(() => TEMPLATE_REGISTRY.reportCard({ title: "Q3", stats: [] })));
+    expect(plain).not.toContain(BRIEF_PILLS_LABEL);
   });
 });
 
@@ -98,21 +134,33 @@ describe("isDateCell", () => {
 });
 
 // ── WS-27bm S10 — the plan card's "Waits on" control ────────────────────────
+//
+// Since the read-first redesign (owner, 2026-10-18), "Waits on" lives in the
+// open row, `RowEditor`. The card draws no editor until a row opens, so
+// these tests draw the editor of each row the way the card does.
 
 describe("the plan card's Waits on control", () => {
-  const plan = (tasks: unknown[]) =>
-    renderToStaticMarkup(createElement(() => TEMPLATE_REGISTRY.planCard({ project: { name: "Steps" }, tasks })));
+  const editors = (tasks: unknown[], kept?: unknown[]) => {
+    const rows = planRowsFrom(tasks);
+    const on = kept ? planRowsFrom(kept) : rows;
+    return rows.map((r) =>
+      renderToStaticMarkup(createElement(RowEditor, {
+        row: r, rows, kept: on, ticked: true, ownersList: "o",
+        onTick: () => {}, onCell: () => {}, onClose: () => {},
+      })),
+    ).join("");
+  };
   const row = (key: string, after: string[] = []) =>
     ({ key, title: key, owner: "a@x.io", effort_mins: 30, due: "2026-10-01", after });
 
   it("draws on each row that has another row to wait on", () => {
-    const html = plan([row("t1"), row("t2", ["t1"]), row("t3", ["t2"])]);
+    const html = editors([row("t1"), row("t2", ["t1"]), row("t3", ["t2"])]);
     // t1 has no option (both others wait on it). t2 and t3 each have one.
     expect(html.match(/aria-label="Waits on \(for /g) ?? []).toHaveLength(2);
   });
 
   it("names each control after its row (fix round 1, a11y)", () => {
-    const html = plan([row("t1"), row("t2", ["t1"]), row("t3", ["t2"])]);
+    const html = editors([row("t1"), row("t2", ["t1"]), row("t3", ["t2"])]);
     expect(html).toContain('aria-label="Waits on (for t2)"');
     expect(html).toContain('aria-label="Waits on (for t3)"');
     expect(html).not.toContain('aria-label="Waits on (for t1)"');
@@ -120,20 +168,34 @@ describe("the plan card's Waits on control", () => {
 
   it("counts only the rows that are still on the card", () => {
     // t9 was dropped from the card, and its key is still in t2's after.
-    const html = plan([row("t1"), row("t2", ["t1", "t9"])]);
+    const html = editors([row("t1"), row("t2", ["t1", "t9"])]);
     const t2 = html.split('aria-label="Waits on (for t2)"')[1].split("</button>")[0];
     expect(t2).toContain("· 1</span>");
     expect(t2).not.toContain("· 2</span>");
   });
 
+  it("counts only the ticked rows: an unticked row is dropped (owner, 2026-10-18)", () => {
+    // t3 is unticked. The editors draw every row, and t2 counts t1 only.
+    const all = [row("t1"), row("t2", ["t1", "t3"]), row("t3")];
+    const html = editors(all, all.slice(0, 2));
+    expect(html.split('aria-label="Waits on (for t2)"')[1].split("</button>")[0]).toContain("· 1</span>");
+  });
+
   it("tells a row with no option why, and does not hide it", () => {
-    const html = plan([row("t1"), row("t2", ["t1"])]);
+    const html = editors([row("t1"), row("t2", ["t1"])]);
     expect(html).toContain("Waits on: none. Every other task waits on this one.");
     expect(html.match(/Waits on: none/g) ?? []).toHaveLength(1);
   });
 
   it("is absent from a plan of one task", () => {
-    expect(plan([row("t1")])).not.toContain("Waits on");
+    expect(editors([row("t1")])).not.toContain("Waits on");
+  });
+
+  it("is absent from the card until a row opens", () => {
+    const html = renderToStaticMarkup(createElement(() => TEMPLATE_REGISTRY.planCard({
+      project: { name: "Steps" }, tasks: [row("t1"), row("t2", ["t1"]), row("t3", ["t2"])],
+    })));
+    expect(html).not.toContain("Waits on");
   });
 });
 
@@ -170,3 +232,146 @@ describe("the board card draws THE priority chip (D78, H-173)", () => {
     expect(html).not.toContain("!1");
   });
 });
+
+describe("the form card's checkbox (WS-46 P13, the batch of new tasks)", () => {
+  const form = () =>
+    renderToStaticMarkup(
+      createElement(() =>
+        TEMPLATE_REGISTRY.formCard({
+          title: "Add 2 tasks to Ops",
+          submitLabel: "Review tasks",
+          fields: [
+            { name: "row_1", label: "Book the caterer", type: "checkbox", value: true,
+              hint: "Priya · due Fri 9 Oct 2026 · To do" },
+            { name: "row_2", label: "Print the badges", type: "checkbox", value: false },
+          ],
+        }),
+      ),
+    );
+
+  it("draws one house checkbox per row, with its start state", () => {
+    const html = form();
+    expect(html.match(/type="checkbox"/g)).toHaveLength(2);
+    expect(html.match(/checked=""/g)).toHaveLength(1);
+    expect(html).toContain("cc-checkbox");
+  });
+
+  it("names the row and gives its facts as words", () => {
+    const html = form();
+    expect(html).toContain("Book the caterer");
+    expect(html).toContain("Priya · due Fri 9 Oct 2026 · To do");
+    expect(html).toContain("Review tasks");
+  });
+
+  it("lists the type in the catalog the model reads", () => {
+    const entry = TEMPLATE_CATALOG.find((t) => t.name === "formCard");
+    expect(entry?.data).toContain("'checkbox'");
+    expect(entry?.data).toContain("hint?");
+  });
+});
+
+describe("a recommended option says so (owner report, 2026-10-09)", () => {
+  // Mutations caught: the badge goes back to a bare star; the picker's motion
+  // goes back to a `both` fill, which held every option at full opacity after
+  // the click; the picker answers a click with no handler.
+  const options = [
+    { id: "fwd", label: "Forward with the PDF", recommended: true, badge: "Fast" },
+    { id: "link", label: "Send a link" },
+  ];
+  const picker = (ctx?: { onAction?: (a: string) => void }) =>
+    renderToStaticMarkup(createElement(() => TEMPLATE_REGISTRY.optionPicker({ title: "How?", options }, ctx)));
+
+  it("the option picker draws the word Recommended, and no star", () => {
+    const html = picker({ onAction: () => {} });
+    expect(html).toContain(">Recommended<");
+    expect(html).not.toMatch(/[★⭐]/);
+    // The option's own badge is the shared Badge too, not a hand-made pill.
+    expect(html).toMatch(/cc-control[^"]*bg-primary\/10[^"]*">Fast</);
+  });
+
+  it("the comparison draws the word Recommended, and no star", () => {
+    const html = renderToStaticMarkup(createElement(() => TEMPLATE_REGISTRY.comparison({
+      options: [{ name: "A", recommended: true, rows: [] }, { name: "B", rows: [] }],
+    })));
+    expect(html).toContain(">Recommended<");
+    expect(html).not.toMatch(/[★⭐]/);
+  });
+
+  it("each option is a pressed or unpressed toggle, and its motion never holds the opacity", () => {
+    const html = picker({ onAction: () => {} });
+    expect(html.match(/aria-pressed="false"/g)?.length).toBe(2);
+    expect(html).toContain("backwards");
+    expect(html).not.toMatch(/ccFadeUp[^;"]* both/);
+  });
+
+  it("an answer the card already got locks it and shows the choice, after any remount (P2-c)", () => {
+    const html = renderToStaticMarkup(createElement(() =>
+      TEMPLATE_REGISTRY.optionPicker({ title: "How?", options }, { answered: "Selected: Send a link" })));
+    expect(html).toContain(">Sent<");
+    expect(html.match(/aria-pressed="true"/g)?.length).toBe(1);
+    expect(html.match(/<button[^>]* disabled=""/g)?.length).toBe(2);
+    expect(html).not.toContain("This card cannot send an answer here.");
+  });
+
+  it("with no handler the options take no click, and the card says why", () => {
+    const html = picker(undefined);
+    expect(html.match(/<button[^>]* disabled=""/g)?.length).toBe(2);
+    expect(html).toContain("This card cannot send an answer here.");
+  });
+});
+
+// ── §26 — the plan card with unassigned rows (owner, 2026-10-17) ────────────
+//
+// Since the read-first redesign (owner, 2026-10-18), a row is a line of text
+// until it opens. An unassigned row's owner chip reads "Unassigned", and the
+// open row's owner field still shows it as its placeholder.
+
+describe("the plan card with unassigned rows", () => {
+  const plan = (tasks: unknown[]) =>
+    renderToStaticMarkup(
+      createElement(() => TEMPLATE_REGISTRY.planCard({ project: { name: "Frame" }, tasks, capacity: "c" })),
+    );
+  const row = (key: string, owner: string) => ({
+    key, title: `Task ${key}`, owner, effort_mins: 30, due: "2026-10-01",
+    fit: "welding", hours: "fits", marks: ["no skill match"],
+  });
+  const editor = (r: unknown) => {
+    const [one] = planRowsFrom([r]);
+    return renderToStaticMarkup(createElement(RowEditor, {
+      row: one, rows: [one], kept: [one], ticked: true, ownersList: "o",
+      onTick: () => {}, onCell: () => {}, onClose: () => {},
+    }));
+  };
+
+  it("draws every row, with an Unassigned owner the member can fill", () => {
+    const html = plan([row("t1", ""), row("t2", ""), row("t3", "")]);
+    expect(html.match(/data-plan-unassigned=""/g) ?? []).toHaveLength(3);
+    expect(html.match(/<span class="truncate">Unassigned<\/span>/g) ?? []).toHaveLength(3);
+    expect(html).not.toContain("Fit:");
+    expect(html).not.toContain("Hours:");
+    expect(html).not.toContain("no skill match");
+    expect(html).not.toContain("Skill gap");
+    expect(html).toContain("All 3 tasks are unassigned, so no row shows a fit or hours.");
+    // Mutation: require the owner again -> the submit line names the owner.
+    expect(html).not.toContain("an owner");
+    // The open row: the owner field, with "Unassigned" as its placeholder.
+    expect(editor(row("t1", ""))).toContain('placeholder="Unassigned"');
+    expect(editor(row("t1", ""))).not.toContain("Fit:");
+  });
+
+  it("keeps the fit of an owned row beside an unassigned one", () => {
+    const html = plan([row("t1", "a@x.io"), row("t2", "")]);
+    expect(html.match(/data-plan-unassigned=""/g) ?? []).toHaveLength(1);
+    // The owned row shows its mark as a badge, and its fit when it opens.
+    expect(html.match(/>Skill gap</g) ?? []).toHaveLength(1);
+    expect(editor(row("t1", "a@x.io")).match(/Fit: welding/g) ?? []).toHaveLength(1);
+    expect(html).toContain("1 of 2 tasks is unassigned, so it shows no fit or hours.");
+  });
+
+  it("says nothing about owners when every row has one", () => {
+    const html = plan([row("t1", "a@x.io")]);
+    expect(html).not.toContain("data-plan-owners");
+    expect(html).not.toContain("data-plan-unassigned");
+  });
+});
+

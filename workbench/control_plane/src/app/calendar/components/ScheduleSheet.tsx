@@ -150,7 +150,7 @@ export function ScheduleSheet({
         <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4">
           {tasks.length === 0 ? (
             <p className="px-1 py-8 text-center text-xs text-muted-foreground">
-              Nothing to schedule — inbox zero on next actions. 🎉
+              Nothing to schedule — My tasks is clear. 🎉
             </p>
           ) : (
             <>
@@ -227,11 +227,13 @@ export function ScheduleSheet({
                                 d <= 1 ? "text-destructive" : "text-warning"
                               }`}
                             >
-                              {d <= 0
-                                ? "due today"
-                                : d === 1
-                                  ? "due tomorrow"
-                                  : `due in ${d}d`}
+                              {d < 0
+                                ? "overdue"
+                                : d === 0
+                                  ? "due today"
+                                  : d === 1
+                                    ? "due tomorrow"
+                                    : `due in ${d}d`}
                             </span>
                           )}
                         </span>

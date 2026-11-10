@@ -82,9 +82,9 @@ Each **skill repo** is a Python package — pip‑installable, well‑typed entr
 
 ```
 project-docs/        # Planning docs — start with AGENTS.md
-  project_plan.md        # Requirements + roadmap + WBS
+  INDEX.md               # Which specs are active
+  work_plan.md           # The dispatch board and the decisions
   system_architecture.md # C4 diagrams, data model, ADRs
-  reference.md           # MAF / Copilot SDK / memory notes
   specs/                 # Per-feature specs
 
 apps/                    # Deployable services / app modules
@@ -236,9 +236,6 @@ All planning artefacts live in [`project-docs/`](project-docs/). Start with `AGE
 | Doc | Purpose |
 |---|---|
 | [`AGENTS.md`](AGENTS.md) | Root project contract + constraints + conventions (read first) |
-| [`project-docs/project_plan.md`](project-docs/project_plan.md) | Requirements + milestones + WBS + risks |
+| [`project-docs/INDEX.md`](project-docs/INDEX.md) | Which specs are active, and which are not |
+| [`project-docs/work_plan.md`](project-docs/work_plan.md) | The dispatch board, the rules and the decisions |
 | [`project-docs/system_architecture.md`](project-docs/system_architecture.md) | C4 diagrams, data model, ADRs |
-| [`project-docs/reference.md`](project-docs/reference.md) | MAF / Copilot SDK / memory library notes |
-| [`FOUNDATION_AUDIT_REPORT.md`](FOUNDATION_AUDIT_REPORT.md) | Foundational architecture audit (findings by severity) |
-| [`FOUNDATION_BUILDOUT_CHECKLIST.md`](FOUNDATION_BUILDOUT_CHECKLIST.md) | Missing/partial foundational capabilities + priorities (incl. `CH-*` competitive refs, BO‑20/BO‑21) |
-| [`COMPETITIVE_COMPARISON.md`](COMPETITIVE_COMPARISON.md) | Three‑way comparison vs Hermes Agent & OpenClaw — where we stand + what to learn (annealed into `project-docs/specs/competitive_hardening_2026-07.md`) |

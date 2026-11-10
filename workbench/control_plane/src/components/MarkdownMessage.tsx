@@ -8,25 +8,46 @@
  *  • Syntax-highlighted code blocks (token colours, `lib/codeTheme.ts`)
  *  • Terminal blocks with macOS-style chrome (red/yellow/green dots)
  *  • One-click copy button on every code block
- *  • Links: an in-app path opens in this tab, any other URL in a new tab
+ *  • Links: an in-app path opens in this tab, any other URL in a new tab, and
+ *    a workspace file in the app's own viewer (`ArtifactLink.tsx`)
+ *  • Images: a remote URL loads only on a member's click (`MarkdownImage`)
  *  • Entity pills (opt-in, WS-27bm S9): «names» from the tools as pills
  *  • Collapsible tool-call accordion blocks (mirrors VS Code's "Used tool: …")
- *  • Streaming cursor (blinking ▌) while the response is in-flight
+ *  • Streaming caret at the end of the last line while the response is in-flight
  */
 
 import { useMemo, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import type { Options as MarkdownOptions } from "react-markdown";
+import remarkTextOnly from "@/lib/remarkTextOnly";
 import ChatEntityPill from "@/components/ChatEntityPill";
+import ChatTaskRef from "@/components/ChatTaskRef";
+import { FencedName } from "@/components/FencedText";
 import { ControlLink } from "@/components/ControlLink";
-import { isInAppPath } from "@/components/ui/EntityPill";
-import { buildEntityIndex, type EntityIndex } from "@/lib/entityIndex";
+import MarkdownImage from "@/components/MarkdownImage";
+import { markdownUrlTransform } from "@/lib/markdownMedia";
+import { stripDsmlMarkup } from "@/lib/dsmlMarkup";
+import rehypeStreamCaret from "@/lib/streamCaret";
+import EntityPill, { isInAppPath } from "@/components/ui/EntityPill";
+import { announceInAppLink, externalHost } from "@/lib/inAppLink";
+import { workspaceFileOfHref } from "@/lib/artifactKind";
+import ArtifactFileLink from "@/components/ArtifactLink";
+import { chipForHref, type LinkChipIndex } from "@/lib/linkChips";
+import { buildEntityIndex, projectIdOfHref, type EntityIndex } from "@/lib/entityIndex";
+import ProjectLinkPill from "@/components/ProjectLinkPill";
+import type { TaskRefMode } from "@/lib/projectsAgent";
+import type { TaskRefResolver } from "@/lib/taskRefs";
 import remarkEntityPills, {
   PILL_ATTR,
+  PILL_GROUP_CLASS,
   PILL_NUMBER_ATTR,
   PILL_TEXT_ATTR,
+  TASK_REF_AFTER_ATTR,
+  TASK_REF_ATTR,
   spaceBeforeBold,
+  typedBulletsToList,
 } from "@/lib/remarkEntityPills";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { CODE_THEME } from "@/lib/codeTheme";
@@ -54,13 +75,15 @@ export interface ToolEvent {
   /** Live streaming text from the sub-agent (appended as it streams). */
   subAgentText?: string;
   /** Tool calls made by the sub-agent. */
-  subAgentTools?: Array<{id: string; name: string; result?: string; status: "running" | "done" | "error"}>;
+  subAgentTools?: Array<{id: string; name: string; result?: string; status: "running" | "done" | "error"; args?: Record<string, unknown>}>;
   /** True while the sub-agent is actively streaming. */
   subAgentActive?: boolean;
 }
 
 interface MarkdownMessageProps {
   content: string;
+  /** The hrefs the tools printed; see `MarkdownBody` (KB-4b). */
+  linkChips?: LinkChipIndex;
   streaming?: boolean;
   toolEvents?: ToolEvent[];
   /** Live tool-name status lines for the ThinkingContainer. */
@@ -87,52 +110,17 @@ interface MarkdownMessageProps {
   /** The index the caller already built (`MessageBubble`). Absent: built
    *  here from `toolEvents`, so the index is made once either way. */
   entityIndex?: EntityIndex;
-}
-
-// ─── Media path resolver (shared with ArtifactViewerModal) ────────────────────
-
-/**
- * Rewrite an image src found inside a markdown message so it routes through the
- * gateway file proxy.
- *
- * Rules (in priority order):
- *  1. Already a full URL (http/https/data:) → pass through unchanged
- *  2. Absolute path starting with /          → treat as workspace-relative and proxy
- *  3. Relative path                          → resolve against the mdFilePath's
- *                                             directory, then proxy
- */
-function resolveMediaSrc(
-  src: string,
-  sessionId: string | undefined,
-  mdFilePath: string | undefined,
-): string {
-  // Full URLs and data URIs pass through unchanged
-  if (/^(https?:|data:)/i.test(src)) return src;
-  // No session context → can't resolve; return as-is
-  if (!sessionId) return src;
-
-  let workspacePath: string;
-  if (src.startsWith("/")) {
-    // Treat absolute paths as workspace-root-relative
-    workspacePath = src.replace(/^\/+/, "");
-  } else if (mdFilePath) {
-    // Relative: resolve against the directory containing the .md file
-    const mdDir = mdFilePath.includes("/")
-      ? mdFilePath.substring(0, mdFilePath.lastIndexOf("/"))
-      : "";
-    const parts = (mdDir ? `${mdDir}/${src}` : src).split("/");
-    const resolved: string[] = [];
-    for (const part of parts) {
-      if (part === "..") resolved.pop();
-      else if (part !== ".") resolved.push(part);
-    }
-    workspacePath = resolved.join("/");
-  } else {
-    // No mdFilePath context — treat as workspace-root-relative
-    workspacePath = src;
-  }
-
-  return `/api/agent/workspace/${sessionId}/file?path=${encodeURIComponent(workspacePath)}`;
+  /** Draw a «name» as a quiet emphasis when no pill draws it (owner report,
+   *  2026-10-07). The chat turns it on for every agent answer. A document
+   *  does not. */
+  fences?: boolean;
+  /** Draw each bare `#171` as the task pill when it is a task the member can
+   *  see (owner report, 2026-10-13). Absent: on with `entityPills`.
+   *  `"echo"`: only when the words after it are the task's title. */
+  taskRefs?: TaskRefMode;
+  /** A read's receipt for its step in the trail (`ThinkingContainer`,
+   *  spec `projects_ai_chat.md` §24 rule 2). `MessageBubble` supplies it. */
+  evidenceFor?: (event: ToolEvent) => React.ReactNode | null;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -172,9 +160,9 @@ function CodeBlock({ lang, code }: { lang: string; code: string }) {
       <div className="flex items-center justify-between px-3 py-1.5 bg-secondary/80 border-b border-border/60">
         {isTerminal ? (
           <div className="flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-full bg-red-500/70" />
+            <span className="w-2.5 h-2.5 rounded-full bg-destructive/70" />
             <span className="w-2.5 h-2.5 rounded-full bg-cat-12/70" />
-            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500/70" />
+            <span className="w-2.5 h-2.5 rounded-full bg-success/70" />
             <span className="ml-2 text-[11px] text-muted-foreground font-mono">{lang}</span>
           </div>
         ) : (
@@ -260,13 +248,13 @@ function ChoiceBlock({
               }}
               className={`text-left text-xs rounded-lg border px-3 py-2 transition-colors ${
                 isPicked
-                  ? "border-emerald-600/70 bg-emerald-900/40 text-emerald-200"
+                  ? "border-primary/60 bg-primary/10 text-primary"
                   : picked !== null
                   ? "border-border bg-card/40 text-muted-foreground cursor-not-allowed"
-                  : "border-border bg-secondary/70 text-foreground hover:border-emerald-600/60 hover:bg-secondary"
+                  : "border-border bg-secondary/70 text-foreground hover:border-primary/50 hover:bg-secondary"
               }`}
             >
-              {isPicked && <span className="mr-1.5 text-emerald-400">✓</span>}
+              {isPicked && <span className="mr-1.5 text-primary">✓</span>}
               {opt}
             </button>
           );
@@ -290,20 +278,52 @@ export const LINK_CLASS =
 function InAppLink({ href, children }: { href: string; children?: ReactNode }) {
   const router = useRouter();
   return (
-    <ControlLink href={href} onActivate={() => router.push(href)} className={LINK_CLASS}>
+    <ControlLink
+      href={href}
+      // Each click announces itself first. A push of the URL the page already
+      // shows changes nothing, so the second click on one email link did
+      // nothing (`lib/inAppLink.ts`, review round 1 P2-b).
+      onActivate={() => { announceInAppLink(href); router.push(href); }}
+      className={LINK_CLASS}
+    >
       {children}
     </ControlLink>
   );
 }
 
+/** The words of a link, for the "does it already show the host" test. */
+function nodeText(node: ReactNode): string {
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(nodeText).join("");
+  return "";
+}
+
 function MarkdownLink({ href, children }: { href?: string; children?: ReactNode }) {
+  // A link to a workspace file opens the app's viewer, never the raw file in
+  // a new tab (owner report, 2026-10-16, `components/ArtifactLink.tsx`).
+  const file = workspaceFileOfHref(href);
+  if (file) return <ArtifactFileLink file={file} className={LINK_CLASS}>{children}</ArtifactFileLink>;
   if (href && isInAppPath(href)) return <InAppLink href={href}>{children}</InAppLink>;
   if (href?.toLowerCase().startsWith("mailto:")) {
     return <a href={href} className={LINK_CLASS}>{children}</a>;
   }
+  // A link to another site says so: an icon, and its host unless the words
+  // already show it. A mail subject can carry a link, and the member must see
+  // where a link goes before the click (review round 1, P2-a).
+  const host = externalHost(href);
+  const showHost = host !== null && !nodeText(children).includes(host);
   return (
-    <a href={href} target="_blank" rel="noopener noreferrer" className={LINK_CLASS}>
+    <a href={href} target="_blank" rel="noopener noreferrer" className={LINK_CLASS}
+      data-external-link={host ?? undefined}>
       {children}
+      {host !== null && (
+        // `inline-flex` is an atomic inline, so the link's underline stops
+        // here, and the host reads as a label, not as more of the link text.
+        <span className="ml-1 inline-flex items-center gap-0.5 text-[10px] text-muted-foreground" title={href}>
+          <Icon name="ExternalLink" size={10} />
+          {showHost ? host : null}
+        </span>
+      )}
     </a>
   );
 }
@@ -320,6 +340,39 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
 // every «name» and bare email into a pill, and a missing space before a bold
 // after a full stop is put back. The pills resolve against `entityIndex`, or
 // against the nearest `EntityIndexContext` when no index is passed.
+//
+// `fences` (owner report, 2026-10-07) is the mode of an agent answer with no
+// pills: a «name» draws as a quiet emphasis, and the marks never show. An
+// email stays a mailto link. A document keeps its text as written.
+//
+// `taskRefs` (owner report, 2026-10-13) turns each bare `#171` into the task
+// pill, when one task the member can see has that number (`ChatTaskRef.tsx`).
+// It is on with `entityPills` unless the caller says otherwise. With
+// `entityPills` or `fences` it rides their plugin. `taskRefs={true}` with
+// neither (WS-57 TR-5, the task card) runs the plugin in its `names: false`
+// mode: only the `#171`s change, and no «mark», email or bullet does. The chat
+// always passes `fences`, so its output is the one it was before TR-5
+// (fence: `markdownChatGolden.test.ts`). `taskRefResolver` is the store the
+// pills read: the card passes its task's root store (`taskRefResolverFor`).
+//
+// `projectPills` (WS-57 TR-5) draws a link to `/projects?project=<id>` as the
+// project pill, which opens the project. It adds no link to the task.
+//
+// `inline` draws ONE line of agent text, for a generative-UI field (a list
+// item, a callout, a table cell). Only inline Markdown survives: bold,
+// italic, strikethrough, inline code and links. Every other element is
+// unwrapped to its text, and an image is dropped, so a field can never load a
+// remote file or draw a block. The link rules are the ones above, and HTML
+// stays text, because this renderer has no `rehype-raw`.
+//
+// `plainEmails` (WS-57 TR-4) draws a `mailto:` link as its text. The task
+// card's description and comments use it, so an @mention such as
+// `@asha@example.com` stays the plain text it was before they drew Markdown.
+// The chat never passes it. A backslash before the `@` does not stop GFM's
+// email autolink, so the link is unwrapped here instead.
+
+/** The elements an `inline` body keeps. Exported for its test. */
+export const INLINE_ELEMENTS = ["p", "strong", "em", "del", "code", "a", "span", "br"];
 
 export function MarkdownBody({
   content,
@@ -328,6 +381,15 @@ export function MarkdownBody({
   mdFilePath,
   entityPills = false,
   entityIndex,
+  fences = false,
+  taskRefs,
+  inline = false,
+  caret = false,
+  plainEmails = false,
+  taskRefResolver,
+  projectPills = false,
+  textOnly = false,
+  linkChips,
 }: {
   content: string;
   onChoice?: (choice: string) => void;
@@ -335,26 +397,86 @@ export function MarkdownBody({
   mdFilePath?: string;
   entityPills?: boolean;
   entityIndex?: EntityIndex;
+  fences?: boolean;
+  /** Absent: the same as `entityPills`. `"echo"`: a bare `#171` links only
+   *  when the words after it are the task's title (`taskRefModeForTurn`). */
+  taskRefs?: TaskRefMode;
+  inline?: boolean;
+  /** Draw the streaming caret at the end of the last line of words
+   *  (`lib/streamCaret.ts`). Never after the body: that is a line of its own. */
+  caret?: boolean;
+  /** Draw a `mailto:` link as plain text. Off everywhere but the task card. */
+  plainEmails?: boolean;
+  /** The store the `#171` pills read. Absent: the app's store. */
+  taskRefResolver?: TaskRefResolver;
+  /** Draw a link to a project as the project pill. Off everywhere but the
+   *  task card. */
+  projectPills?: boolean;
+  /** No image and no link: each link draws as its words, on the parsed tree
+   *  (`lib/remarkTextOnly.ts`). A report's text sets it. */
+  textOnly?: boolean;
+  /** The hrefs this message's tools printed (KB-4b). A link in the index
+   *  draws as a chip. Absent: no link chips. */
+  linkChips?: LinkChipIndex;
 }) {
+  // DeepSeek's DSML tool-call text never shows (owner report, 2026-10-11).
+  // The Router turns it into real tool calls. This catches a message stored
+  // before that fix, and a box that serves without the Router.
+  const visible = stripDsmlMarkup(content);
+  const named = entityPills || fences;
+  const refs = !!(taskRefs ?? entityPills) && named;
+  // The task card's mode: the `#171`s and nothing else (WS-57 TR-5).
+  const refsOnly = taskRefs === true && !named;
+  // An orchestrator turn that asked no task agent (review of PR #1156).
+  const mustEcho = taskRefs === "echo";
+  // While the answer streams, a number may be half typed: no lookup yet.
+  const live = !caret;
   return (
     <ReactMarkdown
-      remarkPlugins={entityPills ? [remarkGfm, remarkEntityPills] : [remarkGfm]}
+      remarkPlugins={[
+        ...(entityPills
+          ? [remarkGfm, [remarkEntityPills, { taskRefs: refs }]]
+          : fences
+            ? [remarkGfm, [remarkEntityPills, { emails: false, taskRefs: refs }]]
+            : refsOnly
+              ? [remarkGfm, [remarkEntityPills, { names: false, emails: false, taskRefs: true }]]
+              : [remarkGfm]) as NonNullable<MarkdownOptions["remarkPlugins"]>,
+        ...(textOnly ? [remarkTextOnly] : []),
+      ]}
+      rehypePlugins={caret ? [rehypeStreamCaret] : []}
+      urlTransform={markdownUrlTransform}
+      allowedElements={inline ? INLINE_ELEMENTS : undefined}
+      unwrapDisallowed={inline}
       components={{
         // ── Entity pills (the plugin's `span[data-entity-pill]`) ──
         // `node` is react-markdown's own prop, and must not reach the DOM.
         // eslint-disable-next-line @typescript-eslint/no-unused-vars
         span: ({ node: _node, children, ...rest }) => {
           const attrs = rest as Record<string, unknown>;
-          if (entityPills && attrs[PILL_ATTR] !== undefined) {
-            const number = attrs[PILL_NUMBER_ATTR];
+          if ((refs || refsOnly) && typeof attrs[TASK_REF_ATTR] === "string") {
             return (
-              <ChatEntityPill
-                text={String(attrs[PILL_TEXT_ATTR] ?? "")}
-                number={typeof number === "string" ? number : undefined}
-                index={entityIndex}
-              />
+              <ChatTaskRef refText={attrs[TASK_REF_ATTR] as string}
+                after={String(attrs[TASK_REF_AFTER_ATTR] ?? "")} index={entityIndex}
+                scope={sessionId} live={live} resolver={taskRefResolver} mustEcho={mustEcho} />
             );
           }
+          if ((entityPills || fences) && attrs[PILL_ATTR] !== undefined) {
+            const number = attrs[PILL_NUMBER_ATTR];
+            const text = String(attrs[PILL_TEXT_ATTR] ?? "");
+            const n = typeof number === "string" ? number : undefined;
+            return entityPills ? (
+              <ChatEntityPill text={text} number={n} index={entityIndex} scope={sessionId} live={live} />
+            ) : (
+              // A `#5 «X»` links when the turn links task numbers (2026-10-19).
+              <FencedName text={text} number={n} live={live && refs} scope={sessionId} />
+            );
+          }
+          // A name with no pill is a run of words, and it must wrap like
+          // words (owner report, 2026-10-13: a long «task title» and its
+          // full stop ran past the right edge of the question card). The
+          // group's `whitespace-nowrap` keeps a short PILL with its comma.
+          // A word and the mark that touches it never part anyway.
+          if (!entityPills && attrs.className === PILL_GROUP_CLASS) return <>{children}</>;
           return <span {...rest}>{children}</span>;
         },
 
@@ -381,9 +503,12 @@ export function MarkdownBody({
         ),
 
         // ── Paragraphs & text ──
-        p: ({ children }) => (
-          <p className="mb-3 last:mb-0 text-foreground">{children}</p>
-        ),
+        p: ({ children }) =>
+          inline ? (
+            <span className="block not-first:mt-1">{children}</span>
+          ) : (
+            <p className="mb-3 last:mb-0 text-foreground">{children}</p>
+          ),
         strong: ({ children }) => (
           <strong className="font-semibold text-foreground">{children}</strong>
         ),
@@ -410,7 +535,18 @@ export function MarkdownBody({
         ),
 
         // ── Links ──
-        a: ({ href, children }) => <MarkdownLink href={href}>{children}</MarkdownLink>,
+        a: ({ href, children }) => {
+          if (plainEmails && typeof href === "string" && /^mailto:/i.test(href)) {
+            return <>{children}</>;
+          }
+          const project = projectPills ? projectIdOfHref(href) : null;
+          if (project) return <ProjectLinkPill id={project} text={nodeText(children)} href={href} />;
+          const chip = linkChips ? chipForHref(linkChips, href, nodeText(children)) : null;
+          if (chip) {
+            return <EntityPill kind="unknown" label={chip.label} href={href} icon={chip.icon} app={chip.app} />;
+          }
+          return <MarkdownLink href={href}>{children}</MarkdownLink>;
+        },
 
         // ── Blockquote ──
         blockquote: ({ children }) => (
@@ -420,22 +556,18 @@ export function MarkdownBody({
         ),
 
         // ── Images ──
-        // Rewrite src to route through the gateway workspace file proxy.
-        // Full URLs (https://…) and data: URIs pass through unchanged.
-        img({ src, alt, ...rest }) {
-          const rawSrc = typeof src === "string" ? src : "";
-          const resolvedSrc = resolveMediaSrc(rawSrc, sessionId, mdFilePath);
-          // eslint-disable-next-line @next/next/no-img-element
-          return (
-            <img
-              src={resolvedSrc}
-              alt={alt ?? ""}
-              {...rest}
-              className="max-w-full max-h-96 rounded-lg my-3 border border-border/50 object-contain"
-              loading="lazy"
-            />
-          );
-        },
+        // A workspace path routes through the gateway file proxy. A remote
+        // URL draws as a click-to-load placeholder and loads only on a
+        // member's click (`lib/markdownMedia.ts` holds the threat).
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        img: ({ node: _node, ...props }) => (
+          <MarkdownImage
+            {...props}
+            sessionId={sessionId}
+            mdFilePath={mdFilePath}
+            className="max-w-full max-h-96 rounded-lg my-3 border border-border/50 object-contain"
+          />
+        ),
 
         // ── Tables (GFM) ──
         // A table keeps its words whole and scrolls when it is wider than its
@@ -497,7 +629,7 @@ export function MarkdownBody({
           // language is specified; a fenced block WITHOUT a language has no
           // class, so also treat any multi-line code as a block — otherwise an
           // unlabeled ``` block renders cramped as inline with literal newlines.
-          if (match || codeString.includes("\n")) {
+          if (!inline && (match || codeString.includes("\n"))) {
             // MCQ choices block — render interactive buttons instead of code.
             if (lang === "choices") {
               return <ChoiceBlock raw={codeString} onChoice={onChoice} />;
@@ -514,7 +646,11 @@ export function MarkdownBody({
         },
       }}
     >
-      {entityPills ? spaceBeforeBold(content) : content}
+      {entityPills
+        ? spaceBeforeBold(typedBulletsToList(visible))
+        : fences
+          ? typedBulletsToList(visible)
+          : visible}
     </ReactMarkdown>
   );
 }
@@ -534,6 +670,10 @@ export default function MarkdownMessage({
   mdFilePath,
   entityPills = false,
   entityIndex: givenIndex,
+  fences = false,
+  taskRefs,
+  evidenceFor,
+  linkChips,
 }: MarkdownMessageProps) {
   // The names this message's tools printed, for the pills (WS-27bm S9).
   const entityIndex = useMemo(
@@ -576,7 +716,7 @@ export default function MarkdownMessage({
   const showThinking = isThinkingActive || hasTools || hasReasoning || hasNarration;
 
   return (
-    <div className="text-[12px] sm:text-[13px] text-foreground leading-relaxed min-w-0">
+    <div className="text-[12px] sm:text-[13px] text-foreground leading-relaxed min-w-0 glass:text-body glass:sm:text-body glass:leading-normal glass:glass-prose">
       {/* Thinking container — groups the whole working phase (reasoning + tool calls + status) */}
       {showThinking && (
         <div className="mb-3">
@@ -586,6 +726,7 @@ export default function MarkdownMessage({
             reasoningBlocks={reasoningBlocks}
             narrationSegments={narrationSegments}
             isActive={!!isThinkingActive}
+            evidenceFor={evidenceFor}
           />
         </div>
       )}
@@ -598,14 +739,14 @@ export default function MarkdownMessage({
         mdFilePath={mdFilePath}
         entityPills={entityPills}
         entityIndex={entityIndex}
+        fences={fences}
+        taskRefs={taskRefs}
+        linkChips={linkChips}
+        // The streaming caret, only once text streams. It draws INSIDE the
+        // last line of words. A span here, after the body, drew a lone "|"
+        // on its own line between the answer and the next card (2026-10-07).
+        caret={!!streaming && answerBody.trim().length > 0}
       />
-
-      {/* Streaming cursor — only once text is actually streaming, so it doesn't
-          float with no text during a tool-only phase (the ThinkingContainer
-          shows activity there instead). */}
-      {streaming && answerBody.trim().length > 0 && (
-        <span className="inline-block w-[2px] h-[1em] bg-zinc-300 animate-pulse ml-0.5 align-middle rounded-full" />
-      )}
     </div>
   );
 }

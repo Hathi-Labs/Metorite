@@ -51,11 +51,37 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid4
 
-from acb_audit import AuditEvent, record
+from acb_audit import AuditEvent, record, refuse_tenantless
+from acb_common import get_logger
+from acb_common.no_person import NO_PERSON_PRESENT, no_person_present, no_person_refusal
+
+_log = get_logger("action_broker")
+
+
+def _audit(event: AuditEvent) -> None:
+    """Record one broker event in the BOUND tenant (task 2189).
+
+    Each broker event belongs to the tenant whose action it is. ``propose:*``
+    even carries that tenant's payload. So this stamps ``organization_id`` from
+    ``current_tenant()``, the same value that the queue's ``tenant_session``
+    binds. It never reads a proposal or payload field (R5). With no bound
+    tenant and ``ACB_GRAPH_TENANT_BIND`` on, ``refuse_tenantless`` skips the
+    row, so it can never land under the operator org. The structlog line of
+    the skip keeps the trail. Fence:
+    ``tests/unit/test_action_broker_audit_org_r8.py``.
+    """
+    from acb_common.db import current_tenant
+
+    org = current_tenant()
+    event.organization_id = str(org) if org else None
+    if refuse_tenantless(event):
+        return
+    record(event)
 
 
 class AuthorityTier(StrEnum):
@@ -129,7 +155,7 @@ def propose(
         payload=payload, authority=authority, destructive=destructive,
         disposition=disposition,
     )
-    record(AuditEvent(
+    _audit(AuditEvent(
         actor=actor, action=f"propose:{action}", target=target,
         payload={
             "authority": authority.value,
@@ -160,16 +186,61 @@ def clear_action_handlers() -> None:
     _HANDLERS.clear()
 
 
-async def execute(proposal: ActionProposal) -> dict[str, Any]:
+#: The reason of a refusal when no tenant is bound (task 2220).
+TENANT_UNBOUND = "tenant_unbound"
+
+
+async def execute(proposal: ActionProposal, *, member: str | None = None) -> dict[str, Any]:
     """Perform an auto-apply / approved proposal via its registered handler.
 
     Fails CLOSED:
+    * with ``ACB_GRAPH_TENANT_BIND`` on and no bound tenant, nothing runs
+      (task 2220). The audit row of the act would be skipped, and an outward
+      write with no audit row breaks ``core_brief.md`` §8. It answers
+      ``status: refused``, ``reason: tenant_unbound``. Only the
+      ``audit.skipped_no_tenant`` and ``action_broker.tenant_unbound`` log
+      lines record it, because no tenant exists to own a row;
     * a ``rejected`` proposal is never executed;
     * an action with no registered handler is REFUSED (never silently applied);
-    both are audited. On success the handler's result is returned.
+    the last two are audited. On success the handler's result is returned.
+
+    ⚠️ The tenant is ``current_tenant()``, which only ``bind_tenant`` sets. A
+    ``tenant_session(org)`` (``acb_common.db`` or ``acb_graph``) binds the GUC
+    of its own connection only, so a caller with only that is refused. Fence:
+    ``tests/unit/test_action_broker_execute_tenant_r8.py``.
+
+    ``member`` is the person who decided the act. ``approve`` passes its
+    ``reviewed_by``, from the session and never from the payload, and the
+    ``execute:<action>`` row carries it as ``payload.member``. ``submit``'s
+    auto-apply path passes none: no person decided that act.
+
+    A handler that answers a dict with ``"ok": False`` has REFUSED the work, as
+    ``workflow.resume_run`` does for a run that it will not resume (H-328). That
+    is a failure, never a success: ``approve`` then marks the row ``failed`` and
+    the approver reads the handler's error. Any other result is a success.
     """
+    from acb_common.db import current_tenant
+
+    org = current_tenant()
+    unbound = AuditEvent(
+        actor="system:action_broker",
+        action=f"execute_refused:{proposal.action}",
+        target=proposal.target,
+        payload={"reason": TENANT_UNBOUND},
+        organization_id=str(org) if org else None,
+    )
+    if refuse_tenantless(unbound):
+        _log.warning("action_broker.tenant_unbound", op="execute",
+                     action=proposal.action, target=proposal.target)
+        return {
+            "ok": False,
+            "status": "refused",
+            "reason": TENANT_UNBOUND,
+            "error": "no tenant is bound, so the action did not run",
+        }
+
     if proposal.disposition == Disposition.REJECTED:
-        record(AuditEvent(
+        _audit(AuditEvent(
             actor="system:action_broker",
             action=f"execute_refused:{proposal.action}",
             target=proposal.target,
@@ -179,7 +250,7 @@ async def execute(proposal: ActionProposal) -> dict[str, Any]:
 
     handler = _HANDLERS.get(proposal.action)
     if handler is None:
-        record(AuditEvent(
+        _audit(AuditEvent(
             actor="system:action_broker",
             action=f"execute_refused:{proposal.action}",
             target=proposal.target,
@@ -190,39 +261,71 @@ async def execute(proposal: ActionProposal) -> dict[str, Any]:
             "error": f"no handler registered for action {proposal.action!r}",
         }
 
-    record(AuditEvent(
+    _audit(AuditEvent(
         actor="system:action_broker",
         action=f"execute:{proposal.action}",
         target=proposal.target,
-        payload={"authority": proposal.authority.value},
+        payload={
+            "authority": proposal.authority.value,
+            **({"member": member} if member else {}),
+        },
     ))
     result = await handler(proposal)
+    if isinstance(result, dict) and result.get("ok") is False:
+        return {
+            "ok": False,
+            "error": str(result.get("error") or "the handler refused the action"),
+            "result": result,
+        }
     return {"ok": True, "result": result}
 
 
 # ── Approval queue — persistence for NEEDS_APPROVAL proposals ─────────────────
 # Mirrors ``pending_commit`` (self-mutation): a proposal the broker cannot
 # auto-apply is parked in ``pending_actions`` until an operator approves it, at
-# which point :func:`execute` runs the registered handler. DB access uses the
-# same sync ``acb_graph.get_session`` + ``text()`` recipe as
-# ``mutation._register_pending_commit``; each write is best-effort and returns a
-# sentinel (never raises) so a broker call is not lost on a DB blip.
+# which point :func:`execute` runs the registered handler. Each write is
+# best-effort and returns a sentinel (never raises) so a broker call is not lost
+# on a DB blip.
+#
+# ⚠️ **Tenant-bound (H-201).** ``pending_actions`` has FORCE row level security.
+# Every read and write opens ``acb_graph.tenant_session(org)``, the ONE sync GUC
+# seam. ``org`` is the tenant the caller's context bound (``current_tenant()``,
+# set by the auth dependency or by a job from its own record). It never comes
+# from a proposal, a payload or a request field (R5 / R11). With no bound tenant
+# a read answers empty, a write refuses, and ``action_broker.tenant_unbound``
+# is logged. Nothing falls back to the unbound ``get_session``. The fence is
+# ``tests/unit/test_action_broker_tenancy_r8.py``.
+
+
+def _bound_tenant(op: str) -> str | None:
+    """The tenant this broker call acts for, or ``None`` (logged)."""
+    from acb_common.db import current_tenant
+
+    org = current_tenant()
+    if not org:
+        _log.warning("action_broker.tenant_unbound", op=op)
+        return None
+    return str(org)
 
 
 def enqueue(proposal: ActionProposal) -> str | None:
     """Persist *proposal* to ``pending_actions`` (status ``pending``).
 
     Returns the row id (the proposal's own UUID) or ``None`` if the DB write
-    fails. Call this for a ``NEEDS_APPROVAL`` disposition.
+    fails or no tenant is bound. Call this for a ``NEEDS_APPROVAL`` disposition.
+    The row's ``organization_id`` comes from the GUC that ``tenant_session``
+    sets, through the column's DEFAULT.
     """
     import json
 
     try:
-        from acb_graph import get_session
+        from acb_graph import tenant_session
         from sqlalchemy import text
 
         row_id = str(proposal.id)
-        with get_session() as sess:
+        # With no tenant, ``tenant_session(None)`` raises ``TenantUnbound``
+        # before it opens a connection, and the ``except`` below audits it.
+        with tenant_session(_bound_tenant("enqueue")) as sess:
             sess.execute(
                 text(
                     "INSERT INTO pending_actions "
@@ -242,8 +345,7 @@ def enqueue(proposal: ActionProposal) -> str | None:
                     "disposition": (proposal.disposition or Disposition.NEEDS_APPROVAL).value,
                 },
             )
-            sess.commit()
-        record(AuditEvent(
+        _audit(AuditEvent(
             actor="system:action_broker",
             action=f"enqueue:{proposal.action}",
             target=proposal.target,
@@ -251,7 +353,7 @@ def enqueue(proposal: ActionProposal) -> str | None:
         ))
         return row_id
     except Exception as exc:  # best-effort: never lose the caller on a DB blip
-        record(AuditEvent(
+        _audit(AuditEvent(
             actor="system:action_broker",
             action=f"enqueue_failed:{proposal.action}",
             target=proposal.target,
@@ -261,12 +363,18 @@ def enqueue(proposal: ActionProposal) -> str | None:
 
 
 def list_pending() -> list[dict[str, Any]]:
-    """Return the pending approval queue (newest first). ``[]`` on DB failure."""
+    """Return the bound tenant's pending queue (newest first).
+
+    ``[]`` on DB failure, and ``[]`` when no tenant is bound.
+    """
+    org = _bound_tenant("list_pending")
+    if org is None:
+        return []
     try:
-        from acb_graph import get_session
+        from acb_graph import tenant_session
         from sqlalchemy import text
 
-        with get_session() as sess:
+        with tenant_session(org) as sess:
             rows = sess.execute(
                 text(
                     "SELECT id, actor, action, target, payload, authority, "
@@ -280,12 +388,93 @@ def list_pending() -> list[dict[str, Any]]:
         return []
 
 
-def _load_proposal(action_id: str) -> tuple[ActionProposal | None, str | None]:
-    """Load a queued row and rebuild its :class:`ActionProposal` + current status."""
-    from acb_graph import get_session
+#: The most rows :func:`read_pending` returns.
+READ_PENDING_MAX = 50
+
+
+def read_pending(limit: int = READ_PENDING_MAX) -> list[dict[str, Any]]:
+    """The bound tenant's pending queue, the longest wait first, ``limit`` rows.
+
+    The sibling of :func:`list_pending` for a reader that must tell "empty"
+    from "broken": the needs feed (``gateway/routes/shell/needs.py``). It
+    RAISES when the database fails, so the feed reads ``failed`` and never a
+    false ``ok``. It is bounded: at most ``READ_PENDING_MAX`` rows. With no
+    bound tenant it answers ``[]``, as :func:`list_pending` does.
+    """
+    org = _bound_tenant("read_pending")
+    if org is None:
+        return []
+    from acb_graph import tenant_session
     from sqlalchemy import text
 
-    with get_session() as sess:
+    size = max(1, min(int(limit), READ_PENDING_MAX))
+    with tenant_session(org) as sess:
+        rows = sess.execute(
+            text(
+                "SELECT id, actor, action, target, payload, authority, "
+                "       destructive, disposition, status, created_at "
+                "FROM pending_actions WHERE status = 'pending' "
+                "ORDER BY created_at ASC, id LIMIT :limit"
+            ),
+            {"limit": size},
+        ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+#: The statuses of an action that a person decided. ``approved`` runs now,
+#: ``applied`` ran and ``rejected`` never runs. ``failed`` is not here: the
+#: write did not happen, so nothing was handled.
+DECIDED_STATUSES: tuple[str, ...] = ("approved", "applied", "rejected")
+#: The most rows :func:`read_decided` returns.
+READ_DECIDED_MAX = 15
+
+
+def read_decided(since: datetime, limit: int = READ_DECIDED_MAX) -> list[dict[str, Any]]:
+    """The bound tenant's actions decided at or after ``since``, the newest first.
+
+    The sibling of :func:`read_pending` for the shell's Handled group
+    (``my_day_feed.md`` MD-2c). ``reviewed_at`` is the decision: approve and
+    reject stamp it, and the later ``applied`` keeps it. ``reviewed_by`` is
+    who decided. It RAISES when the database fails, so the group reads a
+    failure and never a false empty. With no bound tenant it answers ``[]``.
+    No index serves it: the tenant, the status and ``READ_DECIDED_MAX`` rows
+    bound it.
+    """
+    org = _bound_tenant("read_decided")
+    if org is None:
+        return []
+    from acb_graph import tenant_session
+    from sqlalchemy import text
+
+    size = max(1, min(int(limit), READ_DECIDED_MAX))
+    statuses = ", ".join(f"'{s}'" for s in DECIDED_STATUSES)
+    with tenant_session(org) as sess:
+        rows = sess.execute(
+            text(
+                "SELECT id, actor, action, target, payload, status, "
+                "       reviewed_by, reviewed_at "
+                f"FROM pending_actions WHERE status IN ({statuses}) "
+                "AND reviewed_at >= :since "
+                "ORDER BY reviewed_at DESC, id LIMIT :limit"
+            ),
+            {"since": since, "limit": size},
+        ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def _load_proposal(action_id: str) -> tuple[ActionProposal | None, str | None]:
+    """Load a queued row and rebuild its :class:`ActionProposal` + current status.
+
+    The read sees only the bound tenant's rows. Another tenant's id, or no
+    bound tenant, reads as ``(None, None)``, so :func:`approve` runs nothing.
+    """
+    from acb_graph import tenant_session
+    from sqlalchemy import text
+
+    org = _bound_tenant("load_proposal")
+    if org is None:
+        return None, None
+    with tenant_session(org) as sess:
         row = sess.execute(
             text(
                 "SELECT id, actor, action, target, payload, authority, "
@@ -311,41 +500,83 @@ def _load_proposal(action_id: str) -> tuple[ActionProposal | None, str | None]:
 
 def _mark(
     action_id: str, status: str, *, reviewed_by: str | None = None,
-    result: dict[str, Any] | None = None,
-) -> None:
-    """Update a queued row's status (+ reviewer / result). Best-effort."""
+    result: dict[str, Any] | None = None, only_from: str | None = None,
+) -> int:
+    """Update a queued row's status (+ reviewer / result). Best-effort.
+
+    Returns the number of rows it changed, 0 when it changed none. With
+    ``only_from`` it changes the row only while it still has that status, so a
+    late reject cannot rewrite an action that already ran (review, 2026-10-09).
+
+    The UPDATE reaches only the bound tenant's rows. With no bound tenant it
+    changes nothing.
+    """
     import json
 
+    org = _bound_tenant("mark")
+    if org is None:
+        return 0
     try:
-        from acb_graph import get_session
+        from acb_graph import tenant_session
         from sqlalchemy import text
 
         reviewed_at_expr = "now()" if reviewed_by is not None else "reviewed_at"
-        with get_session() as sess:
-            sess.execute(
+        guard = " AND status = :only_from" if only_from is not None else ""
+        with tenant_session(org) as sess:
+            res = sess.execute(
                 text(
                     "UPDATE pending_actions SET status = :status, "
                     "reviewed_by = COALESCE(:reviewed_by, reviewed_by), "
                     f"reviewed_at = {reviewed_at_expr}, "
                     "result = CAST(:result AS jsonb) "
-                    "WHERE id = :id"
+                    f"WHERE id = :id{guard}"
                 ),
                 {
                     "id": action_id,
                     "status": status,
                     "reviewed_by": reviewed_by,
                     "result": json.dumps(result) if result is not None else None,
+                    "only_from": only_from,
                 },
             )
-            sess.commit()
+            return int(getattr(res, "rowcount", 0) or 0)
     except Exception:
-        pass
+        return 0
+
+
+def _refuse_no_person(act: str, action_id: str, reviewed_by: str) -> dict[str, Any] | None:
+    """The refusal of a run with no person present, or ``None`` (AUTO-7a).
+
+    A marked run cannot settle a ``pending_actions`` row, so text in a page
+    or a mail cannot approve its own write (``proactive_agent.md`` §4.2). It
+    reads nothing and writes no row. The audit records the refusal.
+    """
+    if not no_person_present():
+        return None
+    _log.warning("action_broker.no_person_refused", act=act, action_id=action_id)
+    _audit(AuditEvent(
+        actor="system:action_broker",
+        action=f"{act}_refused",
+        target=action_id,
+        payload={"reason": NO_PERSON_PRESENT, "reviewed_by": reviewed_by},
+    ))
+    return no_person_refusal()
 
 
 def reject(action_id: str, reviewed_by: str) -> dict[str, Any]:
-    """Reject a pending action — it is never executed. Audited."""
-    _mark(action_id, "rejected", reviewed_by=reviewed_by)
-    record(AuditEvent(
+    """Reject a pending action — it is never executed. Audited.
+
+    It answers ``ok: False`` when no pending row of the bound tenant has that
+    id: another tenant's id, a missing id, or an action already decided. It
+    used to answer ``ok`` for all three (review, 2026-10-09). A run with no
+    person present gets a refusal (:func:`_refuse_no_person`).
+    """
+    refused = _refuse_no_person("reject", action_id, reviewed_by)
+    if refused is not None:
+        return refused
+    if not _mark(action_id, "rejected", reviewed_by=reviewed_by, only_from="pending"):
+        return {"ok": False, "error": f"no pending action {action_id!r}"}
+    _audit(AuditEvent(
         actor=reviewed_by,
         action="action_rejected",
         target=action_id,
@@ -359,7 +590,11 @@ async def approve(action_id: str, reviewed_by: str) -> dict[str, Any]:
 
     Fails CLOSED: a missing/non-pending row is not run; a handler error marks
     the row ``failed`` (not ``applied``). The handler result is persisted.
+    A run with no person present gets a refusal (:func:`_refuse_no_person`).
     """
+    refused = _refuse_no_person("approve", action_id, reviewed_by)
+    if refused is not None:
+        return refused
     proposal, status = _load_proposal(action_id)
     if proposal is None:
         return {"ok": False, "error": f"no pending action {action_id!r}"}
@@ -367,7 +602,7 @@ async def approve(action_id: str, reviewed_by: str) -> dict[str, Any]:
         return {"ok": False, "error": f"action {action_id!r} is {status}, not pending"}
 
     _mark(action_id, "approved", reviewed_by=reviewed_by)
-    res = await execute(proposal)
+    res = await execute(proposal, member=reviewed_by)
     if res.get("ok"):
         _mark(action_id, "applied", result=res)
         return {"ok": True, "status": "applied", "action_id": action_id, "result": res.get("result")}

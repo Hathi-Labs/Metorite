@@ -25,11 +25,12 @@ lives.** It is one surface (Settings → Organization), admin-gated, tenant-owne
 
 | # | Item | Gate | State |
 |---|---|---|---|
-| **OI-1** | **Logo upload + the shell lockup.** Admin uploads a raster logo; it replaces our mark top-left in every member's shell, above "powered by Metorite". | 🟢 AGENT-SAFE | ◐ built, unmerged |
-| **OI-2** | **Tenant-scope the store.** `org_settings` must carry `organization_id`, widen its PK, and bind through the seam before a second customer shares a database. | 🔴 **BLOCKED on MT-1b** | 🔴 |
+| **OI-1** | **Logo upload + the shell lockup.** Admin uploads a raster logo. It replaces our mark top-left in every member's shell. Since 2026-10-11 no words of ours sit beside it. Our comet signs the right end of the shell bar (owner decision, `navigation_shell.md` §3.1). | 🟢 AGENT-SAFE | ◐ built, unmerged |
+| **OI-1b** | **The logo editor and dark mode.** Any image opens in an editor that trims and crops it and draws the stored PNG. One logo covers both colour modes. | 🟢 AGENT-SAFE | ✅ built 2026-10-09 |
+| **OI-2** | **Tenant-scope the store.** `org_settings` must carry `organization_id`, widen its PK, and bind through the seam before a second customer shares a database. | 🟢 AGENT-SAFE | ✅ built 2026-10-09, migration 234 |
 | **OI-3a** | **No network wait.** The customer's mark renders from a local cache, revalidated behind it. | 🟢 AGENT-SAFE | ✅ built 2026-08-14 |
 | **OI-3b** | **True SSR branding.** The server-rendered HTML itself carries the mark. | 🟢 AGENT-SAFE | 🔴 |
-| **OI-4** | **Organization display name** — shown beside/instead of the logo, in the operator console, and on invoices (D38). | 🟢 AGENT-SAFE | 🔴 |
+| **OI-4** | **Organization display name** — shown beside/instead of the logo, in the operator console, and on invoices (D38). | 🟢 AGENT-SAFE | 🟡 The tenant rename is built (#1035, 2026-10-15). The operator rename and the cross-plane name sync are built on branch `org-rename` (2026-10-27), not merged. `customer_console.md` CP-8 "Rename an organization" holds the contract. The invoice name waits for SC-5. |
 | **OI-5** | **Logo on billing documents** — the customer's mark on their own tax invoice. | 🔴 depends on D38's invoice renderer | 🔴 |
 
 ### Non-goals
@@ -38,9 +39,10 @@ lives.** It is one surface (Settings → Organization), admin-gated, tenant-owne
   our four. They do not get a custom palette, a custom font, or CSS. The
   theming engine is one product themed centrally (owner directive 2026-08-10);
   a per-tenant palette is the exact thing that directive forbids.
-- **Not white-labelling.** "Powered by Metorite" is not removable. If a
-  reseller SKU is ever sold, that is a commercial decision (a D-number), not a
-  settings toggle.
+- **Not white-labelling.** Our comet at the right end of the shell bar is not
+  removable (owner, 2026-10-11). It replaced the "Powered by Metorite" caption.
+  If a reseller SKU is ever sold, that is a commercial decision (a D-number),
+  not a settings toggle.
 - **Not vector art.** SVG is refused — see §3.
 - **Not per-Center or per-user branding.** One mark per organization.
 
@@ -89,21 +91,73 @@ customer (seats, credits, placement), not the customer's own content.
 
 ---
 
+## 2a. OI-1b and OI-2 — what changed on 2026-10-09, and why
+
+**The owner reported that uploads "always" failed.** Two causes, both real.
+
+1. **The save itself crashed.** Two `PUT /settings/branding` answered 500 on
+   2026-10-08 with `invalid input syntax for type uuid: ""`. The generated
+   tenancy phases had put `org_settings` under FORCED row-level security.
+   `acb_common/org_settings.py` wrote through a raw connection that bound no
+   tenant. Every read came back empty too. **OI-2 fixes it.** The module binds
+   the request's tenant (`set_config(..., true)`) and names `organization_id`
+   in both statements. Migration 234 re-keys the table to
+   `(organization_id, key)`. Fence: `tests/unit/test_org_settings_tenancy_r8.py`
+   (R8, as the non-privileged role, two organizations).
+2. **The rules met the person.** A file was refused for its size, its
+   shape or its format before the save was even tried. **OI-1b moves that work
+   into the uploader's browser.** `LogoEditor.tsx` opens PNG, JPEG, WebP, GIF
+   or SVG of any size up to 20 MB. It finds the logo's edges, removes a solid
+   background, and lets the admin adjust the crop. Then `logoCanvas.ts` draws
+   a PNG 84px tall (3x the 28px slot) and pads its shape to fit 1:2 to 8:1. A
+   person no longer meets the server's bounds. The server still checks every
+   one.
+
+**Dark mode, from one upload.** `logoImage.ts` finds the share of the logo's
+ink that is too dark for the dark sidebar (under 3:1). It then suggests one of
+three styles, and the admin can change it:
+
+| Style | When it is suggested | What dark mode shows |
+|---|---|---|
+| As it is | Under 15% of the ink is too dark | The logo |
+| White version | The dark ink is black or grey | `logoDark`: every dark, neutral pixel turned white, colours kept |
+| On a light card | The dark ink is itself a colour (navy, maroon) | The logo, on a small white card |
+| My dark version | Never: only the admin knows the file exists | `logoDark`: the organization's own dark-background logo, trimmed, its solid background removed |
+
+The logo for a light background is always required. The dark version is
+optional (owner direction, 2026-10-09). "Change dark mode" on the Branding
+tab reopens the saved logo, so an admin can add a dark version later. It
+sends the saved logo back unchanged, so the trim and the background removal
+never run on it twice (`savePayload`, fence `logoEditor.test.ts`). The style
+`own` passes the same server checks as `white`, and both need their image.
+
+⚠️ The advice is NOT an average of the whole logo. A bright orange mark lifted
+the average while navy text beside it vanished (measured 2026-10-09).
+
+The branding row stores `logo`, `logoDark` (white and own styles only) and
+`darkStyle`. The server refuses a pair that disagrees. `BrandMark` renders
+both images, and CSS shows one per colour mode (`.light` on the root), so a
+mode switch waits on no fetch. Fence:
+`src/components/orgBrandLockup.mode.test.ts` ties the `.light` class to
+next-themes and to BrandMark. The logo shows at the top of the desktop
+sidebar and at the top of the phone menu.
+
 ## 3. The format rules, and why each one
 
 Authority is the gateway. The frontend copy in `src/lib/orgBranding.ts` is
 **advisory** — immediate feedback on an obviously-wrong file — and says so.
+Since OI-1b the editor makes every file fit these rules before it is sent.
 
 | Rule | Value | Why |
 |---|---|---|
 | Formats | PNG, JPEG, WebP | Raster only. |
-| **SVG** | **refused, by name** | An SVG is a document that can carry script and external references, stored by one tenant and rendered in every colleague's shell. A 28px header slot does not need vector art enough to take that on. The refusal message says "export a PNG", because SVG is what a designer hands over and it is the likeliest rejection. |
+| **SVG** | **refused by the server, opened by the editor** | An SVG is a document that can carry script and external references, so the STORED file must never be one. Since OI-1b the uploader's browser draws an SVG as a PNG through an `<img>`, where it runs no script, and only the PNG is sent. The server still refuses SVG bytes. |
 | Max bytes | 128 KiB raw | Keeps the row a row rather than a file in a column — which is what §2's placement argument depends on. Also bounds what every member downloads on load. |
 | Edge | 32–2048 px, longer side | Below is a favicon; above is a print asset. |
 | Aspect | 0.5–8.0 (w/h) | Size alone does not stop a 1:20 sliver that renders as a 2px smear. |
 | Type detection | **magic bytes only** | The declared content type is caller-controlled. The stored `data:` URI is *rebuilt* from the sniffed type — an echoed URI is a stored-XSS sink wearing an image's clothes. |
 
-Header parsing is `apps/services/gateway/gateway/image_probe.py`: fixed offsets
+Header parsing is `packages/acb_common/acb_common/image_probe.py`: fixed offsets
 and length-prefixed chunk walks, **no pixel decoding**, no dependency. The
 trade is explicit — we verify the header, not the body, so a corrupt payload
 renders broken in the browser rather than running a decoder over hostile input
@@ -166,7 +220,7 @@ logo contains that logo and not the fallback caption.
 
 | Path | Role |
 |---|---|
-| `apps/services/gateway/gateway/image_probe.py` | header-only format + dimension probe |
+| `packages/acb_common/acb_common/image_probe.py` | header-only format + dimension probe |
 | `apps/services/gateway/gateway/routes/settings.py` (`_BRANDING_KEY` onward) | `GET`/`PUT`/`DELETE /settings/branding` |
 | `packages/acb_common/acb_common/org_settings.py` | the store — **the OI-2 conversion site** |
 | `infra/postgres/151_org_settings.sql` | the table |

@@ -16,10 +16,23 @@ a bearer value for ten minutes and is not tied to a browser. An attacker could
 start the flow, get a victim to consent, and attach the mailbox of the victim
 to the account of the attacker. The callback closes that: the member of the
 session must be the member in the state.
+
+**Gmail (WS-17 EM-G7, §12.3.9).** The authorize leg asks the two scopes of
+D-EM-31, and the callback refuses a grant that lacks either one, or that
+carries no refresh token. Each bounce names its provider. The Gmail connect
+is dark behind ``EMAIL_GMAIL_CONNECT`` (:func:`gmail_connect_enabled`).
+``GET /email/oauth/providers`` tells the UI which provider can connect
+(D-EM-35).
+
+**The member list (WS-17 EM-G7b, §12.3.9b).** ``EMAIL_GMAIL_CONNECT_MEMBERS``
+narrows the flag to listed member addresses, for the live test while the
+Google app is in Testing. Each Gmail gate asks :func:`gmail_connect_allowed`
+with the member of the session, and never with a request input.
 """
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -29,19 +42,31 @@ from uuid import uuid4
 
 import httpx
 from acb_auth import UserContext, get_current_user
+from acb_common import get_settings
 from email_ingestion.import_window import DEFAULT_IMPORT_MONTHS, since_for_months
 from email_ingestion.providers.app_credentials import MICROSOFT_OAUTH_BASE, oauth_app
 from email_ingestion.providers.gmail import GMAIL_SCOPES
 from email_ingestion.providers.outlook import GRAPH_SCOPES
 from fastapi import Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
-from gateway.routes.email.core import _default_label, _log, _tenant_session, router
+from gateway.routes.email.core import (
+    MAILBOX_LIMIT_DETAIL,
+    MAX_MAILBOXES_PER_MEMBER,
+    _default_label,
+    _log,
+    _tenant_session,
+    enforce_mailbox_limit,
+    member_mailbox_count,
+    router,
+)
+from gateway.routes.email.mailbox_access import connector_predicate
+from gateway.routes.email.mailbox_identity import NEXT_SLOT_SQL
 from gateway.routes.email.transport.signing import (
     SigningUnavailable,
     sign_oauth_state,
     verify_oauth_state,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import text
 
 
@@ -80,18 +105,109 @@ _ADMIN_CONSENT_CODES = frozenset({"90094", "90095", "65001"})
 #: The member said no on the consent screen.
 _DECLINED_CODES = frozenset({"65004"})
 
+#: The providers of the connect flow, in the order of the capability read.
+#: A bounce names a provider only when it is one of these, so a path segment
+#: is never echoed (EM-G7 item 6).
+CONNECT_PROVIDERS: tuple[str, ...] = ("microsoft", "gmail")
+
+#: What a member reads when a provider cannot connect (EM-G7 item 7, D-EM-35).
+#: A member never configures an app, so neither entry names Integrations, a
+#: client ID or a secret. The BFF hands this ``detail`` to the callback page.
 _NOT_CONFIGURED = {
-    "gmail": (
-        "Gmail OAuth is not configured. Go to Integrations → APIs → "
-        "'Gmail OAuth' and enter your Google Cloud OAuth client ID "
-        "and secret. Instructions are provided there."
-    ),
-    "microsoft": (
-        "Microsoft OAuth is not configured. Go to Integrations → APIs → "
-        "'Microsoft OAuth' and enter your Azure App client ID "
-        "and secret. Instructions are provided there."
-    ),
+    "gmail": "Gmail is not available yet.",
+    "microsoft": "Microsoft 365 / Outlook is not available yet.",
 }
+
+#: The 503 of ``GET /email/oauth/{provider}/app`` with no app.
+_APP_NOT_SET_UP = {
+    "gmail": "Gmail is not set up on this deployment.",
+    "microsoft": "Microsoft mail is not set up on this deployment.",
+}
+
+#: Google error codes with a reason of their own (EM-G7 item 4). Each other
+#: plain code passes through :func:`_provider_error_reason`.
+_GOOGLE_ERROR_REASONS = {
+    "access_denied": "consent_declined",
+    "admin_policy_enforced": "workspace_admin_blocked",
+}
+
+
+def gmail_connect_enabled() -> bool:
+    """True when the Gmail connect may run on this box (EM-G7, dark flag).
+
+    ``EMAIL_GMAIL_CONNECT`` is false by default. On 2026-10-12 the production
+    box holds both ``GMAIL_OAUTH_*`` names with empty values, so the keys
+    alone keep Gmail dark today (spec §12.1). The client of the owner lands
+    at §12.4 step 9, and from then on only this flag keeps Gmail dark. While
+    this is false, the capability read answers ``gmail: false``, and the
+    authorize leg, the callback leg and the app facts refuse Gmail. A flip on
+    a box is gate ``enforcement-flip``, and it waits for EM-G10. Only the env
+    file of the box sets the flag, and a change needs a restart of the
+    gateway. The comment on the field in ``acb_common/settings.py`` says why.
+
+    This is the one reader of the setting. Its one caller is
+    :func:`gmail_connect_allowed`, which every Gmail gate asks (EM-G7b).
+    """
+    return get_settings().email_gmail_connect is True
+
+
+@functools.lru_cache(maxsize=16)
+def _connect_members(raw: str) -> frozenset[str] | None:
+    """The addresses in *raw*, trimmed and in lower case.
+
+    ``None`` when *raw* is empty or blank: no list, so the flag alone
+    decides. A value that holds only commas and spaces is an empty set, and
+    names no member, so nobody passes (EM-G7b item 5). Cached on the raw
+    value, as ``scheduler._delta_accounts`` is.
+    """
+    if not raw.strip():
+        return None
+    return frozenset(p.strip().lower() for p in raw.split(",") if p.strip())
+
+
+def gmail_connect_members() -> frozenset[str] | None:
+    """The member list of the Gmail connect (WS-17 EM-G7b, §12.3.9b).
+
+    ``EMAIL_GMAIL_CONNECT_MEMBERS`` holds member sign-in addresses, with a
+    comma between addresses. ``None`` means that no list is set. This is the
+    one reader of the setting. Only the env file of the box sets it, because
+    ``env_guard`` refuses each ``EMAIL_*`` name on each Integrations write.
+    """
+    return _connect_members(str(get_settings().email_gmail_connect_members or ""))
+
+
+def gmail_connect_allowed(user: UserContext) -> bool:
+    """True when the member of the session may connect Gmail (EM-G7b).
+
+    The flag is the master switch. With ``EMAIL_GMAIL_CONNECT`` off, nobody
+    may. With the flag on and no list, every member may, and that state is
+    for the time after Google verifies the app. With the flag on and a list,
+    only a member whose address is on it may. The match ignores case and the
+    space around each address, and it compares whole addresses.
+
+    ``user`` is the ``UserContext`` of ``get_current_user``, so the address
+    comes from the session (R11). No query, body, header or state names the
+    member here. Every Gmail gate of this module calls this function, and
+    Microsoft never does.
+    """
+    if not gmail_connect_enabled():
+        return False
+    members = gmail_connect_members()
+    if members is None:
+        return True
+    return (user.email or "").strip().lower() in members
+
+
+def provider_available(provider: str, user: UserContext) -> bool:
+    """True when the member of ``user`` can connect ``provider`` (D-EM-35).
+
+    The app of the provider must hold a client ID and a secret
+    (``oauth_app(provider).configured``). Gmail also needs
+    :func:`gmail_connect_allowed` for the member of the session.
+    """
+    if provider not in CONNECT_PROVIDERS or not oauth_app(provider).configured:
+        return False
+    return provider != "gmail" or gmail_connect_allowed(user)
 
 
 @router.get("/oauth/{provider}/authorize")
@@ -121,6 +237,15 @@ async def oauth_authorize(
     ``login_hint`` query replaces it only when it parses as an address, and
     a malformed one is dropped (EM-T3a item 3).
 
+    **One more mailbox (EM-T8a, D-EM-26, MB-1).** When the member already has
+    a mailbox of this provider in this organization and the client sent no
+    hint, the URL carries ``prompt=select_account`` and no ``login_hint``.
+    The default hint is the sign-in address of the member, which is the
+    address of the first mailbox. Microsoft then signs that mailbox in again
+    and the callback takes the reconnect path, so the member could never add
+    a second one. A reconnect still sends the mailbox address as its hint,
+    and a client hint always wins.
+
     ``import_months`` is the import range of a new mailbox, 0 to 6 months, and
     1 when absent (EM-T6a, D-EM-11). Any other value answers 400 before the
     route signs a state. The state carries it to the callback.
@@ -131,8 +256,16 @@ async def oauth_authorize(
             detail="Connecting a mailbox needs a signed-in member of an organization.",
         )
     redirect_uri = _build_redirect_uri(provider)
-    if provider not in ("gmail", "microsoft"):
+    if provider not in CONNECT_PROVIDERS:
         raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
+    if provider == "gmail" and not gmail_connect_allowed(user):
+        # Dark (EM-G7): the answer of a box with no Google app. It refuses
+        # before it signs a state or reads a mailbox, and it names no flag.
+        # A reconnect of a Gmail mailbox is refused too, and production
+        # holds none (§12.3.9 as-built). A member off the list of EM-G7b
+        # gets the same answer. A `login_hint` never widens the list.
+        _log.info("email.oauth_gmail_dark", leg="authorize")
+        raise HTTPException(status_code=400, detail=_NOT_CONFIGURED["gmail"])
     if len(redirect_after) > _MAX_REDIRECT_AFTER:
         raise HTTPException(status_code=400, detail="redirect_after is too long.")
     months = DEFAULT_IMPORT_MONTHS
@@ -166,7 +299,25 @@ async def oauth_authorize(
             detail="The connect request is too long or malformed.",
         ) from None
 
-    hint = _login_hint(login_hint) or _login_hint(user.email)
+    client_hint = _login_hint(login_hint)
+    # Q-MB-1: the sixth mailbox is refused before the redirect. A hint for a
+    # mailbox the member has is a reconnect and passes. The callback checks
+    # again, because two tabs can race.
+    if await _mailbox_limit_reached(
+            str(user.organization_id), user.email.strip().lower(), client_hint):
+        raise HTTPException(status_code=409, detail=MAILBOX_LIMIT_DETAIL)
+    another = False
+    if client_hint is None:
+        try:
+            another = await _member_has_mailbox(
+                str(user.organization_id), user.email.strip().lower(), provider,
+            )
+        except Exception as exc:
+            # The picker is right for a first connect too, so a failed read
+            # shows it rather than answer 500 (EM-T8a review).
+            _log.warning("email.oauth_mailbox_check_failed", error=str(exc)[:200])
+            another = True
+    hint = None if another else (client_hint or _login_hint(user.email))
     app = oauth_app(provider)
     if not app.client_id:
         raise HTTPException(status_code=400, detail=_NOT_CONFIGURED[provider])
@@ -181,7 +332,7 @@ async def oauth_authorize(
         params.update({
             "scope": " ".join(GMAIL_SCOPES),
             "access_type": "offline",
-            "prompt": "consent",
+            "prompt": "consent select_account" if another else "consent",
         })
     else:
         # The authority is always `common`, so a sign-in tenant cannot make
@@ -189,9 +340,13 @@ async def oauth_authorize(
         # provider asks for on refresh, so the two legs cannot drift.
         base = f"{MICROSOFT_OAUTH_BASE}/authorize"
         params["scope"] = " ".join(GRAPH_SCOPES)
+        if another:
+            # One more mailbox: Microsoft must ask which account, or it signs
+            # in the account the browser holds (EM-T8a, D-EM-26).
+            params["prompt"] = "select_account"
     if hint:
         # A hint, never an identity: the callback still binds the member of
-        # the session. No `prompt=select_account` (EM-T3a item 3).
+        # the session. A first connect sends no prompt (EM-T3a item 3).
         params["login_hint"] = hint
     auth_url = f"{base}?{urlencode(params)}"
 
@@ -199,6 +354,41 @@ async def oauth_authorize(
     # cross-site, and the browser drops the Lax session cookie on that POST, so
     # the BFF callback could not see the member (EM-T1a item 3).
     return RedirectResponse(auth_url, status_code=302)
+
+
+class OAuthProviders(BaseModel):
+    """Which mail provider a member can connect on this box (D-EM-35).
+
+    One boolean for each provider of :data:`CONNECT_PROVIDERS`, keyed by its
+    id. It holds no client ID, no secret and no URL, and ``extra="forbid"``
+    keeps it that way.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    microsoft: bool
+    gmail: bool
+
+
+@router.get("/oauth/providers")
+async def oauth_providers(
+    user: UserContext = Depends(get_current_user),
+) -> OAuthProviders:
+    """The capability read of the connect flow (EM-G7 item 8, D-EM-35).
+
+    A provider is ``true`` when its app holds a client ID and a secret, and
+    Gmail also needs ``EMAIL_GMAIL_CONNECT`` and, when the list of EM-G7b is
+    set, the member of the session on it. The UI shows Gmail as a live
+    choice only when it reads ``true`` (EM-G8). The route reads no mailbox.
+    """
+    if not user.organization_id or not user.email:
+        raise HTTPException(
+            status_code=403,
+            detail="This needs a signed-in member of an organization.",
+        )
+    return OAuthProviders(
+        **{p: provider_available(p, user) for p in CONNECT_PROVIDERS},
+    )
 
 
 class OAuthAppInfo(BaseModel):
@@ -214,29 +404,31 @@ async def oauth_app_info(
     provider: str,
     user: UserContext = Depends(get_current_user),
 ) -> OAuthAppInfo:
-    """The client ID and the redirect URI of the mail app (EM-T3b).
+    """The client ID and the redirect URI of the mail app (EM-T3b, EM-G7).
 
     The guided page for admin approval builds the admin-consent link from
     these two values, so the client ID is never a constant in the browser.
-    Both values are public: Microsoft shows them in every authorize URL. The
-    client secret never leaves settings.
+    A Google Workspace admin needs the client ID to trust the app (EM-G7
+    item 9). Both values are public: each provider shows them in every
+    authorize URL. The client secret never leaves settings.
 
-    Only Microsoft has an admin-consent step, so another provider is a 404.
-    With no client ID in settings, the route answers 503.
+    Another provider is a 404. With no client ID in settings, the route
+    answers 503, and so does Gmail while ``EMAIL_GMAIL_CONNECT`` is off, or
+    for a member off the list of EM-G7b. The dark state is one state.
     """
     if not user.organization_id or not user.email:
         raise HTTPException(
             status_code=403,
             detail="This needs a signed-in member of an organization.",
         )
-    if provider != "microsoft":
-        raise HTTPException(status_code=404, detail="Admin approval applies to Microsoft only.")
-    app = oauth_app(provider)
-    if not app.client_id:
+    if provider not in CONNECT_PROVIDERS:
         raise HTTPException(
-            status_code=503,
-            detail="Microsoft mail is not set up on this deployment.",
+            status_code=404,
+            detail="Mail app facts exist for Microsoft and Gmail only.",
         )
+    app = oauth_app(provider)
+    if not app.client_id or (provider == "gmail" and not gmail_connect_allowed(user)):
+        raise HTTPException(status_code=503, detail=_APP_NOT_SET_UP[provider])
     return OAuthAppInfo(
         provider=provider,
         client_id=app.client_id,
@@ -271,21 +463,35 @@ async def oauth_callback(
     exit, so there is no ``commit()`` here. A statement after a commit in the
     middle of the block would run with no tenant bound (``SET LOCAL`` ends at
     commit).
+
+    Gmail (EM-G7): while ``EMAIL_GMAIL_CONNECT`` is off, each Gmail callback
+    bounces ``provider_unavailable`` before any check, so a state signed
+    before a flip-off cannot complete. So does the callback of a session
+    member off the list of EM-G7b, whatever member the state names. A
+    Google grant must hold both scopes of D-EM-31 and a refresh token, or it
+    saves nothing.
     """
     callback_page = f"{_workbench_public_url()}/email/oauth/callback"
 
     def _bounce(reason: str) -> RedirectResponse:
+        # Each failure names its provider (EM-G7 item 6), so the page never
+        # takes Microsoft for a Gmail try. Only a known provider rides on it.
+        query = {"error": reason}
+        if provider in CONNECT_PROVIDERS:
+            query["provider"] = provider
         return RedirectResponse(
-            f"{callback_page}?{urlencode({'error': reason})}", status_code=302,
+            f"{callback_page}?{urlencode(query)}", status_code=302,
         )
+
+    if provider == "gmail" and not gmail_connect_allowed(user):
+        _log.info("email.oauth_gmail_dark", leg="callback")
+        return _bounce("provider_unavailable")
 
     if not code:
         # The provider refused (for example, the tenant of the customer needs
         # admin consent) and sent `error` with no `code`. Show the callback
         # page, never a raw 422. EM-T3b owns the guided page for admin consent.
-        if not error:
-            return _bounce("invalid_state")
-        return _bounce(_consent_error_reason(error, error_description))
+        return _bounce(_refusal_reason(provider, error, error_description))
 
     claims = await _verified_claims(provider, state, user)
     if claims is None:
@@ -306,6 +512,13 @@ async def oauth_callback(
     except Exception as exc:
         _log.error("Token exchange failed: %s", exc)
         return _bounce("token_exchange_failed")
+
+    if provider == "gmail":
+        # A member can clear a scope on the consent page of Google, and a
+        # grant with no refresh token cannot sync (EM-G7 items 2 and 3).
+        refusal = _gmail_grant_refusal(token_data)
+        if refusal is not None:
+            return _bounce(refusal)
 
     # Get user email from provider
     try:
@@ -331,6 +544,11 @@ async def oauth_callback(
             encrypted_creds=encrypted_creds,
             import_months=claims["import_months"],
         )
+    except HTTPException as exc:
+        if exc.status_code == 409:
+            return _bounce("mailbox_limit")
+        _log.error("email.oauth_account_save_failed", error=str(exc.detail)[:200])
+        return _bounce("account_save_failed")
     except Exception as exc:
         _log.error("email.oauth_account_save_failed", error=str(exc)[:200])
         return _bounce("account_save_failed")
@@ -367,6 +585,53 @@ def _provider_error_reason(error: str) -> str:
     """
     raw = error.strip().lower()
     return raw if _PROVIDER_ERROR.match(raw) else "provider_error"
+
+
+def _refusal_reason(
+    provider: str, error: str | None, error_description: str | None,
+) -> str:
+    """The reason of a callback that carries no ``code``.
+
+    No ``error`` either is ``invalid_state``. Google errors map through
+    :func:`_google_error_reason` (EM-G7 item 4). Microsoft errors map through
+    :func:`_consent_error_reason` (EM-T3a item 4).
+    """
+    if not error:
+        return "invalid_state"
+    if provider == "gmail":
+        return _google_error_reason(error)
+    return _consent_error_reason(error, error_description)
+
+
+def _google_error_reason(error: str) -> str:
+    """The reason the callback page shows for a refusal of Google (EM-G7).
+
+    ``access_denied`` is a declined consent, and ``admin_policy_enforced``
+    means that a Google Workspace admin blocks the app. Each other plain code
+    passes through :func:`_provider_error_reason`. ``error_description`` is
+    never read, because its text is not ours.
+    """
+    known = _GOOGLE_ERROR_REASONS.get(error.strip().lower())
+    return known or _provider_error_reason(error)
+
+
+def _gmail_grant_refusal(token_data: dict[str, Any]) -> str | None:
+    """The bounce reason when a Google token answer cannot serve a mailbox.
+
+    ``None`` when the answer holds both scopes of D-EM-31 and a refresh
+    token. ``scope`` is the space-separated list that Google granted. A
+    missing or malformed list is a missing scope (EM-G7 items 2 and 3).
+    """
+    raw_scope = token_data.get("scope")
+    granted = set(raw_scope.split()) if isinstance(raw_scope, str) else set()
+    missing = sorted(set(GMAIL_SCOPES) - granted)
+    if missing:
+        _log.warning("email.oauth_scope_missing", provider="gmail", missing=missing)
+        return "scope_missing"
+    if not token_data.get("refresh_token"):
+        _log.warning("email.oauth_no_refresh_token", provider="gmail")
+        return "token_exchange_failed"
+    return None
 
 
 def _consent_error_reason(error: str, error_description: str | None) -> str:
@@ -427,6 +692,57 @@ async def _verified_claims(
     return claims
 
 
+async def _mailbox_limit_reached(
+    org: str, member: str, hint: str | None = None,
+) -> bool:
+    """True when ``member`` has the most mailboxes and ``hint`` names no one of them.
+
+    The authorize leg asks this (Q-MB-1). A hint that matches a mailbox of the
+    member is a reconnect, so it is never refused. A failed read answers
+    False, because the callback checks the limit again before it inserts.
+    """
+    try:
+        async with _tenant_session(org) as db:
+            if await member_mailbox_count(db, member) < MAX_MAILBOXES_PER_MEMBER:
+                return False
+            if hint:
+                row = (await db.execute(
+                    # private-only: the connect flow reads the member's own rows. It mirrors
+                    # the unique index of migration 223 (WS-65 SM-2). SM-3 owns a shared row.
+                    text("SELECT 1 FROM email_accounts WHERE lower(user_id) = :m "
+                         "AND lower(email_address) = :a LIMIT 1"),
+                    {"m": member, "a": hint.strip().lower()},
+                )).fetchone()
+                if row is not None:
+                    return False
+            return True
+    except Exception as exc:
+        _log.warning("email.oauth_limit_check_failed", error=str(exc)[:200])
+        return False
+
+
+async def _member_has_mailbox(org: str, member: str, provider: str) -> bool:
+    """True when ``member`` already has a mailbox of ``provider`` in ``org``.
+
+    The authorize leg asks this to choose between the sign-in hint of a first
+    connect and the account picker of one more mailbox (EM-T8a, D-EM-26).
+    ``member`` is in lower case, as in :func:`_save_account`. One block, and
+    no provider I/O inside it.
+    """
+    async with _tenant_session(org) as db:
+        row = (await db.execute(
+            text(
+                # private-only: the connect flow reads the member's own rows. It mirrors
+                # the unique index of migration 223 (WS-65 SM-2). SM-3 owns a shared row.
+                """SELECT 1 FROM email_accounts
+                   WHERE lower(user_id) = :member AND provider = :provider
+                   LIMIT 1"""
+            ),
+            {"member": member, "provider": provider},
+        )).fetchone()
+    return row is not None
+
+
 async def _save_account(
     *,
     org: str,
@@ -457,10 +773,12 @@ async def _save_account(
         # ``last_history_id = NULL``. For OUTLOOK that changed nothing: Outlook
         # ignores the cursor, and no code reset ``initial_sync_done``. For
         # Gmail it cleared a stale history id. Now only a Resync clears it
-        # (``transport/sync.py``). The risk is low, because D-EM-5 keeps Gmail
-        # out of the connect flow.
+        # (``transport/sync.py``). The risk is low, because EMAIL_GMAIL_CONNECT
+        # keeps Gmail out of the connect flow until EM-G10 (EM-G7).
         existing_row = (await db.execute(
             text(
+                # private-only: the connect flow reads the member's own rows. It mirrors
+                # the unique index of migration 223 (WS-65 SM-2). SM-3 owns a shared row.
                 """SELECT id FROM email_accounts
                    WHERE lower(user_id) = :member
                      AND provider = :provider
@@ -482,22 +800,27 @@ async def _save_account(
                 {"creds": encrypted_creds, "id": account_id},
             )
             return account_id
+        # A new mailbox, not a reconnect: the limit applies (Q-MB-1).
+        await enforce_mailbox_limit(db, member)
         # organization_id is set explicitly. The column default reads the same
         # GUC, but a write names its tenant (R5).
         nothing_old = import_months == 0
         result = await db.execute(
             text(
-                """INSERT INTO email_accounts
+                # The first-mailbox test mirrors the partial unique index of
+                # one default for each user_id (migration 223, WS-65 SM-2).
+                f"""INSERT INTO email_accounts
                    (id, user_id, provider, email_address, label,
                     avatar_color, credentials_encrypted, is_default,
                     organization_id, import_since, initial_sync_done,
-                    import_phase)
+                    import_phase, color_slot)
                    VALUES (:id, :user_id, :provider, :email, :label,
                             :color, :creds,
                             NOT EXISTS (SELECT 1 FROM email_accounts
-                                        WHERE lower(user_id) = :member),
+                                        WHERE {connector_predicate(uid="member", fold="column")}),
                             CAST(:org AS uuid), :import_since,
-                            :initial_sync_done, :import_phase)
+                            :initial_sync_done, :import_phase,
+                            {NEXT_SLOT_SQL})
                    RETURNING id"""
             ),
             {

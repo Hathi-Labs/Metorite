@@ -20,6 +20,9 @@
  *   fixed on the server.
  */
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -29,6 +32,8 @@ import {
   hitContext,
   isCurrent,
   isOpenShortcut,
+  isSearchableQuery,
+  isTaskNumberQuery,
   moveSelection,
   paletteKey,
   paletteState,
@@ -63,8 +68,15 @@ describe("paletteState", () => {
   });
 
   it("leaves idle at exactly the server's minimum", () => {
-    expect(MIN_QUERY).toBe(2);
-    expect(state({ query: "pa", hits: [] }).kind).toBe("empty");
+    expect(MIN_QUERY).toBe(3);
+    expect(state({ query: "pa", hits: [] }).kind).toBe("idle");
+    expect(state({ query: "par", hits: [] }).kind).toBe("empty");
+  });
+
+  it("leaves idle for a task number of any length (D-PM-31's exception)", () => {
+    expect(state({ query: "#7", hits: [] }).kind).toBe("empty");
+    expect(state({ query: "7", hits: [] }).kind).toBe("empty");
+    expect(state({ query: "#", hits: [] }).kind).toBe("idle");
   });
 
   it("never claims 'no results' while a request is in flight", () => {
@@ -268,5 +280,37 @@ describe("hitContext", () => {
 
   it("is empty rather than punctuation when it knows nothing", () => {
     expect(hitContext(hit({ project_name: null, task_number: null }))).toBe("");
+  });
+});
+
+// ── the minimum, and its one exception (D-PM-31) ────────────────────────────
+
+/**
+ * The ONE case table for the rule, `searchMinimumCases.json`. The gateway's
+ * `tests/unit/test_projects_search_minimum_lockstep.py` reads the same file
+ * and checks `filters.task_number` and the chat tool against it. A change to
+ * either side that the other does not share fails one of the two suites.
+ */
+const CASES: { q: string; number: number | null; searchable: boolean }[] = JSON.parse(
+  readFileSync(fileURLToPath(new URL("./searchMinimumCases.json", import.meta.url)), "utf8"),
+);
+
+describe("the shared case table (searchMinimumCases.json)", () => {
+  it.each(CASES)("%j", ({ q, number, searchable }) => {
+    expect(isTaskNumberQuery(q)).toBe(number !== null);
+    expect(isSearchableQuery(q)).toBe(searchable);
+  });
+});
+
+describe("isSearchableQuery — the one gate before /projects/search", () => {
+  it("needs MIN_QUERY characters of text", () => {
+    expect(isSearchableQuery("ab")).toBe(false);
+    expect(isSearchableQuery("  ab  ")).toBe(false);
+    expect(isSearchableQuery("abc")).toBe(true);
+  });
+
+  it("passes a task number at any length", () => {
+    expect(isSearchableQuery("#7")).toBe(true);
+    expect(isSearchableQuery("7")).toBe(true);
   });
 });

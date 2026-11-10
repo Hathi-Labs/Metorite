@@ -164,8 +164,7 @@ export default async function LoginPage({
           <div className="field-hint">
             Cannot get in? Unset <code>{IDENTITY_FLAG}</code> server-side and
             restart the console. The staff passphrase works again after that
-            restart. H-56 removes the passphrase for good, after one real
-            sign-in has succeeded.
+            restart.
           </div>
         )}
 

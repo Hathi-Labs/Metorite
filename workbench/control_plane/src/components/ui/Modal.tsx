@@ -103,8 +103,9 @@
  * WS-27bd recorded for the email `ContextMenu`. Do not add a sixth consumer.
  */
 
+import { useCloseOnBarTap } from "@/lib/phoneBarTap";
 import { Dialog } from "@base-ui/react/dialog";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
@@ -112,8 +113,12 @@ import Button from "@/components/ui/Button";
 /**
  * Reading width. The names are the Tailwind max-widths the six converted
  * dialogs already used, so adoption changed no dialog's size.
+ *
+ * `4xl` is the CRM record sheet's width (CRM-U2). The sheet holds a timeline
+ * and a 340 px fields column side by side, and it was `max-w-4xl` before it
+ * moved onto this primitive.
  */
-export type ModalSize = "sm" | "md" | "lg" | "xl" | "2xl" | "3xl";
+export type ModalSize = "sm" | "md" | "lg" | "xl" | "2xl" | "3xl" | "4xl" | "6xl";
 
 const SIZES: Record<ModalSize, string> = {
   sm: "max-w-sm",
@@ -122,6 +127,10 @@ const SIZES: Record<ModalSize, string> = {
   xl: "max-w-xl",
   "2xl": "max-w-2xl",
   "3xl": "max-w-3xl",
+  "4xl": "max-w-4xl",
+  // A reader with a list beside it, such as the page history of Knowledge
+  // (WS-61 KB-2g).
+  "6xl": "max-w-6xl",
 };
 
 /**
@@ -130,12 +139,19 @@ const SIZES: Record<ModalSize, string> = {
  * `top` is for surfaces raised by a keystroke that the eye should find without
  * moving — the command palette and the shortcuts sheet — and matches what both
  * already did.
+ *
+ * `end` hangs under the right end of the shell bar, for a panel that a control
+ * in that corner opens (the activity panel, WS-51 S3). `sheet` rises from the
+ * bottom edge, for the same panel on a phone, where the shell's own menus are
+ * bottom sheets too.
  */
-export type ModalPlacement = "center" | "top";
+export type ModalPlacement = "center" | "top" | "end" | "sheet";
 
 const PLACEMENT: Record<ModalPlacement, string> = {
   center: "items-center justify-center p-4",
   top: "items-start justify-center p-4 pt-16",
+  end: "items-start justify-end p-2 pt-12",
+  sheet: "items-end justify-center px-2 pt-2 pb-safe-full",
 };
 
 /**
@@ -148,7 +164,7 @@ const PLACEMENT: Record<ModalPlacement, string> = {
  *
  * ⚠️ `alert` exists because not every overlay is a Modal yet. Measured
  * 2026-09-24: hand-rolled `fixed` overlays sit at `z-[55]` up to `z-[95]`.
- * My Tasks' TaskFocusModal is `z-[80]`, so a delete confirmed from it opened
+ * My Tasks' TaskFocusModal is `z-[15]`, so a delete confirmed from it opened
  * BEHIND it at `z-50`. Focus went to a confirm button nobody could see, and
  * Enter deleted the task with no visible prompt.
  *
@@ -192,7 +208,7 @@ const CALLER_SETS_MAX_HEIGHT = /(?:^|\s)(?:[\w-]+:)*max-h-/;
  * The landmark focus lands on when the opener is gone. First in document
  * order, which on every Metorite page is `AppShell`'s own `<main>`.
  */
-const LANDMARK = "main, [role='main']";
+export const LANDMARK = "main, [role='main']";
 
 /**
  * Focus a landmark that is not focusable, and leave the DOM as it was found.
@@ -208,7 +224,7 @@ const LANDMARK = "main, [role='main']";
  * its **first tabbable child** — i.e. the first control on the page, which is
  * a jump, not a return.
  */
-function focusLandmark(el: HTMLElement): void {
+export function focusLandmark(el: HTMLElement): void {
   const owned = !el.hasAttribute("tabindex");
   if (owned) el.setAttribute("tabindex", "-1");
   queueMicrotask(() => {
@@ -350,6 +366,19 @@ export default function Modal({
     }
   }
 
+  /**
+   * The phone's bottom bar counts as an outside press (MOB-9, task 2002).
+   *
+   * The bar paints above every overlay, and the scrim ends at its top edge. A
+   * tap on a tab is then a press outside the dialog, but the substrate does
+   * not dismiss on it: it treats the bar, inside the app root that it marked
+   * inert, as part of the page behind the scrim. Measured at 390 px: the tab
+   * opened its sheet and the dialog stayed under it. So a click on the bar
+   * closes the dialog, and the tab then does its own job. Fence:
+   * `e2e/phone-bar-always.spec.ts`.
+   */
+  useCloseOnBarTap(onClose, open);
+
   /** The order documented on `finalFocus`. Runs in Base UI's close cleanup. */
   const returnFocus = () => {
     if (finalFocus === false) return false;
@@ -403,7 +432,7 @@ export default function Modal({
             finalFocus={returnFocus}
             className={`flex ${
               CALLER_SETS_MAX_HEIGHT.test(className) ? "" : "max-h-full"
-            } w-full ${SIZES[size]} flex-col overflow-hidden rounded-lg border border-border bg-card shadow-lg outline-none ${className}`}
+            } w-full ${SIZES[size]} flex-col overflow-hidden rounded-lg border border-border bg-card shadow-lg outline-none glass:rounded-2xl glass:border-transparent glass:glass-menu-flat ${className}`}
           >
             {title ? (
               <header className="flex items-center gap-2 border-b border-border px-3 py-2">

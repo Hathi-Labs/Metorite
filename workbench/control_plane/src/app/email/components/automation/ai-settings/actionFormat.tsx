@@ -6,11 +6,13 @@
 // is defined ONCE and every surface renders actions identically.
 
 import AppIcon from "@/components/Icon";
+import { accentForHue } from "@/lib/statusAccent";
 import type { RuleAction, RuleActionType, RuleConditions } from "../../../lib/types";
 
 export const ACTION_TYPES: RuleActionType[] = [
   "ARCHIVE", "LABEL", "MARK_READ", "STAR", "MARK_SPAM", "TRASH",
   "MOVE_FOLDER", "REPLY", "FORWARD", "DRAFT_EMAIL", "CALL_WEBHOOK",
+  "NOTIFY_ME",
 ];
 
 /**
@@ -30,6 +32,10 @@ export const ACTION_META: Record<RuleActionType, { label: string; description: s
   FORWARD: { label: "Forward", description: "Create a forward draft to someone — never auto-sent." },
   DRAFT_EMAIL: { label: "Draft reply", description: "Let the AI write a reply draft for your review — never auto-sent." },
   CALL_WEBHOOK: { label: "Call webhook", description: "POST the email to a URL you specify." },
+  NOTIFY_ME: {
+    label: "Tell me on WhatsApp",
+    description: "Send you a WhatsApp message about the email. Only you get it.",
+  },
 };
 
 /**
@@ -49,6 +55,7 @@ export const ACTION_ICON: Record<RuleActionType, string> = {
   FORWARD: "Forward",
   DRAFT_EMAIL: "PenLine",
   CALL_WEBHOOK: "Webhook",
+  NOTIFY_ME: "MessageCircle",
 };
 
 export function ActionIcon({ type, size = 11 }: { type: string; size?: number }) {
@@ -89,6 +96,7 @@ export const ACTION_COLOR: Record<RuleActionType, string> = {
   FORWARD: "bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-500/20",
   DRAFT_EMAIL: "bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/20",
   CALL_WEBHOOK: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20",
+  NOTIFY_ME: "bg-cat-4/10 text-cat-4 border-cat-4/20",
 };
 
 export function actionColor(type: string): string {
@@ -124,6 +132,9 @@ export function actionText(a: RuleAction): string {
   if (a.type === "FORWARD" && a.to_address) return `Forward to ${a.to_address}`;
   if (a.type === "REPLY" && a.to_address) return `Reply to ${a.to_address}`;
   if (a.type === "CALL_WEBHOOK" && a.url) return "Call webhook";
+  if (a.type === "NOTIFY_ME") {
+    return a.label === "urgent" ? "Tell me on WhatsApp (urgent)" : "Tell me on WhatsApp";
+  }
   if ((a.type === "DRAFT_EMAIL" || a.type === "REPLY") && a.content) {
     const snip = a.content.replace(/\s+/g, " ").trim().slice(0, 40);
     return `${actionLabel(a.type)}: "${snip}${a.content.length > 40 ? "…" : ""}"`;
@@ -158,8 +169,57 @@ export function matchSourceLabel(src?: string | null): string | null {
   }
 }
 
+/** Label for a rule run whose mail was moved or deleted before the rule ran. */
+export const GONE_MAIL_LABEL = "Mail moved or deleted";
+
+/**
+ * The server says which SKIPPED run is a gone-mail skip, with `mail_gone`.
+ * The UI never guesses it: a suppressed skip keeps its rule_id too. One place
+ * reads the flag, and History, its popover, the Fix dialog and the timeline
+ * call it.
+ */
+export function isGoneMailSkip(row: { mail_gone?: boolean | null }): boolean {
+  return row.mail_gone === true;
+}
+
+/** The "No match" filter of History: every SKIPPED row except a gone-mail one. */
+export function isNoMatchRow(row: {
+  status?: string | null;
+  mail_gone?: boolean | null;
+}): boolean {
+  return row.status === "SKIPPED" && !isGoneMailSkip(row);
+}
+
+/** The "Matched:" chip of the Fix dialog: label and colour for the current run. */
+export function currentMatchChip(
+  matched: boolean,
+  ruleName: string | null,
+  gone: boolean,
+): { label: string; cls: string } {
+  if (gone) return { label: GONE_MAIL_LABEL, cls: accentForHue("gray").chip };
+  if (matched)
+    return { label: ruleName || "Matched", cls: "bg-success/15 text-success" };
+  return { label: "No match found", cls: "bg-destructive/15 text-destructive" };
+}
+
+/** The prefix of the reason line in the popover. */
+export function reasonPrefix(gone: boolean): string {
+  return gone ? "What happened:" : "Reason for choosing this rule:";
+}
+
+/** A gone-mail row hides its action errors: they repeat the reason in red. */
+export function showActionErrors(gone: boolean, errorCount: number): boolean {
+  return !gone && errorCount > 0;
+}
+
 /** Friendly label + tint for an executed-rule status (History popover). */
-export function statusMeta(status?: string): { label: string; cls: string } | null {
+export function statusMeta(
+  status?: string,
+  mailGone?: boolean | null,
+): { label: string; cls: string } | null {
+  if ((status || "").toUpperCase() === "SKIPPED" && isGoneMailSkip({ mail_gone: mailGone })) {
+    return { label: GONE_MAIL_LABEL, cls: accentForHue("gray").chip };
+  }
   switch ((status || "").toUpperCase()) {
     case "APPLIED":
       return { label: "Applied", cls: "bg-emerald-500/15 text-emerald-400" };
@@ -188,6 +248,7 @@ export function statusMeta(status?: string): { label: string; cls: string } | nu
  */
 export function exampleActionType(text: string): RuleActionType {
   const t = text.toLowerCase();
+  if (/\bwhatsapp\b/.test(t)) return "NOTIFY_ME";
   if (/\bforward(s|ed|ing)?\b/.test(t)) return "FORWARD";
   if (/\b(draft|repl(y|ies)|respond)\b/.test(t)) return "DRAFT_EMAIL";
   if (/\bspam\b/.test(t)) return "MARK_SPAM";

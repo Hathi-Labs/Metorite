@@ -28,17 +28,56 @@ from typing import Any
 
 import httpx
 from acb_common import get_logger, get_settings
+from acb_common.paging import prefix_limit, prefix_page
+
+# H-236: every tool states ``open_world``. Each one is a read or a draft over
+# the gateway's own ``/whatsapp/*`` routes, and none sends (the DOCTRINE
+# above), so each says ``open_world=False``. A run that a covered Projects
+# run calls keeps them. A future send tool must say ``open_world=True``.
+try:
+    from acb_skills.tool_annotations import annotate as _annotate_risk
+except ImportError:  # older platform without the annotations registry
+    def _annotate_risk(**_hints):  # type: ignore[misc]
+        def _wrap(fn):
+            return fn
+        return _wrap
 
 _log = get_logger("agent.whatsapp_assistant")
 
 
 _INSTRUCTIONS_FILE = Path(__file__).parent / "instructions.md"
-INSTRUCTIONS = (
+_INSTRUCTIONS_TEXT = (
     _INSTRUCTIONS_FILE.read_text(encoding="utf-8")
     if _INSTRUCTIONS_FILE.exists()
     else "You are the WhatsApp Assistant. Help the user triage, understand, and "
     "draft replies to their WhatsApp Business messages using the provided tools."
 )
+
+#: The name this agent runs under, and the name ``NARROWING_AGENTS`` lists.
+AGENT_NAME = "whatsapp-assistant"
+
+#: WS-48 N4: the block of ``instructions.md`` that teaches ``narrow_and_read``.
+#: Only a build that holds the tool keeps it (:func:`_instructions`), so the
+#: prompt never names a tool that the agent does not hold.
+_NARROW_START = "<!-- narrowing:start -->"
+_NARROW_END = "<!-- narrowing:end -->"
+
+
+def _instructions(with_narrowing: bool) -> str:
+    """The instructions, with the narrowing block only when the tool is held."""
+    text = _INSTRUCTIONS_TEXT
+    start = text.find(_NARROW_START)
+    end = text.find(_NARROW_END, start + 1) if start != -1 else -1
+    if start == -1 or end == -1:
+        return text
+    tail = text[end + len(_NARROW_END):]
+    if with_narrowing:
+        return text[:start] + text[start + len(_NARROW_START):end] + tail
+    return text[:start].rstrip("\n") + "\n\n" + tail.lstrip("\n")
+
+
+#: The instructions of a build with no ``narrow_and_read`` (the flag off).
+INSTRUCTIONS = _instructions(False)
 
 
 # ── Gateway access (user-scoped) ─────────────────────────────────────────────
@@ -69,21 +108,14 @@ def _current_user_email() -> str:
 
 
 def _internal_token() -> str:
-    """The gateway's internal bearer token.
+    """The gateway's internal bearer token: ``GATEWAY_INTERNAL_TOKEN`` only.
 
-    ``gateway_internal_token`` IS a real Settings field
-    (``acb_common/settings.py``) — the service-identity/LLM-key split — and it
-    ships empty, which is why ``litellm_master_key`` is the fallback rather than
-    the primary. The order below is load-bearing in that direction: on a box
-    where the split HAS been provisioned, "simplifying" this to read
-    ``litellm_master_key`` first sends the wrong token and 403s every call.
+    There is no ``litellm_master_key`` rung (WS-24b, 2026-11-06). The gateway
+    no longer accepts the LLM key as service identity, so that rung would only
+    send a token that 401s. Unset gives ``""``, and the gateway refuses it.
     """
     settings = get_settings()
-    return (
-        getattr(settings, "gateway_internal_token", "")
-        or getattr(settings, "litellm_master_key", "")
-        or "sk-local"
-    )
+    return (getattr(settings, "gateway_internal_token", "") or "").strip()
 
 
 def _headers() -> dict[str, str]:
@@ -169,6 +201,7 @@ async def _default_account_id() -> str | None:
 
 # ── Read / triage tools ───────────────────────────────────────────────────────
 
+@_annotate_risk(open_world=False)
 async def list_whatsapp_accounts() -> str:
     """List the founder's connected WhatsApp Business numbers (id, number, name,
     sync status). Start here when a tool needs an account_id and none was given."""
@@ -185,6 +218,7 @@ async def list_whatsapp_accounts() -> str:
     return "\n".join(lines)
 
 
+@_annotate_risk(open_world=False)
 async def whatsapp_brief(account_id: str | None = None) -> str:
     """The WhatsApp morning brief: how many need a reply / are waiting / are muted,
     the top chats that need the founder first, promises the founder made that
@@ -227,27 +261,35 @@ async def whatsapp_brief(account_id: str | None = None) -> str:
     return "\n".join(lines)
 
 
+@_annotate_risk(open_world=False)
 async def list_whatsapp_chats(
-    stream: str = "needs_reply", account_id: str | None = None,
+    stream: str = "needs_reply", account_id: str | None = None, offset: int = 0,
 ) -> str:
     """List chats in a triage stream: 'needs_reply', 'waiting', 'groups', or
-    'all'. Returns each chat's name, last snippet, and chat_id."""
-    params: dict[str, Any] = {"stream": stream}
+    'all'. Returns each chat's name, last snippet, and chat_id. 20 a page:
+    offset reads the next."""
+    # `/whatsapp/chats` has a LIMIT (at most 200) and no OFFSET. The tool sent
+    # no limit before, so the route's default of 50 read as "every chat".
+    start, size, ask = prefix_limit(offset, 20, default=20, cap=200)
+    params: dict[str, Any] = {"stream": stream, "limit": ask}
     if account_id:
         params["account_id"] = account_id
     chats = await _get("/whatsapp/chats", params)
     if not chats:
         return f"No chats in the '{stream}' stream."
-    lines = [f"Chats in '{stream}' ({len(chats)}):"]
-    for c in chats[:20]:
+    page = prefix_page(chats, start, size, cap=200, asked=ask, noun="chats")
+    if not page.items:
+        return page.line
+    lines = [f"Chats in '{stream}':"]
+    for c in page.items:
         status = f" [{c['status']}]" if c.get("status") else ""
         win = "" if c.get("window_open", True) else " · window closed"
         lines.append(
             f"• {c.get('name') or c.get('wa_chat_id')}{status}{win}: "
             f"{(c.get('last_snippet') or '')[:80]} (chat_id={c.get('id')})"
         )
-    if len(chats) > 20:
-        lines.append(f"… and {len(chats) - 20} more")
+    if page.line:
+        lines.append(page.line)
     return "\n".join(lines)
 
 
@@ -261,40 +303,61 @@ def _fmt_message(m: dict[str, Any]) -> str:
     return f"{who}: {body[:200]}"
 
 
-async def read_whatsapp_chat(chat_id: str, limit: int = 20) -> str:
-    """Read the recent messages of a chat (oldest→newest), including voice-note
+@_annotate_risk(open_world=False)
+async def read_whatsapp_chat(chat_id: str, limit: int = 20, offset: int = 0) -> str:
+    """Read the newest `limit` messages of a chat (shown oldest→newest), including voice-note
     transcripts. Use before drafting a reply or answering a question about a
-    conversation."""
-    msgs = await _get(f"/whatsapp/chats/{chat_id}/messages", {"limit": limit})
+    conversation. offset counts back from the newest: offset=20 reads the 20
+    before them."""
+    # The route gives the newest LIMIT rows (at most 500), oldest first, and
+    # has no OFFSET. So the page is cut from the newest end.
+    start, size, ask = prefix_limit(offset, limit, default=20, cap=500)
+    msgs = await _get(f"/whatsapp/chats/{chat_id}/messages", {"limit": ask})
     if not msgs:
         return "No messages in this chat."
-    return "\n".join(_fmt_message(m) for m in msgs)
+    page = prefix_page(list(reversed(msgs)), start, size, cap=500, asked=ask,
+                       noun="messages")
+    if not page.items:
+        return page.line
+    lines = [_fmt_message(m) for m in reversed(page.items)]
+    if page.line:
+        lines.append(page.line)
+    return "\n".join(lines)
 
 
-async def search_whatsapp(query: str, account_id: str | None = None) -> str:
+@_annotate_risk(open_world=False)
+async def search_whatsapp(query: str, account_id: str | None = None,
+                          offset: int = 0) -> str:
     """Search the founder's WhatsApp history by meaning AND keyword (message
     bodies AND voice-note transcripts). Returns matches with chat_id + message_id.
     Semantic re-ranking applies when it's enabled; otherwise this is pure
     keyword search (recall is identical either way)."""
     # hybrid re-ranks by semantic closeness when enabled, and falls back to pure
     # lexical otherwise — so passing it is always safe.
-    params: dict[str, Any] = {"q": query, "hybrid": "true"}
+    # `/whatsapp/search` has a LIMIT (at most 201) and no OFFSET.
+    start, size, ask = prefix_limit(offset, 15, default=15, cap=200)
+    params: dict[str, Any] = {"q": query, "hybrid": "true", "limit": ask}
     if account_id:
         params["account_id"] = account_id
     msgs = await _get("/whatsapp/search", params)
     if not msgs:
         return f"No messages match '{query}'."
-    lines = [f"Matches for '{query}' ({len(msgs)}):"]
-    for m in msgs[:15]:
+    page = prefix_page(msgs, start, size, cap=200, asked=ask, noun="matches",
+                       rest="Other matches", narrow="Use more exact words to reach them.")
+    if not page.items:
+        return page.line
+    lines = [f"Matches for '{query}':"]
+    for m in page.items:
         lines.append(
             f"• {_fmt_message(m)} (chat_id={m.get('chat_id')}, "
             f"message_id={m.get('id')})"
         )
-    if len(msgs) > 15:
-        lines.append(f"… and {len(msgs) - 15} more")
+    if page.line:
+        lines.append(page.line)
     return "\n".join(lines)
 
 
+@_annotate_risk(open_world=False)
 async def whatsapp_waiting_on(account_id: str | None = None) -> str:
     """List the open promises OTHERS made to the founder (what to chase). Each
     carries a commitment_id you can pass to draft_waiting_on_nudge."""
@@ -317,6 +380,7 @@ async def whatsapp_waiting_on(account_id: str | None = None) -> str:
     return "\n".join(lines)
 
 
+@_annotate_risk(open_world=False)
 async def whatsapp_my_commitments(account_id: str | None = None) -> str:
     """List the open promises the FOUNDER made (their word to keep). Each shows
     whether it's already been captured as a task."""
@@ -337,6 +401,13 @@ async def whatsapp_my_commitments(account_id: str | None = None) -> str:
     return "\n".join(lines)
 
 
+#: The most loops and promises ``/whatsapp/chats/{id}/context`` returns
+#: (``limit=10`` and ``LIMIT 5`` in ``transport/context.py``).
+_CONTEXT_LOOPS_MAX = 10
+_CONTEXT_WAITING_MAX = 5
+
+
+@_annotate_risk(open_world=False)
 async def whatsapp_chat_context(chat_id: str) -> str:
     """The company standing behind a chat: who the contact is, their CRM/ERP
     link, open tasks/commitments, and what they owe the founder. The moat the
@@ -354,15 +425,23 @@ async def whatsapp_chat_context(chat_id: str) -> str:
     if entity:
         lines.append(
             f"• Linked: {entity.get('system')} {entity.get('kind')} #{entity.get('id')}")
+    # The route already caps each list (10 loops, 5 promises). Print all it
+    # sent: the tool cut the loops to 5 on top, with no notice.
     loops = ctx.get("open_loops", []) or []
     if loops:
         lines.append("• Open loops: " + "; ".join(
-            lp.get("title", "") for lp in loops[:5]))
+            lp.get("title", "") for lp in loops))
+        if len(loops) >= _CONTEXT_LOOPS_MAX:
+            lines.append(f"• That is the first {len(loops)} open loops. "
+                         "More may exist.")
     waiting = ctx.get("waiting_on", []) or []
     if waiting:
         lines.append("• They owe you: " + "; ".join(
             f"{w.get('text', '')[:60]} (commitment_id={w.get('id')})"
-            for w in waiting[:5]))
+            for w in waiting))
+        if len(waiting) >= _CONTEXT_WAITING_MAX:
+            lines.append(f"• That is the first {len(waiting)}. "
+                         "whatsapp_waiting_on lists every open promise.")
     stats = ctx.get("stats", {}) or {}
     lines.append(f"• History: {stats.get('message_count', 0)} messages")
     return "\n".join(lines)
@@ -370,6 +449,7 @@ async def whatsapp_chat_context(chat_id: str) -> str:
 
 # ── Understanding tools (AI) ──────────────────────────────────────────────────
 
+@_annotate_risk(open_world=False)
 async def summarize_whatsapp_group(chat_id: str) -> str:
     """Collapse a noisy group chat into one paragraph: what was discussed, the
     sentiment, whether the founder was addressed, and the points worth their eye.
@@ -385,6 +465,7 @@ async def summarize_whatsapp_group(chat_id: str) -> str:
     return "\n".join(lines)
 
 
+@_annotate_risk(open_world=False)
 async def list_whatsapp_group_summaries(needs_you: bool = False) -> str:
     """List cached group summaries, the ones that need the founder first. Set
     needs_you=true to see only groups where the founder was addressed."""
@@ -402,6 +483,7 @@ async def list_whatsapp_group_summaries(needs_you: bool = False) -> str:
     return "\n".join(lines)
 
 
+@_annotate_risk(open_world=False)
 async def transcribe_whatsapp_voice_note(message_id: str) -> str:
     """Transcribe a voice note by its message_id and fold it into triage (so a
     spoken promise becomes a real commitment). Returns the transcript."""
@@ -411,6 +493,7 @@ async def transcribe_whatsapp_voice_note(message_id: str) -> str:
 
 # ── Drafting tools (never sends) ──────────────────────────────────────────────
 
+@_annotate_risk(open_world=False)
 async def draft_whatsapp_reply(chat_id: str) -> str:
     """Draft a reply to a chat in the founder's WhatsApp voice (short, warm, in
     the thread's language). This is a DRAFT — the founder reviews and sends it in
@@ -422,6 +505,7 @@ async def draft_whatsapp_reply(chat_id: str) -> str:
     )
 
 
+@_annotate_risk(open_world=False)
 async def draft_waiting_on_nudge(commitment_id: str) -> str:
     """Draft a gentle follow-up to chase something someone owes the founder,
     keyed on a commitment_id from whatsapp_waiting_on / whatsapp_brief. A DRAFT —
@@ -453,6 +537,53 @@ _TOOLS = [
     draft_whatsapp_reply,
     draft_waiting_on_nudge,
 ]
+
+
+# ── WS-48 N4: narrow, pick, read (data_narrowing_pipeline.md §9 N4) ─────────
+
+
+def _narrow_source() -> Any:
+    """The WhatsApp adapter of ``narrow_source.py``, on THIS module's ``_get``.
+
+    It is loaded by path under a name of its own. A bare ``import
+    narrow_source`` would take whichever agent's adapter loaded first, because
+    each agent dir that holds one goes on ``sys.path`` (``acb_skills.loader``).
+    The getter reads ``_get`` at each call, so it is the one client of this
+    agent (``_request`` and ``_headers``), and no second one exists.
+    """
+    import importlib.util
+
+    path = Path(__file__).with_name("narrow_source.py")
+    spec = importlib.util.spec_from_file_location("agent_whatsapp_assistant_narrow_source", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"no narrow_source.py beside {__file__}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    async def _get_for_adapter(path: str, params: dict[str, Any] | None = None) -> Any:
+        return await _get(path, params)
+
+    return module.WhatsAppNarrowSource(get=_get_for_adapter)
+
+
+def _narrow_tool() -> Any | None:
+    """``narrow_and_read`` when ``NARROWING_AGENTS`` names this agent, else ``None``.
+
+    ``narrow_tool_for`` is the ONE door (WS48-F4). It reads the flag, and the
+    tool reads it again at each call. A fault here builds no tool, so the
+    agent keeps every other tool.
+    """
+    try:
+        from acb_skills.narrowing import narrow_tool_for, narrowing_on
+    except ImportError:  # an older platform with no narrowing seam
+        return None
+    if not narrowing_on(AGENT_NAME):
+        return None
+    try:
+        return narrow_tool_for(AGENT_NAME, _narrow_source())
+    except Exception as exc:  # never break the agent build
+        _log.warning("whatsapp_assistant.narrow_tool_failed", error_type=type(exc).__name__)
+        return None
 
 
 def _register_agent_tools() -> dict[str, Any]:
@@ -498,17 +629,19 @@ def build_agents() -> list[Any]:
             default_headers={"X-CC-Agent": "whatsapp-assistant", "X-CC-Source": "chat"},
         ),
     )
+    narrow = _narrow_tool()
+    tools = [*_TOOLS, narrow] if narrow is not None else list(_TOOLS)
     return [
         Agent(
             client=client,
-            instructions=INSTRUCTIONS,
-            name="whatsapp-assistant",
+            instructions=_instructions(narrow is not None),
+            name=AGENT_NAME,
             description=(
                 "Triages, understands, and drafts WhatsApp Business messages — "
                 "the morning brief, waiting-on chases, group summaries, voice-note "
                 "transcription, and reply/nudge drafts. Drafts only; never sends."
             ),
-            tools=list(_TOOLS),
+            tools=tools,
         )
     ]
 

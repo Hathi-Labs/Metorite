@@ -74,23 +74,27 @@ async def test_sync_messages_deep_sets_full_snapshot_and_passes_since() -> None:
     p.list_folders = AsyncMock(return_value=[])  # type: ignore[method-assign]
     seen: list = []
 
-    async def _sweep(folder, max_results, canonical_override=None, *, max_pages=None, since=None):
-        seen.append((folder, max_pages, since))
+    async def _sweep(folder, max_results, canonical_override=None, *,
+                     max_pages=None, since=None, catch_up=None):
+        seen.append((folder, max_pages, since, catch_up))
         return []
 
     p._sweep_folder = _sweep  # type: ignore[method-assign]
     since = NOW - timedelta(days=365)
     res = await p.sync_messages(deep=True, since=since)
     assert res.full_snapshot is True
+    assert len(seen) == 6, "a fake that refuses a keyword hides every folder"
     assert all(s[2] == since for s in seen)            # since threaded through
     assert all(s[1] == p.DEEP_SYNC_MAX_PAGES for s in seen)
 
     seen.clear()
-    res = await p.sync_messages(deep=False, since=since)
+    mark = NOW - timedelta(days=21)
+    res = await p.sync_messages(deep=False, since=since, catch_up=mark)
     # EM-T6a item 5: the shallow poll applies the floor too, and keeps its
-    # page count.
-    assert seen and all(s[2] == since for s in seen)
+    # page count. EM-T6b item 9: it carries the catch-up watermark.
+    assert len(seen) == 6 and all(s[2] == since for s in seen)
     assert all(s[1] == p.RECURRING_SYNC_MAX_PAGES for s in seen)
+    assert all(s[3] == mark for s in seen)
 
 
 # ── Gmail: after: query + deep paging ────────────────────────────────────────

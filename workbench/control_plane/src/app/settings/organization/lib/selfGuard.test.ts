@@ -90,6 +90,24 @@ describe("rowActions", () => {
     expect(a.canPurge).toBe(true);
   });
 
+  it("labels Remove as Revoke invite on an invited row, and only there", () => {
+    // Owner request, 2026-10-15. An invited person never signed in, so the
+    // act is to end the invitation.
+    expect(rowActions("owner@fracktal.in", member({ status: "invited" })).removeLabel)
+      .toBe("Revoke invite");
+    for (const status of ["active", "suspended"] as const) {
+      expect(rowActions("owner@fracktal.in", member({ status })).removeLabel)
+        .toBe("Remove");
+    }
+  });
+
+  it("offers no Activate on a removed row", () => {
+    // The removal dropped every role grant, and the seat went back to the
+    // pool. The way back is a fresh invite, which consumes a seat again.
+    const a = rowActions("owner@fracktal.in", member({ status: "removed" }));
+    expect(a.canActivate).toBe(false);
+  });
+
   it("still offers to re-activate the viewer's own dormant row", () => {
     // Not destructive, and the gateway allows it: `active` is the one status
     // that gives access rather than taking it.

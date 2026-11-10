@@ -19,6 +19,16 @@ Classes:
 
 A row may name a tool that is not built yet. Every such tool is in
 :data:`PLANNED` with the slice that builds it, and the fence asserts that.
+
+WS-46 P4 (D91) takes the same rule from the route to the FIELD. :data:`SENDS`,
+:data:`FIELD_EXEMPT` and :data:`FIELD_PLANNED` hold every field of a mapped
+route's request, and ``tests/unit/test_projects_field_parity.py`` (fence F2)
+reads the fields from the real router.
+
+WS-46 P5 takes it to the UI client METHOD. :data:`UI_ACTIONS`,
+:data:`UI_EXEMPT` and :data:`UI_PLANNED` hold every method of the Projects
+client, and ``tests/unit/test_projects_ui_actions.py`` (fence F3) reads the
+methods and the routes they call from the TypeScript source.
 """
 
 from __future__ import annotations
@@ -29,9 +39,17 @@ from dataclasses import dataclass
 __all__ = [
     "CLASSES",
     "COMPOSITE",
+    "FIELD_EXEMPT",
+    "FIELD_GAPS",
+    "FIELD_PLANNED",
+    "IDENTITY_HEADERS",
     "MANIFEST",
     "PLANNED",
     "READ_ONLY_POSTS",
+    "SENDS",
+    "UI_ACTIONS",
+    "UI_EXEMPT",
+    "UI_PLANNED",
     "Route",
     "allowed",
     "is_read",
@@ -39,6 +57,7 @@ __all__ = [
     "route_for",
     "tool_class",
     "tools_by_class",
+    "witnesses",
 ]
 
 CLASSES = ("A", "B", "C", "X")
@@ -68,41 +87,34 @@ class Route:
             raise ValueError(f"{self.method} {self.path}: class {self.cls} needs a tool")
 
 
-#: Why the two hard deletes are not here. D-PM-35: the routes carry no
-#: authority rule (H-121, WS-40), so a chat tool over them would let any
-#: reader destroy a subtree with a card as the only brake.
+#: Why My Tasks' purge is not a chat route. The chat deletes a task through
+#: `delete_task` (owner, 2026-10-22, over D-PM-35, one card per act). The purge
+#: is the member's own finishing step on a soft delete, and it stays in the app.
 _DELETE_REASON = (
-    "D-PM-35 — hard delete waits for WS-40's authority rule. Archive is the chat's remove verb."
+    "The purge of a soft-deleted personal task is My Tasks' own step. The chat has delete_task."
 )
-#: Delivery is the Reports app's, and arming the schedule is owner-gated
-#: (§9.12.8). The chat renders a report. It never sends one.
-_DELIVERY_REASON = (
-    "Report delivery stays in the Reports app. Arming the schedule is owner-gated (§9.12.8)."
+#: WS-55 EA-6h (EA3-51). An outside agent deletes a task over MCP, after the
+#: member said yes in the agent and turned on their own switch. The chat
+#: deletes through `delete_task` and its card (D-PM-35 binds the chat).
+_AGENT_DELETE_REASON = (
+    "The MCP door only (EA3-51): an outside agent deletes after the member's yes. "
+    "The chat deletes through delete_task and its card."
 )
-#: Writing who can see a project is a membership-shaped act. D-PM-40, the
-#: owner's answer of 2026-09-29 to spec §12 question 2.
-_GRANT_REASON = (
-    "D-PM-40 — the chat does not write grants. Propose the grant in words, "
-    "and a person applies it in the app."
+#: An agent's archive request is answered on the task card only (EA3-40,
+#: D-OP-13). A chat tool that answered it would be a second door to the answer.
+_CARD_ANSWER_REASON = (
+    "Only the run's member answers an agent's request, on the task card (EA3-40, "
+    "D-OP-13). The chat lists the request and links the card."
 )
 #: Per-client UI state and board order. The browser owns these.
 _UI_STATE_REASON = "Client UI state. The browser writes it, and a chat has no view to keep."
 #: The day planner belongs to the Calendar app and the Tasks assistant
 #: (``calendar_ai_review.md`` §4). A second caller would be a second planner.
+#: CAL-1a (task 1675): the main chat reaches it through the ``calendar-day``
+#: pack, which holds the My Tasks planner tools. No Projects tool calls these routes.
 _PLANNER_REASON = (
-    "The day planner is the Calendar app's and the Tasks assistant's (calendar_ai_review.md §4)."
-)
-#: A nudge tells a COLLEAGUE you are waiting on them. That is contacting a
-#: third party on the member's behalf, which CLAUDE.md §3a rule 3 holds for the
-#: owner. §9.12.9 also makes the act deliberately explicit — "a follow-up that
-#: always pings somebody is a tool people stop using" — and a chat tool is the
-#: shortest road to one that does. An assistant that chases people for you is a
-#: different product decision from one that reads and edits your own work, so
-#: this waits for an answer instead of assuming one. The member presses Nudge
-#: on the Waiting-For row.
-_NUDGE_REASON = (
-    "A nudge contacts a colleague. §9.12.9 makes it an explicit human act, and "
-    "whether the chat may chase somebody is an owner question."
+    "The day planner is the Calendar app's and the Tasks assistant's (calendar_ai_review.md §4). "
+    "The chat reaches it through the calendar-day pack (my_tasks_plan_day and its siblings)."
 )
 #: A file import is an admin's upload through a wizard (project_import.md §7.7).
 _IMPORT_REASON = (
@@ -126,22 +138,82 @@ MANIFEST: tuple[Route, ...] = (
     Route("POST", "/projects/nodes", "create_project", "B"),
     Route("PATCH", "/projects/nodes/{project_id}", "update_project", "B"),
     Route("POST", "/projects/nodes/{project_id}/move", "move_project", "C"),
-    Route("DELETE", "/projects/nodes/{project_id}", "", "X", _DELETE_REASON),
+    # WS-64 OP-10 (D-OP-16): a folder becomes a project, one card per folder.
+    Route("POST", "/projects/nodes/{project_id}/convert", "convert_folder_to_project", "C"),
+    Route("DELETE", "/projects/nodes/{project_id}", "delete_project", "C"),
     Route("POST", "/projects/nodes/{project_id}/archive", "archive_project", "C"),
     Route("POST", "/projects/nodes/{project_id}/unarchive", "unarchive_project", "C"),
     Route("GET", "/projects/nodes/{project_id}/grants", "project_access", "A"),
-    Route("POST", "/projects/nodes/{project_id}/grants", "", "X", _GRANT_REASON),
-    Route("DELETE", "/projects/nodes/{project_id}/grants/{grant_id}", "", "X", _GRANT_REASON),
+    # RX-1: who can see a project, for the card of a held chat.
+    Route("GET", "/projects/nodes/{project_id}/audience", "project_access", "A"),
+    # WS-64 OP-6b (D-OP-9 reverses D-PM-40): one grant per card. The route
+    # decides who may write it (D-OP-11, `authority.assert_may_write_grant`).
+    Route("POST", "/projects/nodes/{project_id}/grants", "grant_access", "C"),
+    Route("DELETE", "/projects/nodes/{project_id}/grants/{grant_id}", "revoke_access", "C"),
+    # WS-ALN ALN-4 repair (D-OP-9): the pin of a Knowledge page to a project.
+    # The route decides who may pin (`authority.assert_may_write_grant`).
+    Route("GET", "/projects/nodes/{project_id}/authorities", "project_authorities", "A"),
+    Route("POST", "/projects/nodes/{project_id}/authorities", "pin_authority", "C"),
+    Route(
+        "DELETE", "/projects/nodes/{project_id}/authorities/{pin_id}", "unpin_authority", "C"
+    ),
+    # WS-39 LP-1a (project_management_app.md §14.2a): the updates of a project.
+    # The post is class B: one card, and a newer update takes its place. An
+    # outside agent reaches both routes over MCP (MCP_ROUTES).
+    Route("GET", "/projects/nodes/{project_id}/updates", "list_project_updates", "A"),
+    Route("POST", "/projects/nodes/{project_id}/updates", "post_project_update", "B"),
+    # The soft delete: the author or a Projects admin. Class C, one card. It
+    # stays off the MCP in LP-1a (test_mcp_edge_coverage.NEVER_ON_THE_EDGE).
+    Route(
+        "DELETE", "/projects/nodes/{project_id}/updates/{update_id}",
+        "delete_project_update", "C",
+    ),
+    # WS-ALN ALN-2a (D-OP-9): one person decides. The reader is the decider
+    # only, and the route is dark behind DECISIONS_ORGS. The answer is the
+    # person's word: the tool refuses a run with no person present, then raises
+    # one card, and the route refuses an agent connection.
+    Route("GET", "/projects/decisions", "my_decisions", "A"),
+    Route("POST", "/projects/decisions/{decision_id}/answer", "answer_decision", "C"),
+    # WS-AP AP-8a (waiting_on_me.md §7.2): a member asks a member. Dark behind
+    # WAITING_ORGS and DECISIONS_ORGS. The route refuses an agent connection
+    # and a run with no person present. AP-10 builds the tool `ask_person`.
+    Route("POST", "/projects/tasks/{task_id}/asks", "ask_person", "C"),
+    # The asker withdraws an ask on its card (AP-9). A member does it by a
+    # click, so D-OP-9 gives it a chat tool: AP-10 builds `withdraw_ask`.
+    Route("POST", "/projects/asks/{ask_id}/withdraw", "withdraw_ask", "C"),
+    # ── cycles.py — the cycle store (WS-39 SP-1, D195) ───────────────────
+    # Dark behind PROJECTS_SPRINTS_ORGS. SP-5 (Metorite task 964) builds each
+    # tool. A delete of a planned cycle, a start and a close are hard to undo,
+    # so they are class C. A plan and an edit change rows that the app can
+    # change back, so they are class B.
+    Route("GET", "/projects/nodes/{project_id}/cycles", "list_cycles", "A"),
+    Route("POST", "/projects/nodes/{project_id}/cycles", "create_cycle", "B"),
+    Route("GET", "/projects/cycles/{cycle_id}", "cycle_detail", "A"),
+    Route("PATCH", "/projects/cycles/{cycle_id}", "update_cycle", "B"),
+    Route("DELETE", "/projects/cycles/{cycle_id}", "delete_cycle", "C"),
+    Route("POST", "/projects/cycles/{cycle_id}/tasks", "plan_cycle", "B"),
+    Route("DELETE", "/projects/cycles/{cycle_id}/tasks/{task_id}", "plan_cycle", "B"),
+    Route("POST", "/projects/cycles/{cycle_id}/start", "start_cycle", "C"),
+    Route("POST", "/projects/cycles/{cycle_id}/close", "close_cycle", "C"),
     # ── tasks.py ─────────────────────────────────────────────────────────
     Route("GET", "/projects/tasks", "list_tasks", "A"),
+    # MCP-G19a (task 1957): the count read. The chat tool is task 2223.
+    Route("GET", "/projects/tasks/stats", "board_stats", "A"),
+    # MCP-G21 (task 2216): the members a task can go to. The chat tool waits.
+    Route("GET", "/projects/assignable-members", "assignable_members", "A"),
     Route("GET", "/projects/tasks/{task_id}", "task_detail", "A"),
+    # D-OP-10 (OP-7): the subtasks a delete card offers, hidden ones counted.
+    Route("GET", "/projects/tasks/{task_id}/subtree", "delete_task", "C"),
     Route("POST", "/projects/tasks", "create_task", "B"),
     Route("PATCH", "/projects/tasks/{task_id}", "update_task", "B"),
     Route("POST", "/projects/tasks/{task_id}/move", "move_task", "B"),
-    Route("DELETE", "/projects/tasks/{task_id}", "", "X", _DELETE_REASON),
+    Route("DELETE", "/projects/tasks/{task_id}", "delete_task", "C"),
     Route("POST", "/projects/tasks/{task_id}/archive", "archive_task", "C"),
     Route("POST", "/projects/tasks/{task_id}/unarchive", "unarchive_task", "B"),
     Route("PUT", "/projects/tasks/{task_id}/assignees", "assign", "B"),
+    # WS-55 EA-6b (EA3-34). An outside agent reaches it over MCP as
+    # `claim_task` (external_agent_access.md §9.2). The chat has no tool yet.
+    Route("POST", "/projects/tasks/{task_id}/claim", "claim_task", "B"),
     Route("POST", "/projects/tasks/{task_id}/links", "link_tasks", "B"),
     Route("DELETE", "/projects/tasks/{task_id}/links/{link_id}", "unlink_tasks", "B"),
     # ── bulk.py · move.py · merge.py ─────────────────────────────────────
@@ -190,6 +262,8 @@ MANIFEST: tuple[Route, ...] = (
     Route("PUT", "/projects/views/{view_id}/positions", "", "X", _UI_STATE_REASON),
     # ── me.py · personal.py ──────────────────────────────────────────────
     Route("GET", "/projects/assigned-to-me", "my_work", "A"),
+    # SW-68a: the plan order of the member's tasks. The MCP `my_work` reads it.
+    Route("GET", "/projects/plan/order", "my_work", "A"),
     Route("GET", "/projects/my/project", "my_work", "A"),
     Route(
         "POST",
@@ -235,6 +309,16 @@ MANIFEST: tuple[Route, ...] = (
     # `my_work` may pass the flag ("what landed on my plate").
     Route("GET", "/projects/my/inbox", "my_work", "A"),
     Route("GET", "/projects/my/tasks/{task_id}", "my_task", "A"),
+    # WS-64 OP-11 — the Overview of My tasks: counts over the one "mine".
+    Route(
+        "GET",
+        "/projects/my/summary",
+        "",
+        "X",
+        "The counts the Overview tab of My tasks draws (WS-64 OP-11). A second "
+        "door to a read the chat has: my_work and list_tasks read the same "
+        "tasks, and the chat counts them in its answer.",
+    ),
     # WS-39 S6g — My Tasks' purge: the hard delete that finalises a soft
     # delete, and only for a task in the caller's personal tree. A delete is
     # never a chat act, for the reason `DELETE /projects/tasks/{id}` gives.
@@ -252,46 +336,49 @@ MANIFEST: tuple[Route, ...] = (
     ),
     Route("GET", "/projects/my/calendar", "calendar", "A"),
     Route("GET", "/projects/my/contexts", "my_contexts", "A"),
+    # WS-46 P7 - the member's date and zone (`user_settings.timezone`). It is
+    # my_work's read, and the tools that guess a day reach it as a composite.
+    Route("GET", "/projects/my/today", "my_work", "A"),
     # WS-39 S6e — the projects I lead, with their open work and mine.
     Route("GET", "/projects/my/led", "my_led_projects", "A"),
-    # WS-39 S6b — a member's own categories. The READ is on the surface,
-    # because "file this under Home" needs to know Home exists. The three
-    # writes are not, and that is a decision rather than an oversight: an
-    # Area is the member's own filing scheme, the names are theirs and often
-    # near-duplicates ("Home" / "House"), and an assistant that renames or
-    # deletes one on a guess is the kind of help nobody asked for. S6c owns
-    # the promote door; if the chat should ever shape a member's tree, that
-    # is its own decision with its own card.
+    # WS-39 S6b — a member's own categories. WS-64 OP-6a (2026-10-23, D-OP-9):
+    # the chat now makes, renames and deletes an area. Before this, the three
+    # writes were class X on the worry that a guess renames the wrong
+    # category. The tools answer that worry: a name resolves among the
+    # member's own areas only, two near-equal names are a question to the
+    # member (`_my_area`), and a rename or a delete shows a card first. The
+    # card is a brake and not authority: the route finds an area by its owner,
+    # so another member's area is NOT FOUND (`_load_my_area`).
     Route("GET", "/projects/my/areas", "my_areas", "A"),
-    Route(
-        "POST",
-        "/projects/my/areas",
-        "",
-        "X",
-        "A member's categories are theirs to make. The chat can file a task "
-        "into one (my_areas reads them), and minting one is a shaping act "
-        "the member should perform where they can see the whole list.",
-    ),
-    Route(
-        "PATCH",
-        "/projects/my/areas/{area_id}",
-        "",
-        "X",
-        "Renaming somebody's own category on a guess. Two of a member's "
-        "areas are often near-synonyms, and the chat cannot tell which was "
-        "meant from a sentence.",
-    ),
-    Route(
-        "DELETE",
-        "/projects/my/areas/{area_id}",
-        "",
-        "X",
-        "An empty area is hard-deleted by this route. That is not a verb to "
-        "reach through a guess at which area was meant.",
-    ),
+    Route("POST", "/projects/my/areas", "create_area", "B"),
+    Route("PATCH", "/projects/my/areas/{area_id}", "rename_area", "C"),
+    Route("DELETE", "/projects/my/areas/{area_id}", "delete_area", "C"),
     Route("POST", "/projects/tasks/{task_id}/complete", "complete", "B"),
     Route("POST", "/projects/tasks/{task_id}/defer", "defer", "B"),
-    Route("POST", "/projects/tasks/{task_id}/nudge", "", "X", _NUDGE_REASON),
+    # WS-64 OP-6c (D-OP-9, 2026-10-23): a card names the person and the task, and
+    # the route writes one in-app notification. It sends no mail.
+    Route("POST", "/projects/tasks/{task_id}/nudge", "nudge_task", "C"),
+    # ── reminders.py (WS-66 RM-1, D114) ──────────────────────────────────
+    # The member's private reminders (calendar_events_reminders.md §5.8).
+    # RM-3 built the tools. The writes are class B, because each one is a
+    # reversible write on the member's own record, and `reopen` is the Undo
+    # of a done or a drop. RX-2 (2026-11-01): these five tools act at once
+    # in a chat that read no outside mail, with an Undo on the receipt, and
+    # show one card in any other chat (`writes._reminder_acts_at_once`,
+    # `egress.write_must_show_card`). They stay class B:
+    # the class marks "a reversible write", and the one reader decides the
+    # card. The promote makes a task and has no undo, so it is class C and
+    # always shows its card. The route finds a reminder by its OWNER only.
+    Route("GET", "/projects/my/reminders", "list_reminders", "A"),
+    Route("POST", "/projects/my/reminders", "set_reminder", "B"),
+    Route("PATCH", "/projects/my/reminders/{reminder_id}", "update_reminder", "B"),
+    Route("POST", "/projects/my/reminders/{reminder_id}/resolve", "resolve_reminder", "B"),
+    Route("POST", "/projects/my/reminders/{reminder_id}/reopen", "reopen_reminder", "B"),
+    Route("POST", "/projects/my/reminders/{reminder_id}/promote", "promote_reminder", "C"),
+    Route("POST", "/projects/my/reminders/{reminder_id}/snooze", "reschedule_reminder", "B"),
+    Route(
+        "POST", "/projects/my/reminders/{reminder_id}/reschedule", "reschedule_reminder", "B"
+    ),
     # ── planning.py ──────────────────────────────────────────────────────
     Route("POST", "/projects/my/calendar/plan", "", "X", _PLANNER_REASON),
     Route("POST", "/projects/my/calendar/replan", "", "X", _PLANNER_REASON),
@@ -302,11 +389,14 @@ MANIFEST: tuple[Route, ...] = (
     Route("GET", "/projects/search", "find_tasks", "A"),
     Route(
         "GET",
-        "/projects/export/tasks.csv",
+        "/projects/search/refs",
         "",
         "X",
-        "A file download. The app's export button owns it.",
+        "The chat's own pills read it to link a #n in an answer "
+        "(lib/taskRefs.ts). The model finds a task with find_tasks.",
     ),
+    # WS-64 OP-6c: the CSV comes back as a document of the chat. A read, so no card.
+    Route("GET", "/projects/export/tasks.csv", "export_tasks", "A"),
     Route(
         "GET",
         "/projects/delta/tasks",
@@ -363,6 +453,9 @@ MANIFEST: tuple[Route, ...] = (
     # S7d — the plan preview (plan_preview.py). It writes nothing, so it is
     # in READ_ONLY_POSTS. Its class is the tool's: propose_plan is class B.
     Route("POST", "/projects/plan/preview", "propose_plan", "B"),
+    # PJP-6a: the plan engine's read. SP-12 gives it the chat tool `get_plan`
+    # (class A), the same read that the MCP tool `get_plan` makes.
+    Route("GET", "/projects/plan/analysis", "get_plan", "A"),
     Route("GET", "/projects/reports", "report_list", "A"),
     # WS-27bn R2 - the template gallery. It must sit ABOVE the
     # {report_id} row, because route_for takes the first match. R-final:
@@ -381,18 +474,21 @@ MANIFEST: tuple[Route, ...] = (
     # is in READ_ONLY_POSTS. R-final: render_report renders a template and a
     # subject through it, so the server runs the §7.1 check.
     Route("POST", "/projects/reports/preview", "render_report", "A"),
-    Route("GET", "/projects/reports/{report_id}/recipients", "", "X", _DELIVERY_REASON),
-    Route("POST", "/projects/reports/{report_id}/recipients", "", "X", _DELIVERY_REASON),
-    Route("DELETE", "/projects/reports/{report_id}/recipients/{email}", "", "X", _DELIVERY_REASON),
-    Route("PATCH", "/projects/reports/{report_id}/schedule", "", "X", _DELIVERY_REASON),
-    # ── attachments.py ───────────────────────────────────────────────────
+    # WS-64 OP-6d (D-OP-9): the recipients and the schedule. Each write takes a
+    # card. The route decides who may change them (the author or an admin), and
+    # the send switch of the deployment is not a tool's (CLAUDE.md §3a rule 3).
+    Route("GET", "/projects/reports/{report_id}/recipients", "report_recipients", "A"),
+    Route("POST", "/projects/reports/{report_id}/recipients", "add_report_recipient", "C"),
     Route(
-        "POST",
-        "/projects/tasks/{task_id}/attachments",
-        "",
-        "X",
-        "A file upload. The chat has no file input, so the browser owns it.",
+        "DELETE",
+        "/projects/reports/{report_id}/recipients/{email}",
+        "remove_report_recipient",
+        "C",
     ),
+    Route("PATCH", "/projects/reports/{report_id}/schedule", "set_report_schedule", "C"),
+    # ── attachments.py ───────────────────────────────────────────────────
+    # WS-64 OP-6c (G21): the bytes come from a file the member uploaded to THIS chat.
+    Route("POST", "/projects/tasks/{task_id}/attachments", "attach_to_task", "C"),
     Route("GET", "/projects/tasks/{task_id}/attachments", "task_detail", "A"),
     Route(
         "GET",
@@ -409,6 +505,63 @@ MANIFEST: tuple[Route, ...] = (
     Route("PUT", "/projects/tasks/{task_id}/recurrence", "set_recurrence", "B"),
     Route("DELETE", "/projects/tasks/{task_id}/recurrence", "set_recurrence", "B"),
     Route("GET", "/projects/tasks/{task_id}/relations", "task_detail", "A"),
+    # ── refs.py — a task's URL references (WS-57 TR-1, TR-3) ─────────────
+    Route("GET", "/projects/tasks/{task_id}/refs", "task_detail", "A"),
+    Route("POST", "/projects/tasks/{task_id}/refs", "add_task_ref", "B"),
+    Route("DELETE", "/projects/tasks/{task_id}/refs/{ref_id}", "remove_task_ref", "B"),
+    # ── agent_runs.py — agent runs on a task (WS-55 EA-12a, EA12-9) ──────
+    # The routes serve an OUTSIDE agent over MCP (external_agent_access.md
+    # §12.1). The in-product chat gets them in EA-12e.
+    Route("GET", "/projects/tasks/{task_id}/agent-runs", "agent_runs", "A"),
+    # WS-64 OP-6e (D-OP-13): the chat lists the member's waiting requests.
+    Route("GET", "/projects/agent-runs", "waiting_agent_requests", "A"),
+    Route("GET", "/projects/agent-runs/{run_id}", "agent_runs", "A"),
+    Route("POST", "/projects/tasks/{task_id}/agent-runs", "start_agent_run", "B"),
+    Route("POST", "/projects/agent-runs/{run_id}/activities", "post_agent_activity", "B"),
+    Route("POST", "/projects/agent-runs/{run_id}/finish", "finish_agent_run", "B"),
+    # WS-55 EA-14a. The holder, the run's member, an assignee or an admin gives
+    # a task up. The task keeps its status and its assignees, so class B.
+    Route("POST", "/projects/agent-runs/{run_id}/release", "release_agent_run", "B"),
+    # WS-55 SW-11a (spec §12.7). A person hands a stalled run back to an agent:
+    # one member prompt, with the rule of Release. The task does not change, so
+    # class B. The chat gets the tool with the other run tools in EA-12e.
+    Route("POST", "/projects/agent-runs/{run_id}/resume", "resume_agent_run", "B"),
+    # SW-43a (spec agent_coordination.md §3.9). The run's member takes back an
+    # answer that no agent has read. It writes one marker prompt and changes
+    # no task, so class B. The chat gets the tool with SW-43c.
+    Route("POST", "/projects/agent-runs/{run_id}/answer/withdraw", "withdraw_agent_answer", "B"),
+    # WS-55 MCP-G15. An outside agent records a decision that its member made
+    # outside Metorite, on its own awaiting run. It writes an agent response
+    # and changes no task, so class B. The chat acts as the member, and the
+    # member answers the question on the task, so the chat waits for EA-12e.
+    Route("POST", "/projects/agent-runs/{run_id}/outside-decision",
+          "record_outside_decision", "B"),
+    # WS-55 EA-6g (EA3-40). An outside agent ASKS to archive over MCP: the
+    # request writes a question and archives nothing, so it is class B. The
+    # run's member answers on the task. The approval archives, so it is
+    # class C, and it stays out of MCP_ROUTES (external_agent_access.md §9.5).
+    Route("POST", "/projects/tasks/{task_id}/archive-request", "request_task_archive", "B"),
+    # WS-64 OP-6e (D-OP-13): only the run's member answers, on the task card.
+    # The chat lists the request (`waiting_agent_requests`) and links the card.
+    Route("POST", "/projects/agent-runs/{run_id}/archive-approval", "", "X", _CARD_ANSWER_REASON),
+    # WS-55 EA-6h (EA3-51). The ONE destructive pair of MCP_WRITE_ROUTES. It
+    # is class X: the chat never reaches it. `test_mcp_edge_coverage.py`
+    # names it as the one class X pair that the edge may hold (§9.5).
+    Route("POST", "/projects/tasks/{task_id}/agent-delete", "", "X", _AGENT_DELETE_REASON),
+    # ── agent_summary.py — the strip above the board (WS-55 EA-13e, EA3-43) ──
+    # Five counts over the tasks the caller can see. A read, so class A. The
+    # chat reads the same counts through a tool after EA-12e.
+    Route("GET", "/projects/{project_id}/agent-summary", "agent_summary", "A"),
+    # ── needs_attention.py — Needs attention (WS-55 SW-11a, spec §12.7) ──────
+    # Stalled runs, open runs of closed tasks and tasks blocked by parked work,
+    # over the tasks the caller can see. A read, so class A, and the chat asks
+    # nothing for it.
+    Route("GET", "/projects/needs-attention", "needs_attention", "A"),
+    # ── agent_questions.py — Questions for me (WS-55 EA-18a, spec §12.8) ─────
+    # The agent questions that wait on the reader. A read, so class A. The chat
+    # has no tool yet: a read tool for "what questions wait on me" is a later
+    # slice (D109), with the other run tools.
+    Route("GET", "/projects/agent-questions", "agent_questions", "A"),
     Route("PUT", "/projects/tasks/{task_id}/watch", "watch", "B"),
     Route("DELETE", "/projects/tasks/{task_id}/watch", "watch", "B"),
     Route("GET", "/projects/tasks/{task_id}/watchers", "watchers", "A"),
@@ -424,22 +577,77 @@ MANIFEST: tuple[Route, ...] = (
     Route("POST", "/projects/intake/{task_id}/snooze", "triage_intake", "B"),
     Route("GET", "/projects/notifications", "notifications", "A"),
     Route("POST", "/projects/notifications/read", "mark_notifications_read", "B"),
+    # ── templates.py (WS-39 TPL-1a, task 18) ─────────────────────────────
+    # Dark behind PROJECTS_TEMPLATES_ORGS. A template is org-wide. The save
+    # and the apply are class C: one card each, and neither has an undo in
+    # the app. The MCP edge reaches the same three routes.
+    Route("GET", "/projects/templates", "list_templates", "A"),
+    Route("POST", "/projects/templates", "save_as_template", "C"),
+    Route("POST", "/projects/templates/{template_id}/apply", "create_project_from_template", "C"),
 )
 
 #: Tools the manifest names that no slice has built yet, with the slice that
 #: builds each. The coverage fence holds this against ``__all__``: a tool is
 #: exported OR it is here, never both and never neither.
 PLANNED: dict[str, str] = {
+    # MCP-G21: the route is built. The chat reads people through `people_for`.
+    "assignable_members": "Metorite task 2216, chat parity for the assignable member list",
+    # MCP-G19a: the route is built. The chat tool waits on Metorite task 2223.
+    "board_stats": "Metorite task 2223, chat parity for the board count",
     # S2 (2026-09-22) shipped the fifteen daily class B verbs. S2b
     # (2026-09-23) shipped the rest of class B and the two reads it needed
     # (`recurrence`, `my_task`).
     # S3 (2026-09-23) shipped the seventeen class C acts (`guarded.py`).
-    # WS-39 S6b (2026-09-23) added the personal-areas read.
-    "my_areas": "S6b",
+    # WS-39 S6b (2026-09-23) added the personal-areas read, and WS-46 P7
+    # (2026-10-06) built it (G17).
     # S4 (2026-09-23) shipped the workflows, the views and the forms. S5
     # (2026-09-23) shipped the rest: views, calendar, contexts, watchers,
     # intake, notifications, grants (`inbox.py`). Every other tool the
     # manifest names is built.
+    # WS-55 EA-12a (2026-10-14) added the agent-run routes for an outside
+    # agent. The in-product chat gets their tools in EA-12e (EA12-9).
+    "agent_runs": "WS-55 EA-12e, in-product chat parity",
+    "start_agent_run": "WS-55 EA-12e, in-product chat parity",
+    "post_agent_activity": "WS-55 EA-12e, in-product chat parity",
+    "finish_agent_run": "WS-55 EA-12e, in-product chat parity",
+    # WS-55 EA-14a. A person releases a run from the card. The chat gets the
+    # tool with the other run tools in EA-12e.
+    "release_agent_run": "WS-55 EA-12e, in-product chat parity",
+    # WS-39 SP-1 built the cycle routes. SP-5 builds their tools.
+    "list_cycles": "Metorite task 964, SP-5 cycles in the chat and over the MCP",
+    "cycle_detail": "Metorite task 964, SP-5 cycles in the chat and over the MCP",
+    "create_cycle": "Metorite task 964, SP-5 cycles in the chat and over the MCP",
+    "update_cycle": "Metorite task 964, SP-5 cycles in the chat and over the MCP",
+    "delete_cycle": "Metorite task 964, SP-5 cycles in the chat and over the MCP",
+    "plan_cycle": "Metorite task 964, SP-5 cycles in the chat and over the MCP",
+    "start_cycle": "Metorite task 964, SP-5 cycles in the chat and over the MCP",
+    "close_cycle": "Metorite task 964, SP-5 cycles in the chat and over the MCP",
+    # WS-AP AP-8a built the person ask route. AP-10 builds its chat tool.
+    "ask_person": "WS-AP AP-10, the chat tools of Waiting",
+    "withdraw_ask": "WS-AP AP-10, the chat tools of Waiting",
+    # WS-55 SW-11a. A person resumes a stalled run from Needs attention. The
+    # chat gets the tool with the other run tools in EA-12e.
+    "resume_agent_run": "WS-55 EA-12e, in-product chat parity",
+    # SW-43a. A member withdraws an answer on the run card. The chat gets the
+    # tool with the change tool in slice SW-43c (spec agent_coordination.md §3.9).
+    "withdraw_agent_answer": "SW-43c, in-product chat parity",
+    # WS-55 EA-13e (2026-10-18) added the summary route for the board strip.
+    "agent_summary": "WS-55, in-product chat parity, after EA-12e",
+    # WS-55 EA-6b (2026-10-15) added the claim route for an outside agent.
+    # The chat assigns through `assign` and moves through `update_task`.
+    "claim_task": "WS-55, in-product chat parity, after EA-12e",
+    # WS-55 EA-6g (2026-10-15) added the archive request and its approval.
+    # The chat archives through `archive_task`.
+    "request_task_archive": "WS-55, in-product chat parity, after EA-12e",
+    # WS-55 MCP-G15 (2026-11-04) added the outside decision for an outside
+    # agent. The chat acts as the member, who answers on the task.
+    "record_outside_decision": "WS-55, in-product chat parity, after EA-12e",
+    # WS-55 EA-18a (2026-11-06) added the list of the questions that wait on a
+    # person. It adds no chat tool (spec §12.8, D109).
+    "agent_questions": "WS-55, in-product chat parity, after EA-12e",
+    # ⚠️ `approve_task_archive` is NOT a chat tool, ever (EA3-40, D-OP-13). Its
+    # route is class X with a reason, and `waiting_agent_requests` lists it.
+    # WS-66 RM-3 (2026-10-25) built the seven reminder tools that RM-1 planned.
 }
 
 
@@ -450,7 +658,23 @@ PLANNED: dict[str, str] = {
 #: reaches. ``test_projects_agent_writes.py`` holds every non-GET a tool
 #: issues to its own routes or to these.
 COMPOSITE: dict[str, frozenset[str]] = {
-    "create_task": frozenset({"assign"}),
+    # WS-46 P1 (D91): a repeating task is one act, so the rule is the second
+    # write under the create's one card (`PUT …/recurrence`). WS-46 P6 sends
+    # the custom values in the create itself, which checks them (#679).
+    # WS-46 P7: a weekly rule with no day takes today in the member's zone,
+    # from my_work's `GET /projects/my/today`.
+    # WS-IMG IMG-2: `files` posts each file through `attach_to_task`'s route
+    # and then patches the description through `update_task`'s, under the
+    # same card. Its own row makes it class B. A held chat refuses `files`.
+    "create_task": frozenset({"assign", "set_recurrence", "my_work", "attach_to_task"}),
+    "set_recurrence": frozenset({"my_work"}),
+    # WS-46 P7: a block time with no offset is read in the member's zone.
+    "set_my_overlay": frozenset({"my_work"}),
+    "bulk_update": frozenset({"my_work"}),
+    # WS-46 P1: the detail prints "Repeats:" from the `recurrence` read.
+    "task_detail": frozenset({"recurrence"}),
+    # D-OP-10 (OP-7): the card lists the subtasks it offers before it asks.
+    "delete_task": frozenset({"task_detail"}),
     "add_subtasks": frozenset({"create_task"}),
     # The create route's INSERT has no `required` column; the flag is a
     # PATCH under the same card (S2b verifier).
@@ -460,6 +684,12 @@ COMPOSITE: dict[str, frozenset[str]] = {
     "render_board": frozenset({"project_summary", "vocabulary", "list_tasks"}),
     "render_tasks": frozenset({"list_tasks", "vocabulary"}),
     "render_report": frozenset({"report_render"}),
+    # WS-64 OP-6d: each tool reads the report (for its name and `can_edit`), and the
+    # three writes read the list and the directory names before their card.
+    "report_recipients": frozenset({"report_render", "people_for"}),
+    "add_report_recipient": frozenset({"report_render", "report_recipients", "people_for"}),
+    "remove_report_recipient": frozenset({"report_render", "report_recipients", "people_for"}),
+    "set_report_schedule": frozenset({"report_render", "report_recipients", "people_for"}),
     "status_report": frozenset(
         {"project_summary", "analytics_stuck", "analytics_load", "analytics_outlook"}
     ),
@@ -468,13 +698,58 @@ COMPOSITE: dict[str, frozenset[str]] = {
     # S5 — three reads name the row through another read's route.
     "watchers": frozenset({"task_detail", "project_summary"}),
     "project_access": frozenset({"project_summary"}),
+    "project_authorities": frozenset({"project_summary"}),
+    # WS-39 LP-1a: both tools read the node to name the project. The post
+    # also reads the newest update first, so a dark flag shows no card.
+    "list_project_updates": frozenset({"project_summary"}),
+    "post_project_update": frozenset({"project_summary", "list_project_updates"}),
+    "delete_project_update": frozenset({"project_summary", "list_project_updates"}),
     "project_views": frozenset({"project_summary"}),
     "edit_task": frozenset({"update_task"}),
     "edit_project": frozenset({"update_project"}),
     # S7d — the plan also writes its `blocks` links under the same card.
     "propose_plan": frozenset({"create_project", "create_task", "link_tasks"}),
+    # WS-46 P13 — several new tasks in one project under ONE confirmation
+    # card. Each row is create_task's own write, and its assign PUT after.
+    # Review round 2: the read before the card sends `include_triage` on
+    # list_tasks' route, so F2 holds that claim too.
+    "create_tasks": frozenset({"create_task", "list_tasks"}),
+    # H-273 — several new tags, or several new types, under ONE confirmation
+    # card. Each ticked row is one POST to the single tool's own route.
+    "create_tags": frozenset({"create_tag"}),
+    "create_types": frozenset({"create_type"}),
+    # 2026-10-18 — several tasks filed into their projects under ONE card
+    # with a checkbox for each task. Each ticked row is move_task's own
+    # planned write (`_plan_move`, `_Move.send`), on move_task's routes.
+    "file_tasks": frozenset({"move_task"}),
+    # 2026-10-19 — several links under ONE card with a checkbox for each
+    # link. Each ticked row is link_tasks' own POST.
+    "link_tasks_batch": frozenset({"link_tasks"}),
+    # WS-PJP PJP-4 — several edits under ONE card with a checkbox for each
+    # task. Each ticked row is update_task's own planned PATCH
+    # (`_plan_task_edit`), on update_task's route.
+    "update_tasks": frozenset({"update_task"}),
     # S6 — navigation reads the row it opens, then dispatches to the page.
     "open_in_app": frozenset({"task_detail", "project_summary"}),
+    # WS-66 RM-3 (D114): the reminder tools read the member's saved zone
+    # (my_work's `GET /projects/my/today`), and the writes read the member's
+    # own list (list_reminders' route) to name the reminder on the card. No
+    # route reads one reminder. `reschedule_reminder` reaches both moves.
+    "list_reminders": frozenset({"my_work"}),
+    "set_reminder": frozenset({"my_work"}),
+    "update_reminder": frozenset({"list_reminders", "my_work"}),
+    "reschedule_reminder": frozenset({"list_reminders", "my_work"}),
+    "resolve_reminder": frozenset({"list_reminders"}),
+    "reopen_reminder": frozenset({"list_reminders"}),
+    "promote_reminder": frozenset({"list_reminders"}),
+    # WS-46 P11 — what the page shows: the node read, and the views read for a
+    # saved view by name. It writes nothing.
+    "show_view": frozenset({"project_summary", "project_views"}),
+    # WS-39 TPL-1a: each template write reads the template list before its
+    # card, the save for a taken name and the apply for its one template by
+    # id. Each also reads the project (project_summary's route).
+    "save_as_template": frozenset({"list_templates", "project_summary"}),
+    "create_project_from_template": frozenset({"list_templates", "project_summary"}),
 }
 
 #: POST routes that WRITE NOTHING. A preview computes what an act would do
@@ -488,6 +763,1170 @@ READ_ONLY_POSTS: frozenset[tuple[str, str]] = frozenset(
         ("POST", "/projects/reports/preview"),
     }
 )
+
+
+# ── WS-46 P4 (D91, fence F2) — every request FIELD, not only every route ─────
+#
+# Spec: ``project-docs/specs/projects_agent_parity.md`` §6.3. D-PM-37 holds
+# each ROUTE to a decision. These three tables hold each FIELD of a mapped
+# route's request to one. ``tests/unit/test_projects_field_parity.py`` reads
+# the fields from FastAPI's own ``route.dependant`` (the body model's fields,
+# the query parameters and the route's own headers), and fails on a field
+# that is in none of the three, or in more than one. So a new field on a
+# Projects route cannot merge until its author decides what the chat does
+# with it. Class X routes have no tool, and their fields are not held here.
+#
+# The wire name is the key: an alias (``from``, ``If-Match``) where the route
+# declares one. A dict body with no model is one field, the parameter name.
+
+#: Headers a route's DEPENDENCY declares. They are the auth seam, and the
+#: client sets each one from the run binding, never from a tool argument
+#: (R11, user_management_contract.md). The fence ignores these four and
+#: fails on any other header a dependency adds.
+IDENTITY_HEADERS: frozenset[str] = frozenset(
+    {"x-user-email", "x-user-role", "authorization", "x-actor-via"}
+)
+
+#: For each mapped route: request field -> the tool that sends it. The value is
+#: ``"tool.argument"`` when an argument sets the field, or ``"tool"`` when the
+#: tool sets it by itself (a fixed page size, ``include_subtree``). One witness
+#: per field is enough. The fence calls each witness through the fake gateway
+#: and asserts that the request carries the field, so a claim the tool does
+#: not honour fails.
+#:
+#: WS-46 P13: a value may also be a TUPLE of witnesses, when a second tool
+#: sends the same field. ``"tool.argument.key"`` names one key of a JSON row
+#: argument, for example ``create_tasks.tasks.due``. The fence checks each
+#: witness of the tuple on the wire.
+SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
+    # ── the plan engine (SP-12) ──────────────────────────────────────────
+    ("GET", "/projects/plan/analysis"): {"root_task_id": "get_plan"},
+    # ── agent runs (WS-64 OP-6e) ─────────────────────────────────────────
+    ("GET", "/projects/agent-runs"): {
+        "status": "waiting_agent_requests",
+        "limit": "waiting_agent_requests",
+        "order": "waiting_agent_requests",
+    },
+    # ── Needs attention (WS-55 SW-11a) ───────────────────────────────────
+    ("GET", "/projects/needs-attention"): {
+        "project_id": "needs_attention.project_id",
+        "mine": "needs_attention.mine",
+        "offset": "needs_attention.offset",
+        "limit": "needs_attention",
+    },
+    # ── tasks ────────────────────────────────────────────────────────────
+    ("GET", "/projects/tasks"): {
+        "project_id": "list_tasks.project_id",
+        "include_subtree": "list_tasks.include_subtree",
+        "q": "list_tasks.query",
+        "include_archived": "list_tasks.include_archived",
+        "status_category": "list_tasks.status_category",
+        "assignees": "list_tasks.assignee",
+        "unassigned": "list_tasks.unassigned",
+        "overdue": "list_tasks.overdue",
+        "due_before": "list_tasks.due_before",
+        "tags": "list_tasks.tags",
+        "watching": "list_tasks.watching",
+        "page": "list_tasks.page",
+        "page_size": "list_tasks.page_size",
+        # WS-46 P13 review round 2: the read before a batch's card takes the
+        # triage lane too, so a twin in triage starts unticked.
+        "include_triage": "create_tasks",
+    },
+    # WS-46 P13: create_tasks sends each field from one key of each row.
+    ("POST", "/projects/tasks"): {
+        "project_id": ("create_task.project_id", "create_tasks.project_id"),
+        "parent_task_id": (
+            "create_task.parent_task_id",
+            "create_tasks.tasks.parent_task_id",
+        ),
+        "status_id": ("create_task.status", "create_tasks.tasks.status"),
+        "title": ("create_task.title", "create_tasks.tasks.title"),
+        "description": ("create_task.description", "create_tasks.tasks.description"),
+        "importance": ("create_task.important", "create_tasks.tasks.important"),
+        "leveraged": ("create_task.leveraged", "create_tasks.tasks.leveraged"),
+        "estimate_mins": ("create_task.estimate_mins", "create_tasks.tasks.estimate_mins"),
+        "due_at": ("create_task.due", "create_tasks.tasks.due"),
+        "tags": ("create_task.tags", "create_tasks.tasks.tags"),
+        # WS-46 P6: G5, G6 and G7. The route checks each custom value
+        # through `custom_fields.apply_values` (#679), before the insert.
+        "start_date": ("create_task.start", "create_tasks.tasks.start"),
+        "type_id": ("create_task.type", "create_tasks.tasks.type"),
+        "custom_fields": ("create_task.fields", "create_tasks.tasks.fields"),
+        # WS-46 P9 (G10): where a task came from. The chat sends `email` for
+        # a task made from a mail that email-assistant described.
+        "source": ("create_task.source", "create_tasks.tasks.source"),
+    },
+    ("PATCH", "/projects/tasks/{task_id}"): {
+        "status_id": "update_task.status",
+        "title": "update_task.title",
+        "description": "update_task.description",
+        "importance": "update_task.important",
+        "leveraged": "update_task.leveraged",
+        "estimate_mins": "update_task.estimate_mins",
+        "start_date": "update_task.start",
+        "due_at": "update_task.due",
+        "tags": "update_task.tags",
+        # WS-46 P6: G6, G7 and G9.
+        "type_id": "update_task.type",
+        "custom_fields": "update_task.fields",
+        "include_subtasks": "update_task.include_subtasks",
+    },
+    # D-OP-10 (OP-7): the card sends the ids that the member ticked.
+    ("DELETE", "/projects/tasks/{task_id}"): {
+        "delete_subtask_ids": "delete_task.subtasks_to_delete",
+        "delete_all_subtasks": "delete_task.subtasks_to_delete",
+    },
+    ("POST", "/projects/tasks/{task_id}/move"): {
+        "parent_task_id": "move_task.parent_task_id",
+        # WS-46 P6 (G8): a move WITH the destination's required fields is
+        # this route, one task at a time, as the app's promote door is.
+        "project_id": "move_task.destination_project_id",
+        "custom_fields": "move_task.fields",
+        "include_subtasks": "move_task.include_subtasks",
+    },
+    ("PUT", "/projects/tasks/{task_id}/assignees"): {
+        "assignees": ("assign.assignees", "create_tasks.tasks.assignees"),
+    },
+    ("POST", "/projects/tasks/{task_id}/links"): {
+        "target_task_id": "link_tasks.other_task_id",
+        "link_type": "link_tasks.link_type",
+    },
+    # WS-57 TR-3: the chat's reads take the stored rows and call no GitHub.
+    ("GET", "/projects/tasks/{task_id}/refs"): {"refresh": "task_detail"},
+    # WS-57 TR-3: the URL and the optional title the member gave.
+    ("POST", "/projects/tasks/{task_id}/refs"): {
+        "url": "add_task_ref.url",
+        "title": "add_task_ref.title",
+        # The chat stores the link and reads no GitHub (open_world=False).
+        "refresh": "add_task_ref",
+    },
+    ("POST", "/projects/tasks/bulk"): {
+        "task_ids": "bulk_update.task_ids",
+        "patch": "bulk_update.status",
+        "assignees_add": "bulk_update.assignees_add",
+        "assignees_remove": "bulk_update.assignees_remove",
+        "tags_add": "bulk_update.tags_add",
+        "tags_remove": "bulk_update.tags_remove",
+        "action": "bulk_update.action",
+        "include_subtasks": "bulk_update.include_subtasks",
+        # WS-46 P7 (G16): the member's own overlay on every task of a selection.
+        "personal": "bulk_update.personal",
+    },
+    ("POST", "/projects/tasks/move/preview"): {
+        "task_ids": "move_task.task_ids",
+        "destination_project_id": "move_task.destination_project_id",
+        "include_subtasks": "move_task.include_subtasks",
+    },
+    ("POST", "/projects/tasks/move"): {
+        "task_ids": "move_task.task_ids",
+        "destination_project_id": "move_task.destination_project_id",
+        "accept_drops": "move_task",
+        "accepted_drops": "move_task",
+        "include_subtasks": "move_task.include_subtasks",
+    },
+    # WS-46 P6 (G9, D-PM-38): the two lifecycle doors read it as a query flag.
+    ("POST", "/projects/tasks/{task_id}/archive"): {
+        "include_subtasks": "archive_task.include_subtasks",
+    },
+    ("POST", "/projects/tasks/{task_id}/complete"): {
+        "include_subtasks": "complete.include_subtasks",
+    },
+    ("POST", "/projects/tasks/{task_id}/merge"): {"sources": "merge_tasks.source_task_ids"},
+    ("GET", "/projects/search"): {"q": "find_tasks.query", "limit": "find_tasks.limit"},
+    # ── activity ─────────────────────────────────────────────────────────
+    ("GET", "/projects/tasks/{task_id}/timeline"): {
+        "kind": "render_timeline.kind",
+        "page": "task_detail",
+        "page_size": "task_detail",
+    },
+    ("POST", "/projects/tasks/{task_id}/comments"): {
+        "body": "comment.body",
+        "parent_id": "comment.reply_to",
+    },
+    ("PATCH", "/projects/comments/{activity_id}"): {"body": "edit_comment.body"},
+    # ── statuses, types, fields, tags ────────────────────────────────────
+    ("POST", "/projects/nodes/{project_id}/statuses"): {
+        "name": "create_status.name",
+        "color": "create_status.color",
+        "position": "create_status",
+        "category": "create_status.category",
+    },
+    ("PATCH", "/projects/statuses/{status_id}"): {
+        "name": "update_status.name",
+        "color": "update_status.color",
+        "position": "update_status.position",
+        "category": "update_status.category",
+    },
+    ("DELETE", "/projects/statuses/{status_id}"): {"move_to": "delete_status.move_to"},
+    ("POST", "/projects/nodes/{project_id}/status-set/preview"): {
+        "mode": "set_status_set.mode",
+        "copy_from": "set_status_set.copy_from",
+    },
+    ("POST", "/projects/nodes/{project_id}/status-set"): {
+        "mode": "set_status_set.mode",
+        "copy_from": "set_status_set.copy_from",
+    },
+    # H-273: create_types sends each field from one key of each row.
+    ("POST", "/projects/nodes/{project_id}/types"): {
+        "name": ("create_type.name", "create_types.types.name"),
+        "icon": ("create_type.icon", "create_types.types.icon"),
+        "color": ("create_type.color", "create_types.types.color"),
+        "is_default": "create_type.is_default",
+        "scope": "create_type.org_wide",
+        "is_epic": ("create_type.is_epic", "create_types.types.is_epic"),
+    },
+    ("PATCH", "/projects/types/{type_id}"): {
+        "name": "update_type.name",
+        "icon": "update_type.icon",
+        "color": "update_type.color",
+        "is_default": "update_type.make_default",
+        "is_epic": "update_type.epic",
+    },
+    ("POST", "/projects/nodes/{project_id}/fields"): {
+        "name": "create_field.name",
+        "description": "create_field.description",
+        "field_type": "create_field.field_type",
+        "options": "create_field.options",
+        "scope": "create_field.org_wide",
+    },
+    ("PATCH", "/projects/fields/{field_id}"): {
+        "name": "update_field.name",
+        "description": "update_field.description",
+        "field_type": "update_field.field_type",
+        "options": "update_field.options",
+        "required": "update_field.required",
+    },
+    # H-273: create_tags sends each field from one key of each row.
+    ("POST", "/projects/nodes/{project_id}/tags"): {
+        "name": ("create_tag.name", "create_tags.tags.name"),
+        "color": ("create_tag.color", "create_tags.tags.color"),
+        "description": ("create_tag.description", "create_tags.tags.description"),
+        "scope": "create_tag.org_wide",
+    },
+    ("PATCH", "/projects/tags/{tag_id}"): {
+        "name": "update_tag.name",
+        "color": "update_tag.color",
+        "description": "update_tag.description",
+    },
+    ("POST", "/projects/tags/{tag_id}/merge"): {"into_tag_id": "merge_tags.into"},
+    # ── the tree and the views ───────────────────────────────────────────
+    ("POST", "/projects/nodes"): {
+        "name": "create_project.name",
+        "description": "create_project.description",
+        "parent_project_id": "create_project.parent_project_id",
+        "kind": "create_project.kind",
+        "lead": "create_project.lead",
+    },
+    ("PATCH", "/projects/nodes/{project_id}"): {
+        "name": "update_project.name",
+        "description": "update_project.description",
+        "status": "update_project.status",
+        "lead": "update_project.lead",
+        # WS-46 P7 (G12): Space Settings and the Lifecycle panel.
+        "icon": "update_project.icon",
+        "icon_slot": "update_project.icon_slot",
+        "archive_after_months": "update_project.archive_after_months",
+        "close_after_months": "update_project.close_after_months",
+        "timezone": "update_project.timezone",
+    },
+    ("POST", "/projects/nodes/{project_id}/move"): {
+        "parent_project_id": "move_project.parent_project_id",
+        # WS-46 P7 (G13): the tree drag's order among the siblings.
+        "position": "move_project.place",
+    },
+    # WS-64 OP-10: the one direction, which the tool sets by itself.
+    ("POST", "/projects/nodes/{project_id}/convert"): {
+        "to": "convert_folder_to_project",
+    },
+    ("POST", "/projects/nodes/{project_id}/views"): {
+        "name": "save_view.name",
+        "view_type": "save_view.view_type",
+        # WS-46 P7 (G14): the filters and the grouping of the view.
+        "config": "save_view.filters",
+    },
+    ("PATCH", "/projects/views/{view_id}"): {
+        "name": "save_view.view_id",
+        "config": "save_view.filters",
+    },
+    # ── the member's own work ────────────────────────────────────────────
+    ("GET", "/projects/assigned-to-me"): {
+        "include_done": "my_work.include_done",
+        "page": "my_work.page",
+        "page_size": "my_work",
+    },
+    ("GET", "/projects/my/inbox"): {
+        "include_done": "my_work.include_done",
+        "page": "my_work.page",
+        "page_size": "my_work",
+        # WS-46 P7 (G18): "what landed on my plate".
+        "untriaged": "my_work.untriaged",
+    },
+    # WS-46 P7 (G17)
+    ("GET", "/projects/my/areas"): {"include_archived": "my_areas.include_archived"},
+    # WS-64 OP-6c: the export takes the filters of list_tasks, and the columns.
+    ("GET", "/projects/export/tasks.csv"): {
+        "project_id": "export_tasks.project_id",
+        "include_subtree": "export_tasks.include_subtree",
+        "q": "export_tasks.query",
+        "include_archived": "export_tasks.include_archived",
+        "status_category": "export_tasks.status_category",
+        "assignees": "export_tasks.assignee",
+        "unassigned": "export_tasks.unassigned",
+        "overdue": "export_tasks.overdue",
+        "due_before": "export_tasks.due_before",
+        "tags": "export_tasks.tags",
+        "watching": "export_tasks.watching",
+        "shown_fields": "export_tasks.shown_fields",
+    },
+    # WS-64 OP-6c: the file is the one part of the multipart body.
+    ("POST", "/projects/tasks/{task_id}/attachments"): {"file": "attach_to_task.file_name"},
+    # WS-64 OP-6b: the one field of a grant.
+    ("POST", "/projects/nodes/{project_id}/grants"): {"subject": "grant_access.subject"},
+    # WS-ALN ALN-4: the one field of a pin, and the removed pins of a read.
+    ("GET", "/projects/nodes/{project_id}/authorities"): {
+        "include_removed": "project_authorities.include_removed"
+    },
+    ("POST", "/projects/nodes/{project_id}/authorities"): {"page_id": "pin_authority.page_id"},
+    # WS-39 LP-1a: the page of the updates, and the two fields of a post.
+    ("GET", "/projects/nodes/{project_id}/updates"): {
+        "limit": "list_project_updates.limit",
+        "before": "list_project_updates.before",
+    },
+    ("POST", "/projects/nodes/{project_id}/updates"): {
+        "health": "post_project_update.health",
+        "body": "post_project_update.body",
+    },
+    # WS-ALN ALN-2a: the one field of an answer.
+    ("POST", "/projects/decisions/{decision_id}/answer"): {
+        "answer_key": "answer_decision.answer_key"
+    },
+    # WS-64 OP-6d: one address, and the on/off of the schedule.
+    ("POST", "/projects/reports/{report_id}/recipients"): {
+        "payload": "add_report_recipient.recipient"
+    },
+    ("PATCH", "/projects/reports/{report_id}/schedule"): {
+        "payload": "set_report_schedule.enabled"
+    },
+    # WS-64 OP-6a
+    ("POST", "/projects/my/areas"): {"name": "create_area.name"},
+    ("PATCH", "/projects/my/areas/{area_id}"): {"name": "rename_area.new_name"},
+    ("POST", "/projects/my/tasks"): {
+        "title": "create_personal_task.title",
+        "next_action": "create_personal_task.next_action",
+        "context": "create_personal_task.context",
+        "due_at": "create_personal_task.due",
+        "notes": "create_personal_task.notes",
+        # WS-47 WAC-4b: a capture with a block on my calendar.
+        "scheduled_start": "create_personal_task.block_start",
+        "scheduled_end": "create_personal_task.block_end",
+    },
+    ("PATCH", "/projects/tasks/{task_id}/personal"): {
+        "disposition": "set_my_overlay.disposition",
+        "next_action": "set_my_overlay.next_action",
+        "context": "set_my_overlay.context",
+        "energy": "set_my_overlay.energy",
+        "is_two_minute": "set_my_overlay.two_minute",
+        # WS-46 P7 (G15): the block, the actual times, deep work and the chase.
+        "scheduled_start": "set_my_overlay.block_start",
+        "scheduled_end": "set_my_overlay.block_end",
+        "flexible": "set_my_overlay.flexible",
+        "is_hard_date": "set_my_overlay.hard_date",
+        "actual_start": "set_my_overlay.actual_start",
+        "actual_end": "set_my_overlay.actual_end",
+        "deep_work": "set_my_overlay.deep_work",
+        "waiting_on": "set_my_overlay.waiting_on",
+        "delegated_at": "set_my_overlay.waiting_since",
+        "expected_by": "set_my_overlay.expected_by",
+    },
+    ("POST", "/projects/tasks/{task_id}/defer"): {"until": "defer.until"},
+    ("GET", "/projects/my/calendar"): {"start": "calendar.start", "end": "calendar.end"},
+    ("GET", "/projects/calendar"): {
+        "from": "calendar.start",
+        "to": "calendar.end",
+        "project_id": "calendar.project_id",
+        # WS-46 P5: the app's calendar sends it, so the chat's does too.
+        "include_subtree": "calendar.include_subtree",
+    },
+    # ── recurrence ───────────────────────────────────────────────────────
+    ("PUT", "/projects/tasks/{task_id}/recurrence"): {
+        "freq": "set_recurrence.freq",
+        "interval": "set_recurrence.interval",
+        "anchor": "set_recurrence.anchor",
+        "weekdays": "set_recurrence.weekdays",
+        "day_of_month": "set_recurrence.day_of_month",
+        "month_of_year": "set_recurrence.month_of_year",
+        "until_at": "set_recurrence.until",
+        "max_occurrences": "set_recurrence.max_occurrences",
+    },
+    # ── intake and the bell ──────────────────────────────────────────────
+    ("POST", "/projects/intake"): {
+        "project_id": "capture_intake.project_id",
+        "title": "capture_intake.title",
+        "description": "capture_intake.description",
+        "importance": "capture_intake.important",
+        "leveraged": "capture_intake.leveraged",
+        "due_at": "capture_intake.due",
+        # WS-46 P9 (G11): the app that sent it, and the reference there.
+        "source": "capture_intake.source",
+        "source_ref": "capture_intake.source_ref",
+    },
+    ("GET", "/projects/intake"): {
+        "project_id": "intake_queue.project_id",
+        "page": "intake_queue",
+        "page_size": "intake_queue",
+    },
+    ("POST", "/projects/intake/{task_id}/accept"): {"status_id": "triage_intake.status"},
+    ("POST", "/projects/intake/{task_id}/duplicate"): {
+        "duplicate_of_task_id": "triage_intake.duplicate_of",
+    },
+    ("POST", "/projects/intake/{task_id}/snooze"): {"until": "triage_intake.until"},
+    ("GET", "/projects/notifications"): {
+        "unread_only": "notifications.unread_only",
+        "page": "notifications",
+        "page_size": "notifications",
+    },
+    ("POST", "/projects/notifications/read"): {
+        "ids": "mark_notifications_read.ids",
+        "all": "mark_notifications_read.all_unread",
+    },
+    # ── people, fit and analytics ────────────────────────────────────────
+    ("GET", "/projects/people/names"): {"emails": "people_for.emails"},
+    ("GET", "/projects/assignees"): {"q": "people_for.query", "due": "people_for.due"},
+    ("GET", "/projects/candidates"): {
+        "title": "fit_for_task.title",
+        "tags": "fit_for_task.tags",
+        "due": "fit_for_task.due",
+    },
+    ("GET", "/projects/analytics/stuck"): {
+        "project_id": "analytics_stuck.project_id",
+        "include_subtree": "analytics_stuck",
+    },
+    ("GET", "/projects/analytics/load"): {
+        "project_id": "analytics_load.project_id",
+        "include_subtree": "analytics_load",
+        # 2026-10-14: the page of people (test_read_tool_paging.py).
+        "people_offset": "analytics_load.offset",
+    },
+    ("GET", "/projects/analytics/throughput"): {
+        "project_id": "analytics_throughput.project_id",
+        "include_subtree": "analytics_throughput",
+        "weeks": "analytics_throughput.weeks",
+    },
+    ("GET", "/projects/analytics/finished"): {
+        "project_id": "analytics_finished.project_id",
+        "include_subtree": "analytics_finished",
+        "weeks": "analytics_finished.weeks",
+        "skip_current_week": "analytics_finished.skip_current_week",
+    },
+    ("GET", "/projects/analytics/outlook"): {
+        "project_id": "analytics_outlook.project_id",
+        "include_subtree": "analytics_outlook",
+    },
+    ("GET", "/projects/analytics/capacity"): {
+        "project_id": "team_capacity.project_id",
+        "include_subtree": "team_capacity",
+        "horizon_days": "team_capacity.horizon_days",
+    },
+    ("GET", "/projects/analytics/conflicts"): {
+        "project_id": "find_conflicts.project_id",
+        "include_subtree": "find_conflicts",
+        "horizon_days": "find_conflicts.horizon_days",
+    },
+    ("GET", "/projects/analytics/rebalance"): {
+        "project_id": "rebalance.project_id",
+        "include_subtree": "rebalance",
+        "horizon_days": "rebalance.horizon_days",
+    },
+    # ── plans and reports ────────────────────────────────────────────────
+    ("POST", "/projects/plan/preview"): {"rows": "propose_plan.tasks"},
+    ("POST", "/projects/reports"): {"payload": "report_save.name"},
+    ("PATCH", "/projects/reports/{report_id}"): {"payload": "report_save.report_id"},
+    ("POST", "/projects/reports/preview"): {"payload": "render_report.template"},
+    # ── the member's reminders (WS-66 RM-3, D114, G24) ───────────────────
+    # The tool sets `tz` by itself: the member's saved zone, sent with each
+    # time. `at` is the tool's word for `fire_at`.
+    ("GET", "/projects/my/reminders"): {
+        "state": "list_reminders.state",
+        "start": "list_reminders.start",
+        "end": "list_reminders.end",
+        "limit": "list_reminders.limit",
+    },
+    ("POST", "/projects/my/reminders"): {
+        "title": "set_reminder.title",
+        "fire_at": "set_reminder.at",
+        "tz": "set_reminder",
+        "kind": "set_reminder.kind",
+        "notes": "set_reminder.notes",
+        "subject_kind": "set_reminder.subject_kind",
+        "subject_id": "set_reminder.subject_id",
+        "estimate_minutes": "set_reminder.estimate_minutes",
+        "important": "set_reminder.important",
+    },
+    ("PATCH", "/projects/my/reminders/{reminder_id}"): {
+        "title": "update_reminder.title",
+        "fire_at": "update_reminder.at",
+        "tz": "update_reminder",
+        "kind": "update_reminder.kind",
+        "notes": "update_reminder.notes",
+        "subject_kind": "update_reminder.subject_kind",
+        "subject_id": "update_reminder.subject_id",
+        "estimate_minutes": "update_reminder.estimate_minutes",
+        "important": "update_reminder.important",
+    },
+    ("POST", "/projects/my/reminders/{reminder_id}/resolve"): {
+        "action": "resolve_reminder.answer",
+    },
+    ("POST", "/projects/my/reminders/{reminder_id}/snooze"): {
+        "fire_at": "reschedule_reminder.in_minutes",
+        "tz": "reschedule_reminder",
+    },
+    ("POST", "/projects/my/reminders/{reminder_id}/reschedule"): {
+        "fire_at": "reschedule_reminder.at",
+        "tz": "reschedule_reminder",
+    },
+    # ── templates (WS-39 TPL-1a) ─────────────────────────────────────────
+    # The apply reads its one template by id before the card.
+    ("GET", "/projects/templates"): {
+        "template_id": "create_project_from_template.template_id",
+    },
+    # The tool makes the key itself, one for each approved card.
+    ("POST", "/projects/templates"): {
+        "project_id": "save_as_template.project_id",
+        "name": "save_as_template.name",
+        "description": "save_as_template.description",
+        "start_date": "save_as_template.start_date",
+    },
+    ("POST", "/projects/templates/{template_id}/apply"): {
+        "idempotency_key": "create_project_from_template",
+        "parent_project_id": "create_project_from_template.parent_id",
+        "name": "create_project_from_template.name",
+        "description": "create_project_from_template.description",
+        "start_date": "create_project_from_template.start_date",
+    },
+}
+
+_ORDER_REASON = "The order of rows on screen, which a person drags in the app."
+_MAPPING_CARD_REASON = (
+    "The answer on the app's mapping card. Without it the server's own rule maps "
+    "each row, and the preview the chat card shows already counts that rule."
+)
+#: MCP-G19a (task 1957). The audit filters of the agent door. The chat
+#: gets them with its count tool, Metorite task 2223.
+_AUDIT_FILTER_REASON = (
+    "An audit filter of the agent door (MCP-G19a). The chat gets it with "
+    "the board count tool, Metorite task 2223."
+)
+_STATS_ROUTE_REASON = (
+    "A field of the board count route of the agent door (MCP-G19a). Its "
+    "chat tool is Metorite task 2223."
+)
+_MEMBERS_ROUTE_REASON = (
+    "The project filter of the assignable member route of the agent door "
+    "(MCP-G21). Its chat tool is Metorite task 2216."
+)
+_READ_FILTER_REASON = (
+    "A filter of the app's list. The chat narrows tasks through list_tasks, "
+    "which prints the facts this filter reads."
+)
+#: WS-64 OP-11. The My tasks space of the app sends these. The chat has its
+#: own door to the same set.
+_MINE_SCOPE_REASON = (
+    "The My tasks space of the app (WS-64 OP-11). The chat reads the member's "
+    "own tasks through my_work, which reads the same set."
+)
+_MINE_OVERLAY_REASON = (
+    "The member's own overlay on each row of the app's My tasks tabs. The chat "
+    "reads it through my_work and my_task, and sets it through set_my_overlay."
+)
+_SUBJECT_ME_REASON = (
+    "The Reports tab of My tasks (WS-64 OP-11). The chat reads a report on the "
+    "member through a saved report with a subject."
+)
+_SCOPE_AT_CREATE_REASON = (
+    "Where a NEW row lands. The PATCH route drops it, because a row keeps its scope."
+)
+_TRIAGE_READ_REASON = "Intake rows. The chat reads them through intake_queue."
+_SETTINGS_AFTER_CREATE_REASON = (
+    "The app sets it after the create, in Space Settings or Lifecycle. "
+    "update_project sets it."
+)
+#: WS-46 P7. The gap table named the prefix, and no screen writes it: Space
+#: Settings sends a name, an icon and a slot, and no route checks a prefix.
+_TASK_PREFIX_REASON = (
+    "No screen sets it. Space Settings writes a name, an icon and a colour "
+    "(page.tsx saveSpaceSettings), and no route checks a prefix."
+)
+
+#: A field the chat does not set, and why. A reason names the tool or the
+#: rule that answers the need, so a reviewer can check the claim.
+#: RX-1: a field that the card of a chat that read outside mail sets from the rows
+#: it read. The model never names it.
+_HELD_CARD_REASON = "The card of a held chat sets it from the rows it read."
+
+_STATUS_PLACE_REASON = (
+    "create_status and update_status send it when the model passes slot or after, in "
+    "every organization, and the route accepts it at all times. "
+    "test_projects_status_chat.py proves the send."
+)
+
+
+FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
+    ("GET", "/projects/assignable-members"): {"project_id": _MEMBERS_ROUTE_REASON},
+    # SP-12: `get_plan` and the MCP tool plan from today. A first working day
+    # is a web planner override, and the chat has no use for it.
+    ("GET", "/projects/plan/analysis"): {
+        "start": "A web planner override of the first working day. The chat and the MCP plan from today (SP-12).",
+    },
+    # SW-68a: `my_work` sends the ids of the rows it just listed. The member sets no id.
+    ("GET", "/projects/plan/order"): {
+        "task_ids": "The ids of the rows that `my_work` just read, in their order. The tool has no argument for it (SW-68a).",
+    },
+    ("GET", "/projects/tasks/stats"): {
+        "assigned": _STATS_ROUTE_REASON,
+        "assignee": _STATS_ROUTE_REASON,
+        "created_after": _STATS_ROUTE_REASON,
+        "due_before": _STATS_ROUTE_REASON,
+        "group_by": _STATS_ROUTE_REASON,
+        "has_parent": _STATS_ROUTE_REASON,
+        "include_archived": _STATS_ROUTE_REASON,
+        "include_subtree": _STATS_ROUTE_REASON,
+        "is_epic": _STATS_ROUTE_REASON,
+        "parent_task_id": _STATS_ROUTE_REASON,
+        "project_id": _STATS_ROUTE_REASON,
+        "q": _STATS_ROUTE_REASON,
+        "status_category": _STATS_ROUTE_REASON,
+        "status_id": _STATS_ROUTE_REASON,
+        "tags": _STATS_ROUTE_REASON,
+        "title_prefix": _STATS_ROUTE_REASON,
+        "unheld": _STATS_ROUTE_REASON,
+        "updated_after": _STATS_ROUTE_REASON,
+        "updated_before": _STATS_ROUTE_REASON,
+    },
+    # WS-42 PST-4: the place of a lane. The tools send them when the model
+    # passes a place, and this fence's witnesses pass none.
+    ("POST", "/projects/nodes/{project_id}/statuses"): {
+        "slot": _STATUS_PLACE_REASON,
+        "after": _STATUS_PLACE_REASON,
+    },
+    ("PATCH", "/projects/statuses/{status_id}"): {
+        "slot": _STATUS_PLACE_REASON,
+        "after": _STATUS_PLACE_REASON,
+    },
+    # WS-ALN ALN-2a: the list is the member's own, and the chat reads only that.
+    ("GET", "/projects/decisions"): {
+        "task_id": "my_decisions lists the decisions that name the member, across tasks."
+    },
+    ("POST", "/projects/decisions/{decision_id}/answer"): {
+        "reason": "The chat answer carries no reason. The card shows the option only."
+    },
+    ("GET", "/projects/tasks"): {
+        "assigned": _AUDIT_FILTER_REASON,
+        "created_after": _AUDIT_FILTER_REASON,
+        "has_parent": _AUDIT_FILTER_REASON,
+        "is_epic": _AUDIT_FILTER_REASON,
+        "title_prefix": _AUDIT_FILTER_REASON,
+        "updated_after": _AUDIT_FILTER_REASON,
+        "updated_before": _AUDIT_FILTER_REASON,
+        "compact": "A row shape of the agent door (MCP-G19a), not a filter. The chat prints its own rows.",
+        "parent_task_id": "Subtasks are read through task_detail, which lists them.",
+        "status_id": (
+            "One lane by id. list_tasks filters by status_category, and render_board "
+            "groups the tasks by lane."
+        ),
+        "assignee": "The older single form. list_tasks sends assignees.",
+        "sort": "The order of the app's list. The chat orders its own answer.",
+        "direction": "The order of the app's list. The chat orders its own answer.",
+        "archived_only": "The archive view. include_archived reads archived rows with the rest.",
+        "importance_gte": _READ_FILTER_REASON,
+        "tags_all": "Every tag rather than any tag. task_dataset takes tags_all.",
+        "view_id": "The hand-arranged order of a saved view, which only the board reads.",
+        "top_level": "The board's subtask toggle. Each row the chat reads names its parent.",
+        "unheld": (
+            "WS-55 EA-14a: an outside agent skips a task that another agent holds. "
+            "The chat does not claim tasks, and no screen sends it."
+        ),
+        "include_descendants": (
+            "MCP-G5: an outside agent reads a whole subtree in one call. The chat "
+            "reads subtasks through task_detail, and no screen sends it."
+        ),
+        "scope": _MINE_SCOPE_REASON,
+        "with_overlay": _MINE_OVERLAY_REASON,
+    },
+    # WS-64 OP-6c: the export takes the same subset as list_tasks.
+    ("GET", "/projects/export/tasks.csv"): {
+        "assigned": _AUDIT_FILTER_REASON,
+        "created_after": _AUDIT_FILTER_REASON,
+        "has_parent": _AUDIT_FILTER_REASON,
+        "is_epic": _AUDIT_FILTER_REASON,
+        "title_prefix": _AUDIT_FILTER_REASON,
+        "updated_after": _AUDIT_FILTER_REASON,
+        "updated_before": _AUDIT_FILTER_REASON,
+        "parent_task_id": "Subtasks are read through task_detail, which lists them.",
+        "status_id": (
+            "One lane by id. export_tasks filters by status_category, as list_tasks does."
+        ),
+        "assignee": "The older single form. export_tasks sends assignees.",
+        "sort": "The order of the app's list. The file holds the rows in the route's own order.",
+        "direction": "The order of the app's list. The file holds the rows in the route's own order.",
+        "archived_only": "The archive view. include_archived exports archived rows with the rest.",
+        "importance_gte": _READ_FILTER_REASON,
+        "tags_all": "Every tag rather than any tag. task_dataset takes tags_all.",
+        "include_triage": "The Triage lane is intake, and the chat reads it through intake_queue.",
+        "top_level": "The board's subtask toggle. A subtask row in the file names its number.",
+    },
+    ("POST", "/projects/tasks/{task_id}/claim"): {
+        "If-Match": (
+            "The edit guard of an outside agent (D-PM-20, WS-55 EA-6b). The chat "
+            "has no claim tool."
+        ),
+    },
+    ("PATCH", "/projects/tasks/{task_id}"): {
+        "If-Match": (
+            "The browser's edit guard (D-PM-20). A chat edit reads the row first. "
+            "The one chat write that sends it is the image PATCH of create_task with "
+            "files, and the witness fence cannot run it, because the stub upload is a PDF."
+        ),
+        "project_id": "The route refuses it: a move goes through move_task.",
+        "parent_task_id": "The route refuses it: a re-parent goes through move_task.",
+        "source": "Where a task came from is a fact of its create. An edit keeps it.",
+    },
+    ("POST", "/projects/tasks/{task_id}/move"): {
+        "assignees": (
+            "Promote-and-assign is the Clarify card's one transaction. The chat "
+            "assigns through assign."
+        ),
+        "If-Match": (
+            "The edit guard of an outside agent (D-PM-20, WS-55 MCP-G2). A chat "
+            "write reads the row first."
+        ),
+    },
+    # WS-55 MCP-G2: the two fields an outside agent sends and the chat does not.
+    ("POST", "/projects/tasks"): {
+        "assignees": (
+            "An outside agent assigns in the create's own transaction. The chat "
+            "assigns through assign, after the create."
+        ),
+    },
+    ("PUT", "/projects/tasks/{task_id}/assignees"): {
+        "If-Match": (
+            "The edit guard of an outside agent (D-PM-20, WS-55 MCP-G2). A chat "
+            "write reads the row first."
+        ),
+    },
+    ("POST", "/projects/tasks/move/preview"): {
+        "status_map": _MAPPING_CARD_REASON,
+        "field_map": _MAPPING_CARD_REASON,
+        "accept_drops": "A preview writes nothing, so it has nothing to accept.",
+        "accepted_drops": "A preview writes nothing, so it has nothing to accept.",
+    },
+    ("POST", "/projects/tasks/move"): {
+        "status_map": _MAPPING_CARD_REASON,
+        "field_map": _MAPPING_CARD_REASON,
+    },
+    ("GET", "/projects/search"): {
+        "exclude_relatives_of": "The link picker's filter in the app. task_detail reads links.",
+        "include_triage": _TRIAGE_READ_REASON,
+    },
+    ("PATCH", "/projects/comments/{activity_id}"): {
+        "parent_id": "Only POST reads it. An edit cannot re-parent a comment (activities.py).",
+    },
+    ("POST", "/projects/nodes/{project_id}/status-set/preview"): {
+        "mapping": _MAPPING_CARD_REASON,
+    },
+    ("POST", "/projects/nodes/{project_id}/status-set"): {"mapping": _MAPPING_CARD_REASON},
+    # RX-1: a held card reads these. No tool argument names them.
+    ("GET", "/projects/nodes/{project_id}/audience"): {
+        "people": _HELD_CARD_REASON,
+        "beyond": _HELD_CARD_REASON,
+    },
+    ("GET", "/projects/tasks/{task_id}/watchers"): {"audience": _HELD_CARD_REASON},
+    ("PATCH", "/projects/types/{type_id}"): {"scope": _SCOPE_AT_CREATE_REASON},
+    ("POST", "/projects/nodes/{project_id}/fields"): {
+        "field_key": "The route makes the key from the name.",
+        "position": _ORDER_REASON,
+        "required": (
+            "The create route stores no required flag. create_field sets it with a "
+            "PATCH under the same card."
+        ),
+    },
+    ("PATCH", "/projects/fields/{field_id}"): {
+        "field_key": "The route refuses it: a key is the identity of every stored value.",
+        "position": _ORDER_REASON,
+        "scope": _SCOPE_AT_CREATE_REASON,
+    },
+    ("PATCH", "/projects/tags/{tag_id}"): {"scope": _SCOPE_AT_CREATE_REASON},
+    ("POST", "/projects/nodes"): {
+        # WS-46 P9 decided G10 for a node: no. Only mail and the CRM give the
+        # chat an origin, and a space or a project is not made from either.
+        "source": "A node the chat makes starts as manual. P9 gives the chat an origin for tasks only.",
+        "status": "A new node starts active. update_project sets another status.",
+        # WS-46 P7: the app's create sends a name, a parent and a kind only
+        # (page.tsx `submitProject`). The settings are set after the create.
+        "icon": _SETTINGS_AFTER_CREATE_REASON,
+        "icon_slot": _SETTINGS_AFTER_CREATE_REASON,
+        "archive_after_months": _SETTINGS_AFTER_CREATE_REASON,
+        "close_after_months": _SETTINGS_AFTER_CREATE_REASON,
+        "timezone": _SETTINGS_AFTER_CREATE_REASON,
+        "task_prefix": _TASK_PREFIX_REASON,
+        "position": "A new node takes no position, as the app's create sends none. move_project sets its place.",
+    },
+    ("PATCH", "/projects/nodes/{project_id}"): {
+        "If-Match": (
+            "The edit guard of an outside agent (D-PM-20, WS-55 MCP-G1). A chat "
+            "write reads the row first."
+        ),
+        "parent_project_id": "The route refuses it: a re-parent goes through move_project.",
+        "kind": "The route refuses it: a node's kind is set at its create.",
+        "source": "Where a node came from is a fact of its create. An edit keeps it.",
+        "task_prefix": _TASK_PREFIX_REASON,
+        "position": (
+            "The order of the tree. move_project sets it through the move route, "
+            "as the app's tree drag does."
+        ),
+    },
+    ("POST", "/projects/nodes/{project_id}/views"): {"position": _ORDER_REASON},
+    ("PATCH", "/projects/views/{view_id}"): {
+        "view_type": "A view keeps its type. The app has no control that changes it.",
+        "position": _ORDER_REASON,
+    },
+    ("GET", "/projects/my/inbox"): {
+        "disposition": "A chip of the lens. my_work prints the disposition of each row.",
+        "context": "A chip of the lens. my_work prints the context of each row.",
+        "include_deferred": (
+            "A deferred task leaves the lens until its date, as in the app. list_tasks reads it."
+        ),
+        "include_archived": "Archived work is read through list_tasks include_archived.",
+    },
+    ("PATCH", "/projects/tasks/{task_id}/personal"): {
+        "time_estimate_mins": (
+            "Retired by D77. The route refuses it by name. update_task sets the estimate."
+        ),
+        "defer_until": "defer writes it, through POST /projects/tasks/{task_id}/defer.",
+        "important": "Retired by D78. The route refuses it by name. update_task sets it.",
+        "leveraged": "Retired by D78. The route refuses it by name. update_task sets it.",
+        "kept_mine": "The member's dismissal of the app's delegate hint. The chat shows no hint.",
+        "sort_key": _ORDER_REASON,
+        "last_nudged_at": "The nudge route writes it, and nudge_task calls that route.",
+    },
+    ("GET", "/projects/my/calendar"): {
+        "include_done": "Done work is read through my_work include_done.",
+    },
+    ("GET", "/projects/calendar"): {
+        "status_id": _READ_FILTER_REASON,
+        "status_category": _READ_FILTER_REASON,
+        "assignee": _READ_FILTER_REASON,
+        "assignees": _READ_FILTER_REASON,
+        "unassigned": _READ_FILTER_REASON,
+        "overdue": _READ_FILTER_REASON,
+        "importance_gte": _READ_FILTER_REASON,
+        "q": _READ_FILTER_REASON,
+        "tags": _READ_FILTER_REASON,
+        "tags_all": _READ_FILTER_REASON,
+        "include_archived": _READ_FILTER_REASON,
+        "archived_only": _READ_FILTER_REASON,
+        "include_links": "The dependency lines on the app's calendar. task_detail reads links.",
+        "include_undated": "A task with no date is not on a calendar. list_tasks reads it.",
+        "include_triage": _TRIAGE_READ_REASON,
+        "watching": _READ_FILTER_REASON,
+        "top_level": _READ_FILTER_REASON,
+        "scope": _MINE_SCOPE_REASON,
+        "with_overlay": _MINE_OVERLAY_REASON,
+    },
+    ("GET", "/projects/analytics/outlook"): {
+        "weeks": "The app sends no horizon either. The tool reads the route's default.",
+        "subject": (
+            "The route refuses subject=me, as a report refuses a subject on its "
+            "outlook section (NO_SUBJECT_SECTIONS)."
+        ),
+    },
+    ("GET", "/projects/analytics/stuck"): {"subject": _SUBJECT_ME_REASON},
+    ("GET", "/projects/analytics/load"): {"subject": _SUBJECT_ME_REASON},
+    ("GET", "/projects/analytics/throughput"): {"subject": _SUBJECT_ME_REASON},
+    ("GET", "/projects/analytics/finished"): {"subject": _SUBJECT_ME_REASON},
+}
+
+#: The open gaps of ``projects_agent_parity.md`` §3.3 that a field waits on,
+#: and the slice of §12 that closes each. The fence reads the spec: a gap id
+#: must be a row of the gap table, and its slice must not be marked built.
+FIELD_GAPS: dict[str, str] = {
+    # G5 to G9 closed in WS-46 P6 (2026-10-06), and G12 to G18 in P7
+    # (2026-10-06), and G10 and G11 in P9 (2026-10-25). Their rows are in
+    # SENDS or FIELD_EXEMPT.
+    # WS-55 EA-12a (EA12-9): the agent-run routes, for the chat in EA-12e.
+    "G23": "EA-12e",
+    # G24 (the reminder routes of WS-66 RM-1) closed in RM-3 (2026-10-25).
+    # Its rows are in SENDS.
+    # WS-AP AP-8a: the person ask. The chat gets `ask_person` in AP-10.
+    "G25": "AP-10",
+    # WS-39 SP-1: the cycle routes. The chat and the MCP get them in SP-5.
+    "G26": "SP-5",
+}
+
+#: A field that a later slice gives the chat: field -> its gap id. The slice
+#: that closes a gap moves its rows to ``SENDS``, so this table only shrinks.
+FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
+    # G26 (WS-39 SP-1): the cycle routes. SP-5 (Metorite task 964) sends each
+    # field.
+    ("POST", "/projects/nodes/{project_id}/cycles"): {
+        "name": "G26", "goal": "G26", "starts_on": "G26", "ends_on": "G26",
+        "cooldown_days": "G26", "credit_budget": "G26",
+    },
+    ("PATCH", "/projects/cycles/{cycle_id}"): {
+        "name": "G26", "goal": "G26", "starts_on": "G26", "ends_on": "G26",
+        "cooldown_days": "G26", "credit_budget": "G26", "If-Match": "G26",
+    },
+    ("POST", "/projects/cycles/{cycle_id}/tasks"): {"task_id": "G26"},
+    ("POST", "/projects/cycles/{cycle_id}/start"): {"goal": "G26", "capacity": "G26"},
+    ("POST", "/projects/cycles/{cycle_id}/close"): {"choices": "G26"},
+    # G25 (WS-AP AP-8a): the person ask. AP-10 sends each field.
+    ("POST", "/projects/tasks/{task_id}/asks"): {
+        "addressee": "G25", "question": "G25", "choices": "G25", "due_at": "G25",
+    },
+    # G23 (WS-55 EA-12a, EA12-9): the agent-run routes. The chat gets them in
+    # EA-12e. Today an outside agent reaches them over MCP.
+    # `status` and `limit` are sent by `waiting_agent_requests` (OP-6e, SENDS).
+    ("GET", "/projects/agent-runs"): {
+        "needs_agent": "G23", "task_id": "G23",
+        "client_via": "G23", "cursor": "G23",
+        # CIV-14k: the Approvals page asks for the task facts. The chat reads
+        # each task itself.
+        "with_task": "G23",
+    },
+    ("GET", "/projects/agent-runs/{run_id}"): {"after": "G23", "wait_s": "G23"},
+    ("POST", "/projects/tasks/{task_id}/agent-runs"): {
+        "external_link": "G23", "idempotency_key": "G23",
+        "connection_id": "G23", "body": "G23",
+    },
+    ("POST", "/projects/agent-runs/{run_id}/activities"): {
+        "type": "G23", "idempotency_key": "G23", "body": "G23", "options": "G23",
+        "allow_multiple": "G23", "selected": "G23", "action": "G23",
+        "parameters": "G23", "signal": "G23",
+    },
+    ("POST", "/projects/agent-runs/{run_id}/finish"): {
+        "summary": "G23", "idempotency_key": "G23",
+    },
+    # WS-55 EA-6g (EA3-40): the archive request. Its approval is class X (D-OP-13).
+    ("POST", "/projects/tasks/{task_id}/archive-request"): {"idempotency_key": "G23"},
+    # WS-55 SW-11a: the resume of a stalled run, with the other run tools.
+    ("POST", "/projects/agent-runs/{run_id}/resume"): {"idempotency_key": "G23"},
+    # WS-55 MCP-G15: the outside decision, with the other run tools.
+    ("POST", "/projects/agent-runs/{run_id}/outside-decision"): {
+        "decision": "G23", "where": "G23", "selected": "G23", "idempotency_key": "G23",
+    },
+    # WS-55 EA-18a: the list of the questions, with the other run tools.
+    ("GET", "/projects/agent-questions"): {
+        "scope": "G23", "project": "G23", "sort": "G23", "offset": "G23", "limit": "G23",
+    },
+}
+
+
+# ── WS-46 P5 (D91, fence F3) — every UI client METHOD, not only every field ──
+#
+# Spec: ``project-docs/specs/projects_agent_parity.md`` §6.4. A UI action can
+# be new while its route is old, so F1 and F2 cannot see it. The client method
+# is where a UI action first exists in code. ``tests/unit/test_projects_ui_actions.py``
+# reads each method of the Projects client files as TEXT, reads the verb and
+# the path that the method calls, and holds the method to one of these three
+# tables. A method that is in none of them fails by its name and its file.
+#
+# The key is ``object.method``, for example ``projectsApi.createTask``. A free
+# function that builds a gateway path takes the stem of its file as the
+# object, for example ``export.exportPath``.
+
+#: A UI client method -> the tool that does the same act. The fence asserts
+#: that the tool may reach the route that the method calls (``reaches``), and
+#: that the route is not class X. So a false claim fails.
+UI_ACTIONS: dict[str, str] = {
+    # ── projectsApi: the tree and the roll-ups ───────────────────────────
+    "projectsApi.tree": "projects_tree",
+    "projectsApi.summary": "project_summary",
+    "projectsApi.portfolio": "project_summary",
+    "projectsApi.createProject": "create_project",
+    "projectsApi.patchProject": "update_project",
+    "projectsApi.moveNode": "move_project",
+    "projectsApi.archiveProject": "archive_project",
+    "projectsApi.unarchiveProject": "unarchive_project",
+    "projectsApi.deleteProject": "delete_project",
+    "projectsApi.convertFolder": "convert_folder_to_project",
+    "projectsApi.grants": "project_access",
+    # ── projectsApi: analytics and reports ───────────────────────────────
+    "projectsApi.stuck": "analytics_stuck",
+    "projectsApi.load": "analytics_load",
+    "projectsApi.throughput": "analytics_throughput",
+    "projectsApi.finished": "analytics_finished",
+    "projectsApi.outlook": "analytics_outlook",
+    "projectsApi.capacity": "team_capacity",
+    "projectsApi.conflicts": "find_conflicts",
+    "projectsApi.reports": "report_list",
+    "projectsApi.reportTemplates": "render_report",
+    "projectsApi.reportSubjects": "render_report",
+    "projectsApi.createReport": "report_save",
+    "projectsApi.patchReport": "report_save",
+    "projectsApi.renderReport": "report_render",
+    "projectsApi.previewReport": "render_report",
+    "projectsApi.deleteReport": "report_delete",
+    # ── projectsApi: statuses and status sets ────────────────────────────
+    "projectsApi.statuses": "vocabulary",
+    "projectsApi.statusSet": "vocabulary",
+    "projectsApi.previewStatusSet": "set_status_set",
+    "projectsApi.setStatusSet": "set_status_set",
+    "projectsApi.createStatus": "create_status",
+    "projectsApi.patchStatus": "update_status",
+    "projectsApi.deleteStatus": "delete_status",
+    # ── projectsApi: tasks ───────────────────────────────────────────────
+    "projectsApi.tasks": "list_tasks",
+    "projectsApi.calendar": "calendar",
+    "projectsApi.search": "find_tasks",
+    "projectsApi.task": "task_detail",
+    "projectsApi.timeline": "task_detail",
+    "projectsApi.relations": "task_detail",
+    "projectsApi.taskSubtree": "delete_task",
+    "projectsApi.createTask": "create_task",
+    "projectsApi.patchTask": "update_task",
+    "projectsApi.archiveTask": "archive_task",
+    "projectsApi.unarchiveTask": "unarchive_task",
+    "projectsApi.deleteTask": "delete_task",
+    "projectsApi.previewMove": "move_task",
+    "projectsApi.moveTasks": "move_task",
+    "projectsApi.mergeTasks": "merge_tasks",
+    "projectsApi.bulkEdit": "bulk_update",
+    "projectsApi.setAssignees": "assign",
+    "projectsApi.comment": "comment",
+    "projectsApi.createLink": "link_tasks",
+    "projectsApi.deleteLink": "unlink_tasks",
+    "projectsApi.recurrence": "recurrence",
+    "projectsApi.setRecurrence": "set_recurrence",
+    "projectsApi.clearRecurrence": "set_recurrence",
+    # ── projectsApi: people and fit ──────────────────────────────────────
+    "projectsApi.suggestAssignees": "people_for",
+    "projectsApi.personNames": "people_for",
+    "projectsApi.taskCandidates": "fit_for_task",
+    # ── projectsApi: tags, types and fields ──────────────────────────────
+    "projectsApi.tags": "vocabulary",
+    "projectsApi.createTag": "create_tag",
+    "projectsApi.patchTag": "update_tag",
+    "projectsApi.tagImpact": "delete_tag",
+    "projectsApi.mergeTag": "merge_tags",
+    "projectsApi.deleteTag": "delete_tag",
+    "projectsApi.types": "vocabulary",
+    "projectsApi.createType": "create_type",
+    "projectsApi.patchType": "update_type",
+    "projectsApi.deleteType": "delete_type",
+    "projectsApi.fields": "vocabulary",
+    "projectsApi.createField": "create_field",
+    "projectsApi.patchField": "update_field",
+    "projectsApi.deleteField": "delete_field",
+    # ── projectsApi: saved views ─────────────────────────────────────────
+    "projectsApi.views": "project_views",
+    "projectsApi.createView": "save_view",
+    "projectsApi.patchView": "save_view",
+    "projectsApi.deleteView": "delete_view",
+    # ── attachmentsApi ───────────────────────────────────────────────────
+    "attachmentsApi.list": "task_detail",
+    "attachmentsApi.detach": "delete_attachment",
+    # WS-64 OP-6c (G21): the chat attaches a file the member gave it in this thread.
+    "attachmentsApi.upload": "attach_to_task",
+    # ── refsApi (WS-57 TR-2): a task's URL references ────────────────────
+    "refsApi.list": "task_detail",
+    "refsApi.add": "add_task_ref",
+    "refsApi.remove": "remove_task_ref",
+    # ── agentRunsApi (WS-55 EA-12c): agent runs on a task ────────────────
+    # The tools are PLANNED for EA-12e, the in-product chat (EA12-9).
+    "agentRunsApi.list": "agent_runs",
+    "agentRunsApi.get": "agent_runs",
+    "agentRunsApi.post": "post_agent_activity",
+    # EA-12d: "Ask an agent", a member starts a run for their own agent.
+    "agentRunsApi.start": "start_agent_run",
+    "agentRunsApi.enabled": "waiting_agent_requests",
+    # CIV-14k: the Approvals list reads the same rows as the chat tool.
+    "agentRunsApi.waiting": "waiting_agent_requests",
+    # EA-13e: the strip's five counts. The chat reads the same route through a
+    # tool after EA-12e (`PLANNED`).
+    "agentRunsApi.summary": "agent_summary",
+    # WS-55 EA-14a: a person releases a run from the card (`release_agent_run`, PLANNED for EA-12e).
+    "agentRunsApi.release": "release_agent_run",
+    # WS-55 SW-11a: a person resumes a stalled run from Needs attention
+    # (`resume_agent_run`, PLANNED for EA-12e), and the list itself.
+    "agentRunsApi.resume": "resume_agent_run",
+    # SW-43a: a member takes back an answer on the run card
+    # (`withdraw_agent_answer`, PLANNED for SW-43c).
+    "agentRunsApi.withdrawAnswer": "withdraw_agent_answer",
+    "attentionApi.list": "needs_attention",
+    # The Needs attention lens of My tasks: the same route with `mine=true`.
+    "attentionApi.mine": "needs_attention",
+    # The decisions of one task and the answer of one decision (D173).
+    "decisionsApi.forTask": "my_decisions",
+    "decisionsApi.answer": "answer_decision",
+    # EA-6g: the run's member approves or declines an archive request. It is in
+    # UI_EXEMPT: the chat never answers one (D-OP-13).
+    # ── notificationsApi ─────────────────────────────────────────────────
+    "notificationsApi.list": "notifications",
+    "notificationsApi.markRead": "mark_notifications_read",
+    "notificationsApi.markAllRead": "mark_notifications_read",
+    # ── watchersApi · projectWatchersApi ─────────────────────────────────
+    "watchersApi.get": "watchers",
+    "watchersApi.watch": "watch",
+    "watchersApi.unwatch": "watch",
+    "projectWatchersApi.get": "watchers",
+    "projectWatchersApi.watch": "watch",
+    "projectWatchersApi.unwatch": "watch",
+    # ── intakeApi ────────────────────────────────────────────────────────
+    "intakeApi.queue": "intake_queue",
+    "intakeApi.capture": "capture_intake",
+    "intakeApi.accept": "triage_intake",
+    "intakeApi.decline": "triage_intake",
+    "intakeApi.duplicate": "triage_intake",
+    "intakeApi.snooze": "triage_intake",
+    # ── export (WS-64 OP-6c) ─────────────────────────────────────────────
+    "export.exportPath": "export_tasks",
+}
+
+#: A UI client method the chat does not mirror, and why. The fence allows an
+#: exemption only where the route the method calls is class X. Where a tool
+#: reaches the route, the method names the tool in ``UI_ACTIONS``.
+UI_EXEMPT: dict[str, str] = {
+    "agentRunsApi.archiveApproval": (
+        "The run's member answers an agent's request on the task card only "
+        "(EA3-40, D-OP-13). The chat lists the request and links the card."
+    ),
+    "projectsApi.setViewState": (
+        "The member's own overlay on a saved view (WS-27ae). " + _UI_STATE_REASON
+    ),
+    "projectsApi.setPositions": (
+        "The hand-dragged order of cards on a saved view. " + _UI_STATE_REASON
+    ),
+    "projectsApi.mySummary": (
+        "The counts that the Overview tab of My tasks draws (WS-64 OP-11). The "
+        "route is class X: the chat reads the same tasks with my_work and "
+        "list_tasks, and it counts them in its answer."
+    ),
+    "projectsApi.vocabulary": (
+        "The shared vocabulary list of Projects settings. The chat reads a "
+        "space's effective tags, fields and types through vocabulary."
+    ),
+    "projectsApi.vocabularyImpact": (
+        "The count shown before an admin deletes or merges a shared entry. "
+        "The chat neither deletes nor merges shared entries."
+    ),
+    "importApi.upload": _IMPORT_REASON,
+    "importApi.get": _IMPORT_REASON,
+    "importApi.saveMapping": _IMPORT_REASON,
+    "importApi.list": _IMPORT_REASON,
+    "importApi.discard": _IMPORT_REASON,
+    "importApi.apply": _IMPORT_REASON,
+}
+
+#: A UI client method that a later slice gives the chat: method -> its gap id
+#: in the gap table of ``projects_agent_parity.md`` §3.3. The fence reads the
+#: spec, and fails when the slice of that gap is marked built. The slice that
+#: closes the gap moves its rows to ``UI_ACTIONS``, so this table only shrinks.
+UI_PLANNED: dict[str, str] = {}
+
+
+def witnesses(value: str | tuple[str, ...]) -> tuple[str, ...]:
+    """The witnesses of one ``SENDS`` value: one string, or a tuple of them."""
+    return (value,) if isinstance(value, str) else tuple(value)
 
 
 def tool_class(name: str) -> str | None:
@@ -508,9 +1947,19 @@ def tools_by_class(cls: str) -> set[str]:
     return direct | {t for t in COMPOSITE if tool_class(t) == cls}
 
 
+#: A tool that also writes through another tool's route, but is NOT a composite
+#: of it. ``create_task`` with ``files`` patches the description once, to put
+#: each image in it (IMG-2). Its values go in the create itself, with no PATCH
+#: (``test_projects_task_fields.py`` holds that), so ``update_task`` stays out
+#: of COMPOSITE.
+ALSO_WRITES_THROUGH: dict[str, frozenset[str]] = {
+    "create_task": frozenset({"update_task"}),
+}
+
+
 def reaches(tool: str, route_tool: str) -> bool:
     """May ``tool`` issue a call on a route the manifest gives ``route_tool``?"""
-    if tool == route_tool:
+    if tool == route_tool or route_tool in ALSO_WRITES_THROUGH.get(tool, ()):
         return True
     return any(reaches(t, route_tool) for t in COMPOSITE.get(tool, ()))
 

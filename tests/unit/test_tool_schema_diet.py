@@ -52,13 +52,91 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
     'call_agents_parallel': {'params': {'tasks': 'string'},
                              'required': ['tasks']},
     'code_task': {'params': {'task': 'string'}, 'required': ['task']},
+    # WS-53 CRM-C7: the CRM read tools, one `crm` family in DEFAULT_PROFILE.
+    # Each reads through the gateway as the member. None takes a member field.
+    # 2026-10-14 (test_read_tool_paging.py): `page` on crm_aggregate,
+    # crm_deal_contacts, crm_get_module_record, crm_list_fields,
+    # crm_list_modules and crm_report. Each cut its list at 50 with no way
+    # to read the rest. A new optional argument, so no call breaks.
+    # WS-53 CRM-Q25 (crm_platform.md §18.11, done-when 7): the typed aggregate.
+    # `field` names the field of a sum/avg/min/max, `group_field` and
+    # `bucket` group by one field, and `field_filters` filters a module.
+    # `group_by` is no longer required, because a call gives group_by OR
+    # group_field. Every argument that existed keeps its name and type.
+    # WS-53 §18.16 part 4: `term`, the member's own word for a figure. A new
+    # optional argument, so no call breaks.
+    'crm_aggregate': {'params': {'bucket': 'string',
+                                 'close_from': 'string', 'close_to': 'string',
+                                 'created_from': 'string', 'created_to': 'string',
+                                 'custom': 'object', 'entity': 'string',
+                                 'field': 'string', 'field_filters': 'object',
+                                 'group_by': 'string', 'group_field': 'string',
+                                 'measure': 'string',
+                                 'owner': 'string', 'page': 'integer',
+                                 'pipeline_id': 'string',
+                                 'q': 'string', 'status': 'string', 'term': 'string',
+                                 'updated_from': 'string', 'updated_to': 'string'},
+                      'required': ['entity']},
+    'crm_deal_contacts': {'params': {'deal_id': 'string', 'page': 'integer'},
+                          'required': ['deal_id']},
+    'crm_get_module_record': {'params': {'module': 'string', 'page': 'integer',
+                                         'record_id': 'string'},
+                              'required': ['module', 'record_id']},
+    'crm_get_record': {'params': {'entity': 'string', 'record_id': 'string'},
+                       'required': ['entity', 'record_id']},
+    'crm_list_fields': {'params': {'entity': 'string', 'page': 'integer'},
+                        'required': ['entity']},
+    'crm_list_module_records': {'params': {'module': 'string', 'page': 'integer',
+                                           'page_size': 'integer', 'q': 'string'},
+                                'required': ['module']},
+    'crm_list_modules': {'params': {'page': 'integer'}, 'required': []},
+    'crm_list_owners': {'params': {'page': 'integer'}, 'required': []},
+    'crm_list_pipelines': {'params': {}, 'required': []},
+    'crm_list_records': {'params': {'close_from': 'string', 'close_to': 'string',
+                                    'created_from': 'string', 'created_to': 'string',
+                                    'custom': 'object', 'entity': 'string',
+                                    'owner': 'string', 'page': 'integer',
+                                    'page_size': 'integer', 'pipeline_id': 'string',
+                                    'q': 'string', 'status': 'string',
+                                    'updated_from': 'string', 'updated_to': 'string'},
+                         'required': ['entity']},
+    # projects_ai_chat.md §14.10.9 (B3): make_report makes a kept report by code.
+    'crm_report': {'params': {'kind': 'string', 'make_report': 'boolean', 'page': 'integer'},
+                   'required': ['kind']},
+    # WS-53 CRM-Q27 (crm_platform.md §18.11.2, done-when 15 and 16): search of
+    # note text by meaning. A new tool, so no call breaks.
+    'crm_search_notes': {'params': {'limit': 'integer', 'query': 'string'},
+                         'required': ['query']},
+    'crm_stage_dwell': {'params': {'days': 'integer', 'page': 'integer'}, 'required': []},
+    # WS-CRM CRM-M1 (crm_conversational.md §8): the read of the Change history
+    # of the CRM set-up. A new tool, so no call breaks. No member or org
+    # argument: the gateway binds them (R5). It is in the `crm` family, so it
+    # is injectable. The chat reaches it through the `crm-records` pack, and
+    # the orchestrator's base does not hold it, so the core floor and its
+    # total do not move.
+    'crm_change_history': {'params': {'area': 'string', 'page': 'integer',
+                                      'since': 'string', 'until': 'string'},
+                           'required': []},
+    # WS-53 CRM-Q32-8 (crm_platform.md §18.14.10): the reply of a CRM question
+    # card. It loads with the `crm` family only, with org_facts, so the core
+    # floor and its total do not move. `choice` is the KEY of an option. No
+    # member or org argument: the gateway binds them and decides (R5).
+    'crm_answer_question': {'params': {'choice': 'string', 'question_id': 'string'},
+                            'required': ['choice', 'question_id']},
+    # WS-53 CRM-Q33 (crm_platform.md §18.15): a business rule from the chat,
+    # held for the member's confirm. It loads with the `crm` family only, with
+    # org_facts, so the core floor and its total do not move. No member or
+    # org argument: the gateway binds them (R5).
+    'crm_propose_rule': {'params': {'scope': 'string', 'text': 'string'},
+                         'required': ['text']},
     # WS-31 CP-13d (D75). One question per call. The schema has NO member
     # field on purpose: the member never comes from a tool argument.
     'decide': {'params': {'context': 'string', 'kind': 'string',
                           'options': 'string', 'question': 'string'},
                'required': ['context', 'question']},
     'emit_generative_ui': {'params': {'ui': 'string'}, 'required': ['ui']},
-    'fetch_page': {'params': {'max_chars': 'integer', 'url': 'string'},
+    # WEB-7: + render (a boolean, optional), so no call breaks.
+    'fetch_page': {'params': {'max_chars': 'integer', 'render': 'boolean', 'url': 'string'},
                    'required': ['url']},
     'get_errors': {'params': {'filePaths': 'string'}, 'required': []},
     'get_workflow_run': {'params': {'run_id': 'string'},
@@ -72,22 +150,54 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
     'install_dependency': {'params': {'packages': 'string'},
                            'required': ['packages']},
     'list_integrations': {'params': {}, 'required': []},
-    'list_workflows': {'params': {}, 'required': []},
+    # WS-53 CRM-Q32-5 (crm_platform.md §18.14.4): the org-facts read. It
+    # loads with the `crm` family only, so the core floor and its total do
+    # not move. No member or org argument: the gateway binds them (R5).
+    'org_facts': {'params': {'app': 'string', 'offset': 'integer', 'query': 'string'},
+                  'required': []},
+    # 2026-10-15, agent reads page part 2 (test_read_tool_paging.py): an
+    # optional `offset` on list_workflows, query_history and recall_notes.
+    # Each read every row into the context, with no page. A new optional
+    # argument, so no call breaks.
+    'list_workflows': {'params': {'offset': 'integer'}, 'required': []},
     'load_artifact_kit': {'params': {'components': 'string'},
                           'required': []},
     'load_design_system': {'params': {'section': 'string'}, 'required': []},
     'manage_todo_list': {'params': {'todoList': 'string'},
                          'required': ['todoList']},
+    # 2026-10-11: one zip of this chat's files. The paths are a JSON list in
+    # a string, like get_errors. No workspace, member or thread argument: the
+    # run binds them (R5).
+    'package_artifacts': {'params': {'name': 'string', 'paths': 'string'},
+                          'required': []},
+    # H-315 (2026-10-15): a deck or a report as a PDF, from one spec object.
+    # No member, org or path argument: the run binds them (R5).
+    'make_document': {'params': {'spec': 'object'}, 'required': ['spec']},
+    # projects_ai_chat.md §14.10 (2026-10-16): a report as a chat card and a
+    # PDF, from one spec object. The same shape as make_document. A family
+    # tool, so the core floor and its total do not move.
+    'make_report': {'params': {'spec': 'object'}, 'required': ['spec']},
     # MT-0c-1 (D16): query_history no longer takes SQL. The contract change is
     # deliberate — a model-composed `query` string was a raw-SQL tool, which
     # saas_multitenancy.md §0.9.3 makes a condition on the pooled decision. All
     # criteria are optional: "recall recent conversation" is a valid call.
     'query_history': {'params': {'agent_name': 'string', 'limit': 'integer',
+                                 'offset': 'integer',
                                  'search': 'string', 'since_days': 'integer',
                                  'thread_id': 'string'},
                       'required': []},
+    # H-229 (projects_ai_chat.md §22). A file name and an offset only: the
+    # workspace and the thread come from the run's context, never the model.
+    'read_attachment': {'params': {'name': 'string', 'offset': 'integer'},
+                        'required': ['name']},
+    # WS-VOX VOX-3 (projects_ai_chat.md §31): an attached image to tier-vision.
+    # A file name and a question only: the workspace, the thread, the org and
+    # the member come from the run's context, never the model (R5).
+    'analyze_image': {'params': {'file_name': 'string', 'question': 'string'},
+                      'required': ['file_name', 'question']},
     'recall_agent': {'params': {'query': 'string'}, 'required': ['query']},
-    'recall_notes': {'params': {'path': 'string', 'query': 'string'},
+    'recall_notes': {'params': {'offset': 'integer', 'path': 'string',
+                                'query': 'string'},
                      'required': ['path']},
     'recall_org': {'params': {'query': 'string'}, 'required': ['query']},
     'recall_timeline': {'params': {'entity_name': 'string',
@@ -112,7 +222,7 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
                   'required': ['fact', 'path']},
     'save_org_memory': {'params': {'fact': 'string'}, 'required': ['fact']},
     'share_artifact': {'params': {'path': 'string'}, 'required': ['path']},
-    'web_search': {'params': {'max_results': 'integer', 'query': 'string'},
+    'web_search': {'params': {'max_results': 'integer', 'query': 'string', 'source': 'string'},
                    'required': ['query']},
     'write_artifact': {'params': {'content': 'string',
                                   'encoding': 'string',
@@ -122,7 +232,7 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
 }
 
 # ---------------------------------------------------------------------------
-# 3. Per-tool token ceilings for the core floor (19 tools at the diet, 20 with decide)
+# 3. Per-tool token ceilings for the core floor (19 tools at the diet, 23 with decide, read_attachment, package_artifacts and analyze_image)
 # ---------------------------------------------------------------------------
 # Post-diet measurement 2026-08-01 (chars/4 run-context tokenizer), rounded up
 # with ~10% headroom so ordinary wording edits don't fail CI. The floor summed
@@ -142,24 +252,51 @@ CORE_SCHEMA_CEILINGS: dict[str, int] = {
     # catalog (timeline, taskBoard, dataGrid, reportCard, planCard), and the
     # docstring mirrors the catalog by rule (generative_ui_2.md §3). Measured
     # 3163 with the bullets trimmed to one shape line each.
-    "emit_generative_ui": 3200,
-    "fetch_page": 270,
+    # 2026-10-09: the shapes and the two code-mode guides left the docstring.
+    # The tool returns them on demand (write_artifact.genui_guide), and the
+    # docstring keeps the names. Measured 641.
+    "emit_generative_ui": 700,
+    "fetch_page": 310,  # WEB-7: + render (measured 233 -> 273, +40)
     "get_errors": 170,
     "list_integrations": 190,
     "load_artifact_kit": 430,
     "load_design_system": 390,
     "manage_todo_list": 610,
+    # 2026-10-11: zip this chat's files. Measured 139. share_artifact paid
+    # for it (332 -> 201), so the floor measured 6692, under the total.
+    "package_artifacts": 160,
+    # 2026-10-09 (#780): every agent reads a chat attachment, so the tool
+    # joined the floor. Measured 277. The floor then measured 6534, under
+    # the total ceiling.
+    "read_attachment": 300,
+    # WS-VOX VOX-3: the "when to call" rule is in the docstring in full,
+    # because a native agent reads no addendum. Measured 252.
+    "analyze_image": 280,
     "recall_notes": 215,
     "run_diagnostics": 240,
     "run_script": 270,
     "save_note": 290,
-    "share_artifact": 370,
-    "web_search": 280,
-    "write_artifact": 600,
+    # 2026-10-16 (owner report: a pasted link opened raw Markdown). Both
+    # tools now say "name the file, and paste no link". share_artifact
+    # measured 196 (was 201) and write_artifact 533 (was 575).
+    "share_artifact": 210,
+    "web_search": 320,  # WEB-4: + source (web, papers, wiki)
+    "write_artifact": 550,
 }
 
 #: The whole floor. Nudging one tool up must be paid for elsewhere.
-CORE_SCHEMA_TOTAL_CEILING = 9_000
+#: 9,000 until 2026-10-09. The floor then measured 6,438 with `decide`, after
+#: the catalog of emit_generative_ui went on demand.
+#: 2026-10-15, agent reads page part 2: recall_notes gained an `offset`
+#: (193 -> 215, +22), and paid for it itself. Its worked example left the
+#: docstring, so it measured 180, and the floor 6,693 -> 6,680.
+#: WEB-4 added `source` to web_search (+28).
+#: 2026-11-08 (WS-VOX VOX-3, projects_ai_chat.md §31): analyze_image joined the
+#: floor as a NEW tool, not a nudge. The floor measured 6,771 before it and
+#: 7,023 with it (+252). The spec puts the "when to call" rule in its
+#: docstring in full, because a native agent reads no addendum, so no other
+#: tool pays for it. The email assistant and the worker opt out of it.
+CORE_SCHEMA_TOTAL_CEILING = 7_040  # WEB-7: + render on fetch_page (+40); VOX-3: + analyze_image (+252)
 
 
 def _tools_by_name() -> dict[str, object]:
@@ -262,4 +399,50 @@ def test_core_floor_schema_total_stays_under_the_ratchet(tools) -> None:
     assert total <= CORE_SCHEMA_TOTAL_CEILING, (
         f"core-floor schemas total {total} tokens (ratchet "
         f"{CORE_SCHEMA_TOTAL_CEILING}) — the WS-23 diet is being undone"
+    )
+
+
+# ── 4. The System-1 engine of `decide` (WS-45 S1, D90) ─────────────────────
+#
+# `ai_tier_routing.md` §6.3. An agent that AI_TIER_ROUTING covers holds the
+# System-1 engine in the SAME floor slot, so its schema pays from the same
+# total. It widens the Jev contract by `items`, and breaks nothing.
+
+#: The System-1 `decide` contract: the Jev contract, plus `items`.
+SYSTEM_ONE_DECIDE_CONTRACT: dict[str, object] = {
+    "params": {**CALL_CONTRACTS["decide"]["params"], "items": "string"},
+    "required": CALL_CONTRACTS["decide"]["required"],
+}
+
+#: Measured 181 on 2026-10-06, the same as the Jev engine. The floor with the
+#: Jev engine measured 8997 of 9000 that day, so the System-1 description was
+#: cut to fit, and its ceiling is the Jev ceiling.
+SYSTEM_ONE_DECIDE_CEILING = 200
+
+
+def test_the_system_one_decide_widens_the_contract_and_breaks_nothing() -> None:
+    from acb_skills.decide_tools import system_one_decide
+
+    fn = sf.tool_json_schema(system_one_decide)["function"]
+    assert fn["name"] == "decide"
+    got = {k: v["type"] for k, v in fn["parameters"]["properties"].items()}
+    assert got == SYSTEM_ONE_DECIDE_CONTRACT["params"]
+    assert sorted(fn["parameters"]["required"]) == SYSTEM_ONE_DECIDE_CONTRACT["required"]
+    assert len(fn["description"]) > 60
+
+
+def test_the_system_one_decide_stays_under_its_ceiling_and_the_floor_total(tools) -> None:
+    from acb_skills.decide_tools import system_one_decide
+
+    cost = _schema_tokens(system_one_decide)
+    assert cost <= SYSTEM_ONE_DECIDE_CEILING, (
+        f"system-one decide: {cost} > {SYSTEM_ONE_DECIDE_CEILING}"
+    )
+    total = sum(
+        _schema_tokens(system_one_decide if n == "decide" else tools[n])
+        for n in sorted(ti._CORE_STANDARD_TOOL_NAMES) if n in tools
+    )
+    assert total <= CORE_SCHEMA_TOTAL_CEILING, (
+        f"a covered agent's floor totals {total} tokens (ratchet "
+        f"{CORE_SCHEMA_TOTAL_CEILING})"
     )

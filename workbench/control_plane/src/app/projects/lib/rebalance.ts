@@ -19,6 +19,7 @@
 import { asList } from "./analyticsRead";
 import type { RebalancePickup, RebalanceReport, RebalanceTask } from "./api";
 import { shortDate } from "./outlook";
+import { personDisplayName } from "@/lib/personName";
 
 /** How many helpers one task names. The route sends three at most. */
 export const HELPERS_SHOWN = 3;
@@ -49,7 +50,9 @@ export function rebalancePickups(
 
 /** "Held by Hal · due 27 Sep 2026". A task with no due date says so. */
 export function holderLine(task: RebalanceTask): string {
-  const who = task.holder?.name || task.holder?.email || "somebody";
+  const who = task.holder?.email
+    ? personDisplayName(task.holder.name, task.holder.email)
+    : task.holder?.name || "somebody";
   return `Held by ${who} · ${task.due_on ? `due ${shortDate(task.due_on)}` : "no due date"}`;
 }
 

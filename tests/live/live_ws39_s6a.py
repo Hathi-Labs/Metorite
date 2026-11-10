@@ -81,6 +81,7 @@ from gateway.routes.projects.personal import (
     my_tasks_binds,
 )
 from gateway.routes.projects.planning import _LensSource
+from acb_auth.roles import UserContext, UserRole
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -91,6 +92,8 @@ DSN = os.environ.get("LIVE_DSN") or os.environ["TENANT_LADDER_DATABASE_URL"].rep
 #: fixed address would collide with a row an earlier run left behind.
 TAG = uuid.uuid4().hex[:8]
 WHO = f"alice-{TAG}@fracktal.in"
+#: The member who acts. `_organize` checks who may move a task (OP-8, D-OP-14).
+ME = UserContext(email=WHO, role=UserRole.EMPLOYEE)
 OTHER = f"bob-{TAG}@fracktal.in"
 
 results: list[tuple[str, bool, str]] = []
@@ -168,7 +171,7 @@ async def main() -> None:
 
         # ── 3. organize: NEXT with subtasks, self-assigned, in order ───────
         task = await capture(db, root, "Plan the offsite")
-        await _organize(db, vis, WHO, task, OrganizeIn(
+        await _organize(user=ME, db=db, vis=vis, email=WHO, task=task, payload=OrganizeIn(
             kind="next", next_action="Book the venue", context="@computer",
             subtasks=["Shortlist venues", "Call the top two"],
         ))
@@ -201,7 +204,7 @@ async def main() -> None:
         victim = await capture(db, root, "Half clarified")
         try:
             async with db.begin_nested():
-                await _organize(db, vis, WHO, victim, OrganizeIn(
+                await _organize(user=ME, db=db, vis=vis, email=WHO, task=victim, payload=OrganizeIn(
                     kind="next", next_action="x", context="@rolled-back",
                     subtasks=["fine", "BOOM"],
                 ))
@@ -249,7 +252,7 @@ async def main() -> None:
             "VALUES (:t, :a, :a)"), {"t": team_task, "a": WHO})
         row = (await db.execute(text(
             "SELECT * FROM pm_tasks WHERE id = :id"), {"id": team_task})).fetchone()
-        await _organize(db, vis, WHO, row, OrganizeIn(
+        await _organize(user=ME, db=db, vis=vis, email=WHO, task=row, payload=OrganizeIn(
             kind="delegate", next_action="Draft it",
             assignee=OrganizeAssignee(name="Bob", email=OTHER),
             due_at="2026-10-01T00:00:00+00:00",
@@ -301,7 +304,7 @@ async def main() -> None:
 
         # ── 6. kind=project mints a private child the team tree cannot see ─
         proj_task = await capture(db, root, "Redo the kitchen")
-        await _organize(db, vis, WHO, proj_task, OrganizeIn(
+        await _organize(user=ME, db=db, vis=vis, email=WHO, task=proj_task, payload=OrganizeIn(
             kind="project", next_action="Measure", outcome="Kitchen renovated",
         ))
         child = (await db.execute(text(

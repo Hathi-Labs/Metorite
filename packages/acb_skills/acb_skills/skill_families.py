@@ -18,12 +18,24 @@ tasks-gtd / calendar / notes / web-research / diagrams families, but
   list was drafted) — they are the non-toggleable ``core`` family;
 * email / whatsapp / tasks-gtd / calendar tools are agents' OWN repo-baked
   tools (governed by ``own_tool_scope``), never injected by
-  ``_tool_injection.py`` — so they have no place in an *injected*-skills
-  registry until the WS-8 manifest work lands;
+  ``_tool_injection.py``. Since WS-67 OA-7a (D117) the email tools join as
+  TOOL PACKS (below), not as injected families;
 * ``diagrams`` was explicitly "(future)" in the spec and stays out.
 
-What remains outside the core floor: memory, history, coding extras,
+What remains outside the core floor: memory, history, crm, coding extras,
 workflows, and the dynamic Custom-App action tools.
+
+**Tool packs (WS-67 OA-7a, ``specs/one_assistant_context.md`` §4.2.1).** A
+family with an ``owner`` key is a PACK. Its tools are the OWNER agent's own
+tools (``own_tool_scope``), which injection never offers. The main assistant
+loads a pack for the turns that need it (OA-7c), and
+``acb_skills.tool_packs`` holds its rules block, references, words and the
+flag reader. Until OA-7c no run loads a pack, so every consumer that speaks
+about INJECTED tools reads :func:`injected_families` and skips a pack: the
+injected scope resolve, the skill index, the per-agent matrix and the
+``total_injected_tokens`` of the catalog. ``build_catalog`` still prices a
+pack, from its owner's tools and its rules block, and an admin toggle of a
+pack is stored and changes nothing yet.
 
 This module is pure data + dependency-injected helpers: it never imports the
 orchestrator or gateway (packages sit below apps in the import graph). The
@@ -36,7 +48,8 @@ import hashlib
 import inspect
 import json
 import typing
-from typing import Any, Callable, Mapping
+from collections.abc import Callable, Mapping
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # The registry (code-declared data; keep alphabetised inside each family)
@@ -48,6 +61,12 @@ from typing import Any, Callable, Mapping
 # not a platform tool a static scope names).
 # ``dynamic`` — tools exist only at run time (per-grant ``app_<slug>_<action>``
 # functions); the static ``tools`` tuple is empty and drift-checking skips it.
+# ``owner`` — WS-67 OA-7a: the agent whose OWN tools the family holds. A family
+# with an owner is a tool pack (see the module docstring). Its tools are in the
+# owner's ``config.json: own_tool_scope``, each in one pack only, and a pack
+# holds at most ``tool_packs.MAX_PACK_TOOLS``. The drift gate checks them
+# against the owner, never against injection (tests/unit/test_skills_registry.py
+# and tests/unit/test_tool_packs_registry.py).
 
 SKILL_FAMILIES: dict[str, dict[str, Any]] = {
     "core": {
@@ -60,17 +79,21 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "summary": (
             "Web access, file writing and rich generative UI, todo tracking, "
             "asking the user a question, diagnostics, working notes, the "
-            "coding skill, delegation to other agents, and fast typed decisions."
+            "coding skill, delegation to other agents, fast typed "
+            "decisions, and the text of a file attached in this chat."
         ),
         "description": (
             "The guaranteed baseline every agent receives regardless of "
             "tool_scope: web access, file writing & generative UI, task "
             "tracking, HITL questions, diagnostics, working notes, the "
-            "coding skill, inter-agent delegation, and fast typed "
-            "decisions (decide, WS-31 CP-13d). Not toggleable "
+            "coding skill, inter-agent delegation, fast typed "
+            "decisions (decide, WS-31 CP-13d), the text of a chat "
+            "attachment (read_attachment, H-229), and a look at an "
+            "attached image (analyze_image, WS-VOX VOX-3). Not toggleable "
             "(skills_registry.md rule 2)."
         ),
         "tools": (
+            "analyze_image",
             "ask_questions",
             "call_agent",
             "call_agent_background",
@@ -84,6 +107,8 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "load_artifact_kit",
             "load_design_system",
             "manage_todo_list",
+            "package_artifacts",
+            "read_attachment",
             "recall_notes",
             "run_diagnostics",
             "run_script",
@@ -123,6 +148,29 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
+    # H-315 (WS-47 WAC-12, owner 2026-10-15): a deck or a report as a PDF
+    # file in the chat, through the one PDF seam. A family, not the floor:
+    # its spec is long, and only the assistants that make documents hold it.
+    # projects_ai_chat.md §14.10 (2026-10-16): make_report joins it. A report
+    # is a card in the chat, a full view and the same PDF.
+    "documents": {
+        "label": "Documents",
+        "summary": (
+            "Make a report or a deck, with charts, tiles and tables, from "
+            "Metorite's data."
+        ),
+        "description": (
+            "A report shows as a card in the chat, with a full view and a "
+            "PDF (make_report). A sales or pitch deck (16:9 slides) or A4 "
+            "pages come as a PDF file (make_document). The gateway's PDF seam "
+            "lays out both, with the product's charts and cards. WhatsApp "
+            "sends the same PDF as a file."
+        ),
+        "tools": ("make_document", "make_report"),
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
     "history": {
         "label": "Conversation history",
         "summary": (
@@ -138,6 +186,59 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
+    # WS-53 CRM-C7 (crm_platform.md §20.10 item 5): the CRM read tools of
+    # ``acb_skills.crm_tools``. Each one reads a ``/crm`` route as the member,
+    # so the kill switch, ``feature:crm`` and the access rule decide.
+    "crm": {
+        "label": "CRM",
+        "summary": (
+            "Read the CRM as the member: records, fields, pipelines, deal "
+            "contacts, owners, reports, totals by group, stage dwell and "
+            "notes by meaning."
+        ),
+        "description": (
+            "Read-only CRM tools over the /crm routes, called as the acting "
+            "member: list and open records with field labels, the fields, "
+            "pipelines, deal contacts and owners, the four reports, "
+            "server-side totals by group, stage dwell, the mirrored Zoho "
+            "modules, a search of note text by meaning, and the Change "
+            "history of the CRM set-up. A member without CRM access gets a "
+            "refusal."
+        ),
+        "tools": (
+            "crm_aggregate",
+            # WS-CRM CRM-M1: the Change history of the CRM set-up.
+            "crm_change_history",
+            "crm_deal_contacts",
+            "crm_get_module_record",
+            "crm_get_record",
+            "crm_list_fields",
+            "crm_list_module_records",
+            "crm_list_modules",
+            "crm_list_owners",
+            "crm_list_pipelines",
+            "crm_list_records",
+            "crm_report",
+            "crm_search_notes",
+            "crm_stage_dwell",
+            # WS-53 CRM-Q32-5: the org-facts read loads with this family only,
+            # so the core floor does not change (crm_platform.md §18.14.4).
+            "org_facts",
+            # WS-53 CRM-Q32-8: the reply of a CRM question card, on the same
+            # terms. The gateway gates it by CRM_QUESTIONS_ORGS.
+            "crm_answer_question",
+            # WS-53 CRM-Q33: a business rule from the chat, held for the
+            # member's confirm. The gateway gates it by CRM_ANSWER_FIRST_ORGS.
+            "crm_propose_rule",
+        ),
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    # There is no "attachments" family since 2026-10-09: read_attachment is
+    # in the core floor, because every chat can attach a file. A stored
+    # toggle row for the old slug is ignored (``_resolve_declared_scope``
+    # reads only slugs that are here).
     "coding": {
         "label": "Coding extras",
         "summary": (
@@ -189,6 +290,573 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "dynamic": True,
         "tool_pattern": "app_<slug>_<action>",
     },
+    # ── Tool packs (WS-67 OA-7a, one_assistant_context.md §4.2.1) ──────────
+    # The email assistant's 59 own tools, split in two so that a mail turn
+    # does not carry the setup tools (OA-5 measured about 20,800 input tokens
+    # for 58 of them). ``scope_governed`` is True only so that no surface
+    # calls a pack "always injected": every scope helper skips a pack before
+    # it reads that key. From OA-7c a run loads a pack only where the owner
+    # turned tool packs on, and the description says so, because the admin
+    # reads it beside the toggle. Turned off, the toggle stops the pack.
+    "email": {
+        "label": "Email",
+        "summary": (
+            "The member's mailboxes: find, read and summarise mail, reply, "
+            "send, forward, drafts, send later, follow-ups and inbox acts."
+        ),
+        "description": (
+            "A tool pack: the Email Assistant's own tools for daily mail "
+            "work, for the main assistant to load in an email turn. It holds "
+            "the tools to read, find, summarise, reply, send, forward, keep "
+            "drafts, send later, follow up and act on the inbox. A run loads "
+            "a pack only where tool packs are on, so until then this switch "
+            "has no effect."
+        ),
+        "tools": (
+            "bulk_manage_inbox",
+            "cancel_scheduled_send",
+            "compose_reply",
+            "create_label",
+            "digest",
+            "draft_reply",
+            "edit_draft",
+            "find_contact",
+            "find_follow_ups",
+            "find_priority",
+            "forward_email",
+            "get_account_overview",
+            "list_accounts",
+            "list_artifacts",
+            "list_labels",
+            "list_scheduled_sends",
+            "manage_inbox",
+            "mark_thread_done",
+            # Built only while NARROWING_AGENTS names the owner
+            # (agents.py ``_narrow_tool``). It is in own_tool_scope.
+            "narrow_and_read",
+            "present_email_groups",
+            "query_inbox",
+            "query_insights",
+            "read_email",
+            "read_email_attachment",
+            "read_thread",
+            "reclassify_reply_zero",
+            "schedule_send",
+            "send_draft",
+            "send_email",
+            "snooze_email",
+            "sync_account",
+        ),
+        "owner": "email-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    "email-setup": {
+        "label": "Email setup",
+        "summary": (
+            "Set up the email assistant: rules, settings, knowledge, writing "
+            "voice, senders and categories."
+        ),
+        "description": (
+            "A tool pack: the Email Assistant's own tools to set it up, for "
+            "the main assistant to load when a turn needs them. It holds the "
+            "rules, the mailbox and assistant settings, the knowledge, the "
+            "writing voice, the senders and the categories. A run loads a "
+            "pack only where tool packs are on, so until then this switch "
+            "has no effect."
+        ),
+        "tools": (
+            "apply_settings_to_mailboxes",
+            "auto_categorize_inbox",
+            "categorize_senders",
+            "copy_rules",
+            "create_rule",
+            "create_rules_from_prompt",
+            "delete_knowledge",
+            "delete_rule",
+            "forget_pattern",
+            "generate_writing_style",
+            "get_rules_and_settings",
+            "install_default_rules",
+            "learn_rule_pattern",
+            "list_knowledge",
+            "list_patterns",
+            "list_rule_history",
+            "list_senders",
+            "resolve_execution",
+            "rule_guidance",
+            "run_rules",
+            "save_knowledge",
+            "set_sender_status",
+            "test_rule_match",
+            "unsubscribe_sender",
+            "update_account",
+            "update_assistant_settings",
+            "update_rule",
+            "voice_profile",
+        ),
+        "owner": "email-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    # WS-67 OA-8a (one_assistant_context.md §4.3.2): the CRM assistant's own
+    # ten tools, for the one assistant to hold in a CRM turn. The four reads
+    # and the four writes are the specialist's own tools. ``crm_search_notes``
+    # and ``crm_change_history`` are also in the injected ``crm`` family: the
+    # orchestrator does not hold them in its ``tool_scope``, and a run that
+    # holds one skips the pack copy. WS-CRM CRM-M1 put ``crm_change_history``
+    # here and not in the orchestrator's base, because the base was at the
+    # 110-tool cap beside the email and Projects core packs
+    # (``tests/unit/test_projects_packs.py``).
+    "crm-records": {
+        "label": "CRM records",
+        "summary": (
+            "Work the CRM records: find a lead, deal or contact, read the "
+            "pipeline and a record, read its timeline, create a lead, move "
+            "a deal, log an activity, convert a lead, read who changed "
+            "the CRM set-up and create a deal or lead pipeline."
+        ),
+        "description": (
+            "A tool pack: the CRM Assistant's own tools for daily record "
+            "work, for the main assistant to load in a CRM turn. It holds "
+            "the tools to search, read the pipeline, open a record and its "
+            "timeline, search notes, create a lead, move a deal, log an "
+            "activity and convert a lead. It also reads the Change history "
+            "of the CRM set-up, and an admin can create a deal or a lead "
+            "pipeline. "
+            "Each write asks the member first. "
+            "A run loads a pack only where tool packs are on, so until then "
+            "this switch has no effect."
+        ),
+        "tools": (
+            "convert_lead",
+            "create_lead",
+            # WS-CRM CRM-M1: the read of the Change history of the CRM set-up.
+            "crm_change_history",
+            # WS-CRM CRM-M3a: a new deal pipeline, on one card (admin only).
+            # CRM-M4a: the same tool makes a lead pipeline (kind="lead").
+            "crm_create_pipeline",
+            "crm_search_notes",
+            "crm_update_record",
+            "crm_update_task",
+            "get_pipeline",
+            "get_record",
+            "get_timeline",
+            "log_activity",
+            "search_crm",
+            "update_deal_status",
+        ),
+        "owner": "crm-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    # WS-67 OA-8b (one_assistant_context.md §4.3.3): the Projects assistant's
+    # 120 own tools in four packs. Each holds 35 tools or fewer. The core pack
+    # holds 23, so that it fits beside the 31 email tools and the measured
+    # base under the 110-tool request cap. The four together equal
+    # ``skill_projects.__all__`` and the owner's ``own_tool_scope``.
+    "projects": {
+        "label": "Projects",
+        "summary": (
+            "The daily work on tasks: my work, find and read tasks and "
+            "projects, the tree, a summary, the calendar, draw a board or a "
+            "task table, create, update, assign, comment, complete, defer "
+            "and move a task, subtasks, private tasks and the member's own "
+            "triage."
+        ),
+        "description": (
+            "A tool pack: the Projects Assistant's own tools for the daily "
+            "work on tasks, for the main assistant to load in a Projects, "
+            "Tasks or Calendar turn. It holds the tools to read the tree, a "
+            "project and its tasks, find a task, show the member's own work "
+            "and the calendar, draw a board, and to create, update, assign, "
+            "comment on, complete, defer and move a task. Each write asks "
+            "the member first. A run loads a pack only where tool packs are "
+            "on, so until then this switch has no effect."
+        ),
+        "tools": (
+            "add_subtasks",
+            "assign",
+            "calendar",
+            "comment",
+            "complete",
+            "create_personal_task",
+            "create_task",
+            "defer",
+            "find_tasks",
+            "list_tasks",
+            "move_task",
+            "my_task",
+            "my_work",
+            "open_in_app",
+            "people_for",
+            "project_summary",
+            "projects_tree",
+            "render_board",
+            "render_tasks",
+            "set_my_overlay",
+            "task_detail",
+            "update_task",
+            "vocabulary",
+        ),
+        "owner": "projects-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    "projects-plan": {
+        "label": "Projects planning",
+        "summary": (
+            "Plan projects: analytics, team capacity, who fits a task, "
+            "conflicts, a task table, a timeline, a plan from a goal, task "
+            "links, repeat rules, new projects and project settings."
+        ),
+        "description": (
+            "A tool pack: the Projects Assistant's own tools to plan, for "
+            "the main assistant to load when a turn needs them. "
+            "It holds the five analytics reads, the team's capacity, who "
+            "fits a task, plan conflicts, the task table, the "
+            "timeline, a plan from a goal, links between tasks, repeat "
+            "rules, and a new project with its settings. The reports are in "
+            "projects-reports. A run loads a pack "
+            "only where tool packs are on, so until then this switch has no "
+            "effect."
+        ),
+        "tools": (
+            "add_task_ref",
+            "analytics_finished",
+            "analytics_load",
+            "analytics_outlook",
+            "analytics_stuck",
+            "analytics_throughput",
+            "create_project",
+            "edit_project",
+            "find_conflicts",
+            "fit_for_task",
+            "get_plan",
+            "link_tasks",
+            "link_tasks_batch",
+            "needs_attention",
+            "propose_plan",
+            "rebalance",
+            "recurrence",
+            "remove_task_ref",
+            "render_timeline",
+            "set_recurrence",
+            "task_dataset",
+            "team_capacity",
+            "unlink_tasks",
+            "update_project",
+            "waiting_agent_requests",
+        ),
+        "owner": "projects-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    "projects-structure": {
+        "label": "Projects structure",
+        "summary": (
+            "Shape a project: the statuses, types, fields and tags, who can "
+            "see a project, saved views, watchers and project templates."
+        ),
+        "description": (
+            "A tool pack: the Projects Assistant's own tools to shape a "
+            "project, for the main assistant to load when a turn needs "
+            "them. It holds the tools for statuses, task types, fields and "
+            "tags, who can see a project, saved views, watchers and the "
+            "project templates of the organization. "
+            "A run loads a pack only where tool packs are on, so until "
+            "then this switch has no effect."
+        ),
+        "tools": (
+            "create_field",
+            "create_project_from_template",
+            "create_status",
+            "create_tag",
+            "create_tags",
+            "create_type",
+            "create_types",
+            "delete_field",
+            "delete_status",
+            "delete_tag",
+            "delete_type",
+            "delete_view",
+            "grant_access",
+            "list_templates",
+            "merge_tags",
+            "project_access",
+            "project_views",
+            "revoke_access",
+            "save_as_template",
+            "save_view",
+            "set_status_set",
+            "show_view",
+            "update_field",
+            "update_status",
+            "update_tag",
+            "update_type",
+            "watchers",
+        ),
+        "owner": "projects-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    "projects-bulk": {
+        "label": "Projects bulk and guarded acts",
+        "summary": (
+            "Many tasks at once, and the acts that are hard to undo: "
+            "create, file, merge or bulk-edit tasks, archive, restore, "
+            "move or delete a task or a project, comments and attachments, "
+            "a nudge, a revert, watch, and the edit forms."
+        ),
+        "description": (
+            "A tool pack: the Projects Assistant's own tools for bulk work "
+            "and for guarded acts, for the main assistant to load when a "
+            "turn needs them. It holds the tools to create, file, merge and "
+            "bulk-edit tasks, to archive, restore, move and delete a task "
+            "or a project, to edit or delete a comment or an attachment, "
+            "a nudge, a revert, a watch, and the edit forms. "
+            "Each act asks the member first. A run loads a pack only where "
+            "tool packs are on, so until then this switch has no effect."
+        ),
+        "tools": (
+            "archive_project",
+            "archive_task",
+            "attach_to_task",
+            "bulk_update",
+            "convert_folder_to_project",
+            "create_tasks",
+            "delete_attachment",
+            "delete_comment",
+            "delete_project",
+            "delete_task",
+            "edit_comment",
+            "edit_task",
+            "file_tasks",
+            "merge_tasks",
+            "move_project",
+            "my_led_projects",
+            "nudge_task",
+            "revert_activity",
+            "unarchive_project",
+            "unarchive_task",
+            "update_tasks",
+            "watch",
+        ),
+        "owner": "projects-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    "projects-reminders": {
+        "label": "Projects reminders and own organising",
+        "summary": (
+            "The member's own organising: reminders, which are not tasks, the "
+            "decisions that wait for the member, the task inbox, areas, "
+            "contexts and notifications."
+        ),
+        "description": (
+            "A tool pack: the Projects Assistant's own tools for the "
+            "member's reminders, for the main assistant to load when a turn "
+            "says \"remind me\" or names a reminder. A reminder is its own "
+            "object. It is not a task, and it may name a task as its "
+            "subject. The pack holds the tools to set, list, change, "
+            "reschedule, resolve, reopen and promote a reminder. It also "
+            "holds the task inbox, the member's own areas and contexts, and "
+            "the notifications, and the decisions that wait for the member. A reminder acts at once with Undo. Each other write asks the member first. A run loads a pack only where tool "
+            "packs are on, so until then this switch has no effect."
+        ),
+        "tools": (
+            "answer_decision",
+            "capture_intake",
+            "create_area",
+            "delete_area",
+            "intake_queue",
+            "list_reminders",
+            "mark_notifications_read",
+            "my_areas",
+            "my_contexts",
+            "my_decisions",
+            "notifications",
+            "promote_reminder",
+            "rename_area",
+            "reopen_reminder",
+            "reschedule_reminder",
+            "resolve_reminder",
+            "set_reminder",
+            "triage_intake",
+            "update_reminder",
+        ),
+        "owner": "projects-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    "projects-reports": {
+        "label": "Projects reports",
+        "summary": (
+            "Reports on projects: a status report, saved reports, their "
+            "recipients and schedule, and the export of tasks."
+        ),
+        "description": (
+            "A tool pack: the Projects Assistant's own tools for reports, "
+            "for the main assistant to load when a turn needs them. It "
+            "holds the status report, the saved reports with their "
+            "recipients and schedule, and the export of tasks. A run loads "
+            "a pack only where tool packs are on, so until then this switch "
+            "has no effect."
+        ),
+        "tools": (
+            "add_report_recipient",
+            "export_tasks",
+            "remove_report_recipient",
+            "render_report",
+            "report_delete",
+            "report_list",
+            "report_recipients",
+            "report_render",
+            "report_save",
+            "set_report_schedule",
+            "status_report",
+        ),
+        "owner": "projects-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    # WS-ALN ALN-4: the authority page of a project. It has its own pack, because
+    # the reminders and bulk packs must fit under MAX_REQUEST_TOOLS in their
+    # measured turns. WS-39 LP-1a adds the two tools of a project update here,
+    # for the same reason: the reports pack fills the room of a measured turn.
+    "projects-authority": {
+        "label": "Projects authority page and updates",
+        "summary": (
+            "The authority page and the updates of a project: read the pinned "
+            "pages, pin or unpin one, and read, post or delete an update."
+        ),
+        "description": (
+            "A tool pack: the Projects Assistant's own tools for the "
+            "authority page and the updates of a project, for the main "
+            "assistant to load when a turn names them. The pack holds the "
+            "tools to read the pins of a project, to pin a page and to "
+            "remove a pin. It also holds the tools to read the updates of a "
+            "project, to post one with the health that the member picks, and "
+            "to delete one. "
+            "Each change asks the member first. A run loads a pack only "
+            "where tool packs are on, so until then this switch has no "
+            "effect."
+        ),
+        "tools": (
+            "delete_project_update",
+            "list_project_updates",
+            "pin_authority",
+            "post_project_update",
+            "project_authorities",
+            "unpin_authority",
+        ),
+        "owner": "projects-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    # CAL-1a (task 1675): the day planner, for the main chat. The tools are
+    # the My Tasks planner and calendar settings tools (skill_my_tasks.core). The Projects assistant
+    # builds them in `_agent_tools()` only, so the specialist's own tool list and
+    # `skill_projects.__all__` stay as they were. The pack follows `projects`
+    # (tool_packs.FOLLOWS), so the flag list needs no new line.
+    "calendar-day": {
+        "label": "Calendar day planner",
+        "summary": (
+            "The member's day: rebuild it, plan what is left, roll over, "
+            "set the One Thing, block or release time, read or change the calendar settings, and keep the day rules."
+        ),
+        "description": (
+            "A tool pack: the day planner, for the main assistant to load "
+            "when a turn says \"rebuild my day\", \"start my day\" or "
+            "\"I fell behind\". The pack holds the tools to propose and apply "
+            "a plan of the day, to fit what is left, to roll over unfinished "
+            "work, to read the digest of the day, to set the One Thing, and to "
+            "block, release and read the schedule. It also holds the tools to read and change the calendar settings: the standing instruction, the working hours, the capacity, the lunch window, the energy windows and auto rollover. It holds four tools for the day rules too: list, add, edit and delete a recurring focus window or block. Two tools run the day flows in one reply, start my day and close my day: they propose and change nothing. A plan is proposed first "
+            "and applied after the member agrees. A run loads a pack only "
+            "where tool packs are on, so until then this switch has no effect."
+        ),
+        "tools": (
+            "my_tasks_add_day_rule",
+            "my_tasks_close_my_day",
+            "my_tasks_day_digest",
+            "my_tasks_delete_day_rule",
+            "my_tasks_edit_day_rule",
+            "my_tasks_get_calendar_settings",
+            "my_tasks_list_day_rules",
+            "my_tasks_list_schedule",
+            "my_tasks_plan_day",
+            "my_tasks_replan_day",
+            "my_tasks_rollover",
+            "my_tasks_schedule",
+            "my_tasks_set_one_thing",
+            "my_tasks_start_my_day",
+            "my_tasks_unschedule",
+            "my_tasks_update_calendar_settings",
+        ),
+        "owner": "projects-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    # STU-G1 (ai_studio.md section 6.2): the AI Studio builder tools, for the
+    # one assistant to hold in a Studio turn. The owner is `studio-builder`,
+    # which is NOT a second assistant. Eight stateless builder tools (G1b added the describe tool,
+    # G2 the interview and the plan card), three skill tools (F2d) and two package tools (G1c:
+    # save and publish over the A5 routes). A run loads a pack only where tool packs are on, and the pack
+    # builds nothing for an org that STUDIO_ORGS does not hold.
+    "studio": {
+        "label": "AI Studio builder",
+        "summary": (
+            "Build an AI Studio app: draft a manifest from a brief, patch it, "
+            "check it, outline it, list the actions it may use, read the live schema, ask the interview, show the plan card, save and publish the app, save, publish, pause and list your skills, and read the records of a package."
+        ),
+        "description": (
+            "A tool pack: the builder tools of AI Studio, for the main "
+            "assistant to load in a Studio turn. It holds the tools to draft "
+            "an app manifest, patch it, validate it, outline it and list the "
+            "actions an app may use. It also holds the package tools: save "
+            "an app as a draft and publish it. It also holds the skill tools: save, "
+            "publish, pause and list the skills of a member. Two read tools list the "
+            "packages of a member and read the records of an object. Three write tools add, "
+            "change and delete a record, and each asks the member first. The tools keep no "
+            "draft: the chat holds the manifest. A run loads a pack only where tool packs are on, "
+            "so until then this switch has no effect."
+        ),
+        "tools": (
+            "studio_describe",
+            "studio_draft",
+            "studio_interview",
+            "studio_list_actions",
+            "studio_outline",
+            "studio_patch",
+            "studio_plan",
+            "studio_validate",
+            "studio_skill_list",
+            "studio_skill_save",
+            "studio_skill_state",
+            "studio_save",
+            "studio_publish",
+            "studio_package_get",
+            "studio_record_list",
+            "studio_record_create",
+            "studio_record_update",
+            "studio_record_delete",
+        ),
+        "owner": "studio-builder",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
 }
 
 
@@ -211,13 +879,17 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
 #   profile documents the real default surface.
 # * ``apps``      — dynamic, governed by app_grants (its own surface), never
 #   by profiles; listed so "what does a default agent get" reads complete.
+# * ``crm``       — the CRM read tools (WS-53 CRM-C7). Owner decision D2,
+#   2026-10-13: "ensure the data is available for any agent". The gateway
+#   (kill switch, ``feature:crm``, the access rule) is the only gate.
 #
 # Deliberately EXCLUDED (specialised — per-agent tool_scope/toggle only):
 # ``history`` (only the orchestrator declares query_history) and ``coding``
 # extras (only apis-config declares install_dependency; nobody declares the
-# GitHub search pair).
+# GitHub search pair). A tool pack (WS-67 OA-7a) never joins the profile: its
+# tools are its owner's, and injection never offers them.
 
-DEFAULT_PROFILE: tuple[str, ...] = ("core", "memory", "workflows", "apps")
+DEFAULT_PROFILE: tuple[str, ...] = ("core", "memory", "crm", "workflows", "apps")
 
 
 def default_profile_tools() -> frozenset[str]:
@@ -249,9 +921,44 @@ def family_of(tool_name: str) -> str | None:
 
 
 def all_registered_tool_names() -> frozenset[str]:
-    """Every statically-declared tool name across all families."""
+    """Every statically-declared tool name across all families, packs too.
+
+    The answer to "is this name in any family?". For the names that
+    injection can offer, read :func:`injected_tool_names`.
+    """
     return frozenset(
         name for fam in SKILL_FAMILIES.values() for name in fam["tools"]
+    )
+
+
+def is_pack(slug: str) -> bool:
+    """True when family *slug* is a tool pack: it names an ``owner`` (OA-7a)."""
+    fam = SKILL_FAMILIES.get(slug)
+    return bool(fam and fam.get("owner"))
+
+
+def pack_slugs() -> tuple[str, ...]:
+    """The slug of each tool pack, in registry order."""
+    return tuple(slug for slug in SKILL_FAMILIES if is_pack(slug))
+
+
+def injected_families() -> dict[str, dict[str, Any]]:
+    """The families that injection offers: every family that is not a pack.
+
+    The ONE view for each consumer that speaks about injected tools: the
+    scope resolve in ``orchestrator._tool_injection``, the skill index, the
+    per-agent matrix and the catalog total. With no pack in the registry it
+    equals ``SKILL_FAMILIES``, so each of them stays byte-identical.
+    """
+    return {
+        slug: fam for slug, fam in SKILL_FAMILIES.items() if not is_pack(slug)
+    }
+
+
+def injected_tool_names() -> frozenset[str]:
+    """Every static tool name that injection can offer (no pack tool)."""
+    return frozenset(
+        name for fam in injected_families().values() for name in fam["tools"]
     )
 
 
@@ -275,7 +982,15 @@ def tool_json_schema(fn: Any) -> dict[str, Any]:
     Both runtimes build their tool schema from the callable's signature +
     docstring, so rendering the same shape here prices what the model context
     actually pays per tool.
+
+    A MAF ``FunctionTool`` already holds the schema that MAF sends, so it is
+    priced by that schema. Its signature and docstring are the ones of the
+    ``FunctionTool`` class, which the model never sees. The MCP tools of a run
+    are such objects (WS-8c item 24, ``orchestrator._maf_mcp``).
     """
+    spec = _maf_function_schema(fn)
+    if spec is not None:
+        return spec
     name = getattr(fn, "__name__", None) or getattr(fn, "name", str(fn))
     doc = inspect.getdoc(fn) or ""
     props: dict[str, Any] = {}
@@ -306,6 +1021,21 @@ def tool_json_schema(fn: Any) -> dict[str, Any]:
             },
         },
     }
+
+
+def _maf_function_schema(fn: Any) -> dict[str, Any] | None:
+    """The schema of a MAF ``FunctionTool``, as MAF sends it, or None."""
+    try:
+        from agent_framework import FunctionTool
+    except ImportError:  # pragma: no cover — MAF is a dependency
+        return None
+    if not isinstance(fn, FunctionTool):
+        return None
+    try:
+        spec = fn.to_json_schema_spec()
+    except Exception:  # a pricing helper, never a failure
+        return None
+    return spec if isinstance(spec, dict) else None
 
 
 def _hidden_params(fn: Any) -> frozenset[str]:
@@ -386,6 +1116,12 @@ def build_catalog(
 
     Dependencies are parameters so this package never imports the orchestrator
     (the gateway route composes the real ones; tests inject fakes).
+
+    A tool pack (WS-67 OA-7a) is priced as a turn that loads it pays: its
+    rules block (``acb_skills.tool_packs``) plus the schemas of its owner's
+    tools. The caller puts the owner's tools in *tools_by_name*; injection
+    never offers them, so a name that is absent prices nothing. A pack is not
+    in ``total_injected_tokens``, because no run is injected with it.
     """
     rhash = registry_content_hash()
     core_floor = frozenset(core_tool_names)
@@ -402,6 +1138,14 @@ def build_catalog(
         if key not in _COST_CACHE:
             if fam.get("dynamic"):
                 cost = 0
+            elif is_pack(slug):
+                # No addendum section names a pack tool, so the addendum
+                # delta is not what a pack costs. Its rules block is.
+                from acb_skills.tool_packs import rules_for
+
+                cost = count_tokens(rules_for(slug)) + _schema_tokens(
+                    fam["tools"], tools_by_name, count_tokens,
+                )
             elif fam.get("core"):
                 cost = baseline + _schema_tokens(
                     fam["tools"], tools_by_name, count_tokens,
@@ -425,16 +1169,19 @@ def build_catalog(
             "dynamic": bool(fam.get("dynamic")),
             **({"tool_pattern": fam["tool_pattern"]}
                if "tool_pattern" in fam else {}),
+            # WS-67 OA-7a: the agent whose own tools a pack holds.
+            **({"owner": fam["owner"]} if is_pack(slug) else {}),
             "token_cost": _COST_CACHE[key],
         })
 
     total_key = ("__total__", rhash)
     if total_key not in _COST_CACHE:
-        # The WS-12 baseline: the full unscoped addendum + every static schema.
+        # The WS-12 baseline: the full unscoped addendum + every static
+        # schema that injection offers (no pack tool, WS-67 OA-7a).
         _COST_CACHE[total_key] = count_tokens(
             addendum_for_scope(None)
         ) + _schema_tokens(
-            all_registered_tool_names(), tools_by_name, count_tokens,
+            injected_tool_names(), tools_by_name, count_tokens,
         )
     return {
         "registry_hash": rhash,
@@ -455,14 +1202,14 @@ def families_for_scope(
     and — injection being fail-open today (spec rule 3) — receives every
     family. Families that are not scope-governed (core floor, workflows,
     apps) are always present.
+
+    A tool pack is never in the list (WS-67 OA-7a): no agent is injected
+    with one. Its owner holds the tools as own tools, which this matrix of
+    injected families does not show.
     """
     del tool_scope  # reserved for S2 (declared-vs-effective display)
     out: list[str] = []
-    for slug, fam in SKILL_FAMILIES.items():
-        if not fam.get("scope_governed"):
-            out.append(slug)
-        elif resolved_scope is None:
-            out.append(slug)
-        elif resolved_scope & frozenset(fam["tools"]):
+    for slug, fam in injected_families().items():
+        if not fam.get("scope_governed") or resolved_scope is None or resolved_scope & frozenset(fam["tools"]):
             out.append(slug)
     return out

@@ -13,10 +13,21 @@
 
 import { useMemo, useState } from "react";
 
+import Explain from "./Explain";
 import { categoricalBox, providerGlyph } from "@/lib/categorical";
-import { formatDate, formatPaise, seatsTotals, statusHelp, trialHint, type OrgRow } from "@/lib/format";
+import { formatPaise, seatsTotals, statusHelp, type OrgRow } from "@/lib/format";
+import { daysLeftLabel, formatCr, formatInr, type CustomerMoney } from "@/lib/money";
 import { attentionFlags, filterRoster, sortRoster, type RosterFilter } from "@/lib/roster";
 import { chipClass, lifecycleTone } from "@/lib/tone";
+import { runwayTone } from "@/lib/usage";
+
+/** A subscription state worth a word under the status chip. */
+const SUBSCRIPTION_WORDS: Record<string, string> = {
+  past_due: "payment overdue",
+  unpaid: "unpaid",
+  canceled: "subscription cancelled",
+  incomplete: "payment not finished",
+};
 
 function SeatsCell({ org }: { org: OrgRow }) {
   const totals = seatsTotals(org.seats);
@@ -50,7 +61,15 @@ const FILTERS: { key: RosterFilter; label: string }[] = [
   { key: "suspended", label: "Suspended" },
 ];
 
-export default function CustomerTable({ rows }: { rows: OrgRow[] }) {
+export default function CustomerTable({
+  rows,
+  money,
+}: {
+  rows: OrgRow[];
+  /** WS-50: each customer's money for the last 30 days, by slug. A missing or
+   *  null entry means the usage read did not include them: unknown, not zero. */
+  money: Record<string, CustomerMoney | null>;
+}) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<RosterFilter>("all");
 
@@ -112,16 +131,35 @@ export default function CustomerTable({ rows }: { rows: OrgRow[] }) {
               <tr>
                 <th>Customer</th>
                 <th>Status</th>
-                <th>Subscription</th>
-                <th>MRR</th>
-                <th>Seats</th>
-                <th>AI credits</th>
-                <th>Trial</th>
+                <th>
+                  Seats a month
+                  <Explain term="seats" />
+                </th>
+                <th>
+                  We charged, 30 d
+                  <Explain term="weCharged" />
+                </th>
+                <th>
+                  AI cost, 30 d
+                  <Explain term="aiCost" />
+                </th>
+                <th>
+                  Profit, 30 d
+                  <Explain term="profit" />
+                </th>
+                <th>
+                  Credits left
+                  <Explain term="creditsLeft" />
+                </th>
+                <th>Seats used</th>
               </tr>
             </thead>
             <tbody>
               {shown.map((o) => {
                 const flags = attentionFlags(o, now);
+                const m = money[o.slug] ?? null;
+                const loss = m?.profit.value != null && m.profit.value < 0;
+                const sub = o.subscription_status ? SUBSCRIPTION_WORDS[o.subscription_status] : undefined;
                 return (
                   <tr key={o.slug}>
                     <td>
@@ -156,22 +194,47 @@ export default function CustomerTable({ rows }: { rows: OrgRow[] }) {
                       >
                         {o.status.replace("_", " ")}
                       </span>
+                      {sub && <div className="warn-t small">{sub}</div>}
                     </td>
-                    <td>
-                      {o.subscription_status ?? <span className="muted">none</span>}
-                    </td>
-                    <td>{formatPaise(o.mrr_paise)}</td>
+                    <td className="mono">{formatPaise(o.mrr_paise)}</td>
+                    {m ? (
+                      <>
+                        <td className="mono">
+                          {formatInr(m.charged.value)}
+                          <Explain term="weCharged" detail={m.charged.how} notes={m.estimateNotes} />
+                        </td>
+                        <td className="mono">
+                          {formatInr(m.aiCost.value)}
+                          <Explain term="aiCost" detail={m.aiCost.how} />
+                        </td>
+                        <td className="mono">
+                          {loss ? (
+                            <span className={chipClass("danger")}>{formatInr(m.profit.value)}</span>
+                          ) : (
+                            formatInr(m.profit.value)
+                          )}
+                          {m.profit.estimated && <span className="est">est.</span>}
+                        </td>
+                        <td>
+                          <span className="mono">{formatCr(m.creditsLeft)}</span>
+                          <div className="small">
+                            <span className={chipClass(runwayTone(m.daysLeft.days))}>
+                              {daysLeftLabel(m.daysLeft)}
+                            </span>
+                            <Explain term="daysLeft" detail={m.daysLeft.how} />
+                          </div>
+                        </td>
+                      </>
+                    ) : (
+                      <>
+                        <td className="muted" colSpan={3}>
+                          not in the usage read
+                        </td>
+                        <td className="mono">{formatCr(Number(o.credit_balance) || 0)}</td>
+                      </>
+                    )}
                     <td>
                       <SeatsCell org={o} />
-                    </td>
-                    <td>{o.credit_balance}</td>
-                    <td>
-                      {formatDate(o.trial_ends_at)}
-                      {o.status === "trial" && trialHint(o.trial_ends_at, now) && (
-                        <div className="muted small">
-                          {trialHint(o.trial_ends_at, now)}
-                        </div>
-                      )}
                     </td>
                   </tr>
                 );

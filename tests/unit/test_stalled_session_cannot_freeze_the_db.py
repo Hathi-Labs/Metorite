@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import asyncio
 import re
-import time
 from pathlib import Path
 
 import pytest
@@ -99,20 +98,18 @@ async def test_a_hanging_completion_raises_instead_of_hanging(monkeypatch):
 
     _stub_llm(monkeypatch, _hang)  # ceiling = 0.05s
 
-    started = time.monotonic()
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(
             complete(tier=LLMTier.TIER_1, messages=[{"role": "user", "content": "x"}]),
             timeout=10,
         )
-    elapsed = time.monotonic() - started
 
     # NOT vacuous. The outer wait_for would ALSO raise TimeoutError if the inner
     # ceiling were missing, so `pytest.raises` alone would pass on the broken
-    # code. These two are what actually distinguish the fix: 3 attempts at 0.05s
-    # each cannot look like one 10s hang, and a caller that never bounded itself
-    # would only ever have entered `acompletion` once.
-    assert elapsed < 2, f"took {elapsed:.2f}s — the inner ceiling did not fire"
+    # code. The count is what distinguishes the fix: a caller that never
+    # bounded itself would only ever have entered `acompletion` once, and the
+    # outer wait would end it there. A clock bound of 2 s on three attempts of
+    # 0.05 s said the same thing, and it measured the runner too.
     assert attempts["n"] == 3, "each attempt must be bounded, not just the first"
 
 

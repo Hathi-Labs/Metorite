@@ -19,8 +19,13 @@ Output conventions the cards read (``ProjectToolCards.tsx``):
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import asyncio
+import re
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from acb_common.paging import bounds, page_line
 
 from skill_projects.client import GatewayRefusal, data, get, uuid_of
 from skill_projects.priority import change_view, level_detail, level_fact
@@ -49,15 +54,39 @@ def legend() -> str:
     called a task due yesterday "not overdue", and listed overdue work as
     "due in the next seven days". Every read opens with this line, so every
     answer that compares dates has today beside it. UTC, because the member's
-    timezone would cost one more call per tool.
+    timezone would cost one more call per tool. Task 1649: the line says "UTC
+    date" and points at the "Now:" line of the turn context, which holds the
+    member's own day and time. The UTC day is one day behind that member for
+    hours each evening in India, and the old "Today is" wording hid it.
     """
     now = datetime.now(UTC)
-    return f"{DATA_LEGEND} Today is {now:%A} {now:%Y-%m-%d} (UTC)."
+    return (
+        f"{DATA_LEGEND} UTC date: {now:%A} {now:%Y-%m-%d}. "
+        "The member's own day and time are in the Now line of the context. They win."
+    )
 
-#: The largest page a list tool asks for. The route caps at 50 anyway.
+#: The largest page a list tool asks for. ``/projects/search`` caps at 50
+#: (``search.MAX_HITS``). The list routes cap at 100 (``core.MAX_PAGE_SIZE``),
+#: so 50 is this tool's own choice there, not the route's limit.
 MAX_PAGE = 50
+#: The shortest TEXT query the routes run (``filters.MIN_QUERY``, D-PM-31).
+#: The skill cannot import gateway code, so this is a copy, and
+#: ``tests/unit/test_projects_search_minimum_lockstep.py`` holds it equal to
+#: the route and to the browser. A task number passes at any length.
+MIN_QUERY = 3
+#: The longest description snippet a search hit prints. The route caps at
+#: 160 (``search.SNIPPET_CHARS``). This is the tool's own guard, so a route
+#: that grew the snippet cannot grow the model's context with it.
+SNIPPET_MAX = 160
 #: How many timeline rows a detail read carries.
 TIMELINE_ROWS = 12
+#: The most people ``/projects/assignees`` returns for one query
+#: (``assignees.MAX_PEOPLE``). A copy: the skill cannot import gateway code.
+PEOPLE_FOR_MAX = 8
+#: People per page in ``analytics_load``. The route's ``MAX_PEOPLE``.
+LOAD_PEOPLE_PAGE = 20
+#: The most saved reports ``/projects/reports`` returns (its ``LIMIT 200``).
+REPORT_LIST_MAX = 200
 
 
 # ── Small formatters ─────────────────────────────────────────────────────────
@@ -132,18 +161,26 @@ def _project_line(node: dict[str, Any], level: str = "") -> list[str]:
 
 
 async def _status_names(root_ids: set[str]) -> dict[str, str]:
-    """``status_id → name`` for up to five roots. A list read carries ids
-    only, and a member asks for names."""
-    names: dict[str, str] = {}
-    for root in sorted(root_ids)[:5]:
+    """``status_id → name`` for every root on the page. A list read carries
+    ids only, and a member asks for names.
+
+    Every root, not the first five (2026-10-14). A page of 50 rows can span
+    more roots than that, and a row from a sixth root printed with no status.
+    The page bounds the set, and the reads run together."""
+
+    async def _one(root: str) -> list[dict[str, Any]]:
         try:
             # Server-supplied, and still canonicalised: every id that reaches
             # a path goes through `uuid_of`, so the AST fence has one rule.
             rid = uuid_of(root, "root_project_id")
             payload = await get(f"/projects/nodes/{rid}/statuses")
         except Exception:
-            continue
-        for row in (payload or {}).get("rows") or []:
+            return []
+        return list((payload or {}).get("rows") or [])
+
+    names: dict[str, str] = {}
+    for rows in await asyncio.gather(*(_one(r) for r in sorted(root_ids))):
+        for row in rows:
             names[str(row.get("id"))] = str(row.get("name") or "")
     return names
 
@@ -151,7 +188,7 @@ async def _status_names(root_ids: set[str]) -> dict[str, str]:
 # ── The tree and the summaries ───────────────────────────────────────────────
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def projects_tree(include_archived: bool = False) -> str:
     """The spaces, folders, projects and subprojects the member can see, nested.
     Start here for "what is in this space?" or to find a project's id before
@@ -162,27 +199,62 @@ async def projects_tree(include_archived: bool = False) -> str:
     if not roots:
         return "You can see no projects yet."
 
-    levels = ("space", "folder", "project", "subproject")
     out = [legend(), f"Projects you can see ({(payload or {}).get('total', 0)} nodes):"]
 
-    def walk(nodes: list[dict[str, Any]], depth: int) -> None:
+    def walk(nodes: list[dict[str, Any]], depth: int, above: int) -> None:
+        # `above` counts the PROJECT ancestors. A folder never adds one.
         for node in nodes:
             if node.get("archived_at") and not include_archived:
                 continue
-            kind = node.get("kind") or "project"
-            level = "folder" if kind == "folder" else levels[min(depth, 3)]
-            if depth == 0:
-                level = "space"
+            is_folder = (node.get("kind") or "project") == "folder"
+            mine = above
+            if depth == 0 and node.get("parent_project_id"):
+                # A top row whose parent the member cannot see. It is not a
+                # root, so it is not a space: count one hidden project above.
+                mine = 1
+            level = tree_level(is_folder, mine + (0 if is_folder else 1))
             head, ident = _project_line(node, level)
+            head += _tree_counts(node)
             out.append("  " * depth + head)
             out.append("  " * depth + ident)
-            walk(node.get("children") or [], depth + 1)
+            walk(node.get("children") or [], depth + 1, mine + (0 if is_folder else 1))
 
-    walk(roots, 0)
+    walk(roots, 0, 0)
     return "\n".join(out)
 
 
-@_annotate(read_only=True, idempotent=True)
+def _tree_counts(node: dict[str, Any]) -> str:
+    """`` · tasks N (done D, cancelled C)``, or ``""`` when the row has none.
+
+    The SUBTREE counts the sidebar draws (``tree._attach_progress``). Said on
+    every row, so a read never infers "empty" from a missing number.
+    """
+    total = node.get("tasks")
+    if not isinstance(total, int):
+        return ""
+    done = node.get("done") if isinstance(node.get("done"), int) else 0
+    cancelled = node.get("cancelled") if isinstance(node.get("cancelled"), int) else 0
+    return f" · tasks {total} (done {done}, cancelled {cancelled}), with everything under it"
+
+
+def tree_level(is_folder: bool, generation: int) -> str:
+    """The level the app draws for a node, from its kind and its ancestry.
+
+    The rule of ``core.node_level`` and ``lib/tree.ts`` ``nodeLevel``.
+    ``generation`` counts the PROJECT ancestors with the node itself, so a
+    folder is transparent. Generation 1 is a space, 2 a project, and 3 or
+    more a subproject. It is never the depth: a project directly in a space
+    was once labelled a folder here (2026-10-26), and the model read five
+    full projects as "empty folders".
+    """
+    if is_folder:
+        return "folder"
+    if generation <= 1:
+        return "space"
+    return "project" if generation == 2 else "subproject"
+
+
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def project_summary(project_id: str = "") -> str:
     """How a space, folder or project is doing: task totals by status category,
     what is overdue, and one line per child. Pass a project_id from
@@ -207,6 +279,17 @@ async def project_summary(project_id: str = "") -> str:
         out.append("  " + " · ".join(facts))
         if node.get("description"):
             out.append(f"  description: {data(str(node['description'])[:600])}")
+    # WS-39 LP-1a: the newest update, the line the Overview draws. The key is
+    # there only while project updates are on for the organization.
+    latest = payload.get("latest_update")
+    if isinstance(latest, dict):
+        from skill_projects.inbox import UPDATE_HEALTHS  # inbox imports this module
+
+        health = UPDATE_HEALTHS.get(str(latest.get("health")), str(latest.get("health")))
+        out.append(
+            f"  latest update: {health} · by {data(latest.get('author') or '?')}"
+            f" · {latest.get('posted_at')} · {data(str(latest.get('body') or '')[:300])}"
+        )
     out.append(
         f"  tasks {payload.get('tasks', 0)} · overdue {payload.get('overdue', 0)}"
         f" · projects {payload.get('projects', 0)}"
@@ -233,28 +316,76 @@ async def project_summary(project_id: str = "") -> str:
 # ── Finding and listing tasks ────────────────────────────────────────────────
 
 
-@_annotate(read_only=True, idempotent=True)
+_EDGE_SPACE = re.compile(r"^[\s\ufeff]+|[\s\ufeff]+$")
+
+
+def _clean(raw: str) -> str:
+    """Edge whitespace and U+FEFF removed: the route's ``filters.clean_query``."""
+    return _EDGE_SPACE.sub("", raw or "")
+
+
+def _task_number(raw: str) -> int | None:
+    """``#7`` or ``7`` → 7, else ``None``. The same rule as the route's
+    ``filters.task_number``, and the lockstep test holds the two equal."""
+    stripped = _clean(_clean(raw).lstrip("#"))
+    if not (stripped.isascii() and stripped.isdigit()) or len(stripped) > 18:
+        return None
+    return int(stripped)
+
+
+def _short_text(term: str) -> bool:
+    """True for text too short to search. A task number is never short."""
+    return bool(term) and len(term) < MIN_QUERY and _task_number(term) is None
+
+
+def _short_query(term: str) -> str:
+    """The answer for a text query the routes will not run (D-PM-31).
+
+    The search route answers 422 and the list route answers EMPTY. A tool
+    that relayed the empty list would say "no task matches", which is false.
+    """
+    if not term:
+        return f"Give at least {MIN_QUERY} characters to search, or a task number such as #7."
+    return (
+        f"Give at least {MIN_QUERY} characters to search"
+        f" ({data(term)} is {len(term)}). A task number works at any length: #7."
+    )
+
+
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def find_tasks(query: str, limit: int = 10) -> str:
-    """Search tasks by words in the title, or by task number, across every
-    project the member can see. At least 3 characters. Returns ranked hits
-    with the project and status, each with a `full_id` for task_detail."""
-    term = (query or "").strip()
-    if len(term) < 3:
-        return "Give at least 3 characters to search."
+    """Search tasks by the words in their title AND description, or by task
+    number, across every project the member can see. Each word must appear
+    in the title or the description, in any order. Words need at least 3
+    characters. A task number works at any length: "#7" finds task 7 exactly.
+    A query of only digits finds that task number and no text. Title hits
+    rank first. A description hit carries the matched description text, so
+    do not open tasks one by one to search descriptions. Each hit has a
+    `full_id` for task_detail."""
+    term = _clean(query or "")
+    if not term or _short_text(term):
+        return _short_query(term)
     cap = max(1, min(int(limit or 10), MAX_PAGE))
     payload = await get("/projects/search", {"q": term, "limit": cap})
     rows = (payload or {}).get("rows") or []
     if not rows:
         return f"No task matches {data(term)}. Try a shorter fragment."
-    out = [legend(), f"Tasks matching {data(term)} ({len(rows)}):"]
+    out = [legend(), f"Tasks matching {data(term)} in title or description ({len(rows)}):"]
     for row in rows:
         out.extend(_task_line(row))
+        # The route cuts this only for a description hit. It goes AFTER the
+        # `full_id` line, so the card's row-and-id pair stays adjacent.
+        if row.get("snippet"):
+            out.append(f"  description match: {data(str(row['snippet'])[:SNIPPET_MAX])}")
     if payload.get("truncated"):
-        out.append("(more matches exist — narrow the words)")
+        # The search route stops at 50 hits and has no offset. list_tasks
+        # runs the same word rule and pages, so every match stays in reach.
+        out.append("(more matches exist. list_tasks with the same query pages "
+                   "through all of them)")
     return "\n".join(out)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def list_tasks(
     project_id: str = "",
     include_subtree: bool = True,
@@ -275,7 +406,9 @@ async def list_tasks(
     project the member can see. status_category is one of todo, in_progress,
     done, cancelled (comma-separated for several). assignee is an email.
     tags is comma-separated. watching=true lists only tasks the member
-    watches. The total is the server's count, and page_size caps at 50."""
+    watches. query matches each word in the title or description, needs 3
+    characters, or takes a task number such as #7. The
+    total is the server's count, and page_size caps at 50."""
     params: dict[str, Any] = {
         "page": max(1, int(page or 1)),
         "page_size": max(1, min(int(page_size or 25), MAX_PAGE)),
@@ -299,8 +432,13 @@ async def list_tasks(
         params["watching"] = True
     if include_archived:
         params["include_archived"] = True
-    if query:
-        params["q"] = query
+    term = _clean(query or "")
+    if term:
+        # The list route matches NOTHING for short text (filters.py), so a
+        # 2-character query would read as "no task matches those filters".
+        if _short_text(term):
+            return _short_query(term)
+        params["q"] = term
 
     payload = await get("/projects/tasks", params)
     rows = (payload or {}).get("rows") or []
@@ -313,8 +451,11 @@ async def list_tasks(
     out = [legend(), f"Tasks ({total} total, showing {len(rows)}, page {params['page']}):"]
     for row in rows:
         out.extend(_task_line(row, names.get(str(row.get("status_id")), "")))
-    if total > len(rows) * params["page"]:
-        out.append(f"(page {params['page'] + 1} has more)")
+    # The rows BEFORE this page are (page - 1) pages, not (page - 1) rows. The
+    # old test multiplied the row count, so a short last page claimed a next.
+    size = params["page_size"]
+    if line := page_line(total, (params["page"] - 1) * size, len(rows), page_size=size):
+        out.append(line)
     return "\n".join(out)
 
 
@@ -356,6 +497,33 @@ async def _attachments_block(task_id: str) -> list[str]:
     return [f"Attachments ({len(files)}): " + ", ".join(data(f.get("name")) for f in files)]
 
 
+async def _refs_block(task_id: str) -> list[str]:
+    """The task's URL references (WS-57 TR-3), one line each with its ref id.
+
+    A failed read says so. It never reads as "no references", because the
+    model would then tell the member that a linked pull request is absent.
+    """
+    tid = uuid_of(task_id, "task_id")
+    try:
+        # `refresh=false`: the stored rows, and no GitHub read, so this read
+        # stays `open_world=False`. The card's own list refreshes the state.
+        listed = await get(f"/projects/tasks/{tid}/refs", {"refresh": False})
+    except GatewayRefusal:
+        return ["References: unknown, the list could not be read."]
+    rows = (listed or {}).get("rows") or []
+    if not rows:
+        return []
+    out = [f"References ({len(rows)}):"]
+    for row in rows:
+        line = f"- {data(row.get('kind'))} {data(row.get('label') or row.get('url'))}"
+        if row.get("title"):
+            line += f" {data(row.get('title'))}"
+        if row.get("state"):
+            line += f" ({data(row.get('state'))})"
+        out.append(f"{line} {data(row.get('url'))} (ref id {row.get('id')})")
+    return out
+
+
 async def _timeline_block(task_id: str) -> list[str]:
     """The latest timeline rows, newest first, bodies fenced."""
     tid = uuid_of(task_id, "task_id")
@@ -380,10 +548,11 @@ async def _timeline_block(task_id: str) -> list[str]:
     return out
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def task_detail(task_id: str) -> str:
     """Everything about one task: fields, assignees, subtasks, links and
-    blockers, attachments, and the latest timeline entries. Read this before
+    blockers, URL references (pull requests, issues, docs) with their ref
+    ids, attachments, and the latest timeline entries. Read this before
     answering a specific question about a task, and before proposing a
     change to it. task_id is the `full_id` from a list or a search."""
     tid = uuid_of(task_id, "task_id")
@@ -422,8 +591,19 @@ async def task_detail(task_id: str) -> str:
         out.append("  fields: " + ", ".join(f"{k}={data(v)}" for k, v in fields.items()))
     if task.get("description"):
         out.append(f"  description: {data(str(task['description'])[:1200])}")
+    # WS-46 P1 (G2): the rule is not on the task row, so it is one more GET.
+    # A task that repeats says so here, and the model needs no second read.
+    # A failed read says so. It never reads as "does not repeat".
+    try:
+        rule = await _rule_of(tid)
+    except GatewayRefusal:
+        out.append("  Repeats: unknown, the rule could not be read. Use recurrence.")
+    else:
+        if rule:
+            out.append(f"  Repeats: {_rule_text(rule)}")
 
     out.extend(await _relations_block(tid))
+    out.extend(await _refs_block(tid))
     out.extend(await _attachments_block(tid))
     out.extend(await _timeline_block(tid))
     return "\n".join(out)
@@ -432,33 +612,172 @@ async def task_detail(task_id: str) -> str:
 # ── The member's own work ────────────────────────────────────────────────────
 
 
-@_annotate(read_only=True, idempotent=True)
-async def my_work(view: str = "assigned", include_done: bool = False, page: int = 1) -> str:
+def clock_of(row: Any) -> tuple[date | None, str, str]:
+    """``(today, zone, label)`` from ``GET /projects/my/today``, or
+    ``(None, "", "")`` for an answer that carries neither (WS-46 P7).
+    ``zone`` is the IANA name a time is read in. ``label`` is what a card
+    prints, and it is never given to ``ZoneInfo`` (review round 1). The one parser of the
+    member's date: ``my_work`` prints it, and the write tools that guess a
+    day take it (``writes._member_clock``).
+
+    The Tasks and the Calendar apps save the browser's zone when they open.
+    A member who never opened them has no saved zone, so the route answers
+    UTC with ``stored: false``. The zone then reads "UTC, no zone saved", so
+    no card claims that the member chose UTC.
+    """
+    if not isinstance(row, dict):
+        return None, "", ""
+    raw = str(row.get("today") or "").strip()
+    try:
+        day = date.fromisoformat(raw) if len(raw) == 10 else None
+    except ValueError:
+        day = None
+    zone = str(row.get("timezone") or "").strip()
+    if day is None or not zone:
+        return None, "", ""
+    if not row.get("stored", True):
+        label = f"{zone}, no zone saved"
+    elif not row.get("valid", True):
+        label = f"{zone}, no valid zone saved"
+    else:
+        label = zone
+    return day, zone, label
+
+
+async def _clock_line() -> str:
+    """"Your date: Tuesday 2026-10-06 (Asia/Kolkata)." for the member's own
+    lists. ``legend`` states the UTC date, and the member's evening can be
+    the next day. An empty line when the read has no answer."""
+    try:
+        day, _zone, label = clock_of(await get("/projects/my/today"))
+    except GatewayRefusal:
+        return ""
+    if day is None:
+        return ""
+    return f"Your date: {WEEKDAYS[day.isoweekday() - 1]} {day.isoformat()} ({label})."
+
+
+#: The seconds that the plan read may take (SW-68a). The edge has the same limit.
+PLAN_ORDER_BUDGET_S = 2.0
+
+
+async def _plan_ordered(
+    rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+    """SW-68a: *rows* in the order of the plan engine, and the plan of each
+    task that sits under an epic. The gateway route does the ranking, so the
+    MCP ``my_work`` and this list use one rule (``plan_order.py``). A task
+    outside every epic keeps its place. ANY failure of the read (a timeout, a
+    connect or protocol error, a refusal, a body of the wrong shape) keeps
+    today's order. The plan is an aid and never hides the work."""
+    ids = [str(r["id"]) for r in rows if r.get("id")]
+    if not ids:
+        return rows, {}, {}
+    try:
+        # The same 2 second limit as the edge: a slow read keeps today's order.
+        async with asyncio.timeout(PLAN_ORDER_BUDGET_S):
+            answer = await get("/projects/plan/order", {"task_ids": ",".join(ids)})
+        if not isinstance(answer, dict):
+            return rows, {}, {}
+        order, plans = answer.get("order"), answer.get("plan")
+        labels = answer.get("labels")
+        if not isinstance(order, list) or not isinstance(plans, dict):
+            return rows, {}, {}
+        by_id = {str(r["id"]): r for r in rows if r.get("id")}
+        ranked = [by_id[i] for i in order if i in by_id]
+        if len(ranked) != len(by_id) or len(set(order)) != len(order):
+            return rows, {}, {}
+        return ([*ranked, *(r for r in rows if not r.get("id"))], plans,
+                labels if isinstance(labels, dict) else {})
+    except Exception:  # the plan is an aid, see the docstring
+        return rows, {}, {}
+
+
+def _blocker_text(task_id: str, label: Any) -> str:
+    """``#7 Fix the extruder`` for a visible blocker. The title is fenced as
+    member text. With no label the short id is all there is."""
+    if isinstance(label, dict) and label.get("title"):
+        number = f"#{label['number']} " if label.get("number") else ""
+        return f"{number}{data(label['title'])}"
+    return task_id.split("-", 1)[0]
+
+
+def _plan_note(plan: Any, labels: dict[str, Any] | None = None) -> str:
+    """One line for a task that sits under an epic: ready or blocked, the
+    slack, and what blocks it. A blocker is named by its number and title. A
+    blocker the member cannot see has no name."""
+    if not isinstance(plan, dict):
+        return ""
+    if plan.get("ready"):
+        slack = plan.get("slack_mins")
+        return "  plan: ready" + (f" · slack {slack} mins" if isinstance(slack, int) else "")
+    named = [_blocker_text(str(i), (labels or {}).get(str(i))) for i in plan.get("blocked_by") or []]
+    parts = [f"blocked by {', '.join(named)}"] if named else []
+    if plan.get("blocked_by_hidden"):
+        parts.append("blocked by a task hidden from you")
+    return "  plan: " + (" · ".join(parts) or "blocked")
+
+
+async def _personal_home(home: list[str]) -> None:
+    """Add the member's personal project to the head lines of ``my_work``, or
+    say there is none yet."""
+    try:
+        mine = await get("/projects/my/project")
+    except GatewayRefusal:
+        home.append("No personal project yet. create_personal_task makes it.")
+        return
+    if mine and mine.get("id"):
+        home.append(f"Personal project {data(mine.get('name'))} · project_id {mine.get('id')}")
+
+
+@_annotate(read_only=True, idempotent=True, open_world=False)
+async def my_work(
+    view: str = "assigned", include_done: bool = False, page: int = 1, untriaged: bool = False
+) -> str:
     """The member's own work. view="assigned" lists tasks assigned to them
-    across every project. view="inbox" lists their personal lens with the
-    per-member overlay (disposition, context, defer). Use this for "what is
-    mine?" and for triage. Never for another person's work — use list_tasks
-    with assignee for that."""
-    which = (view or "assigned").strip().lower()
+    across every project. view="inbox" lists the member's task inbox: only
+    what they captured, as the app's inbox shows it. view="archived" lists the
+    tasks they archived, across projects (ARC-1), as the Archive chip of My
+    tasks shows them. To bring one back, use unarchive_task. untriaged=true reads the
+    work assigned to them that they have not planned, with who
+    assigned each one. My tasks shows it as New: "what landed on my plate". A ready agent
+    task (D170 amendment) is not here. It shows under Next or Someday. The first line is the member's own date and
+    zone. Use this for "what is mine?" and for triage. Never for another
+    person's work — use list_tasks with assignee for that."""
+    which = "inbox" if untriaged else (view or "assigned").strip().lower()
     params: dict[str, Any] = {"page": max(1, int(page or 1)), "page_size": MAX_PAGE}
     home: list[str] = []
+    clock = await _clock_line()
+    if clock:
+        home.append(clock)
     if which == "inbox":
         if include_done:
             params["include_done"] = True
+        if untriaged:
+            # WS-46 P7 (G18): the route narrows to rows with no overlay of
+            # mine, and adds `assigned_by` (personal.py `my_inbox`).
+            params["untriaged"] = True
+            # Deferred New work counts in the New chip, so the list shows it.
+            params["include_deferred"] = True
+        else:
+            # D170 (INB-1, 2026-11-03): the inbox is the captures, the rows
+            # of INBOX disposition. The app's list reads the same filter.
+            params["disposition"] = "INBOX"
         payload = await get("/projects/my/inbox", params)
-        title = "My inbox"
+        title = "New in My tasks: assigned to me, not planned yet. A ready agent task (D170 amendment) is not here. It shows under Next or Someday." if untriaged else "My task inbox"
         # The personal project is where a private task lives (D53). Named
         # here so "add this to my own list" has an id to land on later.
         # 404 until the member captures their first private task. That is
         # an empty state, not a failure: the trial showed the model telling
         # the member their inbox "failed to load".
-        try:
-            mine = await get("/projects/my/project")
-        except GatewayRefusal:
-            mine = None
-            home.append("No personal project yet. create_personal_task makes it.")
-        if mine and mine.get("id"):
-            home.append(f"Personal project {data(mine.get('name'))} · project_id {mine.get('id')}")
+        await _personal_home(home)
+    elif which == "archived":
+        # ARC-1: the one list route over mine, filed tasks only. The app's
+        # Archive chip reads the same two words (`scope`, `archived_only`).
+        payload = await get(
+            "/projects/tasks", {**params, "scope": "mine", "archived_only": True},
+        )
+        title = "My archive"
     else:
         if include_done:
             params["include_done"] = True
@@ -468,6 +787,10 @@ async def my_work(view: str = "assigned", include_done: bool = False, page: int 
     total = int((payload or {}).get("total") or 0)
     if not rows:
         return "\n".join([*home, f"{title}: nothing."])
+    plans: dict[str, Any] = {}
+    labels: dict[str, Any] = {}
+    if which not in ("inbox", "archived"):
+        rows, plans, labels = await _plan_ordered(rows)
     names = await _status_names(
         {str(r.get("root_project_id")) for r in rows if r.get("root_project_id")}
     )
@@ -475,27 +798,38 @@ async def my_work(view: str = "assigned", include_done: bool = False, page: int 
     for row in rows:
         head, ident = _task_line(row, names.get(str(row.get("status_id")), ""))
         overlay: list[str] = []
-        for key in ("disposition", "context", "energy", "deferred_until"):
+        for key in ("disposition", "context", "energy", "deferred_until", "assigned_by"):
             if row.get(key):
                 overlay.append(f"{key} {data(row[key])}")
         if overlay:
             head += " · " + " · ".join(overlay)
         out.append(head)
         out.append(ident)
+        note = _plan_note(plans.get(str(row.get("id"))), labels)
+        if note:
+            out.append(note)
     return "\n".join(out)
 
 
 # ── People and vocabulary ────────────────────────────────────────────────────
 
 
-WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+#: ISO weekdays: 1 is Monday. The full name, because the card names a day
+#: the tool may have guessed (WS-46 P1, spec §8.1 item 4).
+WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+
+
+def _and(words: list[str]) -> str:
+    """``Monday``, ``Monday and Friday``, ``Monday, Wednesday and Friday``."""
+    return words[0] if len(words) == 1 else ", ".join(words[:-1]) + " and " + words[-1]
 
 
 def _rule_text(rule: dict[str, Any] | None) -> str:
-    """``every 2 weeks on Mon, Wed · from the due date · until 2026-12-31``.
+    """``every 2 weeks on Monday and Wednesday, from the due date, until 2026-12-31``.
 
     One renderer for the read, the card and the receipt, so the three cannot
-    describe one rule three ways.
+    describe one rule three ways. It is one sentence, so a receipt reads
+    "It repeats every week on Friday" (WS-46 P1, spec §8.1 item 2).
     """
     if not rule:
         return "does not repeat"
@@ -503,14 +837,14 @@ def _rule_text(rule: dict[str, Any] | None) -> str:
     every = int(rule.get("interval") or 1)
     unit = {"daily": "day", "weekly": "week", "monthly": "month", "yearly": "year"}.get(freq, freq)
     head = f"every {unit}" if every == 1 else f"every {every} {unit}s"
-    parts = [head]
     days = [int(d) for d in rule.get("weekdays") or [] if 1 <= int(d) <= 7]
     if days:
-        parts.append("on " + ", ".join(WEEKDAYS[d - 1] for d in days))
+        head += " on " + _and([WEEKDAYS[d - 1] for d in days])
     if rule.get("day_of_month"):
-        parts.append(f"on day {rule['day_of_month']}")
+        head += f" on day {rule['day_of_month']}"
     if rule.get("month_of_year"):
-        parts.append(f"in month {rule['month_of_year']}")
+        head += f" in month {rule['month_of_year']}"
+    parts = [head]
     anchor = str(rule.get("anchor") or "due")
     parts.append("from the due date" if anchor == "due" else "from the last completion")
     if rule.get("until_at"):
@@ -520,17 +854,23 @@ def _rule_text(rule: dict[str, Any] | None) -> str:
     made = rule.get("occurrences_made")
     if made:
         parts.append(f"{made} made so far")
-    return " · ".join(parts)
+    return ", ".join(parts)
 
 
-@_annotate(read_only=True, idempotent=True)
+async def _rule_of(task_id: str) -> dict[str, Any] | None:
+    """The task's repeat rule, or ``None``. The one GET ``recurrence`` reads,
+    which ``task_detail`` reaches through ``manifest.COMPOSITE``."""
+    tid = uuid_of(task_id, "task_id")
+    return ((await get(f"/projects/tasks/{tid}/recurrence")) or {}).get("rule")
+
+
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def recurrence(task_id: str) -> str:
     """Whether a task repeats, and its rule: frequency, interval, weekdays,
     anchor (from the due date or from the last completion), end date or
     count, and how many occurrences exist. set_recurrence changes it."""
     tid = uuid_of(task_id, "task_id")
-    rule = ((await get(f"/projects/tasks/{tid}/recurrence")) or {}).get("rule")
-    return f"Repeats: {_rule_text(rule)}\n  full_id: {tid}"
+    return f"Repeats: {_rule_text(await _rule_of(tid))}\n  full_id: {tid}"
 
 
 OVERLAY_FACTS = (
@@ -544,7 +884,7 @@ OVERLAY_FACTS = (
 )
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def my_task(task_id: str) -> str:
     """One task as the member's own lens sees it: the shared fields plus
     THEIR overlay (disposition, context, energy, next action, deferred
@@ -589,7 +929,7 @@ def _person_line(p: dict[str, Any]) -> str:
     return f"- {data(p.get('name'))} · " + " · ".join(facts)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def people_for(query: str = "", due: str = "", emails: str = "") -> str:
     """Who could take a task: people and agents matching the query, with
     their role, current load and any warning (away, engagement ending). Pass
@@ -620,6 +960,11 @@ async def people_for(query: str = "", due: str = "", emails: str = "") -> str:
     if people:
         out.append(f"People ({len(people)}):")
         out.extend(_person_line(p) for p in people)
+        if len(people) >= PEOPLE_FOR_MAX:
+            # The route returns the best few matches and no count. A longer
+            # query reaches the rest.
+            out.append(f"At most {PEOPLE_FOR_MAX} people match one query. "
+                       "Use a longer name to find somebody else.")
     if agents:
         out.append(f"Agents ({len(agents)}):")
         for a in agents:
@@ -632,22 +977,51 @@ async def people_for(query: str = "", due: str = "", emails: str = "") -> str:
     return "\n".join(out)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def vocabulary(project_id: str) -> str:
     """The words a project uses: its statuses (with category), task types,
-    tags (with counts) and custom fields. Read this before you set a status,
-    a type, a tag or a field by name, and relay these names to the member
-    instead of inventing one. project_id is any node in the tree; the root
-    project's vocabulary answers."""
+    tags (with counts) and custom fields. Read this before you put a tag on
+    a task, because a tag name the project lacks becomes a new tag. A write
+    finds a status, a type or a field by name itself, and refuses an unknown
+    name with the real ones. Relay these names to the member instead of
+    inventing one. project_id is any node in the tree; the root project's
+    vocabulary answers."""
     pid = uuid_of(project_id, "project_id")
     out = [legend()]
     status_set = (await get(f"/projects/nodes/{pid}/status-set")) or {}
     if status_set.get("owner_name"):
         owner = "this project" if status_set.get("owns") else data(status_set.get("owner_name"))
-        out.append(
-            f"Status set owned by {owner}"
-            + (" · you may edit it" if status_set.get("may_edit") else " · you may not edit it")
+        # `may_edit` is the server's answer (`core.can_manage_settings`, the
+        # status write's own predicate). Only an explicit False is a "no",
+        # and then the server's own words follow (owner directive 2026-10-07).
+        may = status_set.get("may_edit")
+        verdict = (
+            " · the server says you may edit it" if may is True
+            else " · the server says you may not edit it" if may is False
+            else ""
         )
+        # PST-4: with the guard on, a project that uses a shared set says so,
+        # and the read stops saying "you may edit it" for a set the tools
+        # refuse to change. `guard_on` is the route's answer (§9.4).
+        if (
+            status_set.get("guard_on") is True
+            and status_set.get("owns") is False
+            and may is not False
+        ):
+            n = int(status_set.get("reach") or status_set.get("used_by") or 1)
+            verdict = (
+                f" · shared by {n} project{'' if n == 1 else 's'}. This project needs "
+                "its own set (set_status_set mode=own) before a change"
+            )
+        out.append(f"Status set owned by {owner}{verdict}")
+        if may is False and status_set.get("edit_refusal"):
+            out.append(f"  Gateway said: {data(status_set.get('edit_refusal'))}")
+    # The server checks a type, tag or field write when the tool runs. No
+    # read answers it before, so this read claims nothing either way.
+    out.append(
+        "Types, tags and fields: the server checks each change when you call "
+        "the tool. Call it when the member asks."
+    )
     statuses = ((await get(f"/projects/nodes/{pid}/statuses")) or {}).get("rows") or []
     out.append(f"Statuses ({len(statuses)}):")
     for s in statuses:
@@ -693,7 +1067,7 @@ def _scope_title(payload: dict[str, Any]) -> str:
     )
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def analytics_stuck(project_id: str = "") -> str:
     """Where work is stuck: open tasks banded by how long they have sat in
     their status, tasks blocked by unfinished work, and overdue counts by
@@ -718,13 +1092,15 @@ async def analytics_stuck(project_id: str = "") -> str:
     return "\n".join(out)
 
 
-@_annotate(read_only=True, idempotent=True)
-async def analytics_load(project_id: str = "") -> str:
+@_annotate(read_only=True, idempotent=True, open_world=False)
+async def analytics_load(project_id: str = "", offset: int = 0) -> str:
     """Who is overloaded: open tasks per assignee split into overdue, due in
     the next 7 days, and later. Unassigned is a row of its own, and it is
     often the real finding. Effort is estimated minutes with its coverage,
-    never logged time."""
-    payload = await get("/projects/analytics/load", _scope_params(project_id))
+    never logged time. 20 people a page: offset reads the next."""
+    start, _ = bounds(offset, LOAD_PEOPLE_PAGE, default=LOAD_PEOPLE_PAGE)
+    params = {**_scope_params(project_id), "people_offset": start}
+    payload = await get("/projects/analytics/load", params)
     out = [
         legend(),
         f"Load in {_scope_title(payload)}: {payload.get('total_tasks', 0)} open tasks",
@@ -733,12 +1109,25 @@ async def analytics_load(project_id: str = "") -> str:
         # WS-27bn R5a. The rows below are not every person: say so, so the
         # model never ranks people across rows it did not receive.
         out.append(f"  {line}. Do not compare the rows below with them.")
+    # WS-27bn RA-6. "Needs an owner" comes first when it leads the open
+    # work (§6.8 B), and after the people when it does not. It is not a page
+    # of people, so only the first page prints it (fix round 1).
+    owners = needs_owner_lines(payload) if start == 0 else []
+    leads = bool((payload.get("needs_owner") or {}).get("leads"))
+    if leads:
+        out.extend(owners)
     for p in payload.get("people") or []:
         who = data(p["assignee"]) if p.get("assignee") else "unassigned"
         out.append(
             f"- {who} · open {p.get('open_tasks', 0)} · overdue {p.get('overdue', 0)}"
             f" · next 7 days {p.get('due_next_7d', p.get('due_soon', 0))} · later {p.get('later', 0)}"
         )
+    if not leads:
+        out.extend(owners)
+    listed = payload.get("people_listed")
+    if isinstance(listed, int) and (line := page_line(
+            listed, start, len(payload.get("people") or []), noun="people")):
+        out.append(f"  {line}")
     effort = payload.get("effort") or {}
     if effort:
         out.append(
@@ -748,7 +1137,7 @@ async def analytics_load(project_id: str = "") -> str:
     return "\n".join(out)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def analytics_throughput(project_id: str = "", weeks: int = 8) -> str:
     """Are we getting faster: tasks finished per week and the cycle time from
     first in-progress to done, read from the activity spine. The current
@@ -774,7 +1163,7 @@ async def analytics_throughput(project_id: str = "", weeks: int = 8) -> str:
     return "\n".join(out)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def analytics_finished(
     project_id: str = "", weeks: int = 4, skip_current_week: bool = False
 ) -> str:
@@ -800,7 +1189,7 @@ async def analytics_finished(
     return "\n".join(out)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def analytics_outlook(project_id: str = "") -> str:
     """Will this land, and when: a velocity forecast (the team's real rate
     minus the rate work arrives), a capacity forecast (estimated hours left
@@ -808,6 +1197,11 @@ async def analytics_outlook(project_id: str = "") -> str:
     dates with its coverage, and who is holding open work."""
     payload = await get("/projects/analytics/outlook", _scope_params(project_id))
     out = [f"Forecast for {_scope_title(payload)}:"]
+    # WS-27bn RA-6. The server's sentence first (§6.8 E5): the 50% and 85%
+    # dates, or why there is no date. It holds no member text.
+    summary = (payload.get("velocity") or {}).get("summary")
+    if isinstance(summary, str) and summary:
+        out.append(f"  {summary}")
     for name in ("velocity", "capacity"):
         block = payload.get(name) or {}
         if block:
@@ -915,7 +1309,7 @@ def _capacity_lines(row: dict[str, Any]) -> list[str]:
     return out
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def team_capacity(project_id: str = "", horizon_days: int = 14) -> str:
     """Who holds the open work in a scope, and whether they have the hours.
     One row per person with open work here, plus Unassigned. For a member
@@ -995,7 +1389,7 @@ def _candidate_lines(c: dict[str, Any]) -> list[str]:
     return out
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def fit_for_task(task_id: str = "", title: str = "", tags: str = "", due: str = "") -> str:
     """Who fits one task best, ranked by skill, spare hours and availability:
     at most three people, each with the skills that matched, the spare hours
@@ -1058,7 +1452,7 @@ def _pickup_lines(person: dict[str, Any]) -> list[str]:
     return out
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def rebalance(project_id: str = "", horizon_days: int = 14) -> str:
     """Who could help whom in a scope: the at-risk tasks with up to three
     helpers who fit each one, and the idle people with the unassigned tasks
@@ -1140,7 +1534,7 @@ def _conflict_lines(row: dict[str, Any]) -> list[str]:
     return out
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def find_conflicts(project_id: str = "", horizon_days: int = 14) -> str:
     """Where the plan interferes with itself in a scope, as one list. Seven
     kinds: dependency_order (a task starts or is due before a task that
@@ -1181,6 +1575,108 @@ async def find_conflicts(project_id: str = "", horizon_days: int = 14) -> str:
             out.extend(_conflict_lines(row))
     if payload.get("truncated"):
         out.append(f"(capped: {len(rows)} of {total} rows are listed)")
+    return "\n".join(out)
+
+
+# ── The plan of a goal, epic or project — SP-12 ──────────────────────────────
+
+#: The most slices of one list that ``get_plan`` prints. The route caps its
+#: labels, and this is the tool's own guard on the model's context.
+PLAN_LIST_MAX = 12
+
+
+def _plan_name(labels: dict[str, Any], tid: Any) -> str:
+    """One slice for a sentence: its number and fenced title, or its id."""
+    row = labels.get(tid) if isinstance(labels, dict) else None
+    if isinstance(row, dict):
+        title = row.get("title")
+        n = _number({"task_number": row.get("number")})
+        return f"{n} {data(title)}" if title else n
+    return f"task {tid}"
+
+
+def _plan_rows(labels: dict[str, Any], ids: list[Any], slack: dict[str, Any]) -> list[str]:
+    out: list[str] = []
+    for shown, tid in enumerate(ids):
+        if shown >= PLAN_LIST_MAX:
+            break
+        extra = f" · slack {slack[tid]} min" if tid in slack else ""
+        out.append(f"- {_plan_name(labels, tid)}{extra}")
+        out.append(f"  full_id: {tid}")
+    if len(ids) > PLAN_LIST_MAX:
+        out.append(f"  (and {len(ids) - PLAN_LIST_MAX} more: ids only in the server answer)")
+    return out
+
+
+@_annotate(read_only=True, idempotent=True, open_world=False)
+async def get_plan(root_task_id: str) -> str:
+    """The order of work under one goal, epic or project task, computed by the
+    server from its open slices (tasks with no subtasks) and their blocks
+    links. Use it for "What is the plan for X?", "What can start now?", "What
+    is the next task?" and "What is on the critical path?". It gives the
+    ready set, the waves, the critical path with slack, one finish date, the
+    next slice, the slices held by a blocker outside the tree and the number
+    of slices this member cannot see. Relay it. Never work out an order, a
+    date or a path yourself, and never call the date a forecast. The task id
+    is a full_id from an earlier tool result."""
+    root = uuid_of(root_task_id, "root_task_id")
+    plan = await get("/projects/plan/analysis", {"root_task_id": root}) or {}
+    labels = plan.get("labels") or {}
+    slack = plan.get("slack") or {}
+    hidden = plan.get("hidden") or {}
+    out = [
+        legend(),
+        f"Plan under task {root}: {plan.get('slices', 0)} open slices",
+    ]
+    cycle = plan.get("cycle")
+    if cycle:
+        out.append(
+            "A loop of blocks links stops the plan: no waves, path or finish are given."
+            " The tasks in the loop (full_id):"
+        )
+        out.extend(f"  {tid}" for tid in cycle.get("task_ids") or [])
+    if plan.get("not_enough"):
+        out.append(f"No critical path: {plan['not_enough']}.")
+    ready = plan.get("ready") or []
+    out.append(f"Ready now ({len(ready)}):")
+    out.extend(_plan_rows(labels, ready, {}))
+    if plan.get("next_slice"):
+        out.append(f"Next slice: {_plan_name(labels, plan['next_slice'])}")
+        out.append(f"  full_id: {plan['next_slice']}")
+    path = plan.get("critical_path") or []
+    if path:
+        out.append(f"Critical path ({len(path)} slices, in order):")
+        out.extend(_plan_rows(labels, path, slack))
+    finish = plan.get("finish")
+    if finish:
+        out.append(
+            f"Finish: {finish.get('date')} ({finish.get('working_days')} working days,"
+            f" {finish.get('mins')} minutes of work and review wait). One date from the"
+            " length of the path. It is not a forecast with a range."
+        )
+    waves = plan.get("waves") or []
+    if waves:
+        out.append(
+            "Waves: " + "; ".join(f"wave {i} has {len(w)}" for i, w in enumerate(waves, 1))
+        )
+    held = plan.get("held") or []
+    if held:
+        out.append(f"Held by an open blocker outside this tree ({len(held)}):")
+        out.extend(_plan_rows(labels, held, {}))
+        for row in plan.get("outside_blockers") or []:
+            if isinstance(row, dict):
+                out.append(
+                    f"  {_plan_name(labels, row.get('task_id'))} waits on"
+                    f" {', '.join(str(b) for b in row.get('blocked_by') or [])}"
+                )
+    for sentence in (plan.get("missing") or {}).get("words") or []:
+        out.append(f"Gap: {sentence} (counted as 0 minutes of work, so the date may be early).")
+    if hidden.get("slices") or hidden.get("outside_blockers"):
+        out.append(
+            f"Hidden from this member: {hidden.get('slices', 0)} slices and"
+            f" {hidden.get('outside_blockers', 0)} outside blockers. They are counted"
+            " and left out of the plan. Say so, and do not guess what they are."
+        )
     return "\n".join(out)
 
 
@@ -1349,7 +1845,7 @@ def _dataset_rows(payload: dict[str, Any]) -> list[str]:
     return out
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def task_dataset(
     project_id: str = "",
     state: str = "open",
@@ -1414,7 +1910,7 @@ async def task_dataset(
 # ── Reports ──────────────────────────────────────────────────────────────────
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def report_list() -> str:
     """The saved report definitions in this organization. A report stores the
     question (scope, period, sections), never the answer. Use report_render
@@ -1428,14 +1924,306 @@ async def report_list() -> str:
         scope = r.get("project_id") or "portfolio"
         out.append(f"- {data(r.get('name'))} · scope {scope} · created {_day(r.get('created_at'))}")
         out.append(f"  full_id: {r.get('id')}")
+    if len(rows) >= REPORT_LIST_MAX:
+        # The route returns the newest 200 and no count. Say so, and do not
+        # read the list as every report.
+        out.append(f"These are the newest {REPORT_LIST_MAX} reports. Older ones exist.")
     return "\n".join(out)
 
 
-@_annotate(read_only=True, idempotent=True)
+#: WS-64 OP-6d. The send switch of the deployment is the owner's (CLAUDE.md §3a
+#: rule 3). No tool reads it or sets it, and ``test_projects_report_delivery_tools.py``
+#: fails when the skill or the instructions name it. The schedule route answers
+#: ``delivery_armed_on_this_deployment``, and the Reports app shows that field.
+#: A card has no such answer before the write, so it says what may be true.
+DELIVERY_MAY_BE_OFF = (
+    "Delivery may be switched off. Metorite emails a report only when the "
+    "owner has switched delivery on for the deployment."
+)
+DELIVERY_OFF = "Reports are not emailed yet: delivery is switched off."
+#: Says only what the deployment says. No job sends a report yet (the send
+#: path ``reportEmail.ts`` has no caller), so the receipt claims no email.
+DELIVERY_ON = "Delivery is switched on for this deployment."
+
+#: The words of the schedule in the card. ``reports.SCHEDULES`` holds one: weekly.
+SCHEDULE_WORDS = {"weekly": "every week"}
+
+
+async def _names_of(emails: list[str]) -> dict[str, str]:
+    """Display names by lower-case address. A person the directory lacks has none."""
+    wanted = [e for e in emails if e]
+    if not wanted:
+        return {}
+    labels = (await get("/projects/people/names", {"emails": ",".join(wanted)})) or {}
+    names = labels.get("names") or {}
+    return {str(k).lower(): str(v) for k, v in names.items() if v}
+
+
+@_annotate(read_only=True, idempotent=True, open_world=False)
+async def report_recipients(report_id: str) -> str:
+    """Who one saved report goes to, and whether its schedule is armed. Each
+    recipient shows the address and the name the directory holds. Adding and
+    removing a recipient, and arming the schedule, need a card of their own.
+    Nothing here sends mail."""
+    rid = uuid_of(report_id, "report_id")
+    report = (await get(f"/projects/reports/{rid}")) or {}
+    payload = (await get(f"/projects/reports/{rid}/recipients")) or {}
+    rows = payload.get("recipients") or []
+    names = await _names_of([str(r.get("recipient") or "").lower() for r in rows])
+    armed = bool(report.get("enabled"))
+    out = [
+        legend(),
+        f"Report {data(report.get('name'))} (full_id: {rid}) · {len(rows)} recipients",
+        "  schedule: "
+        + (SCHEDULE_WORDS.get(str(report.get("schedule")), "on") if armed else "off"),
+    ]
+    for r in rows:
+        email = str(r.get("recipient") or "")
+        name = names.get(email.lower())
+        out.append(
+            f"- {data(email)} · {data(name) if name else 'not in the directory'}"
+            f" · added by {data(r.get('added_by') or '?')}"
+        )
+    if not rows:
+        out.append("(nobody receives this report)")
+    if report.get("can_edit") is False:
+        out.append("The member may read this list and may not change it.")
+    out.append(DELIVERY_MAY_BE_OFF)
+    return "\n".join(out)
+
+
+#: WS-64 OP-6e (D-OP-13, EA3-40). The chat LISTS what waits for the member and
+#: links each row to its task card. Only the run's member answers, on the card.
+#: No tool of this skill calls the answer routes, and
+#: ``test_projects_agent_requests_tools.py`` fails if one does.
+AGENT_REQUEST_KINDS = {"archive_task": "asks to archive this task"}
+
+
+def _age(stamp: Any) -> str:
+    """How long ago, in plain words. A stamp that does not parse has no age."""
+    try:
+        then = datetime.fromisoformat(str(stamp))
+    except ValueError:
+        return "an unknown time ago"
+    if then.tzinfo is None:
+        then = then.replace(tzinfo=UTC)
+    secs = max(0, int((datetime.now(UTC) - then).total_seconds()))
+    if secs < 120:
+        return "just now"
+    if secs < 7200:
+        return f"{secs // 60} minutes ago"
+    if secs < 172800:
+        return f"{secs // 3600} hours ago"
+    return f"{secs // 86400} days ago"
+
+
+def _expired(stamp: Any) -> bool:
+    try:
+        at = datetime.fromisoformat(str(stamp))
+    except ValueError:
+        return True
+    return at.tzinfo is None or at <= datetime.now(UTC)
+
+
+async def _task_of_run(task_id: Any) -> dict[str, Any]:
+    """The task that a run belongs to. The id passes ``uuid_of`` before it
+    reaches a path, as every id does."""
+    tid = uuid_of(task_id, "task")
+    return (await get(f"/projects/tasks/{tid}")) or {}
+
+
+#: The answer of ``waiting_agent_requests`` while agent runs are switched off.
+AGENT_RUNS_OFF = (
+    "Agent runs are switched off in this organization, so no agent request "
+    "waits for you."
+)
+
+
+@_annotate(read_only=True, idempotent=True, open_world=False)
+async def waiting_agent_requests() -> str:
+    """The questions and requests that agents have put to the member and that
+    still wait for an answer, oldest first. Each row shows the task, the agent,
+    the request in plain words, its age and the link to the task card. Only
+    the member answers, on that card. No chat tool approves, declines or
+    answers one, so send the member to the link."""
+    try:
+        page = (await get("/projects/agent-runs", {"status": "awaiting", "order": "oldest", "limit": MAX_PAGE})) or {}
+    except GatewayRefusal as exc:
+        # `require_agent_runs` answers 404 while agent runs are switched off.
+        if exc.status == 404:
+            return AGENT_RUNS_OFF
+        raise
+    runs = [r for r in page.get("rows") or [] if r.get("status") == "awaiting"]
+    tasks = await asyncio.gather(
+        *(_task_of_run(r.get("task_id")) for r in runs), return_exceptions=True
+    )
+    out = [legend(), f"{len(runs)} agent requests wait for the member"]
+    for run, task in zip(runs, tasks, strict=True):
+        try:
+            tid = uuid_of(run.get("task_id"), "task")
+        except GatewayRefusal:
+            continue
+        ask = run.get("open_elicitation") or {}
+        request = (ask.get("content_metadata") or {}).get("request") or {}
+        kind = str(request.get("kind") or "")
+        body = str((ask.get("content") or {}).get("body") or "")
+        if isinstance(task, BaseException):
+            head = "(task not readable)"
+        else:
+            head = f"{_number(task)} {data(task.get('title'))}"
+        who = data(run.get("client_name") or run.get("client_via") or "an agent")
+        if kind:
+            plain = AGENT_REQUEST_KINDS.get(kind, "makes a request of an unknown kind")
+            if _expired(request.get("expires_at")):
+                plain += " (the request has expired)"
+        else:
+            plain = "asks a question"
+        when = _age(ask.get("created_at") or run.get("last_activity_at"))
+        out.append(f"- {head} · {who} {plain} · {when}")
+        if body:
+            out.append(f"    says: {data(body[:400])}")
+        out.append(f"    link: /projects?task={tid}")
+        out.append(f"    full_id: {tid}")
+    if not runs:
+        out.append("(no agent waits for the member)")
+    if page.get("next_cursor"):
+        out.append(f"(more than {MAX_PAGE} wait: this is the newest {MAX_PAGE})")
+    out.append(
+        "Only the member answers, on the task card. Give the link. Do not approve, "
+        "decline or answer for the member."
+    )
+    return "\n".join(out)
+
+
+# ── WS-55 SW-11a — Needs attention (external_agent_access.md §12.7) ─────────
+
+#: Rows per page of ``needs_attention``. The route pages through ``offset``.
+ATTENTION_PAGE = 25
+
+#: What each kind means, in the words the list on the board uses.
+ATTENTION_KINDS = {
+    "stalled": "stalled: an agent run stopped, and a recovery record waits for a person",
+    "dangling": "an agent run is still open on a closed task",
+    "blocked": "blocked by parked work: the blocker is in the backlog, and nobody holds it",
+}
+
+#: The next action of each row, for the model to say. No chat tool takes
+#: either write yet (`resume_agent_run` and `release_agent_run` are PLANNED).
+ATTENTION_ACTIONS = {
+    "resume": (
+        "Resume (asks the same agent client to continue, and the run keeps the task)"
+        " or Close the run (frees the task for anyone)"
+    ),
+    "close_run": "Close the run (frees the task for anyone, and the task keeps its status)",
+    "open_blocker": "open the blocker and give it an owner or move it on",
+}
+
+#: The server's own answer, quoted: `can_act` is false for this caller. The
+#: route reads the rule of Release (`agent_runs.person_may_end_sql`). No line
+#: here names who holds the right (`test_projects_agent_grants.py`).
+ATTENTION_NO_RIGHT = "only a person with the right to end this run can act on it"
+
+#: A stalled run whose agent connection is revoked or expired. No session of
+#: that client can come back, so the server offers Close the run only.
+ATTENTION_CONNECTION_GONE = "the agent's connection is revoked or expired, so it cannot resume"
+
+
+def _hours_ago(hours: Any) -> str:
+    """``3.4`` → ``3 h``, ``50`` → ``2 d``. An age that does not parse is
+    unknown."""
+    try:
+        value = float(hours)
+    except (TypeError, ValueError):
+        return "for an unknown time"
+    if value < 1:
+        return "for under an hour"
+    if value < 48:
+        return f"for {int(value)} h"
+    return f"for {int(value // 24)} d"
+
+
+def _attention_lines(row: dict[str, Any]) -> list[str]:
+    """One row: the task line, then its ids. Titles and names are fenced."""
+    kind = str(row.get("kind") or "")
+    facts = [ATTENTION_KINDS.get(kind, kind)]
+    if kind == "stalled":
+        why = "did not read the answer" if row.get("reason") == "answer_unread" else "sent nothing"
+        facts.append(f"{data(row.get('client_name') or 'the agent')} {why} "
+                     f"{_hours_ago(row.get('age_hours'))}")
+    elif kind == "dangling":
+        facts.append(f"the task is {row.get('reason') or 'closed'}, and the run is "
+                     f"{row.get('run_status')}, quiet {_hours_ago(row.get('age_hours'))}")
+    elif kind == "blocked":
+        facts.append(f"blocked by #{row.get('blocker_number')} {data(row.get('blocker_title'))} "
+                     f"{_hours_ago(row.get('age_hours'))}")
+    owner = row.get("owner_name") or row.get("owner")
+    facts.append(f"owner {data(owner)}" if owner else "no owner")
+    if row.get("yours"):
+        facts.append("yours")
+    if row.get("project_name"):
+        facts.append(f"in {data(row['project_name'])}")
+    action = ATTENTION_ACTIONS.get(str(row.get("action") or ""), "open the task")
+    if row.get("connection_gone") and kind == "stalled":
+        facts.append(ATTENTION_CONNECTION_GONE)
+    if not row.get("can_act"):
+        action += f" ({ATTENTION_NO_RIGHT})"
+    head = f"- {_number(row)} {data(row.get('title'))} · " + " · ".join(facts)
+    out = [head, f"  next: {action}", f"  full_id: {row.get('task_id')}"]
+    if row.get("blocker_id"):
+        out.append(f"  blocker_id: {row['blocker_id']}")
+    if row.get("run_id"):
+        out.append(f"  run_id: {row['run_id']}")
+    return out
+
+
+@_annotate(read_only=True, idempotent=True, open_world=False)
+async def needs_attention(project_id: str = "", mine: bool = False, offset: int = 0) -> str:
+    """What is stuck and needs a person: agent runs that stopped and have a
+    recovery record, agent runs still open on closed tasks, and tasks blocked
+    by parked work (a backlog task that nobody holds). Use it for "what is
+    stuck?" and "what needs my attention?". Pass a project_id for one project
+    and its subprojects, or leave it empty for every project the member can
+    see. mine=true keeps the member's own rows. 25 rows a page: offset reads
+    the next. The member resumes or closes a run on the Needs attention list
+    in the app. No tool of yours does it."""
+    start, size = bounds(offset, ATTENTION_PAGE, default=ATTENTION_PAGE)
+    params: dict[str, Any] = {"offset": start, "limit": size}
+    if project_id:
+        params["project_id"] = uuid_of(project_id, "project_id")
+    if mine:
+        params["mine"] = True
+    payload = (await get("/projects/needs-attention", params)) or {}
+    rows = list(payload.get("rows") or [])
+    counts = payload.get("counts") or {}
+    scope = "this project and its subprojects" if project_id else "every project the member can see"
+    whose = "the member's own items" if mine else "items"
+    out = [
+        legend(),
+        f"Needs attention in {scope}: {payload.get('total', 0)} {whose}"
+        f" (stalled {counts.get('stalled', 0)}, open runs of closed tasks"
+        f" {counts.get('dangling', 0)}, blocked by parked work {counts.get('blocked', 0)}).",
+    ]
+    for row in rows:
+        out.extend(_attention_lines(row))
+    if not rows and start == 0:
+        out.append("(nothing needs attention)")
+    listed = payload.get("listed")
+    if isinstance(listed, int) and (line := page_line(listed, start, len(rows), noun="items")):
+        out.append(f"  {line}")
+    if payload.get("capped"):
+        out.append(
+            "  One kind holds more items than the list reads (200 for each kind). "
+            "Name a project to see the rest."
+        )
+    return "\n".join(out)
+
+
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def report_render(report_id: str) -> str:
     """Render one saved report now, from the same numbers that the Overview
     of the Reports app shows. The member's own visibility applies. This never sends anything;
-    delivery lives in the Reports app."""
+    delivery lives in the Reports app. For a report the member keeps, call
+    render_report with make_report=true."""
     rid = uuid_of(report_id, "report_id")
     definition = await get(f"/projects/reports/{rid}")
     body = await get(f"/projects/reports/{rid}/render")
@@ -1462,7 +2250,9 @@ async def report_render(report_id: str) -> str:
 _REPORT_SECTIONS: dict[str, tuple[str, str, tuple[str, ...]]] = {
     "finished": ("projects", "name", ("total_completed", "total_cancelled", "median_hours")),
     "throughput": ("series", "week_start", ("completed", "cancelled", "median_hours", "measured")),
-    "load": ("people", "assignee", ("total_tasks",)),
+    # `people_total`: the route cuts the rows to 20, so the count says how
+    # many people the section left out (2026-10-14).
+    "load": ("people", "assignee", ("total_tasks", "people_total", "needs_owner.total")),
     # S7a. The row label is the directory name; the unassigned row has none
     # and prints as "unassigned". Nested HR blocks are skipped per row.
     "capacity": ("people", "name", ("total_tasks", "people_total", "hr_visible", "horizon_days")),
@@ -1474,9 +2264,37 @@ _REPORT_SECTIONS: dict[str, tuple[str, str, tuple[str, ...]]] = {
     # `_dig`. A generic fallback would print nothing for a nested dict.
     "outlook": ("", "", (
         "velocity.verdict", "plan.planned_finish", "velocity.finish_date",
+        "velocity.p85_date", "velocity.converge_per_week",
         "plan.slip_days", "velocity.remaining_tasks", "capacity.verdict",
     )),
     "stuck":("overdue", "name", ("overdue_total", "blocked_total")),
+    # WS-27bn RA-3. Three lists. `_waiting_lines` prints each of them, so
+    # the list key here is the first only. The answer time is nested.
+    "waiting": ("questions", "title", (
+        "questions_total", "reviews_total", "handoffs_total",
+        "answer_time.median_hours", "answer_time.p90_hours",
+        "answer_time.unanswered",
+    )),
+    # WS-27bn RA-4. Two lists: the silent runs now and the long runs.
+    # `_agent_runs_lines` prints both, so the list key here is the first
+    # only. The outcomes and the success rate are nested.
+    "agent_runs": ("silent", "title", (
+        "outcomes.completed", "outcomes.failed", "outcomes.stopped",
+        "outcomes.abandoned", "outcomes.released", "outcomes.server_closed",
+        "success.rate", "success.rate_before", "silent_total", "long_total",
+    )),
+    # WS-27bn RA-5. One list: the open agent pull requests whose checks
+    # fail. `_quality_lines` prints it after the summary. The figures are
+    # nested, so the scalar keys are dotted paths.
+    "quality": ("checks.failing", "title", (
+        "prs.merged", "prs.closed", "prs.rate", "prs.rate_before", "prs.open",
+        "checks.failing_total", "checks.merged_red",
+        "rework.reopened.agents.reopened", "rework.reopened.agents.undone",
+        "rework.reopened.agents.finished",
+        "rework.reopened.people.reopened", "rework.reopened.people.undone",
+        "rework.reopened.people.finished",
+        "rework.retried.failed", "rework.retried.retried",
+    )),
     # WS-27bn R3c. One row per task, each with its kind. The four counts sit
     # in `by_kind`, so the scalar keys are dotted paths, as in `outlook`.
     "hygiene": ("rows", "title", (
@@ -1498,10 +2316,27 @@ _REPORT_SECTIONS: dict[str, tuple[str, str, tuple[str, ...]]] = {
 #: A key with no entry prints as itself, as before. Each entry is
 #: ``section:key``, so it labels the key in that section only, and an older
 #: section keeps its words (H-186 item 4).
+#: RA-4b. A figure that is a share from 0 to 1 prints as a whole percent, as
+#: the panel prints it. "success rate 0.6" reads as 0.6 percent. Each entry is
+#: ``section:key``. Fence: ``test_projects_chat_coverage.py``.
+_REPORT_PERCENT: frozenset[str] = frozenset({
+    "agent_runs:success.rate", "agent_runs:success.rate_before",
+})
+
+
+def _percent_words(value: Any) -> Any:
+    """A share from 0 to 1 as ``60%``. Any other value stays as it is."""
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return f"{round(value * 100)}%"
+    return value
+
+
 _REPORT_LABELS: dict[str, str] = {
     "outlook:velocity.verdict": "forecast",
     "outlook:plan.planned_finish": "planned finish",
     "outlook:velocity.finish_date": "forecast finish",
+    "outlook:velocity.p85_date": "85% finish",
+    "outlook:velocity.converge_per_week": "finished tasks a week to converge",
     "outlook:plan.slip_days": "slip days",
     "outlook:velocity.remaining_tasks": "tasks left",
     "outlook:capacity.verdict": "capacity",
@@ -1517,8 +2352,218 @@ _REPORT_LABELS: dict[str, str] = {
     "hygiene:by_kind.stale_in_progress": "stale in progress",
     "hygiene:stale_days": "stale after days",
     "pulse:people_total": "people",
+    "load:people_total": "people with open work",
+    "load:needs_owner.total": "tasks that need an owner",
     "pulse:hidden_people": "hidden people",
+    "waiting:questions_total": "agent questions with no answer",
+    "waiting:reviews_total": "tasks waiting for a review",
+    "waiting:handoffs_total": "blocked handoffs",
+    "waiting:answer_time.median_hours": "median answer hours",
+    "waiting:answer_time.p90_hours": "p90 answer hours",
+    "waiting:answer_time.unanswered": "questions with no answer in the period",
+    "agent_runs:outcomes.completed": "runs completed in 14 days",
+    "agent_runs:outcomes.failed": "runs failed in 14 days",
+    "agent_runs:outcomes.stopped": "runs stopped by a person in 14 days",
+    "agent_runs:outcomes.abandoned": "runs abandoned in 14 days",
+    "agent_runs:outcomes.released": "runs released in 14 days",
+    "agent_runs:outcomes.server_closed": "runs closed by Metorite in 14 days",
+    "agent_runs:success.rate": "success rate",
+    "agent_runs:success.rate_before": "success rate of the 14 days before",
+    "agent_runs:silent_total": "silent runs now",
+    "agent_runs:long_total": "completed runs of 4 hours or more",
+    "quality:prs.merged": "agent pull requests merged in 14 days",
+    "quality:prs.closed": "agent pull requests closed with no merge in 14 days",
+    "quality:prs.rate": "merge rate",
+    "quality:prs.rate_before": "merge rate of the 14 days before",
+    "quality:prs.open": "agent pull requests open now",
+    "quality:checks.failing_total": "open agent pull requests with failing checks",
+    "quality:checks.merged_red": "agent pull requests merged while their checks failed",
+    "quality:rework.reopened.agents.reopened": "different tasks reopened after an agent finish",
+    "quality:rework.reopened.agents.undone": "finishes by agents that a later reopen undid",
+    "quality:rework.reopened.agents.finished": "tasks that agents finished in 14 days",
+    "quality:rework.reopened.people.reopened": "different tasks reopened after a person finish",
+    "quality:rework.reopened.people.undone": "finishes by people that a later reopen undid",
+    "quality:rework.reopened.people.finished": "tasks that people finished in 14 days",
+    "quality:rework.retried.failed": "runs that failed in 14 days",
+    "quality:rework.retried.retried": "failed runs that got a new run",
 }
+
+#: The three waiting lists, in the panel's order, with the words of each.
+_WAITING_LISTS: tuple[tuple[str, str], ...] = (
+    ("questions", "question"),
+    ("reviews", "review"),
+    ("handoffs", "handoff"),
+)
+
+
+def _waiting_row(kind: str, row: dict[str, Any]) -> str:
+    """One waiting row as one line: the task, the agent and its member.
+
+    The title, the member and the agent print as data. An MCP agent's name
+    comes from the client map, but an in-app agent's name is the text after
+    ``agent:`` in an assignee or an actor, which a member typed. So every
+    name is fenced, and a newline in it cannot forge a second row.
+    """
+    number = row.get("task_number")
+    task = f"#{number} " if isinstance(number, int) else ""
+    facts = [f"agent {data(row.get('agent') or 'Agent')}"]
+    member = row.get("member_name") or row.get("member")
+    if member:
+        facts.append(f"for {data(member)}")
+    if kind == "handoff":
+        facts.append(f"blocked by {data(row.get('blocker_title'))}")
+        if row.get("person_name") or row.get("person"):
+            facts.append(f"person {data(row.get('person_name') or row.get('person'))}")
+        facts.append(f"agent holds the {row.get('agent_side')} task")
+    if isinstance(row.get("age_hours"), int | float):
+        facts.append(f"waiting {row['age_hours']} hours")
+    return f"- {kind} · {task}{data(row.get('title'))} · " + ", ".join(facts)
+
+
+def _waiting_lines(section: dict[str, Any]) -> list[str]:
+    """The summary of the panel, then every row of each list.
+
+    The summary is the server's sentence, so the chat says the words that
+    the panel says (§6.8 E5). ⚠️ No cut here (`test_read_tool_paging.py`):
+    the server already names 20 rows at most of each list
+    (`analytics_waiting.MAX_NAMED`), so the text prints each row it got.
+    The line after a list says how many the server's cap left out, from the
+    list's own total, and the Reports app shows the same panel."""
+    out: list[str] = []
+    if isinstance(section.get("summary"), str):
+        out.append(f"  {section['summary']}")
+    cap = section.get("max_rows")
+    past = f", past the {cap} the report names" if isinstance(cap, int) else ""
+    for key, kind in _WAITING_LISTS:
+        rows = [r for r in section.get(key) or [] if isinstance(r, dict)]
+        out.extend(_waiting_row(kind, r) for r in rows)
+        total = section.get(f"{key}_total")
+        more = (total if isinstance(total, int) else len(rows)) - len(rows)
+        if more > 0:
+            out.append(f"  (and {more} more of the {key}{past})")
+    return out
+
+
+def _needs_owner_row(row: dict[str, Any]) -> str:
+    """One task that needs an owner, as one line. The title is member text,
+    so it prints as data, and a newline in it cannot forge a second row."""
+    number = row.get("task_number")
+    task = f"#{number} " if isinstance(number, int) else ""
+    due = f" · due {_day(row.get('due_at'))}" if row.get("due_at") else ""
+    return f"- needs an owner · {task}{data(row.get('title'))}{due}"
+
+
+def needs_owner_lines(section: dict[str, Any]) -> list[str]:
+    """WS-27bn RA-6. The open tasks with no assignee and no open run
+    (§6.8 F), one line each.
+
+    ⚠️ No cut here (`test_read_tool_paging.py`): the server names 20 at most
+    (`analytics.NEEDS_OWNER_NAMED`), so the text prints each row it got. The
+    line after the rows says how many the server's cap left out, from the
+    total."""
+    owner = section.get("needs_owner")
+    if not isinstance(owner, dict):
+        return []
+    total = owner.get("total")
+    if not isinstance(total, int) or isinstance(total, bool) or total <= 0:
+        return []
+    rows = [r for r in owner.get("tasks") or [] if isinstance(r, dict)]
+    head = "first, because it leads the open work" if owner.get("leads") else "after the people"
+    out = [f"  Needs an owner: {total} open {'task' if total == 1 else 'tasks'}"
+           f" with no assignee and no open run ({head})."]
+    out.extend(_needs_owner_row(r) for r in rows)
+    more = total - len(rows)
+    if more > 0:
+        out.append(f"  (and {more} more that need an owner, past the {len(rows)} named)")
+    return out
+
+
+#: WS-27bn RA-4. The two lists of the agent runs section, in the panel's
+#: order, as ``(list key, the word of a row, the total key)``.
+_AGENT_RUN_LISTS: tuple[tuple[str, str, str], ...] = (
+    ("silent", "silent", "silent_total"),
+    ("long_runs", "long run", "long_total"),
+)
+
+
+def _agent_run_row(kind: str, row: dict[str, Any]) -> str:
+    """One run as one line: the task, the agent, its member and the time.
+
+    The title, the agent and the member print as data, for the reason that
+    `_waiting_row` gives: an in-app agent's name is text that a member
+    typed, so a newline in it cannot forge a second row.
+    """
+    number = row.get("task_number")
+    task = f"#{number} " if isinstance(number, int) else ""
+    facts = [f"agent {data(row.get('agent') or 'Agent')}"]
+    member = row.get("member_name") or row.get("member")
+    if member:
+        facts.append(f"for {data(member)}")
+    if kind == "silent" and isinstance(row.get("age_hours"), int | float):
+        facts.append(f"silent {row['age_hours']} hours")
+    if kind == "long run" and isinstance(row.get("hours"), int | float):
+        facts.append(f"agent time {row['hours']} hours")
+    return f"- {kind} · {task}{data(row.get('title'))} · " + ", ".join(facts)
+
+
+def _agent_runs_lines(section: dict[str, Any]) -> list[str]:
+    """The summary of the panel, then every silent run and every long run.
+
+    The summary is the server's sentence, so the chat says the words that
+    the panel says (§6.8 E5). ⚠️ No cut here (`test_read_tool_paging.py`):
+    the server names 20 silent runs and 5 long runs at most
+    (`analytics_agent_runs.py`), so the text prints each row it got. The
+    line after a list says how many the server's cap left out, from the
+    list's own total."""
+    out: list[str] = []
+    if isinstance(section.get("summary"), str):
+        out.append(f"  {section['summary']}")
+    for key, kind, total_key in _AGENT_RUN_LISTS:
+        rows = [r for r in section.get(key) or [] if isinstance(r, dict)]
+        out.extend(_agent_run_row(kind, r) for r in rows)
+        total = section.get(total_key)
+        more = (total if isinstance(total, int) else len(rows)) - len(rows)
+        if more > 0:
+            out.append(f"  (and {more} more {kind} rows that the report does not name)")
+    return out
+
+
+def _quality_row(row: dict[str, Any]) -> str:
+    """One failing pull request as one line: the task, the agent and its
+    member. The task title, the pull request title, the agent and the member
+    print as data, for the reason that `_waiting_row` gives."""
+    number = row.get("task_number")
+    task = f"#{number} " if isinstance(number, int) else ""
+    facts = [f"agent {data(row.get('agent') or 'Agent')}"]
+    member = row.get("member_name") or row.get("member")
+    if member:
+        facts.append(f"for {data(member)}")
+    if row.get("ref"):
+        facts.append(f"pull request {data(row['ref'])}")
+    if isinstance(row.get("age_hours"), int | float):
+        facts.append(f"linked {row['age_hours']} hours ago")
+    return f"- failing checks · {task}{data(row.get('title'))} · " + ", ".join(facts)
+
+
+def _quality_lines(section: dict[str, Any]) -> list[str]:
+    """The summary of the panel, then every failing pull request it named.
+
+    The summary is the server's sentence, so the chat says the words that
+    the panel says (§6.8 E5). ⚠️ No cut here (`test_read_tool_paging.py`):
+    the server names five rows at most, so the text prints each row it got,
+    and a line says how many the cap left out."""
+    out: list[str] = []
+    if isinstance(section.get("summary"), str):
+        out.append(f"  {section['summary']}")
+    checks = section.get("checks") if isinstance(section.get("checks"), dict) else {}
+    rows = [r for r in checks.get("failing") or [] if isinstance(r, dict)]
+    out.extend(_quality_row(r) for r in rows)
+    total = checks.get("failing_total")
+    more = (total if isinstance(total, int) else len(rows)) - len(rows)
+    if more > 0:
+        out.append(f"  (and {more} more failing rows that the report does not name)")
+    return out
+
 
 #: The facts one row prints, as ``(path, plain label, fenced)``, for a
 #: section whose rows nest what matters (WS-27bn R3b). A section with no
@@ -1700,16 +2745,38 @@ def _report_row(name: str, label_key: str, row: dict[str, Any]) -> str:
     return f"- {shown} · {facts}"
 
 
+def _section_extras(name: str, section: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """WS-27bn RA-6. The lines a section prints before its rows, and after.
+
+    The outlook prints the server's sentence first (§6.8 E5). Open work
+    prints "Needs an owner" first when it leads the open work (§6.8 B), and
+    after the people when it does not.
+    """
+    if name == "outlook":
+        summary = (section.get("velocity") or {}).get("summary")
+        return ([f"  {summary}"] if isinstance(summary, str) and summary else []), []
+    if name == "load":
+        owners = needs_owner_lines(section)
+        if (section.get("needs_owner") or {}).get("leads"):
+            return owners, []
+        return [], owners
+    return [], []
+
+
 def _report_section(name: str, section: dict[str, Any]) -> list[str]:
     """One report section as lines: its totals, then one line per row."""
     list_key, label_key, scalar_keys = _REPORT_SECTIONS.get(
         name,
         ("rows", "name", tuple(k for k, v in section.items() if not isinstance(v, (dict, list)))),
     )
+    # RA-6 fix round 1: a figure the server sent as null prints nothing. A
+    # converging forecast sends `converge_per_week: null`, and "to converge
+    # None" is a word the model must not repeat.
     totals = ", ".join(
-        f"{_REPORT_LABELS.get(f'{name}:{k}', k)} {v}"
+        f"{_REPORT_LABELS.get(f'{name}:{k}', k)}"
+        f" {_percent_words(v) if f'{name}:{k}' in _REPORT_PERCENT else v}"
         for k in scalar_keys
-        if (v := _dig(section, k)) is not _MISSING
+        if (v := _dig(section, k)) is not _MISSING and v is not None
     )
     out = [f"{name}:" + (f" {totals}" if totals else "")]
     if section.get("hr_visible") is False and name in _REPORT_HINTS:
@@ -1717,6 +2784,20 @@ def _report_section(name: str, section: dict[str, Any]) -> list[str]:
     if name in HIDDEN_LINE_SECTIONS and (line := hidden_people_line(section)):
         # WS-27bn R3d and R5a. The rows this reader cannot see.
         out.append(f"  {line}")
+    if name == "waiting":
+        # WS-27bn RA-3. Three lists, each with its own cap.
+        out.extend(_waiting_lines(section))
+        return out
+    if name == "agent_runs":
+        # WS-27bn RA-4. Two lists, each with its own cap.
+        out.extend(_agent_runs_lines(section))
+        return out
+    if name == "quality":
+        # WS-27bn RA-5. The summary, then the failing pull requests.
+        out.extend(_quality_lines(section))
+        return out
+    before, after = _section_extras(name, section)
+    out.extend(before)
     rows = section.get(list_key) if list_key else None
     rows = rows or []
     if not isinstance(rows, list):
@@ -1736,4 +2817,389 @@ def _report_section(name: str, section: dict[str, Any]) -> list[str]:
         out.append(_report_row(name, label_key, row))
     if len(rows) > 25:
         out.append(f"  (and {len(rows) - 25} more rows)")
+    out.extend(after)
     return out
+
+
+# ── The member's reminders (WS-66 RM-3, D114) ────────────────────────────────
+#
+# Spec: ``calendar_events_reminders.md`` §5.8. A reminder is a private nudge
+# at a time, not a task. The writes are in ``writes.py`` (class B) and in
+# ``guarded.py`` (the promote, class C). The time rules and the two gates live
+# here, because the read and the writes share them, and ``writes.py`` imports
+# this module.
+
+#: The route of the member's own reminders (``routes/projects/reminders.py``).
+REMINDERS = "/projects/my/reminders"
+#: Migration 307's state CHECK, in the order of §5.3. A copy: the skill
+#: cannot import gateway code. The route refuses any other value.
+REMINDER_STATES = ("scheduled", "due", "unconfirmed", "done", "dropped", "cancelled")
+#: The most rows one read of the route returns (``reminders.list_reminders``).
+REMINDER_PAGE_MAX = 500
+#: How far ahead a snooze may move a reminder (``reminders.SNOOZE_MAX``). A
+#: copy, checked before the card, so the member never approves a card that
+#: the route then refuses.
+SNOOZE_MAX = timedelta(days=366)
+#: A wall time with no offset: ``2026-10-31 09:00`` or ``2026-10-31T09:00``.
+#: The tool reads it in the member's own zone.
+LOCAL_TIME = re.compile(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?$")
+#: A day and the word morning: the start of the member's day on that date.
+MORNING = re.compile(r"^(\d{4}-\d{2}-\d{2})\s+morning$", re.IGNORECASE)
+#: The refusal when a time needs the member's zone and none is saved. The
+#: tool never guesses a zone (D114, the RM-3 audit).
+NO_ZONE = (
+    "No time zone is saved for you, so I cannot place a time that has no "
+    "offset. Open the Calendar or the Tasks app once, which saves the zone "
+    "of your browser. Or give the time with its offset, for example "
+    "2026-10-31T09:00:00+05:30."
+)
+#: What both gates tell the model. A task is a different object, so a refused
+#: reminder never turns into one by itself. The member chooses (owner, 2026-11-01).
+FALLBACK = (
+    "Say that plainly. Do not make a task in its place. "
+    "Make a task only when the member asks for one."
+)
+#: The flag ``CALENDAR_REMINDERS`` is off: every reminder route answers 404.
+REMINDERS_OFF = "Reminders are not on for this organization yet."
+#: A run with no card channel (WhatsApp) cannot ask the member, and a
+#: reminder act is not in ``whatsapp_acts.ALLOWED_ACTS`` until RM-9.
+REMINDERS_NO_CARD = "Reminders cannot be set or changed from this chat yet."
+#: The card line for a member whose saved zone is exactly UTC, the column
+#: default of ``user_settings.timezone``. It may be a choice or a default.
+UTC_NOTE = "Your saved time zone is UTC. If that is wrong, change it in Calendar settings."
+#: Product words for the link kinds of §5.1.
+SUBJECT_WORDS = {
+    "task": "task",
+    "email_thread": "email thread",
+    "crm_contact": "CRM contact",
+    "wa_chat": "WhatsApp chat",
+    "project": "project",
+}
+
+
+def for_the_model(text: str) -> str:
+    """A result line that the model reads and the member's card does not show.
+
+    The line starts with :data:`DATA_LEGEND`, and the Projects cards strip
+    every line that starts with the legend (``ProjectToolCards.withoutLegend``).
+    So guidance for the model never reaches the member's receipt.
+    """
+    return f"{DATA_LEGEND} For you, not the member: {' '.join(text.split())}"
+
+
+def gate_text(said: str) -> str:
+    """A gate's refusal: the member's sentence, then the fallback for the model.
+
+    The fallback names a tool, so it goes on the model's line
+    (:func:`for_the_model`) and never on the member's receipt.
+    """
+    return f"{said}\n{for_the_model(FALLBACK)}"
+
+
+def _valid_zone(name: Any) -> str | None:
+    """*name* when ``zoneinfo`` knows it as a zone, else ``None``."""
+    clean = str(name or "").strip()
+    if not clean:
+        return None
+    try:
+        ZoneInfo(clean)
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        # OSError: "America" is a directory of the zone database, not a zone.
+        return None
+    return clean
+
+
+class ReminderClock:
+    """The member's saved zone and the hour their day starts.
+
+    ``zone`` is ``None`` when no valid zone is saved. ``day_start`` is
+    ``None`` when the gateway does not send the hour (R6, during a deploy).
+    """
+
+    def __init__(self, zone: str | None, day_start: int | None) -> None:
+        self.zone = zone
+        self.day_start = day_start
+
+
+async def reminder_clock() -> ReminderClock:
+    """The member's zone and day start, from ``GET /projects/my/today``.
+
+    The zone is ``None`` when the read fails, when no zone is saved, or when
+    the saved zone is not valid. ``writes._member_clock`` falls back to UTC
+    there. A reminder must not, because a guessed zone fires at the wrong
+    minute and the member does not see the guess (D114). So each caller
+    refuses a wall time, or names UTC as UTC, when the zone is ``None``.
+
+    A refusal of the CLIENT itself (no acting member, ``status`` ``None``)
+    goes on up: no read happened, and the tool must stop, not guess.
+    """
+    try:
+        row = await get("/projects/my/today")
+    except GatewayRefusal as exc:
+        if exc.status is None:
+            raise
+        return ReminderClock(None, None)
+    if not isinstance(row, dict):
+        return ReminderClock(None, None)
+    hour = row.get("day_start_hour")
+    day_start = hour if isinstance(hour, int) and 0 <= hour <= 23 else None
+    if row.get("stored") is False or row.get("valid") is False:
+        return ReminderClock(None, day_start)
+    return ReminderClock(_valid_zone(row.get("timezone")), day_start)
+
+
+async def member_zone() -> str | None:
+    """The member's saved zone, or ``None`` (:func:`reminder_clock`)."""
+    return (await reminder_clock()).zone
+
+
+async def reminders_off() -> str:
+    """The refusal of :data:`REMINDERS_OFF` when the routes answer 404, else ``""``.
+
+    With ``CALENDAR_REMINDERS`` off, every route of the store answers 404
+    (``reminders._require_on``). The list route has no id in its path, so a
+    404 there means the flag, and nothing else. Each tool asks this before
+    its card, so no member approves a card that the route then refuses.
+    """
+    try:
+        await get(REMINDERS, {"limit": 1})
+    except GatewayRefusal as exc:
+        if exc.status == 404:
+            return gate_text(REMINDERS_OFF)
+        raise
+    return ""
+
+
+def no_card_channel(tool: str) -> str:
+    """The refusal of :data:`REMINDERS_NO_CARD` when this run cannot show *tool*'s card.
+
+    A WhatsApp run, or any run inside ``ask_tools.refuse_cards``, has nobody
+    who can see a card. There a card is denied, or parked when the tool is in
+    ``whatsapp_acts.ALLOWED_ACTS``. No reminder act is there until RM-9, so
+    the tool refuses before its card and says so. When RM-9 adds
+    the act, this check lets it through with no change here.
+    """
+    try:
+        from acb_skills.ask_tools import cards_refused
+        from acb_skills.whatsapp_acts import act_module
+        from acb_skills.whatsapp_ui import current_run
+    except Exception:  # pragma: no cover — platform package absent in isolation
+        return ""
+    if current_run() is None and not cards_refused():
+        return ""
+    if act_module(tool):
+        return ""
+    return gate_text(REMINDERS_NO_CARD)
+
+
+def _wall_time(text: str, zone: str) -> datetime | str:
+    """A wall time in *zone* as a real instant, or the refusal.
+
+    The instant goes through UTC and back, so a time in a gap of the clock
+    (02:30 on the morning the clock jumps to 03:00) becomes the real time
+    that the zone shows. The card and the receipt then name one time.
+    """
+    try:
+        local = datetime.fromisoformat(text.replace(" ", "T"))
+    except ValueError:
+        return f"{data(text)} is not a real date and time. Check the day and the hour (00:00 to 23:59)."
+    aware = local.replace(tzinfo=ZoneInfo(zone))
+    return aware.astimezone(UTC).astimezone(ZoneInfo(zone))
+
+
+def resolve_at(raw: str, zone: str | None, day_start: int | None = None) -> datetime | str:
+    """The instant of *raw*, or the refusal the model reads.
+
+    *raw* is ISO 8601 with an offset (kept as given), a wall time with no
+    offset, ``YYYY-MM-DD HH:MM``, read in *zone*, or ``YYYY-MM-DD morning``,
+    the hour the member's day starts on that date. With no *zone*, a wall
+    time is refused with :data:`NO_ZONE`. A date alone is refused: a reminder
+    has a time of day. A date or an hour that does not exist is refused,
+    never raised.
+    """
+    text = str(raw or "").strip()
+    morning = MORNING.match(text)
+    if morning:
+        if day_start is None:
+            return "I cannot read the hour your day starts. Name an hour, YYYY-MM-DD HH:MM."
+        text = f"{morning.group(1)} {day_start:02d}:00"
+    if LOCAL_TIME.match(text):
+        if zone is None:
+            return NO_ZONE
+        return _wall_time(text, zone)
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        parsed = None
+    if parsed is None or len(text) <= 10:
+        return (
+            f"at is a date and a time: YYYY-MM-DD HH:MM in your own zone, YYYY-MM-DD "
+            f"morning, or ISO 8601 with an offset. Not {data(text)}."
+        )
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return (
+            f"{data(text)} has seconds or parts that the wall-time form does not "
+            "take. Give YYYY-MM-DD HH:MM, or a time with its offset."
+        )
+    return parsed
+
+
+def _instant_of(value: Any) -> datetime | None:
+    """An ISO instant from the route, as an aware datetime, or ``None``."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        when = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return when if when.tzinfo is not None else when.replace(tzinfo=UTC)
+
+
+def when_text(value: Any, zone: str | None) -> str:
+    """``Fri 31 Oct, 09:00 IST``: an instant in *zone*, as a member reads it.
+
+    *value* is an aware datetime, or an ISO instant as the route sends it.
+    The instant goes through UTC first, so a datetime that carries the zone
+    already shows its real wall time. With no valid *zone* the text is in
+    UTC and says UTC. A zone whose short name is only an offset (``+04``)
+    shows its IANA name. The year shows when it is not this year. An empty
+    string for a value that is not a time.
+    """
+    instant = value if isinstance(value, datetime) else _instant_of(value)
+    if instant is None:
+        return ""
+    if instant.tzinfo is None:
+        instant = instant.replace(tzinfo=UTC)
+    name = _valid_zone(zone) or "UTC"
+    tz = ZoneInfo(name)
+    local = instant.astimezone(UTC).astimezone(tz)
+    short = local.tzname() or name
+    if short.startswith(("+", "-")) or short[0].isdigit():
+        short = name
+    year = f" {local.year}" if local.year != datetime.now(tz).year else ""
+    return f"{local:%a} {local.day} {local:%b}{year}, {local:%H:%M} {short}"
+
+
+def saved_when(row: dict[str, Any]) -> str:
+    """The time of a SAVED reminder, from the route's own answer.
+
+    The instant is the row's ``fire_at`` and the zone is the row's ``tz``. No
+    argument of the tool reaches this text, so the reply can only state what
+    the server stored (§5.8, "the reply quotes the saved row"). A row with no
+    ``tz`` reads in UTC, and says so.
+    """
+    shown = when_text(row.get("fire_at"), row.get("tz"))
+    if not shown:
+        return "no time in the server's answer"
+    if not _valid_zone(row.get("tz")):
+        return f"{shown} (no zone is saved with this reminder)"
+    return shown
+
+
+def reminder_rows(rows: list[dict[str, Any]]) -> list[str]:
+    """Each reminder as one line, then its ``reminder_id`` line.
+
+    A reminder is not a task, so the id line is ``reminder_id:``. A
+    ``full_id:`` line opens a task in the app's cards, and a reminder id
+    would open nothing.
+    """
+    out: list[str] = []
+    for row in rows:
+        facts = [saved_when(row), str(row.get("state") or "?"), str(row.get("kind") or "action")]
+        if row.get("important"):
+            facts.append("important")
+        if int(row.get("snoozes") or 0):
+            facts.append(f"moved by you {int(row['snoozes'])} times")
+        if row.get("subject_kind"):
+            word = SUBJECT_WORDS.get(str(row["subject_kind"]), str(row["subject_kind"]))
+            facts.append(f"linked to a {word} {data(row.get('subject_id'))}")
+        if row.get("resolution"):
+            facts.append(f"closed as {row['resolution']}")
+        if row.get("notes"):
+            facts.append(f"notes {data(str(row['notes'])[:200])}")
+        out.append(f"- {data(row.get('title'))} · " + " · ".join(facts))
+        out.append(f"  reminder_id: {row.get('id')}")
+    return out
+
+
+def _bound(value: str, what: str, zone: str | None, *, end: bool = False) -> str:
+    """A ``start`` or an ``end`` for the list route, ISO with an offset.
+
+    A date alone names a whole day in the member's zone: as a start, its
+    midnight, and as an end, the midnight that starts the NEXT day, so the
+    day itself is in the window (the ``calendar`` tool's rule). So start and
+    end of one date read that one day. A wall time is read in the zone. Both
+    need a saved zone. A time with an offset is kept.
+    """
+    raw = str(value or "").strip()
+    if len(raw) == 10:
+        try:
+            day = date.fromisoformat(raw)
+        except ValueError:
+            raise GatewayRefusal(f"{what} is a date, YYYY-MM-DD, or a time. Not {data(raw)}.") from None
+        if zone is None:
+            raise GatewayRefusal(NO_ZONE)
+        if end:
+            day += timedelta(days=1)
+        midnight = datetime(day.year, day.month, day.day, tzinfo=ZoneInfo(zone))
+        return midnight.astimezone(UTC).astimezone(ZoneInfo(zone)).isoformat()
+    resolved = resolve_at(raw, zone)
+    if isinstance(resolved, str):
+        raise GatewayRefusal(resolved.replace("at is", f"{what} is", 1))
+    return resolved.isoformat()
+
+
+def _clock_words(clock: ReminderClock) -> str:
+    """The first line of the list: the member's time now, zone and day start."""
+    now = datetime.now(UTC)
+    if clock.zone:
+        line = f"Your time now: {when_text(now, clock.zone)} ({clock.zone})."
+    else:
+        line = f"No time zone is saved for you. Times show in UTC. Now: {when_text(now, None)}."
+    if clock.day_start is not None:
+        line += f" Your day starts at {clock.day_start:02d}:00."
+    return line
+
+
+@_annotate(read_only=True, idempotent=True, open_world=False)
+async def list_reminders(state: str = "", start: str = "", end: str = "", limit: int = 50) -> str:
+    """The member's OWN reminders, by time. A reminder is a private nudge at
+    a time, not a task: nobody else sees it, and it is not on a task list.
+    With no state, the open ones (scheduled, due and unconfirmed). state may
+    be one of scheduled, due, unconfirmed, done, dropped or cancelled.
+    "unconfirmed" lists the ones Metorite stopped checking on. start and end
+    bound the time: a date YYYY-MM-DD (an end date includes that whole day),
+    a time YYYY-MM-DD HH:MM in the member's own zone, or ISO with an offset.
+    The first line states the member's own time now, the zone and the hour
+    their day starts: use it for "today", "tomorrow" and "at 5". Each row
+    ends with its reminder_id, which the other reminder tools take."""
+    params: dict[str, Any] = {"limit": max(1, min(int(limit or 50), REMINDER_PAGE_MAX))}
+    wanted = str(state or "").strip().lower()
+    if wanted and wanted != "open":
+        if wanted not in REMINDER_STATES:
+            return f"state is one of {', '.join(REMINDER_STATES)}, or empty for the open ones."
+        params["state"] = wanted
+    clock = await reminder_clock()
+    if str(start or "").strip():
+        params["start"] = _bound(start, "start", clock.zone)
+    if str(end or "").strip():
+        params["end"] = _bound(end, "end", clock.zone, end=True)
+    try:
+        payload = await get(REMINDERS, params) or {}
+    except GatewayRefusal as exc:
+        if exc.status == 404:
+            return gate_text(REMINDERS_OFF)
+        raise
+    rows = [r for r in (payload.get("rows") or []) if isinstance(r, dict)]
+    total = int(payload.get("total") or 0)
+    which = wanted if wanted and wanted != "open" else "open"
+    title = f"My reminders ({which})"
+    if not rows:
+        return "\n".join([legend(), _clock_words(clock), f"{title}: none."])
+    return "\n".join([
+        legend(),
+        _clock_words(clock),
+        f"{title} ({total} total, showing {len(rows)}):",
+        *reminder_rows(rows),
+    ])

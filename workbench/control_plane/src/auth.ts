@@ -128,6 +128,14 @@ if (process.env.AUTH_GOOGLE_ID) {
  */
 const AUTH_SECRET = process.env.AUTH_SECRET ?? "dev-local-insecure-change-me";
 
+/**
+ * The same secret, for the one other reader: the account switcher decodes the
+ * session tokens it holds in slot cookies (`lib/accountSlots.ts`, MT-1k slice
+ * A2). Exported rather than read again from the environment, so there is one
+ * answer to "what the secret is" (see the note above).
+ */
+export const SESSION_SECRET = AUTH_SECRET;
+
 // ── CP-2d · passwordless email OTP via Resend — ships DARK ──────────────────
 //
 // Registered ONLY when `isEmailOtpProviderReady` — env configured
@@ -439,6 +447,13 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     // The route is in `proxy.ts`'s PUBLIC_PAGES: it is reached by somebody who
     // is, by definition, not signed in yet.
     verifyRequest: "/signin/code",
+    // Task 1529. Without this, every error of kind "error" (`Verification`,
+    // `AccessDenied`, `Configuration`) renders `@auth/core`'s built-in page,
+    // and its "Sign in" button links to `/api/auth/error?error=Verification/signin`:
+    // a bare "Error" card with no way back. `/signin` shows our copy
+    // (`errorCopy.ts`) and sends a wrong code back to `/signin/code`.
+    // Fence: `signin.test.ts`.
+    error: "/signin",
   },
 });
 

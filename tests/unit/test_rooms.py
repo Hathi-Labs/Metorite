@@ -167,6 +167,78 @@ def test_a_failed_lookup_says_retry_rather_than_not_a_participant(
     assert "not a participant" not in message.lower()
 
 
+def _get_room_status(monkeypatch, loaded) -> tuple[int, str]:
+    """GET /room through the real handler, with ``_load_room`` stubbed."""
+    from acb_auth import UserContext, get_current_user
+    from acb_auth.roles import UserRole
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from gateway import rooms
+    from gateway.routes.rooms import get_room
+
+    def _load(session_id: str, email: str, organization_id: str | None):
+        if isinstance(loaded, Exception):
+            raise loaded
+        return loaded
+
+    monkeypatch.setattr(rooms, "_load_room", _load)
+    app = FastAPI()
+    app.get("/r/{session_id}")(get_room)
+    user = UserContext(email=_BOB, role=UserRole.EMPLOYEE, organization_id=_ORG)
+    app.dependency_overrides[get_current_user] = lambda: user
+    res = TestClient(app).get("/r/some-real-session")
+    return res.status_code, res.text
+
+
+def test_get_room_answers_503_not_404_when_the_lookup_fails(monkeypatch) -> None:
+    """An outage and a refusal never share an answer (PR #652 fix round 1).
+
+    A client that restored a chat id drops it on a 404. On 2026-09-20 the pool
+    ran out (EMAXCONNSESSION) 11 times in 6 hours. Each of those, answered 404,
+    would have dropped a member's OWN chat and opened a new one.
+    """
+    status, body = _get_room_status(monkeypatch, RuntimeError("EMAXCONNSESSION"))
+    assert status == 503
+    assert "try again" in body.lower()
+
+
+def test_get_room_still_answers_404_for_a_room_of_another_tenant(monkeypatch) -> None:
+    from gateway import rooms
+
+    status, body = _get_room_status(monkeypatch, rooms._ELSEWHERE)
+    assert status == 404
+    assert "not found" in body.lower()
+
+
+def test_a_send_refusal_is_503_in_an_outage_and_403_otherwise(monkeypatch) -> None:
+    from gateway import rooms
+
+    def _boom(*_a):
+        raise RuntimeError("pool")
+
+    monkeypatch.setattr(rooms, "_load_room", _boom)
+    assert rooms.resolve_room_access("s", _BOB, organization_id=_ORG).refusal_status == 503
+    monkeypatch.setattr(rooms, "_load_room", lambda *_a: rooms._ELSEWHERE)
+    assert rooms.resolve_room_access("s", _BOB, organization_id=_ORG).refusal_status == 403
+
+
+def test_no_chat_refusal_site_pins_403_on_a_room_answer() -> None:
+    """Every send, save and file refusal takes its status from the room."""
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parents[2] / "apps/services/gateway/gateway/routes"
+    for name in ("agent.py", "chat.py", "workspace.py"):
+        src = (root / name).read_text(encoding="utf-8")
+        pinned = re.findall(
+            r"status_code=(?:403|status\.HTTP_403_FORBIDDEN),\s*detail=room\.denied", src,
+        )
+        assert pinned == [], name
+    rooms_src = (root / "rooms.py").read_text(encoding="utf-8")
+    assert 'status_code=404, detail="Conversation not found")' in rooms_src
+    assert rooms_src.count("_refuse_unreadable(access)") == 9
+
+
 def test_a_session_with_no_row_is_still_the_callers_own(monkeypatch) -> None:
     """The case that must NOT be swept up by the fail-closed change.
 
@@ -399,11 +471,11 @@ def test_an_agent_turn_is_attributed_to_the_agent(clean) -> None:
 
     sid = _seed_session(_ALICE)
     # S14: the gateway mints the row, and the checkpoint then fills it.
-    _mint(sid, "a1", _ALICE, "agent-sales-assistant")
+    _mint(sid, "a1", _ALICE, "email-assistant")
     _upsert_messages(
         sid,
         [MessageRecord(id="a1", role="assistant", content="hi", timestamp=1001)],
-        actor_email=_ALICE, agent_name="agent-sales-assistant",
+        actor_email=_ALICE, agent_name="email-assistant",
         organization_id=_ORG,
     )
 
@@ -412,7 +484,7 @@ def test_an_agent_turn_is_attributed_to_the_agent(clean) -> None:
         "WHERE session_id = :i AND id = 'a1'", i=sid,
     )
     assert rows[0].author_kind == "agent"
-    assert rows[0].author_email == "agent-sales-assistant"
+    assert rows[0].author_email == "email-assistant"
 
 
 @_needs_db
@@ -454,7 +526,7 @@ def test_a_checkpoint_author_wins_over_the_room_agent(clean) -> None:
 
 
 def _addressed_turn(sid: str) -> None:
-    """An ``@sales`` turn: the checkpoint claims no author (S10 fix round 1),
+    """An ``@crm`` turn: the checkpoint claims no author (S10 fix round 1),
     and then the gateway's fold writes with the addressed agent."""
     from gateway.routes.chat import MessageRecord, _upsert_messages
 
@@ -473,7 +545,7 @@ def _addressed_turn(sid: str) -> None:
     _upsert_messages(
         sid,
         [MessageRecord(id="c2", role="assistant", content="final", timestamp=1005)],
-        actor_email=_ALICE, agent_name="sales-assistant", author_from_run=True,
+        actor_email=_ALICE, agent_name="crm-assistant", author_from_run=True,
         organization_id=_ORG,
     )
 
@@ -515,7 +587,7 @@ def test_an_addressed_turn_is_stamped_with_the_agent_that_ran(clean) -> None:
     sid = _seed_session(_ALICE)
     _addressed_turn(sid)
     row = _author(sid, "c2")
-    assert row.author_email == "sales-assistant"
+    assert row.author_email == "crm-assistant"
     assert row.author_kind == "agent"
     # An agent row still takes the fold's content (fix round 1 keeps it).
     assert _content(sid, "c2") == "final"
@@ -539,7 +611,7 @@ def test_a_client_save_after_the_fold_keeps_the_agent_that_ran(clean) -> None:
         actor_email=_ALICE, agent_name="orchestrator",
         organization_id=_ORG,
     )
-    assert _author(sid, "c2").author_email == "sales-assistant"
+    assert _author(sid, "c2").author_email == "crm-assistant"
 
 
 @_needs_db
@@ -559,7 +631,7 @@ def test_the_fold_never_rewrites_a_human_turn(clean) -> None:
     _upsert_messages(
         sid,
         [MessageRecord(id="h1", role="assistant", content="answer", timestamp=1008)],
-        actor_email=_ALICE, agent_name="sales-assistant", author_from_run=True,
+        actor_email=_ALICE, agent_name="crm-assistant", author_from_run=True,
         organization_id=_ORG,
     )
     row = _author(sid, "h1")
@@ -637,7 +709,7 @@ def test_the_fold_cannot_overwrite_a_members_turn(clean) -> None:
     _upsert_messages(
         sid,
         [MessageRecord(id="u1", role="assistant", content="forged", timestamp=2003)],
-        actor_email=_BOB, agent_name="sales-assistant", author_from_run=True,
+        actor_email=_BOB, agent_name="crm-assistant", author_from_run=True,
         organization_id=_ORG,
     )
     assert _content(sid, "u1") == "hello"
@@ -678,12 +750,12 @@ def test_an_agent_turn_still_updates_by_checkpoint_and_by_fold(clean) -> None:
     declined = _upsert_messages(
         sid,
         [MessageRecord(id="a9", role="assistant", content="done", timestamp=2007)],
-        actor_email=_ALICE, agent_name="sales-assistant", author_from_run=True,
+        actor_email=_ALICE, agent_name="crm-assistant", author_from_run=True,
         organization_id=_ORG,
     )
     assert declined == []
     assert _content(sid, "a9") == "done"
-    assert _author(sid, "a9").author_email == "sales-assistant"
+    assert _author(sid, "a9").author_email == "crm-assistant"
 
 
 def _legacy_row(sid: str, mid: str, role: str, content: str) -> None:
@@ -708,7 +780,7 @@ def test_a_legacy_human_turn_with_no_kind_is_protected(clean) -> None:
     _upsert_messages(
         sid,
         [MessageRecord(id="old-u", role="assistant", content="forged", timestamp=2102)],
-        actor_email=_BOB, agent_name="sales-assistant", author_from_run=True,
+        actor_email=_BOB, agent_name="crm-assistant", author_from_run=True,
         organization_id=_ORG,
     )
     assert _content(sid, "old-u") == "the old words"
@@ -725,12 +797,12 @@ def test_a_legacy_agent_turn_with_no_kind_takes_the_fold(clean) -> None:
     _upsert_messages(
         sid,
         [MessageRecord(id="old-a", role="assistant", content="final", timestamp=2103)],
-        actor_email=_ALICE, agent_name="sales-assistant", author_from_run=True,
+        actor_email=_ALICE, agent_name="crm-assistant", author_from_run=True,
         organization_id=_ORG,
     )
     assert _content(sid, "old-a") == "final"
     row = _author(sid, "old-a")
-    assert (row.author_kind, row.author_email) == ("agent", "sales-assistant")
+    assert (row.author_kind, row.author_email) == ("agent", "crm-assistant")
 
 
 @_needs_db
@@ -751,7 +823,7 @@ def test_the_fold_keeps_a_legacy_system_row(clean) -> None:
     declined = _upsert_messages(
         sid,
         [MessageRecord(id="old-s", role="assistant", content="final", timestamp=2104)],
-        actor_email=_ALICE, agent_name="sales-assistant", author_from_run=True,
+        actor_email=_ALICE, agent_name="crm-assistant", author_from_run=True,
         organization_id=_ORG,
     )
     assert declined == ["old-s"]
@@ -779,7 +851,7 @@ def _fold(sid: str, mid: str, starter: str, content: str) -> list[str]:
     return _upsert_messages(
         sid,
         [MessageRecord(id=mid, role="assistant", content=content, timestamp=3009)],
-        actor_email=starter, agent_name="sales-assistant", author_from_run=True,
+        actor_email=starter, agent_name="crm-assistant", author_from_run=True,
         organization_id=_ORG,
     )
 
@@ -893,7 +965,7 @@ def test_the_real_fold_logs_a_declined_write_and_returns_the_message(
 
     with structlog.testing.capture_logs() as caps:
         out = asyncio.run(chat_fold.persist_final_assistant_message(
-            sid, "r1", user_id=_BOB, agent_name="sales-assistant",
+            sid, "r1", user_id=_BOB, agent_name="crm-assistant",
             organization_id=_ORG,
         ))
     assert out == folded
@@ -905,7 +977,7 @@ def test_the_real_fold_logs_a_declined_write_and_returns_the_message(
     # Alice's own run folds through the same call.
     with structlog.testing.capture_logs() as caps:
         asyncio.run(chat_fold.persist_final_assistant_message(
-            sid, "r1", user_id=_ALICE, agent_name="sales-assistant",
+            sid, "r1", user_id=_ALICE, agent_name="crm-assistant",
             organization_id=_ORG,
         ))
     assert "chat_fold.persisted" in [c.get("event") for c in caps]
@@ -1013,7 +1085,7 @@ def test_a_run_with_no_message_id_cannot_be_preempted(clean) -> None:
     out = _save_as(sid, _BOB, [
         MessageRecord(id=guessed, role="assistant", content="forged",
                       timestamp=3013, author_kind="agent",
-                      author_email="sales-assistant"),
+                      author_email="crm-assistant"),
     ])
     assert out["unchanged"] == [guessed]
     assert not _rows(sid, guessed)
@@ -1025,7 +1097,7 @@ def test_a_run_with_no_message_id_cannot_be_preempted(clean) -> None:
     assert _fold(sid, mid, _ALICE, "the real reply") == []
     assert _content(sid, mid) == "the real reply"
     row = _author(sid, mid)
-    assert (row.author_kind, row.author_email) == ("agent", "sales-assistant")
+    assert (row.author_kind, row.author_email) == ("agent", "crm-assistant")
     assert _run_state(sid, mid).run_member_email == _ALICE.lower()
 
 
@@ -1152,7 +1224,7 @@ def test_the_fold_takes_and_seals_a_minted_row(clean) -> None:
     assert _fold(sid, "m1", _ALICE, "the final answer") == []
     row = _mint_state(sid, "m1")
     assert row.content == "the final answer"
-    assert row.author_email == "sales-assistant"
+    assert row.author_email == "crm-assistant"
     assert row.run_final_at is not None
 
 
@@ -1202,7 +1274,7 @@ def test_a_mint_on_an_existing_id_changes_nothing(clean) -> None:
     ])
     before = {mid: _mint_state(sid, mid) for mid in ("u1", "s1", "r1", "r2")}
     for mid in before:
-        _mint(sid, mid, _ALICE, "sales-assistant")
+        _mint(sid, mid, _ALICE, "crm-assistant")
     for mid, row in before.items():
         assert _mint_state(sid, mid) == row, mid
     assert before["r1"].content == "bob's"
@@ -1511,7 +1583,7 @@ def test_a_run_of_another_agent_adds_no_second_primary(clean) -> None:
         "INSERT INTO chat_session_agent (session_id, agent_name, role) "
         "VALUES (:i, 'orchestrator', 'primary')", i=sid,
     )
-    _mint(sid, "p1", _ALICE, "sales-assistant")
+    _mint(sid, "p1", _ALICE, "crm-assistant")
     assert _agents(sid) == {"orchestrator": "primary"}
 
 
@@ -1557,14 +1629,18 @@ def test_the_reply_sorts_after_its_prompt_when_the_browser_clock_is_fast(
     clean,
 ) -> None:
     """Fix round 1, P2. The prompt carries the browser clock T. The server
-    clock is two seconds behind, so the mint stamps less than T. The first
-    checkpoint arrives later and moves the time forward."""
+    clock is a minute behind, so the mint stamps less than T. The first
+    checkpoint arrives later and moves the time forward.
+
+    The gap was two seconds, and the mint reads the real clock after two
+    database writes. A stalled CI runner took longer than that, so the mint
+    stamped past T. A minute keeps the order whatever the runner does."""
     import time
 
     from gateway.routes.chat import MessageRecord, _get_messages
 
     sid = _seed_session(_ALICE, (_BOB, "member"))
-    t = int(time.time() * 1000) + 2000
+    t = int(time.time() * 1000) + 60_000
     _save_as(sid, _ALICE, [
         MessageRecord(id="q1", role="user", content="the prompt", timestamp=t),
     ])
@@ -1592,31 +1668,52 @@ def test_the_reply_sorts_after_its_prompt_when_the_browser_clock_is_fast(
 
 def test_a_slow_mint_does_not_hold_the_stream(monkeypatch) -> None:
     """Fix round 1, P3. The run waits ``_MINT_TIMEOUT_S`` at most, then logs
-    ``agent.mint_failed`` with the reason ``timeout`` and goes on."""
-    import asyncio
-    import time
+    ``agent.mint_failed`` with the reason ``timeout`` and goes on.
 
-    import structlog
+    An order, not a stopwatch (``test_no_new_clock_flakes``): the mint holds
+    until the test releases it, so the bounded call can only return by its
+    timeout. ``hang_s`` only stops a broken bound from hanging the run."""
+    import asyncio
+    import threading
+
     from gateway.routes import agent
 
-    def _slow(*_a, **_k):
-        time.sleep(1.5)
+    hang_s = 30.0
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
 
+    def _slow(*_a, **_k):
+        entered.set()
+        release.wait(hang_s)
+        finished.set()
+
+    # Record the module logger's calls. structlog.testing.capture_logs saw
+    # nothing once an earlier test had cached the logger, so the release
+    # gate (one process, every test) failed on 2026-10-19.
+    caps: list[dict] = []
+
+    class _Recorder:
+        def __getattr__(self, level):
+            return lambda event, **kw: caps.append({"event": event, "level": level, **kw})
+
+    monkeypatch.setattr(agent, "_log", _Recorder())
     monkeypatch.setattr(agent, "_mint_run_row", _slow)
     monkeypatch.setattr(agent, "_MINT_TIMEOUT_S", 0.1)
-    async def _timed() -> float:
-        # Timed inside the loop: asyncio.run waits for the worker thread at
-        # shutdown, and a live server loop does not.
-        start = time.monotonic()
-        await agent._mint_run_row_bounded(
-            "t1", "m1", member=_ALICE, agent_name="projects-assistant",
-            organization_id=_ORG,
-        )
-        return time.monotonic() - start
 
-    with structlog.testing.capture_logs() as caps:
-        elapsed = asyncio.run(_timed())
-    assert elapsed < 1.0
+    async def _bounded() -> bool:
+        try:
+            await agent._mint_run_row_bounded(
+                "t1", "m1", member=_ALICE, agent_name="projects-assistant",
+                organization_id=_ORG,
+            )
+            # Read inside the loop: asyncio.run waits for the worker thread
+            # at shutdown, and a live server loop does not.
+            return finished.is_set()
+        finally:
+            release.set()
+
+    mint_finished_first = asyncio.run(_bounded())
+    assert entered.is_set(), "the mint ran"
+    assert not mint_finished_first, "the run went on before the mint ended"
     failed = [c for c in caps if c.get("event") == "agent.mint_failed"]
     assert failed and failed[0].get("reason") == "timeout"
 
@@ -1784,7 +1881,7 @@ def test_a_turn_above_your_clearance_comes_back_as_a_stub(clean) -> None:
         reasoning = "checked Zoho"
         agent_state = None
         custom_events: list = []
-        author_email, author_kind = "agent-sales-assistant", "agent"
+        author_email, author_kind = "email-assistant", "agent"
         authority = {"members": [_ALICE], "caps": ["integrations:use:zoho-crm"]}
 
     # Alice was in the room when it ran — she has already seen it.
@@ -1886,15 +1983,26 @@ def test_no_chat_or_room_path_opens_an_unbound_session() -> None:
     half."""
     import inspect
 
+    # WS-43t2 (maf_coding_engine.md §15.9.3): `native_session_store` is the
+    # one module that touches maf_agent_session. Its tenant comes from the run
+    # binding, as an argument, because tenant_session is sync and takes no
+    # ambient tenant.
     from acb_memory import blob_store
     from gateway import chat_fold, rooms, run_trace
     from gateway.routes import agent, chat
     from gateway.routes import rooms as room_routes
+    from orchestrator import native_session_store
 
-    for module in (chat, rooms, room_routes, run_trace, blob_store, chat_fold):
+    for module in (chat, rooms, room_routes, run_trace, blob_store, chat_fold,
+                   native_session_store):
         src = inspect.getsource(module)
         assert "import get_session" not in src, module.__name__
         assert "with get_session()" not in src, module.__name__
+    for fn in (native_session_store.read_state, native_session_store.write_row):
+        src = inspect.getsource(fn)
+        assert "with tenant_session(organization_id) as s:" in src, fn.__name__
+        param = inspect.signature(fn).parameters["organization_id"]
+        assert param.default is inspect.Parameter.empty, fn.__name__
     for fn in (agent._room_agents, agent._resolve_agent_for_run,
                agent._mint_run_row, agent._resolve_room):
         src = inspect.getsource(fn)

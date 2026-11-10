@@ -99,6 +99,29 @@ Set at minimum:
 
 Then edit `deploy/hostinger/caddy/Caddyfile` and replace the placeholder hostnames with yours.
 
+### Rotate `GATEWAY_SESSION_SECRET`
+
+A skill folder records its author as an HMAC under this secret (spec
+`maf_coding_engine.md` §16.3). A new secret changes every member id, so each
+skill folder then belongs to no member, and its name stays taken. Clear the
+skills as part of the rotation:
+
+1. Set the new value in `/opt/acb/app/.env`.
+2. Delete `agent-data/skills/*` in EVERY tenant dir, for every shared agent:
+   `<agents_clone_dir>/state/<agent>/o_*/agent-data/skills/*`. Do not stop at
+   the dirs that `MAF_CODING_SCOPE` covers: the gateway write route records an
+   author in any shared agent's tenant dir.
+3. Delete the blob-store rows of the same paths, or the next rehydrate
+   restores them. Do it in `agent_blob` and in `agent_file_history`, with
+   `instance LIKE 'o:%' AND path LIKE 'agent-data/skills/%'`. This is the same
+   set as step 2: every agent, every tenant. Run it as the owner role, after a
+   backup.
+4. Restart `acb-gateway`. Each member makes their skills again.
+
+The secret also signs member proofs and the email connect state. Read risk
+R-1 of `email_app_master_plan.md` §10.4.1 ("The state and the webhook signature
+use `gateway_session_secret`") before a rotation.
+
 ## Memory system (Mem0 + Graphiti)
 
 Metorite has two memory layers that persist across conversations:
@@ -108,8 +131,36 @@ Metorite has two memory layers that persist across conversations:
 | **Mem0** (episodic) | Postgres + pgvector | `MEM0_ENABLED=true` | Per-user facts extracted from conversations |
 | **Graphiti** (knowledge graph) | Neo4j | `GRAPHITI_ENABLED=true` | Time-stamped entity relationships and timelines |
 
-Both are enabled by default in the deploy scripts (`--profile core --profile memory`).
-Set the env vars in `/opt/acb/app/.env`:
+⚠️ The deploy starts `--profile core` only, so Neo4j does not run. WS-49 BH-8
+took the memory profile out of `acb.service`, because Neo4j answered on the
+public internet with the old compose default password. Its ports now bind to
+`127.0.0.1`, so use an SSH tunnel for the browser.
+
+**What the compose guard checks, and what it does not check.** The compose
+file has no default password. Its entrypoint guard stops the container when
+`NEO4J_PASSWORD` is empty, `neo4j` or `neo4j_dev_change_me`. The guard reads
+only the env. Neo4j sets the password from the env on the FIRST start of an
+empty data volume only (`set-initial-password`). After that, Neo4j keeps the
+password that the volume stores, whatever the env says. So a volume that
+started once with the old default keeps the old default.
+
+**The 2026-10-08 removal.** On the box, the coordinator archived the Neo4j
+volume to `/opt/acb/backups/neo4j-volume-20261008T172504Z.tar.zst` (root,
+0600) at 17:25 UTC. Then the coordinator removed the `acb-neo4j` container and
+the `acb_acb-neo4j-data` and `acb_acb-neo4j-logs` volumes. No Neo4j container
+and no Neo4j volume remain on the box.
+
+**Before you turn Neo4j on again, do these steps in this order:**
+
+1. Make sure that no old volume remains. Run
+   `docker volume ls -q | grep acb_acb-neo4j`. Expect no output.
+2. If a volume remains, remove it with the container, or change the password
+   in the running database. To remove it, run `docker rm -f acb-neo4j`, then
+   `docker volume rm acb_acb-neo4j-data acb_acb-neo4j-logs`. To change it, run
+   `cypher-shell -u neo4j -p '<old>' -d system "ALTER CURRENT USER SET PASSWORD FROM '<old>' TO '<new>'"`
+   inside the container. Then put the new value in `NEO4J_PASSWORD`.
+3. Set `NEO4J_PASSWORD` through `scripts/secrets.sh`, never by hand.
+4. Set the env vars in `/opt/acb/app/.env`:
 
 ```bash
 MEM0_ENABLED=true

@@ -105,7 +105,8 @@ describe("the words", () => {
   });
 
   it("names people by name, and by address when there is no name", () => {
-    expect(rowPeople(late)).toBe("Hal, gone@example.test");
+    // No name on file reads as the left half of the address (owner, 2026-10-10).
+    expect(rowPeople(late)).toBe("Hal, gone");
     expect(rowPeople(order)).toBeNull();
   });
 

@@ -1,0 +1,338 @@
+/**
+ * The needs feed in the browser (`navigation_shell.md` §7.2, NS-3).
+ *
+ * Three claims:
+ *
+ *   1. A feed with a missing or odd field reads as empty, never as a throw.
+ *   2. Each one-click act runs through its OWNING app's code. A done is the
+ *      My Tasks store's gesture (`markDoneFromHome`), so the subtask question
+ *      and the store's Undo come with it. A read goes through the Projects
+ *      bell's route. The shell adds no write route.
+ *   3. The feed's key is in the Projects cache family, so each Projects
+ *      write makes it read again.
+ */
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const markDoneFromHome = vi.fn(async (id: string) => (id === "parent" ? "kept" : "done"));
+vi.mock("@/app/tasks/lib/completeFromHome", () => ({
+  markDoneFromHome: (id: string) => markDoneFromHome(id),
+}));
+
+import { PROJECTS_CACHE } from "@/app/projects/lib/api";
+
+import {
+  CARRIER_WAIT_MS,
+  KIND_ORDER,
+  NEEDS_APP_HREF,
+  NEEDS_CACHE,
+  NEEDS_SOURCE_APP,
+  carryNeeds,
+  countsByApp,
+  fetchNeeds,
+  floorApps,
+  needsByHref,
+  needsKey,
+  readFeed,
+  runAct,
+  type NeedsFeed,
+  type NeedsItem,
+} from "./needs";
+
+function rowLog() {
+  const log: string[] = [];
+  return {
+    log,
+    row: { hide: () => log.push("hide"), show: () => log.push("show"), fail: (m: string) => log.push(`fail:${m}`) },
+  };
+}
+
+interface Call {
+  method: string;
+  url: string;
+  body: unknown;
+}
+
+function stub(reply: unknown): { calls: Call[] } {
+  const calls: Call[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({
+        method: (init?.method ?? "GET").toUpperCase(),
+        url: String(input),
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+      return new Response(JSON.stringify(reply), { status: 200 });
+    }),
+  );
+  return { calls };
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  markDoneFromHome.mockClear();
+});
+
+const item = (extra: Partial<NeedsItem>): NeedsItem => ({
+  id: "tasks:t1",
+  app: "tasks",
+  kind: "overdue",
+  title: "Ship it",
+  detail: null,
+  href: "/projects?task=t1",
+  at: null,
+  act: "done",
+  act_ref: "t1",
+  ...extra,
+});
+
+describe("readFeed", () => {
+  it("reads a missing field as empty", () => {
+    expect(readFeed(undefined)).toEqual({ count: 0, total: 0, items: [], sources: {}, totals: {}, capped: [] });
+    expect(readFeed({ items: "nope" })).toEqual({ count: 0, total: 0, items: [], sources: {}, totals: {}, capped: [] });
+  });
+
+  it("drops a row it cannot draw, and keeps the rest", () => {
+    const feed = readFeed({
+      count: 2,
+      items: [item({}), { id: "x", kind: "something_new", title: "?", href: "/" }],
+      sources: { tasks: "ok" },
+    });
+    expect(feed.items.map((i) => i.id)).toEqual(["tasks:t1"]);
+    expect(feed.count).toBe(2);
+    expect(feed.sources).toEqual({ tasks: "ok" });
+  });
+
+  it("reads `total`, the rows before the feed's cut, and falls back to `count`", () => {
+    // NS-6: the bell's badge reads `total`, so a feed cut to 30 still says 47.
+    expect(readFeed({ count: 1, total: 47, items: [item({})] }).total).toBe(47);
+    // An older gateway sends no `total`.
+    expect(readFeed({ count: 1, items: [item({})] }).total).toBe(1);
+    // Never less than the rows sent.
+    expect(readFeed({ count: 3, total: 1, items: [item({})] }).total).toBe(3);
+  });
+
+  it("keeps an approval row, the kind slice C adds", () => {
+    const approval = item({
+      id: "approvals:pa1",
+      app: "approvals",
+      kind: "approval",
+      href: "/approvals",
+      act: null,
+      act_ref: null,
+    });
+    const feed = readFeed({ count: 1, items: [approval], sources: { approvals: "ok" } });
+    expect(feed.items).toEqual([approval]);
+    expect(feed.sources).toEqual({ approvals: "ok" });
+  });
+
+  it("puts approvals right after the overdue rows", () => {
+    expect(KIND_ORDER.slice(2, 7)).toEqual(["overdue", "approval", "due_today", "notification", "needs_reply"]);
+  });
+
+  // WS-66 RM-2b. Mutation: take a reminder kind out of KIND_ORDER and the bell
+  // row below is dropped by `isItem`, so this fails.
+  it("puts the fired reminder kinds first, the unconfirmed last, and keeps a reminder row", () => {
+    expect(KIND_ORDER.slice(0, 2)).toEqual(["reminder_due", "reminder_check"]);
+    expect(KIND_ORDER.at(-1)).toBe("reminder_unconfirmed");
+    const due = item({
+      id: "reminders:r1",
+      app: "calendar",
+      kind: "reminder_due",
+      href: "/chat?do=new-chat&reminder=r1",
+      act: null,
+      act_ref: null,
+    });
+    const feed = readFeed({ count: 1, items: [due], sources: { reminders: "ok" }, totals: { reminders: 1 } });
+    expect(feed.items).toEqual([due]);
+    expect(NEEDS_APP_HREF.calendar).toBe("/calendar");
+  });
+
+  // Owner, 2026-11-03: the reminders that need the member count on the
+  // Calendar row. Mutation: hold `reminders` out of `countsByApp` again, and
+  // the first two assertions fail.
+  it("counts the reminders that need the member on the Calendar row", () => {
+    const due = item({ id: "reminders:r1", app: "calendar", kind: "reminder_due", act: null, act_ref: null });
+    const feed = readFeed({ count: 1, items: [due], sources: { reminders: "ok" }, totals: { reminders: 4 } });
+    expect(countsByApp(feed, feed.items, false)).toEqual({ calendar: 4 });
+    expect(needsByHref(countsByApp(feed, feed.items, false))).toEqual({ "/calendar": 4 });
+  });
+
+  it("marks a capped reminders count as a floor, and a failed source as no count", () => {
+    const due = item({ id: "reminders:r1", app: "calendar", kind: "reminder_due", act: null, act_ref: null });
+    const capped = readFeed({ count: 1, items: [due], sources: { reminders: "ok" }, totals: { reminders: 15 }, capped: ["reminders"] });
+    expect([...floorApps(capped, false)]).toEqual(["calendar"]);
+    const failed = readFeed({ count: 0, items: [], sources: { reminders: "failed" }, totals: {} });
+    expect(countsByApp(failed, failed.items, false)).toEqual({});
+    expect(floorApps(failed, false).size).toBe(0);
+  });
+
+  it("maps every source id to its app in ONE place, and the sidebar still counts by source", () => {
+    expect(NEEDS_SOURCE_APP.reminders).toBe("calendar");
+    const row = item({});
+    const feed = readFeed({ count: 1, items: [row], sources: { tasks: "ok", reminders: "failed" }, totals: { tasks: 3 } });
+    expect(countsByApp(feed, feed.items, false)).toEqual({ tasks: 3 });
+  });
+});
+
+describe("runAct goes through the owning app", () => {
+  it("hands a done to the My Tasks store's own gesture, and writes nothing itself", async () => {
+    const { calls } = stub({});
+    const r = rowLog();
+    expect(await runAct(item({}), r.row)).toBe("done");
+    expect(markDoneFromHome).toHaveBeenCalledWith("t1");
+    expect(calls).toEqual([]);
+  });
+
+  it("passes on that the row was KEPT, when the store asked and nothing was done", async () => {
+    stub({});
+    expect(await runAct(item({ id: "tasks:parent", act_ref: "parent" }), rowLog().row)).toBe("kept");
+  });
+
+  it("marks a notification read through the Projects bell's route, and the row leaves", async () => {
+    const { calls } = stub({ marked: 1 });
+    const r = rowLog();
+    const out = await runAct(
+      item({ id: "projects:n1", app: "projects", kind: "notification", act: "read", act_ref: "n1" }),
+      r.row,
+    );
+    expect(calls).toEqual([{ method: "POST", url: "/api/projects/notifications/read", body: { ids: ["n1"] } }]);
+    expect(out).toBe("done");
+    expect(r.log).toEqual(["hide"]);
+    expect(markDoneFromHome).not.toHaveBeenCalled();
+  });
+
+  it("trusts act_refs only as a non-empty list of non-empty strings, else posts [act_ref]", async () => {
+    // Fix round 2, F2. Each odd shape falls back to the row's own ref.
+    const odd: unknown[] = [[], ["", "n1"], ["n2", 5], "n2", null, [null]];
+    for (const refs of odd) {
+      const { calls } = stub({ marked: 1 });
+      const row = item({
+        id: "projects:n9",
+        app: "projects",
+        kind: "notification",
+        act: "read",
+        act_ref: "n9",
+        act_refs: refs as string[],
+      });
+      expect(await runAct(row, rowLog().row), JSON.stringify(refs)).toBe("done");
+      expect(calls.map((c) => c.body), JSON.stringify(refs)).toEqual([{ ids: ["n9"] }]);
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("marks each note of a feed card's merged read in one post (my_day_feed.md §14.1a)", async () => {
+    const { calls } = stub({ marked: 2 });
+    const out = await runAct(
+      item({ id: "projects:n2", app: "projects", kind: "notification", act: "read", act_ref: "n2", act_refs: ["n2", "n1"] }),
+      rowLog().row,
+    );
+    expect(out).toBe("done");
+    expect(calls).toEqual([{ method: "POST", url: "/api/projects/notifications/read", body: { ids: ["n2", "n1"] } }]);
+  });
+
+  it("brings a read row back with an error when the bell's route fails", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 500 })));
+    const r = rowLog();
+    const out = await runAct(
+      item({ id: "projects:n1", app: "projects", kind: "notification", act: "read", act_ref: "n1" }),
+      r.row,
+    );
+    expect(out).toBe("failed");
+    expect(r.log).toEqual(["hide", "fail:Could not mark it read. Try again."]);
+  });
+
+  it("never approves from My Day: an approval row runs nothing", async () => {
+    const { calls } = stub({});
+    const r = rowLog();
+    const approval = item({ id: "approvals:pa1", app: "approvals", kind: "approval", act: null, act_ref: null });
+    expect(await runAct(approval, r.row)).toBeNull();
+    expect(calls).toEqual([]);
+    expect(r.log).toEqual([]);
+  });
+
+  it("does nothing for a row with no act", async () => {
+    const { calls } = stub({});
+    const r = rowLog();
+    expect(await runAct(item({ act: null, act_ref: null }), r.row)).toBeNull();
+    expect(calls).toEqual([]);
+    expect(r.log).toEqual([]);
+    expect(markDoneFromHome).not.toHaveBeenCalled();
+  });
+
+  it("never reads the notification list, which is the bell's (seams.test.ts)", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(new URL("./needs.ts", import.meta.url), "utf8");
+    expect(src).not.toMatch(/notificationsApi\.list\(/);
+    // And no second completion path: no lens write is named here.
+    expect(src).not.toMatch(/lensCompleteItem|lensPatchItem|lensSetStatusId/);
+  });
+});
+
+describe("the feed's cache key", () => {
+  it("lives in the Projects family, so a Projects write reads it again", () => {
+    expect(NEEDS_CACHE.startsWith(PROJECTS_CACHE)).toBe(true);
+    expect(needsKey().startsWith(PROJECTS_CACHE)).toBe(true);
+  });
+});
+
+/**
+ * The carrier's limit (`my_day_feed.md` MD-2b, the third follow-up of MD-1b).
+ * The feed route may take 8 seconds. A needs read waits 4 seconds at most on
+ * the feed, then reads the needs route, so the bell never waits on a slow feed.
+ *
+ * Mutation, run by hand (2026-10-14): race the carrier with no limit, and
+ * the first test fails.
+ */
+describe("the carrier's limit (MD-2b)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("reads the needs route after 4 seconds on a feed that does not answer, and not before", async () => {
+    vi.useFakeTimers();
+    const { calls } = stub({ count: 0, items: [], sources: {} });
+    const release = carryNeeds(() => new Promise<NeedsFeed | null>(() => {}));
+    try {
+      const read = fetchNeeds();
+      await vi.advanceTimersByTimeAsync(CARRIER_WAIT_MS - 1);
+      expect(calls).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(read).resolves.toMatchObject({ count: 0 });
+      expect(calls.map((c) => c.url)).toEqual(["/api/shell/needs?limit=30"]);
+    } finally {
+      release();
+    }
+    expect(CARRIER_WAIT_MS).toBe(4_000);
+  });
+
+  it("takes the carried view when the feed answers in time, with no second request", async () => {
+    vi.useFakeTimers();
+    const { calls } = stub({ count: 0, items: [], sources: {} });
+    const view = readFeed({ count: 1, items: [item({})], sources: { tasks: "ok" } });
+    const release = carryNeeds(
+      () => new Promise<NeedsFeed | null>((resolve) => setTimeout(() => resolve(view), CARRIER_WAIT_MS - 500)),
+    );
+    try {
+      const read = fetchNeeds();
+      await vi.advanceTimersByTimeAsync(CARRIER_WAIT_MS);
+      await expect(read).resolves.toBe(view);
+    } finally {
+      release();
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it("reads the needs route at once when the carrier throws", async () => {
+    const { calls } = stub({ count: 0, items: [], sources: {} });
+    const release = carryNeeds(() => {
+      throw new Error("no feed");
+    });
+    try {
+      await fetchNeeds();
+    } finally {
+      release();
+    }
+    expect(calls.map((c) => c.url)).toEqual(["/api/shell/needs?limit=30"]);
+  });
+});

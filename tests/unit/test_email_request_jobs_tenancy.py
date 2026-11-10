@@ -94,11 +94,16 @@ from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
 _EMAIL = (Path(__file__).resolve().parents[2]
           / "apps/services/gateway/gateway/routes/email")
 
-#: The one unbound read that stays in ``routes/email``: the tenant-discovery
-#: read of ``mailbox_owner`` (``test_db_engine_seam.H2_TENANT_DISCOVERY_SITES``).
-#: Keyed by (file, function), with the count of its sites.
+#: The unbound reads that stay in ``routes/email``, each a tenant-discovery
+#: read of ``test_db_engine_seam.H2_TENANT_DISCOVERY_SITES``: ``mailbox_owner``,
+#: and the org list of the purge loop (WS-17 EM-G11f2), which reads only the
+#: RLS-EXEMPT ``organization`` table. Keyed by (file, function), with the count.
 ALLOWED_UNBOUND: dict[tuple[str, str], int] = {
     ("scheduler_hooks.py", "mailbox_owner"): 1,
+    ("memory_purge.py", "_organization_ids"): 1,
+    # WS-17 EM-G11f1c: the one session of the RLS-EXEMPT
+    # `email_detached_purges`, whose tenant no longer exists.
+    ("memory_purge.py", "_detached_session"): 1,
 }
 
 #: The ten jobs of EM-T4a-0, keyed by file. They held twelve sites:
@@ -404,11 +409,13 @@ def test_the_compose_stream_task_keeps_the_organization_of_its_request(
     monkeypatch.setattr(drafting_mod, "_assert_account_owner", AsyncMock())
     monkeypatch.setattr(drafting_mod, "_load_assistant_about",
                         AsyncMock(return_value=("", "")))
-    monkeypatch.setattr(drafting_mod, "_account_models", AsyncMock(
-        return_value={"rule": "tier-fast", "draft": "tier-powerful",
-                      "compose": "tier-fast", "chat": "tier-powerful"}))
     monkeypatch.setattr(drafting_mod, "_llm_compose_assist",
                         AsyncMock(return_value="Hello Priya"))
+    # New mail names the sending mailbox (EM-T8e-1). The block yields a bare
+    # AsyncMock, which answers no read, so the identity read is a double too.
+    from gateway.routes.email.automation.identity import SelfIdentity
+    monkeypatch.setattr(drafting_mod, "resolve_self",
+                        AsyncMock(return_value=SelfIdentity()))
 
     app = FastAPI()
     app.add_middleware(TenantScopeMiddleware)
@@ -440,6 +447,15 @@ def test_the_compose_stream_task_keeps_the_organization_of_its_request(
 
 class _JobProvider(_FakeProvider):
     """The EM-T1b-2 fake, plus the calls of the request jobs."""
+
+    async def get_message_body(self, pmid):
+        """The body the provider holds now (``live_bodies``). The draft
+        cleanup reads it before it trashes (WS-17 EM-G11c2 fix round 1)."""
+        from types import SimpleNamespace
+
+        self.calls.append(f"body:{pmid}")
+        live = getattr(self, "live_bodies", {})
+        return SimpleNamespace(body_text=live.get(pmid, ""), body_html=None)
 
     async def trash_message(self, pmid):
         self.calls.append(f"trash:{pmid}")
@@ -717,7 +733,9 @@ class TestTheRequestJobsWriteTheirOwnTenant:
         assert (job["total"], job["remaining"]) == (1, 1), (
             f"the backlog count read {job} — the count block ran unbound"
         )
-        classify.assert_awaited_once_with(acc)
+        # EM-G11c2 fix round 1: the member started it, so Auto-run does not
+        # gate it.
+        classify.assert_awaited_once_with(acc, obey_auto_run=False)
         left = _rows(p.admin_engine,
                      "SELECT thread_id, status FROM email_thread_status "
                      f"{_BY_ACCOUNT}", {"a": acc})
@@ -767,7 +785,11 @@ class TestTheRequestJobsWriteTheirOwnTenant:
     ):
         """Learn: the draft DELETE is block one (the former first commit) and
         the learned pattern is the write after it. Cleanup: the provider
-        trashes the draft and its mirror row goes, in one block."""
+        trashes the draft and its mirror row goes, in one block.
+
+        WS-17 EM-G11c2 (G7): the cleanup trashes only the unchanged AI draft,
+        and it runs BEFORE the learn, as both send routes order it. The draft
+        here holds the stored AI text."""
         import acb_memory
 
         _assert_non_priv(app_engine)
@@ -783,6 +805,10 @@ class TestTheRequestJobsWriteTheirOwnTenant:
                 "draft_text, organization_id) VALUES (CAST(:a AS uuid), :t, "
                 "'The draft the assistant wrote.', CAST(:o AS uuid))",
                 {"a": acc, "t": tid, "o": p.org_b})
+        _insert(p.admin_engine,
+                "UPDATE email_messages SET body_text = "
+                "'The draft the assistant wrote.' WHERE id = CAST(:m AS uuid)",
+                {"m": draft_mid})
         monkeypatch.setattr(drafting_mod, "_llm_extract_reply_memories",
                             AsyncMock(return_value=[{
                                 "content": "Sign off with the first name.",
@@ -790,12 +816,16 @@ class TestTheRequestJobsWriteTheirOwnTenant:
                                 "topic": ""}]))
         monkeypatch.setattr(acb_memory, "add_memories_background", AsyncMock())
         provider = _JobProvider()
+        draft_pmid = _scalar(p.admin_engine,
+                             "SELECT provider_message_id FROM email_messages "
+                             "WHERE id = CAST(:m AS uuid)", {"m": draft_mid})
+        provider.live_bodies = {draft_pmid: "The draft the assistant wrote."}
         _patch_providers(monkeypatch, provider)
         async with tenant_engine_scope(_app_dsn(p)):
             with _bound(p.org_b):
+                await drafting_mod._cleanup_thread_drafts(acc, tid)
                 await drafting_mod._learn_from_sent(
                     acc, tid, "A reply that the member rewrote in full.")
-                await drafting_mod._cleanup_thread_drafts(acc, tid)
 
         assert _scalar(p.admin_engine,
                        f"SELECT count(*) FROM email_ai_drafts {_BY_ACCOUNT}",

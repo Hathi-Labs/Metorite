@@ -55,6 +55,7 @@ from gateway.routes.projects.core import (
     record_activity,
     record_field_change,
     require_row,
+    status_order_sql,
     update_row,
 )
 from gateway.routes.projects.core import (
@@ -106,7 +107,7 @@ async def resolve_status(db: Any, root_project_id: str, wanted: str) -> Any:
     rows = (await db.execute(
         text(
             "SELECT * FROM pm_task_statuses WHERE project_id = CAST(:pid AS uuid) "
-            "ORDER BY position"
+            f"ORDER BY {status_order_sql()}"
         ),
         {"pid": root_project_id},
     )).fetchall()
@@ -330,10 +331,10 @@ async def run_lifecycle_sweep(
     ``SELECT * FROM pm_projects WHERE parent_project_id IS NULL`` with no
     predicate at all, which is one schedule archiving and closing **every
     customer's** work. A blank tenant raises :class:`TenantUnbound` rather than
-    sweeping wider; the caller
-    (``routes/workflows/service._pm_lifecycle_sweeper``) resolves it from the
-    workflow owner's ``app_user`` row — a stored fact, never request input
-    (R11) — and binds it on the session it hands in.
+    sweeping wider. The caller
+    (``routes/workflows/service._pm_lifecycle_sweeper``) takes it from the run
+    — a stored fact, never request input (R11) — and binds it on the session
+    it hands in.
 
     For each ROOT project **in that organization** with a policy enabled (both
     columns NULL — the default — means the project is never touched):
@@ -411,7 +412,7 @@ async def run_lifecycle_sweep(
         statuses = (await db.execute(
             text(
                 "SELECT * FROM pm_task_statuses "
-                "WHERE project_id = CAST(:pid AS uuid) ORDER BY position, name"
+                f"WHERE project_id = CAST(:pid AS uuid) ORDER BY {status_order_sql()}"
             ),
             {"pid": str(project.id)},
         )).fetchall()

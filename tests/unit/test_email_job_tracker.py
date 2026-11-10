@@ -73,3 +73,16 @@ def test_missing_account_is_safe() -> None:
     assert t.guarded("nope", 1) is None
     t.update("nope", 1, x=1)   # no-op, no raise
     t.finish("nope", 1)        # no-op, no raise
+
+
+def test_one_mailbox_id_in_any_form_finds_one_row() -> None:
+    """A start route keys by the raw body id. A status route reads the
+    canonical id of ``account_ref``. Both forms reach the same row."""
+    aid = "3f1c2d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
+    t = JobTracker()
+    tok = t.start(aid.upper(), status="running")
+    for form in (aid, "{" + aid + "}", aid.replace("-", ""), f" {aid} "):
+        assert t.get(form) == {"token": tok, "status": "running"}, form
+        assert t.is_running(form) is True
+    t.finish(aid, tok, status="done")
+    assert t.get(aid.upper())["status"] == "done"

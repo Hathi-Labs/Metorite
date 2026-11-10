@@ -29,6 +29,8 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
 
+from tests.unit._card_words import assert_card_words
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 AGENT_DIR = REPO_ROOT / "apps" / "agents" / "agent-crm"
 
@@ -129,6 +131,8 @@ def _set_confirmation(monkeypatch: Any, answer: bool) -> list[dict]:
     asked: list[dict] = []
 
     async def _stub(**kwargs: Any) -> bool:
+        # Every card a test draws is checked for the member's words.
+        assert_card_words(kwargs)
         asked.append(dict(kwargs))
         return answer
 

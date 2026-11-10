@@ -196,9 +196,18 @@ async def test_recurrence_still_spawns_through_the_cascade(subtree, monkeypatch)
 # ── The complete door ───────────────────────────────────────────────────────
 
 
+class _EmptyDb:
+    """Answers the batched reads that `attach_agent_state` runs even with the
+    runs flag off (the EA-13d PR chip, the EA-13e agent_worked) with no rows.
+    Every other call is faked by the fixtures."""
+
+    async def execute(self, *_a, **_k):
+        return SimpleNamespace(fetchall=lambda: [])
+
+
 class _Session:
     async def __aenter__(self):
-        return object()
+        return _EmptyDb()
 
     async def __aexit__(self, *exc):
         return False
@@ -313,7 +322,7 @@ def patch_door(monkeypatch):
     async def load_visible_task(db, vis, task_id):
         return PARENT
 
-    async def apply_status_transition(db, task, status_id, *, created_by):
+    async def apply_status_transition(db, task, status_id, *, created_by, completed_at=None):
         return {
             "row": task,
             "from": SimpleNamespace(name="To do"),
@@ -462,8 +471,9 @@ def mover(monkeypatch, subtree):
     every task that changes project is remapped into the destination's."""
     written: list[tuple] = []
 
-    async def load_visible_project(db, vis, pid):
-        return SimpleNamespace(id=pid, kind="project")
+    async def load_visible_project(db, vis, pid, **_kw):
+        # A project in a space: a space holds no tasks (2026-10-26).
+        return SimpleNamespace(id=pid, kind="project", parent_project_id="space")
 
     async def noop(*args, **kwargs):
         return None
@@ -499,6 +509,8 @@ def mover(monkeypatch, subtree):
     monkeypatch.setattr(tasks, "touch_task", noop)
     monkeypatch.setattr(tasks, "record_activity", noop)
     monkeypatch.setattr(tasks, "record_drops", noop)
+    # WS-39 SP-1: the cycle rule of a move. Its SQL runs in test_sprint_store_r8.py.
+    monkeypatch.setattr(tasks, "detach_moved_tasks", noop)
     monkeypatch.setattr(tasks, "row_to_dict", lambda row, model: {"id": row.id})
     return written
 
@@ -516,7 +528,7 @@ async def test_move_cascade_carries_the_subtree_and_remaps_each_set(
     _visible_tree(monkeypatch)
     got = await tasks.move_task_in(
         None, VIS, PARENT,
-        tasks.MoveTask(project_id="proj-z", include_subtasks=True), by="me@x.in")
+        tasks.MoveTask(project_id="proj-z", include_subtasks=True), by="me@x.in", user=None)
     moved = {rid: values for rid, values in mover}
     # The parent and every visible descendant, at every depth.
     assert set(moved) == {
@@ -533,7 +545,7 @@ async def test_move_cascade_carries_the_subtree_and_remaps_each_set(
 async def test_move_without_the_flag_moves_one_task(mover, monkeypatch):
     _visible_tree(monkeypatch)
     got = await tasks.move_task_in(
-        None, VIS, PARENT, tasks.MoveTask(project_id="proj-z"), by="me@x.in")
+        None, VIS, PARENT, tasks.MoveTask(project_id="proj-z"), by="me@x.in", user=None)
     assert [rid for rid, _ in mover] == ["parent"]
     assert "subtasks_moved" not in got
 
@@ -544,7 +556,7 @@ async def test_a_hidden_descendant_refuses_the_whole_move(mover):
         await tasks.move_task_in(
             None, VIS, PARENT,
             tasks.MoveTask(project_id="proj-z", include_subtasks=True),
-            by="me@x.in")
+            by="me@x.in", user=None)
     assert err.value.status_code == 409
     assert err.value.detail.startswith("1 subtask of this task is hidden")
     assert mover == []
@@ -564,7 +576,7 @@ async def test_the_single_move_names_a_d62_subtask_before_any_write(
         await tasks.move_task_in(
             None, VIS, PARENT,
             tasks.MoveTask(project_id="proj-z", include_subtasks=True),
-            by="me@x.in")
+            by="me@x.in", user=None)
     assert err.value.status_code == 422
     # The SUBTASK is named, not the parent.
     assert err.value.detail.startswith("Subtask #21 ")
@@ -587,7 +599,7 @@ async def test_the_bulk_move_refuses_a_hidden_descendant_before_any_write(
     async def resolve_visibility(db, user):
         return VIS
 
-    async def plan(db, vis, payload):
+    async def plan(db, vis, payload, user):
         return {
             "tasks": [], "source_project_id": "a",
             "destination_project_id": "z", "required_missing": [],
@@ -622,7 +634,7 @@ async def test_the_bulk_move_carries_each_descendant_through_the_seam(
     async def resolve_visibility(db, user):
         return VIS
 
-    async def plan(db, vis, payload):
+    async def plan(db, vis, payload, user):
         return {
             "tasks": [], "source_project_id": "a",
             "destination_project_id": "z", "required_missing": [],
@@ -635,7 +647,7 @@ async def test_the_bulk_move_carries_each_descendant_through_the_seam(
             "subtasks": {"count": 3, "hidden": 0, "refused": []},
         }
 
-    async def move_task_in(db, vis, task, payload, *, by, field_map=None):
+    async def move_task_in(db, vis, task, payload, *, by, user, field_map=None):
         carried.append((task.id, payload.project_id, payload.include_subtasks,
                         field_map))
         return {}
@@ -737,13 +749,16 @@ def planner(monkeypatch):
     monkeypatch.setattr(move, "load_subtree", load_subtree)
     monkeypatch.setattr(move, "_status_proposal", status_proposal)
     monkeypatch.setattr(move, "_type_proposal", type_proposal)
+    # D-OP-14 is fenced in `test_projects_write_authority.py`. Here the
+    # member may move what they name.
+    monkeypatch.setattr(move, "assert_may_move_task", noop)
     return _DB()
 
 
 async def test_the_plan_with_subtasks_shows_their_drops_and_required_fields(
     planner,
 ):
-    plan = await move._plan(planner, VIS, move.MoveIn(
+    plan = await move._plan(planner, VIS, user=_user(), payload=move.MoveIn(
         task_ids=["p"], destination_project_id="proj-z", include_subtasks=True))
     # k2's Severity has no home in the destination: shown, and so gated by
     # accept_drops like any other loss (D-PM-29).
@@ -756,7 +771,7 @@ async def test_the_plan_with_subtasks_shows_their_drops_and_required_fields(
 
 
 async def test_the_plan_without_subtasks_shows_only_the_selection(planner):
-    plan = await move._plan(planner, VIS, move.MoveIn(
+    plan = await move._plan(planner, VIS, user=_user(), payload=move.MoveIn(
         task_ids=["p"], destination_project_id="proj-z"))
     assert plan["drops"] == {}
     assert plan["required_missing"] == []
@@ -774,14 +789,14 @@ async def test_the_plan_names_a_subtask_that_d62_refuses(planner, monkeypatch):
             raise HTTPException(status_code=422, detail="personal")
 
     monkeypatch.setattr(cascade, "assert_move_keeps_privacy", guard)
-    plan = await move._plan(planner, VIS, move.MoveIn(
+    plan = await move._plan(planner, VIS, user=_user(), payload=move.MoveIn(
         task_ids=["p"], destination_project_id="proj-z", include_subtasks=True))
     refused = plan["subtasks"]["refused"]
     assert [r["task_id"] for r in refused] == ["k2"]
     assert refused[0]["reason"].startswith("Subtask ")
     assert "Untick" in refused[0]["reason"]
     # Without the box, nothing is carried and nothing is refused.
-    plan = await move._plan(planner, VIS, move.MoveIn(
+    plan = await move._plan(planner, VIS, user=_user(), payload=move.MoveIn(
         task_ids=["p"], destination_project_id="proj-z"))
     assert plan["subtasks"]["refused"] == []
 
@@ -792,7 +807,7 @@ async def test_the_bulk_apply_refuses_a_d62_subtask_before_any_write(monkeypatch
     async def resolve_visibility(db, user):
         return VIS
 
-    async def plan(db, vis, payload):
+    async def plan(db, vis, payload, user):
         return {
             "tasks": [], "source_project_id": "a",
             "destination_project_id": "z", "required_missing": [],
@@ -919,7 +934,7 @@ async def test_load_subtree_binds_the_callers_visibility():
                     return []
             return _R()
 
-    vis = SimpleNamespace(params={"vis_org": "org-1"}, unrestricted=True)
+    vis = SimpleNamespace(params={"vis_org": "org-1"}, unrestricted=True, agent=None)
     await cascade.load_subtree(_DB(), vis, "parent")
     assert "CAST(:vis_org AS uuid)" in seen["sql"]
     assert seen["params"]["vis_org"] == "org-1"
@@ -927,19 +942,28 @@ async def test_load_subtree_binds_the_callers_visibility():
 
 
 # ── The chat tools keep the default, and say the option exists ─────────────
+#
+# WS-46 P6 (G9) gave the Projects assistant's three doors the argument: each
+# asks once, then sends the flag only for a "yes" (projects_agent_parity.md
+# slice P6). `tests/unit/test_projects_task_fields.py` is their fence now.
+# The My Tasks tool still keeps the gateway's default.
 
 
-def _tool_sources():
+def test_the_my_tasks_tool_names_include_subtasks_and_does_not_send_it():
     from skill_my_tasks import core as my_tasks
-    from skill_projects import guarded, writes
-    return [
-        my_tasks.my_tasks_complete, writes.complete, writes.move_task,
-        guarded.archive_task,
-    ]
 
-
-@pytest.mark.parametrize("tool", _tool_sources(), ids=lambda t: t.__name__)
-def test_a_chat_tool_names_include_subtasks_and_does_not_send_it(tool):
+    tool = my_tasks.my_tasks_complete
     assert "include_subtasks" in (tool.__doc__ or "")
     body = inspect.getsource(tool).split('"""')[-1]
     assert "include_subtasks" not in body
+
+
+def _projects_doors():
+    from skill_projects import guarded, writes
+    return [writes.complete, writes.move_task, guarded.archive_task]
+
+
+@pytest.mark.parametrize("tool", _projects_doors(), ids=lambda t: t.__name__)
+def test_a_projects_door_takes_include_subtasks_as_an_argument(tool):
+    assert "include_subtasks" in inspect.signature(tool).parameters
+    assert inspect.signature(tool).parameters["include_subtasks"].default == ""

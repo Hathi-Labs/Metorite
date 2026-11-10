@@ -19,6 +19,7 @@ R8 suites, which this path now reaches.
 """
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -571,3 +572,65 @@ class TestTheAgentPathsBillToo:
         finally:
             get_settings.cache_clear()
         assert seen, "the direct agent path stopped working"
+
+
+class TestTheSystemOneDecideIsRouted:
+    """WS-45 S1 (D90, ``ai_tier_routing.md`` §6.5): the System-1 ``decide``.
+
+    Its request goes to the gateway's ``/v1``, named ``tier-fast`` and
+    attributed to the CALLING agent, and only on a box that routes. A box
+    whose flag is on but whose Router is not wired sends nothing, so the call
+    can never reach a vendor directly.
+    """
+
+    @staticmethod
+    def _wire(monkeypatch) -> list[Any]:
+        import httpx
+        import openai
+
+        seen: list[Any] = []
+
+        def answer(request):
+            seen.append(request)
+            return httpx.Response(200, json={
+                "id": "s1", "object": "chat.completion", "created": 0, "model": "p",
+                "choices": [{"index": 0, "finish_reason": "stop", "message": {
+                    "role": "assistant",
+                    "content": '{"answers": [{"id": "q", "choice": "yes", '
+                               '"confidence": 0.9, "reason": "r"}]}',
+                }}],
+            })
+
+        monkeypatch.setattr(
+            openai, "DefaultAsyncHttpxClient",
+            lambda **kw: httpx.AsyncClient(transport=httpx.MockTransport(answer), **kw),
+        )
+        return seen
+
+    async def test_a_routed_box_sends_one_attributed_tier_fast_request(
+        self, monkeypatch, routed
+    ):
+        from acb_common import bind_run_context, clear_run_context
+        from acb_skills.decide_tools import system_one_decide
+
+        seen = self._wire(monkeypatch)
+        bind_run_context(run_id="run-r", agent="projects-assistant")
+        try:
+            out = await system_one_decide(question="Is it?", context="x")
+        finally:
+            clear_run_context()
+        assert out.endswith("yes (confidence 0.90) — r")
+        assert len(seen) == 1
+        assert str(seen[0].url).endswith("/v1/chat/completions")
+        assert json.loads(seen[0].content)["model"] == "tier-fast"
+        assert seen[0].headers["X-CC-Agent"] == "projects-assistant"
+        assert seen[0].headers["X-CC-Run"] == "run-r"
+
+    async def test_an_unwired_box_sends_nothing(self, monkeypatch, routed):
+        from acb_skills.decide_tools import UNAVAILABLE, system_one_decide
+
+        monkeypatch.setenv("CUSTOMER_CONSOLE_URL", "")
+        get_settings.cache_clear()
+        seen = self._wire(monkeypatch)
+        assert await system_one_decide(question="Is it?", context="x") == UNAVAILABLE
+        assert seen == []

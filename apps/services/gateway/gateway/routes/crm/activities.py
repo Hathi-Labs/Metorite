@@ -28,7 +28,9 @@ compete with.
 
 from __future__ import annotations
 
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException, Query
@@ -38,11 +40,14 @@ from gateway.routes.crm.core import (
     DEALS,
     LEADS,
     ORGANIZATIONS,
+    TABLE_BY_ACTIVITY_TARGET,
     ActivityModel,
     Entity,
     _tenant_session,
     actor,
+    assert_writable,
     bump_last_activity,
+    current_tenant,
     insert_row,
     require_row,
     router,
@@ -98,15 +103,68 @@ class TimelineEntry(BaseModel):
 
 class TimelineResponse(BaseModel):
     entries: list[TimelineEntry]
+    #: Set only when the caller pages (``offset``): whether an older entry
+    #: exists past this page. The unpaged read leaves it out.
+    has_more: bool | None = None
+
+
+#: The deepest ``offset`` a timeline page may start at. Each source reads
+#: ``offset + limit + 1`` rows, so this bounds one request's work.
+MAX_TIMELINE_OFFSET = 5000
+
+#: The tie-break between two sources at the same instant. Any fixed order
+#: works. It only has to be the same on every page.
+_KIND_RANK = {"activity": 0, "status_change": 1, "email_thread": 2}
+
+
+def _entry_key(entry: TimelineEntry) -> tuple[bool, datetime | str, int, str]:
+    """The ONE total order of a paged timeline, newest first under reverse.
+
+    The instant, then the source, then the row's own id. Every source query
+    in paged mode orders by the same instant and id (``strict``), so the
+    first ``n`` merged rows always come from the first ``n`` rows of each
+    source. ``at`` is None last.
+    """
+    payload = entry.activity or entry.status_change or entry.email_thread or {}
+    row_id = str(payload.get("message_id") or payload.get("id") or "")
+    if not entry.at:
+        return (False, "", _KIND_RANK.get(entry.kind, 9), row_id)
+    return (True, datetime.fromisoformat(entry.at), _KIND_RANK.get(entry.kind, 9), row_id)
+
+
+def merge_page(
+    entries: list[TimelineEntry], offset: int, limit: int,
+) -> tuple[list[TimelineEntry], bool]:
+    """One page of the merged timeline, and whether another one exists.
+
+    ⚠️ Paged mode has NO email budget. The budget (:func:`_email_budget`)
+    reserves half of the unpaged read for the record's own history, and it
+    makes each page a different mix: the rows of a larger read do not begin
+    with the rows of a smaller one, so a page 2 cut from a bigger read
+    repeats notes and skips mail. A page here is a plain slice of one order.
+    """
+    ordered = sorted(entries, key=_entry_key, reverse=True)
+    return ordered[offset:offset + limit], len(ordered) > offset + limit
 
 
 # ── Shared behaviour ────────────────────────────────────────────────────────
 
 async def _timeline(
     entity: Entity, record_id: str, limit: int, user: UserContext,
+    offset: int | None = None,
 ) -> TimelineResponse:
     """The merged timeline. ``user`` is required because one of the three
-    sources — email — is scoped to the CALLER's mailboxes, not to the record."""
+    sources — email — is scoped to the CALLER's mailboxes, not to the record.
+
+    With ``offset`` the read is a PAGE of one total order (:func:`merge_page`),
+    and each source reads ``offset + limit + 1`` rows. Without it the read is
+    the unpaged one the CRM panel draws, with the email budget."""
+    # A direct call (the hermetic suites) passes no offset, and the default is
+    # then FastAPI's `Query` object, not None.
+    if not isinstance(offset, int) or isinstance(offset, bool):
+        offset = None
+    strict = offset is not None
+    want = (offset or 0) + limit + 1 if strict else limit
     async with _tenant_session() as db:
         record = await require_row(db, entity.table, record_id, entity.label)
         sources: list[tuple[Entity, str, str]] = [(entity, record_id, "own")]
@@ -117,12 +175,10 @@ async def _timeline(
 
         entries: list[TimelineEntry] = []
         for source_entity, source_id, origin in sources:
-            entries.extend(
-                await _activity_entries(db, source_entity, source_id, origin, limit)
-            )
-            entries.extend(
-                await _status_entries(db, source_entity, source_id, origin, limit)
-            )
+            entries.extend(await _activity_entries(
+                db, source_entity, source_id, origin, want, strict=strict))
+            entries.extend(await _status_entries(
+                db, source_entity, source_id, origin, want, strict=strict))
         # Email is resolved ONCE for the whole record rather than per source:
         # a deal's addresses already include its originating lead's, so running
         # it per source would return every inherited thread twice.
@@ -130,22 +186,58 @@ async def _timeline(
             db,
             await _record_addresses(db, entity, record_id, record),
             user,
-            _email_budget(limit),
+            want if strict else _email_budget(limit),
+            strict=strict,
         ))
+        if strict:
+            page, more = merge_page(entries, offset or 0, limit)
+            return TimelineResponse(entries=page, has_more=more)
         # Newest first. `at` is None only for a row with no timestamp at all,
         # which sorts last rather than crashing the comparison.
         entries.sort(key=lambda e: (e.at or ""), reverse=True)
         return TimelineResponse(entries=entries[:limit])
 
 
+#: The column of ``crm_activities`` that names a generic module record
+#: (CRM-Q23a, migration 275). ``routes/crm/modules.py`` reads a module
+#: record's timeline through it.
+MODULE_ACTIVITY_COLUMN = "module_record_id"
+
+#: The parent columns that :func:`activity_entries_by` may name: the four of
+#: the entity registry and the module one. A column is a literal of this set,
+#: never caller text.
+ACTIVITY_PARENT_COLUMNS: frozenset[str] = frozenset(
+    {*TABLE_BY_ACTIVITY_TARGET, MODULE_ACTIVITY_COLUMN},
+)
+
+
 async def _activity_entries(
     db: Any, entity: Entity, record_id: str, origin: str, limit: int,
+    *, strict: bool = False,
 ) -> list[TimelineEntry]:
+    return await activity_entries_by(
+        db, entity.activity_column, record_id, origin, limit, strict=strict,
+    )
+
+
+async def activity_entries_by(
+    db: Any, column: str, record_id: str, origin: str, limit: int,
+    *, strict: bool = False,
+) -> list[TimelineEntry]:
+    """The activities whose parent ``column`` is *record_id*, as timeline
+    entries. ``column`` is one of :data:`ACTIVITY_PARENT_COLUMNS`."""
+    if column not in ACTIVITY_PARENT_COLUMNS:
+        raise ValueError(f"not an activity parent column: {column!r}")
+    # Paged mode orders by the instant the entry SHOWS (`occurred_at`, else
+    # `created_at`) and the id, the order `merge_page` merges by. The unpaged
+    # read keeps its `created_at` order.
+    order = ("COALESCE(occurred_at, created_at) DESC, id DESC" if strict
+             else "created_at DESC")
     rows = (await db.execute(
         text(
             "SELECT * FROM crm_activities "
-            f"WHERE {entity.activity_column} = CAST(:record_id AS uuid) "
-            "ORDER BY created_at DESC LIMIT :limit"
+            f"WHERE {column} = CAST(:record_id AS uuid) "
+            f"ORDER BY {order} LIMIT :limit"
         ),
         {"record_id": record_id, "limit": limit},
     )).fetchall()
@@ -162,6 +254,7 @@ async def _activity_entries(
 
 async def _status_entries(
     db: Any, entity: Entity, record_id: str, origin: str, limit: int,
+    *, strict: bool = False,
 ) -> list[TimelineEntry]:
     """Status changes are merged in from their own log, not re-read from the
     activity that mirrors them: the log carries ``dwell_seconds``, which is the
@@ -176,7 +269,8 @@ async def _status_entries(
             "SELECT * FROM crm_status_changes "
             "WHERE entity_type = :entity_type "
             "AND entity_id = CAST(:record_id AS uuid) "
-            "ORDER BY changed_at DESC LIMIT :limit"
+            + ("ORDER BY changed_at DESC NULLS LAST, id DESC LIMIT :limit" if strict
+               else "ORDER BY changed_at DESC LIMIT :limit")
         ),
         {"entity_type": entity_type, "record_id": record_id, "limit": limit},
     )).fetchall()
@@ -210,8 +304,12 @@ def _email_budget(limit: int) -> int:
     source at ``limit`` is NOT enough on its own: the merge sorts newest-first
     and then truncates to ``limit``, so ``limit`` recent threads evict every
     activity and every status change the record has. That is the common case,
-    not the pathological one — the CRM agent's ``get_timeline`` defaults to 20,
-    and twenty recent emails is an ordinary week on an active deal.
+    not the pathological one: the CRM panel draws one unpaged read, and twenty
+    recent emails is an ordinary week on an active deal.
+
+    The budget applies to the unpaged read only. The CRM agent's
+    ``get_timeline`` pages with ``offset``, and a paged read has no budget
+    (:func:`merge_page` says why). Its hint line leads to the older history.
 
     Rounded UP so a limit of 1 still admits email, and so the reserved half is
     the one that can be empty: a record with no activity at all still fills the
@@ -298,6 +396,7 @@ async def _record_addresses(
 
 async def _email_entries(
     db: Any, origins: dict[str, str], user: UserContext, limit: int,
+    *, strict: bool = False,
 ) -> list[TimelineEntry]:
     """Email threads from these addresses, in the CALLER's own mailboxes.
 
@@ -353,7 +452,8 @@ async def _email_entries(
             f" AND LOWER(em.from_address->>'email') IN ({', '.join(placeholders)})"
             " ORDER BY em.account_id, COALESCE(em.thread_id, em.id::text),"
             " em.received_at DESC"
-            ") t ORDER BY received_at DESC LIMIT :limit"
+            + (") t ORDER BY received_at DESC NULLS LAST, message_id DESC LIMIT :limit"
+               if strict else ") t ORDER BY received_at DESC LIMIT :limit")
         ),
         params,
     )).fetchall()
@@ -418,8 +518,9 @@ async def lead_timeline(
     record_id: str,
     limit: int = Query(100, ge=1, le=500),
     user: UserContext = Depends(get_current_user),
+    offset: int | None = Query(None, ge=0, le=MAX_TIMELINE_OFFSET),
 ) -> TimelineResponse:
-    return await _timeline(LEADS, record_id, limit, user)
+    return await _timeline(LEADS, record_id, limit, user, offset)
 
 
 @router.get("/deals/{record_id}/timeline", response_model=TimelineResponse)
@@ -427,9 +528,10 @@ async def deal_timeline(
     record_id: str,
     limit: int = Query(100, ge=1, le=500),
     user: UserContext = Depends(get_current_user),
+    offset: int | None = Query(None, ge=0, le=MAX_TIMELINE_OFFSET),
 ) -> TimelineResponse:
     """A deal's own history, unioned with its originating lead's (§5.3)."""
-    return await _timeline(DEALS, record_id, limit, user)
+    return await _timeline(DEALS, record_id, limit, user, offset)
 
 
 @router.get("/contacts/{record_id}/timeline", response_model=TimelineResponse)
@@ -437,8 +539,9 @@ async def contact_timeline(
     record_id: str,
     limit: int = Query(100, ge=1, le=500),
     user: UserContext = Depends(get_current_user),
+    offset: int | None = Query(None, ge=0, le=MAX_TIMELINE_OFFSET),
 ) -> TimelineResponse:
-    return await _timeline(CONTACTS, record_id, limit, user)
+    return await _timeline(CONTACTS, record_id, limit, user, offset)
 
 
 @router.get("/organizations/{record_id}/timeline", response_model=TimelineResponse)
@@ -446,8 +549,9 @@ async def organization_timeline(
     record_id: str,
     limit: int = Query(100, ge=1, le=500),
     user: UserContext = Depends(get_current_user),
+    offset: int | None = Query(None, ge=0, le=MAX_TIMELINE_OFFSET),
 ) -> TimelineResponse:
-    return await _timeline(ORGANIZATIONS, record_id, limit, user)
+    return await _timeline(ORGANIZATIONS, record_id, limit, user, offset)
 
 
 # ── Logging ─────────────────────────────────────────────────────────────────
@@ -482,6 +586,22 @@ async def log_organization_activity(
     user: UserContext = Depends(get_current_user),
 ) -> dict:
     return await _log_activity(ORGANIZATIONS, record_id, payload, user)
+
+
+# ── Reading and editing one activity ────────────────────────────────────────
+
+@router.get("/activities/{activity_id}")
+async def get_activity(
+    activity_id: str, user: UserContext = Depends(get_current_user),
+) -> dict:
+    """One timeline entry, for the chat card that edits it (CRM-M2b).
+
+    Reads through the same tenant session as :func:`patch_activity`, so a row
+    of another organization answers 404 under RLS.
+    """
+    async with _tenant_session() as db:
+        row = await require_row(db, "crm_activities", activity_id, "Activity")
+        return row_to_dict(row, ActivityModel)
 
 
 # ── Editing one activity ────────────────────────────────────────────────────
@@ -543,6 +663,9 @@ async def delete_activity(
                     "with editable history is not a record of anything."
                 ),
             )
+        await assert_writable(
+            db, current_tenant(), "crm_activities", None, row=row,
+        )
         await db.execute(
             text("DELETE FROM crm_activities WHERE id = CAST(:id AS uuid)"),
             {"id": activity_id},
@@ -550,11 +673,131 @@ async def delete_activity(
         return {"deleted": activity_id}
 
 
+# ── My due follow-ups, for the My Day feed (WS-58 MD-3e) ────────────────────
+
+#: The types that no member writes as a follow-up. The pipeline writes
+#: ``status_change`` and the platform writes ``system``.
+NOT_FOLLOWUP_TYPES: tuple[str, ...] = ("status_change", "system")
+
+#: My open activities that are due by the end of my local today, one row for
+#: each record, with the earliest due time of that record (``my_day_feed.md``
+#: §5.9 item 13). An activity on more than one record takes the first of
+#: deal, lead, contact and organization.
+#:
+#: **The one CRM day rule** (``crm_platform.md`` §19.7, ``format.ts``
+#: ``dueDay``, ``core.attach_next_activity``). A task's ``due_at`` holds a
+#: DATE at 00:00 UTC, because the Zoho sync and the composer both write it so.
+#: So a task compares its UTC date with my local date (``:before_day``, the
+#: UTC midnight of my local tomorrow). A call or a meeting compares its real
+#: instant with my local midnight (``:before``). ``all_day`` says which.
+#:
+#: **Today first.** ``fresh`` is true for a row due from my local today on,
+#: by the same rule. The LIMIT keeps the fresh rows first and fills with the
+#: older ones, so a mirror with many stale open tasks cannot hide a follow-up
+#: that is due in an hour.
+#:
+#: ⚠️ Each statement names the tenant AND the member. RLS holds the gateway
+#: role, so this is defence in depth. The inner filter reads through
+#: ``idx_crm_activities_due_at`` (``144_crm.sql``), a partial index on the
+#: open rows, by ``:upper``, the later of the two bounds.
+_MY_DUE_SQL = (
+    "SELECT record_kind, record_id, label, due_at, subject, all_day, fresh FROM ("
+    " SELECT DISTINCT ON (record_kind, record_id)"
+    "  record_kind, record_id, label, due_at, subject, all_day, fresh, activity_id"
+    "  FROM ("
+    "  SELECT"
+    "   CASE WHEN a.deal_id IS NOT NULL THEN 'deal'"
+    "        WHEN a.lead_id IS NOT NULL THEN 'lead'"
+    "        WHEN a.contact_id IS NOT NULL THEN 'contact'"
+    "        ELSE 'organization' END AS record_kind,"
+    "   COALESCE(a.deal_id, a.lead_id, a.contact_id, a.company_id) AS record_id,"
+    "   CASE WHEN a.deal_id IS NOT NULL THEN d.name"
+    "        WHEN a.lead_id IS NOT NULL THEN l.lead_name"
+    "        WHEN a.contact_id IS NOT NULL THEN"
+    "             concat_ws(' ', c.first_name, c.last_name)"
+    "        ELSE co.name END AS label,"
+    "   a.due_at, a.subject, a.id AS activity_id,"
+    "   (a.type = 'task') AS all_day,"
+    "   CASE WHEN a.type = 'task' THEN a.due_at >= CAST(:today_day AS timestamptz)"
+    "        ELSE a.due_at >= CAST(:today_start AS timestamptz) END AS fresh"
+    "  FROM crm_activities a"
+    "  LEFT JOIN crm_deals d ON d.id = a.deal_id"
+    "   AND d.organization_id = a.organization_id"
+    "  LEFT JOIN crm_leads l ON l.id = a.lead_id"
+    "   AND l.organization_id = a.organization_id"
+    "  LEFT JOIN crm_contacts c ON c.id = a.contact_id"
+    "   AND c.organization_id = a.organization_id"
+    "  LEFT JOIN crm_companies co ON co.id = a.company_id"
+    "   AND co.organization_id = a.organization_id"
+    "  WHERE a.organization_id = CAST(:org AS uuid)"
+    "   AND lower(a.created_by) = :member"
+    "   AND a.completed_at IS NULL"
+    "   AND a.due_at < CAST(:upper AS timestamptz)"
+    "   AND a.due_at < CASE WHEN a.type = 'task' THEN CAST(:before_day AS timestamptz)"
+    "                       ELSE CAST(:before AS timestamptz) END"
+    "   AND a.type <> ALL(CAST(:skip AS text[]))"
+    " ) mine"
+    " ORDER BY record_kind, record_id, due_at, activity_id"
+    ") firsts ORDER BY fresh DESC, due_at, record_kind, record_id LIMIT :limit"
+)
+
+
+def due_bounds(today: date, tz: ZoneInfo) -> dict[str, datetime]:
+    """The four bounds of the one CRM day rule for my local ``today``: my
+    local midnight of today and of tomorrow, and the UTC midnight of the
+    same two dates, which is where a task's date sits."""
+    tomorrow = today + timedelta(days=1)
+    before = datetime.combine(tomorrow, time.min, tzinfo=tz)
+    before_day = datetime.combine(tomorrow, time.min, tzinfo=UTC)
+    return {
+        "today_start": datetime.combine(today, time.min, tzinfo=tz),
+        "before": before,
+        "today_day": datetime.combine(today, time.min, tzinfo=UTC),
+        "before_day": before_day,
+        "upper": max(before, before_day),
+    }
+
+
+async def my_due_activities(
+    db: Any, user: UserContext, *, today: date, tz: ZoneInfo, limit: int,
+) -> list[dict[str, Any]]:
+    """My open follow-ups that are due by the end of my local ``today``, one
+    for each record (WS-58 MD-3e, ``my_day_feed.md`` §5.9 item 13). The rows
+    due from today on come first, then the older ones, the earliest first in
+    each part. See ``_MY_DUE_SQL`` for the one CRM day rule.
+
+    "My" is ``lower(created_by)``, and the Zoho sync writes the mapped
+    member there, so a mirrored follow-up counts too. The caller gives the
+    session, so the feed's three CRM reads share one. The tenant is the
+    bound one (``current_tenant``), never a request value. Each row is
+    ``{record_kind, record_id, label, due_at, subject, all_day, fresh}``, and
+    ``record_kind`` is ``deal``, ``lead``, ``contact`` or ``organization``.
+    """
+    org = current_tenant()
+    member = (getattr(user, "email", None) or "").strip().lower()
+    if not org or not member:
+        return []
+    rows = (await db.execute(text(_MY_DUE_SQL), {
+        "org": str(org), "member": member, **due_bounds(today, tz),
+        "skip": list(NOT_FOLLOWUP_TYPES), "limit": max(1, int(limit)),
+    })).fetchall()
+    return [{
+        "record_kind": str(r.record_kind), "record_id": str(r.record_id),
+        "label": r.label, "due_at": r.due_at, "subject": r.subject,
+        "all_day": bool(r.all_day), "fresh": bool(r.fresh),
+    } for r in rows]
+
+
 __all__ = [
+    "ACTIVITY_PARENT_COLUMNS",
     "ACTIVITY_TYPES",
     "LOGGABLE_TYPES",
+    "MODULE_ACTIVITY_COLUMN",
+    "NOT_FOLLOWUP_TYPES",
     "ActivityIn",
     "ActivityPatch",
     "TimelineEntry",
     "TimelineResponse",
+    "activity_entries_by",
+    "my_due_activities",
 ]

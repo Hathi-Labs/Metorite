@@ -19,8 +19,10 @@ The claims worth pinning:
   queries" rather than as a defect.
 * **`#42` is a task number.** Getting every task whose description mentions 42
   is a search box that ignored what you typed.
-* **a short query is empty, not a 422.** A search box types one character on
-  the way to three, and an error flashing on every keystroke is noise.
+* **a short TEXT query is a 422 that says what to type** (D-PM-31, built
+  2026-10-06). The palette gates before it calls, so only a caller that
+  skipped the gate sees it. A task number passes at any length, as an exact
+  lookup.
 * **search can never surface what the list would hide.** Same visibility
   clause, same archived rule.
 """
@@ -31,6 +33,7 @@ import re
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 from gateway.routes.projects import activities as pm_activities
 from gateway.routes.projects import admin as pm_admin
 from gateway.routes.projects import core as pm_core
@@ -130,7 +133,8 @@ def test_the_list_endpoint_escapes_too_not_only_search(
     wrong.
     """
     _, params = build_task_filters(q=term)
-    assert params["q"] == bound_pattern
+    # One word, so one bound pattern (`filters.text_match_clause`).
+    assert params["q_w0"] == bound_pattern
 
 
 # ── task_number ─────────────────────────────────────────────────────────────
@@ -140,7 +144,7 @@ def test_the_list_endpoint_escapes_too_not_only_search(
     [
         ("#42", 42), ("42", 42), (" #42 ", 42), ("# 42", 42),
         ("parser", None), ("", None), ("#", None), ("4.2", None),
-        ("-1", None), ("42a", None),
+        ("-1", None), ("42a", None), ("²", None), ("#٧", None),  # noqa: RUF001
     ],
 )
 def test_a_task_number_is_recognised_only_when_it_is_one(raw, expected) -> None:
@@ -278,7 +282,8 @@ async def test_a_title_prefix_outranks_a_title_mention_outranks_a_description(
         (1, "Parser rewrite"),
         (2, "Newer title mention of parser"),
         (2, "Older title mention of parser"),
-        (3, "Beta unrelated"),
+        # Tier 4 since 2026-10-13: the description holds the whole query.
+        (4, "Beta unrelated"),
     ]
 
 
@@ -319,16 +324,22 @@ async def test_a_percent_sign_is_searched_for_literally(db, events):
 
 
 @pytest.mark.asyncio
-async def test_a_short_query_is_empty_rather_than_an_error(db, events):
-    """⚠️ A search box types one character on the way to three. A 422 flashing
-    on every keystroke is noise the user cannot act on."""
+@pytest.mark.parametrize("term", ["a", "ab", " qa "])
+async def test_a_short_text_query_is_a_422_that_says_what_to_type(db, events, term):
+    """D-PM-31. A text query under 3 characters cannot use the trigram index,
+    so the route refuses it. The palette gates first (``search.ts``), so the
+    422 reaches only a caller that skipped the gate. It costs no query."""
     project, todo = _workspace(db)
     db.seed_task(project.id, todo.id, title="Anything")
 
-    result = await pm_search.search_tasks(q="a", user=USER)
+    with pytest.raises(HTTPException) as refused:
+        await pm_search.search_tasks(q=term, user=USER)
 
-    assert result == {"rows": [], "total": 0, "truncated": False, "query": "a"}
-    # And it cost nothing: no database round trip at all.
+    assert refused.value.status_code == 422
+    assert refused.value.detail == (
+        f"Give at least 3 characters to search ('{term.strip()}' is"
+        f" {len(term.strip())}). A task number works at any length: #7."
+    )
     assert db.statements == []
 
 
@@ -340,10 +351,25 @@ async def test_a_whitespace_only_query_is_not_a_search(db, events):
 
 
 @pytest.mark.asyncio
-async def test_the_minimum_is_exactly_two_characters(db, events):
+async def test_the_minimum_is_exactly_three_characters(db, events):
     _workspace(db)
-    await pm_search.search_tasks(q="ab", user=USER)
+    assert MIN_QUERY == 3
+    await pm_search.search_tasks(q="abc", user=USER)
     assert db.statements != [], f"{MIN_QUERY} characters must reach the database"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("term", ["#7", "7", " #7 ", "# 7"])
+async def test_a_task_number_passes_at_any_length(db, events, term):
+    """The owner's exception (2026-10-06). ``#7`` is two characters and is an
+    exact lookup, so the minimum does not apply to it."""
+    project, todo = _workspace(db)
+    db.seed_task(project.id, todo.id, title="Unrelated work", task_number=7)
+    db.seed_task(project.id, todo.id, title="Ship #7 of the batch", task_number=8)
+
+    result = await pm_search.search_tasks(q=term, user=USER)
+
+    assert [(r["task_number"], r["rank"]) for r in result["rows"]] == [(7, 0)]
 
 
 @pytest.mark.asyncio
@@ -401,15 +427,29 @@ async def test_the_bound_pattern_is_escaped_not_raw(db, events):
 
 
 @pytest.mark.asyncio
-async def test_a_number_query_binds_the_number_and_the_text(db, events):
-    """`#42` should find task 42 AND anything that mentions 42 — ranked with
-    the exact number first. Binding only one of the two would lose half the
-    answer."""
+async def test_a_number_query_is_an_exact_lookup_and_never_a_text_scan(db, events):
+    """D-PM-31's exception. A query that is only a number runs the EXACT arm.
+    Without it, ``#7`` would be a two-character ILIKE, the scan D-PM-31
+    exists to refuse."""
     _workspace(db)
     await pm_search.search_tasks(q="#42", user=USER)
-    bound = next(args for stmt, args in db.calls if "AS rank" in stmt)
+    stmt, bound = next((s, a) for s, a in db.calls if "AS rank" in s)
+    where = stmt.split("END AS rank", 1)[1]
     assert bound["number"] == 42
-    assert bound["term"] == "%#42%"
+    assert "t.task_number = CAST(:number AS bigint)" in where
+    assert "ILIKE" not in where
+
+
+@pytest.mark.asyncio
+async def test_a_word_query_runs_the_text_arm_only(db, events):
+    _workspace(db)
+    await pm_search.search_tasks(q="parser", user=USER)
+    stmt = next(s for s, _a in db.calls if "AS rank" in s)
+    # The ranked step's WHERE only: the snippet step after it SELECTs the
+    # `task_number` column, and that is no match arm.
+    where = stmt.split("END AS rank", 1)[1].split("ORDER BY", 1)[0]
+    assert "(t.title ILIKE :q_w0 OR t.description ILIKE :q_w0)" in where
+    assert "task_number" not in where
 
 
 @pytest.mark.asyncio
@@ -420,3 +460,110 @@ async def test_a_word_query_binds_a_null_number(db, events):
     await pm_search.search_tasks(q="parser", user=USER)
     bound = next(args for stmt, args in db.calls if "AS rank" in stmt)
     assert bound["number"] is None
+
+
+# ── Descriptions, by word, with a snippet (owner request, 2026-10-13) ───────
+#
+# The Projects chat told the owner that a description "is not in that index
+# at all". The route matched descriptions all along, but as ONE substring and
+# with no text to show why. These pin the three repairs at the route. The
+# R8 half (`test_projects_search_description_r8.py`) runs the same SQL on a
+# real Postgres, as the app role, because a fake cannot rank.
+
+@pytest.mark.asyncio
+async def test_words_apart_in_a_description_still_find_the_task(db, events):
+    """The defect: "invoice approval" missed "approval of the invoice"."""
+    project, todo = _workspace(db)
+    db.seed_task(project.id, todo.id, title="Finance chores",
+                 description="Waiting on approval of the invoice from Acme.")
+
+    result = await pm_search.search_tasks(q="invoice approval", user=USER)
+
+    assert [r["title"] for r in result["rows"]] == ["Finance chores"]
+
+
+@pytest.mark.asyncio
+async def test_every_word_must_be_found(db, events):
+    project, todo = _workspace(db)
+    db.seed_task(project.id, todo.id, title="Finance chores",
+                 description="Waiting on approval of the invoice.")
+
+    result = await pm_search.search_tasks(q="invoice extruder", user=USER)
+
+    assert result["rows"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_description_hit_carries_the_matched_words(db, events):
+    project, todo = _workspace(db)
+    filler = "Background text that says nothing. " * 10
+    db.seed_task(project.id, todo.id, title="Finance chores",
+                 description=filler + "The quicksilver supplier is late. " + filler)
+
+    (hit,) = (await pm_search.search_tasks(q="quicksilver", user=USER))["rows"]
+
+    assert "quicksilver" in hit["snippet"]
+    assert hit["snippet"].startswith("…") and hit["snippet"].endswith("…")
+    assert len(hit["snippet"]) <= pm_search.SNIPPET_CHARS
+
+
+@pytest.mark.asyncio
+async def test_a_title_hit_carries_no_snippet(db, events):
+    """The title already says why. A snippet there is payload for nothing."""
+    project, todo = _workspace(db)
+    db.seed_task(project.id, todo.id, title="Quicksilver order",
+                 description="The quicksilver supplier is late.")
+
+    (hit,) = (await pm_search.search_tasks(q="quicksilver", user=USER))["rows"]
+
+    assert hit["rank"] < pm_search.DESCRIPTION_RANK
+    assert hit["snippet"] is None
+
+
+@pytest.mark.asyncio
+async def test_the_title_holding_every_word_outranks_a_description(db, events):
+    project, todo = _workspace(db)
+    db.seed_task(project.id, todo.id, title="Unrelated",
+                 description="invoice approval",
+                 updated_at="2026-08-09T00:00:00Z")
+    db.seed_task(project.id, todo.id, title="Approval for the invoice",
+                 updated_at="2026-07-01T00:00:00Z")
+
+    rows = (await pm_search.search_tasks(q="invoice approval", user=USER))["rows"]
+
+    assert [(r["rank"], r["title"]) for r in rows] == [
+        (3, "Approval for the invoice"),
+        (4, "Unrelated"),
+    ]
+
+
+def test_a_snippet_is_one_line_and_capped() -> None:
+    raw = "line one\n\n<b>bold</b>\tline two " + "word " * 200
+    out = pm_search.snippet_of(raw, starts_inside=False, ends_inside=True)
+    assert "\n" not in out and "\t" not in out
+    assert len(out) <= pm_search.SNIPPET_CHARS
+    assert out.endswith("…")
+
+
+def test_a_short_description_is_the_whole_snippet() -> None:
+    out = pm_search.snippet_of("Call the  quicksilver\nsupplier.",
+                               starts_inside=False, ends_inside=False)
+    assert out == "Call the quicksilver supplier."
+
+
+def test_an_empty_window_is_no_snippet() -> None:
+    assert pm_search.snippet_of("  \n ", starts_inside=False, ends_inside=False) is None
+
+
+def test_a_window_that_starts_on_whitespace_keeps_its_first_word() -> None:
+    """Review of #941: indentation before the hit collapsed away, and the
+    half-word rule then dropped the word that matched."""
+    raw = " " * 50 + "approval of the invoice from finance"
+    out = pm_search.snippet_of(raw, starts_inside=True, ends_inside=False)
+    assert out == "…approval of the invoice from finance"
+
+
+def test_a_window_that_starts_inside_a_word_drops_the_half_word() -> None:
+    out = pm_search.snippet_of("ating the approval of it",
+                               starts_inside=True, ends_inside=False)
+    assert out == "…the approval of it"

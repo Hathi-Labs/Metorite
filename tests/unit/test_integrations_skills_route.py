@@ -46,7 +46,14 @@ def _hermetic(monkeypatch):
 
     monkeypatch.setattr(
         sk, "_platform_tools_by_name",
-        lambda: {n: _mk(n) for n in sf.all_registered_tool_names()},
+        lambda: {n: _mk(n) for n in sf.injected_tool_names()},
+    )
+    # WS-67 OA-7a: the tools of each pack come from its owner. Fakes here;
+    # test_tool_packs_registry.py loads the real owner.
+    monkeypatch.setattr(
+        sk, "_pack_tools_by_name",
+        lambda: {n: _mk(n) for slug in sf.pack_slugs()
+                 for n in sf.SKILL_FAMILIES[slug]["tools"]},
     )
     monkeypatch.setattr(sk, "_addendum_for_scope", lambda scope: "a" * 400)
     monkeypatch.setattr(sk, "_count_tokens", len)
@@ -55,7 +62,7 @@ def _hermetic(monkeypatch):
         lambda: frozenset(sf.SKILL_FAMILIES["core"]["tools"]),
     )
     # S2: no stored skill settings unless a test injects them.
-    monkeypatch.setattr(sk, "_disabled_families_by_agent", lambda: {})
+    monkeypatch.setattr(sk, "_disabled_families_by_agent", lambda _org: {})
     yield
     sf.clear_cost_cache()
 
@@ -79,7 +86,7 @@ async def test_catalog_shape_and_costs(monkeypatch):
     assert out["total_injected_tokens"] > 0
     by_slug = {f["slug"]: f for f in out["families"]}
     assert by_slug["core"]["token_cost"] > 0
-    assert by_slug["core"]["tool_count"] == 20  # 20 with decide (WS-31 CP-13d)
+    assert by_slug["core"]["tool_count"] == 23  # decide (CP-13d), read_attachment (2026-10-09), package_artifacts (2026-10-11), analyze_image (WS-VOX VOX-3)
     assert by_slug["apps"]["dynamic"] is True
     assert by_slug["apps"]["token_cost"] == 0
     assert out["agents"] == []
@@ -111,7 +118,8 @@ async def test_matrix_unscoped_agent_shows_all_families(monkeypatch):
     row = out["agents"][0]
     assert row["all_families"] is True
     assert row["disabled_families"] == []
-    assert set(row["families"]) == set(sf.SKILL_FAMILIES)
+    # Every INJECTED family. No agent is injected with a tool pack (OA-7a).
+    assert set(row["families"]) == set(sf.injected_families())
 
 
 @pytest.mark.asyncio
@@ -121,7 +129,7 @@ async def test_matrix_reflects_stored_skill_settings(monkeypatch):
     _agents(monkeypatch, [{"name": "orchestrator"}], {"orchestrator": None})
     monkeypatch.setattr(
         sk, "_disabled_families_by_agent",
-        lambda: {"orchestrator": frozenset({"memory", "workflows"})},
+        lambda _org: {"orchestrator": frozenset({"memory", "workflows"})},
     )
     out = await sk.skills_catalog(user=USER)
     row = out["agents"][0]

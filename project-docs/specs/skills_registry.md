@@ -118,11 +118,19 @@ panel: family checklist with a live context-cost meter ("enabled: 5 families ·
   subsumes files-artifacts / notes / web-research / most coding), `memory`
   (8), `history` (1), `coding` (3: install_dependency + GitHub code search),
   `workflows` (3, scope-independent), `apps` (dynamic per-grant). email /
-  whatsapp / tasks-gtd / calendar are agents' OWN repo-baked tools (never
-  injected) and join the registry only via the WS-8 manifest work. Measured
+  whatsapp / tasks-gtd / calendar are agents' OWN repo-baked tools, and
+  injection never offers them (see the amendment below). Measured
   baseline (chars/4 run-context tokenizer): full unscoped addendum ≈5.7k
   tokens; addendum + all 34 static tool schemas ≈19.3k, of which the core
   floor is ≈15.1k — the WS-12 Phase-1 instrument now exists.
+
+  **Amended 2026-10-26 (WS-67 OA-7a, D117):** an agent's own tools can join
+  the registry as a tool pack, a family with an `owner` key. The email tools
+  join as the packs `email` and `email-setup` (`one_assistant_context.md`
+  §4.2.1). The catalog shows the cost of a pack, from its owner's tools.
+  Injection never offers a pack, so the agent matrix, the skill index and the
+  injected scope skip it. A pack toggle changes no run until OA-7c. The drift
+  gate checks a pack against its owner, not against injection.
 - **S2 — toggles + enforcement.** Table, PUT API, per-agent panel,
   intersection in `_resolve_injected_scope`. *Done when:* disabling a family
   removes its tools AND its addendum section from the next run (assert on the

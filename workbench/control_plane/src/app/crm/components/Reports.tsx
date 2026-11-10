@@ -22,27 +22,46 @@
  *   · **Orphaned stage names are shown.** Renaming a lane orphans its history
  *     from the funnel, and a total that silently shrank when somebody fixed a
  *     typo is worse than a total with a footnote.
+ *
+ * **The weekly digest** (WS-53 CRM-Q28 item 13). `DigestCard` reads the
+ * newest digest of the org and shows its week, its text, its numbers as a
+ * table and a line that says AI wrote the text from them. The server checked
+ * each number of the text against that table, and this file draws both
+ * verbatim. An org with no digest sees no card.
  */
 
+import { useEffect, useState } from "react";
+
 import Icon from "@/components/Icon";
-import { statusTone } from "../lib/board";
-import { compactMoney, money, shortDate } from "../lib/format";
+import InfoTip from "@/components/ui/InfoTip";
+import { listDigests } from "../lib/api";
+import { stageAccent } from "../lib/board";
+import { useCrmModeValue } from "../lib/modeContext";
+import { money, shortDate } from "../lib/format";
+import { useCompactMoney } from "../lib/useCompactMoney";
 import {
   byWeight,
+  DIGEST_AI_LINE,
+  digestMissing,
+  digestTableRows,
+  digestValue,
+  digestWeekLabel,
   dwellSummary,
   funnelWidths,
   hasFunnel,
   hasOwners,
   hasPipeline,
   hasWinLoss,
+  newestDigest,
   ownerLabel,
   percentLabel,
+  plusLabel,
   pipelineWidths,
   shareOfForecast,
   undatedNotice,
   windowLabel,
 } from "../lib/reports";
-import type { CrmReports } from "../lib/types";
+import type { CrmDigest, CrmReports } from "../lib/types";
 
 export default function Reports({
   reports,
@@ -62,6 +81,7 @@ export default function Reports({
   }
   return (
     <div className="flex-1 space-y-6 overflow-y-auto p-4 sm:p-6">
+      <DigestCard />
       <Forecast reports={reports} />
       <Funnel reports={reports} />
       <div className="grid gap-6 lg:grid-cols-2">
@@ -76,19 +96,31 @@ export default function Reports({
 function Block({
   title,
   blurb,
+  method,
   children,
 }: {
   title: string;
+  /** One short line (CRM-U15). */
   blurb: string;
+  /** How the figures are worked out. It sits behind an info icon. */
+  method?: string;
   children: React.ReactNode;
 }) {
   return (
     <section className="rounded-xl border border-border bg-card p-4 sm:p-5">
       <h2 className="text-sm font-semibold text-foreground">{title}</h2>
-      <p className="mt-0.5 text-xs text-muted-foreground">{blurb}</p>
+      <p className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
+        {blurb}
+        {method && <InfoTip label={`How ${title.toLowerCase()} is worked out`}>{method}</InfoTip>}
+      </p>
       <div className="mt-4">{children}</div>
     </section>
   );
+}
+
+/** A figure and, when the report holds another currency, "plus ..." after it. */
+function withPlus(figure: string, plus: string): string {
+  return plus ? `${figure} · ${plus}` : figure;
 }
 
 function Empty({ children }: { children: React.ReactNode }) {
@@ -117,18 +149,29 @@ function Figure({
 // ── 1 · the forecast ──────────────────────────────────────────────────────
 
 function Forecast({ reports }: { reports: CrmReports }) {
+  const mode = useCrmModeValue();
+  const compact = useCompactMoney();
   const { pipeline } = reports;
   const widths = pipelineWidths(pipeline);
   const ordered = pipeline.stages;
   return (
     <Block
       title="Forecast by stage"
-      blurb="Open and ongoing lanes only. Weighted ₹ is each deal's amount at its own probability, falling back to its stage's default — won is booked revenue, lost is nothing, and a parked deal is nobody's forecast."
+      blurb="Open deals in each stage, with the weighted amount."
+      method="Open and ongoing lanes only. Weighted amount is each deal's amount at its own probability, falling back to its stage's default. Won is booked revenue, lost is nothing, and a parked deal is nobody's forecast."
     >
       <div className="mb-4 grid grid-cols-3 gap-4">
         <Figure label="Open deals" value={String(pipeline.count)} />
-        <Figure label="In the pipeline" value={money(pipeline.amount)} />
-        <Figure label="Weighted" value={money(pipeline.weighted)} />
+        <Figure
+          label="In the pipeline"
+          value={money(pipeline.amount, pipeline.currency)}
+          hint={plusLabel(pipeline.others, (o) => o.amount) || undefined}
+        />
+        <Figure
+          label="Weighted"
+          value={money(pipeline.weighted, pipeline.currency)}
+          hint={plusLabel(pipeline.others, (o) => o.weighted) || undefined}
+        />
       </div>
       {!hasPipeline(pipeline) ? (
         // `hasPipeline` tests whether any open/ongoing STAGE exists, not
@@ -143,7 +186,7 @@ function Forecast({ reports }: { reports: CrmReports }) {
           {ordered.map((stage, index) => (
             <li key={stage.status.id} className="flex items-center gap-3">
               <span
-                className={`h-2 w-2 shrink-0 rounded-full ${statusTone(stage.status)}`}
+                className={`h-2 w-2 shrink-0 rounded-full ${stageAccent(stage.status, mode).dot}`}
                 aria-hidden
               />
               <span className="w-36 shrink-0 truncate text-xs text-foreground">
@@ -159,11 +202,23 @@ function Forecast({ reports }: { reports: CrmReports }) {
                 {stage.count} deals
               </span>
               <span className="w-24 shrink-0 text-right text-xs tabular-nums text-foreground">
-                {compactMoney(stage.weighted)}
+                {compact(stage.weighted, stage.currency)}
               </span>
             </li>
           ))}
         </ul>
+      )}
+      {ordered.some((stage) => (stage.others?.length ?? 0) > 0) && (
+        <p className="mt-3 text-[11px] text-muted-foreground">
+          Weighted in another currency:{" "}
+          {ordered
+            .filter((stage) => (stage.others?.length ?? 0) > 0)
+            .map(
+              (stage) =>
+                `${stage.status.name} ${plusLabel(stage.others, (o) => o.weighted)}`
+            )
+            .join(" · ")}
+        </p>
       )}
       {hasPipeline(pipeline) && (
         <p className="mt-3 text-[11px] text-muted-foreground">
@@ -184,12 +239,14 @@ function Forecast({ reports }: { reports: CrmReports }) {
 // ── 2 · the funnel ────────────────────────────────────────────────────────
 
 function Funnel({ reports }: { reports: CrmReports }) {
+  const mode = useCrmModeValue();
   const { funnel } = reports;
   const widths = funnelWidths(funnel);
   return (
     <Block
       title="Funnel"
-      blurb="A deal counts in every stage it has visited — its current one included, which is the only one an imported deal has. Conversion is “ever got past this stage”, not “went to the next one”."
+      blurb="How many deals reached each stage."
+      method="A deal counts in every stage it has visited, its current one included. An imported deal has only its current one. Conversion is “ever got past this stage”, not “went to the next one”."
     >
       {!hasFunnel(funnel) ? (
         <Empty>No deals yet, so no funnel.</Empty>
@@ -200,7 +257,7 @@ function Funnel({ reports }: { reports: CrmReports }) {
               <li key={stage.status.id}>
                 <div className="flex items-center gap-3">
                   <span
-                    className={`h-2 w-2 shrink-0 rounded-full ${statusTone(stage.status)}`}
+                    className={`h-2 w-2 shrink-0 rounded-full ${stageAccent(stage.status, mode).dot}`}
                     aria-hidden
                   />
                   <span className="w-36 shrink-0 truncate text-xs text-foreground">
@@ -254,6 +311,7 @@ function Funnel({ reports }: { reports: CrmReports }) {
 
 function WinLoss({ reports }: { reports: CrmReports }) {
   const { winLoss } = reports;
+  const compact = useCompactMoney();
   const notice = undatedNotice(winLoss);
   return (
     <Block
@@ -269,12 +327,18 @@ function WinLoss({ reports }: { reports: CrmReports }) {
             <Figure
               label="Won"
               value={String(winLoss.won)}
-              hint={compactMoney(winLoss.won_amount)}
+              hint={withPlus(
+                compact(winLoss.won_amount, winLoss.currency),
+                plusLabel(winLoss.others, (o) => o.won_amount)
+              )}
             />
             <Figure
               label="Lost"
               value={String(winLoss.lost)}
-              hint={compactMoney(winLoss.lost_amount)}
+              hint={withPlus(
+                compact(winLoss.lost_amount, winLoss.currency),
+                plusLabel(winLoss.others, (o) => o.lost_amount)
+              )}
             />
             <Figure
               label="Average cycle"
@@ -303,7 +367,11 @@ function WinLoss({ reports }: { reports: CrmReports }) {
                     {reason.label}
                   </span>
                   <span className="shrink-0 tabular-nums text-muted-foreground">
-                    {reason.deals} · {compactMoney(reason.amount)}
+                    {reason.deals} ·{" "}
+                    {withPlus(
+                      compact(reason.amount, reason.currency),
+                      plusLabel(reason.others, (o) => o.amount)
+                    )}
                   </span>
                 </li>
               ))}
@@ -325,10 +393,11 @@ function WinLoss({ reports }: { reports: CrmReports }) {
 
 function Leaderboard({ reports }: { reports: CrmReports }) {
   const { owners } = reports;
+  const compact = useCompactMoney();
   return (
     <Block
       title="By owner"
-      blurb={`Who is carrying what. Won ₹ is ${windowLabel(owners.window_days)}, the same window as win / loss.`}
+      blurb={`Open and won deals for each owner. Won is ${windowLabel(owners.window_days)}.`}
     >
       {!hasOwners(owners) ? (
         <Empty>No deals are assigned yet.</Empty>
@@ -352,10 +421,20 @@ function Leaderboard({ reports }: { reports: CrmReports }) {
                   {row.open_deals}
                 </td>
                 <td className="py-1.5 text-right tabular-nums text-foreground">
-                  {compactMoney(row.weighted)}
+                  {compact(row.weighted, row.currency)}
+                  {(row.others?.length ?? 0) > 0 && (
+                    <span className="block text-[11px] text-muted-foreground">
+                      {plusLabel(row.others, (o) => o.weighted)}
+                    </span>
+                  )}
                 </td>
                 <td className="py-1.5 text-right tabular-nums text-muted-foreground">
-                  {compactMoney(row.won_amount)}
+                  {compact(row.won_amount, row.currency)}
+                  {(row.others?.length ?? 0) > 0 && (
+                    <span className="block text-[11px]">
+                      {plusLabel(row.others, (o) => o.won_amount)}
+                    </span>
+                  )}
                 </td>
               </tr>
             ))}
@@ -366,6 +445,74 @@ function Leaderboard({ reports }: { reports: CrmReports }) {
         <p className="mt-3 text-[11px] text-muted-foreground">
           {owners.omitted} more owner(s) not shown — the leaderboard is capped,
           and says so rather than looking complete.
+        </p>
+      )}
+    </Block>
+  );
+}
+
+// ── 5 · the weekly digest (WS-53 CRM-Q28) ─────────────────────────────────
+
+/**
+ * Loads the newest digest. A failed read and an empty list draw nothing:
+ * the digest is extra, and the four blocks below must not wait for it.
+ */
+function DigestCard() {
+  const [digest, setDigest] = useState<CrmDigest | null>(null);
+  useEffect(() => {
+    let live = true;
+    listDigests(4)
+      .then((digests) => {
+        if (live) setDigest(newestDigest(digests));
+      })
+      .catch(() => {
+        if (live) setDigest(null);
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
+  return digest ? <DigestCardView digest={digest} /> : null;
+}
+
+/** The newest digest: its week, its text, its numbers and the AI line. */
+export function DigestCardView({ digest }: { digest: CrmDigest }) {
+  const rows = digestTableRows(digest.numbers);
+  const missing = digestMissing(digest.numbers);
+  return (
+    <Block title="Weekly digest" blurb={digestWeekLabel(digest)}>
+      <p className="whitespace-pre-line text-sm text-foreground">{digest.text}</p>
+      <div className="mt-3 flex items-start gap-2 rounded-lg border border-border bg-secondary p-2.5">
+        <Icon name="Sparkles" className="mt-0.5 h-3.5 w-3.5 text-muted-foreground" />
+        <p className="text-[11px] text-muted-foreground" data-digest-ai-line>
+          {DIGEST_AI_LINE}
+        </p>
+      </div>
+      {rows.length > 0 && (
+        <table className="mt-4 w-full text-xs">
+          <thead>
+            <tr className="text-muted-foreground">
+              <th className="pb-2 text-left font-normal">Part</th>
+              <th className="pb-2 text-left font-normal">Group</th>
+              <th className="pb-2 text-right font-normal">Number</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, index) => (
+              <tr key={`${row.part}-${row.label}-${index}`} className="border-t border-border">
+                <td className="max-w-[14rem] truncate py-1.5 text-muted-foreground">{row.part}</td>
+                <td className="max-w-[12rem] truncate py-1.5 text-foreground">{row.label}</td>
+                <td className="py-1.5 text-right tabular-nums text-foreground">
+                  {digestValue(row)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {missing.length > 0 && (
+        <p className="mt-3 text-[11px] text-muted-foreground">
+          Not counted this week: {missing.join(", ")}.
         </p>
       )}
     </Block>

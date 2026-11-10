@@ -31,6 +31,10 @@ _PERSONAL = (_REPO / "apps" / "services" / "gateway" / "gateway" / "routes"
              / "projects" / "personal.py")
 _TREE = (_REPO / "apps" / "services" / "gateway" / "gateway" / "routes"
          / "projects" / "tree.py")
+#: WS-64 OP-11: the arms of MY_TASKS_FROM moved into `core.mine_clause`, the
+#: one definition of "mine", and MY_TASKS_FROM composes it.
+_CORE = (_REPO / "apps" / "services" / "gateway" / "gateway" / "routes"
+         / "projects" / "core.py")
 
 
 def _read(path: Path) -> str:
@@ -99,7 +103,10 @@ def test_the_projects_app_still_excludes_every_private_row() -> None:
 
 def test_the_tasks_lens_still_includes_every_private_row() -> None:
     """191's visibility half, and it must stay depth-agnostic."""
-    body = _read(_PERSONAL)
+    assert 'mine_clause("t")' in _read(_PERSONAL), (
+        "MY_TASKS_FROM no longer composes core.mine_clause, the one 'mine'"
+    )
+    body = _read(_CORE)
     assert re.search(r"lower\(proj\.personal_owner\)\s*=\s*:who", body), (
         "MY_TASKS_FROM no longer matches on `proj.personal_owner`. Since "
         "migration 191 that arm is what puts a member's categories — and the "
@@ -108,7 +115,7 @@ def test_the_tasks_lens_still_includes_every_private_row() -> None:
     )
     # ⚠️ Narrowing this arm to the root would compile, pass every other test,
     # and silently hide every categorised task from the member who filed it.
-    arm = re.search(r"OR lower\(proj\.personal_owner\) = :who[^\n]*\n", body)
+    arm = re.search(r'"personal": \((?:[^)]|\)(?!,\n))*\),\n', body)
     assert arm and "parent_project_id" not in arm.group(0), (
         "MY_TASKS_FROM's ownership arm must NOT be narrowed to the root — the "
         "lens is meant to see the whole private tree, at every depth"

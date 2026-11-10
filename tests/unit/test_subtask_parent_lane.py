@@ -42,7 +42,8 @@ def db(monkeypatch: pytest.MonkeyPatch) -> FakeProjectsDB:
 def _board(db: FakeProjectsDB):
     """A project whose FIRST lane is Backlog, so the first-lane rule and the
     parent's lane give different answers."""
-    project = db.seed_project(name="Website")
+    # In a space: a space holds no tasks (`core.assert_holds_tasks`).
+    project = db.seed_in_space(name="Website")
     lanes = {
         "backlog": db.seed_status(project.id, name="Backlog", category="backlog",
                                   position=0),
@@ -101,7 +102,7 @@ async def test_a_parent_in_another_status_set_falls_back(
     """The parent's lane belongs to another project's set. The step cannot
     hold it, so it takes the first lane of its own set."""
     project, lanes = _board(db)
-    other = db.seed_project(name="Elsewhere")
+    other = db.seed_in_space(name="Elsewhere", space="Other")
     theirs = db.seed_status(other.id, name="Doing", category="in_progress",
                             position=0)
     parent = db.seed_task(other.id, theirs.id, title="Their parent")

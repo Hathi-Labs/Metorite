@@ -16,7 +16,7 @@
 >
 > **Isolation ladder (R2).** This doc's Phase-5 build order is lettered **P5-a/b/c/d**.
 > The **isolation-strength ladder is T0/T1/T2**, defined once in
-> [`agent_platform_hardening_2026-07.md`](agent_platform_hardening_2026-07.md) §1.2 and
+> `agent_platform_hardening_2026-07.md` §1.2 and
 > implemented in `AgentManifest.isolation_tier()`. Until 2026-08-03 this doc used
 > "Tier 0/1/2/3" for its build order while the hardening doc used "T0/T1/T2" for
 > isolation strength — two incompatible ladders inside one board cell. They are not the
@@ -97,6 +97,13 @@ file-write-scope check (the same plain-dict context the tools already use).
 > discrepancy: the code's *default* is the enforcing mode, but **prod is pinned
 > to `audit`** (see the 2026-07-03 production-verification entry below), so
 > reading this section's "default" as the live posture is wrong.
+>
+> ⚠️ **Corrected 2026-10-03: production runs `enforce`, not `audit`.** The
+> PR #598 reviewer read the box. `/opt/acb/app/.env` has no
+> `AGENT_PERMISSION_MODE` line, so `_mode()` falls back to `enforce`. All 70
+> `permission.decision` lines of the 14 days to 2026-10-03 read
+> `mode=enforce`. So the B6 refusals are live on production today. A switch to
+> another mode is still the owner's act (`work_plan.md` §6).
 
 ## Wiring
 Replace `_PH.approve_all` at all five executor sites with our handler (guarded:
@@ -159,6 +166,9 @@ shell/file/network requests surface.
   ~9s) and set `LOG_FORMAT=json` on the VPS (logs are now JSON, run-correlated).
   Prod is in `AGENT_PERMISSION_MODE=audit` (log-only) pending review of the
   decision stream before flipping to `enforce`.
+  ⚠️ **Corrected 2026-10-03:** production runs `enforce`. The box's `.env`
+  sets no mode, and the 70 decision lines of the 14 days to that date read
+  `mode=enforce` (the PR #598 reviewer).
 
 ---
 
@@ -189,7 +199,7 @@ re-checked against the tree at `2ccff9e0` before being written here.
 
 **Cross-doc pointer (contract point 6).** The **build record** for the 2026-07-27 work is
 not in this file — it lives in
-[`competitive_hardening_2026-07.md`](competitive_hardening_2026-07.md)`:119-141` (the
+`competitive_hardening_2026-07.md``:119-141` (the
 `2026-07-27 — BO-7 progress, in two passes` log entry). That is a fourth doc describing
 this board cell, alongside this spec, `agent_platform_hardening_2026-07.md` Part 1, and
 `FOUNDATION_BUILDOUT_CHECKLIST.md` §BO‑7. **This spec is the owner**; the other three
@@ -353,6 +363,12 @@ not part of WS-3a; it stays as an unowned residual.
 
 ### P5-a.2 — **WS-3a · Record the derived tier, and refuse a run we cannot isolate** — 🔲 **AGENT-SAFE, dispatchable**
 
+> ⚠️ **Amended 2026-10-03 (`maf_coding_engine.md` §9 WS43-S3).** Done-when 3
+> below reads `copilot_sandbox_scope` as the coverage test. When WS-3a is
+> built, it reads `sandbox_broker.covers(agent, org)` in its place. WS-43 owns
+> that predicate (`maf_coding_engine.md` §7.7). Until WS-43f, it returns
+> `False` for every agent. Measured 2026-10-03: WS-3a is not built (H-213).
+
 The tier is already derived and immediately discarded (see §"What actually
 shipped"). This slice makes it a **record** and a **gate**. It builds no
 container and changes no isolation mechanism — it makes the ladder observable
@@ -511,6 +527,12 @@ An agent asked to "finish P5-b" builds **P5-b.2 only** and refuses this by name.
 
 ### P5-c — Generalize the container to a live, streaming run sandbox — 🔲 **PARKED SUB-PROJECT** (owner decision 2026-08-03) · **OWNER-GATE to un-park**
 
+> ⚠️ **Amended 2026-10-03 by D83 (owner decision).** The owner un-parked T2
+> for one kind of container only: the WS-43 sandbox terminal, which runs the
+> shell commands of the coding engine (`maf_coding_engine.md` §3). P5-c itself
+> stays parked. It lifts a whole agent run into a container, and D83 does not
+> cover that. An agent still refuses P5-c and P5-d by name.
+
 > ⚠️ **Read the D16 update at the end of this box first (2026-08-09):** the parking
 > survives but the premise below is dated and the un-park trigger changed — it is the
 > **pooled cutover**, not "a second organisation".
@@ -582,7 +604,9 @@ objection). Layer intent-level authorization over allow-everything.
 >
 > The one piece of P5-d that is separable is the **near-term handler's mode**,
 > which already exists: prod runs `AGENT_PERMISSION_MODE` in `audit` and moving
-> it to enforcement is **OWNER-GATE** (`work_plan.md` §6). That flip does not
+> it to enforcement is **OWNER-GATE** (`work_plan.md` §6). ⚠️ **Corrected
+> 2026-10-03:** production already runs `enforce`, because the box's `.env`
+> sets no mode (the PR #598 reviewer). That flip does not
 > need P5-c and does not need this section — it needs someone to read the
 > decision stream. Everything else here (intent-level authorization over a
 > default-deny surface) stays parked with P5-c and gets **no acceptance**.

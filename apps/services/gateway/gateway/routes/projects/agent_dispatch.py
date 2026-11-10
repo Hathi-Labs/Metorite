@@ -35,11 +35,48 @@ therefore a WARNING log line (`projects.agent_dispatch_refused`), not a
 timeline row. Fenced by `tests/unit/test_projects_automation.py`'s
 `test_an_event_without_a_tenant_refuses_*` and by
 `tests/unit/test_db_engine_seam.py`, which no longer exempts this file.
+
+**The run gets a dict, and the member gets its reply.** From WS-27f
+(2026-08-06) until 2026-10-04 this sink handed `run_agent` the task text as a
+string. `run_agent` takes a dict payload, so every dispatched run failed with
+`'str' object has no attribute 'keys'` before the agent read a word. Every
+test replaced the run with a fake that accepted any message.
+`run_payload` and `reply_text` are now the two halves of that contract, and
+`tests/unit/test_projects_agent_dispatch_run.py` runs the real sink through
+the real executor on a real Postgres.
+
+**Dark by default: `PROJECTS_AGENT_DISPATCH`.** A dispatched run spends the
+org's AI credits, and §9.12.10 keeps "Assign to AI" parked. With the flag OFF
+the sink starts no run. It writes one `agent_run` row that says the feature
+is not switched on, and logs `projects.agent_dispatch_disabled` at INFO. The
+flip is the owner's (`work_plan.md` §6). Fenced by both suites named above.
+
+**The run is started, never awaited.** `PUT /tasks/{id}/assignees` awaits
+`emit`, which awaits every sink. A sink that awaited the run held the
+member's request open for the whole run. `on_event` therefore writes the
+handoff row, starts one task per agent, and returns.
+
+**The run acts for the member who assigned the task (H-240, 2026-11-07).**
+The emitter puts the signed-in assigner on the event under
+:data:`MEMBER_KEY`, from the verified session and never from the body
+(:func:`assigning_member`). The sink hands that member to `run_agent` as
+``session_user``, the keyword no request body can set, and as the run's own
+``user_email``. That is the idiom of `routes/agent.py` `run_agent_sync`:
+``_session_member`` names the member, and ``_drop_identity_claims`` keeps
+only the session's own claim. The executor then binds the member VERIFIED,
+and a `skill-projects` call reaches the gateway as that member, so the
+server limits each write to what the member may do. An event with no member
+(a signed outside agent, a service caller, an inactive member) runs as
+before, with no acting user, and its gateway calls refuse. Fences:
+`tests/unit/test_projects_agent_dispatch_run.py` (R8) and
+`tests/unit/test_projects_automation.py`.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
+from collections.abc import Coroutine
 from typing import Any
 
 from acb_common import get_logger
@@ -54,6 +91,7 @@ from acb_common import get_logger
 # module that opens a session without one.
 from gateway.db import tenant_session as _tenant_session
 from gateway.routes.projects.core import (
+    _TRUTHY,
     is_runnable_with_ancestors,
     record_activity,
 )
@@ -68,6 +106,54 @@ AGENT_PREFIX = "agent:"
 #: Matches the workflows engine's agent-node budget — the same runtime, so a
 #: different number here would only mean one of the two is lying.
 AGENT_RUN_TIMEOUT_SECONDS = 600.0
+
+#: What `payload.source` says for a run this sink starts. The executor binds it
+#: into the run's context, so the usage and the logs name where a run came from.
+RUN_SOURCE = "projects.agent_dispatch"
+
+#: Ship dark (2026-10-04). A dispatched run spends the org's AI credits, and
+#: `project_management_app.md` §9.12.10 keeps "Assign to AI" parked. The flip
+#: is the owner's (`work_plan.md` §6). Read at call time, like
+#: `PROJECTS_ORG_VOCABULARIES`, so the flip is a restart and not a release.
+DISPATCH_FLAG = "PROJECTS_AGENT_DISPATCH"
+
+#: The one row a member sees when the flag is OFF.
+DISABLED_BODY = (
+    "Assigning work to an AI agent is not switched on for this workspace."
+)
+
+#: The fixed half of a failed row. The exception's text can carry SQL or an
+#: internal URL, so it goes to the WARNING log, and the member reads only the
+#: exception's type and this sentence.
+FAILED_HINT = (
+    "The details are in the gateway log. Assign the task again to retry."
+)
+
+#: The closing row of a run that a restart cancelled.
+INTERRUPTED_DETAIL = "interrupted by a restart"
+
+#: How long a cancelled run may take to write its closing row.
+INTERRUPTED_WRITE_SECONDS = 5.0
+
+#: The longest reply the closing timeline row keeps.
+REPLY_LIMIT = 2000
+
+#: The runs this sink started that have not ended. asyncio holds a task by a
+#: weak reference only, so a run that nothing holds can be collected while it
+#: is still running. Each task leaves this set when it is done.
+_RUNS: set[asyncio.Task[None]] = set()
+
+#: The ``(task_id, agent)`` pairs that have a live run (H-240). A run acts as
+#: its member, so it can assign the task again. Without this check, an agent
+#: that takes itself off a task and puts itself back starts a second run of
+#: itself, and that run can do the same. A pair leaves when its run ends.
+_LIVE: set[tuple[str, str]] = set()
+
+#: The event key that names the member who assigned the task (H-240). Only
+#: the gateway's own emitter writes it, from the verified session
+#: (:func:`assigning_member`). `tests/unit/test_projects_automation.py` fences
+#: that no other code can publish a ``projects`` event.
+MEMBER_KEY = "assigned_by"
 
 
 def agent_targets(assignees: Any) -> list[str]:
@@ -106,6 +192,141 @@ def build_message(task: Any) -> str:
         parts.append(description)
     parts.append(f"The task id is {task.id}.")
     return "\n\n".join(parts)
+
+
+def dispatch_enabled() -> bool:
+    """Is a dispatched run released? Default **OFF**, and fail closed.
+
+    Any value outside `_TRUTHY` reads as OFF. OFF means no run starts and
+    nothing is spent. The sink writes one timeline row so that the member
+    knows the assignment did not reach an agent.
+    """
+    import os
+
+    return (os.environ.get(DISPATCH_FLAG) or "").strip().lower() in _TRUTHY
+
+
+def run_payload(message: str, member: str = "") -> dict[str, Any]:
+    """The event payload `run_agent` is handed. A dict, never the bare text.
+
+    The same keys the other batch callers send: the workflows agent node and
+    the sub-agent path in `executor.py`. `message` is what the agent reads.
+    ⚠️ The tenant is NOT a key here. It goes to `run_agent` as the
+    `organization_id` keyword, because the payload is agent-visible and a
+    tenant read from it is a spoofing hole (R5, R11).
+
+    *member* (H-240) is the verified assigner, or ``""``. The executor binds
+    the acting user of the gateway-calling tools from ``user_email``
+    (``executor._bind_run_identity``), so the member goes here too. It is
+    the same address as ``session_user``, which is what
+    ``routes/agent._drop_identity_claims(keep_own=True)`` leaves in a
+    ``/agent/run`` body. No caller's body reaches this dict.
+    """
+    payload: dict[str, Any] = {
+        "message": message, "mode": "sub_task", "source": RUN_SOURCE,
+    }
+    if member:
+        payload["user_email"] = member
+    return payload
+
+
+def assigning_member(user: Any) -> str:
+    """The member a dispatched run acts for, from the verified session, or ``""``.
+
+    The emitter calls this with the request's ``UserContext``, never with a
+    body field (R11). ``routes/agent._session_member`` decides what counts as
+    a person, so a service caller (``system:internal``) names nobody. Two more
+    cases name nobody:
+
+    * a signed outside agent (``user.agent`` set). Its scope is narrower
+      than its member's, and a run as the member would widen it;
+    * a member whose access is not active. A run must not act for a person
+      the organization has suspended.
+
+    ``""`` keeps the run as it was before H-240: no acting user.
+    """
+    if getattr(user, "agent", None) is not None:
+        return ""
+    if not getattr(getattr(user, "access", None), "is_active", False):
+        return ""
+    from gateway.routes.agent import _session_member
+
+    return _session_member(user) or ""
+
+
+def event_member(payload: dict[str, Any]) -> str:
+    """The member the event names under :data:`MEMBER_KEY`, or ``""``.
+
+    The value is one the gateway's emitter wrote (:func:`assigning_member`).
+    A value that is not a plain address (no ``@``, or a ``:`` such as
+    ``agent:x``) reads as nobody, so a run never acts as an agent key.
+    """
+    member = str(payload.get(MEMBER_KEY) or "").strip()
+    if "@" not in member or ":" in member:
+        return ""
+    return member
+
+
+def reply_text(result: Any) -> str:
+    """The agent's reply in a `run_agent` result, or ``""``.
+
+    `run_agent` returns a dict that carries the reply under ``result`` and
+    ``answer``. This reads it the way `orchestrator/agents.py` does. The
+    timeline shows a member the reply, never the dict around it.
+    """
+    if not isinstance(result, dict):
+        return str(result or "")
+    reply = result.get("result") or result.get("answer") or ""
+    if isinstance(reply, dict):
+        reply = reply.get("content") or ""
+    return str(reply or "")
+
+
+def _start(
+    run: Coroutine[Any, Any, None], key: tuple[str, str] | None = None,
+) -> asyncio.Task[None]:
+    """Start one run in the background and hold it until it ends.
+
+    *key* is the run's ``(task_id, agent)`` pair. It stays in :data:`_LIVE`
+    until the run ends.
+    """
+    task = asyncio.get_running_loop().create_task(run)
+    _RUNS.add(task)
+    task.add_done_callback(_RUNS.discard)
+    if key is not None:
+        _LIVE.add(key)
+        task.add_done_callback(lambda _t: _LIVE.discard(key))
+    return task
+
+
+def live_run_count() -> int:
+    """How many runs this sink started have not ended (``GET /internal/drain``)."""
+    return sum(1 for task in list(_RUNS) if not task.done())
+
+
+async def stop_runs(timeout: float = INTERRUPTED_WRITE_SECONDS + 1.0) -> None:
+    """Cancel every run this sink started, and wait briefly for each to close.
+
+    The gateway lifespan calls this on shutdown. Each cancelled run writes its
+    "interrupted by a restart" row before it ends, so no task keeps a
+    "started" row that nothing closes. Bounded, so a wedged database cannot
+    hold the shutdown open.
+    """
+    runs = list(_RUNS)
+    for task in runs:
+        task.cancel()
+    if runs:
+        await asyncio.wait(runs, timeout=timeout)
+
+
+async def wait_for_runs() -> None:
+    """Wait until every run this sink started has ended.
+
+    For a caller that must see the outcome rows, such as a test or a
+    shutdown hook. The sink itself never waits.
+    """
+    while _RUNS:
+        await asyncio.gather(*list(_RUNS), return_exceptions=True)
 
 
 def event_tenant(payload: dict[str, Any]) -> str:
@@ -158,66 +379,121 @@ async def on_event(source: str, event_type: str, payload: dict[str, Any]) -> Non
         )
         return
 
-    async with _tenant_session(organization_id) as db:
-        task = (await db.execute(
-            text("SELECT * FROM pm_tasks WHERE id = CAST(:tid AS uuid)"),
-            {"tid": task_id},
-        )).fetchone()
-        if task is None:
-            return
+    # H-240: the pairs this event holds in `_LIVE`. A failure before the
+    # runs start, the commit included, gives them back.
+    held: list[tuple[str, str]] = []
+    try:
+        async with _tenant_session(organization_id) as db:
+            task = (await db.execute(
+                text("SELECT * FROM pm_tasks WHERE id = CAST(:tid AS uuid)"),
+                {"tid": task_id},
+            )).fetchone()
+            if task is None:
+                return
 
-        # WS-27bg. An agent is not put to work inside a project that is not
-        # running. Assignment in a paused project is planning ("this is yours
-        # when we restart"), and dispatching on it would have an agent burn
-        # budget on work the org has explicitly suspended.
-        #
-        # A WARNING rather than a timeline row, for the same reason the tenant
-        # refusal above is: this is a sink, and the decision belongs in the log
-        # where an operator looks, not in the activity feed of a project nobody
-        # is reading.
-        # Ancestor-aware: an agent must not be put to work inside an active
-        # subproject of a PAUSED department. Reading the immediate project
-        # alone was the slice-1 defect (see `is_runnable_with_ancestors`).
-        if not await is_runnable_with_ancestors(
-            db, getattr(task, "project_id", None)
-        ):
-            _log.warning(
-                "projects.agent_dispatch_skipped", task_id=task_id,
-                agents=agents,
-                reason="the task's project (or one above it) is not running "
-                       "(WS-27bg)",
-            )
-            return
+            # WS-27bg. An agent is not put to work inside a project that is not
+            # running. Assignment in a paused project is planning ("this is yours
+            # when we restart"), and dispatching on it would have an agent burn
+            # budget on work the org has explicitly suspended.
+            #
+            # A WARNING rather than a timeline row, for the same reason the tenant
+            # refusal above is: this is a sink, and the decision belongs in the log
+            # where an operator looks, not in the activity feed of a project nobody
+            # is reading.
+            # Ancestor-aware: an agent must not be put to work inside an active
+            # subproject of a PAUSED department. Reading the immediate project
+            # alone was the slice-1 defect (see `is_runnable_with_ancestors`).
+            if not await is_runnable_with_ancestors(
+                db, getattr(task, "project_id", None)
+            ):
+                _log.warning(
+                    "projects.agent_dispatch_skipped", task_id=task_id,
+                    agents=agents,
+                    reason="the task's project (or one above it) is not running "
+                           "(WS-27bg)",
+                )
+                return
 
-        message = build_message(task)
-        for name in agents:
-            # The timeline entry is written and COMMITTED before the run
-            # starts — the `_tenant_session` block commits on exit, which is
-            # BEFORE the dispatch loop below — so the handoff is visible
-            # immediately rather than when the agent finishes.
-            await record_activity(
-                db, activity_type="agent_run", created_by=f"{AGENT_PREFIX}{name}",
-                task_id=task_id, body=f"Assigned to {name}; starting a run.",
-                meta={"agent": name, "state": "started"},
-            )
+            # Ship dark. OFF: one row the member reads, an INFO line, no run.
+            # Checked after the task and the run state, so a paused project stays
+            # as quiet as it was, and before any `agent_run` "started" row.
+            if not dispatch_enabled():
+                await record_activity(
+                    db, activity_type="agent_run",
+                    created_by=f"{AGENT_PREFIX}{agents[0]}",
+                    task_id=task_id, body=DISABLED_BODY,
+                    meta={"agent": agents[0], "agents": agents,
+                          "state": "disabled"},
+                )
+                _log.info(
+                    "projects.agent_dispatch_disabled", task_id=task_id,
+                    agents=agents, flag=DISPATCH_FLAG,
+                )
+                return
 
+            # H-240: no second run of an agent on a task while its first one
+            # lives. The run acts as its member, so it can assign the task again,
+            # and an agent that puts itself back on the task must not start a
+            # copy of itself. The pairs are held from here, so a second event
+            # that arrives while this one writes its rows is skipped too.
+            busy = [name for name in agents if (task_id, name) in _LIVE]
+            if busy:
+                _log.warning(
+                    "projects.agent_dispatch_already_running", task_id=task_id,
+                    agents=busy,
+                )
+            agents = [name for name in agents if name not in busy]
+            if not agents:
+                return
+            held = [(task_id, name) for name in agents]
+            _LIVE.update(held)
+
+            message = build_message(task)
+            for name in agents:
+                # The timeline entry is written and COMMITTED before the run
+                # starts — the `_tenant_session` block commits on exit, which is
+                # BEFORE the dispatch loop below — so the handoff is visible
+                # immediately rather than when the agent finishes.
+                await record_activity(
+                    db, activity_type="agent_run", created_by=f"{AGENT_PREFIX}{name}",
+                    task_id=task_id, body=f"Assigned to {name}; starting a run.",
+                    meta={"agent": name, "state": "started"},
+                )
+    except BaseException:
+        _LIVE.difference_update(held)
+        raise
+
+    # H-240: the member the gateway's emitter wrote, or "" (no acting user).
+    member = event_member(payload)
+    # Started, never awaited: `set_assignees` awaits this sink, so awaiting the
+    # run here held the member's request open until the agent finished. One
+    # task per agent, so a second agent does not wait for the first.
     for name in agents:
-        await _run_and_record(name, message, task_id, organization_id)
+        _start(
+            _run_and_record(name, message, task_id, organization_id, member),
+            key=(task_id, name),
+        )
 
 
 async def _run_and_record(
     agent: str, message: str, task_id: str, organization_id: str,
+    member: str = "",
 ) -> None:
     """Run one agent and close its timeline entry either way.
 
     A dispatch that fails silently is worse than one that never started: the
     task shows a session that appears to still be running and nobody knows to
-    pick the work back up. So the failure path writes too.
+    pick the work back up. So the failure path writes too, and it logs a
+    WARNING, because a row on a task nobody opens is not a signal to anyone.
 
     ``organization_id`` is threaded down rather than re-read: this coroutine
     outlives the transaction that started it, so there is nothing left to read
     it from, and re-resolving it would be a second answer to a question the
     event already settled.
+
+    ``member`` (H-240) is the verified assigner from the event, or ``""``.
+    It goes to `run_agent` as ``session_user``, never as a bare payload key
+    that a caller could write.
     """
     try:
         from orchestrator.executor import run_agent
@@ -231,38 +507,82 @@ async def _run_and_record(
 
     try:
         result = await asyncio.wait_for(
+            # A dict payload, never the bare text (see `run_payload`).
             # H-201 part 3: the run needs its tenant for its working dir. A
             # shared agent with no tenant is refused. The org is the one the
             # server-side event carries, and the task row was found in it.
-            run_agent(agent, message, organization_id=organization_id),
+            # WS-63 PZ-2 (personalization.md §5.1): the reply goes to the
+            # task timeline, which other members read. The run is never solo,
+            # whatever context started it, so it gets no profile block.
+            # H-240: the assigner, verified by the gateway's emitter, is the
+            # run's member. ``None`` keeps a run with no member as it was.
+            run_agent(
+                agent, run_payload(message, member),
+                organization_id=organization_id,
+                session_user=member or None,
+                solo_room=False,
+            ),
             timeout=AGENT_RUN_TIMEOUT_SECONDS,
         )
+    except asyncio.CancelledError:
+        # A restart, or `stop_runs`. CancelledError is not an Exception, so
+        # without this clause the "started" row stays open for ever. The write
+        # is shielded and bounded, and the cancellation is re-raised.
+        _log.warning(
+            "projects.agent_dispatch_failed", task_id=task_id, agent=agent,
+            error=INTERRUPTED_DETAIL,
+        )
+        with contextlib.suppress(Exception, asyncio.CancelledError):
+            await asyncio.wait_for(
+                asyncio.shield(_record_outcome(
+                    task_id, agent, organization_id,
+                    ok=False, detail=INTERRUPTED_DETAIL,
+                )),
+                timeout=INTERRUPTED_WRITE_SECONDS,
+            )
+        raise
     except TimeoutError:
+        _log.warning(
+            "projects.agent_dispatch_failed", task_id=task_id, agent=agent,
+            error="timed out", timeout_s=AGENT_RUN_TIMEOUT_SECONDS,
+        )
         await _record_outcome(
             task_id, agent, organization_id, ok=False, detail="timed out",
         )
         return
     except Exception as exc:
+        kind = type(exc).__name__
+        # The detail is for the operator. The member reads the type only.
+        _log.warning(
+            "projects.agent_dispatch_failed", task_id=task_id, agent=agent,
+            error=(str(exc) or kind)[:300], error_type=kind,
+        )
         await _record_outcome(
-            task_id, agent, organization_id, ok=False, detail=str(exc)[:300],
+            task_id, agent, organization_id, ok=False, detail="",
+            body=f"Agent run failed ({kind}). {FAILED_HINT}",
         )
         return
+    reply = reply_text(result).strip()
     await _record_outcome(
         task_id, agent, organization_id,
-        ok=True, detail=str(result or "")[:2000],
+        ok=True, detail=reply[:REPLY_LIMIT] or "Finished with no reply.",
     )
 
 
 async def _record_outcome(
     task_id: str, agent: str, organization_id: str, *, ok: bool, detail: str,
+    body: str | None = None,
 ) -> None:
+    """Write the closing row. ``body`` replaces the text built from ``detail``."""
+    if body is None:
+        body = detail if ok else f"Agent run failed: {detail}"
     try:
         async with _tenant_session(organization_id) as db:
             await record_activity(
                 db, activity_type="agent_run",
                 created_by=f"{AGENT_PREFIX}{agent}",
                 task_id=task_id,
-                body=detail if ok else f"Agent run failed: {detail}",
+                body=body,
                 meta={"agent": agent, "state": "finished" if ok else "failed"},
             )
     except Exception as exc:  # pragma: no cover — the outcome write is best-effort

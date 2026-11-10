@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
 from gateway.routes.workflows.engine.graph import validate_graph
 from gateway.routes.workflows.tools import destructive_action_names
 from orchestrator import workflow_tools
@@ -114,16 +115,35 @@ def test_gate_is_context_gated_not_structural() -> None:
 # ── Workflow tools (orchestrator side) ──────────────────────────────────────
 
 
+#: The org these hermetic tests bind as the run's tenant. The real binding
+#: and the real service under FORCE RLS: ``test_workflows_tool_rls_r8.py``.
+_ORG = "00000000-0000-0000-0000-00000000f13a"
+
+
+@pytest.fixture
+def bound_org():
+    """Bind the run's tenant the way ``run_agent_stream`` binds it."""
+    from acb_common.db import bind_tenant, release_tenant
+
+    token = bind_tenant(_ORG)
+    try:
+        yield _ORG
+    finally:
+        release_tenant(token)
+
+
 def _patch_service(monkeypatch, **overrides) -> dict:
     """Monkeypatch the gateway service helpers workflow_tools calls."""
     import gateway.routes.workflows.service as svc
 
-    calls: dict = {"run": [], "summary": []}
+    calls: dict = {"run": [], "summary": [], "orgs": []}
 
-    async def list_published_workflows():
+    async def list_published_workflows(*, organization_id):
+        calls["orgs"].append(organization_id)
         return [{"id": "w1", "name": "Lead intake", "description": "…", "version": 3}]
 
-    async def run_published_workflow(ref, payload, *, started_by):
+    async def run_published_workflow(ref, payload, *, started_by, organization_id):
+        calls["orgs"].append(organization_id)
         calls["run"].append((ref, payload, started_by))
         if ref == "ghost":
             return {"error": "no published workflow named or with id 'ghost'"}
@@ -142,7 +162,8 @@ def _patch_service(monkeypatch, **overrides) -> dict:
         ],
     )
 
-    async def run_summary(run_id):
+    async def run_summary(run_id, *, organization_id):
+        calls["orgs"].append(organization_id)
         calls["summary"].append(run_id)
         return summaries[min(len(calls["summary"]) - 1, len(summaries) - 1)]
 
@@ -152,27 +173,39 @@ def _patch_service(monkeypatch, **overrides) -> dict:
     return calls
 
 
-def test_list_workflows_tool(monkeypatch) -> None:
-    _patch_service(monkeypatch)
+def test_list_workflows_tool(monkeypatch, bound_org) -> None:
+    calls = _patch_service(monkeypatch)
     out = asyncio.run(workflow_tools.list_workflows())
     assert "Lead intake" in out and json.loads(out)[0]["id"] == "w1"
+    assert calls["orgs"] == [bound_org]
 
 
-def test_run_workflow_fire_and_forget(monkeypatch) -> None:
+def test_run_workflow_fire_and_forget(monkeypatch, bound_org) -> None:
     calls = _patch_service(monkeypatch)
     out = asyncio.run(workflow_tools.run_workflow("Lead intake", '{"body": "x"}'))
     assert "run_id=r1" in out
     assert calls["run"] == [("Lead intake", {"body": "x"}, "agent-tool")]
     assert calls["summary"] == []  # no wait → no polling
+    assert calls["orgs"] == [bound_org]
 
 
-def test_run_workflow_waits_and_reports_output(monkeypatch) -> None:
-    _patch_service(monkeypatch)
+def test_run_workflow_waits_and_reports_output(monkeypatch, bound_org) -> None:
+    calls = _patch_service(monkeypatch)
     out = asyncio.run(workflow_tools.run_workflow("Lead intake", "{}", wait_seconds=5))
     assert "succeeded" in out and "done" in out
+    assert set(calls["orgs"]) == {bound_org}
 
 
-def test_run_workflow_reports_paused_as_waiting_for_inbox(monkeypatch) -> None:
+def test_the_trio_refuses_with_no_bound_org(monkeypatch) -> None:
+    """No run binding: each tool says so and calls no service at all."""
+    calls = _patch_service(monkeypatch)
+    assert asyncio.run(workflow_tools.list_workflows()) == workflow_tools.NO_ORG
+    assert asyncio.run(workflow_tools.run_workflow("Lead intake")) == workflow_tools.NO_ORG
+    assert asyncio.run(workflow_tools.get_workflow_run("r1")) == workflow_tools.NO_ORG
+    assert calls == {"run": [], "summary": [], "orgs": []}
+
+
+def test_run_workflow_reports_paused_as_waiting_for_inbox(monkeypatch, bound_org) -> None:
     _patch_service(
         monkeypatch,
         summaries=[
@@ -189,7 +222,7 @@ def test_run_workflow_reports_paused_as_waiting_for_inbox(monkeypatch) -> None:
     assert "paused" in out and "approvals inbox" in out
 
 
-def test_run_workflow_bad_payload_and_unknown_ref(monkeypatch) -> None:
+def test_run_workflow_bad_payload_and_unknown_ref(monkeypatch, bound_org) -> None:
     _patch_service(monkeypatch)
     assert "not valid JSON" in asyncio.run(workflow_tools.run_workflow("Lead intake", "{nope"))
     assert "Could not start" in asyncio.run(workflow_tools.run_workflow("ghost", "{}"))

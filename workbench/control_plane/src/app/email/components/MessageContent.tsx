@@ -1,15 +1,78 @@
 "use client";
 
 import Icon from "@/components/Icon";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import DOMPurify from "dompurify";
 import { splitQuotedHtml, splitQuotedText } from "../lib/quoting";
+import { UNTRUSTED_FORBID_ATTR, UNTRUSTED_FORBID_TAGS } from "@/lib/untrustedHtml";
+import { useCachedResource } from "@/lib/useCachedResource";
+import { messageHtmlKey } from "../lib/api";
+import { HTML_HOLD_MS, openMessageHtml } from "../lib/htmlPrefetch";
+import { bodyLookCss, bodyPalette, chooseBodyLook, forceDarkMedia, frameColorScheme, frameContentHeight } from "../lib/bodyLook";
+import { useMode } from "@/lib/theme/surfaces";
+import { imgSrcDirective, inlineImagePath, inlineImageUrl } from "../lib/inlineImages";
 
 interface MessageContentProps {
   /** Raw HTML body from the provider (preferred when present). */
   html?: string | null;
   /** Plain-text body (fallback when there is no HTML). */
   text: string;
+  /**
+   * The id of a message whose HTML the provider holds (`htmlRemote`, WS-17
+   * EM-S2). Give it with `remoteHtmlId(email)`. With no `html`, the text
+   * shows at once, and the HTML of `openMessageHtml` replaces it when it
+   * arrives. Null or absent: no request, and the body draws as before.
+   */
+  remoteId?: string | null;
+  /**
+   * The member asked for this message as sent, on its light sheet, while the
+   * app is dark (`lib/lightVersion.ts`). It changes nothing in light mode.
+   */
+  lightVersion?: boolean;
+  /**
+   * The id of the message row. With it, each `cid:` picture of the body
+   * loads from `GET /api/email/messages/{id}/inline` (WS-17, the inline
+   * images fix). With none, a `cid:` picture shows its alt text, as before.
+   */
+  messageId?: string | null;
+}
+
+/**
+ * The light version of the message whose body draws below. A context, not a
+ * prop, so every frame of one body (the main part and the quoted part) and
+ * the text fallback read the same choice.
+ */
+const LightVersionContext = createContext(false);
+
+/**
+ * The path that serves the `cid:` pictures of the message below, or null. A
+ * context, so the main frame and the quoted frame of one body use one path.
+ */
+const InlineImageContext = createContext<string | null>(null);
+
+/**
+ * The live value of an app token: the accent of the links of a dark look.
+ * While `<html>` still carries `.light`, the page shows the light tokens, so
+ * the read gives nothing and THEME's dark value stands (fix round 3, P2-a).
+ */
+function readToken(name: string): string | null {
+  if (typeof document === "undefined") return null;
+  const root = document.documentElement;
+  if (root.classList.contains("light")) return null;
+  return getComputedStyle(root).getPropertyValue(name).trim() || null;
+}
+
+/** Each change of the class or the inline style of `<html>`: a mode or an accent. */
+function subscribeRoot(onChange: () => void): () => void {
+  const observer = new MutationObserver(onChange);
+  observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "style"] });
+  return () => observer.disconnect();
+}
+
+/** A key of the mode class and the accent of `<html>`, as the page shows them now. */
+function rootKey(): string {
+  const root = document.documentElement;
+  return `${root.className}|${root.style.getPropertyValue("--primary")}`;
 }
 
 /** Matches a remote (http/https) URL inside src/srcset/poster/background or CSS url(). */
@@ -32,11 +95,17 @@ function proxify(u: string): string {
  * URLs are rewritten through our gateway proxy so the sender's tracking pixel
  * never sees the user's IP. When false, remote loading is blocked by the iframe
  * CSP and we just report that remote content is present.
+ *
+ * With ``inlinePath`` (`inlineImagePath`), each `cid:` URL of a `src`, a
+ * `poster` or a `background` becomes the URL of that picture on the gateway.
  */
-function sanitizeEmailHtml(
+export function sanitizeEmailHtml(
   raw: string,
-  proxyRemote: boolean
+  proxyRemote: boolean,
+  inlinePath: string | null = null,
 ): { clean: string; hasRemote: boolean } {
+  // Fail closed: with no DOM, DOMPurify hands the input back unchanged.
+  if (!DOMPurify.isSupported) return { clean: "", hasRemote: false };
   let hasRemote = false;
   const hook = "afterSanitizeAttributes";
   DOMPurify.addHook(hook, (node) => {
@@ -47,7 +116,12 @@ function sanitizeEmailHtml(
     }
     for (const attr of ["src", "poster", "background"]) {
       const v = el.getAttribute?.(attr);
-      if (v && /^https?:/i.test(v)) {
+      // A picture of the mail itself (`cid:`) loads from the gateway. It is
+      // part of the message, not a remote host, so the gate does not hold it.
+      const inline = v ? inlineImageUrl(v, inlinePath) : null;
+      if (inline) {
+        el.setAttribute(attr, inline);
+      } else if (v && /^https?:/i.test(v)) {
         hasRemote = true;
         if (proxyRemote) el.setAttribute(attr, proxify(v));
       }
@@ -61,8 +135,9 @@ function sanitizeEmailHtml(
   const clean = DOMPurify.sanitize(raw, {
     // Defense in depth — the iframe sandbox already blocks scripts, but strip
     // the obvious dangerous structural tags too. <style> is intentionally kept.
-    FORBID_TAGS: ["script", "iframe", "object", "embed", "form", "base", "meta", "link"],
-    FORBID_ATTR: ["ping"],
+    // The base policy is shared with the .docx viewer (`lib/untrustedHtml.ts`).
+    FORBID_TAGS: [...UNTRUSTED_FORBID_TAGS],
+    FORBID_ATTR: [...UNTRUSTED_FORBID_ATTR],
     ADD_ATTR: ["target"],
     ALLOW_DATA_ATTR: false,
     WHOLE_DOCUMENT: false,
@@ -96,6 +171,8 @@ function QuoteToggle({
       }`}
     >
       <Icon name="MoreHorizontal" size={14} />
+      {/* The words, not only "•••", so the member sees there is more (#891). */}
+      <span>{label}</span>
     </button>
   );
 }
@@ -111,11 +188,28 @@ function QuoteToggle({
  *    images: blocked by default (defeats tracking pixels), allowed once the
  *    user clicks "Show images".
  */
-function HtmlFrame({ html, quoted = false }: { html: string; quoted?: boolean }) {
+function HtmlFrame({
+  html,
+  quoted = false,
+  images,
+}: {
+  html: string;
+  quoted?: boolean;
+  /** One "Show images" choice for the whole message, held by the caller, so
+   *  the quoted part never asks again (#891). Absent, the frame holds its own. */
+  images?: { show: boolean; onShow: () => void };
+}) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState(quoted ? 160 : 400);
   const [mounted, setMounted] = useState(false);
-  const [showImages, setShowImages] = useState(false);
+  const [ownShowImages, setOwnShowImages] = useState(false);
+  const showImages = images ? images.show : ownShowImages;
+  const setShowImages = (v: boolean) => (images ? v && images.onShow() : setOwnShowImages(v));
+  // How the body draws in dark mode (`lib/bodyLook.ts`). Light mode and the
+  // light version draw the original sheet.
+  const lightVersion = useContext(LightVersionContext);
+  const inlinePath = useContext(InlineImageContext);
+  const dark = useMode() === "dark";
 
   // DOMPurify needs the DOM — defer sanitization to the client to avoid SSR
   // crashes and hydration mismatches on the iframe srcDoc.
@@ -131,12 +225,34 @@ function HtmlFrame({ html, quoted = false }: { html: string; quoted?: boolean })
     setShowImages(false);
   }
 
-  const sanitized = useMemo(() => {
+  const purified = useMemo(() => {
     if (!mounted) return null;
     // When showing images, rewrite them through our proxy (same-origin), so the
     // CSP only ever needs to allow 'self' — remote hosts never load directly.
-    return sanitizeEmailHtml(html, showImages);
-  }, [mounted, html, showImages]);
+    return sanitizeEmailHtml(html, showImages, inlinePath);
+  }, [mounted, html, showImages, inlinePath]);
+  // The look reads the SANITIZED markup, which is what the frame draws. The
+  // sanitizer drops a style block of the head, and a dark media query there
+  // never reaches the frame, so it cannot make the look `native`.
+  // Memoized on the markup, so a re-render does not scan the mail again.
+  const look = useMemo(
+    () => chooseBodyLook({ dark, lightVersion, html: purified?.clean ?? "" }),
+    [dark, lightVersion, purified],
+  );
+  // The colours of a dark look: THEME's dark values, and the live accent.
+  // The accent is read again after `<html>` changes its class or its style,
+  // because next-themes swaps the class only after its own state changed.
+  const root = useSyncExternalStore(subscribeRoot, rootKey, () => "");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const palette = useMemo(() => (mounted ? bodyPalette(readToken) : bodyPalette()), [mounted, root]);
+  // The native look turns the sender's own dark media queries on. A child
+  // frame reads its colour scheme from the OS, not from the app, so its
+  // queries cannot see the app's dark mode. Fixed words replace the media
+  // condition after the sanitizer ran, so no tag can form.
+  const sanitized = useMemo(
+    () => (purified && look === "native" ? { ...purified, clean: forceDarkMedia(purified.clean) } : purified),
+    [purified, look],
+  );
 
   const srcDoc = useMemo(() => {
     if (!sanitized) return "";
@@ -145,9 +261,9 @@ function HtmlFrame({ html, quoted = false }: { html: string; quoted?: boolean })
     // origin — remote image hosts can never see the user's IP.
     const origin =
       typeof window !== "undefined" ? window.location.origin : "";
-    const imgSrc = showImages
-      ? `img-src 'self' ${origin} data:;`
-      : "img-src data:;";
+    // The pictures of the mail itself load from ONE path of our origin, the
+    // inline route of this message, also while remote pictures are blocked.
+    const imgSrc = imgSrcDirective(showImages, origin, inlinePath);
     const mediaSrc = showImages
       ? `media-src 'self' ${origin} data:;`
       : "media-src 'none';";
@@ -162,6 +278,10 @@ function HtmlFrame({ html, quoted = false }: { html: string; quoted?: boolean })
     // white background, so this stays readable in BOTH app themes (no more
     // white-on-white in light mode or dark-on-dark when mail sets its own
     // black text). This mirrors how Gmail/Outlook render message bodies.
+    // A dark look adds its own sheet after this one, inside `@media screen`,
+    // so a print still draws the original. It holds no text of the email.
+    const lookCss = bodyLookCss(look, palette, { remoteBlocked: !showImages });
+    const lookStyle = lookCss ? "<style>" + lookCss + "</style>" : "";
     return `<!doctype html><html><head>
 <meta http-equiv="Content-Security-Policy" content="${csp}">
 <meta charset="utf-8">
@@ -179,8 +299,8 @@ function HtmlFrame({ html, quoted = false }: { html: string; quoted?: boolean })
   a { color: #2563eb; }
   blockquote { border-left: 3px solid #d1d5db; margin: 0; padding-left: 12px; color: #6b7280; }
   pre { white-space: pre-wrap; }
-</style></head><body>${sanitized.clean}</body></html>`;
-  }, [sanitized, showImages, quoted]);
+</style>${lookStyle}</head><body>${sanitized.clean}</body></html>`;
+  }, [sanitized, showImages, quoted, look, palette, inlinePath]);
 
   useEffect(() => {
     if (!srcDoc) return;
@@ -193,10 +313,11 @@ function HtmlFrame({ html, quoted = false }: { html: string; quoted?: boolean })
       try {
         const doc = iframe.contentDocument;
         if (doc?.body) {
-          const h = Math.max(
-            doc.body.scrollHeight,
-            doc.documentElement.scrollHeight
-          );
+          const h = frameContentHeight({
+            bodyScroll: doc.body.scrollHeight,
+            docScroll: doc.documentElement.scrollHeight,
+            docClient: doc.documentElement.clientHeight,
+          });
           if (h > 0) setHeight(h + 24);
           // Keep tracking growth as images/fonts settle in.
           if (!observer && typeof ResizeObserver !== "undefined") {
@@ -245,8 +366,11 @@ function HtmlFrame({ html, quoted = false }: { html: string; quoted?: boolean })
           // allow-same-origin (without allow-scripts) lets us measure content
           // height for auto-sizing; scripts still never run.
           sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
-          className="w-full border border-border rounded-md bg-white"
-          style={{ height, minHeight: quoted ? 80 : 200 }}
+          data-body-look={look}
+          className={`w-full border border-border rounded-md ${look === "original" ? "bg-white" : "bg-card"}`}
+          // A child frame reads `prefers-color-scheme` from this element, so
+          // the sender's own dark CSS applies only to the `native` look.
+          style={{ height, minHeight: quoted ? 80 : 200, colorScheme: frameColorScheme(look) }}
         />
       ) : (
         <div style={{ minHeight: quoted ? 80 : 200 }} />
@@ -259,6 +383,8 @@ function HtmlFrame({ html, quoted = false }: { html: string; quoted?: boolean })
 function HtmlMessage({ html }: { html: string }) {
   const [mounted, setMounted] = useState(false);
   const [showQuoted, setShowQuoted] = useState(false);
+  const [showImages, setShowImages] = useState(false);
+  const images = { show: showImages, onShow: () => setShowImages(true) };
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => setMounted(true), []);
   /* eslint-enable react-hooks/set-state-in-effect */
@@ -268,6 +394,7 @@ function HtmlMessage({ html }: { html: string }) {
   if (html !== prevHtml) {
     setPrevHtml(html);
     setShowQuoted(false);
+    setShowImages(false);
   }
 
   // Splitting parses HTML — only meaningful in the browser. Before mount we
@@ -277,15 +404,15 @@ function HtmlMessage({ html }: { html: string }) {
     [mounted, html]
   );
 
-  if (!split.quoted) return <HtmlFrame html={html} />;
+  if (!split.quoted) return <HtmlFrame html={html} images={images} />;
 
   return (
     <div className="w-full">
-      <HtmlFrame html={split.main} />
+      <HtmlFrame html={split.main} images={images} />
       <QuoteToggle open={showQuoted} onClick={() => setShowQuoted((v) => !v)} />
       {showQuoted && (
         <div className="border-l-2 border-border pl-2 mt-1">
-          <HtmlFrame html={split.quoted} quoted />
+          <HtmlFrame html={split.quoted} quoted images={images} />
         </div>
       )}
     </div>
@@ -294,6 +421,21 @@ function HtmlMessage({ html }: { html: string }) {
 
 /** A plain-text body with Outlook-style collapsing of the quoted trailing chain. */
 function TextMessage({ text }: { text: string }) {
+  // A plain-text body already draws in the app's tokens. Its light version
+  // draws on a light sheet: the `.light` class sets the light tokens for
+  // this box only.
+  const lightVersion = useContext(LightVersionContext);
+  const dark = useMode() === "dark";
+  return lightVersion && dark ? (
+    <div className="light max-w-2xl rounded-md border border-border bg-card px-3.5 py-3 text-card-foreground">
+      <TextBody text={text} />
+    </div>
+  ) : (
+    <TextBody text={text} />
+  );
+}
+
+function TextBody({ text }: { text: string }) {
   const [showQuoted, setShowQuoted] = useState(false);
   const split = useMemo(() => splitQuotedText(text), [text]);
 
@@ -323,13 +465,90 @@ function TextMessage({ text }: { text: string }) {
   );
 }
 
+/** The state of the read of a remote HTML, as `useCachedResource` gives it. */
+export interface RemoteHtmlRead {
+  data?: string | null;
+  loading: boolean;
+  error: string | null;
+}
+
+/**
+ * What the pane draws from the read of a remote HTML (WS-17 EM-S2). Null
+ * means no read: the message has no `remoteId`. A failed read gives no HTML
+ * and no loading line, so the text stays with no error state.
+ */
+export function remoteBody(read: RemoteHtmlRead | null): { html: string | null; loading: boolean } {
+  if (!read) return { html: null, loading: false };
+  const html = typeof read.data === "string" && read.data.trim().length > 0 ? read.data : null;
+  return { html, loading: html === null && read.loading && !read.error };
+}
+
+/**
+ * The HTML that the provider holds for `remoteId` (WS-17 EM-S2). It reads
+ * through `dataCache`, under the same key as the prefetch of the list, so a
+ * prefetched row paints its HTML on the first frame.
+ */
+function useRemoteHtml(remoteId: string | null): { html: string | null; loading: boolean } {
+  const key = remoteId ? messageHtmlKey(remoteId) : null;
+  const res = useCachedResource<string | null>(
+    key,
+    () => openMessageHtml(remoteId as string),
+    // The HTML of a message does not change. A refocus of the tab asks for
+    // nothing, and the gateway caches it for one hour too.
+    { ttl: HTML_HOLD_MS, revalidateOnFocus: false },
+  );
+  return remoteBody(key ? res : null);
+}
+
+/** The quiet line above the text while the HTML of an old message loads. */
+function RemoteHtmlStatus() {
+  return (
+    <p
+      role="status"
+      aria-live="polite"
+      className="flex items-center gap-1.5 mb-2 text-[11px] text-muted-foreground"
+    >
+      <Icon name="Loader2" size={12} className="animate-spin" aria-hidden />
+      Getting the formatted message from the mail provider…
+    </p>
+  );
+}
+
 /**
  * Renders an email body. HTML emails render in a sandboxed iframe; plain-text
  * falls back to a pre-wrapped block. In both cases the quoted trailing
  * conversation is collapsed behind a "•••" toggle (Outlook-style).
+ *
+ * The HTML of an old message (`remoteId`, WS-17 EM-S2) goes through the SAME
+ * path as a stored body: `HtmlMessage`, `HtmlFrame`, `sanitizeEmailHtml` and
+ * the sandboxed iframe. There is no second render path.
  */
-export function MessageContent({ html, text }: MessageContentProps) {
+export function MessageContent({
+  html,
+  text,
+  remoteId = null,
+  lightVersion = false,
+  messageId = null,
+}: MessageContentProps) {
+  return (
+    <LightVersionContext.Provider value={lightVersion}>
+      <InlineImageContext.Provider value={inlineImagePath(messageId)}>
+        <MessageBody html={html} text={text} remoteId={remoteId} />
+      </InlineImageContext.Provider>
+    </LightVersionContext.Provider>
+  );
+}
+
+function MessageBody({ html, text, remoteId = null }: Omit<MessageContentProps, "lightVersion" | "messageId">) {
   const hasHtml = !!html && html.trim().length > 0;
+  const remote = useRemoteHtml(hasHtml ? null : remoteId);
   if (hasHtml) return <HtmlMessage html={html as string} />;
-  return <TextMessage text={text} />;
+  if (remote.html) return <HtmlMessage html={remote.html} />;
+  if (!remote.loading) return <TextMessage text={text} />;
+  return (
+    <div className="w-full">
+      <RemoteHtmlStatus />
+      <TextMessage text={text} />
+    </div>
+  );
 }

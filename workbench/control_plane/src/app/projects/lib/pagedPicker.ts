@@ -34,7 +34,7 @@
  * (`routes/projects/search.py:68-71`): "returning half the workspace."
  */
 
-import { MIN_QUERY, isCurrent } from "./search";
+import { isCurrent, isSearchableQuery } from "./search";
 
 /** Anything a picker can list. Identity is the id, and nothing else. */
 export interface Identified {
@@ -173,10 +173,10 @@ export function receivePage<T extends Identified>(
 /**
  * Is this query long enough to send?
  *
- * The gate is `MIN_QUERY` from `./search`, which mirrors the gateway's own
- * `search.py:72`. It is **imported, never re-declared** — a third copy of the
- * number is the CLAUDE.md §5 defect, and this module is exactly where somebody
- * would add one.
+ * The gate is `isSearchableQuery` from `./search`: `MIN_QUERY` for text, and
+ * any length for a task number (D-PM-31). It is **imported, never
+ * re-declared** — a third copy of the rule is the CLAUDE.md §5 defect, and
+ * this module is exactly where somebody would add one.
  *
  * ⚠️ **What happens BELOW the minimum is not this module's decision.** WS-27bc
  * asked for a fallback to "the unfiltered first page", and §9.5.2's audit
@@ -188,5 +188,5 @@ export function receivePage<T extends Identified>(
  * stops.
  */
 export function isSearchable(query: string): boolean {
-  return query.trim().length >= MIN_QUERY;
+  return isSearchableQuery(query);
 }

@@ -258,15 +258,24 @@ def test_the_filters_come_from_the_one_shared_builder() -> None:
     is not the same as handing it the caller's values, and a source grep for
     ``list_contract(`` alone would pass on a call that reparsed ``params`` into
     its own vocabulary first.
+
+    Since WS-53 CRM-C7 the one builder is ``records.list_query``: the export
+    hands it the caller's whole ``params`` and builds no filter itself, and
+    ``list_query`` hands each field to ``list_contract``.
     """
     source = SOURCE.read_text(encoding="utf-8")
-    assert "list_contract(" in source
-    for field in ("q", "sort", "direction", "status_id", "owner", "source"):
-        assert f"{field}=params.{field}" in source, (
+    assert "await list_query(db, entity, params, user)" in source
+    for builder in ("list_contract(", "extra_filters(", "related_filters(",
+                    "resolve_owner(", "OPEN_LEAD_SQL"):
+        assert builder not in source, f"the export builds a filter itself: {builder}"
+    records = (SOURCE.parent / "records.py").read_text(encoding="utf-8")
+    body = records[records.index("async def list_query"):]
+    for field in ("q", "sort", "direction", "status_id", "source"):
+        assert f"{field}=params.{field}" in body, (
             f"`{field}` is not handed to `list_contract` off the caller's "
             f"params — the export and the screen would disagree about it"
         )
-    assert "extra_where=extra" in source
+    assert "owner=owner" in body and "extra_where=(*extra, *more_where)" in body
 
 
 def test_there_is_no_partial_file_path_at_all() -> None:
@@ -376,17 +385,17 @@ async def test_an_export_leaves_no_row_dirty(db) -> None:
 
 @pytest.mark.asyncio
 async def test_the_export_carries_every_matching_row(db) -> None:
-    db.seed("crm_organizations", name="Acme", industry="Manufacturing",
+    db.seed("crm_companies", name="Acme", industry="Manufacturing",
             phone="123", owner_email="priya@fracktal.in")
-    db.seed("crm_organizations", name="Globex", industry="Retail",
+    db.seed("crm_companies", name="Globex", industry="Retail",
             phone="456", owner_email="asha@fracktal.in")
 
     text, headers = await _export("organizations", sort="name", direction="asc")
 
     assert _rows(text) == [
-        ["Organization", "Industry", "Phone", "Owner"],
-        ["Acme", "Manufacturing", "123", "priya@fracktal.in"],
-        ["Globex", "Retail", "456", "asha@fracktal.in"],
+        ["Company", "Industry", "Phone", "Owner", "Last touched"],
+        ["Acme", "Manufacturing", "123", "priya@fracktal.in", ""],
+        ["Globex", "Retail", "456", "asha@fracktal.in", ""],
     ]
     assert headers["content-type"].startswith("text/csv")
     assert headers["content-disposition"] == (
@@ -399,8 +408,8 @@ async def test_the_export_carries_every_matching_row(db) -> None:
 async def test_the_owner_filter_reaches_the_export(db) -> None:
     """⚠️ The acceptance criterion. An export that silently means "every record
     in the CRM" is the failure this ticket was written against."""
-    db.seed("crm_organizations", name="Mine", owner_email="Priya@Fracktal.in")
-    db.seed("crm_organizations", name="Theirs", owner_email="asha@fracktal.in")
+    db.seed("crm_companies", name="Mine", owner_email="Priya@Fracktal.in")
+    db.seed("crm_companies", name="Theirs", owner_email="asha@fracktal.in")
 
     text, _ = await _export("organizations", owner="priya@fracktal.in")
 
@@ -434,14 +443,16 @@ async def test_converted_leads_are_hidden_unless_asked_for(db) -> None:
 @pytest.mark.asyncio
 async def test_a_deal_carries_its_organization_name(db) -> None:
     """The joined display column ``core.project_joined`` projects. Without the
-    join the Organization column would be empty on every row — a column of
+    join the Company column would be empty on every row — a column of
     nothing that reads as missing data."""
-    org = db.seed("crm_organizations", name="Acme")
-    db.seed("crm_deals", name="Big one", organization_id=org.id, amount=100)
+    org = db.seed("crm_companies", name="Acme")
+    db.seed("crm_deals", name="Big one", company_id=org.id, amount=100)
 
     text, _ = await _export("deals")
 
-    assert _rows(text)[1][:2] == ["Big one", "Acme"]
+    header, row = _rows(text)[:2]
+    # Read by header: CRM-X1 put the Stage column between the two.
+    assert [row[header.index("Deal")], row[header.index("Company")]] == ["Big one", "Acme"]
 
 
 @pytest.mark.asyncio
@@ -601,7 +612,7 @@ async def test_a_hostile_name_arrives_intact_and_inert(db) -> None:
     The guard is `gateway.csv_export.csv_cell`, shared with Projects; this is
     the end-to-end proof it is actually applied here."""
     nasty = '=SUM(A1),"drop"\nline two'
-    db.seed("crm_organizations", name=nasty)
+    db.seed("crm_companies", name=nasty)
 
     text, _ = await _export("organizations")
 
@@ -614,13 +625,15 @@ async def test_an_empty_result_is_a_header_row_not_an_error(db) -> None:
     download; the header row says "this filter matched nothing"."""
     text, headers = await _export("deals")
 
-    assert _rows(text) == [["Deal", "Organization", "Amount", "Closing", "Owner"]]
+    assert _rows(text) == [
+        ["Deal", "Stage", "Company", "Amount", "Closing", "Owner", "Last touched"],
+    ]
     assert headers["x-export-rows"] == "0"
 
 
 @pytest.mark.asyncio
 async def test_the_line_terminator_is_rfc_4180(db) -> None:
-    db.seed("crm_organizations", name="Acme")
+    db.seed("crm_companies", name="Acme")
 
     text, _ = await _export("organizations")
 
@@ -632,7 +645,7 @@ async def test_the_line_terminator_is_rfc_4180(db) -> None:
 async def test_the_filename_is_the_slug_and_never_free_text(db) -> None:
     """Done-when 5. A filename built from a record name would be a
     header-injection surface: names here are free text out of Zoho."""
-    db.seed("crm_organizations", name='ev"il\r\nX-Injected: 1')
+    db.seed("crm_companies", name='ev"il\r\nX-Injected: 1')
 
     _, headers = await _export("organizations")
 

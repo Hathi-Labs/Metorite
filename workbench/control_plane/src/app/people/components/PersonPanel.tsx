@@ -371,7 +371,11 @@ export function PersonPanel({
       )}
 
       <section className="p-3">
+        {/* Keyed by the person, so an unsaved draft dies with its person. The
+            panel stays mounted while the next one loads, and without the key
+            a Save on person B sent the edits made to person A. */}
         <ProfilePanels
+          key={person.id}
           person={person}
           onSaved={(saved) => setPerson(saved)}
         />

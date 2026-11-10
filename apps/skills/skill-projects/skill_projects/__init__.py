@@ -9,41 +9,74 @@ Spec: ``project-docs/specs/projects_ai_chat.md``.
 tool that is not exported is in ``manifest.PLANNED`` with its slice.
 """
 
-from skill_projects.forms import edit_project, edit_task, propose_plan
+from skill_projects.forms import (
+    create_tags,
+    create_tasks,
+    create_types,
+    edit_project,
+    edit_task,
+    propose_plan,
+)
 from skill_projects.guarded import (
+    add_report_recipient,
+    answer_decision,
     archive_project,
     archive_task,
+    attach_to_task,
     bulk_update,
+    convert_folder_to_project,
+    create_project_from_template,
+    delete_area,
     delete_attachment,
     delete_comment,
     delete_field,
+    delete_project,
+    delete_project_update,
     delete_status,
     delete_tag,
+    delete_task,
     delete_type,
     delete_view,
+    grant_access,
     merge_tags,
     merge_tasks,
     move_project,
+    nudge_task,
+    pin_authority,
+    promote_reminder,
+    remove_report_recipient,
+    rename_area,
     report_delete,
     revert_activity,
+    revoke_access,
+    save_as_template,
+    set_report_schedule,
     set_status_set,
     unarchive_project,
+    unpin_authority,
 )
 from skill_projects.inbox import (
     calendar,
     capture_intake,
+    create_area,
     intake_queue,
+    list_project_updates,
+    list_templates,
     mark_notifications_read,
+    my_areas,
     my_contexts,
+    my_decisions,
     my_led_projects,
     notifications,
+    post_project_update,
     project_access,
+    project_authorities,
     project_views,
     save_view,
     triage_intake,
     watchers,
 )
-from skill_projects.nav import open_in_app
+from skill_projects.nav import open_in_app, show_view
 from skill_projects.reads import (
     analytics_finished,
     analytics_load,
@@ -53,22 +86,28 @@ from skill_projects.reads import (
     find_conflicts,
     find_tasks,
     fit_for_task,
+    get_plan,
+    list_reminders,
     list_tasks,
     my_task,
     my_work,
+    needs_attention,
     people_for,
     project_summary,
     projects_tree,
     rebalance,
     recurrence,
     report_list,
+    report_recipients,
     report_render,
     task_dataset,
     task_detail,
     team_capacity,
     vocabulary,
+    waiting_agent_requests,
 )
 from skill_projects.views import (
+    export_tasks,
     render_board,
     render_report,
     render_tasks,
@@ -77,6 +116,7 @@ from skill_projects.views import (
 )
 from skill_projects.writes import (
     add_subtasks,
+    add_task_ref,
     assign,
     comment,
     complete,
@@ -89,18 +129,27 @@ from skill_projects.writes import (
     create_type,
     defer,
     edit_comment,
+    file_tasks,
     link_tasks,
+    link_tasks_batch,
     move_task,
+    remove_task_ref,
+    reopen_reminder,
     report_save,
+    reschedule_reminder,
+    resolve_reminder,
     set_my_overlay,
     set_recurrence,
+    set_reminder,
     unarchive_task,
     unlink_tasks,
     update_field,
     update_project,
+    update_reminder,
     update_status,
     update_tag,
     update_task,
+    update_tasks,
     update_type,
     watch,
 )
@@ -119,9 +168,13 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "project_summary",
     "projects_tree",
     "report_list",
+    "report_recipients",
     "report_render",
     "task_detail",
     "vocabulary",
+    "waiting_agent_requests",
+    # Class A — WS-55 SW-11a, what needs a person (spec §12.7)
+    "needs_attention",
     # Class A — the two reads S2b needed
     "my_task",
     "recurrence",
@@ -131,25 +184,39 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "render_tasks",
     "render_timeline",
     "status_report",
+    # Class A — WS-64 OP-6c, the filtered list as a file of the chat
+    "export_tasks",
     # Class A — the rest of the reads (S5)
     "calendar",
     "intake_queue",
     "my_contexts",
     # Class A — WS-39 S6e, the projects I lead
     "my_led_projects",
+    # Class A — WS-46 P7, the member's own areas (G17)
+    "my_areas",
     "notifications",
     "project_access",
+    "project_authorities",
     "project_views",
     "watchers",
+    "my_decisions",
+    # Class A — WS-39 LP-1a, the updates of a project with their health
+    "list_project_updates",
+    # Class A — WS-39 TPL-1a, the templates of the organization
+    "list_templates",
     # Class A — navigation (S6)
     "open_in_app",
+    "show_view",
     # Class A — team intelligence (S7a capacity, S7b fit and rebalancing,
     # S7c conflicts, S7e on-the-fly analysis)
     "team_capacity",
     "fit_for_task",
     "rebalance",
     "find_conflicts",
+    "get_plan",
     "task_dataset",
+    # Class A — WS-66 RM-3 (D114), the member's own reminders
+    "list_reminders",
     # Class B — reversible writes, one card each (S2)
     "add_subtasks",
     "assign",
@@ -165,6 +232,7 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "unlink_tasks",
     "update_project",
     "update_task",
+    "update_tasks",
     "watch",
     # Class B — the rest: vocabulary, a comment of one's own, the repeat
     # rule, the private capture and the overlay (S2b)
@@ -180,31 +248,76 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "update_status",
     "update_tag",
     "update_type",
+    # Class B — a task's URL references (WS-57 TR-3)
+    "add_task_ref",
+    "remove_task_ref",
     # Class B — the forms: an editable card, then the class B card (S4)
     "edit_project",
     "edit_task",
     "propose_plan",
+    # Class B — several new tasks in one project, one batch (WS-46 P13)
+    "create_tasks",
+    # Class B — several new tags or types, one batch (H-273)
+    "create_tags",
+    "create_types",
+    # Class B — several tasks filed into their projects, one card (2026-10-18)
+    "file_tasks",
+    # Class B — several links between tasks, one card (2026-10-19)
+    "link_tasks_batch",
+    # Class B — WS-64 OP-6a, a new area of the member's own
+    "create_area",
     # Class B — the rest of the writes (S5)
     "capture_intake",
     "mark_notifications_read",
     "save_view",
     "triage_intake",
+    # Class B — WS-66 RM-3 (D114), the member's reminders. One card each
+    # until CF-6 gives them an act-at-once door with Undo.
+    "set_reminder",
+    "update_reminder",
+    "resolve_reminder",
+    "reopen_reminder",
+    "reschedule_reminder",
+    # Class B — WS-39 LP-1a, an update of a project with its health, one card
+    "post_project_update",
     # Class C — hard to undo, one act one card, the impact first (S3)
     "archive_project",
     "archive_task",
+    "attach_to_task",
     "bulk_update",
+    "convert_folder_to_project",
+    "delete_area",
     "delete_attachment",
     "delete_comment",
     "delete_field",
+    "delete_project",
     "delete_status",
     "delete_tag",
+    "delete_task",
     "delete_type",
     "delete_view",
+    "grant_access",
+    "pin_authority",
+    "answer_decision",
     "merge_tags",
     "merge_tasks",
     "move_project",
+    "nudge_task",
+    "rename_area",
     "report_delete",
+    "revoke_access",
+    "unpin_authority",
+    # Class C — WS-39 LP-1a, the delete of a project update, one card
+    "delete_project_update",
+    "add_report_recipient",
+    "remove_report_recipient",
+    "set_report_schedule",
     "revert_activity",
     "set_status_set",
     "unarchive_project",
+    # Class C — WS-66 RM-3: a reminder becomes a task, and it cannot reopen
+    "promote_reminder",
+    # Class C — WS-39 TPL-1a: an org-wide template, and a project made from one
+    "save_as_template",
+    "create_project_from_template",
 ]

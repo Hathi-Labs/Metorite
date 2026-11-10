@@ -40,6 +40,7 @@ from skill_projects import writes as W
 from tests.unit._projects_agent_fakes import (
     SKILL_DIR,
     approve,
+    card_answer,
     deny,
     empty_list,
     fake_gateway,
@@ -62,9 +63,39 @@ P0_ID = "9f8fad5b-d9cb-469f-a165-70867728950e"
 ARCHIVED = "af8fad5b-d9cb-469f-a165-70867728950e"
 CHANGE = "bf8fad5b-d9cb-469f-a165-70867728950e"
 FILE = "cf8fad5b-d9cb-469f-a165-70867728950e"
+#: One reference on the task, as `GET /projects/tasks/{id}/refs` answers it.
+REF_ROW: dict[str, Any] = {
+    "id": "d1f8fad5-d9cb-469f-a165-70867728950e",
+    "task_id": UUID,
+    "kind": "pull_request",
+    "provider": "github",
+    "ref": "acme/widgets#12",
+    "url": "https://github.com/acme/widgets/pull/12",
+    "label": "widgets#12",
+    "title": "Fix the login",
+    "state": "open",
+}
 VIEW_ID = "df8fad5b-d9cb-469f-a165-70867728950e"
 LIVE = "ef8fad5b-d9cb-469f-a165-70867728950e"
+SUB_A = "3f8fad5b-d9cb-469f-a165-70867728950e"
+SUB_A1 = "4f8fad5b-d9cb-469f-a165-70867728950e"
+SUB_B = "5f8fad5b-d9cb-469f-a165-70867728950e"
+
+
+def _sub(rid: str, parent: str, title: str, archived: bool = False) -> dict[str, Any]:
+    return {
+        "id": rid,
+        "parent_task_id": parent,
+        "title": title,
+        "status_name": "To do",
+        "status_category": "todo",
+        "archived": archived,
+    }
 SALES = "ff8fad5b-d9cb-469f-a165-70867728950e"
+#: WS-64 OP-6c. A task the member waits on a colleague for (nudge_task).
+WAITER = "ab8fad5b-d9cb-469f-a165-70867728950e"
+#: WS-64 OP-10. A folder the member may turn into a project.
+FOLDER = "cd8fad5b-d9cb-469f-a165-70867728950e"
 TASK = {
     "id": UUID,
     "title": "Fix the extruder",
@@ -112,6 +143,10 @@ def _s3_reads(call: dict) -> Any:
         return {**TASK, "id": LIVE, "task_number": 9, "archived_at": None}
     if path == f"/projects/nodes/{ARCHIVED}" and method == "GET":
         return {"id": ARCHIVED, "name": "Old", "archived_at": "2026-09-01T00:00:00+00:00"}
+    if path == f"/projects/nodes/{FOLDER}" and method == "GET":
+        return {"id": FOLDER, "name": "Ops", "kind": "folder", "can_convert": True}
+    if path == f"/projects/nodes/{FOLDER}/convert" and method == "POST":
+        return {"id": FOLDER, "name": "Ops", "kind": "project"}
     if path.endswith("/summary"):
         return {"id": UUID, "tasks": 5, "by_category": {"todo": 3, "done": 2}}
     if path.endswith("/impact"):
@@ -119,7 +154,7 @@ def _s3_reads(call: dict) -> Any:
     if path.endswith("/views") and method == "GET":
         return {"rows": [{"id": VIEW_ID, "name": "Board", "view_type": "board"}]}
     if path.endswith("/attachments") and method == "GET":
-        return {"rows": [{"id": FILE, "name": "quote.pdf"}], "total": 1}
+        return {"rows": [{"attachment_id": FILE, "name": "quote.pdf"}], "total": 1}
     if path.endswith("/status-set/preview"):
         return {
             "lanes": [{"name": "Inbox"}, {"name": "Done"}],
@@ -200,6 +235,10 @@ def _s3_writes(call: dict) -> Any:
         return {"project_id": ARCHIVED, "archived": False, "projects": 1, "open_tasks": 0}
     if path.endswith("/revert"):
         return {"task_id": UUID, "reverted": ["due_at"], "skipped": []}
+    if method == "DELETE" and path.startswith("/projects/nodes/"):
+        return {"deleted": UUID, "cascaded": {"projects": 2, "tasks": 5, "grants": 1}}
+    if method == "DELETE" and path.startswith("/projects/tasks/"):
+        return {"deleted": LIVE, "cascaded": {"subtasks_promoted": 0}}
     if method == "DELETE" and path.startswith("/projects/statuses/"):
         # The route's real shape (admin.py `delete_status`).
         return {"deleted": S1, "tasks_affected": 4}
@@ -277,6 +316,31 @@ def _s2b_answers(call: dict) -> Any:
     return None
 
 
+def _refs_answers(call: dict) -> Any:
+    """WS-57 TR-3: the task's references, in the TR-1 route's row shape
+    (refs.py `_row`)."""
+    if call["method"] == "GET" and call["path"] == f"/projects/tasks/{UUID}/refs":
+        return {"rows": [REF_ROW]}
+    return None
+
+
+def _subtree_answers(call: dict) -> Any:
+    """OP-7: the route's real shape (tasks.py `task_subtree`). The visible
+    descendants top down, archived ones too, and a hidden count."""
+    if call["method"] != "GET" or not call["path"].endswith("/subtree"):
+        return None
+    root = call["path"].split("/")[-2]
+    return {
+        "task_id": root,
+        "subtasks": [
+            _sub(SUB_A, root, "Write the notes"),
+            _sub(SUB_B, root, "Book the demo", archived=True),
+            _sub(SUB_A1, SUB_A, "Proofread the notes"),
+        ],
+        "hidden": 1,
+    }
+
+
 def _answered(call: dict, *tables: Any) -> Any:
     for table in tables:
         answered = table(call)
@@ -285,9 +349,255 @@ def _answered(call: dict, *tables: Any) -> Any:
     return None
 
 
+#: WS-64 OP-6a. The member's own areas, as `GET /projects/my/areas` returns them.
+AREAS = [
+    {"id": UUID, "name": "Home", "archived": False, "open_tasks": 2},
+    {"id": SALES, "name": "Finance", "archived": False, "open_tasks": 0},
+]
+
+
+def _area_answers(call: dict) -> Any:
+    """WS-64 OP-6a: the member's areas, and the three writes on them."""
+    path, method = call["path"], call["method"]
+    if path == "/projects/my/areas" and method == "GET":
+        return {"rows": AREAS, "total": len(AREAS)}
+    if path == "/projects/my/areas" and method == "POST":
+        return {"id": OTHER, "name": call["json"]["name"], "archived": False, "open_tasks": 0}
+    if path.startswith("/projects/my/areas/") and method == "DELETE":
+        return {"id": path.rsplit("/", 1)[-1], "outcome": "archived", "tasks": 3}
+    if path.startswith("/projects/my/areas/") and method == "PATCH":
+        return {"id": path.rsplit("/", 1)[-1], "name": call["json"]["name"], "archived": False}
+    return None
+
+
+#: WS-64 OP-6c. What the member uploaded to the chat, as the accessor returns it.
+UPLOAD = ("brief.pdf", b"%PDF-1.4 a brief of 40 bytes, more or less")
+
+
+def stub_chat_upload(monkeypatch: Any, upload: Any = UPLOAD) -> None:
+    """The file the member attached to THIS chat, in place of the thread folder."""
+    from acb_skills import attachment_tools
+
+    async def _bytes(name: str) -> Any:
+        if str(name).strip() == upload[0]:
+            return upload
+        return f"No file named {name} was attached in this chat. Files attached here: {upload[0]}."
+
+    monkeypatch.setattr(attachment_tools, "read_attachment_bytes", _bytes)
+
+
+def _op6c_answers(call: dict) -> Any:
+    """WS-64 OP-6c: the nudge, and the upload onto a task."""
+    path, method = call["path"], call["method"]
+    if path == f"/projects/tasks/{WAITER}" and method == "GET":
+        return {**TASK, "id": WAITER, "archived_at": None}
+    if path == f"/projects/my/tasks/{WAITER}" and method == "GET":
+        return {
+            "id": WAITER,
+            "disposition": "WAITING",
+            "waiting_on": {"name": "Priya", "email": "priya@x.io"},
+            "last_nudged_at": None,
+        }
+    if path == f"/projects/tasks/{WAITER}/nudge" and method == "POST":
+        return {
+            "notified": ["priya@x.io"],
+            "skipped": [],
+            "last_nudged_at": "2026-10-23T10:00:00+00:00",
+        }
+    if path == f"/projects/tasks/{UUID}/attachments" and method == "POST":
+        return {"attachment_id": FILE, "name": UPLOAD[0], "size": len(UPLOAD[1]), "kind": "file"}
+    return None
+
+
+#: WS-64 OP-6b. The grants of the project, as `GET /projects/nodes/{id}/grants` lists them.
+GRANT_ID = "a1f8fad5-d9cb-469f-a165-70867728950e"
+GRANTS = [{"id": GRANT_ID, "project_id": UUID, "subject": "group:design", "created_by": "a@x.io"}]
+
+
+def _op6b_answers(call: dict) -> Any:
+    """WS-64 OP-6b: the grant list, a new grant and a removed one."""
+    path, method = call["path"], call["method"]
+    if path == f"/projects/nodes/{UUID}/grants" and method == "GET":
+        return {"rows": GRANTS, "total": len(GRANTS)}
+    if path == f"/projects/nodes/{UUID}/grants" and method == "POST":
+        return {"id": OTHER, "project_id": UUID, "subject": call["json"]["subject"]}
+    if path == f"/projects/nodes/{UUID}/grants/{GRANT_ID}" and method == "DELETE":
+        return {"deleted": GRANT_ID, "subject": "group:design"}
+    return None
+
+
+#: WS-ALN ALN-4. The pins of the project, as `GET /projects/nodes/{id}/authorities` lists them.
+PIN_ID = "b2c9fad5-d9cb-469f-a165-70867728950e"
+PINS = [{"id": PIN_ID, "project_id": UUID, "page_id": FILE, "page_version": 1,
+         "pinned_by": "a@x.io", "state": "active", "stale_reason": None,
+         "page_hidden": False, "title": "Project rules"}]
+
+
+def _aln4_answers(call: dict) -> Any:
+    """WS-ALN ALN-4: the pin list, a new pin and a removed one."""
+    path, method = call["path"], call["method"]
+    base = f"/projects/nodes/{UUID}/authorities"
+    if path == base and method == "GET":
+        return {"rows": PINS, "total": len(PINS)}
+    if path == base and method == "POST":
+        return {**PINS[0], "id": OTHER, "page_id": call["json"]["page_id"]}
+    if path == f"{base}/{PIN_ID}" and method == "DELETE":
+        return {**PINS[0], "state": "removed"}
+    return None
+
+
+#: WS-ALN ALN-2a. One open decision that names the member, on the task LIVE.
+DECISION_ID = "d1f8fad5-d9cb-469f-a165-70867728950e"
+DECISION = {"id": DECISION_ID, "subject_kind": "task", "subject_id": LIVE,
+            "decider": "pm@fracktal.in", "question": "Ship it today?", "state": "open",
+            "expires_at": "2026-11-09T00:00:00+00:00",
+            "options": [{"key": "yes", "label": "Yes"}, {"key": "no", "label": "No"}]}
+
+
+#: WS-39 LP-1a. One live update of the project UUID, which the member may delete.
+UPDATE_ID = "c3d9fad5-d9cb-469f-a165-70867728950e"
+UPDATE_ROW = {"id": UPDATE_ID, "project_id": UUID, "author": "pm@fracktal.in",
+              "health": "at_risk", "body": "The vendor slipped a week.",
+              "posted_at": "2026-11-08T10:00:00+00:00", "drafted_by_ai": False,
+              "via": None, "can_delete": True, "delete_refusal": None}
+
+
+def _lp1a_answers(call: dict) -> Any:
+    """WS-39 LP-1a: the updates of a project, a post and a delete."""
+    path, method = call["path"], call["method"]
+    base = f"/projects/nodes/{UUID}/updates"
+    if path == base and method == "GET":
+        return {"rows": [UPDATE_ROW], "next_before": None}
+    if path == base and method == "POST":
+        return {**UPDATE_ROW, "id": OTHER, **(call["json"] or {})}
+    if path == f"{base}/{UPDATE_ID}" and method == "DELETE":
+        return {"id": UPDATE_ID, "project_id": UUID, "deleted": True,
+                "deleted_at": "2026-11-09T10:00:00+00:00"}
+    return None
+
+
+def _aln2a_answers(call: dict) -> Any:
+    """WS-ALN ALN-2a: the member's open decisions, and the answer."""
+    path, method = call["path"], call["method"]
+    if path == "/projects/decisions" and method == "GET":
+        return {"decisions": [DECISION]}
+    if path == f"/projects/decisions/{DECISION_ID}/answer" and method == "POST":
+        return {"decision": {**DECISION, "state": "answered", "answer_key": "yes"}}
+    return None
+
+
+def _op6d_answers(call: dict) -> Any:
+    """WS-64 OP-6d: the list of a report, an add, a remove and the schedule."""
+    path, method = call["path"], call["method"]
+    base = f"/projects/reports/{UUID}"
+    if path == base and method == "GET":
+        return {"id": UUID, "name": "Weekly", "project_id": None, "scope": "portfolio",
+                "can_edit": True, "enabled": False, "schedule": None}
+    if path == f"{base}/recipients" and method == "GET":
+        return {"report_id": UUID, "recipients": [
+            {"recipient": "pm@fracktal.in", "added_by": "pm@fracktal.in", "added_at": None}]}
+    if path == f"{base}/recipients" and method == "POST":
+        return {"report_id": UUID, "recipient": call["json"]["recipient"]}
+    if path.startswith(f"{base}/recipients/") and method == "DELETE":
+        return {}
+    if path == f"{base}/schedule" and method == "PATCH":
+        return {"id": UUID, "enabled": call["json"]["enabled"],
+                "delivery_armed_on_this_deployment": False}
+    return None
+
+
+#: WS-66 RM-3. One open reminder of the member's, as the RM-1 route answers it
+#: (`reminders._out`). Its title is the task's, so the card-naming fence
+#: below reads «Fix the extruder» on each reminder card too.
+REMINDER = "e1f8fad5-d9cb-469f-a165-70867728950e"
+REMINDER_ROW: dict[str, Any] = {
+    "id": REMINDER,
+    "title": "Fix the extruder",
+    "notes": None,
+    "kind": "action",
+    "subject_kind": None,
+    "subject_id": None,
+    "fire_at": "2099-10-31T09:00:00+00:00",
+    "tz": "UTC",
+    "state": "scheduled",
+    "next_check_at": None,
+    "first_fired_at": None,
+    "cycles": 0,
+    "snoozes": 0,
+    "estimate_minutes": None,
+    "important": False,
+    "resolution": None,
+    "resolved_at": None,
+    "promoted_task_id": None,
+    "source": "chat",
+}
+
+
+def _reminder_answers(call: dict) -> Any:
+    """WS-66 RM-3: the member's zone, the list of reminders, and each write.
+
+    The zone is UTC and the date is ``writes._today()``, the value that
+    ``_member_clock`` fell back to before this fake answered. So a tool that
+    guesses a day reads the same day, and a test that pins ``_today`` holds.
+    """
+    path, method = call["path"], call["method"]
+    if path == "/projects/my/today":
+        today = W._today().isoformat()
+        return {"today": today, "timezone": "UTC", "stored": True, "valid": True}
+    if not path.startswith("/projects/my/reminders"):
+        return None
+    body = call["json"] if isinstance(call["json"], dict) else {}
+    if method == "GET":
+        state = (call["params"] or {}).get("state") or "scheduled"
+        closed = state if state in ("done", "dropped") else None
+        return {"rows": [{**REMINDER_ROW, "state": state, "resolution": closed}], "total": 1}
+    if path == "/projects/my/reminders":
+        return {**REMINDER_ROW, **body, "state": "scheduled"}
+    if method == "PATCH":
+        return {**REMINDER_ROW, **body}
+    tail = path.rsplit("/", 1)[-1]
+    if tail == "resolve":
+        state = "done" if body.get("action") == "done" else "dropped"
+        return {**REMINDER_ROW, "state": state, "resolution": state}
+    if tail == "promote":
+        return {**REMINDER_ROW, "state": "done", "resolution": "promoted",
+                "promoted_task_id": OTHER}
+    if tail in ("snooze", "reschedule"):
+        return {**REMINDER_ROW, **body, "snoozes": 1}
+    return {**REMINDER_ROW, "state": "scheduled"}
+
+
+#: WS-39 TPL-1a. One template of the org, as `GET /projects/templates` lists it.
+TEMPLATE_ROW = {
+    "id": UUID, "kind": "project", "name": "Install kit", "description": None,
+    "work_style": None, "created_by": "a@x.io", "created_at": "2026-11-08T10:00:00+00:00",
+    "counts": {"statuses": 4, "types": 3, "fields": 2, "tags": 1, "tasks": 6},
+}
+
+
+def _template_answers(call: dict) -> Any:
+    """The three template routes (WS-39 TPL-1a)."""
+    path, method = call["path"], call["method"]
+    body = call["json"] if isinstance(call["json"], dict) else {}
+    if path == "/projects/templates" and method == "GET":
+        return {"rows": [TEMPLATE_ROW], "total": 1, "more": False}
+    if path == "/projects/templates" and method == "POST":
+        return {**TEMPLATE_ROW, "id": OTHER, "name": body.get("name")}
+    if path.startswith("/projects/templates/") and path.endswith("/apply"):
+        return {
+            "project": {"id": OTHER, "name": body.get("name") or "Install kit"},
+            "template_id": UUID, "replayed": False, "own_statuses": True,
+            "created": {"statuses": 4, "types": 0, "fields": 0, "tags": 0, "tasks": 6},
+        }
+    return None
+
+
 def responder(call: dict) -> Any:
     """A gateway that answers every read the write tools make, and every write."""
     path, method = call["path"], call["method"]
+    template = _template_answers(call)
+    if template is not None:
+        return template
     if path == f"/projects/tasks/{UUID}":
         return TASK
     if path == f"/projects/tasks/{OTHER}":
@@ -295,7 +605,11 @@ def responder(call: dict) -> Any:
     if path.endswith("/statuses"):
         # The route's shape (admin.py `list_statuses`): rows AND per-lane counts.
         return {"rows": STATUSES, "counts": {S1: 4, S2: 2, S3: 0}, "owner_id": UUID}
-    answered = _answered(call, _s5_answers, _s3_reads, _s3_writes, _s2b_answers)
+    # `_op6c_answers` before `_s2b_answers`: its task answers a `/my/tasks/` read that
+    # `_s2b_answers` also claims. WS-66 RM-3: `_reminder_answers` claims only the
+    # member's zone and `/projects/my/reminders`, so it may lead.
+    answered = _answered(call, _reminder_answers, _op6d_answers, _op6c_answers, _op6b_answers, _aln4_answers, _lp1a_answers, _aln2a_answers, _refs_answers, _s5_answers, _s3_reads, _s3_writes,
+                         _s2b_answers, _subtree_answers, _area_answers)
     if answered is not None:
         return answered
     if path.endswith("/relations"):
@@ -330,6 +644,8 @@ def responder(call: dict) -> Any:
             "drops": ["cost"],
             "required_missing": [],
             "crosses_status_set": True,
+            # WS-46 P6: a move into another space, where answers land.
+            "crosses_root": True,
         }
     if path == "/projects/tasks/move":
         return {"moved": 1}
@@ -389,20 +705,47 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
             "assignees": "Priya",
             "due": "2026-09-30",
             "tags": "urgent",
-        }
+        },
+        # WS-46 P1: the rule is the second write under the one card.
+        {"project_id": UUID, "title": "Send the timesheet", "repeat": "weekly", "repeat_on": "5"},
+        # WS-46 P6: the start and the type in the POST, the values in a PATCH.
+        {
+            "project_id": UUID,
+            "title": "Weld the frame",
+            "start": "2026-10-05",
+            "type": "bug",
+            "fields": '{"Customer": "SMB"}',
+        },
     ],
     "update_task": [
         {"task_id": UUID, "status": "done", "due": "2026-10-01"},
         {"task_id": UUID, "clear": "due"},
+        # WS-46 P6
+        {"task_id": UUID, "type": "bug", "fields": '{"Customer": "SMB"}'},
+        {"task_id": UUID, "status": "done", "include_subtasks": "yes"},
     ],
     "assign": [{"task_id": UUID, "assignees": "priya@x.io, agent:crm-assistant"}],
     "comment": [{"task_id": UUID, "body": "Waiting on legal."}],
     "add_subtasks": [{"task_id": UUID, "titles": "Draft the spec\nReview it"}],
     "link_tasks": [{"task_id": UUID, "other_task_id": OTHER, "link_type": "blocks"}],
     "unlink_tasks": [{"task_id": UUID, "link_id": LINK}],
+    # WS-57 TR-3 — a URL on the task, through the TR-1 route.
+    "add_task_ref": [
+        {"task_id": UUID, "url": REF_ROW["url"], "title": "Fix the login"},
+        {"task_id": UUID, "url": "https://docs.google.com/document/d/1AbCdEfGhIjK/edit"},
+    ],
+    "remove_task_ref": [{"task_id": UUID, "url": REF_ROW["url"]}],
     "move_task": [
         {"task_ids": UUID, "destination_project_id": OTHER},
         {"task_ids": UUID, "parent_task_id": OTHER},
+        # WS-46 P6: the destination's fields, and the subtasks along.
+        {
+            "task_ids": UUID,
+            "destination_project_id": OTHER,
+            "fields": '{"Customer": "SMB"}',
+            "include_subtasks": "yes",
+        },
+        {"task_ids": UUID, "destination_project_id": OTHER, "include_subtasks": "yes"},
     ],
     "watch": [
         {"target_id": UUID, "kind": "task"},
@@ -410,7 +753,7 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
         {"target_id": UUID, "kind": "project"},
         {"target_id": UUID, "kind": "project", "stop": True},
     ],
-    "complete": [{"task_id": UUID}],
+    "complete": [{"task_id": UUID}, {"task_id": UUID, "include_subtasks": "yes"}],
     "defer": [{"task_id": UUID, "until": "2026-10-06"}],
     "unarchive_task": [{"task_id": UUID}],
     "create_project": [{"name": "Q4 launch", "parent_project_id": UUID, "lead": "Priya"}],
@@ -437,15 +780,35 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
     ],
     "create_personal_task": [{"title": "Renew the domain", "due": "2026-10-01"}],
     "set_my_overlay": [{"task_id": UUID, "disposition": "someday", "clear": "energy"}],
+    # WS-66 RM-3 — the member's reminders, one card each
+    "set_reminder": [
+        {"title": "Call the bank", "at": "2099-10-31 09:00"},
+        {"title": "The office closes early", "in_minutes": 20, "kind": "notice"},
+    ],
+    "update_reminder": [
+        {"reminder_id": REMINDER, "title": "Fix the extruder today", "at": "2099-11-01 10:00"},
+        {"reminder_id": REMINDER, "clear": "notes"},
+    ],
+    "resolve_reminder": [{"reminder_id": REMINDER}, {"reminder_id": REMINDER, "answer": "drop"}],
+    "reopen_reminder": [{"reminder_id": REMINDER}],
+    "reschedule_reminder": [
+        {"reminder_id": REMINDER, "at": "2099-11-02 08:00"},
+        {"reminder_id": REMINDER, "in_minutes": 60, "snooze": "yes"},
+    ],
+    "promote_reminder": [{"reminder_id": REMINDER}],
     # S3 — class C, one act one card
     "archive_project": [{"project_id": UUID}],
     "unarchive_project": [{"project_id": ARCHIVED}],
     "move_project": [{"project_id": UUID, "parent_project_id": SALES}],
-    "archive_task": [{"task_id": LIVE}],
+    "convert_folder_to_project": [{"project_id": FOLDER}],
+    "archive_task": [{"task_id": LIVE}, {"task_id": LIVE, "include_subtasks": "yes"}],
+    "delete_project": [{"project_id": UUID}],
+    "delete_task": [{"task_id": LIVE}],
     "merge_tasks": [{"target_task_id": UUID, "source_task_ids": OTHER}],
     "bulk_update": [
         {"task_ids": f"{UUID},{OTHER}", "status": "done", "tags_add": "q4"},
         {"task_ids": UUID, "action": "archive"},
+        {"task_ids": UUID, "action": "archive", "include_subtasks": "yes"},
     ],
     "delete_comment": [{"task_id": UUID, "comment_id": LINK}],
     "revert_activity": [{"task_id": UUID, "activity_id": CHANGE}],
@@ -460,7 +823,32 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
     "merge_tags": [{"project_id": UUID, "tag": "urgent", "into": "p0"}],
     "delete_view": [{"project_id": UUID, "view_name": "Board"}],
     "report_delete": [{"report_id": UUID}],
+    "delete_area": [{"area": "Home"}, {"area": SALES}],
+    "rename_area": [{"area": "Home", "new_name": "House"}],
     "delete_attachment": [{"task_id": UUID, "attachment_id": FILE}],
+    # WS-64 OP-6c — a nudge to the person the member waits on, a file from the chat
+    "nudge_task": [{"task_id": WAITER}],
+    "attach_to_task": [{"task_id": UUID, "file_name": "brief.pdf"}],
+    # WS-64 OP-6b — one grant per card, by grant_id or by subject
+    "grant_access": [{"project_id": UUID, "subject": "org"}],
+    # WS-ALN ALN-4 — one pin per card, by pin_id
+    "pin_authority": [{"project_id": UUID, "page_id": OTHER}],
+    # WS-39 TPL-1a: one template per card, and one project per card.
+    "save_as_template": [{"project_id": UUID, "name": "Office move"}],
+    "create_project_from_template": [{"template_id": UUID, "parent_id": UUID}],
+    "unpin_authority": [{"project_id": UUID, "pin_id": PIN_ID}],
+    # WS-ALN ALN-2a: one answer per card
+    "answer_decision": [{"decision_id": DECISION_ID, "answer_key": "yes"}],
+    "revoke_access": [
+        {"project_id": UUID, "grant": GRANT_ID},
+        {"project_id": UUID, "grant": "group:Design"},
+    ],
+    # WS-64 OP-6d — who gets a report, and when
+    "add_report_recipient": [{"report_id": UUID, "recipient": "priya@x.io"}],
+    "remove_report_recipient": [{"report_id": UUID, "recipient": "pm@fracktal.in"}],
+    "set_report_schedule": [{"report_id": UUID, "enabled": True}],
+    # WS-64 OP-6a — a new area of the member's own
+    "create_area": [{"name": "Garden"}],
     # S4 — the forms: an editable card, then the class B card
     "edit_task": [{"task_id": UUID}],
     "edit_project": [{"project_id": UUID}],
@@ -477,6 +865,49 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
         {"task_id": UUID, "action": "snooze", "until": "2026-10-06"},
     ],
     "mark_notifications_read": [{"ids": OTHER}, {"all_unread": True}],
+    # WS-46 P13 — several new tasks, one selection card, one confirmation card.
+    "create_tasks": [
+        {
+            "project_id": UUID,
+            "tasks": '[{"title": "Call the vendor", "status": "in progress", '
+            '"assignees": "Priya", "due": "2026-09-30"}, {"title": "Draft the brief"}]',
+        }
+    ],
+    # H-273 — several new tags or types, one confirmation card with rows.
+    "create_tags": [
+        {"project_id": UUID, "tags": '[{"name": "q4", "color": "blue"}, "blocked"]'},
+    ],
+    "create_types": [
+        {"project_id": UUID, "types": '[{"name": "Chore", "icon": "broom"}, {"name": "Spike"}]'},
+    ],
+    # 2026-10-19 — several links between tasks, one card with rows.
+    "link_tasks_batch": [
+        {
+            "links": f'[{{"from_task_id": "{UUID}", "to_task_id": "{OTHER}"}}, '
+            f'{{"from_task_id": "{OTHER}", "to_task_id": "{UUID}", "type": "duplicates"}}, '
+            f'{{"from_task_id": "{UUID}", "to_task_id": "{OTHER}", "type": "duplicates"}}]',
+        }
+    ],
+    # WS-PJP PJP-4 — several edits, a different change for each task, one card.
+    "update_tasks": [
+        {
+            "changes": f'[{{"task_id": "{UUID}", "title": "A"}}, '
+            f'{{"task_id": "{OTHER}", "title": "B"}}]',
+        }
+    ],
+    # 2026-10-18 — several tasks filed into their projects, one card with rows.
+    "file_tasks": [
+        {
+            "moves": f'[{{"task_id": "{UUID}", "destination_project_id": "{OTHER}"}}, '
+            f'{{"task_id": "{OTHER}", "destination_project_id": "{SALES}"}}]',
+        }
+    ],
+    # WS-39 LP-1a — a project update with the health that the member picks,
+    # and the delete of one, one card each.
+    "post_project_update": [
+        {"project_id": UUID, "health": "at risk", "body": "The vendor slipped a week."}
+    ],
+    "delete_project_update": [{"project_id": UUID, "update_id": UPDATE_ID}],
     "propose_plan": [
         {
             "name": "Q4 launch",
@@ -494,7 +925,10 @@ _ONE_ID: dict[str, str] = {
     "archive_project": "project_id",
     "unarchive_project": "project_id",
     "move_project": "project_id",
+    "convert_folder_to_project": "project_id",
     "archive_task": "task_id",
+    "delete_project": "project_id",
+    "delete_task": "task_id",
     "delete_comment": "comment_id",
     "revert_activity": "activity_id",
     "delete_status": "status",
@@ -506,6 +940,22 @@ _ONE_ID: dict[str, str] = {
     "delete_view": "view_name",
     "report_delete": "report_id",
     "delete_attachment": "attachment_id",
+    "delete_area": "area",
+    "rename_area": "area",
+    "nudge_task": "task_id",
+    "attach_to_task": "task_id",
+    "grant_access": "subject",
+    "revoke_access": "grant",
+    "pin_authority": "page_id",
+    "unpin_authority": "pin_id",
+    "answer_decision": "decision_id",
+    "delete_project_update": "update_id",
+    "add_report_recipient": "recipient",
+    "remove_report_recipient": "recipient",
+    "set_report_schedule": "report_id",
+    "promote_reminder": "reminder_id",
+    "save_as_template": "project_id",
+    "create_project_from_template": "template_id",
 }
 
 
@@ -540,6 +990,37 @@ def _forms_answered(monkeypatch) -> None:
     form_stub(monkeypatch, FORM_ANSWERS)
 
 
+@pytest.fixture(autouse=True)
+def _a_chat_upload(monkeypatch) -> None:
+    stub_chat_upload(monkeypatch)
+
+
+#: WS-66 RX-2: these five reminder writes act at once in a run that may send.
+#: They keep their one card in a HELD run (``no_egress=True``), so each card
+#: test below binds a held run for them. ``test_reminder_acts_at_once.py`` holds
+#: the open-run behaviour. ``promote_reminder`` is class C and always asks.
+ACT_AT_ONCE = frozenset({
+    "set_reminder", "update_reminder", "resolve_reminder", "reopen_reminder",
+    "reschedule_reminder",
+})
+
+
+@pytest.fixture(autouse=True)
+def _an_open_run(request: pytest.FixtureRequest) -> Any:
+    """Each tool runs inside a run, as in production. This run may send
+    (``no_egress=False``). H-236 reads a frame with no run as ``no_egress``,
+    and then ``assign`` refuses the ``agent:`` assignee of the cases above.
+    ``test_delegation_no_egress.py`` covers the refusal. A tool of
+    ``ACT_AT_ONCE`` runs held, so it shows the card these tests count."""
+    from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+
+    callspec = getattr(request.node, "callspec", None)
+    tool = (callspec.params.get("tool") if callspec else None) or ""
+    with artifact_context_scope():
+        bind_artifact_context(agent_name="projects-assistant", no_egress=tool in ACT_AT_ONCE)
+        yield
+
+
 @pytest.mark.parametrize("tool", sorted(_WRITES))
 async def test_a_denied_card_writes_nothing(tool: str, monkeypatch) -> None:
     deny(monkeypatch)
@@ -565,9 +1046,10 @@ async def test_everything_before_the_card_is_a_read(tool: str, monkeypatch) -> N
 
     calls = fake_gateway(monkeypatch, responder)
 
-    async def marker(**kwargs: Any) -> bool:
+    async def marker(**kwargs: Any) -> Any:
         calls.append({"method": "CARD", "path": "", "headers": {}, "params": {}, "json": kwargs})
-        return True
+        # A card with rows answers with the ticked ids (WS-46 P13 one-card).
+        return card_answer(kwargs, True)
 
     monkeypatch.setattr(ask_tools, "request_confirmation", marker)
     for kwargs in _WRITES[tool]:
@@ -612,6 +1094,18 @@ async def test_a_run_with_nobody_to_act_as_makes_no_call(tool: str, monkeypatch)
             "unarchive_project",
             "propose_plan",
             "mark_notifications_read",
+            # WS-64 OP-6a: an area is the member's own category, not a task or a project.
+            "create_area",
+            "rename_area",
+            "delete_area",
+            # WS-64 OP-6d: a report is named by its name, as report_delete is. The
+            # recipient tools' own tests (test_projects_report_delivery_tools.py)
+            # pin the name, the address and the schedule on the card.
+            "add_report_recipient",
+            "remove_report_recipient",
+            "set_report_schedule",
+            # WS-66 RM-3: a NEW reminder, as create_personal_task is a new task.
+            "set_reminder",
         )
     ),
 )
@@ -666,14 +1160,44 @@ def test_every_class_b_tool_awaits_the_one_confirm_door() -> None:
     tree = ast.parse(source)
     assert source.count("def _confirm(") == 1, "a second card door"
     delegates = {"edit_task": "update_task", "edit_project": "update_project"}
+    delegates.update({t: "_ask_reminder" for t in ACT_AT_ONCE})
+    # The one-card batches (2026-10-18) share `_ask_batch`, which is itself
+    # a caller of `_confirm`, so it is no second door.
+    shared = next(
+        fn for fn in ast.walk(tree)
+        if isinstance(fn, ast.AsyncFunctionDef) and fn.name == "_ask_batch"
+    )
+    assert "_confirm" in {getattr(n.func, "id", "") for n in ast.walk(shared)
+                          if isinstance(n, ast.Call)}
+    batches = {"file_tasks", "link_tasks_batch", "update_tasks"}
     for fn in ast.walk(tree):
         if not isinstance(fn, ast.AsyncFunctionDef) or fn.name not in _class_b_built():
             continue
         awaited = {getattr(n.func, "id", "") for n in ast.walk(fn) if isinstance(n, ast.Call)}
         # A form (S4) delegates its card to the class B tool it wraps.
+        if fn.name in batches:
+            assert "_ask_batch" in awaited, f"{fn.name} never awaits _ask_batch"
+            continue
         assert "_confirm" in awaited or delegates.get(fn.name) in awaited, (
             f"{fn.name} never awaits _confirm"
         )
+    # WS-66 RX-2: the five reminder writes reach `_confirm` through the ONE
+    # small reader `_ask_reminder`, which acts at once only in a run that may
+    # send. Nothing else may use it, and it must keep the card for a held run.
+    ask = next(
+        fn for fn in ast.walk(tree)
+        if isinstance(fn, ast.AsyncFunctionDef) and fn.name == "_ask_reminder"
+    )
+    assert "_confirm" in {getattr(n.func, "id", "") for n in ast.walk(ask)
+                          if isinstance(n, ast.Call)}
+    users = {
+        fn.name for fn in ast.walk(tree)
+        if isinstance(fn, ast.AsyncFunctionDef) and fn.name != "_ask_reminder"
+        and "_ask_reminder" in {getattr(n.func, "id", "") for n in ast.walk(fn)
+                                if isinstance(n, ast.Call)}
+    }
+    assert users == ACT_AT_ONCE, f"act-at-once reminder tools changed: {users ^ ACT_AT_ONCE}"
+    assert not (users & _class_c_built()), "a class C tool must always show its card"
 
 
 # ── 4 and 5. The wire, and the manifest ─────────────────────────────────────
@@ -984,7 +1508,7 @@ async def test_set_recurrence_puts_the_rule_and_stop_deletes_it(monkeypatch) -> 
     put = [c for c in writes(calls) if c["method"] == "PUT"]
     assert put[0]["json"] == {"freq": "weekly", "interval": 2, "anchor": "due", "weekdays": [1, 3]}
     assert (
-        "rule: «every week · on Mon · from the due date» → «every 2 weeks · on Mon, Wed"
+        "rule: «every week on Monday, from the due date» → «every 2 weeks on Monday and Wednesday"
         in (asked[0]["context"])
     )
     calls.clear()
@@ -992,10 +1516,68 @@ async def test_set_recurrence_puts_the_rule_and_stop_deletes_it(monkeypatch) -> 
     assert [c["method"] for c in writes(calls)] == ["DELETE"]
 
 
-async def test_a_weekly_rule_without_weekdays_is_refused_before_the_card(monkeypatch) -> None:
+async def test_a_weekly_rule_without_weekdays_takes_todays_day_and_says_so(monkeypatch) -> None:
+    """WS-46 P1 §8.1 item 8 replaced the refusal: ``set_recurrence`` takes the
+    weekly default ``create_task`` takes (Q1). The task has no due date, so
+    the day is today's, and the card names it."""
+    import datetime as dt
+
+    monkeypatch.setattr(W, "_today", lambda: dt.date(2026, 10, 6))  # a Tuesday
+
+    def no_rule_yet(call: dict) -> Any:
+        if call["path"].endswith("/recurrence") and call["method"] == "GET":
+            return {"rule": None}
+        return responder(call)
+
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, no_rule_yet)
+    await skill_projects.set_recurrence(UUID, freq="weekly")
+    put = [c for c in writes(calls) if c["method"] == "PUT"]
+    assert put[0]["json"]["weekdays"] == [2]
+    assert "repeat day: «Tuesday, today's weekday (UTC)" in asked[0]["context"]
+
+
+async def test_a_weekly_rule_that_exists_keeps_its_days(monkeypatch) -> None:
+    """WS-46 P1 review: "make it every 2 weeks" on a task that repeats every
+    Monday keeps Monday. The default is for a task with no weekly rule."""
+    import datetime as dt
+
+    monkeypatch.setattr(W, "_today", lambda: dt.date(2026, 10, 6))  # a Tuesday
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)  # the current rule: weekly on Monday
+    await skill_projects.set_recurrence(UUID, freq="weekly", interval=2)
+    put = [c for c in writes(calls) if c["method"] == "PUT"]
+    assert put[0]["json"]["weekdays"] == [1]
+    assert "repeat day" not in asked[0]["context"]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "word"),
+    [
+        ({"freq": "daily", "interval": 0}, "interval is 1 to 365, not 0"),
+        ({"freq": "monthly", "day_of_month": 32}, "day_of_month is 1 to 31"),
+        ({"freq": "yearly", "day_of_month": 1, "month_of_year": 13}, "month_of_year is 1 to 12"),
+        ({"freq": "daily", "max_occurrences": -1}, "max_occurrences is 1 or more"),
+        ({"freq": "daily", "until": "2026-13-01"}, "until is a date, YYYY-MM-DD"),
+        ({"freq": "daily", "until": "2026-10-05"}, "in the past"),
+    ],
+)
+async def test_set_recurrence_refuses_a_number_out_of_range_before_the_card(
+    kwargs: dict, word: str, monkeypatch
+) -> None:
+    import datetime as dt
+
+    monkeypatch.setattr(W, "_today", lambda: dt.date(2026, 10, 6))
     asked = approve(monkeypatch)
     calls = fake_gateway(monkeypatch, responder)
-    assert "weekdays" in await skill_projects.set_recurrence(UUID, freq="weekly")
+    assert word in await skill_projects.set_recurrence(UUID, **kwargs)
+    assert asked == [] and writes(calls) == []
+
+
+async def test_a_bad_weekday_is_still_refused_before_the_card(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    assert "weekdays" in await skill_projects.set_recurrence(UUID, freq="weekly", weekdays="9")
     assert asked == [] and writes(calls) == []
 
 
@@ -1237,7 +1819,8 @@ def test_the_enum_tuples_match_the_gateway() -> None:
 
 
 def _canonical_names(fn: ast.AST) -> set[str]:
-    """Names bound from `uuid_of(...)`, or unpacked first from `_task`/`_node`."""
+    """Names bound from `uuid_of(...)` or `_path_address(...)` (WS-64 OP-6d: a recipient
+    address as one encoded segment), or unpacked first from `_task`/`_node`."""
     safe: set[str] = set()
     for node in ast.walk(fn):
         if not isinstance(node, ast.Assign):
@@ -1247,7 +1830,7 @@ def _canonical_names(fn: ast.AST) -> set[str]:
         if not isinstance(call, ast.Call):
             continue
         callee = getattr(call.func, "id", "")
-        if callee == "uuid_of":
+        if callee in ("uuid_of", "_path_address"):
             safe.update(t.id for t in node.targets if isinstance(t, ast.Name))
         elif callee in ("_task", "_node"):
             for target in node.targets:
@@ -1631,7 +2214,7 @@ async def test_bulk_refuses_a_clear_beside_a_value_and_names_a_clear(monkeypatch
     )
     assert asked == [] and writes(calls) == []
     await skill_projects.bulk_update(UUID, clear="due")
-    assert "due_at → cleared" in asked[0]["context"]
+    assert "due_at: «cleared»" in asked[0]["context"]
 
 
 async def test_bulk_receipt_prints_rows_for_applied_ids_only(monkeypatch) -> None:
@@ -1880,7 +2463,47 @@ async def test_clearing_the_bell_prints_a_done_line_and_no_row(monkeypatch) -> N
 async def test_every_manifest_tool_is_now_built() -> None:
     from skill_projects import manifest as m
 
-    assert set(m.PLANNED) <= {"my_areas"}, m.PLANNED
+    # The four agent-run tools wait for WS-55 EA-12e, the in-product chat
+    # parity of the routes an outside agent already uses (EA12-9, §12.1).
+    # EA-14a adds the release of a run to the same wait. WS-55 SW-11a adds the
+    # resume of a stalled run (spec §12.7): a member act on a run, as the
+    # release is, so the chat gets it with the other run tools in EA-12e.
+    ea_12e = {"agent_runs", "start_agent_run", "post_agent_activity", "finish_agent_run",
+              "release_agent_run", "resume_agent_run"}
+    # WS-55 EA-6b: the claim route serves an outside agent over MCP. The chat
+    # assigns through `assign` and moves through `update_task`.
+    ea_6b = {"claim_task"}
+    # WS-55 EA-6g (EA3-40): an outside agent asks to archive over MCP, and
+    # only the run's member approves on the task. The chat archives through
+    # `archive_task`, so neither tool has a chat build yet.
+    ea_6g = {"request_task_archive", "approve_task_archive"}
+    # WS-55 EA-13e: the strip of the board reads a count route. The chat reads
+    # the same counts through a tool after EA-12e.
+    ea_13e = {"agent_summary"}
+    # WS-55 MCP-G15: an outside agent records a decision that its member made
+    # outside Metorite. The chat acts as the member, who answers on the task.
+    mcp_g15 = {"record_outside_decision"}
+    # SW-43a: a member takes back an answer on the run card. The chat tool
+    # comes with slice SW-43c (spec agent_coordination.md §3.9).
+    sw_43 = {"withdraw_agent_answer"}
+    # WS-55 EA-18a: the list of the questions that wait on a person. A read
+    # tool for "what questions wait on me" is a later slice (spec §12.8, D109).
+    ea_18a = {"agent_questions"}
+    # WS-55 MCP-G19a: the board count read serves an outside agent over MCP.
+    # The chat tool for the same counts is Metorite task 2223.
+    mcp_g19a = {"board_stats"}
+    # WS-55 MCP-G21: the assignable member read serves an outside agent.
+    mcp_g21 = {"assignable_members"}
+    # WS-66 RM-3 built the seven reminder tools that RM-1 planned, so no
+    # reminder tool is planned now.
+    # WS-AP AP-8a: the person ask and its withdraw. AP-10 builds both tools.
+    ap_10 = {"ask_person", "withdraw_ask"}
+    # WS-39 SP-1: the cycle routes. SP-5 (Metorite task 964) builds the tools.
+    sp_5 = {"list_cycles", "cycle_detail", "create_cycle", "update_cycle", "delete_cycle",
+            "plan_cycle", "start_cycle", "close_cycle"}
+    assert set(m.PLANNED) <= ({"my_areas"} | ea_12e | ea_6b | ea_6g | ea_13e
+                              | mcp_g15 | sw_43 | ea_18a | ap_10 | mcp_g19a | mcp_g21 | sp_5), m.PLANNED
+    assert not {t for t in m.PLANNED if "reminder" in t}, m.PLANNED
 
 
 async def test_a_capture_with_no_project_lands_in_the_personal_project(monkeypatch) -> None:
@@ -2011,7 +2634,14 @@ async def test_create_task_without_a_parent_keeps_the_default_on_the_card(
 def test_the_cards_know_every_guarded_tool() -> None:
     """A class C receipt wears the warning tone (`ProjectToolCards.tsx`
     `GUARDED_TOOLS`). The set is a literal in TypeScript, so a guarded tool
-    added here without a line there would paint green. Hold the two equal."""
+    added here without a line there would paint green. Hold the two equal.
+
+    The rule is "every class C tool the chat can CALL has a guarded card".
+    A tool in ``PLANNED`` is not built, so the chat cannot call it, and it
+    needs no card yet. WS-55 EA-6g added one: ``approve_task_archive`` is the
+    member's approval of an agent's archive request, member-only and never a
+    chat tool (EA3-40). When a planned class C tool is built it leaves
+    ``PLANNED``, and this test asks for its card again."""
     import re
 
     from tests.unit._projects_agent_fakes import REPO_ROOT
@@ -2022,7 +2652,10 @@ def test_the_cards_know_every_guarded_tool() -> None:
     block = re.search(r"GUARDED_TOOLS[^=]*=\s*new Set\(\[(.*?)\]\)", src, re.S)
     assert block, "GUARDED_TOOLS literal not found in ProjectToolCards.tsx"
     in_cards = set(re.findall(r'"([a-z_]+)"', block.group(1)))
-    assert in_cards == m.tools_by_class("C")
+    callable_c = m.tools_by_class("C") - set(m.PLANNED)
+    assert in_cards == callable_c
+    # The narrowing hides only planned tools, never a built one.
+    assert not in_cards & set(m.PLANNED)
 
 
 # ── F2: the defer card says what the defer does ─────────────────────────────
@@ -2204,9 +2837,10 @@ async def test_the_plan_writes_in_rule_8_order_under_exactly_one_card(monkeypatc
     form_stub(monkeypatch, _plan_submit(PLAN_DEPS))
     calls = fake_gateway(monkeypatch, _plan_gateway())
 
-    async def marker(**kwargs: Any) -> bool:
+    async def marker(**kwargs: Any) -> Any:
         calls.append({"method": "CARD", "path": "", "headers": {}, "params": {}, "json": kwargs})
-        return True
+        # A card with rows answers with the ticked ids (WS-46 P13 one-card).
+        return card_answer(kwargs, True)
 
     monkeypatch.setattr(ask_tools, "request_confirmation", marker)
     await skill_projects.propose_plan("Frame", _json.dumps(PLAN_DEPS))
@@ -2226,7 +2860,7 @@ async def test_the_plan_writes_in_rule_8_order_under_exactly_one_card(monkeypatc
             kinds.append("link")
         else:
             kinds.append(c["path"])
-    assert kinds == ["card", "node", "task", "task", "task", "owner", "owner", "owner",
+    assert kinds == ["card", "node", "node", "task", "task", "task", "owner", "owner", "owner",
                      "link", "link"]
     for c in writes([c for c in calls if c["method"] != "CARD"]):
         row = m.route_for(c["method"], c["path"])
@@ -2613,3 +3247,552 @@ async def test_a_lost_project_write_gives_a_receipt_and_writes_nothing_else(
     assert not any(c["method"] == "POST" and c["path"] == "/projects/tasks" for c in calls)
     assert not any(c["method"] == "PUT" and c["path"].endswith("/assignees") for c in calls)
     assert not any(c["path"].endswith("/links") for c in calls)
+
+
+# ── §26: a plan row with no owner is an unassigned task (owner, 2026-10-17) ─
+#
+# The owner asked "we should allow for unassigned tasks, no?" after the chat
+# refused a plan with no owners and offered a placeholder owner or a Markdown
+# file. Each test names the mutation that turns it red (R7).
+
+
+def _owners(*who: str) -> list[dict[str, Any]]:
+    """PLAN_DEPS with the owners given, in order. "" is an unassigned row."""
+    return [{**row, "owner": w} for row, w in zip(PLAN_DEPS, who, strict=True)]
+
+
+async def test_a_plan_with_no_owner_creates_every_task_unassigned(monkeypatch) -> None:
+    """Zero owners. The card draws, no row carries a fit, hours or a mark,
+    the tasks are made with no assignee write, and the links still land.
+    Mutation: put "owner" back in PLAN_FIELDS -> the plan is refused."""
+    rows = _owners("", "", "")
+    drawn = form_stub(monkeypatch, _plan_submit(rows))
+    asked = approve(monkeypatch)
+    seen: list[dict] = []
+    base = _plan_gateway(seen=seen)
+
+    def made_with_nobody(call: dict) -> Any:
+        # The create route assigns nobody (`tasks.create_task` adds the
+        # creator as a watcher only). The shared TASK fake carries an
+        # assignee, so this answer drops it.
+        got = base(call)
+        if call["method"] == "POST" and call["path"] == "/projects/tasks":
+            return {**got, "assignees": []}
+        return got
+
+    calls = fake_gateway(monkeypatch, made_with_nobody)
+    out = await skill_projects.propose_plan("Frame", _json.dumps(rows))
+
+    card = drawn[0]["props"]["data"]
+    assert [r["owner"] for r in card["tasks"]] == ["", "", ""]
+    for row in card["tasks"]:
+        assert not {"fit", "hours", "marks", "warnings"} & set(row), row
+    # The plan card counts the owners itself (planCard.ts), so its capacity
+    # line is the server's. The confirm card's line says nobody is measured.
+    assert "no owner" not in card["capacity"]
+    assert "capacity: «No task has an owner" in asked[0]["context"]
+    # The preview reads the rows with an empty owner. No owner is resolved.
+    assert all(r["owner"] == "" for r in seen[0]["rows"])
+    assert not any(c["path"] == "/projects/assignees" for c in calls)
+
+    assert len(asked) == 1
+    assert "3 unassigned" in asked[0]["detail"]
+    assert "task 1: «Order the steel» · unassigned · 120 min" in asked[0]["context"]
+    posted = [c for c in writes(calls) if c["method"] == "POST" and c["path"] == "/projects/tasks"]
+    assert len(posted) == 3
+    assert all("assignees" not in c["json"] for c in posted)
+    assert not any(c["method"] == "PUT" for c in writes(calls))
+    assert sum(c["path"].endswith("/links") for c in writes(calls)) == 2
+    assert out.count("full_id:") == 3 and "stopped:" not in out
+    assert out.count("· unassigned") == 3, out
+
+
+async def test_a_plan_with_some_owners_assigns_only_those(monkeypatch) -> None:
+    """Some owners. The preview's fit for an unassigned row is never shown,
+    and the capacity line counts that row apart. Mutation: drop the
+    ``key in nobody`` skip in ``_capacity`` -> the empty row shows a fit."""
+    rows = _owners("priya@x.io", "", "sam@x.io")
+    drawn = form_stub(monkeypatch, _plan_submit(rows))
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _plan_gateway())
+    out = await skill_projects.propose_plan("Frame", _json.dumps(rows))
+
+    card = {r["key"]: r for r in drawn[0]["props"]["data"]["tasks"]}
+    assert card["t1"]["fit"] == "welding" and card["t3"]["fit"] == "welding"
+    assert not {"fit", "hours", "marks"} & set(card["t2"]), card["t2"]
+    assert drawn[0]["props"]["data"]["capacity"].startswith("Hours cover")
+    assert "1 of 3 tasks has no owner, so it carries no fit or hours.»" in asked[0]["context"]
+
+    assert "1 unassigned" in asked[0]["detail"]
+    assert "«Weld the frame» · unassigned ·" in asked[0]["context"]
+    puts = [c for c in writes(calls) if c["method"] == "PUT"]
+    assert [c["json"] for c in puts] == [
+        {"assignees": ["priya@x.io"]}, {"assignees": ["sam@x.io"]},
+    ]
+    assert out.count("full_id:") == 3 and "stopped:" not in out
+
+
+async def test_a_plan_where_every_task_has_an_owner_is_as_before(monkeypatch) -> None:
+    """All owners. No line says "unassigned", and every task gets its PUT."""
+    drawn = form_stub(monkeypatch, _plan_submit(PLAN_DEPS))
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _plan_gateway())
+    await skill_projects.propose_plan("Frame", _json.dumps(PLAN_DEPS))
+    assert "no owner" not in drawn[0]["props"]["data"]["capacity"]
+    assert "no owner" not in asked[0]["context"]
+    assert "unassigned" not in asked[0]["detail"] + asked[0]["context"]
+    assert sum(c["method"] == "PUT" for c in writes(calls)) == 3
+
+
+async def test_the_member_clears_an_owner_on_the_card(monkeypatch) -> None:
+    """The model gave every row an owner, and the member emptied one on the
+    card. The submit is no refusal, and that task is made with nobody."""
+    edited = _owners("priya@x.io", "priya@x.io", "")
+    form_stub(monkeypatch, _plan_submit(edited))
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _plan_gateway())
+    out = await skill_projects.propose_plan("Frame", _json.dumps(PLAN_DEPS))
+    assert len(asked) == 1 and "1 unassigned" in asked[0]["detail"]
+    assert sum(c["method"] == "PUT" for c in writes(calls)) == 2
+    assert "project_id:" in out
+
+
+async def test_a_stopped_plan_counts_only_the_owners_it_has(monkeypatch) -> None:
+    """The partial receipt counts the assigned rows, never every row. With
+    no owner at all it says 0 of 0, and nothing divides by it. Mutation:
+    count ``len(final)`` as the owners again -> "0 of 3"."""
+    rows = _owners("priya@x.io", "", "")
+    form_stub(monkeypatch, _plan_submit(rows))
+    approve(monkeypatch)
+    fake_gateway(monkeypatch, _plan_gateway(refuse_task=2))
+    out = await skill_projects.propose_plan("Frame", _json.dumps(rows))
+    assert "not tried: 1 task · 0 of 1 owners assigned · 0 of 2 links written" in out
+
+    rows = _owners("", "", "")
+    form_stub(monkeypatch, _plan_submit(rows))
+    approve(monkeypatch)
+    fake_gateway(monkeypatch, _plan_gateway(refuse_task=3))
+    out = await skill_projects.propose_plan("Frame", _json.dumps(rows))
+    assert "not tried: 0 tasks · 0 of 0 owners assigned · 0 of 2 links written" in out
+
+
+async def test_a_lost_project_write_counts_only_the_owners_it_has(monkeypatch) -> None:
+    base = _plan_gateway()
+
+    def fail(call: dict) -> Any:
+        if call["method"] == "POST" and call["path"] == "/projects/nodes":
+            raise client.GatewayRefusal("Projects POST /projects/nodes: Failed (403).")
+        return base(call)
+
+    rows = _owners("", "sam@x.io", "")
+    form_stub(monkeypatch, _plan_submit(rows))
+    approve(monkeypatch)
+    fake_gateway(monkeypatch, fail)
+    out = await skill_projects.propose_plan("Frame", _json.dumps(rows))
+    assert "not tried: 3 tasks · 0 of 1 owners assigned · 0 of 2 links written" in out
+
+
+async def test_a_row_with_no_effort_is_still_refused(monkeypatch) -> None:
+    """The owner left the required list, and nothing else did."""
+    drawn = form_stub(monkeypatch, _plan_submit(PLAN_DEPS))
+    calls = fake_gateway(monkeypatch, _plan_gateway())
+    out = await skill_projects.propose_plan(
+        "Frame", _json.dumps([{"key": "t1", "title": "Cut", "due": "2026-10-10"}])
+    )
+    assert "lacks effort_mins" in out and "The owner can be empty." in out
+    assert drawn == [] and calls == []
+
+
+def test_the_instructions_never_ask_for_an_owner_or_offer_a_file() -> None:
+    """The model asked who owns each task and offered a Markdown file in
+    place of the card. Mutation: restore "an owner" to the W1 required list
+    -> this test fails."""
+    root = SKILL_DIR.parents[2]
+    text_ = (root / "agents/agent-projects/instructions.md").read_text(encoding="utf-8")
+    w1 = " ".join(text_.split("**W1 · Plan a project from a goal.**", 1)[1]
+                  .split("**W2", 1)[0].split())
+    assert "verb-plus-object title, an effort in minutes and a due date" in w1
+    assert "The owner is optional." in w1
+    assert "Do not ask about owners" in w1
+    assert "never put a placeholder owner" in w1
+    assert "Never write a plan to a file instead" in w1
+    many = " ".join(text_.split("## Several new tasks", 1)[1].split("## ", 1)[0].split())
+    assert "approves every task on one card" in many
+    assert "Leave `assignees` out when the member names nobody" in many
+    doc = " ".join((F.propose_plan.__doc__ or "").split())
+    assert "empty for an unassigned task" in doc and "do not ask" in doc
+
+
+# ── The plan card redesign (owner, 2026-10-18) ──────────────────────────────
+#
+# The card reads first and folds the rows under a phase. The phase is a label
+# for the card only. The member's Cancel is no submit.
+
+
+async def test_a_phase_reaches_the_card_and_never_a_write(monkeypatch) -> None:
+    """Mutation: send `phase` in the task POST body -> this test fails."""
+    phased = [{**PLAN_DEPS[0], "phase": "Build"}, {**PLAN_DEPS[1], "phase": "Build"},
+              {**PLAN_DEPS[2], "phase": "Finish"}]
+    # The card never sends the phase back (planCard.ts planSubmit).
+    drawn = form_stub(monkeypatch, _plan_submit(PLAN_DEPS))
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _plan_gateway())
+    await skill_projects.propose_plan("Frame", _json.dumps(phased))
+    card_rows = drawn[0]["props"]["data"]["tasks"]
+    assert [r.get("phase") for r in card_rows] == ["Build", "Build", "Finish"]
+    posts = [c for c in calls if c["method"] == "POST" and c["path"] == "/projects/tasks"]
+    assert len(posts) == 3
+    assert all("phase" not in c["json"] for c in posts)
+    preview = [c for c in calls if c["path"] == "/projects/plan/preview"]
+    assert all("phase" not in r for c in preview for r in c["json"]["rows"])
+
+
+async def test_a_plan_with_no_phase_draws_no_phase_key(monkeypatch) -> None:
+    """A row the model gives no phase keeps the shape it had before."""
+    drawn = form_stub(monkeypatch)
+    fake_gateway(monkeypatch, _plan_gateway())
+    await skill_projects.propose_plan("Frame", _json.dumps(PLAN_DEPS))
+    assert all("phase" not in r for r in drawn[0]["props"]["data"]["tasks"])
+    assert drawn[0]["props"]["data"]["description"] == "Under a new space «Frame» with a project «Frame»."
+
+
+async def test_a_plan_named_like_its_parent_is_refused_and_names_create_tasks(monkeypatch) -> None:
+    """The owner's plan "Personalization & Memory System" came "Under
+    Personalization & Memory System." (review of #1160). propose_plan always
+    makes a NEW project, so it made a second one of that name inside the
+    first. Mutation: drop the name check -> this test fails, because a card
+    is drawn and the batch POSTs /projects/nodes."""
+    drawn = form_stub(monkeypatch, FORM_ANSWERS)
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _plan_gateway())
+    # The fake parent is called "Ops" (`responder`), and case and spaces do not count.
+    out = await skill_projects.propose_plan("  ops ", _json.dumps(PLAN_DEPS), parent_project_id=UUID)
+    assert out.startswith("Refused:")
+    assert "create_tasks with project_id" in out and UUID in out
+    assert "nothing was created" in out
+    assert drawn == [] and asked == [] and writes(calls) == []
+    assert not [c for c in calls if c["path"] == "/projects/plan/preview"]
+    # The next step is complete: the key mapping, the keys to leave out, and
+    # the second call for the links (review of #1160).
+    for words in ("owner becomes assignees", "effort_mins becomes estimate_mins",
+                  "Leave out key, after and phase", "link_tasks_batch", "type blocks"):
+        assert words in out, words
+
+
+async def test_a_folder_named_like_the_plan_is_a_fair_parent(monkeypatch) -> None:
+    """A folder holds projects, and create_tasks refuses a folder, so a plan
+    named like its folder draws its card. Mutation: drop the kind check ->
+    this test fails."""
+    drawn = form_stub(monkeypatch)
+
+    def folder(call: dict) -> Any:
+        if call["method"] == "GET" and call["path"].startswith(f"/projects/nodes/{UUID}"):
+            return {"id": UUID, "name": "Ops", "kind": "folder", "status": "active", "lead": None}
+        return _plan_gateway()(call)
+
+    fake_gateway(monkeypatch, folder)
+    out = await skill_projects.propose_plan("Ops", _json.dumps(PLAN_DEPS), parent_project_id=UUID)
+    assert not str(out).startswith("Refused:")
+    assert drawn and drawn[0]["props"]["data"]["description"] == "Under Ops."
+
+
+async def test_a_plan_with_its_own_name_under_a_parent_still_draws(monkeypatch) -> None:
+    drawn = form_stub(monkeypatch)
+    fake_gateway(monkeypatch, _plan_gateway())
+    await skill_projects.propose_plan("Frame", _json.dumps(PLAN_DEPS), parent_project_id=UUID)
+    assert drawn[0]["props"]["data"]["description"] == "Under Ops."
+
+
+def test_w1_sends_an_existing_project_to_create_tasks() -> None:
+    """The model must never propose a new project to fill one that exists.
+    Mutation: drop the sentence from W1 -> this test fails."""
+    root = SKILL_DIR.parents[2]
+    text_ = (root / "agents/agent-projects/instructions.md").read_text(encoding="utf-8")
+    w1 = " ".join(text_.split("**W1 · Plan a project from a goal.**", 1)[1]
+                  .split("**W2", 1)[0].split())
+    assert "`propose_plan` always makes a NEW project" in w1
+    assert "call `create_tasks` with its `full_id`" in w1
+
+
+async def test_cancel_on_the_plan_card_writes_nothing(monkeypatch) -> None:
+    """The card's Cancel sends "Cancel", which is no submit. Mutation: read
+    any answer as a submit -> this test fails."""
+    form_stub(monkeypatch, {"Plan": "Cancel"})
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _plan_gateway())
+    out = await skill_projects.propose_plan("Frame", _json.dumps(PLAN_DEPS))
+    assert out == F.NOT_SUBMITTED
+    assert asked == [] and writes(calls) == []
+
+
+# ── IMG-2: one card makes a task with its files (projects_ai_chat.md §30.4) ──
+
+PNG = ("shot.png", b"\x89PNG" + b"x" * 240 * 1024)
+PDF = ("spec.pdf", b"%PDF-1.4" + b"x" * 1100 * 1024)
+SERVED_ID = "ef8fad5b-d9cb-469f-a165-70867728950e"
+
+
+def _chat_files(monkeypatch: Any, *uploads: tuple[str, bytes]) -> None:
+    """Each file the member attached to THIS chat, by name."""
+    from acb_skills import attachment_tools
+
+    held = {u[0]: u for u in uploads}
+
+    async def _bytes(name: str) -> Any:
+        if str(name).strip() in held:
+            return held[str(name).strip()]
+        return f"No file named {name} was attached in this chat. Files attached here: {', '.join(held)}."
+
+    monkeypatch.setattr(attachment_tools, "read_attachment_bytes", _bytes)
+
+
+def _files_gateway(
+    *, fail_on: str = "", patch_fails: bool = False, concurrent: list[str] | None = None
+) -> Any:
+    """The create, the file posts and the description PATCH of a new task.
+
+    The task keeps its description and its version. Each entry of ``concurrent``
+    is a text that a second editor saves just before the next PATCH lands, so
+    that PATCH meets a 412. ``patched`` records every PATCH it received.
+    """
+    state: dict[str, Any] = {"description": "", "v": 1, "patched": []}
+    edits = list(concurrent or [])
+
+    def version() -> str:
+        return f"2026-11-07T10:00:{state['v']:02d}+00:00"
+
+    def answer(call: dict) -> Any:
+        from tests.unit._projects_agent_fakes import FakeResponse
+
+        path, method = call["path"], call["method"]
+        if path == "/projects/tasks" and method == "POST":
+            state["description"] = (call["json"] or {}).get("description") or ""
+            return responder(call)
+        if path == f"/projects/tasks/{OTHER}/attachments" and method == "POST":
+            name = call["files"]["file"][0]
+            if name == fail_on:
+                return FakeResponse({"detail": "That file type is not accepted."}, status_code=422)
+            mime = call["files"]["file"][2]
+            return {
+                "attachment_id": SERVED_ID, "name": name, "mime": mime,
+                "size": len(call["files"]["file"][1]),
+                "kind": "image" if mime.startswith("image/") else "file",
+                "url": f"/api/projects/attachments/{SERVED_ID}/{name}",
+            }
+        if path == f"/projects/tasks/{OTHER}" and method == "GET":
+            return {**TASK, "id": OTHER, "description": state["description"],
+                    "updated_at": version()}
+        if path == f"/projects/tasks/{OTHER}" and method == "PATCH":
+            state["patched"].append(call)
+            if patch_fails:
+                return FakeResponse({"detail": "Not saved."}, status_code=500)
+            if edits:
+                state["description"] = state["description"] + edits.pop(0)
+                state["v"] += 1
+            if call["headers"].get("If-Match") != version():
+                return FakeResponse({"detail": {"error": "precondition_failed"}}, status_code=412)
+            state["description"] = call["json"]["description"]
+            state["v"] += 1
+            return {**TASK, "id": OTHER}
+        return responder(call)
+
+    answer.state = state  # type: ignore[attr-defined]
+    return answer
+
+
+def _kinds(calls: list[dict]) -> list[str]:
+    return [f"{c['method']} {c['path']}" for c in writes(calls)]
+
+
+async def test_create_task_with_files_is_one_card_with_the_files_on_it(monkeypatch) -> None:
+    _chat_files(monkeypatch, PNG, PDF)
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _files_gateway())
+    out = await skill_projects.create_task(UUID, "Fix the bug", files=[PNG[0], PDF[0]])
+    [card] = asked
+    assert (
+        "files: «shot.png» (240 KB), «spec.pdf» (1.1 MB) · everyone who can open "
+        "the task can open them"
+    ) in card["context"]
+    # The order: the task, each file, then ONE description PATCH.
+    assert _kinds(calls) == [
+        "POST /projects/tasks",
+        f"POST /projects/tasks/{OTHER}/attachments",
+        f"POST /projects/tasks/{OTHER}/attachments",
+        f"PATCH /projects/tasks/{OTHER}",
+    ]
+    posted = [c for c in calls if c["method"] == "POST" and c.get("files")]
+    assert [c["files"]["file"][0] for c in posted] == [PNG[0], PDF[0]]
+    assert "Content-Type" not in posted[0]["headers"]
+    [edit] = [c for c in calls if c["method"] == "PATCH"]
+    # Only the image goes in the description, as TR-4 writes it for a paste.
+    assert edit["json"] == {
+        "description": f"![shot.png](/api/projects/attachments/{SERVED_ID}/shot.png)"
+    }
+    assert "Files attached:" in out and "shot.png" in out and "not attached" not in out
+
+
+async def test_the_image_goes_after_the_words_of_the_description(monkeypatch) -> None:
+    _chat_files(monkeypatch, PNG)
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _files_gateway())
+    await skill_projects.create_task(UUID, "Fix", description="It breaks.", files=[PNG[0]])
+    [edit] = [c for c in calls if c["method"] == "PATCH"]
+    assert edit["json"]["description"].startswith("It breaks.\n\n![shot.png](")
+
+
+async def test_a_file_that_is_not_an_image_makes_no_description_patch(monkeypatch) -> None:
+    _chat_files(monkeypatch, PDF)
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _files_gateway())
+    await skill_projects.create_task(UUID, "Read the spec", files=[PDF[0]])
+    assert _kinds(calls) == ["POST /projects/tasks", f"POST /projects/tasks/{OTHER}/attachments"]
+
+
+async def test_a_task_with_no_files_calls_no_file_route(monkeypatch) -> None:
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _files_gateway())
+    await skill_projects.create_task(UUID, "Plain", files=[])
+    assert _kinds(calls) == ["POST /projects/tasks"]
+
+
+@pytest.mark.parametrize(
+    ("uploads", "asked_for", "words"),
+    [
+        ([("empty.txt", b"")], ["empty.txt"], "«empty.txt» is empty"),
+        ([("setup.exe", b"MZ")], ["setup.exe"], "File type not allowed: «setup.exe»."),
+        ([PNG], ["nope.png"], "No file named nope.png was attached in this chat."),
+        (
+            [("a.bin", b"x" * (6 * 1024 * 1024)), ("b.bin", b"x" * (5 * 1024 * 1024))],
+            ["a.bin", "b.bin"],
+            "would hold 11.0 MB with «a.bin», «b.bin», and the limit is 10.0 MB",
+        ),
+        ([("big.bin", b"x" * (11 * 1024 * 1024))], ["big.bin"], "«big.bin» is 11.0 MB"),
+    ],
+    ids=["empty", "blocked", "missing", "total-over", "one-over"],
+)
+async def test_a_bad_file_is_refused_before_the_card_with_no_post(
+    uploads: list, asked_for: list, words: str, monkeypatch
+) -> None:
+    _chat_files(monkeypatch, *uploads)
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _files_gateway())
+    out = await skill_projects.create_task(UUID, "Fix", files=asked_for)
+    assert words in out, out
+    assert asked == [] and writes(calls) == []
+
+
+async def test_one_file_that_fails_leaves_the_task_and_names_the_file(monkeypatch) -> None:
+    _chat_files(monkeypatch, PNG, PDF)
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _files_gateway(fail_on=PDF[0]))
+    out = await skill_projects.create_task(UUID, "Fix", files=[PNG[0], PDF[0]])
+    assert "not attached: «spec.pdf»" in out and "attach_to_task" in out
+    assert "That file type is not accepted." in out
+    assert OTHER in out, "the task stays, and the reply says its id"
+    assert "shot.png" in out.split("not attached")[0]
+    # The image that landed is still put in the description.
+    assert any(c["method"] == "PATCH" for c in calls)
+
+
+async def test_a_failed_description_patch_keeps_the_files_and_says_so(monkeypatch) -> None:
+    _chat_files(monkeypatch, PNG)
+    approve(monkeypatch)
+    fake_gateway(monkeypatch, _files_gateway(patch_fails=True))
+    out = await skill_projects.create_task(UUID, "Fix", files=[PNG[0]])
+    assert "The description has no inline image." in out
+    assert "Files attached:" in out and "The files are on the task." in out
+
+
+async def test_a_declined_card_with_files_writes_nothing(monkeypatch) -> None:
+    _chat_files(monkeypatch, PNG)
+    deny(monkeypatch)
+    calls = fake_gateway(monkeypatch, _files_gateway())
+    assert await skill_projects.create_task(UUID, "Fix", files=[PNG[0]]) == W.CANCELLED
+    assert writes(calls) == []
+
+
+def test_create_task_files_are_in_the_pin_and_the_rule_text() -> None:
+    """Mutation: drop `files` from the pin or from a rule text -> red."""
+    from acb_skills import egress, tool_packs
+
+    assert "files" in egress.HELD_CARD_WRITE_TOOLS["create_task"]
+    root = SKILL_DIR.parents[2]
+    path = root / "agents/agent-projects/instructions.md"
+    text_ = " ".join(path.read_text(encoding="utf-8").split())
+    assert "pass the file names in `create_task` `files`" in text_
+    assert "Do not call `attach_to_task` after it." in text_
+    # The core rules hold a size pin (3500 characters), so the rule lives in
+    # the description of create_task, which the model reads with the tool.
+    doc = " ".join((skill_projects.create_task.__doc__ or "").split())
+    assert "pass them here, and do not call attach_to_task after it." in doc
+    assert "create_task files" not in " ".join(tool_packs._PROJECTS_RULES.split())
+
+
+async def test_the_description_patch_carries_if_match(monkeypatch) -> None:
+    _chat_files(monkeypatch, PNG)
+    approve(monkeypatch)
+    gw = _files_gateway()
+    fake_gateway(monkeypatch, gw)
+    await skill_projects.create_task(UUID, "Fix", description="It breaks.", files=[PNG[0]])
+    [edit] = gw.state["patched"]
+    assert edit["headers"]["If-Match"] == "2026-11-07T10:00:01+00:00"
+
+
+async def test_a_412_appends_the_image_to_the_current_description(monkeypatch) -> None:
+    _chat_files(monkeypatch, PNG)
+    approve(monkeypatch)
+    gw = _files_gateway(concurrent=[" Also on Linux."])
+    fake_gateway(monkeypatch, gw)
+    out = await skill_projects.create_task(UUID, "Fix", description="It breaks.", files=[PNG[0]])
+    first, second = gw.state["patched"]
+    assert first["headers"]["If-Match"] != second["headers"]["If-Match"]
+    assert gw.state["description"].startswith("It breaks. Also on Linux.\n\n![shot.png](")
+    assert "no inline image" not in out
+
+
+async def test_a_second_412_says_the_description_has_no_inline_image(monkeypatch) -> None:
+    _chat_files(monkeypatch, PNG)
+    approve(monkeypatch)
+    gw = _files_gateway(concurrent=[" One.", " Two."])
+    fake_gateway(monkeypatch, gw)
+    out = await skill_projects.create_task(UUID, "Fix", description="It breaks.", files=[PNG[0]])
+    assert len(gw.state["patched"]) == 2
+    assert "The description has no inline image." in out
+    assert "The files are on the task." in out
+    assert "![shot.png]" not in gw.state["description"]
+
+
+async def test_the_alt_text_keeps_every_r_and_drops_brackets_and_line_breaks() -> None:
+    from skill_projects import task_files
+
+    row = {"mime": "image/png", "url": f"/api/projects/attachments/{SERVED_ID}/x.png"}
+    md = task_files.image_markdown({**row, "name": "error[1].png"})
+    assert md.startswith("![error1.png](")
+    md = task_files.image_markdown({**row, "name": "a" + chr(13) + "b" + chr(10) + "c.png"})
+    assert md.startswith("![abc.png](")
+
+
+async def test_one_file_under_two_spellings_is_one_file(monkeypatch) -> None:
+    """`shot.png` and `uploads/shot.png` resolve to one file: one card entry, one post."""
+    from acb_skills import attachment_tools
+
+    async def resolved(name: str) -> Any:
+        return PNG
+
+    monkeypatch.setattr(attachment_tools, "read_attachment_bytes", resolved)
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _files_gateway())
+    await skill_projects.create_task(UUID, "Fix", files=["shot.png", "uploads/shot.png"])
+    assert asked[0]["context"].count("«shot.png»") == 1
+    assert len([c for c in calls if c["method"] == "POST" and c.get("files")]) == 1
+
+
+async def test_a_caller_header_never_replaces_the_identity(monkeypatch) -> None:
+    calls = fake_gateway(monkeypatch, _files_gateway())
+    await client.request(
+        "GET", "/projects/tasks", headers={"X-User-Email": "evil@x.io", "If-Match": "t"}
+    )
+    sent = calls[0]["headers"]
+    assert sent["X-User-Email"] == "pm@fracktal.in"
+    assert sent["If-Match"] == "t"

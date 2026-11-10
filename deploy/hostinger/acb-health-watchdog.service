@@ -12,7 +12,11 @@ User=root
 # Invoked through bash on purpose: a checkout that loses the executable bit
 # (Windows contributors, archive exports) would otherwise make ExecStart fail
 # with a bare "Permission denied" and the watchdog would silently never run.
-ExecStart=/bin/bash /opt/acb/app/deploy/hostinger/health-watchdog.sh
+# WS-49 BH-6: the ROOT COPY, never the checkout. The copy is flat, so the
+# watchdog cannot find bh2_rollback.sh from its own path. This line names the
+# flat copy. The unit loads no env file, so only root sets the name.
+ExecStart=/bin/bash /usr/local/lib/acb/health-watchdog.sh
+Environment=BH2_ROLLBACK_SCRIPT=/usr/local/lib/acb/bh2_rollback.sh
 # A restart attempt plus probes can legitimately take a while; do not let a
 # wedged service hang the timer forever.
 TimeoutStartSec=600

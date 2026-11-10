@@ -11,7 +11,7 @@ Usage:
 
 Requires:
   GATEWAY_BASE_URL (default http://127.0.0.1:8080)
-  GATEWAY_INTERNAL_TOKEN (or LITELLM_MASTER_KEY)
+  GATEWAY_INTERNAL_TOKEN (the LLM key is not service identity, WS-24b)
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from typing import Any
 import httpx
 
 GATEWAY = os.environ.get("E2E_GATEWAY_URL", os.environ.get("GATEWAY_BASE_URL", "http://127.0.0.1:8080"))
-TOKEN = os.environ.get("E2E_TOKEN", os.environ.get("GATEWAY_INTERNAL_TOKEN", os.environ.get("LITELLM_MASTER_KEY", "sk-local-dev-change-me")))
+TOKEN = os.environ.get("E2E_TOKEN", os.environ.get("GATEWAY_INTERNAL_TOKEN", ""))
 # The memory endpoints scope by identity, not just by token: a personal scope
 # needs the platform to say WHO it is acting for (gateway/routes/memory.py
 # _authorize_scope). The token alone reaches shared scopes only.
@@ -225,7 +225,7 @@ async def test_copilot_agent_context(client: httpx.AsyncClient) -> None:
         "so you remember it for our conversation."
     )
     text1, _ = await stream_agent_chat(
-        client, "agent-sales-assistant", msg1, history=history, thread_id=tid,
+        client, "crm-assistant", msg1, history=history, thread_id=tid,
     )
     history.append({"role": "user", "content": msg1})
     history.append({"role": "assistant", "content": text1})
@@ -239,7 +239,7 @@ async def test_copilot_agent_context(client: httpx.AsyncClient) -> None:
     # Turn 2: ask about facts from Turn 1 — requires session continuity
     msg2 = "How many employees does Fracktal Works have?"
     text2, _ = await stream_agent_chat(
-        client, "agent-sales-assistant", msg2, history=history, thread_id=tid,
+        client, "crm-assistant", msg2, history=history, thread_id=tid,
     )
 
     ok(f"Turn 2 response ({len(text2)} chars)")
@@ -252,7 +252,7 @@ async def test_copilot_agent_context(client: httpx.AsyncClient) -> None:
     # Turn 3: ask about client
     msg3 = "Who is our biggest client?"
     text3, _ = await stream_agent_chat(
-        client, "agent-sales-assistant", msg3, history=history, thread_id=tid,
+        client, "crm-assistant", msg3, history=history, thread_id=tid,
     )
 
     if "acme" in text3.lower():

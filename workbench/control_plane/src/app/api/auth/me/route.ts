@@ -32,6 +32,17 @@ export async function GET(): Promise<NextResponse> {
       cache: "no-store",
       signal: AbortSignal.timeout(8000),
     });
+    // A 503 is "try again", never "nobody" (2026-10-07). The gateway answers
+    // it when the identity read timed out waiting for a database connection.
+    // A 200 of NO_ACCESS here is authoritative to `resolveAccess`, so a live
+    // member lost every pane. Passed on, it reads as `unavailable`, and the
+    // shell keeps what it last knew.
+    if (res.status === 503) {
+      return NextResponse.json(
+        { detail: "unavailable" },
+        { status: 503, headers: { "Retry-After": res.headers.get("Retry-After") ?? "2" } },
+      );
+    }
     if (!res.ok) return NextResponse.json(NO_ACCESS, { status: 200 });
     return NextResponse.json(await res.json());
   } catch {

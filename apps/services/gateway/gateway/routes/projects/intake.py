@@ -49,14 +49,18 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
+from gateway.align.trigger import enqueue_check
+from gateway.db import current_tenant
 from gateway.routes.projects.core import (
-    TASK_SOURCES,
+    CLIENT_TASK_SOURCES,
     TRIAGE_CATEGORY,
     Page,
     TaskModel,
     _tenant_session,
     actor,
     apply_status_transition,
+    assert_holds_tasks,
+    assert_not_archived,
     emit,
     insert_row,
     load_default_status,
@@ -68,14 +72,15 @@ from gateway.routes.projects.core import (
     require_status_in_project,
     resolve_visibility,
     root_project_id,
-    status_owner_id,
     router,
     row_to_dict,
+    status_owner_id,
     task_visibility_clause,
     update_row,
     wire,
 )
 from gateway.routes.projects.filters import parse_when
+from gateway.routes.projects.personal import stored_due
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -278,7 +283,11 @@ async def capture_intake(
         vis = await resolve_visibility(db, user)
         # R5 — capturing INTO a project requires seeing it; an unreadable id
         # answers 404, never 403.
-        await load_visible_project(db, vis, str(payload.project_id))
+        target = await load_visible_project(db, vis, str(payload.project_id))
+        # A capture is a task, so it lands where a task may: in a project,
+        # never on a space or a folder (`core.assert_holds_tasks`).
+        assert_holds_tasks(target, then="Capture into")
+        assert_not_archived(target, then="Capture into")
         root = await root_project_id(db, str(payload.project_id))
         # The triage lane belongs to the set this project USES, which is
         # the nearest owner and not necessarily the root (migration 196).
@@ -300,13 +309,20 @@ async def capture_intake(
                 {"leveraged": payload.leveraged}
                 if payload.leveraged is not None else {}
             ),
-            "due_at": payload.due_at,
+            # A chat date has no time, so it takes the one date seam (RX-5).
+            "due_at": await stored_due(db, actor(user).lower(), payload.due_at),
             "task_number": await next_task_number(db, root),
             "created_by": actor(user),
             # The task's own source speaks the CHECK'd vocabulary; the
-            # wrapper's is free text. When they coincide, both say it.
-            **({"source": source} if source in TASK_SOURCES else {}),
+            # wrapper's is free text. When they coincide, both say it. Only a
+            # source that a request may name (EA-6d): `mcp` is the server's.
+            **({"source": source} if source in CLIENT_TASK_SOURCES else {}),
         })
+        # WS-ALN ALN-1 (`project_alignment.md` §5). A capture is a create, so it
+        # enqueues in THIS transaction, as `create_task` does. A personal
+        # project (§1.2) gets no job. Fence: `test_align_trigger.py`.
+        if not getattr(target, "personal_owner", None):
+            await enqueue_check(db, str(task.id), current_tenant(), row=task, known_team=True)
         wrapper = await insert_row(db, "pm_intake", {
             "task_id": str(task.id),
             "status": "pending",

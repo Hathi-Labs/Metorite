@@ -15,6 +15,10 @@ Two things are asserted here:
 2. It reaches whichever options dict the agent actually uses — Copilot-SDK
    agents carry ``_default_options``, native MAF agents carry
    ``default_options``.
+3. A native MAF agent gets ``reasoning_effort`` and NOTHING else. Its client
+   passes every key to ``AsyncCompletions.create()``, which refuses
+   ``model_params`` and ``thinking``. These fakes cannot see that refusal, so
+   ``test_native_maf_wire.py`` drives a real client through the real executor.
 """
 from __future__ import annotations
 
@@ -86,10 +90,43 @@ def test_existing_model_params_are_preserved() -> None:
 # Reaching the right options dict
 # ---------------------------------------------------------------------------
 
-def test_applies_to_a_native_maf_agent() -> None:
+@pytest.mark.parametrize(("mode", "effort"), [("thinking", "medium"), ("max", "high")])
+def test_a_native_maf_agent_gets_reasoning_effort_and_nothing_else(
+    mode: str, effort: str,
+) -> None:
+    """PR #585 review: ``model_params`` and ``thinking`` in a native agent's
+    ``default_options`` end every turn in RUN_ERROR. Same values as Tier 1.5."""
     agent = _MafAgent()
-    assert _apply_thinking_mode_for_agent(agent, "max") is True
-    assert agent.default_options["model_params"]["reasoning_effort"] == "high"
+    assert _apply_thinking_mode_for_agent(agent, mode) is True
+    assert agent.default_options == {"reasoning_effort": effort}
+
+
+def test_an_unknown_mode_leaves_a_native_agent_untouched() -> None:
+    agent = _MafAgent()
+    assert _apply_thinking_mode_for_agent(agent, "turbo") is False
+    assert agent.default_options == {}
+
+
+def test_the_native_map_matches_the_copilot_tier_1_5_values() -> None:
+    assert _mr.NATIVE_REASONING_EFFORT == {"thinking": "medium", "max": "high"}
+
+
+def test_the_copilot_chat_path_never_hands_a_native_agent_model_params() -> None:
+    """``/copilot/chat`` runs the native MAF orchestrator. It must go through
+    ``_apply_thinking_mode_for_agent``, never the Copilot-only mapping."""
+    import ast
+    from pathlib import Path
+
+    main_py = (
+        Path(__file__).resolve().parents[2]
+        / "apps/services/gateway/gateway/main.py"
+    )
+    calls = [
+        node for node in ast.walk(ast.parse(main_py.read_text(encoding="utf-8")))
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", getattr(node.func, "attr", "")) == "_apply_thinking_mode"
+    ]
+    assert calls == [], "gateway/main.py calls the Copilot-only mapping on an agent"
 
 
 def test_applies_to_a_copilot_sdk_agent() -> None:

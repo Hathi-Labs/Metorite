@@ -10,9 +10,11 @@ and the ``already_absent`` retry arm.
 **R8** — real Postgres via the tenant ladder (``TENANT_LADDER_DATABASE_URL``):
 the whole feature IS FK topology, which a hermetic fake cannot disagree with.
 The suite's sharpest lesson is pinned in ``TestTheExclusionCannotGoStale``:
-the ``crm_*`` tables' ``organization_id`` references ``crm_organizations``
-(a CRM company record), NOT the tenant — discovered when this suite's first
-draft seeded them as tenant rows and the FK refused.
+three ``crm_*`` tables had an ``organization_id`` that referenced the CRM
+company record, NOT the tenant — discovered when this suite's first draft
+seeded them as tenant rows and the FK refused. WS-53 CRM-T1 renamed that
+column to ``company_id``, and all 13 ``crm_*`` tables now cascade from the
+tenant (migration 241).
 
 ⚠️ Writes are COMMITTED (the function opens its own sessions); every test
 seeds unique rows and cleans up in ``finally``.
@@ -94,6 +96,61 @@ def _counts(conn, org: str) -> dict[str, int]:
             {"o": org},
         ).scalar_one()
     return out
+
+
+_CRM_TABLES = (
+    "crm_companies", "crm_contacts", "crm_lead_statuses", "crm_deal_statuses",
+    "crm_leads", "crm_deals", "crm_activities",
+)
+
+
+def _seed_crm(conn, org: str) -> None:
+    """One company, contact, lead, deal and activity, each lead and deal in a
+    seeded stage of its own org (WS-53 CRM-T4).
+
+    The stages are what make the purge hazard reachable: ``crm_leads.status_id``
+    and ``crm_deals.status_id`` are ``ON DELETE RESTRICT``.
+    """
+    p = {"o": org}
+    ids = {}
+    for key, sql in (
+        ("company", "INSERT INTO crm_companies (name, organization_id) "
+                    "VALUES ('Acme', CAST(:o AS uuid)) RETURNING id"),
+        ("lstage", "INSERT INTO crm_lead_statuses (name, position, type, "
+                   "organization_id) VALUES ('New', 1, 'open', "
+                   "CAST(:o AS uuid)) RETURNING id"),
+        ("dstage", "INSERT INTO crm_deal_statuses (name, position, type, "
+                   "organization_id) VALUES ('Proposal', 1, 'open', "
+                   "CAST(:o AS uuid)) RETURNING id"),
+    ):
+        ids[key] = str(conn.execute(text(sql), p).scalar_one())
+    ids["contact"] = str(conn.execute(text(
+        "INSERT INTO crm_contacts (first_name, company_id, organization_id) "
+        "VALUES ('Ada', CAST(:c AS uuid), CAST(:o AS uuid)) RETURNING id"),
+        {**p, "c": ids["company"]}).scalar_one())
+    conn.execute(text(
+        "INSERT INTO crm_leads (lead_name, status_id, organization_id) "
+        "VALUES ('Lead', CAST(:s AS uuid), CAST(:o AS uuid))"),
+        {**p, "s": ids["lstage"]})
+    ids["deal"] = str(conn.execute(text(
+        "INSERT INTO crm_deals (name, company_id, status_id, organization_id) "
+        "VALUES ('Deal', CAST(:c AS uuid), CAST(:s AS uuid), CAST(:o AS uuid)) "
+        "RETURNING id"), {**p, "c": ids["company"], "s": ids["dstage"]}
+    ).scalar_one())
+    conn.execute(text(
+        "INSERT INTO crm_activities (type, deal_id, created_by, "
+        "organization_id) VALUES ('note', CAST(:d AS uuid), 'a@x.test', "
+        "CAST(:o AS uuid))"), {**p, "d": ids["deal"]})
+
+
+def _crm_counts(conn, org: str) -> dict[str, int]:
+    return {
+        t: conn.execute(
+            text(f"SELECT count(*) FROM {t} WHERE organization_id = "
+                 "CAST(:o AS uuid)"), {"o": org},
+        ).scalar_one()
+        for t in _CRM_TABLES
+    }
 
 
 def _cleanup(conn, *, slug: str, org: str):
@@ -199,21 +256,62 @@ class TestThePurge:
             await purge_tenant_organization(slug="   ")
 
 
-class TestTheExclusionCannotGoStale:
-    def test_every_organization_id_cascades_to_the_tenant_or_is_named_crm(
-        self, eng
-    ):
-        """Every column NAMED ``organization_id`` must either (a) cascade to
-        the tenant ``organization`` table — so the purge's single DELETE
-        reaches it — or (b) be one of the named ``crm_*`` tables whose
-        ``organization_id`` is a DIFFERENT fact (an FK to
-        ``crm_organizations``, the CRM company record — measured 2026-08-24
-        when seeding them as tenant rows was refused by that very FK).
+class TestTheCrmPurge:
+    async def test_an_org_holding_leads_and_deals_in_stages_purges_whole(self, eng):
+        """WS-53 CRM-T4. ``crm_leads.status_id`` and ``crm_deals.status_id`` are
+        ``ON DELETE RESTRICT``, so the one cascading DELETE can reach a stage
+        before the lead or deal that sits in it.
 
-        The red arms, both deliberate: a NEW tenant table without the cascade
-        FK would orphan rows the purge claims to destroy; and the day MT-1j
-        threads the CRM family onto real tenancy, the exclusion stops being
-        true and the purge must grow their deletes."""
+        **Measured 2026-10-11 on Postgres 16: the hazard did NOT reproduce
+        with the bare cascade.** Without the explicit deletes in
+        ``purge_tenant_organization`` the org still purged whole, because the
+        referential triggers fire after the statement and by then the
+        cascade has removed the leads and deals too. The test stays, and
+        the explicit deletes stay, so the purge does not depend on that
+        trigger order.
+        """
+        from acb_auth.offboard import purge_tenant_organization
+
+        victim = f"purge-{uuid.uuid4().hex[:8]}"
+        bystander = f"stays-{uuid.uuid4().hex[:8]}"
+        with eng.begin() as conn:
+            v_org = _seed_org(conn, slug=victim)
+            b_org = _seed_org(conn, slug=bystander)
+            _seed_crm(conn, v_org)
+            _seed_crm(conn, b_org)
+            assert set(_crm_counts(conn, v_org).values()) == {1}
+        try:
+            async with tenant_engine_scope(_URL):
+                receipt = await purge_tenant_organization(slug=victim)
+            assert receipt["already_absent"] is False
+            assert receipt["deleted"] == {
+                "organization": 1, "crm_activities": 1, "crm_deals": 1,
+                "crm_leads": 1,
+            }, receipt["deleted"]
+            with eng.begin() as conn:
+                gone = _crm_counts(conn, v_org)
+                kept = _crm_counts(conn, b_org)
+            assert gone == {t: 0 for t in _CRM_TABLES}, gone
+            assert kept == {t: 1 for t in _CRM_TABLES}, kept
+        finally:
+            with eng.begin() as conn:
+                _cleanup(conn, slug=victim, org=v_org)
+                _cleanup(conn, slug=bystander, org=b_org)
+
+
+class TestTheExclusionCannotGoStale:
+    def test_every_organization_id_cascades_to_the_tenant(self, eng):
+        """Every column NAMED ``organization_id`` must cascade to the tenant
+        ``organization`` table, so the purge's single DELETE reaches it, or be
+        named in ``_NOT_TENANT_SCOPED``.
+
+        That set is EMPTY since WS-53 CRM-T1 (2026-10-11). It held the three
+        ``crm_*`` tables whose ``organization_id`` was the CRM company record.
+        144_crm.sql renamed that column to ``company_id``, and migration 241
+        gave all 13 ``crm_*`` tables a cascading tenant key.
+
+        The red arm is deliberate: a NEW tenant table without the cascade FK
+        would orphan rows the purge claims to destroy."""
         from acb_auth.offboard import _NOT_TENANT_SCOPED
 
         with eng.begin() as conn:
@@ -236,27 +334,46 @@ class TestTheExclusionCannotGoStale:
                     "      AND c.confdeltype = 'c')"
                 ))
             }
+        assert not _NOT_TENANT_SCOPED
         assert not_cascading == set(_NOT_TENANT_SCOPED), (
             f"organization_id columns outside the cascade: "
             f"{sorted(not_cascading)} — a new tenant table must gain "
-            "ON DELETE CASCADE to organization; a newly-threaded CRM table "
-            "must be removed from _NOT_TENANT_SCOPED and purged explicitly"
+            "ON DELETE CASCADE to organization"
         )
 
-        # And the exclusion means what the docstring says: each named table's
-        # organization_id points at crm_organizations, not the tenant.
+    def test_every_crm_table_cascades_from_the_tenant(self, eng):
+        """WS-53 CRM-T1: the positive half, so the empty set above is not
+        vacuous for the CRM. Each of the 13 ``crm_*`` tables carries an
+        ``organization_id`` that cascades from ``organization``. WS-53 CRM-T5
+        adds the 14th, ``crm_settings`` (migration 243), whose primary key is
+        that column."""
         with eng.begin() as conn:
-            for table in sorted(_NOT_TENANT_SCOPED):
-                target = conn.execute(text(
-                    "SELECT ref.relname FROM pg_constraint c "
+            cascading = {
+                r[0]
+                for r in conn.execute(text(
+                    "SELECT rel.relname FROM pg_constraint c "
                     "JOIN pg_class rel ON rel.oid = c.conrelid "
                     "JOIN pg_class ref ON ref.oid = c.confrelid "
                     "JOIN pg_attribute a ON a.attrelid = c.conrelid "
                     "  AND a.attnum = ANY(c.conkey) "
                     "WHERE c.contype = 'f' AND a.attname = 'organization_id' "
-                    f"  AND rel.relname = '{table}'"
-                )).scalar_one_or_none()
-                assert target == "crm_organizations", (
-                    f"{table}.organization_id references {target!r} — the "
-                    "exclusion's premise changed; re-derive it"
-                )
+                    "  AND ref.relname = 'organization' "
+                    "  AND c.confdeltype = 'c' "
+                    "  AND starts_with(rel.relname, 'crm_')"
+                ))
+            }
+        assert cascading == {
+            "crm_activities", "crm_auto_lead_cursors", "crm_business_rules",
+            "crm_change_log", "crm_companies",
+            "crm_contacts", "crm_convert_mappings", "crm_deal_contacts", "crm_deal_statuses",
+            "crm_deals", "crm_digests", "crm_field_defs", "crm_field_fill", "crm_field_rules",
+            "crm_field_sections",
+            "crm_lead_pipeline_stages",
+            "crm_lead_statuses",
+            "crm_leads",
+            "crm_lost_reasons", "crm_mapping_plans", "crm_module_records",
+            "crm_note_labels", "crm_note_vectors", "crm_pipeline_stages",
+            "crm_pipelines",
+            "crm_settings", "crm_source_profiles", "crm_status_changes",
+            "crm_sync_cursors", "crm_sync_runs", "crm_views", "crm_zoho_tombstones",
+        }

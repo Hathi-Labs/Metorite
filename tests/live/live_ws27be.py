@@ -52,6 +52,7 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "apps" / "services" / "gateway"))
 
 from acb_auth import UserContext, UserRole, build_access  # noqa: E402
+from fastapi import HTTPException  # noqa: E402
 from acb_common.db import bind_tenant, release_tenant  # noqa: E402
 from gateway.db import get_db  # noqa: E402
 from gateway.routes.projects import search as pm_search  # noqa: E402
@@ -358,19 +359,18 @@ async def main():
               max(visited(v) for k, v in PLANS.items()
                   if k.endswith("AFTER")) < ROWS * 0.1, True)
 
-        # ── the boundary this fix does NOT reach, measured not assumed ──────
+        # ── the boundary D-PM-31 closed (built 2026-10-06) ─────────────────
         #
         # `pg_trgm` extracts whole trigrams from the pattern, and `%ab%` has
-        # none. MIN_QUERY is 2, so the shortest ACCEPTED query is the longest
-        # one the index cannot serve. Reported rather than asserted green:
-        # raising the minimum is a product decision, recorded as owed.
+        # none. MIN_QUERY is now 3, so a 2-character pattern is never sent.
+        # The plan below is still printed, as the cost D-PM-31 avoids.
         # ⚠️ The planner may still CHOOSE the index for a 2-character pattern —
         # and it does. That is not the same as the index helping: with no whole
         # trigram to look up, the Bitmap Index Scan returns every entry and the
         # query costs what it always did. "Uses the index" is the wrong question;
         # the honest one is what it costs, so both are printed.
         two = "qu"
-        assert len(two) == MIN_QUERY
+        assert len(two) == MIN_QUERY - 1
         lsql, lparams = list_statement(vis, q=two)
         PLANS["list ?q=qu (MIN_QUERY) · AFTER"] = await explain(db, lsql, lparams)
         note("2-char query: index named in the plan",
@@ -397,8 +397,12 @@ async def main():
         check("…and the same call without q is NOT empty",
               unfiltered.total, ROWS)
 
-        hits = await pm_search.search_tasks(q="a", user=user(ANA))
-        check("search still answers empty for the same query", hits["rows"], [])
+        try:
+            await pm_search.search_tasks(q="a", user=user(ANA))
+            status = 200
+        except HTTPException as refused:
+            status = refused.status_code
+        check("search answers 422 for the same query (D-PM-31)", status, 422)
 
         # ── the tenant predicate survives the new index path ────────────────
         found = await pm_search.search_tasks(q=RARE, user=user(ANA))

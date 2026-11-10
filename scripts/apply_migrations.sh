@@ -79,6 +79,114 @@ elif ! docker ps --format '{{.Names}}' | grep -qx "$PG_CONTAINER"; then
   exit 1
 fi
 
+# ── The ledger (BO-6) ────────────────────────────────────────────────────────
+#
+# Until this, every deploy replayed EVERY numbered migration — 150+ files. That
+# worked only because each is hand-written to be idempotent, which is a property
+# of 152 authors' care rather than of the system.
+#
+# The cost was not only time. `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` still
+# takes ACCESS EXCLUSIVE when the column is already there, and on 2026-08-06 one
+# such queued ALTER, behind a session left `idle in transaction`, froze every
+# later reader of that table and took the app down. Asking for 150 locks we do
+# not need is the exposure; this removes it.
+#
+# Created here rather than relying on 153_schema_migrations.sql having run,
+# because the ledger must exist BEFORE the loop that would apply that file.
+# `IF NOT EXISTS` makes the two agree; the migration file is what documents the
+# table and what a fresh install gets.
+REPLAY_ALL="${MIGRATION_REPLAY_ALL:-0}"
+
+if [ "$REPLAY_ALL" = "1" ]; then
+  say "MIGRATION_REPLAY_ALL=1 — replaying the whole ladder, ignoring the ledger"
+  APPLIED_SET=""
+else
+  pgi psql -v ON_ERROR_STOP=1 -U "$PG_USER" -d "$PG_DB" -q >/dev/null <<'LEDGER'
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  filename    text PRIMARY KEY,
+  checksum    text NOT NULL,
+  applied_at  timestamptz NOT NULL DEFAULT now(),
+  duration_ms integer
+);
+LEDGER
+  # One query, not one per file: 150 round trips through `docker exec` is
+  # several seconds of deploy for something that fits in a single result.
+  # `< /dev/null`: `pgi` is `docker exec -i`, which DRAINS stdin. A caller that
+  # feeds this script on stdin (the deploy does — `ssh 'bash -s' < …`) would
+  # lose every unread line to this one query. Belt as well as braces: the deploy
+  # also isolates the whole script, but a helper that steals stdin should not
+  # rely on every caller remembering.
+  APPLIED_SET="$(pgi psql -tA -U "$PG_USER" -d "$PG_DB" \
+    -c "SELECT filename || ' ' || checksum FROM schema_migrations" \
+    2>/dev/null < /dev/null || true)"
+fi
+
+# "new" | "same" | "changed", from the set read above.
+ledger_state() {
+  row="$(printf '%s\n' "$APPLIED_SET" | grep -F "$1 " || true)"
+  if [ -z "$row" ]; then echo new
+  elif [ "${row#* }" = "$2" ]; then echo same
+  else echo changed
+  fi
+}
+
+shopt -s nullglob
+# Match 2-OR-MORE-digit numeric prefixes (NN_ … NNN_) and apply in NUMERIC
+# order. `sort -V` (version sort) is essential now that 3-digit numbers exist:
+# plain lexical `sort` puts "100_" BEFORE "99_", which would run a later
+# migration before an earlier one. The 2-digit scheme filled up at 99, so
+# migrations continue at 100+.
+migration_files="$(ls "$MIGRATIONS_DIR"/[0-9][0-9]*_*.sql 2>/dev/null | sort -V)"
+if [ -z "$migration_files" ]; then
+  # NOT a silent success. `nullglob` deletes a pattern that matches nothing, so
+  # without this guard the `ls` below runs bare, lists the CURRENT directory,
+  # and hands psql whatever it finds — the first symptom being a syntax error
+  # in AGENTS.md. Found while replaying the ladder against a scratch DB with a
+  # temp APP_DIR, which is exactly how a mis-set APP_DIR would fail in prod.
+  echo "ERROR: no numbered migrations in '$MIGRATIONS_DIR'." >&2
+  echo "       APP_DIR='$APP_DIR' — is it the app checkout?" >&2
+  exit 1
+fi
+
+# migration_state <file> -> "init" | "new" | "same" | "changed".
+# 🔴 **The ONE definition of pending.** A file is pending when this says `new`
+# or `changed`. The count below and the apply loop further down both ask this
+# function, so the gate on the backup can never disagree with the loop about
+# what will run. `00_`/`01_` are init-only (initdb applies them on first boot).
+migration_state() {
+  case "$(basename "$1")" in
+    00_*|01_*) echo init; return ;;
+  esac
+  ledger_state "$(basename "$1")" "$(sha256sum "$1" | cut -d" " -f1)"
+}
+
+# --- Is there anything to apply? (incident, 2026-10-07) ---------------------
+# Every deploy used to take a FULL pg_dump of the production cluster here,
+# also when no migration was pending. Seven deploys on 2026-10-07 each read
+# the whole database for nothing. That load, with the nightly verify, used up
+# the disk I/O budget of the managed cluster, and it stayed degraded for hours.
+#
+# So count first. With nothing pending, nothing below can change the schema,
+# so there is nothing for a backup to protect. Say so, and stop here with the
+# same last line as a run that applied nothing.
+# ⚠️ This can only SKIP a backup when the ledger says every file is applied.
+# A ledger that cannot be read leaves APPLIED_SET empty, every file reads as
+# `new`, and the backup runs. MIGRATION_REPLAY_ALL=1 does the same.
+pending=0
+recorded=0
+for f in $migration_files; do
+  case "$(migration_state "$f")" in
+    new|changed) pending=$((pending + 1)) ;;
+    same) recorded=$((recorded + 1)) ;;
+  esac
+done
+if [ "$pending" -eq 0 ]; then
+  say "No pending migrations — skipping the pre-migration backup"
+  say "Migrations complete (0 applied, $recorded already recorded)"
+  exit 0
+fi
+say "$pending pending migration(s), $recorded already recorded"
+
 # --- Take a backup BEFORE replaying the ladder (BO-23 done-when 4) ----------
 # The migrations below are idempotent but forward-only: there are no down
 # migrations, and they run under ON_ERROR_STOP=1. A migration that corrupts
@@ -88,6 +196,8 @@ fi
 #
 # Fail CLOSED: if the backup cannot be taken, the migrations do not run. The
 # escape hatch is explicit and has to be typed on purpose.
+# It runs only when a migration is pending (see the count above). With work
+# pending it is exactly as strict as before (CLAUDE.md §3a rule 1).
 BACKUP_SCRIPT="$APP_DIR/scripts/backup_db.sh"
 if [ "${SKIP_PRE_MIGRATION_BACKUP:-0}" = "1" ]; then
   say "Pre-migration backup SKIPPED (SKIP_PRE_MIGRATION_BACKUP=1)"
@@ -148,57 +258,6 @@ if ! printf '%s\n' "$LOCK_PRELUDE" \
   LOCK_PRELUDE=""
 fi
 
-# ── The ledger (BO-6) ────────────────────────────────────────────────────────
-#
-# Until this, every deploy replayed EVERY numbered migration — 150+ files. That
-# worked only because each is hand-written to be idempotent, which is a property
-# of 152 authors' care rather than of the system.
-#
-# The cost was not only time. `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` still
-# takes ACCESS EXCLUSIVE when the column is already there, and on 2026-08-06 one
-# such queued ALTER, behind a session left `idle in transaction`, froze every
-# later reader of that table and took the app down. Asking for 150 locks we do
-# not need is the exposure; this removes it.
-#
-# Created here rather than relying on 153_schema_migrations.sql having run,
-# because the ledger must exist BEFORE the loop that would apply that file.
-# `IF NOT EXISTS` makes the two agree; the migration file is what documents the
-# table and what a fresh install gets.
-REPLAY_ALL="${MIGRATION_REPLAY_ALL:-0}"
-
-if [ "$REPLAY_ALL" = "1" ]; then
-  say "MIGRATION_REPLAY_ALL=1 — replaying the whole ladder, ignoring the ledger"
-  APPLIED_SET=""
-else
-  pgi psql -v ON_ERROR_STOP=1 -U "$PG_USER" -d "$PG_DB" -q >/dev/null <<'LEDGER'
-CREATE TABLE IF NOT EXISTS schema_migrations (
-  filename    text PRIMARY KEY,
-  checksum    text NOT NULL,
-  applied_at  timestamptz NOT NULL DEFAULT now(),
-  duration_ms integer
-);
-LEDGER
-  # One query, not one per file: 150 round trips through `docker exec` is
-  # several seconds of deploy for something that fits in a single result.
-  # `< /dev/null`: `pgi` is `docker exec -i`, which DRAINS stdin. A caller that
-  # feeds this script on stdin (the deploy does — `ssh 'bash -s' < …`) would
-  # lose every unread line to this one query. Belt as well as braces: the deploy
-  # also isolates the whole script, but a helper that steals stdin should not
-  # rely on every caller remembering.
-  APPLIED_SET="$(pgi psql -tA -U "$PG_USER" -d "$PG_DB" \
-    -c "SELECT filename || ' ' || checksum FROM schema_migrations" \
-    2>/dev/null < /dev/null || true)"
-fi
-
-# "new" | "same" | "changed", from the set read above.
-ledger_state() {
-  row="$(printf '%s\n' "$APPLIED_SET" | grep -F "$1 " || true)"
-  if [ -z "$row" ]; then echo new
-  elif [ "${row#* }" = "$2" ]; then echo same
-  else echo changed
-  fi
-}
-
 say "Applying migrations to db '$PG_DB' as '$PG_USER' (container: $PG_CONTAINER)"
 
 # Apply 02+ in numeric order. Only NUMBERED migration files (NN_*.sql) are
@@ -208,36 +267,16 @@ say "Applying migrations to db '$PG_DB' as '$PG_USER' (container: $PG_CONTAINER)
 # are NOT idempotent and MUST NOT be replayed onto an already-migrated DB (it
 # errors with `type "..." already exists`). 00/01 are init-only (handled by
 # initdb on first boot) and contain statements that aren't re-runnable.
-shopt -s nullglob
 applied=0
 skipped=0
 changed_files=""
-# Match 2-OR-MORE-digit numeric prefixes (NN_ … NNN_) and apply in NUMERIC
-# order. `sort -V` (version sort) is essential now that 3-digit numbers exist:
-# plain lexical `sort` puts "100_" BEFORE "99_", which would run a later
-# migration before an earlier one. The 2-digit scheme filled up at 99, so
-# migrations continue at 100+.
-migration_files="$(ls "$MIGRATIONS_DIR"/[0-9][0-9]*_*.sql 2>/dev/null | sort -V)"
-if [ -z "$migration_files" ]; then
-  # NOT a silent success. `nullglob` deletes a pattern that matches nothing, so
-  # without this guard the `ls` below runs bare, lists the CURRENT directory,
-  # and hands psql whatever it finds — the first symptom being a syntax error
-  # in AGENTS.md. Found while replaying the ladder against a scratch DB with a
-  # temp APP_DIR, which is exactly how a mis-set APP_DIR would fail in prod.
-  echo "ERROR: no numbered migrations in '$MIGRATIONS_DIR'." >&2
-  echo "       APP_DIR='$APP_DIR' — is it the app checkout?" >&2
-  exit 1
-fi
 for f in $migration_files; do
   base="$(basename "$f")"
-  case "$base" in
-    00_*|01_*) continue ;;  # init-only, skip
-  esac
-
   # Already applied, unchanged? Skip it. This is the win: a steady-state deploy
   # runs ~0 files instead of 152, and takes ~0 locks instead of hundreds.
-  sum="$(sha256sum "$f" | cut -d" " -f1)"
-  case "$(ledger_state "$base" "$sum")" in
+  # `migration_state` is the same function the pending count above asked.
+  case "$(migration_state "$f")" in
+    init) continue ;;  # init-only, skip
     same) skipped=$((skipped + 1)); continue ;;
     changed)
       # Re-apply rather than refuse. Every file here is idempotent by
@@ -252,6 +291,7 @@ for f in $migration_files; do
       ;;
   esac
 
+  sum="$(sha256sum "$f" | cut -d" " -f1)"
   printf "    - %s ... " "$base"
   started_ms="$(date +%s%3N)"
   attempt=1

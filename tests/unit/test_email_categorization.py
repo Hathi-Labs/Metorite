@@ -55,8 +55,11 @@ class _FakeDB:
         sql = str(clause)
         if "LEFT JOIN email_senders" in sql and "ORDER BY COUNT(*) DESC" in sql:
             return _Result(rows=self.senders)
-        if "SELECT email_address FROM email_accounts" in sql:
-            return _Result(one=SimpleNamespace(email_address=self.account_email))
+        if sql.lstrip().startswith("SELECT o.id::text"):
+            # `identity.resolve_self` (EM-T8e-1): each mailbox of the member.
+            # Here the member has one mailbox, the account's own address.
+            return _Result(rows=[SimpleNamespace(
+                id="acc-1", address=self.account_email, label=None)])
         if "unnest(em.categories)" in sql:
             return _Result(rows=self.tally)
         upper = sql.lstrip().upper()

@@ -41,6 +41,7 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import uuid
 from typing import Any, AsyncIterator
 
@@ -154,6 +155,27 @@ async def _get_client() -> aioredis.Redis:
     return _client
 
 
+#: The events that end a run's stream. A subscriber stops at either one.
+_TERMINAL_EVENTS: frozenset[str] = frozenset({"RUN_FINISHED", "RUN_ERROR"})
+
+
+async def _give_back_steers(thread_id: str) -> None:
+    """Before a run's terminal event lands, return the steers it never read.
+
+    Ordered BEFORE the write on purpose: the chat reads the terminal event
+    and then asks for the steer follow-up, so the durable store must already
+    hold the steer when the event becomes visible (owner, 2026-10-12). One
+    seam for every path that ends a run, because every one of them writes
+    its terminal event here. Never raises.
+    """
+    try:
+        from orchestrator.steer import return_unconsumed  # noqa: PLC0415
+
+        await return_unconsumed(thread_id)
+    except Exception:  # noqa: BLE001 — a run must end whatever happens here
+        _log.warning("stream_relay.steer_give_back_failed", thread_id=thread_id[:12])
+
+
 async def push_event(thread_id: str, event: dict[str, Any]) -> str:
     """Append a single event to the per-thread stream.
 
@@ -164,6 +186,8 @@ async def push_event(thread_id: str, event: dict[str, Any]) -> str:
     Returns:
         The Redis entry ID (e.g. ``"1719123456789-0"``).
     """
+    if isinstance(event, dict) and event.get("type") in _TERMINAL_EVENTS:
+        await _give_back_steers(thread_id)
     r = await _get_client()
     try:
         eid = await r.xadd(
@@ -347,6 +371,7 @@ async def mark_active(
     actor: str | None = None,
     source: str | None = None,
     floor: list[str] | None = None,
+    keep_run_facts: bool = False,
 ) -> None:
     """Mark a thread's agent as currently running.
 
@@ -370,15 +395,29 @@ async def mark_active(
                    folded over.  Recorded so a steer from somebody who was not
                    in that fold can be refused rather than silently moving the
                    floor under a turn already executing.
+        keep_run_facts: Mark the SAME run again, and leave its actor, source
+                   and floor as they are. Only the executor's own call inside
+                   a run passes it (``run_agent_stream``). Any other call
+                   clears an omitted fact, so a new run never inherits the
+                   previous run's actor (``test_concurrent_run_guard.py``).
     """
     r = await _get_client()
     try:
         if reset:
             await r.delete(_stream_key(thread_id))
         await r.set(_active_key(thread_id), "1", ex=STREAM_TTL_SECONDS)
+        # ⚠️ An omitted fact is CLEARED, except when the caller marks the
+        # same run again (``keep_run_facts``). The executor makes that call
+        # inside every detached run (``run_agent_stream``). Before the fix it
+        # passed nothing, and deleted the actor, the source and the floor
+        # that ``run_detached`` had just written. The steer floor then failed
+        # open, the supersede guard never answered 409, and a cron run read as
+        # a person's. Fences: ``test_chat_deploy_recovery.py::
+        # test_the_executor_prologue_keeps_the_run_facts`` (same run) and
+        # ``test_concurrent_run_guard.py`` (a new run inherits nothing).
         if actor:
             await r.set(_run_actor_key(thread_id), actor, ex=STREAM_TTL_SECONDS)
-        else:
+        elif not keep_run_facts:
             # A run with no known actor must not inherit the previous one's,
             # or an anonymous/internal run would look like it belongs to
             # whoever ran last and could be refused on their behalf.
@@ -391,7 +430,7 @@ async def mark_active(
             await r.set(
                 _run_source_key(thread_id), source, ex=STREAM_TTL_SECONDS,
             )
-        else:
+        elif not keep_run_facts:
             await r.delete(_run_source_key(thread_id))
         if floor:
             await r.set(
@@ -399,8 +438,13 @@ async def mark_active(
                 json.dumps(sorted({str(m) for m in floor})),
                 ex=STREAM_TTL_SECONDS,
             )
-        else:
+        elif not keep_run_facts:
             await r.delete(_run_floor_key(thread_id))
+        # Which PROCESS holds this run, so a run whose process died is never
+        # read as live again (orchestrator.run_liveness, incident 2026-10-09).
+        from orchestrator.run_liveness import claim_run  # noqa: PLC0415
+
+        await claim_run(thread_id)
     finally:
         pass  # shared pooled client — never closed per-call
 
@@ -469,6 +513,9 @@ async def mark_inactive(thread_id: str) -> None:
         # finished run must not lend either to whatever starts next.
         await r.delete(_run_source_key(thread_id))
         await r.delete(_run_floor_key(thread_id))
+        from orchestrator.run_liveness import release_run  # noqa: PLC0415
+
+        await release_run(thread_id)
         # Also refresh the stream TTL so late reconnectors can still replay.
         await r.expire(_stream_key(thread_id), STREAM_TTL_SECONDS)
     finally:
@@ -501,6 +548,357 @@ async def touch_active(thread_id: str) -> None:
         await r.expire(_stream_key(thread_id), STREAM_TTL_SECONDS)
     except Exception:  # noqa: BLE001 — heartbeat must never break a wait
         _log.warning("stream_relay.touch_active_failed", thread_id=thread_id[:12])
+
+
+# ---------------------------------------------------------------------------
+# The live-run index: which runs are in flight, PER ORGANIZATION
+# ---------------------------------------------------------------------------
+#
+# ``GET /chat/active-sessions`` used to SCAN ``cc:active:*``. That key carries
+# no tenant, so the scan listed the live thread ids of EVERY organization, and
+# the route's "no session row yet" fallback then handed them to the caller: the
+# other org's ``chat_session`` row is invisible under FORCE RLS, so it looked
+# like a row that did not exist yet. The scan was also O(every key in Redis),
+# every 5 s, per open chat surface.
+#
+# This index replaces the scan. It is ONE hash per organization, built through
+# the tenant-prefix wrapper (``acb_common.tenant_redis``, R5c), so the key is
+# ``cc:<org>:liveruns`` and a key without a tenant cannot be built:
+#
+#     field = thread_id
+#     value = {"actor": <email or "">, "startedAt": <ISO-8601>, "token": <run>}
+#
+# The org of a run is therefore WHICH HASH it is in, written at run start from
+# the server-side ``organization_id`` (never from the payload, R11). The actor
+# is recorded HERE and not read from ``cc:runactor``, because the executor's own
+# ``mark_active(thread_id)`` call used to clear ``cc:runactor`` mid-run. That
+# call keeps it now (``mark_active`` clears only on ``reset=True``), and the
+# index still records its own copy.
+#
+# Why per organization and not per member: a shared room shows the green dot to
+# every participant, and the run belongs to only one of them. A per-member set
+# cannot answer "which live runs may this member SEE"; the org hash can, and
+# Postgres (``SESSION_VISIBLE_SQL`` under RLS) answers the rest.
+#
+# Liveness stays with ``cc:active:{tid}``. A field whose flag is gone is a run
+# that ended without its ``finally`` (a crash, a restart), and the reader prunes
+# it. The hash TTL only bounds that garbage. It is twice the stream TTL, so a
+# run parked on a HITL question for the whole ask_user budget, which pushes no
+# event, still outlives one TTL from its last refresh.
+#
+# Fence (R7): ``tests/unit/test_active_sessions_tenant.py``.
+
+LIVE_RUNS_NAMESPACE = "liveruns"
+LIVE_RUNS_TTL_SECONDS = 2 * STREAM_TTL_SECONDS
+#: The run cap's reservations (WS-51 D-3, ``orchestrator.run_cap``):
+#: ``cc:<org>:runslots``, thread id -> ``{actor, at}``. A run that registers
+#: in the live-run index drops its reservation, because the index entry now
+#: holds its slot.
+RUN_SLOTS_NAMESPACE = "runslots"
+
+
+def _live_runs_key(organization_id: str):
+    """``cc:<org>:liveruns``. Call only inside ``organization_scope(org)``.
+
+    The key refuses to build when *organization_id* is not the bound tenant.
+    """
+    from acb_common.tenant_redis import TenantKey  # noqa: PLC0415
+
+    return TenantKey(organization_id, LIVE_RUNS_NAMESPACE)
+
+
+async def _tenant_client():
+    """The relay's pooled client, behind the tenant-prefix wrapper."""
+    from acb_common.tenant_redis import TenantRedis  # noqa: PLC0415
+
+    return TenantRedis(await _get_client())
+
+
+async def register_live_run(
+    thread_id: str,
+    *,
+    organization_id: str | None,
+    actor: str | None,
+    token: str,
+    run_id: str | None = None,
+    keep_run_facts: bool = False,
+) -> None:
+    """Record a starting run in its organization's live-run index.
+
+    *organization_id* and *actor* come from the authenticated session, server
+    side. With no organization nothing is written, so the run is never listed.
+    That is the fail-closed answer, because a run with no org has no tenant to
+    be listed under. Best-effort: Redis trouble never blocks a run.
+
+    *run_id* is the run's own id (the gateway's ``run_id``, which the executor
+    also uses). The entry carries it as ``runId``: the browser keys a run by it
+    (``lib/runStatus.ts`` ``runKeyOf``, chat_run_continuity.md §4.10).
+
+    *keep_run_facts*: the SAME run registers again (the executor, after
+    ``run_detached``). The token is replaced, so the executor's ``finally``
+    removes its own entry, but ``startedAt`` and ``runId`` stay as the first
+    register wrote them. A ``startedAt`` that moved mid-run read as a NEW run
+    in the browser (re-review of #1171). An entry of ANOTHER run (its
+    ``runId`` differs) is never kept.
+    """
+    if not organization_id or not thread_id:
+        return
+    try:
+        from datetime import UTC, datetime
+
+        from acb_common.tenant_redis import (  # noqa: PLC0415
+            TenantKey,
+            organization_scope,
+        )
+
+        with organization_scope(organization_id):
+            r = await _tenant_client()
+            k = _live_runs_key(organization_id)
+            started = datetime.now(UTC).isoformat()
+            rid = (run_id or "").strip() or None
+            if keep_run_facts:
+                held: dict = {}
+                with contextlib.suppress(Exception):
+                    raw = await r.hget(k, thread_id)
+                    held = json.loads(raw) if raw else {}
+                    if not isinstance(held, dict):
+                        held = {}
+                held_rid = held.get("runId") or None
+                if held and (held_rid is None or rid is None or held_rid == rid):
+                    started = str(held.get("startedAt") or started)
+                    rid = held_rid or rid
+            fields: dict = {
+                "actor": (actor or "").strip().lower(),
+                "startedAt": started,
+                "token": token,
+            }
+            if rid:
+                fields["runId"] = rid
+            await r.hset(k, thread_id, json.dumps(fields))
+            await r.expire(k, LIVE_RUNS_TTL_SECONDS)
+            # The run cap's reservation for this thread is done: the entry
+            # above holds the slot now (orchestrator.run_cap).
+            await r.hdel(TenantKey(organization_id, RUN_SLOTS_NAMESPACE), thread_id)
+    except Exception:  # noqa: BLE001 — the index is advisory, never a blocker
+        _log.warning("stream_relay.register_live_run_failed",
+                     thread_id=thread_id[:12])
+
+
+async def drop_run_slot(organization_id: str | None, thread_id: str) -> None:
+    """Remove the run cap's reservation for *thread_id*. Best-effort."""
+    if not organization_id or not thread_id:
+        return
+    try:
+        from acb_common.tenant_redis import TenantKey, organization_scope  # noqa: PLC0415
+
+        with organization_scope(organization_id):
+            r = await _tenant_client()
+            await r.hdel(TenantKey(organization_id, RUN_SLOTS_NAMESPACE), thread_id)
+    except Exception:  # noqa: BLE001
+        _log.warning("stream_relay.drop_run_slot_failed", thread_id=thread_id[:12])
+
+
+async def unregister_live_run(
+    thread_id: str, *, organization_id: str | None, token: str,
+) -> None:
+    """Remove a finished run from the index, ONLY if the entry is still its own.
+
+    A superseded run's ``finally`` can run after the new run registered. The
+    token check stops it from deleting the new run's entry.
+    """
+    if not organization_id or not thread_id:
+        return
+    try:
+        from acb_common.tenant_redis import organization_scope  # noqa: PLC0415
+
+        with organization_scope(organization_id):
+            r = await _tenant_client()
+            k = _live_runs_key(organization_id)
+            raw = await r.hget(k, thread_id)
+            if raw is None:
+                return
+            try:
+                held = json.loads(raw).get("token")
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                held = None
+            if held == token:
+                await r.hdel(k, thread_id)
+    except Exception:  # noqa: BLE001
+        _log.warning("stream_relay.unregister_live_run_failed",
+                     thread_id=thread_id[:12])
+
+
+async def refresh_live_runs(organization_id: str | None) -> None:
+    """Push the index's TTL out again. A long run calls this as it streams."""
+    if not organization_id:
+        return
+    try:
+        from acb_common.tenant_redis import organization_scope  # noqa: PLC0415
+
+        with organization_scope(organization_id):
+            r = await _tenant_client()
+            await r.expire(_live_runs_key(organization_id), LIVE_RUNS_TTL_SECONDS)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+async def list_live_runs(organization_id: str) -> list[dict[str, str]]:
+    """The live runs of ONE organization: ``threadId``, ``actor``, ``startedAt``, ``runId``.
+
+    Reads one hash. It never scans the keyspace. A field whose ``cc:active``
+    flag is gone is pruned and left out. Raises on a Redis error, so the caller
+    can tell "no runs" from "could not ask".
+    """
+    from acb_common.tenant_redis import organization_scope  # noqa: PLC0415
+
+    raw_client = await _get_client()
+    out: list[dict[str, str]] = []
+    with organization_scope(organization_id):
+        r = await _tenant_client()
+        k = _live_runs_key(organization_id)
+        entries = await r.hgetall(k) or {}
+        dead: list[str] = []
+        for tid, raw in entries.items():
+            if not tid:
+                continue
+            if await raw_client.get(_active_key(tid)) != "1":
+                dead.append(tid)
+                continue
+            try:
+                meta = json.loads(raw) if raw else {}
+                if not isinstance(meta, dict):
+                    meta = {}
+            except (json.JSONDecodeError, TypeError):
+                meta = {}
+            out.append({
+                "threadId": tid,
+                "actor": str(meta.get("actor") or ""),
+                "startedAt": str(meta.get("startedAt") or ""),
+                "runId": str(meta.get("runId") or ""),
+            })
+        if dead:
+            with contextlib.suppress(Exception):
+                await r.hdel(k, *dead)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# The live step of a run (WS-51 S3)
+# ---------------------------------------------------------------------------
+#
+# The activity panel shows "Running · 2 min · <step>". The step is read from the
+# TAIL of the run's own stream: one XREVRANGE with a small COUNT, never the whole
+# stream and never a new key. The caller reads it only for a thread that it has
+# already shown the member may see.
+#
+# ⚠️ The step comes ONLY from a tool NAME or a fixed label (review of #815). The
+# text of a progress update, a result or an argument is never used. A Copilot
+# partial result with no tool id becomes a PROGRESS_UPDATE that carries raw
+# tool OUTPUT, for example lines of a `.env` file from a shell tool, and every
+# member of the room would see it. A tool name must also look like an
+# identifier, so a free-text "intent" name is not shown either.
+#
+# The step is plain text. `plain_step` takes out tags, angle brackets and
+# control characters, folds whitespace and caps the length. The browser draws
+# it as a text node, never as HTML. The route reads the step only when the
+# browser asks (`?steps=1`, while the panel is open), so the 5 s badge poll
+# reads no stream at all.
+#
+# Fence (R7): ``tests/unit/test_run_last_step.py``.
+
+LAST_STEP_MAX_CHARS = 60
+#: The newest events read from the stream. A long reply pushes many text
+#: deltas, so a small window answers "Writing a reply" and stays cheap.
+LAST_STEP_SCAN = 12
+
+_TAG_RE = re.compile(r"<[^>]*>")
+
+
+def plain_step(text: Any, limit: int = LAST_STEP_MAX_CHARS) -> str | None:
+    """*text* as one short line of plain text, or None when nothing is left."""
+    if not isinstance(text, str):
+        return None
+    s = _TAG_RE.sub(" ", text)
+    s = "".join(" " if (ord(c) < 32 or ord(c) == 127 or c in "<>") else c for c in s)
+    s = " ".join(s.split())
+    if not s:
+        return None
+    if len(s) > limit:
+        s = s[: limit - 1].rstrip() + "…"
+    return s
+
+
+#: A tool name is an identifier: letters, digits and ``_ - . :``, no spaces.
+_TOOL_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,79}$")
+#: An MCP tool name carries its server: ``mcp__github__list_issues`` or
+#: ``mcp_github_list_issues``. The server is not a step.
+_MCP_PREFIX_RE = re.compile(r"^mcp(?:__[A-Za-z0-9-]+__|_[A-Za-z0-9-]+_)")
+
+#: The fixed labels. Nothing else but a tool name reaches the step.
+STEP_WRITING = "Writing a reply"
+STEP_THINKING = "Thinking"
+
+
+def tool_step(name: Any) -> str | None:
+    """A tool NAME as a short label: ``search_tasks`` → ``Search tasks``.
+
+    None for anything that is not an identifier, so free text never passes.
+    """
+    if not isinstance(name, str):
+        return None
+    name = name.strip()
+    if not _TOOL_NAME_RE.match(name) or name == "tool":
+        return None
+    name = _MCP_PREFIX_RE.sub("", name) or name
+    words = " ".join(re.split(r"[_.:-]+", name)).strip()
+    if not words:
+        return None
+    return plain_step(words[:1].upper() + words[1:])
+
+
+def step_from_events(events: list[dict[str, Any]]) -> str | None:
+    """The latest step in *events*, which are NEWEST FIRST.
+
+    The first event that names a step wins. A tool start gives its tool name
+    as a label, a text delta gives "Writing a reply" and a thinking delta gives
+    "Thinking". A progress update, a result, an argument and every other event
+    are skipped, because their TEXT can be tool output.
+    """
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        kind = ev.get("type")
+        if kind in ("TOOL_CALL_START", "SUB_AGENT_TOOL_CALL_START"):
+            step = tool_step(ev.get("toolCallName"))
+            if step:
+                return step
+        elif kind in ("TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT"):
+            return STEP_WRITING
+        elif kind == "THINKING_TEXT_MESSAGE_CONTENT":
+            return STEP_THINKING
+    return None
+
+
+async def latest_step(thread_id: str) -> str | None:
+    """The live step of *thread_id*, from the tail of its stream. Best-effort."""
+    if not thread_id:
+        return None
+    try:
+        r = await _get_client()
+        entries = await r.xrevrange(_stream_key(thread_id), "+", "-", count=LAST_STEP_SCAN)
+    except Exception:  # noqa: BLE001 — a missing step never fails the list
+        return None
+    events: list[dict[str, Any]] = []
+    for entry in entries or []:
+        try:
+            _eid, fields = entry
+            raw = fields.get("event") if isinstance(fields, dict) else None
+            ev = json.loads(raw) if raw else None
+        except (ValueError, TypeError, AttributeError):
+            continue
+        if isinstance(ev, dict):
+            events.append(ev)
+    return step_from_events(events)
 
 
 async def stream_exists(thread_id: str) -> bool:
@@ -686,9 +1084,44 @@ async def dispatch_control(thread_id: str, command: dict[str, Any]) -> bool:
     (audit R2: the card cleared while the agent stayed parked for an hour).
     A zero-subscriber publish is retried once (~0.3s) to ride out the short
     listener-startup race at run boundaries.
+
+    After the call, :func:`delivery_of` says what happened (incident
+    2026-10-09):
+
+    * ``"applied"``: a worker that owns the run applied it.
+    * ``"unacked"``: a listener heard it and sent no ack. A process still
+      holds the run.
+    * ``"undelivered"``: no subscriber anywhere, twice. ``run_liveness``
+      reads a run as dead only when its owner's heartbeat is ALSO gone.
+
+    The status is kept BESIDE the command, never written into it: an applier
+    may hold the command dict, and it must see only what the caller sent
+    (``evals/trajectories/test_stream_replay_trajectory.py``).
     """
+    status = await _deliver_control(thread_id, command)
+    if len(_DELIVERY) > 1024:  # a caller that never asked; keep it bounded
+        _DELIVERY.clear()
+    _DELIVERY[id(command)] = status
+    return status == "applied"
+
+
+#: id(command) -> what dispatch_control did with it, until delivery_of reads it.
+_DELIVERY: dict[int, str] = {}
+
+
+def delivery_of(command: dict[str, Any]) -> str:
+    """What :func:`dispatch_control` did with *command*. Read it once.
+
+    ``"unacked"`` when nothing recorded it (a stub, or a dispatch that
+    raised): a delivery nobody can describe proves nothing about the run, so
+    it is never read as "undelivered".
+    """
+    return _DELIVERY.pop(id(command), "unacked")
+
+
+async def _deliver_control(thread_id: str, command: dict[str, Any]) -> str:
     if _apply_control_local(thread_id, command):
-        return True
+        return "applied"
     # Not ours — relay to the owner and wait for its applied-ack.
     ack_id = command.setdefault("ack_id", uuid.uuid4().hex)
     delivered = await publish_control(thread_id, command)
@@ -700,14 +1133,14 @@ async def dispatch_control(thread_id: str, command: dict[str, Any]) -> bool:
             "stream_relay.control_undelivered",
             thread_id=thread_id[:12], cmd=str(command.get("cmd")),
         )
-        return False
+        return "undelivered"
     if await wait_control_ack(ack_id):
-        return True
+        return "applied"
     _log.warning(
         "stream_relay.control_unacked",
         thread_id=thread_id[:12], cmd=str(command.get("cmd")),
     )
-    return False
+    return "unacked"
 
 
 async def _control_listener(thread_id: str) -> None:
@@ -812,6 +1245,19 @@ def register_background_child(thread_id: str, task: asyncio.Task) -> None:
     task.add_done_callback(_discard)
 
 
+def live_run_count(skip: set[str] | frozenset[str] = frozenset()) -> int:
+    """How many detached runs in THIS process have not ended.
+
+    A restart ends every one of them, so the gateway's stop step asks this
+    number first and waits for it to reach zero (``GET /internal/drain``).
+    ``skip`` names threads not to count, such as a run that waits on a person.
+    """
+    return sum(
+        1 for thread_id, task in list(_DETACHED_TASKS.items())
+        if not task.done() and thread_id not in skip
+    )
+
+
 def get_detached_task(thread_id: str) -> asyncio.Task[None] | None:
     """Return the in-flight detached run task for *thread_id*, if any."""
     task = _DETACHED_TASKS.get(thread_id)
@@ -830,6 +1276,7 @@ async def run_detached(
     source: str | None = None,
     floor: list[str] | None = None,
     organization_id: str | None = None,
+    record: dict[str, Any] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Run *gen* (an SSE-line async generator) in a DETACHED background task
     and yield its events from the Redis stream.
@@ -868,6 +1315,9 @@ async def run_detached(
                    event loop (including the ``on_complete`` persist hook, which
                    runs AFTER the generator's own binding has been released) see
                    the right tenant. WS-29 MT-1d (H4), slice 2 — DARK.
+        record:    What the restart sweep needs to persist this run if its
+                   process dies (``orchestrator.run_liveness``): the message
+                   row id, the agent, the run id. Server-side facts only.
 
     Raises:
         SupersedeRefused: when a DIFFERENT party's run is in flight on this
@@ -917,13 +1367,40 @@ async def run_detached(
     await mark_active(
         thread_id, reset=True, actor=actor, source=source, floor=floor,
     )
+    # The org's live-run index (``/chat/active-sessions``). Server-side org and
+    # actor only. The token lets this run's ``finally`` remove its OWN entry.
+    _live_token = uuid.uuid4().hex
+    await register_live_run(
+        thread_id, organization_id=organization_id, actor=actor,
+        token=_live_token,
+        # The run's own id, written once here. The executor's re-register
+        # keeps it and startedAt (`keep_run_facts`, chat_run_continuity §4.10).
+        run_id=str((record or {}).get("runId") or "") or None,
+    )
+    # What a later process needs to close this run if THIS process dies
+    # (orchestrator.run_liveness, incident 2026-10-09). The executor
+    # re-registers the index entry with the run id as its token, so both
+    # tokens travel. No member email: the sweep reads cc:runactor instead.
+    from orchestrator.run_liveness import (  # noqa: PLC0415
+        forget_instance_run, record_instance_run,
+    )
+
+    _rec = dict(record or {})
+    await record_instance_run(thread_id, {
+        **_rec,
+        "org": organization_id,
+        "source": source,
+        "tokens": [t for t in (_live_token, _rec.get("runId")) if t],
+    })
 
     # A note buffered for a run that never got to a tool boundary must not leak
     # into the next one; the durable store (cc:steer:) is what carries anything
     # still owed forward, and the route replays it into the run's input.
     try:
-        from orchestrator.steer import clear_guidance  # noqa: PLC0415
+        from orchestrator.steer import clear_guidance, clear_stopped  # noqa: PLC0415
         clear_guidance(thread_id)
+        # A Stop of an earlier run says nothing about this one.
+        await clear_stopped(thread_id)
     except Exception:  # noqa: BLE001
         pass
 
@@ -950,8 +1427,15 @@ async def run_detached(
                 "stream_relay.detached_run_missing_org",
                 thread_id=thread_id[:12], source=source,
             )
+        _live_refreshed = asyncio.get_running_loop().time()
         try:
             async for line in gen:
+                # Keep the org's live-run index alive on a long run, at most
+                # once a minute. One EXPIRE, never one per token delta.
+                _now = asyncio.get_running_loop().time()
+                if organization_id and _now - _live_refreshed >= 60:
+                    _live_refreshed = _now
+                    await refresh_live_runs(organization_id)
                 if tee:
                     try:
                         await push_sse_event(thread_id, line)
@@ -975,11 +1459,12 @@ async def run_detached(
                 thread_id=thread_id[:12],
             )
             try:
-                await push_event(thread_id, {
-                    "type": "RUN_ERROR",
-                    "message": str(exc),
-                    "code": type(exc).__name__,
-                })
+                # A code from the run-error vocabulary and a ref the log
+                # carries (acb_llm.run_errors, owner report 2026-10-08).
+                from acb_llm.run_errors import run_error_event
+                await push_event(thread_id, run_error_event(
+                    exc, where="stream_relay.detached_run",
+                ))
             except Exception:  # noqa: BLE001
                 pass
         finally:
@@ -987,18 +1472,41 @@ async def run_detached(
                 await mark_inactive(thread_id)
             except Exception:  # noqa: BLE001
                 pass
+            with contextlib.suppress(BaseException):
+                await unregister_live_run(
+                    thread_id, organization_id=organization_id,
+                    token=_live_token,
+                )
             # Tear down the cross-worker control bus for this run (P1-2).
             # Await the listener's shutdown so its pub/sub connection closes
             # before this run boundary returns (no post-loop cleanup dangle).
             with contextlib.suppress(BaseException):
                 await _stop_control_listener_wait(thread_id)
             unregister_control_handler(thread_id)
+            # A steer this run never read goes back to the durable store, so
+            # the follow-up turn answers it (owner, 2026-10-12). The terminal
+            # event already did this. This catches a run that sent none.
+            with contextlib.suppress(BaseException):
+                from orchestrator.steer import end_of_run as _steer_end  # noqa: PLC0415
+
+                await asyncio.shield(_steer_end(thread_id))
+            # WS-51 S2: a card this run left open, and no wait settled, is
+            # closed now. A parked card stays open (orchestrator.pending_ask).
+            with contextlib.suppress(BaseException):
+                from orchestrator.pending_ask import end_of_run  # noqa: PLC0415
+
+                await asyncio.shield(end_of_run(thread_id))
             if on_complete is not None:
                 # Shield: this finally also runs on task cancellation (Stop /
                 # steer), where the first await would otherwise re-raise
                 # CancelledError before persistence gets to run.
                 with contextlib.suppress(BaseException):
                     await asyncio.shield(on_complete())
+            # The run is persisted, so the restart sweep has nothing to do
+            # for it. After on_complete, so a death before the persist still
+            # leaves the record for the next process.
+            with contextlib.suppress(BaseException):
+                await forget_instance_run(thread_id)
             # Release this task's tenant binding LAST — after on_complete, which
             # is the write that most needs it (WS-29 MT-1d / H4).
             if _tenant_token is not None:
@@ -1041,13 +1549,23 @@ async def run_detached(
         if not text:
             return False
         author = str(command.get("author") or "someone")
+        sid = str(command.get("signal_id") or "")
+        # PZ-31: only a real True is typed. A command from a process that
+        # predates the flag has none, so its steer grounds nothing.
+        typed = command.get("typed") is True
         try:
-            from orchestrator.steer import (  # noqa: PLC0415
-                buffer_guidance, discard_signal,
+            from orchestrator.steer import buffer_guidance  # noqa: PLC0415
+            buffered = buffer_guidance(
+                thread_id, author, text, signal_id=sid, typed=typed,
             )
-            buffer_guidance(thread_id, author, text)
         except Exception:  # noqa: BLE001
             return False
+        if not buffered:
+            # The run has sent its terminal event and reads no more notes.
+            # The owner still has the steer: its durable copy stays, and the
+            # follow-up turn answers it (owner, 2026-10-12). So this is an
+            # ack, and the signal is NOT discarded.
+            return True
         # NOTE the visible half of this — the ``STEER_INJECTED`` event everyone
         # in the room sees — is published by the SENDER onto ``cc:room:``, not
         # here onto ``cc:stream:``. Two reasons, both deliberate:
@@ -1058,10 +1576,9 @@ async def run_detached(
         #     run-event type is a two-sided change. A steer is a room fact, not
         #     a turn fact — §4.4 puts ``STEER_INJECTED`` on the room stream for
         #     exactly this reason.
-        sid = str(command.get("signal_id") or "")
-        if sid:
-            with contextlib.suppress(Exception):
-                asyncio.create_task(discard_signal(thread_id, sid))
+        # The durable copy stays until a tool result carries the note to
+        # the model (``steer._forget_durable``, round 2 of the review of
+        # #920). A note in this buffer must survive this process dying.
         return True
 
     register_control_command(thread_id, "steer", _steer_apply)
@@ -1085,6 +1602,13 @@ async def cancel_run(thread_id: str) -> bool:
     active (idempotent) — it still marks the thread inactive and emits the
     terminal event so a stuck UI recovers.
     """
+    # A Stop asks for no follow-up, from any tab or member. Recorded FIRST:
+    # the cancelled run's own end gives its unread steers back, maybe on
+    # another worker and later than this (review of #920, round 2).
+    with contextlib.suppress(Exception):
+        from orchestrator.steer import mark_stopped  # noqa: PLC0415
+
+        await mark_stopped(thread_id)
     task = _DETACHED_TASKS.get(thread_id)
     found = task is not None and not task.done()
 

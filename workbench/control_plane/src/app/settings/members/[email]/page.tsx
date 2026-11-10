@@ -28,7 +28,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useAccess } from "@/components/AccessProvider";
 import { explainSource, type Decision, type MemberAccess, type Role } from "../types";
-import SettingsHeader from "@/components/SettingsHeader";
+import { AppTopBar } from "@/components/AppTopBar";
 
 type Effect = "inherit" | "allow" | "deny";
 
@@ -200,23 +200,19 @@ export default function MemberAccessPage() {
   return (
     <div className="flex h-full flex-col">
       {/* Header */}
-      <div className="shrink-0 border-b border-border px-4 py-3 sm:px-6 sm:py-4">
-        <SettingsHeader
-          // `truncate`: the title here is DATA, not a label. A long display
-          // name must not push the Save button off the row.
-          truncate
-          title={data.display_name || data.email}
-          subtitle={`${data.email} · ${data.status}`}
-          backHref="/settings/organization"
-          backLabel="Back to Organisation"
-          actions={
-            <Button size="lg" layout="flex items-center" onClick={() => void save()} disabled={!dirty || saving}>
-              {saving ? <Icon name="Loader2" size={14} className="animate-spin" /> : <Icon name="Save" size={14} />}
-              {dirty ? "Save changes" : "Saved"}
-            </Button>
-          }
-        />
-      </div>
+      {/* The page's title bar (owner, 2026-10-10). The name is DATA, not a
+          label, so it truncates rather than push Save off the row. */}
+      <AppTopBar
+        back={{ href: "/settings/organization", label: "Back to Organisation" }}
+        title={data.display_name || data.email}
+        subtitle={`${data.email} · ${data.status}`}
+        tools={
+          <Button size="sm" onClick={() => void save()} disabled={!dirty || saving}>
+            {saving ? <Icon name="Loader2" size={14} className="animate-spin" /> : <Icon name="Save" size={14} />}
+            {dirty ? "Save changes" : "Saved"}
+          </Button>
+        }
+      />
 
       {(error || notice) && (
         <div

@@ -36,11 +36,23 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-@pytest.fixture()
+@pytest.fixture(scope="module")
 def db():
+    """The Console database, with its ladder applied by this suite.
+
+    The ladder is idempotent. This suite applies it itself, so it does not
+    depend on an earlier suite in the same CI shard. A new test elsewhere moves
+    the pytest-split cut, and then this suite can run first in its shard.
+    """
     from sqlalchemy import create_engine
 
-    return create_engine(_URL, future=True)
+    from tests.unit._customer_console_ladder import apply_ladder
+
+    eng = create_engine(_URL, future=True)
+    with eng.begin() as conn:
+        apply_ladder(conn)
+    yield eng
+    eng.dispose()
 
 
 @pytest.fixture()

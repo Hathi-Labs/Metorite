@@ -10,8 +10,9 @@
  * card per custom event. A renderer registry keyed by `name` plugs in later.
  */
 
-import { useState } from "react";
 import GenerativeUINode from "@/components/GenerativeUINode";
+import Icon from "@/components/Icon";
+import { ToolCardShell } from "@/components/ToolCardShell";
 
 type Json = unknown;
 
@@ -34,8 +35,8 @@ function JsonView({ value }: { value: Json }): React.ReactElement {
         new Set(value.flatMap((row) => Object.keys(row as object))),
       );
       return (
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
+        <div className="overflow-x-auto glass:rounded-[10px] glass:bg-secondary">
+          <table className="w-full text-left text-xs glass:text-footnote">
             <thead>
               <tr className="border-b border-border text-muted-foreground">
                 {cols.map((c) => (
@@ -98,14 +99,32 @@ const PANEL_HIDDEN_EVENTS = new Set([
   "elicitation_requested",
   "user_input_requested",
   "confirmation_requested",
+  // A closed card. The chat translator saves every custom event on the
+  // message, so a reloaded thread carries this one too.
+  "confirmation_resolved",
   "generative_ui",
   // A dispatched browser action (H-164): a side effect with nothing to show.
   "frontend_tool",
+  // The one assistant's mailbox mark (§7.1.1 rule 6). The transcript draws
+  // it as a line, so the fold must not show it again as data.
+  "email_mailbox_mark",
+  // The "used your profile" mark (PZ-20b). The message footer draws it.
+  "assistant_profile_used",
   // A file the turn wrote. `ArtifactCard` already renders it, with Open and
   // Download; the fold showed the same event again as raw data (UX review
   // 2026-09-23).
   "artifact_created",
   "artifact_updated",
+  // The tier of one model request (WS-45 S2). A label, not a view: the
+  // answer's details menu names it (S3), and raw JSON here would show a
+  // fold on every answer of a covered agent.
+  "ai.route",
+  // An app update cut the run (incident 2026-10-09). The chat draws the
+  // "interrupted" notice with Continue for it (`lib/chatRecovery.ts`).
+  "run_interrupted",
+  // The offer of the pill "Continue in a fresh chat" (WT-2). The chat draws
+  // the pill, and the fold must not show the event as data.
+  "chat_continue_offer",
 ]);
 
 /** A typed renderer for a specific custom-event `name`, returning the card body
@@ -131,7 +150,7 @@ export const CUSTOM_EVENT_RENDERERS: Record<string, CustomEventRenderer> = {
     const v = (value ?? {}) as Record<string, unknown>;
     return (
       <div className="space-y-1">
-        <div className="text-[12px] font-semibold text-foreground">
+        <div className="text-[12px] font-semibold text-foreground glass:text-subhead">
           {String(v.title ?? "Approval request")}
         </div>
         {v.detail != null && (
@@ -168,7 +187,6 @@ export default function GenerativeUIPanel({
   agentState,
   customEvents,
 }: GenerativeUIPanelProps): React.ReactElement | null {
-  const [open, setOpen] = useState(false);
   const displayEvents = (customEvents ?? []).filter(
     (ev) => !PANEL_HIDDEN_EVENTS.has(ev.name),
   );
@@ -177,20 +195,16 @@ export default function GenerativeUIPanel({
   const hasCustom = displayEvents.length > 0;
   if (!hasState && !hasCustom) return null;
 
+  // The fold is the shared tool card (`ToolCardShell`): one toggle, one
+  // header and one chevron with every other chat card (owner report,
+  // 2026-10-13: this row drew text triangles on a bare button). Closed at
+  // first, and a closed card mounts nothing.
   return (
-    <div className="mt-3 rounded-lg border border-border/60 bg-card/50">
-      <button
-        onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-muted-foreground hover:text-foreground"
-      >
-        <span className="text-[10px]">{open ? "▾" : "▸"}</span>
-        Interactive view
-        <span className="ml-auto text-[10px] text-muted-foreground">AG-UI</span>
-      </button>
-      {open && (
-        <div className="space-y-3 px-3 pb-3">
+    <div className="mt-3">
+      <ToolCardShell title="Interactive view" icon={<Icon name="LayoutTemplate" size={13} />} defaultCollapsed>
+        <div className="space-y-3">
           {hasState && (
-            <div className="rounded-md bg-card/50 p-2">
+            <div className="rounded-md bg-card/50 p-2 glass:rounded-[10px] glass:bg-secondary glass:p-3">
               <JsonView value={shownState} />
             </div>
           )}
@@ -198,7 +212,7 @@ export default function GenerativeUIPanel({
             displayEvents.map((ev, i) => {
               const renderer = CUSTOM_EVENT_RENDERERS[ev.name];
               return (
-                <div key={i} className="rounded-md bg-card/50 p-2">
+                <div key={i} className="rounded-md bg-card/50 p-2 glass:rounded-[10px] glass:bg-secondary glass:p-3">
                   {renderer ? (
                     renderer(ev.value)
                   ) : (
@@ -213,7 +227,7 @@ export default function GenerativeUIPanel({
               );
             })}
         </div>
-      )}
+      </ToolCardShell>
     </div>
   );
 }

@@ -328,7 +328,7 @@ async def _visibility(db: Any, user: UserContext) -> Any:
     return await resolve_visibility(db, user)
 
 
-def _scope(vis: Any, params: dict[str, Any], column: str = "t.root_project_id") -> str:
+def _scope(vis: Any, params: dict[str, Any], column: str = "t.project_id") -> str:
     """The viewer's grant closure as a WHERE fragment, binds folded in.
 
     ⚠️ **Applied for the unrestricted caller too.** ``data:org:read`` means
@@ -341,8 +341,12 @@ def _scope(vis: Any, params: dict[str, Any], column: str = "t.root_project_id") 
     ``/people/{id}/work`` does skip it; that is a finding for the board, not a
     pattern to copy.
 
-    ``t.root_project_id`` is the column the Projects package scopes on and the
-    one migration 161's trigger keeps in the same tenant.
+    ``t.project_id``, the task's OWN node, is the column (WS-64 OP-9,
+    D-OP-15). A team node under a personal root is visible, and its tasks
+    carry that root as ``root_project_id``, so a root scope would hide them.
+    Both arms hold every visible node at any depth, so this is the set that
+    ``task_visibility_clause`` reads. Migration 161's trigger keeps the task
+    and its project in the same tenant.
     """
     params.update(vis.params)
     return vis.project_clause(column)
@@ -351,7 +355,10 @@ def _scope(vis: Any, params: dict[str, Any], column: str = "t.root_project_id") 
 async def _totals(db: Any, vis: Any) -> dict[str, Any]:
     """Open tasks, hours, unestimated, overdue and the next deadline — one
     statement for the whole page, grouped by assignee."""
-    params: dict[str, Any] = {}
+    from gateway.routes.projects.core import reader_day_start
+    from gateway.routes.projects.due_day import not_overdue_sql, overdue_sql
+
+    params: dict[str, Any] = {"day_start": await reader_day_start(db, vis.email)}
     scope = _scope(vis, params)
     rows = (await db.execute(text(
         "SELECT lower(a.assignee) AS who, "
@@ -359,8 +366,8 @@ async def _totals(db: Any, vis: Any) -> dict[str, Any]:
         "       COALESCE(sum(t.estimate_mins), 0) AS mins, "
         "       count(*) FILTER (WHERE t.estimate_mins IS NULL) AS unestimated, "
         "       count(*) FILTER (WHERE t.due_at IS NOT NULL "
-        "                          AND t.due_at < now()) AS overdue, "
-        "       min(t.due_at) FILTER (WHERE t.due_at >= now()) AS next_due "
+        f"                          AND {overdue_sql()}) AS overdue, "
+        f"       min(t.due_at) FILTER (WHERE {not_overdue_sql()}) AS next_due "
         "  FROM pm_tasks t "
         "  JOIN pm_task_statuses s ON s.id = t.status_id "
         "  JOIN pm_task_assignees a ON a.task_id = t.id "
@@ -432,13 +439,13 @@ async def _last_activity(db: Any, vis: Any) -> dict[str, Any]:
 
     Scoped like everything else: an activity on a project the viewer cannot open
     must not become a timestamp they can read. The visibility clause names
-    ``t.root_project_id`` so the alias is bound here too — an activity attached
+    ``t.project_id`` so the alias is bound here too — an activity attached
     to a project rather than a task falls back to its own ``project_id``, which
     the closure also contains (it holds every visible project at any depth, not
     only the roots).
     """
     params: dict[str, Any] = {"days": ACTIVITY_WINDOW_DAYS}
-    scope = _scope(vis, params, "COALESCE(t.root_project_id, v.project_id)")
+    scope = _scope(vis, params, "COALESCE(t.project_id, v.project_id)")
     rows = (await db.execute(text(
         "SELECT lower(v.created_by) AS who, max(v.created_at) AS last_at "
         "  FROM pm_activities v "

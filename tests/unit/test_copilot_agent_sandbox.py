@@ -18,6 +18,10 @@ from orchestrator.copilot_agent import MetoriteCopilotAgent
 class _FakeCopilotClient:
     """Records the keywords, then proves the REAL SDK client accepts them.
 
+    It binds them to the real signature and builds no client. A real client
+    resolves the CLI binary, and on a box with no cached CLI that downloads it
+    over the network. An earlier test used to warm that cache by accident.
+
     SDK 1.0 (H-181) takes keyword arguments, and ``cli_url`` became
     ``connection=RuntimeConnection.for_uri(...)``. Building a real client
     from the same keywords fails the test if the SDK signature drifts again.
@@ -26,9 +30,12 @@ class _FakeCopilotClient:
     instances: ClassVar[list[_FakeCopilotClient]] = []
 
     def __init__(self, **options):
+        import inspect
+
         from copilot import CopilotClient
 
-        CopilotClient(**options)  # raises TypeError on an unknown keyword
+        # raises TypeError on an unknown keyword, with no CLI download
+        inspect.signature(CopilotClient.__init__).bind(None, **options)
         self.options = options
         _FakeCopilotClient.instances.append(self)
 
@@ -90,5 +97,9 @@ async def test_no_sandbox_url_falls_back_to_existing_token_path(monkeypatch):
     await agent.start()
 
     assert len(_FakeCopilotClient.instances) == 1
-    assert _FakeCopilotClient.instances[0].options == {"github_token": "fake-token"}
+    opts = _FakeCopilotClient.instances[0].options
+    assert set(opts) == {"github_token", "env"}
+    assert opts["github_token"] == "fake-token"
+    # WS-49 BH-1: the CLI gets the allowlist, never the token by name.
+    assert "COPILOT_GITHUB_TOKEN" not in opts["env"]
     assert base_start_calls == [agent]

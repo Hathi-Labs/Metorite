@@ -8,9 +8,9 @@
  * appeared only as a card. Two copies of the rule would drift, so both chats
  * call this module.
  *
- * Which files open is `artifactKind`'s answer, not a second extension list:
- * Markdown, HTML, and a React artifact under `outputs/`. Anything else stays a
- * card in the thread.
+ * Which files open is `artifactKind`'s answer (`hasRenderedView`), not a second
+ * extension list: Markdown, HTML, a React artifact under `outputs/` and a
+ * report (`.report.json`). Anything else stays a card in the thread.
  *
  * ⚠️ **Never on mobile.** A phone has no side panel. Opening a tab there writes
  * to a store nothing renders, and the member sees nothing. The card in the
@@ -19,7 +19,7 @@
  * The side-panel calls are injected so the rule is a pure function a node-env
  * test can drive (`autoOpenArtifact.test.ts`).
  */
-import { classifyArtifact, isRenderable } from "@/lib/artifactKind";
+import { hasRenderedView } from "@/lib/artifactKind";
 import { openDoc, pruneToSession, setDocLive } from "@/lib/sidePanelStore";
 
 /** How long the "writing" badge stays after the last write to a file. */
@@ -47,8 +47,7 @@ const DEFAULT_DEPS: AutoOpenDeps = {
 export function shouldAutoOpen(path: string, isMobile: boolean, panelFits = true): boolean {
   if (isMobile || !panelFits) return false;
   const name = path.split("/").pop() ?? path;
-  const kind = classifyArtifact(name, path);
-  return kind === "markdown" || isRenderable(kind);
+  return hasRenderedView(name, path);
 }
 
 /**
@@ -58,11 +57,17 @@ export function shouldAutoOpen(path: string, isMobile: boolean, panelFits = true
  */
 export function autoOpenArtifact(
   path: string,
-  ctx: { sessionId: string | null | undefined; isMobile: boolean; panelFits?: boolean },
+  ctx: {
+    sessionId: string | null | undefined;
+    isMobile: boolean;
+    panelFits?: boolean;
+    /** A quiet file (`lib/artifactCards.ts`): another card shows it. */
+    quiet?: boolean;
+  },
   deps: AutoOpenDeps = DEFAULT_DEPS,
 ): boolean {
-  const { sessionId, isMobile, panelFits = true } = ctx;
-  if (!sessionId || !shouldAutoOpen(path, isMobile, panelFits)) return false;
+  const { sessionId, isMobile, panelFits = true, quiet = false } = ctx;
+  if (quiet || !sessionId || !shouldAutoOpen(path, isMobile, panelFits)) return false;
   const name = path.split("/").pop() ?? path;
   deps.openDoc({ path, name, sessionId, live: true });
   deps.schedule(() => deps.setDocLive(sessionId, path, false), LIVE_BADGE_MS);
@@ -77,8 +82,8 @@ export function autoOpenArtifact(
 export function artifactHandler(
   ctx: { sessionId: string | null | undefined; isMobile: boolean; panelFits: boolean },
   deps: AutoOpenDeps = DEFAULT_DEPS,
-): (entry: { path: string }) => boolean {
-  return (entry) => autoOpenArtifact(entry.path, ctx, deps);
+): (entry: { path: string; quiet?: boolean }) => boolean {
+  return (entry) => autoOpenArtifact(entry.path, { ...ctx, quiet: entry.quiet }, deps);
 }
 
 /**

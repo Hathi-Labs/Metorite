@@ -9,6 +9,10 @@
  * dismissed tool-call ids in localStorage and filter the cards at render time.
  * The ids are the stable tool-call ids persisted in tool_events, so a dismissal
  * survives a refresh and re-applies when the conversation reloads.
+ *
+ * The same set holds the info-only notices of the chat (owner report,
+ * 2026-10-17, `isInfoOnlyNotice` in `lib/runErrors.ts`). A notice key is
+ * `noticeDismissKey(sessionId, messageId)`, so it never meets a tool-call id.
  */
 import { useSyncExternalStore } from "react";
 
@@ -47,6 +51,11 @@ export function dismissToolCard(id: string): void {
   _ids.add(id);
   persist();
   emit();
+}
+
+/** The key of one chat notice in this set: its session, then its message id. */
+export function noticeDismissKey(sessionId: string, messageId: string): string {
+  return `notice:${sessionId}:${messageId}`;
 }
 
 /** Un-dismiss (used by an "undo"/"show dismissed" affordance if added later). */

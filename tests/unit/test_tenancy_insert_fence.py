@@ -185,9 +185,12 @@ _GRANDFATHERED: dict[tuple[str, str], tuple[int, str]] = {
     ("133_workflows_publish_permission.sql", "org_role_permission"): (3, "SEED"),
     ("138_groups_and_session_participants.sql", "chat_session_participant"): (2, "SEED"),
     ("139_room_authorship_and_agents.sql", "chat_session_agent"): (1, "SEED"),
-    ("144_crm.sql", "crm_deal_statuses"): (1, "SEED"),
-    ("144_crm.sql", "crm_lead_statuses"): (1, "SEED"),
-    ("144_crm.sql", "crm_lost_reasons"): (1, "SEED"),
+    # WS-53 CRM-T1: each 144 seed now runs only on a table with no
+    # `organization_id` column (`pg_attribute`), which is a fresh install
+    # before migration 241. The counted INSERT is that no-column arm.
+    ("144_crm.sql", "crm_deal_statuses"): (1, "GUARDED"),
+    ("144_crm.sql", "crm_lead_statuses"): (1, "GUARDED"),
+    ("144_crm.sql", "crm_lost_reasons"): (1, "GUARDED"),
     ("156_projects_tags.sql", "pm_tags"): (1, "SEED"),
     ("178_billing_purchase_permission.sql", "org_role_permission"): (2, "SEED"),
     ("179_org_provisioning.sql", "org_role_permission"): (1, "SUPERSEDED by 200"),
@@ -207,6 +210,9 @@ _GRANDFATHERED: dict[tuple[str, str], tuple[int, str]] = {
     # Same guarded shape: the column list is built per call from
     # `pg_attribute`, so the literal text shows the no-column arm.
     ("209_people_email_unique_per_tenant.sql", "people"): (1, "GUARDED"),
+    # 233 restates 209's trigger INSERT unchanged and adds an UPDATE half,
+    # so the guarded shape and the count are the same as 209's.
+    ("233_people_status_follows_member.sql", "people"): (1, "GUARDED"),
     # Both arms of 207's cross-tenant grant. The no-column half is the
     # one counted; the other names `organization_id` from the ROLE being
     # granted, because the statement crosses every organization by
@@ -217,6 +223,14 @@ _GRANDFATHERED: dict[tuple[str, str], tuple[int, str]] = {
     # no-column arm counted here runs only on a ladder with no tenancy layer;
     # the tenancy arm names `organization_id` and binds each tenant.
     ("221_chat_session_creator_owner_backfill.sql", "chat_session_participant"): (1, "GUARDED"),
+    # WS-61 KB-1 seeds `knowledge:manage` onto `admin` in every organization,
+    # in the two-arm shape of 207. The no-column half is the one counted; the
+    # other names `organization_id` from the ROLE being granted.
+    ("272_knowledge_pages.sql", "org_role_permission"): (1, "GUARDED"),
+    # WS-65 SM-1 seeds `email:shared:manage` onto `admin` in every
+    # organization, in the two-arm shape of 207 and 272. The no-column half is
+    # the one counted. The other names `organization_id` from the ROLE.
+    ("296_email_shared_mailbox.sql", "org_role_permission"): (1, "GUARDED"),
 }
 
 
@@ -278,11 +292,12 @@ class TestTheFenceCanActuallyFail:
         # 143 until 2026-09-23. Migration 217 (WS-39 S8) dropped six `gtd_*`
         # tables, and the phase files lost them in the same PR.
         assert len(tables) >= 130
-        # The two that H-104 actually broke, and the one the homonym rule keeps
-        # OUT (its `organization_id` is the customer company, not the tenant).
+        # The two that H-104 actually broke. And `crm_contacts`, which the
+        # homonym rule kept OUT until WS-53 CRM-T1 renamed its company column
+        # to `company_id` (2026-10-11). The phases scope it now.
         assert "org_role_permission" in tables
         assert "user_role" in tables
-        assert "crm_contacts" not in tables
+        assert "crm_contacts" in tables
 
     def test_it_finds_the_omissions_that_are_really_there(self):
         found = omissions()

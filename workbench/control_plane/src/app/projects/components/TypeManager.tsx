@@ -27,8 +27,8 @@ import { Input } from "@/components/ui/Input";
 import SelectButton from "@/components/ui/SelectButton";
 
 import { type TaskTypeRow, projectsApi } from "../lib/api";
-import { TAG_COLORS, chipClass } from "../lib/tags";
-import { iconOptionsFor, iconValueFor, sortTypes, typeDeleteBody, typeOrgWide } from "../lib/taskTypes";
+import { COLOR_SELECT_OPTIONS, TAG_COLORS, chipClass } from "../lib/tags";
+import { iconSelectOptions, iconValueFor, sortTypes, typeDeleteBody, typeOrgWide } from "../lib/taskTypes";
 import ManagerFrame from "./ManagerFrame";
 
 interface Props {
@@ -186,7 +186,7 @@ export function TypeManager({ projectId, projectName, onClose, onChanged, inline
                           return null;
                         })
                       }
-                      options={iconOptionsFor(t.icon).map((c) => ({ value: c, label: c }))}
+                      options={iconSelectOptions(t.icon)}
                     />
                     <SelectButton
                       label={`Colour for ${t.name}`}
@@ -199,7 +199,7 @@ export function TypeManager({ projectId, projectName, onClose, onChanged, inline
                           return null;
                         })
                       }
-                      options={TAG_COLORS.map((c) => ({ value: c, label: c }))}
+                      options={COLOR_SELECT_OPTIONS}
                     />
                     <Button
                       variant="ghost"

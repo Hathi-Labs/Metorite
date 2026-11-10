@@ -45,7 +45,7 @@ import {
   vocabularyNotes,
 } from "../lib/sharedVocabulary";
 import { orgRenameCopy } from "../lib/tagCopy";
-import { TAG_COLORS, chipClass, normaliseTag } from "../lib/tags";
+import { COLOR_SELECT_OPTIONS, TAG_COLORS, chipClass, normaliseTag } from "../lib/tags";
 
 interface Props {
   /** A change moved what every board shows: the board re-reads it. */
@@ -274,7 +274,7 @@ export default function SharedVocabulary({ onChanged, anchorSpaceId = null }: Pr
                                   return `Recoloured the shared tag “${entry.name}”.`;
                                 })
                               }
-                              options={TAG_COLORS.map((c) => ({ value: c, label: c }))}
+                              options={COLOR_SELECT_OPTIONS}
                             />
                           ) : null}
                           {group.kind === "tags" && vocab.can_edit && rows.length > 1 ? (

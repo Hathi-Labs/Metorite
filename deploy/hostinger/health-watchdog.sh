@@ -12,7 +12,9 @@
 # The CI workflow (.github/workflows/vps-health.yml) is the external alarm for
 # the case this script cannot fix: box healthy locally, still unreachable.
 #
-# Safe to run by hand:  sudo /opt/acb/app/deploy/hostinger/health-watchdog.sh
+# acb-health-watchdog.service runs the ROOT COPY (WS-49 BH-6), never this
+# checkout file. Safe to run by hand, as the unit does:
+#   sudo BH2_ROLLBACK_SCRIPT=/usr/local/lib/acb/bh2_rollback.sh bash /usr/local/lib/acb/health-watchdog.sh
 # Check mode (no restarts):  ... health-watchdog.sh --dry-run
 
 set -uo pipefail
@@ -20,12 +22,23 @@ set -uo pipefail
 DRY_RUN=0
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=1
 
-LOG_DIR=/var/log/acb
+# WATCHDOG_LOG_DIR exists for tests/unit/test_bh2_strict_check.py. The unit
+# sets no such name, so the box always logs to /var/log/acb.
+LOG_DIR="${WATCHDOG_LOG_DIR:-/var/log/acb}"
 LOG=$LOG_DIR/health-watchdog.log
 FORENSICS=$LOG_DIR/net-forensics.log
 mkdir -p "$LOG_DIR"
 
 # Gateway hostname as served by Caddy — see deploy/hostinger/caddy/Caddyfile.
+# WS-38 S-4: read it from the Caddyfile THIS box serves, so a staging box
+# (Caddyfile.staging, api.dev.metorite.com) probes its own host. A probe of a
+# host the box does not serve fails every run, and this script would then
+# restart Caddy every run. The first `api.` site wins. Without the file, the
+# production name stays the default.
+watchdog_vhost() {
+  awk '/^api\.[A-Za-z0-9.-]+ *\{/ { print $1; exit }' "${1:-/etc/caddy/Caddyfile}" 2>/dev/null
+}
+CADDY_VHOST="${CADDY_VHOST:-$(watchdog_vhost "${WATCHDOG_CADDYFILE:-/etc/caddy/Caddyfile}")}"
 CADDY_VHOST="${CADDY_VHOST:-api.metorite.com}"
 
 ts() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
@@ -170,6 +183,41 @@ probe_http acb-workbench http://127.0.0.1:3001/       "workbench"
 # open connection. Fence: test_deploy_serialize.py, the H-60 section.
 probe_http caddy "https://${CADDY_VHOST}/internal/watchdog-probe" "caddy TLS" \
   --resolve "${CADDY_VHOST}:443:127.0.0.1"
+
+# ── WS-49 BH-2: a rollback of the gateway sandbox is a WARN on each tick ──
+# Spec: project-docs/specs/box_hardening.md §5 BH-2 item 6 (B3).
+#
+# `scripts/bh2_rollback.sh on` turns the sandbox of acb-gateway off for 72 h.
+# A rollback must not become the state, so this tick says so every 10 min.
+# The status exit codes are the contract of that script:
+#   0  on and valid       -> WARN BH-2 rolled back
+#   1  off                -> nothing
+#   else (expired, half there, unreadable) -> WARN BH-2 rollback is not valid.
+#      An expired 90-bh2-off.conf still keeps the sandbox off until `off`.
+# The WARN never counts as a failure, and it never changes the exit code.
+# `status` takes no deploy lock, so a tick never waits on a deploy.
+# Fence: tests/unit/test_bh2_strict_check.py (the watchdog section).
+BH2_ROLLBACK="${BH2_ROLLBACK_SCRIPT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/bh2_rollback.sh}"
+
+bh2_rollback_warn() {
+  local out rc=0 line
+  if [ ! -f "$BH2_ROLLBACK" ]; then
+    log "WARN BH-2 rollback is not valid: $BH2_ROLLBACK is missing, so the state is unknown"
+    return 0
+  fi
+  out="$(bash "$BH2_ROLLBACK" status 2>&1)" || rc=$?
+  case "$rc" in
+    0)
+      line="$(printf '%s\n' "$out" | grep -m1 '^WARN BH-2 rolled back' || true)"
+      log "${line:-WARN BH-2 rolled back}" ;;
+    1) ;;
+    *)
+      log "WARN BH-2 rollback is not valid (status $rc): $(printf '%s\n' "$out" | head -n 1)" ;;
+  esac
+  return 0
+}
+
+bh2_rollback_warn
 
 # ── Forensic snapshot ─────────────────────────────────────────────────────
 # The recurring failure is "box alive, internet cannot reach it". That leaves

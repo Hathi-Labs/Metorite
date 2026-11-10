@@ -79,6 +79,10 @@ class _FakeRedis:
         self.calls.append(("get", (name,)))
         return self.store.get(name)
 
+    async def mget(self, names: list[str]) -> list[Any]:
+        self.calls.append(("mget", tuple(names)))
+        return [self.store.get(n) for n in names]
+
     async def set(self, name: str, value: Any, **kwargs: Any) -> bool:
         self.calls.append(("set", (name, value)))
         self.store[name] = value
@@ -107,6 +111,34 @@ class _FakeRedis:
     async def publish(self, channel: str, message: Any) -> int:
         self.calls.append(("publish", (channel,)))
         return 1
+
+    # Sorted sets (WS-58 MD-5b). A zset is a dict of member -> score.
+    async def zadd(self, name: str, mapping: dict[str, float], **kwargs: Any) -> int:
+        self.calls.append(("zadd", (name,)))
+        zset = self.store.setdefault(name, {})
+        added = sum(1 for m in mapping if m not in zset)
+        zset.update(mapping)
+        return added
+
+    async def zrangebyscore(self, name: str, lo: Any, hi: Any, **kwargs: Any) -> list[str]:
+        self.calls.append(("zrangebyscore", (name,)))
+        lo_f, hi_f = float(lo), float(hi)
+        zset = self.store.get(name, {})
+        return [m for m, s in sorted(zset.items(), key=lambda kv: kv[1]) if lo_f <= s <= hi_f]
+
+    async def zrem(self, name: str, *members: str) -> int:
+        self.calls.append(("zrem", (name,)))
+        zset = self.store.get(name, {})
+        return sum(1 for m in members if zset.pop(m, None) is not None)
+
+    async def zremrangebyscore(self, name: str, lo: Any, hi: Any) -> int:
+        self.calls.append(("zremrangebyscore", (name,)))
+        lo_f, hi_f = float(lo), float(hi)
+        zset = self.store.get(name, {})
+        gone = [m for m, s in zset.items() if lo_f <= s <= hi_f]
+        for m in gone:
+            del zset[m]
+        return len(gone)
 
     async def scan_iter(self, match: str | None = None, count: int = 10):
         self.calls.append(("scan_iter", (match or "",)))
@@ -477,6 +509,141 @@ def test_binary_client_is_the_same_wrapper_over_a_second_small_pool(monkeypatch)
 
 
 # ---------------------------------------------------------------------------
+# 5c. ``mget`` (WS-17 EM-T16 PR-A) — one round trip, the same key discipline.
+# ---------------------------------------------------------------------------
+#
+# The Reply Zero backfill reads the back-off mark of up to 200 threads in ONE
+# call. A list argument is the easy hole: one raw string in it must refuse the
+# whole call before redis-py sees any key.
+
+async def test_mget_sends_only_prefixed_keys_in_one_call() -> None:
+    fake = _FakeRedis()
+    client = TenantRedis(fake)
+    with organization_scope(ORG_A):
+        await client.set(client.key("email-status-backoff", "acc", "t1", "m1"), "1")
+        values = await client.mget([
+            client.key("email-status-backoff", "acc", "t1", "m1"),
+            client.key("email-status-backoff", "acc", "t2", "m2")])
+    assert values == ["1", None]
+    reads = [args for name, args in fake.calls if name == "mget"]
+    prefix = f"{KEY_ROOT}:{ORG_A}:email-status-backoff:acc:"
+    assert reads == [(f"{prefix}t1:m1", f"{prefix}t2:m2")], reads
+
+
+async def test_mget_refuses_a_raw_string_anywhere_in_the_list() -> None:
+    fake = _FakeRedis()
+    client = TenantRedis(fake)
+    with organization_scope(ORG_A), pytest.raises(TypeError, match="TenantKey"):
+        await client.mget([client.key("email-status-backoff", "t1"),
+                           "cc:email-status-backoff:t2"])  # type: ignore[list-item]
+    assert fake.calls == [], "a key reached redis-py before the refusal"
+
+
+async def test_mget_refuses_a_key_of_another_tenant() -> None:
+    fake = _FakeRedis()
+    client = TenantRedis(fake)
+    with organization_scope(ORG_A):
+        stolen = key("email-status-backoff", "t1")
+    with organization_scope(ORG_B), pytest.raises(TenantMismatch):
+        await client.mget([key("email-status-backoff", "t1"), stolen])
+    assert fake.calls == []
+
+
+async def test_mget_unbound_raises_and_an_empty_list_sends_nothing() -> None:
+    fake = _FakeRedis()
+    client = TenantRedis(fake)
+    with organization_scope(ORG_A):
+        captured = key("email-status-backoff", "t1")
+    with pytest.raises(TenantNotBound):
+        await client.mget([captured])
+    with organization_scope(ORG_A):
+        assert await client.mget([]) == []
+    assert fake.calls == []
+
+
+def test_mget_stays_inside_the_r5c_ratchet() -> None:
+    """R5(c): the new command takes typed keys, and the back-off mark of
+    ``replyzero.py`` reaches Redis only through this wrapper."""
+    annotation = str(inspect.signature(TenantRedis.mget).parameters["keys"].annotation)
+    assert "TenantKey" in annotation, annotation
+    replyzero = (_REPO / "apps/services/gateway/gateway/routes/email/automation"
+                 / "replyzero.py")
+    assert not _imports_redis_package(replyzero)
+    assert _rel(replyzero) not in _ALLOWED_DIRECT_REDIS
+    with organization_scope(ORG_A):
+        assert key("email-status-backoff", "a").value.startswith(f"{KEY_ROOT}:{ORG_A}:")
+
+
+# ---------------------------------------------------------------------------
+# 5d. Sorted sets (WS-58 MD-5b) — the My Day active set, same key discipline.
+# ---------------------------------------------------------------------------
+#
+# ``my_day_feed.md`` §8.4 item 15: ``zadd``, ``zrangebyscore``, ``zrem`` and
+# ``zremrangebyscore``, each with a typed key first. The generic test above
+# checks the annotation. These check what reaches redis-py.
+
+_ZSET_COMMANDS = ("zadd", "zrangebyscore", "zrem", "zremrangebyscore")
+
+
+def test_the_four_zset_commands_exist_and_take_a_typed_key_first() -> None:
+    for name in _ZSET_COMMANDS:
+        params = list(inspect.signature(getattr(TenantRedis, name)).parameters.values())
+        assert params[1].name == "k", name
+        assert "TenantKey" in str(params[1].annotation), name
+
+
+async def test_zset_commands_send_only_prefixed_keys_and_round_trip() -> None:
+    fake = _FakeRedis()
+    client = TenantRedis(fake)
+    with organization_scope(ORG_A):
+        k = client.key("my_day", "active")
+        await client.zadd(k, {"old@x.test": 10.0, "new@x.test": 500.0})
+        assert await client.zrangebyscore(k, 100, "+inf") == ["new@x.test"]
+        assert await client.zremrangebyscore(k, "-inf", 100) == 1
+        assert await client.zrangebyscore(k, "-inf", "+inf") == ["new@x.test"]
+        assert await client.zrem(k, "new@x.test") == 1
+        assert await client.zrem(k) == 0
+    sent = [args[0] for name, args in fake.calls if name in _ZSET_COMMANDS]
+    assert sent and set(sent) == {f"{KEY_ROOT}:{ORG_A}:my_day:active"}, sent
+
+
+async def test_zset_commands_refuse_a_raw_string_key() -> None:
+    fake = _FakeRedis()
+    client = TenantRedis(fake)
+    with organization_scope(ORG_A):
+        for name in _ZSET_COMMANDS:
+            with pytest.raises(TypeError, match="TenantKey"):
+                await _each_zset_command_one(client, name, "cc:my_day:active")
+    assert fake.calls == [], "a key reached redis-py before the refusal"
+
+
+async def test_zset_commands_refuse_a_key_of_another_tenant_and_an_unbound_call() -> None:
+    fake = _FakeRedis()
+    client = TenantRedis(fake)
+    with organization_scope(ORG_A):
+        stolen = key("my_day", "active")
+    with organization_scope(ORG_B):
+        for name in _ZSET_COMMANDS:
+            with pytest.raises(TenantMismatch):
+                await _each_zset_command_one(client, name, stolen)
+    for name in _ZSET_COMMANDS:
+        with pytest.raises(TenantNotBound):
+            await _each_zset_command_one(client, name, stolen)
+    assert fake.calls == []
+
+
+async def _each_zset_command_one(client: TenantRedis, name: str, k: Any) -> None:
+    if name == "zadd":
+        await client.zadd(k, {"a@x.test": 1.0})
+    elif name == "zrangebyscore":
+        await client.zrangebyscore(k, 0, "+inf")
+    elif name == "zrem":
+        await client.zrem(k, "a@x.test")
+    else:
+        await client.zremrangebyscore(k, "-inf", 0)
+
+
+# ---------------------------------------------------------------------------
 # 6. The ratchet — a direct redis client outside the wrapper fails the build.
 # ---------------------------------------------------------------------------
 #
@@ -496,17 +663,21 @@ _ALLOWED_DIRECT_REDIS: dict[str, str] = {
         "the wrapper itself — the one place redis-py is reached",
 
     # ── MT-1e follow-up: convert these to acb_common.tenant_redis ──
+    # H-201c moved cc:activity and cc:activity:live onto the wrapper, and
+    # H-201e moved the per-tenant cost rollup (cc:<org>:cost:<day>). What
+    # remains is the short-lived clients of the no-loop paths, which the
+    # wrapper wraps but which still open through redis-py. The pooled client
+    # writes ONE deployment-level key by design: cc:_unattributed:cost:<day>,
+    # the priced calls with no tenant. No tenant route reads it.
     "packages/acb_common/acb_common/activity.py":
-        "FOLLOW-UP: cc:activity, cc:activity:live:{run_id}, cc:cost:{day}; pooled "
-        "client at :66 plus two one-shot clients at :226/:317",
+        "FOLLOW-UP: the one-shot no-loop clients at :330/:433 (wrapped in "
+        "TenantRedis). The pooled client at :103-116 writes only the "
+        "deployment-level cc:_unattributed:cost:<day> hash (H-201e)",
     "apps/services/orchestrator/orchestrator/stream_relay.py":
         "FOLLOW-UP: cc:stream, cc:active, cc:runactor, cc:runsource, cc:runfloor, "
         "cc:control, cc:ctrl-ack — 31 key call sites, the largest conversion",
     "apps/services/gateway/gateway/room_stream.py":
         "FOLLOW-UP: cc:room:{tid} stream + cc:presence:{tid} hash",
-    "apps/services/gateway/gateway/routes/chat.py":
-        "FOLLOW-UP: inline client at :700 and the cc:active:* SCAN at :707 — the "
-        "scan is a cross-tenant enumeration the moment a second tenant exists",
     "apps/services/ingestion/ingestion/queue.py":
         "FOLLOW-UP: ingestion:{clickup,zoho,gmail,dlq} streams (sync client)",
     "apps/services/ingestion/ingestion/consumer.py":
@@ -598,13 +769,19 @@ def test_allowlist_entries_say_why() -> None:
 # The import ratchet above catches a module that opens its own connection. It
 # does NOT catch a module that builds an untenanted key and hands it to someone
 # else's client — which is exactly what ``steer.py`` does today (``cc:steer``
-# keys, ``stream_relay``'s client) and what ``chat.py`` does with its
-# ``cc:active:*`` SCAN. Those are the same leak with an extra hop, so they get
-# their own ratchet and their own follow-up entries.
+# keys, ``stream_relay``'s client), and what ``chat.py`` did with its
+# ``cc:active:*`` SCAN until that leak was closed (``liveruns`` index,
+# test_active_sessions_tenant.py). Those are the same leak with an extra hop,
+# so they get their own ratchet and their own follow-up entries.
 
 _ALLOWED_CC_LITERALS: dict[str, str] = {
+    # H-201e: the tenant cost rollup is cc:<org>:cost:<day> now. The one
+    # literal left is the deployment-level hash of the priced calls with no
+    # tenant. It has no tenant by definition, and no tenant route reads it.
     "packages/acb_common/acb_common/activity.py":
-        "FOLLOW-UP: ACTIVITY_STREAM / LIVE_PREFIX / COST_PREFIX (:45-47)",
+        "DEPLOYMENT-LEVEL: UNATTRIBUTED_COST_PREFIX (:81), the "
+        "cc:_unattributed:cost:<day> hash of priced calls with no tenant. "
+        "The '_' lead is not a legal org id, so no tenant key can equal it",
     "apps/services/orchestrator/orchestrator/stream_relay.py":
         "FOLLOW-UP: seven PREFIX constants (:53, :54, :65, :71, :76, :557, :558)",
     "apps/services/orchestrator/orchestrator/steer.py":
@@ -612,9 +789,18 @@ _ALLOWED_CC_LITERALS: dict[str, str] = {
         "import ratchet cannot see it",
     "apps/services/gateway/gateway/room_stream.py":
         "FOLLOW-UP: ROOM_STREAM_PREFIX / PRESENCE_PREFIX (:39-40)",
-    "apps/services/gateway/gateway/routes/chat.py":
-        "FOLLOW-UP: the cc:active:* SCAN match and removeprefix (:707-711) — a "
-        "cross-tenant session enumeration once a second tenant exists",
+    # Incident 2026-10-09. Four keys belong to a PROCESS, not to a tenant: its
+    # heartbeat, the set of processes, the sweep's claim, and the runs one
+    # process holds. That last hash, cc:instance-runs:{id}, DOES hold the org
+    # ids, row ids and run ids of many tenants, because one process holds the
+    # runs of many orgs, so no single tenant can prefix it. It holds no member
+    # email: the sweep reads the actor from cc:runactor. RUN_OWNER_PREFIX and
+    # RECOVER_PREFIX sit beside cc:active:{tid} and are read wherever it is
+    # read, so they convert with stream_relay's prefixes in the same follow-up.
+    "apps/services/orchestrator/orchestrator/run_liveness.py":
+        "FOLLOW-UP: RUN_OWNER_PREFIX and RECOVER_PREFIX convert with stream_relay's "
+        "ACTIVE_PREFIX; INSTANCE_* are process-scoped, and instance-runs holds the "
+        "org and row ids of many tenants (no emails)",
 }
 
 

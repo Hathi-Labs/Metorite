@@ -74,7 +74,14 @@ export function describeActivity(
       return `Edited ${named.join(", ") || "fields"}`;
     }
     case "agent_run":
-      return `Agent run ${String(meta.agent ?? "")}`.trim();
+      // The body IS the outcome: the handoff line, the agent's reply, or
+      // "Agent run failed: …". The byline already names the agent. Printing
+      // only `Agent run <name>` hid every reply and every failure, which is
+      // how a run that never once worked looked the same as one that did.
+      return (
+        activity.body?.trim() ||
+        `Agent run ${String(meta.agent ?? "")}`.trim()
+      );
     case "sync":
       return activity.body ?? "Synced";
     case "attachment":

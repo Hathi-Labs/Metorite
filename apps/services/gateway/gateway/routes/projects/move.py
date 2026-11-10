@@ -44,6 +44,7 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
+from gateway.routes.projects.authority import assert_may_move_task
 from gateway.routes.projects.bulk import MAX_BULK, dedupe_ids
 from gateway.routes.projects.cascade import (
     load_subtree,
@@ -55,19 +56,21 @@ from gateway.routes.projects.core import (
     TRIAGE_CATEGORY,
     _tenant_session,
     actor,
+    assert_holds_tasks,
     assert_move_keeps_privacy,
+    assert_not_archived,
     emit,
     from_jsonb,
     load_visible_project,
     load_visible_task,
     next_task_number,
-    node_kind,
     record_activity,
     remap_one_type,
     require_status_in_project,
     resolve_visibility,
     root_project_id,
     router,
+    status_order_sql,
     status_owner_id,
     update_row,
     vocabulary_scope,
@@ -76,6 +79,7 @@ from gateway.routes.projects.custom_fields import (
     _is_blank,
     load_definitions,
 )
+from gateway.routes.projects.cycles import detach_moved_tasks
 from gateway.routes.projects.landing import (
     CHOICE_TYPES as _CHOICE_TYPES,
 )
@@ -96,6 +100,7 @@ from gateway.routes.projects.landing import (
 from gateway.routes.projects.landing import (
     resolve_field_map as _resolve_field_map,
 )
+from gateway.routes.projects.notifications import project_grant_holders
 from gateway.routes.projects.tasks import MoveTask, move_task_in
 from pydantic import BaseModel, field_validator
 from sqlalchemy import text
@@ -174,8 +179,9 @@ class MoveIn(BaseModel):
     #: D-PM-38 decision 4 (S5). Take every descendant of the selection along,
     #: each through the narrow move seam (`tasks.move_task_in`), so each one
     #: is remapped into the destination's set by the rule that seam applies.
-    #: FALSE by default: the chat tool and old callers move what they name.
-    #: The Move dialog sends true, because its box is ticked.
+    #: FALSE by default: old callers move what they name. The Move dialog
+    #: sends true, because its box is ticked, and the Projects chat's
+    #: `move_task` sends it for a member's "yes" (WS-46 P6).
     include_subtasks: bool = False
 
     @field_validator("status_map", "field_map")
@@ -220,16 +226,77 @@ async def _selection(db: Any, vis: Any, raw_ids: list[str]) -> list[Any]:
     return [await load_visible_task(db, vis, task_id) for task_id in ids]
 
 
+#: WS-55 MCP-G1, fix round 1. The three answers of the audience of a move.
+#: ``wider``: a member who could not see a moved task before can see it after.
+#: ``narrower``: somebody who saw it can no longer, and nobody new can.
+#: ``same``: neither. The plan carries the answer for an agent only (``None``
+#: for a member), so the Move dialog of the app does no extra read.
+AUDIENCE_SAME = "same"
+AUDIENCE_NARROWER = "narrower"
+AUDIENCE_WIDER = "wider"
+#: The code of the 403 of an agent's move whose audience is wider. An agent
+#: never widens who sees a task, so a member makes such a move in the app.
+#: The edge holds a copy, and ``test_mcp_edge_projects.py`` pins the two equal.
+AGENT_AUDIENCE_WIDENS = "audience_widens"
+
+
+async def _move_audience(
+    db: Any, vis: Any, moved: list[Any], dest: Any,
+) -> str:
+    """Who sees the *moved* tasks after the move, against who sees them now.
+
+    The grant arm of each side is ``notifications.project_grant_holders``,
+    the one predicate ``Visibility.project_clause``. The assignee arm of
+    ``task_visibility_clause`` moves with the task, so the assignees of each
+    task count on both sides. A task of a personal project that moves into a
+    project that is not personal is always ``wider`` (D-OP-15: a personal
+    node is its owner's only), even when the grants give the same people.
+    """
+    if not moved:
+        return AUDIENCE_SAME
+    dest_id = str(dest.id)
+    sources = sorted({str(t.project_id) for t in moved})
+    personal = {
+        str(r.id) for r in (await db.execute(
+            text(
+                "SELECT id FROM pm_projects WHERE id = ANY(CAST(:ids AS uuid[]))"
+                " AND personal_owner IS NOT NULL"
+            ),
+            {"ids": sources},
+        )).fetchall()
+    }
+    if personal and getattr(dest, "personal_owner", None) is None:
+        return AUDIENCE_WIDER
+    holders = await project_grant_holders(db, [*sources, dest_id], vis.organization_id)
+    assigned: dict[str, set[str]] = {}
+    for row in (await db.execute(
+        text(
+            "SELECT task_id, lower(assignee) AS who FROM pm_task_assignees"
+            " WHERE task_id = ANY(CAST(:ids AS uuid[]))"
+        ),
+        {"ids": sorted({str(t.id) for t in moved})},
+    )).fetchall():
+        assigned.setdefault(str(row.task_id), set()).add(str(row.who))
+    after_grants = holders.get(dest_id, frozenset())
+    narrower = False
+    for task in moved:
+        keep = assigned.get(str(task.id), set())
+        before = holders.get(str(task.project_id), frozenset()) | keep
+        after = after_grants | keep
+        if after - before:
+            return AUDIENCE_WIDER
+        narrower = narrower or bool(before - after)
+    return AUDIENCE_NARROWER if narrower else AUDIENCE_SAME
+
+
 async def _destination(db: Any, vis: Any, project_id: str) -> Any:
-    dest = await load_visible_project(db, vis, project_id)
+    # FOR SHARE: a concurrent move of the destination to the top waits for
+    # this move (`core.load_visible_project`).
+    dest = await load_visible_project(db, vis, project_id, lock_share=True)
     # After the visibility load, so a caller who cannot see the folder still
     # gets 404 and never learns from a 422 that it exists (R5).
-    if node_kind(getattr(dest, "kind", None)) == "folder":
-        raise HTTPException(
-            status_code=422,
-            detail="A folder holds projects, not tasks. Move into a project "
-                   "inside it.",
-        )
+    assert_holds_tasks(dest, then="Move into")
+    assert_not_archived(dest, then="Move into")
     return dest
 
 
@@ -312,7 +379,9 @@ async def _type_proposal(
     return out
 
 
-async def _plan(db: Any, vis: Any, payload: MoveIn) -> dict[str, Any]:
+async def _plan(
+    db: Any, vis: Any, payload: MoveIn, user: Any,
+) -> dict[str, Any]:
     """Everything both endpoints need to agree about, computed once.
 
     The preview returns it. The move applies it. Sharing one function is what
@@ -337,6 +406,12 @@ async def _plan(db: Any, vis: Any, payload: MoveIn) -> dict[str, Any]:
     # the apply would reject.
     for task in tasks:
         await assert_move_keeps_privacy(db, task, dest_id)
+    # WS-64 OP-8 (D-OP-14). Each named task needs the member's move
+    # authority, in the preview too, so a card never offers a refused move.
+    # A task already in the destination does not move, so it is not checked.
+    for task in tasks:
+        if str(task.project_id) != dest_id:
+            await assert_may_move_task(db, user, task)
 
     # D-PM-38 decision 4 — the descendants a move WITH its subtasks would
     # take, for the dialog's "Include N subtasks" box. Every depth, and not
@@ -361,6 +436,15 @@ async def _plan(db: Any, vis: Any, payload: MoveIn) -> dict[str, Any]:
     #: through `move_task_in`, so the preview names them first: the card
     #: then holds Move and says which subtask, and why.
     privacy_refused = await subtree_privacy_refusals(db, carried, dest_id)
+    #: WS-55 MCP-G1, fix round 1. For an agent only: the audience of every
+    #: task that the move takes, the named ones and the carried ones.
+    audience = (
+        await _move_audience(
+            db, vis,
+            [*(t for t in tasks if str(t.project_id) != dest_id), *carried], dest,
+        )
+        if getattr(user, "agent", None) is not None else None
+    )
 
     source_root = str(tasks[0].root_project_id)
     dest_root = await root_project_id(db, dest_id)
@@ -526,7 +610,7 @@ async def _plan(db: Any, vis: Any, payload: MoveIn) -> dict[str, Any]:
             text(
                 "SELECT id, name, category FROM pm_task_statuses "
                 " WHERE project_id = CAST(:owner AS uuid) "
-                " ORDER BY position, name"
+                " ORDER BY " + status_order_sql()
             ),
             {"owner": dest_home},
         )).fetchall()
@@ -568,6 +652,7 @@ async def _plan(db: Any, vis: Any, payload: MoveIn) -> dict[str, Any]:
         "types": types,
         "tags": {"carried": tag_names, "unregistered": unregistered},
         "subtree_maps": subtree_maps,
+        "audience": audience,
         "dest_keys": dest_keys,
         "dest_defs": dest_defs,
         "dest_home": dest_home,
@@ -599,7 +684,7 @@ async def preview_move(
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        return _public(await _plan(db, vis, payload))
+        return _public(await _plan(db, vis, payload, user))
 
 
 def _refuse_unless_agreed(plan: dict[str, Any], payload: MoveIn) -> None:
@@ -649,6 +734,15 @@ def _refuse_unless_agreed(plan: dict[str, Any], payload: MoveIn) -> None:
             )
 
 
+#: WS-55 MCP-G1 (spec ``external_agent_access.md`` §9.2). The 422 of a signed
+#: agent move that sends no ``accepted_drops``. The edge sends the drops that
+#: its preview showed, so a move that would drop more gets the 409 below. A
+#: bare ``accept_drops`` is a yes to a question that the agent never saw.
+AGENT_MOVE_NEEDS_DROPS = (
+    "An agent move sends accepted_drops, the drops that its preview showed."
+)
+
+
 @router.post("/tasks/move")
 async def move_tasks(
     payload: MoveIn, user: UserContext = Depends(get_current_user),
@@ -658,10 +752,29 @@ async def move_tasks(
     **One transaction.** A half-moved selection is worse than a half-applied
     bulk edit, because the tasks are then in two projects and nobody can tell
     which half landed. ``bulk.py`` makes the same argument for the same reason.
+
+    WS-55 MCP-G1. A signed agent move must send ``accepted_drops``
+    (:data:`AGENT_MOVE_NEEDS_DROPS`). Fix round 1: a signed agent move whose
+    audience is wider (:func:`_move_audience`) gets 403
+    :data:`AGENT_AUDIENCE_WIDENS`. A member's move is unchanged.
     """
+    if getattr(user, "agent", None) is not None and payload.accepted_drops is None:
+        raise HTTPException(status_code=422, detail=AGENT_MOVE_NEEDS_DROPS)
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        plan = await _plan(db, vis, payload)
+        plan = await _plan(db, vis, payload, user)
+        # WS-55 MCP-G1, fix round 1. An agent never widens who sees a task.
+        # Before any write, and before the drops: the member makes this move.
+        # Fail closed: an agent moves only on a KNOWN same or narrower
+        # audience. A member's plan has no audience, and nothing changes.
+        is_agent = getattr(user, "agent", None) is not None
+        if is_agent and plan.get("audience") not in (AUDIENCE_SAME, AUDIENCE_NARROWER):
+            raise HTTPException(status_code=403, detail={
+                "error": AGENT_AUDIENCE_WIDENS,
+                "message": "This move shows the tasks to people who cannot see "
+                           "them now. An agent never widens who sees a task, so "
+                           "a member makes this move in the app.",
+            })
 
         _refuse_unless_agreed(plan, payload)
         # Before any write: a hidden descendant refuses the whole move (409),
@@ -816,9 +929,13 @@ async def move_tasks(
                 continue
             await move_task_in(
                 db, vis, child, MoveTask(project_id=dest_id), by=actor(user),
+                # Carried by the checked selection (D-OP-14).
+                user=None,
                 field_map=plan["subtree_maps"].get(str(child.root_project_id)),
             )
             carried.append(str(child.id))
+        # WS-39 SP-1. A task that left the node of its open cycle leaves it.
+        await detach_moved_tasks(db, [*moved, *carried], by=actor(user))
 
     for task_id in [*moved, *carried]:
         await emit("pm.task.moved", {"task_id": task_id})

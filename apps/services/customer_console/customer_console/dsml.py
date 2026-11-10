@@ -1,0 +1,1177 @@
+# The docstrings quote the vendor's markup, and its bar IS the fullwidth one.
+# ruff: noqa: RUF002, RUF003
+"""Turn DeepSeek's DSML tool-call text into real tool calls.
+
+Spec: ``customer_console.md`` §6A (the Router owns the vendor seam).
+
+🔴 **A chat showed the member raw markup, and the tool never ran.** Owner
+report, 2026-10-11. The Projects chat answered with this text where a tool
+call belonged::
+
+    <｜DSML｜calls> <｜DSML｜invoke name="update_task">
+    <｜DSML｜parameter name="task_id" string="true">5ec5…</｜DSML｜parameter>
+    </｜DSML｜invoke> </｜DSML｜calls>
+
+DeepSeek sometimes writes its NATIVE tool-call format into ``content``, where
+an OpenAI client expects structured ``tool_calls``. The delimiter is the
+fullwidth bar U+FF5C, not ``|``. Nothing in the stack knew the format, so the
+agent framework saw plain text, ran nothing, and showed the text.
+
+## Why this lives in the Router
+
+Production runs with ``ROUTER_SERVING_ENABLED=true`` (read on the box,
+2026-10-11). So every chat completion crosses ``/v1/chat/completions`` here:
+the agent runtimes through the gateway hop, and the in-product helpers through
+``acb_llm.routed.completion_on_router``. The Router already normalises this
+vendor's other quirk (:mod:`customer_console.reasoning`), and it is the one
+place that sees the request beside the vendor's answer.
+
+## The rules
+
+Model text is NOT a trusted channel. An email, a web page or a tool result can
+hold a DSML block, and a model that QUOTES it writes the block back out. So a
+call runs only when all five of these hold:
+
+1. **The request offered the tool** (:func:`declared_tool_names`).
+   ``tool_choice="none"`` offers nothing, and a forced choice offers one tool.
+2. **No input message holds DSML** (:func:`input_is_tainted`). If any input
+   message carries the marker, escaped or not, the model may be echoing it,
+   so nothing runs (``echoed_input``). Assistant turns count too.
+3. **The block is not inside a code fence.** A fenced block is a quote. It
+   stays visible and it never runs (``fenced``).
+4. **The block is the trailing content.** The vendor template puts calls at
+   the end of the answer. A block with prose after it is removed and never runs
+   (``not_trailing``).
+5. **The block parses**, and ``parallel_tool_calls=false`` keeps only one call.
+
+**Markup outside a fence never reaches the member.** Each block that does not
+run logs ``router.dsml_dropped`` with a ``dsml_reason``.
+
+**Ordinary text costs nothing.** Text that holds neither ``DSML`` nor
+``tool▁`` never reaches a regex. A chunk that the filter does not change is
+yielded as the same object or the same bytes. The stream holds back only a
+tail that could still grow into a marker, at most :data:`_MAX_MARK`
+characters.
+
+## The marker is tolerant
+
+🔴 **A second chat showed raw markup with TWO bars on each side.** Owner
+report, 2026-10-17. An answer about outstanding payments showed
+``<｜｜DSML｜｜tool_calls> <｜｜DSML｜｜invoke name="crm_aggregate"> ...``. The
+parser knew only the one-bar form, so the markup passed through as text and
+the two calls never ran. Nobody could read the exact code points, so the
+marker now takes the forms a model can drift to:
+
+- one to three bars on each side of ``DSML``, from :data:`BARS` (U+FF5C,
+  ``|``, U+2502, U+2223 and U+FFE8), mixed freely;
+- up to two spaces or tabs after the ``<`` or ``</``, and around each bar.
+
+A space between the last bar and the tag name is NOT allowed, so
+``<｜DSML｜ is odd`` stays text. ``DSML`` stays case-sensitive. One grammar
+(:data:`_OPEN`, :data:`_CLOSE`, :data:`_FOREIGN`) gives the marker regex, the
+holdback regex and the longest marker, so the three cannot drift apart.
+
+## DeepSeek's other native format never runs
+
+DeepSeek V3 and R1 can write ``<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>
+function<｜tool▁sep｜>NAME`` with a JSON fence, then ``<｜tool▁call▁end｜>
+<｜tool▁calls▁end｜>`` (▁ is U+2581). The Router serves models that write
+DSML, so this is a second line. A region of that format outside a code fence
+is removed from the shown text and NEVER runs (``foreign_format``). A fenced
+one is a quote and stays visible, as DSML does. The stream and the buffered
+path read it with the same machine.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import re
+import uuid
+from collections.abc import AsyncIterator, Iterable
+from dataclasses import dataclass, field
+from typing import Any
+
+__all__ = [
+    "OPEN_MARKER",
+    "DsmlPolicy",
+    "DsmlStream",
+    "ParsedText",
+    "declared_tool_names",
+    "extract_tool_calls",
+    "input_is_tainted",
+    "normalise_response",
+    "normalise_stream",
+    "policy_for",
+]
+
+_log = logging.getLogger("platform.router")
+
+#: The fullwidth vertical bar DeepSeek uses as its DSML delimiter.
+BAR = chr(0xFF5C)
+
+#: The canonical part every DSML tag shares: one fullwidth bar on each side.
+#: The parser reads more forms than this one (:data:`CORE`).
+TAG_CORE = f"{BAR}DSML{BAR}"
+
+#: The canonical opening marker. The parser reads more forms (:data:`_OPEN`).
+OPEN_MARKER = f"<{TAG_CORE}"
+
+#: Every bar a delimiter may use: U+FF5C (fullwidth), ``|`` (ASCII), U+2502
+#: (box drawing), U+2223 (divides) and U+FFE8 (halfwidth). Owner report,
+#: 2026-10-17: the exact code point could not be read, so all five count.
+BARS = "\uff5c|\u2502\u2223\uffe8"
+
+
+# ── The marker grammar ──────────────────────────────────────────────────────
+#
+# A node is ("cls", regex class, min, max), ("seq", [nodes]) or ("opt", node).
+# One grammar gives three things: the regex of a whole marker (_full), the
+# regex of every text that may still grow into one (_prefix), and the
+# longest marker (_max_len). So the holdback cannot drift from the parser.
+
+_Node = tuple[Any, ...]
+
+
+def _cls(pattern: str, lo: int = 1, hi: int = 1) -> _Node:
+    return ("cls", pattern, lo, hi)
+
+
+def _seq(*nodes: _Node) -> _Node:
+    return ("seq", list(nodes))
+
+
+def _opt(node: _Node) -> _Node:
+    return ("opt", node)
+
+
+def _lit(text: str) -> _Node:
+    return _seq(*(_cls(re.escape(ch)) for ch in text))
+
+
+def _full(node: _Node) -> str:
+    """The regex of the whole node."""
+    if node[0] == "cls":
+        _, pattern, lo, hi = node
+        return pattern if (lo, hi) == (1, 1) else f"{pattern}{{{lo},{hi}}}"
+    if node[0] == "opt":
+        return f"(?:{_full(node[1])})?"
+    return "".join(_full(n) for n in node[1])
+
+
+def _prefix(node: _Node) -> str:
+    """The regex of every prefix of the node, the empty one and the whole included.
+
+    The prefixes of ``x`` then ``rest`` are the prefixes of ``x``, plus a
+    whole ``x`` followed by a prefix of ``rest``.
+    """
+    if node[0] == "cls":
+        return f"{node[1]}{{0,{node[3]}}}"
+    if node[0] == "opt":
+        return _prefix(node[1])
+    out = ""
+    for part in reversed(node[1]):
+        out = f"(?:{_prefix(part)}|{_full(part)}{out})" if out else _prefix(part)
+    return out
+
+
+def _max_len(node: _Node) -> int:
+    if node[0] == "cls":
+        return int(node[3])
+    if node[0] == "opt":
+        return _max_len(node[1])
+    return sum(_max_len(n) for n in node[1])
+
+
+def _min_len(node: _Node) -> int:
+    if node[0] == "cls":
+        return int(node[2])
+    if node[0] == "opt":
+        return 0
+    return sum(_min_len(n) for n in node[1])
+
+
+_SPACE = _cls(r"[ \t]", 0, 2)
+_ONE_BAR = _cls(f"[{BARS}]")
+#: Before ``DSML``: spaces, then one to three bars, each with spaces after it.
+_LEFT = _seq(
+    _SPACE, _ONE_BAR, _SPACE,
+    _opt(_seq(_ONE_BAR, _SPACE)), _opt(_seq(_ONE_BAR, _SPACE)),
+)
+#: After ``DSML``: one to three bars, each with spaces before it. The tag
+#: name follows the last bar at once, so ``<｜DSML｜ is odd`` stays text.
+_RIGHT = _seq(
+    _SPACE, _ONE_BAR,
+    _opt(_seq(_SPACE, _ONE_BAR)), _opt(_seq(_SPACE, _ONE_BAR)),
+)
+_OPEN = _seq(_lit("<"), _LEFT, _lit("DSML"), _RIGHT)
+_CLOSE = _seq(_lit("</"), _LEFT, _lit("DSML"), _RIGHT)
+#: DeepSeek V3's token format, as in ``<｜tool▁calls▁begin｜>``. It never runs.
+_FOREIGN = _seq(_lit("<"), _LEFT, _lit("tool\u2581"))
+
+#: The tolerant part every DSML tag shares, as a regex.
+CORE = f"{_full(_LEFT)}DSML{_full(_RIGHT)}"
+_L = _full(_LEFT)
+_R = _full(_RIGHT)
+
+#: The longest marker of any kind. The stream never holds back more.
+_MAX_MARK = max(_max_len(_OPEN), _max_len(_CLOSE), _max_len(_FOREIGN))
+#: The shortest marker of each kind: the canonical one-bar form.
+_MIN_MARK = {
+    "open": _min_len(_OPEN), "close": _min_len(_CLOSE), "foreign": _min_len(_FOREIGN),
+}
+
+#: The names a block tag may carry. The owner's report showed ``calls``, the
+#: DeepSeek chat template writes ``function_calls``, and ``tool_calls`` is the
+#: OpenAI spelling a model may drift to.
+_BLOCK_NAMES = r"(?:function_calls|tool_calls|calls)"
+
+_BLOCK_RE = re.compile(
+    rf"<{CORE}(?P<kind>{_BLOCK_NAMES})\s*>(?P<body>.*?)</{CORE}(?P=kind)\s*>",
+    re.S,
+)
+#: A closing tag, or one that has its name and waits for its ``>`` at the end
+#: of the text. The ``\s*`` before the ``>`` has no bound, as in
+#: :data:`_BLOCK_RE`. So a waiting tag can grow without a limit, and the
+#: stream keeps it in :attr:`_Region.waiting` and reads its whitespace once.
+_CLOSE_RE = re.compile(rf"</{CORE}{_BLOCK_NAMES}\s*(?:>|\Z)")
+_INVOKE_CLOSE_RE = re.compile(rf"</{CORE}invoke\s*(?:>|\Z)")
+#: The token after the region a foreign first token opens. It has no
+#: unbounded part, so the lookback always holds it.
+_FOREIGN_CLOSERS = {
+    "calls\u2581begin": re.compile(rf"<{_L}tool\u2581calls\u2581end{_R}[ \t]{{0,2}}>"),
+    "call\u2581begin": re.compile(rf"<{_L}tool\u2581call\u2581end{_R}[ \t]{{0,2}}>"),
+}
+_FOREIGN_CLOSER_MAX = _max_len(
+    _seq(_lit("<"), _LEFT, _lit("tool\u2581calls\u2581end"), _RIGHT, _SPACE, _lit(">"))
+)
+#: The whitespace that continues a waiting closing tag.
+_SPACE_RUN_RE = re.compile(r"\s*")
+#: The first tag of a region: a block or an invoke opens one, anything else
+#: (a stray closing tag, a lone parameter) is one tag long. ``fname`` is set
+#: when the first tag is a foreign token.
+_FIRST_TAG_RE = re.compile(
+    rf"<(?P<slash>/?){CORE}(?P<name>[A-Za-z_]+)[^<>]*>"
+    rf"|<{_L}tool\u2581(?P<fname>[a-z\u2581]+){_R}[ \t]{{0,2}}>"
+)
+#: Where a region may start: an opening tag, a stray closing one, or a
+#: foreign token. ``lastgroup`` names the kind.
+_MARK_RE = re.compile(
+    rf"(?P<close>{_full(_CLOSE)})|(?P<open>{_full(_OPEN)})|(?P<foreign>{_full(_FOREIGN)})"
+)
+#: Text that may still grow into a marker, or a marker that may still grow.
+_MARK_PREFIX_RE = re.compile(
+    f"(?:{_prefix(_OPEN)}|{_prefix(_CLOSE)}|{_prefix(_FOREIGN)})"
+)
+#: A real tag name starts with one of these. A marker followed by anything
+#: else is plain text, not markup.
+_TAG_START_RE = re.compile(r"[A-Za-z_]")
+#: A region whose first tag has not closed within this many characters is
+#: released as text. A real first tag is far shorter. The limit is for the
+#: canonical one-bar marker. A longer marker adds its extra characters
+#: (:attr:`_Region.budget`), so a variant gets the same room for its name.
+MAX_FIRST_TAG = 96
+#: The most characters a marker can add to the canonical one.
+_MAX_EXTRA = max(_max_len(_OPEN) - _MIN_MARK["open"], _max_len(_CLOSE) - _MIN_MARK["close"])
+#: The characters at the start of a region that decide its first tag. One
+#: more than the largest budget, so a tag that closes too late is seen.
+_HEAD = MAX_FIRST_TAG + _MAX_EXTRA + 1
+#: The search for a closing tag starts this far before each new delta, so it
+#: finds a closing tag whose NAME a delta boundary cut. It is the longest
+#: DSML closing tag up to the end of its name, or a whole foreign closer less
+#: its last character, whichever is longer. The whitespace after a DSML name
+#: has no bound, so no lookback can hold it: :attr:`_Region.waiting` does that.
+_CLOSE_LOOKBACK = max(
+    _max_len(_CLOSE) + len("function_calls"), _FOREIGN_CLOSER_MAX - 1
+)
+#: The start of a tag that has not reached its ``>`` yet.
+_TAG_HEAD_RE = re.compile(
+    rf'</?{CORE}[A-Za-z_]+(?:\s+[A-Za-z_][\w-]*(?:\s*=\s*(?:"[^"]*"?)?)?)*\s*'
+    rf"|<{_L}tool\u2581[a-z\u2581]*{_prefix(_seq(_RIGHT, _SPACE, _lit('>')))}"
+)
+_INVOKE_RE = re.compile(
+    rf"<{CORE}invoke(?P<attrs>[^>]*)>(?P<body>.*?)</{CORE}invoke\s*>",
+    re.S,
+)
+_PARAM_RE = re.compile(
+    rf"<{CORE}parameter(?P<attrs>[^>]*)>(?P<value>.*?)</{CORE}parameter\s*>",
+    re.S,
+)
+_ATTR_RE = re.compile(r'([A-Za-z_][\w-]*)\s*=\s*"([^"]*)"')
+#: A fence line: any leading whitespace, then three or more ` or ~. Any
+#: indent counts, so a fence inside a list item is found. That fails closed:
+#: more text reads as a quote, and a quote never runs.
+_FENCE_LINE_RE = re.compile(r"[ \t]*(`{3,}|~{3,})(.*)")
+#: One bar in an input message, also when an encoder wrote it as six
+#: characters such as backslash, u, f, f, 5, c (once or twice escaped).
+#: The escaped forms come from :data:`BARS`, so a new bar is tainted too.
+#: The backslash run has a bound: an unbounded run made the search quadratic
+#: on a long run of backslashes (review of #1125).
+_TAINT_BAR = (
+    rf"(?:[{BARS}]|\\{{1,8}}u(?:{'|'.join(f'{ord(c):04x}' for c in BARS)}))"
+)
+#: A space or a tab in an input message, also an escaped tab.
+_TAINT_SPACE = r"(?:[ \t]|\\{1,8}t){0,2}"
+#: The marker in an input message, in any form :data:`CORE` reads, escaped or
+#: not. It is looser than the parser on purpose: more taint runs nothing more,
+#: and that fails closed. Matched against lowercased text.
+_TAINT_RE = re.compile(
+    rf"(?:{_TAINT_SPACE}{_TAINT_BAR}){{1,3}}{_TAINT_SPACE}dsml{_TAINT_SPACE}{_TAINT_BAR}"
+)
+
+
+def _may_hold_markup(text: str) -> bool:
+    """The cheap gate before any regex: True when the text may hold a marker.
+
+    Every DSML marker holds ``DSML``, and every foreign one holds ``tool▁``.
+    Ordinary text fails both substring tests and costs nothing more.
+    """
+    return "DSML" in text or "tool\u2581" in text
+
+
+class _Malformed(ValueError):
+    """One invoke that cannot become a tool call."""
+
+
+# ── What the request allows ─────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class DsmlPolicy:
+    """What one request lets DSML text do."""
+
+    #: The tool names a DSML call may use. Empty means none may run.
+    declared: frozenset[str] = frozenset()
+    #: An input message holds DSML, so the answer may echo it. Nothing runs.
+    tainted: bool = False
+    #: ``parallel_tool_calls=false``: at most ONE call in the turn.
+    single_call: bool = False
+
+
+def declared_tool_names(tools: Any, tool_choice: Any = None) -> frozenset[str]:
+    """The tool names this request offered. Empty means none may run.
+
+    ⚠️ ``tool_choice="none"`` empties the set. The caller offered the tools to
+    describe them and forbade a call, and model text must not overrule that.
+    A forced choice (``{"type": "function", "function": {"name": ...}}``)
+    narrows the set to that one tool, for the same reason. Both the Chat
+    Completions shape (``{"function": {"name": ...}}``) and the Responses
+    shape (``{"type": "function", "name": ...}``) are read.
+    """
+    if tool_choice == "none" or not isinstance(tools, list):
+        return frozenset()
+    names: set[str] = set()
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        fn = tool.get("function")
+        name = fn.get("name") if isinstance(fn, dict) else tool.get("name")
+        if isinstance(name, str) and name:
+            names.add(name)
+    if isinstance(tool_choice, dict):
+        forced = tool_choice.get("function")
+        forced_name = forced.get("name") if isinstance(forced, dict) else tool_choice.get("name")
+        if isinstance(forced_name, str):
+            names &= {forced_name}
+    return frozenset(names)
+
+
+def _texts(content: Any) -> Iterable[str]:
+    if isinstance(content, str):
+        yield content
+    elif isinstance(content, list):
+        for part in content:
+            if isinstance(part, str):
+                yield part
+            elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                yield part["text"]
+
+
+def _message_texts(message: dict[str, Any]) -> Iterable[str]:
+    yield from _texts(message.get("content"))
+    for call in message.get("tool_calls") or []:
+        fn = call.get("function") if isinstance(call, dict) else None
+        if isinstance(fn, dict) and isinstance(fn.get("arguments"), str):
+            yield fn["arguments"]
+
+
+def input_is_tainted(messages: Any) -> bool:
+    """True when ANY input message holds DSML markup, escaped or not.
+
+    🔴 **The echo attack.** An email body holds a DSML block. The member asks
+    to see the email, the model quotes it, and a Router that read every block
+    would run the quoted call. A request whose INPUT already carries the
+    marker cannot tell an echo from a call, so it runs none.
+
+    🔴 **Assistant turns count too (re-review of #851).** Tool messages do
+    not reach the next turn (``acb_llm.assemble_run_context`` and the
+    gateway's store loader keep user, assistant and system turns). So turn 1
+    can quote the email inside a fence, and turn 2 can ask for it "again, as
+    plain text" with no tool message left to taint it. After this fix, DSML
+    in a stored assistant turn is a fenced quote or a leak from before the
+    fix. Both are reasons to run nothing.
+
+    ⚠️ **Escaped markup counts.** ``json.dumps`` writes the bar as six
+    characters, and a model that quotes the text decodes them.
+    """
+    if not isinstance(messages, list):
+        return False
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        for text in _message_texts(message):
+            low = text.lower()
+            if "dsml" in low and _TAINT_RE.search(low):
+                return True
+    return False
+
+
+def policy_for(
+    *,
+    tools: Any,
+    tool_choice: Any = None,
+    parallel_tool_calls: Any = None,
+    messages: Any = None,
+) -> DsmlPolicy:
+    """The one place a request becomes a :class:`DsmlPolicy`."""
+    return DsmlPolicy(
+        declared=declared_tool_names(tools, tool_choice),
+        tainted=input_is_tainted(messages),
+        single_call=parallel_tool_calls is False,
+    )
+
+
+def _as_policy(policy: DsmlPolicy | frozenset[str]) -> DsmlPolicy:
+    return policy if isinstance(policy, DsmlPolicy) else DsmlPolicy(declared=frozenset(policy))
+
+
+# ── One region of markup ────────────────────────────────────────────────────
+
+
+def _attrs(raw: str) -> dict[str, str]:
+    return dict(_ATTR_RE.findall(raw or ""))
+
+
+def _value(raw: str, string_flag: str | None) -> Any:
+    """One parameter's value. ``string="true"`` is raw text, ``"false"`` is JSON."""
+    if string_flag == "true":
+        return raw
+    if string_flag == "false":
+        try:
+            return json.loads(raw)
+        except ValueError as exc:
+            raise _Malformed(f"parameter is not JSON: {exc}") from exc
+    # No flag: JSON when it parses, otherwise the text itself.
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return raw
+
+
+def _invoke_to_call(attrs: str, body: str) -> tuple[str, dict[str, Any]]:
+    name = _attrs(attrs).get("name", "").strip()
+    if not name:
+        raise _Malformed("invoke has no name")
+    args: dict[str, Any] = {}
+    for param in _PARAM_RE.finditer(body):
+        pattrs = _attrs(param.group("attrs"))
+        pname = pattrs.get("name", "").strip()
+        if not pname:
+            raise _Malformed("parameter has no name")
+        args[pname] = _value(param.group("value"), pattrs.get("string"))
+    # Text between parameters that is not whitespace is a shape we do not know.
+    if _PARAM_RE.sub("", body).strip():
+        raise _Malformed("invoke holds text outside its parameters")
+    return name, args
+
+
+def _new_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": f"call_{uuid.uuid4().hex[:24]}",
+        "type": "function",
+        "function": {"name": name, "arguments": json.dumps(args, ensure_ascii=False)},
+    }
+
+
+def _drop(reason: str, **extra: Any) -> None:
+    _log.warning("router.dsml_dropped", extra={"dsml_reason": reason, **extra})
+
+
+def _call_from_invoke(inv: re.Match[str], declared: frozenset[str]) -> dict[str, Any] | None:
+    """One invoke as a call, or None when it is malformed or not allowed."""
+    try:
+        name, args = _invoke_to_call(inv.group("attrs"), inv.group("body"))
+    except _Malformed as exc:
+        _drop("malformed_invoke", dsml_detail=str(exc)[:200])
+        return None
+    if name not in declared:
+        # 🔴 The prompt-injection fence. See the module docstring.
+        _drop("undeclared_tool", dsml_tool=name[:100])
+        return None
+    return _new_call(name, args)
+
+
+def _calls_from_region(raw: str, policy: DsmlPolicy) -> list[dict[str, Any]]:
+    """The calls one closed region asks for, after the request's rules."""
+    first = _FIRST_TAG_RE.match(raw)
+    if first is not None and first.group("fname") is not None:
+        # 🔴 DeepSeek V3's token format. It is hidden, and it never runs.
+        _drop("foreign_format", dsml_detail=first.group("fname")[:40])
+        return []
+    if first is None or first.group("slash") or first.group("name") not in (
+        "invoke", "calls", "function_calls", "tool_calls"
+    ):
+        _drop("stray_tag")
+        return []
+    if policy.tainted:
+        _drop("echoed_input")
+        return []
+    if first.group("name") == "invoke":
+        inv = _INVOKE_RE.match(raw)
+        if inv is None:
+            _drop("malformed_invoke", dsml_detail="unreadable invoke")
+            return []
+        call = _call_from_invoke(inv, policy.declared)
+        return [call] if call is not None else []
+    match = _BLOCK_RE.match(raw)
+    if match is None:
+        _drop("malformed_block")
+        return []
+    body = match.group("body")
+    invokes = list(_INVOKE_RE.finditer(body))
+    if not invokes:
+        _drop("block_without_invoke")
+        return []
+    if _INVOKE_RE.sub("", body).strip():
+        _drop("block_holds_text_outside_invokes")
+    found = (_call_from_invoke(inv, policy.declared) for inv in invokes)
+    return [c for c in found if c is not None]
+
+
+# ── The state machine ───────────────────────────────────────────────────────
+
+
+def _not_a_tag(head: str, length: int, budget: int = MAX_FIRST_TAG) -> bool:
+    """True when the text after a marker can no longer become a DSML tag.
+
+    A first tag that closes within ``budget`` characters is a tag. Text that
+    has no ``>`` yet is still a candidate only while it reads like the head
+    of one: a name, then ``attr="value"`` pairs.
+
+    ``head`` is the first :data:`_HEAD` characters of a region of ``length``
+    characters. The first ``<`` or ``>`` after the tag name ends the first
+    tag, so the head decides the answer, and a long region costs no more.
+    """
+    first = _FIRST_TAG_RE.match(head)
+    if first is not None:
+        return first.end() > budget
+    return length > budget or _TAG_HEAD_RE.fullmatch(head) is None
+
+
+def _tail_that_may_grow(text: str) -> int:
+    """How many trailing characters could still become a marker.
+
+    The answer is the longest suffix that :data:`_MARK_PREFIX_RE` accepts.
+    Such a suffix starts with ``<`` and is at most :data:`_MAX_MARK` long, so
+    only the last :data:`_MAX_MARK` characters are read. Text with no ``<``
+    near its end costs one ``find``.
+    """
+    window = text[-_MAX_MARK:]
+    at = window.find("<")
+    while at != -1:
+        if _MARK_PREFIX_RE.fullmatch(window, at):
+            return len(window) - at
+        at = window.find("<", at + 1)
+    return 0
+
+
+@dataclass
+class _Fence:
+    """Tracks whether the text shown so far sits inside a code fence."""
+
+    open: str | None = None
+    line: str = ""
+    #: How many fences have opened, so a quote logs once per fence.
+    opened: int = 0
+
+    def push(self, text: str) -> None:
+        parts = text.split("\n")
+        for i, part in enumerate(parts):
+            if i:
+                self._end_line()
+            if len(self.line) < 200:
+                self.line += part[: 200 - len(self.line)]
+
+    def _end_line(self) -> None:
+        match = _FENCE_LINE_RE.fullmatch(self.line)
+        self.line = ""
+        if match is None:
+            return
+        run, rest = match.group(1), match.group(2)
+        if self.open is None:
+            # A backtick fence may not hold a backtick in its info string.
+            if not (run[0] == "`" and "`" in rest):
+                self.open = run
+                self.opened += 1
+        elif run[0] == self.open[0] and len(run) >= len(self.open) and not rest.strip():
+            self.open = None
+
+    @property
+    def inside(self) -> bool:
+        return self.open is not None
+
+
+class _Region:
+    """The text of one open region, held so that a long region costs O(n).
+
+    🔴 **The region was one string, grown with ``+=`` on each delta.** Each
+    delta then copied the whole region and handed it to the regexes again,
+    so a long call streamed in small deltas cost O(n²). A 200 KB argument in
+    one-character deltas took 2.4 s on a dev box.
+
+    Now each delta goes into a list, and the region keeps only two short
+    strings beside it: the head that decides the first tag, and the tail in
+    which a closing tag may have begun. A delta costs its own length plus a
+    bounded constant. The text is joined once, when the region ends.
+
+    🔴 **A delta boundary inside a long closing tag lost the call.** A
+    closing tag may hold any amount of whitespace before its ``>``. With
+    more than about ten characters of it, the tag began before the lookback,
+    so the stream never found it and ran nothing. A whole feed ran the call.
+    Now :attr:`waiting` keeps a closing tag that has its name, and the next
+    delta goes on from the end of the text. No text is read twice.
+    """
+
+    __slots__ = ("budget", "first", "head", "length", "parts", "tail", "waiting")
+
+    def __init__(self, extra: int = 0) -> None:
+        #: How long the first tag may be: :data:`MAX_FIRST_TAG`, plus the
+        #: characters this region's marker has beyond the canonical one.
+        self.budget = MAX_FIRST_TAG + extra
+        self.parts: list[str] = []
+        self.length = 0
+        #: The first :data:`_HEAD` characters.
+        self.head = ""
+        #: The last :data:`_CLOSE_LOOKBACK` characters.
+        self.tail = ""
+        #: The first tag, once it closed in time. More text cannot change it.
+        self.first: re.Match[str] | None = None
+        #: The text ends inside a closing tag that has its name, and only
+        #: whitespace follows the name. The next delta may hold its ``>``.
+        self.waiting = False
+
+    def add(self, data: str) -> tuple[int, str]:
+        """Take one delta. Returns ``start`` and the region text from ``start`` on.
+
+        ``start`` is :data:`_CLOSE_LOOKBACK` characters before the delta, so
+        the text from it is the old tail plus the delta.
+        """
+        start = max(0, self.length - _CLOSE_LOOKBACK)
+        recent = self.tail + data
+        self.parts.append(data)
+        self.length += len(data)
+        if len(self.head) < _HEAD:
+            self.head += data[: _HEAD - len(self.head)]
+        self.tail = recent[-_CLOSE_LOOKBACK:]
+        return start, recent
+
+    def text(self) -> str:
+        """The whole region. Called once, when the region ends."""
+        return "".join(self.parts)
+
+
+@dataclass
+class _Choice:
+    held: str = ""
+    region: _Region | None = None
+    #: Calls from the trailing group, held until the choice finishes.
+    pending: list[dict[str, Any]] = field(default_factory=list)
+    native_next: int = 0
+    calls_out: int = 0
+    finished: bool = False
+    saw_markup: bool = False
+    fence: _Fence = field(default_factory=_Fence)
+    #: The fence (by its count) whose quoted markup was already logged.
+    fence_logged: int = 0
+
+
+class DsmlStream:
+    """The per-stream state that turns DSML text into tool calls.
+
+    One instance per stream (or per buffered answer). :meth:`feed` takes one
+    choice's text and returns what may be shown now. :meth:`finish` ends the
+    choice and returns the calls that may run.
+
+    ⚠️ **Calls leave only at the finish.** A block runs only if it is the
+    trailing content, and that is not known until the text ends. Holding the
+    calls also means their indexes follow every vendor call in the turn.
+    """
+
+    def __init__(self, policy: DsmlPolicy | frozenset[str]) -> None:
+        self._policy = _as_policy(policy)
+        self._choices: dict[int, _Choice] = {}
+
+    def _state(self, index: int) -> _Choice:
+        return self._choices.setdefault(index, _Choice())
+
+    def note_native(self, index: int, tool_calls: Any) -> None:
+        """Remember the vendor's own call indexes, so ours never collide."""
+        st = self._state(index)
+        for call in tool_calls or []:
+            i = _field(call, "index")
+            if not isinstance(i, int):
+                i = st.native_next
+            if i + 1 > st.native_next:
+                st.native_next = i + 1
+
+    def saw_markup(self, index: int) -> bool:
+        return self._state(index).saw_markup
+
+    def _show(self, st: _Choice, text: str, out: list[str]) -> None:
+        if not text:
+            return
+        out.append(text)
+        st.fence.push(text)
+        if st.pending and text.strip():
+            # 🔴 Prose after a block: the block was not the trailing content.
+            _drop("not_trailing", dsml_calls=len(st.pending))
+            st.pending = []
+
+    def feed(self, index: int, text: str) -> str:
+        """Take one text delta. Returns the text that may be shown now."""
+        st = self._state(index)
+        out: list[str] = []
+        data = st.held + text
+        st.held = ""
+        while data:
+            if st.region is None:
+                data = self._outside(st, data, out)
+                continue
+            region = st.region
+            start, recent = region.add(data)
+            # Where this delta begins inside ``recent``.
+            fresh = len(recent) - len(data)
+            data = ""
+            # A first tag that closed in time stays a tag, so test only before.
+            if region.first is None and _not_a_tag(region.head, region.length, region.budget):
+                # No tag formed: the marker was text after all. Show the
+                # marker and scan the rest again, so a later real block in
+                # the same text is still found.
+                data, st.region = region.text(), None
+                lead = _MARK_RE.match(data)
+                cut = lead.end() if lead else 1
+                self._show(st, data[:cut], out)
+                data = data[cut:]
+                continue
+            end = self._region_end(region, start, recent, fresh)
+            if end is None:
+                break
+            whole = region.text()
+            raw, data = whole[:end], whole[end:]
+            st.region = None
+            st.pending.extend(_calls_from_region(raw, self._policy))
+        return "".join(out)
+
+    def _outside(self, st: _Choice, data: str, out: list[str]) -> str:
+        """Scan text outside any region. Returns what is left to scan."""
+        mark = _MARK_RE.search(data) if _may_hold_markup(data) else None
+        if mark is None:
+            keep = _tail_that_may_grow(data)
+            self._show(st, data[: len(data) - keep], out)
+            st.held = data[len(data) - keep :]
+            return ""
+        self._show(st, data[: mark.start()], out)
+        rest = data[mark.start() :]
+        if len(rest) <= _MAX_MARK and _MARK_PREFIX_RE.fullmatch(rest):
+            # The text ends in this marker, or in one that may still grow: a
+            # bar or a space may come next. Hold it, so that each feed reads
+            # the same marker that a whole feed reads.
+            st.held = rest
+            return ""
+        after = data[mark.end() :]
+        if st.fence.inside or not _TAG_START_RE.match(after):
+            # A quote inside a fence, or a marker with no tag name: text.
+            if st.fence.inside and _TAG_START_RE.match(after) and (
+                st.fence_logged != st.fence.opened
+            ):
+                # Logged once per fence: the quote is visible, and it never runs.
+                st.fence_logged = st.fence.opened
+                _drop("fenced")
+            self._show(st, mark.group(0), out)
+            return after
+        kind = mark.lastgroup or "open"
+        st.region = _Region(extra=len(mark.group(0)) - _MIN_MARK[kind])
+        st.saw_markup = True
+        return rest
+
+    @staticmethod
+    def _region_end(region: _Region, start: int, recent: str, fresh: int) -> int | None:
+        """Where the region that starts at a marker ends, or None.
+
+        A block tag waits for its closing block tag, and an invoke tag for its
+        closing invoke tag. Any other tag is a region of its own, so a stray
+        tag can never swallow the rest of the answer.
+
+        ``recent`` is the region text from ``start`` on, and the new delta
+        begins at ``fresh`` in it. The search reads ``recent`` and never the
+        whole region, which is what keeps a stream linear.
+        """
+        first = region.first or _FIRST_TAG_RE.match(region.head)
+        if first is None:
+            return None
+        region.first = first
+        if first.group("slash"):
+            return first.end()
+        name = first.group("name")
+        if name is None:
+            # A foreign token. ``calls▁begin`` and ``call▁begin`` wait for
+            # their end token, and any other token is a region of its own.
+            foreign = _FOREIGN_CLOSERS.get(first.group("fname"))
+            if foreign is None:
+                return first.end()
+            close = foreign.search(recent, max(start, first.end()) - start)
+            return None if close is None else start + close.end()
+        if re.fullmatch(_BLOCK_NAMES, name):
+            closer = _CLOSE_RE
+        elif name == "invoke":
+            closer = _INVOKE_CLOSE_RE
+        else:
+            return first.end()
+        if region.waiting:
+            # The text before this delta ends in a closing tag's name and its
+            # whitespace. Read on from the delta, so no whitespace is read twice.
+            gap = _SPACE_RUN_RE.match(recent, fresh).end()
+            if gap == len(recent):
+                return None
+            region.waiting = False
+            if recent[gap] == ">":
+                return start + gap + 1
+            # No closer after all. A tag starts only at a ``<``, and the tag
+            # holds one ``<``, so the search below sees all that is left.
+        # The closer has no lookbehind, and its one anchor ``\Z`` is the end
+        # of the region, so a search of ``recent`` finds what a search of the
+        # region from ``start`` finds.
+        close = closer.search(recent, max(start, first.end()) - start)
+        if close is None:
+            return None
+        if close.group().endswith(">"):
+            return start + close.end()
+        # The text ends in a closing tag that has its name. Its ``>`` may come.
+        region.waiting = True
+        return None
+
+    def finish(self, index: int) -> tuple[str, list[dict[str, Any]]]:
+        """End one choice. Returns the last text and the calls that may run."""
+        st = self._state(index)
+        out: list[str] = []
+        if st.held:
+            held, st.held = st.held, ""
+            self._show(st, held, out)
+        if st.region is not None:
+            first = st.region.first
+            if first is not None and first.group("fname") is not None:
+                _drop("foreign_format", dsml_detail="unterminated", dsml_chars=st.region.length)
+            else:
+                _drop("unterminated_block", dsml_chars=st.region.length)
+            st.region = None
+        calls, st.pending = st.pending, []
+        if self._policy.single_call:
+            room = max(0, 1 - st.native_next)
+            if len(calls) > room:
+                _drop("parallel_disabled", dsml_calls=len(calls) - room)
+                calls = calls[:room]
+        st.finished = True
+        return "".join(out), calls
+
+    def indexed(self, index: int, calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Give each call its stream index, after every vendor call."""
+        st = self._state(index)
+        out = []
+        for call in calls:
+            out.append({"index": st.native_next + st.calls_out, **call})
+            st.calls_out += 1
+        return out
+
+    def calls_emitted(self, index: int) -> int:
+        return self._state(index).calls_out
+
+    def unfinished(self) -> list[int]:
+        return [i for i, c in self._choices.items() if not c.finished]
+
+
+# ── Buffered text and responses ─────────────────────────────────────────────
+
+
+@dataclass
+class ParsedText:
+    """What one piece of assistant text holds once its DSML is read."""
+
+    #: The text with every unfenced DSML region removed.
+    content: str
+    #: OpenAI-shaped calls: ``{id, type: "function", function: {name, arguments}}``.
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    #: True when markup outside a fence was found, parsed or not.
+    found: bool = False
+
+
+def extract_tool_calls(
+    text: str, policy: DsmlPolicy | frozenset[str], *, native: int = 0
+) -> ParsedText:
+    """Read the DSML out of one whole answer. Never raises.
+
+    It runs the SAME machine as the stream, in one step, so the buffered and
+    the streamed path cannot disagree. ``native`` is the number of calls the
+    vendor already made in this turn.
+    """
+    if not isinstance(text, str) or not _may_hold_markup(text):
+        return ParsedText(content=text)
+    machine = DsmlStream(policy)
+    machine.note_native(0, [{"index": i} for i in range(native)])
+    shown = machine.feed(0, text)
+    tail, calls = machine.finish(0)
+    return ParsedText(content=shown + tail, tool_calls=calls, found=machine.saw_markup(0))
+
+
+def _field(obj: Any, name: str) -> Any:
+    if isinstance(obj, dict):
+        return obj.get(name)
+    return getattr(obj, name, None)
+
+
+def _has_marker(response: Any) -> bool:
+    for choice in _field(response, "choices") or []:
+        content = _field(_field(choice, "message"), "content")
+        if isinstance(content, str) and _may_hold_markup(content):
+            return True
+    return False
+
+
+def normalise_response(response: Any, policy: DsmlPolicy | frozenset[str]) -> Any:
+    """Move DSML calls in a buffered completion into ``message.tool_calls``.
+
+    ⚠️ **A response with no unfenced marker is returned as the SAME object**,
+    so every other completion keeps its exact shape. Only a response that the
+    filter changes is re-built as a dict, and FastAPI encodes a dict the same
+    way.
+
+    ⚠️ **Swallows its own failures.** A shape we cannot walk is a reason to
+    leave the text alone, never a reason to lose a paid completion.
+    """
+    try:
+        if not _has_marker(response):
+            return response
+        dump = getattr(response, "model_dump", None)
+        body: dict[str, Any] = (
+            dump(mode="json") if callable(dump) else json.loads(json.dumps(response, default=str))
+        )
+        changed = False
+        for choice in body.get("choices") or []:
+            message = choice.get("message")
+            if not isinstance(message, dict):
+                continue
+            existing = message.get("tool_calls") or []
+            parsed = extract_tool_calls(message.get("content"), policy, native=len(existing))
+            if not parsed.found:
+                continue
+            changed = True
+            text = parsed.content if parsed.content.strip() else ""
+            if parsed.tool_calls:
+                message["tool_calls"] = [*existing, *parsed.tool_calls]
+                message["content"] = text or None
+                if choice.get("finish_reason") in (None, "stop"):
+                    choice["finish_reason"] = "tool_calls"
+            else:
+                message["content"] = text
+        return body if changed else response
+    except Exception:
+        _log.exception("router.dsml_normalise_failed")
+        return response
+
+
+# ── Streams ─────────────────────────────────────────────────────────────────
+
+
+_DATA = b"data:"
+
+
+def _frame_body(frame: bytes) -> dict[str, Any] | None:
+    line = frame.strip()
+    if not line.startswith(_DATA):
+        return None
+    raw = line[len(_DATA) :].strip()
+    if not raw or raw == b"[DONE]":
+        return None
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        return None
+    return body if isinstance(body, dict) else None
+
+
+def _encode(body: dict[str, Any]) -> bytes:
+    return b"data: " + json.dumps(body, ensure_ascii=False).encode("utf-8") + b"\n\n"
+
+
+def _plan(state: DsmlStream, chunk: Any) -> dict[int, dict[str, Any]]:
+    """Run one chunk through the machine. Returns the edits, by choice position.
+
+    Reads the chunk without copying it, so a chunk that needs no edit costs
+    one attribute walk and nothing else.
+    """
+    edits: dict[int, dict[str, Any]] = {}
+    for pos, choice in enumerate(_field(chunk, "choices") or []):
+        index = _field(choice, "index")
+        index = index if isinstance(index, int) else 0
+        delta = _field(choice, "delta")
+        state.note_native(index, _field(delta, "tool_calls"))
+        content = _field(delta, "content")
+        shown = state.feed(index, content) if isinstance(content, str) and content else ""
+        calls: list[dict[str, Any]] = []
+        finish = _field(choice, "finish_reason")
+        if finish:
+            tail, ready = state.finish(index)
+            shown += tail
+            calls = state.indexed(index, ready)
+        edit: dict[str, Any] = {}
+        if (isinstance(content, str) and shown != content) or (
+            not isinstance(content, str) and shown
+        ):
+            edit["content"] = shown
+        if calls:
+            edit["tool_calls"] = calls
+        if finish == "stop" and state.calls_emitted(index):
+            edit["finish_reason"] = "tool_calls"
+        if edit:
+            edits[pos] = edit
+    return edits
+
+
+def _apply(body: dict[str, Any], edits: dict[int, dict[str, Any]]) -> None:
+    choices = body.get("choices") or []
+    for pos, edit in edits.items():
+        choice = choices[pos]
+        delta = choice.get("delta")
+        if not isinstance(delta, dict):
+            delta = choice["delta"] = {}
+        if "content" in edit:
+            delta["content"] = edit["content"]
+        if "tool_calls" in edit:
+            delta["tool_calls"] = [*(delta.get("tool_calls") or []), *edit["tool_calls"]]
+        if "finish_reason" in edit:
+            choice["finish_reason"] = edit["finish_reason"]
+
+
+def _plain(obj: Any) -> Any:
+    """A JSON-safe copy of one vendor object, best-effort."""
+    if obj is None or isinstance(obj, (dict, list, str, int, float, bool)):
+        return obj
+    try:
+        return json.loads(json.dumps(obj, default=lambda o: getattr(o, "__dict__", str(o))))
+    except Exception:
+        return None
+
+
+def _minimal(chunk: Any) -> dict[str, Any]:
+    """Rebuild a chunk that cannot copy itself, from the fields a client reads."""
+    choices = []
+    for choice in _field(chunk, "choices") or []:
+        delta = _field(choice, "delta")
+        out: dict[str, Any] = {}
+        role = _field(delta, "role")
+        if isinstance(role, str):
+            out["role"] = role
+        content = _field(delta, "content")
+        if isinstance(content, str):
+            out["content"] = content
+        native = _field(delta, "tool_calls")
+        if native:
+            out["tool_calls"] = [_plain(c) for c in native]
+        index = _field(choice, "index")
+        choices.append({
+            "index": index if isinstance(index, int) else 0,
+            "delta": out,
+            "finish_reason": _field(choice, "finish_reason"),
+        })
+    body: dict[str, Any] = {"object": "chat.completion.chunk", **_head(chunk), "choices": choices}
+    usage = _plain(_field(chunk, "usage"))
+    if isinstance(usage, dict):
+        body["usage"] = usage
+    return body
+
+
+def _head(chunk: Any) -> dict[str, Any]:
+    return {k: v for k in ("id", "object", "created", "model") if (v := _field(chunk, k))}
+
+
+def _flush_chunk(state: DsmlStream, head: dict[str, Any] | None) -> dict[str, Any] | None:
+    """A closing chunk for a stream that ended without a finish reason."""
+    choices = []
+    for index in state.unfinished():
+        text, ready = state.finish(index)
+        calls = state.indexed(index, ready)
+        if not text and not calls:
+            continue
+        delta: dict[str, Any] = {}
+        if text:
+            delta["content"] = text
+        if calls:
+            delta["tool_calls"] = calls
+        choices.append({"index": index, "delta": delta})
+    if not choices:
+        return None
+    return {"object": "chat.completion.chunk", **(head or {}), "choices": choices}
+
+
+async def normalise_stream(
+    source: Any, policy: DsmlPolicy | frozenset[str]
+) -> AsyncIterator[Any]:
+    """Relay *source*, turning DSML text deltas into ``tool_calls`` deltas.
+
+    Yields ONE chunk for each chunk in, so usage frames and finish reasons
+    keep their place, plus at most one closing chunk before the end.
+
+    ⚠️ **A chunk that is not changed is yielded as the same object.** A byte
+    frame stays the same bytes, which keeps ``relay_stream``'s byte-identity
+    promise for every stream with no DSML in it. A changed object chunk is
+    yielded as a dict, and ``frame_of`` already serialises a dict.
+    """
+    state = DsmlStream(policy)
+    head: dict[str, Any] | None = None
+    async for chunk in source:
+        raw = isinstance(chunk, (bytes, bytearray))
+        if raw:
+            frame = bytes(chunk)
+            if frame.strip() == b"data: [DONE]":
+                flush = _flush_chunk(state, head)
+                if flush is not None:
+                    yield _encode(flush)
+                yield frame
+                continue
+            view: Any = _frame_body(frame)
+            if view is None:
+                yield frame
+                continue
+        else:
+            view = chunk
+        edits = _plan(state, view)
+        head = _head(view) or head
+        if not edits:
+            yield chunk
+            continue
+        if raw:
+            _apply(view, edits)
+            yield _encode(view)
+            continue
+        dump = getattr(chunk, "model_dump", None)
+        try:
+            body = dump(mode="json", exclude_none=True) if callable(dump) else dict(chunk)
+        except Exception:
+            # 🔴 The machine has ALREADY taken this chunk, so the original
+            # must not go out: it would show the raw markup, and held text
+            # twice. A minimal copy carries the planned edits instead.
+            _log.exception("router.dsml_chunk_unreadable")
+            body = _minimal(chunk)
+        _apply(body, edits)
+        yield body
+    flush = _flush_chunk(state, head)
+    if flush is not None:
+        yield flush

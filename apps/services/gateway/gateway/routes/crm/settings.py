@@ -1,0 +1,988 @@
+"""CRM · settings — the mode of the organization and who may open the CRM.
+
+Spec: ``project-docs/specs/crm_platform.md`` §3.1, §3.4, §10 items 5 and 6,
+§16 Q3. WS-53 CRM-T5.
+
+    GET    /crm/settings
+    PATCH  /crm/settings
+    PUT    /crm/settings/labels
+
+**Admin only.** Both routes need ``admin:access:manage`` (§10 item 5: only an
+org admin changes the mode). The router's access rule passes an admin too, so
+an admin who sets ``access = 'groups'`` with no group of their own still
+reaches this page.
+
+**The mode.** Two changes of mode are open. From NULL (not chosen) to
+``native`` (CRM-T5): the same transaction seeds the organization's stages and
+lost reasons (``seed.seed_native_pipeline``). From ``native`` or ``mirror``
+back to NULL (CRM-U5b, "Change CRM setup"): allowed only with 0 rows in the
+five record tables and no Zoho connection that is ``connected``, else a 409
+(``crm_has_records``, ``crm_connected``). The reset clears ``mode`` and
+``connection_id`` and deletes the stages and lost reasons, in the same
+transaction, and keeps ``access`` and ``access_groups``. It also clears
+``labels``, ``cutover_at`` and ``cutover_by`` (CRM-Z10g), as the start over
+does. Each other change of
+mode is a 422. Only the Zoho callback of ``connection.py`` (CRM-Z2) sets
+``mirror``. A
+``mode`` equal to the stored one is not a change, so it is a 200 that writes no
+seed. The upsert writes only if the mode is still the one this request read,
+else it answers 409.
+
+**The access rule.** ``access`` is ``admins``, ``everyone`` or ``groups``.
+Each entry of ``access_groups`` goes through the Projects grant vocabulary
+(``routes/projects/core.validate_grant_subject``, D12), and only a
+``group:<slug>`` subject is accepted. An email or ``org`` is a 422: the rule
+names groups, and ``everyone`` already says "the whole organization".
+
+**No tenant in the body.** The organization is ``UserContext.organization_id``
+from the server (R5, R11). The response does not name it either.
+
+**The start over (WS-53 CRM-X0, §19.11 item 6).** ``POST /crm/reset`` with
+``{"confirm": "DELETE", "then": "none" | "native" | "mirror"}``. Admin only,
+and any other ``confirm`` is a 422. It is the one route that removes CRM
+records, and it does four things in this order:
+
+1. ``then = "mirror"`` makes the Zoho consent URL first, so a missing Zoho
+   client is a 503 before anything goes.
+2. It disconnects Zoho through the ONE disconnect logic
+   (``connection.disconnect_zoho``): a revoke at Zoho, and no token left for a
+   run to read.
+3. In ONE transaction, it takes the ``crm_settings`` row ``FOR UPDATE``. A
+   sync page reads the mode ``FOR SHARE`` (``engine.MODE_SHARE_SQL``), so the
+   lock waits for a page in flight, and the next page reads the new mode and
+   stops. Then ``core.reset_crm_from_admin`` deletes the records, and the row
+   gets the new mode with no connection. ``then = "native"`` seeds the Native
+   stages in the same transaction.
+4. One audit line through ``acb_audit``: the admin, the time and the counts.
+
+The same transaction also sets ``labels``, ``cutover_at`` and ``cutover_by``
+back to NULL (CRM-Z10g), so a new setup starts with the names of the CRM. It
+keeps ``access`` and ``access_groups``.
+
+``GET /crm/settings/counts`` reads the same counts for the hub, admin only.
+
+**The names of the core records (WS-53 CRM-Z10g, D133.1).**
+``PUT /crm/settings/labels`` with ``{"labels": {<slug>: {"label",
+"singular_label"}}}``. Admin only, and Native mode only: Mirror mode is a 409
+``mirror_mode_labels``, because Zoho owns its names there. No mode is a 409
+``not_native``. The body replaces the whole map. An entity that the body
+leaves out, or sends as ``null``, takes the name of the CRM again, so ``{}``
+clears every name. A key that is not a core API slug, an empty name, a name
+of more than :data:`LABEL_MAX` characters after the trim, and a NUL
+(``records.refuse_nul``) are each a 422. The write is one ``UPDATE`` guarded
+on ``mode = 'native'`` in its own WHERE, so a mode change between a read and
+the write cannot land a name on a Mirror CRM. ``GET /crm/mode`` serves the
+stored names in Native mode, with no ``CRM_FILL_RANK_ORGS`` gate.
+
+**Change history (WS-CRM CRM-M1, ``crm_conversational.md`` §8).** The rename
+and ``PATCH /crm/settings`` write one row each through
+``change_log.log_change``, in the transaction of the write, at the
+``company`` level. A change of the access rule (area ``access``) and of the
+names (``record_names``) can be undone. A change of the mode (``setup``) is
+logged and cannot be undone. The start over keeps its ``acb_audit`` line and
+writes no Change history row: it is one-way.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime
+from typing import Any, Literal
+
+from acb_auth import UserContext, get_current_user, require_permission
+from acb_common import get_logger
+from fastapi import Depends, HTTPException
+from gateway.connections import store
+from gateway.routes.crm import change_log
+from gateway.routes.crm.access import (
+    ACCESS_MODES,
+    ADMIN_PERMISSION,
+    DEFAULT_ACCESS,
+    read_settings,
+)
+from gateway.routes.crm.change_log import Change, Logged, log_change
+from gateway.routes.crm.connection import (
+    _CONNECT_LOCK_SQL,
+    OWNING_APP,
+    PROVIDER,
+    consent_url_for,
+    disconnect_zoho,
+)
+from gateway.routes.crm.core import (
+    ENTITIES,
+    _tenant_session,
+    count_records,
+    from_jsonb,
+    reset_crm_from_admin,
+    router,
+)
+from gateway.routes.crm.fill_rank import (
+    EntityLabel,
+    EntityState,
+    entity_states,
+    source_labels,
+)
+from gateway.routes.crm.flags import crm_mirror_allowed, pipelines_allowed
+from gateway.routes.crm.records import refuse_nul
+from gateway.routes.crm.seed import seed_native_pipeline
+from gateway.routes.projects.core import validate_grant_subject
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
+
+_log = get_logger("crm.settings")
+
+#: The ``crm_settings.mode`` vocabulary, mirrored from the CHECK in
+#: migration 243.
+MODES: tuple[str, ...] = ("native", "mirror")
+
+#: The one change of mode that CRM-T5 allows: (stored, requested).
+ALLOWED_MODE_CHANGES: frozenset[tuple[str | None, str | None]] = frozenset({
+    (None, "native"),
+    # CRM-U5b: Change CRM setup. Each needs 0 records and no live connection.
+    ("native", None),
+    ("mirror", None),
+})
+
+#: The record tables. Every row counts, native or mirrored. The generic record
+#: store of the mirror (CRM-Q6a) counts too.
+_RECORD_TABLES: tuple[str, ...] = (
+    "crm_leads", "crm_deals", "crm_contacts", "crm_companies", "crm_activities",
+    "crm_module_records",
+)
+
+#: Child first. Nothing references them with 0 records, but a status that a
+#: record names is ``ON DELETE RESTRICT``, so the order is the safe one.
+#: ⚠️ CRM-Q18-1b: ``crm_mapping_plans`` goes BEFORE ``crm_field_rules``, in
+#: the lock order of the plan approve, as in ``core.RESET_TABLES``.
+_RESET_DELETES: tuple[str, ...] = (
+    # CRM-Q26: the labels of the notes. With 0 records none can exist, and the
+    # list names every table of the start over.
+    "crm_note_labels",
+    # CRM-Q27: the vectors of the notes, on the same terms.
+    "crm_note_vectors",
+    # CRM-Q6a: the reset deletes the module cursors below, so a generic record
+    # that lands after the count must not stay without its cursor.
+    "crm_module_records",
+    "crm_status_changes", "crm_pipeline_stages",
+    # CRM-M4a: the lead statuses of each lead pipeline, before the pipelines
+    # and the statuses that it names.
+    "crm_lead_pipeline_stages", "crm_pipelines",
+    "crm_deal_statuses", "crm_lead_statuses", "crm_lost_reasons",
+    # The shape of the old Zoho account (CRM-Q1). A new setup reads its own.
+    "crm_source_profiles",
+    # Zoho sync state. A cursor with ``initial_done_at`` set would make a later
+    # reconnect skip the first import (engine.py reads it), so it goes too.
+    "crm_sync_cursors", "crm_sync_runs",
+    # CRM-Q18-1: the versions of the plan name the field rules below. They go
+    # first, in the lock order of the plan approve (CRM-Q18-1b).
+    "crm_mapping_plans",
+    # CRM-Q7a: the field rules name the fields of the old Zoho account.
+    "crm_field_rules",
+    # CRM-Q17a-1: the fill rank names the fields of the old setup.
+    "crm_field_fill",
+    # CRM-C4a: the sections of the field studio. The fields go below.
+    "crm_field_sections",
+    # CRM-C6a: the lead-conversion mapping names the fields that go below.
+    "crm_convert_mappings",
+    # CRM-Q28: the weekly digests count the records of the old setup.
+    "crm_digests",
+)
+
+_HAS_RECORDS = {
+    "code": "crm_has_records",
+    "message": (
+        "This CRM has records, so its setup cannot change. "
+        "Remove the records first."
+    ),
+}
+
+_UPSERT_SQL = (
+    "INSERT INTO crm_settings "
+    "(organization_id, mode, access, access_groups, updated_by, updated_at) "
+    "VALUES (CAST(:organization_id AS uuid), :mode, :access, :access_groups, "
+    ":updated_by, now()) "
+    "ON CONFLICT (organization_id) DO UPDATE SET "
+    "mode = EXCLUDED.mode, access = EXCLUDED.access, "
+    "access_groups = EXCLUDED.access_groups, "
+    "updated_by = EXCLUDED.updated_by, updated_at = EXCLUDED.updated_at "
+    # The mode this request read. The Zoho callback can set 'mirror' between
+    # the read and this write. Without the guard, this write puts the stale
+    # mode back over it (CRM-Z2 review P2). No row back means the guard refused.
+    "WHERE crm_settings.mode IS NOT DISTINCT FROM :expected_mode "
+    "RETURNING organization_id, mode, access, access_groups, updated_by, "
+    "updated_at"
+)
+
+
+class CrmSettingsModel(BaseModel):
+    mode: str | None = None
+    access: str = DEFAULT_ACCESS
+    access_groups: list[str] = []
+    updated_by: str | None = None
+    updated_at: datetime | None = None
+
+
+class CrmSettingsIn(BaseModel):
+    mode: str | None = None
+    access: str | None = None
+    access_groups: list[str] | None = None
+
+
+def _wire(row: Any) -> CrmSettingsModel:
+    if row is None:
+        return CrmSettingsModel()
+    return CrmSettingsModel(
+        mode=getattr(row, "mode", None),
+        access=getattr(row, "access", None) or DEFAULT_ACCESS,
+        access_groups=list(getattr(row, "access_groups", None) or []),
+        updated_by=getattr(row, "updated_by", None),
+        updated_at=getattr(row, "updated_at", None),
+    )
+
+
+def _organization(user: UserContext) -> str:
+    """The caller's organization, from the server. None is a 403."""
+    if not user.organization_id:
+        raise HTTPException(
+            status_code=403, detail="Forbidden: you are in no organization.",
+        )
+    return str(user.organization_id)
+
+
+def _check_mode(stored: str | None, requested: str | None) -> bool:
+    """True when the write changes the mode. A refused change is a 422."""
+    if requested == stored:
+        return False
+    if requested is not None and requested not in MODES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown CRM mode '{requested}'. One of: {list(MODES)}.",
+        )
+    if (stored, requested) not in ALLOWED_MODE_CHANGES:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"The CRM mode cannot change from {stored or 'not chosen'} to "
+                f"{requested or 'not chosen'} yet. Choose 'native' first, or "
+                "change the setup back to not chosen. Mirror mode starts "
+                "from Connect Zoho."
+            ),
+        )
+    return True
+
+
+async def _check_reset_allowed(db: Any, org: str) -> None:
+    """409 unless the org has 0 records and no connected Zoho (CRM-U5b)."""
+    for table in _RECORD_TABLES:
+        found = (await db.execute(
+            text(f"SELECT 1 FROM {table} LIMIT 1"),
+        )).first()
+        if found is not None:
+            raise HTTPException(status_code=409, detail=dict(_HAS_RECORDS))
+    connection = await store.get(db, org, PROVIDER, OWNING_APP)
+    if connection is not None and connection.status == store.STATUS_CONNECTED:
+        raise HTTPException(status_code=409, detail={
+            "code": "crm_connected",
+            "message": "Disconnect Zoho first, then change the setup.",
+        })
+
+
+async def _reset_setup(db: Any, org: str) -> None:
+    """Clear the mode, the connection pointer and the seeded pipeline.
+
+    CRM-Z10g: the names of the records and the cutover stamps go too, as in
+    the start over (``_CLEAR_SETUP_SQL``). Else Native → none → Native shows
+    the old names again, and a stale ``cutover_at`` stays on a new setup.
+    """
+    from gateway.crm_sync import holds
+
+    await db.execute(text(
+        "UPDATE crm_settings SET connection_id = NULL, "
+        "labels = NULL, cutover_at = NULL, cutover_by = NULL "
+        "WHERE organization_id = CAST(:o AS uuid)"), {"o": org})
+    await holds.clear(db, org)  # CRM-Q16: the next import decides again
+    try:
+        for table in _RESET_DELETES:
+            await db.execute(text(
+                f"DELETE FROM {table} "
+                "WHERE organization_id = CAST(:o AS uuid)"), {"o": org})
+        # CRM-C4a (§20.7 item 13): the fields of the field studio go too
+        # (`source = 'metorite'`), because a new setup starts with none.
+        await db.execute(text(
+            "DELETE FROM crm_field_defs WHERE organization_id = "
+            "CAST(:o AS uuid) AND source IN ('zoho', 'metorite')"), {"o": org})
+    except DBAPIError as exc:
+        # A record written after the count names a stage: RESTRICT refuses the
+        # delete. That is "has records", not a 500.
+        code = getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None)
+        if code == "23503":
+            raise HTTPException(status_code=409, detail=dict(_HAS_RECORDS)) from exc
+        raise
+
+
+def _check_access(access: str | None) -> None:
+    if access is not None and access not in ACCESS_MODES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown CRM access '{access}'. One of: {list(ACCESS_MODES)}.",
+        )
+
+
+def _clean_groups(groups: list[str]) -> list[str]:
+    """Each subject through the D12 validator, ``group:<slug>`` only, no twins."""
+    cleaned: list[str] = []
+    for subject in groups:
+        value = validate_grant_subject(subject)
+        if not value.startswith("group:"):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"'{subject}' is not a group. CRM access names groups as "
+                    "'group:<slug>'. Use access 'everyone' for the whole "
+                    "organization."
+                ),
+            )
+        if value not in cleaned:
+            cleaned.append(value)
+    return cleaned
+
+
+@router.get(
+    "/settings", response_model=CrmSettingsModel,
+    dependencies=[require_permission(ADMIN_PERMISSION)],
+)
+async def get_crm_settings(
+    user: UserContext = Depends(get_current_user),
+) -> CrmSettingsModel:
+    """The organization's settings. No row reads as mode NULL, access admins."""
+    org = _organization(user)
+    async with _tenant_session() as db:
+        return _wire(await read_settings(db, org))
+
+
+class CrmModeModel(BaseModel):
+    """The mode, and the source's names of the core entities. It holds no
+    access rule, so any member may read it."""
+
+    mode: str | None = None
+    #: CRM-Q17a-1 (§18.9.1, D95.2 as amended 2026-10-15): in Mirror mode, the
+    #: source's plural and singular label of each core entity, by API slug
+    #: (``contacts`` → "Existing Sites"). Left OUT of the body with no source
+    #: profile, or outside ``CRM_FILL_RANK_ORGS``, so such an org reads
+    #: ``{"mode": …}`` as before (``test_crm_aggregate_r8.py``).
+    #: CRM-Z10g (D133.1): in Native mode, the names in ``crm_settings.labels``,
+    #: in the same shape, for every org. A Native CRM with no stored name, and
+    #: a CRM with no mode, leave it OUT.
+    labels: dict[str, EntityLabel] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
+    #: CRM-Q20-2 (§18.9.6, option A): by core slot (``company``, ``contact``,
+    #: ``lead``, ``deal``), the API name of the generic module of each
+    #: approved ``role``. The rail row of the slot opens that module's list.
+    #: Each member may read it. Only a module that the bound org mirrors is
+    #: named. With no approved role, the body has no ``overlays`` key.
+    overlays: dict[str, str] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
+    #: CRM-Q17b (§18.9.6 items 2 to 4): by API slug, whether the org holds a
+    #: record of each core entity, and whether Zoho turned it off. The rail
+    #: drops a row that is off and empty, and ``/crm`` opens on the first row
+    #: that holds records. Left OUT of the body where ``labels`` is left out.
+    entities: dict[str, EntityState] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
+    #: CRM-Z10b: ``true`` when a Native CRM came from Zoho through the switch
+    #: (``cutover_at`` is set). Only then does the card of an admin read
+    #: ``GET /crm/cutover/status`` for "Finish closing Zoho". Each other CRM
+    #: leaves it OUT, so its body is as before.
+    cutover_done: bool | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
+    #: CRM-M3a: ``true`` when ``CRM_PIPELINES_ORGS`` lets an admin of this
+    #: Native CRM create a pipeline. The settings card shows "New pipeline"
+    #: to an admin only then. Each other CRM leaves it OUT, so its body is as
+    #: before. The create route checks the flag again (404).
+    pipeline_create: bool | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
+
+
+#: CRM-Z10b: a Native CRM that the switch made. Read in Native mode only.
+_CUTOVER_DONE_SQL = (
+    "SELECT 1 FROM crm_settings WHERE organization_id = CAST(:o AS uuid) "
+    "AND mode = 'native' AND cutover_at IS NOT NULL"
+)
+
+
+@router.get("/mode", response_model=CrmModeModel)
+async def get_crm_mode(
+    user: UserContext = Depends(get_current_user),
+) -> CrmModeModel:
+    """The CRM mode, for each member that the access rule admits (CRM-C7).
+
+    ``GET /crm/settings`` stays admin only, because it names the access
+    groups. An agent run reads this route as the member, to drop the record
+    write tools in Mirror mode. No row reads as mode NULL. It is also the one
+    route of the source labels (CRM-Q17a-1 item 6), and of the overlays of
+    the approved roles (CRM-Q20-2), which only a Mirror CRM can hold, and
+    of the state of each core entity (CRM-Q17b). In Native mode it serves
+    the names that an admin stored (CRM-Z10g), and ``cutover_done`` after
+    the switch from Zoho (CRM-Z10b).
+    """
+    from gateway.routes.crm.mapping_plans import approved_overlays
+
+    org = _organization(user)
+    async with _tenant_session() as db:
+        row = await read_settings(db, org)
+        mode = getattr(row, "mode", None) if row is not None else None
+        labels = (
+            await native_labels(db, org) if mode == "native"
+            else await source_labels(db, org)
+        )
+        overlays = await approved_overlays(db, org) if mode == "mirror" else {}
+        entities = await entity_states(db, org)
+        switched = mode == "native" and (
+            await db.execute(text(_CUTOVER_DONE_SQL), {"o": org})
+        ).first() is not None
+    return CrmModeModel(
+        mode=mode, labels=labels, overlays=overlays or None, entities=entities,
+        cutover_done=True if switched else None,
+        pipeline_create=True if mode == "native" and pipelines_allowed(org) else None,
+    )
+
+
+# ── The names of the core records (WS-53 CRM-Z10g, D133.1) ──────────────────
+
+#: The longest name an admin may give, counted after the trim.
+LABEL_MAX = 60
+
+#: The stored names of a Native CRM. A Mirror CRM serves the source's names.
+_NATIVE_LABELS_SQL = (
+    "SELECT labels FROM crm_settings "
+    "WHERE organization_id = CAST(:o AS uuid) AND mode = 'native'"
+)
+
+#: The one write of the names. The mode guard is in its own WHERE, so a CRM
+#: that is not Native when the write runs gets no row back, and a 409.
+_SAVE_LABELS_SQL = (
+    "UPDATE crm_settings SET labels = CAST(:labels AS jsonb), "
+    "updated_by = :updated_by, updated_at = now() "
+    "WHERE organization_id = CAST(:o AS uuid) AND mode = 'native' "
+    "RETURNING labels"
+)
+
+_MIRROR_LABELS = {
+    "code": "mirror_mode_labels",
+    "message": (
+        "Zoho names these records. You can rename them after you switch to "
+        "Metorite."
+    ),
+}
+
+_NOT_NATIVE = {
+    "code": "not_native",
+    "message": "Choose a CRM setup first. Then you can rename the records.",
+}
+
+
+class LabelIn(BaseModel):
+    """The names of one core entity. No other field is allowed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: The plural name, for the rail and the list ("Existing Sites").
+    label: str
+    #: The name of one record ("Existing Site"). With none, the record page
+    #: uses the plural name, as in Mirror mode.
+    singular_label: str | None = None
+
+
+class LabelsIn(BaseModel):
+    """The body of ``PUT /crm/settings/labels``. No other field (R11).
+
+    The map replaces the stored one. An entity that is left out, or sent as
+    ``null``, takes the name of the CRM again.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    labels: dict[str, LabelIn | None] = Field(default_factory=dict)
+
+
+class LabelsOut(BaseModel):
+    #: The stored names, by API slug. ``{}`` means the names of the CRM.
+    labels: dict[str, EntityLabel]
+
+
+def stored_labels(value: Any) -> dict[str, EntityLabel]:
+    """The names in ``crm_settings.labels``, in the order of ``ENTITIES``.
+
+    Lenient on read: a key that is not a core API slug, and an entry with no
+    plural name, are left out. The write path refuses both.
+    """
+    out: dict[str, EntityLabel] = {}
+    if not isinstance(value, dict):
+        return out
+    for slug in ENTITIES:
+        entry = value.get(slug)
+        if not isinstance(entry, dict):
+            continue
+        label = entry.get("label")
+        if not isinstance(label, str) or not label.strip():
+            continue
+        singular = entry.get("singular_label")
+        out[slug] = EntityLabel(
+            label=label.strip(),
+            singular_label=(
+                singular.strip()
+                if isinstance(singular, str) and singular.strip() else None
+            ),
+        )
+    return out
+
+
+async def native_labels(db: Any, org: str) -> dict[str, EntityLabel] | None:
+    """The stored names of a Native CRM, or None when it stores none."""
+    row = (await db.execute(text(_NATIVE_LABELS_SQL), {"o": org})).first()
+    if row is None:
+        return None
+    return stored_labels(from_jsonb(row.labels)) or None
+
+
+def _name(slug: str, part: str, value: str) -> str:
+    """One name, trimmed. Empty or longer than :data:`LABEL_MAX` is a 422."""
+    name = value.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail=(
+            f"The {part} name of '{slug}' is empty. Leave '{slug}' out to use "
+            "the default name."
+        ))
+    if len(name) > LABEL_MAX:
+        raise HTTPException(status_code=422, detail=(
+            f"The {part} name of '{slug}' has {len(name)} characters. The "
+            f"limit is {LABEL_MAX}."
+        ))
+    return name
+
+
+def clean_labels(raw: dict[str, LabelIn | None]) -> dict[str, EntityLabel]:
+    """The names to store, in the order of ``ENTITIES``. A bad one is a 422.
+
+    A NUL goes to the one guard, ``records.refuse_nul``, before any other
+    check. A key that is not a core API slug is refused, never dropped.
+    """
+    refuse_nul(
+        pair
+        for key, entry in raw.items()
+        for pair in (
+            (key, entry.label if entry else ""),
+            (key, (entry.singular_label or "") if entry else ""),
+        )
+    )
+    unknown = sorted(set(raw) - set(ENTITIES))
+    if unknown:
+        raise HTTPException(status_code=422, detail=(
+            f"Unknown record type {unknown}. One of: {list(ENTITIES)}."
+        ))
+    out: dict[str, EntityLabel] = {}
+    for slug in ENTITIES:
+        entry = raw.get(slug)
+        if entry is None:
+            continue
+        out[slug] = EntityLabel(
+            label=_name(slug, "plural", entry.label),
+            singular_label=(
+                None if entry.singular_label is None
+                else _name(slug, "singular", entry.singular_label)
+            ),
+        )
+    return out
+
+
+@router.put(
+    "/settings/labels", response_model=LabelsOut,
+    dependencies=[require_permission(ADMIN_PERMISSION)],
+)
+async def put_crm_labels(
+    payload: LabelsIn | None = None,
+    user: UserContext = Depends(get_current_user),
+) -> LabelsOut:
+    """Rename the core records of a Native CRM. See the module doc."""
+    org = _organization(user)
+    cleaned = clean_labels(payload.labels if payload is not None else {})
+    async with _tenant_session() as db:
+        result = await save_labels_in(db, org, user, cleaned)
+    return LabelsOut(labels=result)
+
+
+#: The stored names, held until the write commits, so the "before" of the
+#: Change history row is the value that this write replaces.
+_LOCK_LABELS_SQL = (
+    "SELECT labels FROM crm_settings "
+    "WHERE organization_id = CAST(:o AS uuid) FOR UPDATE"
+)
+
+
+def _labels_plain(labels: dict[str, EntityLabel]) -> dict[str, Any]:
+    return {slug: name.model_dump() for slug, name in labels.items()}
+
+
+async def save_labels_in(
+    db: Any, org: str, user: Any, cleaned: dict[str, EntityLabel],
+    *, undoes: str | None = None,
+) -> dict[str, EntityLabel]:
+    """The body of ``PUT /crm/settings/labels``, in the caller's transaction.
+
+    The route and the Undo of a change both call it. It logs one row at the
+    ``company`` level when the names change (CRM-M1).
+    """
+    stored = json.dumps(_labels_plain(cleaned)) if cleaned else None
+    held = (await db.execute(text(_LOCK_LABELS_SQL), {"o": org})).first()
+    before = stored_labels(from_jsonb(held.labels)) if held is not None else {}
+    row = (await db.execute(text(_SAVE_LABELS_SQL), {
+        "o": org,
+        "labels": stored,
+        "updated_by": (user.email or "").strip().lower() or None,
+    })).first()
+    if row is None:
+        current = await read_settings(db, org)
+        mirror = getattr(current, "mode", None) == "mirror"
+        raise HTTPException(
+            status_code=409,
+            detail=dict(_MIRROR_LABELS if mirror else _NOT_NATIVE),
+        )
+    result = stored_labels(from_jsonb(row.labels))
+    if _labels_plain(before) != _labels_plain(result):
+        await log_change(db, user, Change(
+            area="record_names", action=change_log.CHANGE,
+            summary="Changed the names of the record types",
+            ladder=change_log.COMPANY,
+            before={"labels": _labels_plain(before)},
+            after={"labels": _labels_plain(result)},
+        ), undoes=undoes)
+    return result
+
+
+def _clean_settings(values: dict[str, Any]) -> dict[str, Any]:
+    """The access value and the groups of a settings write, checked. 422 else."""
+    if "access" in values:
+        if values["access"] is None:
+            raise HTTPException(
+                status_code=422, detail="'access' cannot be null.",
+            )
+        _check_access(values["access"])
+    if "access_groups" in values:
+        values["access_groups"] = _clean_groups(values["access_groups"] or [])
+    return values
+
+
+@router.patch(
+    "/settings", response_model=CrmSettingsModel,
+    dependencies=[require_permission(ADMIN_PERMISSION)],
+)
+async def patch_crm_settings(
+    payload: CrmSettingsIn, user: UserContext = Depends(get_current_user),
+) -> CrmSettingsModel:
+    """Change the mode, the access rule or its groups. See the module doc."""
+    org = _organization(user)
+    values = _clean_settings(payload.model_dump(exclude_unset=True))
+    async with _tenant_session() as db:
+        result, resetting = await write_settings_in(db, org, user, values)
+    # After the commit: the access rule and the mode change what My Day may
+    # show, so the org's feed version moves (WS-58 MD-3e, `my_day_feed.md`
+    # §5.8 item 2). Nothing with MY_DAY_CACHE off. `bump_org_safe` waits a
+    # short time at most and never raises, so Redis never fails or holds a
+    # write that already committed (the MD-3c rule for another app's write).
+    await _bump_feed(org)
+    if resetting:
+        # Drop the credential too: revoke best-effort, delete the blob. A
+        # `connected` row never gets here (409 above).
+        await disconnect_zoho(org)
+    return result
+
+
+async def _bump_feed(org: str) -> None:
+    from gateway.routes.shell import cache as feed_cache
+
+    await feed_cache.bump_org_safe(org)
+
+
+#: The settings that a Change history row of this route holds.
+_SETTINGS_KEYS: tuple[str, ...] = ("mode", "access", "access_groups")
+
+#: The name of each mode, and of each access rule, in a summary.
+_MODE_WORDS: dict[str | None, str] = {
+    "native": "Native", "mirror": "Zoho mirror", None: "not chosen",
+}
+_ACCESS_WORDS: dict[str, str] = {
+    "admins": "admins only", "everyone": "everyone with CRM access",
+    "groups": "the chosen groups",
+}
+
+
+async def write_settings_in(
+    db: Any, org: str, user: Any, values: dict[str, Any],
+    *, undoes: str | None = None,
+) -> tuple[CrmSettingsModel, bool]:
+    """The body of ``PATCH /crm/settings``, in the caller's transaction.
+
+    Returns the new settings and whether the setup went back to not chosen.
+    The route and the Undo of an access change both call it. It logs one
+    row at the ``company`` level when a value changes (CRM-M1). A change of
+    the mode is the area ``setup``, and no Undo can reverse it: a switch
+    seeds or deletes the pipeline in the same transaction.
+    """
+    current = _wire(await read_settings(db, org))
+    mode_changes = (
+        "mode" in values and _check_mode(current.mode, values["mode"])
+    )
+    resetting = mode_changes and values["mode"] is None
+    if resetting:
+        # Serialise with any other write of this settings row, then count.
+        await db.execute(text(
+            "SELECT 1 FROM crm_settings "
+            "WHERE organization_id = CAST(:o AS uuid) FOR UPDATE"), {"o": org})
+        await _check_reset_allowed(db, org)
+    merged = {
+        "organization_id": org,
+        "mode": values.get("mode", current.mode),
+        "access": values.get("access", current.access),
+        "access_groups": values.get("access_groups", current.access_groups),
+        "updated_by": (user.email or "").strip().lower() or None,
+        "expected_mode": current.mode,
+    }
+    row = (await db.execute(text(_UPSERT_SQL), merged)).first()
+    if row is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "The CRM mode changed while this request ran. Load the "
+                "settings again, then send the change again."
+            ),
+        )
+    if mode_changes and merged["mode"] == "native":
+        await seed_native_pipeline(db, org)
+    if resetting:
+        await _reset_setup(db, org)
+    result = _wire(row)
+    before, after = change_log.diff(
+        {k: getattr(current, k) for k in _SETTINGS_KEYS},
+        {k: getattr(result, k) for k in _SETTINGS_KEYS},
+    )
+    if "mode" in after:
+        await log_change(db, user, Change(
+            area="setup", action=change_log.CHANGE,
+            summary=(
+                f"Changed the CRM setup from {_MODE_WORDS.get(current.mode, current.mode)} "
+                f"to {_MODE_WORDS.get(result.mode, result.mode)}"
+            ),
+            ladder=change_log.COMPANY, before=before, after=after,
+            reversible=False,
+        ), undoes=undoes)
+    elif after:
+        await log_change(db, user, Change(
+            area="access", action=change_log.CHANGE,
+            summary=(
+                "Changed who can open the CRM to "
+                f"{_ACCESS_WORDS.get(result.access, result.access)}"
+            ),
+            ladder=change_log.COMPANY, before=before, after=after,
+        ), undoes=undoes)
+    return result, resetting
+
+
+@change_log.undoes("access")
+async def _undo_access(db: Any, user: Any, logged: Logged) -> Any:
+    """Write the old access rule back through :func:`write_settings_in`.
+    The settings row is locked first, so the check holds until the write."""
+    org = _organization(user)
+    await db.execute(text(_LOCK_SETTINGS_SQL), {"o": org})
+    current = _wire(await read_settings(db, org))
+    if not change_log.same_values(
+        {k: getattr(current, k) for k in _SETTINGS_KEYS}, logged.after,
+    ):
+        raise change_log.changed_since()
+    values = {k: v for k, v in (logged.before or {}).items() if k in ("access", "access_groups")}
+    await write_settings_in(db, org, user, _clean_settings(values), undoes=logged.id)
+    return lambda: _bump_feed(org)
+
+
+@change_log.undoes("record_names")
+async def _undo_record_names(db: Any, user: Any, logged: Logged) -> None:
+    """Write the old names back through :func:`save_labels_in`. The
+    settings row holds the names, and it is locked first."""
+    org = _organization(user)
+    await db.execute(text(_LOCK_SETTINGS_SQL), {"o": org})
+    current = await native_labels(db, org) or {}
+    if _labels_plain(current) != (logged.after or {}).get("labels"):
+        raise change_log.changed_since()
+    old = (logged.before or {}).get("labels") or {}
+    raw = {slug: LabelIn(**entry) for slug, entry in old.items() if isinstance(entry, dict)}
+    await save_labels_in(db, org, user, clean_labels(raw), undoes=logged.id)
+    return None
+
+
+# ── The start over (WS-53 CRM-X0) ───────────────────────────────────────────
+
+#: The one word the admin types. The dialog shows it, and the route checks it.
+RESET_CONFIRM = "DELETE"
+
+#: ``SELECT ... FOR UPDATE`` on the org's settings row. A sync page holds the
+#: same row ``FOR SHARE`` (``engine.MODE_SHARE_SQL``), so this waits for it.
+_LOCK_SETTINGS_SQL = (
+    "SELECT mode FROM crm_settings "
+    "WHERE organization_id = CAST(:o AS uuid) FOR UPDATE"
+)
+
+#: No connection, and the time of this start over. The sync reads only the
+#: runs after ``reset_at`` (``crm_sync/runs.py``, migration 252). CRM-Z10g:
+#: the names of the records and the cutover stamps go too, so a new setup
+#: starts with the names of the CRM.
+_CLEAR_SETUP_SQL = (
+    "UPDATE crm_settings SET connection_id = NULL, reset_at = now(), "
+    "labels = NULL, cutover_at = NULL, cutover_by = NULL "
+    "WHERE organization_id = CAST(:o AS uuid)"
+)
+
+#: The SQLSTATEs of a write that runs into the start over: a record that
+#: names a stage (23503) and a deadlock (40P01). The transaction rolls back.
+_CHANGED_STATES = frozenset({"23503", "40P01"})
+
+#: A write that lands during the start over (CRM-X0 review P2).
+_CHANGED = {
+    "code": "crm_changed",
+    "message": (
+        "A record was saved while the CRM started over. Nothing was removed. "
+        "Try again."
+    ),
+}
+
+
+class ResetIn(BaseModel):
+    """The body of ``POST /crm/reset``. No other field is allowed (R11)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    confirm: str
+    then: Literal["none", "native", "mirror"] = "none"
+
+
+class ResetOut(BaseModel):
+    #: The records that went, by entity.
+    removed: dict[str, int]
+    #: The mode after the start over.
+    mode: str | None = None
+    #: ``then = "mirror"``: the Zoho consent to follow.
+    consent_url: str | None = None
+
+
+class CountsOut(BaseModel):
+    counts: dict[str, int]
+    total: int
+
+
+def _audit_reset(user: UserContext, org: str, then: str, removed: dict[str, int]) -> None:
+    """One audit line: the admin, the time (on the event) and the counts."""
+    try:
+        from acb_audit import AuditEvent, record
+
+        record(AuditEvent(
+            actor=f"user:{(user.email or '').strip().lower()}",
+            action="crm.reset",
+            target=f"crm:{org}",
+            payload={"organization_id": org, "then": then, "removed": dict(removed)},
+            organization_id=org,
+        ))
+    except Exception as exc:  # an audit backend that is down must not undo a reset
+        _log.warning("crm.reset.audit_failed error=%s", type(exc).__name__)
+
+
+@router.get(
+    "/settings/counts", response_model=CountsOut,
+    dependencies=[require_permission(ADMIN_PERMISSION)],
+)
+async def get_crm_counts(user: UserContext = Depends(get_current_user)) -> CountsOut:
+    """The records of the org, by entity, for the setup hub and the dialog."""
+    org = _organization(user)
+    async with _tenant_session() as db:
+        counts = await count_records(db, org)
+    return CountsOut(counts=counts, total=sum(counts.values()))
+
+
+@router.post(
+    "/reset", response_model=ResetOut,
+    dependencies=[require_permission(ADMIN_PERMISSION)],
+)
+async def reset_crm(
+    payload: ResetIn, user: UserContext = Depends(get_current_user),
+) -> ResetOut:
+    """Start the CRM over. See the module doc for the order of the steps."""
+    org = _organization(user)
+    if payload.confirm != RESET_CONFIRM:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Type {RESET_CONFIRM} to confirm. Nothing was removed.",
+        )
+    consent_url: str | None = None
+    if payload.then == "mirror":
+        # Before anything goes: a Zoho that cannot start must not cost the records.
+        if not crm_mirror_allowed(org):
+            raise HTTPException(status_code=409, detail={
+                "code": "mirror_unavailable",
+                "message": "Zoho sync is not on for this organization. Nothing was removed.",
+            })
+        consent_url = consent_url_for(org, (user.email or "").strip().lower())
+    # The sync stops: no token for a run, and a revoke at Zoho.
+    await disconnect_zoho(org)
+    mode = "native" if payload.then == "native" else None
+    try:
+        removed = await _start_over(mode=mode, org=org, user=user)
+    except DBAPIError as exc:
+        # A record that another request saved names a stage (RESTRICT), or a
+        # deadlock. The transaction rolled back, so nothing went.
+        code = getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None)
+        if code in _CHANGED_STATES:
+            raise HTTPException(status_code=409, detail=dict(_CHANGED)) from exc
+        raise
+    _audit_reset(user, org, payload.then, removed)
+    return ResetOut(removed=removed, mode=mode, consent_url=consent_url)
+
+
+async def _start_over(*, mode: str | None, org: str, user: UserContext) -> dict[str, int]:
+    """The one transaction of ``POST /crm/reset``. Returns the counts.
+
+    ⚠️ **The lock order is the consent's** (re-review P2). The callback takes
+    the advisory connect lock, then writes the connection row. This
+    takes the same lock FIRST, then ``crm_settings`` ``FOR UPDATE``, then the
+    connection, so the two never wait on each other in opposite orders.
+    """
+    async with _tenant_session() as db:
+        await db.execute(text(_CONNECT_LOCK_SQL), {"key": f"crm.connect:{org}:{PROVIDER}"})
+        # Waits for a sync page in flight. A later page reads the new mode.
+        await db.execute(text(_LOCK_SETTINGS_SQL), {"o": org})
+        current = _wire(await read_settings(db, org))
+        removed = await reset_crm_from_admin(db, org)
+        row = (await db.execute(text(_UPSERT_SQL), {
+            "organization_id": org,
+            "mode": mode,
+            "access": current.access,
+            "access_groups": current.access_groups,
+            "updated_by": (user.email or "").strip().lower() or None,
+            "expected_mode": current.mode,
+        })).first()
+        if row is None:  # the lock makes this unreachable, and it stays a 409
+            raise HTTPException(status_code=409, detail=(
+                "The CRM mode changed while this request ran. Nothing was removed."
+            ))
+        await db.execute(text(_CLEAR_SETUP_SQL), {"o": org})
+        from gateway.crm_sync import holds
+
+        await holds.clear(db, org)  # CRM-Q16: the next import decides again
+        # The next consent may be for any account (CRM-X0 review P1-2).
+        connection = await store.get(db, org, PROVIDER, OWNING_APP)
+        if connection is not None:
+            await store.forget_account(db, org, connection.id)
+        if mode == "native":
+            await seed_native_pipeline(db, org)
+    return removed

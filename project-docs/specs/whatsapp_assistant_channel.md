@@ -1,0 +1,2471 @@
+# WhatsApp assistant channel — a member chats with Metorite from their own WhatsApp
+
+**CH-TEAM (§19) is specified, and nothing is built (2026-11-09, epic task 2431).** Mira in team channels: the audience check, a post step, the daily standup, a WhatsApp group, Mira's email address and Slack later. D115 still binds its WhatsApp parts.
+
+**Status:** H-391 built on the branch `email-whatsapp-confirm`, not merged
+(2026-10-24, owner directive). The email writes of the chat work from
+WhatsApp: archive, label, move, reply, send a draft, schedule, forward and
+new mail. Each one parks, and the member approves it with a reply code. It is
+dark behind `WHATSAPP_ASSISTANT_WRITES`, which the owner turns on per org
+(§18).
+
+WAC-P2, WAC-P3 and WAC-P4 built (2026-10-19, owner directive).
+A WhatsApp run now reads the member's memory and gets the org's MCP servers,
+as a web run does. After an email assistant answer, an egress call asks for
+the member's Confirm button, and it is not refused. WAC-P5, a file that is
+not a PDF, is open (§17.3). The as-built record is §17.5.
+
+WAC-P1 built (2026-10-19, owner directive): channel parity. A
+WhatsApp run now gets each context block and each CRM line of a web run. A
+DEWiN billing question had gone to document search, not to the CRM (§17).
+
+WAC-10h built (2026-10-19, owner directive): charts and the AI's
+words use lakh and crore by default. An org or a member may choose million and
+billion (§13.10).
+
+WAC-13 built (2026-10-15). When Metorite's AI path does not answer,
+the bot says that Metorite is updating and holds the message. It answers the
+message when Metorite is back (§16).
+
+WAC-4b built (2026-10-15): the bot also blocks time on the
+member's calendar, with `create_personal_task` and `set_my_overlay`, and a
+reply sends each answer once (§14.9). `WHATSAPP_ASSISTANT_WRITES` is on for
+the beta orgs (read on the box, 2026-10-15). WAC-4 built (2026-10-11): a
+confirmed `create_task` from
+WhatsApp behind `WHATSAPP_ASSISTANT_WRITES`, default OFF (§14, §14.8). The
+switch-on for an org is the owner's (WAC-9).
+
+WAC-10f built (2026-10-11): one
+chart language for WhatsApp (§13.8). WAC-10e live (2026-10-11): quoted replies and reactions
+(§13.7). WAC-10c built (2026-10-10): cards, views and quick commands
+(§13), on top of WAC-10a, the run profile and its native UI (§12). WAC-3 (2026-10-10) is live on Meta's test number for
+two beta orgs, after WAC-1 and WAC-2 on 2026-10-09. With the WAC-4 switch
+off, the bot is read-only (§14.1). The board row is **WS-47**.
+
+WAC-1 to WAC-5 are AGENT-SAFE, and they run on Meta's free test number. WAC-0
+(the number) is the owner's, and it gates production only. HANDOFF **H-251**
+carries it.
+
+**WAC-1 as built (2026-10-09).** The table is `whatsapp_member_links`. The
+routes are in `gateway/routes/whatsapp_channel/`, and the section is
+`WhatsAppLinkSection` on My Profile. The flags have one reader,
+`whatsapp_channel/flags.py`. Fences: `tests/unit/test_wac_link_code.py`,
+`tests/unit/test_wac_link_table.py` (R8) and
+`workbench/control_plane/src/app/people/lib/whatsappLink.test.ts`.
+
+**WAC-2 as built (2026-10-09).** `receive_webhook` sends the group of
+`WHATSAPP_ASSISTANT_PHONE_NUMBER_ID` to `whatsapp_channel/inbound.py`, and
+the group never reaches the WS-20 path. The bot replies with
+`WHATSAPP_ASSISTANT_ACCESS_TOKEN`, after the 200. `flags.py` reads both. A
+redelivery record keeps the reply of each link message by `wamid`, so a
+repeat gets the same reply and counts no second failure. It is in the process
+and single-process.
+
+**The WAC-3 record replaces it for a linked sender only.** A link message from an
+unlinked phone has no org, so a tenant table cannot hold it. The in-process
+record stays for that case.
+
+The migration `whatsapp_member_link_lookups` adds the two SECURITY DEFINER reads
+of §5.3: `whatsapp_member_links_for_phone` and
+`whatsapp_member_link_for_code`. The code function also returns an active
+row of the SAME phone, for the redelivery rule. A new code for a phone that
+the member already linked in that org revokes the old row, so the unique
+index holds. Fences: `tests/unit/test_wac_bot_inbound.py` and
+`tests/unit/test_wac_bot_link_r8.py` (R8).
+
+**WAC-3 as built (2026-10-10).** The run is `whatsapp_channel/bot_run.py`.
+The migration `whatsapp_bot_messages` adds the table and `chat_session.channel`. Before
+the 200, `inbound.py` binds the org of the phone's current link. It writes the
+member's turn into the WhatsApp thread, and then a `received` row by `wamid`.
+The turn has an id made from the `wamid`, so the sweep reads the text back from
+the thread.
+
+After the 200, the background task starts the run as a task of its own, so a
+slow run never holds the response.
+
+The run checks the switch, the link, the member, `feature:chat` and
+`resolve_identity`, in that order. Then it calls the executor's `run_agent` in
+the process. `acb_skills.ask_tools.refuse_cards` makes every card tool deny at
+once. `chat_fold.persist_channel_reply` writes the reply row. Fences:
+`tests/unit/test_wac_bot_run.py` and `tests/unit/test_wac_bot_run_r8.py` (R8).
+
+*(Review round 1, 2026-10-10.)* One thread runs one message at a time, oldest
+first, so a second text runs right after the first. A failure after the claim
+gives the row back to the sweep, and the last try sends the general text once.
+A thread that gets a participant on the web is a shared room. The bot leaves
+it, and the next text opens a new thread. A redelivery writes nothing, and a
+bot write keeps the agent that the member chose.
+
+*(Review round 2, 2026-10-10.)* Each message gets one reply at most, and at
+least one unless the channel fails. A row becomes `sending` in the database
+just before its first part goes out, and nothing runs a `sending` row again. A
+crash can lose the tail of a long reply, and it never sends a part twice. A
+thread is a room only when its visibility is not `private` or it has a
+participant who is not its member. The member's own `owner` row is no room.
+
+*(Review round 3, 2026-10-10.)* The bot sends a stored reply again only when
+the first part SURELY did not reach the member. That is a 4xx from Meta, or a
+connection that never opened. A read timeout, a 5xx or a 200 with no message
+id may have delivered the text. Then the row closes as `replied`, and nothing
+goes again. The last word of a used-up message is its stored reply when the thread
+holds one, and else the general text.
+
+**The trade-off is at-most-once.** A restart, or an unclear error, during the
+first send can lose the reply and still record the message as `replied`. A
+reply that goes out twice is the worse failure, so the bot accepts the loss.
+
+One more case falls on that side *(verifier F1, 2026-10-10)*. On the last try,
+the stored reply's own send mark can commit and then raise. The row then
+closes as `send_unconfirmed` with nothing sent. It needs a database fault after
+the commit, and it never sends twice.
+
+**Amended 2026-10-09 (owner, in chat: "can you see what we can start working on
+and building").** Four changes, recorded in §11:
+
+1. **No App Review gates the bot.** The bot number belongs to Hathi Labs, which
+   owns the Metorite Meta app. Standard access covers a business's own assets.
+   App Review (submitted 2026-10-08) matters only for the WS-20 inbox, where a
+   customer connects their own number. Most of §6.2 is done already.
+2. **The run uses the main Chat assistant**, not the Projects assistant (§5.5).
+3. **One phone can link to every org its person belongs to**, with an org
+   switcher. This replaces the one-org rule of D-WAC-2 (§5.2, §5.3).
+4. **Native WhatsApp UI** (lists, link buttons, Flows) becomes two new slices,
+   WAC-10 and WAC-11 (§5.11, §7).
+
+**Verified against code on 2026-10-06** at `origin/main` `fb97075fe`. **§4.1, §5.4,
+§5.9 and the WAC-2 row checked again on 2026-10-09** at `c9ea6c22b` (WAC-2 audit).
+**Created:** 2026-10-06, by owner directive in chat. **Owner:** vjvarada.
+
+**Single owner.** This spec owns WhatsApp as a way to TALK to Metorite.
+Since 2026-11-09, §19 also owns team channels (CH-TEAM): a WhatsApp group, Mira's email address and, later, Slack.
+`whatsapp_message_manager.md` (WS-20) owns the WhatsApp INBOX app: a member's
+own business number, triage and drafts. The two share the transport code and
+nothing else. `whatsapp_calls_note_taker.md` owns calls.
+
+**Supersedes nothing.** It realises ADR-007 (`system_architecture.md`) and the
+WhatsApp half of CH-4 (`competitive_hardening_2026-07.md`).
+
+---
+
+## 0. The answer in one paragraph
+
+A member of a customer org chats with Metorite from **their own personal
+WhatsApp**, the way an Instinct user texts Instinct. **Metorite owns one bot
+number for all orgs.** The customer creates no number and configures nothing. A
+member links their phone **once**, with one tap in Metorite and one message
+sent. After that, every message from that phone runs the Metorite assistant **as
+that member, inside that member's org**, and the reply comes back on WhatsApp.
+
+The bot answers questions about Metorite work only, because Meta bans
+general-purpose AI assistants on the WhatsApp Business Platform. About 80
+percent of the plumbing exists. Three parts do not exist yet. They are the
+phone link, the hand-off from the webhook into an agent run, and an org binding
+that does not go through the email.
+
+---
+
+## 1. Scope and non-goals
+
+### 1.1 In scope
+
+1. One Metorite-owned WhatsApp number, on the official Meta Cloud API.
+2. Linking a member's phone to that member and one org, without typing a phone
+   number (§5.2).
+3. An inbound text or voice note runs the assistant as the member, and the reply
+   goes back as WhatsApp text.
+4. A write that changes data asks for confirmation with WhatsApp reply buttons.
+5. Metorite-initiated messages (a link invitation, a daily brief, a nudge)
+   through Meta-approved templates, only to a member who opted in.
+6. An org admin can turn the channel off for the org. A member can unlink.
+
+### 1.2 Non-goals
+
+- **No open-domain assistant.** The bot does not answer "write me a poem". This
+  is Meta policy (§2.3), not a product preference.
+- **No unofficial transport.** The whatsmeow bridge in
+  `apps/services/whatsapp_bridge/` breaks WhatsApp's terms. A ban would remove
+  the channel for every customer at once. This channel never uses it.
+- **No number per customer org** in this workstream. It is an upgrade path
+  (§10, Q2).
+- **No iMessage, SMS or Telegram.** iMessage needs a third-party relay (Linq or
+  Sendblue) and Apple's approval. WhatsApp is the channel that matters in India.
+- **No voice calls to the bot.** The Business Calling API exists, and
+  `whatsapp_calls_note_taker.md` already uses it. Calls are a later workstream.
+- **No change to the WS-20 inbox app.** A message to the bot number never lands
+  in anybody's WhatsApp inbox app.
+
+---
+
+## 2. Research record (2026-10-06)
+
+### 2.1 What Instinct is
+
+- **A consumer personal assistant**, from Spear Street Technology (San
+  Francisco), founder Noah Shinn. It is invite-only, US-operated and 18+. It
+  raised a Series B at a $2.5B valuation in August 2026.
+- **The interface is a conversation.** A user texts it on iMessage or WhatsApp,
+  or calls it. It also has a Mac app and a web workspace at `app.instinct.com`,
+  where the user manages connections and settings.
+- **A persistent cloud computer does the work.** It has a browser and stored
+  credentials for the user's connected accounts (Gmail, Calendar, Drive). It
+  keeps working between messages, so a job can take hours or days.
+- **It messages first.** It "texts you first when something needs doing".
+- **It publishes no architecture.** One review says: "Public architecture is
+  thin. The company does not publish a runtime diagram." No source names its
+  WhatsApp or iMessage provider.
+- **Group chats.** A person with no account can join a group chat with the
+  agent. That is an onboarding channel.
+
+**The lesson for Metorite.** Instinct built no chat app of its own. The first
+message IS the onboarding. That is the part worth copying.
+
+### 2.2 How the category does the transport
+
+- **Poke** (The Interaction Company) runs on iMessage, SMS and Telegram through
+  **Linq**, a texting-API company. Poke has limited WhatsApp support because of
+  Meta's ban (§2.3).
+- **WhatsApp has one reliable route:** the Meta Cloud API, directly or through
+  a Business Solution Provider (Twilio, Gupshup, Interakt and others). A funded
+  company does not build on an unofficial client, because WhatsApp bans the
+  number.
+- **Inference.** Instinct's WhatsApp channel is almost certainly the Meta Cloud
+  API on a business number that Instinct owns. This is an inference, not a
+  published fact.
+
+### 2.3 The constraint: Meta's 2026 policy
+
+- **Since 15 January 2026, the WhatsApp Business Solution Terms ban "AI
+  Providers" whose AI is the core product.** New accounts were bound from 15
+  October 2025. ChatGPT, Copilot and Perplexity left WhatsApp because of it.
+- **Allowed:** a bot that is "ancillary to a legitimate business service", for
+  example bookings, order tracking, notifications and customer service.
+- **Our reading.** A member who asks their own company's Metorite about tasks,
+  projects and the calendar uses a business service. That reading holds only
+  while the bot refuses open-domain questions. ⚠️ Meta has not ruled on our
+  case. Meta enforces at its own discretion.
+- **The antitrust case.** Italy's AGCM ordered interim measures in December
+  2025. On 8 June 2026 it referred the case to the European Commission, which
+  investigates across the EEA. Do not plan around the outcome.
+
+### 2.4 What the channel costs
+
+- **The number:** a prepaid SIM, a few hundred rupees. It must receive one OTP.
+- **The Cloud API:** Meta charges nothing to connect or host.
+- **Messages (per-message pricing since 1 July 2025):** a free-form reply
+  inside the 24-hour customer-service window is free. A template that Metorite
+  sends outside that window is charged by category (utility, marketing,
+  authentication) and by the recipient's country. Read the live rate card at
+  build time. Do not copy rates into this spec.
+
+### 2.5 Sources
+
+- Instinct: [instinct.com](https://instinct.com/) ·
+  [Vellum breakdown](https://www.vellum.ai/blog/official-instinct-breakdown) ·
+  [eesel review](https://www.eesel.ai/blog/instinct-ai-review) ·
+  [rywalker research](https://rywalker.com/research/instinct) ·
+  [TechBuzz, group chats](https://techbuzz.ai/articles/instinct-launches-ai-agent-group-chats-for-collaborative-tasks)
+- Poke and Linq: [TechBuzz, Linq raise](https://www.techbuzz.ai/articles/linq-raises-20m-to-embed-ai-assistants-in-imessage-and-sms) ·
+  [Linq texting API guide](https://linqapp.com/blog/texting-api)
+- Meta policy: [respond.io explainer](https://respond.io/blog/whatsapp-general-purpose-chatbots-ban) ·
+  [TechCrunch, Italy](https://techcrunch.com/2025/12/24/italy-tells-meta-to-suspend-its-policy-that-bans-rival-ai-chatbots-from-whatsapp/) ·
+  [GBAF, referral to the EU](https://www.globalbankingandfinance.com/italy-regulator-drops-investigation-metas-whatsapp-ai-bot/)
+
+---
+
+## 3. The owner's questions, and the answers (2026-10-06)
+
+These three questions shaped the design. They are recorded so nobody asks them
+again.
+
+**Q-A. "How does Instinct use WhatsApp, and can we do the same?"** Yes. See
+§2. The difference is scope: Instinct is a general assistant, and Metorite must
+stay a business service.
+
+**Q-B. "I do not want my customer to create a WhatsApp number for the bot. The
+phone number should be the customer's, and the bot chats with it."** That is
+the design. Two numbers exist, and the customer owns neither one as a setup
+task:
+
+| Number | Who owns it | Who sets it up |
+|---|---|---|
+| The bot's number ("Metorite" on WhatsApp) | Metorite | The owner, once, through Meta (§6) |
+| The member's number | The member's own personal WhatsApp | Nobody. It already exists |
+
+The bot must have a number, because WhatsApp cannot deliver a message without a
+sender. Instinct has one too. A user saves it as a contact.
+
+**Q-C. "Do I need to buy a separate phone number?"** Yes. Buy one, keep it for
+the life of the product, and keep it off every WhatsApp app. One number serves
+every customer. Development does not wait for it, because Meta gives every new
+app a free test number (§6.3).
+
+---
+
+## 4. Measured state (2026-10-06)
+
+### 4.1 What exists and is reused
+
+| Piece | Where | What it gives us |
+|---|---|---|
+| Meta webhook | `apps/services/gateway/gateway/routes/whatsapp/transport/webhook.py` (GET line 62, POST line 122) | Verify handshake, `X-Hub-Signature-256` HMAC check against `WHATSAPP_APP_SECRET`, and a parse to a sync result |
+| Webhook parser | `apps/services/whatsapp_ingestion/whatsapp_ingestion/providers/webhook.py` | `parse_webhook(payload)`. It is total and never raises |
+| Send seam | `whatsapp_ingestion/providers/base.py` (`BaseWhatsAppProvider` line 122, `send_text` line 133, `send_template` line 147) and `providers/cloud_api.py` | Free text and templates over the Cloud API |
+| 24-hour window rule | `gateway/routes/whatsapp/transport/send.py` (route at line 62) | The template-or-text decision |
+| Agent run | `gateway/routes/agent.py`: `POST /agent/run` (line 3065), `/agent/run/stream` (line 2192), `/agent/run/async` (line 3131). WAC-3 calls the executor's `run_agent` in the process instead, because these routes take the org from the email | A run as a named member, through `session_user` |
+| Service identity | `packages/acb_auth/acb_auth/deps.py` `get_current_user` (line 410) | `Bearer GATEWAY_INTERNAL_TOKEN` + `X-User-Email` gives a member context |
+| Projects, Tasks and Calendar tools | `apps/skills/skill-projects/skill_projects/` | Every tool calls the gateway as the member, through a per-run ContextVar |
+| Chat history | `chat_session`, `chat_message` (`infra/postgres/02_chat_history.sql`), with tenant RLS | The store of the web chat. It has no channel marker, and a server-started run writes no `chat_message` rows (measured 2026-10-10). WAC-3 adds both (§5.5) |
+| Speech to text | `packages/acb_stt/` | Voice notes |
+| Approval of an outward act | Action Broker, as `gateway/routes/whatsapp/automation/outbound.py` uses it | The pattern for a confirm step |
+| Calls | `whatsapp_calls_note_taker.md` Surface C | The later calls workstream |
+
+### 4.2 The gaps
+
+1. **No link from a phone to a member.** `people.phone`
+   (`infra/postgres/172_people_profile.sql` line 97) is private, self-written,
+   unverified and not unique. It must not identify anybody. No other member
+   table holds a phone.
+2. **The webhook knows only per-org numbers.** `_resolve_account` (line 93) looks
+   up `phone_number_id` in `wa_accounts`, through the SECURITY DEFINER function of
+   migration 230. Every row there belongs to one org and
+   one owning member (`infra/postgres/102_whatsapp.sql` line 24). The bot
+   number belongs to Metorite, not to an org. An unknown number is logged as
+   `whatsapp.webhook.unknown_number` and dropped today.
+3. **Nothing sends an inbound message into an agent run.** The post-sync hooks
+   (`whatsapp_ingestion/post_sync.py`) classify and triage. They never start a
+   chat turn.
+4. 🔴 **The email route cannot carry a member of two orgs.**
+   `acb_auth/access.py` `resolve_identity` (line 1247) has two branches.
+   With the identity cutover on, it returns `(None, None)` for a person with
+   more than one active membership, on purpose (P2a). With the cutover off, it
+   reads one `app_user` row and binds the org of that row. In both cases,
+   `X-User-Email` alone cannot pick the org that the member linked. The phone
+   link already names the org. So the run must bind THAT org, and never
+   re-derive it from the email (§5.5).
+5. **A chat confirmation is a web card.** The Projects assistant asks for
+   confirmation with a generative-UI card (`generative_ui_2.md`). WhatsApp has
+   no cards. It has reply buttons (up to three) and list messages.
+
+---
+
+## 5. The design
+
+### 5.1 The bot number is platform configuration, not tenant data
+
+The bot number is not a row in `wa_accounts`. It is platform configuration on
+the box:
+
+| Variable | Holds |
+|---|---|
+| `WHATSAPP_ASSISTANT_PHONE_NUMBER_ID` | Meta's id for the bot number. The webhook matches it FIRST |
+| `WHATSAPP_ASSISTANT_DISPLAY_NUMBER` | The bot's phone number, digits only with the country code and no "+" (for example `919800000000`). The `wa.me` link needs it, because the phone number id is not a phone number *(added 2026-10-09)* |
+| `WHATSAPP_ASSISTANT_WABA_ID` | The WhatsApp Business Account id, for templates |
+| `WHATSAPP_ASSISTANT_ACCESS_TOKEN` | The System User's permanent token |
+| `WHATSAPP_APP_SECRET` | Exists already. The webhook HMAC key |
+| `WHATSAPP_VERIFY_TOKEN` | Exists already. The GET handshake token |
+| `WHATSAPP_ASSISTANT_ENABLED` | The kill switch, default OFF |
+| `WHATSAPP_ASSISTANT_ORGS` | The list of org ids that may link, default empty |
+
+**Why not a `wa_accounts` row.** That table is tenant data, owned by one member
+of one org, under RLS. Putting a cross-tenant number in it would give one org a
+row that routes every other org's traffic. (D-WAC-1, §10.)
+
+### 5.2 Linking a phone, with nothing typed
+
+**Flow A, member-initiated (the default).**
+
+1. The member opens **My Profile** (`/people/me`) and selects **"Chat on
+   WhatsApp"**. The section adds no nav entry *(host page named 2026-10-09)*.
+2. Metorite issues a single-use code that expires in 15 minutes. It stores only
+   a hash of the code, with the member and the org.
+3. Metorite shows a `https://wa.me/<bot number>?text=Link%20me%3A%20<code>`
+   link and a QR code of the same link for a desktop user.
+4. The member taps it, and WhatsApp opens with the message ready. They send it.
+5. The webhook sees the bot number and finds a link code in the text. It checks
+   the hash and the expiry. Then it writes the link: the sender's WhatsApp id,
+   the member and the org.
+6. The bot replies: "Linked to <org name> as <member name>. Ask me about your
+   tasks, projects or calendar."
+
+The message proves the member holds the phone. The signed-in session proves who
+the member is. No SMS OTP is needed.
+
+**Flow B, Metorite-initiated.** The member, or an admin, enters the number once,
+and the member ticks "Message me on WhatsApp" (the opt-in Meta requires).
+Metorite sends an approved template: "Hi, this is Metorite. Reply YES to
+connect." A YES within 24 hours writes the link. No link exists before the reply,
+so a wrong number links nobody.
+
+**One phone, one person, and every org of that person (D-WAC-2, amended
+2026-10-09).** A phone links to one person. That person can link the phone in
+each org where they are a member, one link per org. Exactly one of those links
+is the **current** link, and every run uses it. The member changes it with the
+org switcher (§5.11), and the last choice stays.
+
+**A second person can never link the same phone.** The phone can already have an
+active link to one member email. Then the bot refuses a link code from a
+different member email, and tells the sender why.
+
+**The routes (WAC-1).** A router of its own, never the `/whatsapp` router, because
+`require_feature_router("whatsapp")` gates that router for the inbox app. `GET
+/me/whatsapp-link` returns the channel state and the member's links. `POST
+/me/whatsapp-link/code` issues a code. Both need a signed-in member with
+`feature:chat`, because the run of WAC-3 is a Chat run. Both refuse when
+`WHATSAPP_ASSISTANT_ENABLED` is off or the bound org is not in
+`WHATSAPP_ASSISTANT_ORGS`. The org comes from the bound tenant, never from the
+request.
+
+**A new code replaces the old one.** Issuing a code revokes the member's earlier
+`pending` row in the same org, so one member has at most one live code per org.
+
+**The QR code renders in the browser** with the `qrcode` npm package, from the
+same `wa.me` link. The server sends no image.
+
+### 5.3 The link table
+
+A new table, name chosen at build time (proposed `whatsapp_member_links`).
+Columns: `id`, `organization_id`, `member_email`, `wa_id` (the sender id Meta
+sends, digits only), `status` (`pending`, `active`, `revoked`), `code_hash`,
+`code_expires_at`, `opted_in_at`, `linked_at`, `last_inbound_at`, `revoked_at`.
+
+- **R5.** The table is tenant-scoped, with RLS, and it passes
+  `tests/unit/test_tenant_coverage.py`.
+- **The cross-tenant reads** *(corrected 2026-10-09)*. The webhook knows no
+  org when a message arrives. The table has FORCE RLS (R5), so each read is a
+  SECURITY DEFINER function granted to `acb_app` only, in the shape of
+  migration 230. It is not a new connection site (R5b). WAC-2 adds two
+  functions:
+  - **by `wa_id`**, for a message: the active links of that phone
+  - **by `code_hash`**, for a redemption: the one `pending` row of that code,
+    because the sender of a code does not say which org issued it
+  *(Was: "the same mechanism as `resolve_identity`". That was wrong:
+  `resolve_identity` reads tables that are exempt from RLS.)*
+- **The code hash is SHA-256 of the code.** A code has 10 characters from a
+  32-character alphabet, which is 50 bits. It expires in 15 minutes and works
+  once, so a copy of the database cannot be used to redeem one later.
+- **Uniqueness** *(amended 2026-10-09)*. A partial unique index on
+  `(wa_id, organization_id)` where `status = 'active'`, and a second partial
+  unique index on `wa_id` where `is_current` is true. A column `is_current`
+  (boolean, default false) joins the column list.
+- **The cross-tenant read returns every active link of the phone**, each as
+  `(organization_id, member_email, is_current)`. The org switcher needs the
+  list. The run uses only the current row.
+- **One person per phone.** The code redemption refuses a link when the phone
+  already has an active link to a different `member_email`. This check runs in
+  the same narrow read, so it needs no wider access.
+- **R6.** The migration only adds. The number is taken at build time (R1).
+
+### 5.4 The inbound path
+
+```
+Meta ──POST /whatsapp/webhook──▶ verify HMAC ──▶ parse
+        │
+        ├─ phone_number_id ≠ bot number ──▶ today's path, unchanged (WS-20)
+        │
+        └─ phone_number_id = bot number
+              ├─ status update only ──▶ log the status, ack 200 (no store before WAC-3)
+              ├─ text holds a link code ──▶ §5.2 redemption, reply, ack 200
+              ├─ wa_id has no active link ──▶ fixed reply with NO org data, ack 200
+              └─ wa_id is linked ──▶ record the message by wamid (idempotent)
+                                     ──▶ ack 200 at once
+                                     ──▶ run the assistant in the background (§5.5)
+                                     ──▶ send the reply (§5.6)
+```
+
+- **Ack fast.** Meta retries a slow webhook, and a retry is a duplicate. The
+  route returns 200 before the agent runs.
+- **Idempotent by `wamid`.** Meta can deliver one message twice. A second
+  delivery of the same `wamid` starts no second run.
+- **The reply to an unknown sender carries no org data.** It says how to link,
+  and nothing else. It never names an org, a member or a task.
+- **Durability.** A crash between the ack and the run must not lose the message
+  in silence. The recorded message carries a state, and a sweep re-runs a
+  message that stayed `received` too long. Use the BO-20 durable queue (WS-4)
+  if it has landed by build time. Do not build a second queue.
+
+**The bot message record, as WAC-3 builds it** *(set 2026-10-10 from the WAC-3
+audit)*. BO-20 has not landed (WS-4 row). So WAC-3 adds the table
+`whatsapp_bot_messages`, tenant-scoped with FORCE RLS. Its columns are `id`,
+`organization_id`, `member_email`, `wa_id`, `wamid` (unique), `direction` (`in`
+or `out`), `state`, `chat_session_id`, `tries`, `error_code`, `received_at`
+and `updated_at`. The states are `received`, `running`, `sending`,
+`replied`, `refused`, `failed` and `expired`. A row is `sending` from just
+before the first part of its reply goes out, and nothing runs it again.
+
+- **It holds no message text.** The text lives only in the chat thread (§5.9).
+- **One `wamid`, one run.** A redelivery inserts nothing (`ON CONFLICT DO
+  NOTHING`). Only the insert that wrote the row starts a run.
+- **The sweep.** Every minute, a sweep binds each org of
+  `WHATSAPP_ASSISTANT_ORGS` in turn, so it needs no new SECURITY DEFINER
+  function. It runs a row again when the row stayed `received` or `running` for
+  more than 5 minutes, for at most 3 tries. A row older than 24 hours becomes
+  `expired` and gets no reply, because the reply window has closed.
+
+**Link redemption, as WAC-2 builds it** *(set 2026-10-09 from the WAC-2 audit)*:
+
+- **Status updates.** WAC-2 acks a status update and writes a log line with the
+  status and no message text. Nothing stores it. WAC-3 records the bot's own
+  messages, and a delivery state can attach to that record then.
+- **The fixed replies.** The bot sends exactly these texts. Only the success
+  reply holds org data, and it goes only to the phone that just proved it holds
+  the code.
+
+  | Case | Reply |
+  |---|---|
+  | Unknown phone, no code | "Hi, this is Metorite. To chat with your workspace, open My Profile in Metorite and select Chat on WhatsApp." |
+  | Wrong, used or expired code (one text for all three) | "That link code did not work. Open My Profile in Metorite and get a new link." |
+  | The phone belongs to another person | "This phone is already linked to another Metorite account. Unlink it there first." |
+  | Too many failed codes | The same text as a wrong code |
+  | Success | "Linked to <org name> as <member name>. Ask me about your tasks, projects or calendar." |
+
+  One text covers wrong, used and expired codes, so a reply never tells a
+  guesser which case it hit.
+- **A redelivered link message.** Meta can deliver the same message twice. When
+  the code's row is already `active` with this sender's `wa_id`, the bot sends
+  the success reply again and changes nothing. It never answers a redelivery
+  with the failure reply.
+- **The per-sender limit.** At most 5 failed redemptions for each `wa_id` in 15
+  minutes. After that, the bot sends the failure reply and runs no lookup. The
+  counter lives in the gateway process, so a restart resets it. The gateway
+  runs one process (`deploy/hostinger/acb-gateway.service`). A move to several
+  workers makes this limit advisory, and that move must replace it. A 50-bit
+  code that expires in 15 minutes leaves little to guess, and every sender is a
+  real WhatsApp phone behind Meta's HMAC.
+- **The per-member issue limit.** At most 10 codes for each member in each org
+  in one hour. The route counts them from `whatsapp_member_links.created_at`,
+  under the advisory lock that it already takes. Beyond it, the route
+  answers 429 with a plain sentence, and writes nothing.
+- **The first link of a phone is current.** Redemption sets `is_current` only
+  when the phone has no current link. A later org of the same person links
+  with `is_current` false, and the org switcher (WAC-10) moves it.
+- **The bot path fails closed.** With `WHATSAPP_APP_SECRET` unset, the bot path
+  does nothing, in dev too. The WS-20 path keeps its own rule.
+
+### 5.5 The run
+
+- **The agent** *(amended 2026-10-09)*. The run uses the main Chat assistant,
+  the default agent of `/chat`, with its specialist agents. The owner wants the
+  bot to be an entry point to all of Metorite, not to Projects only. The
+  channel adds no agent of its own. Tools that need a card on the web follow
+  §5.6.
+- **The identity.** The run is the linked member. ⚠️ **The org comes from the
+  link row and is bound explicitly.** It is never re-derived from the email,
+  because §4.2 gap 4 makes that fail for a member of two orgs. It is never read
+  from the message text. (D-WAC-3.)
+- **The tools find the org again** *(measured 2026-10-10)*. Each tool calls the
+  gateway with `X-User-Email` (`skill_projects/client.py`). The gateway binds
+  the org from `resolve_identity` (`acb_auth/deps.py`). So binding the org on
+  the run does not reach the tools.
+- **So the run checks the identity first.** Before each run, WAC-3 checks that
+  `resolve_identity(member_email)` returns the org of the current link. When it
+  does not, the run does not start. The bot sends this fixed text: "Metorite
+  cannot open this workspace from WhatsApp yet. Use the web app." A run never
+  answers from an org that the link does not name.
+- **What this costs today.** Nothing yet: `app_user` is unique on the email
+  across all orgs (migration 162), so every link that exists resolves to its
+  own org. A full answer for a member of two orgs needs a per-request org claim
+  on the tool loopback. WS-35 slice B owns that, and WAC-3 does not build it.
+- **Still a member, and still allowed.** Before each run, check four things. The
+  member is active in the link's org (a bound read of `app_user.status`). The
+  member holds `feature:chat` there. The kill switch is on. The org allowlist
+  still holds the org. Refuse a second live run on the same thread. WAC-3 refuses the
+  run of a removed member. WAC-8 revokes the link.
+- **The scope rule.** The run carries a channel instruction: answer about this
+  member's Metorite work only, and refuse other topics in one line. Keep replies
+  short, and write plain text, because WhatsApp shows plain text and a little
+  markup.
+- **The thread** *(set 2026-10-10)*. The migration of WAC-3 also adds
+  `chat_session.channel text` (nullable, no default, expand only). WAC-3 writes
+  `whatsapp` there. The thread is the member's latest `whatsapp` session in the
+  link's org. A message more than 24 hours after the last one starts a new
+  session. WAC-3 writes the member's turn and the reply through `routes/chat.py`
+  `_upsert_session` and `_upsert_messages`, with the link's org. A badge in the
+  web sidebar is not part of WAC-3.
+- **Metering.** The run goes through the Router like every other chat run, and
+  it spends the org's AI credits by the same rules. WhatsApp adds no second
+  meter.
+
+### 5.6 The reply
+
+- A reply inside the 24-hour window is free-form text through `send_text`.
+- Split a long reply at paragraph breaks. WhatsApp's limit is 4096 characters.
+- **WAC-3 is reads only** *(set 2026-10-10)*. A server-started run pushes a card
+  that nobody sees, and the tool would wait up to an hour. So in a WhatsApp run,
+  a tool that asks for a card gets a deny at once. It writes nothing, and the
+  run does not wait. The reply says to make the change in the web app. Capture
+  moves to WAC-4. *(Accepted 2026-10-10, WAC-3 review.)* The member's own
+  memory tools (`remember`, `save_memory` and `save_episode`) ask for no card,
+  so they still write the member's own memory from WhatsApp.
+- **A rate limit per member is due before WAC-9** *(WAC-3 review)*. WAC-3 runs
+  every text of a linked member, and only the org's AI credits cap the cost.
+  WAC-9 must not switch on an org before a limit on bot runs per member exists.
+- **A failed run gets one fixed reply**, chosen by `classify_run_error`. For the
+  code `credits` the reply is: "Your organization is out of AI credits. An admin
+  can add credits in Settings, Billing." Every other code gets: "Metorite could
+  not answer just now. Try again in a few minutes."
+- **A write asks first** (WAC-4, §14). An allowed tool parks its act and ends
+  the run. The reply carries "Confirm" and "Cancel" buttons from code. The
+  binding is server-side, and no code reads the button id. A tap from any
+  other phone, or after 10 minutes, does nothing.
+- **A destructive act never runs from WhatsApp.** A class C or class X act of
+  the Projects manifest replies with a link to the web app (§14.4). A stolen
+  phone must not be able to destroy data. (D-WAC-4, a rule of this spec.)
+- Each reply can end with a deep link to the item in Metorite.
+
+### 5.7 Voice notes
+
+Meta sends an audio message as a media id. Download it with the bot's token,
+transcribe it through `acb_stt`, and treat the text as the member's message.
+Echo the transcript in the reply ("Heard: …") so the member can catch a wrong
+transcription. Delete the audio file after transcription.
+
+### 5.8 Messages that Metorite starts
+
+- **Only to a phone with an active link and `opted_in_at` set.**
+- **Only through approved templates.** Each template is a utility template with
+  a reply button, so the member's tap opens a free 24-hour window.
+- **First templates:** the link invitation (flow B), and the daily brief (the
+  "My day" report of `projects_reports.md`). The third is a nudge on a task that
+  waits on the member.
+- **The member stops them** by sending "STOP", or from Settings. "START"
+  resumes.
+- **Owner: `proactive_reach.md` (WS-59), since 2026-10-14.** That spec
+  plans and sends each message that Metorite starts, through its outbox. Its
+  RE-2 builds the template sends, the window check, opt-in, STOP and START.
+
+### 5.9 Security and tenancy
+
+| Risk | Control |
+|---|---|
+| A SIM swap gives the phone to someone else | Destructive acts go to the web app (D-WAC-4). An admin can revoke a link. A link expires after 90 days with no inbound message (the period is Q5) |
+| A forged webhook | HMAC on every POST. A missing `WHATSAPP_APP_SECRET` must fail CLOSED for the bot path, in dev too. Today's route answers 403 with no secret outside dev, and accepts in dev |
+| A message arrives from an unknown phone | §5.4. No org data in the reply |
+| A link code is guessed | 8 characters or more, single use, 15-minute expiry, a hash at rest, and a rate limit per sender |
+| A member leaves the org | The membership check in §5.5 revokes the link |
+| The org turns the channel off | An org setting stops new links and stops every run for that org |
+| Org data passes through Meta | State it in the trust record (WS-37) and the DPDP notice. Store no message text beyond the chat thread |
+
+### 5.11 Native WhatsApp UI *(added 2026-10-09)*
+
+WhatsApp offers native elements. The bot uses them where they help, and plain
+text everywhere else.
+
+| Element | Limit | Use |
+|---|---|---|
+| Reply buttons | 3 buttons | Confirm and Cancel (§5.6). Quick acts on one task: Done, Tomorrow, Snooze |
+| List message | 10 rows in sections | Today's tasks, where a row opens the task. A project picker. **The org switcher** |
+| Link button (`cta_url`) | 1 button | "Open in Metorite" for any item |
+| Typing indicator | Shows up to 25 seconds | Sent when a run starts, so the member knows the bot works |
+| WhatsApp Flows | Multi-screen forms | "New task" with a project dropdown, an assignee and a calendar picker. A Flow fetches the member's projects from a Flow endpoint (WAC-11) |
+| Document and image | Files | A report as a PDF. A chart as an image |
+
+**The org switcher.** "Switch org" (typed, or a list row) sends a list message
+of the member's linked orgs. A tap sets that link as current. The reply names
+the new org. A member with one org never sees the switcher.
+
+**The tap is untrusted input.** A list row id or a button id from WhatsApp is
+data the phone sent, and no code reads it (§12.4). A tap counts as its title.
+A Confirm counts only when the server holds a live act for that phone, member,
+org and thread (§14.3). A tap never carries an org id that the sender has no
+link to.
+
+**Flows need an endpoint key.** A Flow endpoint encrypts its payload with an RSA
+key pair. The private key is platform configuration on the box, like §5.1. The
+owner puts it there (WAC-11).
+
+### 5.10 Shell manifest (R9)
+
+This is a channel, not an app, so R9 does not bind it. It adds one entry in
+member settings ("Chat on WhatsApp") and one org setting for admins. It adds no
+pane, no palette, no bell and no ⌘K listener.
+
+---
+
+## 6. Owner setup — the Meta side (WAC-0, OWNER-GATE)
+
+**Why it is the owner's.** It creates the company's identity at a third party.
+It adds a payment method. It puts a long-lived secret on the box (`CLAUDE.md`
+§3a rule 3). HANDOFF **H-251** carries it.
+
+### 6.1 Get the number
+
+1. Buy a new prepaid SIM, registered to the company. A landline or a virtual
+   number also works, if it can receive a voice-call OTP.
+2. Make sure the number is on NO WhatsApp app. If it is, delete that WhatsApp
+   account first. Do not use a personal number.
+3. Keep the SIM recharged. An Indian carrier recycles an inactive number, and a
+   recycled number can cost us control of the bot.
+
+### 6.2 Set up Meta
+
+1. Create a **Meta Business Portfolio** at business.facebook.com for the legal
+   entity.
+2. **Verify the business:** incorporation or GST documents, and the
+   `metorite.com` domain. Before verification, Meta limits how many chats the
+   business can start each day.
+3. At developers.facebook.com, create an app of type **Business** and add the
+   **WhatsApp** product. Meta creates a WhatsApp Business Account and a free test
+   number.
+4. In WhatsApp Manager, add the real number and verify it by OTP. Set the
+   display name to **"Metorite"**. Meta reviews the name against the website.
+   Turn on the two-step PIN.
+5. In Business Settings, create a **System User**. Give it a permanent token
+   with `whatsapp_business_messaging` and `whatsapp_business_management`.
+6. Set the webhook. The callback URL is
+   **`https://api.metorite.com/whatsapp/webhook`**. Caddy already sends
+   `api.metorite.com` to the gateway. Set the verify token, and subscribe to the
+   **`messages`** field.
+7. Add a **payment method** in WhatsApp Manager.
+8. Submit the templates of §5.8 for approval.
+9. Publish the app (Live mode). Meta requires a privacy-policy URL.
+
+### 6.3 Develop before 6.1 and 6.2 finish
+
+The test number from step 3 can message up to five recipient numbers that the
+owner verifies in the app dashboard. That is enough to build and demo WAC-1 to
+WAC-5. Put the test number's id and a temporary token in a local `.env` only.
+
+### 6.4 What reaches the box
+
+Five values: the phone number id, the display number, the WABA id, the app
+secret and the access token (§5.1). The owner puts them in the box `.env`. They never go into chat, a
+commit or a log line.
+
+---
+
+## 7. Tickets
+
+Every ticket ships dark behind `WHATSAPP_ASSISTANT_ENABLED` (default OFF) and
+`WHATSAPP_ASSISTANT_ORGS` (default empty). Each one is one PR.
+
+| Id | What | Gate | Done when |
+|---|---|---|---|
+| **WAC-0** | The Meta setup of §6 | **OWNER-GATE** | The five values of §5.1 are on the box, and `GET /whatsapp/webhook` answers Meta's handshake |
+| **WAC-1** ✅ built 2026-10-09 | The link table (§5.3), its migration, the code-issue route, and "Chat on WhatsApp" in member settings | AGENT-SAFE | A signed-in member gets a `wa.me` link and a QR. The code is stored as a hash and expires. The migration applies on a real database (R8). `test_tenant_coverage.py` passes |
+| **WAC-2** ✅ built 2026-10-09, dark | The webhook branch for the bot number (§5.4): code redemption, the unknown-sender reply, status updates | AGENT-SAFE | A link message from the test phone writes an `active` row and gets the confirmation reply. A message from an unlinked phone gets the fixed reply, and the reply holds no org data. A wrong, used or expired code links nothing. The WS-20 path is unchanged for every other `phone_number_id`. *(Added 2026-10-09, WAC-1 review and WAC-2 audit.)* `POST /me/whatsapp-link/code` answers 429 after 10 codes for one member in one org in an hour. The sixth failed code from one `wa_id` in 15 minutes gets the failure reply with no lookup. A redelivered link message re-sends the success reply. With `WHATSAPP_APP_SECRET` unset, the bot path does nothing, in dev too. A second member email on a linked phone links nothing |
+| **WAC-3** ✅ built 2026-10-10, dark | A linked text runs the main Chat assistant and the reply comes back (§5.4 bot message record, §5.5, §5.6). Read tools only: a card is denied at once (capture moves to WAC-4) | AGENT-SAFE | *(Made testable 2026-10-10.)* A1: a linked sender's message writes one `received` row, the route answers 200 before the run, and `run_agent` gets agent `orchestrator`, the link row's org, the link's email as the session user, and the scope rule in `system_context`. A2: one payload delivered twice, or twice at once, starts one run. A3: `resolve_identity` returning another org or none starts no run and sends the fixed refusal. A4: a member not active in the link's org gets no run and no reply. A5 (R8): a `chat_session` with channel `whatsapp` and its user and assistant rows exist in the link's org, `GET /chat/sessions` lists them for that member, and another org sees none. A6: a card tool in a WhatsApp run returns at once and writes nothing. A7: a `credits` failure sends the credits text, any other failure sends the general text, and the row ends `failed`. A8: the sweep runs a stale `received` row once, a row older than 24 hours ends `expired` with no send, and the tries stop at 3. A9: flag off or org off the allowlist starts no run. A10: the migration applies on a real database and `test_tenant_coverage.py` passes. Fences: `tests/unit/test_wac_bot_run.py`, `tests/unit/test_wac_bot_run_r8.py`. The live phone check stays the manual step of §8 |
+| **WAC-4** ✅ built 2026-10-11, dark | A confirmed write from WhatsApp (§14, §14.8): an allowed Projects act parks, and a Confirm runs it once with no model call. Class C and X acts get a web link. Behind `WHATSAPP_ASSISTANT_WRITES` | AGENT-SAFE to build, **OWNER-GATE** to switch on for an org (WAC-9) | §14.7, W1 to W9. Fences: `tests/unit/test_wac_writes.py`, `tests/unit/test_wac_writes_r8.py` |
+| **WAC-5** | Voice notes (§5.7) | AGENT-SAFE | A voice note runs as its transcript, the reply echoes the transcript, and no audio file remains after the run |
+| **WAC-6** | Flow B, the Metorite-initiated link (§5.2) | AGENT-SAFE to build, **OWNER-GATE** to send to a real person | With a test template, YES links the phone and no reply links nothing |
+| **WAC-7** | Proactive messages: the daily brief and the nudge, STOP and START (§5.8) | AGENT-SAFE to build, **OWNER-GATE** to switch on | A brief goes only to an opted-in, linked phone. STOP ends every Metorite-initiated message to that phone |
+| **WAC-8** | Org controls: the org setting, admin revoke, revoke on membership removal, link expiry | AGENT-SAFE | An org with the channel off gets no run and no new link. A removed member's link is `revoked` before their next message |
+| **WAC-9** | Production switch-on for an org | **OWNER-GATE** | The owner names the org. The flag holds it, and a smoke message on production gets an answer. Report the box and the SHA (§3a rule 2) |
+| **WAC-10a** ✅ live 2026-10-10 (Meta test number) | The WhatsApp run profile and the `whatsapp_ui` tool (§12): buttons, lists, the link button, chart and table images, the typing indicator, taps as text. The web-only tools leave the bot run | AGENT-SAFE | §12.5, N1 to N8. Fence: `tests/unit/test_wac_native_ui.py` |
+| **WAC-10c** ✅ built 2026-10-10 | Cards, views and quick commands (§13): KPI tiles, board, timeline, agenda, gantt and donut images. Six views that code builds from the web's own reads. Quick commands answer with no AI call | AGENT-SAFE | §13.5, C1 to C8. Fences: `tests/unit/test_wac_views.py`, `tests/unit/test_wac_cards.py` |
+| **WAC-10e** ✅ built 2026-10-11 | Reply and react like a person (§13.7): the first part of each answer quotes the member's message, the AI can react with an emoji, a long job says so first, and a plain thanks gets a 👍 with no AI call | AGENT-SAFE | §13.7, E1 to E7. Fence: `tests/unit/test_wac_react.py` |
+| **WAC-10f** ✅ built 2026-10-11 | One chart language (§13.8): the web app's chart engine draws WhatsApp charts on the server, in the product's look. 13 kinds, from a short spec. Falls back to the old renderer | AGENT-SAFE | §13.8, F1 to F5. Fences: `src/lib/charts/charts.test.ts`, `tests/unit/test_wac_chart_engine.py` |
+| **WAC-10g** ✅ built 2026-10-11 | The same charts live in the web chat (§13.9): a `chart` template with a tooltip and a legend, and `barChart` through the same engine | AGENT-SAFE | §13.9, G1 to G5. Fence: `src/components/LiveChart.test.ts` |
+| **WAC-13** ✅ built 2026-10-15 | "Metorite is updating" (§16): a message that meets a restart or an outage of the AI path waits, the member hears so once, and the bot answers it when Metorite is back | AGENT-SAFE | §16.6, U1 to U7. Fences: `tests/unit/test_wac_updating.py`, `tests/unit/test_wac_bot_run_r8.py` |
+| **WAC-12** ✅ live 2026-10-15 | A PDF document from WhatsApp (§15): a deck or a report, laid out from the org's own data, sent as a file that the member can forward | AGENT-SAFE. Ships dark behind `WHATSAPP_DOCUMENTS` | §15.6, D1 to D8. Fences: `tests/unit/test_wac_documents.py`, `tests/unit/test_pdf_render.py` |
+| **WAC-P1** ✅ built 2026-10-19 | Channel parity (§17): the batch path gets the per-turn blocks of the web path, the CRM facts block routes business figures to the CRM, and `WHATSAPP_FORMS` maps each delivery tool | AGENT-SAFE | §17.4, P1 to P5. Fence: `tests/unit/test_wac_channel_parity.py` |
+| **WAC-P2 to WAC-P5** | The open parity defects of §17.3: pre-read memory, MCP servers, the card after an untrusted answer, and a file that is not a PDF | AGENT-SAFE to build. WAC-P2 needs a tenancy review, and WAC-P4 a security review | §17.3 |
+| **WAC-10b** (was WAC-10) | Native UI, part 1 (§5.11): the org switcher. §12 built the rest | AGENT-SAFE | "What is due today?" returns a list message, and a tap on a row returns that task. A member of two orgs switches orgs with the list, and the next answer comes from the new org. A row id for an org the sender has no link to changes nothing |
+| **WAC-11** | Native UI, part 2: the "New task" Flow and its endpoint (§5.11) | AGENT-SAFE to build, **OWNER-GATE** for the endpoint key on the box | The Flow opens from a button, lists the member's own projects, and its submit writes exactly one task in the current org. A Flow token from another phone writes nothing |
+
+**Order:** WAC-1 → WAC-2 → WAC-3 → WAC-10a → WAC-4 → WAC-10b → WAC-8 →
+WAC-5 → WAC-11 → WAC-6 → WAC-7. *(WAC-10a moved ahead of WAC-4 on
+2026-10-10, at the owner's ask.)*
+WAC-8 comes before any production use. WAC-9 can follow WAC-8.
+
+---
+
+## 8. Verification commands
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"   # R8: without it the DB tests SKIP
+uv run pytest tests/unit/test_wac_*.py -q   # not test_whatsapp_assistant_*, which is WS-20's
+uv run pytest tests/unit/test_tenant_coverage.py tests/unit/test_index_completeness.py tests/unit/test_handoff_queue.py -q
+uv run pytest tests/unit/test_whatsapp_webhook*.py -q                 # the WS-20 path stays green
+node .claude/hooks/ste-lint.mjs project-docs/specs/whatsapp_assistant_channel.md
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run   # the My Profile section
+```
+
+The end-to-end check uses Meta's test number and the owner's phone. It is a
+manual step, and its evidence is the reply on the phone plus the run log line.
+
+---
+
+## 9. Fences (R7)
+
+| Rule | Fence (written by the slice named) |
+|---|---|
+| The run's org comes from the link row, never from the email or the message, and a run whose email resolves to another org does not start | A test with `resolve_identity` patched to another org (WAC-3, A3) |
+| A card tool in a WhatsApp run never waits. With writes off, it never writes. With writes on, only an allowed act writes, once, after a Confirm | A test that runs a class B tool in a WhatsApp run (WAC-3, A6), and W1 to W7 (WAC-4, §14.7) |
+| An unknown sender gets no org data | A test that asserts the reply text is the fixed string (WAC-2) |
+| One `wamid` starts one run | A test that delivers one payload twice (WAC-3) |
+| A link code is single-use and expires | Tests for reuse and expiry (WAC-1, WAC-2) |
+| The bot path fails closed with no app secret | A test with `WHATSAPP_APP_SECRET` unset (WAC-2) |
+| No class C or class X act runs from WhatsApp | A structural test over every class C tool, with writes on (WAC-4, W5) |
+| A WhatsApp run gets each tool, context block and prompt line of a web run, except the delivery tools of `WHATSAPP_FORMS` and the open gaps of §17.3 | `tests/unit/test_wac_channel_parity.py` (WAC-P1, §17.4) |
+| The bot refuses open-domain questions | **Advisory.** The instruction text carries the rule, and an eval case checks it. No unit test can prove a model's refusal |
+
+---
+
+## 10. Proposed decisions and open questions
+
+### 10.1 Proposed decisions (the owner accepts them, or changes them)
+
+- **D-WAC-1.** The bot number is platform configuration, not a `wa_accounts`
+  row (§5.1).
+- **D-WAC-2** *(amended 2026-10-09, §11)*. One phone belongs to one person. It
+  can link to each org of that person, and one link is current. *Was:* one phone
+  has at most one active link, to one member in one org
+  (§5.2).
+- **D-WAC-3.** The run binds the org from the link row (§5.5).
+- **D-WAC-4.** A destructive or guarded act never runs from WhatsApp. It
+  replies with a web-app link (§5.6).
+- **D-WAC-5.** The bot answers about Metorite work only (§2.3).
+
+### 10.2 Open questions for the owner, each with a default
+
+| Q | Question | Default if unanswered |
+|---|---|---|
+| Q1 | Pricing: is the channel in the ₹500 seat, or a paid add-on? Who pays Meta's template charges? | In the seat. AI use spends credits as usual. Metorite absorbs template charges during the pilot |
+| Q2 | One shared number, or one number per org? | One shared number. A per-org number is a later upgrade for a customer who wants its own brand |
+| Q3 | Display name: "Metorite" or "Metorite Assistant"? | "Metorite" |
+| Q4 | Which org goes first? | Fracktal (customer zero, D36) |
+| Q5 | How long does a link live with no inbound message? | 90 days |
+| Q6 | Flow B: may an admin enter a member's number, or only the member? | Only the member |
+
+---
+
+## 11. Amendments of 2026-10-09
+
+The owner asked to start the build while they get the bot number. Four
+changes follow from the research of that day. The owner may still reverse any
+of them.
+
+| # | Change | Why |
+|---|---|---|
+| A1 | No App Review gates the bot | The number belongs to the app's own business. Standard access covers it |
+| A2 | The run uses the main Chat assistant | The owner wants one entry point to all of Metorite |
+| A3 | One phone links to every org of its person, with a current link and an org switcher | A person can be a member of two orgs. One shared bot number serves every org |
+| A4 | Native UI slices WAC-10 and WAC-11 | The owner asked for UI elements inside the chat. §5.11 lists what WhatsApp allows |
+
+**Interpretation recorded.** "A bot that can chat with all the customers of all
+the organizations" is read as: the members of every Metorite org. The end
+customers of an org (for example, a café's clients) are a different product,
+and this spec does not cover them. The owner has not confirmed this reading.
+
+---
+
+## 12. Amendment of 2026-10-10: WAC-10a, the WhatsApp run profile
+
+**The owner's ask (2026-10-10).** "Start building the WhatsApp native cards and
+generative UI elements for the WhatsApp bot. Strip the other generative UI
+tools from the bot, because they are not useful there and they add context."
+
+**What WAC-10a is.** It narrows WAC-10 to the parts that need no new table.
+The org switcher stays in WAC-10, which this amendment renames WAC-10b.
+
+### 12.1 What WhatsApp can show
+
+| Element | Limit | Built in WAC-10a |
+|---|---|---|
+| Reply buttons | 3 buttons, 20 characters each | Yes |
+| List message | 10 rows, title 24 and description 72 characters | Yes |
+| Link button (`cta_url`) | 1 button | Yes, to `app.metorite.com` only |
+| Image | 5 MB | Yes: charts and tables, drawn on the server |
+| Typing indicator | Shown up to 25 seconds | Yes |
+| Text marks | `*bold*`, `_italic_`, `~strike~`, lists, a ``` block | Yes, in the scope rule |
+| Flows (forms) | 50 components a screen | No: WAC-11 |
+| Slider, rating, chart, poll | WhatsApp has none | A chart is an image. The rest has no native form |
+
+### 12.2 The profile
+
+`WHATSAPP_ASSISTANT_NATIVE_UI` (default OFF) switches the profile on. It adds
+to `WHATSAPP_ASSISTANT_ENABLED` and never replaces it. With the profile on,
+`bot_run` opens `acb_skills.whatsapp_ui.whatsapp_run` around the run, and the
+injection seam (`orchestrator._tool_injection._inject_agent_tools`) does three
+things for each agent of the run:
+
+1. **It strips the web DELIVERY tools, and only those.** The tools of
+   `whatsapp_ui.WITHHELD_TOOLS` leave the scope, the final list and each
+   agent's own tools. Each one is about HOW an answer reaches the web chat.
+   The list holds web cards, the todo panel, file cards, uploads and the web
+   design kits. The
+   web prompt blocks leave too: the generative UI directive and the output
+   discipline block.
+   ⚠️ **The rule (owner, 2026-10-10):** the channel changes delivery, never
+   function. A tool that does something (search, diagnose, build, configure,
+   delegate) stays on WhatsApp, because a member may need it there. The rule
+   covers each context block and each line of guidance too (owner,
+   2026-10-19, §17). `WHATSAPP_FORMS` gives each withheld tool its WhatsApp
+   form. The
+   fence asserts that `web_search`, `get_errors`, `app_builder` and
+   `spawn_copilot_agent` stay. The D85 shell block still applies on top.
+   We measured the real `orchestrator` on 2026-10-10. A web run sends 39
+   tools and 52,073 characters of prompt and tool schemas. A WhatsApp run
+   sends 31 tools (`whatsapp_ui` included) and 35,189 characters, which is
+   32% less on each model request. **Known gap:** a Copilot-shaped agent's
+   addendum keeps its fixed workspace section, which names `write_artifact`
+   and `emit_generative_ui` whatever the scope. Every in-tree agent is native
+   MAF, so no bot run carries that section today.
+2. **It adds one tool.** `whatsapp_ui(kind, data)` goes to the run's own agent
+   (`orchestrator`), and to no agent that it calls. A specialist answers in
+   text, and the main agent decides what the member sees.
+3. **It changes the scope rule.** `SCOPE_RULE_NATIVE` keeps the scope and the
+   "no change from WhatsApp" rule of §5.5 and §5.6. It adds how to write for a
+   phone, and when to call `whatsapp_ui`.
+
+### 12.3 The tool and the send
+
+- **The tool queues, and the run sends.** `whatsapp_ui` checks the element
+  against the limits of §12.1, draws an image if it needs one, and adds it to
+  the run's outbox. A broken element returns `{"ok": false, "error": ...}` and
+  queues nothing. A title over its limit is cut with "…". A reply holds 3
+  elements at most.
+- **A link opens the Metorite app only.** A `link` element must be `https`
+  with the host `app.metorite.com` exactly: no port, no user part, no
+  backslash, no `@` and no space. The URL that goes out is built again from
+  the checked parts. A phone browser and Python read a backslash or an `@`
+  differently. Without these checks, Python can read a link as Metorite
+  while the phone opens another site. *(WAC-10a review, 2026-10-10.)*
+- **An image never holds the gateway.** The tool draws in a worker thread
+  behind one lock, because `pymupdf` is not safe in two threads at once. Each
+  label and cell is cut to 160 characters before the layout measures it.
+- **The order.** The text reply goes first, then each element. All parts go
+  under the one send mark of §5.4, so the at-most-once rules hold for each.
+  An element that Meta refuses after the text went out closes the row as
+  `replied` with `send_partial`, and nothing is sent again.
+- **The thread** keeps the text, an invisible mark (U+2063), and a plain
+  rendition of each element, so the next turn knows which buttons it offered.
+  A resend of a stored reply cuts the record at the mark and sends the text
+  only. An answer of elements only has no text, so its resend sends the
+  renditions. The elements themselves are not stored.
+- **Images** are SVG, drawn in the light colours of `globals.css`, and turned
+  into a PNG by `pymupdf`, which the gateway already holds. No new dependency.
+- **The typing indicator** goes before the run, bounded to 5 seconds. A
+  failure never stops the run.
+
+### 12.4 A tap
+
+A tap on a reply button or a list row arrives as an `interactive` message.
+`inbound.tap_text` turns it into the member's text turn: the title, and for a
+row its description in brackets. It is untrusted input exactly like a typed
+text. No code reads the button or row id (§5.11).
+
+A tap never redeems a link code. A Flow reply (`nfm_reply`) still gets no
+action (WAC-11). With `WHATSAPP_ASSISTANT_NATIVE_UI` off, a tap gets no
+action, as in WAC-2.
+
+**Reads only, as in WAC-3.** A button or a row asks or narrows a question. It
+changes no data. WAC-4 brings the Confirm and Cancel buttons for writes.
+
+### 12.5 Acceptance (WAC-10a)
+
+| # | Done when |
+|---|---|
+| N1 | In a WhatsApp run, no agent holds a tool of `WITHHELD_TOOLS` and no web prompt block. A web run is unchanged |
+| N2 | `whatsapp_ui` reaches the run's own agent only |
+| N3 | An element over a limit, or a link that is not a page of `https://app.metorite.com`, is refused with a reason and queues nothing |
+| N4 | The text goes first and each element after it. The thread keeps each rendition. An answer of elements only is sent |
+| N5 | A chart or a table goes as an uploaded PNG with its caption |
+| N6 | A button tap runs as its title, and a row tap as its title and description. A Flow reply gets no action |
+| N7 | With the switch off, the run is the WAC-3 run: `SCOPE_RULE`, no profile, no typing indicator, and a tap gets no action |
+| N8 | The live check on Meta's test number: a question about tasks returns a list, and a tap on a row returns that task |
+
+Fence: `tests/unit/test_wac_native_ui.py`. N8 is the manual step of §8.
+
+---
+
+## 13. Amendment of 2026-10-10: WAC-10c, cards, views and quick commands
+
+**The owner's ask (2026-10-10).** "Consider all the aspects of Metorite, and
+the questions a user might ask about the different apps. Find the best way to
+display them, in ASCII, images or whatever." And: "use generated code, so we
+do not spend AI tokens on repetitive or general tasks."
+
+### 13.1 Three ways to answer, cheapest first
+
+| Tier | When | AI cost |
+|---|---|---|
+| **1. Quick command** | The whole message is a command ("today", "due today", "overdue", "calendar", "approvals", "menu", "hi"), or a tap on a row of the menu | **None.** Code reads the data and builds the answer (`whatsapp_channel/views.py`) |
+| **2. View by name** | A free question that a view answers ("what's on my plate?") | One short tool call: `whatsapp_ui(kind="view", data={"name"})`. The model writes no rows |
+| **3. Composed answer** | Everything else | The model reads with its tools and calls `whatsapp_ui` with the data |
+
+A view can fail: a read, a render, or a timeout of 15 seconds. Then the
+assistant gets the message, so a member always gets an answer.
+
+### 13.2 The views
+
+Each view reads the SAME data as the web page, through the route code
+in-process, as the member (`acb_auth.deps.member_context`). A route function
+called in-process skips its router's feature gate, so each view checks the
+feature itself.
+
+| View | Reads | Shows |
+|---|---|---|
+| `menu` | The member's permissions | A list: My day, Due today, Overdue, Calendar, and Approvals for an admin |
+| `my_day` | The My Day feed (`shell_needs`) | A summary line, then a list in sections: Overdue, Approvals, Due today, From your projects, Needs your reply. A link when more than 10 rows wait |
+| `due_today`, `overdue` | The member's due work (`my_due_tasks`), feature `projects` | A count by project, then a list of tasks with the due time or the days late |
+| `calendar` | The day summary (`day_summary`), feature `tasks` | The One Thing, the overdue and unplanned counts, then an agenda image in the member's zone and a Calendar link |
+| `approvals` | The My Day feed, admins only | A list of agent actions that wait |
+
+### 13.3 What each app's questions look like on WhatsApp
+
+| App | A typical question | Display |
+|---|---|---|
+| My Day | "What needs me?" | View `my_day` (a list in sections) |
+| My Tasks | "What's due today?" "What's overdue?" | Views `due_today`, `overdue` |
+| My Tasks | "Tell me about task X" | A text card (bold title, priority mark, status, due, project, owner), then a link to `/projects?task=<id>` |
+| My Tasks | "How is my inbox?" | `stats` tiles: inbox, next, waiting, stale |
+| Calendar | "What's my day?" | View `calendar` (an agenda image) |
+| Calendar | "When am I free?" | Text with the free slots, or an `agenda` with `free` blocks |
+| Projects | "How is project X doing?" | `stats` tiles (open, overdue, done, at risk), then buttons for the next question |
+| Projects | "Show the board" | `board` image, 4 columns at most |
+| Projects | "What's the plan or timeline?" | `gantt` image, or `timeline` for milestones |
+| Projects | "Tasks by status" | `chart` donut |
+| Projects | "Who is overloaded?" | `chart` progress (committed of capacity per person) |
+| Projects | "Throughput this month" | `chart` line |
+| Projects | Any list of tasks | `list` (10 rows), or a `table` image for 3 or more columns |
+| People | "Who knows X?" "Who is free?" | `list` of people (name, role, free hours), then a link to `/people/<id>` |
+| My Email | "What needs a reply?" | `list` of emails (sender, subject, age), then a link to the email |
+| My Email | "Read the email from X" | Text: sender, subject, a short summary, then a link |
+| My Email | "Inbox overview" | `stats` tiles: unread, needs reply, top sender |
+| My WhatsApp | "Who is waiting on me?" | `list` of chats (name, intent, snippet) |
+| Approvals | "What waits for me?" | View `approvals` |
+| Anything rich | A form, a live chart, a long report | A link button to the page in Metorite |
+
+**The text card for one item** is WhatsApp text, with no AI-built image:
+
+```
+*Fix the extruder nozzle*
+🔥 Critical · ⏳ In progress · 📅 Fri 11 Oct
+📁 Snowflake X1 · 👤 Vijay · ⏱ 3 h left
+```
+
+The priority marks are D78's: 🔥 Critical, 🚨 Urgent, 📈 High-Leverage, ❗
+Important, 📤 Quick win, 🧪 Speculative, and none for Low.
+
+### 13.4 The cards
+
+`acb_skills/whatsapp_cards.py` draws six more images, beside the charts and
+the table of §12. They are KPI tiles (`stats`), a board, a timeline, a
+calendar day (`agenda`), a project schedule (`gantt`), and a breakdown
+(`chart` type `donut`). A status takes the hue that
+`statusAccent.ts` gives it (`whatsapp_cards.hue`).
+
+**The table layout was fixed the same day.** The spare width went to the
+first column. So in the owner's "Due today" image, the task titles sat far
+to the right of a short id column. Now the spare width goes to the widest text
+column, and only the wide columns shrink (`whatsapp_render.column_widths`).
+
+### 13.5 Acceptance (WAC-10c)
+
+| # | Done when |
+|---|---|
+| C1 | A quick command runs no agent, and its answer comes from the reads of §13.2 |
+| C2 | A view that fails hands the message to the assistant |
+| C3 | Each view checks its feature. A non-admin gets no approvals |
+| C4 | `whatsapp_ui` kind `view` sends a view by name, and resolves the member once |
+| C5 | Each card draws from valid data, and refuses bad data with a reason |
+| C6 | A status takes the web hue. The table gives spare width to the widest text column |
+| C7 | With `WHATSAPP_ASSISTANT_NATIVE_UI` off, a command goes to the assistant |
+| C8 | The live check: "today", "calendar" and "menu" answer on the test number, and the log shows `whatsapp_channel.run.quick` |
+
+Fences: `tests/unit/test_wac_views.py`, `tests/unit/test_wac_cards.py`.
+
+### 13.6 The review round of 2026-10-10
+
+An adversarial review, a verifier and the owner's own screenshots found
+these. Each one is fixed, and each fix has a fence in
+`tests/unit/test_wac_views_review.py`, `test_wac_cards.py` or
+`test_wac_native_ui.py`.
+
+| Found | Fix |
+|---|---|
+| A tap on a menu row arrives as "Title (description)", so it never matched a command, and the AI ran | `views.match` reads the title of a list tap |
+| Two rows that cut to one title made the list refuse, and the whole view failed | `whatsapp_ui` adds " (2)" to a repeated row title |
+| A source that timed out still gave "Nothing needs you ✅" | A failed source says the view may not be all. A failed approvals source hands the message to the AI |
+| 50 overdue tasks hid every task due later today | The due read takes 200 rows. At the cap, "due today" hands over to the AI and "overdue" says "200+" |
+| A full source showed its cap as the count | A source that gave its 15 rows shows "15+", with a link to the rest |
+| `member_context` resolves the org from the email, not from the link row | `views.member_context` refuses a context whose org is not the link's (D-WAC-3) |
+| A tap on the AI's own "Today" button opened the canned view | The quick path skips when the last reply offered the AI's own buttons or list. A view's reply carries an invisible mark (U+2064), so a menu tap still runs |
+| The model typed "[Table: …]" and "[Chart …]" as text and sent no image (owner screenshots) | The model no longer reads element records in its history. The reply guard (`whatsapp_ui.polish`) draws a typed table or chart, or cuts it |
+| The model said "tap any of these" and sent nothing to tap (owner screenshot) | The guard turns the reply's bullets into a list, or cuts the sentence |
+| The table shrink could push a column off the image | `column_widths` caps the wide columns at one width, so the sum is the image width |
+| `hue` claimed an exact match with the web and did not give one | `hue` applies the web's rules first. Its own health and priority words apply only where the web gives no hue |
+| The menu showed rows that the member cannot open | The menu shows a row only when the member holds its feature |
+
+**Each link names its org** (owner, 2026-10-10). A link button carries
+`org=<the link row's org id>`, which the server sets and the model cannot
+choose. The web app's switch to that org's account is WAC-10d.
+
+### 13.7 WAC-10e: reply and react like a person (owner, 2026-10-11)
+
+The owner asked for two things. The bot reacts to the member's message with
+an emoji that fits. Each answer quotes the message that it answers, as a
+swipe reply on WhatsApp does.
+
+**The quote.** With the WhatsApp profile on, the first part of each answer
+carries `context.message_id`, the member's message id. The text, the
+element or the image that goes first shows the quote. The other parts do not
+quote. Meta drops a quote that it cannot resolve and still delivers the part.
+So a quote can never cost the member the answer.
+
+**The reaction.** `whatsapp_ui` takes the kind `react`, with data
+`{"emoji"}`. The tool accepts one emoji only, and refuses text. A reaction is
+not an element. It never counts toward the cap of 3, and a later reaction
+replaces the earlier one. `bot_run` sends it first, under the send mark, as a
+best-effort call: a refused reaction is logged and never retried, and the
+answer still goes. A reaction is never a part, so a resend of a stored reply
+never sends it. `resend_text` also cuts the reaction record.
+
+**A thanks costs no AI call.** A message that is only a thanks ("thanks",
+"thank you", "🙏" and the forms in `views.THANKS`) gets a 👍 from code, with no
+text. An "ok" or a 👍 is NOT a thanks, because it can answer a question that
+the AI asked. A thanks after the AI's own buttons goes to the AI.
+
+**The scope rule** tells the model which emoji fits which message, and to
+react in the same step as its first other tool call, so a reaction adds no
+model round.
+
+**A long job says so first** (owner, 2026-10-11). A member who asks for an
+image, a calculation, code or a page must know at once that it takes time.
+The AI calls `whatsapp_ui` kind `working` FIRST, with one line: what it does
+and about how long it takes. That line goes at once, quotes the member's
+message, and shows "typing..." again. The answer follows in full.
+
+If the AI sends no such line, code sends `REPLY_WORKING` after
+`WORKING_AFTER_S` (20 seconds), with no AI call. Meta hides "typing..." after
+25 seconds, so the member hears before the indicator goes. The member never
+gets both lines, and a quick answer gets neither. The line is no part of the
+answer and goes before the send mark. So a try that runs again can send it
+again: that costs one short line, never a second answer.
+
+**Acceptance (WAC-10e).**
+
+| # | Check | Fence |
+|---|---|---|
+| E1 | With the profile on, only the first part quotes the member's message. With it off, no part quotes | `test_the_first_part_quotes_the_members_message_and_only_the_first`, `test_with_the_profile_off_no_part_quotes` |
+| E2 | A reaction goes on the member's message and is not a part. A reaction-only answer sends no text and closes as `replied` | `test_a_reaction_goes_on_the_members_message_and_is_no_part`, `test_a_reaction_only_answer_sends_no_text_and_closes_replied` |
+| E3 | A refused reaction never costs the answer | `test_a_refused_reaction_never_costs_the_answer` |
+| E4 | The tool refuses text, takes one emoji (a skin tone, a family, a flag, a keycap), and the last one wins | `test_the_tool_takes_one_emoji_and_a_later_one_replaces_it` |
+| E5 | A resend never sends a reaction as text | `test_a_resend_never_sends_a_reaction_as_text` |
+| E6 | A plain thanks gets a 👍 with no AI call and no text. An "ok" goes to the AI | `test_a_thanks_gets_a_thumbs_up_with_no_ai_call_and_no_text`, `test_only_a_plain_thanks_is_a_thanks` |
+| E7 | A long job tells the member first: the AI's line, or code's line past 20 s. Never both, and never on a quick run | `test_the_ai_says_first_that_a_long_job_takes_a_while`, `test_a_long_run_with_no_early_message_gets_one_from_code`, `test_the_timer_stays_quiet_after_the_ais_own_early_message`, `test_a_quick_run_sends_no_early_message` |
+
+All seven fences are in `tests/unit/test_wac_react.py`.
+
+### 13.8 WAC-10f: one chart language (owner, 2026-10-11)
+
+The owner asked for charts with one design language, in the quality of the
+Instinct examples, made in a way that spends few AI tokens. The owner also
+asked for the same charts as live HTML and JavaScript in the web chat. The
+owner approved the sampler on 2026-10-11 ("good work on the charts. I like
+them.").
+
+**One engine, two surfaces.** `workbench/control_plane/src/lib/charts/` holds
+the chart language:
+
+| File | Job |
+|---|---|
+| `theme.mjs` | The colours and the type, from the tokens of `lib/theme/themes.ts` |
+| `kinds.mjs` | `chartOption`: each kind checks its data, then a short spec in, a full ECharts option out |
+| `render.mjs` | The server half: ECharts SVG, then resvg with Geist, to a PNG |
+
+The web chat imports `kinds.mjs` and draws the option live (WAC-10g). The
+WhatsApp bot runs `render.mjs` as a child process and sends the PNG. So the
+two surfaces show one chart, not two charts that look alike.
+
+**Why a short spec.** The AI writes only the data. Code adds the grid, the
+type, the colour and the labels. Measured on 2026-10-11, a 12-point line costs
+about 54 tokens as a spec, 362 as an ECharts option, and 1665 as an SVG.
+
+**Why a child process and not a route.** The gateway already runs on the box
+that holds the web app's packages. A child process reads JSON on stdin and
+writes JSON on stdout. It opens no port, so it adds no door to the box. Its
+environment is the BH-1 allowlist of `acb_common.child_env`, not the
+gateway's own, so a compromised chart package reads no secret. The files are plain JavaScript,
+because the box runs Node 20, which cannot strip TypeScript types.
+
+**The kinds.** bar, line, area, donut, progress, scatter, heatmap, radar,
+box, waterfall, funnel, calendar and gantt. A bar takes series and stacking,
+and turns sideways for long labels. A progress of 4 rows or fewer draws as
+rings. `whatsapp_engine.KINDS` and `kinds.mjs` hold one list.
+
+**It fails soft.** `WHATSAPP_CHART_ENGINE` turns the engine on (default off).
+The engine can be off, or Node, the file or the packages can be missing. A
+child can also time out, crash or answer in a wrong shape. In each case the
+old SVG renderer draws bar, line, progress and donut. A new kind is then
+refused, and the refusal names the four old kinds. A bad spec comes back with
+the engine's reason, so the model fixes the data. A fault inside the engine is never a
+spec error: it falls back like a missing engine. Each fallback logs
+`whatsapp_engine.unavailable` with its reason, and each drawing logs
+`whatsapp_engine.rendered`.
+
+**One status vocabulary.** The engine knows the six hue names only. The
+gateway turns each status word into a hue with `whatsapp_cards.hue`, the
+fenced mirror of `statusAccent.ts`, before the spec reaches the engine. So
+"On hold" is amber on a chart, as it is on a card.
+
+**Bounded.** At most 2 children run at once, for at most 20 seconds each. One
+call draws at most 6 charts, a drawing is at most 2400 pixels tall, and a
+calendar spans at most 400 days.
+
+**Acceptance (WAC-10f).**
+
+| # | Check | Fence |
+|---|---|---|
+| F1 | Each chart colour is a token of `themes.ts`, or a `--cat-n` hue | `charts.test.ts` `wac10f-one-palette` |
+| F2 | Each kind builds, and draws a PNG | `charts.test.ts` `wac10f-every-kind-draws`, `test_every_kind_draws_through_the_child_process` |
+| F3 | A bad spec is refused with what to fix, and the model gets that reason | `charts.test.ts` `wac10f-spec-refusals`, `test_a_bad_spec_reaches_the_model_as_a_fix` |
+| F4 | The tool offers exactly the kinds that the engine draws | `test_the_tool_offers_exactly_the_kinds_the_engine_draws` |
+| F5 | An engine that is off or broken never costs a chart of the four old kinds | `test_a_broken_engine_falls_back_to_the_old_renderer`, `test_with_the_engine_off_the_old_kinds_still_draw_and_a_new_one_is_refused` |
+
+The Python fences are in `tests/unit/test_wac_chart_engine.py`. The tests
+that need Node and the packages skip where the packages are not installed.
+
+**Next.** WAC-10g draws the same spec live in the web chat, as a `chart`
+template, with tooltips and a legend. WAC-10h draws the KPI tiles, the board,
+the timeline and the agenda in the same language.
+
+### 13.9 WAC-10g: the same charts, live in the web chat (owner, 2026-10-11)
+
+The owner asked for the charts as live HTML and JavaScript in Metorite's own
+chat, not as static images.
+
+**One template.** `emit_generative_ui` gets the template `chart`. Its data is
+the spec of §13.8, word for word, so the AI writes one shape for both
+surfaces. `LiveChart.tsx` builds the option with `kinds.mjs` and draws it in
+the page with ECharts. It adds a tooltip on hover and a legend that hides a
+series. The chart also follows the member's colour mode and the width of the
+chat column.
+
+**One bar chart.** The old `barChart` template now draws through the same
+engine. Its data maps onto a bar spec (`barChartSpec`), so the chat holds no
+second, hand-built bar chart.
+
+**Small bundle.** `lib/charts/echarts.ts` imports only the series and the
+components that the kinds use. `LiveChart` loads it on first use, so a chat
+with no chart never downloads it.
+
+**Text, never markup.** Each live tooltip uses ECharts' `richText` mode. A
+label is the model's text, and the default HTML tooltip would put it into the
+page as markup. Rich text draws it as text.
+
+**Acceptance (WAC-10g).**
+
+| # | Check | Fence |
+|---|---|---|
+| G1 | The chat offers `chart`, and `barChart` draws through the engine | `LiveChart.test.ts` `wac10g-one-chart` |
+| G2 | A live chart has a tooltip, no footer and the page's font. A bad spec shows its reason | `LiveChart.test.ts` `wac10g-live` |
+| G3 | The browser registry holds every series and component that a kind uses | `LiveChart.test.ts` `wac10g-every-kind-loads` |
+| G4 | Every live tooltip is rich text | `charts.test.ts` "a live tooltip draws text, never HTML" |
+| G5 | The template catalog, the registry, the shapes and the docstring name `chart` | `tests/unit/test_genui_catalog_lockstep.py` |
+
+### 13.10 WAC-10h: Indian numbering by default (owner, 2026-10-19)
+
+The owner wrote: "When I ask for graphs and numbers, you use the million
+convention, which is not standard in India. Use the user's preferences, and
+keep it in the organizational memory." The owner left the design to us. This
+section is that design, and it is built.
+
+**One preference, two values.** A number system is `indian` (thousand, lakh,
+crore) or `international` (thousand, million, billion). The org's value is the
+`org_settings` key `number_system`, and an admin sets it. A member's override
+is `user_settings.number_system` (migration 284), and NULL means "use the
+organization's setting". The default is `indian` for every org.
+`acb_common.number_system.resolve` is the one rule: the member's override
+wins, then the org's value, then the default.
+
+**Routes.** `routes/settings.py` adds three. `GET /settings/number-system`
+gives the org's value, the member's value and the resolved one, to any member.
+`PUT /settings/number-system` sets the org's value and needs
+`admin:settings:manage`. `PUT /settings/number-system/me` sets or clears the
+member's own override. The tenant and the member come from the session (R5).
+
+**Charts.** A chart spec takes an optional field `numbering`. The one
+formatter is `src/lib/numberFormat.mjs`, and `kinds.mjs` writes every axis,
+label, tooltip, caption and donut total through it. The Indian system writes
+85K below a lakh, then 12.5 L from 1e5 and 1.35 Cr from 1e7. A value that
+rounds up into the next band moves up to it, so 99,999 is 1 L and never 100K.
+The CRM's short money (`compactMoney`) uses the same formatter. Each CRM
+screen gets the member's system from `useCompactMoney`, which shares one read
+of the setting for the whole page. The old SVG renderer
+(`whatsapp_render.fmt`) is the fallback when the engine is off or fails. It
+uses `acb_common.number_system.compact_number`, the Python twin of the
+formatter, with the spec's stamped `numbering`. Both test suites read one
+table of cases, `tests/fixtures/number_format_cases.json`.
+
+**The server writes `numbering`.** `emit_generative_ui`, the WhatsApp chart
+(`whatsapp_ui._chart`) and `make_report` stamp each chart with the run's
+resolved system. The stamp replaces any value that the model wrote, so a
+model cannot get it wrong. `executor.run_number_system` is the one reader of
+the run's preference. A PNG draws with the spec's value. In the web chat
+`LiveChart` passes the viewer's own resolved system, and that value wins.
+
+**The chat's words.** The per-turn context of a run with an org ends with one
+line from the resolved system. For `indian` it reads "Write amounts in lakh
+and crore (₹45.3 lakh, ₹1.35 crore), never million or billion." The line
+reaches the web chat and WhatsApp alike. The org-facts seam loads with the CRM
+family only, so the preference is not an org fact.
+
+**Settings.** Settings, Organisation, Branding gets "Number format" with two
+choices. Appearance, Your appearance gets the same select and "Use the
+organization's setting". Both use `SelectButton`.
+
+**Acceptance (WAC-10h).**
+
+| # | Check | Fence |
+|---|---|---|
+| N1 | The member's override wins, then the org's value, then `indian` | `tests/unit/test_number_system.py` `number-system-member-wins` |
+| N2 | A chart that the server builds carries `numbering`, over the model's value | `tests/unit/test_number_system.py` `number-system-stamped-by-the-server` |
+| N3 | The chat's context holds the one line of the resolved system | `tests/unit/test_number_system.py` `number-system-prompt-line` |
+| N4 | The band edges at 1e5 and 1e7, negatives, decimals and the international path | `src/lib/numberFormat.test.ts` |
+| N5 | Each kind of chart writes every number in the system that `numbering` names | `src/lib/charts/charts.test.ts` "numbering" |
+| N6 | Migration 284, and the round trip: org default, org set, member override | `tests/unit/test_number_system_r8.py` |
+| N7 | The two selects, and their saves | `src/lib/numberSystem.test.ts` |
+
+## 14. Amendment of 2026-10-11: WAC-4, a confirmed write from WhatsApp
+
+The audit of 2026-10-11 found WAC-4 not ready to build. §5.6 and §5.11 gave a
+signed token in the button id. §12.4 then made the id unread. The spec also
+said nothing about how a confirm resumes the write. This section is the design
+of record for WAC-4. Where §5.6, §5.11 or §9 disagree with it, this section
+wins.
+
+### 14.1 What is true today (as built)
+
+The bot is read-only. `bot_run._answer` opens `acb_skills.ask_tools.refuse_cards`
+around every run, so a tool that asks for a card gets a deny and writes
+nothing. The scope rules (`SCOPE_RULE`, `SCOPE_RULE_NATIVE`) tell the model to
+send the member to the web app for a change. A tap arrives as its title only
+(`inbound.tap_text`). Every button id is `b1`, `b2` or `b3`
+(`whatsapp_ui._buttons`), and no code reads it.
+
+### 14.2 Why the web card cannot be reused
+
+The web card blocks the run on a future until the member answers
+(`request_confirmation`, `wait_user_future`). A WhatsApp run sends its reply
+only after the run ends, and it holds its thread's lock while it runs. So the
+buttons would never go out, and the tap would wait behind the lock. WAC-4
+therefore parks the act and ends the run. It does not wait.
+
+### 14.3 The design: park, then run the stored act
+
+1. **Ask.** With writes on (§14.6), an allowed Projects tool (§14.4) calls
+   `_confirm`, as on the web. The WhatsApp profile
+   answers that call. It does not wait. It stores a pending act and returns
+   "not yet", so the tool writes nothing and says so to the model. The run
+   ends. Its reply carries the act's summary and two buttons from code:
+   "Confirm" and "Cancel".
+2. **The record.** One row in `whatsapp_pending_acts`, tenant-scoped (R5). It
+   holds the org, the member, the `wa_id` that got the buttons and the
+   thread. It also holds the tool name, the exact arguments, the card's text,
+   the state and the expiry. The migration number is taken at build
+   time (R1). The table is expand-only (R6), and an R8 suite fences it.
+3. **Confirm.** The next message from that `wa_id` in that thread is checked
+   BEFORE any run. If its text is exactly "Confirm" (any case, trimmed), and an
+   act is live, code runs the stored call once. No model runs.
+   It runs the same tool with the same arguments, in a context that answers
+   `_confirm` "yes" for that one act. So the write path stays the web's own
+   path. The run's `_confirm` answers "yes" only when the card it builds
+   (title, detail, context) equals the stored card text. A rename, a status
+   edit or a "tomorrow" that crossed midnight gives another card. Then nothing
+   is written, the act closes as `void`, and the reply asks the member to ask
+   again. So the member confirms exactly what the card showed. The row moves
+   from `pending` to `done` under a row lock. A second Confirm, or a
+   redelivered message, then writes nothing.
+4. **Cancel, or anything else.** "Cancel" closes the act as `cancelled`. Any
+   other message closes it as `void` and then runs as a normal message. A
+   tap on the AI's own buttons is any other message.
+5. **The reply.** Code sends the tool's own result text, which quotes the
+   member's message (§13.7). A failed write sends the tool's error text, and
+   the act closes as `failed`.
+6. **An act counts only once it is offered** (review, 2026-10-11). `_send`
+   marks the act offered after Meta took the part that carries the Confirm
+   and Cancel buttons. The mark is `offered_at`, and `offered_wamid` is the
+   message id that Meta gave that part. The 10 minutes start then. Some sends leave the act unoffered. These are a part that Meta surely refused,
+a send that stopped before the buttons, and an unclear send. A resend of a stored reply
+   never offers it. The member's next message voids an unoffered act, and
+   that message then runs as a normal message.
+7. **A Confirm answers one card** (review, 2026-10-11). A tap carries the
+   message that it answers (Meta's `context.id`), and the inbound row keeps
+   it as `whatsapp_bot_messages.context_wamid`. A tapped Confirm or Cancel
+   counts only when that id is the act's `offered_wamid`. A typed one counts
+   only when its row arrived after `offered_at`. Any other Confirm or Cancel writes nothing and leaves the act as it is. Its
+reply says that it does not match the latest request. So a tap on an older card never
+   confirms a newer card.
+8. **The card binds what it does not show.** Before its card, `create_task`
+   binds the project that it resolved and the people that it assigns
+   (`whatsapp_acts.card_facts`). The stored card text holds them. A card that
+   names the project by name then fails at Confirm when another project took
+   that name. The member's summary does not change.
+
+**The id stays unread.** The binding is server-side. It holds the org, the
+member, the `wa_id`, the thread and the expiry. It also holds the exact title
+and the button message that a tap answers. The button id is never read.
+
+A typed "Confirm" from the same phone counts when it arrives after the
+buttons, as on any chat. `whatsapp_ui` refuses the titles "Confirm" and
+"Cancel" on the model's own buttons, so only code can offer them. §5.11's
+"checks it against pending acts" means this server-side check.
+
+### 14.4 Which acts may go by button
+
+- **Allowed:** the Projects tools `create_task`, `create_personal_task` and
+  `set_my_overlay`. Each is class B, with one card and no rows. WAC-4b added
+  the last two (§14.9). A later slice can add another class B tool that asks
+  one card with no rows, by name (`update_task`, `edit_task`).
+- **A web link, never a button:** every class C act (for example
+  `archive_task`, `move_project`) and every class X act. A class X act has no
+  chat tool at all (D-PM-35). The reply gives a deep link to the item.
+- **Still refused:** a card with rows, a form, `ask_questions`,
+  `move_task`, and every card tool outside Projects (email, CRM and any other
+  caller of `request_confirmation`). Each one stays under `refuse_cards`,
+  until a later slice names it. §18 names six email tools (H-391, 2026-10-24).
+
+This is D-WAC-4 as a rule of this spec: no class C or class X act runs from
+WhatsApp. A stolen phone can create or edit a task, which the web app can
+undo. It cannot destroy data.
+
+### 14.5 Expiry, phones and orgs
+
+- **Expiry: 10 minutes** after the buttons go out. A later Confirm writes
+  nothing, and the reply says the request expired. The act also dies with the
+  24-hour reply window, which is longer.
+- **Only the phone that got the buttons can confirm.** The member's second
+  phone, linked to the same org, cannot confirm: it is a different `wa_id`.
+- **An org switch, or a lost link, voids the act** (D-WAC-2 amended,
+  D-WAC-3). At Confirm, the run checks the link again, as every run does. It
+  also calls `resolve_identity` again for the act's org.
+
+### 14.6 The switch
+
+`WHATSAPP_ASSISTANT_WRITES` turns WAC-4 on, for the orgs of
+`WHATSAPP_ASSISTANT_WRITES_ORGS` only. The switch is default OFF, and an empty
+list allows no org. With either one off, every card stays refused, as today. **Turning it on for an org is the owner's
+act** (WAC-9, OWNER-GATE). It writes a live org's data from a new surface. The
+`enforcement-flip` grant does not cover it.
+
+### 14.7 Acceptance (WAC-4)
+
+| # | Check | Fence |
+|---|---|---|
+| W1 | "Add a task: call the vendor tomorrow" gets a summary and Confirm and Cancel buttons. It writes nothing until Confirm | A run test with the writes switch on |
+| W2 | One Confirm makes exactly one create call. A second Confirm, or a redelivered message, writes nothing | A run test that counts the calls |
+| W3 | A Confirm after 10 minutes, from another `wa_id`, or after an org switch writes nothing | Three run tests |
+| W4 | Cancel, or any other message, voids the act, and the other message runs as normal | A run test |
+| W5 | Every class C and class X tool, every rows card and every form stays refused in a WhatsApp run | A structural test over `manifest.tools_by_class("C")`, with the writes switch on |
+| W6 | The model cannot offer "Confirm" or "Cancel" itself | A `whatsapp_ui` test |
+| W7 | With the switch off, the run is today's read-only run | A run test |
+| W8 | The pending-act table holds its tenancy under FORCE RLS | An R8 suite, and `test_tenant_coverage` |
+| W9 | A Confirm whose rebuilt card differs from the stored card writes nothing, and asks again | A run test that renames the project between the ask and the Confirm |
+
+### 14.8 WAC-4 as built (2026-10-11)
+
+WAC-4 is built and dark. `WHATSAPP_ASSISTANT_WRITES` is OFF by default. It
+works only for an org of `WHATSAPP_ASSISTANT_WRITES_ORGS`, and only with
+`WHATSAPP_ASSISTANT_NATIVE_UI` on (`flags.writes_enabled(org)`).
+
+| Part | Where |
+|---|---|
+| The table | Migration `242_whatsapp_pending_acts.sql`. It is tenant-scoped, with FORCE RLS, and expand-only. The generated phase files carry it too. The same file adds the nullable `whatsapp_bot_messages.context_wamid` |
+| The offer | `bot_run._send` calls `acts.offered` after Meta took the buttons part |
+| The name of the call | The injection seam wrapper (`_tool_injection._gate_injected_tool`) opens `whatsapp_acts.tool_call` around each tool call |
+| The park and the "yes" | `acb_skills/whatsapp_acts.py`. `ask_tools.request_confirmation` asks `answer_card` first |
+| The store and the Confirm | `gateway/routes/whatsapp_channel/acts.py`. `bot_run._answer` calls `acts.settle` before the quick path and the model |
+| The scope rule | `bot_run.SCOPE_RULE_WRITES` allows the one act and sends every other change to the web app |
+
+**Where the build differs from §14.3, and why.**
+
+1. The profile answers in `ask_tools.request_confirmation`, which `_confirm`
+   calls. `_confirm` itself is unchanged. Only the card gate sees the clipped
+   title, detail and context. So one code path builds the stored card text
+   and the rebuilt card text. The card text is the JSON of those values.
+2. `create_task` tells the model that the act waits for Confirm. Before this
+   change, it said "Cancelled". The model then told the member so.
+3. The act stores the link row that was current. At Confirm, that row must
+   still be the phone's current link. A revoked row never becomes current
+   again, and a new link is a new row. So a lost link, a relink and an org
+   switch each void the act. Known gap: WAC-10b may move `is_current` back
+   to an old row. That switch must void the live acts of the org it leaves.
+4. The state `running` is the claim. The UPDATE from `pending` to `running`
+   takes the row lock, so the stored call runs once. A crash during the call
+   leaves the row `running`, and nothing runs it again (at most once).
+5. With `AGENT_PERMISSION_MODE=approve_all`, the seam wrapper is not applied.
+   Then no call has a name, and every card stays refused. It fails closed.
+6. A retry that sends a stored reply sends its text only (§12.3). The member then
+gets no summary and no buttons. That act was never offered (§14.3
+   item 6), so no Confirm can run it. The next message voids it.
+7. At Confirm no agent runs. The tool's own name match can still ask the
+   `decide` engine (`choices.resolve_name`), as it does on the web.
+
+**Fences.** W1 to W7 and W9: `tests/unit/test_wac_writes.py`. W8:
+`tests/unit/test_wac_writes_r8.py`, which also runs an ask, a stale tap, a
+Confirm and a second Confirm end to end on the real tables. The review round
+of 2026-10-11 added these fences:
+
+| Found | Fence |
+|---|---|
+| A tap on an older card confirmed a newer card | `test_a_confirm_sent_before_the_new_card_was_shown_never_confirms_it`, `test_a_tap_on_another_message_leaves_the_act_and_writes_nothing` |
+| A card that never reached the phone could be confirmed | `test_a_card_whose_first_send_failed_is_never_confirmed_after_the_resend`, `test_buttons_that_did_not_surely_reach_the_phone_offer_nothing` |
+| The switch was not per org | `test_writes_are_switched_on_per_org` |
+| A card by name did not bind the project | `test_a_confirm_after_another_project_took_the_name_writes_nothing` |
+
+### 14.9 WAC-4b: a time block on the calendar, and one reply text (2026-10-15)
+
+**The owner's report.** The owner asked the bot for two time blocks. The bot
+said "I can't write calendar events", and its reply came twice, glued with no
+space ("Sahakar NagarTwo blocks…"). This section records the two causes and
+the fix. It amends §14.4.
+
+**Cause 1: the gate and the rule allowed `create_task` only.** The channel did
+not strip a tool. `set_my_overlay` was in the WhatsApp run. But
+`whatsapp_acts.ALLOWED_ACTS` held `create_task` alone, so its card got a deny.
+`SCOPE_RULE_WRITES` also said "add a task, and make no other change". So the
+model said no, and it was correct by its rule.
+
+**The web chat was never blocked.** The card gate of the web chat approves
+`set_my_overlay`, and its `block_start` and `block_end` put a task on the
+member's calendar. So the gap was WhatsApp only. The owner rule of 2026-10-10
+says that a channel changes delivery, never function. A block is the scheduled
+time of a task (D52 to D54), so the Calendar's write is a Projects write.
+
+**The fix.**
+
+1. `ALLOWED_ACTS` adds two class B tools that ask one card with no rows:
+   `create_personal_task` and `set_my_overlay`. §14.4 allowed this kind of
+   later slice by name.
+2. `create_personal_task` takes `block_start` and `block_end`. "Block 8:30 to
+   10:30 for Sharath" is then ONE card and ONE Confirm. It sends
+   `POST /projects/my/tasks`, which now takes `scheduled_start` and
+   `scheduled_end` and writes them to the member's overlay in the same
+   transaction. A task with a block lands as NEXT and clarified, not in the
+   inbox. A block that ends before it starts is a 422 before any row.
+3. `set_my_overlay` binds the task id to its card (`card_facts`). Its card
+   shows "now" for a since-when that the tool stamps, on the web card too. Before, the card held
+   the stamped instant, so the card that Confirm builds again never matched.
+4. `SCOPE_RULE_WRITES` allows two changes: add a task, and block time. It
+   names the two tools, and it says that one change waits at a time.
+
+**Cause 2: the framework joined the model's steps.** MAF's
+`AgentResponse.text` joins the text of every response message with no
+separator. The model wrote a line, called `whatsapp_ui` for a link button,
+then wrote its answer. The box log shows `parts=2`, which is one text and one
+button. So `split_reply`, the "still working" line and a resend did not join
+the texts. The web chat streams each step as its own part, so it did not show
+the defect.
+
+**The fix.** `executor._run_with_maf_agent` adds `steps`, the text of each
+assistant message that has any. `bot_run.final_text` sends every step, a
+blank line apart, but it removes a copy:
+
+- A step goes out when another step holds 60% or more of its words. That
+  other step must have at least as many words, so the fuller copy stays. A
+  step of fewer than 6 words is never a copy.
+- In the owner's incident, the first step holds 83% of the words of the last
+  step. So the first step goes alone.
+- Take a text card, then a link button, then "Open it with the button
+  below." Both steps go, because the line is too short to be a copy.
+
+A result with no `steps` falls back to the joined text. Every other caller
+keeps `result`, unchanged. `SCOPE_RULE_NATIVE` also tells the model to say
+each thing once.
+
+**Review round 1 (2026-10-15).**
+
+1. The first fix sent the last step only. Then a text card, a link button
+   and "Open it with the button below." lost the card. A second rule
+   compared the last step with all earlier steps joined. Then a middle step
+   with a new fact was lost (verifier round 1). The rule above replaced
+   both, and a fence holds each case.
+2. The tool refuses a block with an end and no start, because the
+   Calendar reads a block by its start.
+3. `set_my_overlay` is not only the member's own overlay. INBOX, NEXT or
+   WAITING on a finished task reopens it for the board (D77), and its card
+   says so. The web app undoes it, so it stays inside §14.4.
+4. Known gap, from WAC-4: at Confirm no run is bound, so the `decide` engine
+   does not run. The tool then refuses a name that `decide` resolved at the
+   ask (an assignee of `create_task`, a `waiting_on` of `set_my_overlay`).
+   The act closes `failed`, and the tool writes nothing. HANDOFF holds it.
+
+**Known limit.** One act waits at a time (§14.3). For two blocks, the bot
+prepares the first. The member asks for the next one after the Confirm.
+
+**The switch.** No new flag. The two acts ride `WHATSAPP_ASSISTANT_WRITES` and
+`WHATSAPP_ASSISTANT_WRITES_ORGS`, which are on for the beta orgs.
+
+**Fences.**
+
+| Check | Fence |
+|---|---|
+| A new block parks, one Confirm writes it once, a second Confirm writes nothing | `test_a_new_time_block_parks_then_one_confirm_writes_it_once` |
+| A block on a task that exists parks and confirms, and the card binds the task id | `test_a_block_on_a_task_that_exists_parks_then_confirms` |
+| A chase with no since-when confirms | `test_a_chase_with_no_since_when_still_confirms` |
+| A backwards block gets no card | `test_a_block_that_ends_before_it_starts_is_refused_before_any_card` |
+| The member gets the answer once, never two texts glued | `test_the_member_gets_the_answer_once_and_never_two_texts_glued`, `test_the_executor_carries_each_step_beside_the_joined_text` |
+| An answer written before the tool call is never dropped | `test_an_answer_written_before_the_tool_call_is_never_dropped` |
+| A step that adds something is never lost: a new fact between two copies, a detail and its summary in each order | `test_a_step_that_adds_something_is_never_lost` |
+| A block with an end and no start gets no card | `test_a_block_with_an_end_and_no_start_is_refused_before_any_card` |
+| The capture writes the block on a real Postgres under FORCE RLS, and the Calendar read answers it (R8) | `tests/unit/test_wac_calendar_block_r8.py` |
+
+The events, meetings and reminders that are not task blocks are a separate
+proposal: `specs/calendar_events_reminders.md`.
+
+## 15. Amendment of 2026-10-15: WAC-12, a PDF document from WhatsApp
+
+**Owner directive, 2026-10-15.** The bot makes a sales deck, a pitch deck, a
+report or an analysis from the org's own data (CRM, email, projects). It sends
+the result as a PDF file on WhatsApp, and the member can forward the file to
+other people. A deck is a presentation, not a Markdown document.
+
+§5.11 planned "a report as a PDF" for WhatsApp. This section is the design of
+record for it.
+
+### 15.1 What exists (measured 2026-10-15)
+
+| Part | State |
+|---|---|
+| The PDF seam | `gateway/pdf_render.py`, the ONE document-to-PDF seam. It lays out Markdown or HTML on A4 in a child process, with a 13 s limit and a slot for each member and each org. Its sanitizer drops every image and every colour |
+| The visuals | `whatsapp_cards` (tiles, board, timeline, agenda, gantt, donut) and `whatsapp_render` (charts, table) draw SVG in the product's light look. The chart engine (WAC-10f) draws 13 chart kinds with ECharts |
+| The transport | `upload_media` takes any file type. There is no `send_document`, and `OutMessage` has no document kind |
+| The data | The orchestrator holds the CRM reads. It reaches email and projects through `call_agent` |
+| Decks | No deck kind, no slide layout, and no browser on the box |
+
+### 15.2 The design
+
+1. **One tool kind.** `whatsapp_ui` gets the kind `document`. The model
+   collects the facts first. Then it sends ONE spec: the format (`deck` or
+   `report`), a title, and the slides or the sections. Each slide or section
+   holds text, bullets and at most one visual. A visual uses the data of a
+   `whatsapp_ui` image kind: chart, stats, table, board, timeline, gantt or
+   agenda.
+2. **The visuals come from the existing renderers.** `acb_skills/documents.py`
+   checks the spec and draws each visual. A card or a table becomes SVG. A
+   chart goes through the chart engine in its light mode, or the old
+   renderer. So a deck has the look of a chart on WhatsApp and on the web.
+3. **The layout goes through the one PDF seam.** `pdf_render` gets the source
+   kind `document`: a JSON layout of text and drawn visuals. It lays out in
+   the same child process, with the same limits. A deck is 16:9 slides. A
+   report is A4 pages. The text is vector, in Geist, and a reader can select
+   and search it.
+4. **The send.** `bot_run` uploads the PDF to Meta's media store. Then it
+   sends the PDF as a document, with its file name and a caption. The member can forward it
+   like any file.
+
+### 15.3 Security
+
+- **The model gives text and numbers, never markup or bytes.** `documents.py`
+  escapes every text value before it builds HTML. A spec key that holds an
+  image, an SVG or a URL is refused.
+- **Only code draws a visual.** The layout that reaches the child holds SVG
+  from our own renderers and PNG from our own engine. A model value never
+  reaches it as markup.
+- **The renderer loads nothing.** The child gets an archive of the Geist font
+  folder only. The HTML has no `img`, no `style` attribute and no link to a
+  resource.
+- **The bounds.** At most 20 slides or 30 sections, and 12 visuals. Each text
+  value has a length limit. The source limit is `MAX_DOCUMENT_BYTES`, and a
+  PDF over 10 MB is refused.
+- **Tenancy.** The PDF holds only what the run read as the link's member, in
+  the link's org (D-WAC-3). The render waits in the member's and the org's
+  queue of `render_pdf`.
+
+### 15.4 The channel rule
+
+The channel changes delivery, never function (owner, 2026-10-10). On
+WhatsApp a document goes as a file. In the web chat the same spec goes to the
+tool `make_document` (`acb_skills.documents`, family `documents`). It lays out
+the PDF through the same `render_pdf` kind `document`, and `write_artifact`
+saves it, so the chat shows a PDF card with a download.
+
+The main assistant
+and the Projects assistant hold it by scope. WhatsApp withholds it, because
+`whatsapp_ui` kind `document` sends the same PDF as a file. Fence:
+`tests/unit/test_chat_documents.py` (owner, 2026-10-15: "live in the AI chat
+too").
+
+### 15.5 The switch
+
+`WHATSAPP_DOCUMENTS` turns WAC-12 on. It is default OFF, and it works only with
+`WHATSAPP_ASSISTANT_NATIVE_UI` on. With it off, the kind `document` answers
+that documents are off, and the scope rule does not offer documents.
+
+### 15.6 Acceptance (WAC-12)
+
+| # | Check | Fence |
+|---|---|---|
+| D1 | A deck spec of a cover, three content slides with a chart, tiles and a table, and a closing slide gives one PDF with five 16:9 pages. The text is selectable | `test_wac_documents.py` |
+| D2 | A report spec gives A4 pages, and a long report flows onto a second page | `test_wac_documents.py` |
+| D3 | The member gets one WhatsApp document part with a `.pdf` file name and the caption. The thread keeps a rendition that names the file and each slide title | `test_wac_documents.py`, a run test |
+| D4 | A model value with HTML or a script reaches the PDF as plain text, and a spec key that holds an image, an SVG or a URL is refused | `test_wac_documents.py` |
+| D5 | Too many slides, too many visuals or a text past its limit is refused with what to fix, before any render | `test_wac_documents.py` |
+| D6 | The layout runs in the `render_pdf` child, and a second render for the same member waits or is refused as before | `test_wac_documents.py` |
+| D7 | With the switch off, the kind refuses, and the scope rule does not offer documents | `test_wac_documents.py` |
+| D8 | An upload or a send that surely failed is a failed part. An unclear one is never sent again | `test_wac_documents.py` |
+
+## 16. Amendment of 2026-10-15: WAC-13, "Metorite is updating"
+
+**Owner directive, 2026-10-15, in two parts.** While Metorite updates, a
+member's message can fail, and the member then reads a general error. The bot
+must say that Metorite is updating. Then, better than asking the member to
+send it again: keep the message, and answer it with its chat context when
+Metorite is back.
+
+### 16.1 What happens today (measured on the box, 2026-10-15)
+
+| Event | What the member got |
+|---|---|
+| A gateway restart (about 40 a day, one for each merge) | `gateway-drain.sh` holds the stop for up to 60 s while runs end. A run that is still going is cancelled. The sweep runs its message again about 5 minutes later. The member gets the answer late, and no word in between |
+| The AI Router was slow, then unavailable (05:36 to 06:04) | Some model calls took 37 s to 89 s, and three reached the 120 s limit (`v1.router_unavailable` at 05:58, 06:02 and 06:04). Three runs from one phone hit their 4-minute limit (`code=timeout`). Each time the member got `REPLY_FAILED`: "Metorite could not answer just now. Try again in a few minutes." |
+
+The second row is the error that the owner saw. The Router was not
+restarted: the customer console's LiteLLM logging worker backed up. To the
+member, a restart and an outage look the same.
+
+### 16.2 The design: hold, then answer
+
+1. **Which failures.** Some codes mean that Metorite's AI path did not
+   answer. One is `connection`: a 502 or 503 from the Router, or a refused
+   connection. The other is `timeout` from a call: a 504, or a read timeout. The run's
+   OWN 4-minute limit counts too, but only when the Router failed during that
+   run: `v1_compat` stamps each `ConsoleRouterUnavailable`. A long job that
+   meets the limit with the Router up keeps the general text.
+2. **Hold.** The message goes back to wait (`received`), with the code
+   `updating`. Its first hold gives back its try, so one outage never uses up
+   a message. A later hold keeps the try. So a message that fails each time
+   ends after 3 tries with the general text, once. The member hears
+   `REPLY_UPDATING` once, on the first hold of that message.
+3. **Back.** The sweep runs a held message again only when the AI path is
+   back. Both of these must be true:
+   - The Router's `/health` answers. The sweep reads it once.
+   - Either a model run succeeded after the last failure, or 5 minutes passed
+     with no new failure on any phone.
+   A `/health` answer alone is not enough. On 2026-10-15 the Router answered
+   its health check while its model calls were slow or failed.
+4. **Answer.** The held message runs as any waiting message runs. It has the
+   thread's history, and it runs oldest first. It runs as the link's member,
+   after the run's own checks (§5.5). The first part quotes the member's
+   message (§13.7), so a late answer shows which message it answers. A thread's newer message
+   runs at once, as before. Only the sweep runs a held message again, and
+   the sweep reads the Router's health first. No drain runs one.
+5. **Every held message gets its answer.** A later answer never closes a held
+   message. A code-only answer (a 👍 for "thanks", a view, a Confirm) did not
+   read it. And the bot promised to answer it. A member who asked again can
+   get two answers. Each one quotes its own message.
+6. **A restart in the middle of a run.** At shutdown, each run that still
+   waits on the model sends `REPLY_UPDATING_HOLD` first, best effort, bounded,
+   with its org bound. The sweep then runs that message again, as before.
+
+### 16.3 Limits
+
+- **The reply window.** WhatsApp takes free text only for 24 hours after the
+  member's message. A held message that is older expires, with no send
+  (`_EXPIRE_SQL`, as for every waiting message).
+- **An org that the sweep does not visit.** The sweep visits the orgs that
+  `WHATSAPP_ASSISTANT_ORGS` names. It skips `*`. So an org that only `*`
+  admits holds nothing: the row closes `failed` with the code
+  `updating_plain`, and the member reads `REPLY_UPDATING_PLAIN`, which
+  promises nothing.
+- **No probe.** The bot does not test the model with a call. A probe would
+  spend an org's AI credits that no member asked to spend.
+- **One process.** The proof of "back" is this process's own record. After a
+  restart it starts empty, and then 5 minutes with no failure count as back.
+
+### 16.4 Words
+
+- `REPLY_UPDATING`: "Metorite is updating right now. I have your message, and
+  I will answer it here when Metorite is back online."
+- `REPLY_UPDATING_PLAIN`: "Metorite is updating right now, so it could not
+  answer. Send your message again in a few minutes."
+- `REPLY_UPDATING_HOLD`: "Metorite is updating right now. Your answer comes
+  here in a few minutes."
+
+The web chat uses the same idea and the same words ("Metorite is updating",
+the run error code `updating`).
+
+### 16.5 Review round 1 (2026-10-15)
+
+The first build sent "back online, send your message again" instead of an
+answer. The reviewer and the verifier found these, and the build above fixes
+each one:
+
+| Found | Fix |
+|---|---|
+| The quiet time was each row's own age, so a member heard "back" during the outage | A new failure on any phone holds every message |
+| An org that only `*` admits got a promise that no sweep kept | The plain text, and no hold |
+| The run's own limit on a long job said "updating" | Only with a Router failure during the run |
+| A shutdown note had no org bound, so its record failed | `_send_bound` |
+| No test held the 24-hour window | An R8 test |
+
+**Review round 2 (the hold design).**
+
+| Found | Fix |
+|---|---|
+| A later code-only answer (a 👍 for "thanks") closed a held message unanswered | No later answer closes a held message |
+| Each hold gave back the try, so a message that failed each time ran for 24 hours | Only the first hold gives back the try |
+| A drain ran a held message with no health read | Only the sweep runs a held message |
+| A shutdown just after a hold sent both notes | The run leaves the shutdown list before the hold |
+
+### 16.6 Acceptance (WAC-13)
+
+| # | Check | Fence |
+|---|---|---|
+| U1 | A run that fails with `connection`, or `timeout` from a call, holds the message and sends `REPLY_UPDATING` once. A second hold sends nothing | `test_wac_updating.py`, R8 |
+| U2 | A run that fails with any other code keeps its text. The run's own limit with the Router up keeps the general text | `test_wac_updating.py`, `test_wac_bot_run.py` |
+| U3 | No drain runs a held message. Once the AI path is back, the sweep runs each held message, oldest first, and each gets its answer | `test_wac_updating.py`, R8 |
+| U4 | "Back" needs the Router's health AND a success or 5 quiet minutes | `test_wac_updating.py` |
+| U5 | A later answer never closes a held message. Only the first hold gives back the try, so a message that fails each time ends after 3 tries with the general text once | `test_wac_updating.py`, R8 |
+| U6 | A held message past 24 hours expires with no send. An org that the sweep skips gets the plain text and no hold | R8, `test_wac_updating.py` |
+| U7 | At shutdown, a run that waits on the model sends `REPLY_UPDATING_HOLD` with its org bound, and the shutdown stays bounded | `test_wac_updating.py` |
+
+---
+
+## 17. Amendment of 2026-10-19: channel parity (WAC-P1)
+
+**The owner's ask (2026-10-19).** Make the WhatsApp chat and the web chat
+of Metorite the same in function. Respect what each one can show (AG-UI).
+
+**The rule, restated.** A channel changes delivery, never function (owner,
+2026-10-10). A WhatsApp run loses only the web DELIVERY tools and the web
+prompt blocks that go with them. Each delivery tool has a WhatsApp form, or
+"none" with a reason, in `whatsapp_ui.WHATSAPP_FORMS`. Everything else that
+reaches a web run reaches a WhatsApp run: each tool, each context block and
+each line of routing guidance.
+
+### 17.1 The defect (production, 2026-10-18)
+
+A DEWiN member asked on WhatsApp for the IP billing of the Mumbai circle for
+September. Run `9a78eeab` held `crm_aggregate` (48 tools) and the CRM facts
+block (26 facts). It called `search_company` twice and answered "the company
+records hold nothing". The answer was a `crm_aggregate` on the Invoices
+module.
+
+Look at 4 days of logs for the orchestrator of this org. On the web
+it made about 250 CRM calls and 8 `search_company` calls. On WhatsApp it made
+6 CRM calls and 51 `search_company` calls.
+
+**The CRM reads were in both tool sets.** The WhatsApp run logged the CRM
+facts block, and only a run that holds a CRM tool gets it. A web run holds 58
+tools and a WhatsApp run 48. The 10 withheld delivery tools are 10 of the 11
+web-only tools, and `whatsapp_ui` is the one WhatsApp-only tool. The 11th is
+most likely `crm_answer_question` (§17.2). The causes were in the prompt:
+
+1. **The batch path dropped four context blocks.** `bot_run` runs the batch
+   executor. Its `_run_with_maf_agent` built the system message from the
+   scope rule and the integrations only. The web run got four more:
+   the org name, the Knowledge index, the memory and the number-system line
+   of §13.10. A WhatsApp run got none of them. The fix calls the one builder
+   of the web path, `_context_preamble_parts`.
+2. **No line sent business figures to the CRM.** The persona's rule 1 sends
+   a company question to `search_company` first. That search finds
+   documents. The WhatsApp scope rule named tasks, projects and the calendar
+   only. The fix adds `CRM_ROUTING_LINE` as the second line of the CRM facts
+   block. The scope rule now names email and the CRM too. Only an org whose
+   CRM holds answered facts gets the block. So the line never sends an org
+   with no CRM to the CRM.
+
+### 17.2 The parity table
+
+| Element | Web chat | WhatsApp | Status |
+|---|---|---|---|
+| CRM reads and `org_facts` | Held | Held | Parity. Fenced |
+| `crm_answer_question`, the reply to a CRM question | Held, for the card | Held on `CRM_ANSWER_FIRST_ORGS` only, for the text follow-up | Delivery. The form ships dark with CRM-Q33 |
+| Core tools, specialists, `search_company`, memory tools | Held | Held | Parity. Fenced |
+| CRM facts block and its routing line | In the prompt | In the prompt | Parity. The routing line is new |
+| Org name, Knowledge index, number-system line | Per-turn context | Per-turn context | Fixed 2026-10-19. Fenced |
+| House voice | Yes | Yes | Parity |
+| Answer check (CRM-Q29) | Yes | Yes | Parity. The mode reads the held tools, never the channel |
+| Model tier (`ai_route`) | Yes | Yes | Parity |
+| Business rules and member preferences (CRM-Q33) | Through the CRM tools and the facts | The same | Parity |
+| CRM-Q33 note "How I got this" | A stream event | `bot_run` adds it to the reply | Parity, in each form |
+| CRM-Q33 follow-up question | A question card | Numbered text that the gateway matches (`text_asks`) | Delivery |
+| Date and time line | None | None | Parity. Neither run carries one |
+| Pre-read memory (Mem0, room, preferences, agent, org) | The chat route adds it | `bot_run` adds it, as the link's member. A room reads none | Parity. Built (WAC-P2, §17.5) |
+| The org's MCP servers | Added to the run | Added to the run. A tool that needs a card is refused | Parity. Built (WAC-P3, §17.5) |
+| Generative UI card | `emit_generative_ui` | `whatsapp_ui` PNG kinds, buttons, list and link | Delivery. Built (§12, §13) |
+| Question or choice card | `ask_questions` | Buttons or a list, and a tap returns as text | Delivery. Built (§12.4) |
+| Confirm card for a WhatsApp act | A card | Confirm and Cancel buttons that code builds | Delivery. Built (WAC-4, §14) |
+| Confirm card after an untrusted answer | A card | Confirm and Cancel buttons that code builds, as a WAC-4 act | Delivery. Built (WAC-P4, §17.5) |
+| Chart | A live chart | A PNG from the chart engine | Delivery. Built (§13.8) |
+| Table | A card | A PNG, or a monospace block for a few short rows | Delivery. Built |
+| Stat dashboard | A card | Stats tiles as a PNG | Delivery. Built (§13) |
+| Report or deck | A PDF card | A PDF document | Delivery. Built (WAC-12, §15) |
+| Another file (CSV, image, zip) | A download card | None | Open: WAC-P5 |
+| A page of the app | A link | A link button to `app.metorite.com` | Delivery. Built |
+| Todo panel | A panel | None. A long job sends a "working" line first | Delivery |
+| Background run | Posts into the thread | None. One reply a message | Delivery |
+| An upload (image, document) | `read_attachment` | None. The bot reads text and taps | Open: WAC-5 |
+
+### 17.3 The open defects
+
+WAC-P2, WAC-P3 and WAC-P4 closed on 2026-10-19 (§17.5).
+
+| Id | Defect | Size |
+|---|---|---|
+| WAC-P5 | A file that is not a PDF has no WhatsApp form | M, measured 2026-10-19. Four parts: a `whatsapp_ui` file kind that the model fills, a MIME map that holds to the document types of the Cloud API, a guard against a CSV formula, and a page on `app.metorite.com` for an HTML file. The HTML page needs a stored file and a viewer route |
+
+### 17.4 Acceptance (WAC-P1) and the fence
+
+| # | Done when |
+|---|---|
+| P1 | A WhatsApp run of a CRM member holds `crm_aggregate`, `org_facts` and the CRM facts block with its routing line |
+| P2 | A member with no CRM fact holds no `org_facts` and no block on either channel. An org with the `crm` skill off holds no CRM read on either channel |
+| P3 | The tools of a WhatsApp run differ from a web run only by `WITHHELD_TOOLS` and `whatsapp_ui`. Each withheld tool has its form in `WHATSAPP_FORMS` |
+| P4 | The prompts differ only by the UI directive, the output discipline block and the attachment rule. Each one belongs to a withheld tool |
+| P5 | A WhatsApp turn carries each per-turn block of a web turn: the org name, the Knowledge index, the integrations and the number-system line |
+
+Fence (R7): `tests/unit/test_wac_channel_parity.py`, rule
+`wac-channel-parity`. A tool, a context block or a prompt line that reaches
+one channel and not the other fails it. The exceptions are the delivery tools
+of `WHATSAPP_FORMS` and the open defects of `KNOWN_GAPS`. A ratchet test fails
+when a gap closes, so its entry and its row in §17.3 leave in the same change.
+
+### 17.5 WAC-P2, WAC-P3 and WAC-P4 as built (2026-10-19)
+
+**Owner directive, 2026-10-19:** "As much parity as possible between WhatsApp
+chat and native Metorite chat, given the AG-UI differences." The ratchet now
+works in both directions. A gap that closes fails until its entry leaves
+`KNOWN_GAPS`. A gap that opens again fails until a person lists it again.
+`KNOWN_GAPS` is empty.
+
+**WAC-P2, the member's memory.**
+
+- `gateway/memory_preread.py` is the ONE builder of the memory block. The
+  web route (`routes/agent.py`) moved its code there unchanged, and calls it.
+- `bot_run._memory_preread` calls it as the link's member, in the org that
+  `run_message` bound from the link row. No field of the message reaches it.
+- A shared room reads no memory at all. A fault reads no memory, and the
+  turn still runs.
+- The comment in `executor._run_with_maf_agent` now says that the memory
+  block comes from the caller's `memory_context`.
+
+**WAC-P3, the org's MCP servers.**
+
+- `executor._assemble_batch_agents` takes a `_BatchMcp`, and calls
+  `_inject_mcp_servers` with the same org stamp, access lookup and card rule
+  as `run_agent_stream`. The `finally` of `_run_agent_inner` closes each
+  server.
+- Only a top-level run of a chat thread opens servers. A delegated run and a
+  run with no chat open none, as on the stream path. A `no_egress` run
+  (H-236) and a self-anneal retry open none.
+- On WhatsApp, a read tool of the server runs. A tool that needs a card is
+  refused (`_maf_mcp._card_refusal`), as before.
+
+**WAC-P4, the Confirm after an untrusted answer.** The call parks as a WAC-4
+act, and the member's Confirm button answers it.
+
+1. **Ask.** In a marked thread, `_tool_injection._gate_injected_tool` asks
+   `whatsapp_acts.answer_egress` before it asks the web card. In a WhatsApp
+   run with writes on, the call parks, one act a run. The tool returns
+   `EGRESS_PARKED_TEXT`, and the call reaches nothing.
+   The member's summary comes from `egress.egress_call_view` (review P1-1).
+   It shows the tool name first. Then it shows each recipient field (`to`,
+   `cc`, `bcc`, `reply_to`), the subject and each attachment name, in full.
+   Then it shows the other arguments, cut with "…". Code sets this order,
+   and the order of the model's arguments changes nothing. When the key
+   fields do not fit in the body limit of an interactive message (1024
+   characters), nothing parks. The tool then tells the model to send the
+   member to the web app.
+2. **The record.** The act is a row of `whatsapp_pending_acts`. Its tool name
+   is `egress__<tool>`, and its card text is the JSON of the tool and ALL its
+   arguments. The change adds no migration.
+3. **Confirm.** `acts.settle` runs every WAC-4 check: the phone, the thread,
+   the link row, the button message and the 10 minutes. The claim moves the
+   row to `running`. Then `settle` gives `Approved`, and it runs no tool.
+4. **The one yes.** `bot_run` runs the model again, inside
+   `whatsapp_acts.approving`. The turn names the call and its arguments. The
+   first call whose tool and arguments equal the act runs. A call with other
+   arguments parks again, so the member sees its own summary.
+5. **The close.** `acts.finish` closes the act `done` when the call ran, and
+   `void` with `unused` when it did not. The yes closes with the run.
+
+A run with no WhatsApp profile cannot use a yes. A batch run, a scheduled
+run and a WhatsApp run with writes off still refuse, as before. The switch
+is `WHATSAPP_ASSISTANT_WRITES` for the org. This change adds no flag.
+
+**The mark is sticky, as on the web (review P1-2).** A WhatsApp run reads
+the untrusted-answer mark exactly as a web run does, and the mark ends only
+with its TTL. The first build ended the mark when its turn left the 20-turn
+replay. A later reply can repeat what the email assistant said, so that end
+let a steered call run with no Confirm. The cost of a sticky mark is one tap
+for each egress call, and the call still works through the Confirm above.
+
+**The web card uses the same view.** `_tool_injection._untrusted_answer_card`
+builds its context with `egress.egress_call_view`, with the card's limit of
+4000 characters. A call whose key fields do not fit gets no card, and so a
+no.
+
+**The CRM routing line, and the number system.**
+
+- `CRM_ROUTING_LINE` names no org's words. "Circles" and "sites" were
+  DEWiN's. `crm_routing_line` adds each org's own module names from its
+  purpose facts, on the same line, at most 8.
+- A new `user_settings` row holds the member in lower case, as the run reads
+  it. A save changes an existing row in place, in any case. `READ_SQL` matches
+  any case, and a row with a value wins.
+- The stat tile writes its number with `numberFormat.groupedNumber`, in the
+  member's system. `toLocaleString(undefined)` grouped by the browser's locale.
+
+| Check | Fence |
+|---|---|
+| An egress call parks and reaches nothing. One Confirm runs that call once | `tests/unit/test_wac_untrusted_confirm.py` |
+| A typed Confirm with no act, other arguments, a second call, a closed yes and a yes outside a WhatsApp run approve nothing | the same file, `wacp4-forged` |
+| Another phone, another org, a stale tap and an expired act approve nothing | the same file, `wacp4-bound` |
+| A room settles no act | the same file, `wacp4-room` |
+| A batch run and a run with writes off still refuse | the same file, `wacp4-batch-refuses` |
+| Every recipient, the subject and each attachment show first, on WhatsApp and on the web card. Key fields that do not fit ask no yes | the same file, `wacp4-view` |
+| A mark whose turn left the replay still parks the call | the same file, `wacp4-mark-sticky` |
+| The act and its claim hold on the real table under FORCE RLS (R8) | `tests/unit/test_wac_writes_r8.py` |
+| The memory and the MCP servers reach a WhatsApp run | `tests/unit/test_wac_channel_parity.py` |
+| Each org reads its own module names | `tests/unit/test_org_facts.py` |
+| A mixed-case settings row reads and saves in place (R8) | `tests/unit/test_number_system_r8.py` |
+| The stat tile groups by the member's system | `numberFormat.test.ts`, `reportView.test.ts` |
+
+## 18. Amendment of 2026-10-24: email writes from WhatsApp, approved with a reply code (H-391)
+
+**The owner's rule.** A channel changes delivery, never function (2026-10-10).
+Before this change, each email write on WhatsApp answered "ask in the app".
+The cause was `_NO_CARD_CHANNEL` in `agent-email-assistant/agents.py`. The
+owner wants every email job to work from the chat (HANDOFF H-391).
+
+This section amends §14.4. §14.4 kept every email card refused. Now the email
+acts of 18.1 park, and a reply code approves them. Every other card stays as
+§14.4 says.
+
+### 18.1 Which acts
+
+The email assistant's card of one of six tools parks
+(`whatsapp_acts.EMAIL_ACTS`):
+
+| Tool | The act |
+|---|---|
+| `manage_inbox` | Archive, label, move, read, star, trash or spam |
+| `compose_reply` | A reply, with its reply form (§18 of the email plan) |
+| `send_draft` | A send of a draft |
+| `schedule_send` | A send of a draft at a later time |
+| `forward_email` | A forward, with its files |
+| `send_email` | A new mail |
+
+A card parks only when the email assistant itself calls the tool. The agent
+name comes from the run binding, never from input. Reads stay as they are.
+Every other email card keeps `_NO_CARD_CHANNEL`, and so does a WhatsApp run
+with writes off. That run has no reply path.
+
+### 18.2 The design: park, summary, code
+
+1. **Ask.** With writes on (§14.6), the card parks as a WAC-4 act does. Unlike
+   §14.4, a card with tick-box rows parks, and so does a reply form. The
+   stored card text holds each row and each field that the send uses
+   (`whatsapp_acts.email_card_text`).
+2. **The record.** One row in `whatsapp_pending_acts`, as §14.3 item 2 says.
+   Migration 298 adds `confirm_code_hash` and `wrong_codes`. The first holds
+   an HMAC-SHA256 of the code, keyed with `gateway_session_secret`, and never
+   the code. NULL is a Confirm-button act, so §14 does not change.
+3. **The summary.** `bot_run` sends one text with no buttons. It holds all
+   that the card shows: the act, the mailbox and each person with a number.
+   Each person has its class mark and its look-alike warning, if any. It also
+   holds the subject and the whole text.
+4. **Never cut.** A text longer than 4096 characters goes over parts, and
+   each part shows "(2/3)". The split drops no character
+   (`whatsapp_acts.code_summary_parts`). The code is in the last part only.
+   That part names the act, so the code counts once Meta took it.
+5. **The code.** Four symbols from `ABCDEFGHJKMNPQRSTUVWXYZ23456789`, from
+   `secrets`. It works once, for 15 minutes after the summary went out.
+
+### 18.3 The member's reply
+
+`whatsapp_acts.parse_code_answer` reads the reply, and `acts._settle_code`
+settles it before any run:
+
+| Reply | Result |
+|---|---|
+| `YES 7K3Q` | Metorite approves the act with the lines that start ticked |
+| `YES 7K3Q WITHOUT 2` | Metorite leaves out line 2 |
+| `YES 7K3Q WITH 3` | Metorite adds line 3. A new address starts unticked, so it needs this |
+| `NO` | The act closes as `cancelled` |
+| A wrong code | Nothing. The act stays, and the reply says why. The fifth wrong code closes the act as `void` |
+| `YES` with no code | Nothing. The act stays, and the reply says why |
+| A quoted reply | Nothing. The act stays, and the reply says why |
+| Extra words after `YES` | Nothing. The act stays, and the reply says why |
+| A text that holds the code, such as a pasted summary | Nothing. The act stays |
+| A forwarded message with a code | `inbound` refuses it before any run |
+| A code after the expiry | The act closes as `expired` |
+| A code from another phone | Nothing. No act waits for that phone |
+| A reused code | Nothing. The claim moved the act from `pending` |
+| Any other message | The act closes as `void`, and the message runs as normal |
+
+**Only the member's phone.** `_live_act` reads the act of the sender's
+`wa_id`, which Meta's signed webhook names. The message body names no phone.
+The link row must still be current, as §14.5 says.
+
+**The numbers.** A number must name a line of the summary. No number may be
+in both lists, and the act must keep one To line. A card with no list takes
+no number. The reply then says to approve the card as shown, or to ask for
+the change.
+
+### 18.4 The approval
+
+`settle` claims the act and gives `Approved` of kind `email`, with the
+numbers. `bot_run` runs the model again inside `whatsapp_acts.approving_email`.
+The turn names the tool and its stored arguments. The member's text is not in
+it, because code already applied the numbers.
+
+1. **One call gets the yes.** The FIRST email call that matches gets it.
+   The email assistant must make it, with the stored tool and exactly the
+   stored arguments. Its card text must also equal the stored text. The text
+   alone does not bind the call, because a card shows 20 messages and a
+   count (review P1). Any other call parks again, so the member sees its own
+   summary and a new code.
+2. **A plain card** gets True, and the tool acts as it does on the web.
+3. **A held send card** (§21 of the email plan) gets a `RowsAnswer`. It holds
+   the rows that start ticked, minus WITHOUT, plus WITH.
+4. **A reply form** gets a `ReplyAnswer` with the people that the member kept.
+5. **The record.** For items 3 and 4, the approval records the answer with
+   `reply_card.record_reply_answer`, as respond-input does for a web card. The
+   key holds the thread, the card id and the member of the link row. The act
+   route then takes it once and sends exactly the recorded rows.
+6. **A failed record is no approval.** Nothing is sent.
+
+**The reply text stays the same.** Before its card, `compose_reply` pins its
+text and its Reply or Reply all choice (`whatsapp_acts.pin_arguments`). The
+approval run then sends that text, and the server writes no new one. A reply
+with no text does not park.
+
+**One act at a time.** A second email card in the same run gets
+`EMAIL_WAITING_TEXT`, and the tool writes nothing.
+
+### 18.5 What did not change
+
+- `WHATSAPP_ASSISTANT_WRITES` still turns this on, per org (§14.6). It is
+  default OFF. Turning it on for an org is the owner's act (WAC-9).
+- `EMAIL_HELD_CARD_SEND` still decides whether a held chat gets the held send
+  card. The owner flips it (§21.8 of the email plan).
+- §21 holds in a held chat. A new address starts unticked. The gateway refuses a Bcc to a new
+  address when it builds the card, and it flags a look-alike.
+- The Projects acts of §14 keep their Confirm and Cancel buttons.
+
+### 18.6 Known limits
+
+1. **A plain send card has no list.** In a chat that read no outside mail,
+   `send_email`, `forward_email`, `send_draft` and `schedule_send` show a plain
+   card. Its people are in the text, with no numbers. The member approves it
+   as shown, or replies NO and asks for the change.
+2. **The approval runs the model again.** The model can make another call, or
+   none. Then no card gets the yes, and the act closes as `void` with `unused`.
+   The WAC-P4 Confirm has the same limit.
+3. **A card that changed asks again.** An approval run can build another
+   card, for example when the draft changed. That card parks with a new code.
+4. **The thread keeps the summary.** No model runs while the act waits,
+   because any other message voids the act first.
+5. **A card that the gate cuts does not park.** `request_confirmation` cuts
+   a long title, detail or context. Such a card would show less than the act
+   sends, so it does not park, and the tool answers `EMAIL_TOO_LONG_TEXT`.
+
+### 18.7 Acceptance and fences (H-391)
+
+| # | Check | Fence |
+|---|---|---|
+| E1 | An archive, a reply and a held send park, and write nothing | `tests/unit/test_wac_email_confirm.py` |
+| E2 | The summary holds each person with a number and a mark, the subject and the whole text. A long text splits and is never cut. The code is in the last part only | the same file, `h391-summary-whole` |
+| E3 | The right code from this phone approves. A wrong, expired or reused code, a quoted reply, a pasted summary and another phone do nothing | the same file, `h391-code-bound` |
+| E4 | WITHOUT drops a line. A new address gets nothing unless WITH names it | the same file, `h391-drop-and-include` |
+| E5 | An approval sends exactly the recorded rows, through the act route of the web card | the same file, `h391-sends-the-record` |
+| E6 | The code record holds on the real table under FORCE RLS. The migration runs twice with no change (R8) | `tests/unit/test_wac_email_confirm_r8.py` |
+| E7 | The recorded answer is the answer that the act route takes, once, on a real Redis (R8) | the same file |
+
+---
+
+## 19. Amendment of 2026-11-09: Mira in team channels (CH-TEAM)
+
+**Status: SPEC, nothing built.** The owner chose this theme on 2026-11-08 on task 2348: "Plan 4 and 2 first, then 6 and 8". It is theme 2 of the coverage check of the user stories under task 2258. Metorite: epic task 2431 in the WhatsApp project. Verified against code on 2026-11-09 at `main` `0c5118d4c`.
+
+**Stories.** 1761 is a daily standup that Metorite posts to the team channel. 1749 is Metorite as a contributor in WhatsApp, email and Slack.
+
+**The scope grows here.** This section widens this spec from one WhatsApp chat to team channels: a WhatsApp group, an email address and, later, Slack. The rest of the spec does not change.
+
+⚠️ **D115 still binds.** The WhatsApp work stays frozen, except brief task 8 (D122.3). The owner lifted D115 for the build of CH-TEAM-4, dark (Q-CHT-2, 2026-11-08). CH-TEAM-1, CH-TEAM-2 with the email adapter, CH-TEAM-3 and CH-TEAM-5 need no WhatsApp change.
+
+### 19.1 The answer
+
+- A team channel is one record: a WhatsApp group, a list of member addresses or, later, a Slack channel. It belongs to one org (CH-TEAM-1).
+- Every message that Mira puts in a team channel passes one audience check. She shares a record only when every person in the channel can open it (CH-TEAM-1).
+- A workflow step, `channel.post`, posts to a team channel through the Action Broker (CH-TEAM-2).
+- The daily standup is a workflow template on that step (CH-TEAM-3).
+- In a WhatsApp group, a linked member tags Mira, and she answers inside the audience check (CH-TEAM-4).
+- Metorite's own number is the bot number of this spec (D-WAC-1). Its email address is a shared mailbox that the org names (CH-TEAM-5).
+- Slack follows as a connector with the same rules (CH-TEAM-6).
+
+### 19.2 What Meta allows in a group (read on 2026-11-09)
+
+These facts come from Meta's Groups API pages. Each quote was read again on 2026-11-09 for the spec audit, and each one is confirmed. The sources are at the end of this section.
+
+1. **Only an Official Business Account (OBA) can use the Groups API.** Quote: "The Groups API is now open to all businesses with an Official Business Account (OBA)." Also: "Groups are not available for WhatsApp Business app phone numbers and phone numbers onboarded to Multi-solution Conversations."
+2. **The business number makes the group, and it is the admin. A person joins only through an invite link.** Quotes: "Groups are an invite-only experience where participants join using a group invite link you send them." "Since you cannot manually add participants to the group," the business sends the link. "The business phone number used to create the group is always added to the group as the creator and admin."
+3. **A group holds 8 participants at most.** Quote: "Max group participants: 8". Also: "Max groups you can create: 10,000 per business number".
+4. **A group message is text, media, or a text or media template.** The overview lists these "Non-supported message types": "Calling", "Disappearing messages", "View-once", "Auth", "Commerce messages" and "Interactive messages". On WhatsApp, buttons and lists are interactive messages.
+5. **The `messages` webhook fires when "A WhatsApp user or a business sends a message to a group."** Quote: "The `message` object includes a `group_id` field to indicate this is a group message." `from` is "Omitted if the user has adopted a username and their phone number is unavailable." The page says: "Use `user_id` and `from_user_id` to identify the participant who sent the message."
+6. **A group message has a price for each message.** Quote: "The Groups API uses per-message pricing."
+7. **Joins and leaves send a webhook.** Quotes: "A `group_participants_update` webhook is triggered when a WhatsApp user joins a group with an invite link". "This webhook is sent when a group participant leaves the group." The fields include `added_participants` and `removed_participants`.
+
+**Not confirmed.** The Meta pages do not say these things:
+
+- Does the webhook carry every message of the group, or only some?
+- Does a message carry data about an @-mention?
+- Can the business join a group that a person made?
+- Does the 24-hour window apply to a group?
+
+**What follows from the facts.**
+
+- Mira cannot join a team group that a person made. A team that wants Mira in a group uses a group that Metorite makes, with 8 people at most.
+- A Confirm button cannot run in a group. Each approval goes to the asker in the 1:1 chat with the bot (§14, §18), or to a card in the web app.
+- The link table keys a phone (§5.3). A sender with a username has no phone in the webhook. So a link must also keep the `from_user_id` of the phone.
+- The AI-provider rule of Meta (§2.3) binds in a group too. Mira answers about the org's work only (D-WAC-5).
+- D122.2 binds. Metorite uses no linked-device reader, so no unofficial path reads a group that a person made.
+
+**Sources.**
+
+- Groups API: https://developers.facebook.com/documentation/business-messaging/whatsapp/groups/
+- Groups reference: https://developers.facebook.com/documentation/business-messaging/whatsapp/groups/reference
+- Group messaging: https://developers.facebook.com/documentation/business-messaging/whatsapp/groups/groups-messaging
+- Group webhooks: https://developers.facebook.com/documentation/business-messaging/whatsapp/groups/webhooks
+- The group message webhook: https://developers.facebook.com/documentation/business-messaging/whatsapp/webhooks/reference/messages/group
+- Slack `app_mention`: https://docs.slack.dev/reference/events/app_mention
+
+### 19.3 The slices
+
+Each slice ships dark behind `TEAM_CHANNELS_ORGS`, off by default. The name of the flag is a working default. The verification commands of §8 bind each slice, with the fence that the slice names.
+
+| Id | Task | What | Tier | Gate | Depends on | Fence |
+|---|---|---|---|---|---|---|
+| **CH-TEAM-1** | 2442 | The team channel and the audience check | HIGH | AGENT-SAFE. No overlap with `wa_chats`, the member links or the O6 point `channels` (see the row) | Nothing | `tests/unit/test_team_channel_audience.py` (planned) |
+| **CH-TEAM-2** | 2443 | Post to a team channel: the step `channel.post` | HIGH | AGENT-SAFE build. **OWNER-GATE** for the first live send of each adapter to real people (CLAUDE.md §3a rule 3) | CH-TEAM-1. The email adapter needs a sending mailbox (task 733 for a shared one) | `tests/unit/test_workflow_channel_post.py` (planned) |
+| **CH-TEAM-3** | 2444 | The daily standup and other group digests | STANDARD | AGENT-SAFE. Unblocked by the answer to Q-CHT-5 (2026-11-08) | CH-TEAM-2, the team pulse T1 (built), Q-CHT-5 | `tests/unit/test_team_digest.py` (planned) |
+| **CH-TEAM-4** | 2445 | Mira in a WhatsApp group | HIGH | Unblocked by the answers to Q-CHT-2 (both halves) and Q-CHT-1 (half B), 2026-11-08. AGENT-SAFE to build. **OWNER-GATE** for the OBA, the live number (WAC-0) and a live group | CH-TEAM-1, WAC-8. Half B: CH-TEAM-2 | `tests/unit/test_wac_group_tag.py` (planned) |
+| **CH-TEAM-5** | 2446 | Metorite's own number and Mira's email address | HIGH | Unblocked by the answer to Q-CHT-4 (2026-11-08). AGENT-SAFE build. **Do not dispatch before PR 1999 merges.** **OWNER-GATE** for the OBA and a live address | CH-TEAM-1, task 733 (SM-3 to SM-9), `ai_studio.md` O17 (task 2421), Q-CHT-4 | `tests/unit/test_mira_inbound_address.py` (planned) |
+| **CH-TEAM-6** | 2447 | Slack, later | HIGH | Unblocked by the answer to Q-CHT-6 (2026-11-08). AGENT-SAFE build. **OWNER-GATE** for the Slack app and its secrets | CH-TEAM-1, CH-TEAM-2, Q-CHT-6 | `tests/unit/test_slack_connector.py` (planned) |
+
+#### CH-TEAM-1. The team channel and the audience check (task 2442)
+
+**Gate.** AGENT-SAFE. **HIGH tier**: privacy, identity and a migration. R5 and R6 bind. The migration takes the next free number at build time (R1).
+
+**The record.** One tenant-scoped table, named at build time, holds each team channel:
+
+- The org, and the kind: `whatsapp_group`, `email` or `slack`.
+- The provider id: a `group_id`, a Slack channel id, or none for email.
+- A title, the member who made it, and its state.
+
+**No overlap.** The table does not overlap the WhatsApp tables that exist, or a planned point:
+
+- `wa_chats` (migration 102) holds the chats of a member's own business number (WS-20), and each row needs a `wa_accounts` row. The bot number is no `wa_accounts` row (D-WAC-1), so a bot group is never a `wa_chats` row.
+- `whatsapp_member_links` (migration 235) holds the member links. The table reads them and copies none of them.
+- The planned O6 point `channels` of WS-PKG lets a package claim an org number and a keyword for people outside the org. A team channel claims no number, and it serves members.
+
+**The participants.**
+
+- **WhatsApp.** The people who joined through the invite link. The group-info call and the join events give the list.
+- **Email.** The member addresses that the channel names. An email channel never holds a list address, because Metorite cannot see who reads a list.
+- **Slack.** The members of the Slack channel.
+
+A participant maps to a member through the link table (a phone or a `from_user_id`), a member email, or the email of a Slack profile. A participant who maps to no member of the channel's org is an **outsider**.
+
+**Fresh participants.**
+
+- WhatsApp sends `group_participants_update` when a person joins through the link or leaves (§19.2, fact 7). Each event updates the list at once.
+- Slack sends join and leave events of its own. Read their names at build time.
+- An email channel changes only when its maker edits it.
+- The send check reads the list at send time, not at the start of the run. When the list changed during the run, the run checks the whole reply again against the new list before it sends.
+
+**The audience check.** It has two halves, and nothing can skip either one.
+
+1. **On read: a named list of tools.** A run for a team channel may call only the tools in one named list in code, for example `CHANNEL_RUN_TOOLS`. Each listed tool returns rows, and each row is one record with its id. Each row passes the owning app's own read for every participant, and a row that fails comes out. An outsider passes no read. Every other tool returns an error that names the channel rule, and no data.
+   - **The first list:** `crm_get_record`, `crm_list_records`, `crm_deal_contacts` and the Projects `list_tasks`. The audit of this slice may add a tool only when its output is one record for each row.
+   - **Never on the list:** a tool that gives an aggregate or a count, such as `crm_aggregate`, `crm_report` or `crm_stage_dwell`. A tool that gives a snippet or a retrieval passage, such as `crm_search_notes` or `search_company`. A tool that reads the text of a file. A context block, such as `crm_facts_block_for_run`. Mira could repeat their content in her own words, and no filter for each record can stop that.
+   - So the model never sees content that one participant cannot open.
+2. **On send.** Before a send, the check reads each record that the message names. That is an entity pill, a citation, a link or a file. A record that fails comes out of the message. The asker gets the rest in a private reply.
+
+**The run.** A run for a team channel acts as the asker. It never gets these things of the asker:
+
+- Personal memory and profile facts.
+- Private mail.
+- The history of the asker's 1:1 thread with the bot.
+
+**Done when.**
+
+1. A channel holds Asha and Ben, and Ben cannot open the deal Atlas. Asha's run names Atlas, and the message goes out without it. Asha gets Atlas in a private reply.
+2. A channel with an outsider shares no record at all.
+3. A thread from a private mailbox never reaches a channel.
+4. A tool result in a channel run holds no record that one participant cannot open.
+5. A channel of another org never resolves (R5, R8).
+6. A structural test fails when a team channel adapter sends without the check.
+7. In a channel run, `crm_aggregate` returns no data, and `crm_search_notes` returns no snippet. Each one returns the channel error.
+8. A test fails when a tool joins the named list without a test of its filter for each row.
+9. A participant joins while a run works. The send check uses the new list, and a record that the new participant cannot open comes out.
+10. A channel run holds no line of the asker's 1:1 thread with the bot.
+
+**Fence.** `tests/unit/test_team_channel_audience.py` (planned), R8, with two members and an outsider. The structural test is in the same file.
+
+#### CH-TEAM-2. Post to a team channel (task 2443)
+
+**Gate.** AGENT-SAFE build. **HIGH tier.** **OWNER-GATE:** the first live send of each adapter to real people waits on the owner's OK (CLAUDE.md §3a rule 3). The email adapter comes first, so its first live send is the first owner ask.
+
+**Not Reach.** Reach sends only to the member (`proactive_reach.md` §2.2, D103). A post to a group is an outward act, with its own approval.
+
+**Build.**
+
+- A workflow tool, `channel.post`, in `routes/workflows/tools.py`. It goes through the Action Broker with `_broker_write`. Its arguments are the channel, the text and the record refs.
+- **The trust ladder (D131).** A workflow that a member makes starts at Ask each run. A post to the channel that the workflow names may climb to Act and report. A post to another channel always asks.
+- **The adapters.**
+  - WhatsApp group: the bot transport. It waits on CH-TEAM-4 half B.
+  - Email: one mail to the named member addresses, from the workflow owner's mailbox or from a shared mailbox with `send` (SM-4 records the send).
+  - Slack: CH-TEAM-6.
+- **The limits.** Each post passes the audience check of CH-TEAM-1. A channel gets 10 posts each day at most, a working default. An org admin can pause all team posts in one step.
+
+**Done when.**
+
+1. With a fake mail transport, a workflow posts to an email channel of 3 members. The fake records one mail to those 3 addresses, and no real mail leaves.
+2. A record that one member cannot open comes out of the post.
+3. At Ask each run, the run waits on the owner's card.
+4. A post to a channel that the workflow does not name asks.
+5. The 11th post of the day stops, and the run console says why.
+6. A paused org sends nothing.
+
+**Fence.** `tests/unit/test_workflow_channel_post.py` (planned).
+
+#### CH-TEAM-3. The daily standup and other group digests (task 2444)
+
+**Gate.** AGENT-SAFE. **Tier** STANDARD. **Unblocked** by the answer to Q-CHT-5, what a standup may show about a person (owner, 2026-11-08).
+
+**Build.**
+
+- A workflow template, "Daily standup". A timer starts it at the time that the team picks, on the org's working days. A step reads the team pulse (`projects_reports.md` T1, the `pulse` section) for the team. Then `channel.post` sends it.
+- Each person gets one line: done yesterday, today's focus and blocked work. The numbers come from the pulse reads, with no new arithmetic.
+- **What a digest never shows.**
+  - A private task.
+  - A task in a project that one participant cannot open (the audience check).
+  - The labels "Needs help" and "Behind". A digest gives no score for a person.
+  - The line of a member who turned their line off (Q-CHT-5).
+- **The setting.** A member turns their own line off with one boolean key, `team_digest_line_off`, in `user_settings.my_day_prefs` (`my_day_feed.md` §13.3). It is a key of a JSON column, so it needs no migration. The audit may move it.
+- Other digests use the same shape, for example the weekly team pulse, or the CRM weekly digest (`crm_platform.md` CRM-I4) to a sales channel.
+
+**Done when.**
+
+1. A team of 3 with tasks gets one post at 09:00 on a working day, with 3 lines.
+2. No post goes out on a day that is not a working day.
+3. A private task never shows.
+4. A task in a project that one participant cannot open never shows.
+5. A member with `team_digest_line_off` set to true is not in the post.
+6. The post needs no manual input.
+
+**Fence.** `tests/unit/test_team_digest.py` (planned).
+
+#### CH-TEAM-4. Mira in a WhatsApp group (task 2445)
+
+**Gate.** **HIGH tier.** **Unblocked** by the answers to Q-CHT-2 (both halves) and Q-CHT-1 (half B), owner, 2026-11-08. Each half is AGENT-SAFE to build. **OWNER-GATE:** the OBA application, the live number (WAC-0, H-251) and any live group with real people.
+
+**Half A: the forward path.** It needs no group API.
+
+- A member forwards messages from any group to the bot, in the 1:1 chat, and asks a question.
+- The run treats the forwarded text as the words of other people. It is untrusted data and never an instruction. It is never the member's own words (D-PZ-37).
+- The answer goes to the member only.
+
+**Half B: a group that Metorite makes.**
+
+1. **Make the group.** A member asks: "Make a WhatsApp group for the Design team." The bot makes the group through the Groups API and is its admin. Mira sends the invite link to each named member, in their 1:1 chat. A team channel binds the group to the org of the asker's current link.
+2. **Who may tag.** A participant whose phone or `from_user_id` maps to an active link in the channel's org, with `feature:chat`. A tag from anyone else gets no answer.
+3. **What counts as a tag.** A tag is the name of the bot at the start of a word, for example "@Metorite". A reply to a message of the bot is a tag too. Mira answers nothing else. Meta may send mention data, but no Meta page says so.
+4. **What Mira reads.** A tenant table keeps the text of the last 24 hours of a group, 50 messages at most. A job deletes older rows each hour. A tag run reads the messages before the tag in that window. It also reads the messages of the 2 minutes after the tag.
+   - The table is tenant-scoped, with FORCE ROW LEVEL SECURITY at the `get_db()` seam (R5). R6 binds its migration, and R1 its number.
+   - No route reads the table for a member. Only the tag run and the delete job read it.
+   - The audit first checks whether `whatsapp_bot_messages` (migration 238) can hold these rows. It adds a table only when that one cannot.
+5. **What Mira keeps.** No group message goes into memory, Knowledge, a profile or a summary. The run treats each message as untrusted data.
+6. **The group knows.** When the group starts, the bot posts a notice. It says: "Metorite reads the last 24 hours of this group only when a member tags it. It shares only what everyone here can open." The member who made the group can turn reading off.
+7. **The answer.** The run acts as the asker, inside the audience check of CH-TEAM-1. The reply goes to the group. A part that the check removes goes to the asker in the 1:1 chat.
+8. **Acts.** A task, a mail or any other write parks for the asker. The asker confirms it in the 1:1 chat (§14, §18) or on a web card. The act runs as the asker, so the asker's own rights bound it.
+9. **Files.** A file goes into the group only when the audience check passes for that file. An example is a deck from the brand hub.
+10. **One org.** A group belongs to one org. A linked member of another org gets no answer (D-WAC-3).
+
+**Done when.** The tests use webhook payloads, because a live group needs the OBA.
+
+1. A forwarded message in the 1:1 chat reaches the run as untrusted data. The reply goes to the member only.
+2. A group payload with a tag from a linked member starts one run as that member. The same payload from an unlinked phone starts no run.
+3. A group message with no tag starts no run.
+4. A record that one participant cannot open never reaches the group, and the asker gets it in the 1:1 chat.
+5. A message older than 24 hours is gone from the table.
+6. A request for a task in the group parks for the asker. Nothing writes before the asker confirms.
+7. A structural test fails when a writer of memory, Knowledge or a profile reads the group table.
+8. A structural test fails when a gateway route reads the group table. An R8 test with a second org reads zero rows of it.
+
+**Fence.** `tests/unit/test_wac_group_tag.py` (planned), R8 for the group table and the link lookup.
+
+#### CH-TEAM-5. Metorite's own number and Mira's email address (task 2446)
+
+**Gate.** **Unblocked** by the answer to Q-CHT-4, where Mira's address lives (owner, 2026-11-08). AGENT-SAFE build. **HIGH tier**, because an email address is easy to forge. **Do not dispatch before PR 1999 merges**, because O17 and O20 live there. **OWNER-GATE** for the OBA and a live address.
+
+**The number.** Metorite's own WhatsApp number is the bot number of this spec (§5.1, D-WAC-1). This slice adds no number. An org that wants its own number uses O6 (`ai_studio.md` §20), and that number answers people outside the org. A group needs the OBA (§19.2), and the owner applies for it.
+
+**The address.**
+
+- An org names one shared mailbox as Mira's address, for example `mira@fracktal.in`. It reuses the connection, the grants and the send record of `shared_mailbox.md`. It reuses O17 (task 2421) for the channel event. The open STU-IDE spec change adds O17 to `ai_studio.md`. It adds no mail server and no second inbox.
+- **A member writes or forwards to it.** Mira counts the sender as a member only when both are true:
+  - The From address is the email of an active member of the org.
+  - The provider reports that the mail passed its sender checks, DKIM or SPF.
+- The member's own words above a forward are the request. Mira reads the forwarded text as untrusted data.
+- Mira then files the mail on a CRM record, drafts a reply in the member's own mailbox, or proposes a task. Each write waits on the member's card in the web app (`waiting_on_me.md`). An email never approves a write.
+- **Anyone else.** A mail from a person who is not a member takes the O17 path. When no flow claims the mailbox, the mail stays in the shared mailbox for the members with a grant, as today.
+
+**Done when.**
+
+1. A mail from a member's own address passed its checks. It makes one card for that member, with the proposed task.
+2. A mail that claims a member's address and failed its checks makes no card. The mailbox marks it.
+3. An instruction inside the forwarded text causes no act.
+4. Nothing writes before the member presses the card.
+5. A member of another org who writes to the address gets no card.
+
+**Fence.** `tests/unit/test_mira_inbound_address.py` (planned), R8.
+
+#### CH-TEAM-6. Slack, later (task 2447)
+
+**Gate.** **Unblocked** by the answer to Q-CHT-6, when Slack comes (owner, 2026-11-08). AGENT-SAFE build. **HIGH tier**: a new connection, OAuth and identity. **OWNER-GATE** for the registration of the Slack app and its secrets. It comes after CH-TEAM-3.
+
+**Build.**
+
+- One Metorite Slack app. An admin installs it in the org's Slack workspace with one OAuth click. The install is one row of `integration_connections` (D96).
+- Slack sends `app_mention` only for a message that mentions the app, in a conversation that the app is in. So Mira reads only the tag. With the history scope, a tag run may also read the thread of the tag, and nothing more.
+- A Slack user maps to a member by the email of the Slack profile.
+- The audience check of CH-TEAM-1 runs over the members of the Slack channel.
+- `channel.post` gets a Slack adapter.
+- Read the current API terms of Slack about AI use of message data at build time. This spec did not read them.
+
+**Done when.**
+
+1. An `app_mention` payload from a mapped member gets an answer in the thread.
+2. A mention from a user who maps to no member gets no answer.
+3. The audience check removes a record that one channel member cannot open.
+4. `channel.post` posts one message to a test channel.
+5. In a shared channel, a mention from a user of another Slack workspace gets no answer.
+
+**Fence.** `tests/unit/test_slack_connector.py` (planned).
+
+### 19.4 Order
+
+CH-TEAM-1 comes first. Then CH-TEAM-2 with the email adapter, then CH-TEAM-3. Half A of CH-TEAM-4 follows the answer to Q-CHT-2. CH-TEAM-5 follows task 733 and O17. Half B of CH-TEAM-4 follows Q-CHT-1 and the OBA. CH-TEAM-6 comes last.
+
+### 19.5 Questions for the owner
+
+The owner answered all six on 2026-11-08 and accepted each recommendation. The Recommendation column now holds the chosen answer.
+
+| ID | Question | Evidence | Recommendation | Blocks |
+|---|---|---|---|---|
+| **Q-CHT-1** | Which path puts Mira in a WhatsApp team chat? | §19.2. Only an OBA can use the Groups API. The business makes the group, a person joins by link, and a group holds 8 people at most. Interactive messages do not work in a group. D122.2 rules out a linked-device reader | **ANSWERED** (owner, 2026-11-08, accepted the recommendation). Build half A, the forward path, first. It works on the 1:1 bot of today. Build half B after the OBA. Use Slack (CH-TEAM-6) for a team larger than 8 | Half B of CH-TEAM-4 |
+| **Q-CHT-2** | Does the owner lift D115 for the WhatsApp parts of CH-TEAM? | D115 freezes new WhatsApp work. D122.3 lifts it for brief task 8 only | **ANSWERED** (owner, 2026-11-08, accepted the recommendation). Lift D115 for the build of CH-TEAM-4, dark. A live switch-on stays an owner gate | CH-TEAM-4 |
+| **Q-CHT-3** | Which number makes the groups: the shared bot number, or an org's own O6 number? | The shared number already holds the member links (D-WAC-2). An O6 number answers outside people, and needs an OBA for each org | **ANSWERED** (owner, 2026-11-08, accepted the recommendation). The shared bot number. One OBA covers every org. The risk is one quality rating for all orgs | Half B of CH-TEAM-4 |
+| **Q-CHT-4** | Is Mira's address a shared mailbox that the org connects, or an address on a Metorite domain? | The owner accepted the spec of the shared mailbox (task 733), and O17 makes it a channel. A Metorite domain needs new mail infrastructure | **ANSWERED** (owner, 2026-11-08, accepted the recommendation). A shared mailbox first. A Metorite address can come later | CH-TEAM-5 |
+| **Q-CHT-5** | What does a standup show about a person, and can a member leave their line out? | Story 1761 asks for yesterday, today and blockers. The team pulse also holds "Needs help" and "Behind" | **ANSWERED** (owner, 2026-11-08, accepted the recommendation). Show done, focus and blocked work, with no label. Each member can leave their own line out | CH-TEAM-3 |
+| **Q-CHT-6** | When does Slack come, and does Microsoft Teams come too? | Story 1749 says "Slack later". No pilot asked for Teams | **ANSWERED** (owner, 2026-11-08, accepted the recommendation). Slack after CH-TEAM-3. No Teams until a pilot asks for it | CH-TEAM-6 |
+
+**Working defaults.** These are not owner decisions. The slice audit may change them.
+
+| ID | Default |
+|---|---|
+| W-CHT-1 | A group table keeps 24 hours, or 50 messages, whichever is less. |
+| W-CHT-2 | A tag run reads the messages of the 2 minutes after the tag. |
+| W-CHT-3 | A channel gets 10 posts each day at most. |
+| W-CHT-4 | A tag from a person who is not a member gets no answer. |
+
+### 19.6 Single owner
+
+This section owns CH-TEAM. `proactive_reach.md` keeps the messages to one member, and it links here for a post to a group. `shared_mailbox.md` keeps the shared mailbox. `ai_studio.md` keeps O6, O7, O9, O17 and O20. `projects_reports.md` keeps the team pulse. Those documents link here and add nothing.

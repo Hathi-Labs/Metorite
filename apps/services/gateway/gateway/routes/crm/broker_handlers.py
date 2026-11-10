@@ -36,8 +36,17 @@ import os
 from typing import Any
 
 from acb_common import get_logger
+from gateway.routes.crm.core import ZOHO_TRACKED_TABLES
 
 _log = get_logger("gateway.crm.broker")
+
+#: The native tables a Zoho push records its outcome on: the four tracked
+#: record tables, the activity spine and the tombstone queue. The approval
+#: handler refuses any other ``table`` in a proposal, because that name
+#: reaches an f-string in ``core.load_row`` and ``core.update_row``.
+PUSH_TABLES: frozenset[str] = ZOHO_TRACKED_TABLES | {
+    "crm_activities", "crm_zoho_tombstones",
+}
 
 #: The three broker actions a Zoho push can be. Registered as handlers and used
 #: as the gate's action names — one list, so a verb cannot be gated without
@@ -160,15 +169,65 @@ async def _handle_crm_zoho_write(proposal: Any) -> dict[str, Any]:
     row stays dirty, the next cycle offers it again, the operator approves
     again, and every approval mints another copy upstream. The two paths share
     ``sync_zoho.apply_push_result`` so they cannot converge differently.
+
+    **The tenant, in this order** (WS-53 CRM-T3, ``crm_platform.md`` §4.3):
+
+    1. ``org = current_tenant()`` — the tenant the ``approve`` call bound.
+       ``action_broker/broker.py`` forbids a tenant taken from a proposal, a
+       payload or a request field. RLS on ``pending_actions`` makes the
+       approver's tenant equal the proposal's organization. With no tenant
+       bound, this raises before any Zoho call.
+    2. A first ``tenant_session(org)`` confirms that the native row exists in
+       that tenant. A row that the tenant cannot see, a table outside
+       :data:`PUSH_TABLES`, or a proposal with no native row is refused, with
+       no Zoho call. Before CRM-T3 the last case wrote to Zoho and recorded
+       nothing. Now it writes nothing, because a write with nowhere to record
+       it is the duplicate-upstream defect above.
+    3. ``execute_push`` runs with NO session open, because a provider call
+       must not hold a pool slot or a transaction.
+    4. ``apply_push_result`` runs in a second ``tenant_session(org)``, with no
+       ``.commit()`` inside it.
     """
-    from gateway.routes.crm.core import _get_db
+    from acb_common.db import TenantUnbound, current_tenant
+    from gateway.routes.crm.core import _tenant_session, load_row
     from gateway.routes.crm.sync_zoho import apply_push_result, execute_push
 
     spec = proposal.payload or {}
     args = spec.get("args") or {}
     if proposal.action not in CRM_ZOHO_ACTIONS:
         raise RuntimeError(f"no Zoho writer for action {proposal.action!r}")
+    org = current_tenant()
+    if not org:
+        _log.warning("crm.broker.push_unbound", action=proposal.action)
+        raise TenantUnbound(
+            "a CRM Zoho push needs the tenant the approve call bound — "
+            "refused before any Zoho call"
+        )
     op = args.get("op")
+    table, native_id = args.get("table"), args.get("native_id")
+    if not (table and native_id) or table not in PUSH_TABLES:
+        _log.error(
+            "crm.broker.push_refused", action=proposal.action,
+            module=args.get("module"), table=table,
+            reason="proposal names no native row this handler may record on",
+        )
+        raise RuntimeError(
+            f"Zoho push {proposal.action} names no native row to record on — "
+            "refused before any Zoho call"
+        )
+    async with _tenant_session(org) as db:
+        visible = await load_row(db, table, str(native_id)) is not None
+    if not visible:
+        _log.error(
+            "crm.broker.push_refused", action=proposal.action,
+            module=args.get("module"), table=table, record_id=native_id,
+            reason="the native row is not visible in the bound tenant",
+        )
+        raise RuntimeError(
+            f"Zoho push {proposal.action}: native row {table}/{native_id} is "
+            "not in this tenant — refused before any Zoho call"
+        )
+
     result = await execute_push(
         module=args.get("module"),
         op=op,
@@ -176,35 +235,10 @@ async def _handle_crm_zoho_write(proposal: Any) -> dict[str, Any]:
         body=args.get("body") or {},
     )
 
-    table, native_id = args.get("table"), args.get("native_id")
-    if not (table and native_id):
-        # An older proposal from before the payload carried them. Say so
-        # loudly: the write HAPPENED, and the row it belongs to is now out of
-        # sync in a way only a human can reconcile.
-        _log.error(
-            "crm.broker.push_applied_unrecorded",
-            action=proposal.action, module=args.get("module"),
-            reason="proposal carries no native row reference",
-        )
-        return result
-
-    # H4/H6, DELIBERATELY NOT H2 (`saas_multitenancy_handover.md`): this is an
-    # approval-time BROKER HANDLER acting as the service identity
-    # `crm:zoho-sync`, not a member's request — an operator may approve the
-    # queued proposal months after it was enqueued, from a context whose
-    # ambient tenant (if any) is the approver's, not the record's. The tenant
-    # source H4 must thread through is the PROPOSAL PAYLOAD (it already carries
-    # `table` + `native_id`, whose row carries `organization_id`), i.e.
-    # `tenant_session(org_id)` — never the ambient binding. Named in
-    # `test_db_engine_seam.py`'s H2_EXEMPT_FILES.
-    db = await _get_db()
-    try:
+    async with _tenant_session(org) as db:
         await apply_push_result(
             db, table=table, native_id=native_id, op=op, result=result,
         )
-        await db.commit()
-    finally:
-        await db.close()
     _log.info(
         "crm.broker.push_applied",
         action=proposal.action, module=args.get("module"),
@@ -229,6 +263,7 @@ def register_crm_broker_handlers() -> None:
 __all__ = [
     "BROKER_ACTOR",
     "CRM_ZOHO_ACTIONS",
+    "PUSH_TABLES",
     "broker_enforced",
     "broker_gate",
     "pending_action_for",

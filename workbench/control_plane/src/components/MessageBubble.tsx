@@ -1,29 +1,59 @@
 "use client";
 
 import Icon from "@/components/Icon";
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import React from "react";
 import type { ChatMessage } from "@/hooks/useAgentChat";
 import type { FileEntry } from "@/components/ArtifactSidebar";
-import type { ParsedAgentError } from "@/lib/parseAgentError";
-import MarkdownMessage from "@/components/MarkdownMessage";
+import { parseStoredRunError } from "@/lib/runErrors";
+import MarkdownMessage, { MarkdownBody } from "@/components/MarkdownMessage";
 import MessageActionBar from "@/components/MessageActionBar";
+import { isHelloRow } from "@/lib/shell/buddyHello";
 import GenerativeUIPanel from "@/components/GenerativeUIPanel";
 import ArtifactCard, { type ArtifactMeta } from "@/components/ArtifactCard";
-import EmailToolCards from "@/components/email/EmailToolCards";
-import TaskToolCards from "@/components/tasks/TaskToolCards";
-import ProjectToolCards from "@/components/projects/ProjectToolCards";
-import GenerativeUINode from "@/components/GenerativeUINode";
+import { fileCardsOf } from "@/lib/artifactCards";
+import { ArtifactOpenContext, type ArtifactOpeners } from "@/components/ArtifactLink";
+import EmailToolCards, { emailEvidence } from "@/components/email/EmailToolCards";
+import { EMAIL_AGENT, delegatedSteps, withEmailSteps } from "@/lib/delegatedSteps";
+import TaskToolCards, { taskEvidence } from "@/components/tasks/TaskToolCards";
+import ProjectToolCards, { projectEvidence } from "@/components/projects/ProjectToolCards";
+import ProfileToolCards from "@/components/profile/ProfileToolCards";
+import StudioToolCards from "@/components/studio/StudioToolCards";
+import { crmEvidence } from "@/components/crm/CrmEvidence";
+import type { ToolEvent } from "@/components/MarkdownMessage";
+import { genUiFlow, genUiPlacement, genUiTitle, type FlowBlock } from "@/lib/chatPlacement";
+import { unfenced } from "@/lib/fencedText";
+import RollupCard from "@/components/RollupCard";
+import { answersFromTools } from "@/lib/askAnswers";
+import { askOutcome } from "@/lib/askOutcome";
+import { genUiTarget } from "@/lib/askPin";
+import GenerativeUINode, { genUiRootOwnsHead } from "@/components/GenerativeUINode";
 import ErrorCard from "@/components/ChatErrorCard";
+import { OtherAccountNotice } from "@/components/OtherAccountNotice";
 import { DismissableCard } from "@/components/ToolCardShell";
-import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
+import { useDismissedToolCards, dismissToolCard, noticeDismissKey } from "@/lib/dismissedTools";
 import { openDoc, openGenUI } from "@/lib/sidePanelStore";
 import { useSidePanelFits } from "@/lib/sidePanelFit";
 import { AgentAvatar, useAgentAvatars } from "@/components/AgentAvatar";
 import { capabilityLabel, type RoomParticipant } from "@/lib/rooms";
 import { EntityIndexContext } from "@/components/ChatEntityPill";
 import { buildEntityIndex } from "@/lib/entityIndex";
-import { pillsForTurn } from "@/lib/projectsAgent";
+import { buildLinkChipIndex } from "@/lib/linkChips";
+import { pillsForTurn, taskRefModeForTurn } from "@/lib/projectsAgent";
+import { useRevalidateOnTools } from "@/lib/taskRefs";
+import AnswerDetails from "@/components/AnswerDetails";
+import { profileMarkShown, ranByViewer } from "@/lib/profileMark";
+import { tierRouteLabel, tierRoutingUiOn } from "@/lib/tierRouting";
+import { isEdited } from "@/lib/chatEdit";
+import { cardAnswerOf, cardAnswerText } from "@/lib/cardAnswer";
+import CardAnswerContent from "@/components/CardAnswerContent";
+import { STEER_WAITING, enterSends, isSteered, touchKeyboard } from "@/lib/chatSteer";
+import ChatSendButton from "@/components/ChatSendButton";
+import { PendingChips, SentChips, workspaceFileUrl } from "@/components/ChatAttachmentChips";
+import { canSend as canSendEdit, composeMessage, editStart } from "@/lib/chatAttachments";
+import type { PendingFile } from "@/lib/chatAttachments";
+import { parseUploadNote, wordsOfMessage } from "@/lib/chatUpload";
+import Button from "@/components/ui/Button";
 
 /** The only part of a room participant a message bubble needs: a face. */
 export type BubbleParticipant = Pick<
@@ -72,6 +102,21 @@ function PersonAvatar({
 }
 
 /**
+ * A member's words. A message that ends in the upload note draws its words,
+ * then chips (projects_ai_chat §30.4). A note that does not parse stays text.
+ */
+function UserWords({ content, sessionId }: { content: string; sessionId: string }) {
+  const note = parseUploadNote(content);
+  if (!note) return <p className="whitespace-pre-wrap break-words">{content}</p>;
+  return (
+    <>
+      {note.words && <p className="whitespace-pre-wrap break-words">{note.words}</p>}
+      <SentChips files={note.files} sessionId={sessionId} />
+    </>
+  );
+}
+
+/**
  * Name plate over an agent's turn, used only when the thread has more than one
  * voice in it. Lives in its own component so the avatar map is fetched for the
  * handful of labelled turns rather than once per message bubble in the thread.
@@ -98,14 +143,17 @@ function MessageBubble({
   sessionId,
   onChoice,
   onHitlRespond,
+  onHitlDecline,
+  askAnswers,
   onFileOpen,
-  onResend,
+  onEditLast,
   onRetryMessage,
   emailContext,
   viewerEmail,
   participants,
   sessionAgentName,
   entityPills = false,
+  taskRefAgent,
 }: {
   message: ChatMessage;
   sessionId: string;
@@ -114,8 +162,17 @@ function MessageBubble({
    *  answers resume the parked run via /agent/respond-input instead of being
    *  sent as a new chat message. Falls back to onChoice when absent. */
   onHitlRespond?: (requestId: string, answer: string) => void;
+  /** "Not now" on a blocking generative-UI card (`lib/declineAnswer.ts`).
+   *  Only a card with a `request_id` parks a run, so only it gets one. */
+  onHitlDecline?: (requestId: string) => void;
+  /** The answers this session sent to blocking cards, by `request_id`
+   *  (`lib/askAnswers.ts`). A card that has one stays locked on a remount. */
+  askAnswers?: ReadonlyMap<string, string>;
   onFileOpen?: (entry: FileEntry) => void;
-  onResend?: (content: string) => void;
+  /** Present on the member's LAST user message only (`lib/chatEdit.ts`).
+   *  The edit replaces that message and every reply after it. An earlier
+   *  message offers no Edit, because editing it would fork the thread. */
+  onEditLast?: (messageId: string, content: string) => Promise<string | null>;
   onRetryMessage?: (m: ChatMessage) => void;
   emailContext?: { accountId?: string | null; emailId?: string | null };
   /** Who is reading. Absent in a solo thread, where every human turn is yours. */
@@ -128,9 +185,22 @@ function MessageBubble({
    *  the Projects assistant only. A turn by another agent in the thread
    *  still draws none. */
   entityPills?: boolean;
+  /** The thread's agent, for the bare `#171` task links (owner report,
+   *  2026-10-13). `taskRefsForTurn` decides, by the agent of each turn. */
+  taskRefAgent?: string;
 }) {
   // Whether a document may open in the side panel here (`lib/sidePanelFit.ts`).
   const panelFits = useSidePanelFits();
+  // A link to a file in the reply opens these viewers, as the file card does
+  // (owner report, 2026-10-16, `components/ArtifactLink.tsx`). The report
+  // card opens its report through the same openers (`ReportTemplate`).
+  const artifactOpeners = useMemo<ArtifactOpeners>(() => ({
+    sessionId,
+    openModal: onFileOpen,
+    openPanel: panelFits
+      ? (entry) => openDoc({ path: entry.path, name: entry.name, sessionId })
+      : undefined,
+  }), [sessionId, onFileOpen, panelFits]);
   // Deliberately NOT `role === "user"`.  `role` is the model's vocabulary: it
   // says which side of the conversation a turn sits on, and in a room every
   // person's turn is `role: "user"` — mine and yours alike.  Ownership is an
@@ -145,6 +215,11 @@ function MessageBubble({
       message.authorEmail.toLowerCase() === viewerEmail.toLowerCase());
   const isUser = message.role === "user";
   const isSystem = message.role === "system";
+  // A card answer that went as a new message (`lib/cardAnswer.ts`). The
+  // turn's content is the envelope the model reads, and the member reads
+  // the answered card instead. It is never edited: its words are the
+  // server's.
+  const cardAnswer = isUser ? cardAnswerOf(message) : null;
   const author = message.authorEmail
     ? participants?.find((p) => p.subject === message.authorEmail)
     : undefined;
@@ -161,7 +236,17 @@ function MessageBubble({
       ? message.authorEmail !== sessionAgentName
       : otherVoices > 0);
   const [editing, setEditing] = useState(false);
-  const [editText, setEditText] = useState(message.content);
+  // The server's answer to an edit: pending while it decides, then the
+  // reason it refused. A refusal keeps the composer open with the text.
+  const [editPending, setEditPending] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+  const [editText, setEditText] = useState(() => editStart(message.content).words);
+  const [editItems, setEditItems] = useState<PendingFile[]>([]);
+  const openEdit = () => {
+    const e = editStart(message.content, (p) => workspaceFileUrl(sessionId, p));
+    setEditText(e.words);
+    setEditItems(e.items);
+  };
   const editRef = useRef<HTMLTextAreaElement>(null);
 
   // Auto-grow the edit textarea + focus when entering edit mode
@@ -170,7 +255,7 @@ function MessageBubble({
       const t = editRef.current;
       t.focus();
       t.style.height = "auto";
-      t.style.height = `${Math.max(t.scrollHeight, 60)}px`;
+      t.style.height = `${Math.max(t.scrollHeight, 32)}px`;
     }
   }, [editing]);
 
@@ -193,39 +278,65 @@ function MessageBubble({
   // the context. Only a Projects turn builds it: another agent's tools hold
   // email bodies and other text that no pill may resolve against.
   const pills = pillsForTurn(entityPills, message);
+  // An orchestrator turn links every bare #N only when it asked a task agent
+  // (review of PR #1156). Otherwise only a number followed by its title.
+  const refs = taskRefModeForTurn(taskRefAgent, message, dedupedToolEvents);
+  // A tool of this turn may have created the #234 that its answer, or a card,
+  // names next. Ask the task lookup again, so a miss read before the write
+  // does not stay text (owner report, 2026-10-19). Only this chat's answers
+  // and the cards (`""`) are asked again, never another session's numbers.
+  useRevalidateOnTools(
+    dedupedToolEvents.filter((t) => t.status === "done").length,
+    !!message.streaming,
+    sessionId,
+  );
   const entityIndex = useMemo(
     () => (pills ? buildEntityIndex(dedupedToolEvents) : null),
     [pills, dedupedToolEvents],
   );
+  // The hrefs this turn's tools printed (KB-4b). A link in the answer to one
+  // of them draws as a chip. An assistant turn only, and not tied to pills.
+  const linkChips = useMemo(
+    () => (isUser || isSystem ? undefined : buildLinkChipIndex(dedupedToolEvents)),
+    [isUser, isSystem, dedupedToolEvents],
+  );
+
+  // A READ's receipt draws in its step, inside the trail, and never after the
+  // answer (spec `projects_ai_chat.md` §24 rule 2, owner 2026-10-08). Each
+  // card file says whether an event is its read; `lib/chatPlacement.ts` is
+  // the one map behind all four.
+  const accountId = emailContext?.accountId;
+  const evidenceFor = useCallback(
+    (e: ToolEvent) => {
+      const own = projectEvidence(e) ?? taskEvidence(e) ?? emailEvidence(e, accountId) ?? crmEvidence(e);
+      if (own) return own;
+      // A hand-off to email-assistant holds the reads of its sub-run, so
+      // they draw in that step (navigation_shell.md §7.1.1 rule 5).
+      const reads = delegatedSteps([e], EMAIL_AGENT)
+        .map((st) => ({ id: st.id, node: emailEvidence(st, accountId) }))
+        .filter((r) => r.node != null);
+      if (reads.length === 0) return null;
+      return (
+        <div className="space-y-2 min-w-0">
+          {reads.map((r) => <div key={r.id}>{r.node}</div>)}
+        </div>
+      );
+    },
+    [accountId],
+  );
+  // The steps of a delegated email run, after the turn's own events, so the
+  // draft, thread and rule cards draw in the one assistant (§7.1.1 rule 5).
+  const emailCardEvents = useMemo(() => withEmailSteps(dedupedToolEvents), [dedupedToolEvents]);
 
   // Dismissed tool/artifact cards (persisted) — filter them out of every card
   // surface so closing a card sticks across reloads.
   const dismissed = useDismissedToolCards();
 
   // ── Extract artifact events from custom events ──────────────────────────
-  // Dedup by path (last write wins) so an artifact_created followed by an
-  // artifact_updated for the SAME file renders as one card, not two.
-  const artifactEvents: ArtifactMeta[] = (() => {
-    const byPath = new Map<string, ArtifactMeta>();
-    for (const e of message.customEvents ?? []) {
-      if (
-        (e.name === "artifact_created" || e.name === "artifact_updated") &&
-        e.value &&
-        typeof e.value === "object"
-      ) {
-        const v = e.value as Record<string, unknown>;
-        const path = String(v.path ?? "");
-        byPath.set(path, {
-          path,
-          name: path.split("/").pop() ?? path,
-          size: typeof v.size === "number" ? v.size : undefined,
-          mimeType: typeof v.mime_type === "string" ? v.mime_type : undefined,
-          sha256: typeof v.sha256 === "string" ? v.sha256 : undefined,
-        } satisfies ArtifactMeta);
-      }
-    }
-    return [...byPath.values()];
-  })();
+  // One card per path (last write wins), and none for a QUIET file: a file
+  // that another card shows, such as the files behind a report card
+  // (`lib/artifactCards.ts`, §14.10).
+  const artifactEvents: ArtifactMeta[] = fileCardsOf(message.customEvents);
 
   // ── Generative-UI events → inline declarative component trees ───────────
   // Agents push `generative_ui` CUSTOM events carrying a safe component tree
@@ -233,9 +344,30 @@ function MessageBubble({
   // inline as a first-class element (not buried in the "Interactive view"
   // fold) so on-the-fly UI is prominent. Button actions route through onChoice
   // — the same follow-up contract as the ```choices``` MCQ block.
-  const genUiEvents = (message.customEvents ?? [])
-    .filter((e) => e.name === "generative_ui" && e.value != null)
-    .map((e) => e.value);
+  // The answers the run itself recorded, so a reload keeps a card answered.
+  const toolAnswers = useMemo(() => answersFromTools(dedupedToolEvents), [dedupedToolEvents]);
+  const genUiRaw = (message.customEvents ?? [])
+    .filter((e) => e.name === "generative_ui" && e.value != null);
+  const genUiEvents = genUiRaw.map((e) => e.value);
+  // Text that streamed AFTER a card draws below that card (owner report,
+  // 2026-10-09: the run's answer to a picked option drew above the picker,
+  // so the click looked dead). `null` keeps the old order: all the text,
+  // then all the cards. `genUiFlow` in lib/chatPlacement.ts is the rule.
+  const flow = genUiFlow(message.segments, genUiRaw.map((e) => e.segmentCutoff));
+  const head = flow && flow[0]?.kind === "text" ? flow[0].text : "";
+  // ONE slot for the cards in both layouts, so a card keeps its place in
+  // the tree when the turn's first text arrives after it, and never
+  // remounts: its block is the first after the head in both (`cards-0`).
+  const blocks: FlowBlock[] = flow
+    ? (head ? flow.slice(1) : flow)
+    : genUiEvents.length > 0
+      ? [{ kind: "cards", indexes: genUiEvents.map((_, i) => i) }]
+      : [];
+  const lastTextIdx = flow ? flow.map((b) => b.kind).lastIndexOf("text") : -1;
+
+  // The tiers that served this answer (WS-45 S3, D90 Q4), for every member.
+  // Null with the UI flag off, so the action row is as it was.
+  const tierLabel = tierRoutingUiOn() ? tierRouteLabel(message.customEvents) : null;
 
   const timestamp = new Date(message.timestamp).toLocaleTimeString([], {
     hour: "2-digit",
@@ -274,12 +406,26 @@ function MessageBubble({
   if (isSystem) {
     const content = message.content;
     if (content.startsWith("__ERROR__")) {
-      try {
-        const parsed: ParsedAgentError = JSON.parse(content.slice(9));
-        return <ErrorCard parsed={parsed} />;
-      } catch {
-        // fall through
+      const runError = parseStoredRunError(content.slice(9));
+      // The other-account notice switches accounts (owner call, 2026-10-18).
+      if (runError.code === "answer_in_other_account") {
+        return (
+          <OtherAccountNotice
+            id={`error:${message.id}`}
+            dismissKey={noticeDismissKey(sessionId, message.id)}
+            error={runError}
+          />
+        );
       }
+      // Retry re-sends the member's last message (`lib/chatRetry.ts`).
+      return (
+        <ErrorCard
+          id={`error:${message.id}`}
+          dismissKey={noticeDismissKey(sessionId, message.id)}
+          error={runError}
+          onRetry={onRetryMessage ? () => onRetryMessage(message) : undefined}
+        />
+      );
     }
     // Context-compaction summary pill — styled distinctly so users know
     // the conversation was compressed.
@@ -290,9 +436,7 @@ function MessageBubble({
       return (
         <div className="rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-[11px] text-primary/80">
           <div className="flex items-center gap-1.5 font-medium mb-1">
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M3 8h10M8 3l5 5-5 5" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
+            <Icon name="ArrowRight" size={12} className="shrink-0" />
             {header}
           </div>
           {body && (
@@ -308,23 +452,43 @@ function MessageBubble({
     );
   }
 
-  const handleEditSubmit = () => {
-    const trimmed = editText.trim();
-    if (trimmed && onResend) {
-      onResend(trimmed);
+  const handleEditSubmit = async () => {
+    if (editPending) return;
+    // The words, then the note of the files that are kept (`composeMessage`).
+    const trimmed = composeMessage(editText, editItems).trim();
+    // An unchanged text is a RESEND (owner, task 1653): it takes the same
+    // supersede path as a changed one, so the old answer is replaced and the
+    // model reads the note of the writes that already ran. Retry cannot do
+    // that: it sends a new turn with no note and keeps the old rows.
+    if (!trimmed || !onEditLast) {
+      setEditing(false);
+      return;
     }
-    setEditing(false);
+    setEditPending(true);
+    setEditError(null);
+    const refused = await onEditLast(message.id, trimmed);
+    setEditPending(false);
+    // Accepted: the edited turn replaces this bubble. Refused: the thread is
+    // as it was, and the member keeps the text and reads why.
+    if (refused) setEditError(refused);
+    else setEditing(false);
   };
+  const cancelEdit = () => {
+    setEditing(false);
+    setEditError(null);
+    openEdit();
+  };
+  const startEdit = onEditLast && !cardAnswer
+    ? () => { openEdit(); setEditError(null); setEditing(true); }
+    : undefined;
 
   const handleEditKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // Enter inserts a newline (matches the main composer) — only Ctrl/Cmd+
-    // Enter (or the Send button) submits the edited message.
-    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+    // The main composer's keys: Enter sends and Shift+Enter is a new line.
+    if (enterSends({ ...e, isComposing: e.nativeEvent.isComposing }, touchKeyboard())) {
       e.preventDefault();
-      handleEditSubmit();
+      void handleEditSubmit();
     } else if (e.key === "Escape") {
-      setEditing(false);
-      setEditText(message.content);
+      cancelEdit();
     }
   };
 
@@ -332,7 +496,7 @@ function MessageBubble({
     setEditText(e.target.value);
     const t = e.currentTarget;
     t.style.height = "auto";
-    t.style.height = `${Math.min(Math.max(t.scrollHeight, 60), 300)}px`;
+    t.style.height = `${Math.min(Math.max(t.scrollHeight, 32), 300)}px`;
   };
 
   // ═══ Someone ELSE's turn — left-aligned, with a face and a name ═══
@@ -351,12 +515,16 @@ function MessageBubble({
             <span className="text-[10px] text-muted-foreground">{timestamp}</span>
           </div>
           <div className="px-4 py-2.5 text-[13px] sm:text-sm leading-relaxed bg-secondary text-foreground rounded-2xl rounded-tl-md">
-            <p className="whitespace-pre-wrap break-words">{message.content}</p>
+            {cardAnswer ? (
+              <CardAnswerContent answer={cardAnswer} />
+            ) : (
+              <UserWords content={message.content} sessionId={sessionId} />
+            )}
           </div>
           {message.content.trim() && (
             <div className="flex items-center gap-2 mt-1 pl-0.5">
               <MessageActionBar
-                content={message.content}
+                content={cardAnswer ? cardAnswerText(cardAnswer) : wordsOfMessage(message.content)}
                 messageId={message.id}
                 role="user"
               />
@@ -370,72 +538,122 @@ function MessageBubble({
   if (isUser) {
     return (
       <div className="flex justify-end group">
-        {editing ? (
-          /* ═══ Edit mode ═══ */
-          <div className="w-full max-w-full sm:max-w-[85%]">
-            <div className="rounded-2xl rounded-tr-sm border-2 border-warning/50 bg-secondary shadow-lg shadow-warning/5 overflow-hidden">
-              {/* Edit header */}
-              <div className="flex items-center justify-between px-4 py-2 border-b border-border/60 bg-secondary/80">
-                <span className="text-[11px] text-warning/80 font-medium">
-                  ✏️ Editing message
+        {editing && onEditLast ? (
+          /* ═══ Edit mode — a variant of the chat composer (owner, 2026-10-09).
+             Same container, radius, padding and Send button as the composer
+             in AgentChat. The cue is the primary border and a Pencil icon,
+             tokens only. The keyboard hint shows on a desktop pointer only. */
+          <div className="w-full sm:max-w-[85%]">
+            <div className="rounded-2xl border border-primary/40 bg-secondary/50 tech-transition">
+              <div className="flex items-center gap-1.5 pl-3 pr-1 pt-1.5 text-[11px] text-muted-foreground">
+                <Icon name="Pencil" size={12} className="shrink-0 text-primary" />
+                <span className="font-medium text-foreground">Editing</span>
+                <span className="hidden lg:inline pointer-coarse:hidden truncate">
+                  · Ctrl+Enter to send · Esc to cancel
                 </span>
-                <span className="text-[10px] text-muted-foreground hidden sm:block">
-                  Ctrl+Enter to send · Esc to cancel · Enter for new line
-                </span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={cancelEdit}
+                  className="ml-auto"
+                >
+                  Cancel
+                </Button>
               </div>
-
-              {/* Textarea */}
-              <div className="px-3 py-3">
+              <div className="flex items-end gap-2 px-2 pt-1 pb-2">
                 <textarea
                   ref={editRef}
                   value={editText}
                   onChange={handleEditInput}
                   onKeyDown={handleEditKeyDown}
-                  rows={3}
-                  className="w-full resize-none rounded-xl bg-card border border-border px-4 py-3 text-[16px] sm:text-sm text-foreground placeholder-muted-foreground focus:outline-none focus:border-warning/60 transition-colors"
-                  style={{ minHeight: "60px", maxHeight: "300px" }}
+                  rows={1}
+                  aria-label="Edit your message"
+                  className="flex-1 resize-none bg-transparent px-1 py-1.5 text-[16px] sm:text-sm text-foreground placeholder-muted-foreground focus:outline-none overflow-y-auto scrollbar-thin"
+                  style={{ minHeight: "32px", maxHeight: "300px" }}
+                />
+                <ChatSendButton
+                  type="button"
+                  onClick={() => void handleEditSubmit()}
+                  disabled={!canSendEdit(editText, editItems)}
+                  loading={editPending}
+                  label="Send edited message"
+                  title="Send edited message"
                 />
               </div>
-
-              {/* Action buttons */}
-              <div className="flex items-center justify-between px-4 py-2.5 border-t border-border/60 bg-secondary/60">
-                <button
-                  onClick={() => { setEditing(false); setEditText(message.content); }}
-                  className="text-[12px] px-3 py-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary/60 transition-colors"
-                >
-                  Cancel
-                </button>
-                <div className="flex items-center gap-2">
-                  <span className="text-[10px] text-muted-foreground">{editText.length} chars</span>
-                  <button
-                    onClick={handleEditSubmit}
-                    disabled={!editText.trim()}
-                    className="text-[12px] px-4 py-1.5 rounded-lg bg-primary text-primary-foreground font-semibold disabled:opacity-30 hover:opacity-90 tech-transition flex items-center gap-1.5"
-                  >
-                    <span>↑</span> Send
-                  </button>
-                </div>
+              <div className={editItems.length > 0 ? "pb-2" : undefined}>
+                <PendingChips
+                  items={editItems}
+                  onRemove={(id) => { setEditItems((xs) => xs.filter((x) => x.id !== id)); editRef.current?.focus(); }}
+                  onRetry={() => {}}
+                />
               </div>
+              {editError && (
+                <p role="alert" className="flex items-start gap-1.5 px-3 pb-2 text-[11px] text-destructive">
+                  <Icon name="AlertCircle" size={12} className="mt-0.5 shrink-0" />
+                  <span className="min-w-0">{editError}</span>
+                </p>
+              )}
+            </div>
+          </div>
+        ) : isSteered(message) ? (
+          /* ═══ A steer (owner, 2026-10-12, lib/chatSteer.ts) ═══
+             Words the member added to a reply while the agent worked. A
+             small note, not a new turn: a quiet tinted box, the words, and
+             one line under it that says what the server did with them. */
+          <div className="max-w-[88%] sm:max-w-[78%]" data-chat-steer={message.steerAck ?? "added"}>
+            <div className="flex items-start gap-1.5 rounded-xl border border-primary/20 bg-primary/5 px-3 py-1.5 text-[13px] sm:text-sm leading-relaxed text-foreground">
+              <Icon name="MessageSquarePlus" size={13} className="mt-1 shrink-0 text-primary" />
+              {/* A card answer that steered a live run (review of #942): the
+                  answered card, never the envelope the model reads. */}
+              {cardAnswer ? (
+                <CardAnswerContent answer={cardAnswer} />
+              ) : (
+                <div className="min-w-0"><UserWords content={message.content} sessionId={sessionId} /></div>
+              )}
+            </div>
+            <div className="mt-1 flex items-center justify-end gap-1.5 pr-0.5 text-[10px] text-muted-foreground">
+              {message.steerAck === "sending" ? (
+                <>
+                  <Icon name="Loader2" size={10} className="animate-spin shrink-0" />
+                  <span>Adding to the reply…</span>
+                </>
+              ) : message.steerWaiting ? (
+                <span data-steer-waiting>{STEER_WAITING}</span>
+              ) : (
+                <>
+                  <Icon name="Check" size={10} className="shrink-0 text-success" />
+                  <span>Added to the reply</span>
+                </>
+              )}
+              <span>{timestamp}</span>
             </div>
           </div>
         ) : (
           /* ═══ Normal user bubble — compact, right-aligned, no avatar ═══ */
           <div className="max-w-[88%] sm:max-w-[78%]">
             <div
-              onDoubleClick={() => { setEditText(message.content); setEditing(true); }}
-              className="px-4 py-2.5 text-[13px] sm:text-sm leading-relaxed bg-primary/15 text-foreground rounded-2xl rounded-tr-md cursor-pointer select-none hover:bg-primary/20 tech-transition"
-              title="Double-click to edit"
+              onDoubleClick={startEdit}
+              className={`px-4 py-2.5 text-[13px] sm:text-sm leading-relaxed bg-primary/15 text-foreground rounded-2xl rounded-tr-md tech-transition ${cardAnswer ? "" : "glass:bg-primary glass:text-primary-foreground "}glass:text-body glass:sm:text-body glass:leading-normal glass:rounded-[16px] glass:rounded-br-[6px] ${startEdit ? `cursor-pointer select-none hover:bg-primary/20${cardAnswer ? "" : " glass:hover:bg-primary"}` : ""}`}
+              title={startEdit ? "Double-click to edit" : undefined}
             >
-              <p className="whitespace-pre-wrap break-words">{message.content}</p>
+              {cardAnswer ? (
+                <CardAnswerContent answer={cardAnswer} />
+              ) : (
+                <UserWords content={message.content} sessionId={sessionId} />
+              )}
             </div>
             <div className="flex items-center justify-end gap-2 mt-1 pr-0.5 opacity-100 transition-opacity">
               {message.content.trim() && (
                 <MessageActionBar
-                  content={message.content}
+                  content={cardAnswer ? cardAnswerText(cardAnswer) : wordsOfMessage(message.content)}
                   messageId={message.id}
                   role="user"
-                  onEdit={() => { setEditText(message.content); setEditing(true); }}
+                  onEdit={startEdit}
                 />
+              )}
+              {isEdited(message) && (
+                <span className="text-[10px] text-muted-foreground">Edited</span>
               )}
               <div className="text-[10px] text-muted-foreground">{timestamp}</div>
             </div>
@@ -445,8 +663,82 @@ function MessageBubble({
     );
   }
 
+  // One generative-UI card, by its index in `genUiEvents`. Both orders draw
+  // through it: the old order and the stream order of `genUiFlow`.
+  const renderGenUi = (i: number) => {
+    const spec = genUiEvents[i];
+
+    const rec = (spec && typeof spec === "object"
+      ? spec : {}) as Record<string, unknown>;
+    const requestId =
+      typeof rec.request_id === "string" ? rec.request_id : null;
+    const act = (msg: string) => {
+      if (requestId && onHitlRespond) onHitlRespond(requestId, msg);
+      else onChoice?.(msg);
+    };
+    const answered = requestId
+      ? (askAnswers?.get(requestId) ?? toolAnswers.get(requestId))
+      : undefined;
+    const decline = requestId && onHitlDecline ? () => onHitlDecline(requestId) : undefined;
+    // An element that needs the member is marked, so the pin above
+    // the composer can find it and scroll to it (§24 rule 1).
+    const ask = genUiPlacement(spec) === "ask";
+    const askAttr = ask ? { "data-chat-ask": genUiTarget(message.id, i, spec) } : {};
+    if (rec.surface === "panel") {
+      const title = typeof rec.title === "string" && rec.title
+        ? rec.title : "Interactive view";
+      return (
+        <Button
+          key={i}
+          type="button"
+          variant="secondary"
+          size="sm"
+          icon="AppWindow"
+          onClick={() => openGenUI({
+            id: `${message.id}:${i}`,
+            title,
+            sessionId,
+            spec,
+          })}
+        >
+          <span className="font-medium text-foreground">{title}</span>
+          <span>· Open in the side panel</span>
+        </Button>
+      );
+    }
+    // A long card rolls up when a newer card arrives (`components/RollupCard`).
+    // An ask that still waits never does: the pin's own rule says when.
+    // A root `card`, and a template with its own head, has its own title
+    // row, and that row is the one toggle. A root card never wore an icon,
+    // and a template draws its own, so neither gets one. A frame does.
+    const target = genUiTarget(message.id, i, spec);
+    const title = unfenced(genUiTitle(spec)) || "Card";
+    const header = genUiRootOwnsHead(spec) ? "own" : "frame";
+    const icon = header === "own" ? undefined : "LayoutTemplate";
+    if (ask) {
+      // An answered card folds to one line that says what happened (§29
+      // rule 1, owner report 2026-10-19). It never folds to a bare title.
+      return (
+        <RollupCard key={i} id={target} title={title} icon={icon} header={header}
+          askTarget={answered === undefined ? target : undefined}
+          answered={answered !== undefined} summary={askOutcome(spec, answered) || undefined}>
+          <div {...askAttr} className="min-w-0 outline-none">
+            <GenerativeUINode spec={spec} onAction={act} answered={answered} onDecline={decline} />
+          </div>
+        </RollupCard>
+      );
+    }
+    // A result card: a long one opens cut, with "Show all" (§29 rule 2).
+    return (
+      <RollupCard key={i} id={target} title={title} icon={icon} header={header} clamp>
+        <GenerativeUINode spec={spec} onAction={act} answered={answered} onDecline={decline} />
+      </RollupCard>
+    );
+  };
+
   // ═══ Assistant message — no bubble, renders directly ═══
   return (
+    <ArtifactOpenContext.Provider value={artifactOpeners}>
     <div className="group">
       {/* Which agent is speaking — only in a thread where that is a real
           question (see showAgentLabel). The turn's layout is otherwise
@@ -456,17 +748,22 @@ function MessageBubble({
           ThinkingContainer, code blocks, and artifact cards have their own
           visual containers. Only the timestamp and action bar are added. */}
       <MarkdownMessage
-        content={message.content}
-        streaming={message.streaming}
+        content={flow ? head : message.content}
+        // In flow order the caret sits on the LAST text block, wherever it is.
+        streaming={flow ? message.streaming && !!head && lastTextIdx === 0 : message.streaming}
         toolEvents={dedupedToolEvents}
         progressLines={message.progressLines}
         isThinkingActive={message.isThinkingActive}
         reasoningBlocks={message.reasoningBlocks}
-        segments={message.segments}
+        segments={flow ? (head ? [{ id: "flow-head", text: head }] : undefined) : message.segments}
         onChoice={onChoice}
         sessionId={sessionId}
         entityPills={pills}
         entityIndex={entityIndex ?? undefined}
+        fences
+        taskRefs={refs}
+        linkChips={linkChips}
+        evidenceFor={evidenceFor}
       />
       {/* Inline artifact cards — dismissable (persisted), keyed by sha/path. */}
       {(() => {
@@ -504,51 +801,36 @@ function MessageBubble({
           surface:"panel" specs render as a compact open-chip (the immersive
           view lives in the side panel); specs carrying a request_id route
           interactions through the blocking HITL resume path. */}
-      {genUiEvents.length > 0 && (
+      {blocks.length > 0 && (
         <EntityIndexContext.Provider value={entityIndex}>
-        <div className="mt-3 space-y-2">
-          {genUiEvents.map((spec, i) => {
-            const rec = (spec && typeof spec === "object"
-              ? spec : {}) as Record<string, unknown>;
-            const requestId =
-              typeof rec.request_id === "string" ? rec.request_id : null;
-            const act = (msg: string) => {
-              if (requestId && onHitlRespond) onHitlRespond(requestId, msg);
-              else onChoice?.(msg);
-            };
-            if (rec.surface === "panel") {
-              const title = typeof rec.title === "string" && rec.title
-                ? rec.title : "Interactive view";
-              return (
-                <button
-                  key={i}
-                  type="button"
-                  onClick={() => openGenUI({
-                    id: `${message.id}:${i}`,
-                    title,
-                    sessionId,
-                    spec,
-                  })}
-                  className="flex items-center gap-2 rounded-lg border border-border/60 bg-card/50 px-3 py-2 text-xs text-foreground hover:bg-secondary/60 transition-colors"
-                >
-                  <Icon name="AppWindow" size={13} className="text-primary" />
-                  <span className="font-medium">{title}</span>
-                  <span className="text-muted-foreground">
-                    — open in side panel
-                  </span>
-                </button>
-              );
-            }
-            return <GenerativeUINode key={i} spec={spec} onAction={act} />;
-          })}
-        </div>
+          {blocks.map((b, k) =>
+            b.kind === "cards" ? (
+              <div key={`cards-${k}`} className="mt-3 space-y-2">
+                {b.indexes.map((i) => renderGenUi(i))}
+              </div>
+            ) : (
+              <div key={`text-${k}`} className="mt-3 text-[12px] sm:text-[13px] text-foreground leading-relaxed min-w-0 glass:text-body glass:sm:text-body glass:leading-normal glass:glass-prose">
+                <MarkdownBody
+                  content={b.text}
+                  onChoice={onChoice}
+                  sessionId={sessionId}
+                  entityPills={pills}
+                  entityIndex={entityIndex ?? undefined}
+                  fences
+                  taskRefs={refs}
+                  linkChips={linkChips}
+                  caret={!!message.streaming && flow!.indexOf(b) === lastTextIdx}
+                />
+              </div>
+            ),
+          )}
         </EntityIndexContext.Provider>
       )}
       {/* Inline email-assistant cards (editable draft, rule disable/delete).
           Inert unless the message contains email-assistant tool calls, so this
           renders in both the chat app and the email app. */}
       <EmailToolCards
-        toolEvents={dedupedToolEvents}
+        toolEvents={emailCardEvents}
         accountId={emailContext?.accountId}
         emailId={emailContext?.emailId}
       />
@@ -560,14 +842,22 @@ function MessageBubble({
           titled reads). Inert unless the message contains skill-projects tool
           calls, so this renders in both the chat app and the Projects app's
           AI chat (WS-27bm). */}
-      <ProjectToolCards toolEvents={dedupedToolEvents} />
+      <ProjectToolCards toolEvents={dedupedToolEvents} mine={ranByViewer(message, viewerEmail)} />
+      {/* The approval card of a Studio record change (STU-B2c-2c). Inert
+          unless the message holds an ask of a studio_record_* write tool. */}
+      <StudioToolCards toolEvents={dedupedToolEvents} sessionId={sessionId} />
+      {/* The receipts of the assistant profile writes, each with Undo (WS-63
+          PZ-6a). Inert unless the message holds a profile_* tool call. */}
+      <ProfileToolCards toolEvents={dedupedToolEvents} />
       <GenerativeUIPanel
         agentState={message.agentState}
         customEvents={message.customEvents}
       />
       {!message.streaming && (
         <div className="flex items-center gap-2 mt-1.5 opacity-100 transition-opacity">
-          {message.content.trim() && (
+          {/* The hello is words that code wrote, not a model answer: no Copy
+              and no feedback under it (BUD-1). */}
+          {message.content.trim() && !isHelloRow(message.id) && (
             <MessageActionBar
               content={message.content}
               messageId={message.id}
@@ -576,10 +866,26 @@ function MessageBubble({
               onRetry={onRetryMessage ? () => onRetryMessage(message) : undefined}
             />
           )}
+          {profileMarkShown(message, viewerEmail) && (
+            <Button
+              variant="ghost"
+              size="none"
+              layout="inline-flex items-center"
+              href="/settings/assistant"
+              data-profile-mark=""
+              title="Your profile was used in this answer. Open Assistant settings."
+              className="gap-0.5 px-1 py-0.5 text-[10px]"
+            >
+              <Icon name="UserRound" size={11} />
+              Profile
+            </Button>
+          )}
+          {tierLabel && <AnswerDetails tierLabel={tierLabel} />}
           <div className="text-[10px] text-muted-foreground">{timestamp}</div>
         </div>
       )}
     </div>
+    </ArtifactOpenContext.Provider>
   );
 }
 
@@ -614,7 +920,13 @@ export default React.memo(MessageBubble, (a, b) =>
   a.message === b.message &&
   a.sessionId === b.sessionId &&
   a.onChoice === b.onChoice &&
-  a.onResend === b.onResend &&
+  // The blocking-card answer. Left out, a bubble kept the handler of the
+  // render when the card arrived, with a stale `submitText` inside it, so a
+  // 409 fallback could queue the answer behind a run that had ended.
+  a.onHitlRespond === b.onHitlRespond &&
+  a.onHitlDecline === b.onHitlDecline &&
+  a.askAnswers === b.askAnswers &&
+  a.onEditLast === b.onEditLast &&
   a.onRetryMessage === b.onRetryMessage &&
   a.onFileOpen === b.onFileOpen &&
   a.emailContext?.accountId === b.emailContext?.accountId &&
@@ -622,5 +934,6 @@ export default React.memo(MessageBubble, (a, b) =>
   a.viewerEmail === b.viewerEmail &&
   a.sessionAgentName === b.sessionAgentName &&
   a.entityPills === b.entityPills &&
+  a.taskRefAgent === b.taskRefAgent &&
   sameParticipants(a.participants, b.participants),
 );

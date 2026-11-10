@@ -5,6 +5,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
+import { refuseBadSegment } from "@/app/api/integrations/safeSegment";
 import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
@@ -16,6 +17,8 @@ export async function DELETE(
   const me = await requireIdentity();
   if (me instanceof NextResponse) return me;
   const { id } = await params;
+  const bad = refuseBadSegment(id);
+  if (bad) return bad;
   try {
     const res = await gatewayFetch(
       `${GATEWAY_URL}/integrations/plugins/${encodeURIComponent(id)}`,

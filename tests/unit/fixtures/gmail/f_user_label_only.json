@@ -1,0 +1,59 @@
+{
+  "id": "1926b3a4c5d6e7f8",
+  "threadId": "1926b3a4c5d6e7f8",
+  "labelIds": [
+    "Label_4815162342",
+    "CATEGORY_PERSONAL"
+  ],
+  "snippet": "The weekly build report for the plant line.",
+  "payload": {
+    "partId": "",
+    "mimeType": "text/plain",
+    "filename": "",
+    "headers": [
+      {
+        "name": "Delivered-To",
+        "value": "asha@example.com"
+      },
+      {
+        "name": "Received",
+        "value": "by 2002:a05:7300:5b1a:b0:12a:3c4d:5e6f with SMTP id x9csp1234567; Sat, 05 Oct 2024 06:00:00 +0000"
+      },
+      {
+        "name": "MIME-Version",
+        "value": "1.0"
+      },
+      {
+        "name": "From",
+        "value": "Build Bot <builds@example.net>"
+      },
+      {
+        "name": "Date",
+        "value": "Sat, 05 Oct 2024 06:00:00 +0000"
+      },
+      {
+        "name": "Message-ID",
+        "value": "<weekly-2024-40.build@example.net>"
+      },
+      {
+        "name": "Subject",
+        "value": "Weekly build report"
+      },
+      {
+        "name": "To",
+        "value": "asha@example.com"
+      },
+      {
+        "name": "Content-Type",
+        "value": "text/plain; charset=\"UTF-8\""
+      }
+    ],
+    "body": {
+      "size": 44,
+      "data": "VGhlIHdlZWtseSBidWlsZCByZXBvcnQgZm9yIHRoZSBwbGFudCBsaW5lLgo="
+    }
+  },
+  "sizeEstimate": 4096,
+  "historyId": "2817602",
+  "internalDate": "1728108000000"
+}

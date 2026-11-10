@@ -1,10 +1,13 @@
 "use client";
 
 import Modal from "@/components/ui/Modal";
+import Switch from "@/components/ui/Switch";
 import Icon from "@/components/Icon";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { useTaskStore } from "../lib/taskStore";
 import type { TaskSettings } from "../lib/api";
+import { useTierRouted } from "@/hooks/useTierRouted";
+import { visibleModelRows } from "@/lib/tierRouting";
 import {
   COLUMNS,
   DEFAULT_VISIBLE,
@@ -63,7 +66,7 @@ const MODEL_FIELDS: {
     title: "Email → task drafting model",
     description:
       "Turns an email into an actionable capture title + context when you " +
-      "use “Add to My Tasks” in the email app.",
+      "use “Add to My work” in the email app.",
     def: "tier-fast",
   },
   {
@@ -82,6 +85,14 @@ function SettingsPanel() {
   const backend = useTaskStore((s) => s.backend);
   const settings = useTaskStore((s) => s.settings);
   const updateSettings = useTaskStore((s) => s.updateSettings);
+  // WS-45 S4 (D90, §7.1): the row `user_settings.chat_model` has TWO chat
+  // readers, the Tasks rail (task-manager) and the Projects rail
+  // (projects-assistant). Its control leaves only when the platform routes
+  // both, so a member never loses the control of a chat that still reads it
+  // (review P2 of S4b). The other rows stay (§1.2).
+  const tasksTier = useTierRouted("task-manager");
+  const projectsTier = useTierRouted("projects-assistant");
+  const chatRowLeaves = tasksTier.covered && projectsTier.covered;
 
   // Tier list + enabled models — the same sources the email settings use.
   const [tiers, setTiers] = useState<LLMTierInfo[]>([]);
@@ -130,7 +141,7 @@ function SettingsPanel() {
               <Icon name="Sparkles" className="h-3.5 w-3.5" /> AI models
             </h3>
             <div className="flex flex-col gap-2">
-              {MODEL_FIELDS.map((cfg) => (
+              {visibleModelRows(MODEL_FIELDS, "chatModel", chatRowLeaves).map((cfg) => (
                 <div
                   key={cfg.key}
                   className="rounded-lg border border-border px-3 py-2.5"
@@ -225,10 +236,10 @@ function SettingsPanel() {
           {/* ── Next Actions list columns ── */}
           <section>
             <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <Icon name="Columns3" className="h-3.5 w-3.5" /> Next Actions columns
+              <Icon name="Columns3" className="h-3.5 w-3.5" /> My tasks columns
             </h3>
             <p className="mb-2 px-1 text-[11px] text-muted-foreground">
-              In the list view (desktop), Next Actions shows these as aligned
+              In the list view (desktop), My tasks shows these as aligned
               columns. Hide the ones you don&rsquo;t want to see. On mobile the
               pills stay stacked under each task regardless.
             </p>
@@ -271,24 +282,11 @@ function ColumnsEditor() {
             <span className="text-sm font-medium text-foreground">
               {c.label}
             </span>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={on}
-              aria-label={`Show ${c.label} column`}
-              onClick={() => setColumnVisible(c.key, !on)}
-              className={[
-                "tech-transition relative inline-flex h-5 w-9 shrink-0 items-center rounded-full",
-                on ? "bg-primary" : "bg-secondary",
-              ].join(" ")}
-            >
-              <span
-                className={[
-                  "inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform",
-                  on ? "translate-x-[18px]" : "translate-x-[2px]",
-                ].join(" ")}
-              />
-            </button>
+            <Switch
+              checked={on}
+              onChange={(next) => setColumnVisible(c.key, next)}
+              label={`Show ${c.label} column`}
+            />
           </div>
         );
       })}
@@ -315,24 +313,7 @@ function Toggle({
           {description}
         </p>
       </div>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        aria-label={title}
-        onClick={() => onChange(!checked)}
-        className={[
-          "tech-transition relative mt-0.5 inline-flex h-5 w-9 shrink-0 items-center rounded-full",
-          checked ? "bg-primary" : "bg-secondary",
-        ].join(" ")}
-      >
-        <span
-          className={[
-            "inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform",
-            checked ? "translate-x-[18px]" : "translate-x-[2px]",
-          ].join(" ")}
-        />
-      </button>
+      <Switch checked={checked} onChange={onChange} label={title} className="mt-0.5" />
     </div>
   );
 }

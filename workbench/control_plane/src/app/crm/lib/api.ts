@@ -9,15 +9,51 @@
 // flattened them all to "request failed" would leave the UI unable to explain
 // a refusal, which is the difference between a rule and a bug.
 
-import { filenameFromDisposition, saveCsv } from "@/lib/export";
+import { invalidate } from "@/lib/dataCache";
+import { filenameFromDisposition, saveBlob, saveCsv } from "@/lib/export";
 import { moveRequest, type DealMove, type MoveExtras } from "./board";
 import { queryString, type ListQuery } from "./filters";
+import type { ConnectionInfo, CrmSettings, SyncStatus } from "./connect";
+import type { FieldDef } from "./fields";
+import { asFieldLayout, type FieldLayout } from "./fieldLayout";
+import type {
+  FieldMap,
+  FieldRule,
+  MappingPlan,
+  PlanChange,
+  PlanList,
+} from "./fieldMap";
+import type { CrmOwner } from "./filterBar";
+import type { SavedView, SavedViewBody, ViewEntity } from "./savedViews";
+import type { SyncHealth, SyncHold } from "./syncHealth";
+import type { SourceLabels } from "./views";
+import type {
+  OverlayPreview,
+  SlotWord,
+  SuggestionDone,
+  SuggestionList,
+} from "./suggestions";
+import type {
+  AcceptBestDone,
+  AnswerDone,
+  AnswerValue,
+  CatalogueParts,
+  QuestionsBody,
+  SumCheck,
+} from "./questions";
+import type { BusinessRule, MyChoice, RuleScope, RulesBody } from "./rules";
+import { CHANGE_PAGE_SIZE, type ChangeList } from "./changeHistory";
+import type { PipelinePlan } from "./newPipeline";
+import type { RecordCounts, ResetThen } from "./setup";
+import type { ResetResult } from "./startOver";
 import type {
   Activity,
   Contact,
   ConvertResult,
+  CrmDigest,
   Deal,
   DealContact,
+  DealPipeline,
   EntitySlug,
   FunnelReport,
   Lead,
@@ -33,17 +69,57 @@ import type {
   TimelineEntry,
   WinLossReport,
 } from "./types";
+import type { CrmModule, ModuleListResponse, ModuleRecordPage } from "./modules";
+
+/**
+ * What a refusal with no detail says (CRM-U17a). One sentence for every CRM
+ * refusal that has nothing better, with no status code in it. Anything that
+ * turns a failure into words reads it from here.
+ */
+export const TRY_AGAIN = "That did not work. Try again.";
 
 export class CrmError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  /**
+   * The machine code of a refusal: a string `detail` (`sync_running`) or the
+   * `code` of an object `detail` (`mirrored_record`, `mirror_mode_create`).
+   */
+  code?: string;
+  /**
+   * The custom field that a refusal names (CRM-C4p item 4): the `field` key
+   * of an object `detail`. The C4a write path sends it with each refused
+   * value, so a form can show the message beside that input.
+   */
+  field?: string;
+  /**
+   * The whole object `detail` of a refusal, or undefined (CRM-Z10b). The
+   * switch reads the `modules` of a 409 `module_incomplete` from it. Each
+   * other caller keeps reading `message`, `code` and `field`.
+   */
+  detail?: Record<string, unknown>;
+  constructor(
+    message: string,
+    status: number,
+    code?: string,
+    field?: string,
+    detail?: Record<string, unknown>
+  ) {
     super(message);
     this.name = "CrmError";
     this.status = status;
+    this.code = code;
+    this.field = field;
+    this.detail = detail;
   }
 }
 
-async function call<T>(path: string, init?: RequestInit): Promise<T> {
+/**
+ * The one way to call the gateway (CRM-C4p item 5). Each CRM route goes
+ * through it, so a refusal keeps its status, its code and its field. A second
+ * `fetch` path to `/api/crm` is a defect. The CSV and ZIP downloads below
+ * are the exceptions, because their bodies are not JSON.
+ */
+export async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api/crm${path}`, {
     ...init,
     headers: { "Content-Type": "application/json", ...init?.headers },
@@ -53,7 +129,13 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
       detail?: unknown;
       error?: string;
     };
-    throw new CrmError(detailOf(body) || `Gateway error ${res.status}`, res.status);
+    throw new CrmError(
+      detailOf(body) || TRY_AGAIN,
+      res.status,
+      codeOf(body),
+      fieldOf(body),
+      objectDetailOf(body)
+    );
   }
   if (res.status === 204) return undefined as T;
   const text = await res.text();
@@ -68,6 +150,11 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 function detailOf(body: { detail?: unknown; error?: string }): string {
   const { detail } = body;
   if (typeof detail === "string") return detail;
+  // The write guard (CRM-Z6) answers `{code, source, message}`.
+  if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+    const message = (detail as { message?: unknown }).message;
+    if (typeof message === "string") return message;
+  }
   if (Array.isArray(detail)) {
     return detail
       .map((item) =>
@@ -78,6 +165,34 @@ function detailOf(body: { detail?: unknown; error?: string }): string {
       .join("; ");
   }
   return body.error ?? "";
+}
+
+function codeOf(body: { detail?: unknown }): string | undefined {
+  const { detail } = body;
+  if (typeof detail === "string") return detail;
+  if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+    const code = (detail as { code?: unknown }).code;
+    if (typeof code === "string") return code;
+  }
+  return undefined;
+}
+
+/** An object `detail` as it came, or undefined (CRM-Z10b). */
+function objectDetailOf(body: { detail?: unknown }): Record<string, unknown> | undefined {
+  const { detail } = body;
+  return detail && typeof detail === "object" && !Array.isArray(detail)
+    ? (detail as Record<string, unknown>)
+    : undefined;
+}
+
+/** The `field` of an object `detail`, or undefined (CRM-C4p item 4). */
+function fieldOf(body: { detail?: unknown }): string | undefined {
+  const { detail } = body;
+  if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+    const field = (detail as { field?: unknown }).field;
+    if (typeof field === "string" && field) return field;
+  }
+  return undefined;
 }
 
 // ── Records ───────────────────────────────────────────────────────────────
@@ -116,6 +231,29 @@ export function deleteRecord(
   id: string
 ): Promise<{ deleted: string; entity: string; cascaded: Record<string, number> }> {
   return call(`/${entity}/${id}`, { method: "DELETE" });
+}
+
+// ── Field definitions (CRM-Q4) ────────────────────────────────────────────
+
+/** What each custom field of one entity means. Read only. */
+export function listFields(entity: EntitySlug): Promise<FieldDef[]> {
+  return call<FieldDef[]>(`/fields/${entity}`);
+}
+
+/**
+ * The one layout of an entity (CRM-C4a item 12): the sections, the system
+ * fields and the custom fields, in order, with `studio` and `studio_admin`.
+ * A body that is not a layout throws, so the caller falls back.
+ */
+export async function getFieldLayout(entity: EntitySlug): Promise<FieldLayout> {
+  return asFieldLayout(await call<unknown>(`/fields/${entity}?layout=1`));
+}
+
+// ── The owner filter (CRM-X1) ─────────────────────────────────────────────
+
+/** Each active member, and each record owner who is not a member. */
+export async function listOwners(): Promise<CrmOwner[]> {
+  return (await call<{ owners: CrmOwner[] }>("/owners")).owners;
 }
 
 // ── The CSV export (WS-26i-export) ────────────────────────────────────────
@@ -162,8 +300,68 @@ export async function exportRecords(
 
 // ── The board ─────────────────────────────────────────────────────────────
 
-export function getPipeline(owner?: string | null): Promise<Pipeline> {
-  return call<Pipeline>(`/pipeline${owner ? `?owner=${encodeURIComponent(owner)}` : ""}`);
+export function getPipeline(
+  owner?: string | null,
+  pipelineId?: string | null,
+  extra?: ListQuery,
+): Promise<Pipeline> {
+  const params = new URLSearchParams();
+  if (owner) params.set("owner", owner);
+  if (pipelineId) params.set("pipeline_id", pipelineId);
+  // CRM-Q8: the board takes the same filters as the list.
+  for (const [key, value] of Object.entries(extra ?? {})) {
+    if (value !== undefined && value !== "") params.set(key, String(value));
+  }
+  const qs = params.toString();
+  return call<Pipeline>(`/pipeline${qs ? `?${qs}` : ""}`);
+}
+
+/**
+ * The deal pipelines (CRM-Q2). `null` when the gateway has no such route yet:
+ * the CRM then has one implicit pipeline and shows no picker.
+ */
+export function listPipelines(): Promise<DealPipeline[] | null> {
+  return orNullOn404(call<DealPipeline[]>("/pipelines"));
+}
+
+/**
+ * The lead pipelines, each with its lead statuses in order (WS-CRM CRM-M4a).
+ * Only a row that says `kind: "lead"` counts, so a gateway from before
+ * CRM-M4a, which reads no `kind`, gives none and never its deal pipelines.
+ */
+export async function listLeadPipelines(): Promise<DealPipeline[] | null> {
+  const rows = await orNullOn404(call<DealPipeline[]>("/pipelines?kind=lead"));
+  return rows ? rows.filter((row) => row.kind === "lead") : null;
+}
+
+/**
+ * What a new deal pipeline would hold, in order (WS-CRM CRM-M3a). It reads
+ * only. The gateway answers each refusal of the create here too, so the
+ * dialog shows it before the member presses Create. Admin only, and 404 for
+ * an org off `CRM_PIPELINES_ORGS`.
+ */
+export function previewPipeline(body: Record<string, unknown>): Promise<PipelinePlan> {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(body)) {
+    if (value === undefined || value === null) continue;
+    // The stages go as one JSON value, the shape of the body of a create.
+    query.set(key, typeof value === "string" ? value : JSON.stringify(value));
+  }
+  return call<PipelinePlan>(`/pipelines/preview?${query.toString()}`);
+}
+
+/**
+ * Create a deal pipeline (WS-CRM CRM-M3a). Native mode only: Mirror mode is
+ * 409. It wakes every CRM read, `usePipelines` too, so the Deals board shows
+ * the pipeline switcher when the org has two pipelines.
+ */
+export function createPipeline(body: Record<string, unknown>): Promise<DealPipeline> {
+  return writeAndWake(() =>
+    call<DealPipeline>("/pipelines", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  );
 }
 
 /**
@@ -226,6 +424,23 @@ export function deleteStatus(
   statusId: string
 ): Promise<{ deleted: string; kind: string }> {
   return call(`/statuses/${kind}/${statusId}`, { method: "DELETE" });
+}
+
+/**
+ * The lane order of one kind, in one transaction (WS-53 CRM-C3, §20.6 item 4).
+ * `ids` is every id of the kind, in the new order. Mirror mode writes the
+ * Metorite order (`ui_position`) and never Zoho. Native mode writes `position`.
+ */
+export function orderStatuses(kind: StatusKind, ids: string[]): Promise<Status[]> {
+  return call<Status[]>(`/statuses/${kind}/order`, {
+    method: "PUT",
+    body: JSON.stringify({ ids }),
+  });
+}
+
+/** "Reset order to Zoho" (CRM-C3, item 14): the Metorite order goes. Mirror only. */
+export function resetStatusOrder(kind: StatusKind): Promise<Status[]> {
+  return call<Status[]>(`/statuses/${kind}/order/reset`, { method: "POST" });
 }
 
 export function createLostReason(body: {
@@ -296,6 +511,222 @@ export function getWinLossReport(): Promise<WinLossReport> {
 
 export function getOwnerLeaderboard(): Promise<OwnerLeaderboard> {
   return call<OwnerLeaderboard>("/reports/owners");
+}
+
+/**
+ * The newest weekly digests of the org (WS-53 CRM-Q28). Read only. An org
+ * with no digest gets an empty list, which the Reports tab draws as nothing.
+ */
+export async function listDigests(limit = 4): Promise<CrmDigest[]> {
+  const res = await call<{ digests: CrmDigest[] }>(`/digests?limit=${limit}`);
+  return res?.digests ?? [];
+}
+
+/**
+ * One page of the Change history of the CRM set-up, newest first (WS-CRM
+ * CRM-M1). Read only. The chat reads the same route (`crm_change_history`).
+ */
+export function listChanges(page = 1): Promise<ChangeList> {
+  return call<ChangeList>(`/change-history?page=${page}&page_size=${CHANGE_PAGE_SIZE}`);
+}
+
+// ── The generic Zoho modules (WS-53 CRM-Q6b) ──────────────────────────────
+
+/** The mirrored generic modules, in the profile order. Empty in Native mode. */
+export function listModules(): Promise<CrmModule[]> {
+  return call<CrmModule[]>("/modules");
+}
+
+/**
+ * One page of a module's records. The module name goes into the path encoded,
+ * and the gateway checks it against the profile before it reads a record.
+ */
+export function listModuleRecords(
+  module: string,
+  query: ListQuery = {},
+): Promise<ModuleListResponse> {
+  return call<ModuleListResponse>(
+    `/modules/${encodeURIComponent(module)}/records${queryString(query)}`,
+  );
+}
+
+/** One generic record, with its field definitions and its lookup links. */
+export function getModuleRecord(module: string, id: string): Promise<ModuleRecordPage> {
+  return call<ModuleRecordPage>(
+    `/modules/${encodeURIComponent(module)}/records/${encodeURIComponent(id)}`,
+  );
+}
+
+/**
+ * Edit one generic record (CRM-Z10d). Native mode only: Mirror mode answers
+ * 409 `mirrored_record`. The body holds `name`, `owner_email` and `fields`,
+ * and names only the keys that change. A refusal is a `CrmError` with the
+ * `code` and the `field` of the 422.
+ */
+export function patchModuleRecord(
+  module: string,
+  id: string,
+  body: Record<string, unknown>,
+): Promise<ModuleRecordPage> {
+  return call<ModuleRecordPage>(
+    `/modules/${encodeURIComponent(module)}/records/${encodeURIComponent(id)}`,
+    { method: "PATCH", body: JSON.stringify(body) },
+  );
+}
+
+/**
+ * The activities of one module record, newest first (CRM-Q23a). Read only:
+ * no route writes an activity on a module record. An unknown module or
+ * record is a 404.
+ */
+export function getModuleTimeline(
+  module: string,
+  id: string,
+  limit = 100,
+): Promise<{ entries: TimelineEntry[] }> {
+  return call<{ entries: TimelineEntry[] }>(
+    `/modules/${encodeURIComponent(module)}/records/${encodeURIComponent(id)}/timeline?limit=${limit}`,
+  );
+}
+
+// ── Mode, connection and sync (WS-53 CRM-U5, CRM-Z7) ───────────────────────
+//
+// A 404 from the three reads below means the Zoho mirror is dark for this
+// deployment (`CRM_MIRROR` off). It is an answer, not a failure: each read
+// then returns `null` and the mirror UI stays hidden.
+
+async function orNullOn404<T>(work: Promise<T>): Promise<T | null> {
+  try {
+    return await work;
+  } catch (err) {
+    if (err instanceof CrmError && err.status === 404) return null;
+    throw err;
+  }
+}
+
+export function getConnection(): Promise<ConnectionInfo | null> {
+  return orNullOn404(call<ConnectionInfo>("/connection"));
+}
+
+export function getSyncStatus(): Promise<SyncStatus | null> {
+  return orNullOn404(call<SyncStatus>("/sync/status"));
+}
+
+/** Admin only (CRM-Q9). The sync health card reads it. A 404 means the mirror is off. */
+export function getSyncHealth(): Promise<SyncHealth | null> {
+  return orNullOn404(call<SyncHealth>("/sync/health"));
+}
+
+/** Admin only. A member gets 403, which the caller treats as "unknown". */
+export function getCrmSettings(): Promise<CrmSettings> {
+  return call<CrmSettings>("/settings");
+}
+
+/** The body of `GET /crm/mode`. */
+export type CrmModeBody = {
+  mode: string | null;
+  labels?: SourceLabels | null;
+  /** CRM-Q20-2: by core slot, the Zoho module that plays it. */
+  overlays?: Partial<Record<SlotWord, string>> | null;
+  /**
+   * CRM-Q17b: by API slug, whether the org holds a record of each core
+   * entity, and whether Zoho turned it off. Read it through `coreStatesOf`.
+   */
+  entities?: unknown;
+  /**
+   * CRM-Z10b: true when a Native CRM came from Zoho through the switch. Only
+   * then does the cutover card read the status of the switch.
+   */
+  cutover_done?: boolean;
+  /**
+   * CRM-M3a: true when `CRM_PIPELINES_ORGS` lets an admin of this Native CRM
+   * create a pipeline. Each other CRM leaves it out.
+   */
+  pipeline_create?: boolean;
+};
+
+/**
+ * `GET /crm/mode`, for each member the access rule admits. In Mirror mode,
+ * for an org on `CRM_FILL_RANK_ORGS`, it also holds the source's names of the
+ * core entities (CRM-Q17a-1 item 6). In Native mode it holds the names that
+ * an admin stored (CRM-Z10g). Each other body has no `labels` key.
+ * CRM-Q20-2: with an approved role, `overlays` names the module of each slot.
+ */
+export function getCrmMode(): Promise<CrmModeBody> {
+  return call<CrmModeBody>("/mode");
+}
+
+/**
+ * Admin only, Native mode only (CRM-Z10g). The map replaces the stored names,
+ * and a type that is left out takes the default name again. Mirror mode is a
+ * 409. The write wakes every CRM read, so the rail and the headings follow.
+ */
+export function saveRecordNames(labels: SourceLabels): Promise<{ labels: SourceLabels }> {
+  return writeAndWake(() =>
+    call<{ labels: SourceLabels }>("/settings/labels", {
+      method: "PUT",
+      body: JSON.stringify({ labels }),
+    }),
+  );
+}
+
+/** Admin only. Choose who may open the CRM (CRM-T5). Each group is `group:<slug>`. */
+export function saveAccess(body: {
+  access: "admins" | "everyone" | "groups";
+  access_groups: string[];
+}): Promise<CrmSettings> {
+  return call<CrmSettings>("/settings", { method: "PATCH", body: JSON.stringify(body) });
+}
+
+/** The organization's groups, for the access control. An empty list when unreadable. */
+export async function listGroups(): Promise<Array<{ slug: string; display_name?: string }>> {
+  try {
+    const res = await fetch("/api/admin/groups", { cache: "no-store" });
+    if (!res.ok) return [];
+    const rows: unknown = await res.json();
+    return Array.isArray(rows) ? (rows as Array<{ slug: string; display_name?: string }>) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function chooseNativeMode(): Promise<CrmSettings> {
+  return call<CrmSettings>("/settings", {
+    method: "PATCH",
+    body: JSON.stringify({ mode: "native" }),
+  });
+}
+
+export function startZohoConnect(): Promise<{ url: string }> {
+  return call<{ url: string }>("/connection/zoho/start", { method: "POST" });
+}
+
+export function disconnectCrm(): Promise<ConnectionInfo> {
+  return call<ConnectionInfo>("/connection/disconnect", { method: "POST" });
+}
+
+/**
+ * Start a sync. With `only` (CRM-Q16), the run reads that one count key on
+ * its own, also when it is held. Without it, the call sends no body, as before.
+ */
+export function syncZohoNow(opts: { only?: string } = {}): Promise<{ started: boolean }> {
+  const init: RequestInit = { method: "POST" };
+  if (opts.only) init.body = JSON.stringify({ only: opts.only });
+  return call<{ started: boolean }>("/sync/zoho", init);
+}
+
+/**
+ * Admin only (CRM-Q16). `sync: false` holds a count key and `sync: true`
+ * releases it. The key can be `module:<ApiName>`, so it is encoded.
+ */
+export function setModuleSync(
+  key: string,
+  sync: boolean
+): Promise<{ holds: Record<string, SyncHold> }> {
+  return call<{ holds: Record<string, SyncHold> }>(
+    `/sync/modules/${encodeURIComponent(key)}`,
+    { method: "PUT", body: JSON.stringify({ sync }) }
+  );
 }
 
 // ── Timeline ──────────────────────────────────────────────────────────────
@@ -374,3 +805,330 @@ export function convertLead(
 }
 
 export type { Contact, Deal, Lead, Organization };
+
+// ── The Field map (WS-53 CRM-Q7a) ─────────────────────────────────────────
+
+/** Admin only, Mirror mode only. The fields that go to custom, the rules and the targets. */
+export function getFieldMap(entity: EntitySlug): Promise<FieldMap> {
+  return call<FieldMap>(`/field-rules?entity=${encodeURIComponent(entity)}`);
+}
+
+/**
+ * Admin only. Pick a target by hand: the rule is approved at once. A rule the
+ * server refuses is a 422 with a sentence, and a column that another approved
+ * rule fills is a 409 (`rule_taken`).
+ */
+export function createFieldRule(body: {
+  entity: EntitySlug;
+  field_api_name: string;
+  target_column: string;
+}): Promise<FieldRule> {
+  return call<FieldRule>("/field-rules", { method: "POST", body: JSON.stringify(body) });
+}
+
+/** Admin only. Approve or reject one rule. The next sync applies it. */
+export function decideFieldRule(
+  id: string,
+  status: "approved" | "rejected",
+): Promise<FieldRule> {
+  return call<FieldRule>(`/field-rules/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ status }),
+  });
+}
+
+// ── The plan of the Field map (WS-53 CRM-Q18-2) ───────────────────────────
+//
+// Admin only, Mirror mode only. The routes are CRM-Q18-1's. A 409 keeps its
+// code: `plan_moved` (the map changed after the draft) and `plan_busy` (a
+// clash with the sync, and a retry is safe). `lib/fieldMap.ts` holds the types
+// and `runPlanWrite`, which acts on both codes.
+
+/** The versions, newest first, with the count of their rules and no rules. */
+export function listMappingPlans(): Promise<PlanList> {
+  return call<PlanList>("/mapping/plans");
+}
+
+/** One version with its rules. It reads only. */
+export function getMappingPlan(version: number): Promise<MappingPlan> {
+  return call<MappingPlan>(`/mapping/plans/${encodeURIComponent(String(version))}`);
+}
+
+/** A draft: the version in use with the changes. It changes no live rule. */
+export function draftMappingPlan(changes: PlanChange[]): Promise<MappingPlan> {
+  return call<MappingPlan>("/mapping/plans", {
+    method: "POST",
+    body: JSON.stringify({ changes }),
+  });
+}
+
+/** Approve a draft. The next sync applies it. */
+export function approveMappingPlan(version: number): Promise<MappingPlan> {
+  return call<MappingPlan>(`/mapping/plans/${encodeURIComponent(String(version))}/approve`, {
+    method: "POST",
+  });
+}
+
+/** Approve a new version with the content of an earlier one ("Go back"). */
+export function restoreMappingPlan(version: number): Promise<MappingPlan> {
+  return call<MappingPlan>(`/mapping/plans/${encodeURIComponent(String(version))}/restore`, {
+    method: "POST",
+  });
+}
+
+// ── The suggestions of the mapping (WS-53 CRM-Q20-2) ──────────────────────
+//
+// Admin only, Mirror mode only. `lib/suggestions.ts` holds the types and the
+// words. Each write is for one slot, and a 409 keeps its code.
+
+/** The open suggestions, and the slots that a module plays now. It reads only. */
+export function listSuggestions(): Promise<SuggestionList> {
+  return call<SuggestionList>("/mapping/suggestions");
+}
+
+/** The records of the module of one suggestion, as the slot reads them. It writes nothing. */
+export async function previewSuggestion(version: number, slot: SlotWord): Promise<OverlayPreview> {
+  const body = await call<{ overlay: OverlayPreview }>("/mapping/preview", {
+    method: "POST",
+    body: JSON.stringify({ version, slot }),
+  });
+  return body.overlay;
+}
+
+/** The module of the suggestion plays the slot. */
+export function approveSuggestion(slot: SlotWord, version: number): Promise<SuggestionDone> {
+  return call<SuggestionDone>(`/mapping/suggestions/${slot}/approve`, {
+    method: "POST",
+    body: JSON.stringify({ version }),
+  });
+}
+
+/** The slot shows its own list again. */
+export function undoSuggestion(slot: SlotWord): Promise<SuggestionDone> {
+  return call<SuggestionDone>(`/mapping/suggestions/${slot}/undo`, { method: "POST" });
+}
+
+/** Do not offer the module for the slot again, until Zoho changes. */
+export function dismissSuggestion(slot: SlotWord, version: number): Promise<SuggestionDone> {
+  return call<SuggestionDone>(`/mapping/suggestions/${slot}/dismiss`, {
+    method: "POST",
+    body: JSON.stringify({ version }),
+  });
+}
+
+// ── The open questions (WS-53 CRM-Q32-3) ──────────────────────────────────
+//
+// Admin only, Mirror mode only, and dark behind `CRM_QUESTIONS_ORGS`: an org
+// outside it gets 404 `questions_off`. `lib/questions.ts` holds the types and
+// the words. Each write calls `invalidate("crm:")` on each answer, also a
+// refusal, so every CRM read wakes: the questions, the rail count, the
+// catalogue and Sync health (rule 2 of `workbench/AGENTS.md`, the CRM row).
+
+/** Each write wakes every CRM read, whatever the answer was. */
+async function writeAndWake<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } finally {
+    invalidate("crm:");
+  }
+}
+
+/** The open questions, by impact. `all` adds each part in use, for "Your answers". */
+export function listQuestions(opts: { all?: boolean; limit?: number } = {}): Promise<QuestionsBody> {
+  const query = new URLSearchParams();
+  if (opts.all) query.set("all", "1");
+  if (opts.limit !== undefined) query.set("limit", String(opts.limit));
+  const qs = query.toString();
+  return call<QuestionsBody>(`/questions${qs ? `?${qs}` : ""}`);
+}
+
+/**
+ * Answer one question. `null` is "None of these", and `"@auto"` on a
+ * `stage_value` is its Undo. The `amount` of a module also takes a list of
+ * 2 to 5 field keys, a sum (CRM-Q32-9). `version` is the plan that the card
+ * read, so a plan that moved gives 409 `plan_moved`.
+ */
+export function answerQuestion(
+  id: string,
+  value: AnswerValue,
+  version?: number | null,
+): Promise<AnswerDone> {
+  const body: { value: AnswerValue; version?: number } = { value };
+  if (typeof version === "number") body.version = version;
+  return writeAndWake(() =>
+    call<AnswerDone>(`/questions/${encodeURIComponent(id)}/answer`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+/** "Not relevant": the question does not come back until the Zoho schema changes. */
+export function dismissQuestion(id: string): Promise<{ id: string; dismissed: boolean }> {
+  return writeAndWake(() =>
+    call<{ id: string; dismissed: boolean }>(`/questions/${encodeURIComponent(id)}/dismiss`, {
+      method: "POST",
+    }),
+  );
+}
+
+/**
+ * The Undo of "Not relevant" and of "None of these" on a slot: the question
+ * opens again. A 404 `not_dismissed` says that no dismissal exists.
+ */
+export function undismissQuestion(id: string): Promise<{ id: string; dismissed: boolean }> {
+  return writeAndWake(() =>
+    call<{ id: string; dismissed: boolean }>(`/questions/${encodeURIComponent(id)}/dismiss`, {
+      method: "DELETE",
+    }),
+  );
+}
+
+/**
+ * Accept Jev's best guesses. A dry run writes nothing and wakes nothing. A
+ * real run writes ONE plan version, and its Undo puts back each part.
+ */
+export function acceptBest(
+  ids: readonly string[],
+  dryRun: boolean,
+  version?: number | null,
+): Promise<AcceptBestDone> {
+  const body: { ids: string[]; dry_run: boolean; version?: number } = { ids: [...ids], dry_run: dryRun };
+  if (typeof version === "number") body.version = version;
+  const run = () =>
+    call<AcceptBestDone>("/questions/accept-best", { method: "POST", body: JSON.stringify(body) });
+  return dryRun ? run() : writeAndWake(run);
+}
+
+/**
+ * A correction of the catalogue (CRM-Q31-4). Each part takes a field, a
+ * purpose word, `null` ("None"), or `"@auto"` (the choice of Metorite).
+ * `amount` also takes a list of 2 to 5 field keys, a sum (CRM-Q32-9).
+ */
+export function putCatalogue(
+  module: string,
+  parts: CatalogueParts,
+): Promise<{ module: string; version: number | null }> {
+  return writeAndWake(() =>
+    call<{ module: string; version: number | null }>(`/catalogue/${encodeURIComponent(module)}`, {
+      method: "PUT",
+      body: JSON.stringify(parts),
+    }),
+  );
+}
+
+/**
+ * The check of a ticked set of fields for a sum (CRM-Q32-9): the coverage
+ * line, and a warning for a pair that holds the same value. A read, so it
+ * writes nothing and wakes nothing. 422 `bad_answer` for a set that is not
+ * 2 to 5 currency fields of the module.
+ */
+export function sumCheck(id: string, keys: readonly string[]): Promise<SumCheck> {
+  const query = new URLSearchParams({ fields: keys.join(",") });
+  return call<SumCheck>(`/questions/${encodeURIComponent(id)}/sum-check?${query.toString()}`);
+}
+
+// ── The business rules, and a member's own choices (WS-53 CRM-Q33) ────────
+//
+// Each member with CRM access in Mirror mode, and dark behind
+// `CRM_ANSWER_FIRST_ORGS`: an org outside it gets 404 `rules_off`. Each
+// write wakes every CRM read.
+
+/** The org's rules and the caller's own. */
+export function listRules(): Promise<RulesBody> {
+  return call<RulesBody>("/rules");
+}
+
+/** Add a rule. `org` needs a CRM admin, else 403 `rule_admin_only`. */
+export function addRule(body: string, scope: RuleScope): Promise<BusinessRule> {
+  return writeAndWake(() =>
+    call<BusinessRule>("/rules", { method: "POST", body: JSON.stringify({ body, scope }) }),
+  );
+}
+
+/** Change the words of a rule. Its slug stays. */
+export function changeRule(id: string, body: string): Promise<BusinessRule> {
+  return writeAndWake(() =>
+    call<BusinessRule>(`/rules/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ body }),
+    }),
+  );
+}
+
+export function removeRule(id: string): Promise<{ id: string; removed: boolean }> {
+  return writeAndWake(() =>
+    call<{ id: string; removed: boolean }>(`/rules/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  );
+}
+
+/** The caller's own choices in the chat that wait for a CRM admin. */
+export function listMyChoices(): Promise<{ choices: MyChoice[] }> {
+  return call<{ choices: MyChoice[] }>("/questions/mine");
+}
+
+/** Clear the caller's own choice of one question. The org's answer does not change. */
+export function clearMyChoice(id: string): Promise<{ id: string; cleared: boolean }> {
+  return writeAndWake(() =>
+    call<{ id: string; cleared: boolean }>(`/questions/${encodeURIComponent(id)}/mine`, {
+      method: "DELETE",
+    }),
+  );
+}
+
+// ── The setup hub and the start over (WS-53 CRM-X0) ───────────────────────
+
+/** Admin only. The records of the org, by entity. */
+export function getRecordCounts(): Promise<RecordCounts> {
+  return call<RecordCounts>("/settings/counts");
+}
+
+/**
+ * Admin only. Remove every record and set the mode from `then`. A wrong
+ * `confirm` is a 422 with a sentence. `then = "mirror"` gives the consent URL.
+ */
+export function resetCrm(body: { confirm: string; then: ResetThen }): Promise<ResetResult> {
+  return call<ResetResult>("/reset", { method: "POST", body: JSON.stringify(body) });
+}
+
+/** The ZIP of every record, through the proxy. The server names the file. */
+export const ALL_RECORDS_ZIP = "/api/crm/export/all.zip";
+
+/**
+ * Get the whole ZIP, then save it (review P2). A refusal or a proxy error is
+ * a `CrmError` with the server's words, and nothing is saved, so a JSON body
+ * never lands on disk as `crm-export.zip`. It resolves only after the save.
+ */
+export async function downloadAllRecords(
+  deps: { fetch: typeof fetch; save: (body: Blob, filename: string) => void } = {
+    fetch: (input, init) => fetch(input, init),
+    save: saveBlob,
+  },
+): Promise<void> {
+  const res = await deps.fetch(ALL_RECORDS_ZIP, { cache: "no-store" });
+  const type = res.headers.get("content-type") ?? "";
+  if (!res.ok || !type.includes("application/zip")) {
+    const body = (await res.json().catch(() => ({}))) as { detail?: unknown; error?: string };
+    throw new CrmError(detailOf(body) || `The copy did not download (${res.status}).`, res.status);
+  }
+  const blob = await res.blob();
+  deps.save(blob, filenameFromDisposition(res.headers.get("content-disposition"), "crm-export.zip"));
+}
+
+// ── Saved views (CRM-Q8) ──────────────────────────────────────────────────
+
+export function listViews(entity: ViewEntity): Promise<SavedView[]> {
+  return call<SavedView[]>(`/views?entity=${encodeURIComponent(entity)}`);
+}
+
+export function createView(body: SavedViewBody): Promise<SavedView> {
+  return call<SavedView>("/views", { method: "POST", body: JSON.stringify(body) });
+}
+
+export function patchView(id: string, body: Partial<SavedViewBody>): Promise<SavedView> {
+  return call<SavedView>(`/views/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+}
+
+export function deleteView(id: string): Promise<{ deleted: string }> {
+  return call<{ deleted: string }>(`/views/${id}`, { method: "DELETE" });
+}

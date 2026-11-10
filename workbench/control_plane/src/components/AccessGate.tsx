@@ -17,8 +17,23 @@ import { usePathname } from "next/navigation";
 import Link from "next/link";
 import { useAccess } from "@/components/AccessProvider";
 import { canSeePath, isOrgless } from "@/lib/access";
+import OrgLinkGate from "@/components/OrgLinkGate";
+import { OrglessAccounts } from "@/components/AccountSwitcher";
 
+/**
+ * An org-aware link (`?org=`) is settled FIRST, before the org-less arm and
+ * before the route check: the link may belong to another signed-in account,
+ * and that account may reach what this one cannot (`OrgLinkGate.tsx`).
+ */
 export default function AccessGate({ children }: { children: React.ReactNode }) {
+  return (
+    <OrgLinkGate>
+      <RouteGate>{children}</RouteGate>
+    </OrgLinkGate>
+  );
+}
+
+function RouteGate({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "/";
   const { access, loading, refresh } = useAccess();
 
@@ -100,6 +115,10 @@ export default function AccessGate({ children }: { children: React.ReactNode }) 
               </Link>
             </div>
           </div>
+          {/* The account acts: switch back to a held account, add one, or
+              sign out (review of 2026-10-14). No sidebar mounts here, so
+              this card is the one place for them. */}
+          <OrglessAccounts />
         </div>
       </div>
     );
@@ -129,6 +148,17 @@ export default function AccessGate({ children }: { children: React.ReactNode }) 
         >
           Back to Chat
         </Link>
+        {/* The one page that explains this refusal. It is ungated, so it opens
+            for exactly the member who is looking at this card. Since
+            2026-10-05 it is a People tab, not a sidebar pane, so this card is
+            its most useful door. */}
+        {!suspended && (
+          <p className="mt-3 text-xs">
+            <Link href="/people/access" className="text-primary hover:underline">
+              See what you can reach, and why
+            </Link>
+          </p>
+        )}
       </div>
     </div>
   );

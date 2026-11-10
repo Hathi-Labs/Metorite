@@ -283,7 +283,7 @@ describe("reportEmail · capacity", () => {
 
   it("never prints 0h for a row whose hours mean nothing", () => {
     const { text, html } = reportEmail(withCapacity);
-    expect(text).toContain("bo@example.test: 2 open, no hours");
+    expect(text).toContain("bo: 2 open, no hours");
     expect(text).not.toMatch(/\b0h\b/);
     expect(html).not.toMatch(/style=/);
   });
@@ -519,7 +519,7 @@ describe("reportEmail · pulse", () => {
     expect(text).not.toContain("Idle");
     // No HR half: no status, and the bar is overdue of open tasks.
     expect(text).toContain(
-      `eli@example.test: 4 open · ${textBar(1, 4)} 1 of 4 overdue · 0 focus`,
+      `eli: 4 open · ${textBar(1, 4)} 1 of 4 overdue · 0 focus`,
     );
     expect(text).toContain("two runs in a row");
     expect(text).not.toContain("This report hides");
@@ -781,7 +781,7 @@ describe("reportEmail · the exact HTML", () => {
         "</ul>",
       "<p>…and 2 more projects</p>",
       "<p>Who has the hours (next 14 days): 6 open</p>",
-      "<ul><li>Ana: 3 open, 12.5h spare</li><li>bo@example.test: 2 open, no hours</li><li>Unassigned: 1 open</li></ul>",
+      "<ul><li>Ana: 3 open, 12.5h spare</li><li>bo: 2 open, no hours</li><li>Unassigned: 1 open</li></ul>",
       "<p>People's hours, leave and skills are private, so only admins see them. Ask an admin if you need them.</p>",
       "<p>Where the plan conflicts: 2</p>",
       "<ul><li>High: &quot;Order &lt;steel&gt;&quot; is late.</li><li>Medium: Bo holds 3.</li></ul>",
@@ -929,6 +929,47 @@ describe("reportEmail · outlook (WS-27bn R3a)", () => {
     expect(got.text).toContain("Finishing 4.2 a week, adding 1.1 a week, over 6 weeks");
     expect(got.html).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
     expect(got.html).not.toMatch(/\b(rgb|hsl)a?\(|style=/);
+  });
+
+  it("prints the server's sentence first, and the 85% date (WS-27bn RA-6)", () => {
+    const got = withOutlook({
+      velocity: {
+        verdict: "converging",
+        finish_date: "2026-12-23",
+        p85_date: "2027-01-13",
+        remaining_tasks: 26,
+        summary:
+          "Half of 2,000 runs finish the 26 open tasks by 23 Dec 2026, and 85% finish by 13 Jan 2027.",
+      },
+      plan: { planned_finish: null, dated: 0, tasks: 26, slip_days: null },
+    });
+    const lines = got.text.split("\n");
+    const head = lines.findIndex((l) => l.startsWith("Forecast: converging"));
+    expect(lines[head + 1]).toContain("Half of 2,000 runs finish the 26 open tasks");
+    expect(got.text).toContain("Forecast finish: 23 Dec 2026");
+    expect(got.text).toContain("85% finish: 13 Jan 2027");
+  });
+
+  it("names Needs an owner first in Open work when it leads (WS-27bn RA-6)", () => {
+    const people = [
+      { assignee: null, open_tasks: 25, overdue: 0 },
+      { assignee: "ana@example.test", open_tasks: 1, overdue: 0 },
+    ];
+    const owner = { total: 25, leads: true, tasks: [] };
+    const first = reportEmail({
+      ...rendered,
+      sections: { load: { people, total_tasks: 26, needs_owner: owner } },
+    }).text.split("\n");
+    const at = first.findIndex((l) => l.includes("Needs an owner: 25"));
+    expect(at).toBeGreaterThan(-1);
+    expect(at).toBeLessThan(first.findIndex((l) => l.includes("Unassigned: 25")));
+    const last = reportEmail({
+      ...rendered,
+      sections: { load: { people, total_tasks: 26, needs_owner: { ...owner, total: 1, leads: false } } },
+    }).text.split("\n");
+    expect(last.findIndex((l) => l.includes("Needs an owner: 1"))).toBeGreaterThan(
+      last.findIndex((l) => l.includes("ana@example.test")),
+    );
   });
 
   it("prints no date and no broken word when the verdict has no forecast", () => {

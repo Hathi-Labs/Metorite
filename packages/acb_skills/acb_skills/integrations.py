@@ -111,24 +111,10 @@ def _instantly(s: Any) -> dict[str, Any]:
     }
 
 
-def _gmail(s: Any) -> dict[str, Any]:
-    sa_path = getattr(s, "gmail_sa_json_path", "") or os.getenv("GMAIL_SA_JSON_PATH", "")
-    default_user = getattr(s, "gmail_default_user", "") or os.getenv("GMAIL_DEFAULT_USER", "")
-    if not sa_path:
-        raise IntegrationMisconfiguredError(
-            "gmail: GMAIL_SA_JSON_PATH (service-account key) is required."
-        )
-    return {
-        "type": "service_account",
-        "sa_json_path": sa_path,
-        "workspace_domain": getattr(s, "gmail_workspace_domain", ""),
-        "default_user": default_user,
-    }
-
-
-def _gmail_send(s: Any) -> dict[str, Any]:
-    """Alias for gmail — used by agents that only need outbound send."""
-    return _gmail(s)
+# ⚠️ No `gmail` and no `gmail-send` resolver (WS-17 EM-G11b, 2026-10-14). They
+# resolved the service-account Gmail path, which held a second set of Gmail
+# scopes. A declared `gmail` service now reports "not in the
+# IntegrationRegistry". Mail reaches an agent through the Email app's own tools.
 
 
 def _smtp(s: Any) -> dict[str, Any]:
@@ -186,12 +172,11 @@ def _anymailfinder(s: Any) -> dict[str, Any]:
 
 
 def _google_sheets(s: Any) -> dict[str, Any]:
-    # Reuse the Gmail service-account key if a dedicated one isn't set
+    # Its own key only. EM-G11b removed the fallback to the Gmail
+    # service-account key.
     sa_path = (
         getattr(s, "google_sheets_sa_json_path", "")
         or os.getenv("GOOGLE_SHEETS_SA_JSON_PATH", "")
-        or getattr(s, "gmail_sa_json_path", "")
-        or os.getenv("GMAIL_SA_JSON_PATH", "")
     )
     if not sa_path:
         raise IntegrationMisconfiguredError(
@@ -219,8 +204,6 @@ FIELD_TO_ENV: dict[str, list[tuple[str, str]]] = {
     "apify":         [("api_token", "APIFY_API_TOKEN")],
     "anymailfinder": [("api_key", "ANYMAILFINDER_API_KEY")],
     "instantly":     [("api_key", "INSTANTLY_API_KEY")],
-    "gmail":         [("sa_json_path", "GMAIL_SA_JSON_PATH"), ("default_user", "GMAIL_DEFAULT_USER")],
-    "gmail-send":    [("sa_json_path", "GMAIL_SA_JSON_PATH"), ("default_user", "GMAIL_DEFAULT_USER")],
     "smtp":          [("host", "SMTP_HOST"), ("username", "SMTP_USERNAME"), ("password", "SMTP_PASSWORD")],
     "google-maps":   [("api_key", "GOOGLE_MAPS_API_KEY")],
     "google-sheets": [("sa_json_path", "GOOGLE_SHEETS_SA_JSON_PATH")],
@@ -345,8 +328,6 @@ _REGISTRY: dict[str, Any] = {
     "apollo":        _apollo,
     "google-maps":   _google_maps,
     "instantly":     _instantly,
-    "gmail":         _gmail,
-    "gmail-send":    _gmail_send,
     "smtp":          _smtp,
     "litellm":       _litellm,
     "serpapi":       _serpapi,

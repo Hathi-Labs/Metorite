@@ -11,15 +11,22 @@ from gateway.routes.email.transport import (
     attachments,
     contacts,
     folders,
+    forward,
+    inline_images,
     messages,
+    metorite_files,
     oauth,
     search,
     send,
+    storage,
     sync,
 )  # noqa: F401
 
-for _mod in (accounts, attachments, contacts, folders, messages, oauth, search,
-             send, sync):
+# H-392: imported for its route only. Its names stay in its own module.
+_ = metorite_files
+
+for _mod in (accounts, attachments, contacts, folders, forward, inline_images,
+             messages, oauth, search, send, storage, sync):
     for _k, _v in vars(_mod).items():
         if not _k.startswith("__"):
             globals()[_k] = _v

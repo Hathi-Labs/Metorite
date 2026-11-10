@@ -214,8 +214,9 @@ Check: mutation_attempts_this_run >= 1?
         │
         ▼
 Work from persistent local clone of agent-<name>
-(already authenticated via GITHUB_TOKEN in remote URL;
- bot git identity already configured)
+(the remote URL holds no token, H-363. The gateway gives
+ the credential to one git process per fetch or push.
+ The bot git identity is already configured.)
         │
         ▼
 Read failure telemetry from Postgres (error trace, inputs, stack)
@@ -452,6 +453,7 @@ flowchart TD
 
 ### ADR-007: WhatsApp via Meta Cloud API + dedicated agent number
 - **Decision:** Provision new business number; MAF skill (`skill-whatsapp-send`) handles webhook processing.
+- **Realised by WS-47 (2026-10-06):** `specs/whatsapp_assistant_channel.md` owns the dedicated number as a channel for members to talk to Metorite.
 
 ### ADR-008: LiteLLM gateway + RouteLLM + Anthropic/OpenAI prompt caching — **implemented (2026-07-03)**
 - **Decision:** litellm SDK for unified routing; Anthropic `cache_control` + OpenAI automatic caching on stable prefixes (50–90% cost reduction); RouteLLM in Phase 5.

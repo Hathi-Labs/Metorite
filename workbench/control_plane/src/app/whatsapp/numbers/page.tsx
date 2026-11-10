@@ -6,15 +6,29 @@
 // WhatsApp app itself (via the shared nav's "Numbers" tab).
 
 import Icon from "@/components/Icon";
+import Button from "@/components/ui/Button";
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { disconnectAccount, fetchAccounts } from "../lib/api";
+import {
+  disconnectAccount,
+  fetchAccounts,
+  startHistoryImport,
+} from "../lib/api";
+import { accountHistoryLine, type HistoryTone } from "../lib/historySync";
 import type { WaAccount } from "../lib/types";
+
+/** The token class of each history tone. No new colour (WS-20 WA-C3 P12). */
+const HISTORY_TONE: Record<HistoryTone, string> = {
+  muted: "text-muted-foreground",
+  success: "text-success",
+  destructive: "text-destructive",
+};
 
 export default function NumbersPage() {
   const [accounts, setAccounts] = useState<WaAccount[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
+  const [starting, setStarting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -31,8 +45,8 @@ export default function NumbersPage() {
       const label = a.display_name || a.phone_number || "this number";
       if (
         !confirm(
-          `Disconnect ${label}? Its chats stay stored, but no new messages will ` +
-            `sync until you reconnect.`
+          `Disconnect ${label}? This deletes every chat, message, contact and ` +
+            `attachment Metorite stored from this number. It can't be undone.`
         )
       )
         return;
@@ -42,6 +56,20 @@ export default function NumbersPage() {
       setBusy(null);
       if (res.ok) await load();
       else setError(res.error ?? "Couldn't disconnect that number.");
+    },
+    [load]
+  );
+
+  // WS-20 WA-C3 P4: start the coexistence history import again, inside
+  // Meta's 24-hour window. The server decides, and the list reloads.
+  const onStartHistory = useCallback(
+    async (a: WaAccount) => {
+      setStarting(a.id);
+      setError(null);
+      const res = await startHistoryImport(a.id);
+      setStarting(null);
+      if (!res.ok) setError(res.error ?? "Couldn't start the history import.");
+      await load();
     },
     [load]
   );
@@ -58,7 +86,7 @@ export default function NumbersPage() {
     <div className="mx-auto h-full max-w-2xl overflow-y-auto p-4 md:p-6">
       <div className="mb-1 flex items-center gap-2">
         <Icon name="Smartphone" className="h-4 w-4 text-primary" />
-        <h1 className="text-[15px] font-semibold">Connected numbers</h1>
+        <h2 className="text-[15px] font-semibold">Connected numbers</h2>
       </div>
       <p className="mb-5 text-[12.5px] text-muted-foreground">
         Manage the WhatsApp numbers linked to this workspace. Disconnecting keeps
@@ -112,6 +140,11 @@ export default function NumbersPage() {
                   <span aria-hidden>·</span>
                   <SyncBadge status={a.sync_status} />
                 </div>
+                <HistoryLine
+                  account={a}
+                  starting={starting === a.id}
+                  onStart={() => void onStartHistory(a)}
+                />
               </div>
               <button
                 onClick={() => void onDisconnect(a)}
@@ -136,6 +169,35 @@ export default function NumbersPage() {
             <Icon name="Plus" className="h-3.5 w-3.5" /> Connect another number
           </Link>
         </div>
+      )}
+    </div>
+  );
+}
+
+function HistoryLine({
+  account,
+  starting,
+  onStart,
+}: {
+  account: WaAccount;
+  starting: boolean;
+  onStart: () => void;
+}) {
+  const line = accountHistoryLine(account, new Date());
+  if (!line) return null;
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px]">
+      <span className={HISTORY_TONE[line.tone]}>{line.text}</span>
+      {line.canStart && (
+        <Button
+          variant="secondary"
+          size="sm"
+          icon="History"
+          loading={starting}
+          onClick={onStart}
+        >
+          Start history import
+        </Button>
       )}
     </div>
   );

@@ -59,8 +59,18 @@ import { CENTERS } from "@/lib/centers";
  * `/oauth/approved` (WS-17 EM-T3c) is the landing page of an IT admin who
  * approved Metorite in Microsoft. That admin has no session and may never
  * join, so the page carries no chrome. It is public in `proxy.ts` as well.
+ *
+ * `/connect` (WS-55 EA-4a) holds the consent page an outside agent opens,
+ * `/connect/authorize`. It is a standalone screen that another app opened,
+ * so it carries no chrome. It is NOT public: the member must be signed in,
+ * so `proxy.ts` sends a signed-out member to `/signin` and back.
  */
-export const CHROMELESS_ROUTES: readonly string[] = ["/signin", "/signup", "/oauth/approved"];
+export const CHROMELESS_ROUTES: readonly string[] = [
+  "/signin",
+  "/signup",
+  "/oauth/approved",
+  "/connect",
+];
 
 export function isChromeless(pathname: string): boolean {
   return CHROMELESS_ROUTES.some(
@@ -96,7 +106,49 @@ export type NavPane = {
    * plus a test update, which is what makes it a deliberate act.
    */
   launch: LaunchStatus;
+
+  // ── The shell manifest (D89, `navigation_shell.md` §5.1, NS-2) ──────────
+  // The shell reads these fields. An app never edits the sidebar, the
+  // launcher or the account menu by hand. `nav.test.ts` fails on a live pane
+  // with no `team` or no `blurb`.
+
+  /** The group the pane belongs to, in the sidebar and in All apps. */
+  team: PaneTeam;
+  /**
+   * What the app is for, in one sentence of job words, 60 characters at
+   * most. The launcher prints it under the name, and the command bar prints
+   * it beside "Open …". Required for a live pane. `note` is the older line,
+   * written for operators, and the home grid still reads it.
+   */
+  blurb?: string;
+  /**
+   * Where the pane's door is, with the shell nav on (`shellNavOn`).
+   * `sidebar`, the default, puts it in its team's group. `account` puts it in
+   * the account menu at the sidebar's foot, for a page about the member
+   * rather than a place to work. Organisation is an app in Admin, not an
+   * account page (owner, 2026-10-09).
+   */
+  door?: "sidebar" | "account";
+  /**
+   * A preference about the member, not an app: My Profile, Appearance. It
+   * opens from the account menu and never shows in All apps.
+   */
+  setting?: true;
+  /**
+   * The agent this app's assistant runs (`navigation_shell.md` §5.1, the
+   * `agent` field). The run badge (WS-51 S1, `lib/runActivity.ts`) counts a
+   * live run of this agent on this pane. The first pane that names an agent
+   * owns it, and an agent no pane names counts on Chat.
+   */
+  agent?: string;
 };
+
+/**
+ * A pane's team. `personal` is the member's own work, `across` is shared
+ * with their teams, `studio` makes things with AI, and `admin` runs the
+ * organization. A Center's slug may also stand here (§5.1).
+ */
+export type PaneTeam = "personal" | "across" | "studio" | "admin" | (string & {});
 
 export type NavSection = {
   id: string;
@@ -141,11 +193,17 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       {
         href: "/tasks",
+        team: "personal",
+        blurb: "Your to-do list, and the work given to you",
         label: "My Tasks",
         icon: "CheckSquare",
         note: "Your tasks, and your view of the company's",
         feature: "tasks",
-        launch: "live",
+        // WS-64 OP-4, the owner's flip (2026-10-25): My Tasks is now the
+        // My work section of Projects, and `/tasks` redirects there while
+        // `NEXT_PUBLIC_PROJECTS_MY_WORK` is on. The route and its grant stay.
+        launch: "preview",
+        agent: "task-manager",
       },
       // Calendar — D54 (2026-08-24, board WS-39 S2). Lifted out of `/tasks`,
       // where it had been a view mode rather than a destination.
@@ -163,6 +221,8 @@ export const NAV_SECTIONS: NavSection[] = [
       // That is why `launch_surface.md` §2's live set is nine and not eight.
       {
         href: "/calendar",
+        team: "personal",
+        blurb: "Plan your day and block time to focus",
         label: "Calendar",
         icon: "Calendar",
         note: "When your work happens — timeboxing, day plan, focus",
@@ -176,26 +236,25 @@ export const NAV_SECTIONS: NavSection[] = [
       // their own profile" from everybody who had not been granted the roster.
       {
         href: "/people/me",
+        team: "personal",
+        blurb: "Your skills, CV and working hours",
+        door: "account",
+        setting: true,
         label: "My Profile",
         icon: "User",
         note: "Your skills, CV, working hours — what the assignment AI reads",
         launch: "live",
       },
-      // Deliberately UNGATED — one of two panes in the sidebar that are. This
-      // is the page that explains why a pane is missing, so gating it would
-      // hide it from exactly the person who needs it, and "I don't have access
-      // to this" would stay an unanswerable sentence. In Personal Center
-      // rather than Admin because it is a fact about YOU, and because a plain
-      // member must be able to reach it without an Admin heading appearing.
-      {
-        href: "/access",
-        label: "My Access",
-        icon: "ShieldCheck",
-        note: "What you can reach, and why anything else is hidden",
-        launch: "live",
-      },
+      // ⚠️ "My Access" is NOT a pane any more (owner directive, 2026-10-05:
+      // "remove my access from the sidebar and fold it into the People's
+      // app"). It is the "My access" tab of the People app, at
+      // `/people/access`, beside My profile, and it is still UNGATED
+      // (`lib/access.ts` ALWAYS_ALLOWED). Do not put it back here. The People
+      // layout shows the two personal tabs even to a member without
+      // `feature:people`, so that member still has a door to it.
       {
         href: "/dashboard",
+        team: "personal",
         label: "Dashboard",
         icon: "LayoutDashboard",
         note: "Your day across your apps · company view today",
@@ -206,7 +265,11 @@ export const NAV_SECTIONS: NavSection[] = [
       },
       {
         href: "/email",
-        label: "Email",
+        team: "personal",
+        blurb: "Read, sort and answer your email, with AI help",
+        // "My Email" since 2026-10-08 (owner): the member's own mailbox,
+        // apart from any shared team inbox a later app may add.
+        label: "My Email",
         icon: "Mail",
         note: "AI-powered inbox",
         feature: "email",
@@ -214,17 +277,25 @@ export const NAV_SECTIONS: NavSection[] = [
         // WS-17 EM-T3b). A member connects Microsoft 365 from inside the app,
         // with no setup step. `launch_surface.md` §2 moved in the same change.
         launch: "live",
+        agent: "email-assistant",
       },
       {
         href: "/whatsapp",
-        label: "WhatsApp",
+        team: "personal",
+        blurb: "Your WhatsApp Business chats, with AI help",
+        // "My WhatsApp", and `live`, since 2026-10-08 by owner decision (WS-20
+        // WA-C6). A member connects a WhatsApp Business account through Meta's
+        // Embedded Signup, the one official way in. `launch_surface.md` §2
+        // moved in the same change.
+        label: "My WhatsApp",
         icon: "MessageSquare",
         note: "AI-powered WhatsApp inbox",
         feature: "whatsapp",
-        launch: "preview", // WS-20 incomplete
+        launch: "live",
       },
       {
         href: "/notes",
+        team: "personal",
         label: "Notes",
         icon: "StickyNote",
         note: "AI note taker",
@@ -233,6 +304,7 @@ export const NAV_SECTIONS: NavSection[] = [
       },
       {
         href: "/memory",
+        team: "personal",
         label: "Memories",
         icon: "Brain",
         note: "Facts · episodic · knowledge graph",
@@ -243,11 +315,16 @@ export const NAV_SECTIONS: NavSection[] = [
       },
       {
         href: "/artifacts",
+        team: "personal",
+        blurb: "The files your chats made",
         label: "Artifacts",
         icon: "FolderOpen",
-        note: "All agent files · inputs · outputs · data",
+        note: "Chat files · agent workspaces",
         feature: "artifacts",
-        launch: "preview", // reads as a debugging surface
+        // Live since 2026-10-13, by owner direction (D99, NS-6 slice 6c): the
+        // files of each chat, "accessed via the artifacts app". It opens on
+        // the member's chats now, not on the agents' workspaces.
+        launch: "live",
       },
     ],
   },
@@ -264,22 +341,36 @@ export const NAV_SECTIONS: NavSection[] = [
       // grants are what actually scope the data.
       {
         href: "/projects",
+        team: "across",
+        blurb: "Plan and track your teams' projects and tasks",
         label: "Projects",
         icon: "FolderKanban",
         note: "Departments, projects and team tasks",
         feature: "projects",
         launch: "live",
+        agent: "projects-assistant",
       },
       {
         href: "/crm",
+        team: "across",
+        blurb: "Track leads, deals and customers in one pipeline",
         label: "CRM",
         icon: "KanbanSquare",
         note: "Pipeline, leads and customers",
         feature: "crm",
-        launch: "preview", // WS-26 incomplete
+        // `live` since 2026-10-11 - owner, in chat ("Promote CRM to live
+        // now"), taking the live set from ELEVEN to TWELVE (WS-53 CRM-L2).
+        // This line, `launch_surface.md` section 2 and `nav.test.ts` move together.
+        launch: "live",
+        // WS-53 CRM-X2. Today this feeds the run badge only: a run of the CRM
+        // assistant counts on the CRM, not on Chat. The shell's assistant
+        // dock (NS-6 slice 6b) is not built, so nothing docks it yet.
+        agent: "crm-assistant",
       },
       {
         href: "/people",
+        team: "across",
+        blurb: "Find a colleague, their skills and who is out",
         label: "People",
         icon: "Users",
         note: "Directory, skills and org chart",
@@ -298,6 +389,25 @@ export const NAV_SECTIONS: NavSection[] = [
         // this member reach it*, and they stay two questions.
         launch: "live",
       },
+      {
+        href: "/knowledge",
+        team: "across",
+        blurb: "What the company knows, written down",
+        label: "Knowledge",
+        icon: "BookOpen",
+        note: "Spaces, pages and connected folders",
+        feature: "knowledge",
+        // `live` since 2026-10-18 (WS-61 KB-12), by owner decision in chat
+        // (H-21), taking the live set from FOURTEEN to FIFTEEN. It was
+        // `preview` from KB-0. Its two jobs, "Write a page" and "Find in
+        // Knowledge", landed with the promotion (`lib/shell/registry.ts`).
+        // It has no agent: the orchestrator holds the Knowledge tools
+        // (`knowledge_base.md` §11).
+        //
+        // ⚠️ The gateway answers only for an org on `KNOWLEDGE_ORGS` (`*` on
+        // production). For any other org the app shows its off state.
+        launch: "live",
+      },
       // The six Center landing pages, kept as `preview` so they remain
       // reachable with the flag on and by URL always (D49 / launch_surface.md
       // §5). Derived from CENTERS rather than transcribed, so registering a
@@ -310,6 +420,7 @@ export const NAV_SECTIONS: NavSection[] = [
         note: c.tagline,
         feature: c.feature,
         launch: "preview",
+        team: "across",
       })),
     ],
   },
@@ -322,6 +433,8 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       {
         href: "/chat",
+        team: "studio",
+        blurb: "Ask the AI assistant, or have it do the work",
         label: "Chat",
         icon: "MessageCircle",
         note: "AI conversations · sessions · rooms",
@@ -329,28 +442,15 @@ export const NAV_SECTIONS: NavSection[] = [
         launch: "live",
       },
       {
-        href: "/workflows",
-        label: "Workflows",
-        icon: "Workflow",
-        note: "Visual automation across agents · tools · integrations",
-        feature: "workflows",
-        launch: "preview", // WS-11 incomplete
-      },
-      {
-        href: "/build/apps",
-        label: "App Workshop",
-        icon: "PlusSquare",
-        note: "User-created applications",
-        feature: "build.apps",
-        launch: "preview",
-      },
-      {
-        href: "/build/agents",
-        label: "Agent Workshop",
-        icon: "Wrench",
-        note: "MAF agents & skills",
-        feature: "build.agents",
-        launch: "preview",
+        href: "/studio",
+        team: "studio",
+        blurb: "Build apps, workflows and skills for your company",
+        label: "Studio",
+        icon: "Hammer",
+        note: "Apps · workflows · skills in one library",
+        feature: "studio", // ai_studio.md §14 J1: the gate of every /studio route
+        launch: "live", // ai_studio.md §14 A1: the one library pane. Live for the beta (D179)
+        agent: "app-builder", // until G3 gives the dock `studio-builder`
       },
     ],
   },
@@ -363,6 +463,8 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       {
         href: "/approvals",
+        team: "admin",
+        blurb: "Check what the AI will send before it goes out",
         label: "Approvals",
         icon: "ShieldCheck",
         note: "Action Broker · outward writes awaiting review",
@@ -373,7 +475,13 @@ export const NAV_SECTIONS: NavSection[] = [
         // The one admin destination for the organization: members & roles,
         // seat assignments and branding as tabs (launch_surface.md §6.2).
         // `/settings/members` redirects here. British spelling is the owner's.
+        // ⚠️ Its door is the SIDEBAR, in Admin (owner, 2026-10-09). Slice 1 put
+        // it in the account menu, and an admin then found it only by opening
+        // their own account. It is a place an admin works in, so it is an
+        // app (`navigation_shell.md` §3.2a item 4).
         href: "/settings/organization",
+        team: "admin",
+        blurb: "Members, roles, seats and your brand",
         label: "Organisation",
         icon: "Building2",
         note: "Members & roles · seat assignments · branding",
@@ -385,6 +493,12 @@ export const NAV_SECTIONS: NavSection[] = [
         // preference, not an admin capability. The org-wide default on the
         // same page is authorized at the gateway.
         href: "/settings/appearance",
+        // A sidebar app in Admin, beside Organisation and Integrations, and a
+        // member stars it on or off in All apps like any app (owner,
+        // 2026-11-01: "keep it on the sidebar ... add or remove them in the
+        // favorites"). It left the account menu.
+        team: "admin",
+        blurb: "Light or dark, spacing and accent colour",
         label: "Appearance",
         icon: "Palette",
         // "Themes ·" led this line until 2026-08-31. The theming engine is
@@ -400,6 +514,7 @@ export const NAV_SECTIONS: NavSection[] = [
       // a surface that should not exist in this product at all.
       {
         href: "/agents",
+        team: "admin",
         label: "Agent Registry",
         icon: "Bot",
         note: "Register · manage · commits · remove",
@@ -408,14 +523,23 @@ export const NAV_SECTIONS: NavSection[] = [
       },
       {
         href: "/integrations",
+        team: "admin",
+        blurb: "Every tool your company has connected",
         label: "Integrations",
         icon: "Plug",
-        note: "APIs · MCP servers · plugins",
-        feature: "integrations",
-        launch: "preview",
+        note: "Connect AI agents · connections · API keys",
+        // ⚠️ NO `feature` since 2026-10-14 (D-EA-9, WS-55 EA-4b). Every member
+        // opens the app for the AI agents view, and each view gates itself:
+        // the org views still need `feature:integrations` (`page.tsx`).
+        // `access.ts` lists the exact path in ALWAYS_ALLOWED and keeps
+        // `/integrations` in HREF_FEATURES for any sub-route.
+        // Live on 2026-10-13, by owner decision in chat ("I still don't see
+        // the integrations app ... turn it on"). launch_surface.md §2.
+        launch: "live",
       },
       {
         href: "/observability",
+        team: "admin",
         label: "Live Activity",
         icon: "Activity",
         note: "Agent & model activations in real time",

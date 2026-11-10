@@ -48,9 +48,14 @@ const ANCHOR_LABELS: Record<string, string> = {
 
 interface Props {
   taskId: string;
+  /**
+   * Drop the "Repeats" heading. The task body draws this as a Details row,
+   * and the row's own label names it.
+   */
+  bare?: boolean;
 }
 
-export function RepeatEditor({ taskId }: Props) {
+export function RepeatEditor({ taskId, bare = false }: Props) {
   const [saved, setSaved] = useState<Rule | null>(null);
   const [draft, setDraft] = useState<Rule | null>(null);
   const [busy, setBusy] = useState(false);
@@ -112,7 +117,7 @@ export function RepeatEditor({ taskId }: Props) {
 
   return (
     <div>
-      <span className="text-xs text-muted-foreground">Repeats</span>
+      {bare ? null : <span className="text-xs text-muted-foreground">Repeats</span>}
 
       {error ? (
         <p className="mt-1 rounded-md bg-muted px-2 py-1 text-xs text-foreground">
@@ -121,7 +126,7 @@ export function RepeatEditor({ taskId }: Props) {
       ) : null}
 
       {!editing ? (
-        <div className="mt-1 flex flex-wrap items-center gap-2">
+        <div className={`${bare ? "" : "mt-1 "}flex flex-wrap items-center gap-2`}>
           {saved ? (
             <>
               <Badge tone="primary" icon="Repeat">
@@ -160,7 +165,7 @@ export function RepeatEditor({ taskId }: Props) {
           )}
         </div>
       ) : (
-        <div className="mt-1 space-y-2 rounded-md border border-border p-2">
+        <div className={`${bare ? "" : "mt-1 "}space-y-2 rounded-md border border-border p-2`}>
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs text-muted-foreground">Every</span>
             <Input

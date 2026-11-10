@@ -32,10 +32,32 @@ than no review.
 5. **Placement.** Per root `AGENTS.md`: a feature in the wrong layer is a defect
    even if it works. New event-driven execution belongs on MAF paths, not the
    Copilot runtime; UI under `workbench/`; secrets never in agent/skill repos.
+   An app that builds its own shell part is a placement defect too (D89). Look
+   for a palette, a bell, an assistant rail, a ⌘K listener or a top bar inside
+   an app. Look for a new key or a higher number in `SEAM_DEBT` of
+   `src/lib/shell/seams.test.ts`. Look for a second file per seam in
+   `src/lib/shell/`.
+   The test cannot see a top bar, so you must.
 6. **Durable state in the wrong place.** Deploy git-resets the tree, so tracked
    runtime files are wiped. Runtime state belongs in Postgres, not in files.
-7. **Migrations.** Number genuinely free at build time; forward-only; safe to run
-   against a live DB, since deploy auto-applies before the gateway restarts.
+7. **Migrations.** The number is free at build time. The migration is
+   forward-only and safe on a live DB, because deploy applies it before the
+   gateway restarts.
+8. **States and words on a surface.** For a new control or surface, find each
+   state that can occur: loading, empty, error, disabled and long content. A
+   state with no branch in the code is a P1 when a real response produces it.
+   An error that gives no next step, and a destructive act with no confirm or
+   undo, are P1 too. `DESIGN_SYSTEM.md` §9, §10 and §11 hold the rules.
+   Also look for these, because no test sees them:
+   - A Save button on each row, where one save for the form is enough.
+   - A submit that can fire twice on a double click or a second Enter.
+   - A confirm on an action that Undo can reverse. Prefer Undo.
+   - Content that moves when data loads, because no space was kept for it.
+   - A drag with no keyboard path ("Move to", or Alt with the arrow keys).
+   - A budget that rose in a `*_DEBT` map of `motion.test.ts` or
+     `uiGates.test.ts`. No test compares a budget with `main`.
+   A UI diff with no stated interaction is a P1 (§11). For a UI diff, this
+   item runs in build mode too, even when the full review does not.
 
 ## Method
 

@@ -302,7 +302,7 @@ export function TaskListGrouped({
       tabIndex={0}
       onKeyDown={onKeyDown}
       aria-label="Task list — arrow keys move, Enter opens"
-      className="flex-1 overflow-y-auto outline-none"
+      className="isolate flex-1 overflow-y-auto outline-none"
     >
       {/* Desktop column header row (Context list only). Hidden on mobile, where
           rows stay stacked. The left spacer matches a row's three gutters —

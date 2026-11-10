@@ -2,6 +2,8 @@
  * The connect flow of the Email app, as pure decisions (WS-17 EM-T3b).
  *
  * Spec: `project-docs/specs/email_app_master_plan.md` §10.3 and §10.4.3.
+ * Since EM-G8 (§12.3.10), the capability read of the gateway decides which
+ * provider is live, and the copy names the provider of the try.
  *
  * Every choice the connect UI makes lives here, because vitest in this tree
  * runs in the node environment and cannot render a component. The pages
@@ -11,47 +13,135 @@
  * Fence: `connect.test.ts`.
  */
 
-import type { EmailAccount } from "./types";
+import type { EmailAccount, EmailFolder } from "./types";
 
 // ── The providers a member may connect ──────────────────────────────────────
 
 export type ConnectProviderId = "microsoft" | "gmail";
 
-export interface ConnectProvider {
+/** The fixed facts of a provider. The capability read decides the rest. */
+export interface ConnectProviderFacts {
   id: ConnectProviderId;
   label: string;
   detail: string;
+  /** A Lucide name. Never a brand colour (DESIGN_SYSTEM.md §1). */
+  icon: string;
+}
+
+export interface ConnectProvider extends ConnectProviderFacts {
   /** False draws the choice disabled, with `note` beside it. */
   available: boolean;
   note?: string;
-  /** A Lucide name. Never a brand colour (DESIGN_SYSTEM.md §1). */
-  icon: string;
 }
 
 /**
  * The choices of the empty state and of the add-account dialog, in order.
  *
- * Microsoft is the one live path (D-EM-1). Google waits for its own app
- * verification, so it shows and cannot be clicked. IMAP is not offered: the
- * old button went to a URL that nothing read.
+ * WS-17 EM-G8 (D-EM-35, GM-26): this list no longer says which provider is
+ * live. `connectChoices` adds that from the capability read of the gateway.
+ * IMAP is not offered: the old button went to a URL that nothing read.
  */
-export const CONNECT_PROVIDERS: readonly ConnectProvider[] = [
+export const CONNECT_PROVIDERS: readonly ConnectProviderFacts[] = [
   {
     id: "microsoft",
     label: "Microsoft 365 / Outlook",
     detail: "Sign in with your work or personal Microsoft account",
-    available: true,
     icon: "Building2",
   },
   {
     id: "gmail",
     label: "Google / Gmail",
     detail: "Google Workspace and Gmail",
-    available: false,
-    note: "Coming soon",
     icon: "Mail",
   },
 ];
+
+// ── The capability read (WS-17 EM-G8, D-EM-35, D-EM-36) ──────────────────
+
+/**
+ * The answer of `GET /email/oauth/providers` (EM-G7 item 8): one boolean for
+ * each provider. Gmail is true only when the Google app is on the box AND
+ * `EMAIL_GMAIL_CONNECT` is on (D-EM-36). While the flag is off, it is false.
+ */
+export type ProviderAvailability = Readonly<Record<ConnectProviderId, boolean>>;
+
+/**
+ * The read as the UI takes it, or null for a failed read.
+ *
+ * Only an object with a boolean for EACH provider counts. Any other answer
+ * (an error body, a list, a string, a missing key) is a failed read, so a
+ * gateway of another version can never turn Gmail on by accident.
+ */
+export function mapProviderAvailability(raw: unknown): ProviderAvailability | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.microsoft !== "boolean" || typeof r.gmail !== "boolean") return null;
+  return { microsoft: r.microsoft, gmail: r.gmail };
+}
+
+/**
+ * What a failed read means (EM-G8 item 2). Microsoft stays live, as it was
+ * before EM-G8, so a 404 from a gateway without EM-G7 breaks nothing. Gmail
+ * fails closed: "Coming soon".
+ */
+export const FAILED_READ_AVAILABILITY: ProviderAvailability = { microsoft: true, gmail: false };
+
+/**
+ * The providers a member can connect now.
+ *
+ * `read` is the store's value: an answer, `null` for a failed read, or
+ * `undefined` while the read has not settled. Both of the last two give the
+ * failed-read set. Only an explicit `true` makes a provider live.
+ */
+export function liveProviders(
+  read: ProviderAvailability | null | undefined,
+): ReadonlySet<ConnectProviderId> {
+  const answer = read ?? FAILED_READ_AVAILABILITY;
+  return new Set(CONNECT_PROVIDERS.map((p) => p.id).filter((id) => answer[id] === true));
+}
+
+/**
+ * The note beside a provider that the read does not offer (E-D4).
+ *
+ * Microsoft says what the gateway says with no app (`_NOT_CONFIGURED`,
+ * EM-G7 item 7). Gmail keeps "Coming soon".
+ */
+export const UNAVAILABLE_NOTE: Readonly<Record<ConnectProviderId, string>> = {
+  microsoft: "Not available yet",
+  gmail: "Coming soon",
+};
+
+/** The choices, in order, with `available` and `note` from the read. */
+export function connectChoices(read: ProviderAvailability | null | undefined): ConnectProvider[] {
+  const live = liveProviders(read);
+  return CONNECT_PROVIDERS.map((p) =>
+    live.has(p.id) ? { ...p, available: true } : { ...p, available: false, note: UNAVAILABLE_NOTE[p.id] },
+  );
+}
+
+/** The company whose sign-in page the member sees, for each provider. */
+export const PROVIDER_NAME: Readonly<Record<ConnectProviderId, string>> = {
+  microsoft: "Microsoft",
+  gmail: "Google",
+};
+
+/**
+ * The line of the empty state about the sign-in (E-D3).
+ *
+ * There is no try yet, so it names each provider that the read offers. With
+ * Microsoft only, it reads as it did before EM-G8.
+ */
+export function signInLine(live: ReadonlySet<ConnectProviderId>): string {
+  const names = CONNECT_PROVIDERS.filter((p) => live.has(p.id)).map((p) => PROVIDER_NAME[p.id]);
+  const privacy = "Metorite never sees your password.";
+  return names.length ? `You sign in with ${names.join(" or ")}. ${privacy}` : privacy;
+}
+
+/** The label of the reconnect button, for each provider (EM-G8 item 7). */
+export const RECONNECT_LABEL: Readonly<Record<ConnectProviderId, string>> = {
+  microsoft: "Reconnect Outlook",
+  gmail: "Reconnect Gmail",
+};
 
 /**
  * The query of the BFF authorize route.
@@ -129,7 +219,7 @@ export const IMPORT_MONTHS_STORAGE_KEY = "metorite.email.importMonths";
 type MonthsStore = Pick<Storage, "getItem" | "setItem">;
 
 /** The session storage of this tab, or null where it is absent or refused. */
-function sessionStore(): MonthsStore | null {
+function sessionStore(): (MonthsStore & Pick<Storage, "removeItem">) | null {
   try {
     return typeof window === "undefined" ? null : window.sessionStorage;
   } catch {
@@ -153,6 +243,63 @@ export function storedImportMonths(store: MonthsStore | null = sessionStore()): 
   }
 }
 
+// ── The return after a connect (EM-T8c, MB-9, §11.6 case 2) ───────────────
+
+/** The session key of the mailbox ids the member had before a connect. */
+export const MAILBOXES_BEFORE_CONNECT_KEY = "cc.email.mailboxesBeforeConnect";
+
+/** Keeps the ids of the mailboxes the member has, before the page leaves for
+ *  the provider. The callback page reads them back. Never throws. */
+export function rememberMailboxesBeforeConnect(
+  ids: ReadonlyArray<string>,
+  store: MonthsStore | null = sessionStore(),
+): void {
+  try {
+    store?.setItem(MAILBOXES_BEFORE_CONNECT_KEY, JSON.stringify(ids.filter(Boolean)));
+  } catch {
+    // A full or refused storage only costs the notice.
+  }
+}
+
+/**
+ * True when `accountId` was already connected before this ADD, so the connect
+ * signed it in again instead of adding a mailbox. Reads the ids ONCE: the key
+ * goes, so a later reconnect (which stores no ids) never reads a stale list.
+ */
+export function wasConnectedBefore(
+  accountId: string | null,
+  store: (MonthsStore & Partial<Pick<Storage, "removeItem">>) | null = sessionStore(),
+): boolean {
+  let raw: string | null = null;
+  try {
+    raw = store?.getItem(MAILBOXES_BEFORE_CONNECT_KEY) ?? null;
+    store?.removeItem?.(MAILBOXES_BEFORE_CONNECT_KEY);
+  } catch {
+    return false;
+  }
+  if (!accountId || !raw) return false;
+  try {
+    const ids: unknown = JSON.parse(raw);
+    return Array.isArray(ids) && ids.includes(accountId);
+  } catch {
+    return false;
+  }
+}
+
+/** The return target with the mailbox of the connect selected. Before, the
+ *  target kept `?account=<old>`, and the new mailbox and its setup stayed
+ *  hidden (MB-9). A target that is not a path of this site stays as it is. */
+export function withSelectedMailbox(target: string, accountId: string | null): string {
+  if (!target.startsWith("/")) return target;
+  const url = new URL(target, "http://local");
+  // The add is done. `connect=1` would open the add dialog again over the
+  // new mailbox (EM-T8c review).
+  url.searchParams.delete("connect");
+  url.searchParams.delete("provider");
+  if (accountId) url.searchParams.set("account", accountId);
+  return url.pathname + url.search + url.hash;
+}
+
 /** Keeps the chosen range for the next time the step opens. Never throws. */
 export function rememberImportMonths(months: number, store: MonthsStore | null = sessionStore()): void {
   if (!isImportMonths(months)) return;
@@ -168,6 +315,118 @@ export function reconnectProvider(account: Pick<EmailAccount, "provider">): Conn
   return account.provider === "microsoft" || account.provider === "gmail"
     ? account.provider
     : null;
+}
+
+/** The line of the reconnect banner on a Gmail mailbox while Gmail is not live (E-D3). */
+export const GMAIL_RECONNECT_UNAVAILABLE = "Gmail reconnect is not available right now.";
+
+/** The line of the reconnect banner for a provider with no reconnect, as on main. */
+export const RECONNECT_BY_DISCONNECT = "Disconnect it from the account menu, then connect it again.";
+
+/** What the reconnect banner draws at its end (`reconnectAction`). */
+export type ReconnectAction =
+  | { kind: "button"; provider: ConnectProviderId; label: string }
+  | { kind: "unavailable"; text: string }
+  | { kind: "disconnect"; text: string };
+
+/**
+ * The end of the reconnect banner (WS-17 EM-G8-f1, D-G8-f1-3).
+ *
+ * A Gmail mailbox gets the button only while the capability read makes Gmail
+ * live. Otherwise the gateway refuses the try, so the banner shows a line and
+ * no button. A failed or unsettled read gives no Gmail (`liveProviders`).
+ *
+ * ⚠️ Outlook is LIVE. It keeps its button for each read, as on main.
+ */
+export function reconnectAction(
+  account: Pick<EmailAccount, "provider">,
+  live: ReadonlySet<ConnectProviderId>,
+): ReconnectAction {
+  const provider = reconnectProvider(account);
+  if (!provider) return { kind: "disconnect", text: RECONNECT_BY_DISCONNECT };
+  if (provider === "gmail" && !live.has("gmail")) {
+    return { kind: "unavailable", text: GMAIL_RECONNECT_UNAVAILABLE };
+  }
+  return { kind: "button", provider, label: RECONNECT_LABEL[provider] };
+}
+
+// ── The move field of the rule editor (WS-17 EM-G8-f1, §12.3.12.7) ─────────
+
+/** One suggestion of the move field: a key for the list, and the name it fills in. */
+export interface MoveTarget {
+  key: string;
+  label: string;
+}
+
+/** The well-known folders that a rule may move mail into. */
+const MOVE_SYSTEM_KEYS = new Set(["archive", "junk"]);
+
+/**
+ * The suggestions of the move field of a rule (D-G8-f1-1).
+ *
+ * Outlook and IMAP: the user folders and Archive and Junk of `folders`, in the
+ * order of the tree, as on main. Gmail: Archive and Junk of `folders`, then the
+ * labels of the mailbox. `folders` of a Gmail mailbox holds no user label
+ * (`mergeFolders`, O-GM-1), so the labels come from `availableLabels`. A label
+ * with the name of a target already in the list does not come again.
+ */
+export function moveTargets(
+  provider: EmailAccount["provider"] | undefined,
+  folders: ReadonlyArray<Pick<EmailFolder, "key" | "label" | "type">>,
+  labels: ReadonlyArray<string>,
+): MoveTarget[] {
+  if (provider !== "gmail") {
+    return folders
+      .filter((f) => f.type === "user" || MOVE_SYSTEM_KEYS.has(f.key))
+      .map((f) => ({ key: f.key, label: f.label }));
+  }
+  const out: MoveTarget[] = folders
+    .filter((f) => MOVE_SYSTEM_KEYS.has(f.key))
+    .map((f) => ({ key: f.key, label: f.label }));
+  const seen = new Set(out.map((t) => t.label.toLowerCase()));
+  for (const name of labels) {
+    const low = name.toLowerCase();
+    if (!name.trim() || seen.has(low)) continue;
+    seen.add(low);
+    out.push({ key: `label:${low}`, label: name });
+  }
+  return out;
+}
+
+/** The words and the icon of the move field (`moveFieldCopy`). */
+export interface MoveFieldCopy {
+  placeholder: string;
+  /** The words of the create button for a typed name. */
+  createLabel: (name: string) => string;
+  createError: string;
+  /** A Lucide name for the create button. */
+  createIcon: string;
+}
+
+const MOVE_FIELD_FOLDER: MoveFieldCopy = {
+  placeholder: "Choose or type a folder name",
+  createLabel: (name) => `Create folder “${name}”`,
+  createError: "Couldn't create that folder. Try again.",
+  createIcon: "FolderPlus",
+};
+
+const MOVE_FIELD_LABEL: MoveFieldCopy = {
+  placeholder: "Choose or type a label name",
+  createLabel: (name) => `Create label “${name}”`,
+  createError: "Couldn't create that label. Try again.",
+  createIcon: "Tag",
+};
+
+/**
+ * The words of the move field (D-G8-f1-2, E-D3).
+ *
+ * A Gmail user label is a label and never a folder (O-GM-1), so a Gmail
+ * mailbox reads "label". The create route is the same for each provider, and
+ * for Gmail it makes a user label. ⚠️ Outlook is LIVE and keeps the words of
+ * main.
+ */
+export function moveFieldCopy(provider: EmailAccount["provider"] | undefined): MoveFieldCopy {
+  return provider === "gmail" ? MOVE_FIELD_LABEL : MOVE_FIELD_FOLDER;
 }
 
 // ── Which surface the page draws ───────────────────────────────────────────
@@ -187,9 +446,12 @@ export function emailSurface(state: { loaded: boolean; loading: boolean; count: 
   return "empty";
 }
 
-/** True for a provider that a member can connect today. */
-function isLiveProvider(id: string | null): id is ConnectProviderId {
-  return CONNECT_PROVIDERS.some((p) => p.id === id && p.available);
+/** True for a provider in the live set of the capability read. */
+function isLiveProvider(
+  id: string | null,
+  live: ReadonlySet<ConnectProviderId>,
+): id is ConnectProviderId {
+  return CONNECT_PROVIDERS.some((p) => p.id === id) && live.has(id as ConnectProviderId);
 }
 
 /**
@@ -200,14 +462,17 @@ function isLiveProvider(id: string | null): id is ConnectProviderId {
  * connect. A direct authorize call carries no `import_months`, and the
  * gateway default of 1 month then replaces the range the member chose. So a
  * live provider goes back to the range step, which opens with the stored
- * range (`storedImportMonths`). A provider that is not available (Gmail,
- * "Coming soon") goes to the connect choices only.
+ * range (`storedImportMonths`). A provider that is not live goes to the
+ * connect choices only.
+ *
+ * `live` comes from the capability read (EM-G8 item 2, `liveProviders`). A
+ * read that failed, or that has not settled, gives Microsoft only.
  *
  * `/email?connect=1` opens the add-account dialog, or the empty state shows
  * the same choices. `provider` opens the range step of that provider.
  */
-export function retryTarget(provider: ConnectProviderId): string {
-  if (!isLiveProvider(provider)) return "/email?connect=1";
+export function retryTarget(provider: ConnectProviderId, live: ReadonlySet<ConnectProviderId>): string {
+  if (!isLiveProvider(provider, live)) return "/email?connect=1";
   return `/email?${new URLSearchParams({ connect: "1", provider }).toString()}`;
 }
 
@@ -219,13 +484,17 @@ export function wantsConnectChoices(search: string): boolean {
 /**
  * The provider whose range step the URL asks to open, or null.
  *
- * Only with `connect=1`, and only for a live provider. Any other value is
- * request input that names nothing, so it opens the list.
+ * Only with `connect=1`, and only for a provider in `live`, the live set of
+ * the capability read (EM-G8 item 2). Any other value is request input that
+ * names nothing, so it opens the list.
  */
-export function rangeStepProviderFrom(search: string): ConnectProviderId | null {
+export function rangeStepProviderFrom(
+  search: string,
+  live: ReadonlySet<ConnectProviderId>,
+): ConnectProviderId | null {
   if (!wantsConnectChoices(search)) return null;
   const provider = new URLSearchParams(search).get("provider");
-  return isLiveProvider(provider) ? provider : null;
+  return isLiveProvider(provider, live) ? provider : null;
 }
 
 // ── First sync ─────────────────────────────────────────────────────────────
@@ -320,7 +589,23 @@ export type CallbackKind =
   | "consent_declined"
   | "duplicate"
   | "retry"
+  | "scope_missing"
+  | "workspace_admin_blocked"
+  | "provider_unavailable"
+  | "mailbox_limit"
   | "unknown";
+
+/**
+ * The provider of the try, from the `provider` of the callback URL.
+ *
+ * EM-G7 puts `provider` on each bounce (GM-24), and only `gmail` or
+ * `microsoft`. A URL with no provider, or with another value, is a
+ * Microsoft try, as before EM-G7. The value only picks copy and a retry
+ * target, and the retry target still checks the live set.
+ */
+export function callbackProvider(param: string | null): ConnectProviderId {
+  return param === "gmail" ? "gmail" : "microsoft";
+}
 
 export interface CallbackView {
   kind: CallbackKind;
@@ -354,8 +639,11 @@ export function callbackView(params: {
   error: string | null;
   accountId: string | null;
   email: string | null;
+  /** The provider of the try (`callbackProvider`). Copy names it (GM-27). */
+  provider: ConnectProviderId;
 }): CallbackView {
-  const { error, accountId, email } = params;
+  const { error, accountId, email, provider } = params;
+  const name = PROVIDER_NAME[provider];
   if (!error) {
     if (!accountId) {
       return { kind: "loading", title: "Finishing the connection", body: "One moment." };
@@ -381,8 +669,55 @@ export function callbackView(params: {
       kind: "consent_declined",
       title: "You cancelled the connection",
       body:
-        "Microsoft did not give Metorite access to your mailbox, so nothing was connected. " +
+        `${name} did not give Metorite access to your mailbox, so nothing was connected. ` +
         "Try again when you are ready. Metorite reads and sends mail only as you tell it to.",
+    };
+  }
+  // EM-G7 item 2: Google lets a member clear a permission on its consent
+  // page, and the callback then saves nothing (D-EM-31).
+  if (error === "scope_missing") {
+    return {
+      kind: "scope_missing",
+      title: "Metorite needs both permissions",
+      body:
+        `${name} showed two permissions, and one of them was not given. Metorite needs both: ` +
+        "one to read, send and organize your mail, and one to manage your mail filters. " +
+        "Nothing was connected. Try again, and keep both permissions selected.",
+    };
+  }
+  // EM-G7 item 4: Google's `admin_policy_enforced`. The company lets Google
+  // mail reach only the apps that its Workspace admin trusts.
+  if (error === "workspace_admin_blocked") {
+    return {
+      kind: "workspace_admin_blocked",
+      title: "Your Google Workspace admin needs to trust Metorite",
+      body:
+        "Your company lets Google mail reach only the apps that its admin trusts. " +
+        "Your admin can trust Metorite once for everyone in the company. When that is done, connect again.",
+    };
+  }
+  // EM-G8-f1 (D-G8-f1-4): the gateway bounces a Gmail try while Gmail is not
+  // open to this member (`transport/oauth.py`). A second try changes nothing,
+  // so the view offers no retry. The flag and `EMAIL_GMAIL_CONNECT_MEMBERS`
+  // open Gmail for each member, so the body says "your account".
+  if (error === "provider_unavailable") {
+    return {
+      kind: "provider_unavailable",
+      title: "Gmail is not available yet",
+      body: "Gmail is not available for your account yet.",
+    };
+  }
+  // Q-MB-1 (owner, 2026-10-23): the gateway holds the one copy of the
+  // limit (`core.MAX_MAILBOXES_PER_MEMBER`), so this text names no number.
+  // The authorize route and the callback both send this code. A second try
+  // changes nothing, so the view offers no retry.
+  if (error === "mailbox_limit") {
+    return {
+      kind: "mailbox_limit",
+      title: "You have the most mailboxes",
+      body:
+        "You have connected the most mailboxes that one member can have. " +
+        "Disconnect one from its mailbox menu, then connect this one.",
     };
   }
   if (error === "duplicate") {
@@ -409,10 +744,60 @@ export function callbackView(params: {
     kind: "unknown",
     title: "We could not connect your mailbox",
     body:
-      "Microsoft or Metorite stopped the connection. Try again. " +
+      `${name} or Metorite stopped the connection. Try again. ` +
       "If it happens again, give your Metorite admin the reference below.",
     reference,
   };
+}
+
+/**
+ * The note after a connect that signed in a mailbox the member already had
+ * (EM-T8c, §11.6 case 2). It names the sign-in page of the try (GM-27).
+ */
+export function alreadyConnectedCopy(email: string | null, provider: ConnectProviderId): string {
+  return (
+    `${email || "This mailbox"} was already connected. Metorite signed it in again. ` +
+    `To add a different mailbox, choose another account at ${PROVIDER_NAME[provider]}.`
+  );
+}
+
+/** The callback results that offer "Try again". */
+export function offersTryAgain(kind: CallbackKind): boolean {
+  return kind === "consent_declined" || kind === "retry" || kind === "scope_missing" || kind === "unknown";
+}
+
+/** The callback results that wait on an admin, so they offer "Approved? Connect again". */
+export function offersConnectAgain(kind: CallbackKind): boolean {
+  return kind === "admin_consent_required" || kind === "workspace_admin_blocked";
+}
+
+// ── The help for a Google Workspace admin (EM-G8 item 6, §12.4) ───────────
+
+/**
+ * The words of the Workspace admin help.
+ *
+ * Under the Gmail choice, `line` opens the help. The callback page shows it
+ * for `workspace_admin_blocked`. Google shows some refusals (`org_internal`)
+ * on its own page and never returns, so the help must come before the click
+ * too (EM-G7 item 5). The path is the one of §12.4.
+ */
+export const WORKSPACE_ADMIN_HELP = {
+  line: "Company Google account? Your admin can trust Metorite once for everyone.",
+  steps: [
+    "Your Google Workspace admin opens the Google Admin console, then Security → Access and data control → API controls.",
+    "Then Manage third-party app access → Configure new app.",
+    "They find Metorite by the client ID below, and choose Trusted.",
+  ],
+  clientIdLabel: "Metorite client ID",
+  copy: "Copy client ID",
+  copied: "Client ID copied",
+  loading: "Getting the client ID…",
+  unavailable: "Metorite could not load its client ID. Ask your Metorite admin for it.",
+} as const;
+
+/** True when the callback page shows the Workspace admin help. */
+export function showsWorkspaceAdminHelp(kind: CallbackKind): boolean {
+  return kind === "workspace_admin_blocked";
 }
 
 /** The line above the admin-approval help after a Microsoft decline. */
@@ -443,7 +828,11 @@ export function adminApprovalHelp(
 
 // ── Admin consent ──────────────────────────────────────────────────────────
 
-/** The public facts of the mail app, from `GET /email/oauth/microsoft/app`. */
+/**
+ * The public facts of a mail app, from `GET /email/oauth/{provider}/app`.
+ * Microsoft builds the admin-consent link from them. Google shows the client
+ * ID to a Workspace admin (EM-G7 item 9, EM-G8 item 6). Neither is a secret.
+ */
 export interface MailAppInfo {
   clientId: string;
   redirectUri: string;
@@ -495,12 +884,26 @@ export function adminConsentMailto(link: string): string {
 
 // ── Disconnect ─────────────────────────────────────────────────────────────
 
-export function disconnectCopy(address: string): { title: string; body: string; note: string; confirm: string } {
+/**
+ * The words of the disconnect dialog.
+ *
+ * `name` names the mailbox as "label · address" (`disconnectNames` in
+ * `lib/mailboxSettings.ts`, EM-T8f-2). `nextDefault` names the mailbox that
+ * becomes the default, when the mailbox that goes is the default. The dialog
+ * names it before the removal (§11.6 case 18).
+ */
+export function disconnectCopy(
+  name: string,
+  nextDefault: string | null = null,
+): { title: string; body: string; note: string; confirm: string } {
+  const body =
+    `Metorite stops syncing ${name} and deletes its sign-in tokens. ` +
+    "The synced mail, rules and AI settings of this mailbox are deleted from Metorite.";
   return {
     title: "Disconnect this mailbox?",
-    body:
-      `Metorite stops syncing ${address} and deletes its sign-in tokens. ` +
-      "The synced mail, rules and AI settings of this mailbox are deleted from Metorite.",
+    body: nextDefault
+      ? `${body}\n\nThis is your default mailbox. After the disconnect, ${nextDefault} becomes the default.`
+      : body,
     note: "Your mail stays in your Microsoft or Google mailbox. To use it here again, connect it again.",
     confirm: "Disconnect",
   };

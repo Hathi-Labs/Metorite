@@ -98,27 +98,52 @@ match it exactly, and `nav.test.ts` is the fence that says so (§9 LS-1).
 
 | Section | App | Route | Gate | Note |
 |---|---|---|---|---|
-| **Personal Center** | My Tasks | `/tasks` | `feature:tasks` | Renamed from "Tasks" on 2026-09-23 (D73). The **personal lens over Projects** since D53 — one store, not a second one (`task_manager_app.md` §13) |
 | **Personal Center** | Calendar | `/calendar` | `feature:tasks` | 🆕 **Added 2026-08-24 by D54**, extracted from a *view* inside `/tasks` (there was never a `/tasks/calendar` route — D54.5, measured). ⚠️ The gate is **`feature:tasks`, not a new `feature:calendar`** (D54.1): the calendar lived inside Tasks, so every `feature:tasks` holder already had it, and minting a new slug would ship the app dark to all of them until an admin granted it. Code + fence agree — `nav.ts:142`, `access.ts:94` (`["/calendar", "tasks"]`), `nav.test.ts:43`. `live` and not `preview` deliberately: it is reachable inside a live app today, so holding it back would *withdraw* a shipped capability (`calendar_focus_os.md` §10) |
 | **Personal Center** | My Profile | `/people/me` | ungated | Your own record is never the directory (D-PC-15) |
-| **Personal Center** | My Access | `/access` | ungated | Renamed from "Your access". Ungated by construction — it is the page that explains a missing pane |
-| **Personal Center** | Email | `/email` | `feature:email` | 🆕 **Live on 2026-10-02**, by owner decision of 2026-10-01 (H-21). WS-17 EM-T3b gave the app a connect flow with no setup step. A member connects Microsoft 365 from inside Email. Gmail shows as "Coming soon" (`email_app_master_plan.md` §10.4.3) |
+| **Personal Center** | My Email | `/email` | `feature:email` | Named "My Email" since 2026-10-08 (owner), apart from a later shared team inbox. 🆕 **Live on 2026-10-02**, by owner decision of 2026-10-01 (H-21). WS-17 EM-T3b gave the app a connect flow with no setup step. A member connects Microsoft 365 from inside Email. Gmail shows as "Coming soon" (`email_app_master_plan.md` §10.4.3) |
+| **Personal Center** | My WhatsApp | `/whatsapp` | `feature:whatsapp` | 🆕 **Live on 2026-10-08**, by owner decision (WS-20 WA-C6). A member connects a WhatsApp Business account through Meta's Embedded Signup, the one official way in. The unofficial personal-number QR route left the connect screen the same day |
+| **Personal Center** | Artifacts | `/artifacts` | `feature:artifacts` | 🆕 **Live on 2026-10-13**, by owner direction (D99, `navigation_shell.md` NS-6 slice 6c: "do whatever it takes to go live"). It opens on the member's chats and the files each one made. The agents' own workspaces are its second tab. `feature:artifacts` reaches every role (migration 207) |
 | **Apps** | Projects | `/projects` | `feature:projects` | |
+| **Apps** | CRM | `/crm` | `feature:crm` | 🆕 **Live on 2026-10-11**, by owner decision in chat ("Promote CRM to live now"). `CRM_ENABLED` is on for each org. The Zoho mirror stays on for Fracktal only (`CRM_MIRROR_ORGS`). ⚠️ A member sees the CRM only when an admin opens it in CRM settings. Until then the member sees "The CRM is not open to you yet" |
 | **Apps** | People | `/people` | `feature:people` | 🆕 **Live on 2026-09-20**, by owner decision. Held back before because the directory could not load and had no rows. PR #306 repaired the BFF proxy and gave each new member a `people` row. H-124's roster sync seeds the members who predate it. ⚠️ `feature:people` is `is_default false`. A live pane is still dark to a member without the grant |
+| **Apps** | Knowledge | `/knowledge` | `feature:knowledge` | 🆕 **Live on 2026-10-18**, by owner decision in chat (H-21, WS-61 KB-12). The owner asked for Knowledge to be on for all orgs. `feature:knowledge` is `is_default true` and reaches every role except guest (migrations 207 and 270). ⚠️ The gateway answers only for an org on `KNOWLEDGE_ORGS`, which is `*` on production. For any other org the app shows its off state |
 | **AI Studio** | Chat | `/chat` | `feature:chat` | Section renamed from "Studio" |
+| **AI Studio** | Studio | `/studio` | `feature:studio` | 🆕 **Live on 2026-11-05**, by owner decision in chat (D179, task 1795): "You can build this for everybody. Let all my beta customers be able to try it out and bleed it out, and continue to build features onto it." The pane is the one library of apps, workflows and skills (`ai_studio.md` §14 A1). ⚠️ The routes under it answer only for an org on `STUDIO_ORGS`. For any other org the pane says that Studio is not open for the organization yet. Slice J1-1 moves the gate to `feature:studio` |
 | **Admin** | Approvals | `/approvals` | `feature:approvals` | |
 | **Admin** | Organisation | `/settings/organization` | admin | Tabs: Members & roles · Seat assignments · Branding · **Requests** · **Email** (§6.2) |
 | **Admin** | Appearance | `/settings/appearance` | ungated | Personal preference; the org-wide default on the same page is gateway-authorized |
+| **Admin** | Integrations | `/integrations` | none (each view gates itself) | 🆕 **Live on 2026-10-13**, by owner decision in chat ("I still don't see the integrations app on my sidebar ... turn it on"). WS-54 built the org connections (IN-0 to IN-4, IN-7, IN-8a). ⚠️ **Open to every member since 2026-10-14 (D-EA-9, WS-55 EA-4b).** The pane has no `feature`, and `/integrations` is an exact entry of `ALWAYS_ALLOWED`. Each member sees the AI agents view. The org views still need `feature:integrations`, which is `is_default false`. The pane stays in Admin |
 
-**Eleven** entries, four sections, in that order. The set held eight until 2026-08-24,
-nine until 2026-09-20 and ten until 2026-10-02. D54 added Calendar. The owner then
-promoted People, and then Email. `nav.test.ts`'s count fence moved 8 → 9 → 10 → 11 in
-the same pull request as each pane. That is what the fence is for.
+**Fifteen** entries, four sections, in that order. The set held eight until 2026-08-24,
+nine until 2026-09-20, ten until 2026-10-02, eleven until 2026-10-05, ten until
+2026-10-08, eleven until 2026-10-11, twelve until 2026-10-13, thirteen until later on
+2026-10-13, fourteen until 2026-10-18, fifteen until 2026-10-25, and fourteen until 2026-11-05. D54 added Calendar. The owner then promoted
+People, Email, WhatsApp, the CRM, Integrations, Artifacts and Knowledge. `nav.test.ts`'s
+count fence moved 8 → 9 → 10 → 11 → 10 → 11 → 12 → 13 → 14 → 15 → 14 → 15 in the same pull
+request as each pane. That is what the fence is for.
+
+**My Tasks left the sidebar on 2026-10-25** (owner: "go ahead and turn on all the
+flags"). WS-64 OP-4 made it the My work section of Projects
+(`one_projects_app.md` D-OP-1, D-OP-5), and `/tasks` redirects there while
+`NEXT_PUBLIC_PROJECTS_MY_WORK` is on. The route, the `feature:tasks` grant and the
+Calendar's gate stay. The pane is `preview` in `nav.ts`.
+
+**My Access left the sidebar on 2026-10-05** (owner directive: "remove my access from
+the sidebar and fold it into the People's app"). It is the "My access" tab of the
+People app, at `/people/access`, beside My profile.
+
+It is still ungated, because it is the page that explains a missing pane.
+`lib/access.ts` lists it in `ALWAYS_ALLOWED` by name, and the People layout shows the
+two personal tabs to a member without `feature:people`. `/access` redirects there.
+This is not a promotion and not a withdrawal. The page did not change what it shows,
+only where it lives.
 
 **"Personal Center" survives as a
 section label and nothing else.** It is a category of apps mapped one-to-one to
 the signed-in person. It is not a projection of a department. The directive
 keeps it by name.
+
+**Amended 2026-10-05 by D87.** "Personal" is also the first altitude of Home, My Day (`navigation_shell.md` §4.1). It is still not a destination, and it is still not a grant.
 
 ### Preview — in the application, absent from the surface
 
@@ -128,22 +153,18 @@ answer rather than a diff:
 | Section it will return to | App | Route | Held back because |
 |---|---|---|---|
 | Personal Center | Dashboard | `/dashboard` | Company-view-only today; the personal view is WS-15 |
-| Personal Center | WhatsApp | `/whatsapp` | WS-20 incomplete |
 | Personal Center | Notes | `/notes` | WS-19 incomplete |
 | Personal Center | Memories | `/memory` | WS-9 — operator-grade surface, not customer-grade |
-| Personal Center | Artifacts | `/artifacts` | Reads as a debugging surface |
-| Apps | CRM | `/crm` | WS-26 incomplete |
 | Apps | Centers (six panes) | `/centers/<slug>` | **Withdrawn by D49**, not merely incomplete (§5) |
 | AI Studio | Workflows | `/workflows` | WS-11 incomplete |
 | AI Studio | App Workshop | `/build/apps` | Incomplete |
 | AI Studio | Agent Workshop | `/build/agents` | Incomplete |
 | Admin | Models | ~~`/settings/models`~~ | ✅ **GONE — deleted 2026-08-28 (CP-5).** The route, the page, `TierCard`, `ProviderCard`, `model-types` and five BFF routes are all removed, and the operator console's `/models` is where this lives now. The history below is kept because it explains WHY. 🗑️ **LEFT THE PRODUCT ENTIRELY — D56, 2026-08-26.** Not "held back": it is a **three-tab model-operations console in the customer's app** (providers + API keys, per-model enable, tier assignment). D32.7 ruled the customer never chooses a model. D56 relocated this surface to the **operator** console. **CP-10 slice 4 deletes the pane**, and must move `nav.test.ts`'s preview count in the same PR — the D54 precedent |
 | Admin | Agent Registry | `/agents` | Operator concern |
-| Admin | Integrations | `/integrations` | Incomplete |
 | Admin | Live Activity | `/observability` | Operator concern |
 
-**The count is the fence.** `nav.test.ts` asserts that exactly the **eleven** rows
-above are `live`. A pane added without a launch status fails the suite.
+**The count is the fence.** `nav.test.ts` asserts that exactly the **fifteen** rows
+of the live table are `live`. A pane added without a launch status fails the suite.
 Promoting one is a deliberate edit that also updates the test.
 
 *(It worked three times. The Calendar pane, the People pane and the Email pane
@@ -197,6 +218,8 @@ launch: "live" | "preview"   // src/lib/nav.ts, NavPane
 ---
 
 ## 4. Pricing — flat, per user, plus AI credits (D49)
+
+> **The direction changed (owner, 2026-11-10, D204 point 9 and D190.3).** The D152 seat tiers with base pricing replace the flat seat. The code sells the flat seat until PLN-0 merges. This section stays the record of what the code does today.
 
 ### 4.1 The shape
 
@@ -411,6 +434,8 @@ filter, or it is a second answer to one question.
 
 Fence: `nav.test.ts` + `accessProvider.test.ts` (§9 LS-4/LS-5).
 
+**Extended 2026-10-05 by WS-44 (D89).** The shell adds four surfaces that read this one filter: the launcher, the command bar, My Day and the avatar menu. `navigation_shell.md` §5 owns them. They change WHERE a live pane renders, and never WHETHER it is live. The count in §2 stays the fence.
+
 ---
 
 ## 9. Tickets
@@ -426,8 +451,9 @@ move Projects and CRM into Apps. Rename "Your access" → "My Access" and the
 
 **Done when:** `nav.test.ts` asserts all four of these.
 
-- (a) The live set is exactly §2's **eleven** `(section, href)` pairs (Email joined
-  on 2026-10-02).
+- (a) The live set is exactly §2's **fifteen** `(section, href)` pairs (2026-10-25, after My Tasks left for Projects; Email joined
+  on 2026-10-02, My Access left for the People app on 2026-10-05, and WhatsApp
+  joined on 2026-10-08).
 - (b) Every pane carries an explicit `launch`.
 - (c) No section is named "Centers".
 - (d) `visibleSections` drops `preview` panes when the preview flag is off, and
@@ -555,4 +581,7 @@ cd workbench/operator_console && npx tsc --noEmit && npx vitest run
    act (CLAUDE.md §4).
 4. **Promoting a `preview` app to `live`** — it is the decision "this is finished
    enough to sell", which is the owner's, and the registry edit is trivial once
-   it is taken.
+   it is taken. ⚠️ **Two things hold before an agent proposes a promotion
+   (D89).** The app's spec carries its "Shell manifest" section (R9).
+   `src/lib/shell/seams.test.ts` names no debt for the app. An app that still
+   mounts its own palette, bell, rail or ⌘K listener is not ready to sell.

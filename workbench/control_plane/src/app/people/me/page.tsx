@@ -30,6 +30,9 @@ import PageHeader from "@/components/PageHeader";
 import { AbsencePanel, AwayBadge } from "../components/AbsencePanel";
 import { AvatarPicker } from "../components/AvatarPicker";
 import { ProfilePanels } from "../components/ProfilePanels";
+import { WhatsAppLinkSection } from "../components/WhatsAppLinkSection";
+import { ReachSection } from "../components/ReachSection";
+import { NotificationsSection } from "../components/NotificationsSection";
 import { type PersonDetail, type WorkRow, peopleApi } from "../lib/api";
 import { initials } from "../lib/directory";
 import { PAGE_FRAME } from "../lib/frame";
@@ -286,10 +289,22 @@ export default function MyProfilePage() {
           <ProfilePanels
             person={state.person}
             showCompleteness
+            selfRoute
             onSaved={(p) => setState({ kind: "resolved", person: p })}
           />
         </>
       )}
+
+      {/*
+        Chat on WhatsApp (WS-47 WAC-1). It needs no directory row, so it sits
+        outside the three states, and it draws nothing until the gateway says
+        the channel is open for this member's organization.
+      */}
+      <WhatsAppLinkSection />
+      {/* Messages Metorite starts (WS-59 RE-1a). Draws nothing while Reach is dark. */}
+      <ReachSection />
+      {/* Notifications on this device (WS-66 PN-1). Draws nothing while web push is dark. */}
+      <NotificationsSection />
     </main>
   );
 }

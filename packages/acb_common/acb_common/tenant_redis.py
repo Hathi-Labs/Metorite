@@ -97,11 +97,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import redis.asyncio as aioredis
+from redis.exceptions import RedisError
 
 from acb_common.settings import get_settings
 
 __all__ = [
     "KEY_ROOT",
+    "OUTAGE_ERRORS",
     "ConsumerGroup",
     "ScanPattern",
     "TenantKey",
@@ -122,6 +124,13 @@ __all__ = [
 #: The one place the ``cc:`` root is written. Nothing else in the codebase
 #: should ever type it again — that is the point of the module.
 KEY_ROOT = "cc"
+
+#: The errors that mean "Redis did not answer": a refused or dropped
+#: connection, a timeout, or any error of redis-py. A caller that must tell an
+#: outage from a wrong value catches this tuple, so it never imports redis-py
+#: itself (the ratchet in ``tests/unit/test_tenant_redis.py``). WS-55 EA-4a
+#: answers 503 for it.
+OUTAGE_ERRORS: tuple[type[BaseException], ...] = (RedisError, OSError, TimeoutError)
 
 
 # ── Errors ───────────────────────────────────────────────────────────────────
@@ -350,9 +359,10 @@ class ScanPattern:
 
     Built by :func:`match`. The fixed segments are glob-escaped and only the
     trailing wildcard is free, so ``cc:<org>:active:*`` is expressible and
-    ``cc:*:active:*`` is not. This matters more than it looks: the one scan in
-    the tree today (``chat.py`` listing active sessions via ``cc:active:*``)
-    becomes a cross-tenant enumeration the moment a second tenant exists.
+    ``cc:*:active:*`` is not. This matters more than it looks: ``chat.py``
+    once listed active sessions with a ``cc:active:*`` scan, and that scan was
+    a cross-tenant enumeration the moment a second tenant existed. It now reads
+    the per-org ``liveruns`` hash instead.
     """
 
     organization_id: str
@@ -489,6 +499,24 @@ class TenantRedis:
     async def get(self, k: TenantKey) -> Any:
         return await self._client.get(self._raw(k))
 
+    async def getdel(self, k: TenantKey) -> Any:
+        """``GETDEL``: read the value and delete the key in ONE command.
+
+        A one-time value needs this, so two readers can never both get it:
+        the consent ticket of WS-55 EA-4a, and the pending flow of an MCP
+        OAuth consent of WS-54 IN-8a. Redis 6.2 or later.
+        """
+        return await self._client.getdel(self._raw(k))
+
+    async def mget(self, keys: Sequence[TenantKey]) -> list[Any]:
+        """Read many keys in ONE round trip. Each key goes through
+        :meth:`_raw`, so one ``str`` or one key of another tenant refuses the
+        whole call. An empty list sends nothing (WS-17 EM-T16 PR-A)."""
+        raw = [self._raw(k) for k in keys]
+        if not raw:
+            return []
+        return list(await self._client.mget(raw))
+
     async def set(self, k: TenantKey, value: Any, **kwargs: Any) -> Any:
         return await self._client.set(self._raw(k), value, **kwargs)
 
@@ -509,6 +537,9 @@ class TenantRedis:
 
     async def incr(self, k: TenantKey, amount: int = 1) -> Any:
         return await self._client.incr(self._raw(k), amount)
+
+    async def decrby(self, k: TenantKey, amount: int = 1) -> Any:
+        return await self._client.decrby(self._raw(k), amount)
 
     # -- lists (steer signals are a durable list today) ---------------------
 
@@ -540,6 +571,34 @@ class TenantRedis:
 
     async def hincrbyfloat(self, k: TenantKey, name: str, amount: float = 1.0) -> Any:
         return await self._client.hincrbyfloat(self._raw(k), name, amount)
+
+    # -- sorted sets (the My Day active set, WS-58 MD-5b) -------------------
+    #
+    # A member is a value INSIDE the set, never a key, so it needs no tenant
+    # check of its own: the key that holds it carries the tenant.
+
+    async def zadd(self, k: TenantKey, mapping: Mapping[str, float], **kwargs: Any) -> Any:
+        """``ZADD``: set the score of each member of *mapping*."""
+        return await self._client.zadd(self._raw(k), dict(mapping), **kwargs)
+
+    async def zrangebyscore(
+        self, k: TenantKey, min_score: float | str, max_score: float | str, **kwargs: Any,
+    ) -> Any:
+        """``ZRANGEBYSCORE``: the members with a score in the closed range."""
+        return await self._client.zrangebyscore(self._raw(k), min_score, max_score, **kwargs)
+
+    async def zrem(self, k: TenantKey, *members: str) -> Any:
+        """``ZREM``: remove the named members. No member sends nothing."""
+        raw = self._raw(k)
+        if not members:
+            return 0
+        return await self._client.zrem(raw, *members)
+
+    async def zremrangebyscore(
+        self, k: TenantKey, min_score: float | str, max_score: float | str,
+    ) -> Any:
+        """``ZREMRANGEBYSCORE``: remove the members with a score in the range."""
+        return await self._client.zremrangebyscore(self._raw(k), min_score, max_score)
 
     # -- streams ------------------------------------------------------------
 
@@ -687,8 +746,18 @@ _BINARY_POOL: Any = None
 #: Connection ceiling of the binary pool. One caller, short-lived commands.
 BINARY_POOL_MAX_CONNECTIONS = 4
 
+#: The third pool, for long blocking reads (H-201c). The live activity feed
+#: holds an ``XREAD BLOCK 15000`` open for each viewer. On the main pool of
+#: 16, a few open feeds take every connection, and each other caller then
+#: gets "Too many connections". This pool keeps those reads apart. It is the
+#: SAME wrapper over it, so the key discipline is identical.
+_BLOCKING_POOL: Any = None
 
-def get_tenant_redis(*, binary: bool = False) -> TenantRedis:
+#: Connection ceiling of the blocking pool. One connection for each open feed.
+BLOCKING_POOL_MAX_CONNECTIONS = 16
+
+
+def get_tenant_redis(*, binary: bool = False, blocking: bool = False) -> TenantRedis:
     """The shared tenant-aware client for this process.
 
     Does **not** require a tenant to be bound — the client is tenant-agnostic;
@@ -698,8 +767,23 @@ def get_tenant_redis(*, binary: bool = False) -> TenantRedis:
     ``binary=True`` returns the same wrapper over a second, small pool with
     ``decode_responses=False``: replies come back as ``bytes``, unchanged.
     Use it only for values that are not text.
+
+    ``blocking=True`` returns the same wrapper over the third pool, for a
+    command that waits on the server (``XREAD BLOCK``). Use it only for such a
+    read, so a long wait never takes a connection of the main pool.
     """
-    global _POOL, _BINARY_POOL
+    global _POOL, _BINARY_POOL, _BLOCKING_POOL
+    if binary and blocking:
+        raise ValueError("binary and blocking pools are separate: pick one")
+    if blocking:
+        if _BLOCKING_POOL is None:
+            _BLOCKING_POOL = aioredis.from_url(
+                get_settings().redis_url,
+                decode_responses=True,
+                max_connections=BLOCKING_POOL_MAX_CONNECTIONS,
+                health_check_interval=30,
+            )
+        return TenantRedis(_BLOCKING_POOL)
     if binary:
         if _BINARY_POOL is None:
             _BINARY_POOL = aioredis.from_url(
@@ -720,7 +804,8 @@ def get_tenant_redis(*, binary: bool = False) -> TenantRedis:
 
 
 def reset_pool_for_tests() -> None:
-    """Drop both cached pools. Tests only — there is no runtime reason to call it."""
-    global _POOL, _BINARY_POOL
+    """Drop the cached pools. Tests only — there is no runtime reason to call it."""
+    global _POOL, _BINARY_POOL, _BLOCKING_POOL
     _POOL = None
     _BINARY_POOL = None
+    _BLOCKING_POOL = None

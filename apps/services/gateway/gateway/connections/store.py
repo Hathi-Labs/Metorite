@@ -1,0 +1,1047 @@
+"""The store of ``integration_connections`` — the only reader of the blob.
+
+Spec: ``project-docs/specs/crm_platform.md`` §5.3 and §7.1. Migration 245.
+
+⚠️ **This is the ONLY module that names the blob column** (``credentials`` plus
+``_encrypted``). The column holds the Fernet blob of the tokens. Every other
+module reads a :class:`Connection` (no blob) or a :class:`SourceCredential`
+that this module decrypts. The fence is ``tests/unit/test_crm_connection.py``:
+an AST scan that fails when another file under ``apps/`` or ``packages/`` names
+the column.
+
+* **Two sealed shapes.** A token connection (Zoho, GitHub) seals a
+  :class:`SourceCredential`. A static-header connection (an MCP server, WS-54
+  IN-4) seals ``{"headers": {...}}``: :func:`save_headers` and
+  :func:`load_headers_by_prefix`. Each reader opens only its own shape.
+* **The key.** The blob uses the Fernet key of ``acb_llm.key_store``
+  (``ACB_MASTER_KEY``). This module makes no second key.
+* **The session.** Each function takes the ``db`` that ``tenant_session`` gave
+  the caller. Row level security binds the tenant. Each query also names the
+  organization, so a session with RLS off still reads one organization. The
+  organization comes from the server, never from request input (R5).
+* **No secret out.** The blob, the access token and the refresh token never
+  appear in a return value (except :func:`load_credential`, which exists to
+  return them to server code), a log line or an error message.
+"""
+
+from __future__ import annotations
+
+import json
+import uuid
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any
+
+from acb_common import get_logger
+from acb_llm.key_store import InvalidToken, get_key_store
+from sqlalchemy import text
+
+from gateway.crm_sources.base import SourceCredential
+
+_log = get_logger("connections.store")
+
+
+class Undecryptable(Exception):
+    """The stored blob does not open.
+
+    The master key changed, or the blob is damaged. The message holds the name
+    of the exception class only, never a byte of the blob.
+    """
+
+
+#: The ``status`` vocabulary, mirrored from the CHECK in migration 245, and
+#: widened by migration 252.
+STATUS_CONNECTED = "connected"
+STATUS_NEEDS_RECONNECT = "needs_reconnect"
+#: CRM-X0: the new consent is for another account than the one the records
+#: came from. Nothing syncs until an admin starts over or connects the first
+#: account again. ``shared_token`` gives no credential for it.
+STATUS_NEEDS_RESET = "needs_reset"
+STATUS_DISCONNECTED = "disconnected"
+
+#: The ``provider_meta`` key of the provider account that a consent was for
+#: (CRM-X0 review P1-2). The consent callback writes it on each good consent.
+#: A disconnect and ``needs_reset`` keep it, and only the start over removes
+#: it (:func:`forget_account`), so a later consent always has it to compare.
+META_ACCOUNT_ID = "account_id"
+
+SCOPE_ORG = "org"
+SCOPE_MEMBER = "member"
+
+#: The owning app of the CRM mirror (WS-61 KC-1a lift). Two side effects of
+#: this store belong to the CRM alone: the drop or stale of
+#: ``crm_source_profiles`` in :func:`save_credential`, and the strip of the
+#: discovered keys in :func:`disconnect`. They run for this app only. The CRM
+#: routes and the sync use the same value (``routes/crm/connection.OWNING_APP``,
+#: ``crm_sync/engine.OWNING_APP``). Fence: ``tests/unit/test_kc_sources_store_lift.py``.
+CRM_OWNING_APP = "crm"
+
+#: Each column except the blob. A SELECT list is built from this string only.
+_PUBLIC_COLUMNS = (
+    "id, organization_id, provider, owning_app, scope_kind, member_email, "
+    "status, provider_meta, scopes, connected_by, last_sync_at, last_error, "
+    "created_at, updated_at"
+)
+
+#: The where clause of one connection. ``COALESCE`` matches the unique index.
+_KEY_WHERE = (
+    "organization_id = CAST(:org AS uuid) AND provider = :provider "
+    "AND owning_app = :owning_app AND scope_kind = :scope_kind "
+    "AND COALESCE(member_email, '') = :member"
+)
+
+_GET_SQL = f"SELECT {_PUBLIC_COLUMNS} FROM integration_connections WHERE {_KEY_WHERE}"
+
+_LIST_SQL = (
+    f"SELECT {_PUBLIC_COLUMNS} FROM integration_connections "
+    "WHERE organization_id = CAST(:org AS uuid) ORDER BY owning_app, provider, created_at"
+)
+
+_GET_BY_ID_SQL = (
+    f"SELECT {_PUBLIC_COLUMNS} FROM integration_connections "
+    "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid)"
+)
+
+#: The lock of one row by id, at the strength of the UPDATE that the caller
+#: runs next (WS-61 KC-3h). Any status, so a disconnect and a sync run lock the
+#: same row. The lock order of the Knowledge rows is in ``kb_sync/engine.py``.
+_LOCK_BY_ID_SQL = _GET_BY_ID_SQL + " FOR NO KEY UPDATE"
+
+_BLOB_SQL = (
+    "SELECT credentials_encrypted FROM integration_connections "
+    f"WHERE {_KEY_WHERE} AND status <> 'disconnected'"
+)
+
+_BLOB_BY_ID_SQL = (
+    "SELECT credentials_encrypted FROM integration_connections "
+    "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid) "
+    "AND status <> 'disconnected' FOR UPDATE"
+)
+
+_UPSERT_SQL = (
+    "INSERT INTO integration_connections (organization_id, provider, "
+    "owning_app, scope_kind, member_email, status, provider_meta, "
+    "credentials_encrypted, scopes, connected_by, last_error, created_at, "
+    "updated_at) VALUES (CAST(:org AS uuid), :provider, :owning_app, "
+    ":scope_kind, :member_email, 'connected', CAST(:provider_meta AS jsonb), "
+    ":blob, :scopes, :connected_by, NULL, now(), now()) "
+    "ON CONFLICT (organization_id, provider, owning_app, scope_kind, "
+    "(COALESCE(member_email, ''))) DO UPDATE SET status = 'connected', "
+    "provider_meta = EXCLUDED.provider_meta, "
+    "credentials_encrypted = EXCLUDED.credentials_encrypted, "
+    "scopes = EXCLUDED.scopes, connected_by = EXCLUDED.connected_by, "
+    "last_error = NULL, updated_at = now() "
+    f"RETURNING {_PUBLIC_COLUMNS}"
+)
+
+#: A connection that holds NO secret (WS-54 GH-3, the GitHub App). The App's
+#: key is the operator's (D56), so the customer row keeps no blob at all.
+#: ``credentials_encrypted`` is set to NULL, so a token row that becomes an
+#: App row loses its token in the same statement.
+_UPSERT_NO_SECRET_SQL = (
+    "INSERT INTO integration_connections (organization_id, provider, "
+    "owning_app, scope_kind, member_email, status, provider_meta, "
+    "credentials_encrypted, scopes, connected_by, last_error, created_at, "
+    "updated_at) VALUES (CAST(:org AS uuid), :provider, :owning_app, "
+    ":scope_kind, :member_email, 'connected', CAST(:provider_meta AS jsonb), "
+    "NULL, :scopes, :connected_by, NULL, now(), now()) "
+    "ON CONFLICT (organization_id, provider, owning_app, scope_kind, "
+    "(COALESCE(member_email, ''))) DO UPDATE SET status = 'connected', "
+    "provider_meta = EXCLUDED.provider_meta, credentials_encrypted = NULL, "
+    "scopes = EXCLUDED.scopes, connected_by = EXCLUDED.connected_by, "
+    "last_error = NULL, updated_at = now() "
+    f"RETURNING {_PUBLIC_COLUMNS}"
+)
+
+#: Set the status and ``last_error`` of one row, for a provider event (the
+#: GitHub App uninstall, suspend and unsuspend, GH-4). ``disconnected`` also
+#: drops the blob, as :func:`disconnect` does.
+_SET_STATUS_SQL = (
+    "UPDATE integration_connections SET status = :status, last_error = :code, "
+    "credentials_encrypted = CASE WHEN :status = 'disconnected' THEN NULL "
+    "ELSE credentials_encrypted END, updated_at = now() "
+    "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid) "
+    f"RETURNING {_PUBLIC_COLUMNS}"
+)
+
+_UPDATE_TOKENS_SQL = (
+    "UPDATE integration_connections SET credentials_encrypted = :blob, "
+    "provider_meta = provider_meta || CAST(:provider_meta AS jsonb), "
+    "updated_at = now() "
+    "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid) "
+    "AND status <> 'disconnected'"
+)
+
+_MERGE_META_SQL = (
+    "UPDATE integration_connections SET "
+    "provider_meta = provider_meta || CAST(:extra AS jsonb), updated_at = now() "
+    "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid) "
+    "AND status <> 'disconnected'"
+)
+
+#: Merge keys into ``provider_meta`` of one row, found by its key, under any
+#: status. For a family such as MCP, where a disabled row is still the admin's
+#: (H-300).
+_MERGE_META_BY_KEY_SQL = (
+    "UPDATE integration_connections SET "
+    "provider_meta = provider_meta || CAST(:extra AS jsonb), updated_at = now() "
+    f"WHERE {_KEY_WHERE} RETURNING {_PUBLIC_COLUMNS}"
+)
+
+_NEEDS_RECONNECT_SQL = (
+    "UPDATE integration_connections SET status = 'needs_reconnect', "
+    "last_error = :code, updated_at = now() "
+    "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid) "
+    "AND status <> 'disconnected'"
+)
+
+_NEEDS_RESET_SQL = (
+    "UPDATE integration_connections SET status = 'needs_reset', "
+    "last_error = :code, updated_at = now() "
+    "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid)"
+)
+
+_FORGET_ACCOUNT_SQL = (
+    "UPDATE integration_connections SET provider_meta = provider_meta - 'account_id', "
+    "updated_at = now() "
+    "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid)"
+)
+
+_MARK_SYNCED_SQL = (
+    "UPDATE integration_connections SET last_sync_at = now() "
+    "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid) "
+    "AND status <> 'disconnected'"
+)
+
+#: What the sync learned about the account. A new consent or a disconnect drops
+#: it, because the next connection may be another Zoho org (CRM-Q1 review).
+_DISCOVERED_KEYS = ("domain_name", "edition", "tabs")
+
+#: A new consent drops the profile, unless the caller confirmed that it is the
+#: same account (CRM-Q10). A disconnect keeps it (CRM-X0): the next consent
+#: compares its account with the profile's, and a different account gets
+#: ``needs_reset`` (``routes/crm/connection.py``).
+
+_DROP_PROFILES_SQL = (
+    "DELETE FROM crm_source_profiles WHERE connection_id = CAST(:id AS uuid) "
+    "AND organization_id = CAST(:org AS uuid)"
+)
+
+#: CRM-Q10: a consent to the SAME account keeps the profile, and so the edition
+#: budget, but marks it stale. Each row moves back by the same span, so the
+#: newest version stays the newest. 7 days is far past the 24 hours of
+#: ``engine.DISCOVERY_EVERY``, so the next run discovers with the new scopes.
+_STALE_PROFILES_SQL = (
+    "UPDATE crm_source_profiles SET fetched_at = fetched_at - interval '7 days' "
+    "WHERE connection_id = CAST(:id AS uuid) "
+    "AND organization_id = CAST(:org AS uuid)"
+)
+
+#: The CRM disconnect. It also strips the keys that the CRM sync discovered
+#: (:data:`_DISCOVERED_KEYS`), because the next consent may be another Zoho org.
+_DISCONNECT_SQL = (
+    "UPDATE integration_connections SET status = 'disconnected', "
+    "provider_meta = provider_meta - 'domain_name' - 'edition' - 'tabs', "
+    "credentials_encrypted = NULL, last_error = NULL, updated_at = now() "
+    "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid) "
+    f"AND owning_app = '{CRM_OWNING_APP}' "
+    f"RETURNING {_PUBLIC_COLUMNS}"
+)
+
+#: The disconnect of every other app (WS-61 KC-1a). It deletes the blob and
+#: keeps ``provider_meta`` as it is: the CRM keys mean nothing there, and the
+#: Knowledge Drive row keeps ``account_email`` for the shared-grant check.
+_DISCONNECT_OTHER_SQL = (
+    "UPDATE integration_connections SET status = 'disconnected', "
+    "credentials_encrypted = NULL, last_error = NULL, updated_at = now() "
+    "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid) "
+    f"AND owning_app <> '{CRM_OWNING_APP}' "
+    f"RETURNING {_PUBLIC_COLUMNS}"
+)
+
+# ── The static-header shape (WS-54 IN-4, MCP servers) ──────────────────────
+#
+# A provider such as an MCP server has no token to refresh. It has a map of
+# static HTTP headers, and a header value is a credential. So the blob holds
+# ``{"headers": {...}}``. One family of connections shares a provider prefix
+# (``mcp:<name>``), because the unique index includes the provider.
+
+#: Each row of one provider family. ``left()`` and not ``LIKE``, so a ``_`` or
+#: a ``%`` in the prefix is never a wildcard.
+_LIST_PREFIX_SQL = (
+    f"SELECT {_PUBLIC_COLUMNS} FROM integration_connections "
+    "WHERE organization_id = CAST(:org AS uuid) AND owning_app = :owning_app "
+    "AND scope_kind = :scope_kind AND COALESCE(member_email, '') = :member "
+    "AND left(provider, length(CAST(:prefix AS text))) = CAST(:prefix AS text) "
+    "ORDER BY created_at, provider"
+)
+
+#: The blob of each row of one provider family, by provider. Any status: a
+#: disabled MCP server keeps its headers, so a test of it still sends them.
+#: A row that an OAuth consent wrote (IN-8a, ``provider_meta.auth = 'oauth'``)
+#: holds the token shape, not a header map, so this read leaves it out.
+_BLOBS_PREFIX_SQL = (
+    "SELECT provider, credentials_encrypted FROM integration_connections "
+    "WHERE organization_id = CAST(:org AS uuid) AND owning_app = :owning_app "
+    "AND scope_kind = :scope_kind AND COALESCE(member_email, '') = :member "
+    "AND left(provider, length(CAST(:prefix AS text))) = CAST(:prefix AS text) "
+    "AND COALESCE(provider_meta->>'auth', '') <> 'oauth'"
+)
+
+# ── The OAuth shape on a static-header row (WS-54 IN-8a, MCP OAuth) ─────────
+#
+# An MCP server that needs a consent keeps its registry row. The consent
+# replaces the header blob with the token shape, and it MERGES the public
+# facts into ``provider_meta``, so the url, the label and the H-300 switch of
+# the row stay. The row is read with ``FOR UPDATE``, so two callbacks at one
+# time each see the token that the other one replaced.
+
+#: ``provider_meta.auth`` of a row whose blob holds OAuth tokens.
+AUTH_OAUTH = "oauth"
+
+_LOCK_ROW_SQL = (
+    f"SELECT {_PUBLIC_COLUMNS}, credentials_encrypted FROM integration_connections "
+    f"WHERE {_KEY_WHERE} FOR UPDATE"
+)
+
+#: A disabled MCP server stays disabled: its status is the admin's switch.
+_ATTACH_OAUTH_SQL = (
+    "UPDATE integration_connections SET credentials_encrypted = :blob, "
+    "provider_meta = provider_meta || CAST(:provider_meta AS jsonb), "
+    "scopes = :scopes, connected_by = :connected_by, last_error = NULL, "
+    "status = CASE WHEN status = 'disconnected' THEN 'disconnected' "
+    "ELSE 'connected' END, updated_at = now() "
+    "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid) "
+    f"RETURNING {_PUBLIC_COLUMNS}"
+)
+
+#: A re-register of an OAuth row (review of #931, P2 1). The public keys
+#: merge in, the blob and ``auth`` stay. *enabled* false disables the row.
+#: True enables a disabled row and keeps any other status, such as
+#: ``needs_reconnect``.
+_UPDATE_OAUTH_PUBLIC_SQL = (
+    "UPDATE integration_connections SET "
+    "provider_meta = provider_meta || CAST(:extra AS jsonb), "
+    "status = CASE WHEN NOT :enabled THEN 'disconnected' "
+    "WHEN status = 'disconnected' THEN 'connected' ELSE status END, "
+    "updated_at = now() "
+    "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid) "
+    f"RETURNING {_PUBLIC_COLUMNS}"
+)
+
+_UPSERT_HEADERS_SQL = (
+    "INSERT INTO integration_connections (organization_id, provider, "
+    "owning_app, scope_kind, member_email, status, provider_meta, "
+    "credentials_encrypted, connected_by, last_error, created_at, updated_at) "
+    "VALUES (CAST(:org AS uuid), :provider, :owning_app, :scope_kind, "
+    ":member_email, :status, CAST(:provider_meta AS jsonb), :blob, "
+    ":connected_by, NULL, now(), now()) "
+    "ON CONFLICT (organization_id, provider, owning_app, scope_kind, "
+    "(COALESCE(member_email, ''))) DO {conflict} "
+    f"RETURNING {_PUBLIC_COLUMNS}"
+)
+
+_HEADERS_REPLACE = (
+    "UPDATE SET status = EXCLUDED.status, "
+    "provider_meta = EXCLUDED.provider_meta, "
+    "credentials_encrypted = EXCLUDED.credentials_encrypted, "
+    "connected_by = EXCLUDED.connected_by, last_error = NULL, updated_at = now()"
+)
+
+_DELETE_SQL = (
+    f"DELETE FROM integration_connections WHERE {_KEY_WHERE} RETURNING id"
+)
+
+
+@dataclass(frozen=True)
+class Connection:
+    """One registry row, with no blob."""
+
+    id: str
+    organization_id: str
+    provider: str
+    owning_app: str
+    scope_kind: str
+    member_email: str | None
+    status: str
+    provider_meta: dict[str, Any]
+    scopes: tuple[str, ...]
+    connected_by: str | None
+    last_sync_at: datetime | None
+    last_error: str | None
+    created_at: datetime | None
+    updated_at: datetime | None
+
+
+def _connection(row: Any) -> Connection:
+    meta = row.provider_meta
+    if isinstance(meta, str):
+        meta = json.loads(meta)
+    return Connection(
+        id=str(row.id),
+        organization_id=str(row.organization_id),
+        provider=row.provider,
+        owning_app=row.owning_app,
+        scope_kind=row.scope_kind,
+        member_email=row.member_email,
+        status=row.status,
+        provider_meta=dict(meta or {}),
+        scopes=tuple(row.scopes or ()),
+        connected_by=row.connected_by,
+        last_sync_at=row.last_sync_at,
+        last_error=row.last_error,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+def _key(
+    org: str, provider: str, owning_app: str, scope_kind: str, member_email: str | None,
+) -> dict[str, Any]:
+    if scope_kind not in (SCOPE_ORG, SCOPE_MEMBER):
+        raise ValueError("scope_kind is 'org' or 'member'")
+    member = (member_email or "").strip().lower()
+    if (scope_kind == SCOPE_MEMBER) != bool(member):
+        raise ValueError("a member connection names a member, an org connection does not")
+    return {
+        "org": str(uuid.UUID(str(org))),
+        "provider": provider,
+        "owning_app": owning_app,
+        "scope_kind": scope_kind,
+        "member": member,
+    }
+
+
+# ── The blob ────────────────────────────────────────────────────────────────
+
+
+def _keys() -> Any:
+    """The one key seam (``ACB_MASTER_KEY``). The blob has no tenant key."""
+    return get_key_store()
+
+
+def legacy_keys() -> Any:
+    """The per-org key store, for a migration that moves an old ``provider_keys`` row.
+
+    WS-54 IN-7 reads the old ``github:token`` row through it once, then deletes
+    it. Going through this module adds no new key store call site.
+    """
+    return _keys()
+
+
+def _seal(credential: SourceCredential) -> str:
+    """The token shape. ``client_secret`` (IN-8a) is written only when it is
+    set, so a Zoho or GitHub blob keeps its shape."""
+    sealed: dict[str, Any] = {
+        "access_token": credential.access_token,
+        "refresh_token": credential.refresh_token,
+        "expires_at": credential.expires_at.isoformat(),
+        "scopes": list(credential.scopes),
+        "provider_meta": dict(credential.provider_meta),
+    }
+    if credential.client_secret:
+        sealed["client_secret"] = credential.client_secret
+    if credential.issued_at is not None:  # IN-8b: only an MCP OAuth blob
+        sealed["issued_at"] = credential.issued_at.isoformat()
+    return _keys().encrypt(json.dumps(sealed, separators=(",", ":")))
+
+
+def _unseal(blob: str) -> SourceCredential:
+    """Open the blob, or raise :class:`Undecryptable` with no cause attached.
+
+    ``from None`` drops the cause, so no trace can carry the blob or a token.
+
+    ⚠️ The key store is fetched OUTSIDE the ``try``. A missing or wrong
+    ``ACB_MASTER_KEY`` setting is an operator fault that a restart repairs. It
+    must fail loud and write nothing. If it became ``Undecryptable``, every
+    org would be marked ``needs_reconnect`` for good (CRM-Z2 re-review P1).
+    Only a blob that this key cannot open is ``Undecryptable``.
+    """
+    keys = _keys()
+    try:
+        data = json.loads(keys.decrypt(blob))
+        return SourceCredential(
+            access_token=str(data["access_token"]),
+            refresh_token=str(data["refresh_token"]),
+            expires_at=datetime.fromisoformat(data["expires_at"]),
+            scopes=tuple(data.get("scopes") or ()),
+            provider_meta={
+                str(k): str(v) for k, v in (data.get("provider_meta") or {}).items()
+            },
+            client_secret=str(data.get("client_secret") or ""),
+            issued_at=(datetime.fromisoformat(data["issued_at"])
+                       if data.get("issued_at") else None),
+        )
+    # ValueError covers binascii.Error, UnicodeDecodeError and a bad JSON.
+    except (InvalidToken, ValueError, KeyError, TypeError) as exc:
+        raise Undecryptable(type(exc).__name__) from None
+
+
+def _clean_headers(headers: dict[str, Any] | None) -> dict[str, str]:
+    return {str(k): str(v) for k, v in (headers or {}).items()}
+
+
+def _seal_headers(headers: dict[str, Any] | None) -> str:
+    """The second sealed shape: a static header map, ``{"headers": {...}}``.
+
+    An empty map is sealed too, so every row of the family holds a blob and
+    the plain columns never say how many headers a server has.
+    """
+    plain = json.dumps({"headers": _clean_headers(headers)}, separators=(",", ":"))
+    return _keys().encrypt(plain)
+
+
+def _unseal_headers(blob: str) -> dict[str, str]:
+    """Open a header blob, or raise :class:`Undecryptable` with no cause.
+
+    The key store is fetched outside the ``try``, for the reason that
+    :func:`_unseal` gives. A token blob is not a header blob: it is refused.
+    """
+    keys = _keys()
+    try:
+        data = json.loads(keys.decrypt(blob))
+        headers = data["headers"]
+        if not isinstance(headers, dict):
+            raise TypeError("headers")
+        return _clean_headers(headers)
+    except (InvalidToken, ValueError, KeyError, TypeError) as exc:
+        raise Undecryptable(type(exc).__name__) from None
+
+
+# ── Reads ───────────────────────────────────────────────────────────────────
+
+
+async def get(
+    db: Any,
+    org: str,
+    provider: str,
+    owning_app: str,
+    *,
+    scope_kind: str = SCOPE_ORG,
+    member_email: str | None = None,
+) -> Connection | None:
+    """The connection row, or ``None``. It carries no blob."""
+    params = _key(org, provider, owning_app, scope_kind, member_email)
+    row = (await db.execute(text(_GET_SQL), params)).first()
+    return _connection(row) if row is not None else None
+
+
+async def list_all(db: Any, org: str) -> list[Connection]:
+    """Every connection row of *org*, with no blob (the Integrations console)."""
+    org = str(uuid.UUID(str(org)))
+    rows = (await db.execute(text(_LIST_SQL), {"org": org})).fetchall()
+    return [_connection(r) for r in rows]
+
+
+async def get_by_id(db: Any, org: str, connection_id: str) -> Connection | None:
+    """One connection by id, in *org* only, or ``None``. It carries no blob.
+
+    A malformed id is ``None``, not an error, so a route can answer 404.
+    """
+    try:
+        params = {"id": str(uuid.UUID(str(connection_id))), "org": str(uuid.UUID(str(org)))}
+    except ValueError:
+        return None
+    row = (await db.execute(text(_GET_BY_ID_SQL), params)).first()
+    return _connection(row) if row is not None else None
+
+
+async def lock_by_id(db: Any, org: str, connection_id: str) -> Connection | None:
+    """Like :func:`get_by_id`, and it locks the row ``FOR NO KEY UPDATE``.
+
+    WS-61 KC-3h. A Knowledge transaction that writes the connection row and
+    a source row takes this lock FIRST, then the source row. The order is in
+    the module doc of ``kb_sync/engine.py``. The row is locked in any status.
+    """
+    try:
+        params = {"id": str(uuid.UUID(str(connection_id))), "org": str(uuid.UUID(str(org)))}
+    except ValueError:
+        return None
+    row = (await db.execute(text(_LOCK_BY_ID_SQL), params)).first()
+    return _connection(row) if row is not None else None
+
+
+async def load_credential(
+    db: Any,
+    org: str,
+    provider: str,
+    owning_app: str,
+    *,
+    scope_kind: str = SCOPE_ORG,
+    member_email: str | None = None,
+) -> SourceCredential | None:
+    """The decrypted credential, or ``None`` with no blob or after a disconnect.
+
+    A connection in ``needs_reconnect`` still returns its credential, because
+    the callback needs the old refresh token to revoke it.
+
+    A blob that does not open also returns ``None``. A disconnect must still
+    clear the row, so nothing on that path may fail on the old blob
+    (CRM-Z2 review P1).
+    """
+    params = _key(org, provider, owning_app, scope_kind, member_email)
+    row = (await db.execute(text(_BLOB_SQL), params)).first()
+    if row is None or not row.credentials_encrypted:
+        return None
+    try:
+        return _unseal(row.credentials_encrypted)
+    except Undecryptable as exc:
+        _log.warning("connection blob does not open (%s)", exc)
+        return None
+
+
+async def load_credential_locked(
+    db: Any, org: str, connection_id: str,
+) -> SourceCredential | None:
+    """Like :func:`load_credential`, by id, with ``FOR UPDATE`` on the row.
+
+    The shared token helper uses it: a second worker waits on the row lock,
+    then reads the token that the first worker wrote. A blob that does not
+    open raises :class:`Undecryptable`, so the helper can stop the connection.
+    """
+    row = (await db.execute(
+        text(_BLOB_BY_ID_SQL), {"id": str(connection_id), "org": str(org)},
+    )).first()
+    if row is None or not row.credentials_encrypted:
+        return None
+    return _unseal(row.credentials_encrypted)
+
+
+# ── Writes ──────────────────────────────────────────────────────────────────
+
+
+async def save_credential(
+    db: Any,
+    org: str,
+    provider: str,
+    owning_app: str,
+    credential: SourceCredential,
+    *,
+    connected_by: str,
+    scope_kind: str = SCOPE_ORG,
+    member_email: str | None = None,
+    scopes: Sequence[str] | None = None,
+    keep_profile: bool = False,
+) -> Connection:
+    """Insert the connection, or update the one row that already exists.
+
+    A reconnect updates the row: status ``connected``, a new blob, no error.
+
+    ``keep_profile`` (CRM-Q10) is for a consent that the caller confirmed as
+    the same provider account. The source profile stays and becomes stale, so
+    the sync keeps the edition budget and discovers again at its next run.
+    Without it, the profile is dropped, because the account may be another one.
+    Both apply to the CRM only (:data:`CRM_OWNING_APP`). Any other app touches
+    no ``crm_source_profiles`` row, and ``keep_profile`` means nothing there.
+    """
+    params = _key(org, provider, owning_app, scope_kind, member_email)
+    params["member_email"] = params.pop("member") or None
+    params.update(
+        provider_meta=json.dumps(dict(credential.provider_meta)),
+        blob=_seal(credential),
+        scopes=list(scopes if scopes is not None else credential.scopes),
+        connected_by=(connected_by or "").strip().lower() or None,
+    )
+    row = (await db.execute(text(_UPSERT_SQL), params)).first()
+    if owning_app == CRM_OWNING_APP:
+        # A new consent may be another org or data centre: the profile and the
+        # discovered keys are the old account's. Discovery runs again at the next
+        # run. A confirmed same account keeps the profile, stale (CRM-Q10). No
+        # other app has a source profile, so no other app touches one (KC-1a).
+        profiles_sql = _STALE_PROFILES_SQL if keep_profile else _DROP_PROFILES_SQL
+        await db.execute(text(profiles_sql), {"id": str(row.id), "org": str(row.organization_id)})
+    return _connection(row)
+
+
+async def save_no_secret(
+    db: Any,
+    org: str,
+    provider: str,
+    owning_app: str,
+    *,
+    provider_meta: dict[str, Any],
+    connected_by: str,
+    scopes: Sequence[str] = (),
+) -> Connection:
+    """Insert or update an org connection that holds no secret (WS-54 GH-3).
+
+    The row is ``connected`` with NO blob: an existing blob is set to NULL.
+    *provider_meta* goes to a PLAIN column, so it must hold public facts only.
+    A unique index of the provider (the GitHub installation, migration 282)
+    can refuse the write with an ``IntegrityError``. The caller maps it.
+    """
+    params = _key(org, provider, owning_app, SCOPE_ORG, None)
+    params["member_email"] = params.pop("member") or None
+    params.update(
+        provider_meta=json.dumps(dict(provider_meta)),
+        scopes=list(scopes),
+        connected_by=(connected_by or "").strip().lower() or None,
+    )
+    row = (await db.execute(text(_UPSERT_NO_SECRET_SQL), params)).first()
+    return _connection(row)
+
+
+#: The values that :func:`set_status` may write. ``needs_reset`` stays with
+#: its own writer (:func:`mark_needs_reset`), because it keeps the blob.
+_EVENT_STATUSES = frozenset({STATUS_CONNECTED, STATUS_NEEDS_RECONNECT, STATUS_DISCONNECTED})
+
+
+async def set_status(
+    db: Any, org: str, connection_id: str, status: str, code: str | None,
+) -> Connection | None:
+    """Set the status of one row after a provider event, and ``last_error``.
+
+    *code* is kept only when it looks like a short word (:func:`safe_error_code`),
+    and ``None`` clears it. ``disconnected`` also drops the blob.
+    """
+    if status not in _EVENT_STATUSES:
+        raise ValueError("an event sets connected, needs_reconnect or disconnected")
+    row = (await db.execute(text(_SET_STATUS_SQL), {
+        "id": str(connection_id), "org": str(org), "status": status,
+        "code": safe_error_code(code) if code else None,
+    })).first()
+    return _connection(row) if row is not None else None
+
+
+async def update_tokens(
+    db: Any, org: str, connection_id: str, credential: SourceCredential,
+) -> None:
+    """Write a refreshed credential back, so every worker shares it."""
+    await db.execute(text(_UPDATE_TOKENS_SQL), {
+        "id": str(connection_id),
+        "org": str(org),
+        "blob": _seal(credential),
+        "provider_meta": json.dumps(dict(credential.provider_meta)),
+    })
+
+
+async def merge_provider_meta(
+    db: Any, org: str, connection_id: str, extra: dict[str, Any],
+) -> None:
+    """Add keys to ``provider_meta`` of one connection and keep the others.
+
+    The sync writes what it learned about the account here (``domain_name``,
+    ``edition``, ``tabs``). The row holds no token, so the keys are plain
+    metadata. A refresh and a reconnect keep them, because both merge into the
+    column and never replace it. A key with a ``None`` value is dropped.
+    """
+    kept = {str(k): v for k, v in extra.items() if v is not None}
+    if not kept:
+        return
+    await db.execute(text(_MERGE_META_SQL), {
+        "id": str(connection_id), "org": str(org), "extra": json.dumps(kept),
+    })
+
+
+async def merge_meta_by_key(
+    db: Any,
+    org: str,
+    provider: str,
+    owning_app: str,
+    extra: dict[str, Any],
+    *,
+    scope_kind: str = SCOPE_ORG,
+    member_email: str | None = None,
+) -> Connection | None:
+    """Merge *extra* into ``provider_meta`` of one row, under any status.
+
+    The row is found by its key, so the org is in the statement. The other
+    keys, the blob and the status stay. ``None`` when no row has that key.
+    *extra* must hold no secret: ``provider_meta`` is plain text.
+    """
+    params = _key(org, provider, owning_app, scope_kind, member_email)
+    params["extra"] = json.dumps(dict(extra))
+    row = (await db.execute(text(_MERGE_META_BY_KEY_SQL), params)).first()
+    return _connection(row) if row is not None else None
+
+
+def safe_error_code(code: str | None) -> str:
+    """A provider error code when it looks like one, else ``refresh_failed``."""
+    value = (code or "").strip()
+    if value and len(value) <= 40 and value.replace("_", "").isalnum():
+        return value
+    return "refresh_failed"
+
+
+async def mark_needs_reconnect(db: Any, org: str, connection_id: str, code: str) -> None:
+    """Set ``needs_reconnect`` and ``last_error`` to the safe *code*.
+
+    The caller passes a provider error code. This function keeps only a short
+    word, so a free text can never reach the column.
+    """
+    await db.execute(text(_NEEDS_RECONNECT_SQL), {
+        "id": str(connection_id), "org": str(org), "code": safe_error_code(code),
+    })
+
+
+async def mark_needs_reset(
+    db: Any, org: str, connection_id: str, code: str = "different_org",
+) -> None:
+    """Set ``needs_reset`` (CRM-X0) and ``last_error`` to the safe *code*.
+
+    It keeps the blob and the profile. The blob is the token of the FIRST
+    account, so a disconnect still revokes it, and a consent to the first
+    account again still compares with the profile.
+    """
+    await db.execute(text(_NEEDS_RESET_SQL), {
+        "id": str(connection_id), "org": str(org), "code": safe_error_code(code),
+    })
+
+
+async def forget_account(db: Any, org: str, connection_id: str) -> None:
+    """Remove :data:`META_ACCOUNT_ID`. Only the start over calls it (CRM-X0)."""
+    await db.execute(text(_FORGET_ACCOUNT_SQL), {"id": str(connection_id), "org": str(org)})
+
+
+async def disconnect(db: Any, org: str, connection_id: str) -> Connection | None:
+    """Delete the blob and set ``disconnected``. The row stays as a record.
+
+    The SQL follows the ``owning_app`` of the row (WS-61 KC-1a). A CRM row
+    also loses the discovered keys (:data:`_DISCOVERED_KEYS`), in ONE
+    statement, as before. Any other row keeps its ``provider_meta``. Each
+    statement names its app in the WHERE, so the CRM statement runs first and
+    the other one runs only when it changed no row.
+
+    The source profile stays too (CRM-X0), so the next consent can tell the
+    same account from another one. The start over deletes it.
+    """
+    params = {"id": str(connection_id), "org": str(org)}
+    row = (await db.execute(text(_DISCONNECT_SQL), params)).first()
+    if row is None:
+        row = (await db.execute(text(_DISCONNECT_OTHER_SQL), params)).first()
+    return _connection(row) if row is not None else None
+
+
+async def mark_synced(db: Any, org: str, connection_id: str) -> None:
+    """Set ``last_sync_at`` to now. The sync engine calls it after a good run."""
+    await db.execute(text(_MARK_SYNCED_SQL), {"id": str(connection_id), "org": str(org)})
+
+
+# ── The static-header family (WS-54 IN-4) ───────────────────────────────────
+
+
+async def list_by_prefix(
+    db: Any,
+    org: str,
+    prefix: str,
+    owning_app: str,
+    *,
+    scope_kind: str = SCOPE_ORG,
+    member_email: str | None = None,
+) -> list[Connection]:
+    """Every row of *org* whose provider starts with *prefix*. No blob."""
+    if not prefix:
+        raise ValueError("a provider prefix is not empty")
+    params = _key(org, prefix, owning_app, scope_kind, member_email)
+    params["prefix"] = params.pop("provider")
+    rows = (await db.execute(text(_LIST_PREFIX_SQL), params)).fetchall()
+    return [_connection(r) for r in rows]
+
+
+async def load_headers_by_prefix(
+    db: Any,
+    org: str,
+    prefix: str,
+    owning_app: str,
+    *,
+    scope_kind: str = SCOPE_ORG,
+    member_email: str | None = None,
+) -> dict[str, dict[str, str] | None]:
+    """The decrypted header map of each row of the family, by provider.
+
+    A row with no blob maps to ``{}``. A blob that does not open maps to
+    ``None``, so the caller can leave that server out: a server with its auth
+    header missing is a broken server, not a public one.
+    """
+    if not prefix:
+        raise ValueError("a provider prefix is not empty")
+    params = _key(org, prefix, owning_app, scope_kind, member_email)
+    params["prefix"] = params.pop("provider")
+    rows = (await db.execute(text(_BLOBS_PREFIX_SQL), params)).fetchall()
+    out: dict[str, dict[str, str] | None] = {}
+    for row in rows:
+        if not row.credentials_encrypted:
+            out[row.provider] = {}
+            continue
+        try:
+            out[row.provider] = _unseal_headers(row.credentials_encrypted)
+        except Undecryptable as exc:
+            _log.warning("connection header blob does not open (%s)", exc)
+            out[row.provider] = None
+    return out
+
+
+async def save_headers(
+    db: Any,
+    org: str,
+    provider: str,
+    owning_app: str,
+    headers: dict[str, Any] | None,
+    *,
+    provider_meta: dict[str, Any],
+    connected_by: str,
+    enabled: bool = True,
+    only_if_absent: bool = False,
+    scope_kind: str = SCOPE_ORG,
+    member_email: str | None = None,
+) -> Connection | None:
+    """Insert a static-header connection, or replace the one that exists.
+
+    The headers go into the blob only. *provider_meta* must hold no secret.
+    *enabled* is the status: ``connected`` or ``disconnected``. A disabled row
+    keeps its blob, because the admin may test it or enable it again.
+
+    With *only_if_absent*, a row that exists stays as it is, and the answer is
+    ``None``. The move of an old row uses it, so it never replaces a newer
+    registration.
+    """
+    params = _key(org, provider, owning_app, scope_kind, member_email)
+    params["member_email"] = params.pop("member") or None
+    params.update(
+        status=STATUS_CONNECTED if enabled else STATUS_DISCONNECTED,
+        provider_meta=json.dumps(dict(provider_meta)),
+        blob=_seal_headers(headers),
+        connected_by=(connected_by or "").strip().lower() or None,
+    )
+    sql = _UPSERT_HEADERS_SQL.format(
+        conflict="NOTHING" if only_if_absent else _HEADERS_REPLACE,
+    )
+    row = (await db.execute(text(sql), params)).first()
+    return _connection(row) if row is not None else None
+
+
+@dataclass(frozen=True)
+class OAuthAttach:
+    """What :func:`attach_oauth_credential` did. ``previous`` is the token
+    that the consent replaced, so the caller can revoke it after the commit.
+    It is ``None`` when the row held headers or a blob that does not open."""
+
+    before: Connection
+    after: Connection
+    previous: SourceCredential | None = field(default=None, repr=False)
+
+
+async def attach_oauth_credential(
+    db: Any,
+    org: str,
+    provider: str,
+    owning_app: str,
+    credential: SourceCredential,
+    *,
+    connected_by: str,
+    scopes: Sequence[str] = (),
+    check: Callable[[Connection], bool] | None = None,
+) -> OAuthAttach | None:
+    """Seal *credential* on the row that exists, under its row lock (IN-8a).
+
+    ``None`` when *org* holds no such row, or when *check* refuses the row
+    that the lock read. The blob becomes the token shape. ``provider_meta`` of
+    the row keeps its keys, and ``credential.provider_meta`` plus
+    ``auth = 'oauth'`` merge in. ⚠️ That map goes to a PLAIN column, so it
+    must hold public facts only. ``credential.client_secret`` goes in the
+    blob only, and no SQL parameter reads it.
+    """
+    params = _key(org, provider, owning_app, SCOPE_ORG, None)
+    row = (await db.execute(text(_LOCK_ROW_SQL), params)).first()
+    if row is None:
+        return None
+    before = _connection(row)
+    if check is not None and not check(before):
+        return None
+    previous: SourceCredential | None = None
+    if before.provider_meta.get("auth") == AUTH_OAUTH and row.credentials_encrypted:
+        try:
+            previous = _unseal(row.credentials_encrypted)
+        except Undecryptable as exc:
+            _log.warning("connection blob does not open (%s)", exc)
+    meta = {**{str(k): str(v) for k, v in credential.provider_meta.items()},
+            "auth": AUTH_OAUTH}
+    after_row = (await db.execute(text(_ATTACH_OAUTH_SQL), {
+        "id": before.id,
+        "org": before.organization_id,
+        "blob": _seal(credential),
+        "provider_meta": json.dumps(meta),
+        "scopes": list(scopes),
+        "connected_by": (connected_by or "").strip().lower() or None,
+    })).first()
+    return OAuthAttach(before=before, after=_connection(after_row), previous=previous)
+
+
+async def lock_row(
+    db: Any, org: str, provider: str, owning_app: str,
+) -> tuple[Connection, SourceCredential | None] | None:
+    """The org row of *provider*, with ``FOR UPDATE``, or ``None``.
+
+    The second value is the OAuth credential of an OAuth row (``auth =
+    'oauth'``), so the caller can revoke it after its commit. It is ``None``
+    for a header row, and for a blob that does not open.
+    """
+    params = _key(org, provider, owning_app, SCOPE_ORG, None)
+    row = (await db.execute(text(_LOCK_ROW_SQL), params)).first()
+    if row is None:
+        return None
+    conn = _connection(row)
+    credential: SourceCredential | None = None
+    if conn.provider_meta.get("auth") == AUTH_OAUTH and row.credentials_encrypted:
+        try:
+            credential = _unseal(row.credentials_encrypted)
+        except Undecryptable as exc:
+            _log.warning("connection blob does not open (%s)", exc)
+    return conn, credential
+
+
+async def update_oauth_public(
+    db: Any, conn: Connection, extra: dict[str, Any], *, enabled: bool,
+) -> Connection:
+    """Merge public keys into an OAuth row that :func:`lock_row` read.
+
+    The blob, ``auth`` and ``connected_by`` stay: the connection still acts
+    as the admin who gave the consent (D98). *extra* must hold no secret and
+    no ``auth`` key.
+    """
+    kept = {str(k): v for k, v in extra.items() if k != "auth"}
+    row = (await db.execute(text(_UPDATE_OAUTH_PUBLIC_SQL), {
+        "id": conn.id, "org": conn.organization_id,
+        "extra": json.dumps(kept), "enabled": bool(enabled),
+    })).first()
+    return _connection(row)
+
+
+# ── A short-lived sealed value (WS-54 IN-8a) ────────────────────────────────
+
+
+def seal_value(value: str) -> str:
+    """Fernet ciphertext of *value*, with the one key of this module.
+
+    The MCP OAuth flow seals a DCR ``client_secret`` before the pending flow
+    goes to Redis for ten minutes, so no plain secret sits there.
+    """
+    return _keys().encrypt(value)
+
+
+def open_value(sealed: str) -> str | None:
+    """The plain text of :func:`seal_value`, or ``None`` when it does not open."""
+    keys = _keys()
+    try:
+        return str(keys.decrypt(sealed))
+    except (InvalidToken, ValueError, TypeError):
+        return None
+
+
+async def delete(
+    db: Any,
+    org: str,
+    provider: str,
+    owning_app: str,
+    *,
+    scope_kind: str = SCOPE_ORG,
+    member_email: str | None = None,
+) -> bool:
+    """Delete the row and its blob. ``True`` when a row was deleted.
+
+    For a family such as MCP, where the admin removes the server. A provider
+    with a sync keeps its row as a record, so it uses :func:`disconnect`.
+    """
+    params = _key(org, provider, owning_app, scope_kind, member_email)
+    return (await db.execute(text(_DELETE_SQL), params)).first() is not None

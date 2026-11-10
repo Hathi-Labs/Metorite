@@ -418,8 +418,11 @@ def test_r3_characters_mupdf_breaks_at_do_not_join_a_word() -> None:
 
 
 def test_r3_the_child_gets_no_secret(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Hardening: the child parses untrusted HTML, so it inherits only
-    CHILD_ENV_KEYS, never the gateway's keys."""
+    """Hardening: the child parses untrusted HTML, so it inherits only the
+    ``acb_common.child_env`` allowlist (WS-49 BH-1), never the gateway's
+    keys."""
+    from acb_common.child_env import child_env
+
     monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", "s3cret-token-value")
     monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@h/db")
     monkeypatch.setattr(
@@ -436,7 +439,7 @@ def test_r3_the_child_gets_no_secret(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "GATEWAY_INTERNAL_TOKEN" not in names
     assert "DATABASE_URL" not in names
     assert "s3cret" not in out
-    assert names <= set(pdf_render.CHILD_ENV_KEYS) | {"__CF_USER_TEXT_ENCODING"}
+    assert names <= set(child_env()) | {"__CF_USER_TEXT_ENCODING"}
 
 
 # ── Fix round 4 ─────────────────────────────────────────────────────────────

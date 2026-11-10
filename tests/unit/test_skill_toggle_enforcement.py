@@ -32,9 +32,14 @@ from tests.unit._decide_flag import (
 )
 
 MEMORY_TOOLS = set(sf.SKILL_FAMILIES["memory"]["tools"])
-ALL_STATIC_FAMILY_TOOLS = {
-    n for fam in sf.SKILL_FAMILIES.values() for n in fam["tools"]
-}
+# Every static tool that injection offers. A tool pack (WS-67 OA-7a) holds
+# its owner's own tools, which injection never offers, so it is not here.
+ALL_STATIC_FAMILY_TOOLS = set(sf.injected_tool_names())
+
+#: D85: an agent with no config reads as SHARED and loses the shell tools.
+#: These tests pin the S2 rules over the WHOLE floor, so the fake agent is
+#: personal. The block itself is ``test_shared_agent_shell_tools.py``.
+_PERSONAL = {"sharing": {"instancing": "personal"}}
 
 
 # ── _resolve_injected_scope: the intersection rule ─────────────────────────
@@ -186,6 +191,8 @@ def _injection_env(monkeypatch):
     """Deterministic injection: no permission-gate wrapping (identity-level
     comparison), no app grants, a fake workflow trio, and a patchable
     settings loader."""
+    # WS-VOX VOX-3: analyze_image is per org. This suite pins the lit surface.
+    monkeypatch.setattr(ti, "_image_withheld", lambda: frozenset())
     monkeypatch.setenv("AGENT_PERMISSION_MODE", "approve_all")
     fake_apps = types.ModuleType("orchestrator.app_tools")
     fake_apps.load_app_action_tools = lambda name: []  # type: ignore[attr-defined]
@@ -211,7 +218,8 @@ def test_regression_no_rows_injects_byte_identical_set(
         ti, "_load_disabled_skill_families", lambda name: frozenset()
     )
     agent = _FakeMafAgent()
-    ti._inject_agent_tools([agent], tool_scope=None, agent_name="fake-maf")
+    ti._inject_agent_tools([agent], tool_scope=None, agent_name="fake-maf",
+                           agent_config=_PERSONAL)
     expected = ti._collect_injectable_platform_tools() + _injection_env
     assert [id(t) for t in agent.tools] == [id(fn) for fn in expected], (
         "with no settings rows the injected set must be byte-identical to "
@@ -228,7 +236,8 @@ def test_disabling_memory_removes_its_tools_from_injection(
         lambda name: frozenset({"memory"}),
     )
     agent = _FakeMafAgent()
-    ti._inject_agent_tools([agent], tool_scope=None, agent_name="fake-maf")
+    ti._inject_agent_tools([agent], tool_scope=None, agent_name="fake-maf",
+                           agent_config=_PERSONAL)
     names = set(_injected_names(agent))
     assert not (names & MEMORY_TOOLS)
     assert ti._CORE_STANDARD_TOOL_NAMES <= names  # core survives (rule 2)
@@ -246,7 +255,8 @@ def test_disabling_workflows_removes_the_trio(
         lambda name: frozenset({"workflows"}),
     )
     agent = _FakeMafAgent()
-    ti._inject_agent_tools([agent], tool_scope=None, agent_name="fake-maf")
+    ti._inject_agent_tools([agent], tool_scope=None, agent_name="fake-maf",
+                           agent_config=_PERSONAL)
     names = set(_injected_names(agent))
     assert not (
         names & {"list_workflows", "run_workflow", "get_workflow_run"}
@@ -269,6 +279,7 @@ def test_scoped_agent_with_disable_keeps_core_and_declared(
         [agent],
         tool_scope=["query_history", "remember", "install_dependency"],
         agent_name="fake-maf",
+        agent_config=_PERSONAL,
     )
     names = set(_injected_names(agent))
     assert "query_history" in names          # declared + enabled family
@@ -295,3 +306,20 @@ def test_addendum_drops_disabled_family_section() -> None:
     assert "### Memory & knowledge graph" not in without_memory
     # Core-floor sections stay whatever is disabled.
     assert "### Web access" in without_memory
+
+
+def test_the_run_tools_leave_out_a_disabled_family(monkeypatch, _injection_env) -> None:
+    """projects_ai_chat.md §14.10 (review of #1064): ``_inject_agent_tools``
+    returns the run's tools after the toggles. The executor binds them as
+    ``run_tools``, and ``write_artifact.run_holds_tool`` reads them, so a tool
+    that calls make_report in-process keeps the admin's intersection."""
+    monkeypatch.setattr(
+        ti, "_load_disabled_skill_families", lambda name: frozenset({"documents"}),
+    )
+    held = ti._inject_agent_tools([_FakeMafAgent()], tool_scope=["make_report"],
+                                  agent_name="fake-maf", agent_config=_PERSONAL)
+    assert "make_report" not in held and "write_artifact" in held
+    monkeypatch.setattr(ti, "_load_disabled_skill_families", lambda name: frozenset())
+    held = ti._inject_agent_tools([_FakeMafAgent()], tool_scope=["make_report"],
+                                  agent_name="fake-maf", agent_config=_PERSONAL)
+    assert "make_report" in held

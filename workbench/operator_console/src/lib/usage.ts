@@ -53,6 +53,35 @@ export type OrgUsageRow = {
    *  token total is itself the signal that the provider's SHAPE broke, not
    *  our arithmetic. */
   unbilledTokens: number;
+  /** Migration 036 (WS-50 S0): of the credits spent in the window, what came
+   *  from a BOUGHT lot and what it was sold at, what came free, and what no
+   *  lot covered. Optional: a Console before 036 sends none of them, and
+   *  `lib/money.ts` then treats the whole window as untraced. */
+  paidCredits?: string;
+  paidValueInr?: string;
+  unpricedPaidCredits?: string;
+  freeCredits?: string;
+  unbackedCredits?: string;
+  lifePaidUsed?: string;
+  lifePaidValueInr?: string;
+  lifeUnpricedPaidUsed?: string;
+  lifeFreeUsed?: string;
+  /** The share of calls (0..1) that carry a vendor cost. Below 1, `costUsd`
+   *  is the cost of SOME calls only. NULL when there are no calls. */
+  costedShare?: string | null;
+  /** Credits billed in the last 7 days: the numerator of `runwayDays`. */
+  creditsLast7Days?: string | null;
+};
+
+/** The fleet read's envelope. Only the fields the money model needs. */
+export type OrgUsageView = {
+  windowDays: number;
+  rows: OrgUsageRow[];
+  /** When draws began to be recorded (migration 036), or null. */
+  drawsSince?: string | null;
+  /** The saved credit price. Null until the owner saves one. */
+  inrPerCredit?: string | null;
+  usdToInr?: string | null;
 };
 
 export type UsageDay = { day: string; calls: number; credits: string };
@@ -97,9 +126,9 @@ export function runwayTone(days: number | null): Tone {
 }
 
 export function runwayLabel(days: number | null): string {
-  if (days === null || days === undefined) return "no burn";
+  if (days === null || days === undefined) return "no recent use";
   if (days === 0) return "out of credit";
-  return `${days}d left`;
+  return `${days} days left`;
 }
 
 /** Does this organization hold refusals and no answered call at all?
@@ -123,7 +152,7 @@ export function isWalled(row: OrgUsageRow): boolean {
  * the seeded fleet, 2026-09-20.
  */
 export function rowRunwayLabel(row: OrgUsageRow): string {
-  if (isOwing(row)) return "past zero";
+  if (isOwing(row)) return "below zero";
   return runwayLabel(row.runwayDays);
 }
 
@@ -155,17 +184,23 @@ export function isOwing(row: OrgUsageRow): boolean {
  *
  * ⚠️ Ordered, because the caller renders them in order and a row with three
  * chips must lead with the one that costs money. */
-export function orgFlags(row: OrgUsageRow): { label: string; tone: Tone }[] {
+export function orgFlags(
+  row: OrgUsageRow,
+  /** WS-50: the customer's profit for the window, from `lib/money.ts`. A
+   *  value below zero raises "losing money". It replaced the "below cost"
+   *  flag, which judged the retired ratio of credits to dollars. */
+  profit?: number | null,
+): { label: string; tone: Tone }[] {
   const out: { label: string; tone: Tone }[] = [];
   // 🔴 Ahead of the runway chip, and it REPLACES it. "Past zero" and "out of
   // credit" are the same row seen twice, and the expensive reading leads.
   if (isOwing(row)) {
-    out.push({ label: "past zero — still serving", tone: "danger" });
+    out.push({ label: "below zero — still served", tone: "danger" });
   } else if (row.runwayDays !== null && row.runwayDays <= SHORT_RUNWAY_DAYS) {
     out.push({ label: runwayLabel(row.runwayDays), tone: "danger" });
   }
-  if (marginTone(row.marginRatio) === "danger") {
-    out.push({ label: "below cost", tone: "danger" });
+  if (profit !== undefined && profit !== null && profit < 0) {
+    out.push({ label: "losing money", tone: "danger" });
   }
   // 🔴 **Immediately above `silent`, because it REPLACES it.** A refusal moves
   // `lastSeen`, so the moment a customer hits a wall the silent flag switches
@@ -239,7 +274,7 @@ export function usageHeadline(rows: OrgUsageRow[]): string {
   // 🔴 First, because it is the only line here that is already costing money.
   if (owing) {
     parts.push(
-      `${owing} past zero and still being served`,
+      `${owing} below zero and still being served`,
     );
   }
   if (short) parts.push(`${short} nearly out of credit`);

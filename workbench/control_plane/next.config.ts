@@ -1,6 +1,39 @@
 import type { NextConfig } from "next";
 
+/**
+ * WS-55 EA-4a (`external_agent_access.md` §10.5): the consent page of an
+ * outside agent may never sit in a frame. A page that approves an agent with
+ * one click is a clickjacking target, so no other site may frame it. CSP
+ * `frame-ancestors` is the rule of modern browsers, and `X-Frame-Options` is
+ * the same rule for older ones. `/connect/:path*` also matches `/connect`.
+ * Fence: `e2e/connect-authorize.spec.ts` reads both headers off the page.
+ */
+const CONNECT_FRAME_HEADERS = [
+  { key: "Content-Security-Policy", value: "frame-ancestors 'none'" },
+  { key: "X-Frame-Options", value: "DENY" },
+];
+
+/**
+ * AI Studio A1 + E1 (`ai_studio.md` §14): one library at `/studio`. The old
+ * panes redirect there. `/build/apps` is an EXACT source, so the run page
+ * (`/build/apps/:slug`) and the Workshop (`/build/apps/:slug/edit`) are not
+ * redirected. `/api/workflows/**` is not touched either.
+ * Fence: `src/lib/studioRedirects.test.ts`.
+ */
+export const STUDIO_REDIRECTS = [
+  { source: "/workflows", destination: "/studio", permanent: true },
+  { source: "/workflows/:id", destination: "/studio/workflows/:id", permanent: true },
+  { source: "/build/apps", destination: "/studio", permanent: true },
+  { source: "/build/agents", destination: "/studio", permanent: true },
+];
+
 const nextConfig: NextConfig = {
+  async redirects() {
+    return STUDIO_REDIRECTS;
+  },
+  async headers() {
+    return [{ source: "/connect/:path*", headers: CONNECT_FRAME_HEADERS }];
+  },
   // 🔴 **The deploy builds BESIDE the running build, never over it.**
   //
   // `scripts/vps_apply.sh` sets `NEXT_DIST_DIR=.next.staging`, builds into it,
@@ -18,6 +51,12 @@ const nextConfig: NextConfig = {
   // Next tries to parse the executable as source and dies on its non-UTF8 bytes.
   // Keeping it external makes the route `require` it at runtime instead.
   serverExternalPackages: ["esbuild"],
+  // The browser suite sets E2E_NO_TURBOPACK_CACHE (`playwright.config.ts`), so
+  // its dev server writes no Turbopack disk cache. Plain `next dev` keeps the
+  // cache. Fence: `src/lib/e2eGate.test.ts`.
+  experimental: {
+    turbopackFileSystemCacheForDev: process.env.E2E_NO_TURBOPACK_CACHE !== "1",
+  },
   images: {
     remotePatterns: [
       // Clearbit logo API — high-quality company logos

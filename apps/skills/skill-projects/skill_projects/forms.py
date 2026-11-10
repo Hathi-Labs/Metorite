@@ -20,41 +20,78 @@ through ``update_task``'s route, ``edit_project`` through ``update_project``'s,
 and ``propose_plan`` through ``create_project``, ``create_task`` (which
 assigns through ``assign``) and ``link_tasks``. Before each card it reads
 ``POST /projects/plan/preview``, which writes nothing (S7d, §13.6).
+
+``create_tasks`` (WS-46 P13) makes several new tasks in a project that
+exists, under ONE confirmation card with one checkbox per task
+(``request_confirmation`` rows). The member's one Approve names the ticked
+tasks. It writes through ``create_task``'s own write path, one task at a time.
+
+``create_tags`` and ``create_types`` (H-273) do the same for several new
+words of the project's vocabulary. Each ticked row is one POST to the route
+of ``create_tag`` or ``create_type``, and the server decides each one.
 """
 
 from __future__ import annotations
 
 import json
 import re
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import httpx
+from acb_common import get_logger
 from acb_common.priority import importance_for, important_from_importance
 
-from skill_projects.client import GatewayRefusal, data, post, put, uuid_of
+from skill_projects import choices
+from skill_projects.client import GatewayRefusal, data, get, post, put, uuid_of
+from skill_projects.hues import hue_of
 from skill_projects.priority import (
     card_view,
     flag,
     level_label,
+    level_note,
     priority_fields,
 )
-from skill_projects.reads import _task_line
+from skill_projects.reads import WEEKDAYS, _number, _task_line
 from skill_projects.views import _emit, _plain, _template
 from skill_projects.writes import (
+    _WRITE_FAILED,
     CANCELLED,
+    CASCADE_DEFAULTS,
     MAX_BATCH,
+    AgentAssigneeRefused,
+    _access_lines,
     _confirm,
+    _date_arg,
     _fields_block,
     _fits_on_card,
+    _follow_new_task,
+    _held_chat,
+    _matches_by_name,
+    _NewTask,
     _node,
+    _post_new_task,
+    _prepare_new_task,
+    _project_id,
     _resolve_assignee,
+    _root_of,
+    _split,
     _statuses_of,
+    _subtask_counts,
+    _subtasks_phrase,
     _task,
+    _tree_scope,
     _unknown_addresses,
+    _vocab,
+    _yes_no,
+    agent_assignee_refusal_as_text,
+    mailbox_line,
+    space_refusal,
     update_project,
     update_task,
 )
+
+_log = get_logger("skill_projects.forms")
 
 try:
     from acb_skills.tool_annotations import annotate as _annotate
@@ -86,14 +123,41 @@ def _answer(response: Any) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-async def _ask(spec: dict[str, Any]) -> dict[str, Any] | None:
+def declined_form() -> str:
+    """What a tool says when the member pressed "Not now" (or the plan
+    card's Cancel) on its form: nothing changed, and the decline text of
+    ``ask_tools`` (owner request, 2026-10-18)."""
+    try:
+        from acb_skills.ask_tools import declined_text
+    except Exception:  # pragma: no cover — platform package absent in isolation
+        return NOT_SUBMITTED
+    return f"{NOT_SUBMITTED} {declined_text(what='form')}"
+
+
+def declined_plan() -> str:
+    """What ``propose_plan`` says when the member pressed the plan card's
+    Cancel: a cancel, not a "not now" (review of #1152). Nothing was made,
+    and the plan is not proposed again unless the member asks."""
+    return (
+        f"{NOT_SUBMITTED} The member cancelled the plan. Nothing was created. "
+        "Do not propose this plan again unless the member asks for it."
+    )
+
+
+async def _ask(spec: dict[str, Any], *, declined: Any = None) -> dict[str, Any] | str:
+    """The values the member submitted, or the tool's reply when there are
+    none: :data:`NOT_SUBMITTED`, or for a "Not now" *declined*'s text
+    (:func:`declined_form` when the caller names none)."""
     result = await _emit({**spec, "hitl": True})
     if not result.get("ok"):
         raise GatewayRefusal(
             "The form could not be drawn (no chat surface to draw into). "
             "Pass the changes as arguments to update_task or update_project instead."
         )
-    return _answer(result.get("response"))
+    if result.get("declined") is True:
+        return (declined or declined_form)()
+    values = _answer(result.get("response"))
+    return NOT_SUBMITTED if values is None else values
 
 
 def _clean(value: Any) -> str:
@@ -103,16 +167,21 @@ def _clean(value: Any) -> str:
 # ── Edit a task ──────────────────────────────────────────────────────────────
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def edit_task(task_id: str) -> str:
     """Open an editable form for a task in the chat: title, description,
     status (by name), due, start, the Important and Leveraged flags,
-    estimate, tags. The member
+    estimate, tags. A task with open subtasks also gets a Subtasks choice,
+    for a Done status (D-PM-38). The member
     edits and submits; the changed fields then go through update_task's
     confirmation card, before → after. Nothing is written until that card
     is approved. Assignees are changed with assign."""
     tid, task = await _task(task_id)
     statuses = await _statuses_of(str(task.get("project_id")))
+    # WS-46 P6: read BEFORE the form, so the form asks the D-PM-38 question
+    # itself. update_task would otherwise ask it after the submit, and the
+    # form has no way to answer it.
+    subtree = await _subtask_counts(tid)
     names = [str(s.get("name")) for s in statuses]
     current = next(
         (str(s.get("name")) for s in statuses if str(s.get("id")) == str(task.get("status_id"))),
@@ -168,6 +237,8 @@ async def edit_task(task_id: str) -> str:
             "value": ", ".join(str(t) for t in task.get("tags") or []),
         },
     ]
+    if subtree.open:
+        fields.append(_subtasks_field(subtree.open, subtree.capped))
     values = await _ask(
         _template(
             "formCard",
@@ -179,17 +250,62 @@ async def edit_task(task_id: str) -> str:
             },
         )
     )
-    if values is None:
-        return NOT_SUBMITTED
+    if isinstance(values, str):
+        return values
     changes = _task_changes(task, values, current)
     if isinstance(changes, str):
         return changes
     if not changes:
         return f"Nothing changed on {_ref(task)}."
+    cascade = _form_subtasks(values, changes, statuses, task) if subtree.open else {}
+    if isinstance(cascade, str):
+        return cascade
+    changes.update(cascade)
     # `update_task` reads the row again, shows the before → after card, and
     # writes only on approval. The form was the member's wording; the card
     # is their consent.
     return await update_task(tid, **changes)
+
+
+#: The two answers of the form's Subtasks choice (D-PM-38 decision 2).
+ONLY_THIS_TASK = "Only this task"
+COMPLETE_THEM_TOO = "Complete them too"
+
+
+def _subtasks_field(open_count: int, capped: bool) -> dict[str, Any]:
+    """The form's Subtasks choice. Its default is the app's
+    (``CASCADE_DEFAULTS["complete"]``): only this task."""
+    return {
+        "name": "subtasks",
+        "label": f"If you set a Done status: {_subtasks_phrase(open_count, 'complete', capped)}",
+        "type": "select",
+        "options": [ONLY_THIS_TASK, COMPLETE_THEM_TOO],
+        "value": COMPLETE_THEM_TOO if CASCADE_DEFAULTS["complete"] else ONLY_THIS_TASK,
+    }
+
+
+def _form_subtasks(
+    values: dict[str, Any],
+    changes: dict[str, Any],
+    statuses: list[dict[str, Any]],
+    task: dict[str, Any],
+) -> dict[str, str] | str:
+    """``include_subtasks`` for ``update_task``, from the form's answer.
+
+    It goes only with a status CHANGE into a Done lane, the one act where
+    the route completes the subtasks too. Any other edit sends nothing.
+    """
+    wanted = str(changes.get("status") or "").strip().lower()
+    lanes = [s for s in statuses if str(s.get("name") or "").strip().lower() == wanted]
+    if len(lanes) != 1 or lanes[0].get("category") != "done":
+        return {}
+    if str(lanes[0].get("id")) == str(task.get("status_id")):
+        return {}
+    default = COMPLETE_THEM_TOO if CASCADE_DEFAULTS["complete"] else ONLY_THIS_TASK
+    choice = _clean(values.get("subtasks")) or default
+    if choice not in (ONLY_THIS_TASK, COMPLETE_THEM_TOO):
+        return f"subtasks is {ONLY_THIS_TASK} or {COMPLETE_THEM_TOO}, not {data(choice)}."
+    return {"include_subtasks": "yes" if choice == COMPLETE_THEM_TOO else "no"}
 
 
 def _numeric_changes(
@@ -274,13 +390,16 @@ def _ref(task: dict[str, Any]) -> str:
 # ── Edit a project ───────────────────────────────────────────────────────────
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def edit_project(project_id: str) -> str:
     """Open an editable form for a space, folder or project: name,
     description, run state (active, paused, stopped), lead. The member
     edits and submits; the changes then go through update_project's
     confirmation card. Nothing is written until that card is approved."""
     pid, node = await _node(project_id)
+    # RX-1: `lead` is a grant write (D-OP-11), so a held chat offers no such
+    # field. `update_project` refuses it too, for a form answer that names it.
+    held = await _held_chat()
     fields = [
         {
             "name": "name",
@@ -309,6 +428,8 @@ async def edit_project(project_id: str) -> str:
             "value": node.get("lead") or "",
         },
     ]
+    if held:
+        fields = [f for f in fields if f["name"] != "lead"]
     values = await _ask(
         _template(
             "formCard",
@@ -320,8 +441,8 @@ async def edit_project(project_id: str) -> str:
             },
         )
     )
-    if values is None:
-        return NOT_SUBMITTED
+    if isinstance(values, str):
+        return values
     changes: dict[str, Any] = {}
     name = _clean(values.get("name"))
     if name and name != _clean(node.get("name")):
@@ -343,10 +464,18 @@ async def edit_project(project_id: str) -> str:
 # ── W1 · plan a project from a goal ──────────────────────────────────────────
 #
 # S7d (spec §13.6) added start dates, dependencies and the capacity preview.
-# There are no phases (owner, 2026-09-24): start dates and `blocks` links
-# carry the order of a plan, and the Timeline draws it.
+# There are no phase TASKS (owner, 2026-09-24): start dates and `blocks`
+# links carry the order of a plan, and the Timeline draws it. Since the card
+# redesign (owner, 2026-10-18), a row may carry a `phase` label. The plan
+# card groups and folds the rows under it. It is display only: the card never
+# sends it back, and nothing stores it or makes a task of it.
 
-PLAN_FIELDS = ("title", "owner", "effort_mins", "due")
+#: The fields a plan row must carry. The owner is not one of them (owner,
+#: 2026-10-17, spec §26): a row with no owner is an unassigned task. It shows
+#: no fit and no hours, and the plan creates it with nobody assigned.
+PLAN_FIELDS = ("title", "effort_mins", "due")
+#: What the card and the receipt say for a row with no owner.
+UNASSIGNED = "unassigned"
 #: The three sort scores. They travel through the submit, so the score after
 #: the submit is the score the card showed (§13.6 rule 10).
 SCORE_KEYS = ("impact", "urgency", "effort")
@@ -358,8 +487,8 @@ PREVIEW_PATH = "/projects/plan/preview"
 #: holds the same bound (``plan_preview.MAX_EFFORT_MINS``).
 MAX_EFFORT_MINS = 90 * 24 * 60
 #: A write whose connection broke may or may not have landed. Both kinds end
-#: the batch with the same receipt (§13.6 rule 9, review round 1).
-_WRITE_FAILED = (GatewayRefusal, httpx.TransportError)
+#: the batch with the same receipt (§13.6 rule 9, review round 1). The one
+#: pair lives in ``writes.py``, which ``create_task`` uses too (WS-46 P1).
 
 #: The words a mark carries on the card (§13.6 rules 1 and 2).
 MARK_WORDS = {
@@ -391,7 +520,7 @@ def _plan_row(i: int, item: Any) -> dict[str, Any] | str:
     if missing:
         return (
             f"Task {i} ({data(item.get('title') or '?')}) lacks {', '.join(missing)}. "
-            "Every task needs all four."
+            "Every task needs a title, an effort and a due date. The owner can be empty."
         )
     try:
         effort = int(item.get("effort_mins"))
@@ -420,6 +549,10 @@ def _plan_row(i: int, item: Any) -> dict[str, Any] | str:
         "due": due,
         "after": _after_of(item.get("after")),
     }
+    phase = _clean(item.get("phase"))
+    if phase:
+        # The card's group label. Display only, and the card cuts it to 80.
+        row["phase"] = phase
     start = _clean(item.get("start"))[:10]
     if start:
         try:
@@ -490,10 +623,11 @@ def _block_cycle(rows: list[dict[str, Any]]) -> list[str]:
 def _plan_rows(raw: Any, *, dropped: frozenset[str] = frozenset()) -> list[dict[str, Any]] | str:
     """The plan's task rows, validated, or the refusal string.
 
-    W1 rule: a task that lacks a title, an owner, an effort or a date is not
-    proposed. §13.6 rule 7 refuses, before any card and with zero writes, a
-    start date after the due date, an ``after`` key that names no row, a row
-    that blocks itself, and a ``blocks`` cycle. ``dropped`` holds the keys of
+    W1 rule: a task that lacks a title, an effort or a date is not proposed.
+    A task with no owner is proposed as an unassigned task (§26). §13.6 rule
+    7 refuses, before any card and with zero writes, a start date after the
+    due date, an ``after`` key that names no row, a row that blocks itself,
+    and a ``blocks`` cycle. ``dropped`` holds the keys of
     rows the member removed on the card: their links drop with them.
     """
     if isinstance(raw, str):
@@ -501,7 +635,7 @@ def _plan_rows(raw: Any, *, dropped: frozenset[str] = frozenset()) -> list[dict[
             raw = json.loads(raw)
         except (TypeError, ValueError):
             return (
-                "tasks is a JSON list of {key, title, owner, effort_mins, start?, due, "
+                "tasks is a JSON list of {key, title, owner?, effort_mins, start?, due, "
                 "after?, level?, important?, leveraged?}."
             )
     if not isinstance(raw, list) or not raw:
@@ -552,6 +686,8 @@ async def _soft_owner(value: str) -> tuple[str, str]:
     """
     try:
         return await _resolve_assignee(value), ""
+    except AgentAssigneeRefused:
+        raise  # H-236: refused before the card, never noted on it
     except GatewayRefusal as exc:
         return value.strip().lower(), str(exc)
 
@@ -611,6 +747,9 @@ def _capacity(
     warnings as sentences, and the one capacity line for the card."""
     titles = {r["key"]: r["title"] for r in rows}
     due_of = {r["key"]: r["due"] for r in rows}
+    # §26: a row with no owner has nobody to measure. It gets no fit, no
+    # hours and no mark, whatever the preview sends for it.
+    nobody = {r["key"] for r in rows if not r["owner"]}
     # A name that did not resolve is picker data every member reads, not HR
     # data. So the mark shows with or without the grant, and without a
     # preview (review round 1, P2a). The member fixes it before the submit.
@@ -631,7 +770,7 @@ def _capacity(
         return by_key, warnings, str(answer.get("hr_note") or "An admin can see capacity.")
     for got in answer.get("rows") or []:
         key = str(got.get("key") or "")
-        if key not in titles:
+        if key not in titles or key in nobody:
             continue
         fit = got.get("fit") or {}
         marks = [MARK_WORDS.get(str(m), str(m)) for m in got.get("marks") or []]
@@ -649,6 +788,26 @@ def _capacity(
     window = answer.get("window") or {}
     line = f"Hours cover {window.get('starts_on')} to {window.get('ends_on')}, across all your visible work."
     return by_key, warnings, line
+
+
+def _with_unassigned(line: str, rows: list[dict[str, Any]]) -> str:
+    """The confirm card's capacity line, with the unassigned rows counted
+    apart (§26). The plan card counts them itself, live, as the member edits
+    the owners (``planCard.ts`` ``ownerSummary``), so it gets the bare line.
+
+    When no row has an owner, nothing is measured, so the line says only
+    that. The count is a count: no figure here divides by the owners.
+    """
+    nobody = sum(1 for r in rows if not r["owner"])
+    if not nobody:
+        return line
+    if nobody == len(rows):
+        return (
+            "No task has an owner, so no row carries a fit or hours. "
+            "Give a task an owner on the card to see them."
+        )
+    said = "has no owner, so it carries" if nobody == 1 else "have no owner, so they carry"
+    return f"{line} {nobody} of {len(rows)} tasks {said} no fit or hours."
 
 
 def _card_rows(rows: list[dict[str, Any]], checks: dict[str, dict[str, Any]]) -> list[dict]:
@@ -674,11 +833,13 @@ def _row_flags(row: dict[str, Any]) -> dict[str, Any]:
 
 def _task_card_line(row: dict[str, Any], owner: str) -> str:
     # Every field the POST carries is on this line (spec §5.3). The priority
-    # shows as the flags and the level the app will draw (H-173).
+    # shows as the flags and the level the app will draw (H-173). A row with
+    # no owner says "unassigned", unfenced, because no member wrote it (§26).
     flags = _row_flags(row)
     shown = card_view(flags)
+    who = data(owner) if owner else UNASSIGNED
     return (
-        f"{data(row['title'])} · {data(owner)} · {row['effort_mins']} min · "
+        f"{data(row['title'])} · {who} · {row['effort_mins']} min · "
         + (f"start {row['start']} · " if row.get("start") else "")
         + f"due {row['due']}"
         + "".join(f" · {k} {v}" for k, v in shown.items())
@@ -728,12 +889,14 @@ def _not_tried(tasks_left: int, owners: tuple[int, int], links: tuple[int, int])
     )
 
 
-def _project_stopped(label: str, exc: Exception, *, tasks: int, links: int) -> str:
+def _project_stopped(
+    label: str, exc: Exception, *, tasks: int, links: int, owners: int | None = None
+) -> str:
     """The receipt when the FIRST write, the project node, fails (WS-27bm S10,
     §16.2 rule 9). No other write runs, so every task, owner and link is not
     tried. A refusal made nothing. A broken connection may have made the
     project, so the member reads the tree before a retry."""
-    left = _not_tried(tasks, (0, tasks), (0, links))
+    left = _not_tried(tasks, (0, tasks if owners is None else owners), (0, links))
     if isinstance(exc, httpx.TransportError):
         return "\n".join([
             f"stopped: the project {data(label)} lost its connection to the gateway "
@@ -750,11 +913,12 @@ def _project_stopped(label: str, exc: Exception, *, tasks: int, links: int) -> s
 
 
 async def _soft_owners(rows: list[dict[str, Any]]) -> tuple[dict[str, str], dict[str, str]]:
-    """Each owner as written, to an address, and the ones that did not resolve."""
+    """Each owner as written, to an address, and the ones that did not resolve.
+    A row with no owner resolves nothing (§26)."""
     soft: dict[str, str] = {}
     unresolved: dict[str, str] = {}
     for row in rows:
-        if row["owner"] not in soft:
+        if row["owner"] and row["owner"] not in soft:
             soft[row["owner"]], why = await _soft_owner(row["owner"])
             if why:
                 unresolved[row["owner"]] = why
@@ -789,7 +953,7 @@ def _confirm_card(
     if about:
         card["description"] = about
     for i, row in enumerate(final, start=1):
-        card[f"task {i}"] = _task_card_line(row, owners[row["owner"]])
+        card[f"task {i}"] = _task_card_line(row, owners.get(row["owner"], ""))
         check = _check_line(checks.get(row["key"], {}))
         if check:
             card[f"task {i} check"] = check
@@ -805,7 +969,44 @@ def _confirm_card(
     return card
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False)
+def _same_name(a: str, b: str) -> bool:
+    """Two project names that a member reads as one name."""
+    return " ".join(str(a).split()).casefold() == " ".join(str(b).split()).casefold()
+
+
+def _new_space_label(label: str) -> str:
+    """What the cards say when the plan has no parent: a space AND a project."""
+    return f"a new space {data(label)} with a project {data(label)}"
+
+
+def _plan_fills_parent(label: str, parent_label: str, parent_id: str) -> str:
+    """The refusal for a plan named like its parent project (review of #1160).
+
+    The owner's plan "Personalization & Memory System" came "Under
+    Personalization & Memory System." ``propose_plan`` always POSTs a NEW
+    project, so the batch made a second project of that name inside the
+    first one, and put every task there. The model meant to fill the project
+    that exists. ``propose_plan`` cannot target an existing project, so the
+    refusal names the tool that can: ``create_tasks`` with its ``full_id``.
+    """
+    from .refusals import refusal_text
+
+    return refusal_text(GatewayRefusal(
+        f"propose_plan makes a NEW project, and the plan is named like its parent "
+        f"project {data(parent_label)}. It would make a second {data(label)} inside "
+        "it, so nothing was created. To add the tasks to the project that exists, "
+        f"call create_tasks with project_id {parent_id}. Map each plan task to a "
+        "create_tasks row: title stays title, owner becomes assignees, effort_mins "
+        "becomes estimate_mins, and start and due stay. Leave out key, after and "
+        "phase, because create_tasks refuses them. Then make each waits-on link in "
+        "a second call, link_tasks_batch (link_tasks for 1 or 2), with type blocks "
+        "and the task ids from the receipt. For a new sub-project, give the plan "
+        "its own name."
+    ))
+
+
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
+@agent_assignee_refusal_as_text
 async def propose_plan(
     name: str,
     tasks: str,
@@ -815,31 +1016,46 @@ async def propose_plan(
 ) -> str:
     """W1: propose a project plan as an editable card, then create it as
     ONE batch under one confirmation card. name is the project's name.
-    tasks is a JSON list of {key, title, owner, effort_mins, start?, due,
-    after?, level?, important?, leveraged?, impact?, urgency?, effort?}.
+    tasks is a JSON list of {key, title, owner?, effort_mins, start?, due,
+    after?, phase?, level?, important?, leveraged?, impact?, urgency?,
+    effort?}.
     level is a priority level name, and sets that level's Important and
     Leveraged flags. important and leveraged are true or false. key is a short label
     such as t1. start and due are YYYY-MM-DD. after lists the keys of the
     tasks that must finish first, and becomes blocks links. Every task needs
-    a verb-plus-object title, an owner (email or name), an effort and a due
-    date, or it is refused. A start after the due date, an unknown key or a
-    circle of blocks is refused before the card. impact, urgency and effort
-    (1 to 5) make a priority score the card shows and nothing stores. The
-    card shows each owner's skill fit and hours across the plan, and marks a
-    row that lacks either. A mark warns and never blocks. risks is the three
+    a verb-plus-object title, an effort and a due date, or it is refused.
+    owner is an email or a name, or empty for an unassigned task. Leave it
+    empty when the member gives no owner or asks for none, and do not ask.
+    A start after the due date, an unknown key or a circle of blocks is
+    refused before the card. impact, urgency and effort (1 to 5) make a
+    priority score the card shows in each task's open row and nothing
+    stores. The card shows each
+    owner's skill fit and hours across the plan, and marks a row that lacks
+    either. An unassigned row shows neither, and the member can give it an
+    owner on the card. A mark warns and never blocks. risks is the three
     ways the plan fails, one per line. parent_project_id is a full_id from
-    projects_tree; empty makes a space. There are no phases."""
+    projects_tree. The plan is always a NEW project inside it. Empty makes a
+    new space named like the plan, with one project of that name inside the
+    space, and the tasks go in that project, because a space holds projects
+    and never tasks. phase is an optional group name,
+    such as a milestone: the card folds the rows under it, and nothing stores
+    it or makes a task of it."""
     label = _clean(name)
     if not label:
         return "A project needs a name."
     rows = _plan_rows(tasks)
     if isinstance(rows, str):
         return rows
-    parent_label = "the top level (a new space)"
+    new_space = not parent_project_id.strip()
+    parent_label = _new_space_label(label)
     parent_id = ""
-    if parent_project_id.strip():
+    if not new_space:
         parent_id, parent = await _node(parent_project_id)
         parent_label = _plain(parent.get("name"))
+        # Only a PROJECT: a folder named like the plan is a fair place for a
+        # new project, and create_tasks refuses a folder (review of #1160).
+        if parent.get("kind", "project") == "project" and _same_name(label, parent_label):
+            return _plan_fills_parent(label, parent_label, parent_id)
     soft, unresolved = await _soft_owners(rows)
     checks, warnings, capacity_line = _capacity(rows, await _preview(rows, soft), unresolved)
     values = await _ask(
@@ -847,7 +1063,7 @@ async def propose_plan(
             "planCard",
             {
                 "title": f"Plan · {label}",
-                "description": f"Under {parent_label}. Edit any row, drop one, then submit.",
+                "description": f"Under {parent_label}.",
                 "project": {
                     "name": label,
                     "parent": parent_label,
@@ -861,19 +1077,22 @@ async def propose_plan(
                 "risks": [r.strip() for r in str(risks or "").splitlines() if r.strip()][:5],
                 "submitLabel": "Review plan",
             },
-        )
+        ),
+        declined=declined_plan,
     )
-    if values is None:
-        return NOT_SUBMITTED
+    if isinstance(values, str):
+        return values
     final = _submitted_rows(values.get("tasks"), rows)
     if isinstance(final, str):
         return final
     project = values.get("project") if isinstance(values.get("project"), dict) else {}
     label = _clean(project.get("name")) or label
+    if new_space:
+        parent_label = _new_space_label(label)
     owners: dict[str, str] = {}
     for row in final:
         who = row["owner"]
-        if who not in owners:
+        if who and who not in owners:
             owners[who] = await _resolve_assignee(who)
     strangers = await _unknown_addresses(sorted(set(owners.values())))
     # §13.6 rule 3: the server computes the marks again, for the plan the
@@ -895,22 +1114,36 @@ async def propose_plan(
             "not in the directory": ", ".join(strangers),
         },
     )
-    card["capacity"] = capacity_line
+    card["capacity"] = _with_unassigned(capacity_line, final)
     if checks or warnings:
         card["note"] = WARNS_NOT_BLOCKS
+    if await _held_chat():
+        card.update(await _plan_access(parent_id, list(owners.values())))
     if not _fits_on_card(card):
         return (
             f"The plan does not fit on one confirmation card ({len(final)} tasks, "
             f"{len(links)} links). Split it into two plans. Nothing was created."
         )
     n_links = f", {len(links)} link{'s' if len(links) != 1 else ''}" if links else ""
+    nobody = sum(1 for r in final if not r["owner"])
+    n_nobody = f", {nobody} {UNASSIGNED}" if nobody else ""
     if not await _confirm(
         title=f"Create {data(label)} with {len(final)} task{'s' if len(final) != 1 else ''}?",
-        detail=f"under {parent_label} · one batch, {len(final)} tasks{n_links}",
+        detail=f"under {parent_label} · one batch, {len(final)} tasks{n_links}{n_nobody}",
         context=_fields_block(card),
     ):
         return CANCELLED
     return await _write_plan(label, parent_id, parent_label, about, final, owners, links, titles)
+
+
+async def _plan_access(parent_id: str, owners: list[str]) -> dict[str, Any]:
+    """Who a new plan reaches, for a held card (RX-1). A new project takes the
+    grants of its parent, and an owner opens each task that they hold. A new
+    space has no parent, so only its owners and the member see it."""
+    if parent_id:
+        return await _access_lines(parent_id, owners)
+    who = ", ".join(dict.fromkeys(o for o in owners if not o.startswith("agent:")))
+    return {"seen by": "you and each task's owner", **({"gives access to": who} if who else {})}
 
 
 async def _write_plan(
@@ -925,18 +1158,39 @@ async def _write_plan(
 ) -> str:
     """Rule 8's order: the project node, the tasks with their start dates,
     the owners, then the links. At the first refusal it stops (rule 9), and
-    the project node is a write like any other (S10)."""
-    payload: dict[str, Any] = {"name": label, "kind": "project"}
-    if parent_id:
-        payload["parent_project_id"] = parent_id
+    the project node is a write like any other (S10). A row with no owner
+    gets no assignee write, and the counts of owners leave it out (§26)."""
+    assigned = sum(1 for r in final if r["owner"])
+    out: list[str] = []
+    if not parent_id:
+        # A space holds projects and never tasks (2026-10-26). A plan with no
+        # parent makes the space first, then the project inside it, and the
+        # tasks go in the project.
+        try:
+            space = await post("/projects/nodes", {"name": label, "kind": "project"})
+        except _WRITE_FAILED as exc:
+            return _project_stopped(
+                label, exc, tasks=len(final), links=len(links), owners=assigned
+            )
+        parent_id = uuid_of(str(space.get("id")), "project_id")
+        out.append(f"Created space {data(space.get('name'))}.\n  space_id: {parent_id}")
+    payload: dict[str, Any] = {
+        "name": label, "kind": "project", "parent_project_id": parent_id,
+    }
     if about:
         payload["description"] = about
     try:
         node = await post("/projects/nodes", payload)
     except _WRITE_FAILED as exc:
-        return _project_stopped(label, exc, tasks=len(final), links=len(links))
+        stopped = _project_stopped(
+            label, exc, tasks=len(final), links=len(links), owners=assigned
+        )
+        if out:
+            stopped = "\n".join(out + [stopped])
+        return stopped
     pid = uuid_of(str(node.get("id")), "project_id")
-    out = [f"Created project {data(node.get('name'))} under {parent_label}.\n  project_id: {pid}"]
+    where = "the new space" if out else parent_label
+    out.append(f"Created project {data(node.get('name'))} under {where}.\n  project_id: {pid}")
     created: list[tuple[dict[str, Any], dict[str, Any]]] = []
     for n, row in enumerate(final):
         body: dict[str, Any] = {
@@ -955,13 +1209,16 @@ async def _write_plan(
                 out.extend(_task_line(made))
             return _stopped(
                 out, f"task {n + 1} of {len(final)}, {data(row['title'])},", exc,
-                tasks_left=len(final) - n - 1, owners=(0, len(final)), links=(0, len(links)),
+                tasks_left=len(final) - n - 1, owners=(0, assigned), links=(0, len(links)),
             )
         created.append((row, task))
     tids: dict[str, str] = {}
-    for n, (row, task) in enumerate(created):
+    done = 0
+    for row, task in created:
         tid = uuid_of(str(task.get("id")), "task_id")
         tids[row["key"]] = tid
+        if not row["owner"]:
+            continue  # §26: an unassigned task gets no assignee write.
         try:
             await put(f"/projects/tasks/{tid}/assignees", {"assignees": [owners[row["owner"]]]})
         except _WRITE_FAILED as exc:
@@ -969,9 +1226,10 @@ async def _write_plan(
                 out.extend(_task_line(made))
             return _stopped(
                 out, f"the owner of {data(row['title'])}", exc,
-                tasks_left=0, owners=(n, len(final)), links=(0, len(links)),
+                tasks_left=0, owners=(done, assigned), links=(0, len(links)),
             )
         task["assignees"] = [owners[row["owner"]]]
+        done += 1
     for _, made in created:
         out.extend(_task_line(made))
     for n, (a, b) in enumerate(links):
@@ -985,10 +1243,1110 @@ async def _write_plan(
         except _WRITE_FAILED as exc:
             return _stopped(
                 out, f"the link {link}", exc,
-                tasks_left=0, owners=(len(final), len(final)), links=(n, len(links)),
+                tasks_left=0, owners=(assigned, assigned), links=(n, len(links)),
             )
         out.append(f"linked: {link}")
     return "\n".join(out)
 
 
-__all__ = ["edit_project", "edit_task", "propose_plan"]
+# ── Several new tasks in one project, as one batch (WS-46 P13) ───────────────
+#
+# Spec: ``projects_agent_parity.md`` §12, slice P13. On 2026-10-06 a member
+# asked for nine tasks in a project that existed. No tool took several
+# top-level tasks, so the model made nine create_task calls and nine cards
+# at once. This tool takes the batch in ONE call, under ONE confirmation
+# card with a checkbox for each row. The member's one Approve names the
+# ticked rows. Each row goes through create_task's own write path
+# (``writes._prepare_new_task``, then the two halves of
+# ``writes._create_new_task``: ``_post_new_task`` and ``_follow_new_task``).
+
+#: The keys of one row. Each one means what the create_task argument of the
+#: same name means, and ``tests/unit/test_projects_create_tasks.py`` holds
+#: the two lists in step.
+ROW_KEYS: tuple[str, ...] = (
+    "title",
+    "description",
+    "status",
+    "assignees",
+    "due",
+    "start",
+    "estimate_mins",
+    "tags",
+    "parent_task_id",
+    "priority",
+    "important",
+    "leveraged",
+    "type",
+    "fields",
+    "source",
+)
+#: The create_task arguments a row does not take: the repeat rule (P1) and
+#: the retired ``importance``. A repeating task is create_task's alone.
+REPEAT_KEYS: tuple[str, ...] = (
+    "repeat",
+    "repeat_every",
+    "repeat_on",
+    "repeat_day",
+    "repeat_month",
+    "repeat_from",
+    "repeat_until",
+    "repeat_times",
+)
+REPEAT_REFUSED = (
+    "create_tasks makes tasks that do not repeat. Make each repeating task with "
+    "create_task and repeat, one call for each."
+)
+PROJECT_REFUSED = (
+    "Every task of one call goes to the project_id of the call. For tasks in "
+    "another project, make a second call."
+)
+TASKS_FORMAT = (
+    'tasks is a JSON list with one object per task, for example [{"title": "Book the '
+    'venue", "assignees": "Priya", "due": "2026-10-09"}]. The keys are: '
+    + ", ".join(ROW_KEYS)
+    + ". Only title is required."
+)
+#: How recent a task with the same title in the same project must be to read
+#: as the same task. The create route takes no idempotency key, so this read
+#: before the card is what makes a retry safe: such a row starts unticked.
+RECENT_MINUTES = 10
+#: The read that finds those tasks. The list route sorts by ``created_at``,
+#: newest first, by default, so one page holds every recent task.
+RECENT_PAGE = 50
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+class _BatchRow:
+    """One row of a batch: the member's words, and create_task's resolved body."""
+
+    def __init__(self, index: int, title: str, item: dict[str, Any], new: _NewTask) -> None:
+        self.index = index
+        self.title = title
+        self.item = item
+        self.new = new
+        #: A task with this title made in the last :data:`RECENT_MINUTES`.
+        self.recent: dict[str, Any] | None = None
+        #: An open task that the typed twin check calls the same (owner,
+        #: 2026-10-09). A flag on the card only: the row stays ticked.
+        self.twin: dict[str, Any] | None = None
+        #: The full line of the confirmation card, fenced.
+        self.line = ""
+        #: The same facts with no title: the row's hint on the card.
+        self.facts = ""
+
+
+def _batch_items(raw: Any) -> list[dict[str, Any]] | str:
+    """The rows as the model sent them, checked for shape, or the refusal."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            return TASKS_FORMAT
+    if not isinstance(raw, list) or not raw:
+        return TASKS_FORMAT
+    if len(raw) > MAX_BATCH:
+        return (
+            f"That is {len(raw)} tasks. The limit for one card is {MAX_BATCH}. Split them "
+            "into two calls. Nothing was created."
+        )
+    seen: dict[str, int] = {}
+    for i, item in enumerate(raw, start=1):
+        if not isinstance(item, dict):
+            return f"Row {i} is not an object. {TASKS_FORMAT}"
+        title = _clean(item.get("title"))
+        label = f"Row {i}" + (f" ({data(title)})" if title else "")
+        for key in item:
+            if key in REPEAT_KEYS:
+                return f"{label}: {REPEAT_REFUSED} Nothing was created."
+            if key == "project_id":
+                return f"{label}: {PROJECT_REFUSED} Nothing was created."
+            if key not in ROW_KEYS and key != "importance":
+                return (
+                    f"{label} has no key {data(key)}. The keys are: {', '.join(ROW_KEYS)}. "
+                    "Nothing was created."
+                )
+        if not title:
+            return f"Row {i} has no title. Every task needs one. Nothing was created."
+        twin = seen.setdefault(title.lower(), i)
+        if twin != i:
+            return (
+                f"Rows {twin} and {i} have the same title, {data(title)}. Give each task its "
+                "own title, or drop one. Nothing was created."
+            )
+    return raw
+
+
+def _row_text(item: dict[str, Any], key: str) -> str:
+    """A text key of a row. A list or an object is refused, never stringified."""
+    value = item.get(key)
+    if value is None:
+        return ""
+    if isinstance(value, list | dict):
+        raise GatewayRefusal(f"{key} takes text, not a list or an object.")
+    return str(value).strip()
+
+
+def _row_list(item: dict[str, Any], key: str) -> list[str]:
+    """``assignees`` or ``tags``: a comma-separated string, or a list."""
+    value = item.get(key)
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if isinstance(value, dict):
+        raise GatewayRefusal(f"{key} takes a comma-separated list, not an object.")
+    return _split(str(value))
+
+
+def _row_estimate(item: dict[str, Any]) -> int:
+    value = item.get("estimate_mins")
+    if value in (None, ""):
+        return 0
+    if isinstance(value, bool) or not str(value).strip().isdigit():
+        raise GatewayRefusal(f"estimate_mins is a whole number of minutes, not {data(value)}.")
+    return int(str(value).strip())
+
+
+def _row_fields(item: dict[str, Any]) -> str:
+    """``fields`` as create_task takes it: a JSON object string."""
+    value = item.get("fields")
+    if value in (None, ""):
+        return ""
+    if isinstance(value, dict):
+        return json.dumps(value)
+    if isinstance(value, str):
+        return value
+    raise GatewayRefusal(
+        'fields is a JSON object keyed by field NAME, for example {"Customer": "Acme"}.'
+    )
+
+
+def _relabel(label: str, exc: GatewayRefusal) -> GatewayRefusal:
+    """*exc*, said for one row. A gateway refusal keeps its safe detail only."""
+    if getattr(exc, "status", None) is not None:
+        hint = "Not found, or not visible to you." if exc.status == 404 else f"({exc.status})"
+        said = f"{hint} {data(exc.detail)}" if exc.detail else hint
+    else:
+        said = " ".join(str(exc).split())
+    text_ = f"{label}: {said} Nothing was created."
+    if isinstance(exc, AgentAssigneeRefused):
+        return AgentAssigneeRefused(text_)
+    return GatewayRefusal(text_, fixable=getattr(exc, "fixable", True))
+
+
+async def _batch_row(
+    pid: str, index: int, item: dict[str, Any], statuses: list[dict[str, Any]]
+) -> _BatchRow:
+    """One row resolved by create_task's own code, or the refusal that names it."""
+    title = _clean(item.get("title"))
+    label = f"Row {index} ({data(title)})"
+    try:
+        flags = priority_fields(
+            priority=_row_text(item, "priority"),
+            important=item.get("important", ""),
+            leveraged=item.get("leveraged", ""),
+            importance=item.get("importance"),
+        )
+        if isinstance(flags, str):
+            raise GatewayRefusal(flags)
+        new = await _prepare_new_task(
+            pid,
+            title,
+            description=_row_text(item, "description"),
+            status=_row_text(item, "status"),
+            due_at=_date_arg(_row_text(item, "due"), "due"),
+            flags=flags,
+            estimate_mins=_row_estimate(item),
+            tags=_row_list(item, "tags"),
+            start=_row_text(item, "start"),
+            type_name=_row_text(item, "type"),
+            fields=_row_fields(item),
+            parent_task_id=_row_text(item, "parent_task_id"),
+            assignees=_row_list(item, "assignees"),
+            statuses=statuses,
+            source=_row_text(item, "source"),
+        )
+    except GatewayRefusal as exc:
+        raise _relabel(label, exc) from None
+    return _BatchRow(index, title, item, new)
+
+
+def _first_lane(statuses: list[dict[str, Any]]) -> str | None:
+    """The lane a task with no status lands in, as ``core.load_default_status``
+    picks it: the first OPEN lane in the route's own order (stage, position,
+    name). Triage, Done and Cancelled never take a new task.
+
+    ``""`` when the read gave no rows, so the card says "the first lane".
+    ``None`` when the set holds no open lane, so the card says so and names
+    no lane (task 1792).
+    """
+    if not statuses:
+        return ""
+    for s in statuses:
+        if s.get("category") not in ("triage", "done", "cancelled"):
+            return str(s.get("name") or "")
+    return None
+
+
+def _day_words(value: str) -> str:
+    """``2026-10-09`` → ``Fri 9 Oct 2026``."""
+    try:
+        day = date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return str(value)
+    return f"{WEEKDAYS[day.weekday()][:3]} {day.day} {_MONTHS[day.month - 1]} {day.year}"
+
+
+async def _names_of(who: list[str]) -> tuple[dict[str, str], list[str]]:
+    """The directory name of each address, and the addresses it does not know.
+
+    One read for the whole batch (``/projects/people/names``), as
+    ``writes._unknown_addresses`` reads it for one task (H-162).
+    """
+    addresses = sorted({a for a in who if "@" in a})
+    if not addresses:
+        return {}, []
+    payload = (await get("/projects/people/names", {"emails": ",".join(addresses)})) or {}
+    names = {str(k).lower(): str(v) for k, v in (payload.get("names") or {}).items()}
+    return names, [a for a in addresses if a.lower() not in names]
+
+
+def _person(who: str, names: dict[str, str]) -> str:
+    """The NAME the directory gives an address, or the address itself."""
+    if who.startswith("agent:"):
+        return f"agent {who.removeprefix('agent:')}"
+    return names.get(who.lower()) or who
+
+
+def _person_card(who: str, names: dict[str, str]) -> str:
+    """An assignee on the confirmation card and the receipt: always
+    ``«Name» (address)`` when the directory knows the address. Two people can
+    share a name, and the card is consent, so it names the address too
+    (review round 2). An address the directory does not know stays bare."""
+    name = names.get(who.lower()) if "@" in who else None
+    return f"{data(name)} ({who})" if name else data(_person(who, names))
+
+
+def _created_at(row: dict[str, Any]) -> datetime | None:
+    raw = str(row.get("created_at") or "").strip()
+    if not raw:
+        return None
+    try:
+        made = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return made if made.tzinfo else made.replace(tzinfo=UTC)
+
+
+async def _recent_titles(pid: str) -> dict[str, dict[str, Any]]:
+    """Each title of a task made in *pid* in the last :data:`RECENT_MINUTES`.
+
+    The create route takes no idempotency key (``TaskIn``), so a retry of a
+    batch that half landed would make each landed task twice. This read
+    before the card finds them, and the card starts them unticked.
+    The read takes the triage lane too, because a create can land a task
+    there and the list hides it by default (review round 2).
+    """
+    query = {"project_id": pid, "page_size": RECENT_PAGE, "include_triage": True}
+    page = (await get("/projects/tasks", query)) or {}
+    since = datetime.now(UTC) - timedelta(minutes=RECENT_MINUTES)
+    out: dict[str, dict[str, Any]] = {}
+    for row in page.get("rows") or []:
+        made = _created_at(row)
+        if made is None or made < since:
+            continue
+        out.setdefault(_clean(row.get("title")).lower(), row)
+    return out
+
+
+def _minutes_ago(row: dict[str, Any]) -> int:
+    made = _created_at(row)
+    if made is None:
+        return 0
+    return max(0, int((datetime.now(UTC) - made).total_seconds() // 60))
+
+
+def _recent_note(row: dict[str, Any]) -> str:
+    ago = _minutes_ago(row)
+    when = "less than a minute ago" if ago < 1 else f"{ago} min ago"
+    return f"a task with this title was made {when}, as {_number(row)}"
+
+
+def _describe(
+    p: _BatchRow, names: dict[str, str], first_lane: str | None
+) -> None:
+    """Fill the row's facts and its confirmation line."""
+    payload = p.new.payload
+    due = str(payload.get("due_at") or "")
+    if "status_id" in payload or "parent_task_id" in payload:
+        lane = p.new.status_label
+    elif first_lane is None:
+        lane = "no open status in this project, so the create is refused"
+    else:
+        lane = f"{first_lane} (the first lane)" if first_lane else "the first lane"
+    # `_parent_lane_label` fences the lane name itself. Fence a bare name
+    # once, and never a fenced one twice (review round 2).
+    lane_card = lane if "«" in lane else data(lane)
+    facts = [
+        ", ".join(_person_card(w, names) for w in p.new.who) if p.new.who else "nobody assigned",
+        f"due {_day_words(due)}" if due else "no due date",
+        f"status {lane_card}",
+    ]
+    if payload.get("start_date"):
+        facts.append(f"start {_day_words(payload['start_date'])}")
+    if payload.get("estimate_mins"):
+        facts.append(f"{payload['estimate_mins']} min")
+    if payload.get("tags"):
+        facts.append("tags " + ", ".join(data(t) for t in payload["tags"]))
+    # The type and each custom value, by NAME. The start is said above.
+    facts.extend(
+        f"{key} {data(value)}" for key, value in p.new.extra.card.items() if key != "start"
+    )
+    shown = card_view({k: payload[k] for k in ("importance", "leveraged") if k in payload})
+    facts.extend(f"{k} {v}" for k, v in shown.items())
+    if payload.get("parent_task_id"):
+        facts.append(_parent_words(p.new.parent or {}, p.new.pid))
+    if payload.get("source"):
+        facts.append(f"source {payload['source']}")
+    if payload.get("description"):
+        # The whole text, as the POST sends it. A cut card is not consent
+        # (projects_ai_chat.md §13.6 rule 8), so a batch too long for the
+        # card is refused by `_fits_on_card` instead (review round 1).
+        facts.append("description " + data(payload["description"]))
+    p.facts = " · ".join(facts)
+    p.line = f"{data(p.title)} · {p.facts}"
+
+
+def _parent_words(parent: dict[str, Any], pid: str) -> str:
+    """``subtask of #8 «Order the nozzle»``, and its project when that is not
+    the project of the call (review round 2)."""
+    out = f"subtask of {_number(parent)} {data(parent.get('title'))}"
+    if parent.get("project_id") and str(parent.get("project_id")) != str(pid):
+        where = data(parent.get("project_name")) if parent.get("project_name") else None
+        out += f", in {where}" if where else ", in another project"
+    return out
+
+
+def _left_why(p: _BatchRow) -> str:
+    """Why a row is not written, in the member's words."""
+    if p.recent is not None:
+        return f"unticked on the card, because {_recent_note(p.recent)}"
+    return "unticked on the card"
+
+
+def _row_id(p: _BatchRow) -> str:
+    """The row's id on the card. The answer names these ids, and nothing else."""
+    return f"row-{p.index}"
+
+
+def _unfenced(text: str) -> str:
+    return " ".join(str(text).replace("«", "").replace("»", "").split())
+
+
+def _card_row(p: _BatchRow) -> dict[str, Any]:
+    """One checkbox of the card: the title, every fact the POST sends, and a
+    recent twin's reason. A row with a twin starts unticked."""
+    hint = _unfenced(p.facts)
+    if p.recent is not None:
+        hint += f" · {_recent_note(p.recent)}, so it starts unticked"
+    if p.twin is not None:
+        hint += f" · {_unfenced(choices.twin_note(p.twin))}"
+    return {"id": _row_id(p), "label": _plain(p.title), "hint": hint, "checked": p.recent is None}
+
+
+def _batch_card(
+    node: dict[str, Any], rows: list[_BatchRow], strangers: list[str],
+    held: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The confirmation card's body. The rows themselves are its checkboxes.
+
+    The title names the project and the count, and the rows carry every
+    fact, so the body repeats neither (PR #691 review: "Tasks 4" read wrong
+    once a row was unticked). It keeps a warning about an unknown address.
+    A row from a mail (WS-46 P9) puts the mailbox line first. *held* is the
+    audience lines of a held chat (RX-1), and a held chat always has the
+    mailbox line, because a steered model would leave out ``source``.
+    """
+    card: dict[str, Any] = {}
+    if held is not None or any(p.new.payload.get("source") == "email" for p in rows):
+        # WS-46 P9: the first line says that mail text leaves the mailbox.
+        card["mailbox"] = mailbox_line(data(node.get("name")))
+    card.update(held or {})
+    if strangers:
+        card["not in the directory"] = ", ".join(strangers)
+    return card
+
+
+def _fits(
+    node: dict[str, Any], rows: list[_BatchRow], strangers: list[str],
+    held: dict[str, Any] | None = None,
+) -> bool:
+    """Does the whole batch, every row's facts included, fit on one card?
+
+    A cut card is not consent (``projects_ai_chat.md`` §13.6 rule 8). The
+    measure is the body and one line for each row, as ``_fits_on_card``
+    counts a card.
+    """
+    card = _batch_card(node, rows, strangers, held)
+    for p in rows:
+        card[f"row {p.index}"] = p.line
+        if p.recent is not None:
+            card[f"row {p.index} check"] = _recent_note(p.recent)
+        if p.twin is not None:
+            card[f"row {p.index} twin"] = choices.twin_note(p.twin)
+    return _fits_on_card(card)
+
+
+#: The answer of a card that named a row it did not offer.
+FORGED_ROWS = (
+    "Refused: the card answered with a row it did not offer, so nothing was created. "
+    "Tell the member, and do not try again."
+)
+
+
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
+@agent_assignee_refusal_as_text
+async def create_tasks(project_id: str, tasks: str) -> str:
+    """Create several new tasks in ONE project as one batch. Use it for 2 or
+    more new tasks, and never call create_task several times in parallel.
+    project_id is a `full_id` from projects_tree (a project or subproject,
+    never a folder). tasks is a JSON list with one object per task. Each
+    object takes the keys of create_task, with the same meaning: title
+    (required), description, status (by NAME), assignees (comma-separated
+    emails, agent:<name>, or people's names), due and start (YYYY-MM-DD),
+    estimate_mins, tags (comma-separated), parent_task_id, priority or
+    important and leveraged, type (by NAME), fields (a JSON object keyed
+    by field NAME), and source (email for a task made from a mail). A repeating task is create_task with repeat, not this
+    tool. Every name is checked before any card, and one bad row refuses the
+    whole batch and names the row. The member then sees ONE card with a
+    checkbox for each task, and approves the ticked tasks once. A task with
+    the same title made in this project in the last 10 minutes starts
+    unticked, so a retry makes no second copy. A row may also carry a flag
+    for an open task that looks the same. Each row is its own write: a
+    row that fails does not stop the others, and the receipt names each task
+    made and each row that failed. Never create a task again that the
+    receipt lists. Archive is the undo."""
+    pid = await _project_id(project_id)
+    items = _batch_items(tasks)
+    if isinstance(items, str):
+        return items
+    pid, node = await _node(pid)
+    if node.get("kind") == "folder":
+        return (
+            f"{data(node.get('name'))} is a folder. A folder holds projects, not tasks. "
+            "Pick a project inside it. Nothing was created."
+        )
+    stop = await space_refusal(pid, node)
+    if stop:
+        return stop
+    statuses = await _statuses_of(pid)
+    rows = [await _batch_row(pid, i, item, statuses) for i, item in enumerate(items, start=1)]
+    names, strangers = await _names_of([w for p in rows for w in p.new.who])
+    recent = await _recent_titles(pid)
+    first_lane = _first_lane(statuses)
+    for p in rows:
+        p.recent = recent.get(p.title.lower())
+        _describe(p, names, first_lane)
+    # Owner, 2026-10-09: ONE typed twin check for the rows with no recent
+    # twin. It flags a row on the card, and never unticks or blocks it.
+    twins = await choices.twin_flags(
+        get, pid, ["" if p.recent is not None else p.title for p in rows]
+    )
+    for i, p in enumerate(rows):
+        p.twin = twins.get(i)
+    from acb_skills.ask_tools import ROW_LABEL_MAX
+
+    long = next((p for p in rows if len(p.title) > ROW_LABEL_MAX), None)
+    if long is not None:
+        return (
+            f"Row {long.index}: a title is at most {ROW_LABEL_MAX} characters, because the "
+            "card shows each title whole. Put the rest in description. Nothing was created."
+        )
+    held = None
+    if await _held_chat():
+        held = await _access_lines(pid, list(dict.fromkeys(w for p in rows for w in p.new.who)))
+    if not _fits(node, rows, strangers, held):
+        return (
+            f"These {len(rows)} tasks do not fit on one confirmation card. Split them into "
+            "two calls. Nothing was created."
+        )
+    n = len(rows)
+    ticked = await _confirm(
+        title=f"Create {n} task{'s' if n != 1 else ''} in {data(node.get('name'))}?",
+        detail=f"one batch in {data(node.get('name'))} · untick a task to leave it out",
+        context=_fields_block(_batch_card(node, rows, strangers, held)),
+        rows=[_card_row(p) for p in rows],
+    )
+    # The card answers with the ticked ids (`request_confirmation` rows). It
+    # already refuses an id it did not offer. This checks again, so a door
+    # that answers anything else writes nothing.
+    if not isinstance(ticked, frozenset) or not ticked:
+        return CANCELLED
+    offered = {_row_id(p) for p in rows}
+    if not ticked <= offered:
+        return FORGED_ROWS
+    chosen = [p for p in rows if _row_id(p) in ticked]
+    left = [p for p in rows if _row_id(p) not in ticked]
+    return await _write_batch(pid, node, chosen, left, names)
+
+
+def _uncertain(exc: Exception) -> bool:
+    """A write whose result nobody knows: a lost connection, or an error that
+    no gateway sends. A refusal of the gateway is a known result."""
+    return not isinstance(exc, GatewayRefusal)
+
+
+def _failure(exc: Exception) -> str:
+    """Why one row's CREATE failed, in words the model can act on."""
+    if isinstance(exc, httpx.TransportError):
+        return (
+            f"lost its connection to the gateway ({type(exc).__name__}), so it may or may "
+            f"not exist. Read list_tasks before a retry. Within {RECENT_MINUTES} minutes, "
+            "a retry with create_tasks starts it unticked when it exists."
+        )
+    if isinstance(exc, GatewayRefusal):
+        status = getattr(exc, "status", None)
+        if status is not None:
+            detail = getattr(exc, "detail", "")
+            return f"refused ({status})" + (f": {data(detail)}" if detail else "")
+        return f"refused: {' '.join(str(exc).split())}"
+    return (
+        f"failed ({type(exc).__name__}), so it may or may not exist. Read list_tasks "
+        f"before a retry. Within {RECENT_MINUTES} minutes, a retry with create_tasks "
+        "starts it unticked when it exists."
+    )
+
+
+def _unsaved(task: dict[str, Any], exc: Exception) -> str:
+    """Why the assign PUT after a create failed. The task EXISTS, so the words
+    are the single path's (``writes._create_stopped``), and they never send
+    the model back to create_tasks for it (review round 2)."""
+    ref = f"{_number(task)} {data(task.get('title'))}"
+    if _uncertain(exc):
+        return (
+            f"not saved: the task {ref} exists. Its assignees may or may not be saved: the "
+            f"write failed ({type(exc).__name__}). Read task_detail for this task first, "
+            "then use assign only if they are not there."
+        )
+    reason = _failure(exc)
+    return _said(f"not saved: the task {ref} exists, but its assignees were {reason}") + (
+        " Use assign on that task."
+    )
+
+
+def _said(line: str) -> str:
+    """*line* with one full stop. A fenced detail often ends with its own."""
+    return line if line.endswith((".", ".»")) else f"{line}."
+
+
+async def _lane_names(pid: str) -> dict[str, str]:
+    """``status_id → name``, read after the writes. Never raises."""
+    try:
+        rows = await _statuses_of(pid)
+    except Exception:  # a receipt detail, never a write
+        return {}
+    return {str(r.get("id")): str(r.get("name") or "") for r in rows}
+
+
+class _Outcome:
+    """What the writes of a batch did, row by row, for the receipt."""
+
+    def __init__(self) -> None:
+        self.made: list[tuple[_BatchRow, dict[str, Any]]] = []
+        #: Rows the gateway refused: no task exists.
+        self.refused: list[str] = []
+        #: Rows whose create may or may not have landed.
+        self.unknown: list[str] = []
+        #: Follow-up writes (the assignees) that did not land on a made task.
+        self.unsaved: list[str] = []
+
+
+def _log_unknown(exc: Exception, step: str) -> None:
+    if not isinstance(exc, _WRITE_FAILED):
+        # Caught, because a raise after a write makes the model create the
+        # tasks again. The trace stays in the log (review round 1).
+        _log.warning("projects.batch_row_failed", step=step, error=type(exc).__name__,
+                     exc_info=True)
+
+
+async def _write_batch(
+    pid: str,
+    node: dict[str, Any],
+    chosen: list[_BatchRow],
+    left: list[_BatchRow],
+    names: dict[str, str] | None = None,
+) -> str:
+    """One write per ticked row, in order, and the receipt. It never raises.
+
+    A row that fails does not stop the next row. The create and the writes
+    after it are apart (``_post_new_task``, ``_follow_new_task``), so an
+    error after the POST is a follow-up that failed on a task that exists,
+    never a task that "may not exist". A raise here would read to the model
+    as "Function failed", and the model would make the tasks again.
+    """
+    out = _Outcome()
+    for p in chosen:
+        try:
+            task = await _post_new_task(p.new)
+        except Exception as exc:  # each row ends in the receipt, never in a raise
+            _log_unknown(exc, "create")
+            line = _said(f"{'unknown' if _uncertain(exc) else 'failed'}: row {p.index} "
+                         f"{data(p.title)} {_failure(exc)}")
+            (out.unknown if _uncertain(exc) else out.refused).append(line)
+            continue
+        out.made.append((p, task))
+        try:
+            _saved, after = await _follow_new_task(task, p.new)
+        except Exception as exc:  # the task exists: a follow-up, never a row
+            _log_unknown(exc, "follow-up")
+            after = ("assignees", exc)
+        if after is not None:
+            out.unsaved.append(_unsaved(task, after[1]))
+    lanes = await _lane_names(pid)
+    return _batch_receipt(node, chosen, left, out, lanes, names or {})
+
+
+def _head(where: str, many: int, out: _Outcome) -> str:
+    """The receipt's first line. It never says "not created" of a row whose
+    create may have landed (review round 2)."""
+    made, refused, unknown = len(out.made), len(out.refused), len(out.unknown)
+    if not refused and not unknown:
+        return f"Created {made} task{'s' if made != 1 else ''} in {where}:"
+    parts = [f"Created {made} of {many} tasks in {where}." if made else
+             f"No task of the {many} is known to exist in {where}."]
+    if unknown:
+        parts.append(
+            f"{unknown} may have been created: read the project before a retry."
+        )
+    if refused:
+        parts.append(f"{refused} {'was' if refused == 1 else 'were'} not created.")
+    return " ".join(parts)
+
+
+def _shown_task(task: dict[str, Any], names: dict[str, str]) -> dict[str, Any]:
+    """The created row as the receipt prints it: each assignee by NAME, with
+    the address, as the confirmation card shows them (review round 2)."""
+    who = [str(a) for a in task.get("assignees") or []]
+    if not who:
+        return task
+    shown = []
+    for a in who:
+        name = names.get(a.lower()) if "@" in a else None
+        shown.append(f"{name} ({a})" if name else a)
+    return {**task, "assignees": shown}
+
+
+def _batch_receipt(
+    node: dict[str, Any],
+    chosen: list[_BatchRow],
+    left: list[_BatchRow],
+    out: _Outcome,
+    lanes: dict[str, str],
+    names: dict[str, str] | None = None,
+) -> str:
+    many = len(chosen)
+    lines = [_head(data(node.get("name")), many, out)]
+    for p, task in out.made:
+        lines.extend(
+            _task_line(_shown_task(task, names or {}), lanes.get(str(task.get("status_id")), ""))
+        )
+        lines.extend(level_note(_row_text(p.item, "priority"), task))
+    lines.extend(out.refused)
+    lines.extend(out.unknown)
+    lines.extend(out.unsaved)
+    failed = len(out.refused) + len(out.unknown)
+    if failed or out.unsaved:
+        lines.append(
+            f"stopped: {failed} of {many} rows failed and {len(out.unsaved)} "
+            f"follow-up write{'s' if len(out.unsaved) != 1 else ''} did not land."
+        )
+    if out.made:
+        made = len(out.made)
+        lines.append(
+            f"The {made} task{'s' if made != 1 else ''} listed above exist. Never "
+            "create them again. To retry a failed row, call create_tasks with that row alone."
+        )
+    lines.extend(
+        f"left out: row {p.index} {data(p.title)}, {_left_why(p)}." for p in left
+    )
+    return "\n".join(lines)
+
+
+# ── Several new tags or types, as one batch (H-273) ──────────────────────────
+#
+# Spec: ``projects_ai_chat.md`` §24.5, and the owner directive of 2026-10-07
+# (``projects_agent_parity.md`` §16): the member's grants decide, and the
+# server checks. On 2026-10-08 the owner asked for several new tags. The chat
+# drew a picker, and then one card for each tag. These tools take the words in
+# ONE call, under ONE confirmation card with a checkbox for each row, as
+# ``create_tasks`` does. Each ticked row is one POST to the route of
+# ``create_tag`` or ``create_type``. The tool decides no permission. A 403 of
+# the route is quoted in the receipt, row by row.
+
+
+class _VocabKind:
+    """One kind of vocabulary word that a batch can add."""
+
+    def __init__(
+        self, *, tool: str, arg: str, kind: str, noun: str, single: str,
+        keys: tuple[str, ...], example: str, blank: str,
+    ) -> None:
+        self.tool = tool
+        #: The tool's argument that holds the rows.
+        self.arg = arg
+        #: The ``writes._vocab`` list, and the last segment of the route.
+        self.kind = kind
+        self.noun = noun
+        #: The single tool that takes the same row, with org_wide.
+        self.single = single
+        #: The keys of one row. Each one means what the argument of the same
+        #: name of the single tool means.
+        self.keys = keys
+        self.example = example
+        #: The hint of a row that gives only a name.
+        self.blank = blank
+
+    def nouns(self, n: int) -> str:
+        return self.noun if n == 1 else f"{self.noun}s"
+
+
+TAG_KIND = _VocabKind(
+    tool="create_tags", arg="tags", kind="tags", noun="tag", single="create_tag",
+    keys=("name", "color", "description"),
+    example='[{"name": "q4", "color": "blue"}, {"name": "blocked"}]',
+    blank="no colour or description",
+)
+TYPE_KIND = _VocabKind(
+    tool="create_types", arg="types", kind="types", noun="type", single="create_type",
+    keys=("name", "icon", "color", "is_epic"),
+    example='[{"name": "Chore", "icon": "broom"}, {"name": "Spike"}]',
+    blank="no icon or colour",
+)
+#: The batch tools of the vocabulary, by tool name. The F2 fence reads the
+#: row keys from here.
+VOCAB_KINDS: dict[str, _VocabKind] = {k.tool: k for k in (TAG_KIND, TYPE_KIND)}
+#: The words of a row on the card and on the receipt, by row key.
+_VOCAB_WORDS = {"color": "colour", "icon": "icon", "description": "description"}
+
+
+def _vocab_format(spec: _VocabKind) -> str:
+    return (
+        f"{spec.arg} is a JSON list with one object per {spec.noun}, for example "
+        f"{spec.example}. A plain name is a row too. The keys are: "
+        f"{', '.join(spec.keys)}. Only name is required."
+    )
+
+
+def _vocab_name(raw: Any) -> str:
+    """A name as the routes store it: trimmed, with the inner spaces collapsed."""
+    return " ".join(str(raw or "").split())
+
+
+def _vocab_items(spec: _VocabKind, raw: Any) -> list[dict[str, Any]] | str:
+    """The rows as the model sent them, checked for shape, or the refusal."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            return _vocab_format(spec)
+    if not isinstance(raw, list) or not raw:
+        return _vocab_format(spec)
+    if len(raw) > MAX_BATCH:
+        return (
+            f"That is {len(raw)} {spec.nouns(2)}. The limit for one card is {MAX_BATCH}. "
+            "Split them into two calls. Nothing was created."
+        )
+    items: list[dict[str, Any]] = []
+    seen: dict[str, int] = {}
+    for i, item in enumerate(raw, start=1):
+        if isinstance(item, str):
+            item = {"name": item}
+        if not isinstance(item, dict):
+            return f"Row {i} is not an object. {_vocab_format(spec)}"
+        name = _vocab_name(item.get("name")) if isinstance(item.get("name"), str) else ""
+        label = f"Row {i}" + (f" ({data(name)})" if name else "")
+        for key, value in item.items():
+            if key in ("org_wide", "scope", "is_default"):
+                return (
+                    f"{label}: a batch adds {spec.nouns(2)} to this project's tree only, and "
+                    f"none is the default. For {data(key)}, call {spec.single} for that "
+                    f"{spec.noun} alone. Nothing was created."
+                )
+            if key not in spec.keys:
+                return (
+                    f"{label} has no key {data(key)}. The keys are: {', '.join(spec.keys)}. "
+                    "Nothing was created."
+                )
+            if isinstance(value, list | dict):
+                return f"{label}: {key} takes text, not a list or an object. Nothing was created."
+        if not name:
+            return f"Row {i} has no name. Every {spec.noun} needs one. Nothing was created."
+        twin = seen.setdefault(name.lower(), i)
+        if twin != i:
+            return (
+                f"Rows {twin} and {i} have the same name, {data(name)}. Drop one. "
+                "Nothing was created."
+            )
+        items.append({**item, "name": name})
+    return items
+
+
+def _vocab_payload(spec: _VocabKind, item: dict[str, Any]) -> dict[str, Any]:
+    """The POST body of one row: the body the single tool sends for the same words."""
+    payload: dict[str, Any] = {"name": item["name"]}
+    for key in spec.keys:
+        if key in ("name", "is_epic"):
+            continue
+        value = str(item.get(key) or "").strip()
+        if key == "color":
+            value = hue_of(value) or ""
+        if value:
+            payload[key] = value
+    if "is_epic" in spec.keys and _yes_no(str(item.get("is_epic") or ""), "is_epic"):
+        payload["is_epic"] = True
+    return payload
+
+
+class _VocabRow:
+    """One row of a vocabulary batch, with what the card says about it."""
+
+    def __init__(self, index: int, payload: dict[str, Any]) -> None:
+        self.index = index
+        self.name: str = payload["name"]
+        self.payload = payload
+        #: Why the row starts unticked, or "" when it starts ticked.
+        self.exists = ""
+
+    def facts(self) -> str:
+        """The row's values in words. The name is the label, so it is not here.
+
+        Each value is member text, so it is fenced with ``data()``: the receipt
+        is read line by line, and a description with a line break could forge
+        a ``tag_id:`` or a ``stopped:`` line (review round 1). The card's hint
+        takes the marks off again (``_unfenced``)."""
+        out = [f"{_VOCAB_WORDS[k]} {data(v)}" for k, v in self.payload.items()
+               if k in _VOCAB_WORDS]
+        if self.payload.get("is_epic"):
+            out.append("a top level (epic)")
+        return " · ".join(out)
+
+
+def _vocab_exists(spec: _VocabKind, rows: list[dict[str, Any]], name: str) -> str:
+    """Why a name starts unticked: it is in the project's vocabulary already."""
+    found = _matches_by_name(rows, name)
+    if not found:
+        return ""
+    if any(r.get("project_id") is not None for r in found):
+        return f"a {spec.noun} with this name exists here already"
+    return (
+        f"an organization-wide {spec.noun} with this name exists. Tick it only to add a "
+        "copy for this tree"
+    )
+
+
+class _VocabPlan:
+    """What the card shows, and what Approve writes."""
+
+    def __init__(
+        self, spec: _VocabKind, path: str, node: dict[str, Any], where: str,
+        rows: list[_VocabRow],
+    ) -> None:
+        self.spec = spec
+        self.path = path
+        self.node = node
+        self.where = where
+        self.rows = rows
+
+    def card(self) -> dict[str, Any]:
+        n, spec = len(self.rows), self.spec
+        body = {"project": data(self.node.get("name")), "scope": self.where}
+        return {
+            "title": f"Add {n} {spec.nouns(n)} to {data(self.node.get('name'))}?",
+            "detail": f"one batch in {self.where} · untick a {spec.noun} to leave it out",
+            "context": _fields_block(body),
+            "rows": [_vocab_card_row(spec, p) for p in self.rows],
+        }
+
+    def fits(self) -> bool:
+        """Does the whole batch fit on one card? A cut card is not consent."""
+        body: dict[str, Any] = {"project": data(self.node.get("name")), "scope": self.where}
+        for p in self.rows:
+            body[f"row {p.index}"] = f"{data(p.name)} · {p.facts()} · {p.exists}"
+        return _fits_on_card(body)
+
+
+def _vocab_row_id(p: _VocabRow) -> str:
+    return f"row-{p.index}"
+
+
+def _vocab_card_row(spec: _VocabKind, p: _VocabRow) -> dict[str, Any]:
+    hint = _unfenced(p.facts()) or spec.blank
+    if p.exists:
+        hint += f" · {_unfenced(p.exists)}, so it starts unticked"
+    return {"id": _vocab_row_id(p), "label": _plain(p.name), "hint": hint,
+            "checked": not p.exists}
+
+
+async def _vocab_plan(spec: _VocabKind, project_id: str, raw: Any) -> _VocabPlan | str:
+    """Every row resolved and every read done, before the card, or the refusal."""
+    uuid_of(project_id, "project_id")
+    items = _vocab_items(spec, raw)
+    if isinstance(items, str):
+        return items
+    rows: list[_VocabRow] = []
+    for i, item in enumerate(items, start=1):
+        try:
+            rows.append(_VocabRow(i, _vocab_payload(spec, item)))
+        except GatewayRefusal as exc:
+            said = " ".join(str(exc).split())
+            return f"Row {i} ({data(item['name'])}): {said} Nothing was created."
+    pid, node = await _node(project_id)
+    paths = {"tags": f"/projects/nodes/{pid}/tags", "types": f"/projects/nodes/{pid}/types"}
+    known = await _vocab(pid, spec.kind)
+    for p in rows:
+        p.exists = _vocab_exists(spec, known, p.name)
+    from acb_skills.ask_tools import ROW_LABEL_MAX
+
+    long = next((p for p in rows if len(p.name) > ROW_LABEL_MAX), None)
+    if long is not None:
+        return (
+            f"Row {long.index}: a name is at most {ROW_LABEL_MAX} characters on the card. "
+            "Nothing was created."
+        )
+    where = _tree_scope(await _root_of(pid, node), node)
+    plan = _VocabPlan(spec, paths[spec.kind], node, where, rows)
+    if not plan.fits():
+        return (
+            f"These {len(rows)} {spec.nouns(2)} do not fit on one confirmation card. "
+            "Split them into two calls. Nothing was created."
+        )
+    return plan
+
+
+def _vocab_failure(exc: Exception) -> tuple[bool, str]:
+    """``(known, words)`` for one row's POST that failed. A gateway refusal is
+    a known result, and its words are the server's (a 403 included)."""
+    if isinstance(exc, GatewayRefusal):
+        status = getattr(exc, "status", None)
+        if status is not None:
+            detail = getattr(exc, "detail", "")
+            return True, f"refused ({status})" + (f": {data(detail)}" if detail else "")
+        return True, f"refused: {' '.join(str(exc).split())}"
+    return False, (
+        f"failed ({type(exc).__name__}), so it may or may not exist. Read vocabulary "
+        "before a retry. A retry starts it unticked when it exists."
+    )
+
+
+async def _vocab_write(plan: _VocabPlan, ticked: Any) -> str:
+    """One POST per ticked row, in the card's order, and the receipt.
+
+    It never raises after the card. A raise reads to the model as "Function
+    failed", and the model would make the words again.
+    """
+    spec = plan.spec
+    if not isinstance(ticked, frozenset) or not ticked:
+        return CANCELLED
+    if not ticked <= {_vocab_row_id(p) for p in plan.rows}:
+        return FORGED_ROWS
+    chosen = [p for p in plan.rows if _vocab_row_id(p) in ticked]
+    left = [p for p in plan.rows if _vocab_row_id(p) not in ticked]
+    made: list[tuple[_VocabRow, dict[str, Any]]] = []
+    refused: list[str] = []
+    unknown: list[str] = []
+    for p in chosen:
+        try:
+            row = await post(plan.path, p.payload)
+        except Exception as exc:  # each row ends in the receipt, never in a raise
+            _log_unknown(exc, spec.tool)
+            known, words = _vocab_failure(exc)
+            line = _said(f"{'failed' if known else 'unknown'}: row {p.index} {data(p.name)} {words}")
+            (refused if known else unknown).append(line)
+            continue
+        made.append((p, row if isinstance(row, dict) else {}))
+    return _vocab_receipt(plan, chosen, left, made, refused, unknown)
+
+
+def _vocab_receipt(
+    plan: _VocabPlan,
+    chosen: list[_VocabRow],
+    left: list[_VocabRow],
+    made: list[tuple[_VocabRow, dict[str, Any]]],
+    refused: list[str],
+    unknown: list[str],
+) -> str:
+    spec, many = plan.spec, len(chosen)
+    if not refused and not unknown:
+        head = f"Added {len(made)} {spec.nouns(len(made))} to {plan.where}:"
+    else:
+        parts = [f"Added {len(made)} of {many} {spec.nouns(many)} to {plan.where}." if made
+                 else f"No {spec.noun} of the {many} is known to exist in {plan.where}."]
+        if unknown:
+            parts.append(f"{len(unknown)} may have been created: read vocabulary before a retry.")
+        if refused:
+            parts.append(f"{len(refused)} {'was' if len(refused) == 1 else 'were'} not created.")
+        head = " ".join(parts)
+    lines = [head]
+    for p, row in made:
+        facts = p.facts()
+        lines.append(f"- {spec.noun} {data(row.get('name') or p.name)}"
+                     + (f" · {facts}" if facts else ""))
+        lines.append(f"  {spec.noun}_id: {row.get('id')}")
+    lines.extend(refused)
+    lines.extend(unknown)
+    failed = len(refused) + len(unknown)
+    if failed:
+        lines.append(f"stopped: {failed} of {many} rows failed.")
+    if made:
+        lines.append(
+            f"The {len(made)} {spec.nouns(len(made))} listed above exist. Never create them "
+            f"again. To retry a failed row, call {spec.tool} with that row alone."
+        )
+    lines.extend(
+        f"left out: row {p.index} {data(p.name)}, unticked on the card"
+        + (f", because {p.exists}." if p.exists else ".")
+        for p in left
+    )
+    return "\n".join(lines)
+
+
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
+async def create_tags(project_id: str, tags: str) -> str:
+    """Register several new tags on the project's tree as one batch. Use it
+    for 2 or more new tags, with no picker first, and never call create_tag
+    several times. project_id is a `full_id` from projects_tree. tags is a
+    JSON list with one object per tag: name (required), color and
+    description, as create_tag takes them. A plain name is a row too. The
+    member sees ONE card with a checkbox for each tag, and approves the
+    ticked tags once. A name the project has already starts unticked. Each
+    row is its own write, and the server decides each one: the receipt names
+    each tag made and quotes each refusal. An organization-wide tag is
+    create_tag with org_wide=true, one call each."""
+    plan = await _vocab_plan(TAG_KIND, project_id, tags)
+    if isinstance(plan, str):
+        return plan
+    ticked = await _confirm(**plan.card())
+    return await _vocab_write(plan, ticked)
+
+
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
+async def create_types(project_id: str, types: str) -> str:
+    """Add several new task types to the project's tree as one batch. Use it
+    for 2 or more new types, with no picker first, and never call
+    create_type several times. project_id is a `full_id` from projects_tree.
+    types is a JSON list with one object per type: name (required), icon,
+    color and is_epic (yes or no), as create_type takes them. The member sees
+    ONE card with a checkbox for each type, and approves the ticked types
+    once. A name the project has already starts unticked. Each row is its own
+    write, and the server decides each one. The default type, and an
+    organization-wide type, are create_type, one call each."""
+    plan = await _vocab_plan(TYPE_KIND, project_id, types)
+    if isinstance(plan, str):
+        return plan
+    ticked = await _confirm(**plan.card())
+    return await _vocab_write(plan, ticked)
+
+
+__all__ = [
+    "create_tags", "create_tasks", "create_types", "edit_project", "edit_task", "propose_plan",
+]

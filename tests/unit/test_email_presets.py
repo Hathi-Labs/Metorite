@@ -78,7 +78,7 @@ async def _seed_through(handler, *, stored_draft_replies: bool | None) -> dict:
             patch.object(m.automation.rules, "_load_rules", AsyncMock(return_value=[])), \
             patch.object(m.automation.rules, "_replace_actions",
                          AsyncMock(side_effect=_replace)):
-        await handler(account_id="acc-1", user=user)
+        await handler(account_id="a0000000-0000-4000-8000-000000000001", user=user)
     return by_rule
 
 
@@ -153,7 +153,7 @@ async def test_install_presets_uses_folder_actions_for_outlook() -> None:
             patch.object(m.automation.rules, "_load_rules", AsyncMock(return_value=[])), \
             patch.object(m.automation.rules, "_replace_actions",
                          AsyncMock(side_effect=lambda _db, _rid, acts: captured.append(acts))):
-        await m.install_preset_rules(account_id="acc-1", user=user)
+        await m.install_preset_rules(account_id="a0000000-0000-4000-8000-000000000001", user=user)
     all_types = {a.type for acts in captured for a in acts}
     assert "MOVE_FOLDER" in all_types  # Outlook files promo mail into folders
 
@@ -183,7 +183,7 @@ async def test_install_presets_creates_only_missing() -> None:
             patch.object(m.automation.rules, "_load_rules",
                          AsyncMock(return_value=[{"name": "Reply"}])), \
             patch.object(m.automation.rules, "_replace_actions", AsyncMock()):
-        res = await m.install_preset_rules(account_id="acc-1", user=user)
+        res = await m.install_preset_rules(account_id="a0000000-0000-4000-8000-000000000001", user=user)
     assert "Needs Reply" not in res["installed"]   # legacy alias → skipped
     assert "FYI" in res["installed"]
     assert len(res["installed"]) == 9
@@ -199,7 +199,7 @@ async def test_install_presets_idempotent_when_all_present() -> None:
             patch.object(m.automation.rules, "_assert_account_owner", AsyncMock()), \
             patch.object(m.automation.rules, "_load_rules", AsyncMock(return_value=all_rules)), \
             patch.object(m.automation.rules, "_replace_actions", AsyncMock()):
-        res = await m.install_preset_rules(account_id="acc-1", user=user)
+        res = await m.install_preset_rules(account_id="a0000000-0000-4000-8000-000000000001", user=user)
     assert res["installed"] == []
 
 
@@ -213,7 +213,7 @@ async def test_reset_rules_deletes_then_reinstalls_every_preset() -> None:
             patch.object(m.automation.rules, "_assert_account_owner", AsyncMock()), \
             patch.object(m.automation.rules, "_load_rules", AsyncMock(return_value=existing)), \
             patch.object(m.automation.rules, "_replace_actions", AsyncMock()):
-        res = await m.reset_rules(account_id="acc-1", user=user)
+        res = await m.reset_rules(account_id="a0000000-0000-4000-8000-000000000001", user=user)
     # …yet every preset is reinstalled, and the response flags the reset.
     assert len(res["installed"]) == len(m._PRESET_RULES)
     assert res["total_presets"] == len(m._PRESET_RULES)
@@ -254,7 +254,7 @@ async def test_reset_preserves_learned_patterns_across_the_reseed() -> None:
             patch.object(m.automation.rules, "_load_rules",
                          AsyncMock(return_value=reseeded)), \
             patch.object(m.automation.rules, "_replace_actions", AsyncMock()):
-        res = await m.reset_rules(account_id="acc-1", user=user)
+        res = await m.reset_rules(account_id="a0000000-0000-4000-8000-000000000001", user=user)
 
     # The two preset-attached patterns were restored; the custom-rule one wasn't.
     assert res["patterns_restored"] == 2

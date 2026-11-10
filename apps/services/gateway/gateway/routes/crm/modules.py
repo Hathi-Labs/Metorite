@@ -1,0 +1,736 @@
+"""CRM · modules — the views of the generic Zoho modules (WS-53 CRM-Q6b).
+
+Spec: ``project-docs/specs/crm_platform.md`` §18.7 "CRM-Q6b: the views".
+
+    GET  /crm/modules                          the mirrored generic modules
+    GET  /crm/modules/{module}/records         one page of a module's records
+    GET  /crm/modules/{module}/records/{id}    one record, its fields and links
+    GET  /crm/modules/{module}/records/{id}/timeline   its activities (CRM-Q23a)
+    PATCH /crm/modules/{module}/records/{id}   edit one record (CRM-Z10d, Native)
+
+CRM-Q6a mirrors each Zoho module that has no table of its own into
+``crm_module_records`` (Products, Quotes, each custom module). These routes
+read that table. In Mirror mode they are read only, and the sync is the only
+writer. In Native mode one PATCH edits a record (CRM-Z10d, below).
+
+**Which modules.** The latest source profile names them: a row with
+``generic`` and ``mirrored`` true. The order is the profile order of
+``generic_modules``: the standard modules of §18.7, then each custom module in
+alphabetical order. An org that has no profile yet gets an empty list. A
+Native org keeps the modules that still hold records (CRM-Z10d, D133.2).
+
+**The edit** (CRM-Z10d). ``PATCH`` takes ``name``, ``owner_email`` and
+``fields``. It goes through ``core.assert_writable``, and ``crm_module_records``
+is in ``MIRROR_RECORD_TABLES``, so a Mirror org gets 409 ``mirrored_record``.
+The sync writes with raw SQL (``upsert_module_records_from_source``) and never
+calls the guard. Each key of ``fields`` must be a live field definition of
+``module:<ApiName>`` (else 422), and its value follows the CRM-C4a check
+(``field_studio.custom_for_patch``). ``owner_email`` must be an active member.
+There is no create, no delete and no field definition edit in v1.
+
+**The module name never reaches SQL text (R5).** Each route checks the name in
+the path against the mirrored set of the profile FIRST. A name outside the set
+is a 404, before any read of a record. The name then goes into each statement
+as a bound parameter. The sort column comes from :data:`MODULE_RECORDS`, an
+allowlist, through ``core.list_contract``.
+
+**Lookups become links.** A lookup value stays in ``fields`` as Zoho sends it,
+``{id, name}``. The field definition (``crm_field_defs``, entity
+``module:<ApiName>``) names its target module in ``options.lookup_module``.
+
+* A known target (Leads, Contacts, Accounts, Deals) links to the record page of
+  the local record with that ``ext_id``.
+* A mirrored generic target links to the generic record page of that record.
+* Any other target, or a record that is not here yet, stays plain text.
+
+**The fill rank** (CRM-Q17a-1, §18.9.3). For an org on
+``CRM_FILL_RANK_ORGS``, each field definition of the list and the record
+route carries ``fill`` and ``distinct`` from ``crm_field_fill``, with one
+read in the route's session. For any other org both are ``null``. The list
+shape of ``GET /crm/modules`` does not change.
+
+**Who may read.** Every route is on the CRM router, so the kill switch, the
+``feature:crm`` gate and the CRM access rule hold. The tenant comes from the
+session that the router binds, never from the request. Each read runs in one
+``_tenant_session()``, so FORCE row level security keeps it in the tenant.
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+from acb_auth import UserContext, get_current_user
+from fastapi import Depends, HTTPException, Query, Request
+from gateway.routes.crm.activities import (
+    MAX_TIMELINE_OFFSET,
+    MODULE_ACTIVITY_COLUMN,
+    TimelineResponse,
+    activity_entries_by,
+    merge_page,
+)
+from gateway.routes.crm.core import (
+    ENTITIES,
+    MAX_PAGE_SIZE,
+    Entity,
+    ListResponse,
+    _tenant_session,
+    checked_uuid,
+    current_tenant,
+    custom_pairs,
+    custom_value_clauses,
+    from_jsonb,
+    is_mirror_mode,
+    list_contract,
+    parse_iso_date,
+    resolve_owner,
+    router,
+    wire,
+)
+from gateway.routes.crm.fields import FieldDef
+from gateway.routes.crm.fill_rank import annotate, fills_for
+from gateway.routes.crm.records import refuse_nul, refuse_nul_tree
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import text
+
+#: The provider whose profile names the modules. One provider today.
+PROVIDER = "zoho"
+
+
+class ModuleSummary(BaseModel):
+    """One row of ``GET /crm/modules``."""
+
+    api_name: str
+    #: The plural label, as the rail shows it ("Products").
+    label: str
+    #: The singular label, as the record page names one record ("Product").
+    singular_label: str | None = None
+    #: The records of the module that the mirror holds.
+    count: int = 0
+
+
+class ModuleRecordModel(BaseModel):
+    """One record of a generic module, on the list and on the record page."""
+
+    id: str
+    module: str
+    name: str | None = None
+    owner_email: str | None = None
+    #: Each field value, keyed by its API name, as Zoho sends it.
+    fields: dict = {}
+    ext_source: str | None = None
+    ext_id: str | None = None
+    #: The deep link ("Open in Zoho"). The sync stores it (CRM-Q1 rules).
+    ext_url: str | None = None
+    ext_created_at: str | None = None
+    ext_modified_at: str | None = None
+
+
+class ModuleFieldDef(FieldDef):
+    """A field definition of a generic module. A lookup names its target."""
+
+    lookup_module: str | None = None
+
+
+class ModuleLink(BaseModel):
+    """Where a lookup value opens.
+
+    ``kind`` is ``record`` for a known record (``entity`` is its collection,
+    for example ``deals``) and ``module`` for a generic record (``module`` is
+    its API name). ``id`` is the local id.
+    """
+
+    kind: str
+    entity: str | None = None
+    module: str | None = None
+    id: str
+    name: str | None = None
+
+
+class ModuleListResponse(ListResponse):
+    """``GET /crm/modules/{module}/records``: the list shape of every CRM list,
+    and the field definitions of the module, so the list can offer its fields
+    as columns by the CRM-Q4 rules."""
+
+    field_defs: list[ModuleFieldDef] = Field(default_factory=list)
+
+
+class ModuleRecordPage(BaseModel):
+    """``GET /crm/modules/{module}/records/{id}``."""
+
+    module: ModuleSummary
+    record: ModuleRecordModel
+    field_defs: list[ModuleFieldDef]
+    #: Field key to its link. A lookup with no link is absent: it stays text.
+    links: dict[str, ModuleLink]
+
+
+#: The list contract of a generic module. ``core.list_contract`` reads the sort
+#: allowlist, the default sort and the search columns from it. The table is a
+#: literal, and the module filter is added as a bound parameter.
+MODULE_RECORDS = Entity(
+    slug="modules",
+    table="crm_module_records",
+    label="Record",
+    activity_column="",
+    model=ModuleRecordModel,
+    payload=BaseModel,
+    required=(),
+    sorts={
+        "name": "name",
+        "owner_email": "owner_email",
+        "ext_modified_at": "ext_modified_at",
+        "ext_created_at": "ext_created_at",
+    },
+    default_sort="ext_modified_at",
+    search=("name",),
+)
+
+_COLUMNS = (
+    "id, module, name, owner_email, fields, ext_source, ext_id, ext_url, "
+    "ext_created_at, ext_modified_at"
+)
+
+_COUNTS_SQL = (
+    "SELECT module, count(*) AS n FROM crm_module_records "
+    "WHERE module = ANY(CAST(:modules AS text[])) GROUP BY module"
+)
+
+#: The modules that hold a record. Row level security keeps it in the tenant.
+_HELD_SQL = "SELECT DISTINCT module FROM crm_module_records"
+
+_ONE_SQL = (
+    f"SELECT {_COLUMNS} FROM crm_module_records "
+    "WHERE id = CAST(:id AS uuid) AND module = :module"
+)
+
+#: The record exists in this module (CRM-Q23a). Row level security keeps the
+#: read in the tenant.
+_EXISTS_SQL = (
+    "SELECT id FROM crm_module_records "
+    "WHERE id = CAST(:id AS uuid) AND module = :module"
+)
+
+_DEFS_SQL = (
+    "SELECT key, label, type, options, source, provider_api_name, position, "
+    "visible FROM crm_field_defs WHERE entity = :entity ORDER BY position, key"
+)
+
+_GENERIC_TARGETS_SQL = (
+    "SELECT id, ext_id FROM crm_module_records WHERE module = :module "
+    "AND ext_source = :ext_source AND ext_id = ANY(CAST(:ids AS text[]))"
+)
+
+#: The known Zoho module → its entity. ``Entity.zoho_module`` is the one answer
+#: to "which Zoho module is a deal", so this map is read from it.
+KNOWN_TARGETS: dict[str, Entity] = {
+    e.zoho_module: e for e in ENTITIES.values() if e.zoho_module
+}
+
+
+def _mapping() -> Any:
+    from gateway.crm_sources.registry import mapping_for
+
+    return mapping_for(PROVIDER)
+
+
+async def mirrored_modules(db: Any) -> dict[str, dict[str, Any]]:
+    """The generic modules of the caller's org, by API name, in the profile
+    order. Empty before the first discovery.
+
+    In Mirror mode: each module that the profile mirrors. In Native mode
+    (CRM-Z10d): each such module that still holds a row in
+    ``crm_module_records``, because a switch keeps every record (D133.2). An
+    org without module records lists none.
+
+    The organization is the bound tenant. Row level security binds the read
+    too.
+    """
+    from gateway.crm_sync import profiles
+
+    org = current_tenant()
+    if not org:
+        return {}
+    mirror = await is_mirror_mode(db, str(org))
+    latest = await profiles.latest(db, str(org))
+    if latest is None:
+        return {}
+    found = mirrored_of(latest.profile)
+    if mirror or not found:
+        return found
+    held = {
+        str(r.module) for r in (await db.execute(text(_HELD_SQL))).fetchall()
+    }
+    return {name: row for name, row in found.items() if name in held}
+
+
+def mirrored_of(profile: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """The mirrored generic modules of one source profile, by API name, in
+    the profile order. The one filter of :func:`mirrored_modules`."""
+    return {
+        str(row["api_name"]): row
+        for row in _mapping().generic_modules(profile)
+        if row.get("mirrored") and row.get("api_name")
+    }
+
+
+def _summary(row: dict[str, Any], count: int = 0) -> ModuleSummary:
+    api_name = str(row["api_name"])
+    return ModuleSummary(
+        api_name=api_name,
+        label=str(row.get("label") or api_name),
+        singular_label=row.get("singular_label") or None,
+        count=count,
+    )
+
+
+#: The most module names that one 404 names.
+MODULE_CHOICES_MAX = 20
+
+
+def _require_module(mirrored: dict[str, dict[str, Any]], module: str) -> dict[str, Any]:
+    """The profile row of *module*, or 404. Runs before any read of a record,
+    so a name outside the mirrored set never reaches a statement.
+
+    The 404 names the mirrored modules (at most :data:`MODULE_CHOICES_MAX`),
+    so a model that guessed a name can pick a real one. ``GET /crm/modules``
+    gives the same names to the same member."""
+    row = mirrored.get(module)
+    if row is None:
+        names = sorted(str(k) for k in mirrored)
+        more = len(names) - MODULE_CHOICES_MAX
+        shown = ", ".join(names[:MODULE_CHOICES_MAX]) or "none"
+        if more > 0:
+            shown += f", and {more} more"
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "unknown_module",
+                "message": f"This module is not mirrored. The mirrored modules "
+                           f"are: {shown}.",
+            },
+        )
+    return row
+
+
+def _record(row: Any) -> ModuleRecordModel:
+    fields = from_jsonb(row.fields)
+    return ModuleRecordModel(
+        id=str(row.id),
+        module=row.module,
+        name=row.name,
+        owner_email=row.owner_email,
+        fields=fields if isinstance(fields, dict) else {},
+        ext_source=row.ext_source,
+        ext_id=row.ext_id,
+        ext_url=row.ext_url,
+        ext_created_at=wire(row.ext_created_at),
+        ext_modified_at=wire(row.ext_modified_at),
+    )
+
+
+def _field_def(row: Any) -> ModuleFieldDef:
+    options = from_jsonb(row.options)
+    target = options.get("lookup_module") if isinstance(options, dict) else None
+    return ModuleFieldDef(
+        key=row.key, label=row.label, type=row.type,
+        options=options if isinstance(options, list) else None,
+        position=int(row.position or 0), visible=bool(row.visible),
+        source="zoho" if row.source == "zoho" else "native",
+        api_name=row.provider_api_name,
+        lookup_module=str(target) if target else None,
+    )
+
+
+async def _field_defs(
+    db: Any, module: str, org: str | None = None,
+) -> list[ModuleFieldDef]:
+    """The field definitions of a module (``module:<ApiName>``), by position.
+
+    With *org* on ``CRM_FILL_RANK_ORGS``, each carries ``fill`` and
+    ``distinct`` (CRM-Q17a-1).
+    """
+    entity = _mapping().module_entity(module)
+    rows = (await db.execute(text(_DEFS_SQL), {"entity": entity})).fetchall()
+    defs = [_field_def(r) for r in rows]
+    return annotate(defs, await fills_for(db, org, entity), module=True)
+
+
+def _lookup_ids(
+    record: ModuleRecordModel, defs: list[ModuleFieldDef],
+) -> dict[str, list[tuple[str, str, str | None]]]:
+    """Target module → ``(field key, ext id, name)`` of each lookup value."""
+    out: dict[str, list[tuple[str, str, str | None]]] = {}
+    for d in defs:
+        if d.type != "lookup" or not d.lookup_module:
+            continue
+        value = record.fields.get(d.key)
+        if not isinstance(value, dict) or not value.get("id"):
+            continue
+        name = value.get("name")
+        out.setdefault(d.lookup_module, []).append(
+            (d.key, str(value["id"]), str(name) if name else None),
+        )
+    return out
+
+
+async def resolve_links(
+    db: Any,
+    record: ModuleRecordModel,
+    defs: list[ModuleFieldDef],
+    mirrored: dict[str, dict[str, Any]],
+) -> dict[str, ModuleLink]:
+    """The link of each lookup of *record*. A lookup with no local target is
+    left out, so the UI draws its name as plain text.
+
+    Each table name comes from :data:`KNOWN_TARGETS` (a literal of ``core``),
+    and each id and module name is a bound parameter.
+    """
+    source = record.ext_source or PROVIDER
+    links: dict[str, ModuleLink] = {}
+    for target, items in _lookup_ids(record, defs).items():
+        ids = sorted({ext_id for _key, ext_id, _name in items})
+        known = KNOWN_TARGETS.get(target)
+        if known is not None:
+            rows = (await db.execute(
+                text(
+                    f"SELECT id, ext_id FROM {known.table} "
+                    "WHERE ext_source = :ext_source "
+                    "AND ext_id = ANY(CAST(:ids AS text[]))"
+                ),
+                {"ext_source": source, "ids": ids},
+            )).fetchall()
+            found = {str(r.ext_id): str(r.id) for r in rows}
+            for key, ext_id, name in items:
+                if ext_id in found:
+                    links[key] = ModuleLink(
+                        kind="record", entity=known.slug, id=found[ext_id], name=name,
+                    )
+        elif target in mirrored:
+            rows = (await db.execute(
+                text(_GENERIC_TARGETS_SQL),
+                {"module": target, "ext_source": source, "ids": ids},
+            )).fetchall()
+            found = {str(r.ext_id): str(r.id) for r in rows}
+            for key, ext_id, name in items:
+                if ext_id in found:
+                    links[key] = ModuleLink(
+                        kind="module", module=target, id=found[ext_id], name=name,
+                    )
+    return links
+
+
+@router.get("/modules", response_model=list[ModuleSummary])
+async def list_modules(
+    user: UserContext = Depends(get_current_user),
+) -> list[ModuleSummary]:
+    """The mirrored generic modules, in the profile order, with a row count.
+
+    A Native org gets the modules that still hold records (CRM-Z10d). An org
+    with no profile gets an empty list.
+    """
+    async with _tenant_session() as db:
+        mirrored = await mirrored_modules(db)
+        if not mirrored:
+            return []
+        counts = {
+            str(r.module): int(r.n)
+            for r in (await db.execute(
+                text(_COUNTS_SQL), {"modules": list(mirrored)},
+            )).fetchall()
+        }
+    return [_summary(row, counts.get(name, 0)) for name, row in mirrored.items()]
+
+
+_KEYS_SQL = (
+    "SELECT key FROM crm_field_defs WHERE entity = :entity "
+    "AND NOT coalesce(is_system, false) AND retired_at IS NULL"
+)
+
+
+async def _field_filters(
+    db: Any,
+    module: str,
+    updated_from: str | None,
+    updated_to: str | None,
+    custom: list[tuple[str, str]],
+) -> tuple[tuple[str, ...], dict[str, Any]]:
+    """The updated range and the custom field filters of a module list.
+
+    A bad day is a 422 before any SQL. A custom key with no definition is
+    dropped. Every key and value is a bound parameter.
+    """
+    from gateway.routes.crm.field_sql import ZONE_PARAM, crm_zone, day_start
+
+    clauses: list[str] = []
+    bound: dict[str, Any] = {}
+    start = parse_iso_date("updated_from", updated_from)
+    end = parse_iso_date("updated_to", updated_to)
+    if start is not None or end is not None:
+        bound[ZONE_PARAM] = await crm_zone(db, current_tenant())
+    if start is not None:
+        clauses.append(
+            f"ext_modified_at >= {day_start('CAST(:updated_from AS date)')}"
+        )
+        bound["updated_from"] = start
+    if end is not None:
+        clauses.append(
+            f"ext_modified_at < {day_start('CAST(:updated_to AS date) + 1')}"
+        )
+        bound["updated_to"] = end
+    if custom:
+        known = {
+            str(r.key) for r in (await db.execute(
+                text(_KEYS_SQL), {"entity": _mapping().module_entity(module)},
+            )).fetchall()
+        }
+        grouped: dict[tuple[str, bool], list[str]] = {}
+        for name, value in custom:
+            if name in known:
+                grouped.setdefault((name, False), []).append(value)
+            elif name.endswith(".in") and name[:-3] in known:
+                grouped.setdefault((name[:-3], True), []).extend(
+                    part.strip() for part in value.split(",") if part.strip()
+                )
+        more, more_bound = custom_value_clauses("fields", grouped)
+        clauses.extend(more)
+        bound.update(more_bound)
+    return tuple(clauses), bound
+
+
+@router.get("/modules/{module}/records", response_model=ModuleListResponse)
+async def list_module_records(
+    module: str,
+    q: str | None = None,
+    sort: str | None = None,
+    direction: str = Query("desc", alias="dir"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=MAX_PAGE_SIZE),
+    owner: str | None = None,
+    updated_from: str | None = None,
+    updated_to: str | None = None,
+    user: UserContext = Depends(get_current_user),
+    request: Request = None,  # type: ignore[assignment]
+) -> ModuleListResponse:
+    """One page of a mirrored module's records. 404 for a module that the
+    profile does not mirror. ``q`` matches ``name``, and ``sort`` is one of
+    :data:`MODULE_RECORDS` ``sorts``. A NUL in the query is a 422 (CRM-Q25c).
+
+    Field filters (CRM-U9): ``owner`` (``me`` is the caller), the
+    ``updated_from`` and ``updated_to`` days, and ``custom.<key>=<value>`` or
+    ``custom.<key>.in=a,b`` over the ``fields`` JSONB. They are the filters
+    of the four core lists. A key that the module has no definition for is
+    ignored, so a stale link or view still opens the list (CRM-Q8 prune).
+    """
+    if request is not None:
+        refuse_nul(request.query_params.multi_items())
+    async with _tenant_session() as db:
+        _require_module(await mirrored_modules(db), module)
+        extra_where, extra_params = await _field_filters(
+            db, module, updated_from, updated_to,
+            custom_pairs(request.query_params if request is not None else None),
+        )
+        query = list_contract(
+            MODULE_RECORDS, q=q, sort=sort, direction=direction,
+            page=page, page_size=page_size, owner=resolve_owner(owner, user),
+            extra_where=("module = :module", *extra_where),
+            extra_params={"module": module, **extra_params},
+        )
+        total = (await db.execute(
+            text(f"SELECT count(*) FROM crm_module_records{query.where}"), query.params,
+        )).scalar() or 0
+        rows = (await db.execute(
+            text(
+                f"SELECT {_COLUMNS} FROM crm_module_records{query.where} "
+                f"ORDER BY {query.order_by} LIMIT :limit OFFSET :offset"
+            ),
+            {**query.params, "limit": query.limit, "offset": query.offset},
+        )).fetchall()
+        defs = await _field_defs(db, module, user.organization_id)
+    return ModuleListResponse(
+        rows=[_record(r).model_dump() for r in rows], total=int(total),
+        field_defs=defs,
+    )
+
+
+@router.get("/modules/{module}/records/{record_id}", response_model=ModuleRecordPage)
+async def get_module_record(
+    module: str,
+    record_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> ModuleRecordPage:
+    """One record of a mirrored module, with its field definitions and the
+    link of each lookup. 404 for an unknown module or record."""
+    async with _tenant_session() as db:
+        mirrored = await mirrored_modules(db)
+        row = _require_module(mirrored, module)
+        wanted = checked_uuid(record_id, "id")
+        found = (await db.execute(
+            text(_ONE_SQL), {"id": wanted, "module": module},
+        )).first()
+        if found is None:
+            raise HTTPException(status_code=404, detail="Record not found")
+        record = _record(found)
+        defs = await _field_defs(db, module, user.organization_id)
+        links = await resolve_links(db, record, defs, mirrored)
+    return ModuleRecordPage(
+        module=_summary(row), record=record, field_defs=defs, links=links,
+    )
+
+
+@router.get(
+    "/modules/{module}/records/{record_id}/timeline", response_model=TimelineResponse,
+)
+async def get_module_record_timeline(
+    module: str,
+    record_id: str,
+    limit: int = Query(100, ge=1, le=500),
+    user: UserContext = Depends(get_current_user),
+    offset: int | None = Query(None, ge=0, le=MAX_TIMELINE_OFFSET),
+) -> TimelineResponse:
+    """The activities of one record of a mirrored module, newest first
+    (WS-53 CRM-Q23a, ``crm_platform.md`` §18.10). Read only.
+
+    The module check comes first, so an unknown module is a 404 before any
+    read of a record. An unknown record is a 404 too. The one source is
+    ``crm_activities.module_record_id``: a module record has no status log,
+    and the email join needs an address that a generic record does not have.
+    With ``offset`` the read is a page of the same total order as every
+    other timeline (``activities.merge_page``).
+    """
+    if not isinstance(offset, int) or isinstance(offset, bool):
+        offset = None  # a direct call passes FastAPI's `Query` object
+    strict = offset is not None
+    want = (offset or 0) + limit + 1 if strict else limit
+    async with _tenant_session() as db:
+        _require_module(await mirrored_modules(db), module)
+        wanted = checked_uuid(record_id, "id")
+        found = (await db.execute(
+            text(_EXISTS_SQL), {"id": wanted, "module": module},
+        )).first()
+        if found is None:
+            raise HTTPException(status_code=404, detail="Record not found")
+        entries = await activity_entries_by(
+            db, MODULE_ACTIVITY_COLUMN, wanted, "own", want, strict=strict,
+        )
+    if strict:
+        page, more = merge_page(entries, offset or 0, limit)
+        return TimelineResponse(entries=page, has_more=more)
+    entries.sort(key=lambda e: (e.at or ""), reverse=True)
+    return TimelineResponse(entries=entries[:limit])
+
+
+# ── The edit (CRM-Z10d) ─────────────────────────────────────────────────────
+
+
+class ModuleRecordPatch(BaseModel):
+    """``PATCH /crm/modules/{module}/records/{id}``. Only the keys sent change.
+
+    A JSON ``null`` in ``name`` or ``owner_email`` clears it. ``fields``
+    merges per key: a key that the body does not name keeps its value, and a
+    ``null`` removes its key. The body names no tenant, no source and no id.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, max_length=500)
+    owner_email: str | None = Field(default=None, max_length=320)
+    fields: dict[str, Any] | None = None
+
+
+_PATCH_SQL = (
+    "UPDATE crm_module_records SET {assignments} "
+    "WHERE id = CAST(:id AS uuid) AND module = :module RETURNING " + _COLUMNS
+)
+
+
+async def _check_owner(db: Any, owner: str | None, kept: str | None) -> str | None:
+    """*owner* as stored, or 422 ``owner_not_member``. The owner that the
+    record holds already may stay. ``None`` clears it."""
+    if owner is None or not owner.strip():
+        return None
+    wanted = owner.strip().lower()
+    if kept is not None and wanted == kept.strip().lower():
+        return kept
+    # The one member rule: the sync keeps a Zoho owner only when this holds.
+    from gateway.crm_sync import runs
+
+    if wanted not in await runs.member_emails(db, str(current_tenant())):
+        raise HTTPException(status_code=422, detail={
+            "code": "owner_not_member",
+            "message": "The owner must be an active member of the organization.",
+            "field": "owner_email",
+        })
+    return wanted
+
+
+@router.patch("/modules/{module}/records/{record_id}", response_model=ModuleRecordPage)
+async def patch_module_record(
+    module: str,
+    record_id: str,
+    payload: ModuleRecordPatch,
+    user: UserContext = Depends(get_current_user),
+) -> ModuleRecordPage:
+    """Edit one record of a module in Native mode (CRM-Z10d).
+
+    The order: the module (404), the record (404, and a record of another
+    organization is invisible to row level security), the mirror guard (409
+    ``mirrored_record`` in Mirror mode), then the values (422). A Native edit
+    sets no ``zoho_dirty``: this table has none, and no push reads it.
+    """
+    from gateway.routes.crm.core import assert_writable
+    from gateway.routes.crm.field_studio import custom_for_patch
+
+    values = payload.model_dump(exclude_unset=True)
+    given = values.pop("fields", None)
+    refuse_nul([(k, v) for k, v in values.items() if isinstance(v, str)])
+    if given:
+        refuse_nul_tree(given)
+    async with _tenant_session() as db:
+        mirrored = await mirrored_modules(db)
+        row = _require_module(mirrored, module)
+        wanted = checked_uuid(record_id, "id")
+        found = (await db.execute(
+            text(_ONE_SQL), {"id": wanted, "module": module},
+        )).first()
+        if found is None:
+            raise HTTPException(status_code=404, detail="Record not found")
+        await assert_writable(
+            db, current_tenant(), "crm_module_records", values, row=found,
+        )
+        put: dict[str, Any] = {}
+        drop: tuple[str, ...] = ()
+        if given:
+            stored = from_jsonb(found.fields)
+            put, drop = await custom_for_patch(
+                db, module, given, stored if isinstance(stored, dict) else {},
+                entity=_mapping().module_entity(module),
+            )
+        if "owner_email" in values:
+            values["owner_email"] = await _check_owner(
+                db, values["owner_email"], found.owner_email,
+            )
+        if isinstance(values.get("name"), str):
+            values["name"] = values["name"].strip() or None
+        assignments = [f"{c} = :{c}" for c in values]
+        bound: dict[str, Any] = dict(values)
+        if put or drop:
+            assignments.append(
+                "fields = (COALESCE(fields, '{}'::jsonb) || CAST(:put AS jsonb)) "
+                "- CAST(:drop AS text[])"
+            )
+            bound["put"] = json.dumps(put)
+            bound["drop"] = list(drop)
+        updated = found
+        if assignments:
+            assignments.append("updated_at = now()")
+            updated = (await db.execute(
+                text(_PATCH_SQL.format(assignments=", ".join(assignments))),
+                {**bound, "id": wanted, "module": module},
+            )).first()
+        record = _record(updated)
+        defs = await _field_defs(db, module, user.organization_id)
+        links = await resolve_links(db, record, defs, mirrored)
+    return ModuleRecordPage(
+        module=_summary(row), record=record, field_defs=defs, links=links,
+    )

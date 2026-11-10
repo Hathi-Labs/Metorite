@@ -40,8 +40,11 @@ import pytest
 pytest.importorskip("sqlalchemy")
 pytest.importorskip("asyncpg")
 
+from datetime import UTC, datetime
+
 from gateway.routes.projects import analytics as A
 from gateway.routes.projects import attachments as pm_attachments
+from gateway.routes.projects import due_day
 from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
     COMPLETED_CATEGORY,
@@ -52,9 +55,11 @@ from gateway.routes.projects.tree import (
     NODE_DESCENDANTS_SQL,
     node_counts_sql,
 )
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
+
+from tests.unit._tenant_ladder import apply_ladder
 
 _TENANT_URL = os.environ.get("TENANT_LADDER_DATABASE_URL", "").strip()
 
@@ -82,8 +87,24 @@ def _async_url() -> str:
     return url
 
 
+@pytest.fixture(scope="module")
+def built():
+    """The tenant schema, built by this file.
+
+    ⚠️ Without it, this file passes only when an earlier module in the same
+    shard has built the schema. Its sibling `test_projects_move_sql_asyncpg.py`
+    failed that way when a new test file moved the shard split.
+    `apply_ladder` is idempotent, so a second call does nothing.
+    """
+    eng = create_engine(_TENANT_URL, future=True)
+    with eng.begin() as connection:
+        apply_ladder(connection)
+    yield
+    eng.dispose()
+
+
 @pytest.fixture
-async def async_engine():
+async def async_engine(built):
     """One engine per test, and the scope is not negotiable.
 
     ⚠️ A module-scoped engine binds its pool to the FIRST test's event loop,
@@ -121,8 +142,9 @@ def _cases() -> list[tuple[str, str, dict]]:
     bands, band_params = A.stale_bands_sql(WHERE)
     return [
         ("stale_bands_sql", bands, band_params),
-        ("overdue_by_project_sql", A.overdue_by_project_sql(WHERE), {}),
-        ("load_sql", A.load_sql(WHERE), {}),
+        ("overdue_by_project_sql", A.overdue_by_project_sql(WHERE),
+         {"day_start": due_day.day_start("UTC", datetime.now(UTC))}),
+        ("load_sql", A.load_sql(WHERE), {"day_start": due_day.day_start("UTC", datetime.now(UTC))}),
         ("total_open_sql", A.total_open_sql(WHERE), {}),
         ("effort_sql", A.effort_sql(WHERE), {}),
         ("weekly_sql", A.weekly_sql(WHERE), _PERIOD),
@@ -176,6 +198,7 @@ async def test_the_node_summary_walk_runs_on_asyncpg(async_engine):
             {
                 "ids": ["00000000-0000-0000-0000-000000000000"],
                 "closed": sorted(CLOSING_CATEGORIES),
+                "day_start": due_day.day_start("UTC", datetime.now(UTC)),
             },
         )
 

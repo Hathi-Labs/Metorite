@@ -33,6 +33,8 @@
 #   scripts/rehearse_restore.sh            # against $PGHOST or localhost:5432
 #
 # Env: PGHOST/PGPORT/PGUSER/PGPASSWORD (libpq), REHEARSAL_DIR (temp by default)
+# Docker must answer too: since 2026-10-07 `--verify-restore` restores into a
+# throwaway pgvector container on this machine, never into the server above.
 set -euo pipefail
 
 export PG_MODE=local

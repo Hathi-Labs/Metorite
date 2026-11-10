@@ -33,14 +33,26 @@ describe("the toast viewport on a phone", () => {
 
   it("below sm it clears the nav: the nav's height, the safe area, and a gap", () => {
     const base = rule(".toast-viewport-bottom", css);
-    expect(base).toMatch(/bottom: calc\(3\.5rem \+ env\(safe-area-inset-bottom, 0px\) \+ 0\.5rem\)/);
+    expect(base).toMatch(/bottom: calc\(var\(--phone-bar-h\) \+ 0\.5rem\)/);
     // The same clearance the page content uses for the same nav.
-    expect(rule(".pb-nav", css)).toMatch(/calc\(3\.5rem \+ env\(safe-area-inset-bottom, 0px\)\)/);
+    expect(rule(".pb-nav", css)).toMatch(/padding-bottom: var\(--phone-bar-h\)/);
   });
 
   it("from sm up (no bottom nav) it keeps the old 1rem", () => {
     const media = css.slice(css.indexOf("@media (min-width: 640px) {\n  .toast-viewport-bottom"));
     expect(media.length, "the sm override is missing").toBeGreaterThan(0);
     expect(rule(".toast-viewport-bottom", media)).toMatch(/bottom: 1rem;/);
+  });
+});
+
+describe("the toast stacks above every modal layer", () => {
+  it("the viewport z-index is above Modal's highest layer, so a side panel never hides a toast", () => {
+    const toast = read("Toast.tsx");
+    const z = toast.match(/<BaseToast\.Viewport className="[^"]*\bz-\[(\d+)\]/);
+    expect(z, "the toast viewport lost its z layer").not.toBeNull();
+    const layers = [...read("Modal.tsx").matchAll(/^\s+(?:dialog|alert):\s*"z-(?:\[(\d+)\]|(\d+))"/gm)]
+      .map((m) => Number(m[1] ?? m[2]));
+    expect(layers.length).toBe(2);
+    expect(Number(z![1])).toBeGreaterThan(Math.max(...layers));
   });
 });

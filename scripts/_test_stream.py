@@ -15,7 +15,7 @@ async def test() -> None:
     async with httpx.AsyncClient(timeout=90) as client:
         resp = await client.post(
             "http://localhost:8000/agent/run/stream",
-            json={"agent": "agent-sales-assistant", "payload": {"message": prompt}},
+            json={"agent": "crm-assistant", "payload": {"message": prompt}},
             headers={"Authorization": f"Bearer {token}"},
         )
         print("HTTP", resp.status_code)

@@ -14,10 +14,23 @@ title = "Metorite gitleaks config"
 [extend]
 useDefault = true
 
+# EA-19e (external_agent_access.md §10.9 question 3): a Metorite box token is
+# `mbt_` and 43 URL-safe characters (256 bits, secrets.token_urlsafe(32)).
+# The same shape as BOX_TOKEN_RE in packages/acb_common/acb_common/_log.py.
+# ⚠️ The global allowlist below skips every path under tests/, so a test that
+# proves this rule must scan a folder outside tests/ and build its sample at
+# run time. Fence: tests/unit/test_box_token_secret_rules.py.
+[[rules]]
+id = "metorite-box-token"
+description = "Metorite box token (mbt_ + 43 URL-safe characters)"
+regex = '''mbt_[A-Za-z0-9_-]{43}'''
+keywords = ["mbt_"]
+
 [allowlist]
 description = "Documented dev defaults + fixtures that are not real secrets"
 paths = [
     '''(^|/)tests?/''',            # unit-test fixtures / mock tokens
+    '''^evals/[^/]+/fixtures/''',  # synthetic eval data (WS-48 N2 mailbox: a fixture "key" field)
     '''\.env\.example$''',         # documented placeholder values
     '''package-lock\.json$''',
     '''uv\.lock$''',
@@ -28,4 +41,24 @@ regexes = [
     '''acb_dev_change_me''',       # documented dev Postgres password default
     '''change-me-dev-only''',      # documented dev session-secret default
     '''sk-local''',                # documented litellm_master_key dev default
+    # WS-54 fix round 6: the ONE fake GitHub token that commit c58caf42d put in
+    # workbench/control_plane/src/lib/setupTokens.test.ts as a literal. It is
+    # a test sentinel, never a real token. A later commit builds the value at
+    # run time, but a PR scan still reads the old commit, and history is not
+    # rewritten (no force-push). The entry matches this exact value and no
+    # other: never widen it.
+    '''ghp_BFF_SENTINEL_0123456789abcdef''',
+    # WS-66 PN-1: the PUBLIC VAPID key of the Google web-push codelab, used as
+    # the applicationServerKey in src/lib/push.test.ts and
+    # notificationsSection.test.ts. It is a public key that the codelab
+    # publishes, never a key of ours (ours come through scripts/secrets.sh). A
+    # PR scan reads the commits that hold it, so it must stay here. The entry
+    # matches this exact value and no other: never widen it.
+    '''BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U''',
+    # CIV-9: the fake AWS key of AWS's own docs examples, in the id of a
+    # parametrized test (test_studio_manifest.py::test_credential_shaped_string).
+    # `.test_durations` lists every test id, so it holds the value. It is a
+    # test sentinel, never a key. The entry matches this exact value and no
+    # other: never widen it.
+    '''AKIAABCDEFGHIJKLMNOP''',
 ]

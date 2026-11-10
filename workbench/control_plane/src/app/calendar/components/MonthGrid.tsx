@@ -11,6 +11,8 @@ import {
   startOfMonthGrid,
   deadlinesForDay,
 } from "./shared";
+import Icon from "@/components/Icon";
+import { monthChips, type CalReminder } from "../lib/reminders";
 
 
 // ── Month grid ───────────────────────────────────────────────────────────────
@@ -19,11 +21,18 @@ export function MonthGrid({
   items,
   onPickDay,
   onOpen,
+  reminders = [],
+  reminderZone = "UTC",
+  onOpenReminder,
 }: {
   anchor: Date;
   items: MyTask[];
   onPickDay: (d: Date) => void;
   onOpen: (id: string) => void;
+  /** The open reminders (WS-66 RM-5): a bell, a time and a title. */
+  reminders?: CalReminder[];
+  reminderZone?: string;
+  onOpenReminder?: (id: string) => void;
 }) {
   const gridStart = startOfMonthGrid(anchor);
   const cells = Array.from({ length: 42 }, (_, i) => addDays(gridStart, i));
@@ -46,8 +55,14 @@ export function MonthGrid({
           const blocks = blocksForDay(items, day);
           const deadlines = deadlinesForDay(items, day);
           const chips = [
-            ...blocks.map((b) => ({ id: b.item.id, title: b.item.title, kind: "block" as const })),
-            ...deadlines.map((d) => ({ id: d.id, title: d.title, kind: "deadline" as const })),
+            ...blocks.map((b) => ({ id: b.item.id, title: b.item.title, kind: "block" as const, time: "" })),
+            ...deadlines.map((d) => ({ id: d.id, title: d.title, kind: "deadline" as const, time: "" })),
+            ...monthChips(reminders, day, reminderZone).map((r) => ({
+              id: r.id,
+              title: r.label,
+              kind: "reminder" as const,
+              time: r.time,
+            })),
           ];
           const today = sameDay(day, now);
           return (
@@ -78,16 +93,23 @@ export function MonthGrid({
                     key={c.id}
                     onClick={(e) => {
                       e.stopPropagation();
-                      onOpen(c.id);
+                      if (c.kind === "reminder") onOpenReminder?.(c.id);
+                      else onOpen(c.id);
                     }}
                     className={[
                       "truncate rounded px-1 text-[9px]",
                       c.kind === "deadline"
                         ? "bg-destructive/10 text-destructive"
-                        : "bg-primary/10 text-primary",
+                        : c.kind === "reminder"
+                          ? "text-muted-foreground"
+                          : "bg-primary/10 text-primary",
                     ].join(" ")}
                   >
                     {c.kind === "deadline" ? "⚑ " : ""}
+                    {c.kind === "reminder" && (
+                      <Icon name="Bell" className="mr-0.5 inline h-2.5 w-2.5 align-[-1px]" />
+                    )}
+                    {c.kind === "reminder" ? `${c.time} ` : ""}
                     {c.title}
                   </span>
                 ))}

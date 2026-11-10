@@ -4,6 +4,8 @@ generation, learned-pattern listing, and the shared about-context loader."""
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Any
 from uuid import uuid4
 
@@ -12,13 +14,15 @@ _KB_WORD_RE = re.compile(r"[a-z0-9]{2,}")
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException, Query, status
+from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
     _assert_account_owner,
-    _tenant_session,
     _log,
-    email_memory_scope,
+    _tenant_session,
     router,
 )
+from gateway.routes.email.mailbox_access import mailbox_predicate
+from gateway.routes.email.memory_purge import writable_memory_scope
 from gateway.routes.email.quoting import split_quoted_text
 from pydantic import BaseModel, Field
 from sqlalchemy import text
@@ -62,12 +66,16 @@ async def _load_assistant_about(
     actually bear on this email make the budget.
     """
     row = (await db.execute(text(
-        """SELECT about, signature, personal_instructions, writing_style,
+        """SELECT about, personal_instructions, writing_style,
                   learned_writing_style
            FROM email_assistant_settings WHERE account_id = :aid"""
     ), {"aid": account_id})).fetchone()
     about = (row.about if row else "") or ""
-    signature = (row.signature if row else "") or ""
+    # WS-17 SG-2 (D-EM-66): the resolver gives the signature. A drafted step
+    # asks for ``new`` until SG-5 passes the kind of the step.
+    from gateway.routes.email.signature import resolve_signature
+
+    signature = await resolve_signature(db, account_id, "new")
     personal = (getattr(row, "personal_instructions", None) or "") if row else ""
     style = (getattr(row, "writing_style", None) or "") if row else ""
     learned_style = (
@@ -109,7 +117,7 @@ async def _load_assistant_about(
     if learned_style.strip():
         parts.append(
             "<learned_writing_style>\n"
-            f"{learned_style.strip()}\n</learned_writing_style>"
+            f"{_learned_text(learned_style)}\n</learned_writing_style>"
         )
     if kb_rows:
         kb_text, budget = [], 4000
@@ -135,49 +143,71 @@ async def _load_assistant_about(
     if lp_rows:
         parts.append(
             "<learned_patterns>\n"
-            + "\n".join(f"- {r.pattern}" for r in lp_rows)
+            + "\n".join(f"- {_learned_text(r.pattern, one_line=True)}" for r in lp_rows)
             + "\n</learned_patterns>"
         )
 
     return "\n\n".join(parts), signature
 
 
-# Per-task default tiers when no account preference is saved (or lookup fails).
-# ⚠️ No `rule` key (D-EM-7, EM-T5b-2): no member chooses the rules model. The
-# rule match runs on `decide` (`tier-decide`), and the old rule call that still
-# runs outside `on` uses its fixed tier, `tier-fast`.
-_DEFAULT_TASK_MODELS = {
-    "draft": "tier-powerful",  # BACKGROUND draft writing (rules, follow-ups)
-    "compose": "tier-fast",    # MANUAL "Draft with AI" (user waits on it)
-    "chat": "tier-powerful",   # email chat panel (strong tool-caller)
-}
+def _learned_text(value: Any, *, one_line: bool = False) -> str:
+    """Text that a model learned from mail, for the prompt of a drafter.
+
+    WS-17 EM-G11d (UMCC). The reply-memory extractor and the style learner
+    read mail, so a mail could steer what they store. The drafter trusts this
+    text outside every frame, so it takes mode (b) of ``acb_skills.untrusted``
+    (round 3): :func:`~acb_skills.untrusted.defang_trusted` turns EVERY angle
+    bracket, of any form, into ``(`` or ``)``. So it can never close
+    ``<learned_patterns>`` or open ``<personal_instructions>``, in any spacing
+    or with any name. With *one_line*, as for a bullet, the text collapses
+    first."""
+    from acb_skills.untrusted import collapse, defang_trusted
+
+    text = collapse(value) if one_line else str(value or "").strip()
+    return defang_trusted(text)
 
 
-async def _account_models(db: Any, account_id: str) -> dict[str, str]:
-    """The three task-specific models an account uses, as a dict with keys
-    ``draft`` (background draft writing), ``compose`` (manual "Draft with
-    AI"), and ``chat`` (the email chat panel).
+# The tier of each email AI task (D-EM-61, owner, 2026-10-09). Our code
+# chooses it, and no member does. "It is hard-coded depending on our best
+# process for email." The settings once let a member pick these three, and the
+# three columns stay until the contract step of R6 (HANDOFF). Nothing reads
+# them. Fence: tests/unit/test_email_no_tier_choice.py.
+#
+# The triage decisions are not here. They run on `decide` (`tier-decide`)
+# through decide_features (D-EM-7). The other email AI calls name their tier at
+# the call site. The email chat sends no model at all when AI_TIER_ROUTING
+# covers email-assistant, because the tier policy then picks each step (D90).
+EMAIL_TASK_TIERS: Mapping[str, str] = MappingProxyType({
+    # BACKGROUND draft writing: a rule draft action and a follow-up nudge.
+    # Nobody waits on these, so the strong tier writes them.
+    "draft": "tier-powerful",
+    # MANUAL "Draft with AI" in the composer. The member waits on it, so the
+    # fast tier answers. A reasoning tier here costs 20 to 60 s for each click.
+    "compose": "tier-fast",
+    # The email chat when the tier policy does not cover it. A strong
+    # tool-caller keeps the chat actions reliable.
+    "chat": "tier-powerful",
+})
 
-    Each falls back to its per-task default (draft→tier-powerful,
-    compose→tier-fast, chat→tier-powerful) so automation works before the user
-    saves a preference or if the lookup fails. The stored ``rule_model``
-    column is not read (D-EM-7)."""
-    out = dict(_DEFAULT_TASK_MODELS)
-    if not account_id:
-        return out
-    try:
-        row = (await db.execute(text(
-            "SELECT draft_model, compose_model, chat_model "
-            "FROM email_assistant_settings WHERE account_id = :aid"
-        ), {"aid": account_id})).fetchone()
-        if row:
-            out["draft"] = (getattr(row, "draft_model", None) or out["draft"])
-            out["compose"] = (
-                getattr(row, "compose_model", None) or out["compose"])
-            out["chat"] = (getattr(row, "chat_model", None) or out["chat"])
-    except Exception as exc:  # noqa: BLE001 — fall back to the per-task defaults
-        _log.warning("email.account_models_failed", error=str(exc)[:160])
-    return out
+# The request fields that once chose a tier (D-EM-61). The model declares them
+# for one release only so the PUT can SEE a client that still sends one. The
+# model ignores an unknown field (pydantic's default `extra="ignore"`), so
+# removing them causes no 422. It only removes the signal. The route ignores
+# each value and logs one line for each field, once in each process. The
+# contract step removes them (HANDOFF H-282).
+RETIRED_MODEL_FIELDS = ("draft_model", "compose_model", "chat_model")
+_retired_fields_logged: set[str] = set()
+
+
+def _log_retired_model_fields(req: AssistantSettingsModel) -> None:
+    """Log once, for each process and field, that a client sent a retired
+    tier field. The line is the signal for the contract step: when no line
+    shows for one release, the fields can go."""
+    for name in RETIRED_MODEL_FIELDS:
+        if getattr(req, name, None) is None or name in _retired_fields_logged:
+            continue
+        _retired_fields_logged.add(name)
+        _log.info("email.assistant_settings.model_field_ignored", field=name)
 
 
 class AssistantSettingsModel(BaseModel):
@@ -185,22 +215,28 @@ class AssistantSettingsModel(BaseModel):
     about: str | None = None
     signature: str | None = None
     # Global "Run rules automatically on new mail" switch (inbox-zero style).
-    # Defaults ON; the scheduler treats a missing settings row as ON, so a fresh
-    # account auto-runs once it has rules. An explicit OFF stops auto-run.
-    auto_run: bool = True
+    # WS-17 EM-G11c2 fix round 1: None means "the body does not say". The PUT
+    # then stores what `rules.auto_run_on` reads now (OFF for a Gmail mailbox
+    # with no row, ON for Outlook, a stored value as it is). A model default of
+    # True stored ON for a member who chose nothing.
+    auto_run: bool | None = None
+    # Task 2305: the write-only marker of the member's own Auto-run act. Only
+    # the Auto-run switch, setup Done, the notice's "Turn on" and a chat
+    # change of ``auto_run`` send it. With a value of ``auto_run``, the PUT
+    # stamps ``auto_run_chosen_at``. Every client spreads the GET body into
+    # the PUT, so the name differs from the GET field ``auto_run_chosen``,
+    # and the answers never carry it.
+    auto_run_choice: bool = False
     cold_email_blocker: str = "OFF"  # OFF | LABEL | ARCHIVE
-    # Three task-specific models (tier-fast | tier-balanced | tier-powerful, or
-    # any enabled model id). There is no rules model (D-EM-7): the rule match
-    # runs on `decide`, and no member can change it. The `rule_model` column
-    # stays (R6), and nothing reads or writes it.
-    # BACKGROUND draft writing (follow-ups, rule DRAFT_EMAIL actions):
-    draft_model: str = "tier-powerful"
-    # MANUAL drafting — the composer's "Draft with AI" button, where the user
-    # is waiting on a spinner. Defaults to the fast tier: a reasoning-tier
-    # model here means a 20-60s wait per click.
-    compose_model: str = "tier-fast"
-    # The interactive email chat panel (strong tool-caller for reliability):
-    chat_model: str = "tier-powerful"
+    # No member chooses a model or a tier (D-EM-7 for the rules, D-EM-61 for
+    # the rest). EMAIL_TASK_TIERS holds the tier of each task. These three
+    # fields stay for one release so the PUT can log a client that still
+    # sends one. The PUT ignores them (_log_retired_model_fields). The GET and
+    # PUT answers leave them out. The columns stay (R6), and nothing reads or
+    # writes them, as with `rule_model`.
+    draft_model: str | None = None
+    compose_model: str | None = None
+    chat_model: str | None = None
     digest_frequency: str = "OFF"  # OFF | DAILY | WEEKLY
     personal_instructions: str | None = None
     writing_style: str | None = None
@@ -239,6 +275,33 @@ class AssistantSettingsModel(BaseModel):
     # whose mail also counts as outbound/internal for direction-aware
     # classification. Read-only ``own_domain`` is returned by GET for display.
     org_domains: list[str] = Field(default_factory=list)
+    # Insights for this mailbox (WS-17 EM-T14a, D-EM-39, migration 231). OFF
+    # for a new mailbox and for a mailbox with no settings row. Only an
+    # opted-in mailbox sends its mail text to a model for Insights (D-EM-44).
+    # The feature flag EMAIL_INSIGHTS is a second switch, and its one reader is
+    # automation/insights_store.insights_enabled.
+    insights_enabled: bool = False
+
+
+def auto_run_chosen(row: Any) -> bool:
+    """True when the member chose Auto-run (task 2305, §12.3.13.7).
+
+    A stored ``auto_run_chosen_at`` (an explicit act), or a stored
+    ``auto_run = true``, is a choice. A row with ``auto_run = false`` and no
+    stamp is not one: a save of another field wrote it from the GET body.
+    No row is no choice. The GET and the PUT answer both use this rule.
+    """
+    if row is None:
+        return False
+    return (getattr(row, "auto_run_chosen_at", None) is not None
+            or getattr(row, "auto_run", None) is True)
+
+
+def _signature_upload_on() -> bool:
+    """True when this server can host a signature image (WS-17 SG-1)."""
+    from gateway.routes.email.signature_images import public_base_url
+
+    return public_base_url() is not None
 
 
 @router.get("/assistant/settings")
@@ -248,10 +311,12 @@ async def get_assistant_settings(
 ):
     """Get the assistant's About/signature/auto-run settings for an account."""
     async with _tenant_session() as db:
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="send")
         row = (await db.execute(text(
-            """SELECT about, signature, auto_run, cold_email_blocker,
-                      draft_model, compose_model, chat_model,
+            """SELECT about, auto_run, auto_run_chosen_at,
+                      cold_email_blocker,
                       digest_frequency, personal_instructions, writing_style,
                       learned_writing_style,
                       draft_replies, follow_up_days, draft_confidence,
@@ -260,7 +325,7 @@ async def get_assistant_settings(
                       digest_time_of_day, digest_send_to_email,
                       morning_brief_enabled,
                       multi_rule_execution, sensitive_data_protection,
-                      org_domains
+                      org_domains, insights_enabled
                FROM email_assistant_settings WHERE account_id = :aid"""
         ), {"aid": account_id})).fetchone()
         # The account's own email domain is ALWAYS treated as internal; surface
@@ -274,7 +339,13 @@ async def get_assistant_settings(
         # Fall back to the legacy single field if the new column is still 0.
         if not awaiting and row:
             awaiting = getattr(row, "follow_up_days", 0) or 0
-        from gateway.routes.email.signature import signature_text  # noqa: PLC0415
+        from gateway.routes.email.signature import (  # noqa: PLC0415
+            signature_forms,
+            signature_text,
+        )
+        # WS-17 SG-2 (D-EM-66): the editor gets the stored free HTML, and the
+        # composer seeds the text of the ``new`` form that the resolver gives.
+        forms = await signature_forms(db, account_id)
         # A stored value always wins. With NO settings row, answer what the
         # engine does: drafting is ON only when a reply rule carries
         # DRAFT_EMAIL. A new mailbox has no rules, so it reads OFF (D-EM-6).
@@ -289,29 +360,29 @@ async def get_assistant_settings(
                 reply_rule_drafts,
             )
             draft_replies = await reply_rule_drafts(db, account_id)
+        # WS-17 EM-G11c2: the ONE auto_run reader, so a missing Gmail row
+        # reads OFF here too. A PUT of this body then stores no ON that the
+        # member did not choose.
+        from gateway.routes.email.automation.rules import auto_run_on
+        auto_run = await auto_run_on(db, account_id)
         return {
             "account_id": account_id,
             "about": row.about if row else "",
-            "signature": row.signature if row else "",
+            "signature": forms.stored,
             # The SERVER's plain-text rendering of the signature — the composer
             # seeds this exact text into the body so the draft-write paths'
             # idempotent re-signing recognises it (a client-side re-derivation
             # could differ by whitespace and get double-signed).
-            "signature_text": signature_text((row.signature if row else "") or ""),
-            "auto_run": bool(row.auto_run) if row else True,
+            "signature_text": signature_text(forms.of("new")),
+            "auto_run": auto_run,
+            # Read-only (task 2267, rule of task 2305): true when the member
+            # chose Auto-run, so the client can tell "the member chose" from
+            # "no stored choice". A row alone is no choice, because a save of
+            # another field writes one. The PUT model has no such field, and
+            # it ignores the one the screen sends back. ``auto_run`` above is
+            # unchanged.
+            "auto_run_chosen": auto_run_chosen(row),
             "cold_email_blocker": (row.cold_email_blocker if row else "OFF") or "OFF",
-            "draft_model": (getattr(row, "draft_model", None) if row else None)
-            or "tier-powerful",
-            # Default must match _DEFAULT_TASK_MODELS["compose"] — manual
-            # "Draft with AI" runs while the user watches, so it defaults fast.
-            "compose_model": (getattr(row, "compose_model", None) if row else None)
-            or "tier-fast",
-            # Default must match _DEFAULT_TASK_MODELS["chat"] and
-            # AssistantSettingsModel.chat_model (tier-powerful — a strong
-            # tool-caller). A divergent default here previously made the email
-            # chat lock to tier-balanced while automation used tier-powerful.
-            "chat_model": (getattr(row, "chat_model", None) if row else None)
-            or "tier-powerful",
             "digest_frequency": (row.digest_frequency if row else "OFF") or "OFF",
             "personal_instructions": (
                 getattr(row, "personal_instructions", None) if row else ""
@@ -372,8 +443,21 @@ async def get_assistant_settings(
             "org_domains": (
                 list(getattr(row, "org_domains", None) or []) if row else []
             ),
+            # A missing row reads as false (D-EM-39), as the model default.
+            "insights_enabled": (
+                bool(row.insights_enabled)
+                if row and getattr(row, "insights_enabled", None) is not None
+                else False
+            ),
             # Read-only: the account's own domain, always treated as internal.
             "own_domain": own_domain,
+            # Read-only (WS-17 SG-1, §23.3.9): False when this server has no
+            # https address to host a signature image. The editor turns its
+            # upload button off.
+            "signature_image_upload": _signature_upload_on(),
+            # Only a save removes anything (the PUT answer). The key is here so
+            # the GET and the PUT carry the same keys.
+            "signature_removed": [],
         }
 
 
@@ -383,8 +467,19 @@ async def put_assistant_settings(
     user: UserContext = Depends(get_current_user),
 ):
     """Upsert the assistant settings for an account."""
+    # WS-17 SG-1 (D-EM-70): a new HTML signature is cleaned on save, and each
+    # `data:` image in it becomes a hosted image first. This runs BEFORE the
+    # session below, because a hosted image runs a child process for up to
+    # 10 s, and no session waits on it. A signature equal to the stored one
+    # stays byte for byte.
+    from gateway.routes.email.signature_images import (
+        signature_for_save,
+    )
+    signature, signature_removed = await signature_for_save(
+        req.account_id, user.email or "anonymous", req.signature)
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, user.email or "anonymous")
+        _log_retired_model_fields(req)
         # `follow_up_awaiting_days` is canonical; accept the legacy `follow_up_days`
         # as a fallback so older clients keep working.
         awaiting = req.follow_up_awaiting_days or req.follow_up_days or 0
@@ -394,10 +489,19 @@ async def put_assistant_settings(
         org_domains = list(dict.fromkeys(
             nd for d in (req.org_domains or [])
             if isinstance(d, str) and (nd := normalize_domain(d))))
+        # EM-G11c2 fix round 1: a body with no auto_run keeps the effective
+        # choice, read before the upsert. The one reader decides.
+        from gateway.routes.email.automation.rules import auto_run_on
+        auto_run = (req.auto_run if req.auto_run is not None
+                    else await auto_run_on(db, req.account_id))
+        # Task 2305: only the member's own Auto-run act stamps the choice: the
+        # marker AND a value. The upsert keeps a stamp that exists (COALESCE),
+        # so no body clears it, and a body with no marker leaves it as it is.
+        choice = req.auto_run_choice is True and req.auto_run is not None
         saved = (await db.execute(text(
             """INSERT INTO email_assistant_settings
-                 (account_id, about, signature, auto_run, cold_email_blocker,
-                  draft_model, compose_model, chat_model,
+                 (account_id, about, signature, auto_run, auto_run_chosen_at,
+                  cold_email_blocker,
                   digest_frequency,
                   personal_instructions,
                   writing_style, draft_replies, follow_up_days, draft_confidence,
@@ -405,20 +509,22 @@ async def put_assistant_settings(
                   follow_up_auto_draft, digest_categories, digest_day_of_week,
                   digest_time_of_day, digest_send_to_email, morning_brief_enabled,
                   multi_rule_execution, sensitive_data_protection, org_domains,
-                  updated_at)
-               VALUES (:aid, :about, :sig, :auto, :cold,
-                       :draft_model, :compose_model, :chat_model,
+                  insights_enabled, updated_at)
+               VALUES (:aid, :about, :sig, :auto,
+                       CASE WHEN CAST(:choice AS boolean) THEN now() END,
+                       :cold,
                        :digest,
                        :pi, :ws, :dr, :fu, :dc, :fua, :funr, :fuad, :dcat,
-                       :ddow, :dtod, :dste, :mbe, :mre, :sdp, :orgd, now())
+                       :ddow, :dtod, :dste, :mbe, :mre, :sdp, :orgd, :ins,
+                       now())
                ON CONFLICT (account_id) DO UPDATE SET
                  about = EXCLUDED.about,
                  signature = EXCLUDED.signature,
                  auto_run = EXCLUDED.auto_run,
+                 auto_run_chosen_at = COALESCE(
+                     email_assistant_settings.auto_run_chosen_at,
+                     EXCLUDED.auto_run_chosen_at),
                  cold_email_blocker = EXCLUDED.cold_email_blocker,
-                 draft_model = EXCLUDED.draft_model,
-                 compose_model = EXCLUDED.compose_model,
-                 chat_model = EXCLUDED.chat_model,
                  digest_frequency = EXCLUDED.digest_frequency,
                  personal_instructions = EXCLUDED.personal_instructions,
                  writing_style = EXCLUDED.writing_style,
@@ -436,13 +542,12 @@ async def put_assistant_settings(
                  multi_rule_execution = EXCLUDED.multi_rule_execution,
                  sensitive_data_protection = EXCLUDED.sensitive_data_protection,
                  org_domains = EXCLUDED.org_domains,
+                 insights_enabled = EXCLUDED.insights_enabled,
                  updated_at = now()
-               RETURNING learned_writing_style"""
-        ), {"aid": req.account_id, "about": req.about, "sig": req.signature,
-            "auto": req.auto_run, "cold": req.cold_email_blocker or "OFF",
-            "draft_model": req.draft_model or "tier-powerful",
-            "compose_model": req.compose_model or "tier-fast",
-            "chat_model": req.chat_model or "tier-powerful",
+               RETURNING learned_writing_style, auto_run, auto_run_chosen_at"""
+        ), {"aid": req.account_id, "about": req.about, "sig": signature,
+            "auto": auto_run, "choice": choice,
+            "cold": req.cold_email_blocker or "OFF",
             "digest": req.digest_frequency or "OFF",
             "pi": req.personal_instructions, "ws": req.writing_style,
             "dr": req.draft_replies, "fu": awaiting,
@@ -456,7 +561,8 @@ async def put_assistant_settings(
             "mbe": req.morning_brief_enabled,
             "mre": req.multi_rule_execution,
             "sdp": req.sensitive_data_protection,
-            "orgd": org_domains})).fetchone()
+            "orgd": org_domains,
+            "ins": req.insights_enabled})).fetchone()
         # inbox-zero parity: the "Auto draft replies" toggle adds/removes the
         # DRAFT_EMAIL action on the "Reply" rule (like inbox-zero's
         # enableDraftRepliesAction), so to-reply mail is auto-drafted when on.
@@ -473,7 +579,9 @@ async def put_assistant_settings(
             "SELECT email_address FROM email_accounts WHERE id = :aid"
         ), {"aid": req.account_id})).fetchone()
         from gateway.routes.email.automation.identity import _domain_of  # noqa: PLC0415
-        from gateway.routes.email.signature import signature_text
+        from gateway.routes.email.signature import signature_forms, signature_text
+        # WS-17 SG-2 (D-EM-66): the composer seeds the text of the ``new`` form.
+        forms = await signature_forms(db, req.account_id, stored=signature or "")
         own_domain = _domain_of(getattr(acc_row, "email_address", "") or "")
         # The answer carries EVERY key the GET carries. SettingsTab keeps this
         # body as its state and PUTs it back on the next change, so a missing
@@ -482,13 +590,13 @@ async def put_assistant_settings(
         return {
             "account_id": req.account_id,
             "about": req.about or "",
-            "signature": req.signature or "",
-            "signature_text": signature_text(req.signature or ""),
-            "auto_run": req.auto_run,
+            "signature": signature or "",
+            "signature_text": signature_text(forms.of("new")),
+            "auto_run": auto_run,
+            # Task 2305: the GET's rule over the row that the upsert
+            # RETURNs. A save of another field is no choice.
+            "auto_run_chosen": auto_run_chosen(saved),
             "cold_email_blocker": req.cold_email_blocker or "OFF",
-            "draft_model": req.draft_model or "tier-powerful",
-            "compose_model": req.compose_model or "tier-fast",
-            "chat_model": req.chat_model or "tier-powerful",
             "digest_frequency": req.digest_frequency or "OFF",
             "personal_instructions": req.personal_instructions or "",
             "writing_style": req.writing_style or "",
@@ -509,7 +617,12 @@ async def put_assistant_settings(
             "multi_rule_execution": req.multi_rule_execution,
             "sensitive_data_protection": req.sensitive_data_protection,
             "org_domains": org_domains,
+            "insights_enabled": req.insights_enabled,
             "own_domain": own_domain,
+            "signature_image_upload": _signature_upload_on(),
+            # WS-17 SG-1 (D-EM-70): each link or image address that the clean
+            # of THIS save removed, so the dialog can name it.
+            "signature_removed": signature_removed,
         }
 
 
@@ -527,7 +640,9 @@ async def list_knowledge(
 ):
     """List the account's knowledge-base entries (used when drafting replies)."""
     async with _tenant_session() as db:
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="send")
         # Suggested entries (voice-profile candidates awaiting review) first,
         # so they surface for approval instead of sinking below the fold.
         rows = (await db.execute(text(
@@ -582,7 +697,8 @@ async def update_knowledge(
         owner = (await db.execute(text(
             """SELECT ek.id FROM email_knowledge ek
                JOIN email_accounts ea ON ek.account_id = ea.id
-               WHERE ek.id = :id AND ea.user_id = :uid"""
+               WHERE ek.id = :id AND """
+            + mailbox_predicate("ea", uid="uid", level="manage")
         ), {"id": kid, "uid": user.email or "anonymous"})).fetchone()
         if not owner:
             raise HTTPException(status_code=404, detail="Not found")
@@ -604,7 +720,8 @@ async def delete_knowledge(
         res = await db.execute(text(
             """DELETE FROM email_knowledge ek USING email_accounts ea
                WHERE ek.id = :id AND ek.account_id = ea.id
-                 AND ea.user_id = :uid"""
+                 AND """
+            + mailbox_predicate("ea", uid="uid", level="manage")
         ), {"id": kid, "uid": user.email or "anonymous"})
         if res.rowcount == 0:
             raise HTTPException(status_code=404, detail="Not found")
@@ -617,6 +734,7 @@ async def _llm_writing_style(samples: list[str]) -> str:
     model's context window (acompletion_with_fallback handles keys + fitting)."""
     try:
         from acb_llm.context import acompletion_with_fallback  # noqa: PLC0415
+        from email_ingestion.llm_cap import llm_slot
         joined = "\n\n---\n\n".join(samples)
         sys_prompt = (
             "Analyze the user's sent emails and describe their writing style as a "
@@ -626,12 +744,15 @@ async def _llm_writing_style(samples: list[str]) -> str:
             "could follow, e.g. 'Keep replies to 2-3 short sentences.' Output ONLY "
             "the guide."
         )
-        resp, _ = await acompletion_with_fallback(
-            model="tier-powerful",
-            messages=[{"role": "system", "content": sys_prompt},
-                      {"role": "user", "content": joined[:8000]}],
-            temperature=0, max_tokens=1000,
-        )
+        # A member drives the writing style, so the slot binds nothing (EM-T4b).
+        async with llm_slot():
+            resp, _ = await acompletion_with_fallback(
+                model="tier-powerful",
+                messages=[{"role": "system", "content": sys_prompt},
+                          {"role": "user", "content": joined[:8000]}],
+                temperature=0, max_tokens=1500,
+                feature="email.voice_profile", job="writing",
+            )
         return (resp.choices[0].message.content or "").strip()
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.writing_style_failed", error=str(exc)[:200])
@@ -645,6 +766,8 @@ async def generate_writing_style(
 ):
     """Derive a writing-style guide from the account's recent sent mail + save it."""
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         await _assert_account_owner(db, account_id, user.email or "anonymous")
         rows = (await db.execute(text(
             """SELECT body_text FROM email_messages
@@ -672,28 +795,39 @@ async def generate_writing_style(
         # mailbox from before D-EM-6 drafts through its Needs Reply rule, and a
         # stored false would show the switch OFF while the engine drafts. The
         # DO UPDATE does not name draft_replies, so a stored choice stays.
+        # WS-17 EM-G11c2 fix round 1 (P1): the same rule for auto_run. The
+        # column default is false, so a first row that omits it turned OFF
+        # the rules, the Reply Zero labels and the sweep of an Outlook mailbox
+        # with one click. The new row stores what `auto_run_on` reads now.
         from gateway.routes.email.automation.rules import (
+            auto_run_on,
             reply_rule_drafts,
         )
         await db.execute(text(
             """INSERT INTO email_assistant_settings
-                 (account_id, writing_style, draft_replies, updated_at)
-               VALUES (:aid, :ws, :dr, now())
+                 (account_id, writing_style, draft_replies, auto_run, updated_at)
+               VALUES (:aid, :ws, :dr, :auto, now())
                ON CONFLICT (account_id) DO UPDATE SET
                  writing_style = EXCLUDED.writing_style, updated_at = now()"""
         ), {"aid": account_id, "ws": style,
-            "dr": await reply_rule_drafts(db, account_id)})
+            "dr": await reply_rule_drafts(db, account_id),
+            "auto": await auto_run_on(db, account_id)})
         # Index the derived style into Mem0 — keyed PER ACCOUNT so a user's other
         # mailboxes don't inherit this inbox's writing voice (see
         # email_memory_scope). The drafter reads it back under the same scope.
+        # WS-17 EM-G11f2 item 2: only a key that a disconnect purges. A missing
+        # owner is "anonymous", the owner that the disconnect route keys on.
+        scope = writable_memory_scope(user.email or "anonymous", account_id,
+                                      "writing_style")
         try:
-            from acb_memory import add_memories_background  # noqa: PLC0415
-            await add_memories_background(
-                email_memory_scope(user.email or "default", account_id),
-                [{"role": "assistant",
-                  "content": f"My email writing style: {style}"}],
-                agent_id="email",
-            )
+            if scope is not None:
+                from acb_memory import add_memories_background  # noqa: PLC0415
+                await add_memories_background(
+                    scope,
+                    [{"role": "assistant",
+                      "content": f"My email writing style: {style}"}],
+                    agent_id="email",
+                )
         except Exception:  # noqa: BLE001
             pass
         return {"writing_style": style}
@@ -706,12 +840,14 @@ async def list_learned_patterns(
 ):
     """Preferences the assistant has learned from the user's draft edits."""
     async with _tenant_session() as db:
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="send")
         rows = (await db.execute(text(
             """SELECT id, pattern, weight, kind, scope_type, scope_value
                FROM email_learned_patterns
                WHERE account_id = :aid
-               ORDER BY weight DESC, updated_at DESC"""
+               ORDER BY weight DESC, updated_at DESC, id DESC"""
         ), {"aid": account_id})).fetchall()
         return {"patterns": [
             {"id": str(r.id), "pattern": r.pattern, "weight": r.weight,
@@ -732,7 +868,8 @@ async def delete_learned_pattern(
         res = await db.execute(text(
             """DELETE FROM email_learned_patterns lp USING email_accounts ea
                WHERE lp.id = :id AND lp.account_id = ea.id
-                 AND ea.user_id = :uid"""
+                 AND """
+            + mailbox_predicate("ea", uid="uid", level="manage")
         ), {"id": pid, "uid": user.email or "anonymous"})
         if res.rowcount == 0:
             raise HTTPException(status_code=404, detail="Not found")

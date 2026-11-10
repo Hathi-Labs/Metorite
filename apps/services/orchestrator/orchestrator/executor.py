@@ -27,19 +27,40 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import dataclasses
 import functools
 import json
 import os
 import re
+import time
 import uuid
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable
+from typing import Any, AsyncIterator, Callable, Iterator
 
 from acb_audit import AuditEvent, record
 from acb_common import get_logger, get_settings
+from acb_common.child_env import child_env, copilot_env
+from acb_common.no_person import no_person_present
+from acb_llm.run_errors import run_error_event
+from acb_skills.ask_tools import QUESTION_HEADER_MAX as _QUESTION_HEADER_MAX
+from acb_skills.ask_tools import QUESTION_TEXT_MAX as _QUESTION_TEXT_MAX
+from acb_skills.ask_tools import clip_words as _clip_words
 from acb_skills.ask_tools import is_hitl_blocking_tool as _is_hitl_blocking_tool
 from acb_skills.integrations import build_integrations
-from acb_skills.loader import AgentLoadError, load_agent
+from acb_skills.loader import (
+    AgentLoadError,
+    AgentRuntimeUnsupported,
+    is_copilot_agent,
+    load_agent,
+    refuse_copilot_specialist,
+)
+
+def _is_internal_agent(agent_name: object) -> bool:
+    """True for an internal agent (the spawn worker), by name."""
+    from acb_skills.subagent_contract import INTERNAL_AGENTS
+
+    return str(agent_name or "") in INTERNAL_AGENTS
+
 
 # Max self-anneal retries before giving up and falling back to LLM recovery.
 _MAX_ANNEAL_ATTEMPTS = 2
@@ -71,7 +92,8 @@ _WATCHDOG = default_watchdog()
 from orchestrator._copilot_session import (
     _apply_copilot_infinite_sessions,
     _copilot_infinite_session_config,
-    _copilot_permission_handler,
+    _copilot_permission_handler,  # noqa: F401 — re-exported for tests
+    _install_copilot_permission_handler,
 )
 
 
@@ -79,15 +101,126 @@ from orchestrator._copilot_session import (
 # (maintainability refactor). Re-exported so bare-name call sites in the run
 # paths + external importers (tests, tool-addendum eval) keep resolving.
 from orchestrator._tool_injection import (
+    _add_crm_facts_block,
     _apply_own_tool_scope,
+    _drop_mirror_record_writes,
     _build_injected_tools_addendum,
+    _count_agent_tools,
+    _log_agent_tools_resolved,
     _build_registry_block,
+    _chat_marked,
+    _covered_chain,
     _gate_injected_tool,
+    _held_tool_names,
+    _host_shell_refused,
     _inject_agent_tools,
+    _narrow_to_held,
+    _close_mcp_tools,
     _inject_mcp_servers,
+    NoEgressRefused,
+    _run_covered,
+    _run_no_egress,
     _tool_name,
+    _withheld_shell_tools,
     materialize_skill_bodies_for_agent,
 )
+
+
+def _tier2_copilot_client(agent_settings: dict[str, Any]) -> Any:
+    """The CopilotClient of a Tier 2 Copilot agent that has none yet.
+
+    D85 (fix round 1 of PR #598): the CLI shell is ALWAYS denied on Tier 2.
+    Tier 1.5 returns for every Copilot-shaped agent, so Tier 2 never serves
+    the ``github-copilot`` label. SDK 1.0 (H-181): ``cli_path`` and the args
+    are one stdio ``RuntimeConnection``, and the client takes keywords.
+
+    Headless auth: the token comes from ``COPILOT_GITHUB_TOKEN``, then
+    ``GITHUB_COPILOT_TOKEN``, then the canonical ``GITHUB_TOKEN``. A server has
+    no logged-in CLI user, so with no token the CLI answers "Authorization
+    error, run /login".
+
+    WS-49 BH-1: the CLI gets ``copilot_env()`` and no gateway secret. The SDK
+    adds ``COPILOT_SDK_AUTH_TOKEN`` from ``github_token`` itself.
+    """
+    from copilot import CopilotClient as _CopilotClient
+    from copilot import RuntimeConnection as _RuntimeConnection
+
+    from orchestrator.copilot_agent import copilot_token
+
+    cli_opts: dict[str, Any] = {
+        "connection": _RuntimeConnection.for_stdio(
+            path=agent_settings.get("cli_path") or None,
+            args=["--deny-tool", "shell"],
+        ),
+    }
+    log_level = agent_settings.get("log_level")
+    if log_level:
+        cli_opts["log_level"] = log_level
+    token = copilot_token()
+    if token:
+        cli_opts["github_token"] = token
+    return _CopilotClient(**cli_opts, env=copilot_env())
+
+
+def _tier2_tool_view(agent: Any, make_shim: Callable[[Any, str], Any]) -> Any:
+    """*agent*, or a per-run copy whose ``default_options`` tools are shimmed.
+
+    The Tier 2 batch path shows a tool row only for a tool it wrapped in
+    ``make_shim``. MAF 1.19 holds a native ``Agent``'s tools in
+    ``default_options["tools"]`` as ``FunctionTool`` objects, which the older
+    ``agent.tools`` and ``@tool`` lookups never reach. Each one is cloned with
+    its ``func`` replaced by the shim, so the name, description, schema and
+    approval mode stay the tool's own. Neither the agent nor a tool object is
+    changed, because another run may hold them. No such tools: *agent* itself.
+    """
+    import copy as _copy
+
+    from acb_skills.egress import _register_platform_wrapper
+
+    opts = getattr(agent, "default_options", None)
+    if not isinstance(opts, dict):
+        return agent
+    tools = opts.get("tools")
+    if not isinstance(tools, (list, tuple)) or not tools:
+        return agent
+    shimmed: list[Any] = []
+    changed = False
+    for item in tools:
+        func = getattr(item, "func", None)
+        name = getattr(item, "name", None) or getattr(func, "__name__", None)
+        if (
+            callable(func)
+            and isinstance(name, str)
+            and name
+            and not getattr(func, "__cc_tier2_shim__", False)
+        ):
+            # The egress rule (H-236) trusts a platform tool by the IDENTITY of
+            # its callable. A new shim is a new callable, so it must inherit
+            # that trust. Without this, a covered run on this path loses every
+            # platform tool (manage_todo_list, write_artifact, run_command, …).
+            # This module is in `orchestrator.*`, so the registry accepts it.
+            shim = _register_platform_wrapper(func, make_shim(func, name))
+            try:
+                shim.__cc_tier2_shim__ = True
+            except (AttributeError, TypeError):
+                pass
+            clone = _copy.copy(item)
+            try:
+                clone.func = shim
+            except (AttributeError, TypeError):
+                shimmed.append(item)
+                continue
+            shimmed.append(clone)
+            changed = True
+        else:
+            shimmed.append(item)
+    if not changed:
+        return agent
+    view = _copy.copy(agent)
+    view.default_options = {**opts, "tools": shimmed}
+    return view
+
+
 def _missing_module_name(exc: BaseException) -> str | None:
     """Best-effort top-level module name from an ImportError/ModuleNotFoundError.
 
@@ -102,6 +235,29 @@ def _missing_module_name(exc: BaseException) -> str | None:
         name = m.group(1) if m else None
     # Install the TOP-LEVEL distribution name (submodule installs never work).
     return name.split(".")[0] if name else None
+
+
+def _missing_dependency_message(tool_name: str, exc: BaseException, module: str | None) -> str:
+    """The tool result when the dependency self-heal could not install *module*.
+
+    It suggests ``install_dependency`` only to a run that holds it. A shared
+    agent does not (D85), so it is told to ask an admin instead, and never
+    to call a tool it was not given.
+    """
+    head = (
+        f"Error: tool '{tool_name}' needs a package that isn't installed "
+        f"({exc}). Auto-install "
+        f"{'failed' if module else 'could not identify the module'}"
+    )
+    try:
+        from acb_skills.write_artifact import artifact_context
+        # The TOOL half of D85: does this run hold install_dependency?
+        withheld = artifact_context().get("shell_tools_withheld", True) is not False
+    except Exception:
+        withheld = True
+    if withheld:
+        return head + "; ask an admin to install the package, then retry."
+    return head + "; call install_dependency('<package>') and retry."
 _TOOL_EXECUTION_TIMEOUT: float = _WATCHDOG.tool_execution
 
 # ── Elicitation bridge: track which tool_call_id maps to a pending
@@ -190,6 +346,45 @@ _RUN_QUEUES: dict[str, "asyncio.Queue[dict[str, Any] | None]"] = {}
 # deleted in its ``finally``. WS-29 MT-1d (H4), slice 2 — DARK: nothing reads it
 # yet (no write is converted this slice).
 _RUN_ORG: dict[str, str] = {}
+
+#: H-236: the run ids of the streamed runs that bound ``no_egress=True``. The
+#: gateway reads it after a run ends, to skip the memory extraction of a
+#: covered conversation (``gateway/routes/agent.py``). It is bounded, and a
+#: read never removes an entry, so a run id that a client reused can only
+#: make one more extraction skip, never let one through. Process-local, as
+#: the run and its end callback share the gateway process.
+_NO_EGRESS_RUNS: dict[str, None] = {}
+_NO_EGRESS_RUNS_MAX = 4096
+
+
+def _remember_no_egress_run(run_id: str | None) -> None:
+    """Record that the streamed run *run_id* bound ``no_egress=True``."""
+    if not run_id:
+        return
+    _NO_EGRESS_RUNS.pop(run_id, None)
+    _NO_EGRESS_RUNS[run_id] = None
+    while len(_NO_EGRESS_RUNS) > _NO_EGRESS_RUNS_MAX:
+        _NO_EGRESS_RUNS.pop(next(iter(_NO_EGRESS_RUNS)))
+
+
+async def _mark_untrusted_session(agent_name: str, parent_ctx: Any) -> None:
+    """``acb_skills.egress.mark_untrusted_session`` for a run that starts now,
+    with the context of the run that started it. Never raises: the write
+    logs its own failure, and each reader fails closed on a fault."""
+    try:
+        from acb_skills.egress import mark_untrusted_session
+
+        await mark_untrusted_session(agent_name, parent_ctx)
+    except Exception:  # noqa: BLE001 — the mark must never kill the run
+        _log.warning("executor.untrusted_session_mark_failed", agent=agent_name)
+
+
+def run_was_no_egress(run_id: str | None) -> bool:
+    """True when the streamed run *run_id* bound ``no_egress=True`` (H-236).
+
+    The server decided it at the run's start. Nothing in a request reaches it.
+    """
+    return bool(run_id) and run_id in _NO_EGRESS_RUNS
 
 
 def _opener_for_org(org: str | None):
@@ -353,6 +548,1800 @@ def _current_run_org() -> str | None:
         return None
 
 
+#: The organisation's display name, by org id, with the time it was read.
+#: Process-local, like ``_RUN_ORG``. A rename shows within the TTL.
+_ORG_NAME_CACHE: dict[str, tuple[float, str]] = {}
+_ORG_NAME_TTL_SECONDS = 600.0
+_ORG_NAME_CACHE_MAX = 1024
+#: The longest org name that reaches a prompt. A name is a member's words.
+_ORG_NAME_MAX_CHARS = 120
+
+
+def _clean_org_name(raw: str) -> str:
+    """*raw* as one short line of plain text (review of #981, P2).
+
+    An org owner sets the display name, and nothing checks it, so it is a
+    member's words in every turn of every member. A newline would forge a
+    context block, and a long name would cost its size on each turn. So:
+    NFKC, then every control (Cc) and format (Cf) character goes (zero
+    width and bidi marks), « and » go, all whitespace becomes one space, and
+    the result stops at ``_ORG_NAME_MAX_CHARS``. The same folding as the
+    gateway's ``chat_recovery._plain_unicode``, which the orchestrator
+    cannot import (it is a gateway module).
+    """
+    import unicodedata  # noqa: PLC0415
+
+    folded = unicodedata.normalize("NFKC", raw or "")
+    folded = "".join(
+        " " if unicodedata.category(ch) == "Cc"
+        else "" if unicodedata.category(ch) == "Cf" or ch in "\u00ab\u00bb"
+        else ch
+        for ch in folded
+    )
+    return " ".join(folded.split())[:_ORG_NAME_MAX_CHARS].strip()
+
+
+def _read_org_display_name(org: str) -> str:
+    """``organization.display_name`` of *org*, or ``""``. One indexed read.
+
+    *org* is the run's tenant, from :func:`_current_run_org`, never from a
+    request. ``organization`` is the tenant registry and has no row policy,
+    so the read works with or without the tenant bind. It never raises.
+    """
+    opener = _opener_for_org(org)
+    if opener is None:
+        return ""
+    try:
+        from sqlalchemy import text  # noqa: PLC0415
+
+        with opener() as session:
+            row = session.execute(
+                text("SELECT display_name FROM organization WHERE id = CAST(:id AS uuid)"),
+                {"id": org},
+            ).first()
+    except Exception:  # noqa: BLE001
+        return ""
+    return _clean_org_name(str(row[0] or "")) if row else ""
+
+
+def _run_org_display_name() -> str:
+    """The display name of the run's organisation, or ``""`` when unknown.
+
+    The run's tenant comes from :func:`_current_run_org`, on this frame and
+    from the run boundary (R5). The name is cached per org for
+    ``_ORG_NAME_TTL_SECONDS``, so a turn pays at most one read. It goes into
+    the per-turn context (:func:`_context_preamble_parts`), after the cache
+    break, so the static prompt of every agent names no tenant
+    (``tests/unit/test_orchestrator_one_source.py``).
+    """
+    import time  # noqa: PLC0415
+
+    org = _current_run_org()
+    if not org:
+        return ""
+    now = time.monotonic()
+    hit = _ORG_NAME_CACHE.get(org)
+    if hit and now - hit[0] < _ORG_NAME_TTL_SECONDS:
+        return hit[1]
+    name = _read_org_display_name(org)
+    _ORG_NAME_CACHE.pop(org, None)
+    _ORG_NAME_CACHE[org] = (now, name)
+    while len(_ORG_NAME_CACHE) > _ORG_NAME_CACHE_MAX:
+        _ORG_NAME_CACHE.pop(next(iter(_ORG_NAME_CACHE)))
+    return name
+
+
+# ── The member's own name (owner report of 2026-10-19) ──────────────────────
+
+#: The agents whose per-turn context names the member. Each one writes mail
+#: that the member signs. The email assistant signed a draft "[your name]",
+#: because no context named the member.
+_MEMBER_NAME_AGENTS = frozenset({"email-assistant", "orchestrator"})
+#: The member's display name by ``(org, member)``, with the time it was read.
+_MEMBER_NAME_CACHE: dict[tuple[str, str], tuple[float, str]] = {}
+_MEMBER_NAME_TTL_SECONDS = 600.0
+_MEMBER_NAME_CACHE_MAX = 4096
+#: The same read as ``gateway.reach.whatsapp._NAME_SQL``: the member's display
+#: name in this org. The orchestrator cannot import a gateway module.
+_MEMBER_NAME_SQL = (
+    "SELECT NULLIF(btrim(display_name), '') FROM app_user "
+    "WHERE organization_id = CAST(:org AS uuid) AND lower(email) = lower(:m) "
+    "LIMIT 1"
+)
+
+
+def _read_member_display_name(org: str, member: str) -> str:
+    """``app_user.display_name`` of *member* in *org*, or ``""``. One read.
+
+    *org* is the run's tenant and *member* the run's verified member, both
+    from the run boundary and never from the payload (R5). It never raises.
+    The name is the member's own words, so it is folded to one short line
+    (:func:`_clean_org_name`) before it reaches a prompt.
+    """
+    opener = _opener_for_org(org)
+    if opener is None:
+        return ""
+    try:
+        from sqlalchemy import text  # noqa: PLC0415
+
+        with opener() as session:
+            row = session.execute(
+                text(_MEMBER_NAME_SQL), {"org": org, "m": member},
+            ).first()
+    except Exception:  # noqa: BLE001
+        return ""
+    return _clean_org_name(str(row[0] or "")) if row and row[0] else ""
+
+
+def _run_member_display_name() -> str:
+    """The display name of the run's verified member, or ``""``. Cached per
+    org and member for ``_MEMBER_NAME_TTL_SECONDS``, so a turn pays at most
+    one read."""
+    import time  # noqa: PLC0415
+
+    org = _current_run_org()
+    member = _verified_run_member()
+    if not (org and member):
+        return ""
+    key = (str(org), member)
+    now = time.monotonic()
+    hit = _MEMBER_NAME_CACHE.get(key)
+    if hit and now - hit[0] < _MEMBER_NAME_TTL_SECONDS:
+        return hit[1]
+    name = _read_member_display_name(str(org), member)
+    _MEMBER_NAME_CACHE.pop(key, None)
+    _MEMBER_NAME_CACHE[key] = (now, name)
+    while len(_MEMBER_NAME_CACHE) > _MEMBER_NAME_CACHE_MAX:
+        _MEMBER_NAME_CACHE.pop(next(iter(_MEMBER_NAME_CACHE)))
+    return name
+
+
+#: The two lines of :func:`_member_name_line`. A placeholder in a draft is
+#: the bug of the owner report, so each line forbids one by example.
+MEMBER_NAME_LINE = (
+    "The member: {name}. When you write an email or a message for the member, "
+    "sign it with this name. Never write a placeholder such as [your name]. A "
+    "mailbox that has a signature adds it when the mail is saved or sent, so "
+    "do not write a signature block."
+)
+MEMBER_NO_NAME_LINE = (
+    "The member has no display name in Metorite. When you write an email for "
+    "the member, end with a plain close and no name. Never write a placeholder "
+    "such as [your name]."
+)
+
+
+# ── The member's own assistant profile (WS-63 PZ-2) ─────────────────────────
+
+#: The one agent whose per-turn context carries the profile block. The
+#: WhatsApp run uses it too (personalization.md §5.1, point 2).
+_PROFILE_AGENT = "orchestrator"
+#: The rendered block by ``(org, member)``, with the time it was read, the
+#: member's write count (``assistant_profile.generation``), the member's zone
+#: (``people.timezone``), the greeting of the block and the stored interview
+#: (PZ-26), so the due line is computed per turn with the clock. A miss is cached
+#: too, so a member with no profile costs one read a minute. A write in this
+#: process moves the count, so the next turn reads again.
+#: The last field says whether the stored profile holds something (PZ-20b).
+_PROFILE_CACHE: dict[tuple[str, str], tuple[float, int, str, str, str, Any, bool, str]] = {}
+_PROFILE_TTL_SECONDS = 60.0
+_PROFILE_CACHE_MAX = 4096
+#: PZ-43: by ``(org, member)``, whether the stored ``celebrations`` key sets
+#: anything, as of the last profile read. The celebration prime asks it first,
+#: so a member with nothing set costs no query.
+_CELEBRATIONS_SET: dict[tuple[str, str], bool] = {}
+
+
+def _read_member_profile(org: str, member: str) -> tuple[Any, str, str, str] | None:
+    """What the block of *member* in *org* needs, or ``None`` on a fault.
+
+    One session and two statements: ``READ_SQL`` gives the stored
+    ``user_settings.assistant_profile``, and ``ADDRESS_SQL`` gives
+    ``people.preferred_name``, ``people.timezone`` and
+    ``app_user.display_name`` (PZ-4, ``personalization.md`` §5.2). The
+    answer is ``(profile, preferred, zone, display)``, with ``None`` for no
+    profile and ``""`` for each value that is absent. A fault in either
+    statement gives ``None``, so there is one failure path. It never raises.
+
+    *org* is the run's tenant and *member* the run's verified member, both
+    from the run boundary and never from the payload (R5). With
+    ``ACB_GRAPH_TENANT_BIND`` off the opener binds no tenant, so FORCE RLS
+    gives no row and the block is empty, as the name read is
+    (:func:`_read_member_display_name`).
+    """
+    opener = _opener_for_org(org)
+    if opener is None:
+        return None
+    try:
+        from acb_common.assistant_profile import ADDRESS_SQL, READ_SQL
+        from sqlalchemy import text
+
+        with opener() as session:
+            row = session.execute(text(READ_SQL), {"org": org, "m": member}).first()
+            names = session.execute(text(ADDRESS_SQL), {"org": org, "m": member}).first()
+        preferred, zone, display = (
+            (str(v or "") for v in names) if names else ("", "", ""))
+        return (row[0] if row else None, preferred, zone, display)
+    except Exception:
+        return None
+
+
+def _member_profile_entry(agent_name: str) -> tuple[str, str, str]:
+    """``(block, zone, greeting)`` of this turn, or ``("", "", "")``.
+
+    ``personalization.md`` §5.1. The block reaches a run only when all hold:
+    the agent is ``orchestrator``, the run has an org,
+    ``assistant_profile.enabled_for`` is true for that org (PZ-25), the
+    run has a verified member (:func:`_verified_run_member`), the run
+    boundary says the room is solo (:data:`_RUN_SOLO_ROOM`). Each check comes before the read, so a run that fails one reads
+    nothing.
+
+    The name follows §5.2 (``assistant_profile.resolve_address_name``). The
+    entry is cached per ``(org, member)`` for ``_PROFILE_TTL_SECONDS``, and
+    a profile write in this process ends it early
+    (``assistant_profile.mark_changed``). An edit of
+    ``people.preferred_name`` or ``app_user.display_name`` moves no count,
+    so it shows after the TTL, within a minute. No exception escapes.
+    Fence: ``tests/unit/test_executor_profile_block.py``.
+    """
+    import time
+
+    from acb_common import assistant_profile
+
+    if agent_name != _PROFILE_AGENT:
+        return ("", "", "")
+    # PZ-25 (§14.2): the switch is per organization, so read the run's org
+    # first. The org comes from the run boundary, never from the payload.
+    org = _current_run_org()
+    if not org or not assistant_profile.enabled_for(str(org)):
+        return ("", "", "")
+    member = _verified_run_member()
+    if not member or _RUN_SOLO_ROOM.get() is not True:
+        return ("", "", "")
+    key = (str(org), member)
+    now = time.monotonic()
+    gen = assistant_profile.generation(member)
+    hit = _PROFILE_CACHE.get(key)
+    if hit and now - hit[0] < _PROFILE_TTL_SECONDS and hit[1] == gen:
+        return (_with_interview_line(hit[2], hit[5], key, hit[7]), hit[3], hit[4])
+    block, zone, greeting, interview = "", "", "", None
+    has_stored = False
+    forms_line = ""
+    try:
+        read = _read_member_profile(str(org), member)
+        if read is not None:
+            raw, preferred, zone, display = read
+            stored = assistant_profile.stored_profile(raw)
+            _CELEBRATIONS_SET.pop(key, None)
+            _CELEBRATIONS_SET[key] = "celebrations" in stored
+            while len(_CELEBRATIONS_SET) > _PROFILE_CACHE_MAX:
+                _CELEBRATIONS_SET.pop(next(iter(_CELEBRATIONS_SET)))
+            has_stored = assistant_profile.has_stored_content(raw)
+            block = assistant_profile.member_block(raw, preferred, display, str(org))
+            if block and assistant_profile.address_forms_for(str(org)):
+                # PZ-40: the offer for the name question. The language is the
+                # stored one, never a guess.
+                from acb_common import honorifics
+
+                forms_line = honorifics.offer_line(stored["style"].get("language"))
+            greeting = assistant_profile.effective_greeting(raw) if block else ""
+            if stored["learning"] is True:
+                interview = stored.get("interview")
+    except Exception:
+        block, zone, greeting, interview, has_stored = "", "", "", None, False
+        forms_line = ""
+    if not block:
+        zone, greeting, interview, has_stored, forms_line = "", "", None, False, ""
+    _PROFILE_CACHE.pop(key, None)
+    _PROFILE_CACHE[key] = (now, gen, block, zone, greeting, interview, has_stored, forms_line)
+    while len(_PROFILE_CACHE) > _PROFILE_CACHE_MAX:
+        _PROFILE_CACHE.pop(next(iter(_PROFILE_CACHE)))
+    return (_with_interview_line(block, interview, key, forms_line), zone, greeting)
+
+
+def _interview_now() -> Any:
+    """The clock of the due line. A seam for the tests."""
+    from datetime import UTC, datetime
+
+    return datetime.now(UTC)
+
+
+#: When the due line was last shown, by ``(org, member)``, in this process.
+#: If the model asks and never marks the area ``asked``, the stored
+#: ``last_asked_at`` stays old. This map keeps the line to one for each
+#: ``DUE_HOURS``. ADVISORY across processes (R7): a second process has its
+#: own map, so a rare second line can come after a restart or on another box.
+_INTERVIEW_SHOWN: dict[tuple[str, str], Any] = {}
+
+#: True while a build of the context only measures it, as the token count of
+#: a native session does (PZ-32, P1-4). The due line then goes into the text,
+#: so the count is right, and :data:`_INTERVIEW_SHOWN` does not change, so
+#: the build that the model reads still gets the line.
+_INTERVIEW_PEEK: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_interview_peek", default=False)
+
+
+@contextlib.contextmanager
+def _interview_peek() -> Iterator[None]:
+    """A scope in which a context build leaves :data:`_INTERVIEW_SHOWN` as
+    it found it. Closing restores the value it found."""
+    token = _INTERVIEW_PEEK.set(True)
+    try:
+        yield
+    finally:
+        _INTERVIEW_PEEK.reset(token)
+
+
+def _with_interview_line(block: str, interview: Any, key: tuple[str, str] | None = None,
+                         forms_line: str = "") -> str:
+    """*block* with the due line of the interview (PZ-26, §14.4), or *block*.
+
+    *interview* is the stored value of a member whose ``learning`` is on,
+    else None. The line comes only in a run where the member can write from
+    the chat: the room is solo, ``WRITES_OPEN`` is open and the channel's
+    writes are on. It comes at most once for each ``DUE_HOURS`` in this
+    process (:data:`_INTERVIEW_SHOWN`). A line that would push the block over
+    ``RENDER_MAX`` is left out. No exception escapes."""
+    if not block or not interview:
+        return block
+    try:
+        from datetime import timedelta
+
+        from acb_common import assistant_profile
+
+        if _RUN_SOLO_ROOM.get() is not True:
+            return block
+        if not (assistant_profile.writes_open() and assistant_profile.channel_writes()):
+            return block
+        now = _interview_now()
+        shown = _INTERVIEW_SHOWN.get(key) if key is not None else None
+        if shown is not None and now - shown <= timedelta(hours=assistant_profile.DUE_HOURS):
+            return block
+        line = assistant_profile.interview_due_line(interview, now, forms_line)
+        if not line or len(block) + 1 + len(line) > assistant_profile.RENDER_MAX:
+            return block
+        if key is not None and not _INTERVIEW_PEEK.get():
+            _INTERVIEW_SHOWN.pop(key, None)
+            _INTERVIEW_SHOWN[key] = now
+            while len(_INTERVIEW_SHOWN) > _PROFILE_CACHE_MAX:
+                _INTERVIEW_SHOWN.pop(next(iter(_INTERVIEW_SHOWN)))
+        return f"{block}\n{line}"
+    except Exception:
+        return block
+
+
+def _profile_used_event(agent_name: str) -> dict[str, Any] | None:
+    """The CUSTOM event of the "used your profile" mark, or ``None`` (PZ-20b).
+
+    ``personalization.md`` §13.3 item 1 and §13.4. The mark shows when the
+    turn holds a block from a stored profile that is not empty. A block of the
+    directory name only draws none. The four conditions of §5.1 stay in
+    :func:`_member_profile_entry`, so this helper adds none of its own. The
+    call runs inside :func:`_interview_peek`, so it does not use up the due
+    line of the interview. The stream calls it after the compose step, so
+    the cache serves it. The value holds no profile text. It builds the
+    event only: :class:`_ProfileMarkHold` sends it. No exception escapes.
+    Fence: ``tests/unit/test_profile_used_event.py``."""
+    try:
+        from acb_common import assistant_profile
+
+        with _interview_peek():
+            block = _member_profile_entry(agent_name)[0]
+        if not block:
+            return None
+        key = (str(_current_run_org()), _verified_run_member())
+        hit = _PROFILE_CACHE.get(key)
+        if not hit or not hit[6]:
+            return None
+        return {"type": "CUSTOM", "name": assistant_profile.PROFILE_USED_EVENT,
+                "value": {"v": 1}}
+    except Exception:
+        return None
+
+
+class _ProfileMarkHold:
+    """The mark of PZ-20b, held until the run gives its first output.
+
+    The fold saves an answer row for a run that sends a CUSTOM event, so a
+    mark that went out before the first output gave a row with no answer to
+    a turn that never answered (a model timeout, a 402, a 429, a fault, a
+    Stop). The hold sends the mark once, right after the first event that
+    alone makes the fold save a row (:func:`_is_answer_event`). A run that
+    gives no output sends no mark. A Tier 1 run that falls back to Tier 2
+    keeps the same hold. The event goes through :func:`_sse` only when it
+    leaves, so the relay never gets a mark that the stream did not send.
+    Fence: ``tests/unit/test_profile_used_event.py``."""
+
+    __slots__ = ("_event",)
+
+    def __init__(self, event: dict[str, Any] | None = None) -> None:
+        self._event = event
+
+    def after(self, event: Any) -> tuple[str, ...]:
+        """The SSE line of the mark when *event* is the first output, else ()."""
+        if self._event is None or not _is_answer_event(event):
+            return ()
+        mark, self._event = self._event, None
+        return (_sse(mark),)
+
+
+def _member_profile_block(agent_name: str) -> str:
+    """The member's profile block for this turn, or ``""``. The block of
+    :func:`_member_profile_entry`, which holds the rules."""
+    return _member_profile_entry(agent_name)[0]
+
+
+def _member_name_line(agent_name: str) -> str:
+    """The per-turn line that names the member, or ``""``.
+
+    Only for :data:`_MEMBER_NAME_AGENTS`, and only for a run with a verified
+    member (:func:`_verified_run_member`), so a webhook or a batch run with no
+    member gets no line. Fence: ``tests/unit/test_no_egress_tool_audit.py``.
+    """
+    if agent_name not in _MEMBER_NAME_AGENTS or not _verified_run_member():
+        return ""
+    name = _run_member_display_name()
+    return MEMBER_NAME_LINE.format(name=name) if name else MEMBER_NO_NAME_LINE
+
+
+# ── The member's number system (whatsapp_assistant_channel.md §13.10) ────────
+
+
+def _read_number_system(org: str, member: str) -> str:
+    """The resolved system of *member* in *org*. One read. It never raises.
+
+    *org* is the run's tenant (:func:`_current_run_org`) and *member* the
+    run's verified member (:func:`_verified_run_member`), never request input
+    (R5). A failed read is the default, "indian".
+    """
+    from acb_common import number_system as ns
+
+    opener = _opener_for_org(org)
+    if opener is None:
+        return ns.DEFAULT
+    try:
+        from sqlalchemy import text
+
+        with opener() as session:
+            row = session.execute(text(ns.READ_SQL), {"org": org, "uid": member}).first()
+    except Exception:
+        return ns.DEFAULT
+    return ns.resolve(row[0], row[1]) if row else ns.DEFAULT
+
+
+def run_number_system() -> str:
+    """The number system of the run on this frame: the member's override,
+    then the org's value, then "indian".
+
+    The ONE reader of the run's preference. The per-turn context line
+    (:func:`_context_preamble_parts`) and the chart stamp
+    (``write_artifact.emit_generative_ui``, ``whatsapp_ui._chart``,
+    ``reports.make_report``) all call it. Cached for a minute per org and
+    member (``acb_common.number_system``), and a settings save drops the
+    cache, so a turn pays at most one read.
+    """
+    from acb_common import number_system as ns
+
+    org = _current_run_org()
+    if not org:
+        return ns.DEFAULT
+    member = _verified_run_member()
+    hit = ns.cached(org, member)
+    if hit is not None:
+        return hit
+    system = ns.resolve(None, _read_number_system(str(org), member))
+    ns.remember(org, member, system)
+    return system
+
+
+# ── WS-61 KB-4a: the Knowledge index block (knowledge_base.md §6.5) ─────────
+
+#: The one agent whose per-turn context carries the block.
+_KB_INDEX_AGENT = "orchestrator"
+#: The block by ``(org, member)``, with the time it was read. Process-local,
+#: like ``_ORG_NAME_CACHE``. A new page shows within the TTL.
+_KB_INDEX_CACHE: dict[tuple[str, str], tuple[float, str]] = {}
+_KB_INDEX_TTL_SECONDS = 300.0
+#: After a failed read, the next turn asks again after this many seconds.
+_KB_INDEX_RETRY_SECONDS = 30.0
+_KB_INDEX_CACHE_MAX = 1024
+#: The longest wait for the read. A slow gateway costs the block, never the turn.
+_KB_INDEX_TIMEOUT_SECONDS = 3.0
+
+
+def _knowledge_org_allowed(org: str) -> bool:
+    """``KNOWLEDGE_ENABLED`` and ``KNOWLEDGE_ORGS`` for *org*, through their ONE
+    reader (``gateway.routes.knowledge.flags``). Fails closed."""
+    try:
+        from gateway.routes.knowledge.flags import knowledge_org_allowed
+    except ImportError:
+        return False
+    try:
+        return knowledge_org_allowed(org) is True
+    except Exception:
+        return False
+
+
+def _kb_index_key(agent_name: str) -> tuple[str, str] | None:
+    """The cache key of the block for this run, or ``None`` for no block.
+
+    No block unless the agent is the orchestrator, ``COMPANY_SEARCH_ENABLED``
+    is on, and the run's org is on ``KNOWLEDGE_ENABLED`` and
+    ``KNOWLEDGE_ORGS``. The org is :func:`_current_run_org` and the member is
+    :func:`_verified_run_member`, both from the run boundary and never from
+    the payload or the model (R5).
+
+    The run boundary must also say the room is solo (:data:`_RUN_SOLO_ROOM`,
+    WS-63 PZ-2, fails closed). In a shared room the chat route binds the
+    member who typed as the verified member. That member's spaces must not
+    reach the room, so a room gets no block (review of KB-4a, P1-a).
+
+    H-406: the memory id is NOT the signal. ``_bind_run_identity`` can rebind
+    it from ``payload.user_email``, a client field, so a member in a shared
+    room could send their own email and match. Fence:
+    ``tests/unit/test_knowledge_index_block.py``.
+    """
+    if agent_name != _KB_INDEX_AGENT:
+        return None
+    try:
+        from acb_skills.company_search_tools import company_search_enabled
+    except ImportError:
+        return None
+    if not company_search_enabled():
+        return None
+    org = _current_run_org()
+    member = _verified_run_member()
+    if not org or not member:
+        return None
+    if _RUN_SOLO_ROOM.get() is not True:
+        return None
+    if not _knowledge_org_allowed(org):
+        return None
+    return (str(org).strip().lower(), member)
+
+
+async def _prime_knowledge_index(agent_name: str) -> None:
+    """Read the block of this run's member into the cache. Never raises.
+
+    ``run_agent_stream`` and the batch path (``_run_agent_inner``, which the
+    WhatsApp channel uses) each await it once, before the agent loads, so the
+    sync :func:`_context_preamble_parts` only reads the cache. The read is
+    ``GET /knowledge/spaces`` as the member (``knowledge_tools.index_block``),
+    at most once each ``_KB_INDEX_TTL_SECONDS`` for each org and member. A
+    failed read keeps the last block, or none, and asks again after
+    ``_KB_INDEX_RETRY_SECONDS``.
+    """
+    key = _kb_index_key(agent_name)
+    if key is None:
+        return
+    import time
+
+    now = time.monotonic()
+    hit = _KB_INDEX_CACHE.get(key)
+    if hit and now - hit[0] < _KB_INDEX_TTL_SECONDS:
+        return
+    try:
+        from acb_skills.knowledge_tools import index_block
+
+        block = await asyncio.wait_for(index_block(key[1]), timeout=_KB_INDEX_TIMEOUT_SECONDS)
+        stamp = now
+    except Exception as exc:
+        _log.warning("executor.knowledge_index_failed", error=type(exc).__name__)
+        block = hit[1] if hit else ""
+        stamp = now - _KB_INDEX_TTL_SECONDS + _KB_INDEX_RETRY_SECONDS
+    _KB_INDEX_CACHE.pop(key, None)
+    _KB_INDEX_CACHE[key] = (stamp, block)
+    while len(_KB_INDEX_CACHE) > _KB_INDEX_CACHE_MAX:
+        _KB_INDEX_CACHE.pop(next(iter(_KB_INDEX_CACHE)))
+
+
+def _knowledge_index_block(agent_name: str) -> str:
+    """The cached block of this run's org and member, or ``""``.
+
+    It reads no database and no gateway, so a turn pays nothing here. The
+    flags are checked again on each call, so a flag turned off drops the
+    block at once.
+    """
+    key = _kb_index_key(agent_name)
+    if key is None:
+        return ""
+    hit = _KB_INDEX_CACHE.get(key)
+    return hit[1] if hit else ""
+
+
+# ── The one assistant's email context (navigation_shell.md §7.1.1) ─────────
+#: The agent whose per-turn context names the member's mailboxes and the
+#: email working set of the chat.
+_EMAIL_CTX_AGENT = "orchestrator"
+
+
+def _email_ctx_member() -> str:
+    """The member whose mail the email context may name, or ``""``.
+
+    The run's verified member, and only when the run boundary says the room
+    is solo (:data:`_RUN_SOLO_ROOM`, fails closed). A shared room gets no
+    mailbox list and no working set (the KB-4a rule, P1-a). From the run
+    boundary, never from the payload or the model (R5). The memory id is not
+    the signal, because a client field can rebind it (H-406).
+    """
+    member = _verified_run_member()
+    if not member or _RUN_SOLO_ROOM.get() is not True:
+        return ""
+    return member
+
+
+async def _prime_email_context(agent_name: str) -> None:
+    """Read the member's mailboxes and this chat's working set into their
+    process caches, so the sync :func:`_context_preamble_parts` reads them.
+    Never raises. Awaited once per turn, after the artifact context binds."""
+    if agent_name != _EMAIL_CTX_AGENT:
+        return
+    member = _email_ctx_member()
+    org = _current_run_org()
+    if not (member and org):
+        return
+    try:
+        from acb_skills import email_chat_context as ecc
+
+        await ecc.prime_mailboxes(str(org), member)
+        await ecc.load_working_set()
+    except Exception as exc:  # a block, never the turn
+        _log.warning("executor.email_context_failed", error=type(exc).__name__)
+
+
+def _email_context_block(agent_name: str) -> str:
+    """The orchestrator's block of the member's mailboxes and of this chat's
+    email working set, from the caches, or ``""``. It reads no gateway and
+    no Redis."""
+    if agent_name != _EMAIL_CTX_AGENT:
+        return ""
+    member = _email_ctx_member()
+    org = _current_run_org()
+    if not (member and org):
+        return ""
+    try:
+        from acb_skills import email_chat_context as ecc
+
+        boxes = ecc.cached_mailboxes(str(org), member)
+        parts = [ecc.mailboxes_block(boxes),
+                 ecc.orchestrator_block(ecc.cached_working_set(), boxes)]
+    except Exception:
+        return ""
+    return "\n\n".join(p for p in parts if p)
+
+
+# ── The member's corrections and limits in a chat (WS-67 OA-4) ─────────────
+
+
+async def _prime_chat_constraints(agent_name: str) -> None:
+    """Read this chat's kept corrections into the run, and open the two tools.
+
+    ``one_assistant_context.md`` §4 OA-4. Only an orchestrator run with
+    ``CHAT_CONSTRAINTS`` on, in a solo room, with a verified member who is
+    the member of the run binding, and with an org. Such a run binds the
+    list (``chat_constraints.CONSTRAINTS``) and opens the tools
+    (``chat_constraints.OPEN``), so the sync :func:`_context_preamble_parts`
+    and each delegated task read it. All of it comes from the run boundary,
+    never from the payload or the model (R5). Never raises. Awaited once per
+    turn, after the artifact context binds.
+    """
+    if agent_name != _EMAIL_CTX_AGENT:
+        return
+    try:
+        from acb_skills import chat_constraints as cc
+        from acb_skills.write_artifact import (
+            artifact_context,
+            derive_artifact_context,
+        )
+    except ImportError:
+        return
+    if not cc.chat_constraints_enabled():
+        return
+    member = _email_ctx_member()
+    if not (member and _current_run_org()):
+        return
+    if str(artifact_context().get("member") or "").strip().lower() != member:
+        return
+    try:
+        items = await cc.load_constraints()
+    except Exception as exc:  # a block, never the turn
+        _log.warning("executor.chat_constraints_failed", error=type(exc).__name__)
+        items = []
+    derive_artifact_context(**{cc.CONSTRAINTS: tuple(items), cc.OPEN: True})
+
+
+def _chat_constraints_block(agent_name: str) -> str:
+    """The orchestrator's block of this chat's corrections and limits, or
+    ``""``. It reads the run binding and the process cache, never Redis."""
+    if agent_name != _EMAIL_CTX_AGENT:
+        return ""
+    try:
+        from acb_skills import chat_constraints as cc
+
+        return cc.orchestrator_block(cc.kept_for_run())
+    except Exception:
+        return ""
+
+
+def _inherited_chat_constraints(parent: Any) -> dict[str, Any]:
+    """The parent's kept corrections, for a DELEGATED run's own binding.
+
+    WS-67 OA-4, as ``member_turns`` (OA-1). *parent* is the run context read
+    BEFORE this run sets its own. A top-level run binds none here, because
+    :func:`_prime_chat_constraints` reads its own. With the flag off or none
+    kept, ``{}``, so the binding stays as it was.
+    """
+    if not (parent or {}).get("run_id"):
+        return {}
+    try:
+        from acb_skills import chat_constraints as cc
+
+        items = cc.kept_for_run(parent)
+    except Exception:
+        return {}
+    return {cc.CONSTRAINTS: tuple(items)} if items else {}
+
+
+# ── The briefing at the start of a chat (WS-63 PZ-34) ───────────────────────
+# ``personalization.md`` §15.4. The async prime builds the block, or reads the
+# stored copy, and binds it for THIS run only. The sync builder reads the run
+# binding and checks each gate again. Fences:
+# ``tests/unit/test_executor_briefing_block.py`` and
+# ``tests/unit/test_executor_briefing_block_r8.py`` (R8).
+
+#: The Redis namespace of the stored block, through the tenant wrapper (R5).
+_BRIEFING_NAMESPACE = "chat-briefing"
+#: The life of a stored block. Each turn of the chat in this time reads the
+#: same bytes, so the block stays stable in the cached prefix (D-PZ-29).
+#: A Forget, a Delete or the switch does not clear a stored block, so one
+#: chat can keep a deleted summary for up to this long (D-PZ-38).
+_BRIEFING_TTL_S = 24 * 3600
+#: The longest wait of a turn for the block: the Redis read, the build and
+#: the store. A slower turn gets no block, and the turn goes on at once.
+_BRIEFING_TIMEOUT_S = 1.0
+#: The run-binding key of the block of THIS run: ``(run_id, org, member,
+#: text)``. A delegated run binds its own context and its own run id, so the
+#: sync builder never gives it the block of its parent.
+_BRIEFING_KEY = "member_briefing"
+#: The version of the stored value.
+_BRIEFING_VERSION = 1
+
+
+def _briefing_now() -> Any:
+    """The clock of the time line. A seam for the tests."""
+    from datetime import UTC, datetime
+
+    return datetime.now(UTC)
+
+
+def _briefing_redis() -> Any:
+    """The tenant Redis client. A seam, so a test passes a fake client."""
+    from acb_common.tenant_redis import get_tenant_redis
+
+    return get_tenant_redis()
+
+
+def _briefing_member_part(member: str) -> str:
+    """A hash of the member, so the key holds no address."""
+    import hashlib
+
+    return hashlib.sha256(member.encode("utf-8")).hexdigest()[:24]
+
+
+def _briefing_slot(
+    agent_name: str,
+    *,
+    organization_id: str | None,
+    thread_id: str | None,
+    delegated: bool,
+    shows_cards: bool,
+    batch_thread: bool,
+) -> tuple[str, str, str] | None:
+    """``(org, session, member)`` of a run that may get the block, or None.
+
+    Only the orchestrator, in the member's own chat on the web: a run that is
+    not delegated, not a batch run, and that shows cards (a WhatsApp run shows
+    none, D115). The org is the run's tenant and must be the bound one. The
+    flag must name it (``assistant_profile.briefing_for``, which needs
+    ``enabled_for`` too). The run needs a verified member and a solo room
+    from the run boundary. Each input comes from the run boundary, never from
+    the payload (R5).
+    """
+    if agent_name != _PROFILE_AGENT or delegated or batch_thread or not shows_cards:
+        return None
+    org = str(organization_id or "").strip()
+    session = str(thread_id or "").strip()
+    if not org or not session or org != str(_current_run_org() or "").strip():
+        return None
+    from acb_common import assistant_profile
+
+    if not assistant_profile.briefing_for(org):
+        return None
+    member = _verified_run_member()
+    if not member or _RUN_SOLO_ROOM.get() is not True:
+        return None
+    return org, session, member
+
+
+def _briefing_aware(value: Any) -> Any:
+    """A stored time as an aware datetime in UTC, or None."""
+    from datetime import UTC, datetime
+
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    if isinstance(value, str) and value.strip():
+        try:
+            at = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return at if at.tzinfo is not None else at.replace(tzinfo=UTC)
+    return None
+
+
+async def _briefing_chats(org: str, session: str, member: str) -> tuple[list[Any], str]:
+    """The member's recent chats for the block, and the member's zone.
+
+    One short session of the run's tenant. ``assistant_summaries.recent`` is
+    the one reader of the summaries, and it holds the flag, the switch and the
+    rules of a chat. The zone is the member's own, read by
+    ``personal.stored_zone``, the one read that the due tasks use too. The
+    current chat never shows: ``recent`` leaves it out, and so does this.
+    """
+    from zoneinfo import ZoneInfo
+
+    from acb_common import assistant_profile as ap
+    from acb_common.db import tenant_session
+    from gateway.assistant_summaries import recent
+    from gateway.routes.projects.due_day import zone_name
+    from gateway.routes.projects.personal import stored_zone
+
+    async with tenant_session(org) as db:
+        found = await recent(db, member, exclude=session)
+        zone = zone_name(await stored_zone(db, member))
+    tz = ZoneInfo(zone)
+    chats: list[Any] = []
+    for item in found:
+        if item.session_id == session:
+            continue
+        at = _briefing_aware(item.updated_at)
+        chats.append(ap.BriefingChat(
+            day=at.astimezone(tz).date() if at is not None else None,
+            title=item.title, text=item.text, follow_ups=tuple(item.follow_ups)))
+    return chats, zone
+
+
+class _BriefingReadFailed(RuntimeError):
+    """The identity read or the role read of the member failed. The build
+    stops, so the store keeps nothing, and the next turn tries again."""
+
+
+async def _briefing_tasks(org: str, member: str, zone: str) -> list[Any]:
+    """At most three of the member's tasks that are due today or overdue.
+
+    ``personal.my_due_tasks`` is the one reader (D-PZ-30), the reader of the
+    needs feed. Like the feed, it runs only for a member with
+    ``feature:projects``. The member's context comes from
+    ``acb_auth.deps.member_context``, as the My Day loop takes it. ⚠️ That
+    call binds the member's org as a side effect, so it runs in the task of
+    :func:`_briefing_within_budget`, and the run's own binding never changes.
+    A context of another org reads nothing.
+
+    ⚠️ A failed read is not "no tasks" (repair round 1, P2-1). The identity
+    read gives ``(None, None)`` and sets ``identity_read_failed()``, and the
+    role read degrades and sets ``role_read_failed()``. Either one raises
+    :class:`_BriefingReadFailed`, so the turn gets no block and the store
+    keeps nothing, as ``my_day_loop.departed`` treats the same flag.
+    """
+    from acb_auth.access import identity_read_failed, role_read_failed
+    from acb_auth.deps import member_context
+    from acb_common import assistant_profile as ap
+    from gateway.routes.projects.due_day import local_date
+    from gateway.routes.projects.personal import my_due_tasks
+
+    user = await member_context(member)
+    if identity_read_failed() or role_read_failed():
+        raise _BriefingReadFailed("the identity or the role read of the member failed")
+    if str(getattr(user, "organization_id", "") or "").strip().lower() != org.lower():
+        return []
+    if not user.has_permission("feature:projects"):
+        return []
+    answer = await my_due_tasks(user, limit=ap.BRIEFING_TASKS_MAX)
+    task_zone = answer.get("timezone") or zone
+    tasks: list[Any] = []
+    for row in answer.get("rows") or []:
+        due = _briefing_aware(row.get("due_at"))
+        tasks.append(ap.BriefingTask(
+            title=str(row.get("title") or ""),
+            due=local_date(task_zone, due) if due is not None else None))
+    return tasks
+
+
+async def _build_member_briefing(org: str, session: str, member: str) -> str:
+    """The text of the block, or ``""`` when it holds no item. One build."""
+    from zoneinfo import ZoneInfo
+
+    from acb_common import assistant_profile as ap
+
+    chats, zone = await _briefing_chats(org, session, member)
+    tasks = await _briefing_tasks(org, member, zone)
+    return ap.render_briefing(chats, tasks, at=_briefing_now().astimezone(ZoneInfo(zone)))
+
+
+async def _briefing_text(org: str, session: str, member: str) -> str:
+    """The stored block of this chat and member, else a new build.
+
+    The key is ``tenant_redis.key("chat-briefing", session, member hash)``
+    under the run's org. A stored value wins, the empty marker too, so a turn
+    after the first runs no read of the database and the bytes stay the
+    same. A build stores its text, or the empty marker, for 24 hours. A
+    Redis fault raises, so the turn gets no block (§15.4).
+    """
+    from acb_common.tenant_redis import key, organization_scope
+
+    redis = _briefing_redis()
+    with organization_scope(org):
+        slot = key(_BRIEFING_NAMESPACE, session, _briefing_member_part(member))
+        raw = await redis.get(slot)
+    if raw is not None:
+        try:
+            stored = json.loads(raw)
+        except (TypeError, ValueError):
+            return ""
+        text = stored.get("text") if isinstance(stored, dict) else None
+        return text if isinstance(text, str) else ""
+    text = await _build_member_briefing(org, session, member)
+    value = json.dumps({"v": _BRIEFING_VERSION, "text": text}, ensure_ascii=False)
+    with organization_scope(org):
+        await redis.setex(slot, _BRIEFING_TTL_S, value)
+    return text
+
+
+def _drop_briefing_result(task: asyncio.Future[Any]) -> None:
+    """Read the end of a build that the turn left, so no warning names it."""
+    if not task.cancelled():
+        task.exception()
+
+
+async def _briefing_within_budget(org: str, session: str, member: str) -> str:
+    """:func:`_briefing_text` within :data:`_BRIEFING_TIMEOUT_S`, else ``""``.
+
+    The work runs in its own task, so a value that it binds (the org of
+    ``member_context``) stays in that task. The turn waits for the budget at
+    most, and never for a cancel. A slow build, a Redis fault and any other
+    fault give ``""`` and a log line with the class only. A cancel of the
+    turn cancels the work too.
+    """
+    task = asyncio.ensure_future(_briefing_text(org, session, member))
+    try:
+        done, _pending = await asyncio.wait({task}, timeout=_BRIEFING_TIMEOUT_S)
+    finally:
+        if not task.done():
+            task.cancel()
+            task.add_done_callback(_drop_briefing_result)
+    if task not in done:
+        _log.warning("executor.briefing_slow", timeout_s=_BRIEFING_TIMEOUT_S)
+        return ""
+    if task.cancelled():
+        return ""
+    exc = task.exception()
+    if exc is not None:
+        _log.warning("executor.briefing_failed", error=type(exc).__name__)
+        return ""
+    text = task.result()
+    return text if isinstance(text, str) else ""
+
+
+async def _prime_member_briefing(
+    agent_name: str,
+    *,
+    organization_id: str | None,
+    thread_id: str | None,
+    delegated: bool,
+    shows_cards: bool,
+    batch_thread: bool,
+) -> None:
+    """Bind the briefing block of this turn into the run, or bind nothing.
+
+    ``personalization.md`` §15.4. The gates are :func:`_briefing_slot`. The
+    run binding must name the verified member and this chat. The block goes
+    into the run binding with this run's id, after ``bind_artifact_context``,
+    so :func:`_member_briefing_block` reads it. A delegated run binds its own
+    context, so it never inherits the block. Awaited once per turn, after the
+    artifact context binds. Never raises, apart from a cancel of the turn.
+    """
+    slot = _briefing_slot(
+        agent_name, organization_id=organization_id, thread_id=thread_id,
+        delegated=delegated, shows_cards=shows_cards, batch_thread=batch_thread)
+    if slot is None:
+        return
+    try:
+        from acb_skills.write_artifact import artifact_context, derive_artifact_context
+    except ImportError:
+        return
+    org, session, member = slot
+    ctx = artifact_context()
+    run_id = str(ctx.get("run_id") or "")
+    if not run_id or ctx.get("batch_thread") is True:
+        return
+    if str(ctx.get("member") or "").strip().lower() != member:
+        return
+    if str(ctx.get("session_id") or "") != session:
+        return
+    text = await _briefing_within_budget(org, session, member)
+    if text:
+        derive_artifact_context(**{_BRIEFING_KEY: (run_id, org, member, text)})
+
+
+def _member_briefing_block(agent_name: str) -> str:
+    """The briefing block of this run, or ``""``.
+
+    It reads the run binding that :func:`_prime_member_briefing` set, and no
+    database and no Redis. It checks each gate again: the agent, the flag of
+    the run's org, the verified member, the solo room, and the run id of the
+    binding. So a run whose parent had a block gets none, and a flag turned
+    off drops the block at once. No exception escapes.
+    """
+    if agent_name != _PROFILE_AGENT:
+        return ""
+    try:
+        from acb_common import assistant_profile
+        from acb_skills.write_artifact import artifact_context
+
+        org = str(_current_run_org() or "").strip()
+        if not org or not assistant_profile.briefing_for(org):
+            return ""
+        member = _verified_run_member()
+        if not member or _RUN_SOLO_ROOM.get() is not True:
+            return ""
+        ctx = artifact_context()
+        entry = ctx.get(_BRIEFING_KEY)
+        if not isinstance(entry, tuple) or len(entry) != 4:
+            return ""
+        run_id, bound_org, bound_member, text = entry
+        if not run_id or run_id != ctx.get("run_id") or ctx.get("batch_thread") is True:
+            return ""
+        if bound_org != org or bound_member != member:
+            return ""
+        return text if isinstance(text, str) else ""
+    except Exception:
+        return ""
+
+
+# ── When to greet (PZ-39, owner 2026-11-06) ─────────────────────────────────
+# The chat greets in the first reply of a chat and in the first reply after
+# ``today.GREET_GAP_HOURS`` with no message in it. The answer comes from the
+# STORED rows of this chat (``chat_message``) in a tenant session, never from
+# ``event_payload["messages"]``, which the client sends (R5). An async prime
+# step binds the answer into the run, and the sync context builder reads it,
+# as the briefing does. A fault, a timeout and an unknown result all give
+# "do not greet": a missed hello is harmless and a hello mid-conversation is
+# the defect. A run without cards (WhatsApp) has no reachable chat rows of its
+# own, so it never greets. Fences: ``tests/unit/test_executor_greet_due.py``
+# and ``tests/unit/test_executor_greet_due_r8.py`` (R8).
+
+#: The run-binding key of the answer of THIS run: ``(run_id, org, member,
+#: due)``. ``due`` is True or False. A run with NO entry has no decision.
+_GREET_KEY = "greet_due"
+#: The longest wait of a turn for the read. A slower turn does not greet.
+_GREET_TIMEOUT_S = 1.0
+#: One read, two answers. First: the server-set time (``created_at``, never the
+#: browser's ``timestamp_ms``) of the newest row of this chat that has content,
+#: leaving out the rows of THIS turn BY ID: the minted reply (``:rid``) and the
+#: member's prompt (``:pid``). Never "the newest user row": a failed prompt
+#: write would then hide the previous prompt (PZ-39 repair F1). Second: the
+#: server time of the prompt row itself, when it exists. An old prompt row is a
+#: re-send, not a new message (F2).
+_GREET_READ_SQL = (
+    "SELECT "
+    "(SELECT (EXTRACT(EPOCH FROM max(created_at)) * 1000)::bigint "
+    " FROM chat_message WHERE session_id = :sid AND content <> '' "
+    " AND id NOT IN (:rid, :pid)), "
+    "(SELECT (EXTRACT(EPOCH FROM created_at) * 1000)::bigint "
+    " FROM chat_message WHERE session_id = :sid AND id = :pid AND :pid <> '')"
+)
+
+
+async def _greet_read(
+    org: str, session: str, reply_id: str = "", prompt_id: str = "",
+) -> tuple[int | None, int | None]:
+    """``(last_ms, prompt_ms)``: the server time of the newest earlier row with
+    content, and of this turn's prompt row. Each is None when absent."""
+    from acb_common.db import tenant_session
+    from sqlalchemy import text
+
+    async with tenant_session(org) as db:
+        row = (await db.execute(text(_GREET_READ_SQL), {
+            "sid": session, "rid": reply_id or "", "pid": prompt_id or ""})).first()
+    last, prompt = (row[0], row[1]) if row else (None, None)
+    return (None if last is None else int(last), None if prompt is None else int(prompt))
+
+
+async def _greet_decision(
+    org: str, session: str, turn_ids: tuple[str, ...] = (),
+) -> bool:
+    """True when this turn opens a conversation. False on any fault.
+
+    *turn_ids* is ``(reply_id, prompt_id)``. The gateway route passes them, and
+    the request supplies both ids. The read skips those rows only. It stays
+    bound to the run's org, member and session (R5), so a client can change
+    only its own greeting: naming older rows of its chat can add one
+    greeting, and nothing else. A turn with no new member message (no
+    prompt id, or a prompt row older than the gap: a regenerate or a retry)
+    never greets (F2). The gap is measured on ``chat_message.created_at``,
+    which the database sets for EVERY row (``DEFAULT now()``, and no writer
+    sets it). So a browser clock cannot move it (F3). A row that a bulk
+    import wrote reads as the time of the import."""
+    from acb_common.today import GREET_GAP_HOURS, greet_due
+
+    reply_id = turn_ids[0] if len(turn_ids) > 0 else ""
+    prompt_id = turn_ids[1] if len(turn_ids) > 1 else ""
+    if not prompt_id:
+        return False
+    try:
+        last_ms, prompt_ms = await asyncio.wait_for(
+            _greet_read(org, session, reply_id, prompt_id),
+            timeout=_GREET_TIMEOUT_S)
+        now_ms = int(_briefing_now().timestamp() * 1000)
+        if prompt_ms is not None and now_ms - prompt_ms >= GREET_GAP_HOURS * 3600 * 1000:
+            return False
+        return greet_due(last_ms, now_ms, first_reply=last_ms is None)
+    except Exception as exc:
+        _log.warning("executor.greet_read_failed", error=type(exc).__name__)
+        return False
+
+
+async def _prime_greet_due(
+    agent_name: str,
+    *,
+    organization_id: str | None,
+    thread_id: str | None,
+    delegated: bool,
+    shows_cards: bool,
+    batch_thread: bool,
+    turn_ids: tuple[str, ...] = (),
+) -> None:
+    """Bind the greeting decision of this turn into the run, or bind nothing.
+
+    Same gates as the briefing without its flag: the orchestrator, a run that
+    is not delegated, not batch and that shows cards, the run's own org, a
+    verified member and a solo room. All from the run boundary (R5). A run
+    that fails a gate gets NO decision, and its part-of-day line keeps the old
+    rule (first reply of the conversation only). A decided run binds True or
+    False. Never raises, apart from a cancel of the turn."""
+    if agent_name != _PROFILE_AGENT or delegated or batch_thread or not shows_cards:
+        return
+    org = str(organization_id or "").strip()
+    session = str(thread_id or "").strip()
+    if not org or not session or org != str(_current_run_org() or "").strip():
+        return
+    member = _verified_run_member()
+    if not member or _RUN_SOLO_ROOM.get() is not True:
+        return
+    try:
+        from acb_common import assistant_profile
+        from acb_skills.write_artifact import artifact_context, derive_artifact_context
+
+        if not assistant_profile.enabled_for(org):
+            return
+        ctx = artifact_context()
+        run_id = str(ctx.get("run_id") or "")
+        if not run_id or ctx.get("batch_thread") is True:
+            return
+        if str(ctx.get("session_id") or "") != session:
+            return
+        due = await _greet_decision(org, session, tuple(turn_ids))
+        derive_artifact_context(**{_GREET_KEY: (run_id, org, member, due)})
+    except ImportError:
+        return
+
+
+def _greet_due_now() -> bool | None:
+    """The decision of this run: True, False, or None when none was made.
+    Reads no database."""
+    try:
+        from acb_skills.write_artifact import artifact_context
+
+        org = str(_current_run_org() or "").strip()
+        member = _verified_run_member()
+        if not org or not member or _RUN_SOLO_ROOM.get() is not True:
+            return None
+        ctx = artifact_context()
+        entry = ctx.get(_GREET_KEY)
+        if not isinstance(entry, tuple) or len(entry) != 4:
+            return None
+        run_id, bound_org, bound_member, due = entry
+        if not run_id or run_id != ctx.get("run_id") or ctx.get("batch_thread") is True:
+            return None
+        if bound_org != org or bound_member != member or not isinstance(due, bool):
+            return None
+        return due
+    except Exception:
+        return None
+
+
+# ── Celebrations (WS-63 PZ-43, personalization.md §16.6) ────────────────────
+# The birthday, the festival picks and the work anniversary of the member. The
+# async prime step reads ONE row in a tenant session (``celebrations.READ_SQL``)
+# and binds it into the run. The sync context builder reads the binding and
+# asks the pure ``celebrations.celebration_line`` for the line, at the member's
+# zone. The line appears in the first reply of the member's local day only,
+# because it needs no assistant reply since local midnight. A fault, a timeout
+# and the flag off all give no line. Fence: ``tests/unit/test_celebrations.py``.
+
+_CELEBRATION_KEY = "celebration_state"
+_CELEBRATION_TIMEOUT_S = 1.0
+
+
+async def _celebration_read(org: str, member: str) -> tuple[Any, Any, Any]:
+    """``(celebrations, last_reply_at, join_date)`` of *member* in *org*."""
+    from acb_common import celebrations
+    from acb_common.db import tenant_session
+    from sqlalchemy import text
+
+    since = celebrations.lookback_since(_briefing_now())
+    async with tenant_session(org) as db:
+        row = (await db.execute(text(celebrations.READ_SQL), {
+            "org": org, "m": member, "since": since})).first()
+    return (row[0], row[1], row[2]) if row else (None, None, None)
+
+
+async def _prime_celebrations(
+    agent_name: str,
+    *,
+    organization_id: str | None,
+    thread_id: str | None,
+    delegated: bool,
+    shows_cards: bool,
+    batch_thread: bool,
+) -> None:
+    """Bind the celebration state of this turn into the run, or bind nothing.
+
+    The gates are those of the briefing: the orchestrator, a run that is not
+    delegated, not batch and that shows cards, the run's own org, a verified
+    member and a solo room, all from the run boundary (R5). The flag
+    ``CELEBRATIONS_ORGS`` must name the org. Never raises, apart from a cancel."""
+    if agent_name != _PROFILE_AGENT or delegated or batch_thread or not shows_cards:
+        return
+    org = str(organization_id or "").strip()
+    session = str(thread_id or "").strip()
+    if not org or not session or org != str(_current_run_org() or "").strip():
+        return
+    member = _verified_run_member()
+    if not member or _RUN_SOLO_ROOM.get() is not True:
+        return
+    try:
+        from acb_common import celebrations
+        from acb_skills.write_artifact import artifact_context, derive_artifact_context
+
+        if not celebrations.celebrations_for(org):
+            return
+        # The profile of this run (cached, one read a minute) says whether
+        # anything is set. Nothing set: no query. Unknown: ask the database.
+        _member_profile_entry(agent_name)
+        if _CELEBRATIONS_SET.get((org, member)) is False:
+            return
+        ctx = artifact_context()
+        run_id = str(ctx.get("run_id") or "")
+        if not run_id or ctx.get("batch_thread") is True:
+            return
+        if str(ctx.get("session_id") or "") != session:
+            return
+        state = await asyncio.wait_for(
+            _celebration_read(org, member.strip().lower()), timeout=_CELEBRATION_TIMEOUT_S)
+        derive_artifact_context(**{_CELEBRATION_KEY: (run_id, org, member, state)})
+    except ImportError:
+        return
+    except Exception as exc:
+        _log.warning("executor.celebration_read_failed", error=type(exc).__name__)
+
+
+def _celebration_line(agent_name: str, zone: str | None) -> str:
+    """The celebration line of this run, or ``""``. Reads the binding that
+    :func:`_prime_celebrations` set, and no database. It checks each gate
+    again, so a flag turned off drops the line at once. No exception escapes."""
+    if agent_name != _PROFILE_AGENT:
+        return ""
+    try:
+        from acb_common import celebrations
+        from acb_skills.write_artifact import artifact_context
+
+        org = str(_current_run_org() or "").strip()
+        member = _verified_run_member()
+        if not org or not member or _RUN_SOLO_ROOM.get() is not True:
+            return ""
+        if not celebrations.celebrations_for(org):
+            return ""
+        ctx = artifact_context()
+        entry = ctx.get(_CELEBRATION_KEY)
+        if not isinstance(entry, tuple) or len(entry) != 4:
+            return ""
+        run_id, bound_org, bound_member, state = entry
+        if not run_id or run_id != ctx.get("run_id") or ctx.get("batch_thread") is True:
+            return ""
+        if bound_org != org or bound_member != member:
+            return ""
+        raw, last_reply_at, join_date = state
+        from acb_common.assistant_profile import _as_dict
+
+        return celebrations.celebration_line(
+            _as_dict(raw),
+            now=_briefing_now(), zone=zone, join_date=join_date, last_reply_at=last_reply_at)
+    except Exception:
+        return ""
+
+
+# ── The tool packs of the one assistant (WS-67 OA-7c) ───────────────────────
+# ``one_assistant_context.md`` §4.2.2 and §4.2.8. Layer (a) in a live run.
+# The read starts beside the load (:func:`_start_pack_turn`), the apply runs
+# after ``_apply_agent_md_overrides`` and before ``_inject_agent_tools``
+# (``_tool_injection._apply_tool_packs``), and the run key and the record go
+# into the run binding after ``bind_artifact_context``. With the flag off the
+# read never starts, so no pack state is read or written. Fences:
+# ``tests/unit/test_tool_packs_choice.py`` and ``tests/unit/test_tool_packs_off.py``.
+
+#: The agent whose own chat runs load tool packs.
+_PACK_AGENT = "orchestrator"
+
+
+def _start_pack_turn(
+    agent_name: str,
+    organization_id: str | None,
+    thread_id: str | None,
+    *,
+    member: str,
+    delegated: bool,
+    solo_room: bool | None,
+    batch_thread: bool,
+    shows_cards: bool,
+) -> asyncio.Future[Any] | None:
+    """Start the read of layer (a) beside the load, or None (§4.2.2).
+
+    Packs act only in the stream run of the orchestrator, in the member's own
+    chat on the web, with a verified member and an org that the flag names.
+    So a delegated run, a shared room, a batch run (the WhatsApp path, D115,
+    and each run with no chat) and a run that shows no card load no pack.
+    Each input comes from the run boundary, never from the payload (R5).
+
+    It is the ONE caller of ``tool_packs.packs_on``. With no pack on for the
+    org it starts nothing, so it reads and writes no pack state. The task
+    counts the turn and reads the sticky packs (``tool_packs.begin_turn``),
+    and it gives that turn and the allowed slugs.
+    """
+    if agent_name != _PACK_AGENT or delegated or solo_room is not True:
+        return None
+    if batch_thread or not shows_cards or not thread_id or not organization_id:
+        return None
+    verified = _verified_run_member()
+    if not verified or str(member or "").strip().lower() != verified:
+        return None
+    try:
+        from acb_common.assistant_profile import sent_words
+        from acb_skills import tool_packs
+    except ImportError:
+        return None
+    allowed = tool_packs.packs_on(organization_id)
+    if not allowed:
+        return None
+    # WS-63 D-PZ-37: the words that the member SENT, typed or tapped. A tapped
+    # pill "Draft a reply to the email from Acme" holds no typed words, and it
+    # must still load the email pack. These words only choose tools, and they
+    # change no guard. The typed words stay the one value that grounds a write.
+    words = sent_words()
+    # OA-7d: the app of the dock. The gateway cleaned it and bound it for this
+    # run, and begin_turn cleans it again. It adds the core pack of that app
+    # only when the flag allows it, and it changes no guard.
+    surface = tool_packs.current_surface()
+
+    async def _read() -> tuple[Any, frozenset[str]]:
+        turn = await tool_packs.begin_turn(
+            organization_id, thread_id, verified, words, surface)
+        return turn, allowed
+
+    return asyncio.ensure_future(_read())
+
+
+async def _apply_pack_turn(
+    task: asyncio.Future[Any] | None,
+    agents: list[Any],
+    run_ctx: dict[str, Any],
+    *,
+    agent_name: str,
+    tool_scope: list[str] | None,
+    agent_config: dict[str, Any] | None,
+    is_authorized: Any = None,
+) -> Any:
+    """Await the read of :func:`_start_pack_turn` and apply layer (a).
+
+    Returns the ``_tool_injection.PackApply`` of the run, or None when no pack
+    loads and no pack is left to offer. A fault loads no pack and never fails
+    the turn: the run then has the tools and the persona of a run with the
+    flag off.
+
+    WS-67 OA-7e: it offers layer (b) too (``offer_loader``). The run then
+    holds ``load_skill_tools`` for each allowed pack that layer (a) did not
+    load. This is the one caller that passes it, so only the run that layer
+    (a) serves gets the tool. WS-67 OA-7i: *is_authorized* is the run's grant
+    check, which the MCP lookahead of the loader plan reads.
+    """
+    if task is None:
+        return None
+    try:
+        turn, allowed = await task
+        from orchestrator._tool_injection import _apply_tool_packs
+        from orchestrator.agents import PACK_DELEGATION_BULLETS
+
+        return await _apply_tool_packs(
+            agents, turn, run_ctx, allowed=allowed, agent_name=agent_name,
+            tool_scope=tool_scope, agent_config=agent_config,
+            bullets=PACK_DELEGATION_BULLETS, offer_loader=True,
+            is_authorized=is_authorized,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # a pack never costs the turn
+        _log.error("executor.packs_refused", reason="apply_failed",
+                   error_type=type(exc).__name__)
+        return None
+
+
+def _pack_loader(agent: Any) -> Any | None:
+    """The ``LoadSkillTools`` of the run's view of *agent*, or None."""
+    try:
+        from acb_skills.tool_packs import LoadSkillToolsProvider
+    except ImportError:
+        return None
+    for provider in getattr(agent, "context_providers", None) or []:
+        if isinstance(provider, LoadSkillToolsProvider):
+            return provider.loader
+    return None
+
+
+def _pack_loader_offer(agent: Any) -> tuple[str, ...]:
+    """The packs that the run still offers to load (layer (b)), for the pack
+    items of the turn-kind request (WS-67 OA-7f). Empty when the run has no
+    loader, so a room, a WhatsApp run and a run with the flag off send none.
+    Each pack is one that layer (a) did not load and that fits the caps."""
+    loader = _pack_loader(agent)
+    return tuple(loader.offered) if loader is not None else ()
+
+
+def _apply_turn_pack_items(agents: list[Any], tier_run: Any) -> None:
+    """Hand the packs of the turn-kind answer to the loader of the run
+    (WS-67 OA-7f). The provider loads them in ``before_run``, so the first
+    model request holds them and no request is added. Never raises."""
+    slugs = tuple(getattr(tier_run, "packs", ()) or ())
+    if not slugs or not agents:
+        return
+    try:
+        loader = _pack_loader(agents[0])
+        if loader is not None:
+            kept = loader.set_early(slugs)
+            _log.info("executor.packs_turn_kind", asked=list(slugs), kept=list(kept))
+    except Exception as exc:  # a pack never costs the turn
+        _log.error("executor.packs_refused", reason="turn_kind_items",
+                   error_type=type(exc).__name__)
+
+
+def _log_request_tools_view(agents: list[Any], agent_name: str) -> list[Any]:
+    """*agents*, with the first one on a per-run view that logs the tools of
+    each model request (WS-67 OA-8f, ``executor.request_tools``): the count
+    actually sent and a short hash of the names, with the tools of a context
+    provider and of an MCP server. Only the orchestrator, and never raises.
+    The view comes from ``agent_with_providers``, as the loader's does."""
+    if agent_name != _PACK_AGENT or not agents:
+        return agents
+    try:
+        from agent_framework import Agent
+
+        if not isinstance(agents[0], Agent):
+            return agents
+        from acb_skills.tool_guard import LogRequestToolsProvider
+
+        from orchestrator._native_run_context import agent_with_providers
+
+        agents[0] = agent_with_providers(agents[0], [LogRequestToolsProvider(agent_name)])
+    except Exception as exc:  # a log never costs the turn
+        _log.warning("executor.request_tools_log_off", error_type=type(exc).__name__)
+    return agents
+
+
+def _log_pack_request_tools(agents: list[Any]) -> None:
+    """Log the tool count of a run that loaded packs, after the injection.
+
+    The cap of layer (a) reads an estimate before the injection
+    (``_tool_injection._pack_base_count``), and this line gives the true
+    count, so OA-8e can measure the gap."""
+    try:
+        from acb_skills.tool_packs import MAX_REQUEST_TOOLS
+    except ImportError:
+        return
+    count = len(_agent_tool_names(agents[0])) if agents else 0
+    # OA-8f: the load tool rides in a context provider, so no pool holds it.
+    # The estimate counts it (``_apply_tool_packs``), so the true count does too.
+    if agents and _pack_loader_offer(agents[0]):
+        count += 1
+    log = _log.warning if count > MAX_REQUEST_TOOLS else _log.info
+    log("executor.pack_request_tools", tools=count, cap=MAX_REQUEST_TOOLS)
+
+
+def _pack_left_block(agent_name: str) -> str:
+    """Task 1747: the line that names the sticky packs that left this chat
+    at the start of the turn (``tool_packs.left_line``), or "".
+
+    It reads the record of the packs from the run binding, which
+    ``_apply_tool_packs`` built and the run bound after
+    ``bind_artifact_context``. A delegated run drops the record, so it gets no
+    line. The line is part of the context of the turn, after the cache break,
+    so the persona keeps its bytes. Never raises."""
+    if agent_name != _PACK_AGENT:
+        return ""
+    try:
+        from acb_skills.tool_packs import PACKS_KEY, left_line
+        from acb_skills.write_artifact import artifact_context
+
+        return left_line(artifact_context().get(PACKS_KEY))
+    except Exception:
+        return ""
+
+
+class _SetupLaps:
+    """Chat speed SPD-1: the ms of each setup step of a streamed run, up to
+    its first model request.
+
+    Each lap is the time since the lap before, so the laps add up to the
+    whole setup, and a step that logs nothing still shows. A name that laps
+    twice adds up. :meth:`log` writes ONE ``executor.setup_steps_ms`` line.
+    The class logs nothing else. Fence: ``tests/unit/test_setup_laps.py``.
+    """
+
+    __slots__ = ("_last", "steps")
+
+    def __init__(self, started: float) -> None:
+        self._last = started
+        self.steps: dict[str, int] = {}
+
+    def lap(self, step: str) -> None:
+        now = time.monotonic()
+        self.steps[step] = self.steps.get(step, 0) + round((now - self._last) * 1000)
+        self._last = now
+
+    def log(self, agent_name: str, run_id: str) -> None:
+        with contextlib.suppress(Exception):  # a timing line never ends a run
+            _log.info(
+                "executor.setup_steps_ms", agent=agent_name, run_id=run_id,
+                total_ms=sum(self.steps.values()), **self.steps,
+            )
+
+
+async def _early_crm_facts() -> list[Any]:
+    """The CRM facts of this run, read as the member. Never raises."""
+    from acb_skills.org_facts_tools import crm_facts_for_run
+
+    return await crm_facts_for_run()
+
+
+class _EarlyReads:
+    """Chat speed SPD-1 part 2: three reads of a streamed run's setup that
+    need only the run binding. They start beside the agent load, so they no
+    longer run one after another before the first model request.
+
+    Production, 2026-10-30: 53% of chat turns came more than 5 minutes after
+    the one before, so the caches of these reads were cold. The knowledge
+    index (about 270 ms cold), the mailbox list (part of a 1.1 s cold email
+    context) and the CRM facts (283 ms median) each waited in turn.
+
+    * ``knowledge`` fills the cache of :func:`_prime_knowledge_index`.
+    * ``mailboxes`` fills the mailbox cache that :func:`_prime_email_context`
+      reads, under that function's own rule (:func:`_email_ctx_member`).
+    * ``crm_facts`` is the value that :func:`_add_crm_facts_block` would read.
+      That function keeps its own rule and only takes this value in place of
+      its own read. It starts only for the orchestrator, outside a
+      ``no_egress`` run, for an org on ``CRM_QUESTIONS_ORGS``. That gate is
+      WIDER than the rule of the block: the early read cannot see whether the
+      run will hold a CRM tool (an admin can turn the ``crm`` skill family
+      off). In that case the read still goes out, as the member, and the
+      block drops its value, so the model sees nothing of it. Reading the
+      toggle first would cost a sync DB read on the loop, which costs more
+      than the read it saves (review of SPD-1 part 2, P2).
+
+    Each task copies the run's context when it starts, so it reads as the
+    run's member and org, never a request field (R5). Nothing here writes
+    the run's context. :meth:`settle` awaits the two cache fills before the
+    first reader of the caches. :meth:`close` cancels what the run did not
+    await. Fence: ``tests/unit/test_early_reads.py``.
+    """
+
+    __slots__ = ("crm_facts", "knowledge", "mailboxes")
+
+    def __init__(
+        self, knowledge: asyncio.Future[Any] | None = None,
+        mailboxes: asyncio.Future[Any] | None = None,
+        crm_facts: asyncio.Future[Any] | None = None,
+    ) -> None:
+        self.knowledge = knowledge
+        self.mailboxes = mailboxes
+        self.crm_facts = crm_facts
+
+    @classmethod
+    def start(cls, agent_name: str, *, no_egress: bool) -> _EarlyReads:
+        knowledge = asyncio.ensure_future(_prime_knowledge_index(agent_name))
+        mailboxes = crm_facts = None
+        if agent_name == _EMAIL_CTX_AGENT:
+            member = _email_ctx_member()
+            org = _current_run_org()
+            if member and org:
+                try:
+                    from acb_skills import email_chat_context as ecc
+                except ImportError:  # as _prime_email_context: no block, never the turn
+                    ecc = None
+                if ecc is not None:
+                    mailboxes = asyncio.ensure_future(ecc.prime_mailboxes(str(org), member))
+            if not no_egress and _crm_questions_on(org):
+                crm_facts = asyncio.ensure_future(_early_crm_facts())
+        return cls(knowledge, mailboxes, crm_facts)
+
+    async def settle(self) -> None:
+        """Await the two cache fills. Each one never raises, and a fault
+        here leaves the cache as the read left it."""
+        for task in (self.knowledge, self.mailboxes):
+            if task is not None:
+                with contextlib.suppress(Exception):
+                    await task
+
+    def close(self) -> None:
+        """Cancel each read that is still running, and read the outcome of
+        each one that ended, so asyncio logs no unread exception."""
+        for task in (self.knowledge, self.mailboxes, self.crm_facts):
+            if task is None:
+                continue
+            if not task.done():
+                task.cancel()
+            elif not task.cancelled():
+                task.exception()
+
+
+def _crm_questions_on(org: Any) -> bool:
+    """``CRM_QUESTIONS_ORGS`` names *org*. Fails closed."""
+    try:
+        from acb_skills.crm_tools import questions_org_on
+
+        return bool(org) and bool(questions_org_on(org))
+    except Exception:
+        return False
+
+
+def _pack_delegation_refusal(agent_name: str, run_id: str = "") -> str | None:
+    """The pack refusal of a hand-off to *agent_name* from this frame, or None.
+
+    The rule is ``tool_packs.delegation_refusal``: the chat run holds a pack
+    that replaces the agent. It reads the run binding of the CALLING run,
+    never a tool argument. Never raises. Its one caller starts the hand-off
+    when the answer is None, so it asks with ``starts=True`` (WS-67 OA-8i):
+    a pack write of the owner later in this run then refuses. Task 1533:
+    *run_id* is the sub-run, so a start that ``call_agent`` recorded for the
+    same run is not counted twice."""
+    try:
+        from acb_skills.tool_packs import delegation_refusal
+
+        refused = delegation_refusal(agent_name, starts=True, run_id=run_id)
+    except Exception:
+        return None
+    if refused:
+        _log.info("executor.pack_delegation_refused", agent=agent_name)
+    return refused
+
+
+def _pack_handoff_ended(
+    agent_name: str, parent_ctx: Any, *, finished: bool, calls: Any = None,
+    run_id: str = "",
+) -> None:
+    """Tell the calling run's pack record whether a hand-off finished (WS-67
+    OA-8i review, P2). *parent_ctx* is the calling run's context, read before
+    the sub-run derived its own. The rule is ``tool_packs.handoff_ended``.
+    Task 1533: *run_id* closes that sub-run, and *calls* are the calls that
+    it reported. Never raises."""
+    try:
+        from acb_skills.tool_packs import handoff_ended
+
+        handoff_ended(
+            agent_name, parent_ctx, finished=finished, run_id=run_id,
+            tools=[str(c.get("name") or "") for c in (calls or []) if isinstance(c, dict)],
+        )
+    except Exception:
+        return
+
+
+def _without_pack_keys(agent_name: str = "") -> dict[str, Any]:
+    """The changes that take the pack keys out of a derived run context, so a
+    delegated run never inherits the run key or the record of its parent.
+
+    WS-67 OA-9c: a spawn child (*agent_name* is the worker) gets the run key
+    that the spawn minted for the pack tools of its job instead
+    (:func:`_job_pack_keys`). It never gets the parent's key or the record."""
+    try:
+        from acb_skills.tool_packs import PACK_RUN_KEY, PACKS_KEY
+    except ImportError:
+        return {}
+    return {PACK_RUN_KEY: None, PACKS_KEY: None, **_job_pack_keys(agent_name)}
+
+
+def _job_pack_keys(agent_name: str, ctx: Any = None) -> dict[str, Any]:
+    """The run key of the pack tools of a spawn child, for the child's own
+    binding, or ``{}`` (WS-67 OA-9c).
+
+    ``subagent_contract.job_pack_run`` reads the job of *ctx* (this frame
+    when None). Only the worker, with a job that holds pack tools, gets a key.
+    The streaming sub-run derives it, and the batch run binds it again after
+    ``bind_artifact_context`` replaces the context. The key ends with the
+    child's run."""
+    try:
+        from acb_skills.subagent_contract import job_pack_run
+        from acb_skills.tool_packs import PACK_RUN_KEY
+    except ImportError:
+        return {}
+    key = job_pack_run(agent_name, ctx)
+    return {PACK_RUN_KEY: key} if key else {}
+
+
+def _worker_refusal(agent_name: str) -> str | None:
+    """Why the internal agent *agent_name* cannot run on this frame, or None.
+
+    WS-67 OA-9a: the ``worker`` runs only for the job that ``spawn_subagents``
+    binds. ``subagent_contract.worker_refusal`` is the rule. It is asked at
+    run time, never at build time (the folder fences build every agent with no
+    job). Never raises."""
+    try:
+        from acb_skills.subagent_contract import worker_refusal
+
+        return worker_refusal(agent_name)
+    except ImportError:
+        return None
+
+
+def _pack_only_refusal(agent_name: str) -> str | None:
+    """Why *agent_name* never runs as an agent, or None (STU-G1).
+
+    ``tool_packs.pack_only_refusal`` is the rule: a pack-only owner gives its
+    tools to a pack and never runs. It reads no run state, so it holds in
+    every run. Never raises."""
+    try:
+        from acb_skills.tool_packs import pack_only_refusal
+
+        return pack_only_refusal(agent_name)
+    except ImportError:
+        return None
+
+
+def _without_job_key(agent_name: str) -> dict[str, Any]:
+    """The change that takes the job out of a derived run context, unless the
+    run IS the worker. So a run that a child starts never inherits the job."""
+    try:
+        from acb_skills.subagent_contract import INTERNAL_AGENTS, JOB_KEY
+    except ImportError:
+        return {}
+    return {} if agent_name in INTERNAL_AGENTS else {JOB_KEY: None}
+
+
+def _job_tool_scope(agent_name: str, scope: list[str] | None) -> list[str] | None:
+    """The injection scope of a run: the tools of the job for the worker,
+    *scope* for any other agent (``subagent_contract.child_tool_scope``)."""
+    try:
+        from acb_skills.subagent_contract import child_tool_scope
+    except ImportError:
+        return scope
+    return child_tool_scope(agent_name, scope)
+
+
+def _registry_entries() -> list[dict[str, Any]]:
+    """The agents that a lookup by name searches, the internal ones FIRST.
+
+    So a dynamic agent that is named like an internal agent cannot take its
+    place (WS-67 OA-9a, ``routes.agent._INTERNAL_AGENTS``)."""
+    from gateway.routes.agent import _AGENT_REGISTRY, _INTERNAL_AGENTS, _load_dynamic_agents
+
+    return [*_INTERNAL_AGENTS, *_load_dynamic_agents(), *_AGENT_REGISTRY]
+
+
 def _resolve_sub_agent_org() -> str | None:
     """The tenant a delegated sub-run must act in: its PARENT run's org.
 
@@ -471,13 +2460,119 @@ _active_run_model: contextvars.ContextVar[str | None] = (
     contextvars.ContextVar("_active_run_model", default=None)
 )
 
+# WS-63 PZ-2 (personalization.md §5.1, point 4): True only when the RUN
+# BOUNDARY says this run is the member's own, not a shared room. The web chat
+# route passes ``solo_room=room_is_solo(room)`` (``gateway/rooms.py``) and the
+# WhatsApp run passes ``solo_room=not shared``. Every other caller passes nothing, so the default
+# is False and the run gets no profile block (fail closed). A run that passes
+# ``None`` keeps its parent's value, so a delegated run cannot widen it. It is
+# never read from the payload, which is client input (R5).
+_RUN_SOLO_ROOM: contextvars.ContextVar[bool] = (
+    contextvars.ContextVar("_run_solo_room", default=False)
+)
+
+
+def _bind_solo_room(solo_room: bool | None) -> contextvars.Token[bool] | None:
+    """Set :data:`_RUN_SOLO_ROOM` for this run, or keep the parent's value
+    when *solo_room* is ``None``. Hand the token to :func:`_release_solo_room`."""
+    if solo_room is None:
+        return None
+    return _RUN_SOLO_ROOM.set(solo_room is True)
+
+
+def _release_solo_room(token: contextvars.Token[bool] | None) -> None:
+    """Close a :func:`_bind_solo_room` scope. Never raises.
+
+    ``Token.reset`` demands the context it was made in, and a stream's
+    teardown does not always run there (see ``_unbind_memory_user_id``). A
+    failed reset sets False, so it fails closed and never open.
+    """
+    if token is None:
+        return
+    try:
+        _RUN_SOLO_ROOM.reset(token)
+    except (ValueError, RuntimeError):
+        _RUN_SOLO_ROOM.set(False)
+
+
+def _bind_profile_writes(open_: bool) -> Any:
+    """WS-63 PZ-6a: open or close the profile writes of this run
+    (``acb_common.assistant_profile.WRITES_OPEN``). Only a run whose
+    boundary bound ``solo_room=True`` passes True, and only with a verified
+    member and no ``no_egress``. Every other run, a delegated one too, binds
+    False, so it never inherits its parent's True. Hand the token to
+    :func:`_release_profile_writes`. Fence:
+    ``tests/unit/test_profile_write_tools.py``."""
+    from acb_common.assistant_profile import bind_writes
+
+    return bind_writes(open_ is True)
+
+
+def _release_profile_writes(token: Any) -> None:
+    """Close a :func:`_bind_profile_writes` scope. Never raises."""
+    try:
+        from acb_common.assistant_profile import release_writes
+
+        release_writes(token)
+    except Exception:
+        pass
+
+
+def _close_profile_writes() -> None:
+    """WS-63 PZ-6a fix round 1: close the profile writes of the run on this
+    frame for the rest of that run. The end of a delegated or specialist run
+    calls it in the parent's frame, because the parent's model reads the
+    answer next. Never raises."""
+    try:
+        from acb_common.assistant_profile import close_writes
+
+        close_writes()
+    except Exception:
+        pass
+
+
+#: The card events (``orchestrator.pending_ask.KIND_BY_EVENT``), as they
+#: appear in an SSE line. A plain substring test, so a token delta costs no
+#: JSON parse.
+_CARD_MARKERS = (
+    '"user_input_requested"', '"elicitation_requested"',
+    '"confirmation_requested"', '"generative_ui"',
+)
+
+
+def _may_hold_card(sse_line: str) -> bool:
+    return '"CUSTOM"' in sse_line and any(m in sse_line for m in _CARD_MARKERS)
+
+
+def _card_payload(sse_line: str) -> Any:
+    for part in sse_line.split("\n"):
+        part = part.strip()
+        if part.startswith("data:"):
+            try:
+                return json.loads(part[5:].strip())
+            except ValueError:
+                return None
+    return None
+
 
 async def _push_sse_to_stream(thread_id: str, sse_line: str) -> None:
     """Push an SSE line to the Redis stream for reconnection support.
 
     Best-effort: failures are silently swallowed so the SSE stream is never
     interrupted by Redis issues.
+
+    WS-51 S2: every card reaches the member through here, so this is where
+    its durable row starts (:func:`orchestrator.pending_ask.note_event`). The
+    call is sync and runs before the push. Only a line that can hold a card
+    is parsed.
     """
+    if _may_hold_card(sse_line):
+        try:
+            from orchestrator.pending_ask import note_event
+
+            note_event(thread_id, _card_payload(sse_line))
+        except Exception:
+            pass
     try:
         from orchestrator.stream_relay import push_sse_event
         await push_sse_event(thread_id, sse_line)
@@ -576,13 +2671,28 @@ class _PendingUserInput(dict[str, Any]):
 
 _pending_user_input: _PendingUserInput = _PendingUserInput()
 
+
+def threads_waiting_on_a_person() -> set[str]:
+    """The threads whose run is parked on a question or an approval card.
+
+    Such a run can wait an hour (``_USER_INPUT_TIMEOUT``), so the gateway's
+    stop step must not wait for it (``GET /internal/drain``). A restart ends
+    it either way.
+    """
+    out: set[str] = set()
+    for request_id, fut in list(_pending_user_input.items()):
+        owner = _pending_user_input.owner_of(request_id)
+        if owner and not fut.done():
+            out.add(owner)
+    return out
+
 # How long the agent waits for a human answer before giving up (seconds).
 _USER_INPUT_TIMEOUT = int(os.environ.get("ASK_USER_TIMEOUT", "3600"))
 
 
 def resolve_user_input(
     request_id: str, answer: str, was_freeform: bool = True,
-    *, thread_id: str | None,
+    *, thread_id: str | None, responder: str | None = None, declined: bool = False,
 ) -> bool:
     """Resolve a pending ``ask_user`` request with the user's answer.
 
@@ -593,7 +2703,18 @@ def resolve_user_input(
     thread that owns the request (:class:`_PendingUserInput`). A missing
     thread, an unknown owner or another thread resolves nothing. The route
     checks ``can_send`` in that thread's room first.
+
+    *declined* is the member's "Not now" (owner request, 2026-10-18). The
+    Future resolves with ``{"answer": "", "declined": True}`` and the run
+    goes on: each parking site reads it with ``ask_tools.is_declined``. The
+    key goes only on a decline, so every answer is exactly as before.
+
+    AUTO-7a: a run with no person present answers no card and no question,
+    of its own run or of a live chat, so it resolves nothing.
     """
+    if no_person_present():
+        _log.warning("executor.user_input_no_person", request_id=request_id[:12])
+        return False
     fut = _pending_user_input.get(request_id)
     if fut is None or fut.done():
         return False
@@ -605,12 +2726,29 @@ def resolve_user_input(
             has_owner=bool(owner),
         )
         return False
-    payload = {"answer": answer, "wasFreeform": was_freeform}
+    payload: dict[str, Any] = {"answer": answer, "wasFreeform": was_freeform}
+    if declined:
+        payload = {"answer": "", "wasFreeform": False, "declined": True}
+    # WS-53 CRM-Q33 fix round 2: who answered, from the gateway's session. A
+    # CRM card counts a pick only of the run's own member.
+    if responder:
+        payload["responder"] = str(responder).strip().lower()
     try:
         loop = fut.get_loop()
     except Exception:
         if not fut.done():
             fut.set_result(payload)
+        return True
+    try:
+        running = asyncio.get_running_loop()
+    except RuntimeError:
+        running = None
+    if running is loop:
+        # Same loop: set it NOW, so ``fut.done()`` is true before this returns.
+        # WS-51 S2 (review of #813): ``pending_ask.park`` reads ``done()`` to
+        # tell an answer that arrived from no answer. A result still queued by
+        # ``call_soon`` read as "no answer", and the run was parked over it.
+        fut.set_result(payload)
         return True
     loop.call_soon_threadsafe(
         lambda: (not fut.done()) and fut.set_result(payload)
@@ -634,6 +2772,9 @@ def _respond_input_applier(thread_id: str) -> Callable[[dict[str, Any]], bool]:
             str(command.get("answer", "")),
             bool(command.get("was_freeform", True)),
             thread_id=thread_id,
+            responder=str(command.get("responder") or "") or None,
+            # Only a JSON true declines, never a truthy string.
+            declined=command.get("declined") is True,
         )
 
     return _apply
@@ -644,6 +2785,7 @@ async def wait_user_future(
     timeout: float,
     thread_id: str | None = None,
     slice_seconds: float = 60.0,
+    park_after: float | None = None,
 ) -> dict[str, Any]:
     """Await a parked HITL future, heartbeating the relay while waiting.
 
@@ -655,29 +2797,94 @@ async def wait_user_future(
     whole HITL budget. Raises ``asyncio.TimeoutError`` when *timeout*
     elapses, like the ``asyncio.wait_for`` it replaces; the future itself is
     left to the caller to clean up.
+
+    WS-51 S2 (``CHAT_DURABLE_ASKS``, default OFF). This is the one wait of
+    every parking site, so it settles the card's durable row when the wait
+    ends (:func:`orchestrator.pending_ask.settle`). After
+    ``CHAT_ASK_PARK_SECONDS`` with no answer it PARKS the run: the row stays
+    open as ``parked``, the run ends, and this raises ``CancelledError``.
+    Fence: ``tests/unit/test_pending_ask_flow.py``.
+
+    WS-53 §18.16 part 2: *park_after* parks sooner. The follow-up card of a
+    CRM answer (``crm_tools.follow_up_park_after``) comes AFTER the answer,
+    so the run has nothing left to wait for. Run b38bcd38 (2026-10-19) held
+    the run 419 s on that card. A refused early park tries again at the
+    normal window, so a card is never lost. With ``CHAT_DURABLE_ASKS`` off
+    there is no late path, and the wait is as before.
     """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     tid = thread_id or resolve_relay_thread_id() or ""
-    while True:
-        remaining = deadline - loop.time()
-        if remaining <= 0:
-            raise asyncio.TimeoutError
-        try:
-            # Shield: a slice timeout must not cancel the shared future —
-            # the next slice keeps waiting on it.
-            return await asyncio.wait_for(
-                asyncio.shield(fut), timeout=min(slice_seconds, remaining)
-            )
-        except asyncio.TimeoutError:
-            if fut.done():
-                return fut.result()
-            if tid:
-                try:
-                    from orchestrator.stream_relay import touch_active
-                    await touch_active(tid)
-                except Exception:
-                    pass
+    from orchestrator import pending_ask  # noqa: PLC0415
+
+    durable = pending_ask.durable_asks_enabled()
+    rid = _request_id_of(fut) if durable else None
+    normal = pending_ask.park_after_seconds()
+    early = park_after is not None and park_after < normal
+    window = park_after if early else normal
+    park_at = loop.time() + window if rid else None
+    answer: str | None = None
+    try:
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise asyncio.TimeoutError
+            wait = min(slice_seconds, remaining)
+            if park_at is not None:
+                wait = max(0.0, min(wait, park_at - loop.time()))
+            try:
+                # Shield: a slice timeout must not cancel the shared future —
+                # the next slice keeps waiting on it.
+                result = await asyncio.wait_for(asyncio.shield(fut), timeout=wait)
+                answer = _settled_answer(result)
+                return result
+            except asyncio.TimeoutError:
+                if fut.done():
+                    result = fut.result()
+                    answer = _settled_answer(result)
+                    return result
+                if (
+                    park_at is not None and rid and tid
+                    and loop.time() >= park_at
+                ):
+                    park_at = None  # one attempt; a refusal keeps waiting
+                    if await pending_ask.park(rid, tid, fut):
+                        raise asyncio.CancelledError
+                    if early:
+                        # §18.16 part 2: the early park found no row yet.
+                        # Try once more at the normal window.
+                        early = False
+                        park_at = loop.time() + max(0.0, normal - window)
+                if tid:
+                    try:
+                        from orchestrator.stream_relay import touch_active
+                        await touch_active(tid)
+                    except Exception:
+                        pass
+    finally:
+        if rid:
+            with contextlib.suppress(BaseException):
+                await asyncio.shield(pending_ask.settle(rid, answer=answer))
+
+
+def _settled_answer(result: Any) -> str | None:
+    """The answer a durable row keeps, or None to close it unanswered.
+
+    A "Not now" (owner request, 2026-10-18) closes the row: the member gave
+    no answer, and a closed row never draws its card again. The table has no
+    state for a decline, and a new state would need a migration.
+    """
+    if isinstance(result, dict) and result.get("declined") is True:
+        return None
+    return str((result or {}).get("answer", "") or "")
+
+
+def _request_id_of(fut: Any) -> str | None:
+    """The request id a parked Future is registered under, if any."""
+    for request_id, parked in list(_pending_user_input.items()):
+        if parked is fut:
+            return request_id
+    return None
 
 
 def _make_user_input_handler(thread_id: str) -> Any:
@@ -686,12 +2893,26 @@ def _make_user_input_handler(thread_id: str) -> Any:
     The returned coroutine emits a ``user_input_requested`` event straight to
     the Redis relay (the streaming generator is parked awaiting ``agent.run``
     and cannot yield this frame itself) and blocks until the answer arrives.
+
+    WS-47 WAC-3: a run inside ``acb_skills.ask_tools.refuse_cards`` has no
+    card channel, so the handler answers empty at once and parks nothing. It
+    reads the switch when it is built, on the run's frame, because the SDK
+    can call it in a context that does not carry the run's ContextVars.
     """
+    try:
+        from acb_skills.ask_tools import cards_refused
+        _refused_at_build = cards_refused()
+    except Exception:
+        cards_refused = None  # type: ignore[assignment]
+        _refused_at_build = False
 
     async def _handler(request: Any, _ctx: Any) -> dict[str, Any]:
         global _sse_seq
         import time as _time
         import uuid as _uuid
+
+        if _refused_at_build or (cards_refused is not None and cards_refused()):
+            return {"answer": "", "wasFreeform": True}
 
         if isinstance(request, dict):
             question = request.get("question", "") or ""
@@ -733,6 +2954,17 @@ def _make_user_input_handler(thread_id: str) -> Any:
         finally:
             _pending_user_input.pop(request_id, None)
 
+        # The member's "Not now" (owner request, 2026-10-18): the SDK hands
+        # the answer to the model as the member's words, so the answer IS
+        # the decline text. The run goes on.
+        if isinstance(result, dict) and result.get("declined") is True:
+            try:
+                from acb_skills.ask_tools import declined_text
+            except Exception:  # noqa: BLE001 — the platform package is absent
+                return {"answer": "The member chose not to answer this question now.",
+                        "wasFreeform": True}
+            return {"answer": declined_text(), "wasFreeform": True}
+
         return {
             "answer": str(result.get("answer", "")),
             "wasFreeform": bool(result.get("wasFreeform", True)),
@@ -770,6 +3002,180 @@ class AgentRunError(Exception):
         self.mutation_pr = mutation_pr
 
 
+# The longest sub-agent answer that goes back to the orchestrator whole. The
+# orchestrator relays a drafted email or document as it is, so 8000 cut real
+# drafts. Override with SUB_AGENT_MAX_RESULT_CHARS.
+# Fence: tests/unit/test_sub_agent_result_cap.py.
+_SUB_AGENT_RESULT_CHARS_DEFAULT = 24000
+
+
+def _cap_sub_agent_result(text: str, cap: int) -> str:
+    """Cut a sub-agent answer to about *cap* characters, head AND tail kept.
+
+    The end of a draft holds the sign-off and the questions for the reader,
+    so a head-only cut lost them. The cut keeps two thirds from the start
+    and one third from the end, each at a line break when one is near. A
+    marker between them names the number of characters left out.
+    """
+    if cap <= 0 or len(text) <= cap:
+        return text
+    head_len = (cap * 2) // 3
+    tail_len = cap - head_len
+    head = text[:head_len]
+    nl = head.rfind("\n")
+    if nl > head_len // 2:
+        head = head[:nl]
+    tail = text[len(text) - tail_len:]
+    nl = tail.find("\n")
+    if 0 <= nl < tail_len // 2:
+        tail = tail[nl + 1:]
+    left_out = len(text) - len(head) - len(tail)
+    return (
+        f"{head}\n\n[Sub-agent result cut: {left_out} of {len(text)} characters"
+        f" left out here. The start and the end are kept.]\n\n{tail}"
+    )
+
+
+async def _email_working_set_for(
+    agent_name: str, parent_ctx: Any,
+) -> tuple[dict[str, str] | None, str]:
+    """The working set of the calling chat and its preamble, for an email
+    sub-run (§7.1.1). ``(None, "")`` for any other agent, and for a run whose
+    tools do not act as its verified member (a shared room). Never raises."""
+    try:
+        from acb_skills import email_chat_context as ecc
+    except Exception:
+        return None, ""
+    if agent_name != ecc.EMAIL_AGENT:
+        return None, ""
+    member = _email_ctx_member()
+    org = _current_run_org()
+    if not (member and org):
+        return None, ""
+    try:
+        ws = await ecc.load_working_set(parent_ctx)
+        await ecc.prime_mailboxes(str(org), member)
+        return ws, ecc.subrun_preamble(ws, ecc.cached_mailboxes(str(org), member))
+    except Exception as exc:
+        _log.warning("executor.email_ws_unread", error=type(exc).__name__)
+        return {}, ""
+
+
+def _sub_call_events(
+    calls: list[dict[str, Any]], *, agent_name: str, run_id: str,
+) -> list[dict[str, Any]]:
+    """The ``SUB_AGENT_TOOL_CALL_START`` and ``_RESULT`` events of a batch
+    sub-run's calls, in the shape ``wrap_sub_agent_events`` gives a streamed
+    sub-run: the arguments as JSON text, the result capped at ``RESULT_CAP``.
+    """
+    import json as _json
+
+    from orchestrator.event_translator import RESULT_CAP
+
+    events: list[dict[str, Any]] = []
+    for c in calls:
+        cid = str(c.get("id") or "") or f"{run_id}:{len(events)}"
+        args = c.get("args")
+        events.append({
+            "type": "SUB_AGENT_TOOL_CALL_START", "agentName": agent_name,
+            "runId": run_id, "toolCallId": cid,
+            "toolCallName": str(c.get("name") or "tool"),
+            "args": args if isinstance(args, str) else _json.dumps(args or {}, default=str),
+        })
+        events.append({
+            "type": "SUB_AGENT_TOOL_CALL_RESULT", "agentName": agent_name,
+            "runId": run_id, "toolCallId": cid,
+            "content": str(c.get("result") or "")[:RESULT_CAP],
+            "success": c.get("success") is not False,
+        })
+    return events
+
+
+def _note_sub_call(calls: list[dict[str, Any]], ev: dict[str, Any]) -> None:
+    """Keep one streamed ``SUB_AGENT_TOOL_CALL_*`` event of a Copilot sub-run
+    as a call, in the shape of :func:`_tool_calls_of`."""
+    kind = ev.get("type")
+    if kind == "SUB_AGENT_TOOL_CALL_START":
+        calls.append({"id": str(ev.get("toolCallId") or ""),
+                      "name": str(ev.get("toolCallName") or ""),
+                      "args": ev.get("args") or {}, "result": "", "success": True})
+    elif kind == "SUB_AGENT_TOOL_CALL_RESULT":
+        cid = str(ev.get("toolCallId") or "")
+        for c in calls:
+            if c["id"] == cid:
+                c["result"] = str(ev.get("content") or "")
+                c["success"] = ev.get("success") is not False
+
+
+async def _record_email_working_set(
+    agent_name: str,
+    parent_ctx: Any,
+    before: dict[str, str] | None,
+    calls: list[dict[str, Any]],
+    emit: Any,
+) -> None:
+    """Write the working set after an email sub-run's *calls* (§7.1.1).
+
+    Only the sub-run's own tool calls write it, never the model's text. A
+    run that :func:`_email_working_set_for` skipped (``before`` None) writes
+    nothing. Never raises."""
+    if before is None or not calls:
+        return
+    try:
+        from acb_skills import email_chat_context as ecc
+
+        org, member = _current_run_org(), _email_ctx_member()
+        boxes = ecc.cached_mailboxes(str(org or ""), member) if org and member else []
+        # The member's list: a mailbox outside it never enters the set, and a
+        # label becomes its id (rule 4). Always a list: when the read failed
+        # it is empty, and a call that names a mailbox keeps the old set.
+        after = ecc.update_working_set(before, calls, list(boxes))
+        if after != before:
+            await ecc.save_working_set(after, parent_ctx)
+        # The mark names the mailbox of ALL the work under it, or none.
+        mark = ecc.mailbox_mark(before, after, boxes, ecc.worked_in(calls, list(boxes)))
+    except Exception as exc:
+        _log.warning("executor.email_ws_unwritten", error=type(exc).__name__)
+        return
+    if mark is not None:
+        # §7.1.1 rule 6: "Now working on <label>" where the email work moved
+        # to another mailbox. A CUSTOM event, so the turn saves it.
+        try:
+            await emit({"type": "CUSTOM", "name": ecc.MAILBOX_MARK_EVENT, "value": mark})
+        except Exception as exc:
+            _log.warning("executor.email_mark_unsent", error=type(exc).__name__)
+
+
+async def _load_agent_off_loop(agent_name: str, **kwargs: Any) -> Any:
+    """``load_agent`` on a worker thread, with its duration logged.
+
+    The loader runs git, file copies and a dependency check. On the event loop
+    it stalled every other chat on the worker for the length of one fetch.
+    ``to_thread`` copies the context, so the run binding still holds.
+    """
+    import time as _t
+    started = _t.monotonic()
+    task = asyncio.ensure_future(
+        asyncio.to_thread(load_agent, agent_name, **kwargs)
+    )
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        # A Stop during the load leaves the thread running. When it ends, it
+        # holds a LoadedAgent that nobody owns, with its sys.path entries.
+        def _release(done: "asyncio.Future[Any]") -> None:
+            if not done.cancelled() and done.exception() is None:
+                done.result().cleanup()
+
+        task.add_done_callback(_release)
+        raise
+    finally:
+        _log.info(
+            "executor.load_agent_ms", agent=agent_name,
+            elapsed_ms=round((_t.monotonic() - started) * 1000),
+        )
+
+
 async def _run_sub_agent_streaming(
     agent_name: str,
     message_str: str,
@@ -782,9 +3188,9 @@ async def _run_sub_agent_streaming(
     Called by ``call_agent`` when there is an active parent SSE queue so that
     the sub-agent's progress is visible in the UI in real time.
 
-    *model* is the parent run's resolved tier; when set it takes priority over
-    the sub-agent's own config default so a delegated task inherits the tier the
-    user chose for the parent (both Copilot SDK and native MAF sub-agents).
+    *model* is the parent run's resolved tier. A delegated task inherits it,
+    but never below the sub-agent's own default (``_sub_agent_tier``, owner
+    2026-10-22), for both Copilot SDK and native MAF sub-agents.
 
     Supports GitHub Copilot SDK agents (native stream) and MAF agents (batch
     run with a single result delta at the end).
@@ -795,14 +3201,31 @@ async def _run_sub_agent_streaming(
 
     Returns the final text response.
     """
+    # WS-67 OA-7c: THE refusal of a hand-off to an agent whose pack the calling
+    # chat run holds. The specialist tools, delegate_to_agent, call_agent and
+    # call_agents_parallel all come here. It reads the parent's binding on the
+    # parent's frame, before any work and before any mark of the chat.
+    _pack_refused = _pack_delegation_refusal(agent_name, run_id)
+    if _pack_refused is not None:
+        return _pack_refused
+    # WS-67 OA-9a: the worker runs only for a bound job (the second of three
+    # callers that ask; `call_agent` and `run_agent` are the others).
+    _worker_refused = _worker_refusal(agent_name)
+    if _worker_refused is not None:
+        return _worker_refused
     settings = get_settings()
+    # WS-67 OA-1 and OA-2: the member's own words, verbatim, and the reply
+    # rules (quoted or inferred) head every delegated task. The executor adds
+    # them, so no prompt and no model can leave them out. Read from the
+    # PARENT's binding, on the parent's frame. WS-67 OA-4: `head_task` puts
+    # the member's kept corrections and limits of the chat after the words.
+    from acb_skills.handoff import head_task
+    message_str = head_task(message_str)
     _repo_name: str | None = None
     _local_path: str | None = None
     _runtime: str = "maf"
     try:
-        from gateway.routes.agent import _AGENT_REGISTRY
-        from gateway.routes.agent import _load_dynamic_agents
-        _all = _load_dynamic_agents() + _AGENT_REGISTRY
+        _all = _registry_entries()
         entry = next((e for e in _all if e["name"] == agent_name), None)
         if entry:
             raw = entry.get("repo_name") or ""
@@ -818,14 +3241,37 @@ async def _run_sub_agent_streaming(
     # in the finally, so the sub-agent can never change what the parent sees.
     from acb_skills.write_artifact import (
         artifact_context,
+        delegation_target,
         derive_artifact_context,
         enter_artifact_context,
         reset_artifact_context,
     )
     _artifact_token = enter_artifact_context()
+    # WS-63 PZ-6a: a delegated run never writes the member's profile.
+    _sub_writes_token = _bind_profile_writes(False)
     # The parent run's acting member, from the parent's bound context and
     # never from the delegated message (H-201 P2-c).
     _parent_member = str(artifact_context().get("member") or "")
+    # The chat that asked: its working dir, store key, agent and session,
+    # from the parent's bound context only (R5). A document this sub-agent
+    # writes goes there, so its card opens in that chat.
+    _deliver_to = delegation_target(artifact_context())
+    # H-236: no egress tool for this sub-run when its parent was no_egress,
+    # or when its own agent is covered. Decided once, from the parent's
+    # binding, and bound at once, so no later path reads the parent's frame.
+    _parent_ctx_sub = artifact_context()
+    _sub_no_egress = _run_no_egress(agent_name, _parent_ctx_sub)
+    # RX-1 (D169): a covered run keeps H-236 as it was, down the whole chain.
+    _sub_cover = _covered_chain(agent_name, _parent_ctx_sub)
+    _sub_marked = await _chat_marked(_parent_ctx_sub)
+    # WS-67 OA-7c: a delegated run never inherits the run key or the record of
+    # its parent's packs, so its own hand-offs are never refused for them.
+    # OA-9c: a spawn child takes the key of its own pack tools instead.
+    derive_artifact_context(
+        no_egress=_sub_no_egress, covered_chain=_sub_cover, chat_marked=_sub_marked,
+        **_without_pack_keys(agent_name), **_without_job_key(agent_name),
+    )
+    _sub_calls: list[dict[str, Any]] = []
 
     # ── Redis relay fallback for paths without _active_run_queue ──────
     # Tier 1 (MAF AG-UI) and Tier 1.5 (Copilot SDK) don't set
@@ -848,6 +3294,10 @@ async def _run_sub_agent_streaming(
 
     # B6 Phase-5 Tier 0: init before the try so the finally can always restore.
     _integration_env_token: IntegrationEnvToken = None
+    # WS-67 OA-8i review, P2: True once the sub-agent's own run ended. The
+    # finally tells the calling run's pack record whether the hand-off
+    # finished, also after a raise, a timeout or a Stop.
+    _sub_done = False
 
     # Delegation is a run too, and until now it was invisible to everyone
     # outside the tab that started it: SUB_AGENT_* events reach the parent's
@@ -874,7 +3324,26 @@ async def _run_sub_agent_streaming(
         pass
 
     try:
-        with load_agent(agent_name, run_id=run_id, repo_name=_repo_name, local_path=_local_path) as loaded:
+        # WS-17 EM-G11f3: a run of an agent that reads mail marks the CALLING
+        # session now, before it does any work, so a cancel or an error cannot
+        # skip the mark. After the no_egress decision, so the sub-run's tools do
+        # not change. The specialist tools and delegate_to_agent come here.
+        # WS-67 OA-8i review: this await and the next sit inside the try, so a
+        # cancel here still reaches the finally and ``_pack_handoff_ended``.
+        await _mark_untrusted_session(agent_name, _parent_ctx_sub)
+        # §7.1.1 (D99): the email working set of the calling chat. An email
+        # sub-run gets its ids as context, and the calls it makes update it. The
+        # held state above is decided first, and nothing here changes it.
+        _ws_before, _ws_preamble = await _email_working_set_for(agent_name, _parent_ctx_sub)
+        # §15.4: a first-party-admin-only agent, delegated to by anyone else,
+        # is refused as absent. The member is the PARENT run's (run binding).
+        await _assert_may_run_agent(agent_name)
+        # D84, D92: a delegated run never takes the retired Copilot runtime.
+        # The label refuses before the load, so no clone and no import run.
+        refuse_copilot_specialist(agent_name, label=_runtime)
+        with await _load_agent_off_loop(
+            agent_name, run_id=run_id, repo_name=_repo_name, local_path=_local_path,
+        ) as loaded:
             mandatory = loaded.config.get("integrations", [])
             optional = loaded.config.get("optional_integrations", [])
             integrations, _sub_warnings = build_integrations(
@@ -883,6 +3352,9 @@ async def _run_sub_agent_streaming(
             # Scope this sub-agent's creds to its run; restored in the finally.
             _integration_env_token = _bind_run_credentials(integrations)
             agents = loaded.build_agents()
+            # The object, whatever its label says (WS-43n): a Copilot agent
+            # does not run as a specialist. The caller gets the error text.
+            refuse_copilot_specialist(agent_name, built=agents)
             # Honour .github/agents/<name>.agent.md instructions for sub-agents
             # too, so a delegated Copilot SDK agent keeps its authored identity.
             _agent_md_spec = _apply_agent_md_overrides(
@@ -897,29 +3369,39 @@ async def _run_sub_agent_streaming(
                 else None,
                 _agent_md_spec,
             )
+            # WS-67 OA-9b: the worker's scope is the tools of its job.
+            _sub_tool_scope = _job_tool_scope(agent_name, _sub_tool_scope)
             _apply_own_tool_scope(
                 agents,
                 loaded.config.get("own_tool_scope") or None
                 if hasattr(loaded, "config") else None,
             )
-            _inject_agent_tools(
+            # CRM-C7: no CRM record write in Mirror mode, read as the member.
+            await _drop_mirror_record_writes(agents)
+            _sub_own_tools = _count_agent_tools(agents)  # WS-8o
+            _sub_run_tools = _inject_agent_tools(
                 agents,
                 is_sub_agent=True,
                 tool_scope=_sub_tool_scope,
                 agent_name=agent_name,
+                # D85: a shared sub-agent gets no shell tool until the
+                # sandbox broker covers it.
+                agent_config=getattr(loaded, "config", None),
+                # H-236: and no egress tool when its parent is covered.
+                no_egress=_sub_no_egress,
             )
+            # CRM-Q32-5: the CRM facts block, read as the member.
+            _sub_run_tools = await _add_crm_facts_block(
+                agents, _sub_run_tools, no_egress=_sub_no_egress)
+            _log_agent_tools_resolved(agent_name, agents, _sub_own_tools)
             if not agents:
                 return f"({agent_name!r} returned empty agent list)"
             agent = agents[0]
 
-            # Apply the risk-aware permission handler for Copilot SDK agents (B6).
-            try:
-                _ph = _copilot_permission_handler()
-                for _a in agents:
-                    if hasattr(_a, "_permission_handler") and _a._permission_handler is None:
-                        _a._permission_handler = _ph
-            except Exception:
-                pass
+            # The permission handler of a Copilot SDK agent (B6), ALWAYS with
+            # the D85 shell guard, whatever handler its factory set.
+            for _a in agents:
+                _install_copilot_permission_handler(_a)
 
             # ── Set working directory for Copilot SDK sub-agents ──────────
             # The Copilot SDK CLI defaults to the gateway process CWD
@@ -938,8 +3420,28 @@ async def _run_sub_agent_streaming(
                 ),
                 organization_id=_resolve_sub_agent_org(),
             )
+            # H-363: the sub-run's git dir and HEAD before it, for the
+            # end-of-turn push step.
+            _sub_git_dir = _git_dir_for(
+                loaded.agent_dir, _sub_agent_dir, _sub_store_instance,
+            )
+            _sub_base_head = await _get_current_head(_sub_git_dir) if _sub_git_dir else ""
+            # WS-43n: the label OR the object. A repo agent registered after
+            # WS-43n gets "maf" when its config.json declares nothing, so the
+            # label alone no longer finds every Copilot object (§15.5).
+            _sub_is_copilot = _runtime == "github-copilot" or is_copilot_agent(agent)
+            # A delegated run never goes BELOW its own agent's default tier
+            # (owner, 2026-10-22). The email assistant runs on tier-powerful
+            # in the Email app, and it got the orchestrator's tier-balanced
+            # when the main chat asked it. A covered sub-agent runs its own
+            # policy below, and that policy floors at the same default.
+            model = _sub_agent_tier(
+                model, agent, getattr(loaded, "config", None) or {},
+                (_agent_md_spec.model or "").strip() if _agent_md_spec is not None else "",
+                is_copilot=_sub_is_copilot,
+            )
             if (
-                _runtime == "github-copilot"
+                _sub_is_copilot
                 and hasattr(agent, "_default_options")
                 and agent._default_options is not None
             ):
@@ -973,6 +3475,34 @@ async def _run_sub_agent_streaming(
                 integration_warnings=dict(_sub_warnings),
                 # A sub-agent never inherits the parent's sandbox root.
                 permission_check_root=None,
+                # D85: the SUB-agent's own answers, never its parent's. The
+                # tool half, and the host half the Copilot permission guard
+                # reads for the CLI's own shell.
+                shell_tools_withheld=bool(_withheld_shell_tools(
+                    agent_name, getattr(loaded, "config", None),
+                )),
+                host_shell_refused=_host_shell_refused(
+                    agent_name, getattr(loaded, "config", None),
+                ),
+                # The push gate (2026-10-19): may this member push agent
+                # code? From the run binding. Fence:
+                # test_chat_autopush_reviewer_gate.py.
+                agent_push_allowed=await _agent_push_binding(
+                    _host_shell_refused(agent_name, getattr(loaded, "config", None)),
+                ),
+                # H-236: set from the parent's binding, never cleared here.
+                # The batch run of a MAF sub-agent reads it as its parent.
+                no_egress=_sub_no_egress,
+                covered_chain=_sub_cover,
+                chat_marked=_sub_marked,
+                # The chat that asked. The batch run of a MAF sub-agent
+                # passes it on (``delegation_target``).
+                deliver_to=_deliver_to,
+                # The SUB-agent's own tools (``run_holds_tool``, §14.10).
+                run_tools=_sub_run_tools,
+                # WS-67 OA-9b hardening: this run is a sub-run, so it never
+                # holds ``spawn_subagents`` (``agent_tools.spawn_subagents``).
+                sub_run=True,
             )
 
             # Skills-as-an-index bodies (QM-2). A sub-agent gets the COMPACT
@@ -980,19 +3510,23 @@ async def _run_sub_agent_streaming(
             # is read. No-op while SKILLS_INDEX_ONLY is off.
             materialize_skill_bodies_for_agent(
                 agent_name, _sub_agent_dir, tool_scope=_sub_tool_scope,
+                agent_config=getattr(loaded, "config", None),
             )
 
             text_parts: list[str] = []
 
             # Max chars returned from a sub-agent to the parent (technique #5).
-            # Research: sub-agents explore deeply (10k+ tokens) but the parent
-            # only needs a condensed 1-2k token summary.  Prevents single
-            # sub-agent calls from bloating the orchestrator's context.
+            # Prevents single sub-agent calls from bloating the orchestrator's
+            # context. The bound is high enough for a whole draft, because the
+            # orchestrator relays a draft as it is.
             _MAX_SUB_RESULT_CHARS = int(
-                os.environ.get("SUB_AGENT_MAX_RESULT_CHARS", "8000")
+                os.environ.get(
+                    "SUB_AGENT_MAX_RESULT_CHARS",
+                    str(_SUB_AGENT_RESULT_CHARS_DEFAULT),
+                )
             )
 
-            if _runtime == "github-copilot" and hasattr(agent, "run"):
+            if _sub_is_copilot and hasattr(agent, "run"):
                 # Resolve model with priority:
                 #   1. parent run's resolved tier (model arg) — tier inheritance
                 #   2. copilot_chat_model (global setting)
@@ -1006,6 +3540,24 @@ async def _run_sub_agent_streaming(
                 ) or (
                     loaded.config.get("model_tier") or ""
                 ).strip()
+                # WS-45 S4 (§4.5): a covered sub-agent runs its own policy.
+                # It ignores the parent's tier, and a Copilot SDK agent keeps
+                # the policy's tier for the whole run. None when not covered.
+                _sub_tier = await _tier_policy_for_run(
+                    agent_name, agent,
+                    run_id=run_id, thread_id=None, model=model,
+                    think_mode=artifact_context().get("think_mode"),
+                    event_payload={"message": message_str},
+                    config=loaded.config,
+                    agent_md_model=(
+                        (_agent_md_spec.model or "").strip()
+                        if _agent_md_spec is not None else ""
+                    ),
+                    is_copilot=True, emit=False,
+                )
+                if _sub_tier is not None:
+                    _model = _sub_tier.run_tier()
+                    _sub_tier.announce_run()
                 # BYOK-by-default: normalise bare/empty names to the default
                 # tier and force gateway routing (mirrors the chat path).
                 _model, _is_sub_byok = _byok_default_model(_model, settings)
@@ -1057,7 +3609,10 @@ async def _run_sub_agent_streaming(
                 for _a in agents:
                     carry_run_context(_a)
                 async with agent:
-                    stream = agent.run(message_str, stream=True)
+                    stream = agent.run(
+                        f"{_ws_preamble}\n\n{message_str}" if _ws_preamble else message_str,
+                        stream=True,
+                    )
                     # ONE canonical mapping, sub-agent envelope on top —
                     # only the wrapper differs from the parent stream paths.
                     _sub_t_state = _TranslationState(run_id)
@@ -1068,7 +3623,16 @@ async def _run_sub_agent_streaming(
                         ):
                             if _sev["type"] == "SUB_AGENT_TEXT_DELTA":
                                 text_parts.append(_sev["delta"])
+                            _note_sub_call(_sub_calls, _sev)
                             await _emit_sub_event(_sev)
+                    # Release a line that the placeholder filter still holds.
+                    for _sev in _wrap_sub_agent_events(
+                        _close_text_message(_sub_t_state),
+                        agent_name=agent_name, run_id=run_id,
+                    ):
+                        if _sev["type"] == "SUB_AGENT_TEXT_DELTA":
+                            text_parts.append(_sev["delta"])
+                        await _emit_sub_event(_sev)
             else:
                 # MAF or unknown runtime: batch run, emit one result delta.
                 # Forward the parent's resolved tier so native MAF sub-agents
@@ -1079,11 +3643,20 @@ async def _run_sub_agent_streaming(
                 # the batch path binds it for this sub-run's acb_graph writes.
                 result = await run_agent(
                     agent_name,
-                    {"message": message_str, "mode": "sub_task"},
+                    {"message": message_str, "mode": "sub_task",
+                     # §7.1.1: the working set, as context and never as the
+                     # member's words. Absent when the chat has none.
+                     **({"system_context": _ws_preamble} if _ws_preamble else {})},
                     run_id=run_id,
                     model=model,
                     organization_id=_resolve_sub_agent_org(),
                 )
+                _sub_calls = list(result.get("tool_calls") or [])
+                # §7.1.1 rule 5: a batch run streams no step, so its calls go
+                # to the parent now, with their arguments and capped results,
+                # and the one assistant draws their cards.
+                for _sev in _sub_call_events(_sub_calls, agent_name=agent_name, run_id=run_id):
+                    await _emit_sub_event(_sev)
                 text = result.get("result") or result.get("answer") or ""
                 if isinstance(text, dict):
                     text = text.get("content", str(text))
@@ -1097,29 +3670,34 @@ async def _run_sub_agent_streaming(
                         "delta": final_text,
                     })
 
+            _sub_done = True  # OA-8i: the sub-agent's run ended
+            # §7.1.1: the ids this email sub-run worked on, for the next turn.
+            await _record_email_working_set(
+                agent_name, _parent_ctx_sub, _ws_before, _sub_calls, _emit_sub_event,
+            )
+
             # ── Technique #5: sub-agent result compression ───────────────
             # Anthropic multi-agent research: sub-agents explore with 10k+
             # tokens but the parent only needs a 1-2k summary.  Cap here to
             # prevent single sub-agent calls from bloating the orchestrator.
+            # H-363: the one end-of-turn push step. The parent reads the text.
+            _sub_push = await _settle_agent_push(
+                agent_name, _sub_git_dir, run_id,
+                since_sha=_sub_base_head or None,
+            )
+            if _sub_push:
+                text_parts.append(_sub_push)
             raw_result = "\n".join(text_parts)
             if not raw_result:
                 return f"({agent_name!r} returned an empty response)"
             if len(raw_result) > _MAX_SUB_RESULT_CHARS:
-                trimmed = raw_result[:_MAX_SUB_RESULT_CHARS]
-                last_nl = trimmed.rfind("\n")
-                if last_nl > _MAX_SUB_RESULT_CHARS // 2:
-                    trimmed = trimmed[:last_nl]
                 _log.debug(
                     "executor.sub_agent_result_truncated",
                     agent=agent_name,
                     original=len(raw_result),
                     capped=_MAX_SUB_RESULT_CHARS,
                 )
-                return (
-                    trimmed
-                    + f"\n\n[Sub-agent result truncated to"
-                    f" {_MAX_SUB_RESULT_CHARS} chars]"
-                )
+                return _cap_sub_agent_result(raw_result, _MAX_SUB_RESULT_CHARS)
             return raw_result
 
     except Exception as exc:
@@ -1129,8 +3707,16 @@ async def _run_sub_agent_streaming(
             "runId": run_id,
             "error": str(exc),
         })
-        return f"Sub-task to {agent_name!r} failed: {exc}"
+        _sub_drop = _drop_agent_push(run_id, "the sub-task failed")
+        return f"Sub-task to {agent_name!r} failed: {exc}" + (
+            f"\n{_sub_drop}" if _sub_drop else ""
+        )
     finally:
+        # WS-67 OA-8i review, P2: first, before any await, the calling run's
+        # pack record learns whether this hand-off finished.
+        _pack_handoff_ended(agent_name, _parent_ctx_sub, finished=_sub_done, calls=_sub_calls,
+                            run_id=run_id)
+        _drop_agent_push(run_id, "the sub-task did not finish")
         try:
             from acb_common import publish_activity
             publish_activity(
@@ -1144,8 +3730,14 @@ async def _run_sub_agent_streaming(
         # B6 Phase-5 Tier 0: tear down this sub-agent's scoped integration creds
         # so a delegated agent's secrets don't linger for the parent/next run.
         _release_run_credentials(_integration_env_token)
+        # WS-43d (§16.3): a delegated run's run data ends with it too.
+        await _end_sandbox_run()
         # Give the parent back its own artifact context (H-201, §21.16).
         reset_artifact_context(_artifact_token)
+        _release_profile_writes(_sub_writes_token)
+        # WS-63 PZ-6a fix round 1: the parent now reads another agent's
+        # answer, so its profile writes close for the rest of its run.
+        _close_profile_writes()
 
 
 def _custom_apps_root() -> Path:
@@ -1319,6 +3911,185 @@ class RunWorkspaceRefused(RuntimeError):
     """
 
 
+# ── Agents for the platform's own admins only (owner, 2026-10-03, §15.4) ────
+#: Only an admin of the first-party organization (``organization.first_party``,
+#: migration 157) may run these, through ANY path: chat, the gateway run API,
+#: delegation, workflows, webhooks and cron. ``metorite`` is the root dev agent
+#: (repo-root ``agents.py``). It keeps its Copilot CLI shell for those admins
+#: (``_tool_injection._D85_OWNER_PENDING``), and this gate is what makes that
+#: safe. Fence: ``tests/unit/test_root_agent_first_party.py`` (WS43-F17).
+_FIRST_PARTY_ADMIN_ONLY_AGENTS: frozenset[str] = frozenset({"metorite"})
+
+#: The established gate of an admin act: the nine member-admin routes require
+#: it (``require_permission("admin:members:manage")``), and only the ``owner``
+#: (``*``) and ``admin`` roles hold it (migration 130). ``admin:members:read``
+#: is NOT an admin check, because migration 130 gives it to ``manager`` too.
+_FIRST_PARTY_ADMIN_PERMISSION = "admin:members:manage"
+
+
+class AgentNotFound(AgentLoadError):
+    """The agent is refused to this caller, and the refusal reads as absent.
+
+    An ``AgentLoadError``, so every path answers it as it answers an agent it
+    cannot load: no self-anneal, no self-mutation, and no word that the agent
+    exists. The sync run API maps it to 404.
+    """
+
+
+def _agent_slug(agent_name: str) -> str:
+    """The name a gate compares: lower case, with no ``agent-`` prefix."""
+    name = str(agent_name or "").strip().lower()
+    return name[len("agent-"):] if name.startswith("agent-") else name
+
+
+async def _first_party_admin_runs() -> tuple[bool, str]:
+    """Is the run on this frame a first-party admin's? ``(allowed, why)``.
+
+    The member and the org come from the run binding only, never from the
+    payload (R11). A direct run binds its member at its boundary, and a
+    delegated run keeps its parent's member, because a run that binds no user
+    leaves the parent's ``user`` and ``member_verified`` in place. Every
+    failure answers no.
+
+    The member must be an active member of the run's org
+    (``acb_auth.access.is_active_member``), and the admin permission is read
+    in the run's org (``acb_auth.access.resolve_access_in_org``). A person
+    with an active membership in two orgs passes only when their role row is
+    in the run's org (PLN-Q5, H-232b). Roles live on one ``app_user`` row, in
+    one org (D48 moves them). A failed read or a mismatch answers no.
+    """
+    from acb_common import get_run_context
+
+    ctx = get_run_context()
+    member = str(ctx.get("user") or "").strip()
+    if not member or ctx.get("member_verified") != "1":
+        return False, "no verified member"
+    org = _current_run_org()
+    if not org:
+        return False, "no organization"
+    try:
+        from orchestrator.mutation import _read_first_party
+        if not await _read_first_party(org):
+            return False, "not the first-party organization"
+    except Exception as exc:
+        return False, f"the first-party check failed: {str(exc)[:120]}"
+    # H-232: the member must belong to the run's org. ``resolve_access`` reads
+    # roles by email alone, so an admin of another org passed this gate.
+    # H-232b: ask about the run's org, not "the member's one org", because
+    # ``resolve_identity`` has no answer for a person in two orgs under the
+    # cutover. Fence: ``tests/unit/test_root_agent_first_party.py``.
+    access, why = await _member_access_in_run_org(member, org)
+    if access is None:
+        return False, why
+    if not (access.is_active and access.has(_FIRST_PARTY_ADMIN_PERMISSION)):
+        return False, "not an admin of the first-party organization"
+    return True, ""
+
+
+async def _member_access_in_run_org(
+    member: str, org: str,
+) -> tuple[Any, str]:
+    """The member's access in the run's org, or ``(None, why)``. H-232b.
+
+    Two ``acb_auth`` reads keyed on ``(email, org)``. First the membership
+    (``is_active_member``), then the roles of the member in that org
+    (``resolve_access_in_org``). Both fail closed, and an exception is a
+    refusal. Both run gates call it: :func:`_first_party_admin_runs` and
+    :func:`_agent_push_allowed`.
+    """
+    try:
+        from acb_auth.access import is_active_member
+        member_ok = await is_active_member(member, org)
+    except Exception as exc:
+        return None, f"the membership check failed: {str(exc)[:120]}"
+    if not member_ok:
+        return None, "the member is not of the run's organization"
+    try:
+        from acb_auth.access import resolve_access_in_org
+        access = await resolve_access_in_org(member, org)
+    except Exception as exc:
+        return None, f"the access check failed: {str(exc)[:120]}"
+    return access, ""
+
+
+async def _agent_push_allowed() -> tuple[bool, str]:
+    """May the member of this run push agent code? ``(allowed, why)``.
+
+    The rule of the self-mutation queue's reviewer, in its one implementation
+    (``acb_auth.agent_operator.may_review_agent_commits``): ``agents:manage``
+    in the first-party org or in an org of ``AGENT_REGISTRY_ORGS``. The member
+    and the org come from the run binding only, never from the payload (R5), as in
+    :func:`_first_party_admin_runs`. Every failure answers no.
+
+    H-232b: the member must be an active member of the run's org, and the
+    permission is read in the run's org (:func:`_member_access_in_run_org`).
+    Before, ``resolve_access`` read it by email alone, so an ``agents:manage``
+    holder of another org passed on a run of a registry org.
+
+    The run binds the answer as ``agent_push_allowed``. The Copilot permission
+    guard and ``run_script`` read it, and :func:`_detect_agent_commits` asks it
+    again before it records a pushed commit as approved.
+    Fence: ``tests/unit/test_chat_autopush_reviewer_gate.py``.
+    """
+    from acb_common import get_run_context
+
+    ctx = get_run_context()
+    member = str(ctx.get("user") or "").strip()
+    if not member or ctx.get("member_verified") != "1":
+        return False, "no verified member"
+    org = _current_run_org()
+    if not org:
+        return False, "no organization"
+    access, why = await _member_access_in_run_org(member, org)
+    if access is None:
+        return False, why
+    try:
+        from acb_auth.agent_operator import may_review_agent_commits
+    except Exception as exc:
+        return False, f"the access check failed: {str(exc)[:120]}"
+    if not access.is_active:
+        return False, "not an active member"
+    if not await may_review_agent_commits(org, access.has):
+        return False, (
+            "not a reviewer of agent code (agents:manage in the first-party "
+            "org or an AGENT_REGISTRY_ORGS org)"
+        )
+    return True, ""
+
+
+async def _agent_push_binding(host_shell_refused: bool) -> bool:
+    """The ``agent_push_allowed`` value that a run boundary binds.
+
+    A run whose host shell is refused cannot run git, so it binds ``False``
+    and skips the access read.
+    """
+    if host_shell_refused:
+        return False
+    try:
+        allowed, _why = await _agent_push_allowed()
+    except Exception:
+        return False
+    return allowed
+
+
+async def _assert_may_run_agent(agent_name: str) -> None:
+    """Refuse a first-party-admin-only agent to everyone else (§15.4).
+
+    Each run boundary calls it once, before it loads the agent:
+    ``run_agent_stream``, ``_run_agent_inner`` and
+    ``_run_sub_agent_streaming``. Every other agent passes untouched. A
+    refusal raises :class:`AgentNotFound`, so the agent's existence does not
+    show. The reason goes to the log only.
+    """
+    if _agent_slug(agent_name) not in _FIRST_PARTY_ADMIN_ONLY_AGENTS:
+        return
+    allowed, why = await _first_party_admin_runs()
+    if allowed:
+        return
+    _log.warning("executor.agent_run_refused", agent=agent_name, reason=why)
+    raise AgentNotFound(f"Agent {agent_name!r} not found.")
+
+
 def _resolve_run_workspace(
     agent_dir: Path,
     agent_config: dict[str, Any],
@@ -1483,10 +4254,45 @@ def _git_dir_for(agent_dir: Path, effective_dir: str, store_instance: str) -> st
     A shared agent's tenant dir holds no code and is not a checkout, so those
     helpers keep the clone, as before H-201 part 3. Every other run keeps its
     working dir, so a personal agent is unchanged.
+
+    WS-43e (§7.5 rule A): it returns ``""`` when that dir is a sandbox dir, a
+    dir that a container mounts now or mounted. The helpers then skip the run,
+    and the self-anneal and the self-mutation get no dir (:func:`_repair_dir`).
     """
     from acb_skills.agent_paths import is_tenant_instance
 
-    return str(agent_dir) if is_tenant_instance(store_instance) else effective_dir
+    chosen = str(agent_dir) if is_tenant_instance(store_instance) else effective_dir
+    return chosen if _host_git_ok(chosen) else ""
+
+
+def _repair_dir(git_dir: str | None, effective_dir: str | None) -> str | None:
+    """The dir of the self-anneal and the self-mutation, or ``None``.
+
+    It is the git dir, else the working dir, as before. WS-43e (§7.5 rule A):
+    it is ``None`` when that dir is a sandbox dir. The self-anneal rewrites
+    files there with plain path calls, and the self-mutation runs host git
+    there, so neither may touch a dir that a container could write.
+    """
+    chosen = git_dir or effective_dir
+    return chosen if chosen and _host_git_ok(chosen) else None
+
+
+def _host_git_ok(path: str | os.PathLike[str] | None) -> bool:
+    """True when host git may run in *path* (§7.5 rule A, WS-43e).
+
+    Every host git site of this module asks it first. It is
+    ``sandbox_broker.host_git_allowed``: a sandbox dir answers ``False``, and
+    so does an empty path. Fence WS43-F13.
+    """
+    if not path:
+        return False
+    from orchestrator.sandbox_broker import host_git_allowed
+
+    try:
+        return host_git_allowed(path)
+    except Exception as exc:  # a run must never fail, or hide its own error, here
+        _log.warning("executor.host_git_check_failed", error=str(exc)[:300])
+        return False
 
 
 async def _maybe_sandbox_session_workspace(
@@ -1611,10 +4417,16 @@ def _apply_agent_md_overrides(
         _repo_mcp = load_repo_mcp_servers(agent_dir)
     except Exception:
         _repo_mcp = {}
+    # D85 (WS-8c review round 2): a stdio server starts a process on the
+    # host, so a repo's stdio entry is dropped here too.
+    for _name in [n for n, c in _repo_mcp.items()
+                  if isinstance(c, dict) and (c.get("type") == "stdio" or c.get("command"))]:
+        _log.warning("mcp.stdio_refused", name=_name, source="repo")
+        _repo_mcp.pop(_name, None)
     if _repo_mcp:
         from orchestrator._tool_injection import merge_mcp_servers
         for _ag in agents:
-            # override=False: the DB registry runs later and outranks the repo.
+            # override=False: nothing from the registry reaches Copilot now.
             merge_mcp_servers(_ag, _repo_mcp, override=False)
         _log.info(
             "executor.agent_md_repo_mcp_applied",
@@ -1694,13 +4506,19 @@ from orchestrator._model_resolution import (
     _is_gateway_model,
 )
 async def _get_current_head(agent_dir: str) -> str:
-    """Return the current HEAD SHA of *agent_dir*, or '' on error."""
+    """Return the current HEAD SHA of *agent_dir*, or '' on error.
+
+    It returns '' for a sandbox dir, with no host git (WS-43e, §7.5 rule A).
+    """
+    if not _host_git_ok(agent_dir):
+        return ""
     try:
         proc = await asyncio.create_subprocess_exec(
             "git", "rev-parse", "HEAD",
             cwd=agent_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            env=child_env(),
         )
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
         return out.decode(errors="replace").strip() if proc.returncode == 0 else ""
@@ -1715,18 +4533,252 @@ async def _commit_on_remote(agent_dir: str, commit_sha: str) -> bool:
     so ``git branch -r --contains <sha>`` lists a remote ref when the commit was
     pushed. Used to auto-approve a commit the user told the agent to push from
     chat (it lands on origin, so it needs no separate Control-Plane approval).
+
+    It answers ``False`` for a sandbox dir, with no host git (WS-43e).
     """
+    if not _host_git_ok(agent_dir):
+        return False
     try:
         proc = await asyncio.create_subprocess_exec(
             "git", "branch", "-r", "--contains", commit_sha,
             cwd=agent_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            env=child_env(),
         )
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
         return proc.returncode == 0 and bool(out.decode(errors="replace").strip())
     except Exception:
         return False
+
+
+async def _push_reviewed_run(
+    agent_name: str, agent_dir: str, run_id: str, *, since_sha: str | None,
+) -> tuple[Any, ...]:
+    """Push THIS turn's commits of *agent_dir*, as the gateway (H-363).
+
+    The ONLY caller is :func:`_settle_agent_push`, after
+    :func:`_agent_push_allowed` said yes for this run. The credential is the
+    push token, and it reaches one git process in a gateway temp dir
+    (``acb_common.git_credentials.push``). The agent's shell never sees it.
+
+    The clone is shared, so it pushes only what this turn made:
+
+    * the turn's window is ``since_sha..HEAD``, and ``since_sha`` must still
+      be an ancestor of HEAD (no rewrite during the turn);
+    * every commit that would go out (``HEAD`` minus the remote branch,
+      after a fresh fetch) must be in that window. An earlier pending commit
+      of another run, or a SHA planted in ``.git/cc-commits-queue``, makes
+      it refuse, and a reviewer approves those on the Agents page.
+
+    Returns ``(pushed, text)``, and on a push ``(True, text, details)``.
+    The text is for the member, with no secret. *details* holds the repo,
+    the branch and the SHAs that went out, for the audit row of
+    :func:`_settle_agent_push`.
+    """
+    if not agent_dir or not _host_git_ok(agent_dir):
+        return False, "this turn has no workspace that Metorite may push from"
+    from acb_common import git_credentials as git_auth
+
+    if git_auth.pinned_remote(agent_dir) is None:
+        # A sub-agent's clone, or a restart: pin it from the registry. The
+        # seam refuses a push with no pin.
+        try:
+            from gateway.routes.agent import _pin_registry_clone
+            _pin_registry_clone(agent_name, agent_dir)
+        except Exception:
+            pass
+    if git_auth.pinned_remote(agent_dir) is None:
+        return False, "Metorite has no record of this agent's repository"
+    branch = await asyncio.to_thread(git_auth.current_branch, agent_dir)
+    if not branch:
+        return False, "the workspace is not on a branch"
+    if not since_sha:
+        return False, "Metorite could not tell which commits this turn made"
+
+    def _lines(*argv: str) -> list[str] | None:
+        return git_auth.git_lines(agent_dir, list(argv))
+
+    head_lines = await asyncio.to_thread(_lines, "rev-parse", "--verify", "-q", "HEAD")
+    if not head_lines:
+        return False, "the workspace has no commit"
+    head = head_lines[0]
+    rewritten = await asyncio.to_thread(
+        git_auth.git_lines, agent_dir, ["merge-base", "--is-ancestor", since_sha, head],
+    )
+    if rewritten is None:
+        return False, "the branch was rewritten during this turn"
+    window = await asyncio.to_thread(_lines, "rev-list", f"{since_sha}..{head}")
+    if not window:
+        return False, "this turn made no commit"
+    fetched = await asyncio.to_thread(git_auth.fetch, agent_dir)
+    if not fetched.ok:
+        return False, "Metorite could not read the remote branch"
+    tracking = f"refs/remotes/origin/{branch}"
+    has_tip = await asyncio.to_thread(_lines, "rev-parse", "--verify", "-q", tracking)
+    outgoing = await asyncio.to_thread(
+        _lines, "rev-list", head, *(["^" + tracking] if has_tip else ["--not", "--remotes=origin"]),
+    )
+    if outgoing is None:
+        return False, "Metorite could not list the commits to push"
+    remote = git_auth.pinned_remote(agent_dir)
+    details = {
+        "repo": f"{remote.owner}/{remote.repo}" if remote else "",
+        "branch": branch,
+        "shas": list(outgoing or [])[:50],
+    }
+    if not outgoing:
+        return True, f"the commits of this turn are already on {branch}", details
+    foreign = [sha for sha in outgoing if sha not in set(window)]
+    if foreign:
+        _log.warning(
+            "executor.agent_push_foreign_commits",
+            agent=agent_name, run_id=run_id, count=len(foreign),
+        )
+        return False, (
+            f"{len(foreign)} earlier commit(s) that this turn did not make would go "
+            "out too. A reviewer must approve them on the Agents page first"
+        )
+    result = await asyncio.to_thread(
+        functools.partial(
+            git_auth.push, agent_dir, src=head, branch=branch,
+            credential=git_auth.push_token(),
+        ),
+    )
+    if result.ok:
+        _log.info("executor.agent_push_done", agent=agent_name, run_id=run_id, branch=branch)
+        return True, f"{len(outgoing)} commit(s) to {branch}", details
+    _log.warning(
+        "executor.agent_push_failed",
+        agent=agent_name, run_id=run_id, branch=branch,
+        stderr=result.stderr.strip()[:300],
+    )
+    return False, "GitHub refused the push"
+
+
+#: The text of a chat push that did not happen, for the member.
+_NO_PUSH_TAIL = (
+    " Your commit stays local, and it waits for a reviewer on the Agents page."
+)
+
+
+async def _settle_agent_push(
+    agent_name: str,
+    agent_dir: str | None,
+    run_id: str,
+    *,
+    since_sha: str | None,
+    thread_id: str | None = None,
+) -> str | None:
+    """THE one end-of-turn step of a chat push (H-363). Every path calls it.
+
+    The run's shell holds no GitHub credential, so its own ``git push``
+    failed. When the run asked for a push
+    (``permission_policy.note_agent_push_request``), this asks the reviewer
+    rule again, from the run binding, and on a yes pushes this turn's
+    commits through :func:`_push_reviewed_run`. A run whose member is not a
+    reviewer gets no credential and no push.
+
+    Each run boundary calls it once, before its RUN_FINISHED (native MAF,
+    Copilot, Tier 2, batch, sub-agent). Returns the text for the member's
+    chat, or ``None`` when the run asked for no push.
+    Fence: ``tests/unit/test_clone_token_h363.py``.
+    """
+    try:
+        from acb_skills.permission_policy import take_agent_push_request
+        if not take_agent_push_request(run_id):
+            return None
+    except Exception:
+        return None
+    try:
+        allowed, why = await _agent_push_allowed()
+    except Exception as exc:
+        allowed, why = False, f"the push check failed: {str(exc)[:120]}"
+    if not allowed:
+        _log.warning(
+            "executor.agent_push_request_refused",
+            agent=agent_name, run_id=run_id, reason=why,
+        )
+        with contextlib.suppress(Exception):
+            record(AuditEvent(
+                actor=f"agent:{agent_name}", action="agent_push_request_refused",
+                target=f"agent:{agent_name}", payload={"run_id": run_id, "reason": why},
+                organization_id=_RUN_ORG.get(thread_id),
+            ))
+        return (
+            "Metorite did not push: only an admin of the first-party organization "
+            "or of a platform operator organization may push agent code."
+            + _NO_PUSH_TAIL
+        )
+    details: dict[str, Any] = {}
+    try:
+        pushed, text, *rest = await _push_reviewed_run(
+            agent_name, agent_dir or "", run_id, since_sha=since_sha,
+        )
+        details = dict(rest[0] or {}) if rest else {}
+    except Exception as exc:
+        _log.warning("executor.agent_push_error", agent=agent_name, error=str(exc)[:200])
+        pushed, text = False, "the push failed"
+    if pushed:
+        # The ONE audit row of a reviewer's chat push, on every run path
+        # (native MAF, Copilot, Tier 2, batch, sub-agent): who, which org,
+        # which repo and branch, and the SHAs that went out.
+        _audit_agent_push(agent_name, run_id, thread_id, details)
+        return f"Metorite pushed this turn's commits: {text}."
+    return f"Metorite did not push: {text}." + _NO_PUSH_TAIL
+
+
+def _audit_agent_push(
+    agent_name: str, run_id: str, thread_id: str | None, details: dict[str, Any],
+) -> None:
+    """Record a push that a reviewer's chat turn made (H-363). Never raises."""
+    try:
+        from acb_common import get_run_context
+
+        member = str(get_run_context().get("user") or "")
+        org = _RUN_ORG.get(thread_id) if thread_id else None
+        org = org or _current_run_org()
+        record(AuditEvent(
+            actor=f"agent:{agent_name}",
+            action="agent_push_by_reviewer",
+            target=f"agent:{agent_name}",
+            payload={
+                "run_id": run_id,
+                "member": member,
+                "repo": str(details.get("repo") or ""),
+                "branch": str(details.get("branch") or ""),
+                "shas": [str(x)[:40] for x in details.get("shas") or []],
+                "reviewed_by": "chat:autopush",
+                # BR-7b (core_brief.md §8.2): the policy that allowed it.
+                "policy": "chat:autopush",
+            },
+            organization_id=org,
+        ))
+    except Exception as exc:
+        _log.warning("executor.agent_push_audit_failed", agent=agent_name, error=str(exc)[:200])
+
+
+def _drop_agent_push(run_id: str, why: str) -> str | None:
+    """Drop the push request of a turn that did not finish. No push happens.
+
+    A turn that fails or is cancelled pushes nothing. Returns the text for
+    the member when a request was pending, so a path that can still answer
+    says so in the chat. The ``finally`` of each run boundary calls it too,
+    for a cancel, where no answer can go out.
+    """
+    try:
+        from acb_skills.permission_policy import take_agent_push_request
+        if not take_agent_push_request(run_id):
+            return None
+    except Exception:
+        return None
+    _log.warning("executor.agent_push_dropped", run_id=run_id, reason=why)
+    return f"Metorite did not push, because {why}." + _NO_PUSH_TAIL
+
+
+def _push_note_events(note: str | None) -> list[dict[str, Any]]:
+    """The chat events of a push note: one text message, or none."""
+    return list(_text_message_events("\n\n" + note)) if note else []
 
 
 async def _install_push_guard(agent_dir: str) -> None:
@@ -1735,8 +4787,10 @@ async def _install_push_guard(agent_dir: str) -> None:
     Installs two hooks (idempotent — skips if already present):
 
     1. **pre-push**: Rejects all direct pushes.  The human-approval gateway
-       endpoint handles the push, or the operator may tell the agent to
-       ``git push --no-verify`` from chat to bypass this hook explicitly.
+       endpoint handles the push. A reviewer of agent code (the rule of
+       ``acb_auth.agent_operator``) may also tell the agent to push from chat
+       with ``--no-verify``. For every other member the permission guard
+       refuses that push (``agent_push_allowed``).
 
     2. **post-commit**: Appends the new commit SHA to ``.git/cc-commits-queue``.
        The post-run commit scanner reads this file to detect commits made
@@ -1745,7 +4799,13 @@ async def _install_push_guard(agent_dir: str) -> None:
 
     Non-fatal — if any hook write fails, execution continues; the post-run
     commit scan (including catch-up) still catches new commits.
+
+    It writes nothing for a sandbox dir (WS-43e, §7.5 rule A). A hook there
+    would sit in a ``.git`` that a container could write, and an empty dir
+    would put the hooks in the gateway's own working dir.
     """
+    if not _host_git_ok(agent_dir):
+        return
     try:
         hooks_dir = Path(agent_dir) / ".git" / "hooks"
         if not hooks_dir.is_dir():
@@ -1756,7 +4816,7 @@ async def _install_push_guard(agent_dir: str) -> None:
             pre_push.write_text(
                 "#!/bin/sh\n"
                 "echo 'Direct push blocked: commits are queued for human approval'\n"
-                "echo 'Approve via the Metorite Control Plane inbox, or tell the agent you approve and it will push with --no-verify.'\n"
+                "echo 'Approve via the Metorite Control Plane inbox. Only a reviewer of agent code may tell the agent to push.'\n"
                 "exit 1\n",
                 encoding="utf-8",
             )
@@ -1812,8 +4872,11 @@ async def _detect_agent_commits(
     do not commit simply produce empty scans.
 
     Non-fatal — any subprocess or DB error is logged and swallowed.
+
+    It scans nothing in a sandbox dir (WS-43e, §7.5 rule A). A container could
+    have written its ``.git``, so host git there could run a planted hook.
     """
-    if not agent_dir:
+    if not _host_git_ok(agent_dir):
         return
 
     # Resolve the pending_commit session opener ONCE, HERE — on the event-loop
@@ -1852,6 +4915,9 @@ async def _detect_agent_commits(
             pass
 
         all_lines: list[str] = []
+        # The commits that THIS run made (phase 0 and phase 1). Only one of
+        # them can be a push of this run, so only these take the push gate.
+        _this_run_shas: set[str] = set()
 
         # ── Phase 0: queue-file scan (post-commit hook) ─────────────────
         # The post-commit hook appends each new SHA to this file.  We read
@@ -1887,12 +4953,14 @@ async def _detect_agent_commits(
                                     cwd=agent_dir,
                                     stdout=asyncio.subprocess.PIPE,
                                     stderr=asyncio.subprocess.DEVNULL,
+                                    env=child_env(),
                                 )
                                 out, _ = await asyncio.wait_for(p.communicate(), timeout=5)
                                 msg = out.decode(errors="replace").strip()
                             except Exception:
                                 msg = sha[:12]
                             all_lines.append(f"{sha}|{msg}")
+                            _this_run_shas.add(sha)
                 # Truncate so SHAs are not re-registered on next scan.
                 queue_file.write_text("", encoding="utf-8")
             except Exception as exc:
@@ -1908,6 +4976,7 @@ async def _detect_agent_commits(
                 cwd=agent_dir,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=child_env(),
             )
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
                 proc.communicate(), timeout=10,
@@ -1916,6 +4985,9 @@ async def _detect_agent_commits(
                 phase1 = stdout_bytes.decode(errors="replace").strip()
                 if phase1:
                     all_lines.extend(phase1.splitlines())
+                    _this_run_shas.update(
+                        ln.split("|", 1)[0].strip() for ln in phase1.splitlines()
+                    )
                     _log.info(
                         "executor.commits_since_sha",
                         agent=agent_name, count=len(phase1.splitlines()),
@@ -1939,6 +5011,7 @@ async def _detect_agent_commits(
             cwd=agent_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            env=child_env(),
         )
         catchup_out, _ = await asyncio.wait_for(
             catchup_proc.communicate(), timeout=10,
@@ -1997,6 +5070,10 @@ async def _detect_agent_commits(
             "initial: seeded from local source",
         )
 
+        # The push gate's answer, asked once per pass and only for a pushed
+        # commit of this run: ``(allowed, why)`` of ``_agent_push_allowed``.
+        _push_gate: tuple[bool, str] | None = None
+
         for raw_line in all_lines:
             parts = raw_line.split("|", 1)
             commit_sha = parts[0].strip()
@@ -2021,10 +5098,43 @@ async def _detect_agent_commits(
             diff_text = await _git_diff(agent_dir, commit_sha)
 
             # If the agent already pushed this commit (the user told it to
-            # "commit and push" in chat, so it ran `git push --no-verify`), it's
-            # on origin — record it as already-approved instead of queuing it for
-            # a redundant Control-Plane approval.
+            # "commit and push" in chat), it is on origin. It is recorded as
+            # approved ONLY when the member of this run passes the reviewer
+            # rule of the queue (2026-10-19). Otherwise it stays pending for a
+            # reviewer, and an audit line names the push that got past the
+            # permission guard. A pushed commit that this run did not make (a
+            # catch-up of an earlier run, or of a pull) keeps the earlier
+            # record. Fence: tests/unit/test_chat_autopush_reviewer_gate.py.
             pushed = await _commit_on_remote(agent_dir, commit_sha)
+            approved = pushed
+            if pushed and commit_sha in _this_run_shas:
+                if _push_gate is None:
+                    try:
+                        _push_gate = await _agent_push_allowed()
+                    except Exception as exc:
+                        _push_gate = (
+                            False, f"the push check failed: {str(exc)[:120]}",
+                        )
+                approved = _push_gate[0]
+                if not approved:
+                    _log.warning(
+                        "executor.agent_push_without_reviewer",
+                        agent=agent_name, run_id=run_id,
+                        commit_sha=commit_sha[:12], reason=_push_gate[1],
+                    )
+                    record(
+                        AuditEvent(
+                            actor=f"agent:{agent_name}",
+                            action="agent_push_without_reviewer",
+                            target=f"agent:{agent_name}",
+                            payload={
+                                "run_id": run_id,
+                                "commit_sha": commit_sha[:12],
+                                "reason": _push_gate[1],
+                            },
+                            organization_id=_RUN_ORG.get(thread_id),
+                        )
+                    )
 
             await _register_pending_commit(
                 agent_name=agent_name,
@@ -2034,8 +5144,8 @@ async def _detect_agent_commits(
                 commit_message=commit_message,
                 diff_text=diff_text,
                 test_summary="(agent self-improvement — no test run)",
-                status="approved" if pushed else "pending",
-                reviewed_by="chat:autopush" if pushed else None,
+                status="approved" if approved else "pending",
+                reviewed_by="chat:autopush" if approved else None,
                 # WS-29 slice 4: the tenant opener resolved on the event-loop
                 # frame above (flag OFF → get_session; ON+org → tenant_session;
                 # ON+no-org → None → the write fails closed + logs).
@@ -2072,7 +5182,9 @@ async def _detect_agent_commits(
         )
 
 
-async def _integration_authorizer(event_payload: Any, thread_id: str | None = None):
+async def _integration_authorizer(
+    event_payload: Any, thread_id: str | None = None, *, session_user: str | None = None,
+):
     """Build the per-run integration filter for the run's authority, or None.
 
     Org access control (spec §5, seam 3). An agent's ``config.json`` declares
@@ -2090,8 +5202,9 @@ async def _integration_authorizer(event_payload: Any, thread_id: str | None = No
     Returns ``None`` — meaning no filtering, the pre-org-access-control
     behaviour — whenever the run is **not** attributable to an active member:
 
-    * no ``user_email`` in the payload (cron, reconciler, webhook-triggered
-      runs: the platform acting on its own behalf, not a person's);
+    * no session member and no ``user_email`` in the payload (cron,
+      reconciler, webhook-triggered runs: the platform acting on its own
+      behalf, not a person's);
     * a synthetic principal such as ``system:internal``;
     * an address that does not resolve to an ACTIVE member.
 
@@ -2101,13 +5214,27 @@ async def _integration_authorizer(event_payload: Any, thread_id: str | None = No
     happened not to be a provisioned member. Who may start a run at all is
     already enforced upstream by ``assert_can_run_agent``, so an
     unidentifiable address here means "platform-initiated", not "attacker".
+
+    🔴 **The member is the session's, through** :func:`_run_member` (MCP-C1).
+    H-337 removes the body's ``user_email`` in the stream route, so a check
+    that read the body found nobody in EVERY web chat. Then this returned
+    ``None``: no integration filter, and no MCP card (``member_present``
+    False). *session_user* wins, and a run whose caller passes none keeps the
+    body's claim, as before. A VERIFIED member who does not resolve active
+    gets nothing, never ``None``: a session names a person, so "the platform
+    started this run" cannot be the reason (review of MCP-C1). Fence:
+    ``tests/unit/test_org_access_credentials.py`` and
+    ``tests/unit/test_maf_mcp_confirm.py``.
     """
-    email = ""
-    if isinstance(event_payload, dict):
-        email = str(
-            event_payload.get("user_email") or event_payload.get("user_id") or ""
-        ).strip()
+    email, verified = _run_member(event_payload, session_user)
     if not email or ":" in email:
+        return None
+
+    try:
+        from acb_auth.access import IdentityUnavailable
+    except ImportError:
+        # The orchestrator does not declare acb_auth. Without it, keep the
+        # prior answer: the broad catch below gave None.
         return None
 
     try:
@@ -2119,6 +5246,11 @@ async def _integration_authorizer(event_payload: Any, thread_id: str | None = No
 
         access = await resolve_access(email)
         if not access.is_active:
+            if verified:
+                # A degraded read or a suspension of a session member: deny
+                # every credential for this run, as for IdentityUnavailable.
+                _log.warning("executor.integration_authorizer_inactive_member")
+                return lambda _service: False
             return None
 
         # Shared-session fold: the intersection REPLACES the actor's access
@@ -2148,10 +5280,19 @@ async def _integration_authorizer(event_payload: Any, thread_id: str | None = No
             pass
 
         return lambda service: access.has(integration_use_permission(service))
+    except IdentityUnavailable:
+        # 🔴 A pool or connect timeout (2026-10-07). It is NOT "no member",
+        # so it must not reach the `None` below, which means NO filter and
+        # gives the run every credential. The likely case is a background
+        # email-automation run while the database is starved of IO. Deny
+        # every credential for this run. The next run resolves again.
+        _log.warning("executor.integration_authorizer_unavailable")
+        return lambda _service: False
     except Exception as exc:
-        # resolve_access is documented never to raise, so reaching here is a
-        # bug rather than a misconfiguration. Preserve the prior behaviour
-        # rather than failing every integration on a transient fault.
+        # resolve_access raises only IdentityUnavailable, caught above, so
+        # reaching here is a bug rather than a misconfiguration. Preserve the
+        # prior behaviour rather than failing every integration on a
+        # transient fault.
         _log.warning("executor.integration_authorizer_failed", error=str(exc))
         return None
 
@@ -2264,6 +5405,110 @@ def _unbind_run_identity(binding: Any) -> None:
         pass
 
 
+@dataclasses.dataclass(frozen=True)
+class _BatchRunInputs:
+    """What the first attempt of a batch run used, captured once for the retry.
+
+    The self-anneal (:func:`_self_anneal`) loads the agent again with
+    *repo_name* and *local_path*, so it loads the same agent and the same
+    ``config.json``. *held* is the tool names the first attempt held after
+    every narrowing, or ``None`` when it failed before its injection. A retry
+    narrows to *held*, so it can never hold more than the first attempt.
+    *run_tools* is the platform tool names that the first attempt bound as
+    ``run_tools`` (``write_artifact.run_holds_tool``). A retry binds them
+    again, narrowed to what it holds, and never wider. *integrations* is the
+    credential names the first attempt resolved, after the acting member's
+    filter. A retry resolves no authority again: it gets those names only.
+    ``None`` on any of the three means the first attempt failed before that
+    step, and the retry then fails closed (nothing).
+    """
+
+    repo_name: str | None = None
+    local_path: str | None = None
+    held: frozenset[str] | None = None
+    run_tools: frozenset[str] | None = None
+    integrations: frozenset[str] | None = None
+
+
+@dataclasses.dataclass
+class _BatchMcp:
+    """What the MCP servers of a batch run need (WS-47 WAC-P3).
+
+    The stream path injects the org's MCP servers with these same four
+    values (``run_agent_stream``). *organization_id* is the caller's
+    server-side stamp, never the payload (R11). *is_authorized* is the run's
+    one access lookup (``_integration_authorizer``). *member_present* is
+    True only when a member can answer a card. *opened* collects each tool
+    and client, and the run closes them in its ``finally``."""
+
+    organization_id: str | None
+    is_authorized: Any
+    member_present: bool
+    opened: list[Any] = dataclasses.field(default_factory=list)
+
+
+async def _assemble_batch_agents(
+    loaded: Any, *, agent_name: str, no_egress: bool,
+    held: frozenset[str] | None = None,
+    mcp: _BatchMcp | None = None,
+) -> tuple[list[Any], Any, frozenset[str]]:
+    """Build and arm the agents of a batch run.
+
+    Returns ``(agents, md_spec, run_tools)``. *run_tools* is the platform
+    tool names that :func:`_inject_agent_tools` left, narrowed to *held* on
+    a retry. The caller binds it as ``run_tools`` (§14.10).
+
+    The first attempt and each self-anneal retry call this one function, so a
+    retry reads the same ``tool_scope``, ``own_tool_scope``, skill toggles,
+    D85 withholding, floor opt-out, Mirror filter, WhatsApp withholding and
+    H-236 answer. *held* is the first attempt's tool names
+    (:class:`_BatchRunInputs`). A retry passes it, and the agents then lose
+    each tool outside it. Access is an intersection, never a union.
+
+    *mcp* (WS-47 WAC-P3) gives each agent the org's MCP servers, as the
+    stream path does, with the same org, access lookup and card rule. A
+    ``no_egress`` run gets none (H-236). A retry passes no *mcp*, so it
+    holds no server: a retry only narrows.
+    """
+    agents = loaded.build_agents()
+    # Honour .github/agents/<name>.agent.md (instructions override).
+    md_spec = _apply_agent_md_overrides(agents, loaded.agent_dir, agent_name)
+    _apply_own_tool_scope(
+        agents, loaded.config.get("own_tool_scope") or None,
+    )
+    # CRM-C7: no CRM record write in Mirror mode, read as the member.
+    await _drop_mirror_record_writes(agents)
+    own_tools = _count_agent_tools(agents)  # WS-8o
+    run_tools = _inject_agent_tools(
+        agents,
+        # WS-67 OA-9b: the worker's scope is the tools of its job.
+        tool_scope=_job_tool_scope(
+            agent_name, loaded.config.get("tool_scope") or None),
+        agent_name=agent_name,
+        agent_config=loaded.config,  # D85: the sharing block
+        no_egress=no_egress,  # H-236: from the run's own binding
+    )  # inject call_agent / call_agent_background
+    if held is not None:
+        _narrow_to_held(agents, held, agent_name)
+        run_tools = frozenset(run_tools) & held
+    # CRM-Q32-5: the CRM facts block, read as the member.
+    run_tools = await _add_crm_facts_block(agents, run_tools, no_egress=no_egress)
+    _log_agent_tools_resolved(agent_name, agents, own_tools)
+    # WS-47 WAC-P3: the org's MCP servers, exactly as the stream path adds
+    # them. H-236: an MCP server reaches outside, so a no_egress run gets
+    # none. H-299: a tool that can change data waits for a member's card,
+    # and a run that cannot show one refuses it (`_maf_mcp`).
+    for _a in agents if mcp is not None and not no_egress else []:
+        await _inject_mcp_servers(
+            _a, agent_name,
+            organization_id=mcp.organization_id,
+            is_authorized=mcp.is_authorized,
+            opened=mcp.opened,
+            member_present=mcp.member_present,
+        )
+    return agents, md_spec, frozenset(run_tools)
+
+
 async def run_agent(
     agent_name: str,
     event_payload: dict[str, Any],
@@ -2273,6 +5518,7 @@ async def run_agent(
     model: str | None = None,
     organization_id: str | None = None,
     session_user: str | None = None,
+    solo_room: bool | None = None,
 ) -> dict[str, Any]:
     """Dynamically load and execute a named agent.
 
@@ -2295,13 +5541,31 @@ async def run_agent(
                        ``_run_sub_agent_streaming``); the workflow / schedule
                        callers resolve their own org in slice 6c and pass
                        ``None`` until then (operator-org fallback / skip).
+        solo_room:     True when the run boundary knows this run is the
+                       member's own, not a shared room (WS-63 PZ-2,
+                       :data:`_RUN_SOLO_ROOM`). ``None`` keeps the parent's.
 
         The final MAF agent result dict.
 
     Raises:
         :class:`AgentRunError` on failure (includes mutation PR URL if one was opened).
     """
+    # WS-67 OA-9a: the third of three callers that ask `worker_refusal`. The
+    # batch fallback of `call_agent` goes straight here, so the streaming seam
+    # alone is not enough. Before any binding, so a refusal binds nothing.
+    # STU-G1: a pack-only owner never runs, from any caller, in any run.
+    _worker_refused = _worker_refusal(agent_name) or _pack_only_refusal(agent_name)
+    if _worker_refused is not None:
+        raise AgentRunError(
+            _worker_refused, agent_name=agent_name, run_id=run_id or "",
+            original=ValueError(_worker_refused),
+        )
     _identity = _bind_run_identity(event_payload, agent_name)
+    # WS-63 PZ-2: closed in the same finally as the identity.
+    _solo_token = _bind_solo_room(solo_room)
+    # WS-63 PZ-6a: True only for a solo run. ``_run_agent_inner`` closes it
+    # again for a run with no verified member or with no_egress.
+    _writes_token = _bind_profile_writes(solo_room is True)
     try:
         # 🔴 **The batch path bound no run context at all**, so a model call
         # made here reached the Router with no member, no app and no run, and
@@ -2311,13 +5575,25 @@ async def run_agent(
         # H-201 (§21.16): the run's artifact context ends with the run, and a
         # nested run gives its parent back the parent's exact context.
         with run_context_scope(), artifact_context_scope():
-            return await _run_agent_inner(
-                agent_name, event_payload,
-                run_id=run_id, thread_id=thread_id, model=model,
-                organization_id=organization_id,
-                session_user=session_user,
-            )
+            try:
+                return await _run_agent_inner(
+                    agent_name, event_payload,
+                    run_id=run_id, thread_id=thread_id, model=model,
+                    organization_id=organization_id,
+                    session_user=session_user,
+                )
+            finally:
+                # WS-43d (§16.3): inside the scope, so the run's own context
+                # still names its run data. A no-op when no sandbox ran.
+                await _end_sandbox_run()
     finally:
+        _release_profile_writes(_writes_token)
+        if solo_room is None:
+            # A nested run (a delegation) hands its answer to the parent's
+            # model, so the parent's writes close (PZ-6a fix round 1). At
+            # the top level no holder is bound, and this does nothing.
+            _close_profile_writes()
+        _release_solo_room(_solo_token)
         _unbind_run_identity(_identity)
 
 
@@ -2346,7 +5622,12 @@ async def _run_agent_inner(
     """
     _disable_agent_telemetry_once()
     settings = get_settings()
+    _batch_started = time.monotonic()
     run_id = run_id or str(uuid.uuid4())
+    # H-227 (the batch decision, PR #616): the executor mints the thread of a
+    # run with no chat. Only this code knows that, so a client can never claim
+    # it by the shape of an id it sends.
+    _minted_thread = not thread_id
     thread_id = thread_id or f"{agent_name}:{run_id}"
 
     # H-201 P2-c (§21.16): a batch run that starts inside the artifact context
@@ -2356,8 +5637,55 @@ async def _run_agent_inner(
     from acb_skills.write_artifact import (
         artifact_context,
         bind_artifact_context,
+        delegation_target,
+        derive_artifact_context,
     )
     _parent_ctx = artifact_context()
+    # A delegated run delivers its documents to the chat that asked, so the
+    # card opens there. From the parent's bound context only (R5). ``None``
+    # for a run with no parent, and for a sub-run of a batch run.
+    _deliver_to = delegation_target(_parent_ctx)
+    # A run with no chat and no parent run is a BATCH run. Its documents
+    # belong to the organization (write_artifact). A delegated run is not:
+    # its parent's chat may hold a member's data.
+    _batch_thread = _minted_thread and not _parent_ctx.get("session_id")
+    # CRM-Q29: the member's own words, a source of the number check.
+    _member_words = _member_words_for_run(_parent_ctx, event_payload)
+    # WS-67 OA-1: the member's messages of the chat, for each delegated task.
+    _member_turns = _member_turns_for_run(_parent_ctx, event_payload)
+    # WS-67 OA-4: a delegated run inherits its parent's kept corrections.
+    _inherited_constraints = _inherited_chat_constraints(_parent_ctx)
+    # H-236: decide this run's no_egress once, from the parent's binding and
+    # this agent's own cover, and bind it before anything can fail. A load
+    # error then retries (self-anneal) with this answer, never the parent's.
+    if _parent_ctx.get("run_id") and _parent_ctx.get("run_id") == run_id:
+        # The batch fallback of a streaming sub-run (_run_sub_agent_streaming)
+        # reads its OWN streaming frame as its parent. That frame decided
+        # this run's no_egress BEFORE it marked the session for a mail agent
+        # (WS-17 EM-G11f3), so keep its decision, plus this agent's own cover.
+        # Asking the mark again here would read the run's own mark.
+        _no_egress = (_parent_ctx.get("no_egress", False) is not False
+                      or _run_covered(agent_name, organization_id))
+    else:
+        _no_egress = _run_no_egress(agent_name, _parent_ctx, organization_id)
+    # RX-1 (D169): a covered run keeps H-236 as it was, down the whole chain.
+    _cover = _covered_chain(agent_name, _parent_ctx, organization_id)
+    _marked = await _chat_marked(
+        {**dict(_parent_ctx), "session_id": _parent_ctx.get("session_id") or thread_id,
+         "batch_thread": _batch_thread}, organization_id)
+    derive_artifact_context(no_egress=_no_egress, covered_chain=_cover, chat_marked=_marked)
+    # WS-17 EM-G11f3: the batch twin of the mark in _run_sub_agent_streaming.
+    await _mark_untrusted_session(agent_name, _parent_ctx)
+    # WS-45 S4: a covered batch run has its own tier policy (below). Its
+    # effort is the payload's, else the parent run's, from the parent's
+    # bound context (a sub-agent). Both are read for a covered agent only.
+    _batch_covered = _tier_policy_covers(agent_name)
+    _batch_effort = ""
+    if _batch_covered:
+        _batch_effort = str(
+            (event_payload.get("think_mode") if isinstance(event_payload, dict) else "")
+            or _parent_ctx.get("think_mode") or "auto"
+        )
 
     # ── Run correlation for the batch path (usage attribution) ─────────────
     # The streaming path binds the same fields. `run_agent` opened the scope
@@ -2376,6 +5704,12 @@ async def _run_agent_inner(
         )
     except Exception:
         pass
+    # WS-63 PZ-6a: the profile writes stay open only for a verified member
+    # in a run with no no_egress. ``run_agent`` restores the parent's value.
+    if _no_egress or not _verified_run_member():
+        from acb_common.assistant_profile import close_writes
+
+        close_writes()
 
     # ── Tenant binding for this batch run's writes (WS-29 acb_graph slice 6a) ──
     # The batch path now HONOURS the ``organization_id`` its callers pass, exactly
@@ -2423,9 +5757,11 @@ async def _run_agent_inner(
             agent=agent_name, thread_id=thread_id,
             source=_batch_source or "batch",
         )
-    # TODO(WS-29 slice 6b): inbound webhooks (WhatsApp) + email-automation
-    # chat need a mailbox/account→org resolver over an RLS-scoped table before they
-    # can pass organization_id here (exempt-resolver design). TODO(WS-29 slice 6c):
+    # TODO(WS-29 slice 6b): email-automation chat needs a mailbox→org resolver
+    # over an RLS-scoped table before it can pass organization_id here
+    # (exempt-resolver design). The WhatsApp webhook has its resolver since
+    # WS-20 WA-C1 (`wa_account_for_phone_number_id`). WS-20 WA-C1b binds the
+    # other WhatsApp paths. TODO(WS-29 slice 6c):
     # the workflow cron scheduler / orphan reconciler / schedule sweep resolve the
     # owning record's org and pass it in.
 
@@ -2443,6 +5779,15 @@ async def _run_agent_inner(
         )
     )
 
+    # WS-45 S4: the run's tier policy, for a covered native agent. Set in the
+    # load below. The self-anneal retry takes it too (review P3).
+    _batch_tier = None
+    _is_copilot_agent = False
+    # What the first attempt used. The self-anneal retry rebuilds from it, so
+    # a retry can only narrow the tools of this run.
+    _anneal_inputs = _BatchRunInputs()
+    # WS-47 WAC-P3: the MCP servers that this run opens. The finally closes them.
+    _batch_mcp: _BatchMcp | None = None
     try:
         _effective_agent_dir: str | None = None
         # The dir the git helpers, the self-anneal and the self-mutation use.
@@ -2455,10 +5800,9 @@ async def _run_agent_inner(
         # Checks dynamic agents (agents.json) first, then falls back to static registry.
         _registry_repo_name: str | None = None
         _registry_local_path: str | None = None
+        _registry_runtime: str | None = None
         try:
-            from gateway.routes.agent import _AGENT_REGISTRY
-            from gateway.routes.agent import _load_dynamic_agents
-            _all_entries = _load_dynamic_agents() + _AGENT_REGISTRY
+            _all_entries = _registry_entries()
             _registry_entry = next(
                 (e for e in _all_entries if e["name"] == agent_name), None
             )
@@ -2468,10 +5812,26 @@ async def _run_agent_inner(
                 # or just "repo". Pass the full slug — load_agent splits when needed.
                 _registry_repo_name = raw_repo if raw_repo else None
                 _registry_local_path = _registry_entry.get("local_path")
+                _registry_runtime = _registry_entry.get("agent_runtime")
         except ImportError:
             pass
+        _anneal_inputs = _BatchRunInputs(
+            repo_name=_registry_repo_name, local_path=_registry_local_path,
+        )
 
-        with load_agent(
+        # §15.4: refused as absent unless a first-party admin runs it. An
+        # AgentLoadError, so no self-anneal and no self-mutation follow.
+        await _assert_may_run_agent(agent_name)
+        # D84, D92: a DELEGATED batch run (a parent context is bound, H-201
+        # P2-c) never takes the retired Copilot runtime. The label refuses
+        # before the load, and the object after the build (below).
+        # AgentRuntimeUnsupported: no self-anneal and no self-mutation.
+        if _parent_ctx:
+            refuse_copilot_specialist(agent_name, label=_registry_runtime)
+        # WS-61 KB-4a: the orchestrator's Knowledge index block, as the
+        # stream path reads it. The WhatsApp channel runs this path.
+        await _prime_knowledge_index(agent_name)
+        with await _load_agent_off_loop(
             agent_name,
             run_id=run_id,
             repo_name=_registry_repo_name,
@@ -2525,11 +5885,8 @@ async def _run_agent_inner(
             _head_before: str = ""
             _is_copilot_agent = False
             try:
-                from gateway.routes.agent import _AGENT_REGISTRY
-                from gateway.routes.agent import \
-                    _load_dynamic_agents as _lda
                 _ea = next(
-                    (e for e in _lda() + _AGENT_REGISTRY if e["name"] == agent_name),
+                    (e for e in _registry_entries() if e["name"] == agent_name),
                     None,
                 )
                 if _ea and _ea.get("agent_runtime") == "github-copilot":
@@ -2548,9 +5905,18 @@ async def _run_agent_inner(
             # user at tool-call time rather than blocking the entire run.
             mandatory_integrations: list[str] = loaded.config.get("integrations", [])
             optional_integrations: list[str] = loaded.config.get("optional_integrations", [])
+            # One access lookup for the run, as on the stream path. The
+            # integrations and the MCP servers (WAC-P3) read the same answer.
+            _authorizer = await _integration_authorizer(
+                event_payload, thread_id, session_user=session_user,
+            )
             integrations, integration_warnings = build_integrations(
                 mandatory_integrations, optional_integrations, settings,
-                is_authorized=await _integration_authorizer(event_payload, thread_id),
+                is_authorized=_authorizer,
+            )
+            # The retry gets these credential names and no others.
+            _anneal_inputs = dataclasses.replace(
+                _anneal_inputs, integrations=frozenset(integrations),
             )
             if integration_warnings:
                 _log.warning(
@@ -2560,17 +5926,32 @@ async def _run_agent_inner(
                     unavailable=list(integration_warnings.keys()),
                 )
 
-            agents = loaded.build_agents()
-            # Honour .github/agents/<name>.agent.md (instructions override).
-            _apply_agent_md_overrides(agents, loaded.agent_dir, agent_name)
-            _apply_own_tool_scope(
-                agents, loaded.config.get("own_tool_scope") or None,
+            # WS-47 WAC-P3: a top-level run of a chat thread (a WhatsApp
+            # run) gets the org's MCP servers, as the stream path gives
+            # them. A delegated run and a run with no chat get none, as on
+            # the stream path, where only the top-level run injects them.
+            if not _parent_ctx.get("run_id") and not _batch_thread:
+                _batch_mcp = _BatchMcp(
+                    organization_id=organization_id,
+                    is_authorized=_authorizer,
+                    member_present=_authorizer is not None,
+                )
+            # The one batch assembly. The self-anneal retry calls it too.
+            agents, _batch_md_spec, _run_tools = await _assemble_batch_agents(
+                loaded, agent_name=agent_name,
+                no_egress=_no_egress,  # H-236: from the parent's binding
+                mcp=_batch_mcp,
             )
-            _inject_agent_tools(
-                agents,
-                tool_scope=loaded.config.get("tool_scope") or None,
-                agent_name=agent_name,
-            )  # inject call_agent / call_agent_background
+            # The retry narrows to what this attempt holds (never a union).
+            _anneal_inputs = dataclasses.replace(
+                _anneal_inputs, held=_held_tool_names(agents), run_tools=_run_tools,
+            )
+            # WS-43n: the label OR the object, as the stream path decides. A
+            # repo agent that declares no runtime is labelled "maf" (§15.5).
+            if not _is_copilot_agent and any(is_copilot_agent(a) for a in agents):
+                _is_copilot_agent = True
+            if _parent_ctx:
+                refuse_copilot_specialist(agent_name, built=agents)
 
             # Set write_artifact context + ensure visible workspace dirs exist.
             # H-201 (§21.16): the context is THIS run's own ContextVar value.
@@ -2580,6 +5961,12 @@ async def _run_agent_inner(
                 agent_name=agent_name,
                 run_id=run_id,
                 workspace_root=_effective_agent_dir,
+                member_message=_member_words,  # CRM-Q29
+                member_turns=_member_turns,  # WS-67 OA-1
+                **_inherited_constraints,  # WS-67 OA-4
+                # H-227: True only when this executor minted the thread of a
+                # run with no chat and no parent (see `_batch_thread`).
+                batch_thread=_batch_thread,
                 # The blob-store partition every write-through must carry —
                 # keeping disk and store on the SAME tenant key (migration
                 # 136). A shared agent's tenant dir carries o:<org>.
@@ -2594,11 +5981,44 @@ async def _run_agent_inner(
                 gateway_url=str(
                     getattr(settings, "gateway_base_url", "http://127.0.0.1:8000")
                 ),
+                # GATEWAY_INTERNAL_TOKEN only, with no LLM-key rung (WS-24b).
                 gateway_token=str(
-                    getattr(settings, "gateway_internal_token", "")
-                    or getattr(settings, "litellm_master_key", "")
-                    or "sk-local"
+                    getattr(settings, "gateway_internal_token", "") or ""
+                ).strip(),
+                # D85, two halves. ``shell_tools_withheld``: the injected
+                # shell tools are withheld (a cover may lift it).
+                # ``host_shell_refused``: the Copilot CLI's own shell, which
+                # runs on the host, is refused (a cover never lifts it).
+                shell_tools_withheld=bool(_withheld_shell_tools(
+                    agent_name, loaded.config,
+                )),
+                host_shell_refused=_host_shell_refused(
+                    agent_name, loaded.config,
                 ),
+                # The push gate (2026-10-19): may this member push agent
+                # code? From the run binding. Fence:
+                # test_chat_autopush_reviewer_gate.py.
+                agent_push_allowed=await _agent_push_binding(
+                    _host_shell_refused(agent_name, loaded.config),
+                ),
+                # H-236: a delegated run of a covered parent sends nothing
+                # off the platform. Its own delegations inherit this.
+                no_egress=_no_egress,
+                covered_chain=_cover,
+                chat_marked=_marked,
+                # The chat that asked, for a delegated run.
+                **({"deliver_to": _deliver_to} if _deliver_to is not None else {}),
+                # WS-45 S4: the System-1 threshold of a covered run follows
+                # the effort. Absent for every other agent, as before.
+                **({"think_mode": _batch_effort} if _batch_covered else {}),
+                # The run's platform tools after every narrowing, for
+                # ``write_artifact.run_holds_tool`` (§14.10).
+                run_tools=_run_tools,
+                # WS-67 OA-9b hardening: a run with a parent is a sub-run.
+                **({"sub_run": True} if _parent_ctx.get("run_id") else {}),
+                # WS-67 OA-9c: a spawn child's own pack tools act in this run,
+                # by the key that the spawn minted for its job. {} otherwise.
+                **_job_pack_keys(agent_name, _parent_ctx),
             )
             try:
                 _ws_root = Path(_effective_agent_dir)
@@ -2635,7 +6055,9 @@ async def _run_agent_inner(
             # No-op (and no filesystem touch at all) while the switch is off.
             materialize_skill_bodies_for_agent(
                 agent_name, _effective_agent_dir,
-                tool_scope=loaded.config.get("tool_scope") or None,
+                tool_scope=_job_tool_scope(
+                    agent_name, loaded.config.get("tool_scope") or None),
+                agent_config=loaded.config,
             )
 
             # ── Set working directory for Copilot SDK agents ────────────
@@ -2662,19 +6084,49 @@ async def _run_agent_inner(
             #  - Native MAF agents: _apply_byok_… is a no-op, so set
             #    default_options["model"] here — the MAF client otherwise keeps
             #    its build-time model and ignores the requested/inherited tier.
+            # WS-45 S4 (D90 §4.5): an agent that AI_TIER_ROUTING covers runs
+            # its OWN policy here. It ignores *model*, the tier its caller
+            # passed or its parent published, and logs ai_route.model_ignored.
+            # None for every other agent, so the block below runs as before.
+            if agents and _batch_covered:
+                _batch_tier = await _tier_policy_for_run(
+                    agent_name, agents[0],
+                    run_id=run_id, thread_id=thread_id, model=model,
+                    think_mode=_batch_effort, event_payload=event_payload,
+                    config=loaded.config,
+                    # The .agent.md model counts for a Copilot SDK default,
+                    # as on the stream and sub-agent paths (review P3).
+                    agent_md_model=(
+                        (getattr(_batch_md_spec, "model", "") or "").strip()
+                    ),
+                    is_copilot=_is_copilot_agent, emit=False,
+                )
+            # Chat speed: a delegated run's setup, up to its first request.
+            _log.info(
+                "executor.run_setup_ms", agent=agent_name, run_id=run_id,
+                setup_ms=round((time.monotonic() - _batch_started) * 1000),
+                path="batch",
+            )
             if agents:
                 _agent0 = agents[0]
                 _cfg_tier = (loaded.config.get("model_tier") or "")
+                _batch_model = (
+                    _batch_tier.run_tier() if _batch_tier is not None
+                    else model or ""
+                )
+                if _batch_tier is not None and _is_copilot_agent:
+                    # A Copilot SDK agent keeps one tier for the whole run.
+                    _batch_tier.announce_run()
                 try:
                     # Copilot-SDK agents: pin gateway /v1 (BYOK) + model.
                     _apply_byok_provider_for_copilot_sdk(
-                        _agent0, model or "", settings,
+                        _agent0, _batch_model, settings,
                         agent_model_tier=_cfg_tier,
                     )
                     # Native MAF agents: set default_options["model"] so the
                     # requested/inherited tier is honoured (no-op for Copilot SDK).
                     _apply_model_for_maf_agent(
-                        _agent0, model or "", settings,
+                        _agent0, _batch_model, settings,
                         agent_model_tier=_cfg_tier,
                     )
                 except Exception as _be:
@@ -2691,6 +6143,7 @@ async def _run_agent_inner(
                     "integration_warnings": integration_warnings,
                 },
                 integrations=integrations,
+                tier_policy=None if _is_copilot_agent else _batch_tier,
             )
 
         record(
@@ -2709,16 +6162,22 @@ async def _run_agent_inner(
         # Post-run: detect commits the agent made during this run (ALL agents)
         _registry_runtime = "maf"
         try:
-            from gateway.routes.agent import _AGENT_REGISTRY
-            from gateway.routes.agent import _load_dynamic_agents
             _e = next(
-                (e for e in _load_dynamic_agents() + _AGENT_REGISTRY if e["name"] == agent_name),
+                (e for e in _registry_entries() if e["name"] == agent_name),
                 None,
             )
             if _e:
                 _registry_runtime = _e.get("agent_runtime", "maf")
         except Exception:
             pass
+        # H-363: the one end-of-turn push step. A batch run has no chat, so
+        # the text goes to the log.
+        _push_text = await _settle_agent_push(
+            agent_name, _git_dir, run_id,
+            since_sha=_head_before or None, thread_id=thread_id,
+        )
+        if _push_text:
+            _log.info("executor.agent_push_result", agent=agent_name, text=_push_text)
         await _detect_agent_commits(
             agent_name, _git_dir, run_id,
             since_sha=_head_before if _head_before else None,
@@ -2742,6 +6201,33 @@ async def _run_agent_inner(
             str(exc), agent_name=agent_name, run_id=run_id, original=exc,
         ) from exc
 
+    except NoEgressRefused as exc:
+        # H-236: a refusal, never a fault. Before the self-anneal and the
+        # self-mutation clauses, so nothing retries a run the control refused.
+        raise AgentRunError(
+            str(exc), agent_name=agent_name, run_id=run_id, original=exc,
+        ) from exc
+
+    except AgentNotFound as exc:
+        # §15.4: refused as absent. Before the AgentLoadError clause, because
+        # that one starts a self-mutation. The agent is fine, and this caller
+        # may not run it. The gate already logged the reason.
+        raise AgentRunError(
+            str(exc), agent_name=agent_name, run_id=run_id, original=exc,
+        ) from exc
+
+    except AgentRuntimeUnsupported as exc:
+        # WS-43n: a Copilot agent after WS-43r. Before the AgentLoadError
+        # clause, because that one starts a self-mutation, and a run of a
+        # refused runtime must not open a repair PR on every call. The text
+        # carries the migration steps of §15.5.
+        _log.warning(
+            "executor.runtime_unsupported", agent=agent_name, run_id=run_id,
+        )
+        raise AgentRunError(
+            str(exc), agent_name=agent_name, run_id=run_id, original=exc,
+        ) from exc
+
     except AgentLoadError as exc:
         _log.error("executor.load_error", agent=agent_name, run_id=run_id, error=str(exc))
         record(
@@ -2754,6 +6240,11 @@ async def _run_agent_inner(
                 organization_id=_RUN_ORG.get(thread_id),
             )
         )
+        # WS-67 OA-9b hardening item 5: a worker never mutates a repo.
+        if _is_internal_agent(agent_name):
+            raise AgentRunError(
+                str(exc), agent_name=agent_name, run_id=run_id, original=exc,
+            ) from exc
         # Structural incompatibility (missing agents.py, no tools, LangGraph remnant, etc.)
         # Trigger the Copilot SDK mutation sandbox to auto-fix the repo and open a PR.
         # The sandbox receives the full error + the agent_repo_compatibility.md guide
@@ -2764,7 +6255,7 @@ async def _run_agent_inner(
             agent_name=agent_name,
             run_id=run_id,
             error=exc,
-            agent_dir=_git_dir or _effective_agent_dir,
+            agent_dir=_repair_dir(_git_dir, _effective_agent_dir),
             incompatibility=True,
         )
         pr_url = mutation_result.pr_url if mutation_result else None
@@ -2790,14 +6281,28 @@ async def _run_agent_inner(
             _tb.format_exception(type(exc), exc, exc.__traceback__)
         )[:8000]
 
+        # WS-67 OA-9b hardening item 5: a worker (spawn child) has a fixed
+        # number of model calls. It never self-anneals and never mutates a
+        # repo. The error is the answer of the child.
+        if _is_internal_agent(agent_name):
+            raise AgentRunError(
+                str(exc), agent_name=agent_name, run_id=run_id, original=exc,
+            ) from exc
+
         # ── Self-annealing: detect → fix in-process → retry → LLM recovery ──
         recovery = await _self_anneal(
             agent_name=agent_name,
             run_id=run_id,
             thread_id=thread_id,
             event_payload=event_payload,
-            agent_dir=_git_dir or _effective_agent_dir,
+            agent_dir=_repair_dir(_git_dir, _effective_agent_dir),
             error=exc,
+            # H-236: every retry injects with THIS run's answer.
+            no_egress=_no_egress,
+            # The same agent, and no tool the first attempt did not hold.
+            inputs=_anneal_inputs,
+            # WS-45 S4: a retry of a covered native run keeps its policy.
+            tier_policy=None if _is_copilot_agent else _batch_tier,
         )
         if recovery is not None:
             return recovery
@@ -2810,7 +6315,7 @@ async def _run_agent_inner(
             agent_name=agent_name,
             run_id=run_id,
             error=exc,
-            agent_dir=_git_dir or _effective_agent_dir,  # the clone, for an authenticated push
+            agent_dir=_repair_dir(_git_dir, _effective_agent_dir),  # the clone, for an authenticated push
         )
         pr_url = mutation_result.pr_url if mutation_result else None
 
@@ -2839,6 +6344,8 @@ async def _run_agent_inner(
         ) from exc
 
     finally:
+        # H-363: a batch turn that failed pushes nothing. Drop its request.
+        _drop_agent_push(run_id, "the turn did not finish")
         # Drop this batch run's tenant record and release the async binding, so a
         # tenant left bound is never inherited by whatever runs next on this task
         # (WS-29 acb_graph slice 6a — mirrors run_agent_stream's finally).
@@ -2846,6 +6353,10 @@ async def _run_agent_inner(
         # run's org — a superseded same-thread run must not clobber a newer one.
         # H-201 part 3: and only an entry this run SET (_owned_org).
         _guarded_pop_run_org(thread_id, _owned_org)
+        # WS-47 WAC-P3: close each MCP tool and client this run opened, as
+        # the stream path does. It never raises.
+        if _batch_mcp is not None:
+            await _close_mcp_tools(_batch_mcp.opened)
         if _tenant_token is not None:
             try:
                 from acb_common.db import release_tenant
@@ -2872,6 +6383,116 @@ _sse_seq: int = 0
 _thread_emit_seq: dict[str, int] = {}
 
 
+#: How much of a Tier 1 failure the fallback log keeps, AFTER redaction.
+#:
+#: 🔴 **Short on purpose, and redacted first.** For a body-level 422, FastAPI
+#: puts the refused value into ``detail[].input``, and for a body the value can
+#: be the whole request, the member's messages included. A 2000-character cut
+#: (#657) could therefore carry member content into the gateway log. The field
+#: names travel in ``rejected_fields`` instead, so the text needs no length.
+_FALLBACK_ERROR_CHARS = 200
+
+#: The ONLY keys of a 422 ``detail`` entry the log may carry. An allowlist,
+#: because ``input`` is the leak and ``ctx`` can echo a value too.
+_DETAIL_KEYS_LOGGED = ("type", "loc", "msg")
+
+#: Where an ``input`` value starts in an error that arrived as TEXT. The text
+#: is cut there, because a value's end cannot be found safely in a repr.
+_INPUT_KEY = re.compile(r"""['"]input['"]\s*:""")
+
+
+def _exception_chain(exc: BaseException) -> list[BaseException]:
+    """*exc* and each exception it wraps, once each, outermost first."""
+    chain: list[BaseException] = []
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        chain.append(cur)
+        cur = getattr(cur, "inner_exception", None) or cur.__cause__
+    return chain
+
+
+def _detail_of(exc: BaseException) -> list[Any] | None:
+    """The parsed 422 ``detail`` list on *exc*, or None."""
+    body = getattr(exc, "body", None)
+    detail = body.get("detail") if isinstance(body, dict) else None
+    return detail if isinstance(detail, list) else None
+
+
+def _rejected_request_fields(exc: BaseException) -> list[str]:
+    """The request fields a 422 refused, read from the exception chain.
+
+    The model client wraps the HTTP error (``ChatClientException`` around an
+    ``openai.UnprocessableEntityError``), and the parsed body sits on the
+    inner one. Each ``detail`` entry carries ``loc = ["body", <field>, ...]``.
+    Returns ``[]`` for any other failure. It never raises, because it runs
+    inside an error path.
+    """
+    fields: list[str] = []
+    for cur in _exception_chain(exc):
+        for item in _detail_of(cur) or []:
+            loc = item.get("loc") if isinstance(item, dict) else None
+            if isinstance(loc, list | tuple) and len(loc) >= 2 and loc[0] == "body":
+                name = ".".join(str(part) for part in loc[1:])
+                if name not in fields:
+                    fields.append(name)
+    return fields
+
+
+def _redacted_fallback_error(exc: BaseException) -> str:
+    """The Tier 1 failure as log text, with every ``input`` value removed.
+
+    A parsed 422 is rebuilt from :data:`_DETAIL_KEYS_LOGGED` alone. Any other
+    failure is its own text, cut where an ``input`` key starts. Then the
+    result is cut to :data:`_FALLBACK_ERROR_CHARS`. It never raises.
+    """
+    text: str | None = None
+    for cur in _exception_chain(exc):
+        detail = _detail_of(cur)
+        if detail is None:
+            continue
+        kept = [
+            {k: item[k] for k in _DETAIL_KEYS_LOGGED if k in item}
+            for item in detail if isinstance(item, dict)
+        ]
+        status = getattr(cur, "status_code", None)
+        text = f"{type(cur).__name__} {status}: {json.dumps(kept, default=str)}"
+        break
+    if text is None:
+        text = str(exc)
+    found = _INPUT_KEY.search(text)
+    if found is not None:
+        text = text[: found.start()] + "[input removed]"
+    return text[:_FALLBACK_ERROR_CHARS]
+
+
+def _observe_crm_note(payload: dict[str, Any]) -> None:
+    """Show one event to ``crm_tools.observe_event`` (WS-53 CRM-Q33 fix
+    round 1). A run that made no CRM note returns at once. Never raises."""
+    try:
+        from acb_skills.crm_tools import observe_event
+    except ImportError:
+        return
+    with contextlib.suppress(Exception):
+        observe_event(payload)
+
+
+def _crm_note_events() -> list[dict[str, Any]]:
+    """The message that adds the "How I got this" note of a CRM total when
+    the answer left it out (WS-53 CRM-Q33 fix round 1). It goes just before
+    RUN_FINISHED, through ``_sse``, so the relay keeps it and the persisted
+    message holds it. Empty in each other run. Never raises."""
+    try:
+        from acb_skills.crm_tools import missing_note_events
+    except ImportError:
+        return []
+    try:
+        return missing_note_events()
+    except Exception:  # the note is advice: a run never fails on it
+        return []
+
+
 def _sse(payload: dict[str, Any]) -> str:
     """Return a single SSE frame as a string.
 
@@ -2894,6 +6515,8 @@ def _sse(payload: dict[str, Any]) -> str:
         _thread_seq = f"#{_n}"
     _local_id = f"local-{int(_time.time() * 1000)}-{_sse_seq}{_thread_seq}"
     payload["_stream_id"] = _local_id
+    # WS-53 CRM-Q33: the run watches its own text for the note of a CRM total.
+    _observe_crm_note(payload)
 
     line = f"data: {json.dumps(payload)}\n\n"
 
@@ -2931,8 +6554,34 @@ async def run_agent_stream(
     organization_id: str | None = None,
     #: The signed-in member, from the route's session. See `_run_member`.
     session_user: str | None = None,
+    #: True only when the caller's client DRAWS a card (a CUSTOM
+    #: ``confirmation_requested`` event). See below.
+    shows_cards: bool = False,
+    #: WS-63 PZ-2: True when the caller's run boundary knows the room is the
+    #: member's own. ``None`` keeps the parent's value. See `_RUN_SOLO_ROOM`.
+    solo_room: bool | None = None,
+    #: PZ-39: ``(reply_id, prompt_id)``, the ids of THIS turn's own rows, set by
+    #: the gateway route from its own mint. The greeting decision leaves them
+    #: out of the gap. Empty means no decision.
+    turn_row_ids: tuple[str, ...] = (),
 ) -> AsyncIterator[str]:
     """Load a named agent and yield AG-UI SSE events while it runs.
+
+    **Cards are opt-in** (review of PR #888, P2). A card tool parks the run
+    until a member answers, so a stream that does not forward the card event
+    would wait an hour with no output, and then tell the model the member
+    said no. Only a caller whose client draws the card passes
+    ``shows_cards=True`` (the web chat, ``gateway.routes.agent``). Every
+    other run is inside ``ask_tools.refuse_cards_for_run``, as a WhatsApp run
+    is: a card answers "no" at once, and an MCP tool that needs one is
+    refused. Fence: ``tests/unit/test_maf_mcp_confirm.py`` (A19), which also
+    fails when a new caller does not say ``shows_cards=``.
+
+    The switch is a ContextVar, so it covers the tools of a MAF agent. A
+    Copilot SDK tool that runs in a JSON-RPC thread reads a fresh context,
+    so it is NOT covered. The email chat route that passed ``False`` is
+    gone (WS-17 EM-G11f3). The chat pane of the Email app runs on
+    ``/agent/run/stream``.
 
     Strategy (two-tier with automatic fallback):
 
@@ -2954,6 +6603,14 @@ async def run_agent_stream(
     """
     _disable_agent_telemetry_once()
     run_id = run_id or str(uuid.uuid4())
+    # WS-43t2 (§15.9.5): the thread id the CALLER named. A run with none
+    # neither loads nor saves a native session.
+    _caller_thread_id = thread_id
+    # H-227: a thread that this executor mints, for a run with no chat and no
+    # parent run, makes a batch run (see `_run_agent_inner`).
+    from acb_skills.write_artifact import artifact_context as _ctx_now
+
+    _batch_thread = not thread_id and not _ctx_now().get("session_id")
     thread_id = thread_id or f"{agent_name}:{run_id}"
 
     settings = get_settings()
@@ -3048,8 +6705,9 @@ async def run_agent_stream(
     # WS-29 slice 6a: sub-agent runs now inherit the parent's org (via the batch
     # path's organization_id, resolved by _resolve_sub_agent_org), and /copilot/
     # chat threads its org through run_detached. TODO(WS-29 slice 6b): email-
-    # automation chat + inbound webhooks (WhatsApp) need an RLS-scoped
-    # mailbox/account→org resolver. TODO(WS-29 slice 6c): the workflow cron
+    # automation chat needs an RLS-scoped mailbox→org resolver. The WhatsApp
+    # webhook has one since WS-20 WA-C1, and WA-C1b binds the other WhatsApp
+    # paths. TODO(WS-29 slice 6c): the workflow cron
     # scheduler / orphan reconciler / schedule sweep resolve the owning record's
     # org and pass it into the batch path.
 
@@ -3059,6 +6717,8 @@ async def run_agent_stream(
     # emitted in the finally below. Duration is measured from here.
     import time as _time
     _activity_started = _time.monotonic()
+    # Chat speed SPD-1: the ms of each setup step, up to the first request.
+    _laps = _SetupLaps(_activity_started)
     try:
         from acb_common import publish_activity
         publish_activity(
@@ -3085,21 +6745,75 @@ async def run_agent_stream(
 
     # ── Stream relay: tee all SSE events to Redis for reconnection support ─
     _relay_token = _stream_relay_thread_id.set(thread_id)
+    # Cards are opt-in (see the docstring). Released in the same finally.
+    from acb_skills.ask_tools import refuse_cards_for_run, release_cards_switch
+    _cards_token = refuse_cards_for_run(not shows_cards)
+    # WS-53 CRM-Q32-8: a fresh holder of the CRM questions that this run
+    # asks, one object for the run, so a tool call in its own copy of the
+    # context still counts. Released in the same finally.
+    from acb_skills.crm_tools import open_asks_for_run, release_asks
+    _asks_token = open_asks_for_run()
     # H-201 (§21.16): this run's artifact context lives in this token's scope.
     from acb_skills.write_artifact import (
+        artifact_context,
         enter_artifact_context,
         reset_artifact_context,
     )
+    # WS-43t2 (§15.9.5): a run that starts inside the artifact context of
+    # another run is a delegation. Read it BEFORE this run opens its own. A
+    # delegated run neither loads nor saves a native session.
+    _delegated_run = bool(artifact_context().get("run_id"))
+    # CRM-Q29: the member's own words of this turn, a source of the number
+    # check. A delegated run takes its parent's words, never its payload.
+    _member_words = _member_words_for_run(artifact_context(), event_payload)
+    # WS-67 OA-1: the member's messages of the chat, for each delegated task.
+    _member_turns = _member_turns_for_run(artifact_context(), event_payload)
+    # WS-67 OA-4: a delegated run inherits its parent's kept corrections.
+    _inherited_constraints = _inherited_chat_constraints(artifact_context())
     _artifact_token = enter_artifact_context()
+    # H-236: decide this run's no_egress ONCE, before anything can fail, and
+    # bind it. A covered agent's run is a covered run, whatever its parent.
+    from acb_skills.write_artifact import artifact_context as _ctx_now
+    from acb_skills.write_artifact import derive_artifact_context as _derive_ctx
+    _stream_no_egress = _run_no_egress(agent_name, _ctx_now(), organization_id)
+    # RX-1 (D169): a covered run keeps H-236 as it was, down the whole chain.
+    _stream_cover = _covered_chain(agent_name, _ctx_now(), organization_id)
+    _stream_marked = await _chat_marked(
+        {**dict(_ctx_now()), "session_id": thread_id or run_id, "batch_thread": _batch_thread},
+        organization_id)
+    _derive_ctx(
+        no_egress=_stream_no_egress, covered_chain=_stream_cover, chat_marked=_stream_marked)
+    if _stream_no_egress:
+        _remember_no_egress_run(run_id)
+    # WS-67 OA-7c (§4.2.2): layer (a) of the tool packs. The read of the
+    # sticky packs starts as the FIRST statement of the main try below, so its
+    # finally cancels it on every early end (fix round 2). The tenant is bound
+    # above. None when packs are off, so no pack state is read.
+    _pack_task: asyncio.Future[Any] | None = None
+    _pack_apply: Any = None
     # Expose the run's model so sub-agents inherit the parent tier. Seed with the
     # raw requested model now; refined to the fully-resolved tier once known.
     _model_token = _active_run_model.set((model or "").strip() or None)
+    # WS-63 PZ-2: the run boundary's solo-room bit. Released in the same finally.
+    _solo_token = _bind_solo_room(solo_room)
+    # WS-63 PZ-6a: the profile writes open only for a solo room, a verified
+    # member and a run with no no_egress. A delegated run passes no
+    # solo_room, so it binds False. Released in the same finally.
+    _writes_token = _bind_profile_writes(
+        solo_room is True and bool(_verified_run_member()) and not _stream_no_egress)
+    # WS-45 S2: the run's tier policy. Set after the load, for a covered
+    # agent only. None everywhere else.
+    _tier_run: Any = None
     _relay_mark_inactive = None  # type: ignore[assignment]
     _relay_mark_active = None  # type: ignore[assignment]
+    _relay_register_live = None  # type: ignore[assignment]
+    _relay_unregister_live = None  # type: ignore[assignment]
     with contextlib.suppress(Exception):
         from orchestrator.stream_relay import (
             mark_active as _relay_mark_active,
             mark_inactive as _relay_mark_inactive,
+            register_live_run as _relay_register_live,
+            unregister_live_run as _relay_unregister_live,
         )
     # H-201 part 3: the relay mark and the RUN_STARTED yield run INSIDE the
     # main try below. A consumer that closes the stream at the first event, or
@@ -3141,11 +6855,46 @@ async def run_agent_stream(
     # B6 Phase-5 Tier 0: initialised here so the finally can always restore,
     # even if load_agent / build_integrations raises before creds are injected.
     _integration_env_token: IntegrationEnvToken = None
+    # WS-8c: the MCP tools and clients this run opened. The finally closes
+    # each one, however the run ends.
+    _mcp_opened: list[Any] = []
+    # Chat speed: the run's tier question, started early (see below). The
+    # finally cancels it when the run ends before it is awaited.
+    _tier_task: asyncio.Future[Any] | None = None
+    # Chat speed (2026-10-30): the same task while a parallel start waits for
+    # its answer, else None. The Tier 1 loop settles it (§4.3).
+    _par_task: asyncio.Future[Any] | None = None
+    # Chat speed SPD-1 part 2: the reads that start beside the load. The
+    # finally cancels what the run did not await.
+    _early: _EarlyReads | None = None
+    # PZ-20b: the "used your profile" mark, held until the first output. The
+    # Tier 1 path fills it after its compose step, and Tier 2 keeps it.
+    _mark = _ProfileMarkHold()
 
     try:
+        # WS-67 OA-7c: the read of layer (a) runs beside the load, and the
+        # apply awaits it. Inside the try, so a raise cannot leave it running.
+        _pack_task = _start_pack_turn(
+            agent_name, organization_id, thread_id, member=_corr_user,
+            delegated=_delegated_run, solo_room=solo_room,
+            batch_thread=_batch_thread, shows_cards=shows_cards,
+        )
         if _relay_mark_active is not None:
             with contextlib.suppress(Exception):
-                await _relay_mark_active(thread_id)
+                # The SAME run that run_detached just marked: keep the actor,
+                # source and floor it wrote (the #791 review P1).
+                await _relay_mark_active(thread_id, keep_run_facts=True)
+        # The org's live-run index (/chat/active-sessions), for a run that no
+        # run_detached wraps. Server-side org and member only, never the body.
+        if _relay_register_live is not None and thread_id:
+            with contextlib.suppress(Exception):
+                await _relay_register_live(
+                    thread_id, organization_id=organization_id,
+                    actor=session_user, token=run_id,
+                    # The SAME run: keep the startedAt and runId that
+                    # run_detached wrote. Only the token changes.
+                    run_id=run_id, keep_run_facts=True,
+                )
 
         # Fresh per-thread emit ordinal for this run (P1-5): the stream was just
         # reset, so the next event emitted is entry #1 in Redis.
@@ -3153,21 +6902,39 @@ async def run_agent_stream(
 
         # Emit RUN_STARTED immediately so the UI can show ThinkingContainer at once.
         yield _sse({"type": "RUN_STARTED", "runId": run_id, "threadId": thread_id})
+        _laps.lap("start")
 
-        with load_agent(
+        # §15.4: refused as absent unless a first-party admin runs it. The
+        # RUN_ERROR then reads like an agent that cannot load.
+        await _assert_may_run_agent(agent_name)
+        _laps.lap("access")
+        # WS-61 KB-4a: the orchestrator's Knowledge index block is read
+        # before the per-turn context, because sync code builds that context.
+        # SPD-1 part 2: it starts here with two other reads, beside the load,
+        # and `_early.settle()` awaits it before the first reader.
+        _early = _EarlyReads.start(agent_name, no_egress=_stream_no_egress)
+        _laps.lap("early_start")
+        with await _load_agent_off_loop(
             agent_name,
             run_id=run_id,
             repo_name=_registry_repo_name,
             local_path=_registry_local_path,
         ) as loaded:
+            _laps.lap("load")
             mandatory = loaded.config.get("integrations", [])
             optional = loaded.config.get("optional_integrations", [])
+            # One access lookup for the run. The integrations below and the
+            # MCP servers of a native agent (WS-8c) read the same answer.
+            _authorizer = await _integration_authorizer(
+                event_payload, thread_id, session_user=session_user,
+            )
+            _laps.lap("authorizer")
             # Filter BEFORE the env injection below, so a credential the
             # acting member may not use never enters the run's environment at
             # all — not merely absent from state["integrations"].
             integrations, integration_warnings = build_integrations(
                 mandatory, optional, settings,
-                is_authorized=await _integration_authorizer(event_payload, thread_id),
+                is_authorized=_authorizer,
             )
             # B6 Phase-5 Tier 0: scope creds to this run; token restored in the
             # finally below so they don't linger in the shared process env.
@@ -3179,10 +6946,34 @@ async def run_agent_stream(
             _agent_md_spec = _apply_agent_md_overrides(
                 agents, loaded.agent_dir, agent_name,
             )
+            _laps.lap("build")
+            # WS-67 OA-7c: the packs of this turn go in here, BEFORE
+            # `_inject_agent_tools`. Each pack tool carries `__cc_gated__`, so
+            # the injection gates none twice. The build reads the server's
+            # run context: the bound tenant, the chat, the member and the H-236
+            # answer. Each run builds its packs again (condition 1).
+            _pack_apply = await _apply_pack_turn(
+                _pack_task, agents,
+                {**dict(_ctx_now()), "run_id": run_id,
+                 "session_id": thread_id or run_id, "agent_name": agent_name,
+                 "member": _corr_user, "batch_thread": _batch_thread,
+                 "no_egress": _stream_no_egress},
+                agent_name=agent_name,
+                tool_scope=_merged_tool_scope(
+                    loaded.config.get("tool_scope") or None, _agent_md_spec,
+                ),
+                agent_config=loaded.config,
+                is_authorized=_authorizer,
+            )
+            _laps.lap("packs")
             _apply_own_tool_scope(
                 agents, loaded.config.get("own_tool_scope") or None,
             )
-            _inject_agent_tools(
+            # CRM-C7: no CRM record write in Mirror mode, read as the member.
+            await _drop_mirror_record_writes(agents)
+            _laps.lap("crm_mirror")
+            _own_tools = _count_agent_tools(agents)  # WS-8o
+            _run_tools = _inject_agent_tools(
                 agents,
                 # .agent.md's VS Code tools widen (never narrow) the scope, so a
                 # declared capability like `codebase` resolves to a real tool.
@@ -3190,10 +6981,41 @@ async def run_agent_stream(
                     loaded.config.get("tool_scope") or None, _agent_md_spec,
                 ),
                 agent_name=agent_name,
+                agent_config=loaded.config,  # D85: the sharing block
+                no_egress=_stream_no_egress,  # H-236
             )  # inject call_agent / call_agent_background
-            # Inject MCP servers from the registry into every agent at runtime
-            for _a in agents:
-                await _inject_mcp_servers(_a, agent_name)
+            _laps.lap("inject")
+            # CRM-Q32-5: the CRM facts block, read as the member.
+            # CRM-Q32-8: the holder of this run learns whether the run still
+            # holds the reply of a question card (`mark_run`).
+            _run_tools = await _add_crm_facts_block(
+                agents, _run_tools, no_egress=_stream_no_egress, mark_run=True,
+                facts=_early.crm_facts)
+            _laps.lap("crm_facts")
+            _log_agent_tools_resolved(agent_name, agents, _own_tools)
+            agents = _log_request_tools_view(agents, agent_name)
+            if _pack_apply is not None:
+                # WS-67 OA-7c: the true tool count beside the estimate of the
+                # cap. Pack names stay out of `_run_tools` (OA-9c reads the
+                # record of the packs instead).
+                _log_pack_request_tools(agents)
+            # Inject MCP servers from the registry into every agent at runtime.
+            # H-236: an MCP server reaches outside the platform, so a
+            # no_egress run gets none. WS-8c: the org is the gateway's
+            # server-side stamp (never the payload), a native agent's servers
+            # pass the run's grant check, and the finally closes them.
+            # H-299: an MCP tool that can change data waits for a member's
+            # card. A run with no member (no authority) or a batch run has
+            # nobody to answer it, so such a tool is refused there.
+            for _a in agents if not _stream_no_egress else []:
+                await _inject_mcp_servers(
+                    _a, agent_name,
+                    organization_id=organization_id,
+                    is_authorized=_authorizer,
+                    opened=_mcp_opened,
+                    member_present=_authorizer is not None and not _batch_thread,
+                )
+            _laps.lap("mcp")
 
             # Per-session workspace override (Custom Apps builder sessions):
             # resolved once here, reused for the artifact context and the
@@ -3226,6 +7048,10 @@ async def run_agent_stream(
             _git_dir = _git_dir_for(
                 loaded.agent_dir, _effective_ws, _store_instance,
             )
+            # H-363: the HEAD before this turn, for every tier. The end-of-turn
+            # push step pushes only the commits after it.
+            _run_base_head = await _get_current_head(_git_dir) if _git_dir else ""
+            _laps.lap("workspace")
             # H-201 (§21.16): a shared run's partition is its tenant key,
             # o:<org>, which exists only now. Stamp it, so the logs and the
             # presence snapshot show where this run works.
@@ -3243,6 +7069,10 @@ async def run_agent_stream(
                 agent_name=agent_name,
                 run_id=run_id,
                 workspace_root=_effective_ws,
+                member_message=_member_words,  # CRM-Q29
+                member_turns=_member_turns,  # WS-67 OA-1
+                **_inherited_constraints,  # WS-67 OA-4
+                batch_thread=_batch_thread,  # H-227
                 # The blob-store partition every write-through must carry —
                 # keeping disk and store on the SAME tenant key (migration
                 # 136). A shared agent's tenant dir carries o:<org>.
@@ -3258,11 +7088,105 @@ async def run_agent_stream(
                 gateway_url=str(
                     getattr(settings, "gateway_base_url", "http://127.0.0.1:8000")
                 ),
+                # GATEWAY_INTERNAL_TOKEN only, with no LLM-key rung (WS-24b).
                 gateway_token=str(
-                    getattr(settings, "gateway_internal_token", "")
-                    or getattr(settings, "litellm_master_key", "")
-                    or "sk-local"
+                    getattr(settings, "gateway_internal_token", "") or ""
+                ).strip(),
+                # D85, two halves. ``shell_tools_withheld``: the injected
+                # shell tools are withheld (a cover may lift it).
+                # ``host_shell_refused``: the Copilot CLI's own shell, which
+                # runs on the host, is refused (a cover never lifts it).
+                shell_tools_withheld=bool(_withheld_shell_tools(
+                    agent_name, loaded.config,
+                )),
+                host_shell_refused=_host_shell_refused(
+                    agent_name, loaded.config,
                 ),
+                # The push gate (2026-10-19): may this member push agent
+                # code? From the run binding. Fence:
+                # test_chat_autopush_reviewer_gate.py.
+                agent_push_allowed=await _agent_push_binding(
+                    _host_shell_refused(agent_name, loaded.config),
+                ),
+                # H-236: False for a top-level run. A covered run does not
+                # bind True for itself: its delegations compute it from
+                # covers(), and the sandbox middleware withholds its own.
+                no_egress=_stream_no_egress,
+                covered_chain=_stream_cover,
+                chat_marked=_stream_marked,
+                # WS-45 S1: the effort mode, so the System-1 `decide` reads
+                # its threshold from the run binding (ai_tier_routing.md §5).
+                think_mode=think_mode or "auto",
+                # The run's platform tools after every narrowing, for
+                # ``write_artifact.run_holds_tool`` (§14.10).
+                run_tools=_run_tools,
+            )
+            if _pack_apply is not None:
+                # WS-67 OA-7c: the bind above replaced the context, so the
+                # run key of the pack calls and the record of the packs go in
+                # now, before any tool can run. A delegated run drops both.
+                _derive_ctx(**_pack_apply.context())
+            _laps.lap("bind")
+
+            # Chat speed (2026-10-25): the tier question asks System 1, and it
+            # took 1.3 to 3.0 s in production. Its inputs are final once the
+            # run is bound, so it starts here and runs beside the email
+            # context, the rehydrate and the skills step below. The tier site
+            # awaits it, as before. The finally cancels it on an early end.
+            def _ask_run_tier(_ag: Any) -> Any:
+                return _tier_policy_for_run(
+                    agent_name, _ag,
+                    run_id=run_id, thread_id=thread_id, model=model,
+                    think_mode=think_mode, event_payload=event_payload,
+                    config=loaded.config,
+                    agent_md_model=(
+                        (_agent_md_spec.model or "").strip()
+                        if _agent_md_spec is not None else ""
+                    ),
+                    is_copilot=_is_copilot_built(_ag, _agent_runtime),
+                    # The member's own turn: read the effort from their words.
+                    effort_from_text=True,
+                    # WS-67 OA-7f: the packs that layer (a) did not load.
+                    pack_offer=_pack_loader_offer(_ag),
+                )
+
+            if agents:
+                _tier_task = asyncio.ensure_future(_ask_run_tier(agents[0]))
+            # SPD-1 part 2: the knowledge index and the mailbox list that
+            # started beside the load are in their caches before any reader.
+            await _early.settle()
+            _laps.lap("early_reads")
+            # §7.1.1: the mailboxes and the email working set of this chat,
+            # read now that the session is bound, for the sync context.
+            await _prime_email_context(agent_name)
+            _laps.lap("email_context")
+            # WS-67 OA-4: this chat's kept corrections and limits, beside the
+            # working set, for the sync context and each delegated task.
+            await _prime_chat_constraints(agent_name)
+            _laps.lap("constraints")
+            # WS-63 PZ-34 (§15.4): the briefing of the member's other chats,
+            # bound for this run only, for the sync context. A delegated, a
+            # batch or a card-less run (WhatsApp) gets none. One second at
+            # most, and a fault costs the block, never the turn.
+            await _prime_member_briefing(
+                agent_name, organization_id=organization_id, thread_id=thread_id,
+                delegated=_delegated_run, shows_cards=shows_cards,
+                batch_thread=_batch_thread,
+            )
+            _laps.lap("briefing")
+            # PZ-39: whether this turn opens a conversation, from the stored
+            # rows of this chat. A fault costs the greeting, never the turn.
+            await _prime_greet_due(
+                agent_name, organization_id=organization_id, thread_id=thread_id,
+                delegated=_delegated_run, shows_cards=shows_cards,
+                batch_thread=_batch_thread, turn_ids=turn_row_ids,
+            )
+            # WS-63 PZ-43 (§16.6): the member's birthday, festivals and work
+            # anniversary, for the sync context. Dark behind CELEBRATIONS_ORGS.
+            await _prime_celebrations(
+                agent_name, organization_id=organization_id, thread_id=thread_id,
+                delegated=_delegated_run, shows_cards=shows_cards,
+                batch_thread=_batch_thread,
             )
             try:
                 # Ensure the three visible workspace directories exist so the
@@ -3294,6 +7218,7 @@ async def run_agent_stream(
                     )
             except Exception:
                 pass
+            _laps.lap("rehydrate")
 
             # Skills-as-an-index bodies (QM-2) — see the MAF path above for
             # why this sits after the rehydrate. No-op while the switch is off.
@@ -3302,7 +7227,9 @@ async def run_agent_stream(
                 tool_scope=_merged_tool_scope(
                     loaded.config.get("tool_scope") or None, _agent_md_spec,
                 ),
+                agent_config=loaded.config,
             )
+            _laps.lap("skills")
 
             if not agents:
                 raise ValueError(f"Agent {agent_name!r}: build_agents() returned empty list.")
@@ -3310,20 +7237,28 @@ async def run_agent_stream(
             agent = agents[0]
 
             # Detect Copilot-SDK-backed agents by capability, NOT the registry
-            # runtime label. Some agents (e.g. task-manager, apis-config) are
-            # built with GitHubCopilotAgent but registered as runtime "maf";
-            # they still need BYOK provider routing or agent.run() opens a
-            # NATIVE Copilot session (→ 402). A genuine MAF agent has no
-            # ``_default_options``. Computed BEFORE session restore so every
-            # session-continuity gate below keys on capability too — gating on
-            # the label made mislabeled Copilot agents silently skip session
-            # resume (re-injecting history every turn) and the ask_user/
-            # working_directory wiring (audit follow-up, 2026-07-22).
-            _is_copilot_sdk = (
-                _agent_runtime == "github-copilot"
-                or (hasattr(agent, "_default_options")
-                    and agent._default_options is not None)
-            )
+            # runtime label. An agent built with GitHubCopilotAgent but
+            # declared runtime "maf" (task-manager's config.json says "maf",
+            # and apis-config was one until 2026-10-03) still needs BYOK
+            # provider routing, or
+            # agent.run() opens a NATIVE Copilot session (→ 402). The label
+            # still counts too: "github-copilot" forces this path even for a
+            # genuine MAF agent, which has no ``_default_options``, and the
+            # BYOK block below then fails on it. Computed BEFORE session
+            # restore so every session-continuity gate below keys on
+            # capability too — gating on the label made mislabeled Copilot
+            # agents silently skip session resume (re-injecting history every
+            # turn) and the ask_user/working_directory wiring (audit
+            # follow-up, 2026-07-22).
+            _is_copilot_sdk = _is_copilot_built(agent, _agent_runtime)
+            # WS-43h (review P3): the runtime of THIS run, from the built
+            # object, for the log lines. The label can differ: app-builder
+            # is labelled "maf", and its factory builds a Copilot agent for
+            # an org outside `app_builder:<org>`.
+            _run_runtime = "github-copilot" if _is_copilot_sdk else "maf"
+            # WS-43t2: the stored session of a native run. Tier 1 loads it,
+            # and Tier 2 reuses it when Tier 1 fails before any output.
+            _session_turn: Any = None
 
             # ── Session continuity: restore Copilot SDK session if available ─
             # Storing the service_session_id allows MAF's _get_or_create_session
@@ -3337,16 +7272,11 @@ async def run_agent_stream(
                                thread_id=thread_id,
                                copilot_session=_copilot_session_id[:12])
 
-            # Ensure the risk-aware permission handler is set for
-            # GitHubCopilotAgent before ANY execution path — repos often omit it
-            # from default_options (B6).
-            try:
-                _ph = _copilot_permission_handler()
-                for _a in agents:
-                    if hasattr(_a, "_permission_handler") and _a._permission_handler is None:
-                        _a._permission_handler = _ph
-            except Exception:
-                pass
+            # Install the permission handler of each GitHubCopilotAgent before
+            # ANY execution path (B6). It ALWAYS carries the D85 shell guard,
+            # also when the agent's factory set its own handler.
+            for _a in agents:
+                _install_copilot_permission_handler(_a)
 
             # ── BYOK early detection (must happen BEFORE tier selection) ────
             # When a LiteLLM model is requested (contains '/' or starts with
@@ -3359,6 +7289,64 @@ async def run_agent_stream(
             #   1. Request ``model`` parameter (explicit user override)
             #   2. Global ``copilot_chat_model`` setting (env / .env)
             #   3. Agent's ``model_tier`` from config.json (per-agent default)
+            #
+            # WS-45 S2 (D90): an agent that AI_TIER_ROUTING covers takes its
+            # tier from the policy instead, and ignores 1 and 2. None for
+            # every other agent, so this block runs as before.
+            _tier_wait_started = time.monotonic()
+            # Chat speed (2026-10-30, ai_tier_routing.md §4.3): with
+            # AI_TURN_KIND_PARALLEL on, a native agent of the member's own
+            # stream does not wait. The run starts as a provisional `chat`
+            # turn, and the Tier 1 loop takes the answer (`_par_task`). The
+            # one yield lets an answer that needs no request (a short
+            # message, Max, a pinned tier) settle first. Flag off: the
+            # await below, as before.
+            if (
+                _tier_task is not None and not _is_copilot_sdk
+                and not _delegated_run and hasattr(agent, "run")
+                and _turn_kind_parallel(agent_name)
+            ):
+                await asyncio.sleep(0)
+                if not _tier_task.done():
+                    _tier_run = _provisional_tier_policy(
+                        agent_name, agent, run_id=run_id, thread_id=thread_id,
+                        think_mode=think_mode, event_payload=event_payload,
+                        config=loaded.config,
+                        agent_md_model=(
+                            (_agent_md_spec.model or "").strip()
+                            if _agent_md_spec is not None else ""
+                        ),
+                    )
+                    if _tier_run is not None:
+                        _par_task = _tier_task
+            if _par_task is None:
+                _tier_run = await (
+                    _tier_task if _tier_task is not None else _ask_run_tier(agent)
+                )
+            # WS-67 OA-7f: layer (c). The packs that System 1 asked for load
+            # before the first model request, through the guarded builder.
+            _apply_turn_pack_items(agents, _tier_run)
+            _laps.lap("tier_wait")
+            # Chat speed: the setup of the run, up to the first model request.
+            # `tier_wait_ms` is what the tier question still cost after the
+            # overlap. Fence: tests/unit/test_chat_speed_slice2.py.
+            _log.info(
+                "executor.run_setup_ms", agent=agent_name, run_id=run_id,
+                setup_ms=round((time.monotonic() - _activity_started) * 1000),
+                tier_wait_ms=round((time.monotonic() - _tier_wait_started) * 1000),
+                **({"tier_parallel": True} if _par_task is not None else {}),
+            )
+            # Owner, 2026-10-07: a covered chat sends `think_mode` "auto", and
+            # the member's words may raise it to `thinking`. The run then
+            # takes that effort everywhere `think_mode` reaches: the reasoning
+            # effort below, and the bound context that the System-1 threshold
+            # and a sub-agent read. None, or the same effort, changes nothing.
+            if _tier_run is not None:
+                from acb_skills.tier_policy import normalise_effort as _norm_effort
+
+                if _tier_run.effort != _norm_effort(think_mode):
+                    think_mode = _tier_run.effort
+                    _derive_ctx(think_mode=think_mode)
             _requested_model_early = (model or "").strip()
             _configured_model_early = (
                 getattr(settings, "copilot_chat_model", "") or ""
@@ -3380,6 +7368,8 @@ async def run_agent_stream(
                 or _agent_md_model
                 or _agent_model_tier
             )
+            if _tier_run is not None:
+                _final_model_early = _tier_run.run_tier()
             # BYOK-by-default: route every Copilot SDK agent through the LiteLLM
             # gateway and normalise any bare/empty model to the default tier.
             _final_model_early, _is_byok_early = _byok_default_model(
@@ -3387,7 +7377,13 @@ async def run_agent_stream(
             )
             # Refine the run's model ContextVar to the fully-resolved tier so
             # sub-agents spawned during this run inherit it (call_agent etc.).
-            if _final_model_early:
+            # WS-45 S2: a covered run publishes the agent's DEFAULT tier, not
+            # the turn's tier. A sub-agent has no policy of its own until S4,
+            # and a code turn would put every request of a fan-out on
+            # tier-powerful.
+            if _tier_run is not None:
+                _active_run_model.set(_tier_run.default)
+            elif _final_model_early:
                 _active_run_model.set(_final_model_early)
             _byok_provider_early: dict[str, Any] | None = None
             _byok_model_id_early = _final_model_early
@@ -3396,12 +7392,12 @@ async def run_agent_stream(
                     getattr(settings, "litellm_base_url", "")
                     or "http://127.0.0.1:8080"
                 ).rstrip("/")
-                # Internal-token precedence must match require_internal_auth
-                # (gateway_internal_token → litellm_master_key); a divergence
-                # otherwise 401s the BYOK /v1 call and surfaces on the Copilot
-                # session as "Authorization error, run /login".
+                # A /v1 call, so the LLM API key and NEVER the identity token
+                # (`Settings.llm_api_key`, the key of _model_resolution).
+                # require_llm_api_auth accepts it. WS-24b removed the
+                # identity token from this provider config.
                 _gw_key = (
-                    getattr(settings, "gateway_internal_token", "")
+                    getattr(settings, "llm_api_key", "")
                     or getattr(settings, "litellm_master_key", "")
                     or "sk-local"
                 ).strip()
@@ -3415,7 +7411,7 @@ async def run_agent_stream(
                 _log.info(
                     "executor.copilot_maf_byok_early",
                     agent=agent_name,
-                    runtime=_agent_runtime,
+                    runtime=_run_runtime,
                     model=_byok_model_id_early,
                     base_url=_gw_base,
                 )
@@ -3433,11 +7429,16 @@ async def run_agent_stream(
                     _log.info(
                         "executor.maf_model_override",
                         agent=agent_name,
-                        runtime=_agent_runtime,
+                        runtime=_run_runtime,
                         model=_final_model_early,
                     )
                 except Exception:
                     pass
+            # WS-45 S2 (§4.5): a Copilot SDK agent cannot switch per request,
+            # so it keeps the turn's tier for the whole run. Log it and tell
+            # the chat once. A native agent's middleware does it per request.
+            if _tier_run is not None and _is_copilot_sdk:
+                yield _sse(_tier_run.announce_run())
 
             # ── Reasoning depth (chat UI "thinking" toggle) ─────────────
             # Applied at the SAME seam as the model, and to every agent this
@@ -3452,7 +7453,7 @@ async def run_agent_stream(
                             _log.info(
                                 "executor.think_mode_applied",
                                 agent=agent_name,
-                                runtime=_agent_runtime,
+                                runtime=_run_runtime,
                                 think_mode=think_mode,
                             )
                     except Exception:  # never break a run over a rendering hint
@@ -3518,9 +7519,32 @@ async def run_agent_stream(
             # Safety net: if streaming raises BEFORE emitting anything, fall
             # through to the proven Tier 2 batch path below.
             if not _is_copilot_sdk and hasattr(agent, "run"):
-                _native_input = _compose_maf_run_input(
-                    agent_name, run_id, event_payload, integrations,
+                _laps.lap("model_prep")
+                # WS-43t2: with the flag on, load this run's stored session.
+                # It logs ONE outcome line. None means no session at all.
+                _session_turn = await _begin_native_session(
+                    agent, agent_name, event_payload, integrations,
+                    run_id=run_id, caller_thread_id=_caller_thread_id,
+                    delegated=_delegated_run, instance=_agent_instance,
                 )
+                _laps.lap("session_load")
+                # WS-43t1: flag OFF returns today's string and no provider.
+                # Flag ON returns structured turns, and a context provider
+                # that _agent_for_run attaches to THIS run only (§15.9.5).
+                # A loaded session makes the input the current turn only.
+                _native_input, _native_ctx = _compose_maf_run(
+                    agent_name, run_id, event_payload, integrations,
+                    native=True, session_turn=_session_turn,
+                    agent=agent,
+                )
+                _laps.lap("compose")
+                # PZ-20b: the compose step read the profile, so the cache
+                # serves the mark. After the access check, so a refused run
+                # has none. The hold sends it with the first output only.
+                _mark = _ProfileMarkHold(_profile_used_event(agent_name))
+                # Chat speed SPD-1: the steps of a native run's setup, logged
+                # once, just before its stream opens.
+                _laps.log(agent_name, run_id)
                 # Context-pressure notice (audit CX6): eviction was silent —
                 # a long conversation just degraded as oldest turns dropped.
                 # Surface one unobtrusive progress line so the user knows.
@@ -3541,6 +7565,8 @@ async def run_agent_stream(
                 _nq: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
                 _nq_token = _active_run_queue.set(_nq)
                 _n_emitted = False
+                # WS-45 S2: ai.route events of a step with no output yet.
+                _held_routes: list[dict[str, Any]] = []
                 # Canonical translation state (message lifecycle + tool-call
                 # id dedup) — shared mapping with every other stream path.
                 _t_state = _TranslationState(run_id)
@@ -3553,9 +7579,33 @@ async def run_agent_stream(
                     async with contextlib.AsyncExitStack() as _nstack:
                         if hasattr(type(agent), "__aenter__"):
                             await _nstack.enter_async_context(agent)
-                        _agen = agent.run(
-                            _native_input, stream=True,
-                        ).__aiter__()
+                        # WS-45 S2: a covered run's view also carries the
+                        # tier policy. None leaves the view as it was.
+                        # WS-43t2: the view carries the session history too.
+                        def _open_native_stream() -> Any:
+                            return _with_tier_policy(
+                                _agent_for_run(
+                                    agent, _native_ctx,
+                                    history=_native_session_history(_session_turn),
+                                ),
+                                _tier_run,
+                            ).run(
+                                _native_input, stream=True,
+                                **_native_session_run_kwargs(_session_turn),
+                            ).__aiter__()
+
+                        # Chat speed (2026-10-30): an answer that came before
+                        # the stream opens moves the turn now. No request
+                        # went out, so nothing is cancelled.
+                        if _par_task is not None and _par_task.done():
+                            if _parallel_moved(_tier_run, _par_task, fresh=True):
+                                think_mode, _final_model_early = _apply_parallel_tier(
+                                    agents, _tier_run, think_mode, settings,
+                                    agent_name=agent_name,
+                                )
+                            _apply_turn_pack_items(agents, _tier_run)
+                            _par_task = None
+                        _agen = _open_native_stream()
                         # Race the agent's next update against the injected-tool
                         # event queue. A BLOCKING tool (ask_questions HITL) puts
                         # its card on _nq then parks awaiting the user; the old
@@ -3621,8 +7671,12 @@ async def run_agent_stream(
                                 hitl_pending=_hitl_pending,
                                 tools_open=_tools_open,
                             )
+                            _waiting: set[Any] = {_next_task, _q_task}
+                            if _par_task is not None:
+                                # Chat speed (2026-10-30): wake for the answer.
+                                _waiting.add(_par_task)
                             _done, _ = await asyncio.wait(
-                                {_next_task, _q_task},
+                                _waiting,
                                 timeout=_wait_to,
                                 return_when=asyncio.FIRST_COMPLETED,
                             )
@@ -3644,14 +7698,87 @@ async def run_agent_stream(
                                 except Exception:
                                     _qev = None
                                 while _qev is not None:
-                                    _n_emitted = True
-                                    if _is_hitl_event(_qev):
-                                        _hitl_pending = True
-                                    yield _sse(_qev)
+                                    # WS-45 S2: an ai.route event is not
+                                    # output. Hold it until the step gives
+                                    # output, so a Tier 1 fault before any
+                                    # output still falls back to Tier 2.
+                                    # CRM-Q29: a hold beat only resets the
+                                    # wait above, and shows nothing.
+                                    if _is_hold_beat(_qev):
+                                        pass
+                                    elif _is_route_event(_qev) and not _n_emitted:
+                                        _held_routes.append(_qev)
+                                    else:
+                                        for _hr in _held_routes:
+                                            yield _sse(_hr)
+                                        _held_routes.clear()
+                                        _n_emitted = True
+                                        if _par_task is not None:
+                                            # The first output: no restart.
+                                            _tier_run.seal()
+                                        if _is_hitl_event(_qev):
+                                            _hitl_pending = True
+                                        yield _sse(_qev)
+                                        for _ml in _mark.after(_qev):
+                                            yield _ml
                                     _qev = (
                                         _nq.get_nowait()
                                         if not _nq.empty() else None
                                     )
+                            # Chat speed (2026-10-30, ai_tier_routing.md
+                            # §4.3): the answer of a parallel start. It is
+                            # taken only while the pull is in flight, so the
+                            # cancel lands inside the stream and closes the
+                            # request. A moved answer before any output starts
+                            # the turn again, once. Otherwise the turn goes on.
+                            if (
+                                _par_task is not None and _par_task.done()
+                                and _next_task not in _done
+                            ):
+                                _parked: list[Any] = []
+                                while not _nq.empty():
+                                    _parked.append(_nq.get_nowait())
+                                if any(
+                                    _pe and not _is_hold_beat(_pe)
+                                    and not _is_route_event(_pe)
+                                    for _pe in _parked
+                                ):
+                                    # Output waits on the queue: it seals.
+                                    _tier_run.seal()
+                                _moved = _parallel_moved(_tier_run, _par_task)
+                                _par_task = None
+                                if not _moved:
+                                    for _pe in _parked:
+                                        _nq.put_nowait(_pe)
+                                else:
+                                    # The request streamed nothing that left
+                                    # the run. Its route events and beats go.
+                                    # The old pull is ONE __anext__ call. It is
+                                    # cancelled, and nothing reads it or pulls
+                                    # its stream again, so two streams never
+                                    # both yield. A slow teardown is logged,
+                                    # and the turn goes on without it.
+                                    _next_task.cancel()
+                                    _next_task.add_done_callback(_drop_pull_result)
+                                    _gone, _ = await asyncio.wait(
+                                        {_next_task}, timeout=_RESTART_TEARDOWN_S,
+                                    )
+                                    if not _gone:
+                                        _log.warning(
+                                            "ai_route.restart_teardown_slow",
+                                            agent=agent_name, run_id=run_id,
+                                            waited_s=_RESTART_TEARDOWN_S,
+                                        )
+                                    _next_task = None
+                                    _held_routes.clear()
+                                    _t_state = _TranslationState(run_id)
+                                    think_mode, _final_model_early = _apply_parallel_tier(
+                                        agents, _tier_run, think_mode, settings,
+                                        agent_name=agent_name,
+                                    )
+                                    _apply_turn_pack_items(agents, _tier_run)
+                                    _agen = _open_native_stream()
+                                    continue
                             if _next_task not in _done:
                                 continue
                             try:
@@ -3717,20 +7844,32 @@ async def run_agent_stream(
                                     _tc_args.pop(_cid, None)
                                 else:
                                     _n_emitted = True
+                                if _par_task is not None:
+                                    # The first output: no restart (2026-10-30).
+                                    _tier_run.seal()
+                                # WS-45 S2: the step gave output, so the held
+                                # ai.route events describe a real step. They
+                                # go out first.
+                                for _hr in _held_routes:
+                                    yield _sse(_hr)
+                                _held_routes.clear()
                                 yield _sse(_ev)
+                                for _ml in _mark.after(_ev):
+                                    yield _ml
                             if _loop_tripped:
                                 _log.warning(
                                     "executor.native_maf_tool_loop_detected",
                                     agent=agent_name, repeats=_loop_max,
                                 )
-                                yield _sse({
-                                    "type": "RUN_ERROR", "runId": run_id,
-                                    "message": (
+                                yield _sse(run_error_event(
+                                    run_id=run_id, code="unknown",
+                                    where="native_maf_tool_loop",
+                                    message=(
                                         "Agent stopped: the same tool was "
                                         f"called with identical arguments "
                                         f"{_loop_max} times (loop detected)."
                                     ),
-                                })
+                                ))
                                 # _next_task is None here in the normal flow
                                 # (reset after .result() above); it is only a
                                 # live task if the trip path ever moves before
@@ -3746,16 +7885,42 @@ async def run_agent_stream(
                             # manage_todo_list, …) emitted during this update.
                             while not _nq.empty():
                                 _qev = _nq.get_nowait()
-                                if _qev:
-                                    _n_emitted = True
-                                    if _is_hitl_event(_qev):
-                                        _hitl_pending = True
-                                    yield _sse(_qev)
+                                if not _qev or _is_hold_beat(_qev):
+                                    continue
+                                if _is_route_event(_qev) and not _n_emitted:
+                                    _held_routes.append(_qev)
+                                    continue
+                                for _hr in _held_routes:
+                                    yield _sse(_hr)
+                                _held_routes.clear()
+                                _n_emitted = True
+                                if _par_task is not None:
+                                    _tier_run.seal()
+                                if _is_hitl_event(_qev):
+                                    _hitl_pending = True
+                                yield _sse(_qev)
+                                for _ml in _mark.after(_qev):
+                                    yield _ml
+                    # Chat speed (2026-10-30): the stream ended before the
+                    # answer was taken. The turn is over, so an answer that
+                    # came is late. The finally cancels one that did not.
+                    if _par_task is not None:
+                        _tier_run.seal()
+                        if _par_task.done():
+                            _parallel_moved(_tier_run, _par_task)
+                        _par_task = None
                     # Drain any events that landed as the stream closed.
+                    # The stream ended without a fault, so a held ai.route
+                    # event goes out first.
+                    for _hr in _held_routes:
+                        yield _sse(_hr)
+                    _held_routes.clear()
                     while not _nq.empty():
                         _qev = _nq.get_nowait()
-                        if _qev:
+                        if _qev and not _is_hold_beat(_qev):
                             yield _sse(_qev)
+                            for _ml in _mark.after(_qev):
+                                yield _ml
                     for _ev in _close_text_message(_t_state):
                         yield _sse(_ev)
                     if _native_idle:
@@ -3763,15 +7928,34 @@ async def run_agent_stream(
                             "executor.native_maf_stream_idle_timeout",
                             agent=agent_name, idle_seconds=_native_idle_after,
                         )
-                        yield _sse({
-                            "type": "RUN_ERROR", "runId": run_id,
-                            "message": (
+                        for _push_ev in _push_note_events(
+                            _drop_agent_push(run_id, "the turn stopped"),
+                        ):
+                            yield _sse(_push_ev)
+                        yield _sse(run_error_event(
+                            run_id=run_id, code="timeout",
+                            where="native_maf_idle",
+                            message=(
                                 "Agent produced no output for "
                                 f"{int(_native_idle_after)}s and was stopped "
                                 "(possible stall)."
                             ),
-                        })
+                        ))
                     elif not _loop_tripped:
+                        # WS-43t2: only a run that finished saves its
+                        # session, and before RUN_FINISHED, so a quick next
+                        # turn finds it. The save never fails the run.
+                        await _finish_native_session(_session_turn)
+                        # WS-53 CRM-Q33: the note of a CRM total that the
+                        # answer left out goes in before the end.
+                        # H-363: the one end-of-turn push step.
+                        for _push_ev in _push_note_events(await _settle_agent_push(
+                            agent_name, _git_dir, run_id,
+                            since_sha=_run_base_head or None, thread_id=thread_id,
+                        )):
+                            yield _sse(_push_ev)
+                        for _note_ev in _crm_note_events():
+                            yield _sse(_note_ev)
                         # A loop trip already emitted its terminal RUN_ERROR
                         # inline — don't follow it with a RUN_FINISHED that
                         # would make the client render the run as successful.
@@ -3793,15 +7977,37 @@ async def run_agent_stream(
                         # doesn't hang in "streaming" before the error lands.
                         for _ev in _close_text_message(_t_state):
                             yield _sse(_ev)
-                        yield _sse({
-                            "type": "RUN_ERROR", "runId": run_id,
-                            "message": str(_nexc),
-                        })
+                        yield _sse(run_error_event(
+                            _nexc, run_id=run_id, where="native_maf_stream",
+                        ))
                         return
                     # Nothing emitted yet — fall through to Tier 2 batch.
+                    # WS-45 S2: the held ai.route events go, and the policy
+                    # counts again from the first request, so Tier 2 sends
+                    # the chat one event for each step.
+                    _held_routes.clear()
+                    # Chat speed (2026-10-30): no output left the run, so the
+                    # turn can still take the answer of its parallel start.
+                    # Tier 2 waits for it, as a run with the flag off does.
+                    if _par_task is not None:
+                        await asyncio.wait({_par_task})
+                        if _parallel_moved(_tier_run, _par_task, fresh=True):
+                            think_mode, _final_model_early = _apply_parallel_tier(
+                                agents, _tier_run, think_mode, settings,
+                                agent_name=agent_name,
+                            )
+                        _apply_turn_pack_items(agents, _tier_run)
+                        _par_task = None
+                    if _tier_run is not None:
+                        _tier_run.restart()
+                    # `rejected_fields` names what a 422 refused. `error` is
+                    # redacted: a 422's `input` can hold member messages.
                     _log.warning(
                         "executor.native_maf_stream_fallback",
-                        agent=agent_name, error=str(_nexc)[:200],
+                        agent=agent_name,
+                        error_type=type(_nexc).__name__,
+                        error=_redacted_fallback_error(_nexc),
+                        rejected_fields=_rejected_request_fields(_nexc),
                     )
 
             # ── Tier 1.5: GitHubCopilotAgent native streaming ───────────────
@@ -3873,12 +8079,9 @@ async def run_agent_stream(
                 _byok_provider = _byok_provider_early
                 _byok_model_id = _byok_model_id_early
 
-                # Ensure the risk-aware permission handler (B6).
-                try:
-                    if hasattr(agent, "_permission_handler") and agent._permission_handler is None:
-                        agent._permission_handler = _copilot_permission_handler()
-                except Exception:
-                    pass
+                # The permission handler (B6), always with the D85 guard. A
+                # no-op here: the install above already guarded it.
+                _install_copilot_permission_handler(agent)
 
                 _msg_text = event_payload.get("message") or event_payload.get("user_query") or ""
 
@@ -4001,6 +8204,10 @@ async def run_agent_stream(
                 # _create_session() retries without the option if the model
                 # rejects it, so unsupported models degrade gracefully.
                 _think_mode = event_payload.get("think_mode") or "auto"
+                # A covered run takes the policy's effort, which the member's
+                # words may have raised (owner, 2026-10-07).
+                if _tier_run is not None:
+                    _think_mode = _tier_run.effort
                 try:
                     _opts = agent.default_options
                     if isinstance(_opts, dict):
@@ -4077,15 +8284,19 @@ async def run_agent_stream(
                                 for _qi, _q in enumerate(_qs):
                                     if not isinstance(_q, dict):
                                         continue
-                                    _qh = str(
-                                        _q.get("header", f"Q{_qi + 1}")
-                                    ).strip()[:50]
-                                    _qt = str(
-                                        _q.get("question", "")
-                                    ).strip()[:200]
+                                    # Cut at a word, with an ellipsis: the
+                                    # same cut as the tool's own path.
+                                    _qh = _clip_words(
+                                        str(_q.get("header", f"Q{_qi + 1}")),
+                                        _QUESTION_HEADER_MAX,
+                                    )
+                                    _qt = _clip_words(
+                                        str(_q.get("question", "")),
+                                        _QUESTION_TEXT_MAX,
+                                    )
                                     if not _qt:
                                         continue
-                                    _valid.append({
+                                    _entry: dict[str, Any] = {
                                         "header": _qh,
                                         "question": _qt,
                                         "multiSelect": bool(
@@ -4101,7 +8312,27 @@ async def run_agent_stream(
                                             ) and len(_q["options"]) > 0
                                             else None
                                         ),
-                                    })
+                                    }
+                                    # The tool's own path keeps this key
+                                    # the same way (``acb_skills.ask_tools``).
+                                    if _q.get("required") is False:
+                                        _entry["required"] = False
+                                    # WS-53 CRM-Q32-8: the id of a CRM
+                                    # question card, as the tool keeps it.
+                                    from acb_skills.ask_tools import (
+                                        card_default as _card_default,
+                                    )
+                                    from acb_skills.ask_tools import (
+                                        crm_card_tag as _crm_tag,
+                                    )
+                                    # The stated default, as the tool keeps
+                                    # it. The card draws it, so a "Not now"
+                                    # names only what the member saw.
+                                    if _card_default(_q):
+                                        _entry["default"] = _card_default(_q)
+                                    if _crm_tag(_q):
+                                        _entry["crm_question"] = _crm_tag(_q)
+                                    _valid.append(_entry)
                             if _valid:
                                 _req_id = uuid.uuid4().hex
                                 _active_elicitation_request_id.set(_req_id)
@@ -4280,12 +8511,12 @@ async def run_agent_stream(
                             # artifact_created CUSTOM events here) ──────────
                             while not _artifact_queue.empty():
                                 _aev = _artifact_queue.get_nowait()
-                                if _aev:
+                                if _relayable(_aev):
                                     yield _sse(_aev)
                         # Drain any remaining artifact events after stream ends
                         while not _artifact_queue.empty():
                             _aev = _artifact_queue.get_nowait()
-                            if _aev:
+                            if _relayable(_aev):
                                 yield _sse(_aev)
                         break  # success — exit retry loop
                     except Exception as _exc:
@@ -4320,8 +8551,9 @@ async def run_agent_stream(
                                 "executor.copilot_maf_stream_error",
                                 agent=agent_name,
                             )
-                            yield _sse({"type": "RUN_ERROR", "runId": run_id,
-                                        "message": str(_exc)})
+                            yield _sse(run_error_event(
+                                _exc, run_id=run_id, where="copilot_maf_stream",
+                            ))
                             return
                         # Stale session — clear it and prepare a retry.
                         _log.warning(
@@ -4376,7 +8608,7 @@ async def run_agent_stream(
                 # ── Drain any late-arriving artifact events + reset queue ─
                 while not _artifact_queue.empty():
                     _aev = _artifact_queue.get_nowait()
-                    if _aev:
+                    if _relayable(_aev):
                         yield _sse(_aev)
                 _active_run_queue.reset(_t15_token)
                 _unregister_run_queue(_t15_qkey)
@@ -4440,6 +8672,15 @@ async def run_agent_stream(
                     # Tool work happened: fall through to RUN_FINISHED +
                     # commit detection so the run records as 'completed' and
                     # the folded tool cards are preserved.
+                # WS-53 CRM-Q33: the note of a CRM total, when left out.
+                # H-363: the one end-of-turn push step.
+                for _push_ev in _push_note_events(await _settle_agent_push(
+                    agent_name, _git_dir, run_id,
+                    since_sha=_run_base_head or None, thread_id=thread_id,
+                )):
+                    yield _sse(_push_ev)
+                for _note_ev in _crm_note_events():
+                    yield _sse(_note_ev)
                 yield _sse({"type": "RUN_FINISHED", "runId": run_id, "threadId": thread_id})
 
                 await _detect_agent_commits(
@@ -4609,23 +8850,23 @@ async def run_agent_stream(
                                 })
                                 raise
                             else:
+                                from acb_common.tool_refusals import (  # noqa: PLC0415
+                                    is_refusal as _is_refusal,
+                                )
                                 result_str = str(result) if result is not None else ""
                                 await queue.put({
                                     "type": "TOOL_CALL_RESULT",
                                     "toolCallId": tool_call_id,
                                     "content": result_str[:2000],
-                                    "success": True,
+                                    "success": not _is_refusal(result),
                                 })
                                 return result
                         # Couldn't heal — surface a clear, actionable error.
                         await queue.put({
                             "type": "TOOL_CALL_RESULT",
                             "toolCallId": tool_call_id,
-                            "content": (
-                                f"Error: tool '{tool_name}' needs a package that "
-                                f"isn't installed ({_imp_exc}). Auto-install "
-                                f"{'failed' if _mod else 'could not identify the module'}"
-                                f"; call install_dependency('<package>') and retry."
+                            "content": _missing_dependency_message(
+                                tool_name, _imp_exc, _mod,
                             ),
                             "success": False,
                         })
@@ -4656,16 +8897,24 @@ async def run_agent_stream(
                         # context. No pending steer => `result` is returned
                         # unchanged, so this path is a dict lookup for every
                         # ordinary call.
+                        from acb_common.tool_refusals import (  # noqa: PLC0415
+                            is_refusal,
+                        )
                         from orchestrator.steer import (  # noqa: PLC0415
                             decorate_tool_result,
                         )
+                        # Asked BEFORE the steer text joins the result. A
+                        # refused call returns its text for the model, and it
+                        # is still no success for the card (event_translator
+                        # asks the same function).
+                        refused = is_refusal(result)
                         result = decorate_tool_result(result, thread_id)
                         result_str = str(result) if result is not None else ""
                         await queue.put({
                             "type": "TOOL_CALL_RESULT",
                             "toolCallId": tool_call_id,
                             "content": result_str[:2000],  # truncate for SSE safety
-                            "success": True,
+                            "success": not refused,
                         })
                         return result
 
@@ -4726,6 +8975,17 @@ async def run_agent_stream(
                         except (AttributeError, TypeError):
                             pass
 
+            # MAF 1.19 keeps a native Agent's tools in `default_options["tools"]`,
+            # and the agent has no `.tools` at all, so both loops above shim
+            # nothing for it. A native agent that fell back here from Tier 1 then
+            # streamed no tool row: the trail showed "Thinking…", the todo list
+            # and the artifact cards, and none of its steps (owner report,
+            # 2026-10-05). Shim them on a PER-RUN view, so the agent object that
+            # another run holds never changes. The restore below still reads the
+            # shared object, which the view never wrote.
+            _t2_shared_agent = agent
+            agent = _tier2_tool_view(agent, _make_tool_shim)
+
             # Run the agent in a background task.
             message = _build_event_message(agent_name, run_id, event_payload, integrations)
 
@@ -4736,58 +8996,25 @@ async def run_agent_stream(
                     # may not be installed.  Our Python tools (e.g. zoho_crm) work fine
                     # without it, and we don't want the LLM to fall back to shell execution.
                     try:
-                        from copilot import CopilotClient as _CopilotClient
-                        from copilot import RuntimeConnection as _RuntimeConnection
                         if hasattr(agent, "_client") and agent._client is None:
-                            _agent_settings = getattr(agent, "_settings", {}) or {}
-                            _cli_opts: dict[str, Any] = {}
-                            # For GitHub Copilot agents (repo-sourced), allow all tools
-                            # including shell — pwsh 7.6.2 is installed. For local/built-in
-                            # MAF agents with Python tools, deny shell to prevent the LLM
-                            # from bypassing structured Python tools with raw shell calls.
-                            # SDK 1.0 (H-181): cli_path + cli_args became one
-                            # stdio RuntimeConnection, and the client takes
-                            # keywords instead of an options dict.
-                            _cli_args = (
-                                ["--deny-tool", "shell"]
-                                if _agent_runtime != "github-copilot" else []
+                            agent._client = _tier2_copilot_client(
+                                getattr(agent, "_settings", {}) or {}
                             )
-                            _cli_path = _agent_settings.get("cli_path")
-                            if _cli_path or _cli_args:
-                                _cli_opts["connection"] = _RuntimeConnection.for_stdio(
-                                    path=_cli_path or None, args=_cli_args,
-                                )
-                            _log_level = _agent_settings.get("log_level")
-                            if _log_level:
-                                _cli_opts["log_level"] = _log_level
-                            # Headless auth: explicit Copilot token (servers
-                            # have no logged-in copilot CLI user).
-                            # Fall back to the canonical GITHUB_TOKEN — the
-                            # only secret the connect UI / settings store / DB
-                            # hydration actually populate. Without this, the
-                            # headless CLI has no auth and no logged-in copilot
-                            # user, yielding "Authorization error, run /login".
-                            _cop_tok = (
-                                os.environ.get("COPILOT_GITHUB_TOKEN")
-                                or os.environ.get("GITHUB_COPILOT_TOKEN")
-                                or os.environ.get("GITHUB_TOKEN")
-                                or ""
-                            ).strip()
-                            if _cop_tok:
-                                _cli_opts["github_token"] = _cop_tok
-                            agent._client = _CopilotClient(**_cli_opts)
                             agent._owns_client = True
                     except Exception:
                         pass
 
                     if hasattr(type(agent), "__aenter__"):
                         await stack.enter_async_context(agent)
-                    # Apply the risk-aware permission handler if needed (B6).
-                    try:
-                        if hasattr(agent, "_permission_handler") and agent._permission_handler is None:
-                            agent._permission_handler = _copilot_permission_handler()
-                    except Exception:
-                        pass
+                    # The permission handler (B6), always with the D85 guard.
+                    # H-201: carry this run's context in, as every Copilot
+                    # path must, or the handler sees no workspace and no
+                    # shell flag. A no-op when Tier 1.5 already carried it.
+                    _install_copilot_permission_handler(agent)
+                    from orchestrator.copilot_agent import (
+                        carry_run_context as _carry_tier2,
+                    )
+                    _carry_tier2(agent)
                     # Pass history as proper MAF Message objects so the model sees
                     # full user/assistant turn structure, not a flat string.
                     #
@@ -4804,9 +9031,31 @@ async def run_agent_stream(
                     # model's real window, current-turn dedup, system context
                     # preserved, and degrades to the composed string when there's
                     # no history to structure.
-                    _run_input = _compose_maf_run_input(
-                        agent_name, run_id, event_payload, integrations)
-                    response = await agent.run(_run_input)
+                    #
+                    # ⚠️ H-216: until WS-43t1 the structured branch never ran,
+                    # and every turn here got the string. A NATIVE agent that
+                    # fell back here from Tier 1 now takes the same flag-gated
+                    # input as Tier 1. A Copilot SDK agent, or any agent with
+                    # the flag OFF, still gets the string and runs on itself.
+                    # WS-43t2: a native run reuses the session that Tier 1
+                    # loaded. A Copilot SDK agent never has one, because
+                    # Tier 1 never ran for it.
+                    _run_input, _run_ctx = _compose_maf_run(
+                        agent_name, run_id, event_payload, integrations,
+                        native=not _is_copilot_sdk,
+                        session_turn=_session_turn,
+                        agent=agent,
+                    )
+                    response = await _with_tier_policy(
+                        _agent_for_run(
+                            agent, _run_ctx,
+                            history=_native_session_history(_session_turn),
+                        ),
+                        None if _is_copilot_sdk else _tier_run,
+                    ).run(
+                        _run_input,
+                        **_native_session_run_kwargs(_session_turn),
+                    )
                 return getattr(response, "text", "") or ""
 
             run_task = asyncio.create_task(_run_task())
@@ -4817,14 +9066,19 @@ async def run_agent_stream(
                     ev = await asyncio.wait_for(queue.get(), timeout=0.1)
                     if ev is None:
                         break
-                    yield _sse(ev)
+                    if _relayable(ev):
+                        yield _sse(ev)
+                        for _ml in _mark.after(ev):
+                            yield _ml
                 except asyncio.TimeoutError:
                     if run_task.done():
                         # Drain any remaining events
                         while not queue.empty():
                             ev = queue.get_nowait()
-                            if ev:
+                            if _relayable(ev):
                                 yield _sse(ev)
+                                for _ml in _mark.after(ev):
+                                    yield _ml
                         break
 
             _active_run_queue.reset(_t2_token)  # restore after drain
@@ -4832,15 +9086,15 @@ async def run_agent_stream(
             # Restore patched tools (attribute-based)
             for attr, _, original in patched:
                 try:
-                    object.__setattr__(agent, attr, original)
+                    object.__setattr__(_t2_shared_agent, attr, original)
                 except Exception:
                     pass
 
             # Restore shimmed list entries
-            if hasattr(agent, "tools") and isinstance(agent.tools, (list, tuple)):
+            if hasattr(_t2_shared_agent, "tools") and isinstance(_t2_shared_agent.tools, (list, tuple)):
                 for _idx, _orig in _shimmed_list_indices:
                     try:
-                        agent.tools[_idx] = _orig
+                        _t2_shared_agent.tools[_idx] = _orig
                     except Exception:
                         pass
 
@@ -4851,6 +9105,8 @@ async def run_agent_stream(
                 raise
             except Exception as exc:
                 raise exc
+            # WS-43t2: the Tier 2 run finished, so its session is saved.
+            await _finish_native_session(_session_turn)
 
             # Strip integration setup tokens (same as batch path)
             setup_token_re = __import__("re").compile(r"<<<SETUP:[^>]+>>>")
@@ -4859,18 +9115,24 @@ async def run_agent_stream(
             )
             if raw_matches:
                 text = setup_token_re.sub("", text).strip()
-                vars_to_save = [{"key": k, "value": v.strip()} for _, k, v in raw_matches if v.strip()]
-                if vars_to_save:
+                # WS-54 fix round 1, item 8: GITHUB_TOKEN goes to the one
+                # writer of a pasted token, and the other keys to configure, in
+                # two requests. A refusal adds a line, so the agent claims no
+                # save that did not happen (orchestrator/setup_tokens.py).
+                if any(v.strip() for _, _k, v in raw_matches):
                     _GATEWAY_URL = settings.gateway_base_url if hasattr(settings, "gateway_base_url") else "http://127.0.0.1:8000"
-                    _token = getattr(settings, "gateway_internal_token", "") or getattr(settings, "litellm_master_key", "")
+                    _token = (getattr(settings, "gateway_internal_token", "") or "").strip()
                     try:
                         import httpx
-                        async with httpx.AsyncClient(timeout=5) as c:
-                            await c.post(
-                                f"{_GATEWAY_URL}/integrations/configure",
-                                json={"vars": vars_to_save},
-                                headers={"Authorization": f"Bearer {_token}"},
+
+                        from orchestrator.setup_tokens import save_setup_vars
+                        async with httpx.AsyncClient(timeout=10) as c:
+                            _setup_note = await save_setup_vars(
+                                c, _GATEWAY_URL, {"Authorization": f"Bearer {_token}"},
+                                raw_matches,
                             )
+                        if _setup_note:
+                            text = f"{text}\n\n{_setup_note}".strip()
                     except Exception:
                         pass
 
@@ -4879,8 +9141,19 @@ async def run_agent_stream(
             # message-id-native START/CONTENT/END protocol.
             for _t2_ev in _text_message_events(text):
                 yield _sse(_t2_ev)
+                for _ml in _mark.after(_t2_ev):
+                    yield _ml
                 if _t2_ev.get("type") == "TEXT_MESSAGE_CONTENT":
                     await asyncio.sleep(0)  # yield event loop so SSE flushes
+            # WS-53 CRM-Q33: the note of a CRM total, when left out.
+            # H-363: the one end-of-turn push step.
+            for _push_ev in _push_note_events(await _settle_agent_push(
+                agent_name, _git_dir, run_id,
+                since_sha=_run_base_head or None, thread_id=thread_id,
+            )):
+                yield _sse(_push_ev)
+            for _note_ev in _crm_note_events():
+                yield _sse(_note_ev)
             # RUN_FINISHED must be emitted INSIDE the try block — the finally
             # below resets the relay contextvar and marks the thread inactive,
             # so a later yield would never reach Redis (reconnecting clients
@@ -4890,84 +9163,125 @@ async def run_agent_stream(
     except AgentRunError:
         raise
     except Exception as exc:
-        yield _sse({
-            "type": "RUN_ERROR",
-            "message": str(exc),
-            "code": type(exc).__name__,
-        })
+        # The code names the failure for the member's chat, and the ref
+        # finds this log line (owner report, 2026-10-08). Before, `code` was
+        # the class name and the member read the raw repr.
+        for _push_ev in _push_note_events(_drop_agent_push(run_id, "the turn failed")):
+            yield _sse(_push_ev)
+        yield _sse(run_error_event(exc, run_id=run_id, where="run_agent_stream"))
         return
     finally:
-        # ── Live activity feed (E2): agent activation END ────────────────────
-        # Clears this run from the "running now" panel and stamps duration +
-        # status. sys.exc_info() is set here iff we're unwinding an exception.
+        if _tier_task is not None:
+            if not _tier_task.done():
+                _tier_task.cancel()
+            elif not _tier_task.cancelled():
+                # Read a result nobody awaited, so asyncio logs no "Task
+                # exception was never retrieved" for it.
+                _tier_task.exception()
+        # WS-67 OA-7c: the read of the packs, when the run ended before the
+        # apply awaited it.
+        if _pack_task is not None and not _pack_task.done():
+            _pack_task.cancel()
+        # SPD-1 part 2: the early reads that the run did not await.
+        if _early is not None:
+            _early.close()
+        # H-363: a turn that was cancelled, or stopped on any other path,
+        # pushes nothing. The request goes, and the log says so.
+        _drop_agent_push(run_id, "the turn did not finish")
         try:
-            import sys as _sys
-            import time as _time
-            from acb_common import publish_activity
-            _status = "error" if _sys.exc_info()[0] is not None else "completed"
-            _dur_ms = int((_time.monotonic() - _activity_started) * 1000)
-            publish_activity(
-                kind="agent", phase="end",
-                agent=agent_name, run_id=run_id, thread_id=thread_id,
-                status=_status, duration_ms=_dur_ms, source=_corr_source,
-            )
-        except Exception:
-            pass
+            # ── Live activity feed (E2): agent activation END ────────────────────
+            # Clears this run from the "running now" panel and stamps duration +
+            # status. sys.exc_info() is set here iff we're unwinding an exception.
+            try:
+                import sys as _sys
+                import time as _time
+                from acb_common import publish_activity
+                _status = "error" if _sys.exc_info()[0] is not None else "completed"
+                _dur_ms = int((_time.monotonic() - _activity_started) * 1000)
+                publish_activity(
+                    kind="agent", phase="end",
+                    agent=agent_name, run_id=run_id, thread_id=thread_id,
+                    status=_status, duration_ms=_dur_ms, source=_corr_source,
+                )
+            except Exception:
+                pass
 
-        # Deactivate stream relay so the reconnect endpoint knows the run
-        # has finished and can drain remaining events from the Redis stream.
-        # Wait for any in-flight ordered pushes first so RUN_FINISHED lands
-        # in Redis BEFORE the active flag is cleared.
-        _pending_push = _push_chains.get(thread_id)
-        if _pending_push is not None:
+            # Deactivate stream relay so the reconnect endpoint knows the run
+            # has finished and can drain remaining events from the Redis stream.
+            # Wait for any in-flight ordered pushes first so RUN_FINISHED lands
+            # in Redis BEFORE the active flag is cleared.
+            _pending_push = _push_chains.get(thread_id)
+            if _pending_push is not None:
+                try:
+                    await _pending_push
+                except Exception:
+                    pass
+            # WS-43d (§16.3): the run data of a sandboxed run ends with the run,
+            # whatever way it ends. Read from the run's own context, so before
+            # that context is reset. A no-op when no sandbox ran.
+            await _end_sandbox_run()
+            _stream_relay_thread_id.reset(_relay_token)
+            release_cards_switch(_cards_token)
+            release_asks(_asks_token)
+            _active_run_model.reset(_model_token)
+            _release_profile_writes(_writes_token)
+            _release_solo_room(_solo_token)
+            # H-201: the run's workspace, tenant key and session end with it.
+            reset_artifact_context(_artifact_token)
+            # Same reason, for the thing that says WHO this run was: an acting user
+            # left bound is inherited by whatever runs next on this task (S1-4).
+            _unbind_run_identity(_identity_binding)
+            # Same rule for the tenant (WS-29 MT-1d / H4): drop this run's
+            # worker-thread org record and release the async tenant binding, so a
+            # tenant left bound is never inherited by whatever runs next on this task.
+            # GUARDED pop (WS-29 slice 3, P2): only drop the record if it is STILL
+            # this run's org — see :func:`_guarded_pop_run_org`. H-201 part 3: and
+            # only an entry this run SET (_owned_org).
+            _guarded_pop_run_org(thread_id, _owned_org)
+            if _tenant_token is not None:
+                try:
+                    from acb_common.db import release_tenant
+                    release_tenant(_tenant_token)
+                except Exception:
+                    pass
+            # B6 Phase-5 Tier 0: tear down this run's scoped integration creds so
+            # they don't linger in the shared process env for the next agent.
+            _release_run_credentials(_integration_env_token)
             try:
-                await _pending_push
+                from acb_common import clear_run_context
+                clear_run_context()
             except Exception:
                 pass
-        _stream_relay_thread_id.reset(_relay_token)
-        _active_run_model.reset(_model_token)
-        # H-201: the run's workspace, tenant key and session end with it.
-        reset_artifact_context(_artifact_token)
-        # Same reason, for the thing that says WHO this run was: an acting user
-        # left bound is inherited by whatever runs next on this task (S1-4).
-        _unbind_run_identity(_identity_binding)
-        # Same rule for the tenant (WS-29 MT-1d / H4): drop this run's
-        # worker-thread org record and release the async tenant binding, so a
-        # tenant left bound is never inherited by whatever runs next on this task.
-        # GUARDED pop (WS-29 slice 3, P2): only drop the record if it is STILL
-        # this run's org — see :func:`_guarded_pop_run_org`. H-201 part 3: and
-        # only an entry this run SET (_owned_org).
-        _guarded_pop_run_org(thread_id, _owned_org)
-        if _tenant_token is not None:
+            _thread_emit_seq.pop(thread_id, None)  # P1-5 counter cleanup
+            # Drop the cross-worker HITL applier for this run (P1-2).  run_detached's
+            # finally also clears ALL handlers for the thread, but this generator can
+            # outlive/precede that path (batch tiers), so unregister defensively.
             try:
-                from acb_common.db import release_tenant
-                release_tenant(_tenant_token)
+                from orchestrator.stream_relay import (
+                    unregister_control_command as _unreg_ctl,
+                )
+                _unreg_ctl(thread_id, "respond_input")
             except Exception:
                 pass
-        # B6 Phase-5 Tier 0: tear down this run's scoped integration creds so
-        # they don't linger in the shared process env for the next agent.
-        _release_run_credentials(_integration_env_token)
-        try:
-            from acb_common import clear_run_context
-            clear_run_context()
-        except Exception:
-            pass
-        _thread_emit_seq.pop(thread_id, None)  # P1-5 counter cleanup
-        # Drop the cross-worker HITL applier for this run (P1-2).  run_detached's
-        # finally also clears ALL handlers for the thread, but this generator can
-        # outlive/precede that path (batch tiers), so unregister defensively.
-        try:
-            from orchestrator.stream_relay import (
-                unregister_control_command as _unreg_ctl,
-            )
-            _unreg_ctl(thread_id, "respond_input")
-        except Exception:
-            pass
-        if _relay_mark_inactive is not None:
-            try:
-                await _relay_mark_inactive(thread_id)
-            except Exception:
-                pass
+            if _relay_mark_inactive is not None:
+                try:
+                    await _relay_mark_inactive(thread_id)
+                except Exception:
+                    pass
+            if _relay_unregister_live is not None and thread_id:
+                with contextlib.suppress(Exception):
+                    await _relay_unregister_live(
+                        thread_id, organization_id=organization_id, token=run_id,
+                    )
+        finally:
+            # WS-8c: close each MCP session this run opened. It runs LAST, after
+            # the run is marked inactive and its org record is gone, so a slow
+            # session DELETE can never keep the run live (review round 2 of
+            # #869). The close is capped at _maf_mcp.CLOSE_TOTAL_S, and the
+            # servers close at the same time. It sits in its own finally, so
+            # a second cancel during an earlier await of this block still
+            # closes the sockets (review of #869, P2).
+            await _close_mcp_tools(_mcp_opened)
 
 
 # ---------------------------------------------------------------------------
@@ -5037,8 +9351,22 @@ async def _self_anneal(
     event_payload: dict[str, Any],
     agent_dir: str | None,
     error: Exception,
+    no_egress: bool,
+    inputs: _BatchRunInputs | None = None,
+    tier_policy: Any = None,
 ) -> dict[str, Any] | None:
     """Self-annealing loop.
+
+    *no_egress* is the H-236 answer of the run that failed. Every retry
+    injects with it, so a retry can never hold more tools than the run did.
+
+    *inputs* is what the first attempt used (:class:`_BatchRunInputs`). Each
+    retry loads the same agent and assembles it through
+    :func:`_assemble_batch_agents`, the function of the first attempt. It
+    then holds no tool that the first attempt did not hold.
+
+    *tier_policy* is the failed run's ``RunTierPolicy`` (WS-45 S4), or None.
+    Each retry runs with it, counted from its first request again.
 
     1. Classify the error.
     2. Apply an in-process fix if one exists for this error class.
@@ -5052,6 +9380,63 @@ async def _self_anneal(
         agent=agent_name, run_id=run_id,
         error_class=error_class, error=str(error)[:200],
     )
+    inputs = inputs or _BatchRunInputs()
+
+    async def _retry_once() -> dict[str, Any]:
+        """Load, assemble and run the agent once, as the first attempt did."""
+        from acb_skills.integrations import build_integrations as _bi
+        from acb_skills.loader import load_agent as _load
+        settings = get_settings()
+        with await asyncio.to_thread(
+            _load, agent_name, run_id=run_id,
+            repo_name=inputs.repo_name, local_path=inputs.local_path,
+        ) as loaded:
+            # Org access control: the retry resolves no authority again. A
+            # shared session's fold can fall back to one actor's wider access
+            # on a database fault, so the retry takes only the credential
+            # names that the first attempt's filter gave. A first attempt that
+            # resolved none gives the retry none (fail closed).
+            allowed = inputs.integrations or frozenset()
+            integrations, integration_warnings = _bi(
+                loaded.config.get("integrations", []),
+                loaded.config.get("optional_integrations", []),
+                settings,
+                is_authorized=lambda service: service in allowed,
+            )
+            integrations = {k: v for k, v in integrations.items() if k in allowed}
+            if inputs.integrations is None:
+                # The first attempt armed no memory gate, and an unarmed gate
+                # allows everything. Close it for the retry.
+                try:
+                    from acb_skills.memory_tools import _set_memory_permission
+                    _set_memory_permission(lambda _permission: False)
+                except Exception:
+                    pass
+            agents, _md_spec, run_tools = await _assemble_batch_agents(
+                loaded, agent_name=agent_name,
+                no_egress=no_egress,  # H-236
+                held=inputs.held,
+            )
+            # ``run_tools`` (§14.10): the retry ALWAYS binds its own, the part
+            # of the first attempt's set that it holds. A first attempt that
+            # bound none gives an empty set, so ``run_holds_tool`` fails
+            # closed. A delegated child never answers from its parent's set.
+            from acb_skills.write_artifact import derive_artifact_context
+            derive_artifact_context(
+                run_tools=run_tools & (inputs.run_tools or frozenset()),
+            )
+            return await _run_with_maf_agent(
+                agents,
+                agent_name=agent_name,
+                run_id=run_id,
+                thread_id=thread_id,
+                event_payload={
+                    **event_payload,
+                    "integration_warnings": integration_warnings,
+                },
+                integrations=integrations,
+                tier_policy=_retry_policy(tier_policy),
+            )
 
     # ── In-process fixes ──────────────────────────────────────────────────
     if error_class == "encoding":
@@ -5061,33 +9446,7 @@ async def _self_anneal(
             for attempt in range(_MAX_ANNEAL_ATTEMPTS):
                 await asyncio.sleep(0.5 * (attempt + 1))
                 try:
-                    from acb_skills.integrations import \
-                        build_integrations as _bi
-                    from acb_skills.loader import \
-                        load_agent as _load
-                    settings = get_settings()
-                    with _load(agent_name, run_id=run_id) as loaded:
-                        integrations, integration_warnings = _bi(
-                            loaded.config.get("integrations", []),
-                            loaded.config.get("optional_integrations", []),
-                            settings,
-                        )
-                        agents = loaded.build_agents()
-                        _apply_agent_md_overrides(
-                            agents, loaded.agent_dir, agent_name,
-                        )
-                        _inject_agent_tools(agents, agent_name=agent_name)
-                        result = await _run_with_maf_agent(
-                            agents,
-                            agent_name=agent_name,
-                            run_id=run_id,
-                            thread_id=thread_id,
-                            event_payload={
-                                **event_payload,
-                                "integration_warnings": integration_warnings,
-                            },
-                            integrations=integrations,
-                        )
+                    result = await _retry_once()
                     _log.info("self_anneal.retry_success",
                               agent=agent_name, attempt=attempt + 1)
                     return result
@@ -5104,33 +9463,7 @@ async def _self_anneal(
                       agent=agent_name, attempt=attempt + 1, wait=wait)
             await asyncio.sleep(wait)
             try:
-                settings = get_settings()
-                from acb_skills.integrations import \
-                    build_integrations as _bi
-                from acb_skills.loader import \
-                    load_agent as _load
-                with _load(agent_name, run_id=run_id) as loaded:
-                    integrations, integration_warnings = _bi(
-                        loaded.config.get("integrations", []),
-                        loaded.config.get("optional_integrations", []),
-                        settings,
-                    )
-                    agents = loaded.build_agents()
-                    _apply_agent_md_overrides(
-                        agents, loaded.agent_dir, agent_name,
-                    )
-                    _inject_agent_tools(agents, agent_name=agent_name)
-                    result = await _run_with_maf_agent(
-                        agents,
-                        agent_name=agent_name,
-                        run_id=run_id,
-                        thread_id=thread_id,
-                        event_payload={
-                            **event_payload,
-                            "integration_warnings": integration_warnings,
-                        },
-                        integrations=integrations,
-                    )
+                result = await _retry_once()
                 _log.info("self_anneal.retry_success",
                           agent=agent_name, attempt=attempt + 1)
                 return result
@@ -5176,6 +9509,7 @@ async def _llm_recovery(
 
     try:
         from acb_llm import LLMTier, complete
+        from acb_llm.voice import voice_prompt
 
         messages: list[dict[str, str]] = list(event_payload.get("messages", []))
         latest: str = event_payload.get("message", "")
@@ -5190,7 +9524,7 @@ async def _llm_recovery(
             "Never show raw Python tracebacks or variable names. Be concise."
         )
         recovery_msgs: list[dict[str, str]] = [
-            {"role": "system", "content": system},
+            {"role": "system", "content": system + "\n\n" + voice_prompt("chat")},
             *messages,
             *(
                 [{"role": "user", "content": latest}]
@@ -5210,7 +9544,14 @@ async def _llm_recovery(
             tier=LLMTier.TIER_2,
             messages=recovery_msgs,
             max_tokens=400,
+            job="writing",
         )
+        if not (content or "").strip():
+            # No recovery text (task 1128). Send no blank reply and no stock
+            # apology as a finished run. None makes the caller go on to the
+            # self-mutation step and raise the first error, with its class.
+            _log.warning("self_anneal.llm_recovery_empty", agent=agent_name)
+            return None
         _log.info("self_anneal.llm_recovery_success", agent=agent_name)
         return {"result": {"role": "assistant", "content": content}}
     except Exception as llm_exc:
@@ -5284,11 +9625,16 @@ async def _run_with_maf_agent(
     thread_id: str,
     event_payload: dict[str, Any],
     integrations: dict[str, Any],
+    tier_policy: Any = None,
 ) -> dict[str, Any]:
     """Execute the primary agent from *agents* via MAF and return a normalised result dict.
 
     Accepts any MAF ``BaseAgent`` subclass including ``GitHubCopilotAgent``.
     Automatically calls ``start()`` / ``stop()`` if the agent supports it.
+
+    *tier_policy* is the run's ``RunTierPolicy`` (WS-45 S4), for a native
+    agent that ``AI_TIER_ROUTING`` covers. The run then uses a per-run copy
+    of the agent that carries the policy. None changes nothing.
     """
     import contextlib
 
@@ -5301,13 +9647,9 @@ async def _run_with_maf_agent(
     # Agent repos often omit it; patch _permission_handler directly so sessions
     # are created without raising AgentException. B6: use the risk-aware handler
     # (blocks dangerous shell / out-of-workspace writes; logs privileged ops).
-    try:
-        _ph = _copilot_permission_handler()
-        for _a in agents:
-            if hasattr(_a, "_permission_handler") and _a._permission_handler is None:
-                _a._permission_handler = _ph
-    except Exception:
-        pass
+    # D85: ALWAYS with the shell guard, whatever handler the factory set.
+    for _a in agents:
+        _install_copilot_permission_handler(_a)
     # H-201 (§21.16): a Copilot SDK agent runs its tool calls and permission
     # requests with no context of this run. Carry this run's context in.
     from orchestrator.copilot_agent import carry_run_context
@@ -5335,25 +9677,18 @@ async def _run_with_maf_agent(
             from agent_framework._types import \
                 Message as _Message
 
-            # Fold the integrations preamble into the leading system context so
-            # the assembler carries it as one system message (it emits a single
-            # leading system block).
-            system_parts: list[str] = []
-            system_context = event_payload.get("system_context") or ""
-            if system_context.strip():
-                system_parts.append(system_context.strip())
-            integration_warnings: dict[str, str] = event_payload.get("integration_warnings", {})
-            if integrations:
-                system_parts.append(
-                    "Connected integrations: " + ", ".join(sorted(integrations.keys())) + "."
-                )
-            if integration_warnings:
-                missing = ", ".join(sorted(integration_warnings.keys()))
-                system_parts.append(
-                    f"Missing integrations (not yet configured): {missing}. "
-                    "If the user task requires one of these, ask them to provide the credential. "
-                    "When they do, output: <<<SETUP:service_name:ENV_VAR_NAME=value>>>"
-                )
+            # The per-turn context blocks go in as the one leading system
+            # message (the assembler emits a single leading system block).
+            # WS-47 parity (2026-10-19): the SAME builder as the web stream
+            # path (`_context_preamble_parts`), so a WhatsApp run gets the
+            # org name, the Knowledge index and the number-system line too.
+            # This path built only the system context and the integrations.
+            # The memory block comes from the caller's `memory_context`, and
+            # a caller that pre-read none gets none: the web route and
+            # `bot_run` (WAC-P2) call `gateway.memory_preread` for it.
+            # Fence: tests/unit/test_wac_channel_parity.py.
+            system_parts = _context_preamble_parts(
+                event_payload, integrations, agent_name)
 
             _model = _active_run_model.get() or ""
             assembled = assemble_run_context(
@@ -5363,6 +9698,7 @@ async def _run_with_maf_agent(
                 model=_model,
                 max_output_tokens=_reserved_output_tokens(_model),
                 history_loader=_loader if callable(_loader) else None,
+                reserve_tokens=_agent_prompt_reserve_tokens(agent),
             )
             # MAF _types.Message takes content as a list of parts.
             run_input = [
@@ -5389,10 +9725,90 @@ async def _run_with_maf_agent(
         # Standard Agent has a no-op __aenter__/__aexit__ — both are safe here.
         if hasattr(type(agent), "__aenter__"):
             await stack.enter_async_context(agent)
-        response = await agent.run(run_input)
+        response = await _with_tier_policy(agent, tier_policy).run(run_input)
 
-    text: str = getattr(response, "text", "") or ""
-    return {"answer": text, "run_id": run_id, "agent": agent_name, "result": text}
+    return _batch_result(response, run_id, agent_name)
+
+
+def _batch_result(response: Any, run_id: str, agent_name: str) -> dict[str, Any]:
+    """The dict `run_agent` returns for one batch run.
+
+    Task 1787: this is the ONE strip of litellm's empty-text placeholder for
+    every caller of a batch result (WhatsApp, the project agent sink, the
+    sub-agent). The placeholder never leaves here.
+    """
+    from acb_llm.message_hygiene import strip_placeholder_lines
+
+    text: str = strip_placeholder_lines(getattr(response, "text", "") or "")
+    steps = [t for t in (strip_placeholder_lines(x).strip()
+                         for x in _step_texts(response)) if t]
+    return {"answer": text, "run_id": run_id, "agent": agent_name, "result": text,
+            "steps": steps, "tool_calls": _tool_calls_of(response)}
+
+
+def _tool_calls_of(response: Any) -> list[dict[str, Any]]:
+    """Each tool call of a batch run, in order: ``{"id", "name", "args",
+    "result", "success"}``. The result is whole, never capped here.
+
+    A batch run streams nothing, so a delegated MAF run showed no step and no
+    card in the one assistant (§7.1.1). ``_run_sub_agent_streaming`` sends
+    these as ``SUB_AGENT_TOOL_CALL_*`` events, and it builds the email
+    working set from them. Never raises.
+    """
+    import json as _json
+
+    calls: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    try:
+        from acb_common.tool_refusals import is_refusal
+    except Exception:
+        def is_refusal(_r: Any) -> bool:  # type: ignore[misc]
+            return False
+    try:
+        for message in list(getattr(response, "messages", None) or []):
+            for content in list(getattr(message, "contents", None) or []):
+                ctype = getattr(content, "type", None)
+                cid = str(getattr(content, "call_id", "") or "")
+                if ctype == "function_call" and cid:
+                    raw = getattr(content, "arguments", None)
+                    if isinstance(raw, str):
+                        try:
+                            raw = _json.loads(raw) if raw.strip() else {}
+                        except ValueError:
+                            raw = {}
+                    if cid not in calls:
+                        order.append(cid)
+                    calls[cid] = {"id": cid, "name": str(getattr(content, "name", "") or "tool"),
+                                  "args": raw if isinstance(raw, dict) else {},
+                                  "result": "", "success": True}
+                elif ctype == "function_result" and cid in calls:
+                    exc = getattr(content, "exception", None)
+                    result = getattr(content, "result", "") or ""
+                    calls[cid]["result"] = str(exc) if exc else str(result)
+                    calls[cid]["success"] = exc is None and not is_refusal(result)
+    except Exception:
+        _log.warning("executor.tool_calls_unread")
+    return [calls[c] for c in order]
+
+
+def _step_texts(response: Any) -> list[str]:
+    """The text of each assistant message that has any, in order.
+
+    MAF's ``AgentResponse.text`` joins every message's text with no
+    separator. One step that writes a line and calls a tool, then a step
+    that writes the answer, joins as "…NagarTwo blocks…" (WS-47, 2026-10-15).
+    ``bot_run`` builds its one WhatsApp text from these steps. Every other
+    caller keeps ``result``, unchanged.
+    """
+    steps: list[str] = []
+    for message in list(getattr(response, "messages", None) or []):
+        role = getattr(message, "role", "")
+        if str(getattr(role, "value", role) or "") != "assistant":
+            continue
+        text = str(getattr(message, "text", "") or "").strip()
+        if text:
+            steps.append(text)
+    return steps
 
 
 def _compose_maf_run_input(
@@ -5401,62 +9817,1037 @@ def _compose_maf_run_input(
     event_payload: dict[str, Any],
     integrations: dict[str, Any],
 ) -> Any:
-    """Build the input passed to a native MAF ``agent.run(...)`` call.
+    """Build the input of a MAF ``agent.run(...)`` with ``MAF_NATIVE_SESSIONS`` OFF.
 
-    Mirrors the Tier 2 batch path's message construction so the streaming and
-    batch paths feed the agent identically:
+    It is the composed prompt string of :func:`_build_event_message`, which
+    folds in the integrations, ``memory_context``, ``system_context`` and the
+    budgeted history. It is this string on every run, with or without history.
 
-    * History present → a structured ``list[Message]`` (the caller's
-      ``system_context`` as a leading system message, then the budgeted prior
-      turns, then the current user turn) so the model sees full turn structure.
-    * Otherwise → the composed prompt string from :func:`_build_event_message`
-      (which already folds in memory_context + system_context + history).
+    H-216: this function used to carry a structured branch. It built
+    ``Message(role=..., content=...)``, MAF 1.19 refused the keyword, and the
+    ``except`` returned this same string. So every native turn ran on the
+    string, and the flag-off path keeps exactly that. The repaired structured
+    branch lives in :func:`_compose_maf_run`, behind the flag (WS-43t1,
+    ``maf_coding_engine.md`` §15.9).
 
-    C2: the structured-message branch routes through the ONE server-side
-    assembler ``acb_llm.assemble_run_context`` — token-budgeted (fit to the
-    resolved model's window) + current-turn dedup + DB-rebuild-when-empty —
-    instead of the old blind ``[-20:]`` count cap.  The batch path
-    (:func:`run_agent`) calls the same assembler, so streaming and batch feed
-    the model identically (the drift the two duplicated slicers risked).
-
-    This is deliberately NOT gated on BYOK any more. It used to be, which meant
-    a non-BYOK native-MAF agent's STREAMING turn silently fell back to the flat
-    string prompt while its own BATCH turn got the token-budgeted assembly — the
-    same agent remembered a different amount of the conversation depending on
-    whether it streamed. The assembler already degrades safely when the model is
-    unknown (no token fit, just a turn cap), so there is nothing BYOK-specific
-    about wanting real turn structure.
+    ⚠️ The assembler still runs when there is history, and its result is
+    discarded, as it always was. Two things read what the call leaves behind:
+    the Tier 1 "Long conversation" notice reads ``last_fit_stats``, and the
+    route's ``_history_loader`` is called. Dropping the call would change a
+    flag-off run.
     """
     message = _build_event_message(agent_name, run_id, event_payload, integrations)
     history_msgs = event_payload.get("messages") or []
-    current_msg_text = (
-        event_payload.get("message") or event_payload.get("user_query") or ""
-    )
-    system_context = event_payload.get("system_context") or ""
-    # Rebuild history from the store when the caller sent none (API/webhook) —
-    # a loader is threaded in via the payload by the route layer when it has a
-    # thread_id; absent one, this is a no-op and behaviour is unchanged.
     _loader = event_payload.get("_history_loader")
     if history_msgs or _loader:
         try:
             from acb_llm import assemble_run_context
-            from agent_framework import Message as _MAFMsg
             _model = _active_run_model.get() or ""
-            assembled = assemble_run_context(
-                system_context=system_context,
+            assemble_run_context(
+                system_context=event_payload.get("system_context") or "",
                 history=history_msgs,
-                current_message=current_msg_text,
+                current_message=(
+                    event_payload.get("message")
+                    or event_payload.get("user_query")
+                    or ""
+                ),
                 model=_model,
                 max_output_tokens=_reserved_output_tokens(_model),
                 history_loader=_loader if callable(_loader) else None,
             )
-            maf_messages = [
-                _MAFMsg(role=m["role"], content=m["content"]) for m in assembled
-            ]
-            return maf_messages if maf_messages else message
         except Exception:
-            return message
+            pass
     return message
+
+
+def _native_sessions_enabled() -> bool:
+    """The one reader of ``MAF_NATIVE_SESSIONS`` (``maf_native_sessions``).
+
+    Default OFF, and OFF means no change (``maf_coding_engine.md`` §15.9.8).
+    A settings failure reads as OFF.
+    """
+    try:
+        return bool(getattr(get_settings(), "maf_native_sessions", False))
+    except Exception:
+        return False
+
+
+def _compose_maf_run(
+    agent_name: str,
+    run_id: str,
+    event_payload: dict[str, Any],
+    integrations: dict[str, Any],
+    *,
+    native: bool,
+    session_turn: Any = None,
+    agent: Any = None,
+) -> tuple[Any, Any]:
+    """Build the input of a MAF run, and the provider of its context.
+
+    Returns ``(run_input, provider)``. Call ``run`` on
+    ``_agent_for_run(agent, provider)``, never on the agent with the input
+    alone, or the run loses its memory.
+
+    * ``native`` False (a Copilot SDK agent), or ``MAF_NATIVE_SESSIONS`` OFF
+      (the default): ``(_compose_maf_run_input(...), None)``. Today's string,
+      byte for byte, and the agent itself.
+    * ON, with history (the browser's ``messages`` or the route's loader) and
+      a current turn: the earlier turns and the current turn as a
+      ``list[Message]``, each built with ``Message(role=..., contents=[...])``
+      (H-216). The per-turn context (integrations, ``memory_context``,
+      ``system_context`` and so the persona) goes to a per-run
+      :class:`RunContextProvider`, NEVER into the message list. WS-43t2 stores
+      the input messages, and the member's memory must never be stored
+      (§15.9.5).
+    * ON, with no history or no current turn: the flag-off string. A payload
+      with no current turn is an event, and the string serialises it.
+    * ON, on any failure: the composed string and no provider. The string
+      already carries the memory.
+
+    The bound (§15.9.6): ``assemble_run_context`` fits the model's window, with
+    the context block counted, and :func:`_cap_structured_history` then holds
+    the earlier turns to ``_HISTORY_MAX_TOKENS``. So the history is capped at
+    the smaller of the two, the same minimum the string path takes.
+
+    The structured branch runs the assembler ONCE. It does not call
+    :func:`_compose_maf_run_input` first, because that would run the assembler
+    and the route's ``_history_loader`` (a database read) a second time.
+
+    *session_turn* (WS-43t2) is the stored session of this run, from
+    :func:`_begin_native_session`. A usable one sends the input through
+    :func:`_compose_session_run`, which never returns the string: a stored
+    session keeps its input messages, and the string carries the memory.
+
+    *agent* is the agent that runs the input. The fit holds back room for its
+    instructions and tool schemas (:func:`_agent_prompt_reserve_tokens`).
+    """
+    if not native or not _native_sessions_enabled():
+        return (
+            _compose_maf_run_input(agent_name, run_id, event_payload, integrations),
+            None,
+        )
+    history_msgs = event_payload.get("messages") or []
+    _loader = event_payload.get("_history_loader")
+    current_msg_text = (
+        event_payload.get("message") or event_payload.get("user_query") or ""
+    )
+    if session_turn is not None and getattr(session_turn, "usable", False):
+        return _compose_session_run(
+            agent_name, run_id, event_payload, integrations, session_turn,
+            agent=agent,
+        )
+    if not (history_msgs or _loader) or not current_msg_text.strip():
+        return (
+            _compose_maf_run_input(agent_name, run_id, event_payload, integrations),
+            None,
+        )
+    # The fallback string is built first, so it only peeks at the interview
+    # memo. The context below is what the model reads, and it records the
+    # due line (PZ-32, P1-4). The context is the FIRST step of the try, before
+    # any import, so an import that fails still leaves the memo recorded: the
+    # model then reads the string, which holds the line (PZ-32 repair, P2-7).
+    # Fence: tests/unit/test_profile_pz32.py.
+    with _interview_peek():
+        message = _build_event_message(agent_name, run_id, event_payload, integrations)
+    try:
+        context_text = _run_context_text(event_payload, integrations, agent_name).strip()
+
+        from acb_llm import assemble_run_context
+        from acb_llm.prompt_cache import CACHE_BREAK
+        from agent_framework import Message as _MAFMsg
+
+        from orchestrator._native_run_context import RunContextProvider
+
+        _model = _active_run_model.get() or ""
+        # The context block goes in as the system context so the window fit
+        # counts it. It then leaves the list and travels by the provider.
+        assembled = assemble_run_context(
+            system_context=context_text,
+            history=history_msgs,
+            current_message=current_msg_text,
+            model=_model,
+            max_output_tokens=_reserved_output_tokens(_model),
+            history_loader=_loader if callable(_loader) else None,
+            reserve_tokens=_agent_prompt_reserve_tokens(agent),
+        )
+        fitted_context = ""
+        turns = list(assembled)
+        if context_text and turns and turns[0].get("role") == "system":
+            fitted_context = str(turns.pop(0).get("content") or "")
+        turns = _cap_structured_history(turns, _model, has_current=True)
+        if not turns:
+            return message, None
+        maf_messages = [
+            _MAFMsg(role=m["role"], contents=[m["content"]]) for m in turns
+        ]
+        provider = (
+            RunContextProvider(f"{CACHE_BREAK}\n{fitted_context}")
+            if fitted_context else None
+        )
+        return maf_messages, provider
+    except Exception as exc:
+        _log.warning(
+            "executor.native_structured_input_failed",
+            agent=agent_name,
+            run_id=run_id,
+            error=str(exc)[:300],
+        )
+        return message, None
+
+
+def _compose_session_run(
+    agent_name: str,
+    run_id: str,
+    event_payload: dict[str, Any],
+    integrations: dict[str, Any],
+    turn: Any,
+    *,
+    agent: Any = None,
+) -> tuple[Any, Any]:
+    """The input of a native run that carries a session (WS-43t2, §15.9.4).
+
+    * The session loaded (``hit``): the input is the current user turn only.
+      The session holds the turns before it, with their tool calls (dedup).
+      The assembler fits only the context block and the current turn, and
+      reads no history, so the route's loader does not run.
+    * Any other outcome: the text history as WS-43t1 structures it, and the
+      current turn, even with no history at all. The fresh session stores
+      them, so the next turn can load.
+
+    The context block always travels by the per-run provider, never as a
+    message, so no stored session holds it (§15.9.5). On a failure the run
+    goes on with the string and NO session: the turn is abandoned, so it is
+    neither attached nor saved.
+    """
+    current = str(
+        event_payload.get("message") or event_payload.get("user_query") or ""
+    ).strip()
+    try:
+        from acb_llm import assemble_run_context
+        from acb_llm.prompt_cache import CACHE_BREAK
+        from agent_framework import Message as _MAFMsg
+
+        from orchestrator._native_run_context import RunContextProvider
+
+        context_text = _run_context_text(event_payload, integrations, agent_name).strip()
+        model = _active_run_model.get() or ""
+        loader = event_payload.get("_history_loader")
+        assembled = assemble_run_context(
+            system_context=context_text,
+            # A fresh session keeps only the user and assistant turns of the
+            # browser history. A `system` or `tool` turn in a request body
+            # never goes into a stored session.
+            history=[] if turn.loaded else [
+                m for m in (event_payload.get("messages") or [])
+                if isinstance(m, dict) and m.get("role") in ("user", "assistant")
+            ],
+            current_message=current,
+            model=model,
+            max_output_tokens=_reserved_output_tokens(model),
+            history_loader=(
+                None if turn.loaded or not callable(loader) else loader
+            ),
+            reserve_tokens=_agent_prompt_reserve_tokens(agent),
+        )
+        turns = list(assembled)
+        fitted_context = ""
+        if context_text and turns and turns[0].get("role") == "system":
+            fitted_context = str(turns.pop(0).get("content") or "")
+        if not turn.loaded:
+            turns = _cap_structured_history(turns, model, has_current=True)
+        if not current or not turns or turns[-1].get("role") != "user":
+            raise ValueError("no current user turn")
+        maf_messages = [
+            _MAFMsg(role=m["role"], contents=[m["content"]]) for m in turns
+        ]
+        provider = (
+            RunContextProvider(f"{CACHE_BREAK}\n{fitted_context}")
+            if fitted_context else None
+        )
+        return maf_messages, provider
+    except Exception as exc:
+        _log.warning(
+            "executor.native_session_input_failed",
+            agent=agent_name, run_id=run_id, error=str(exc)[:300],
+        )
+        turn.abandon("compose_failed")
+        return _build_event_message(agent_name, run_id, event_payload, integrations), None
+
+
+def _agent_prompt_reserve_tokens(agent: Any) -> int:
+    """Tokens that *agent* sends beside the messages: instructions and tools.
+
+    The history fit must leave room for them, or a long chat plus a large
+    tool set goes over the window. The estimate is characters / 4, the same
+    rate as the /v1 guard uses for tool schemas. It reads a MAF ``Agent``
+    (``default_options`` with ``instructions`` and ``tools``) and a Copilot
+    SDK agent (``_default_options`` with ``system_message``). An unknown
+    shape, or any error, gives 0, which is the old budget.
+    Fence: tests/unit/test_context_assembly.py.
+    """
+    if agent is None:
+        return 0
+    try:
+        texts: list[str] = []
+        tools: list[Any] = []
+        for attr in ("default_options", "_default_options"):
+            opts = getattr(agent, attr, None)
+            if not isinstance(opts, dict):
+                continue
+            if isinstance(opts.get("instructions"), str):
+                texts.append(opts["instructions"])
+            msg = opts.get("system_message")
+            if isinstance(msg, dict) and isinstance(msg.get("content"), str):
+                texts.append(msg["content"])
+            if isinstance(opts.get("tools"), (list, tuple)):
+                tools.extend(opts["tools"])
+            break
+        direct = getattr(agent, "instructions", None)
+        if isinstance(direct, str) and direct not in texts:
+            texts.append(direct)
+        chars = sum(len(t) for t in texts)
+        for item in tools:
+            spec: Any = item
+            to_spec = getattr(item, "to_json_schema_spec", None)
+            if callable(to_spec):
+                spec = to_spec()
+            elif not isinstance(item, dict):
+                spec = {
+                    "name": getattr(item, "name", "") or getattr(item, "__name__", ""),
+                    "description": getattr(item, "description", "")
+                    or getattr(item, "__doc__", "") or "",
+                }
+            chars += len(json.dumps(spec, default=str))
+        return chars // 4
+    except Exception:
+        return 0
+
+
+def _native_history_cap(model: str, reserve_tokens: int = 0) -> int:
+    """The token cap of a native session's history (§15.9.6).
+
+    The smaller of two numbers: the budget of
+    ``acb_llm.context.fit_messages_to_context`` for *model*, and
+    ``_HISTORY_MAX_TOKENS``. The same minimum that the string path takes in
+    :func:`_history_char_budget`. *reserve_tokens* is room held back for the
+    context block and the current turn, when a loaded session is fitted.
+    """
+    from acb_llm.context import context_window_for
+
+    window = int(context_window_for(model))
+    budget = window - _reserved_output_tokens(model) - 512
+    if budget < 1024:
+        budget = max(1024, window - 1024 - 512)
+    return max(1024, min(budget, _HISTORY_MAX_TOKENS) - max(0, reserve_tokens))
+
+
+def _native_session_skip(
+    agent: Any,
+    agent_name: str,
+    event_payload: dict[str, Any],
+    *,
+    run_id: str,
+    caller_thread_id: str | None,
+    delegated: bool,
+) -> str | None:
+    """Why this native run neither loads nor saves a session, or ``None``.
+
+    §15.9.5: no thread id (the caller named none, so the id is the
+    ``<agent>:<run>`` default), a delegated run, and an event with no current
+    turn. An agent that brings its own history provider keeps it, and gets
+    no second one.
+
+    WS-43h: a provider with the store's own source id
+    (``native_session_store.HISTORY_SOURCE_ID``) is the store's provider. A
+    harness agent must hold one history provider, so app-builder's factory
+    gives it that one. It reads and writes the very session state that the
+    store loads and saves, so it is no reason to skip, and
+    :func:`_agent_for_run` attaches no second one beside it.
+    """
+    thread = str(caller_thread_id or "").strip()
+    if not thread or thread == f"{agent_name}:{run_id}":
+        return "no_thread"
+    if delegated:
+        return "delegated"
+    current = event_payload.get("message") or event_payload.get("user_query") or ""
+    if not str(current).strip():
+        return "no_current_turn"
+    from agent_framework import HistoryProvider
+
+    from orchestrator.native_session_store import HISTORY_SOURCE_ID
+
+    for provider in getattr(agent, "context_providers", None) or []:
+        if (
+            isinstance(provider, HistoryProvider) and provider.load_messages
+            and getattr(provider, "source_id", None) != HISTORY_SOURCE_ID
+        ):
+            return "agent_history_provider"
+    return None
+
+
+async def _begin_native_session(
+    agent: Any,
+    agent_name: str,
+    event_payload: dict[str, Any],
+    integrations: dict[str, Any],
+    *,
+    run_id: str,
+    caller_thread_id: str | None,
+    delegated: bool,
+    instance: str,
+) -> Any:
+    """Load the stored session of a native run (WS-43t2), or ``None``.
+
+    ``None`` when ``MAF_NATIVE_SESSIONS`` is off, the run is one that §15.9.5
+    keeps out, no organization resolves, or the run has no verified member.
+    The organization and the member are the RUN BINDING, read here on the
+    event loop (:func:`_current_run_org`, :func:`_verified_run_member`), before
+    the store's ``run_in_executor`` hop. Neither comes from the payload (R5).
+    The load logs one outcome line and never fails the run.
+    """
+    if not _native_sessions_enabled():
+        return None
+    reason = _native_session_skip(
+        agent, agent_name, event_payload,
+        run_id=run_id, caller_thread_id=caller_thread_id, delegated=delegated,
+    )
+    org = _current_run_org() if reason is None else None
+    if reason is None and not org:
+        reason = "no_org"
+    actor = _verified_run_member() if reason is None else ""
+    if reason is None and not actor:
+        reason = "no_member"
+    if reason is not None:
+        _log.info(
+            "native_session.skip", agent=agent_name,
+            thread_id=str(caller_thread_id or "")[:40], reason=reason,
+        )
+        return None
+    try:
+        from acb_llm import count_message_tokens
+
+        from orchestrator import native_session_store
+
+        model = _active_run_model.get() or ""
+        current = str(
+            event_payload.get("message") or event_payload.get("user_query") or ""
+        )
+        # The count only measures the context, so it peeks at the interview
+        # memo. The build that the model reads records the due line (PZ-32).
+        with _interview_peek():
+            context_text = _run_context_text(event_payload, integrations, agent_name)
+        reserve = count_message_tokens([
+            {"role": "system", "content": context_text},
+            {"role": "user", "content": current},
+        ], model) + _agent_prompt_reserve_tokens(agent)
+        return await native_session_store.begin_turn(
+            organization_id=str(org),
+            thread_id=str(caller_thread_id),
+            agent_name=agent_name,
+            instance=instance or "",
+            current_message=current,
+            browser_history=(
+                event_payload.get("messages") if "messages" in event_payload else None
+            ),
+            token_budget=_native_history_cap(model, reserve),
+            actor=actor,
+        )
+    except Exception as exc:
+        _log.warning(
+            "native_session.begin_failed", agent=agent_name, error=str(exc)[:200],
+        )
+        return None
+
+
+def _verified_run_member() -> str:
+    """The VERIFIED member of the run on this frame, lower case, or ``""``.
+
+    It comes from the run binding (``user`` with ``member_verified``), which
+    ``run_agent_stream`` binds from the session's member (H-73), never from
+    the payload. The store loads a session only for a thread that is this
+    member's alone, so a run with no verified member gets none.
+    """
+    try:
+        from acb_common import get_run_context
+
+        ctx = get_run_context() or {}
+    except Exception:
+        return ""
+    member = str(ctx.get("user") or "").strip().lower()
+    return member if member and ctx.get("member_verified") == "1" else ""
+
+
+async def _finish_native_session(turn: Any) -> None:
+    """Save the session of a native run that finished. Never raises."""
+    if turn is None or not getattr(turn, "usable", False):
+        return
+    try:
+        from orchestrator import native_session_store
+
+        await native_session_store.finish_turn(
+            turn, token_budget=_native_history_cap(_active_run_model.get() or ""),
+        )
+    except Exception as exc:
+        _log.warning("native_session.finish_failed", error=str(exc)[:200])
+
+
+def _native_session_history(turn: Any) -> Any:
+    """The history provider a run attaches for its session, or ``None``."""
+    if turn is None or not getattr(turn, "usable", False):
+        return None
+    return turn.history
+
+
+def _native_session_run_kwargs(turn: Any) -> dict[str, Any]:
+    """``{"session": ...}`` for a run that carries a session, else ``{}``.
+
+    An empty dict leaves the ``run`` call exactly as it was before WS-43t2.
+    """
+    if turn is None or not getattr(turn, "usable", False):
+        return {}
+    return {"session": turn.session}
+
+
+async def _end_sandbox_run() -> None:
+    """Delete the run-data dir of the run on this frame (WS-43d, §16.3).
+
+    ``sandbox_broker.end_sandbox_run`` reads the run's own artifact context,
+    and it never raises. It touches no file when no sandbox ran in this
+    process, so a run of any agent with an empty ``MAF_CODING_SCOPE`` pays
+    one dict check. Fence: ``tests/unit/test_run_data_hygiene.py`` (WS43-F22).
+    """
+    try:
+        from orchestrator.sandbox_broker import end_sandbox_run
+    except ImportError:
+        return
+    await end_sandbox_run()
+
+
+def _agent_for_run(agent: Any, provider: Any, history: Any = None) -> Any:
+    """The object a native run calls ``run`` on.
+
+    No provider and no history: *agent* itself, unchanged (and the flag-off
+    path never imports the provider module). Otherwise a per-run copy that
+    carries them, so the shared agent object never holds one run's context
+    or session (``orchestrator._native_run_context.agent_for_run``, WS43-F20).
+
+    ⚠️ A run with a ``session`` MUST carry its *history*. With no history
+    provider, MAF 1.19 appends an ``InMemoryHistoryProvider`` to the agent it
+    runs on, and that agent would be the shared one.
+    """
+    if provider is None and history is None:
+        return agent
+    from orchestrator._native_run_context import agent_for_run
+
+    return agent_for_run(agent, provider, history=history)
+
+
+# ── WS-45 S2: the tier policy of a run (ai_tier_routing.md §4, §5, D90) ─────
+#
+# `acb_skills.tier_policy` holds the policy. These helpers only glue it to a
+# run. With `AI_TIER_ROUTING` unset, `_tier_policy_for_run` returns None at
+# once, and no other line of a run changes.
+
+
+def _is_copilot_built(agent: Any, runtime: str) -> bool:
+    """True when *agent* runs on the Copilot SDK: by capability, or by label.
+
+    An agent built with GitHubCopilotAgent but declared runtime "maf" still
+    needs BYOK provider routing. The label "github-copilot" forces the path
+    even for a genuine MAF agent, which has no ``_default_options``."""
+    return runtime == "github-copilot" or (
+        hasattr(agent, "_default_options") and agent._default_options is not None
+    )
+
+
+def _tier_policy_covers(agent_name: str) -> bool:
+    """True when `AI_TIER_ROUTING` covers *agent_name*. Fails closed."""
+    try:
+        from acb_skills.tier_policy import tier_routing_on
+    except ImportError:
+        return False
+    return tier_routing_on(agent_name)
+
+
+def _sub_agent_tier(
+    parent: str | None, agent: Any, config: dict[str, Any], agent_md_model: str,
+    *, is_copilot: bool,
+) -> str | None:
+    """The tier of a delegated run: the higher of the parent's tier and the
+    sub-agent's own default (owner, 2026-10-22).
+
+    A tier off the ladder (an admin's ``provider/model``) stays as the parent
+    chose it. With no parent tier, the sub-agent's own default resolves as
+    before (``None``). So a member who chose a lower tier for the parent
+    gets the sub-agent's own default for the delegated run. Fence:
+    ``tests/unit/test_adaptive_tier.py``.
+    """
+    from acb_skills.tier_policy import LADDER
+
+    if not (parent or "").strip():
+        return parent
+    own = _agent_default_tier(agent, config, agent_md_model, is_copilot=is_copilot)
+    p = parent.strip()
+    if p not in LADDER or own not in LADDER:
+        return parent
+    return LADDER[max(LADDER.index(p), LADDER.index(own))]
+
+
+def _agent_default_tier(
+    agent: Any, config: dict[str, Any], agent_md_model: str, *, is_copilot: bool,
+) -> str:
+    """The agent's own default tier (D-AI-4), the Balanced rung of the policy.
+
+    A native agent's default is its build-time client model, so
+    `PROJECTS_AGENT_MODEL` and the other agent env vars keep their meaning
+    (§8). `copilot_chat_model` does not count for a covered agent. A model
+    that is not a gateway id reads as `tier-balanced`.
+    """
+    from acb_skills.tier_policy import DEFAULT_TIER
+
+    if is_copilot:
+        found = agent_md_model or str(config.get("model_tier") or "")
+    else:
+        found = (
+            str(getattr(getattr(agent, "client", None), "model", "") or "")
+            or str(config.get("model_tier") or "")
+        )
+    found = found.strip()
+    return found if _is_gateway_model(found) else DEFAULT_TIER
+
+
+def _agent_tool_names(agent: Any) -> list[str]:
+    """The names of the tools *agent* holds, for the turn-kind question."""
+    from acb_skills.tool_guard import tool_name
+
+    opts = getattr(agent, "default_options", None)
+    tools = (opts.get("tools") if isinstance(opts, dict) else None) or (
+        getattr(agent, "_tools", None) or []
+    )
+    return [n for n in (tool_name(t) for t in tools) if n]
+
+
+def _emit_to_run(thread_id: str | None) -> Any:
+    """A callback that puts one event on the run's own queue, or nowhere."""
+    def _emit(event: dict[str, Any]) -> None:
+        queue = resolve_run_queue(thread_id)
+        if queue is not None:
+            queue.put_nowait(event)
+    return _emit
+
+
+def _emit_to_run_or_relay(thread_id: str | None) -> Any:
+    """An async callback that puts one event on the run's own queue, and on
+    the run's relay stream when the run has no queue (WS-67 OA-7c condition 5).
+
+    A relay-only run lost the event of :func:`_emit_to_run`. The relay line
+    has the shape of ``_run_sub_agent_streaming``'s own relay push. A frame
+    with neither a queue nor a relay sends the event nowhere, never to
+    another run (H-201)."""
+    async def _emit(event: dict[str, Any]) -> None:
+        queue = resolve_run_queue(thread_id)
+        if queue is not None:
+            queue.put_nowait(event)
+            return
+        relay = resolve_relay_thread_id()
+        if relay:
+            await _push_sse_to_stream(relay, f"data: {json.dumps(event, default=str)}\n\n")
+    return _emit
+
+
+async def _tier_policy_for_run(
+    agent_name: str,
+    agent: Any,
+    *,
+    run_id: str,
+    thread_id: str | None,
+    model: str | None,
+    think_mode: str | None,
+    event_payload: dict[str, Any],
+    config: dict[str, Any],
+    agent_md_model: str,
+    is_copilot: bool,
+    emit: bool = True,
+    effort_from_text: bool = False,
+    pack_offer: tuple[str, ...] = (),
+) -> Any:
+    """The run's `RunTierPolicy`, or None when the flag does not cover the agent.
+
+    A covered run ignores the client's *model* and logs
+    `ai_route.model_ignored` (§8). It asks the turn kind ONCE, here, before
+    the first main request (§4.3), and logs `ai_route.turn_kind` with the
+    latency, so Q8's cost can be read on a box. No line holds tenant text.
+
+    *emit* False sends no `ai.route` event. The batch path and a sub-agent
+    pass it (S4). `resolve_run_queue` reads the PARENT's queue first, so a
+    sub-agent's events would join the parent's answer label.
+
+    *effort_from_text* (owner, 2026-10-07): the member chooses no effort in
+    the chat. The stream path passes it for the member's own turn, so the
+    turn-kind request also asks whether the member's words explicitly ask for
+    deep work. A yes raises an `auto` run to `thinking`, never to `max`, and
+    logs `ai_route.effort_from_text`. The batch path and a sub-agent leave it
+    off: their message is a model's words, and they inherit the parent's
+    effort through `think_mode` in the bound context.
+
+    *pack_offer* (WS-67 OA-7f): the packs that the run can still load. They
+    ride as items in the same request (`turn_kind`), and the packs that
+    System 1 asks for go in `RunTierPolicy.packs`. Empty: the call is the
+    one of before.
+    """
+    if not _tier_policy_covers(agent_name):
+        return None
+    from acb_skills import tier_policy
+
+    requested = (model or "").strip()
+    if requested:
+        _log.info(
+            "ai_route.model_ignored", agent=agent_name, run_id=run_id,
+            model=requested[:80],
+        )
+    default = _agent_default_tier(
+        agent, config, agent_md_model, is_copilot=is_copilot,
+    )
+    message, context_tokens = _turn_size(event_payload)
+    turn = await tier_policy.turn_kind(
+        message, _agent_tool_names(agent), think_mode,
+        read_effort=effort_from_text,
+        # A default the kind cannot move asks no question (`pinned`).
+        default=default,
+        **({"packs": pack_offer} if pack_offer else {}),
+    )
+    _log.info(
+        "ai_route.turn_kind", agent=agent_name, run_id=run_id, kind=turn.kind,
+        source=turn.source, latency_ms=turn.latency_ms,
+    )
+    effort = tier_policy.normalise_effort(think_mode)
+    if effort_from_text and turn.effort and effort == "auto":
+        effort = tier_policy.normalise_effort(turn.effort)
+        _log.info(
+            "ai_route.effort_from_text", agent=agent_name, run_id=run_id,
+            effort=effort, source=turn.effort_source,
+        )
+    # The size of the turn (owner, 2026-10-22): a long chat or a lot of
+    # context starts the turn on the powerful tier. Known before the first
+    # request, so the turn keeps one model (`_turn_size`).
+    if context_tokens >= tier_policy.CONTEXT_POWERFUL_TOKENS:
+        _log.info("ai_route.long_turn", agent=agent_name, run_id=run_id,
+                  tokens=context_tokens)
+    return tier_policy.RunTierPolicy(
+        agent=agent_name,
+        run_id=run_id,
+        default=default,
+        kind=turn.kind,
+        effort=effort,
+        emit=None if (is_copilot or not emit) else _emit_to_run(thread_id),
+        context_tokens=context_tokens,
+        **({"packs": tuple(turn.packs)} if getattr(turn, "packs", ()) else {}),
+    )
+
+
+def _turn_size(event_payload: Any) -> tuple[str, int]:
+    """The task of the turn, and the turn's size in tokens (owner, 2026-10-22).
+
+    WS-67: the turn-kind question reads the task only. The head of a
+    delegated task (the member's words and the reply rules) would make every
+    task look long. The added context is what the BFF and the gateway send
+    with the turn: the persona, open documents and memories (review of
+    #1219). ONE copy, for :func:`_tier_policy_for_run` and
+    :func:`_provisional_tier_policy`.
+    """
+    from acb_skills import tier_policy
+    from acb_skills.handoff import task_of
+
+    if not isinstance(event_payload, dict):
+        return task_of(""), 0
+    message = task_of(str(
+        event_payload.get("message") or event_payload.get("user_query") or ""
+    ))
+    return message, tier_policy.turn_tokens(
+        message, event_payload.get("messages") or [],
+        str(event_payload.get("system_context") or "")
+        + str(event_payload.get("memory_context") or ""),
+    )
+
+
+# ── Chat speed: the parallel start of the turn kind (ai_tier_routing.md §4.3) ─
+#
+# Owner approval 2026-10-29, dark behind AI_TURN_KIND_PARALLEL. Only the
+# native Tier 1 stream of `run_agent_stream` uses these. The batch path, a
+# sub-agent, a delegated run and a Copilot SDK agent await the answer as
+# before. Fence: tests/unit/test_turn_kind_parallel.py.
+
+#: The longest a restart waits for its cancelled pull to end. A cancelled
+#: request normally ends at once. A slower teardown is logged, never awaited.
+_RESTART_TEARDOWN_S = 5.0
+
+
+def _drop_pull_result(task: asyncio.Future[Any]) -> None:
+    """Read the end of a pull that a restart cancelled, so asyncio logs no
+    "exception was never retrieved" for it. Its update never reaches a run."""
+    if not task.cancelled():
+        task.exception()
+
+
+def _turn_kind_parallel(agent_name: str) -> bool:
+    """True when `AI_TURN_KIND_PARALLEL` names *agent_name*. Fails closed."""
+    try:
+        from acb_skills.tier_policy import turn_kind_parallel_on
+    except ImportError:
+        return False
+    return turn_kind_parallel_on(agent_name)
+
+
+def _provisional_tier_policy(
+    agent_name: str,
+    agent: Any,
+    *,
+    run_id: str,
+    thread_id: str | None,
+    think_mode: str | None,
+    event_payload: dict[str, Any],
+    config: dict[str, Any],
+    agent_md_model: str,
+) -> Any:
+    """The policy of a parallel start, or None when the flag does not cover
+    the agent.
+
+    It is the policy that a ``chat`` answer would give: the agent's default,
+    the run's own effort and the turn's size. No question goes out here.
+    The question already runs in its own task. The native agent's middleware
+    reads this object at each request, and ``RunTierPolicy.settle`` takes the
+    answer when it comes.
+    """
+    if not _tier_policy_covers(agent_name):
+        return None
+    from acb_skills import tier_policy
+
+    _message, context_tokens = _turn_size(event_payload)
+    policy = tier_policy.RunTierPolicy(
+        agent=agent_name,
+        run_id=run_id,
+        default=_agent_default_tier(agent, config, agent_md_model, is_copilot=False),
+        kind="chat",
+        effort=tier_policy.normalise_effort(think_mode),
+        emit=_emit_to_run(thread_id),
+        context_tokens=context_tokens,
+    )
+    policy.open_start()
+    return policy
+
+
+def _parallel_moved(
+    policy: Any, answer: asyncio.Future[Any], *, fresh: bool = False,
+) -> bool:
+    """Settle *policy* with the done task *answer* of the turn-kind question.
+
+    True when the answer moved the turn (``SETTLE_MOVED``), so the turn must
+    start again on the new tier. A task that failed or was cancelled gives
+    no answer, so the turn keeps the ``chat`` tier, as a timeout does.
+    *fresh*: no request of the turn is running (``RunTierPolicy.settle``).
+    Never raises.
+    """
+    from acb_skills.tier_policy import SETTLE_MOVED
+
+    final: Any = None
+    if not answer.cancelled():
+        failed = answer.exception()
+        if failed is None:
+            final = answer.result()
+        else:
+            _log.warning(
+                "ai_route.parallel_answer_failed", agent=policy.agent,
+                run_id=policy.run_id, error_type=type(failed).__name__,
+            )
+    try:
+        return policy.settle(final, fresh=fresh) == SETTLE_MOVED
+    except Exception as exc:  # the answer never breaks a turn
+        _log.warning("ai_route.parallel_settle_failed", error_type=type(exc).__name__)
+        policy.seal()
+        return False
+
+
+def _apply_parallel_tier(
+    agents: list[Any], policy: Any, think_mode: str | None, settings: Any,
+    *, agent_name: str,
+) -> tuple[str | None, str]:
+    """Apply an answer that moved a parallel start, before the run starts again.
+
+    The same steps as the tier site of `run_agent_stream`, for a native
+    agent: the effort goes into `think_mode` and the bound context, the tier
+    goes on the agent's options, and Thinking sets its reasoning effort.
+    Change both places together. `test_turn_kind_parallel.py` compares the
+    requests of the two paths. The caller hands the packs to the loader
+    (`_apply_turn_pack_items` keeps ONE caller, the stream run). Returns the
+    run's `think_mode` and its model.
+    """
+    from acb_skills.tier_policy import normalise_effort
+    from acb_skills.write_artifact import derive_artifact_context
+
+    if policy.effort != normalise_effort(think_mode):
+        think_mode = policy.effort
+        derive_artifact_context(think_mode=think_mode)
+    model, _ = _byok_default_model(policy.run_tier(), settings)
+    with contextlib.suppress(Exception):
+        _apply_model_for_maf_agent(agents[0], model, settings)
+    if think_mode and think_mode != "auto":
+        for _ag in agents:
+            with contextlib.suppress(Exception):  # never break a run over a hint
+                _apply_thinking_mode_for_agent(_ag, think_mode)
+    _log.info("executor.maf_model_override", agent=agent_name, model=model)
+    return think_mode, model
+
+
+def _member_turns_for_run(parent: Any, event_payload: dict[str, Any]) -> list[str]:
+    """The member's own messages of the chat, for each task that this run
+    delegates (WS-67 OA-1). ``acb_skills.handoff.member_turns`` decides.
+    *parent* is the run context read BEFORE this run sets its own. With no
+    ``acb_skills``, none."""
+    try:
+        from acb_skills.handoff import member_turns
+    except ImportError:
+        return []
+    return member_turns(parent or {}, event_payload or {})
+
+
+def _member_words_for_run(parent: Any, event_payload: dict[str, Any]) -> str:
+    """The member's own words of a run, for the CRM number check (CRM-Q29).
+
+    ``acb_skills.answer_check.member_words`` decides. *parent* is the run
+    context read BEFORE this run sets its own. With no ``acb_skills``, "".
+    """
+    try:
+        from acb_skills.answer_check import member_words
+    except ImportError:
+        return ""
+    return member_words(parent or {}, event_payload or {})
+
+
+def _is_hold_beat(event: Any) -> bool:
+    """True for the CRM number check's sign of life (CRM-Q29).
+
+    It says that the check holds an answer while the model writes it. It
+    resets the idle watchdog of the native loop, and it is not output, so
+    the loop shows nothing for it.
+    """
+    return (
+        isinstance(event, dict)
+        and event.get("type") == "CUSTOM"
+        and event.get("name") == "answer_check.held"
+    )
+
+
+def _relayable(event: Any) -> bool:
+    """True for a run queue event that a relay sends to the member.
+
+    The Tier 1.5 and Tier 2 relays copy the run queue to the stream. A
+    delegated native run puts its hold beat (CRM-Q29) on its parent's queue,
+    so each relay drops it here: the beat is no output and no answer. The
+    native loop reads it in its own way (``_is_hold_beat``). Fence:
+    ``tests/unit/test_crm_answer_check_executor.py``.
+    """
+    return bool(event) and not _is_hold_beat(event)
+
+
+def _is_route_event(event: Any) -> bool:
+    """True for the `ai.route` custom event. It is a label, not output."""
+    from acb_skills.tier_policy import ROUTE_EVENT
+
+    return (
+        isinstance(event, dict)
+        and event.get("type") == "CUSTOM"
+        and event.get("name") == ROUTE_EVENT
+    )
+
+
+def _is_answer_event(event: Any) -> bool:
+    """True for an event that alone makes the fold save an answer row (PZ-20b).
+
+    It follows the keep rule of ``gateway.chat_fold.fold_run_events``: text
+    that is not blank, reasoning, a tool result, a todo list that is not
+    empty, or a CUSTOM event that the fold keeps. A label (``ai.route``), a
+    hold beat, a browser action and the profile mark itself are no output.
+    A tool start and a text start are no output either, because a fault
+    before their result leaves no row. Fence:
+    ``tests/unit/test_profile_used_event.py`` folds each kind it accepts.
+    """
+    if not isinstance(event, dict):
+        return False
+    kind = event.get("type")
+    if kind in ("TEXT_MESSAGE_CONTENT", "REASONING_MESSAGE_CONTENT",
+                "THINKING_TEXT_MESSAGE_CONTENT"):
+        return bool(str(event.get("delta") or "").strip())
+    if kind in ("TOOL_CALL_END", "TOOL_CALL_RESULT"):
+        return True
+    if kind == "TODO_LIST":
+        todos = event.get("todos")
+        return isinstance(todos, list) and bool(todos)
+    if kind == "CUSTOM":
+        from acb_common.assistant_profile import PROFILE_USED_EVENT
+
+        return not (
+            _is_route_event(event) or _is_hold_beat(event)
+            or event.get("name") in ("frontend_tool", PROFILE_USED_EVENT)
+        )
+    return False
+
+
+def _retry_policy(policy: Any) -> Any:
+    """*policy*, counted from its first request again, for a retry. Or None."""
+    if policy is not None:
+        policy.restart()
+    return policy
+
+
+def _with_tier_policy(view: Any, policy: Any) -> Any:
+    """*view*, or a per-run copy that carries the tier policy's provider."""
+    if policy is None:
+        return view
+    from acb_skills.tier_policy import TierPolicyProvider
+    from orchestrator._native_run_context import agent_with_providers
+
+    return agent_with_providers(view, [TierPolicyProvider(policy)])
+
+
+def _cap_structured_history(
+    turns: list[dict[str, Any]], model: str, *, has_current: bool,
+) -> list[dict[str, Any]]:
+    """Hold the earlier turns of a structured run input to ``_HISTORY_MAX_TOKENS``.
+
+    ``maf_coding_engine.md`` §15.9.6: the history is capped at the smaller of
+    the window budget and ``_HISTORY_MAX_TOKENS``. ``assemble_run_context``
+    already fitted the window, so this applies the other half, as
+    :func:`_history_char_budget` does for the string path. An uncapped history
+    on a 1M-token window is a cost bug.
+
+    *turns* ends with the current user turn when *has_current*, and that turn
+    is never dropped. The oldest earlier turns drop first. One earlier turn
+    that alone passes the cap is trimmed, not dropped, so the turn right
+    before the current one survives.
+    """
+    from acb_llm import compress_message_content, count_message_tokens
+
+    if has_current and turns:
+        history, tail = list(turns[:-1]), [turns[-1]]
+    else:
+        history, tail = list(turns), []
+    for _ in range(_HISTORY_MAX_MESSAGES + 8):
+        if not history:
+            break
+        tokens = count_message_tokens(history, model)
+        if tokens <= _HISTORY_MAX_TOKENS:
+            break
+        if len(history) > 1:
+            history.pop(0)
+            continue
+        only = history[0]
+        content = str(only.get("content") or "")
+        target = max(200, int(len(content) * _HISTORY_MAX_TOKENS / tokens * 0.9))
+        shrunk = compress_message_content(content, target)
+        if len(shrunk) >= len(content):
+            break  # no progress left to make
+        history = [{**only, "content": shrunk}]
+    return history + tail
 
 
 # ── History budgeting for the string-prompt path ──────────────────────────
@@ -5554,6 +10945,8 @@ def _render_history_block(
     drop first (mirroring assemble_run_context's whole-turn eviction); a single
     oversized message is trimmed rather than allowed to eat the whole budget.
     """
+    from acb_llm.message_hygiene import strip_placeholder_lines
+
     budget = _history_char_budget(model)
     # Cap any ONE message so a single giant turn can't crowd out all the others.
     per_msg_cap = max(_HISTORY_MIN_CHARS // 2, budget // 4)
@@ -5566,7 +10959,11 @@ def _render_history_block(
     for idx in range(total - 1, max(-1, total - _HISTORY_MAX_MESSAGES - 1), -1):
         m = history[idx]
         role = m.get("role", "user")
-        content = (m.get("content") or "").strip()
+        content = (m.get("content") or "")
+        if role == "assistant":
+            # A stored turn may hold litellm's placeholder line (task 1787).
+            content = strip_placeholder_lines(content)
+        content = content.strip()
         if not content:
             continue
         # Skip the current turn if the caller also included it in history.
@@ -5589,6 +10986,221 @@ def _render_history_block(
     return "\n".join(picked)
 
 
+def _context_preamble_parts(
+    event_payload: dict[str, Any],
+    integrations: dict[str, Any],
+    agent_name: str = "",
+) -> list[str]:
+    """The per-turn context blocks, in the order the string prompt carries them.
+
+    The run's organisation by name (:func:`_run_org_display_name`), the
+    connected and missing integrations, the Knowledge index block of the
+    orchestrator (:func:`_knowledge_index_block`, WS-61 KB-4a), then
+    ``memory_context``, then ``system_context`` (which carries the persona),
+    then the member's name line (:func:`_member_name_line`), the member's
+    profile block (:func:`_member_profile_block`, WS-63 PZ-2), the briefing
+    of the member's other chats (:func:`_member_briefing_block`, WS-63
+    PZ-34), the member's
+    number-system line (:func:`run_number_system`), today's date
+    (``acb_common.today.today_line``), and last the member's part of the day
+    beside a profile block that greets (``part_of_day_line``, PZ-4), then the
+    line of the tool packs that left at the start of the turn
+    (:func:`_pack_left_block`, task 1747). :func:`_build_event_message`
+    puts the history and the current turn after them. The structured path of
+    WS-43t1 sends the same blocks through its per-run context provider
+    (:func:`_run_context_text`). One builder, so the two paths cannot drift.
+    """
+    integration_warnings: dict[str, str] = event_payload.get("integration_warnings", {})
+    parts: list[str] = []
+
+    # The run's organisation, by name. From the run boundary, never from the
+    # payload (R5). The static prompts name no tenant, so this line is where
+    # an agent learns whose company it works for.
+    org_name = _run_org_display_name()
+    if org_name:
+        parts.append(f"Organisation: {org_name}.")
+
+    # Integration availability context (mirrors old _build_initial_state system message)
+    if integrations:
+        parts.append("Connected integrations: " + ", ".join(sorted(integrations.keys())) + ".")
+    if integration_warnings:
+        missing = ", ".join(sorted(integration_warnings.keys()))
+        parts.append(
+            f"Missing integrations (not yet configured): {missing}. "
+            "If the user task requires one of these, ask them to provide the credential. "
+            "When they do, output: <<<SETUP:service_name:ENV_VAR_NAME=value>>>"
+        )
+
+    # WS-61 KB-4a (knowledge_base.md §6.5): what the company has written
+    # down, for the orchestrator only. Spaces and counts, never page text.
+    knowledge_index = _knowledge_index_block(agent_name)
+    if knowledge_index:
+        parts.append(knowledge_index)
+
+    # §7.1.1 (D99): the member's mailboxes and this chat's email working set,
+    # for the orchestrator only, so it names them on every surface. Ids and
+    # labels, never mail text. From the caches `_prime_email_context` filled.
+    email_ctx = _email_context_block(agent_name)
+    if email_ctx:
+        parts.append(email_ctx)
+
+    # WS-67 OA-4 (one_assistant_context.md §4): the member's corrections and
+    # limits in this chat, for the orchestrator only, beside the working set.
+    # From the run binding that `_prime_chat_constraints` set, never from the
+    # payload (R5).
+    constraints_ctx = _chat_constraints_block(agent_name)
+    if constraints_ctx:
+        parts.append(constraints_ctx)
+
+    # Memory context (pre-enriched by the route handler from Mem0) —
+    # inject as a system-level preamble so Tier 2 agents also benefit.
+    memory_ctx = event_payload.get("memory_context") or ""
+    if memory_ctx:
+        parts.append("## Memory from past conversations\n" + memory_ctx)
+
+    # Caller-supplied system context (persona / app context — e.g. the email
+    # app's currently-selected account + open email).  Injected as a preamble so
+    # the agent operates with that context without the user having to repeat it.
+    system_ctx = event_payload.get("system_context") or ""
+    if system_ctx:
+        parts.append("## Current context\n" + system_ctx)
+
+    # The member's own name, for an agent that writes mail the member signs
+    # (owner report of 2026-10-19). From the run boundary, never the payload.
+    # After the current context and before the number-system line, so every
+    # block above keeps its place.
+    member_line = _member_name_line(agent_name)
+    if member_line:
+        parts.append(member_line)
+
+    # WS-63 PZ-2 (personalization.md §5.1): the member's own profile, for
+    # the orchestrator in a solo run with a verified member, behind
+    # ASSISTANT_PROFILE_ENABLED. From the run boundary, never the payload
+    # (R5). After the name line, so every block above keeps its place.
+    profile_block, profile_zone, profile_greeting = _member_profile_entry(agent_name)
+    if profile_block:
+        parts.append(profile_block)
+
+    # WS-63 PZ-34 (personalization.md §15.4): the briefing, the newest
+    # summaries of the member's other private chats and their due tasks. For
+    # the orchestrator in the member's own web chat, behind
+    # ASSISTANT_BRIEFING_ORGS. From the run binding that
+    # `_prime_member_briefing` set, never the payload (R5). Right after the
+    # profile block, so every block above keeps its place and its bytes.
+    briefing = _member_briefing_block(agent_name)
+    if briefing:
+        parts.append(briefing)
+
+    # The member's number system, one line (owner, 2026-10-19): lakh and
+    # crore by default. From the run boundary, never from the payload (R5).
+    # Last, so the blocks above keep their places. A run with no org (a
+    # webhook with no tenant) has no member preference, and gets no line.
+    # `whatsapp_assistant_channel.md` §13.10.
+    if _current_run_org():
+        from acb_common.number_system import prompt_line
+
+        parts.append(prompt_line(run_number_system()))
+    # WS-63 PZ-51 (personalization.md §5.3): the one language rule, on every
+    # turn of every agent and both channels, beside or without a profile
+    # block. Answer in the member's language, save every record in English.
+    from acb_common.assistant_profile import LANGUAGE_RULE_LINE
+
+    parts.append(LANGUAGE_RULE_LINE)
+    # WS-53 §18.16 part 1: today's date, weekday and zone, on both channels.
+    # Two runs of 2026-10-19 read a month with no year as two different years
+    # because no run knew the date. Last, so each block above keeps its place.
+    from acb_common.today import resolve_zone, today_line
+
+    # Task 1649: the line carries the time too, in the member's own zone.
+    settings_zone, people_zone = _member_zones()
+    member_zone = resolve_zone(settings_zone, people_zone, profile_zone)
+    line = today_line(zone=member_zone, with_time=True)
+    if line:
+        parts.append(line)
+    # WS-63 PZ-4 (personalization.md §5.2): the member's part of the day, at
+    # the same resolved zone as the "now" line (PZ-39), so a greeting fits the hour. Only beside
+    # a profile block whose greeting is not "none". Last, so each block above
+    # keeps its place.
+    if profile_block and profile_greeting != "none":
+        from acb_common.assistant_profile import block_language
+        from acb_common.today import part_of_day_line
+
+        parts.append(part_of_day_line(
+            member_zone, greet=_greet_due_now(), language=block_language(profile_block)))
+        # WS-63 PZ-43 (§16.6): one wish on the member's birthday, festival or
+        # work anniversary, in the first reply of that local day.
+        celebration = _celebration_line(agent_name, member_zone)
+        if celebration:
+            parts.append(celebration)
+    # Task 1747: the tool packs that left this chat at the start of the turn.
+    # The model's history still shows their tools, so the line says that they
+    # left, and how to load them again. From the run binding, never from the
+    # payload (R5). Last, so each block above keeps its place. An empty line
+    # adds nothing.
+    parts.extend(filter(None, [_pack_left_block(agent_name)]))
+    return parts
+
+
+_ZONE_CACHE: dict[tuple[str, str], tuple[float, str, str]] = {}
+
+
+def _member_zones() -> tuple[str, str]:
+    """``(user_settings.timezone, people.timezone)`` of the run's verified
+    member, or ``("", "")``. Task 1649: the zone of the "now" line.
+
+    From the run boundary, never the payload (R5). One short read, cached for
+    a minute per ``(org, member)``. It never raises. The browser stores its own
+    zone in ``user_settings.timezone`` (``saveZone.ts``), so that column is
+    the browser's zone too."""
+    import time
+
+    org, member = _current_run_org(), _verified_run_member()
+    if not org or not member:
+        return ("", "")
+    key = (str(org), member)
+    hit = _ZONE_CACHE.get(key)
+    if hit and time.monotonic() - hit[0] < 60.0:
+        return (hit[1], hit[2])
+    settings_zone = people_zone = ""
+    try:
+        opener = _opener_for_org(str(org))
+        if opener is not None:
+            from acb_common.assistant_profile import ADDRESS_SQL
+            from sqlalchemy import text
+
+            with opener() as session:
+                row = session.execute(
+                    text("SELECT timezone FROM user_settings "
+                         "WHERE organization_id = CAST(:org AS uuid) "
+                         "AND lower(user_id) = lower(:m) "
+                         "ORDER BY updated_at DESC LIMIT 1"),
+                    {"org": str(org), "m": member}).first()
+                names = session.execute(
+                    text(ADDRESS_SQL), {"org": str(org), "m": member}).first()
+            settings_zone = str(row[0] or "") if row else ""
+            people_zone = str(names[1] or "") if names else ""
+    except Exception:
+        return ("", "")
+    _ZONE_CACHE[key] = (time.monotonic(), settings_zone, people_zone)
+    while len(_ZONE_CACHE) > 4096:
+        _ZONE_CACHE.pop(next(iter(_ZONE_CACHE)))
+    return (settings_zone, people_zone)
+
+
+def _run_context_text(
+    event_payload: dict[str, Any],
+    integrations: dict[str, Any],
+    agent_name: str = "",
+) -> str:
+    """The context block of a structured native run (WS-43t1, §15.9.5).
+
+    The same blocks the string prompt leads with, joined the same way. It
+    reaches the model through the per-run context provider, never as a
+    message, so it never enters a stored session.
+    """
+    return "\n".join(_context_preamble_parts(event_payload, integrations, agent_name))
+
+
 def _build_event_message(
     agent_name: str,
     run_id: str,
@@ -5604,37 +11216,12 @@ def _build_event_message(
     it is prepended as conversation context so the agent has full continuity
     regardless of which model/runtime processed previous turns.
     """
-    integration_warnings: dict[str, str] = event_payload.get("integration_warnings", {})
-    parts: list[str] = []
-
-    # Integration availability context (mirrors old _build_initial_state system message)
-    if integrations:
-        parts.append("Connected integrations: " + ", ".join(sorted(integrations.keys())) + ".")
-    if integration_warnings:
-        missing = ", ".join(sorted(integration_warnings.keys()))
-        parts.append(
-            f"Missing integrations (not yet configured): {missing}. "
-            "If the user task requires one of these, ask them to provide the credential. "
-            "When they do, output: <<<SETUP:service_name:ENV_VAR_NAME=value>>>"
-        )
+    parts: list[str] = _context_preamble_parts(event_payload, integrations, agent_name)
 
     # Conversation history — prepend prior turns so model switching mid-chat
     # preserves full context even when switching between CLI / BYOK / MAF paths.
     history: list[dict[str, str]] = event_payload.get("messages") or []
     current_msg = event_payload.get("message") or event_payload.get("user_query") or ""
-
-    # Memory context (pre-enriched by the route handler from Mem0) —
-    # inject as a system-level preamble so Tier 2 agents also benefit.
-    memory_ctx = event_payload.get("memory_context") or ""
-    if memory_ctx:
-        parts.append("## Memory from past conversations\n" + memory_ctx)
-
-    # Caller-supplied system context (persona / app context — e.g. the email
-    # app's currently-selected account + open email).  Injected as a preamble so
-    # the agent operates with that context without the user having to repeat it.
-    system_ctx = event_payload.get("system_context") or ""
-    if system_ctx:
-        parts.append("## Current context\n" + system_ctx)
     if history:
         _rendered = _render_history_block(
             history, current_msg, _active_run_model.get() or "",
@@ -5735,16 +11322,16 @@ def _copilot_no_text_end(
         )
     return (
         [
-            {
-                "type": "RUN_ERROR",
-                "runId": run_id,
-                "message": (
+            # `model_refused`: the model answered with nothing, which is a
+            # content filter or a provider refusal (owner report 2026-10-08:
+            # the code is a word the chat maps to member-facing text).
+            run_error_event(
+                run_id=run_id, code="model_refused", where="no_output",
+                message=(
                     "The agent produced no output.  The underlying model may "
-                    "have hit a content filter or a provider error.  Check "
-                    "gateway logs for details."
+                    "have hit a content filter or a provider error."
                 ),
-                "code": "NO_OUTPUT",
-            },
+            ),
         ],
         False,
     )

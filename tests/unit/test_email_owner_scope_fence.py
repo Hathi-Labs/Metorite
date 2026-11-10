@@ -21,8 +21,9 @@ reason fails. Synthetic sources prove that each scan can still go red.
 ⚠️ **Limit (stated, R7).** The fence reads one function at a time. It does not
 follow data, and it does not read helpers that a handler calls. A handler that
 reads ``email_accounts WHERE user_id = :uid`` and then uses a body-supplied id
-anyway passes it. ``test_email_chat_context_owner.py`` (R8) covers the one leak
-of that shape that was measured on 2026-10-02.
+anyway passes it. The one leak of that shape that was measured on 2026-10-02
+was in the email chat route, which WS-17 EM-G11f3 deleted.
+``test_email_chat_context_owner.py`` (R8) still covers the task-close hop.
 
 Run::
 
@@ -42,9 +43,20 @@ _MIGRATIONS = _ROOT / "infra/postgres"
 #: Where a module outside ``routes/email`` can read an email table.
 _OUTSIDE_ROOTS = (_ROOT / "apps", _ROOT / "packages")
 
-#: The three owner helpers of ``routes/email/core.py``.
+#: The owner helpers: three of ``routes/email/core.py``, and the one owned
+#: attachment fetch of ``transport/attachments.py`` (WS-17 EM-T11), which the
+#: download route and the text route call. That helper carries its own SQL
+#: owner predicate, and ``test_the_attachment_fetch_proves_ownership_itself``
+#: checks it, because this fence does not read the helpers that it trusts.
+#: WS-65 SM-2 adds the builders of ``routes/email/mailbox_access.py``, the one
+#: mailbox access seam. Each returns the owner predicate (with the flag off,
+#: the text ``user_id = :uid``), and ``test_email_owner_predicate_seam.py``
+#: and ``test_email_shared_mailbox_r8.py`` check it.
 OWNER_HELPERS = frozenset({
     "_account_scope", "_assert_account_owner", "provider_session",
+    "_fetch_owned_attachment",
+    "mailbox_predicate", "mailbox_ids_sql", "private_predicate",
+    "assert_mailbox_access", "may_access", "_owned_accounts_sql",
 })
 #: A SQL owner predicate on ``user_id``: ``user_id = :uid``, ``ea.user_id =
 #: :user_id``, ``LOWER(user_id) = LOWER(:uid)``.
@@ -55,23 +67,78 @@ _OWNER_PREDICATE = re.compile(
 
 #: Each handler in ``routes/email`` with no owner proof in its own body, and
 #: why that is safe. The first 13 entries are the measurement of 2026-10-02.
-#: EM-T3d added the fourteenth. A new entry needs a reason that a reviewer can
-#: check against the code.
+#: EM-T3d added the fourteenth, and EM-G7 added ``oauth_providers``. A new
+#: entry needs a reason that a reviewer can check against the code.
 OWNER_SCOPE_EXEMPT: dict[str, str] = {
-    "ai_chat": (
-        "Delegates to _build_chat_context, which keeps account_id only when "
-        "email_accounts WHERE user_id = :uid lists it, else the one mailbox "
-        "of the member, else None. _account_models reads that resolved id. "
-        "R8: test_email_chat_context_owner.py."
+    "resolve_metorite_files_route": (
+        "H-392 (owner, 2026-10-24). Reads no email table and no mailbox. It "
+        "resolves Metorite files through their own stores, as the member: an "
+        "Artifacts file through _member_agent_workspace and _safe_resolve, a "
+        "Knowledge page through load_page and visible_pages_clause, a task "
+        "attachment through visible_task_attachment (test_email_metorite_files.py)."
     ),
-    "quick_action": (
-        "Reads no table. It calls the email-assistant agent tools as the "
-        "member (_set_memory_user_id), and each tool reaches a gateway route "
-        "that makes its own owner check."
+    "held_card": (
+        "§21. Dispatches by kind. DRAFT_ROW_SQL and FORWARD_MAIL_SQL join "
+        "ea.user_id = :uid, _stored_target and _new_card call "
+        "_assert_account_owner, and OWNED_FILES_SQL and MAIL_FILES_SQL join "
+        "acc.user_id = :uid (R8: test_held_send_files_r8.py)."
+    ),
+    "held_card_act": (
+        "§21. Takes the caller's own answer and card record (take_record "
+        "checks the owner of the record). Each act then calls a route that "
+        "proves the owner again: send_draft_endpoint, schedule_draft, "
+        "unsubscribe_sender and upsert_newsletter call _assert_account_owner, "
+        "forward_email joins user_id, and a file comes through "
+        "_fetch_owned_attachment."
+    ),
+    "revise_new_mail_card": (
+        "§18.11. Reads no email table and no mailbox. It peeks and then spends "
+        "the caller's own card record of one thread (peek_record and "
+        "take_record check the owner of the record), and its own snapshot and "
+        "link in tenant Redis. It sends and saves nothing "
+        "(test_email_redraft_snapshot.py)."
     ),
     "cleanup_status": (
         "Reads the in-process _SWEEP_JOBS registry, and answers idle unless "
         "the job's owner is the caller. No table read."
+    ),
+    "reply_card": (
+        "A thin wrapper. _load_mail reads the mail with REPLY_ROW_SQL, whose "
+        "join holds ea.user_id = :uid. That read is the proof when the chat "
+        "passes an agreed draft and no drafter runs. Else draft_reply_smart "
+        "also calls _assert_account_owner (EM-CR)."
+    ),
+    "list_scheduled": (
+        "Send later (H-375). Each read names owner_email = the session's own "
+        "email, and only schedule_draft writes a row, after "
+        "_assert_account_owner. A row of another member is never read."
+    ),
+    "cancel_scheduled": (
+        "Send later (H-375). The row is read FOR UPDATE with owner_email = the "
+        "session's own email, so a row of another member is a 404."
+    ),
+    "reply_recipients_route": (
+        "A thin wrapper. reply_recipients calls _load_mail, which reads the "
+        "mail with REPLY_ROW_SQL, whose join holds ea.user_id = :uid. A mail "
+        "of another member is a 404. It writes nothing."
+    ),
+    "reply_card_bcc": (
+        "A thin wrapper (§21.15). It reads the record of the card only when "
+        "its owner is the caller, and _load_mail reads the mail with "
+        "REPLY_ROW_SQL, whose join holds ea.user_id = :uid. It writes the "
+        "caller's own card record and sends nothing."
+    ),
+    "reply_card_act": (
+        "A thin wrapper. _load_mail reads the mail with REPLY_ROW_SQL, whose "
+        "join holds ea.user_id = :uid, and _save_draft opens provider_session "
+        "for the caller (EM-CR)."
+    ),
+    "reply_card_draft_state": (
+        "A thin wrapper (task 1526, 2026-11-03). draft_in_drafts reads the one "
+        "draft row with _DRAFT_STATE_SQL, whose join holds mailbox_predicate("
+        "'ea', level='read') for the session's own email. A draft of another "
+        "member reads as not in Drafts. It writes nothing and calls no "
+        "provider (R8: test_reply_card_left_drafts_r8.py)."
     ),
     "compose_assist": (
         "A thin wrapper. _compose_assist_run calls _assert_account_owner "
@@ -98,8 +165,14 @@ OWNER_SCOPE_EXEMPT: dict[str, str] = {
         "own member and organization, and reads no mailbox."
     ),
     "oauth_app_info": (
-        "Returns the client ID and redirect URI of the Microsoft app, never "
-        "the secret. It reads no mailbox."
+        "Returns the client ID and redirect URI of the Microsoft or the Gmail "
+        "app (EM-G7 item 9), never the secret. It reads no mailbox."
+    ),
+    "oauth_providers": (
+        "EM-G7 item 8, D-EM-35. The capability read: one boolean per mail "
+        "provider, true when its app is configured (and, for Gmail, when "
+        "EMAIL_GMAIL_CONNECT is on). No client ID, no secret, no URL, and it "
+        "reads no mailbox and no table. Fence: test_email_gmail_connect.py."
     ),
     "oauth_callback": (
         "Writes the caller's OWN mailbox row. It checks that the session's "
@@ -120,6 +193,30 @@ OWNER_SCOPE_EXEMPT: dict[str, str] = {
         "seven integer counts: no address, no member and no account id. "
         "R8: test_email_org_connection_counts.py."
     ),
+    "retire_signature_image": (
+        "WS-17 SG-1. A signature image belongs to the org, not to a mailbox. "
+        "The retire binds 'created_by = :me OR :admin' into its UPDATE, with "
+        "the session member and admin:settings:manage, and a miss is 404. It "
+        "sets retired_at only (test_email_signature_images.py)."
+    ),
+    "signature_image_file": (
+        "WS-17 SG-1, D-EM-68. The public image of a sent signature, with no "
+        "member. It reads one email_signature_images row by its 256-bit "
+        "token under tenant_session(org) and RLS, and reads no mailbox "
+        "(test_email_signature_images_r8.py)."
+    ),
+    "signature_image_head": (
+        "WS-17 SG-1 fix round 1. The HEAD of signature_image_file: the same "
+        "read through _public_image, the same headers, and no body "
+        "(test_email_signature_images_r8.py)."
+    ),
+    "preview_signature": (
+        "WS-17 SG-2, D-EM-65. Reads no email table and no mailbox, and writes "
+        "nothing. It renders the layout and the fields of the request body "
+        "with signature_render.render, and answers 404 while "
+        "EMAIL_SIGNATURE_TEMPLATES_ORGS does not hold the org of the session "
+        "(test_email_signature_resolver.py)."
+    ),
 }
 
 # ── List 2: the modules outside routes/email that read an email child table ─
@@ -128,6 +225,21 @@ OWNER_SCOPE_EXEMPT: dict[str, str] = {
 #: and why its read is scoped. A key that ends in ``/`` is a package. Paths
 #: are relative to the repository root.
 OUTSIDE_EMAIL_READERS: dict[str, str] = {
+    "apps/services/gateway/gateway/kb_entities/graph.py": (
+        "The WS-KG graph sweep (KG-5) runs as the graph.sweep job inside "
+        "tenant_session(org) with FORCE RLS, behind GRAPH_SWEEP_ORGS. It reads "
+        "email senders and recipients only to write kb_links rows of ids and "
+        "a relation, and it has no viewer: it builds no name, snippet or "
+        "output. The neighbour read of KG-6 never opens an email through this "
+        "module. It opens the mail through the email app, with the account "
+        "and folder scope of Email search. Fences: test_kg_resolve_r8.py and "
+        "test_kg_links_writer.py."
+    ),
+    "apps/services/gateway/gateway/routes/admin/members.py": (
+        "An admin removes or purges a member (H-375). It cancels or deletes "
+        "only the scheduled sends whose owner_email is that member, inside "
+        "the admin's own tenant session, after the admin permission check."
+    ),
     "apps/services/gateway/gateway/routes/crm/activities.py": (
         "The CRM timeline reads email through _email_account_scope, a copy "
         "of _account_scope bound to the caller (WS-26d-email). Mutation "
@@ -146,15 +258,11 @@ OUTSIDE_EMAIL_READERS: dict[str, str] = {
         "The task-close hop. _closer_owns_mailbox checks that the member who "
         "closes the task owns the mailbox before any write (EM-T2c item 8)."
     ),
-    "apps/services/gateway/gateway/routes/notes/dispatch.py": (
-        "Reads the signature of the account that _default_email_account "
-        "selected with user_id = the meeting owner, after "
-        "cross_owner_refusal. Not in the spec list of 2026-10-02."
-    ),
     "apps/services/email_ingestion/email_ingestion/": (
         "The sync engine. It reads and writes the mailbox it syncs, by "
-        "account id, with no member request. A member never reaches it with "
-        "an id of their choice."
+        "account id, with no member request. Since EM-T6c one route passes a "
+        "member's mailbox id into storage.py: transport/storage.py, after its "
+        "own owner check (user_id = :uid, or _assert_account_owner)."
     ),
 }
 
@@ -345,6 +453,28 @@ class TestEveryEmailHandlerProvesOwnership:
 
     def test_every_exemption_has_a_reason(self):
         assert not reasonless(OWNER_SCOPE_EXEMPT)
+
+    def test_the_attachment_fetch_proves_ownership_itself(self):
+        """EM-T11. The fence trusts ``_fetch_owned_attachment`` by name, so
+        that helper must carry the SQL owner predicate in its own body. The
+        download route and the text route lean on it, and neither carries a
+        proof of its own."""
+        path = _EMAIL / "transport" / "attachments.py"
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+        [helper] = [fn for fn in ast.walk(tree)
+                    if isinstance(fn, ast.AsyncFunctionDef)
+                    and fn.name == "_fetch_owned_attachment"]
+        # Since WS-65 SM-2 the predicate comes from the one seam, so the
+        # body calls ``mailbox_predicate`` and holds no ``user_id`` literal.
+        assert (any(_OWNER_PREDICATE.search(s) for s in _strings(helper))
+                or "mailbox_predicate" in _called_names(helper)), (
+            "_fetch_owned_attachment lost its owner predicate, and two "
+            "routes trust it as an owner proof"
+        )
+        routes = {name: proof for name, proof in handlers_of(
+            path.read_text(encoding="utf-8-sig"))}
+        assert routes.get("download_attachment") is True
+        assert routes.get("attachment_text") is True
 
 
 class TestTheHandlerScanCanFail:

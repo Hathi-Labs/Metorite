@@ -10,6 +10,11 @@ import React from "react";
  *
  * Hover (desktop) or tap (mobile) reveals a detail popup with used/total tokens
  * and percentage.  Click away or mouse-out dismisses it.
+ *
+ * ⚠️ It is NOT run progress (owner report, 2026-10-19: a "19%" ring under a
+ * run that looked idle). It says how full the model's context window is, and
+ * its name says so to a screen reader and on hover. It never pulses with a
+ * run: the run status row (`RunStatusRow.tsx`) is the only run indicator.
  */
 export default function ContextRing({
   pct,
@@ -18,7 +23,6 @@ export default function ContextRing({
   compacting,
   onCompact,
   modelId,
-  isLoading,
 }: {
   pct: number;
   usedTokens: number;
@@ -26,8 +30,6 @@ export default function ContextRing({
   compacting: boolean;
   onCompact?: () => void;
   modelId?: string;
-  /** When true, show an animated spinner instead of the static ring. */
-  isLoading?: boolean;
 }) {
   const r = 9;
   const circ = 2 * Math.PI * r;
@@ -43,6 +45,8 @@ export default function ContextRing({
         ? "var(--warning)"
         : "var(--primary)";
   const canCompact = pct >= 60 && onCompact && !compacting;
+  // The ring's name: what it measures, so nobody reads it as run progress.
+  const ringName = `Context window ${pct}% full: ${usedTokens.toLocaleString()} of ${totalTokens.toLocaleString()} tokens used`;
 
   // ── Popup state ──────────────────────────────────────────────────────
   const [showPopup, setShowPopup] = React.useState(false);
@@ -68,11 +72,11 @@ export default function ContextRing({
     <div
       className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50
         rounded-lg border border-border bg-popover px-3 py-2.5 shadow-xl
-        text-xs whitespace-nowrap
+        text-xs whitespace-nowrap glass:rounded-[14px] glass:border-transparent glass:glass-menu glass:text-caption
         animate-in fade-in slide-in-from-bottom-1 duration-150"
     >
       {/* Arrow */}
-      <div className="absolute top-full left-1/2 -translate-x-1/2
+      <div className="absolute top-full left-1/2 -translate-x-1/2 glass:hidden
         w-0 h-0 border-l-4 border-r-4 border-t-4
         border-l-transparent border-r-transparent border-t-border" />
 
@@ -80,7 +84,7 @@ export default function ContextRing({
         <span className={`font-semibold ${
           pct >= 80 ? "text-destructive" : pct >= 60 ? "text-warning" : "text-foreground"
         }`}>
-          {pct}% full
+          Context window {pct}% full
         </span>
         {modelId && (
           <span className="text-[10px] text-muted-foreground truncate max-w-[120px]">
@@ -137,8 +141,8 @@ export default function ContextRing({
   // PRIMARY label is the percentage (so the user reads "how full") — the raw
   // token fraction lives in the hover popup.
   const ring = (
-    <span className="shrink-0 flex items-center gap-1.5">
-      <svg width="18" height="18" viewBox="0 0 24 24" className="shrink-0">
+    <span className="shrink-0 flex items-center gap-1.5" role="img" aria-label={ringName} data-context-ring>
+      <svg width="18" height="18" viewBox="0 0 24 24" className="shrink-0" aria-hidden="true">
         {/* Background track */}
         <circle cx="12" cy="12" r={r} fill="none" strokeWidth="3"
           style={{ stroke: "var(--border)" } as React.CSSProperties} />
@@ -192,7 +196,8 @@ export default function ContextRing({
         <button
           type="button"
           onClick={onCompact}
-          className={`shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded-md hover:bg-warning/10 tech-transition ${isLoading ? "animate-pulse" : ""}`}>
+          title={`${ringName}. Compact the conversation`}
+          className="shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded-md hover:bg-warning/10 tech-transition">
           {ring}
           <span className="hidden sm:inline text-[9px] text-warning font-medium">/compact</span>
         </button>
@@ -200,11 +205,11 @@ export default function ContextRing({
     );
   }
 
-  // ── Normal ring — pulses subtly while agent is streaming ────────────
+  // ── Normal ring — still, whatever the run does ──────────────────────
   return (
     <span ref={containerRef} className="relative" {...hoverProps}>
       {popup}
-      <span className={`shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded-md cursor-default ${isLoading ? "animate-pulse" : ""}`}>
+      <span title={ringName} className="shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded-md cursor-default">
         {ring}
       </span>
     </span>

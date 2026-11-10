@@ -3,8 +3,9 @@ the right endpoint per their mode/kind arg, and the old behaviours must still be
 reachable (so the consolidation is behaviour-preserving, just fewer tools).
 
 Also asserts the registered tool surface shrank and no longer exposes the merged
-names, while the quick-action helper functions (search_emails / find_urgent)
-remain importable for the gateway's /ai/quick-action endpoint.
+names, while the old helper functions (search_emails / find_urgent /
+suggest_unsubscribes) stay importable. The gateway route that called them is
+gone (WS-17 EM-G11f3). The agent still calls suggest_unsubscribes.
 """
 from __future__ import annotations
 
@@ -30,6 +31,16 @@ def _load():
 agents = _load()
 
 
+@pytest.fixture(autouse=True)
+def _open_run() -> None:
+    """An open run, as the executor binds for each chat turn. With no run
+    context, a rule tool holds its outward part, because H-236 fails closed.
+    The held run has its own fence: ``test_no_egress_tool_audit.py``."""
+    from acb_skills.write_artifact import bind_artifact_context
+
+    bind_artifact_context(no_egress=False)
+
+
 @pytest.fixture()
 def calls(monkeypatch):
     """Record every gateway call the tool makes, returning canned data."""
@@ -37,6 +48,13 @@ def calls(monkeypatch):
 
     async def fake_get(path, params=None):
         rec["get"].append((path, params or {}))
+        # EM-G11c1 fix round 1: a card reads the row it names first.
+        if path == "/email/accounts":
+            return [{"id": "acc", "email_address": "me@x.com",
+                     "provider": "gmail"}]
+        if path == "/email/rules/history":
+            return {"history": [{"id": "e1", "rule_name": "Bank",
+                                 "subject": "Hi", "actions": ["ARCHIVE"]}]}
         if path == "/email/rules":
             return {"rules": [{"id": "r1", "name": "Bank", "enabled": True,
                                "actions": []}]}
@@ -91,6 +109,16 @@ def calls(monkeypatch):
     monkeypatch.setattr(agents, "_post", fake_post)
     monkeypatch.setattr(agents, "_patch", fake_patch)
     monkeypatch.setattr(agents, "_delete", fake_delete)
+
+    # EM-G11c1: each write tool asks a card first. These tests check the
+    # dispatch, so the member says yes, in a live chat. A test that checks a
+    # "no" patches the card again.
+    async def yes(**kw):
+        return True
+
+    monkeypatch.setattr("acb_skills.ask_tools.request_confirmation", yes)
+    monkeypatch.setattr("acb_skills.ask_tools.confirmation_channel_open",
+                        lambda: True)
     return rec
 
 
@@ -100,8 +128,25 @@ def test_surface_shrank_and_merged_names_gone() -> None:
     tools = agents._register_agent_tools()
     # 41 after the consolidation pass, +1 for auto_categorize_inbox (the
     # uncategorized-inbox sweep — categorize_senders only re-projects existing
-    # rule labels and cannot categorize mail the rules never reached).
-    assert len(tools) == 42
+    # rule labels and cannot categorize mail the rules never reached), +1 for
+    # read_email_attachment (WS-17 EM-T11, the text of a file of a mail),
+    # +1 for query_insights (WS-17 EM-T14c, the facts of Insights), +1 for
+    # forward_email (2026-10-09, a mail and its files to new people).
+    # 46 since ``compose_reply`` (EM-CR, 2026-10-20), the reply card. 50
+    # since the chat assistant tools (owner, 2026-10-20): edit_draft,
+    # snooze_email, find_contact and bulk_manage_inbox. Each has a route of
+    # the Email app that the chat could not reach, and none merges into an
+    # existing tool without a mode switch the model gets wrong.
+    # 53 since send later (H-375): schedule_send, list_scheduled_sends and
+    # cancel_scheduled_send. A schedule is its own act with its own card.
+    # Chat parity wave 1 (owner, 2026-10-23, §22) adds copy_rules (a copy
+    # between two mailboxes is its own act with its own card) and
+    # rule_guidance (the classifier guidance and the policies), and
+    # voice_profile (a store that feeds drafts, withheld in a held run), and
+    # update_account (the name, colour, pool, default and disconnect).
+    # 58 since apply_settings_to_mailboxes (multi-inbox chat wave): one card
+    # for one settings change in several mailboxes.
+    assert len(tools) == 58
     for gone in ("search_emails", "get_important_emails", "find_urgent",
                  "find_needs_reply", "get_full_body_email", "update_rule_state",
                  "approve_execution", "reject_execution", "undo_execution",
@@ -118,11 +163,12 @@ def test_surface_shrank_and_merged_names_gone() -> None:
                  "apply_labels", "import_artifact"):
         assert gone not in tools
     for new in ("find_priority", "resolve_execution", "digest", "save_knowledge",
-                "list_patterns", "forget_pattern", "set_sender_status", "run_rules"):
+                "list_patterns", "forget_pattern", "set_sender_status", "run_rules",
+                "read_email_attachment", "query_insights"):
         assert new in tools
     # Quick-action helpers stay importable even though they're unregistered.
     assert callable(agents.search_emails) and callable(agents.find_urgent)
-    assert callable(agents.suggest_unsubscribes)  # /ai/quick-action=unsubscribe
+    assert callable(agents.suggest_unsubscribes)  # the agent calls it
 
 
 # ── run_rules(scope) + install_default_rules(reset) + manage_inbox(move) ──────
@@ -142,7 +188,8 @@ async def test_install_default_rules_reset(calls) -> None:
 
 
 async def test_manage_inbox_move_uses_patch(calls) -> None:
-    await agents.manage_inbox("archive", ["m1"], account_id="acc")
+    # No account_id: each message acts in its own mailbox (EM-T8e-2).
+    await agents.manage_inbox("archive", ["m1"])
     assert calls["post"][-1][0] == "/email/messages/bulk"
     out = await agents.manage_inbox("move", ["m1", "m2"], folder="Archive")
     # move goes through per-message PATCH, not the bulk endpoint.
@@ -308,9 +355,12 @@ async def test_sync_purge_is_gated_and_fails_closed(calls, monkeypatch) -> None:
 # ── save_knowledge ───────────────────────────────────────────────────────────
 
 async def test_save_knowledge_add_vs_update(calls) -> None:
-    await agents.save_knowledge("acc", "T", "C")  # add → POST
+    # title and content are keyword-only since EM-T8e-2 made account_id
+    # optional, so the tool schema still marks both as required.
+    await agents.save_knowledge("acc", title="T", content="C")  # add → POST
     assert calls["post"][-1][0] == "/email/knowledge"
-    await agents.save_knowledge("acc", "T2", "C2", knowledge_id="k1")  # edit → PATCH
+    await agents.save_knowledge(
+        "acc", title="T2", content="C2", knowledge_id="k1")  # edit → PATCH
     assert calls["patch"][-1][0] == "/email/knowledge/k1"
 
 

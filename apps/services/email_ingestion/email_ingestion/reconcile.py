@@ -17,10 +17,119 @@ must NOT be reconciled (absence there means "unchanged", not "deleted").
 """
 from __future__ import annotations
 
+import logging
+import math
 from datetime import datetime
 from typing import Any
 
 from sqlalchemy import text
+
+logger = logging.getLogger(__name__)
+
+#: A folder of an import trashes at most this many rows, or this share of its
+#: rows in the window, whichever is larger (EM-T6b fix round 2). More means a
+#: gap in the read, not real deletes, so the folder is skipped.
+IMPORT_RECONCILE_MIN_CAP = 50
+IMPORT_RECONCILE_SHARE = 0.02
+
+#: A folder looks up at most this many candidates at the provider in one
+#: reconcile (fix round 3). A candidate that it does not look up stays.
+IMPORT_RECONCILE_MAX_LOOKUPS = 50
+
+#: The stored rows of one folder of an import window.
+_IMPORT_WINDOW_SQL = (
+    """SELECT id, provider_message_id, internet_message_id, updated_at
+       FROM email_messages
+       WHERE account_id = :aid
+         AND LOWER(folder) = :folder
+         AND LOWER(folder) <> 'trash'
+         AND received_at >= :min_recv"""
+)
+_IMPORT_WINDOW_ROWS = text(_IMPORT_WINDOW_SQL)
+
+#: The same rows less each row in drafts (WS-17 EM-G5b item 9). Gmail gives a
+#: draft a new message id at each update (O-GM-2), so a missing draft id
+#: proves no delete. The filter is the one of ``storage.KEPT_FOLDERS_SQL``.
+#: Outlook keeps the statement above, unchanged.
+_IMPORT_WINDOW_ROWS_NO_DRAFTS = text(
+    _IMPORT_WINDOW_SQL
+    + "\n         AND LOWER(COALESCE(folder, '')) NOT IN ('drafts', 'draft')"
+)
+
+#: The guard of ``updated_at`` holds again here: a row written while the
+#: lookups ran stays.
+_TRASH_ROWS = text(
+    "UPDATE email_messages SET folder = 'trash', updated_at = now() "
+    "WHERE id = ANY(:ids) AND updated_at < :started_at"
+)
+
+
+async def import_reconcile_candidates(
+    db: Any, account_id: str,
+    snapshot: list[tuple[str, str, datetime | None]], *, started_at: datetime,
+    skip_drafts: bool = False,
+) -> list[tuple[Any, str | None, str | None]]:
+    """The stored rows that the full import of a member act did not read,
+    as ``(row id, provider_message_id, internet_message_id)``.
+
+    The caller picks the key of the confirm from the two ids (WS-17 EM-G5b
+    item 6, C1). Outlook asks by ``internet_message_id``, because Graph gives
+    a moved message a new id. Gmail asks by ``provider_message_id``, because
+    Gmail never changes the id of a message.
+
+    ``snapshot`` holds ``(id, folder, received_at)`` for each message that
+    the import wrote. Each folder is bounded to its oldest message in the
+    snapshot. A folder with no message in it is not touched, so a folder
+    skipped on 404, mail below the floor, and mail below the last page of a
+    capped folder stay.
+
+    Two guards (fix round 2). A row whose ``updated_at`` is at or after
+    ``started_at`` stays: a move, a rule action or a draft during the import
+    wrote it, and Graph gives a moved message a new id. A folder with more
+    candidates than the cap is skipped and logged as
+    ``sync.import_reconcile_skipped``. A folder gives at most
+    ``IMPORT_RECONCILE_MAX_LOOKUPS`` candidates. The caller looks each one up
+    at the provider with no session open, and then calls
+    ``trash_import_rows`` (fix round 3). It never commits.
+
+    ``skip_drafts`` leaves out each row in drafts (EM-G5b item 9, C3). Gmail
+    sets it, and Outlook reads its drafts as before."""
+    window = _IMPORT_WINDOW_ROWS_NO_DRAFTS if skip_drafts else _IMPORT_WINDOW_ROWS
+    seen = {pid for pid, _, _ in snapshot}
+    folder_min: dict[str, datetime] = {}
+    for _, folder, received in snapshot:
+        if received is None:
+            continue
+        key = (folder or "inbox").lower()
+        if key not in folder_min or received < folder_min[key]:
+            folder_min[key] = received
+
+    candidates: list[tuple[Any, str | None, str | None]] = []
+    for folder, min_recv in folder_min.items():
+        rows = (await db.execute(window, {
+            "aid": account_id, "folder": folder, "min_recv": min_recv})).fetchall()
+        gone = [r for r in rows if r.provider_message_id not in seen
+                and r.updated_at is not None and r.updated_at < started_at]
+        cap = max(IMPORT_RECONCILE_MIN_CAP,
+                  math.ceil(IMPORT_RECONCILE_SHARE * len(rows)))
+        if len(gone) > cap:
+            logger.warning(
+                "sync.import_reconcile_skipped account=%s folder=%s "
+                "candidates=%d rows=%d cap=%d",
+                account_id, folder, len(gone), len(rows), cap)
+            continue
+        candidates.extend((r.id, r.provider_message_id, r.internet_message_id)
+                          for r in gone[:IMPORT_RECONCILE_MAX_LOOKUPS])
+    return candidates
+
+
+async def trash_import_rows(db: Any, ids: list[Any], *, started_at: datetime) -> int:
+    """Move the rows *ids* to trash, each only while its ``updated_at`` is
+    before ``started_at``. Returns the rows moved. It never commits."""
+    if not ids:
+        return 0
+    result = await db.execute(_TRASH_ROWS, {"ids": ids, "started_at": started_at})
+    return int(getattr(result, "rowcount", 0) or 0)
 
 
 async def reconcile_full_snapshot(db: Any, account_id: str, sync_result: Any) -> int:

@@ -1,0 +1,1313 @@
+# Chat run continuity — an assistant run outlives the tab, the account and the org
+
+**Status: ACTIVE.** Board row **WS-51**. Written 2026-10-10 from the owner's
+ask of the same day. **Verified against code on 2026-10-10**, at `origin/main`
+`e5644259b`.
+
+| Slice | State |
+|---|---|
+| S1 — one activity feed and the nav badges | **BUILT** 2026-10-10, branch `chat-activity-badges` |
+| S2 — a durable "needs input" | **BUILT** 2026-10-10, branch `ws51-s2-needs-input`, dark behind `CHAT_DURABLE_ASKS` |
+| S3 — the top-right activity control | **BUILT** 2026-10-10, branch `ws51-s3-activity`, no flag |
+| S4 — the server saves the prompt at run start | **BUILT** 2026-10-10, branch `ws51-s4-prompt-save` |
+| S5 — unread replies, the toast, the tab title and the phone pill | **BUILT** 2026-10-10, branch `ws51-s5-attention`, no flag |
+| S6 — the activity of the other signed-in accounts | Spec only |
+| S7 — browser push for "needs your answer" and "finished" | The transport is BUILT and dark (WS-66 PN-1, 2026-10-25). The two chat events are not built (H-289). D-2 is decided: opt-in per member |
+| The run cap — 5 live runs per member (D-3) | **BUILT** 2026-10-10, branch `ws51-run-cap-and-todos`, no flag |
+| §4.9 — a message sent during a run always steers it | **BUILT** 2026-10-12, branch `composer-always-steer`, no flag |
+| §4.10 — one run status in the open chat | **BUILT** 2026-10-19, branch `chat-run-status`, no flag |
+| D-1 — a separate run worker | **DEFERRED** 2026-10-29 on evidence (§5). Not built |
+
+**This spec owns** how a member sees and resumes an assistant run that they
+are not watching. That covers the run list, the badges, the "needs input"
+state and its storage, and the activity control. `projects_ai_chat.md` §23
+keeps the chat cache namespaces. `navigation_shell.md` keeps the shell bar,
+the bell and the manifest. This spec adds one manifest field use (§4 S1) and
+no second shell part.
+
+---
+
+## 1. The owner's ask (2026-10-10)
+
+The owner's words, kept as written:
+
+- "the AI chat across all the assistants or the chat apps will continue to
+  work" …
+- … "even if the user logs off, switches to another account, and switches
+  back in"
+- multiple sessions, across the chat apps
+- "a robust mechanism … across AI chats, across organizations, across users"
+- a bubble on the nav with the count of running agent sessions
+- an alert at the top right when a session needs input
+- on the desktop and on mobile
+
+---
+
+## 2. Scope and non-goals
+
+**In scope.**
+
+1. One list of the member's live runs, read once for the whole app.
+2. A count on each app's nav entry, on the desktop sidebar and on the phone.
+3. A "needs input" state that survives a restart and an org switch.
+4. One top-right control that lists every run across apps and accounts.
+5. Signals outside an open chat: unread dots, a toast, the tab title.
+
+**Non-goals.**
+
+- A run worker that a deploy cannot stop. That is D-1, an owner decision.
+- An org cap on concurrent runs. The owner refused it (D-3, §4.8).
+- A new chat surface. Every slice reads the chats that exist.
+- Any change to who may see a run. `SESSION_VISIBLE_SQL` and the tenant
+  key `cc:<org>:liveruns` stay the only rules (#791).
+
+---
+
+## 3. The state on 2026-10-10
+
+### 3.1 Already shipped
+
+| PR | What it did |
+|---|---|
+| #780 | Chat uploads survive the run |
+| #791 | The per-org run registry `cc:<org>:liveruns`. `GET /chat/active-sessions` became tenant-safe, and each row carries `startedAt` |
+| #797, #805 | Dead-run recovery: the startup sweep, the "Metorite is updating" notice, held sends, and an interrupted reply with Continue. A late claimant stands down |
+| #795 | An edit supersedes the last message |
+
+### 3.2 Measured on `origin/main`
+
+**The run.** A run is detached from its HTTP request
+(`stream_relay.run_detached`, `apps/services/orchestrator/orchestrator/stream_relay.py:1072`).
+The run pins its identity and its org at start. An account or org switch
+reloads the page, and the run goes on. A browser can reattach within one hour,
+the TTL of the Redis stream (`STREAM_TTL_SECONDS`, same file, line 85).
+
+**A pending question.** `ask_questions`, `request_confirmation` and `ask_user`
+wait on an in-process Future (`executor._pending_user_input`,
+`apps/services/orchestrator/orchestrator/executor.py:738`), with a one-hour
+timeout. A restart loses it. `POST /agent/respond-input`
+(`apps/services/gateway/gateway/routes/agent.py:2725`) resolves the answer in
+the caller's CURRENT org. So an answer from another org fails.
+
+**The client.** `lib/chatStore.ts` is a module singleton keyed by thread id.
+Before S1, `hooks/useActiveSessions.ts` ran one 5 s poll of
+`/chat/active-sessions` in each of five surfaces. The HITL state lives in
+`AgentChat` component state (`confirmations`, `elicitation`, `userInput`).
+`lib/askPin.ts` holds `pendingAsk()`.
+
+**The nav.** Before S1, `Sidebar.tsx` `NavLink` had one `badge` slot, in a
+hard-coded `bg-warning`, and only `/agents` used it. The phone's Chats tab
+showed a count on `/chat` only. The drawer links had no badge.
+
+**The gaps.** Nothing tells a member "needs input" outside an open chat. No
+tab title, favicon or web push signals it. No list joins the chats of two
+accounts. The account switcher is the Gmail model (`lib/accountSwitch.ts`),
+and a switch reloads the page.
+
+---
+
+## 4. The slices
+
+Every slice is **AGENT-SAFE** to build, and each one ships dark where it
+changes behaviour. S2 adds a table, so R5, R6 and R8 bind it. S6 reads a
+second account's cookie, so it takes the full review loop.
+
+### S1 — one activity feed and the nav badges (BUILT 2026-10-10)
+
+**What.**
+
+1. **One poller.** `src/lib/liveRuns.ts` reads `/api/chat/active-sessions`
+   for the whole app. It polls every 5 s while the tab is visible, and every
+   30 s while it is hidden. It polls at once when the tab shows again, and it
+   stops when the last subscriber leaves. `useActiveSessions` keeps its API
+   for its five consumers and reads the shared list. It still unions the list
+   with the local `isLoading` flags.
+2. **One mapping.** A pane names its agent in the shell manifest
+   (`NavPane.agent`, `navigation_shell.md` §5.1). `src/lib/runActivity.ts`
+   reads it. My Tasks names `task-manager`, My Email names `email-assistant`,
+   Projects names `projects-assistant`, and App Workshop names `app-builder`.
+   Every other agent counts on Chat, the orchestrator too. A run whose pane
+   the member cannot see also counts on Chat. If two panes name one agent,
+   the first pane owns it. Calendar can thus take `task-manager` (§5.3 of
+   `navigation_shell.md`), and its runs stay on My Tasks. The
+   tab's own record of a session's agent names a run that the server still
+   calls `unknown`.
+3. **The desktop sidebar.** `NavLink` takes `badgeTone` and `badgeLabel`.
+   `src/components/NavBadge.tsx` draws the count, collapsed and expanded. A
+   running count is `success`. `/agents` keeps its update count in `warning`,
+   and S3 reserves `warning` for "needs you".
+4. **The phone.** Each drawer link shows its app's count. The bottom bar
+   shows the total on every page. On `/chat` the Chats tab carries it. On
+   every other page the Menu tab carries it, because the Chats tab exists on
+   `/chat` only.
+5. **Access.** The badge is `role="img"` with a spoken name, for example "2
+   assistants running". A collapsed link names its pane in `sr-only` text.
+   The pulse is `motion-safe:animate-pulse`.
+6. **The stale `isLoading`.** The reattach loop in `hooks/useAgentChat.ts`
+   was aborted on unmount, and its catch and finally wrote nothing once
+   cancelled. So `isLoading` stayed true with a dead controller, and the badge
+   counted a run that the tab no longer watched. `releaseLoading` in
+   `lib/chatStore.ts` now clears it on unmount, and on a steered (202) or
+   refused reconnect. It clears only the state of the loop that owns it. A
+   run that still runs stays counted, because the server's list reports it.
+7. **Tokens.** The run dots in `app/chat/page.tsx`, `components/AgentChat.tsx`
+   and the Tasks and Email rails use `bg-success`, not the raw palette.
+
+**Done when.**
+
+- One tab sends one request per tick, for any number of subscribers.
+- A hidden tab waits 30 s between requests.
+- Each of the five agents counts on its own pane, and every other agent
+  counts on Chat.
+- The sidebar, the drawer and the bottom bar draw the badge in `success`.
+- An unmounted reattach loop leaves `isLoading` false.
+
+**Fences (R7).**
+
+| Fence | What it holds |
+|---|---|
+| `src/lib/liveRuns.test.ts` | One fetch for N subscribers, a late subscriber starts no request, no second request in flight, the hidden interval, and a tree sweep that refuses a second poller |
+| `src/lib/runActivity.test.ts` | The agent-to-app map, the Chat fallback, the hidden-pane fold, and no two panes naming one agent |
+| `src/components/navBadge.test.ts` | The badge on the sidebar, collapsed and expanded, and on the phone nav on every page |
+| `src/lib/chatStore.test.ts` | `releaseLoading`, and its three call sites in the reattach loop |
+| `src/lib/theme/conformance.test.ts` | Three palette budgets left the baseline, and `AgentChat.tsx` fell to 12 |
+
+**Mutation record (2026-10-10).** Twelve mutants, twelve killed:
+
+- the single-poller guard and the in-flight guard
+- the hidden interval
+- the map, the fold and the "unknown" rule
+- the owner check of `releaseLoading`, and its unmount call
+- the badge tone, the motion rule and the Menu badge
+
+**Known limits.** Each item below is open, and none blocks S1.
+
+- A folded sidebar section hides its items, and with them their badges. A
+  later item puts the sum of its items on the section heading.
+- The phone drawer shows the counts of the moment it opened.
+- A member with no `chat` feature has no Chat pane. A run that folds to Chat
+  then shows only in the phone total, and the desktop shows it nowhere. So
+  for that member a run CAN be invisible on the desktop. The review of
+  2026-10-10 found this.
+- A replay that ends with no content keeps its controller
+  (`useAgentChat.ts`, the `done` case and the end of the stream). The badge
+  then counts the run until the chat unmounts. This defect is older than S1.
+
+The run list is bound to the member like the read cache. `bindIdentity` in
+`lib/dataCache.ts` empties it through `onClear`, and a generation count drops
+a poll that was in flight when the member changed.
+
+**No flag.** S1 ships with no flag, because it only reads a list that the
+server already serves, and it writes nothing.
+
+### S2 — a durable "needs input"
+
+**What.** A pending ask becomes a row, not only a Future.
+
+1. A new table, `chat_pending_ask`, holds one row per open question. A row
+   names the request id, the org, the thread, the run and the actor. It also
+   holds the kind, the question, the time it was asked, and the answer. It is
+   tenant-scoped under FORCE ROW LEVEL SECURITY (R5a). Take the migration
+   number at build time (R1).
+2. After about ten minutes with no answer, the run writes a checkpoint and
+   ends. The row stays open, in the state `parked`.
+3. An answer to a parked row starts a NEW run on the same thread. That run
+   reads the question and the answer as its first turn. This reuses the
+   `run_restarted` shape of #797, which `POST /agent/respond-input` builds
+   (`gateway/routes/agent.py`, near line 2805).
+4. `POST /agent/respond-input` finds the row by its request id. It takes the
+   org from the row, never from the request (R5e). Then it checks that the
+   caller is a member of that org, with a right to the thread.
+5. `GET /chat/active-sessions` adds `state`, `running` or `needs_input`. A
+   parked row is listed as `needs_input`, with no live run behind it.
+
+**Done when.** A question asked before a restart can be answered after it. An
+answer from another org resumes the run in the run's own org. A member of a
+second org cannot answer it. R8 binds: run the row-level security and the
+lookup against a real Postgres.
+
+**Fences.** A `tests/unit/test_pending_ask_*.py` suite under R8, and an
+entry in `tests/unit/test_tenant_coverage.py`.
+
+**As built (2026-10-10).** The flag is `CHAT_DURABLE_ASKS`, and it is OFF by
+default. OFF writes no row, parks no run, and reports every run as
+`running`.
+
+1. **The table.** Migration 237 adds `chat_pending_ask`. It is expand only
+   (R6). The key is `(organization_id, request_id)`. The states are `open`,
+   `parked`, `answered` and `closed`. A row expires after 7 days
+   (`CHAT_ASK_TTL_HOURS`). The migration carries its own FORCE policy, and
+   the generated phase files carry the table too.
+2. **The one write point.** `executor._push_sse_to_stream` carries every
+   card, so `orchestrator/pending_ask.py` writes the row there. It writes a
+   row only for a card whose Future still waits in this process.
+3. **The run settles the row.** `executor.wait_user_future` is the wait of
+   every parking site. It closes the row when the wait ends. After
+   `CHAT_ASK_PARK_SECONDS` (600) it parks the run. The row goes to `parked`,
+   a `RUN_FINISHED` with `parked: true` ends the stream, and the run's task
+   is cancelled. The drain then saves the reply so far.
+4. **A parked card stays open.** `request_confirmation` sends no
+   `confirmation_resolved` for a parked card, so the chat can show it again.
+5. **The late answer.** `POST /agent/respond-input` reads the row and moves
+   it to `answered` in one statement. Then it answers 409 `run_restarted`
+   with the question from the row. Two late answers resend once.
+6. **The chat.** `GET /chat/pending-asks` lists the cards to draw again, for
+   a member who may send in the room. `AgentChat` replays each card through
+   its own HITL handler.
+7. **The badge.** `runBadge` in `lib/runActivity.ts` is the one rule. A run
+   that waits on the member turns the badge amber (`warning`), over the
+   green count. Its spoken name is "1 assistant needs your answer".
+
+**Where the build differs from the text above.**
+
+- **Item 4, the org.** Under FORCE RLS a row is readable only after its org
+  is bound. The route reads the row under the caller's own tenant, which the
+  session binds (R5e). One identity resolves to one org
+  (`acb_auth.access.resolve_identity`), so no member of two orgs can reach
+  this route. A read across orgs needs a SECURITY DEFINER function, and this
+  slice adds none.
+- **The other account.** A tab that drew a card for account A sends `as`.
+  When the browser is now signed in to account B, the BFF route refuses
+  with 409 `answer_in_other_account`, and it calls no gateway. The chat
+  says "Switch to A to answer". After the switch, the answer resumes the
+  run in its own org.
+- **"needs_input" is the asker's.** `/chat/active-sessions` reads the rows of
+  the caller (`actor_email`). A viewer of a shared room sees the run as
+  `running`.
+
+**Fences (R7), as built.**
+
+| Fence | What it holds |
+|---|---|
+| `tests/unit/test_pending_ask_store.py` | R8 as the NOBYPASSRLS role: the migration's own policy block, FORCE, two tenants, an unbound session, a write stamped with another org, one move, expiry, the late answer, and the list |
+| `tests/unit/test_pending_ask_flow.py` | One row per waiting card, a run end that closes a card no wait settled, park and end, the open card, the late answer, the race, another org, needs_input after a restart, and the pending-asks route |
+| `tests/unit/test_tenant_coverage.py` | The table is scoped and never exempt |
+| `src/lib/runActivity.test.ts`, `src/components/navBadge.test.ts` | Amber wins over green, on the sidebar and on the phone |
+| `src/lib/liveRuns.test.ts` | The poller carries `state` |
+| `src/lib/pendingAsks.test.ts`, `src/lib/respondInput.test.ts` | The cards that come back, and the other-account refusal |
+
+**Mutation record (2026-10-10).** Eleven mutants, nine killed on the first
+run. The two that lived led to two new tests:
+
+- A policy with no WITH CHECK lived. That mutant does the same thing,
+  because Postgres uses USING as the check. The phase files also re-made the policy,
+  so the suite now runs the migration alone. FORCE removed and `USING
+  (true)` are both killed.
+- A resend that did not move the row lived. A test of two answers that race
+  now kills it.
+
+**Review of #813 (2026-10-10).** One fix round closed two P1 findings and
+three P2 findings:
+
+- **The park pops the Future.** It removes the Future from
+  `_pending_user_input` before it cancels the run. Before, ask_questions
+  path A and the B1 bridge kept an orphan Future, and a late answer got 200
+  and started nothing.
+- **No answer is lost.** The park checks the Future again after each await.
+  An answer that came in during the park moves the row to `answered`, and
+  the run goes on. `resolve_user_input` now sets the result at once on its
+  own loop, so the check sees it.
+- **Only the asked member.** `/chat/pending-asks` and a late answer read
+  only the caller's own rows (`actor_email`). A thread with no chat row
+  passes the room gate for any member of the org.
+- **A deleted chat asks nothing.** The chat delete closes its rows in the
+  same tenant transaction. `/chat/active-sessions` lists a question with no
+  live run only when its chat row exists.
+- **The question is data.** `compose_card_answer` puts the question in a
+  fenced block and breaks a fence marker, a platform tag or a forged "My
+  answer:" inside it. The member's answer stays outside the block.
+- **The chat asks only when the thread waits.** With the flag off the
+  server never says `needs_input`, so the chat sends no pending-asks
+  request.
+
+Five more mutants, five killed: the Future left in place, no check after
+the move, the actor filter removed twice, and no neutralising pass.
+
+**Known limits.**
+
+- A blocking generative UI is not drawn again from the server. The saved
+  reply keeps its event, and its answer takes the same late path.
+- A parked confirmation asks again in the new run. The new run calls the
+  tool again, so the member approves twice. Nothing approves by itself.
+- On a Windows checkout, three source-reading vitest files fail on CRLF.
+  They fail on `origin/main` too, and none of them is an S2 file.
+
+**The display rule (owner report, 2026-10-13).** After a restart, the owner
+approved a "Create 9 tasks" card. His bubble then showed the fenced envelope,
+`<<<asked-question>>>` and all. The rule is now this:
+
+1. **The model reads the envelope, and the member never does.** The 409
+   `run_restarted` carries two parts. `resumeMessage` is the envelope, and
+   `resumeDisplay` is what the card asked and what the member chose
+   (`gateway/chat_recovery.py`, `CardResend`).
+2. **The display is the `card_answer` custom event on the member's turn.**
+   This is the same seam as the `edited` marker. The chat stamps it, and both
+   saves keep it in `custom_events`: the run route's save at run start
+   (`prompt_to_save`) and the browser's save. The model reads only the
+   turn's content.
+3. **The bubble draws the answered card.** `CardAnswerContent` draws inside
+   the member's normal bubble. It shows "Approved", "Approved 7 of 9",
+   "Rejected" or "Your answer", the question, and then the approved rows by
+   name or the member's own words. A card answer offers no Edit.
+4. **An old row still draws as a card.** A row saved before this rule holds
+   only the envelope. `parseCardAnswerEnvelope` reads that exact shape,
+   anchored at both ends, for display only. Other text stays plain.
+5. **A rows card lists its rows inside the quote.** The answer names row ids
+   (`row-1`), and the next run reads only text. So the quoted block lists each
+   row by id and label. The neutralising pass covers each label. A card with no
+   rows keeps its envelope byte for byte.
+6. **A blocking generative UI stays answered.** Its run died before its tool
+   result kept the answer. The chat reads the answer from the `card_answer`
+   event instead (`genUiAnswersFromTurns`).
+
+The notice now says what has happened: "Your answer went to it as a new
+message."
+
+**Status, 2026-10-17: BUILT, branch `dismissible-notices`.** The two restart
+notices and the other-account notice are one slim line with a Dismiss
+control, and the dismissal stays after a reload (`isInfoOnlyNotice`).
+
+**Review of #942 (2026-10-13).** One fix round closed four P2 findings:
+
+- **The neutralising pass sees look-alikes.** Before its ASCII patterns, it
+  applies NFKC, removes each format character (zero width, bidi), and maps
+  each Unicode dash to `-`. A row label keeps 500 characters, the card's own
+  `ROW_LABEL_MAX`, so the next run reads the title the member approved.
+- **A display must agree with its words.** A `card_answer` display stays only
+  on an envelope that has the same question, decision, rows and words. The
+  gateway checks it on both writes (`card_answer_marker`). The chat checks it
+  again on read and draws a mismatch as plain text. A generative UI card
+  locks only from the viewer's own turns.
+- **A busy resend steers, and is not lost.** `sendMessage` now reports what
+  became of a send (`onSettled`). After #920, a resend that meets a live run
+  steers it, through the composer's own path (`sendRoute`, `steerMessage`).
+  The live run then reads the answer at once. The steer bubble carries the
+  `card_answer` display, and the gateway saves the row with both marks. The
+  notice follows the server's answer. A folded steer reads "Your answer went
+  into the current reply." A new run reads "went to it as a new
+  message". A refused steer keeps its card open and shows the reason.
+- **An answer whose card left the stream** draws as "Approved" with its row
+  count, never as the raw `APPROVE` JSON.
+
+**After #920 (2026-10-13).** The steer bubble draws the answered card inside the steer box,
+with the steer cue under it. A row with both marks draws the same after a reload.
+
+Nine more mutants, nine killed. Known limit: a resend that the run cap refuses
+keeps its card open. But the durable row is already `answered`, so a second
+answer to a parked card gets the old 409.
+
+**Fences (R7).** `src/lib/cardAnswer.test.ts`,
+`tests/unit/test_card_answer_display.py`, the R8 case in
+`tests/unit/test_chat_prompt_saved_at_start.py`, and
+`e2e/chat-card-restart.spec.ts`.
+
+### S3 — the top-right activity control
+
+> ⚠️ **Amended 2026-10-12 by D99.** With `NEXT_PUBLIC_SHELL_CHAT` on, the control leaves the
+> shell bar and sits in the chat bar at the foot of the page, and a row opens its chat in the
+> one assistant. It is the same component, and it reads the same store.
+> `navigation_shell.md` §7.1 owns the place.
+
+**What.** One control in the shell bar's right side, beside the bell. It shows
+an agent icon with the count of live runs. An amber dot, the `warning` tone,
+shows when a run needs input.
+
+The control opens one list across apps. Each row names the agent, the chat
+title and a status: "running 2 min · latest step", "needs your answer", or
+"new reply". A tap opens that chat in its app.
+
+**Done when.** The control reads the S1 store, with no second poll. It reads
+the S2 `state`. It draws on every page, desktop and phone.
+
+**Fence.** A render test of the three row states, and the S1 tree sweep.
+
+**As built (2026-10-10).** No flag. The control only reads the S1 store, and
+it writes nothing. ⚠️ It works with the shell bar flag `NEXT_PUBLIC_SHELL_BAR`
+ON or OFF (review of #815). The flag decides only WHERE the desktop draws the
+control. Nothing in S3 is dark behind it.
+
+1. **The control.** `lib/shell/ActivityControl.tsx` draws the `Bot` icon with
+   `NavBadge` and `runBadge`, the one colour rule. Green counts the running
+   runs. Amber counts the runs that need the member, and amber wins. With no
+   run, the control shows the icon alone. It is ONE component in three
+   places:
+   - with the shell bar ON, the bar's right end, after the app's tools and
+     the bell (`ShellBar.tsx`);
+   - with the shell bar OFF, the sidebar head, beside the fold control
+     (`Sidebar.tsx`), because that layout has no top bar;
+   - on the phone, the Menu drawer, in both cases (`AppShell.tsx`).
+2. **The panel.** `ActivityHost` mounts one `Modal`, and `AppShell` renders
+   it in every layout. It sits under the bar (`end`), near the top when the
+   bar is off (`top`), or as a bottom sheet on the phone (`sheet`). Escape and
+   an outside press close it, Tab stays
+   in it, and focus goes back to the control. The rows come from
+   `useActivityRows`, which reads the same two sources as the badges: the S1
+   store and the runs of this tab. Newest first. A row shows the agent, its
+   app, the chat title and a status: "Running · 2 min · Search tasks" or
+   "Needs your answer". With no run, it says "No assistants are running."
+3. **The link.** No chat link existed before S3. The shell job door
+   (`lib/shell/doJob.tsx`) is the deep-link idiom, so a row links to
+   `<app>?do=open-chat&fill.session=<thread id>`. Chat, My Tasks, Projects
+   and Email each declare `<ShellJob id={OPEN_CHAT_JOB} ungated>`. An
+   `ungated` job listens with the shell bar flag off too, because this link
+   does not come from the command bar and it saves nothing. The three apps
+   open their assistant and call `askRailSession`. Then `useAgentSessions`
+   opens the chat once its restore is done. Every other agent opens in Chat.
+   App Workshop opens in Chat too, because its chat is per app, not per id.
+   A run on a pane that the member cannot see also opens in Chat.
+4. **The step.** `/chat/active-sessions` adds `lastStep` to a running row
+   (`stream_relay.latest_step`). It reads the tail of the run's own stream,
+   one XREVRANGE with COUNT 12, and adds no key.
+   - ⚠️ **The step comes only from a tool NAME or a fixed label.** A tool
+     start gives its name in words, and an MCP name loses its server prefix.
+     A text delta gives "Writing a reply", and a thinking delta gives
+     "Thinking". The text of a progress update, a result or an argument is
+     never a step. A Copilot partial result with no tool id becomes a
+     progress update that carries raw tool output, such as lines of a `.env`
+     file (review of #815).
+   - A tool name must look like an identifier, so free text never passes.
+   - The server takes out tags, angle brackets and control characters, and it
+     caps the step at 60 characters. The browser caps it again and draws it
+     as text.
+   - **Steps only on demand.** The route reads a step only for `?steps=1`.
+     The poll sends it only while the panel is open (`wantLiveSteps`), and
+     the BFF passes on only that parameter. So the 5 s badge poll reads no
+     stream.
+5. **The phone.** The phone has no shell row. The Menu drawer shows the same
+   control beside "Search or ask anything", or beside the word "Assistants"
+   when the shell bar is off. A tap opens the same panel as a bottom sheet.
+   The Menu tab keeps its S1 badge, so a member sees the count before the
+   drawer opens.
+6. **Visibility.** The panel lists only the rows that `/chat/active-sessions`
+   returns for the member and org, plus the runs of this tab. An asked chat
+   opens only when `findSession` finds it in the member's own list.
+
+**Where the build differs from the text above.**
+
+- **"New reply" waits for S5.** The server keeps no "finished, unread" state
+  for a run. A run leaves the list when it ends. So the panel shows two row
+  states, and S5 adds the third with its unread rule.
+- **A chat that is gone.** A link to a chat that is not in the member's list
+  opens nothing. Chat says "That chat is no longer available."
+
+**Fences (R7), as built.**
+
+| Fence | What it holds |
+|---|---|
+| `src/lib/shell/activityControl.test.ts` | The quiet, green and amber states. The rows, their order and their text. The link of each agent, and the ungated job on each app that a link names. The panel is a `Modal` that hands back `onClose`. The empty state. A step drawn as text. The control in the bar, in the sidebar head and in the drawer, and the panel in every layout. Steps asked for only while the panel is open, and the BFF passes on only `steps=1` |
+| `src/lib/railAsk.test.ts` | An ask is read and never taken, it opens once in each rail, and it goes stale. `findSession` finds only the member's own chat |
+| `src/lib/liveRuns.test.ts` | The store carries the step, caps it, and publishes a new step |
+| `tests/unit/test_run_last_step.py` | The step rule, tool output that never reaches the step, the MCP prefix, the 60-character cap, plain text, one tail read, the route, a question with no step, and a badge poll that reads no stream |
+
+**Mutation record (2026-10-10).** Nine mutants, nine killed:
+
+- every row sent to Chat, and amber that does not win
+- an ask taken on read, and an ask that never goes stale
+- the step left out of the publish key
+- no cap, angle brackets kept, the whole stream read, and a step read for a
+  question
+
+The review fix round added six more mutants, six killed:
+
+- progress text back in the step, and a free-text tool name allowed
+- a step read on every poll, and a poll that always asks for steps
+- no control in the sidebar head, and the open-chat job gated on the flag
+
+**Visual review (2026-10-10).** The rig ran the control and the open panel
+with two running chats and one that needs the member. It captured dark,
+light, compact and violet accent at 1440, and the phone at 390. It also drove
+Escape, the focus return, the Tab trap, and two links. A My Tasks row opened
+the asked chat in the My Tasks rail, and a Chat row opened it in Chat.
+
+**Known limits.**
+
+- The control in the phone drawer shows the counts of the moment the drawer
+  opened, like the drawer links (S1).
+- A member with no `chat` feature cannot open a Chat link. The same gap holds
+  for the S1 badge.
+
+### S4 — the server saves the prompt at run start
+
+**What.** Today the browser saves the member's turn (`lib/sessions.ts`, a
+write-through cache). A tab that closes before the save drops the turn, and
+the run goes on without it. The gateway saves the turn when the run starts.
+The write is idempotent by message id, so the browser's save stays harmless.
+
+**Done when.** A tab closed one second after a send still shows the prompt on
+the next open. R8 binds the upsert.
+
+**Fence.** A `tests/unit/test_chat_prompt_saved_at_start.py` suite under R8.
+It closes the stream after the first event, then reads the turn back from
+Postgres.
+
+**As built (2026-10-10).** No flag. The write is idempotent by id, and the
+browser save already writes the same row.
+
+1. **The id.** The chat sends `userMessageId` and `userMessageTs` on every
+   send, not only on an edit. The BFF forwards them as `user_message_id` and
+   `user_message_ts`. With no id, the server saves nothing. That covers an
+   old bundle and an API caller.
+2. **The save point.** `/agent/run/stream` saves the turn after every
+   refusal and after the supersede, and before the agent row of the run. The
+   write goes through `_upsert_messages`, bound to the org of the session.
+   The author is the caller from the session, never the payload. A caller
+   who may not send in the room saves nothing (`prompt_to_save`). The turn
+   and the agent row go in ONE worker call (`_mint_run_row`), with one
+   `_ensure_session` and one 2 s budget. So a stalled database holds the
+   first byte for one budget, not two. A browser id that names an agent row
+   changes nothing, because the seam declines it.
+3. **The time.** The row takes the browser's own time stamp, which the
+   browser save also writes. The earlier turns carry the browser clock, so a
+   server clock could sort the turn above the reply before it.
+4. **An edit.** The supersede removes the old turn first. The new turn then
+   goes in with its "Edited" marker.
+5. **A steer.** The spec was silent. The route saves a steered turn with its
+   actor, so it shows on a reload. The save is a background task that runs
+   after the 202 is sent. The route saves nothing for a stop, or for a turn
+   that it drops.
+6. **The history.** A first turn sends no history, so the executor reads
+   the store. That read now leaves out the current turn, which the model
+   reads as `message`.
+7. **`/copilot/chat`.** No client calls it, so S4 does not change it.
+
+**Mutation record (2026-10-10).** Five mutants, five killed: no save at run
+start, a server id in place of the browser id, no author, no `can_send`
+check, and no history filter. The follow-up added three more, and the suite
+killed all three: the save split from the mint with a second budget, the steered
+save awaited before the 202, and the kind check of the seam removed.
+
+### S5 — signals outside an open chat
+
+**What.**
+
+- A dot on a chat that got a reply the member has not read.
+- A toast when a run ends while its chat is closed.
+- In a hidden tab, the title and the favicon carry the count, for example
+  "(1) Needs you · Metorite".
+- On the phone, an agent pill above the bottom nav that shows the live step.
+
+**Done when.** Each signal reads the S1 store and the S2 `state`. The toast
+uses the shell's one toast viewport.
+
+**Fence.** A `src/lib/runSignals.test.ts` vitest. It pins the title text for
+each state, the unread rule, and one toast for each finished run.
+
+**As built (2026-10-10).** No flag. Every signal reads the S1 store and this
+tab's own runs, and no signal polls. The rules are pure functions in
+`lib/runSignals.ts`. `lib/shell/RunSignals.tsx` feeds them and draws.
+
+1. **Where unread lives.** It lives in the browser, in the member's own chat
+   namespace. `chatKey("unread")` builds the key, so the scope is the email
+   and the org. A switch of account or org reads another map and deletes
+   nothing. A sign-out clears the map with the rest of that account.
+   - **Why not the server.** A server `read_at` needs a table, a FORCE RLS
+     policy and a migration (R1, R5, R6, R8). The spec asks for a dot, and the
+     server keeps no read state today.
+   - **The cost.** A reply read on one device stays unread on another.
+2. **The finish rule.** A run that leaves the live list marks its chat
+   unread. The run must have been on the server list once. A run that only
+   this tab knew can leave the tab's set while it still runs. A new member
+   empties the list, and `liveRunsGeneration` tells the tracker that this is
+   no finish.
+3. **Read.** An `AgentChat` holds its thread open (`useChatOpen`). A chat
+   that the member watches in a visible tab marks nothing. A run that ends in
+   an open chat of a hidden tab marks it, and the tab clears it when it shows.
+   A deleted or forgotten chat leaves the map. The map keeps 50 chats, and an
+   entry goes after 7 days.
+4. **The toast.** "<Agent> finished", the chat title, and "Open", for 8 s.
+   Open takes the `open-chat` link of S3. The open chat never gets a toast. A
+   run that ends while the tab is hidden gets its toast when the tab shows.
+   Two tabs that see one run end show one toast: the entry records the run's
+   start time and a `toasted` mark.
+5. **The badge.** `runBadge` takes a third count. The order is what the
+   member must do: amber (needs you), then blue (`info`, a new reply), then
+   green (running). The control, the sidebar, the drawer and the phone tabs
+   all read it. The panel adds a "New reply · 5 min ago" row. Each chat list
+   draws `components/SessionRunDot.tsx`, and a folded group on /chat shows a
+   blue dot too.
+6. **The hidden tab.** "(N) Needs you · Metorite" wins over "(N) New reply ·
+   Metorite". The favicon swaps to `public/favicon-needs.png` or
+   `public/favicon-reply.png`, which were made once. The page's own title and
+   icon come back when the tab shows.
+7. **The phone pill.** It shows the newest live run that is not an open chat,
+   its step or "Working", and "+N". A run that waits shows "Needs your
+   answer". It sits at `z-50` on the bottom nav, with the safe-area inset.
+   While it shows, `data-agent-pill` on `<html>` lifts the toasts and the
+   page's last row above it. The line moves only with motion allowed. Only the
+   pill asks for `?steps=1`, and only while it shows in a visible tab.
+
+**Fences (R7), as built.**
+
+| Fence | What it holds |
+|---|---|
+| `src/lib/runSignals.test.ts` | The unread rule, scoped by member and org. A new member, a tab-only run and a watched chat mark nothing. One toast for each run, never for the open chat, and one across two tabs. The title text for each state, the favicon swap and the restore. The pill: shows, hides, links, +N, tokens, motion and steps. The badge order, the panel row and the dot on the four chat lists |
+| `src/components/navBadge.test.ts` | The phone tab and drawer badges take the unread count |
+
+**Mutation record (2026-10-10).** Thirteen mutants, thirteen killed:
+
+- the server-seen rule, the open chat, the member reset, a tracker that does
+  not move on
+- the title order, the title restore, the favicon restore
+- the pill that shows the open chat
+- a hidden tab that toasts at once, another tab's toast ignored, an open that
+  clears nothing
+- blue under green in the badge, and a deleted chat that keeps its dot
+
+**Visual review (2026-10-10).** The rig ran /chat with one run that ended and
+one that went on, and the phone at 390 with three runs. It captured the
+toast, the chat list and the panel in dark and light at 1440, and the pill in
+dark and light at 390. In a real page, a hidden tab read "(1) New reply ·
+Metorite" with the reply favicon, and both came back when the tab showed. The
+console showed no error.
+
+**Review of #818 (2026-10-10).** One fix round closed two P1 findings and
+the P2 findings.
+
+- **An outage is not an end.** A Redis, Postgres or question read error in
+  the gateway sets `X-Runs-Partial: 1`. The BFF passes it on, and it marks
+  its own lost call the same way. The poller keeps its last list on a partial
+  answer. The mark is a header, not a 503, because every own-API 5xx raises
+  "Metorite is updating".
+- **Two misses.** A run ends only when two complete polls in a row lack it.
+  A deploy loses two polls at most (`lib/gatewayFetch.ts`).
+- **A parked question never ends.** An answer or an expiry is no reply. Its
+  identity is `ask:<thread>:<kind>`, the same in every tab.
+- **One summary toast.** Three or more runs that end in one poll show "N
+  assistants finished". Its Open shows the activity panel.
+- **Another tab.** A chat that shows in a visible tab writes a heartbeat
+  (`chatKey("open")`, 12 s). Another tab then marks nothing and shows no
+  toast.
+- **Interrupted.** A run that ends within 90 s of an outage says "<Agent>
+  was interrupted".
+- **The dock.** `AgentChat` takes `visible`. The Projects dock passes false
+  while a task hides the chat.
+- An unread entry older than 7 days does not count, before any write. A
+  finish waits until a member scope is bound.
+
+Twelve more mutants, twelve killed. One lived on the first run: the test of
+the question read used a broken Postgres, which marked the list by itself.
+The test now runs on a healthy fake.
+
+**Known limits.**
+
+- Unread does not follow the member to another device.
+- A run ends 10 s after the fact in a visible tab, and 60 s in a hidden tab.
+
+### S6 — the activity of the other signed-in accounts
+
+**What.** The S3 list adds the runs of the other accounts on this device. The
+BFF reads `active-sessions` with each signed-in slot's own cookie. A tap on
+another account's row switches account (`lib/accountSwitch.ts`), then opens
+the chat.
+
+**Done when.** A run in account B shows in account A's list, with B's name.
+No row of B reaches A's tenant cache. The full review loop runs, because this
+reads a second identity.
+
+**Fence.** A vitest on the BFF route. It proves that each slot's request
+carries that slot's cookie only, and that a row keeps its account label.
+
+### S7 — browser push (decided 2026-10-10. The transport is built, 2026-10-25. The two events are not built)
+
+**The decision.** The owner called web push "a good idea" on 2026-10-10. So
+D-2 is decided: push is opt-in, per member. Nothing is built yet.
+
+> ⚠️ **2026-10-25, D114. WS-66 builds this transport as PN-1**, because
+> reminders need it first. The design of the iOS and Android web app is in
+> `calendar_events_reminders.md` §5.9. Two items change. Item 4 grows: push
+> carries every card that Reach delivers (RE-9), and the two events below. Item 5 has one exception: a reminder push holds its title and time,
+> unless the member hides details on the lock screen. Every other push keeps
+> item 5.
+
+**What.** A push to the member's device when one of their own runs needs an
+answer, or finishes, while no tab of theirs shows it.
+
+**Done when.**
+
+1. **The keys.** We generate the VAPID key pair once, and we store it through
+   the existing secrets path (`scripts/secrets.sh`). No key goes in the tree,
+   and no customer sets up a key.
+2. **The service worker.** One service worker receives the push and shows the
+   notification. A tap opens the chat through the S3 `open-chat` link.
+3. **The opt-in.** A member turns push on with a toggle in their own
+   settings. The browser asks for permission only after an explicit click on
+   that toggle, never on page load.
+4. **The events.** Only two events send a push: "needs your answer" (S2) and
+   "finished" (S5). Only the member's own runs send one. A run in a shared
+   room pushes to its actor only.
+5. **No content.** The payload holds the agent name and a fixed title, such
+   as "Projects assistant needs your answer". It holds no message text, no
+   question and no chat title, so the push service reads no content.
+6. **The subscriptions.** Each device subscription is a row, scoped to the
+   org under FORCE ROW LEVEL SECURITY (R5). Take the migration number at
+   build time (R1). R8 binds the policy.
+7. **Sign-out.** A sign-out deletes the subscription of that device, and the
+   service worker unsubscribes.
+
+**Fence (R7).** A `tests/unit/test_push_subscriptions.py` suite under R8: the
+policy, two tenants, and the delete at sign-out. A `src/lib/push.test.ts`
+vitest: no prompt without a click, and a payload with no content field.
+
+### §4.8 — the run cap (D-3, BUILT 2026-10-10)
+
+**The decision.** The owner, 2026-10-10: "Do not limit the organization
+because an organization might have many people, but possibly we can limit 5
+agent runs concurrently per user." So a member may have at most 5 live runs.
+There is no org cap.
+
+**As built.** No flag. The setting is `CHAT_MAX_RUNS_PER_MEMBER`, default 5,
+and 0 turns the cap off. `orchestrator/run_cap.py` holds the rules.
+
+1. **Where.** `POST /agent/run/stream` asks `admit_member_run` after the steer
+   decision. A steer into the member's own live run returns 202 before the
+   check, so it never counts. The check comes before the memory read, the
+   Graphiti episode, the supersede, the prompt save (S4) and the mint.
+2. **The count.** The member's own entries in `cc:<org>:liveruns` (#791),
+   read through `acb_common.tenant_redis`. An entry counts only while
+   `run_liveness` says `live` (#797). A run that ended, a dead process's run
+   and a parked question hold no slot. The thread about to start does not
+   count, because a new run on it replaces the old one.
+3. **One email, one org.** The index is per org. One email resolves to one
+   org today, so the per-org count is the per-member count. If a member of
+   two orgs arrives, that member could run 5 in each org. The fix is then a
+   second index keyed by member.
+4. **Who is exempt.** A caller with no member address (automation, cron, a
+   service) is not capped. An automation run on a member's behalf does not
+   count either. Those paths bind no session member, so their index entry
+   has no actor, and an entry with no actor matches nobody.
+5. **The refusal.** HTTP 429 with `{"error": "too_many_runs", "limit": 5,
+   "running": [thread ids]}`. Nothing is saved, filed or minted. The chat
+   route names the code `too_many_runs` from the body, so a plain 429 stays
+   `rate_limited`.
+6. **The race.** The run registers its index entry only when its stream
+   starts. So the check and a reservation are one step, under a per-member
+   `SET NX` lock with a 3 s TTL, as `cc:recover` does in #797. The
+   reservation (`cc:<org>:runslots`) holds a slot until the run registers, or
+   for 60 s. A refusal after the check releases it.
+7. **The client.** One notice in the run-error idiom: "You have 5 assistants
+   running. Wait for one to finish or stop one, then send again." Its button
+   is "Open activity", which opens the S3 panel. The turn leaves the thread,
+   and its words go back to the composer. A 429 is not an update outage, so
+   nothing is held and nothing retries. An edit that the cap refuses keeps
+   the old turn and says why.
+8. **No browser row.** On the gateway path a new turn waits for the server's
+   answer before the chat saves it (`awaitingServer`). S4 already saves an
+   accepted turn on the server, so this costs nothing, and a refused turn
+   leaves no row. A send that an app update holds (#797) carries the same
+   mark until the server takes it (review of #821).
+9. **The composer.** The refused words go back to the composer. Text that
+   the member typed since keeps its place, and the refused words follow it
+   after a blank line (`mergeCappedText`).
+10. **The room.** The shared room's `USER_MESSAGE` event goes out after the
+    cap, so a refused send shows the other members nothing. A steer still
+    sends it.
+
+**Over-admission, and when.** The lock holds the cap exactly under a true
+race. Two cases can admit one run too many. The first is a lock wait that
+runs out, because a holder stalled past the TTL. The second is a run that
+takes more than 60 s between the check and its stream start. A Redis error
+admits the run (fail open), as `register_live_run` does.
+
+**Fences (R7).**
+
+| Fence | What it holds |
+|---|---|
+| `tests/unit/test_run_cap.py` | The 6th refused and the 5th allowed. A steer not counted. Dead and ended runs. Other members, automation and a service caller. Reservations, their lapse and their release. Six concurrent sends admit five, through a fake Redis that yields. The route: a refused run reaches no memory, no mint and no run |
+| `tests/unit/test_chat_prompt_saved_at_start.py` | R8: a refused run leaves no member's turn, no agent row and no chat row in Postgres |
+| `src/lib/runCap.test.ts` | The code and its words, the frame, the turn that leaves the thread with one notice, the words back in the composer, no hold, and the wiring |
+| `tests/unit/test_run_errors.py` | `too_many_runs` is in both vocabularies |
+
+**Mutation record (2026-10-10).** Five mutants, five killed: no lock, no
+liveness rule, no actor filter, a mint before the refusal, and no cap branch
+in the client seam.
+
+**Known limits.**
+
+- `/copilot/chat` has no client, so it is not capped. Its runs still count.
+- `POST /agent/run` and `/agent/run/async` are not capped, and their runs
+  are not in the index. The chat never sends them: `useAgentChat` sends only
+  `copilot` (to `/agent/run/stream`) or `litellm` (no agent run). The chat
+  route sends a body with `mode: "langgraph"` to `/agent/run`. No client
+  sends that mode, so only a hand-made request reaches it. The cap is a
+  fairness limit, not a security boundary, so this stays open.
+
+### §4.9 — a message sent during a run always steers it (BUILT 2026-10-12)
+
+**The owner's ask (2026-10-12).** "By default, we should always steer the
+messages, so don't even give the option for stopping and sending." The
+agent must go on with its reply, and it must use the new words as more
+context for that reply.
+
+**The rule.** A message that the member sends while a run is live steers
+that run. The client POSTs it the normal way, and the gateway folds it in
+(§QM-1, the STEER route of `orchestrator/steer.py::route_turn`). The live
+stream goes on. The client does not stop the run, does not drop the partial
+reply and does not open a second stream.
+
+**What is gone.** The send-mode menu (Send, Queue, Steer), the
+stop-and-send path and the local send queue. An old queued item in a
+browser goes into the box once, and it never sends by itself
+(`takeLeftoverQueue`).
+
+**The composer.** One box. The message takes the full width. One bar inside
+the box holds Attach, the agent's controls and ONE round control:
+
+- Stop, while a run is live and the box is empty. Esc does the same.
+- Send, as soon as the box has text. Then the status row says "Adds to the
+  current reply".
+- On a phone, the agent's controls take their own row above Attach and the
+  round control.
+
+**How a steer flows.**
+
+1. `AgentChat.submitText` asks `sendRoute`. A live run on the gateway path
+   gives `steer`.
+2. `useAgentChat.steerMessage` calls `sendSteer` (`lib/chatSteer.ts`). The
+   bubble draws at once with the `steered` mark, as "Adding to the reply".
+3. `/api/agent/chat` sends the turn to `POST /agent/run/stream`.
+   `_route_incoming_turn` gives STEER, and `_apply_turn_decision` answers
+   `202 {steered: true}` with no stream. The bubble then says "Added to the
+   reply". The saved row carries the `steered` mark.
+4. `send_steer` writes the steer to `cc:steer:` first, then sends it on the
+   control bus. The owner's applier buffers it, and the next tool result
+   carries it to the model (`decorate_tool_result`).
+
+**A steer after the last tool call.** Before 2026-10-12 such a steer was
+lost. The applier had discarded its durable copy, and the next run start
+cleared the buffer. Now three steps answer it:
+
+1. `stream_relay.push_event` calls `steer.return_unconsumed` before it writes
+   a terminal event (`RUN_FINISHED` or `RUN_ERROR`). Each unread note goes
+   back to `cc:steer:` under its own id. The run then takes no more notes,
+   and a late steer stays in the store.
+2. Once the stream ends, the chat asks once for the steer follow-up
+   (`steerFollowUp: true`, with no words).
+3. The route's gate starts no run while a run is live or when nothing is
+   stored. Otherwise the ENGAGE seam takes the stored steers, makes them the
+   run's message, and drops their copy from the history (`without_replayed`).
+
+**A Stop asks for no follow-up, from any tab or member.** `cancel_run`
+records the Stop for the thread (`cc:steer-stopped:`, through the same
+prefixed Redis client). It does this first, because the cancelled run's own
+end gives its unread steers back, maybe later and on another worker. Then:
+
+- The gate answers `202 stopped` to every follow-up, and drops the stored
+  steers.
+- The member's next real message drops them too, and it does not replay
+  them. The next run start clears the mark.
+- We DROP the stopped run's steers, and we do not keep them for a replay.
+  The member said stop after the steer. A replay would make the agent act on
+  the steer again. The words are not lost: the transcript and the saved row
+  keep them, and the next message's history carries them.
+- The client clears the owed follow-up on Stop and on a `stopped` answer. It
+  cancels a waiting retry, and it ignores a steer answer that lands after a
+  Stop (`stopEpoch`).
+
+**Review of #920.** Four rules close the gaps the review found:
+
+- Any 202 with `steered: true` owes a follow-up. That covers a plain send
+  that the gateway steered, for example into another member's run in a room.
+- A follow-up that meets `run_in_flight` asks again. The wait doubles from
+  2 s to 30 s, for 20 tries (`followUpRetryDelay`).
+- A refusal after ENGAGE (another member's run, a supersede race) gives the
+  taken steers back to the store (`steer.give_back`).
+- `without_replayed` drops only user turns after the last assistant turn. An
+  older turn with the same short words stays.
+
+**Round 2 of the review.**
+
+- The durable copy of a steer goes when a tool result carries it to the
+  model, not when the owner buffers it. A steer in the buffer then survives
+  the owner process dying, for example in a deploy restart.
+- A follow-up that gets 409 or 429 draws no card and no run-cap notice. It
+  asks again with the same wait. After the last try, the steer says "Your
+  added message waits for the next reply."
+- Edit after a steer works. A steer row is part of the turn it joined. Edit
+  offers the prompt, and `plan_supersede` removes the turn with its own
+  steer rows. The note quotes them as `added_while_running`. Another
+  member's steer still refuses the edit.
+
+**Round 3 of the review.** The edit note keeps the steps that already ran.
+The steer quotes once came before the step budget, so a few of them pushed
+the steps out, and the model could repeat a side effect. Now:
+
+- The completed steps have first claim on the budget, as before #920.
+- The added messages fit into what is left. Each is cut at 120 characters,
+  and one line counts the rest.
+- The closing instruction is always whole (`_cap_keeping`).
+- A note with no added message is byte for byte the note of `main`.
+
+Round 3 adds three mutants, and all three are killed: steer quotes placed
+before the step budget, a cap that cuts the closing instruction, and an
+added message that is not cut at 120 characters.
+
+**The fallbacks.**
+
+| The server answers | The client does |
+|---|---|
+| `202 {steered: true}` | The bubble says "Added to the reply". The run owes a follow-up |
+| `202 {aborted}` or `{dropped}` (a bare "stop") | The bubble goes, as the server saved no row |
+| A stream (the run had ended, or a dead run was closed) | It follows that stream as a normal turn, in place of the bubble |
+| A refusal (409, 429 or a network error) | The bubble goes, the words go back to the box, and a plain notice says why |
+| The direct model path (`litellm`) | It sends nothing. The words stay in the box with a notice |
+
+**Fences (R7).**
+
+| Fence | What it holds |
+|---|---|
+| `src/lib/chatSteer.test.ts` | One control by box state, no send-mode menu, a steer that never stops, enqueues or drops the reply, the acknowledgement, a refusal that keeps the words, the follow-up rule, and the queue migration |
+| `tests/unit/test_steer_routing.py` §8 | The give-back at the terminal event, the store before the event, a closed run, and one replay per steer id |
+| `tests/unit/test_steer_follow_up.py` | The route: a second message steers and starts no run, a late steer gets ONE follow-up run that reads it once, and a follow-up with nothing owed starts nothing |
+| `tests/unit/test_chat_prompt_saved_at_start.py` | R8: the steered row carries the `steered` mark in Postgres |
+| `e2e/chat-steer.spec.ts` | The browser: the stream goes on, the words show as added, the follow-up answer draws below the steer, and Stop and Esc halt the run |
+
+**Mutation record (2026-10-12).** Round 2 adds ten mutants, and all ten
+are killed:
+
+- no Stop mark, a gate that ignores the mark, and a mark that a new run never
+  clears.
+- an ENGAGE that replays a stopped run's steers.
+- a client that owes a follow-up after a Stop, and a `stopped` answer that
+  keeps the retry.
+- a drop of the durable copy at buffer time.
+- a follow-up refusal that draws a card.
+- a steer row that refuses the edit on the server, and Edit on the steer row
+  in the client.
+
+Round 1 had eleven mutants, eleven killed: the client
+stops on send, the client enqueues, the button ignores the box, no give-back
+at the terminal event, a give-back that saves nothing, no follow-up gate, a
+replay that keeps the history copy, no follow-up from the hook, a steered
+row with no mark, no give-back after a refusal, and a replay that matches an
+older turn.
+
+**Known limits.**
+
+- A follow-up needs an open chat. If the member closes the tab, the steer
+  stays in the store for 30 minutes, and the next message replays it.
+- The steer bubble sits below the reply it joins, in time order. That is
+  also the order of a reload.
+- The follow-up gate reads a stale `cc:active` of a dead owner as
+  `run_in_flight`. It does not run the dead-run recovery of
+  `_route_incoming_turn`. The steer stays stored, and the next message
+  replays it.
+
+### §4.10 — one run status in the open chat (BUILT 2026-10-19)
+
+**The owner's report (2026-10-19, production).** "I have no idea if the
+agent is working in the background or not … if an agent session is running,
+it must appropriately show in the chatbox. Sometimes I just see a thinking
+container for a fleeting moment before it disappears."
+
+**The rule.** The server is the source of truth. A run is live while
+`GET /chat/active-sessions` lists it. ONE client state holds the run of each
+chat, and every indicator reads it. No indicator decides on its own.
+
+**What caused the symptoms.** Before this slice, eight places each decided
+"a run is active". The table names each one and how it disagreed.
+
+| Source | What it read | How it failed |
+|---|---|---|
+| The live stream in `useAgentChat` | A close of the stream | The BFF reads the gateway with a 310 s budget. The ids of the live stream are `local-*`, so the BFF cannot reattach. A run longer than 310 s lost its stream, and the chat read the clean close as "done". This is the owner's screenshot. |
+| The reattach loop in `useAgentChat` | One read of the run list at mount | It ran once. A stream that ended later never got a reattach. It kept its controller when the replay came back empty, so Stop stayed forever. |
+| The reattach cursor | `lastEventId` | It replayed only the tail into a message that it had emptied. A second return to the page lost the start of the reply. |
+| The history load in `AgentChat` | The `messages` of its first render | That render held no messages, so each load replaced the thread. A reply that had reattached went away: the "fleeting" thinking container. |
+| The recovery poll | A reply that ends in a full stop | It called a run done when its text ended in a full stop. After 45 s it marked a live run "interrupted". Now `serverHoldsRun` guards both exits: while the server listed the run in the last 15 s, the poll keeps the recovery. |
+| The top banner and the composer row | `recovering` and `runStatus` | Each read its own flag. The banner sat at the top of the thread. |
+| The Stop of the composer and the header dot | `isLoading` | Both went idle with the stream. |
+| The context ring ("19%") | `isLoading` | It pulsed with the stream, so it looked like run progress. It is the context window in use. |
+
+**The state.** `src/lib/runStatus.ts` holds the reducer.
+`SessionStreamState.run` in `lib/chatStore.ts` keeps it per thread, and
+`dispatchRun` is the only writer.
+
+| Phase | When | What the member sees |
+|---|---|---|
+| `idle` | No run | The key hint, and Send |
+| `starting` | This tab sent a turn, and no event came yet | "Starting" at once, and Stop |
+| `working` | A stream event came, or the server lists the run | The step and the time, for example "Asking Projects assistant · 1m 12s", and Stop |
+| `waiting_for_you` | A card waits, and the run waits on it | "Waiting for your answer", in the warning tone, and Stop |
+| `parked` | A card waits, and no run runs (`live: false`) | "Paused. Answer the card to go on", and Send |
+| `finishing` | A stream ended with no terminal event | "Checking the run". The chat asks the server at once |
+| `done` | A terminal event came, or the server no longer lists the run | "Done" for 5 s. The time shows only when the terminal event gave the real end |
+| `failed` | The turn failed | The error card in the thread |
+| `stopped` | The member pressed Stop | "Stopped", for 5 s |
+
+**The transitions.**
+
+1. A send gives `starting`. The first stream event gives `working`.
+2. A stream that ends with a terminal event gives `done`. A stream that
+   ends without one gives `finishing`. The close alone never gives `done`.
+3. From `finishing`, a server list that names the run gives `working` and a
+   reattach. A list that does not name it gives `done`. With no answer for
+   20 s, the run settles.
+4. A list that names a run with no stream on it asks for a reattach. Two
+   reattaches are at least 5 s apart.
+5. An open stream with no event, that the server no longer lists, gives
+   `finishing` after 15 s.
+6. A run with no stream that the server has not confirmed for 60 s
+   settles. Nothing stays "working" forever.
+7. A list from before a Stop or a terminal event is lag. The state ignores
+   it for 10 s. The state also ignores a list from before the phase began.
+8. The list can lag a new run by up to 10 s. An open stream is the
+   authority then.
+9. The state keys a run by its server identity (`runKeyOf`). That is the
+   run id of the row, else its start time. A listed run with ANOTHER
+   identity is a new run in every phase. Another tab, a phone or a room
+   member started it. The new run gets its own bubble. It keeps no
+   message, step, start or card of the old run.
+    Two keys compare only in kind: a run id with a run id, a start time
+    with a start time. While a stream of this tab reads the run, a moved
+    start time with no run id is the same run.
+10. A list that names a run while the chat rests (`idle`, `done`, `failed`
+    or `stopped`) also names a new run, unless its identity is the same.
+11. The first server row after a send binds the identity of that send's
+    run. A list from before the send binds nothing.
+12. A chat that mounts over a live phase kept in the store, with no stream
+    that reads it, goes to `finishing` ("checking") until the server
+    answers. The mount trusts no kept message, step or count. While it
+    checks, the composer offers no Stop and no "working…"
+    (`isRunActiveForUi`). The row draws nothing at once on a mount, except
+    for a send.
+13. An attach that cannot start (another attach holds the thread, or a send
+    took it) gives `attach_skipped`. The next server list asks again. An
+    aborted attach never holds the thread.
+
+**When the chat asks the server.** The chat asks on mount and on each poll
+of the shared poller. That poller runs every 5 s in a visible tab and every
+30 s in a hidden tab.
+
+The mount sends no request of its own. It waits for the next complete poll.
+An ask during a poll that started less than 250 ms ago shares that poll. An
+older poll owes one more poll, 1 s after it ends, never back to back. The chat also asks on a return to the tab, when a
+stream ends, and when a run ends or stops. While a run shows, the chat asks
+for the step of the run (`?steps=1`).
+
+**The reattach.** `attach` in `useAgentChat` is the one way into a live run.
+A reload, a return to the page, a switch back to a chat, a second tab and a
+cut stream all use it.
+
+- It never starts beside a stream that already reads the thread.
+- It replays the WHOLE run, with no cursor. The gateway resets the stream
+  for each run.
+- It replays into the message of the run. That is the message this tab saw,
+  else a reply saved mid-stream, else the saved row on the server. Only with
+  none of these does it add a placeholder, with no thinking flag.
+- A reply of an old run is never a target (`planReplay` and `rejectFor` in
+  `lib/runReplay.ts`). That is the reply of the last run that ended in this
+  chat. When the server named a run with another identity, it is every
+  reply that the chat holds. The attach first settles a reply that the old
+  run left marked as streaming.
+- It first draws the saved rows that the chat lacks and that are newer than
+  what shows. That is the prompt of a run started elsewhere.
+- After its read of the server, it checks for a send again. A send that
+  started in that time keeps its controller and its Stop.
+- The replay builds into a shadow copy. The copy replaces the message only
+  when it has caught up, so the message never goes blank.
+- It gives up the loading state on every exit.
+- A re-attach that gets no stream doubles the wait before the next one, up
+  to 60 s (`attach_failed`). So a listed run that cannot replay is never
+  asked in a loop. A stream event sets the wait back to 5 s.
+
+**The card of a run in flight.** A card that a run waits on comes once, as
+a stream event, and lives in the state of `AgentChat`. A chat that unmounts
+and mounts again (the Email pane, a rail, the dock) lost it while the run
+still waited. The stream loops now keep the card events of the run in
+flight (`noteCardEvent` in `lib/chatStore.ts`), and a chat that mounts
+draws them again.
+
+A card redraws as WAITING only when nothing settles it
+(`planCardRedraw` in `lib/cardReplay.ts`). These settle a card:
+
+- An answer or a decline that this tab sent (`noteCardAnswered`). The
+  redraw shows that answer.
+- A `confirmation_resolved` event.
+- For a question, later model output: a text delta, a text message start,
+  reasoning or `done`. The tools of one model turn run at the same time, so
+  a parallel tool or delegation streams while the question waits. Its
+  `tool_*` and `sub_agent_*` events never settle the question. When in
+  doubt, the card redraws as waiting. A stale waiting card costs one
+  harmless 4xx. A hidden one blocks the run.
+- A real list of pending asks from the server that does not hold the card
+  (`cardsToSettle`). A failed read settles nothing.
+
+A refused answer of a redrawn card never turns into a steer, so an answer
+never reaches the agent twice.
+
+Every end of a run clears the log: a `done`, a failure, a Stop, and a run
+that the server stopped listing. A new run key clears it too. A new run
+also starts with no attach backoff of the old run. If a remount then
+learns that the run ended while away, its cards are finalized. Fence:
+`e2e/email-pane-confirm-card.spec.ts`.
+
+**The status row.** `components/RunStatusRow.tsx` draws the state in two
+places. One is above the composer. The other is in the thread where the
+reply will appear, while no live bubble shows the run. A change shorter
+than 400 ms never shows or hides the row (`steadyPresence`). A send by the
+member shows at once.
+
+Every surface uses the one chat, `AgentChat`. That is `/chat`, the
+assistant dock and its full view, and the phone sheet. It is also the
+Projects, Tasks, Email and CRM rails. So every surface draws the same row.
+
+**The run id.** The live-run index writes `runId` once per run, at the
+first register in `run_detached`. The executor registers the same run
+again with `keep_run_facts`. That keeps `startedAt` and `runId`, and it
+replaces only the token, so the executor's `finally` removes its own entry.
+Before, the second register wrote a new `startedAt`, and the key of the
+run moved once early in every run. Fence:
+`tests/unit/test_active_sessions_tenant.py`.
+
+**The gateway.** Each row of `GET /chat/active-sessions` now carries `live`
+and `runId`. The `live` field says that a run runs for the thread. A `needs_input` row with
+`live: false` is parked. An older gateway sends no `live`, and the client
+reads that as live.
+
+**The context ring.** The "19%" ring is the context window in use. It is not
+run progress. Its spoken name and its title say so ("Context window 19%
+full"), and it no longer pulses with a run.
+
+**The dot of the session list.** The dot reads the list of the server and
+the open streams of this tab (`useActiveSessions`). The open chat reconciles
+with the same list, so the two agree. When a run ends or stops, the chat
+asks for the list again at once, so the dot clears with "Done".
+
+**Fences (R7).**
+
+- `src/lib/runStatus.test.ts` tests each transition and a reload into each
+  state. It also tests a silent delegation of ten minutes, a server that
+  says done during a run, and the no-flash rule.
+- `src/lib/liveRuns.test.ts` tests the poll listener and its start time. A
+  partial poll is not heard. A refresh in flight polls once more.
+- `tests/unit/test_pending_ask_flow.py` tests the `live` field.
+- `e2e/chat-run-status.spec.ts` tests a silent tool call, a cut stream, a
+  reload and a move to another app. It also tests a switch of chat, a run
+  that ends while away, the three waiting states and no flash.
+
+**Known limits.**
+
+- The BFF still cuts a live stream at 310 s. The client reattaches, so the
+  member sees no gap. A BFF reattach with `local-*` ids needs the gateway to
+  skip what it already sent. That is a separate change.
+- After a full reload, a run that ended while the page was away reads as
+  `idle`, not `done`, because no tab saw it run. The reply shows from the
+  saved row.
+
+---
+
+## 5. Deferred — owner decisions
+
+| Id | Decision | Recommendation | Gate |
+|---|---|---|---|
+| D-1 | A separate run-worker service, so a deploy never stops a run | **DEFERRED** 2026-10-29: the evidence below shows no need | Built only when the owner asks |
+| D-2 | Opt-in web push for "needs input" | **DECIDED** 2026-10-10: opt-in per member. Slice S7, not built | AGENT-SAFE |
+| D-3 | Caps on concurrent runs | **DECIDED** 2026-10-10: 5 per member, no org cap. **BUILT** (§4.8) | AGENT-SAFE |
+
+An agent must refuse to build D-1 by name until the owner asks for it.
+
+**Why the agent deferred D-1 (2026-10-29).** The owner asked an agent to settle the
+open items on 2026-10-29. The agent measured production, and it found no
+need for a second service:
+
+- **No restart cut a run.** In 8 days, production started the gateway 19
+  times. Each stop runs `gateway-drain.sh` first, and each of the 19 logged
+  `gateway-drain: 0 runs`.
+- **The release lands when nobody works.** In the 21 days to 2026-10-29,
+  members sent no chat message and started no agent run from 22:00 to
+  02:00 UTC. The daily release restarted the gateway between 23:49 and
+  01:33 UTC. `staging_and_daily_release.md` §4.1a keeps it in that window.
+- **A flag flip no longer restarts.** A `*_ORGS` or `*_MODES` flip reloads
+  in place since #1448 (`docs/flag_reload.md`).
+
+**Reopen D-1 when** a production stop logs a `gateway-drain:` line other than
+`0 runs` or `every run ended`. The other lines say that the stop went ahead
+while runs were live, or while the count did not answer. Run
+`sudo journalctl -u acb-gateway --since "7 days ago" -o cat | grep gateway-drain`
+on the box to see each stop.
+
+---
+
+## 6. File paths
+
+| Path | Role |
+|---|---|
+| `workbench/control_plane/src/lib/liveRuns.ts` | The one poller (S1) |
+| `workbench/control_plane/src/lib/runActivity.ts` | The agent-to-app map and the counts (S1), the panel rows and the chat link (S3) |
+| `workbench/control_plane/src/lib/shell/ActivityControl.tsx` | The activity control and its panel (S3) |
+| `workbench/control_plane/src/lib/railSessions.ts` | `askRailSession`, `findSession` (S3) |
+| `workbench/control_plane/src/lib/runSignals.ts` | The unread map, the finish rule, the toast, the tab signal and the pill model (S5) |
+| `workbench/control_plane/src/lib/shell/RunSignals.tsx` | `RunSignalsHost` and `AgentPill` (S5) |
+| `workbench/control_plane/src/components/SessionRunDot.tsx` | The dot on a chat row in every chat list (S5) |
+| `workbench/control_plane/src/hooks/useActiveSessions.ts` | `useActiveSessions` and `useRunActivity` |
+| `workbench/control_plane/src/components/NavBadge.tsx` | The one nav count |
+| `workbench/control_plane/src/components/Sidebar.tsx` | `NavLink`, `paneBadge` |
+| `workbench/control_plane/src/components/AppShell.tsx` | The phone drawer and bottom bar |
+| `workbench/control_plane/src/lib/chatStore.ts` | `releaseLoading`, `setSessionAgent` |
+| `workbench/control_plane/src/hooks/useAgentChat.ts` | The reattach loop |
+| `workbench/control_plane/src/lib/nav.ts` | `NavPane.agent` |
+| `apps/services/gateway/gateway/routes/chat.py` | `GET /chat/active-sessions` (S2 adds `state`) |
+| `apps/services/gateway/gateway/routes/agent.py` | `POST /agent/respond-input` (S2) |
+| `apps/services/orchestrator/orchestrator/executor.py` | `_pending_user_input` (S2) |
+| `apps/services/orchestrator/orchestrator/stream_relay.py` | `run_detached`, `list_live_runs`, `drop_run_slot` |
+| `apps/services/orchestrator/orchestrator/run_cap.py` | The run cap: the count, the lock and the reservation (D-3) |
+| `workbench/control_plane/src/lib/chatTurnFailure.ts` | The capped turn leaves the thread with one notice (D-3) |
+| `workbench/control_plane/src/lib/chatSteer.ts` | A send during a run steers it: the one control, the steer send, the follow-up rule (§4.9) |
+| `apps/services/orchestrator/orchestrator/steer.py` | `return_unconsumed`, `has_pending_steers`, `without_replayed` (§4.9) |
+| `workbench/control_plane/src/lib/runStatus.ts` | The one run state: the reducer, the step, the view and the no-flash rule (§4.10) |
+| `workbench/control_plane/src/components/RunStatusRow.tsx` | The status row and `useSteadyRunView` (§4.10) |
+
+---
+
+## 7. Verification commands
+
+From `workbench/control_plane`:
+
+```bash
+npx vitest run src/lib/liveRuns.test.ts src/lib/runActivity.test.ts \
+  src/lib/chatStore.test.ts src/components/navBadge.test.ts
+npx vitest run src/lib/theme/
+npx tsc --noEmit
+npx vitest run
+```
+
+For S2 and S4, start the scratch database first (`engineering_practice.md`
+§1.1), then run the named `tests/unit/` files with `uv run pytest`.
+
+For §4.9, from `workbench/control_plane`, then from the repo root:
+
+```bash
+npx vitest run src/lib/chatSteer.test.ts src/components/chatEditComposer.test.ts
+npx playwright test e2e/chat-steer.spec.ts --project=ci
+uv run pytest tests/unit/test_steer_routing.py tests/unit/test_steer_follow_up.py
+```
+
+For §4.10, from `workbench/control_plane`, then from the repo root:
+
+```bash
+npx vitest run src/lib/runStatus.test.ts src/lib/liveRuns.test.ts src/lib/chatStore.test.ts
+npx playwright test e2e/chat-run-status.spec.ts --project=ci
+uv run pytest tests/unit/test_pending_ask_flow.py
+```
+
+## 8. Waiting cards reach My Day (D171, 2026-11-03)
+
+**Status:** 📋 SPEC. The parts exist, and they are dark. Metorite: task 1523.
+
+**The ask.** A chat card that the member did not answer must not be lost. Today a card waits in memory for one hour (`ASK_USER_TIMEOUT`), and then it closes as TIMEOUT. Outside its chat, nothing shows it.
+
+**What exists, dark.**
+- `chat_pending_ask` (migration 237, `orchestrator/pending_ask.py`) keeps a waiting card. The flag is `CHAT_DURABLE_ASKS`, off. With it on, the run parks after 600 s, and the row stays answerable for 168 h.
+- The My Day feed has an `agent_asks` card (`feed.py:957-1015`). Two gates hide it: `CHAT_DURABLE_ASKS`, and `MY_DAY_PROVIDERS`, which is empty in production. Its title says only "{agent} asked you a question".
+- The "AI waiting on you" group of My Day (`lib/shell/AiWaitingCard.tsx`) reads chats in the state `needs_input`. That state exists only with the flag on.
+- A late answer goes to `POST /agent/respond-input`. It starts a new run, and for an approval that run asks again on a new card.
+
+**The slices.**
+
+| Slice | Task | What | Done when | Tier |
+|---|---|---|---|---|
+| WAIT-1 | 1550 | Turn on durable asks: `CHAT_DURABLE_ASKS` and the `agent_asks` provider. First on this PC, then in production for one org, then for all | An unanswered approval in a chat that the member closed shows in My Day after the park. A tap opens that chat at the card. The answer reaches the run, or a new run asks again on a new card | MEDIUM. The production flag flip is named in the PR, with the box and the evidence |
+| WAIT-2 | 1551 | The My Day card names the ask: the approval title or the question, the chat, and the age | The card shows the text that the chat card showed, fenced as data. It never shows a payload that the member cannot read | LOW |
+| WAIT-3 | — | The proactive agent (WS-AUTO) and decisions (ALN-2a) use the same group | A proposal of the proactive agent shows in "Needs you" beside the chat cards. WS-AUTO and WS-ALN build it on their own boards | — |
+
+**Fences.** WAIT-1: `tests/unit/test_pending_ask_flow.py` holds the park and the late answer. A new test shows that the feed lists a parked card for its member only. WAIT-2: a test that the card text is fenced and names the chat. Advisory until each slice builds.
+

@@ -17,6 +17,7 @@ import {
   type LensLane,
   type LensLedProject,
   type LensMoveRequest,
+  lensFetchToday,
   lensGetItem,
   lensSetStatusId,
 } from "./lens";
@@ -65,7 +66,10 @@ import {
   MOCK_PROJECTS,
   type ConnectedProvider,
 } from "./mockData";
-import { browserTimeZone, isCalendarItem, isTickled } from "./utils";
+import { isInToday } from "./today";
+import { browserTimeZone, isCalendarItem, isTickled, localDate } from "./utils";
+import { rememberMemberZone } from "@/lib/shell/memberZone";
+import { zoneToSave } from "@/lib/shell/saveZone";
 import {
   clarifyChangesSharedTask,
   clarifyQueue,
@@ -131,10 +135,41 @@ import {
   type LensAreaRemoval,
 } from "./api";
 
-/** Fire-and-forget a live-backend sync; the optimistic local update already
- *  happened, so a transient failure only means the next hydrate reconciles. */
+/** The live writes of one act, while `collectSyncs` runs. The act then
+ *  waits for them itself, and reports its own failure (UXD-1). */
+let _collected: Promise<unknown>[] | null = null;
+
+/** Run `fn` and give back the live writes that it fired through `sync`. */
+function collectSyncs(fn: () => void): Promise<unknown>[] {
+  const outer = _collected;
+  const mine: Promise<unknown>[] = [];
+  _collected = mine;
+  try {
+    fn();
+  } finally {
+    _collected = outer;
+  }
+  return mine;
+}
+
+/** The words of a live write that did not land, with no act name. */
+export const SYNC_FAILURE_TEXT =
+  "A change did not save. The list shows what the server holds.";
+
+/** Fire a live-backend write after the optimistic local update. A write that
+ *  fails is never silent (UXD-1): the list is read back, so the optimistic
+ *  change rolls back, and the failure toast says so. A caller that expects a
+ *  refusal adds its own `.catch`. */
 function sync(promise: Promise<unknown>): void {
-  void promise.catch(() => {});
+  if (_collected) {
+    _collected.push(promise);
+    void promise.catch(() => {});
+    return;
+  }
+  void promise.catch(async () => {
+    await refetchAfterFailure(useTaskStore.setState);
+    useTaskStore.getState().reportSyncFailure(SYNC_FAILURE_TEXT);
+  });
 }
 
 type Setter = (partial: Partial<TaskState> | ((s: TaskState) => Partial<TaskState>)) => void;
@@ -290,7 +325,7 @@ function removalScope(s: { personalRootId: string | null; areas: { id: string }[
 }
 
 /** Sentinel @context for tasks that have none yet — the "@no context" bucket
- *  under My Next Actions. Synced ClickUp tasks arrive here (Clarify never ran),
+ *  under My tasks. Synced ClickUp tasks arrive here (Clarify never ran),
  *  where they can be re-clarified or have their context auto-assigned. */
 export const NO_CONTEXT = "@no context";
 
@@ -374,7 +409,7 @@ export interface ItemMetaPatch {
   /** the full owner set — [] unassigns everyone; takes precedence over assignee
    *  and keeps the primary `assignee` (= assignees[0]) in step. */
   assignees?: Person[] | null;
-  /** personal "My Next Actions" membership (My Next Actions = NEXT & isMine).
+  /** personal "My tasks" membership (My tasks = NEXT & isMine).
    *  false drops a handed-off/unassigned task from my list without deleting it
    *  on ClickUp; a LOCAL overlay only — never back-synced. */
   isMine?: boolean;
@@ -595,6 +630,9 @@ interface UndoSnapshot {
    *  Undo re-patches their scheduled_start/end + flexible from the snapshot
    *  rows, so a mis-drag on the calendar is always one tap from safe. */
   scheduleRevertIds?: string[];
+  /** The live writes of this change have not all answered yet. The Undo
+   *  toast waits, so it never offers Undo for a write that failed (UXD-1). */
+  pending?: boolean;
   /** Board rows ("From Projects") whose triage this change stated. Undo puts
    *  them back into the group and CLEARS the stated disposition (`null`),
    *  because the value before it was derived, and writing the derived value
@@ -885,6 +923,12 @@ interface TaskState {
   providers: ConnectedProvider[];
 
   selectedView: ViewKey;
+  /** The member's date ("YYYY-MM-DD") from `GET /projects/my/today`, which the
+   *  Today view reads (`today.ts`). Null until `loadMyToday` answers. */
+  myToday: string | null;
+  /** The member's IANA zone from the same answer. `isInToday` reads instants in it. */
+  myTimezone: string | null;
+  loadMyToday: () => Promise<void>;
   /** when drilled into a single @context under Next Actions */
   selectedContext: string | null;
   selectedItemId: string | null;
@@ -946,6 +990,10 @@ interface TaskState {
   /** global quick-capture palette (ubiquitous capture). */
   quickCaptureOpen: boolean;
   quickCaptureMode: "single" | "sweep";
+  /** Words the box opens with, from the command bar's coordinator. */
+  quickCaptureSeed: string;
+  /** The seed came from the AI, so the box says "Filled by AI" (§6.4 rule 2). */
+  quickCaptureSeedFromAI: boolean;
   /** the focused clarify overlay (keyboard-driven inbox processing). */
   clarifyModalOpen: boolean;
   // ⚠️ `workspacesModalOpen` / `openWorkspaces` / `closeWorkspaces` were
@@ -1327,6 +1375,9 @@ interface TaskState {
    *  to it on the board's routes, so the card and the strip agree with the
    *  board. A no-op on the demo backend. */
   refreshItem: (id: string) => Promise<void>;
+  /** Re-read the whole list quietly (live backend only). WS-64 live refresh:
+   *  My work calls it when a chat write or another process changed tasks. */
+  reloadItems: () => Promise<void>;
   /**
    * D79 — put a task in ONE exact status of its own status set, and say so
    * in a receipt with Undo (`statusReceipt.ts`). `lanes` saves a second read
@@ -1399,8 +1450,8 @@ interface TaskState {
   /** A live write that did not land, after the optimistic row already moved.
    *  `SyncFailureToast` hands it to the toast seam; the store has re-fetched
    *  by the time it is set, so the list already shows the truth. */
-  syncFailure: { message: string; at: number } | null;
-  reportSyncFailure: (message: string) => void;
+  syncFailure: { message: string; at: number; retry?: () => void } | null;
+  reportSyncFailure: (message: string, retry?: () => void) => void;
   clearSyncFailure: () => void;
   /**
    * S6c — the promote door. Move a task into a company project through ONE
@@ -1417,12 +1468,16 @@ interface TaskState {
   /** Per-user task-manager settings (AI tiers + toggles). Defaults render
    *  immediately; hydrate() refreshes from the gateway. */
   settings: TaskSettings;
+  /** True once `hydrate` read the saved settings. Before that, `settings.timezone` is the
+   *  placeholder "UTC", and no client may judge the saved zone by it (RX-7). */
+  settingsLoaded: boolean;
   /** Patch settings (optimistic; persisted via PUT /tasks/settings). */
   updateSettings: (patch: Partial<TaskSettings>) => Promise<void>;
   settingsModalOpen: boolean;
   openSettings: () => void;
   closeSettings: () => void;
-  openQuickCapture: (mode: "single" | "sweep") => void;
+  /** `seed` types words into the box first, for a member to check (NS-4b). */
+  openQuickCapture: (mode: "single" | "sweep", seed?: string, fromAI?: boolean) => void;
   closeQuickCapture: () => void;
   /** Open/close the clarify overlay for an item. */
   openClarify: (id: string) => void;
@@ -1501,6 +1556,25 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   selectedLedProjectId: null,
 
   selectedView: "inbox",
+  myToday: null,
+  myTimezone: null,
+  loadMyToday: async () => {
+    try {
+      const res = await lensFetchToday();
+      if (res.today) {
+        set({ myToday: res.today, myTimezone: res.timezone || null });
+        return;
+      }
+    } catch {
+      /* fall through to the stored zone below */
+    }
+    // The gateway is out of reach: read the date in the zone the store holds,
+    // which is the zone the gateway would have used.
+    set({
+      myToday: localDate(Date.now(), get().settings.timezone),
+      myTimezone: get().settings.timezone || null,
+    });
+  },
   selectedContext: null,
   focusedItemId: null,
   openFocus: (id) => set({ focusedItemId: id, selectedItemId: id }),
@@ -1613,7 +1687,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     set((s) => {
       const counted = s.clarifiedThisSession.has(id);
       const clarifiedThisSession = new Set(s.clarifiedThisSession).add(id);
-      const nextInbox = clarifyQueue(s.items, s.fromProjectIds, clarifiedThisSession)[0];
+      const nextInbox = clarifyQueue(s.items, clarifiedThisSession)[0];
       return {
         clarifiedThisSession,
         selectedItemId: nextInbox?.id ?? null,
@@ -1732,7 +1806,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       get().reportSyncFailure(
         `Couldn't move it to ${dest.name}: ${
           err instanceof Error && err.message ? err.message : "the move was refused"
-        }. It stays in your Inbox.`,
+        }. It stays in My task inbox.`,
       );
     if (dest.kind === "area") {
       // Inside my own tree, which D62 allows. Nothing is published, so it
@@ -1784,6 +1858,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   lastCaptureIds: [],
   quickCaptureOpen: false,
   quickCaptureMode: "single",
+  quickCaptureSeed: "",
+  quickCaptureSeedFromAI: false,
   clarifyModalOpen: false,
   processedThisSession: 0,
   clarifiedThisSession: new Set(),
@@ -1913,8 +1989,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   dupNotice: null,
 
   syncFailure: null,
-  reportSyncFailure: (message) =>
-    set({ syncFailure: { message, at: Date.now() } }),
+  reportSyncFailure: (message, retry) =>
+    set({ syncFailure: { message, at: Date.now(), retry } }),
   clearSyncFailure: () => set({ syncFailure: null }),
 
   promoteItem: async (id, req) => {
@@ -2095,7 +2171,13 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     }
   },
 
-  openQuickCapture: (mode) => set({ quickCaptureOpen: true, quickCaptureMode: mode }),
+  openQuickCapture: (mode, seed = "", fromAI = false) =>
+    set({
+      quickCaptureOpen: true,
+      quickCaptureMode: mode,
+      quickCaptureSeed: seed.slice(0, 500),
+      quickCaptureSeedFromAI: fromAI && seed.trim() !== "",
+    }),
   closeQuickCapture: () => set({ quickCaptureOpen: false }),
   openClarify: (id) => set({ selectedItemId: id, clarifyModalOpen: true }),
   closeClarify: () => set({ clarifyModalOpen: false }),
@@ -2142,7 +2224,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       await refetchAfterFailure(set);
       throw err;
     }
-    // The row is now WAITING (no longer in My Next Actions). Swap in the
+    // The row is now WAITING (no longer in My tasks). Swap in the
     // authoritative server row rather than patching locally: the server is
     // what stamped `delegated_at`, and a local guess at it would be the one
     // field the Waiting-For list sorts and ages by.
@@ -2258,7 +2340,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       }
       const clarifiedThisSession = new Set(s.clarifiedThisSession).add(id);
       // advance to the OLDEST remaining item of the walk — GTD processes FIFO
-      const nextInbox = clarifyQueue(items, s.fromProjectIds, clarifiedThisSession)[0];
+      const nextInbox = clarifyQueue(items, clarifiedThisSession)[0];
       return {
         items,
         projects,
@@ -2298,13 +2380,16 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       if (weight) {
         const before = get().items.find((i) => i.id === id);
         sync(
-          apply
-            .then(() => apiPatchItem(id, weightPatch(before, weight)))
-            .then((updated) =>
+          apply.then(
+            async () => {
+              const updated = await apiPatchItem(id, weightPatch(before, weight));
               set((s) => ({
                 items: s.items.map((i) => (i.id === id ? updated : i)),
-              })),
-            ),
+              }));
+            },
+            // A refused organize: `onRefused` already said it, once (UXD-1).
+            () => undefined,
+          ),
         );
       }
       if (decision.kind === "project") {
@@ -2351,11 +2436,12 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   /** LIVE member refresh for one workspace (delegate-picker freshness). */
   skipToNextInbox: () =>
     set((s) => {
-      // The same walk Clarify advances through: captures and untriaged
-      // "From Projects" rows together, oldest first.
-      const inbox = clarifyQueue(s.items, s.fromProjectIds, s.clarifiedThisSession);
-      if (inbox.length <= 1) return s; // nothing else to move to
+      // The same walk Clarify advances through: the captures, oldest first
+      // (D170, INB-1). A row opened from My tasks is off the walk, so skip
+      // moves to the first capture.
+      const inbox = clarifyQueue(s.items, s.clarifiedThisSession);
       const idx = inbox.findIndex((i) => i.id === s.selectedItemId);
+      if (inbox.length === 0 || (idx >= 0 && inbox.length === 1)) return s; // nothing else to move to
       const next = inbox[(idx + 1) % inbox.length];
       return { selectedItemId: next.id };
     }),
@@ -2884,6 +2970,19 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   selectLedProject: (id) => {
     get().selectView("projects");
     set({ selectedLedProjectId: id });
+  },
+
+  reloadItems: async () => {
+    // A quiet re-read of the list, for a write made by another process or
+    // tab. Unlike `hydrate` it never falls back to the demo mocks, so a
+    // failed read on a wake leaves the real rows in place.
+    if (get().backend !== "live") return;
+    try {
+      const items = await fetchItems("all");
+      set({ items });
+    } catch {
+      /* keep current */
+    }
   },
 
   refreshItem: async (id) => {
@@ -3492,17 +3591,48 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     // Snapshot BEFORE applying, so undo restores the pre-change grid exactly;
     // the per-item writes then ride the normal updateItem path (optimistic +
     // server sync + authoritative-row swap).
-    set((s) => ({
-      undoSnapshot: {
-        items: s.items,
-        projects: s.projects,
-        processed: s.processedThisSession,
-        selectedItemId: s.selectedItemId,
-        label,
-        scheduleRevertIds: changes.map((c) => c.id),
-      },
-    }));
-    for (const c of changes) get().updateItem(c.id, c.patch);
+    const live = get().backend === "live";
+    const snap: UndoSnapshot = {
+      items: get().items,
+      projects: get().projects,
+      processed: get().processedThisSession,
+      selectedItemId: get().selectedItemId,
+      label,
+      scheduleRevertIds: changes.map((c) => c.id),
+      // The Undo toast waits for the server (UXD-1).
+      pending: live,
+    };
+    set({ undoSnapshot: snap });
+    const writes = collectSyncs(() => {
+      for (const c of changes) get().updateItem(c.id, c.patch);
+    });
+    if (!live) return;
+    void Promise.allSettled(writes).then(async (results) => {
+      const failed = results.some((r) => r.status === "rejected");
+      const current = get().undoSnapshot === snap;
+      if (!failed) {
+        // Confirmed: now the toast may offer Undo.
+        if (current) set({ undoSnapshot: { ...snap, pending: false } });
+        return;
+      }
+      // Refused: no Undo for an act that did not happen. The rows of this
+      // act are read back, so each block returns to the slot that the server
+      // holds. Other rows keep their state: a newer change may be in flight.
+      if (current) set({ undoSnapshot: null });
+      const ids = new Set(changes.map((c) => c.id));
+      try {
+        const truth = new Map(
+          (await fetchItems("all")).filter((i) => ids.has(i.id)).map((i) => [i.id, i]),
+        );
+        set((s) => ({ items: s.items.map((i) => truth.get(i.id) ?? i) }));
+      } catch {
+        /* the next hydrate reconciles */
+      }
+      get().reportSyncFailure(
+        `${label}: this did not save, and the calendar shows what the server holds.`,
+        () => get().applySchedule(label, changes),
+      );
+    });
   },
 
   reorderItem: (id, groupItems, toIndex, refile) => {
@@ -3837,13 +3967,19 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       void get().loadLedProjects();
       // Settings load in parallel — defaults already render, so the panes are
       // usable before they arrive.
-      const settings = await fetchTaskSettings().catch(() => get().settings);
-      set({ settings });
+      let read = true;
+      const settings = await fetchTaskSettings().catch(() => {
+        read = false;
+        return get().settings;
+      });
+      set({ settings, settingsLoaded: read });
       // F5 — the gateway reads "today" for the start-date rule in the zone
-      // stored here. Store this browser's zone when it differs, as
-      // `CalendarView` does, so the inbox and `isTickled` agree on the date.
-      const zone = browserTimeZone();
-      if (zone && zone !== settings.timezone) void get().updateSettings({ timezone: zone });
+      // stored here. RX-7: store this browser's zone only when the saved zone is
+      // unset or the "UTC" default (`zoneToSave`, the shell's one rule), so a
+      // zone the member chose in the Calendar settings is never overwritten on
+      // an open. A failed read judges nothing.
+      const zone = read ? zoneToSave(settings.timezone, browserTimeZone()) : null;
+      if (zone) void get().updateSettings({ timezone: zone });
       // ⚠️ The auto-sync-on-open fire was REMOVED 2026-08-25 (D52, WS-39 S1
       // repair round 1). It ran `syncNow()` whenever any `task_accounts` row
       // survived — which, after the retirement, is the ONLY state it could be
@@ -3868,6 +4004,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     }
   },
 
+  settingsLoaded: false,
   settings: {
     chatModel: "tier-powerful",
     clarifyModel: "tier-balanced",
@@ -3901,6 +4038,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     if (get().backend !== "live") return;
     try {
       set({ settings: await updateTaskSettings(patch) });
+      // The page's one memory of the saved zone follows (`memberZone.ts`, RX-7).
+      if (patch.timezone) rememberMemberZone(patch.timezone);
     } catch {
       /* next hydrate reconciles */
     }
@@ -3946,6 +4085,8 @@ export function itemsForView(
   view: ViewKey,
   context: string | null,
   source: "all" | "local" | "synced" = "all",
+  today: string | null = null,
+  timeZone?: string | null,
 ): MyTask[] {
   if (source === "local") items = items.filter((i) => i.source === "LOCAL");
   else if (source === "synced") items = items.filter((i) => i.source !== "LOCAL");
@@ -3955,8 +4096,11 @@ export function itemsForView(
   switch (view) {
     case "inbox":
       return items.filter((i) => i.disposition === "INBOX");
+    case "today":
+      // WS-64 OP-2 — one rule (`today.ts`). No date yet means no rows.
+      return today ? items.filter((i) => isInToday(i, today, timeZone ?? undefined)) : [];
     case "next":
-      // "My Next Actions" = only tasks assigned to ME (isMine). This excludes
+      // "My tasks" = only tasks assigned to ME (isMine). This excludes
       // unassigned "team pool" tasks (synced as NEXT but is_mine=false) and, of
       // course, anything delegated to someone else (which is WAITING anyway).
       // Co-assigned tasks (me + others) keep is_mine=true, so they stay.
@@ -4023,17 +4167,19 @@ export function itemsForView(
 export function viewCounts(
   items: MyTask[],
   source: "all" | "local" | "synced" = "all",
+  today: string | null = null,
+  timeZone?: string | null,
 ): Record<ViewKey, number> {
   if (source === "local") items = items.filter((i) => i.source === "LOCAL");
   else if (source === "synced") items = items.filter((i) => i.source !== "LOCAL");
   const c = {
-    inbox: 0, next: 0, priority: 0, waiting: 0, calendar: 0, projects: 0,
+    inbox: 0, today: 0, next: 0, priority: 0, waiting: 0, calendar: 0, projects: 0,
     someday: 0, reference: 0, done: 0, engage: 0, archive: 0,
   } as Record<ViewKey, number>;
   for (const i of items) {
     if (i.archivedAt) continue; // archived rows never count toward active views
     if (i.disposition === "INBOX" && !isTickled(i)) c.inbox++;
-    else if (i.disposition === "NEXT" && i.isMine) c.next++; // My Next Actions only
+    else if (i.disposition === "NEXT" && i.isMine) c.next++; // My tasks only
     else if (i.disposition === "WAITING") c.waiting++;
     else if (i.disposition === "SOMEDAY") c.someday++;
     else if (i.disposition === "REFERENCE") c.reference++;
@@ -4045,18 +4191,19 @@ export function viewCounts(
       c.priority++;
     if (i.disposition === "NEXT" && i.isMine) c.engage++;
     if (isCalendarItem(i)) c.calendar++;
+    if (today && isInToday(i, today, timeZone ?? undefined)) c.today++;
   }
   return c;
 }
 
 /** Count of MY NEXT items per context (for the expandable @context sub-list).
- *  Mirrors the "My Next Actions" filter — only tasks assigned to me count, so
+ *  Mirrors the "My tasks" filter — only tasks assigned to me count, so
  *  the subfolder badges match what the view actually shows. */
 export function contextCounts(items: MyTask[]): Record<string, number> {
   const out: Record<string, number> = {};
   for (const i of items) {
     if (i.disposition !== "NEXT" || !i.isMine) continue;
-    // Context-less "My Next Actions" (unprocessed synced tasks) fall into the
+    // Context-less "My tasks" (unprocessed synced tasks) fall into the
     // "@no context" bucket so they're visible and can be clarified/backfilled.
     const key = i.context || NO_CONTEXT;
     out[key] = (out[key] ?? 0) + 1;

@@ -12,6 +12,7 @@
  * as the app rewriting what was typed.
  */
 
+import type { SelectOption } from "@/components/ui/SelectButton";
 import { ACCENT_HUES, type AccentHue, statusAccent } from "@/lib/statusAccent";
 
 import type { TagRow } from "./api";
@@ -73,6 +74,17 @@ export const chipClass = (color: string | undefined): string =>
  */
 export const swatchClass = (color: string | undefined): string =>
   statusAccent({ color }).dot;
+
+/**
+ * The colour picker's options (task #417). Each option carries its hue as
+ * `swatch`, so the list draws the colour and not only its name. The tag,
+ * shared-vocabulary and task-type managers all read this one list.
+ */
+export const COLOR_SELECT_OPTIONS: readonly SelectOption[] = TAG_COLORS.map((c) => ({
+  value: c,
+  label: c,
+  swatch: c,
+}));
 
 /** `lower(name)` → the registry's display form. */
 export function registryOf(tags: TagRow[]): Map<string, string> {

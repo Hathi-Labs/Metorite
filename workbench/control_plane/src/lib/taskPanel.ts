@@ -11,7 +11,7 @@
  * - the panel was `max-w-md` (448px) in Projects and `w-[380px]` in My Tasks.
  *
  * One value each now. `components/TaskPanelHeader.tsx` draws the words, and
- * `app/projects/lib/panelMode.ts` reads the width and the expand's words and
+ * `lib/panelMode.ts` reads the width and the expand's words and
  * glyphs from here. Fence: `taskPanel.test.ts`.
  */
 

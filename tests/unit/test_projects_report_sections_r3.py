@@ -86,9 +86,13 @@ def test_outlook_is_an_opt_in_section_in_the_declared_order() -> None:
     assert "outlook" not in rep.DEFAULT_SECTIONS
     assert "outlook" not in rep.normalise_report_config({})["sections"]
     # §8 R3 declares the whole order. Each slice adds its name in its place.
+    # WS-27bn RA-3 adds `waiting` after `stuck` (§6.8 A, question 3), and
+    # RA-4 adds `agent_runs` after `waiting`, and RA-5 adds `quality` after
+    # `agent_runs`.
     declared = (
         "finished", "throughput", "outlook", "load", "capacity", "pulse",
-        "stuck", "hygiene", "conflicts", "rebalance",
+        "stuck", "waiting", "agent_runs", "quality", "hygiene", "conflicts",
+        "rebalance",
     )
     assert list(rep.SECTIONS) == [s for s in declared if s in rep.SECTIONS]
     got = rep.normalise_report_config({"sections": ["stuck", "outlook", "finished"]})
@@ -136,8 +140,9 @@ def seeded(_ladder):
     """One project with open work in each age band, a plan and a history.
 
     Open tasks sit in three of the four bands and carry due dates, so the
-    plan has a date. Seven tasks finished across the last three closed weeks,
-    so the forecast converges and has a date too. A null on both sides would
+    plan has a date. Eight tasks finished across the last four closed weeks,
+    so the forecast converges and has a date too (WS-27bn RA-6: a forecast
+    needs four weeks with a finish). A null on both sides would
     agree by accident.
     """
     from sqlalchemy import create_engine
@@ -225,8 +230,8 @@ def seeded(_ladder):
         task("a week idle", "todo", due_days=12, idle_days=10)
         task("forgotten", "todo", due_days=20, idle_days=45)
         task("forgotten too", "todo", due_days=3, idle_days=60)
-        # History: seven finished across the last three closed weeks.
-        for n, weeks in ((3, 1), (2, 2), (2, 3)):
+        # History: eight finished across the last four closed weeks.
+        for n, weeks in ((3, 1), (2, 2), (2, 3), (1, 4)):
             for i in range(n):
                 tid = task(f"done {weeks}.{i}", "done", due_days=None,
                            idle_days=weeks * 7)

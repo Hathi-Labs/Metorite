@@ -65,6 +65,25 @@ const store = new Map<CacheKey, CacheEntry<unknown>>();
 /** In-flight reads, so N callers asking at once make ONE request. */
 const inflight = new Map<CacheKey, Promise<unknown>>();
 const watchers = new Map<CacheKey, Set<() => void>>();
+/**
+ * A write counter per key, bumped by `invalidate` and `clearAll` while a read
+ * of that key is IN FLIGHT. A read compares it before and after its fetch.
+ * If it moved, a write landed during the read and the answer predates it.
+ * The read then does not store it (see `read`). It may still hand it back
+ * after `MAX_REREADS` tries, so each bump also WAKES the key's watchers, and
+ * their re-read replaces the answer once the writes stop.
+ *
+ * Never deleted, on purpose: a counter that went back to zero could make an
+ * old read's number match again. One small integer per key ever invalidated
+ * in flight is the whole cost.
+ */
+const generation = new Map<CacheKey, number>();
+const genOf = (key: CacheKey): number => generation.get(key) ?? 0;
+const bump = (key: CacheKey): void => {
+  generation.set(key, genOf(key) + 1);
+};
+/** Re-reads one read makes when writes keep landing during it. */
+const MAX_REREADS = 3;
 
 /** Injectable for the tests. Production reads the wall clock. */
 let clock: () => number = () => Date.now();
@@ -126,6 +145,36 @@ export function put<T>(key: CacheKey, data: T): void {
   notify(key);
 }
 
+/**
+ * A `put` for a value that a read of ANOTHER key carried (MD-1b,
+ * `my_day_feed.md` §14.1). My Day's feed answer carries the needs view, and
+ * the feed's fetcher stores that view under the needs key, so the bell and
+ * the sidebar read it with no second request.
+ *
+ * Call it BEFORE the request goes out. It notes the write counters of both
+ * keys and the clock. The put it returns stores the value only when:
+ *
+ *   - no write landed on the carrier key while its read was in flight (the
+ *     carrier's counter did not move), and none landed on `key` either;
+ *   - no answer newer than the request already sits under `key`.
+ *
+ * Else it stores nothing and returns false. ⚠️ The carrier must be the key
+ * whose read is in flight around the request. `invalidate` bumps a counter
+ * only for a key in flight, and a carrier read is the one in flight.
+ */
+export function guardedPut<T>(carrier: CacheKey, key: CacheKey): (data: T) => boolean {
+  const since = clock();
+  const carrierGen = genOf(carrier);
+  const keyGen = genOf(key);
+  return (data: T) => {
+    if (genOf(carrier) !== carrierGen || genOf(key) !== keyGen) return false;
+    const held = store.get(key);
+    if (held && held.storedAt > since) return false;
+    put(key, data);
+    return true;
+  };
+}
+
 function notify(key: CacheKey): void {
   const set = watchers.get(key);
   if (!set) return;
@@ -175,15 +224,45 @@ export async function read<T>(
   const running = inflight.get(key) as Promise<T> | undefined;
   if (running) return running;
 
-  const task = (async () => {
+  /**
+   * 🔴 **A WRITE THAT LANDS WHILE THIS READ IS IN FLIGHT MAKES ITS ANSWER
+   * STALE** (NS-3 review, 2026-10-10). The order that broke: a write drops
+   * the key, and its watcher starts a re-read. A second write (an Undo)
+   * lands while that re-read is in flight. The key is not in the store, so
+   * the second `invalidate` wakes nobody. The re-read then answers with the
+   * state from BEFORE the second write, `put` stores it as fresh, and the
+   * screen shows the change the member just undid.
+   *
+   * So the read notes the key's write counter before it fetches. If the
+   * counter moved, it does not store that answer. A newer read already in
+   * flight answers instead, or one that already stored, or this read asks
+   * again.
+   */
+  // The body reads its own promise, which exists only once it has started.
+  const self: { task?: Promise<T> } = {};
+  const task: Promise<T> = (self.task = (async () => {
     try {
-      const data = await fetcher();
-      put(key, data);
-      return data;
+      for (let attempt = 0; ; attempt += 1) {
+        const gen = genOf(key);
+        const data = await fetcher();
+        if (genOf(key) === gen) {
+          put(key, data);
+          return data;
+        }
+        const newer = inflight.get(key) as Promise<T> | undefined;
+        if (newer && newer !== self.task) return newer;
+        // `invalidate` deletes the entry, so an entry here now was stored
+        // AFTER the write: a newer read already answered.
+        const since = store.get(key) as CacheEntry<T> | undefined;
+        if (since) return since.data;
+        // Writes that never stop landing: answer, but store nothing stale.
+        if (attempt >= MAX_REREADS) return data;
+        inflight.set(key, self.task!);
+      }
     } finally {
-      inflight.delete(key);
+      if (inflight.get(key) === self.task) inflight.delete(key);
     }
-  })();
+  })());
   inflight.set(key, task);
   return task;
 }
@@ -209,9 +288,20 @@ export function invalidate(match: string | ((key: CacheKey) => boolean)): number
   for (const key of dropped) store.delete(key);
   // In-flight reads for a dropped key answer with data that predates the
   // write. Forget them too, so the next read starts a new request rather than
-  // joining one already carrying a stale answer.
-  for (const key of [...inflight.keys()]) if (hit(key)) inflight.delete(key);
-  for (const key of dropped) notify(key);
+  // joining one already carrying a stale answer. And mark them stale, so the
+  // forgotten read does not STORE its answer when it lands (see `read`).
+  const bumped: CacheKey[] = [];
+  for (const key of [...inflight.keys()]) {
+    if (!hit(key)) continue;
+    bump(key);
+    inflight.delete(key);
+    bumped.push(key);
+  }
+  // A bumped key may be in no store entry at all (its re-read was in
+  // flight). Wake its watchers too: a read that gave up after
+  // `MAX_REREADS` answered stale and stored nothing, and only a new read
+  // replaces that answer.
+  for (const key of new Set([...dropped, ...bumped])) notify(key);
   return dropped.length;
 }
 
@@ -225,10 +315,32 @@ export function invalidate(match: string | ((key: CacheKey) => boolean)): number
  */
 export function clearAll(): void {
   store.clear();
+  // A read in flight belongs to the member who asked. Marked stale, it stores
+  // nothing for the next one when it lands.
+  for (const key of inflight.keys()) bump(key);
   inflight.clear();
+  // Memory BESIDE the cache that belongs to the member (the email HTML
+  // prefetch state, WS-17 EM-S2) empties first, so a watcher that re-reads
+  // below meets a clean prefetcher.
+  for (const cb of [...clearWatchers]) cb();
   // Watchers deliberately survive: a mounted component still wants to hear
   // about its key. It is told now, so it re-reads as itself.
   for (const key of [...watchers.keys()]) notify(key);
+}
+
+const clearWatchers = new Set<() => void>();
+
+/**
+ * Run `cb` on each `clearAll`, so on each sign-out and each change of member
+ * too, because `bindIdentity` calls `clearAll`. A module that keeps memory of
+ * one member beside this cache uses it to forget that memory at the same
+ * moment. Returns the unsubscribe.
+ */
+export function onClear(cb: () => void): () => void {
+  clearWatchers.add(cb);
+  return () => {
+    clearWatchers.delete(cb);
+  };
 }
 
 /** Entry count. For the tests and for a debug read-out. */
@@ -238,6 +350,8 @@ export function size(): number {
 
 /** Who the cached rows belong to. `null` before anyone has signed in. */
 let boundIdentity: string | null = null;
+/** The organization the cached rows belong to, once the access read named it. */
+let boundOrg: string | null = null;
 
 /**
  * ⚠️ THE TENANCY GUARD. Bind the cache to the signed-in member.
@@ -257,16 +371,40 @@ let boundIdentity: string | null = null;
  * how the browser works, not a guarantee this code may rest on — one
  * `signOut({ redirect: false })` anywhere turns it into a leak.
  *
+ * ⚠️ THE ORGANIZATION IS PART OF THE IDENTITY (WS-53, 2026-10-19). One member
+ * can see two organizations in one tab. A cache bound to the email alone then
+ * served org A's answers in org B. In production, a CRM gate that was off for
+ * org A (a cached 404) hid the open questions of org B. So `org` binds too, and
+ * a change of org empties the cache as a change of member does.
+ *
+ * `org` is `null` or absent while the access read has not answered, or when it
+ * failed. An unknown org is no change: it neither empties the cache nor
+ * forgets the last org that was known. So a first page load does not empty
+ * the cache twice, and an outage of the access read does not either.
+ *
  * Returns whether the identity actually changed, so a caller can log it.
  */
-export function bindIdentity(id: string | null): boolean {
-  if (id === boundIdentity) return false;
-  boundIdentity = id;
-  clearAll();
-  return true;
+export function bindIdentity(id: string | null, org?: string | null): boolean {
+  const known = org || null;
+  if (id !== boundIdentity) {
+    boundIdentity = id;
+    boundOrg = known;
+    clearAll();
+    return true;
+  }
+  if (known === null || known === boundOrg) return false;
+  const changed = boundOrg !== null;
+  boundOrg = known;
+  if (changed) clearAll();
+  return changed;
 }
 
 /** Who the cache currently believes it is holding rows for. For the fence. */
 export function identity(): string | null {
   return boundIdentity;
+}
+
+/** The organization the cache believes it holds rows for. For the fence. */
+export function boundOrganization(): string | null {
+  return boundOrg;
 }

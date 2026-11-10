@@ -1,0 +1,597 @@
+"""The one rule for a write to the deployment environment.
+
+Four surfaces write ``os.environ`` and the env file of the box: the
+Integrations routes (``gateway/routes/integrations.py``), the OAuth token
+writer (``gateway/routes/oauth.py``), the Models routes
+(``gateway/routes/settings.py::_write_env_key``), and the startup load of the
+credential store (``acb_llm/key_store.py``). On the box the env file is
+``/opt/acb/app/.env``. It is the ``EnvironmentFile`` of ``acb-gateway.service``
+and ``acb-whatsapp-bridge.service``. Since WS-49 BH-6 no root unit loads it:
+``scripts/root_env.sh`` copies the names of
+``deploy/hostinger/root_env_names.txt`` from it into ``/etc/acb/root.env``,
+which ``acb-backup.service`` and compose read. One process env and one file
+serve every organization, so a write here changes the deployment.
+
+This module holds the rule, and it holds no I/O. A caller asks it, and then
+the caller refuses. Do not copy a rule into a route. A second copy of a
+security rule misses the next fix.
+
+⚠️ **The deny list is NOT the gate** (security fix round 1, 2026-10-05). It
+can never be complete. The gate is an allowlist in the gateway:
+``integrations.BUILTIN_ENV_KEYS``, the keys that a built-in setup guide
+declares. This list is defence in depth behind it.
+
+Three parts:
+
+* ``control_problem`` (layer A). A key or a value that holds a control
+  character, a format character or a line separator is refused. A newline in
+  a value adds a line to the file, and systemd reads the last line of a key.
+  ``str.splitlines`` also breaks on U+2028, U+0085, ``\\x0b``, ``\\x0c`` and
+  ``\\x1c`` to ``\\x1e``, so a value that holds one of them is a line break
+  that waits for the next rewrite.
+* ``value_problem`` (layer A, the length cap and the file form). A value is
+  ``MAX_VALUE_BYTES`` (4096) bytes at most. A value over 128 KiB in
+  ``os.environ`` makes every subprocess start fail with E2BIG. The writer puts
+  ``KEY=value`` into the file with no quotes, and it must stay so, because
+  other readers parse the file line by line. So a value may hold only the
+  characters that systemd, ``bash`` (``source``), python-dotenv and Docker
+  Compose all read as themselves in an unquoted value. A space ends the
+  assignment in ``bash`` and runs the next word as a command. ``$``, a
+  backtick, a quote, a backslash, ``;``, ``&``, ``|``, ``<``, ``>``, ``(`` and
+  ``)`` are code to the shell. A first ``~``, a ``~`` after ``:`` and a first
+  ``#`` change the value in one reader or another. Decision recorded
+  2026-10-05: refuse, and do not quote. Quotes would add a second form to a
+  file that readers parse by hand, and this change only removes ability.
+* ``is_platform_env`` (layer B). The names that no tenant route may write.
+  The list comes from ``acb_common/settings.py``, ``.env.example``,
+  ``deploy/``, the key names that the specs record for the box, the process
+  environment that Python, Go, Node, git, the dynamic linker, the shell,
+  uvicorn and the HTTP clients read, and every literal env name that the code
+  reads. Two tests hold it: one sorts every ``Settings`` field, and one scans
+  every literal env read in the code (``test_integrations_env_hardening.py``).
+  A name that is neither on this list nor in the built-in allowlist fails
+  them.
+
+The wider fix is per-request provider credentials, owner gate §6 (f) of
+``project-docs/work_plan.md``. Until then, these rules narrow the write.
+"""
+from __future__ import annotations
+
+import re
+import unicodedata
+
+__all__ = [
+    "KEY_SHAPE",
+    "MAX_VALUE_BYTES",
+    "PLATFORM_ENV_NAMES",
+    "PLATFORM_ENV_PREFIXES",
+    "PLATFORM_ENV_SUFFIXES",
+    "EnvWriteRefused",
+    "check_env_write",
+    "control_problem",
+    "is_platform_env",
+    "value_problem",
+]
+
+#: The shape of a key that a writer may put into the env file.
+#: ``fullmatch`` only: ``re.match`` with ``$`` accepts a trailing newline.
+KEY_SHAPE = re.compile(r"[A-Z][A-Z0-9_]{1,100}")
+
+#: The largest value, in UTF-8 bytes, that any writer puts into the env file
+#: or into ``os.environ``. No credential comes near it. A value over 128 KiB
+#: in the environment makes every ``execve`` fail with E2BIG.
+MAX_VALUE_BYTES = 4096
+
+#: Unicode categories that are never part of a credential. ``Cc`` holds NUL,
+#: TAB, LF, CR, VT, FF, the C1 set and U+0085. ``Zl`` and ``Zp`` are U+2028 and
+#: U+2029. ``Cf`` holds U+FEFF, which systemd refuses, and the bidi controls.
+#: ``Cs`` is a lone surrogate, which UTF-8 cannot encode. ``Cn`` holds the
+#: noncharacters, which systemd refuses. ``Co`` is private use.
+_CONTROL_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
+
+#: Characters that the shell reads as code or as a word break in
+#: ``KEY=value``. Each one either runs a command under ``source`` or makes
+#: two readers disagree about the value.
+_SHELL_SPECIAL = frozenset(" $`\\'\";&|<>()")
+
+# ── Layer B: the platform names ─────────────────────────────────────────────
+#
+# Matched case-insensitively after strip, because Settings reads the
+# environment with ``case_sensitive=False``. Err on the side of refusing. A
+# refused integration key is a bug report. A written platform key is an
+# outage or a breach.
+#
+# ⚠️ No entry here may match a key of ``integrations.BUILTIN_ENV_KEYS``, or a
+# tenant can no longer save that integration. A test checks it.
+
+#: Exact names.
+PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
+    # Database, cache and graph.
+    "DATABASE_URL", "REDIS_URL", "CC_DSN", "APP_DB", "DBS",
+    # What `tenant_session` does with an aborted transaction (H-249).
+    "TENANT_SESSION_ABORT_MODE",
+    # Sign-in and access. EXECUTIVE_EMAILS grants the EXECUTIVE role, and
+    # ALLOWED_EMAIL_DOMAIN decides who may sign in at all.
+    "ALLOWED_EMAIL_DOMAIN", "EXECUTIVE_EMAILS", "ACCESS_LEGACY_FALLBACK",
+    "IDENTITY_CUTOVER", "SELF_MUTATION_DISABLED", "WORKSPACE_BASE_DOMAIN",
+    "SHARED_TOKEN",
+    # The mail apps are the deployment's (D-EM-1). MICROSOFT_TENANT_ID pins
+    # the directory of the Microsoft app, a per-deployment decision
+    # (deploy.sh, H-13(a)). GOOGLE_CLIENT_* was the app of the retired
+    # `google` entry of oauth.py (removed by WS-17 EM-G11b). The names stay
+    # refused, so that no tenant can set a Google client on the box.
+    "MICROSOFT_TENANT_ID", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    # Operator-only keys of the built-in guides. ZOHO_REGION picks the Zoho
+    # data-centre domain. SMTP_USE_TLS sets the transport of the SMTP host.
+    # GMAIL_DEFAULT_USER picked the mailbox that the Gmail service account
+    # impersonated (round 2). WS-17 EM-G11b removed that path, and the name
+    # stays refused, so that a tenant cannot bring it back by a write.
+    # GMAIL_SA_JSON_PATH is refused by the `_PATH` suffix.
+    "ZOHO_REGION", "SMTP_USE_TLS", "GMAIL_DEFAULT_USER",
+    # LLM and speech provider keys. Only the BYOK-gated Models routes and the
+    # key store write them, and each passes them as ``owned``.
+    "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "DEEPSEEK_API_KEY",
+    "GROQ_API_KEY", "MISTRAL_API_KEY", "TOGETHER_API_KEY", "OPENROUTER_API_KEY",
+    "GITHUB_COPILOT_TOKEN",
+    # Runtime settings of the deployment.
+    "LOG_LEVEL", "LOG", "LLM_USAGE_AUDIT", "PROJECTS_IMPORT",
+    "AGENTS_CLONE_DIR", "GITHUB_INSTALLATION_ID", "GITHUB_ORG",
+    "GITHUB_BOT_NAME", "GITHUB_BOT_EMAIL", "GITHUB_PAT",
+    # H-363: the read credential of the agent clones. Only the operator sets it.
+    "GITHUB_READ_TOKEN",
+    "ENABLE_INSTRUMENTATION", "CI",
+    # WS-45 (D90): the agents that the tier policy covers. It moves what an
+    # organization pays, so only the operator writes it (ai_tier_routing.md).
+    "AI_TIER_ROUTING",
+    # Chat speed (2026-10-25): the covered agents whose auto chat turns run
+    # with thinking off. It changes how a model answers, so only the
+    # operator writes it.
+    "AI_REASONING_OFF_AGENTS",
+    # Chat speed (2026-10-30): the covered agents whose first chat request
+    # starts before the turn-kind answer. A restart can bill a prompt twice,
+    # so only the operator writes it (ai_tier_routing.md §13.1).
+    "AI_TURN_KIND_PARALLEL",
+    # WS-48 N1 (D93): the agents that hold `narrow_and_read`. It moves what
+    # an organization pays, so only the operator writes it
+    # (data_narrowing_pipeline.md §11).
+    "NARROWING_AGENTS",
+    # WS-67 OA-7a: the tool packs of the one assistant, and the orgs that may
+    # use them. A pack moves the egress guards and spends model tokens, so
+    # only the owner writes them (work_plan.md §6 D4). The `TOOL_` prefix
+    # covers both too.
+    "TOOL_PACKS", "TOOL_PACKS_ORGS",
+    # WS-67 OA-8f: the floor trim of the orchestrator. It changes the tool list
+    # of each turn, so only the owner writes it.
+    "ORCHESTRATOR_FLOOR_TRIM",
+    # WS-67 OA-9b: the orgs whose main assistant may spawn sub-agents. Each
+    # child spends model tokens at the org's cost, so only the owner writes it
+    # (work_plan.md §6 D4).
+    "SPAWN_SUBAGENTS_ORGS",
+    # WS-67 RX-1: the orgs where a chat that read outside mail keeps the writes
+    # that a card shows. It moves a guard, so only the operator writes it.
+    "HELD_CARD_WRITES_ORGS",
+    # one_assistant_context.md §9 WT-1: the orgs where a member may continue
+    # a held chat in a fresh chat. It opens a way around a hold, so only the
+    # owner writes it (work_plan.md §6 D4).
+    "CHAT_CONTINUE_ORGS",
+    # projects_ai_chat.md §31 VOX-1: the orgs whose chat shows the mic. Each
+    # clip draws AI credits, so only the operator writes it.
+    "CHAT_VOICE_ORGS",
+    # §18.10: the orgs whose chat shows a new mail on the card that the member
+    # edits. It changes the card of a send, so only the operator writes it.
+    "EMAIL_EDIT_CARD_ORGS",
+    # WS-17 task 1966: the orgs whose Outlook push watches all mail. It changes
+    # what Microsoft sends to the box, so only the operator writes it.
+    "OUTLOOK_ALL_MAIL_WEBHOOK_ORGS",
+    # WS-17 SG-2: the orgs whose mailboxes may use a layout signature. It
+    # changes the signature of each send, so only the operator writes it. The
+    # `EMAIL_` prefix covers it too, and the exact name keeps the fence if that
+    # prefix ever narrows.
+    "EMAIL_SIGNATURE_TEMPLATES_ORGS",
+    # WS-63 PZ-33: the orgs that get a summary of each private chat. The job
+    # spends the org's AI credits with no request of the member, so only the
+    # owner writes it (D-PZ-35). The `ASSISTANT_PROFILE_` prefix below does
+    # not cover it.
+    "ASSISTANT_CHAT_SUMMARY_ORGS",
+    # WS-63 PZ-34: the orgs whose chat opens with the briefing block. It puts
+    # the member's other chats into a run, so only the operator writes it. The
+    # `ASSISTANT_PROFILE_` prefix below does not cover it.
+    "ASSISTANT_BRIEFING_ORGS",
+    # WS-63 PZ-43: the orgs where a member sets a birthday and festivals and
+    # the chat greets on the day. It adds a line to each turn, so only the
+    # operator writes it.
+    "CELEBRATIONS_ORGS",
+    # WS-63 PZ-40: the orgs where the name question offers forms of address
+    # and the block keeps the chosen form as written. It adds a line to each
+    # turn, so only the operator writes it.
+    "ADDRESS_FORMS_ORGS",
+    # H-328 part (b): the orgs whose unattended workflow runs may start. A run
+    # can send mail or WhatsApp and spend credits with no person present, so
+    # only the operator writes it. The `WORKFLOW_` prefix covers it too, and
+    # the exact name keeps the fence if that prefix ever narrows.
+    "WORKFLOW_UNATTENDED_ORGS",
+    # WS-ALN ALN-2a: DECISIONS_ORGS opens "one person decides" for an org. A
+    # tenant that set it could open the bell row for every org on the box.
+    "DECISIONS_ORGS",
+    # WS-AUTO AUTO-7b: AUTO_PARK_ORGS parks the gate of an unattended run on a
+    # decision of the workflow's owner. It moves who settles a run, so only
+    # the operator writes it.
+    "AUTO_PARK_ORGS",
+    # WS-AUTO AUTO-8a: HEADLESS_TURN_ORGS opens the capped headless turn for an
+    # org. A turn spends the member's AI credits with no person present, so
+    # only the owner writes it.
+    "HEADLESS_TURN_ORGS",
+    # WS-MCP SW-31a: AGENT_GUIDANCE_ORGS opens the org's written rules for
+    # agents. The text reaches every agent session of the org, so a tenant
+    # must not open it for another org.
+    "AGENT_GUIDANCE_ORGS",
+    # SW-68a: MY_WORK_PLAN_ORDER_ORGS turns on the plan order of `my_work`. It
+    # changes which task an agent takes first, so only the operator writes it.
+    "MY_WORK_PLAN_ORDER_ORGS",
+    # WS-ALN ALN-1: the orgs whose task writes enqueue an `align.check` job.
+    # A queued row waits for the worker, so only the operator writes it
+    # (project_alignment.md §5 item 8).
+    "ALIGN_JOBS_ORGS",
+    # WS-ALN ALN-4: AUTHORITY_PINS_ORGS opens the pin of a Knowledge page to a
+    # project for an org. A pin changes what a finding quotes, so only the
+    # owner writes it.
+    "AUTHORITY_PINS_ORGS",
+    # WS-39 LP-1a: PROJECTS_UPDATES_ORGS opens the project updates for an org.
+    # An update reaches each member who sees the project, so a tenant must not
+    # open it for another org.
+    "PROJECTS_UPDATES_ORGS",
+    # WS-KG KG-4: GRAPH_SWEEP_ORGS opens the nightly sweep that writes graph
+    # edges into kb_links for an org. A tenant must not open it for another
+    # org, so only the operator writes it.
+    "GRAPH_SWEEP_ORGS",
+    # WS-ALN ALN-5a: PROJECT_RULES_ORGS opens the rules of a project for an
+    # org. A rule reaches each agent and each check of the project, so a
+    # tenant must not open it for another org.
+    "PROJECT_RULES_ORGS",
+    # WS-39 SP-1: PROJECTS_SPRINTS_ORGS opens the cycle store of Projects for
+    # an org. A tenant must not open it for another org, so only the owner
+    # writes it.
+    "PROJECTS_SPRINTS_ORGS",
+    # WS-39 TPL-1a: PROJECTS_TEMPLATES_ORGS opens the templates of Projects
+    # for an org. A tenant must not open it for another org, so only the
+    # owner writes it.
+    "PROJECTS_TEMPLATES_ORGS",
+    # WS-MCP MCP-P1b-1: APP_REQUESTS_ORGS opens the approval store of the app
+    # door for an org. A request waits for a member and can then run, so only
+    # the owner writes it.
+    "APP_REQUESTS_ORGS",
+    # WS-55 EA-18a: AGENT_QUESTIONS_ORGS narrows who may answer an agent's
+    # question and opens the list of the questions, so only the owner writes
+    # it.
+    "AGENT_QUESTIONS_ORGS",
+    # WS-55 MCP-G20: the write cap of each agent connection on the box. A
+    # tenant that raised it would lift the cap of every org, so only the
+    # owner writes it. The AGENT_ prefix covers both too, and the exact
+    # names keep the fence if that prefix ever narrows.
+    "AGENT_WRITE_CAP", "AGENT_WRITE_WINDOW_S",
+    # WS-MCP SW-53: GITHUB_APP_ORGS turns the GitHub App on for an org. On,
+    # deliveries write the org's pull requests and a merge can move its tasks,
+    # so only the owner writes it. The GITHUB_APP_ prefix covers it too.
+    "GITHUB_APP_ORGS",
+    # WS-AP AP-1a: WAITING_ORGS opens the list of what waits on a member for
+    # an org. The list reads held writes, chat questions, app requests and
+    # decisions, so only the owner writes it.
+    "WAITING_ORGS",
+    # WS-42 PST-4: STATUS_SET_GUARD_ORGS turns on the shared-set refusal of the
+    # chat status tools. It changes what a chat write may do, so only the owner
+    # writes it.
+    "STATUS_SET_GUARD_ORGS",
+    # WS-48 N3 (D93): System 1 on the decision model. It sends chat content
+    # to another sub-processor and moves spend, so only the operator writes it.
+    "SYSTEM_ONE_ON_DECIDE",
+    # Owner, 2026-10-09: a `no_egress` run may send a typed question to the
+    # decision model. It moves what a sub-processor receives, so only the
+    # operator writes it (data_narrowing_pipeline.md Q4).
+    "DECIDE_IN_NO_EGRESS",
+    # WS-44 NS-4b: the command bar's coordinator. It sends the member's words
+    # to the decision model and spends credits, so only the operator writes it
+    # (navigation_shell.md NS-4b).
+    "COMMAND_BAR_AI",
+    # WS-61 CX-1: recency in company retrieval. It changes the order and the
+    # text that every member's assistant reads, so only the operator writes
+    # it (company_context.md §11).
+    "CONTEXT_RECENCY",
+    # WS-67 OA-3: OCR of a scanned file. It starts a child process for each
+    # scan that any member reads, so only the operator writes it
+    # (one_assistant_context.md §4).
+    "ATTACHMENT_OCR",
+    # WS-58 MD-5a: My Day's read cache. It changes what every member's feed
+    # serves, so only the operator writes it (my_day_feed.md §8.4 item 7).
+    "MY_DAY_CACHE",
+    # WS-58 MD-3b: the gated sources of My Day. It changes what every
+    # member's feed serves, so only the operator writes it (my_day_feed.md
+    # §5.8 item 1).
+    "MY_DAY_PROVIDERS",
+    # WS-58 MD-6a-1: the orgs that may ask `decide` for My Day, and their
+    # daily ceiling. Each moves what an org pays, so only the operator writes
+    # them (my_day_feed.md §10.9 items 5 and 6).
+    "MY_DAY_DECIDE_ORGS", "MY_DAY_DECIDE_ORG_DAILY_CALLS",
+    # DEC-1: the orgs that may ask `decide` for a `projects.*` feature. It
+    # moves what an org pays, so only the operator writes it.
+    "PROJECTS_DECIDE_ORGS",
+    # WS-43y1a: the fault hook of the data engine (exit, kill, sleep, grow).
+    # Only its tests set it. A tenant that set it would break each verb.
+    "DATA_ENGINE_FAULT",
+    # WS-BUD BUD-1: the capture rig of e2e/buddy-hello.spec.ts. Only a local
+    # capture run sets them. They choose the look and the size of a capture.
+    "HELLO_ACCENT", "HELLO_DENSITY", "HELLO_HEIGHT", "HELLO_NAME",
+    "HELLO_SHOTS", "HELLO_THEME", "HELLO_WIDTH",
+    # Server: uvicorn reads these from the env of acb-gateway.service.
+    "FORWARDED_ALLOW_IPS", "WEB_CONCURRENCY",
+    # CIV-14f: the answer watcher of the home box (scripts/home_server). The
+    # token is a read-only box token. A tenant must never save these.
+    "METORITE_WATCHER_TOKEN", "METORITE_WATCHER_STATE", "METORITE_REPO",
+    "METORITE_MCP_URL", "WATCHER_CLAUDE_CMD",
+    # Deploy, backup and watchdog scripts (variables they read).
+    "APP_DIR", "ENV_FILE", "ACTIONS", "CURRENT", "DEST", "DRY_RUN", "EUID",
+    "FAILED", "FORENSICS", "OURS_FAILED", "ROUTES", "SCRATCH", "STAMP",
+    "SVC_USER", "UNITS", "UNITS_CHANGED", "VENV_OWNER", "VERIFY_RESTORE",
+    "UX_OUT",
+    # STU-B2c-1: vps_apply.sh holds the key of the Studio direct proof here.
+    # Do not name that key in this file: only the proof module and the
+    # settings may name it (test_studio_direct_proof.py).
+    "DIRECT_KEY",
+    # STU-D2b-1: scripts/dev_seed_studio.py reads the gateway token of a local
+    # dev_up.sh stack. It never runs on a box.
+    "DEV_UP_GATEWAY_TOKEN",
+    # WS-49 BH-6: the scripts of the root copy (root_lib_files.txt) are in
+    # the scan now. These are their own variables and the BH-6 deploy steps.
+    "ACK", "DROPIN", "EXPIRES", "EXPIRY_WHY", "HEALTH_TRIES", "NAME",
+    "SRC_CONF", "STATE", "UNIT", "_ACB_CLEAN_ENV",
+    "BH6_ACB_RESTART", "BH6_CORE_CHANGED", "BH6_LIST",
+    # gpg reads its keyring from here. The backup encrypts to a key in it.
+    # tar reads TAR_OPTIONS as extra flags, so it could add or drop files in
+    # the off-box copy (H-123).
+    "GNUPGHOME", "TAR_OPTIONS",
+    # The process environment: shell, Python, Go, linker, TLS, resolver.
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "PWD", "TMPDIR", "TEMP",
+    "TMP", "LANG", "LANGUAGE", "TZ", "IFS", "ENV", "PS1", "PS2", "PS3",
+    "PS4", "SHELLOPTS", "CDPATH", "GLOBIGNORE", "POSIXLY_CORRECT",
+    "EPOCHREALTIME",
+    "VIRTUAL_ENV", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+    "HOSTALIASES", "RES_OPTIONS", "LOCALDOMAIN",
+    "NOTIFY_SOCKET", "INVOCATION_ID", "JOURNAL_STREAM", "DEBIAN_FRONTEND",
+    "GO", "GOFLAGS", "GODEBUG", "GOMAXPROCS", "GOGC", "GOMEMLIMIT",
+    "GOTRACEBACK", "GOROOT", "GOCACHE", "GOTOOLCHAIN", "GOPROXY",
+    "CC", "CXX", "CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS", "MAKEFLAGS",
+    "AR", "LD", "RUBYOPT", "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS",
+})
+
+#: Prefixes. ``AUTH_`` covers AUTH_SECRET, AUTH_URL and every
+#: AUTH_MICROSOFT_ENTRA_ID_* and AUTH_GOOGLE_* sign-in key.
+PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
+    # Database, cache and graph.
+    "DATABASE_", "DB_", "PG", "POSTGRES_", "REDIS_", "NEO4J_", "GRAPHITI_",
+    "MEM0_",
+    # The deployment's own secrets and identity. ACB_MASTER_KEY encrypts
+    # every stored credential.
+    "ACB_", "FERNET", "GATEWAY_", "LITELLM_", "AUTH_", "NEXTAUTH_",
+    "SUPABASE_", "OPERATOR_", "CUSTOMER_CONSOLE_", "CONSOLE_", "ROUTER_",
+    "RESEND_", "LANGFUSE_", "OTEL_", "GOOGLE_SSO_", "CC_",
+    # The mail apps (D-EM-1, WS-17 EM-G7, O-GM-5). This is the one list of
+    # them. `test_email_gmail_connect.py` fails when `oauth_app` reads a
+    # name that these prefixes do not cover.
+    "GMAIL_OAUTH_", "MSFT_OAUTH_", "AUTH_MICROSOFT_ENTRA_ID_", "GMAIL_PUSH_",
+    # Backup. acb-backup.service runs scripts/backup_db.sh as root with the
+    # env file, so BACKUP_REMOTE sends every dump to the host it names, and
+    # KEEP_DAILY deletes the backup history. BACKUP_S3_* holds the key of the
+    # off-box bucket (H-123). The same unit runs rclone and gpg, so RCLONE_*
+    # could point the copy at another bucket. backup_offbox.sh unsets RCLONE_*
+    # and passes --homedir to gpg as well, and this is the second layer. zstd
+    # reads ZSTD_CLEVEL and ZSTD_NBTHREADS.
+    "BACKUP_", "KEEP_", "RCLONE_", "ZSTD_",
+    # MT-1g-1 (D108): the one object store. OBJECT_STORE_* holds the bucket's
+    # key, the Supabase sign-in and the bucket name, so a tenant that set it
+    # could read or write every org's objects.
+    "OBJECT_STORE_",
+    # WS-38 T-9: STAGING_EXPORT_SLUGS names the organizations whose data the
+    # nightly backup copies to the staging box. A tenant that set it could
+    # send its neighbours' data there.
+    "STAGING_",
+    # Server and agent runtime switches.
+    "UVICORN_", "V1_", "SKILLS_", "SUB_AGENT_", "TOOL_", "RUNTIME_",
+    "SESSION_", "STREAM_", "HISTORY_", "PROMPT_", "RUN_", "WATCHDOG_",
+    "WAIT_", "LOG_",
+    # Flags and switches.
+    "EMAIL_", "DECIDE_", "BYOK_", "CRM_", "INGESTION_", "ACTION_BROKER_",
+    "WORKFLOW_", "WHATSAPP_", "MEETING_BOT_", "MIGRATION_", "SKIP_",
+    # The chat run switches (WS-51 S2: CHAT_DURABLE_ASKS and its knobs, and
+    # the D-3 run cap CHAT_MAX_RUNS_PER_MEMBER). A tenant that set the cap
+    # could lift it for every member of every org on the box.
+    "CHAT_",
+    # WS-59 RE-1a: Reach. It sends WhatsApp messages to real members, so only
+    # the operator writes its switch, its allowlists and its cap.
+    "REACH_",
+    # WS-61 KB-1: the Knowledge app. KNOWLEDGE_ORGS opens it for an org, so
+    # a tenant that set it could open it for every org on the box.
+    "KNOWLEDGE_",
+    # WS-63 PZ-25: the assistant profile. ASSISTANT_PROFILE_ORGS opens it for
+    # an org, so a tenant that set it could open it for every org on the box.
+    # The prefix covers ASSISTANT_PROFILE_CARD_WRITES_ORGS (PZ-32) too. It
+    # does not cover ASSISTANT_CHAT_SUMMARY_ORGS (PZ-33), which is an exact
+    # name above.
+    "ASSISTANT_PROFILE_",
+    # WS-66 PN-1: web push. VAPID_PRIVATE_KEY signs every push of the box, so
+    # a tenant that set it would hold the key of every org's devices.
+    # WEB_PUSH_ENABLED is the switch, and the `_ENABLED` suffix covers it too.
+    "VAPID_", "WEB_PUSH_",
+    # WS-WEB WEB-2: web research. WEB_RESEARCH_ORGS gives an org the local
+    # page reader, and WEB_READER_REMOTE=jina sends each URL of those orgs to
+    # a third party. A tenant that set either would change it for every org
+    # on the box, so only the owner writes them.
+    # WEB-4: SEARXNG_URL names the search host of every org on the box.
+    # WEB-6: WEB_WORKER_TOKEN is the bearer of the web worker. A tenant that
+    # set it could send a render job for any org.
+    "WEB_RESEARCH_", "WEB_READER_", "SEARXNG_", "WEB_WORKER_",
+    # WS-66 RM-1: reminders. CALENDAR_REMINDERS is the switch of the reminder
+    # routes, so a tenant that set it could turn them on for every org.
+    "CALENDAR_REMINDERS",
+    # WS-CAL CE-4: events. CALENDAR_EVENTS is the switch of the event store,
+    # so a tenant that set it could turn it on for every org.
+    "CALENDAR_EVENTS",
+    # WS-BRIEF BR-1a: the shared job queue. JOB_QUEUE is the switch of the job
+    # worker, so a tenant that set it could start the worker for every org.
+    "JOB_QUEUE",
+    # WS-BRIEF AUTO-2: the ledger of unattended runs. UNATTENDED_LEDGER is its
+    # switch, so a tenant that set it could turn the ledger on for every org.
+    "UNATTENDED_LEDGER",
+    # WS-BRIEF BR-2a-1: the core brief. BRIEF_ENABLED and BRIEF_ORGS open the
+    # brief for an org, so a tenant that set them could open it for every org
+    # on the box. The prefix covers the later BRIEF_* switches too.
+    "BRIEF_",
+    # WS-OB OB-8: the push prompt. PUSH_PROMPT_ORGS opens the chat sheet for an
+    # org, so a tenant that set it could open the sheet for every org.
+    "PUSH_PROMPT_",
+    # WS-VOX VOX-3: IMAGE_ANALYSIS_ORGS lets the chat send an image to a model
+    # for an org, and each call draws credits. A tenant that set it could
+    # open it for every org on the box.
+    "IMAGE_ANALYSIS_",
+    # RX-5: the morning summary push. DUE_PUSH_ORGS opens it for an org, so a
+    # tenant that set it could send a push to the members of every org.
+    "DUE_PUSH_",
+    # STU-B1: STUDIO_ORGS opens the AI Studio catalog for an org.
+    "STUDIO_",
+    # WS-OB GD-5a: GUIDE_ORGS opens the tour's entries for an org, so a
+    # tenant that set it could open them for every org on the box.
+    "GUIDE_",
+    # WS-PKG PKG-5b: PACKAGE_HOST_ORGS opens the resolved shell manifest for
+    # an org, so a tenant that set it could open it for every org.
+    "PACKAGE_HOST_",
+    # Agent runtime, sandbox and models.
+    "MUTATION_", "SANDBOX_", "COPILOT_", "MAF_", "AGENT_", "CUSTOM_APPS_",
+    "OPENHANDS_", "GITHUB_APP_", "NOTES_", "OAUTH_", "NEXT_",
+    "AWS_", "AZURE_", "VERTEX_",
+    # Speech, meetings and media providers of the deployment.
+    "ASSEMBLYAI_", "DEEPGRAM_", "RECALL_", "PIXELLAB_", "LIVE_", "MEET_",
+    "SHERPA_", "LOCAL_", "VIRTUAL_", "PULSE_", "CHROME_", "PLAYWRIGHT_",
+    # Deploy, release and test harness. BH2_ is the gateway sandbox check of
+    # vps_apply.sh and the watchdog (WS-49 BH-2). A tenant that set
+    # BH2_ROLLBACK_SCRIPT would choose the script that the deploy runs.
+    "DEPLOY_", "RELEASE_", "VPS_", "CADDY_", "SMOKE_", "GH_", "MB_", "OC_",
+    "WB_", "E2E_", "CHECKOUT_", "VERSION_", "BH2_",
+    # The local demo workspace for the marketing screenshots
+    # (scripts/demo_seed, marketing_site.md §6.3). It never runs on the box.
+    "DEMO_",
+    # The process environment and the toolchain. ``BASH`` covers BASH_ENV,
+    # BASHOPTS, BASH_XTRACEFD and every BASH_FUNC_ export.
+    "LC_", "BASH", "PYTHON", "UV_", "PIP_", "LD_", "DYLD_", "NODE_",
+    "NPM_", "GIT_", "SSH_", "DOCKER_", "COMPOSE_", "SSL_", "OPENSSL_",
+    "SYSTEMD_", "XDG_", "PERL5",
+)
+
+#: Suffixes.
+PLATFORM_ENV_SUFFIXES: tuple[str, ...] = (
+    "_DATABASE_URL", "_SESSION_SECRET", "_ENCRYPTION_KEY", "_FERNET_KEY",
+    "_MASTER_KEY", "_INTERNAL_TOKEN", "_OPERATOR_TOKEN", "_DEPLOYMENT_KEY",
+    "_WEBHOOK_SECRET", "_PUBSUB_TOKEN",
+    # A value that names a host sends a request, and often a credential with
+    # it, to that host. The operator-only family of the guides is here too.
+    "_URL", "_HOST", "_PORT", "_DOMAIN", "_PATH", "_ENDPOINT", "_API_BASE",
+    # Feature flags. A dark flag is the owner's to flip.
+    "_ENABLED", "_DISABLED", "_ENFORCE",
+    # Paths on the box.
+    "_DIR", "_ROOT",
+    # HTTP_PROXY and the like send every outbound call through the host.
+    "_PROXY",
+    # Runtime knobs: timeouts, models, commands, cache lifetimes.
+    "_TIMEOUT", "_TIMEOUT_S", "_SECONDS", "_SECS", "_MODEL", "_CMD", "_TTL",
+)
+
+
+class EnvWriteRefused(ValueError):
+    """A write that the rule refuses. The message names the key, never the value.
+
+    ``platform`` is True when the key is a platform name (layer B), and False
+    when the key or the value is malformed (layer A).
+    """
+
+    def __init__(self, key: str, reason: str, *, platform: bool = False) -> None:
+        self.key = key
+        self.reason = reason
+        self.platform = platform
+        super().__init__(f"env write refused for {key!r}: {reason}")
+
+
+def control_problem(text: str) -> str | None:
+    """Say why ``text`` holds a control character, or return None.
+
+    Layer A. It applies to every write of ``os.environ`` and of the env file.
+    """
+    for ch in str(text):
+        if unicodedata.category(ch) in _CONTROL_CATEGORIES:
+            return f"it holds the control character U+{ord(ch):04X}"
+    return None
+
+
+def value_problem(value: str) -> str | None:
+    """Say why the env file cannot hold ``value`` unquoted, or return None.
+
+    Layer A: the length cap, control characters and the file form. It applies
+    to every value that goes into the env file or into ``os.environ``. The
+    reason names a size or a character code and never the value, because the
+    value is a credential.
+    """
+    value = str(value)
+    size = len(value.encode("utf-8", "surrogatepass"))
+    if size > MAX_VALUE_BYTES:
+        return f"it is {size} bytes, and the limit is {MAX_VALUE_BYTES}"
+    problem = control_problem(value)
+    if problem:
+        return problem
+    for ch in value:
+        if ch in _SHELL_SPECIAL:
+            name = "a space" if ch == " " else repr(ch)
+            return f"it holds {name}, which the shell reads as code"
+        if not "\x21" <= ch <= "\x7e":
+            return f"it holds U+{ord(ch):04X}, and the env file takes printable ASCII only"
+    if value.startswith(("~", "#")) or ":~" in value:
+        return "it starts with '~' or '#', or holds ':~', which a reader changes"
+    return None
+
+
+def is_platform_env(name: str) -> bool:
+    """True when ``name`` is a platform setting that no tenant route may write.
+
+    Layer B. The match ignores case and surrounding space.
+    """
+    n = str(name).strip().upper()
+    if not n:
+        return False
+    return (
+        n in PLATFORM_ENV_NAMES
+        or n.startswith(PLATFORM_ENV_PREFIXES)
+        or n.endswith(PLATFORM_ENV_SUFFIXES)
+    )
+
+
+def check_env_write(key: str, value: str, *, owned: frozenset[str] = frozenset()) -> None:
+    """Raise ``EnvWriteRefused`` unless ``KEY=value`` is safe to write.
+
+    The whole rule, for a writer of the env file or of ``os.environ``: the key
+    shape, layer A on the key and the value, and layer B on the key. A route
+    calls the parts first, to answer with the right status. The writer calls
+    this again, so a caller that forgets cannot write.
+
+    ``owned`` names, by exact name, the platform keys that the CALLING surface
+    is the one legitimate writer of. Layer B lets them through, and layer A
+    still applies. Two callers pass a set, and a test pins each one:
+    ``routes/settings.py`` (``_MODELS_PAGE_ENV_KEYS``: the BYOK provider keys
+    and ``COPILOT_CHAT_MODEL``) and ``key_store.configure_litellm`` (the
+    provider keys that it loads). Never put a URL in it.
+    """
+    problem = control_problem(key)
+    if problem:
+        raise EnvWriteRefused(key, f"the key: {problem}")
+    if not KEY_SHAPE.fullmatch(key):
+        raise EnvWriteRefused(key, "the key is not A-Z, 0-9 and underscore")
+    problem = value_problem(value)
+    if problem:
+        raise EnvWriteRefused(key, f"the value: {problem}")
+    if is_platform_env(key) and key not in owned:
+        raise EnvWriteRefused(key, "it is a platform setting", platform=True)

@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { usePhoneBar } from "@/lib/shell/phoneBarEvent";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import AssistantToggle from "@/components/AssistantToggle";
 import { AppSearchButton, AppTopBar } from "@/components/AppTopBar";
@@ -11,6 +12,7 @@ import { useAccess } from "@/components/AccessProvider";
 import { railClass, useRailFold } from "@/lib/railFold";
 import { TASK_PANEL_WIDTH } from "@/lib/taskPanel";
 import { useTaskStore } from "./lib/taskStore";
+import { tasksEntryView } from "./lib/today";
 import { ListsSidebar } from "./components/ListsSidebar";
 import { CaptureBar } from "./components/CaptureBar";
 import { ItemList } from "./components/ItemList";
@@ -37,22 +39,66 @@ import { DeleteConfirmModal } from "./components/DeleteConfirmModal";
 import { SchedulePopup } from "./components/SchedulePopup";
 import { EliminatePopup } from "./components/EliminatePopup";
 import { DelegatePopup } from "./components/DelegatePopup";
-import { TasksShortcuts } from "./components/TasksShortcuts";
-import { tasksOverlayOpen } from "./lib/shortcuts";
 // ⌘K is search in both task apps, and it is ONE palette. My Tasks mounts the
 // Projects one with no commands (`paletteCommands`), so it searches tasks only.
 import { SearchPalette } from "../projects/components/SearchPalette";
 import { NotificationBell } from "../projects/components/NotificationBell";
+import { shellDockOn } from "@/lib/shell/dockFlag";
 import { isOpenShortcut } from "../projects/lib/search";
+import { myWorkEnabled } from "../projects/lib/myWork";
+import { tasksRedirectFor } from "../projects/lib/tasksRedirect";
+import { canSeePath } from "@/lib/access";
 import { MY_DAY, myDayLink, myDayShown } from "../projects/lib/reportEntry";
 import { hitTarget, searchAllowed } from "./lib/searchHit";
+import { ShellJob } from "@/lib/shell/doJob";
+import { openAssistant, useAssistantFacts } from "@/lib/shell/assistant";
+import { shellChatOn } from "@/lib/shell/chatFlag";
+import { tasksAssistantFacts } from "./lib/assistantFacts";
+import { OPEN_CHAT_JOB } from "@/lib/runActivity";
+import { useLiveRefresh } from "@/lib/liveRefresh";
+import { askRailSession } from "@/lib/railSessions";
 
 // My Tasks — 4-panel shell, mirroring the email app's layout
 // philosophy: Lists/Contexts · Item list (+ capture) · Item detail · Assistant.
 // UI-first: runs entirely on mock data (lib/mockData.ts); the gateway `/tasks`
 // API is wired later. See project-docs/specs/task_manager_app.md.
+/**
+ * WS-64 OP-4 — with My work live, `/tasks` is a redirect into Projects. The
+ * redirect reads the address on the client, behind the flag. While the flag is
+ * on and the address is unread, nothing draws, so the page does not flash
+ * before the redirect. A `/tasks` address that stays (the `open-chat` job)
+ * draws the page. With the flag off this wrapper is the page itself.
+ */
 export default function TasksPage() {
+  const router = useRouter();
+  const live = myWorkEnabled();
+  const { access, loading } = useAccess();
+  const [stays, setStays] = useState(!live);
+  // A member without `feature:projects` cannot open the target, so the page
+  // stays and draws My Tasks. The same check `AccessGate` makes.
+  const canProjects = canSeePath(access, "/projects");
+  useEffect(() => {
+    if (!live || loading) return;
+    const to = tasksRedirectFor(
+      { search: window.location.search, hash: window.location.hash },
+      true,
+      canProjects,
+    );
+    if (to) router.replace(to);
+    else setStays(true);
+  }, [live, loading, canProjects, router]);
+  return stays ? <TasksPageBody /> : null;
+}
+
+function TasksPageBody() {
   const { isMobile } = useViewMode();
+  // NS-6: with the shell's one bell on, this app mounts no bell of its own.
+  // Read once, as the shell reads its flags: the dev override is in
+  // `localStorage`, which the server render cannot see.
+  const [dockOn] = useState(() => shellDockOn());
+  // D99: with the chat bar on, the one assistant replaces this app's rail,
+  // and the page tells it what the member is looking at.
+  const [chatOn] = useState(() => shellChatOn());
   const { open: openDrawer, close: closeDrawer } = useMobileDrawer();
   const selectedView = useTaskStore((s) => s.selectedView);
   const selectView = useTaskStore((s) => s.selectView);
@@ -82,6 +128,12 @@ export default function TasksPage() {
   // away (deleting the task from the overlay is the ordinary way), and a stale
   // one would open the next task the user clicked straight into the overlay.
   const [maximisedFor, setMaximisedFor] = useState<string | null>(null);
+  const taskItems = useTaskStore((s) => s.items);
+  const assistantFacts = useMemo(
+    () => (chatOn ? tasksAssistantFacts({ items: taskItems, selectedView, openItemId: focusedItemId ?? selectedItemId }) : null),
+    [chatOn, taskItems, selectedView, selectedItemId, focusedItemId],
+  );
+  useAssistantFacts(assistantFacts);
   const isInbox = selectedView === "inbox";
   const isEngage = selectedView === "engage";
   // S6e — a project I lead, opened from the sidebar. Its own surface: my
@@ -128,12 +180,19 @@ export default function TasksPage() {
     void hydrate();
   }, [hydrate]);
 
-  // Tell the mobile bottom bar which My Tasks section is active (for its highlight).
+  // Task #124: the assistant wrote to the task store. Re-read the list now.
+  const reloadItems = useTaskStore((s) => s.reloadItems);
+  useLiveRefresh(() => void reloadItems(), "tasks");
+
+  // `today` is a My work view of Projects (WS-64 OP-2). /tasks has no Today
+  // list, so a view left by that host maps to Next actions on mount.
   useEffect(() => {
-    window.dispatchEvent(
-      new CustomEvent("cc-tasks-section", { detail: selectedView }),
-    );
-  }, [selectedView]);
+    const now = useTaskStore.getState().selectedView;
+    if (tasksEntryView(now) !== now) selectView(tasksEntryView(now));
+  }, [selectView]);
+
+  // Tell the mobile bottom bar which My Tasks section is active (for its highlight), in the one `cc-phone-bar` event.
+  usePhoneBar({ active: selectedView === "inbox" ? "tasks-inbox" : "tasks-lists" });
 
   // Mobile bottom-nav tabs (from AppShell) → drive the tasks app.
   useEffect(() => {
@@ -154,6 +213,23 @@ export default function TasksPage() {
     return () => window.removeEventListener("cc-mobile-nav", handler);
   }, [openDrawer, closeDrawer, openQuickCapture, selectView]);
 
+  // WS-51 S3: the activity panel's link (`?do=open-chat&fill.session=<id>`).
+  // The rail opens the asked chat once it has restored (`useAgentSessions`).
+  const openChat = useCallback(
+    (f: Record<string, string>) => {
+      if (!f.session) return;
+      // D99: an old link opens the chat in the one assistant.
+      if (chatOn) {
+        openAssistant({ sessionId: f.session });
+        return;
+      }
+      askRailSession("task-manager", f.session);
+      if (isMobile) openDrawer(<AssistantRail />);
+      else setAssistantOpen(true);
+    },
+    [chatOn, isMobile, openDrawer],
+  );
+
   // Search opens from ⌘K and from the top bar's Search button, through ONE
   // guard. Not over another overlay (`searchAllowed`): the palette would open
   // hidden behind it and take the keystrokes.
@@ -163,40 +239,25 @@ export default function TasksPage() {
     }
   }, [maximisedId]);
 
-  // Two hotkeys from any Tasks view: ⌘K searches and `C` captures. ⌘K opens
-  // the same palette it opens in Projects, so one key means one thing in both
-  // task apps. It captured here until 2026-09-24. (App-wide capture from other
-  // Metorite apps needs a persisted store + AppShell-level listener — see spec
-  // §2.1 C2 [plumbing].)
+  // ⌘K searches from any Tasks view. It opens the same palette it opens in
+  // Projects, so one key means one thing in both task apps.
+  //
+  // ⚠️ It is the ONLY key this app binds of its own. The letter shortcuts
+  // (`c`, `u`, `?`, `g`, the Inbox's and Clarify's triage keys) and their
+  // sheet were removed on 2026-10-13: the owner found them unnecessary and
+  // complicated. Arrows, Enter, Escape and Ctrl+Z stay, because a member
+  // brings those from every other application.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (quickCaptureOpen || clarifyModalOpen) return; // a modal owns the keyboard
-      const el = e.target as HTMLElement | null;
-      const typing =
-        !!el &&
-        (el.tagName === "INPUT" ||
-          el.tagName === "TEXTAREA" ||
-          el.isContentEditable);
       if (isOpenShortcut(e)) {
         e.preventDefault();
         openSearch();
-        return;
-      }
-      if (searching) return; // the palette owns the keyboard
-      if (
-        !typing &&
-        !e.metaKey &&
-        !e.ctrlKey &&
-        !e.altKey &&
-        (e.key === "c" || e.key === "C")
-      ) {
-        e.preventDefault();
-        openQuickCapture("single");
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [openQuickCapture, quickCaptureOpen, clarifyModalOpen, searching, openSearch]);
+  }, [quickCaptureOpen, clarifyModalOpen, openSearch]);
 
   // A hit My Tasks holds opens here. Any other task opens in Projects, because
   // the palette searches every project and My Tasks cannot draw a task it does
@@ -216,13 +277,6 @@ export default function TasksPage() {
       onOpenTask={openHit}
     />
   );
-  // `?` and the `g <letter>` jumps, the ones Projects binds. Held off while
-  // any overlay owns the keyboard (`tasksOverlayOpen`, the twin of Projects'
-  // `overlayOpen`), so neither fires under an open dialog.
-  const overlayOpen = useTaskStore((s) =>
-    tasksOverlayOpen(s, { searching, maximised: Boolean(maximisedId) }),
-  );
-  const shortcuts = <TasksShortcuts blocked={overlayOpen} />;
   // WS-27bn R5b-2 — "My day" opens the T2 report in Projects. The builder
   // makes the reader its subject, so the link names none (`myDayLink`).
   // A member who cannot open Projects sees no control at all (`myDayShown`).
@@ -247,6 +301,11 @@ export default function TasksPage() {
     // (`projects/page.tsx`). Desktop docks the same detail beside the list.
     return (
       <div className="flex h-full w-full flex-col overflow-hidden bg-background">
+        {/* NS-1: the command bar's "New task" opens Capture here. */}
+        <ShellJob id="capture" onOpen={(f) => openQuickCapture("single", f.title ?? "", true)} />
+        {/* WS-51 S3: a row of the activity panel opens its chat in the rail. */}
+        <ShellJob id={OPEN_CHAT_JOB}
+        ungated onOpen={openChat} />
         {/* The phone bar, as Projects draws it (`AppTopBar compact`). It
             holds the page's one h1 here too. Capture and the lists live in
             the shell's bottom bar, so this carries "My day", search and the
@@ -258,7 +317,7 @@ export default function TasksPage() {
           tools={
             <>
               <AppSearchButton onOpen={openSearch} />
-              <NotificationBell onOpenTask={openHit} />
+              {dockOn ? null : <NotificationBell onOpenTask={openHit} />}
             </>
           }
         />
@@ -285,13 +344,17 @@ export default function TasksPage() {
         <EliminatePopup />
         <DelegatePopup />
         {search}
-        {shortcuts}
       </div>
     );
   }
 
   return (
     <div className="flex h-full w-full select-none flex-col overflow-hidden bg-background">
+      {/* NS-1: the command bar's "New task" opens Capture here. */}
+      <ShellJob id="capture" onOpen={(f) => openQuickCapture("single", f.title ?? "", true)} />
+      {/* WS-51 S3: a row of the activity panel opens its chat in the rail. */}
+      <ShellJob id={OPEN_CHAT_JOB}
+        ungated onOpen={openChat} />
       {/* The shared app bar (`components/AppTopBar.tsx`), the one Projects
           renders: rail toggle, the app's h1, Capture, then search, the
           bell and the assistant at the right end. */}
@@ -309,7 +372,6 @@ export default function TasksPage() {
               onClick={() => openQuickCapture("single")}
             >
               Capture
-              <kbd className="rounded border border-border px-1 text-[9px]">C</kbd>
             </Button>
             {myDay}
           </>
@@ -317,11 +379,16 @@ export default function TasksPage() {
         tools={
           <>
             <AppSearchButton onOpen={openSearch} />
-            <NotificationBell onOpenTask={openHit} />
-            <AssistantToggle
-              open={assistantOpen}
-              onToggle={() => setAssistantOpen((v) => !v)}
-            />
+            {/* NS-6: with the shell's one bell on, this app mounts no bell
+                of its own. Off, nothing changes. NS-9 deletes it. */}
+            {dockOn ? null : <NotificationBell onOpenTask={openHit} />}
+            {/* D99: the chat bar opens the one assistant. NS-9 deletes this. */}
+            {chatOn ? null : (
+              <AssistantToggle
+                open={assistantOpen}
+                onToggle={() => setAssistantOpen((v) => !v)}
+              />
+            )}
           </>
         }
       />
@@ -332,7 +399,7 @@ export default function TasksPage() {
         {lists.open && (
           <aside className={`w-60 shrink-0 border-r border-border bg-card ${railClass(lists.settled)}`}>
             <ListsSidebar
-              onOpenAssistant={() => setAssistantOpen(true)}
+              onOpenAssistant={chatOn ? undefined : () => setAssistantOpen(true)}
               assistantActive={assistantOpen}
             />
           </aside>
@@ -419,7 +486,6 @@ export default function TasksPage() {
       <EliminatePopup />
       <DelegatePopup />
       {search}
-      {shortcuts}
     </div>
   );
 }

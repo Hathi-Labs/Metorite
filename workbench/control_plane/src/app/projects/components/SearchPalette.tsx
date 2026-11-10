@@ -54,6 +54,7 @@ import {
   highlight,
   hitContext,
   isCurrent,
+  isSearchableQuery,
   moveSelection,
   paletteKey,
   paletteState,
@@ -72,6 +73,8 @@ interface Props {
   actions?: CommandActions;
   /** Where the app is, so a command that would no-op is not offered. */
   context?: CommandContext;
+  /** OP-12b — the member's personal root, so a hit in it reads "Personal". */
+  personalRootId?: string | null;
 }
 
 export function SearchPalette({
@@ -80,6 +83,7 @@ export function SearchPalette({
   onOpenTask,
   actions,
   context,
+  personalRootId,
 }: Props) {
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<Hit[] | null>(null);
@@ -108,7 +112,7 @@ export function SearchPalette({
   useEffect(() => {
     if (!open) return;
     const term = query.trim();
-    if (term.length < 2) {
+    if (!isSearchableQuery(term)) {
       setHits(null);
       setLoading(false);
       return;
@@ -185,6 +189,12 @@ export function SearchPalette({
           placeholder={context ? "Search tasks, or type a command…" : "Search tasks…"}
           aria-label={context ? "Search tasks and commands" : "Search tasks"}
           className="border-0 focus:border-0"
+          // ⚠️ The field fills its header row, and `.cc-control`'s focus ring
+          // sits 2px OUTSIDE it, so the dialog's edge cut the ring off at the
+          // top and sides (owner report, phone, 2026-10-08). Drawn 2px INSIDE
+          // instead, it stays whole, and keyboard focus stays visible. Inline,
+          // because the ring rule is unlayered and beats a utility class.
+          style={{ outlineOffset: "-2px" }}
           onKeyDown={(e) => {
             const action = paletteKey(e);
             if (!action) return;
@@ -316,7 +326,7 @@ export function SearchPalette({
                     <ParentCrumb parent={row.hit.parent} />
                   </span>
                   <span className="shrink-0 text-[11px] text-muted-foreground">
-                    {hitContext(row.hit)}
+                    {hitContext(row.hit, personalRootId)}
                   </span>
                 </button>
               </li>

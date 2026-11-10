@@ -24,6 +24,7 @@ import re
 from typing import Any
 
 from acb_common import get_logger
+from acb_llm.message_hygiene import strip_placeholder_lines
 
 _log = get_logger("gateway.chat_fold")
 
@@ -108,6 +109,53 @@ def _stream_id_ms(event: dict[str, Any]) -> int | None:
 
 
 # ── The fold (port of route.ts translateAndPersistStream accumulation) ──────
+
+def is_specialist_tool(name: str, sub_agent_name: str) -> bool:
+    """True for the orchestrator's own tool for the agent *sub_agent_name*.
+
+    The orchestrator names each specialist tool after its agent, with "-" as
+    "_" (``orchestrator/agents.py``). Such a tool is a hand-off as much as
+    ``call_agent`` is, so its sub-run's steps belong on it (§7.1.1 rule 5).
+    The live twin is ``isSpecialistTool`` in ``lib/chatStream.ts``.
+    """
+    agent = str(sub_agent_name or "").strip().lower()
+    return bool(agent) and str(name or "").strip().lower() == agent.replace("-", "_")
+
+
+#: The tool names that hand work to another agent (substring match, as the
+#: live twin ``isHandoffTool`` in ``lib/chatStream.ts``). ``spawn_subagents``
+#: is a hand-off whose rows keep no child text (WS-67 OA-9b hardening).
+HANDOFF_TOOLS = ("call_agent", "delegate_to_agent", "spawn_subagents")
+SPAWN_TOOL = "spawn_subagents"
+
+
+def is_handoff_tool(name: str) -> bool:
+    """Port of ``isHandoffTool`` (``lib/chatStream.ts``)."""
+    lowered = str(name or "").lower()
+    return any(h in lowered for h in HANDOFF_TOOLS)
+
+
+def take_handoff(
+    tool_name: str, acc: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Port of ``takeHandoff`` (``lib/chatStream.ts``): ``(fields, rest)``.
+
+    A hand-off row (``is_handoff_tool`` or a specialist tool) takes the name,
+    the text and the steps, and the accumulator starts again. A spawn row takes
+    no text, because a child's text is item JSON for the parent model. Any other
+    tool takes nothing and leaves the accumulator alone.
+    """
+    if not (is_handoff_tool(tool_name) or is_specialist_tool(tool_name, acc["name"])):
+        return {}, acc
+    fields: dict[str, Any] = {}
+    if acc["name"] or acc["text"] or acc["tools"]:
+        fields = {
+            "subAgentName": acc["name"],
+            "subAgentText": "" if SPAWN_TOOL in str(tool_name).lower() else acc["text"],
+            "subAgentTools": acc["tools"],
+        }
+    return fields, {"name": "", "text": "", "tools": []}
+
 
 def fold_run_events(events: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Fold one run's AG-UI events into the persisted-message shape.
@@ -218,17 +266,7 @@ def fold_run_events(events: list[dict[str, Any]]) -> dict[str, Any] | None:
             tc_id = str(ev.get("toolCallId") or "")
             name = tool_names.get(tc_id, "tool")
             result = str(ev.get("result") or ev.get("content") or "")
-            is_delegate = "call_agent" in name.lower()
-            sub_fields: dict[str, Any] = {}
-            if is_delegate and (
-                sub_agent["name"] or sub_agent["text"] or sub_agent["tools"]
-            ):
-                sub_fields = {
-                    "subAgentName": sub_agent["name"],
-                    "subAgentText": sub_agent["text"],
-                    "subAgentTools": sub_agent["tools"],
-                }
-                sub_agent = {"name": "", "text": "", "tools": []}
+            sub_fields, sub_agent = take_handoff(name, sub_agent)
             tool_events.append({
                 "id": tc_id,
                 "name": name,
@@ -254,9 +292,16 @@ def fold_run_events(events: list[dict[str, Any]]) -> dict[str, Any] | None:
             pass
 
         elif t == "CUSTOM":
+            # `segmentCutoff`: the count of segments when the card arrived, 0
+            # before the first text, so the reloaded card draws before the
+            # text that streamed after it. The proxy checkpoint and the live
+            # hook stamp it the same way (`genUiFlow`, workbench
+            # lib/chatPlacement.ts). A run with no segments draws in the old
+            # layout, because `genUiFlow` answers null for it.
             custom_events.append({
                 "name": str(ev.get("name") or ""),
                 "value": ev.get("value"),
+                "segmentCutoff": len(segments),
             })
 
         elif t == "SUB_AGENT_TEXT_DELTA":
@@ -269,6 +314,11 @@ def fold_run_events(events: list[dict[str, Any]]) -> dict[str, Any] | None:
                 "id": str(ev.get("toolCallId") or ""),
                 "name": str(ev.get("toolCallName") or "tool"),
                 "status": "running",
+                # §7.1.1 rule 5: the step's arguments, so a reload draws the
+                # same email card as the live turn did.
+                "args": parse_tool_args(
+                    ev.get("args") if isinstance(ev.get("args"), str)
+                    else json.dumps(ev.get("args") or {})),
             })
 
         elif t == "SUB_AGENT_TOOL_CALL_RESULT":
@@ -313,6 +363,12 @@ def fold_run_events(events: list[dict[str, Any]]) -> dict[str, Any] | None:
                         reasoning_blocks[i] = ""
                         break
             content = _joined
+
+    # Safety net (task 1787): litellm's empty-text placeholder never reaches
+    # the stored row, even if it got past the stream filter.
+    content = strip_placeholder_lines(content)
+    for _seg in segments:
+        _seg["text"] = strip_placeholder_lines(_seg["text"])
 
     if not (
         content.strip() or tool_events or reasoning_blocks
@@ -412,6 +468,30 @@ async def _run_authority(thread_id: str, actor: str) -> dict[str, Any] | None:
         return None
 
 
+async def _run_holds_mail(
+    agent_name: str, thread_id: str, member: str, organization_id: str | None,
+) -> bool:
+    """``acb_skills.egress.run_holds_mail`` for a run that this module folds.
+
+    The tenant is the run's own, which the caller resolved on the server, and
+    it is bound only for the read. A fault reads as mail, so it fails closed.
+    """
+    from acb_common.db import bind_tenant, current_tenant, release_tenant
+
+    token = None
+    try:
+        from acb_skills.egress import run_holds_mail
+
+        if organization_id and not current_tenant():
+            token = bind_tenant(str(organization_id))
+        return await run_holds_mail(
+            agent_name, {"session_id": thread_id, "member": member})
+    except Exception:  # noqa: BLE001 — fail closed: the run holds mail
+        return True
+    finally:
+        release_tenant(token)
+
+
 async def persist_final_assistant_message(
     thread_id: str,
     message_id: str,
@@ -421,8 +501,25 @@ async def persist_final_assistant_message(
     run_id: str = "",
     model: str | None = None,
     organization_id: str | None,
+    expect_run_id: str | None = None,
+    holds_mail: bool | None = None,
 ) -> dict[str, Any] | None:
     """Replay the run's event log and upsert the authoritative message row.
+
+    ``holds_mail`` is the answer of ``acb_skills.egress.run_holds_mail`` for
+    this run (WS-17 EM-G11f3, ``email_app_master_plan.md`` section
+    12.3.13.9.1, item 6). True drops the body of the ``agent_run`` trace. A
+    run-end route passes the answer that it took once. ``None`` asks the
+    predicate here, under the run's tenant (:func:`_run_holds_mail`), and the
+    restart sweep relies on that. The message row itself (W9) does not change.
+
+    ``expect_run_id`` makes the fold refuse a stream that belongs to ANOTHER
+    run. The restart sweep folds a dead run after the fact (gateway.
+    chat_recovery). If a new run has reset the thread's stream by then, its
+    ``RUN_STARTED`` names the new run, and folding it would write the new
+    run's answer into the old row. A stream with no ``RUN_STARTED`` (its head
+    trimmed) is folded as before. Fence:
+    ``tests/unit/test_chat_deploy_recovery.py``.
 
     Called from the detached task's ``finally`` — the run is over (finished,
     errored, or cancelled) and every event it emitted is in Redis. Idempotent
@@ -453,6 +550,17 @@ async def persist_final_assistant_message(
         events = await replay_events(
             thread_id, since_id="0-0", count=10_000, drain=True,
         )
+        if expect_run_id:
+            started = next(
+                (e for e in events if e.get("type") == "RUN_STARTED"), None,
+            )
+            held = str((started or {}).get("runId") or "")
+            if held and held != expect_run_id:
+                _log.warning(
+                    "chat_fold.persist_refused_other_run",
+                    thread_id=thread_id[:12], message_id=message_id[:40],
+                )
+                return None
         # Head-trim visibility (audit R1): the stream is MAXLEN-capped, and
         # Redis trims the OLDEST entries — so a very long turn can lose its
         # head (RUN_STARTED + the start of the answer) before this replay
@@ -477,6 +585,9 @@ async def persist_final_assistant_message(
         try:
             from gateway.run_trace import record_run_trace  # noqa: PLC0415
             _last_ms = (folded or {}).get("timestamp") or None
+            if holds_mail is None:
+                holds_mail = await _run_holds_mail(
+                    agent_name, thread_id, user_id, organization_id)
             await record_run_trace(
                 run_id=run_id or message_id,  # message_id is run-unique per turn
                 thread_id=thread_id,
@@ -487,6 +598,7 @@ async def persist_final_assistant_message(
                 folded=folded,
                 ended_ms=_last_ms,
                 organization_id=organization_id,
+                holds_mail=holds_mail,
             )
         except Exception:  # noqa: BLE001
             pass
@@ -548,3 +660,51 @@ async def persist_final_assistant_message(
             error=str(exc),
         )
         return None
+
+
+async def persist_channel_reply(
+    thread_id: str,
+    message_id: str,
+    content: str,
+    *,
+    user_id: str,
+    agent_name: str = "orchestrator",
+    timestamp_ms: int,
+    organization_id: str,
+) -> bool:
+    """Write the final reply of a run that a CHANNEL started (WS-47 WAC-3).
+
+    The WhatsApp bot runs the executor's batch ``run_agent``. That path
+    writes no Redis event log, so :func:`persist_final_assistant_message`
+    has nothing to replay. The caller holds the reply text, and this writes
+    it as the run's sealed agent row, with the same rules as the fold:
+    ``author_from_run`` names the agent that ran, and the member who started
+    the run is the run member (S12, S13). It never changes a human turn.
+
+    The caller wrote the session row first. ``organization_id`` is the tenant
+    that the phone link names, never one from the message. Returns True when
+    the row was written. Unlike the fold, it raises on a database error, so
+    the caller can record the failure.
+    """
+    import asyncio
+
+    from gateway.routes.chat import MessageRecord, _upsert_messages
+
+    record = MessageRecord(
+        id=message_id, role="assistant",
+        content=strip_placeholder_lines(content), timestamp=timestamp_ms,
+    )
+    declined = await asyncio.to_thread(
+        _upsert_messages, thread_id, [record],
+        actor_email=user_id, agent_name=agent_name,
+        # The fold's own rule: a solo thread records nothing (None), and a
+        # thread that became a room records its members and caps (§4).
+        authority=await _run_authority(thread_id, user_id),
+        author_from_run=True,
+        organization_id=organization_id,
+    )
+    if declined:
+        _log.warning("chat_fold.channel_reply_declined",
+                     thread_id=thread_id[:12], message_id=message_id[:40])
+        return False
+    return True

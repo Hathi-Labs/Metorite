@@ -6,11 +6,26 @@
  * One control, because a read-only badge next to a separate "change stage"
  * menu is two places to look for the same fact. Moving from here issues the
  * same PATCH the kanban drag does (lib/board.ts::moveRequest).
+ *
+ * The menu is an `AnchoredPanel` (CRM-U2), the shared popover of
+ * `SelectButton` and `StatusMenu`. It is portalled, so the record sheet's
+ * scroll does not clip it, and it paints above the sheet's `Modal`. A click
+ * outside closes it through `lib/outsideClick.ts`, never a full-screen scrim.
+ * Escape closes the menu only, and focus goes back to the pill.
+ *
+ * Not `StatusMenu`: that menu groups a task's statuses under the task stages.
+ * A CRM status has a type (open, won, lost) and a probability instead.
  */
 
 import Icon from "@/components/Icon";
-import { useState } from "react";
-import { statusTone } from "../lib/board";
+import AnchoredPanel from "@/components/ui/AnchoredPanel";
+import { domClickWalk, shouldDismiss } from "@/lib/outsideClick";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { orderStageList, stageAccent } from "../lib/board";
+import { pickable } from "../lib/emptyStages";
+import { useCrmModeValue } from "../lib/modeContext";
+import { stagesInPlaces } from "../lib/pipelines";
+import { STATUS_TYPE_LABELS } from "../lib/settings";
 import type { Status } from "../lib/types";
 
 export default function StatusPill({
@@ -18,17 +33,107 @@ export default function StatusPill({
   statuses,
   onChange,
   disabled = false,
+  entity = "deals",
+  places,
 }: {
   status: Status | null;
   statuses: Status[];
   onChange?: (statusId: string) => void;
   disabled?: boolean;
+  /** Which stage list this is. Leads keep their own order. */
+  entity?: string;
+  /** The places of the pipeline on screen (`placesOf`), for the board order. */
+  places?: ReadonlyMap<string, number>;
 }) {
   const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement | null>(null);
+  // State, not a ref, so the panel measures again when the trigger mounts.
+  const [trigger, setTrigger] = useState<HTMLButtonElement | null>(null);
+  const menuId = useId();
+  // CRM-C3: a hidden stage is offered only when it is the current one.
+  // The mode comes from the page (`lib/modeContext.ts`, CRM-C2). Task #838:
+  // the menu uses the board's order, so it matches the lanes.
+  const mode = useCrmModeValue();
+  // CRM-M3: a deal offers the stages of its own pipeline, and its current stage.
+  // No places (a pipeline that lists none) offers every stage.
+  const sorted = useMemo(() => {
+    const ordered = pickable(orderStageList(entity, statuses, mode, places), status?.id);
+    return entity === "deals" ? stagesInPlaces(ordered, places, status?.id) : ordered;
+  }, [statuses, status?.id, entity, mode, places]);
+  // The option the keyboard is on. Focus stays on the pill: the menu is
+  // portalled outside the record sheet's focus trap, so moving DOM focus
+  // into it would be pulled back. `aria-activedescendant` names the option
+  // instead, which works inside any trap.
+  const [active, setActive] = useState(0);
+  const optionId = (index: number) => `${menuId}-option-${index}`;
+
+  function toggle() {
+    if (!open) {
+      // The keyboard starts on the current status, set once when the menu
+      // opens so it does not jump while the menu is up.
+      const current = sorted.findIndex((option) => option.id === status?.id);
+      setActive(current >= 0 ? current : 0);
+    }
+    setOpen((value) => !value);
+  }
+
+  const choose = useCallback(
+    (option: Status) => {
+      setOpen(false);
+      root.current?.querySelector("button")?.focus();
+      if (option.id !== status?.id) onChange?.(option.id);
+    },
+    [status?.id, onChange],
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    if (!open) return;
+    const onDown = (event: MouseEvent) => {
+      if (shouldDismiss(event.target as Element | null, domClickWalk(root.current))) {
+        setOpen(false);
+      }
+    };
+    // In the CAPTURE phase on `window`, and stopped there. The pill sits in
+    // the record sheet, and the sheet's `Modal` hears Escape on `document`.
+    // Without the stop, one Escape closed the menu AND the record. The arrow
+    // keys, Home, End and Enter are stopped for the same reason.
+    const onKey = (event: KeyboardEvent) => {
+      const count = sorted.length;
+      let handled = true;
+      if (event.key === "Escape") {
+        setOpen(false);
+        root.current?.querySelector("button")?.focus();
+      } else if (event.key === "ArrowDown") {
+        setActive((index) => (index + 1) % count);
+      } else if (event.key === "ArrowUp") {
+        setActive((index) => (index - 1 + count) % count);
+      } else if (event.key === "Home") {
+        setActive(0);
+      } else if (event.key === "End") {
+        setActive(count - 1);
+      } else if (event.key === "Enter" || event.key === " ") {
+        const option = sorted[active];
+        if (option) choose(option);
+      } else {
+        handled = false;
+      }
+      if (!handled) return;
+      event.stopPropagation();
+      event.preventDefault();
+    };
+    document.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey, true);
+    };
+  }, [open, sorted, active, choose]);
+
   const readOnly = disabled || !onChange || statuses.length === 0;
 
   const label = status?.name ?? "No status";
-  const tone = status ? statusTone(status) : "bg-muted-foreground";
+  const tone = status ? stageAccent(status, mode).dot : "bg-muted-foreground";
 
   if (readOnly) {
     return (
@@ -40,57 +145,67 @@ export default function StatusPill({
   }
 
   return (
-    <div className="relative">
+    <div ref={root} className="relative">
       <button
-        onClick={() => setOpen((v) => !v)}
+        ref={setTrigger}
+        type="button"
+        // The ARIA 1.2 select-only combobox: focus stays here and
+        // `aria-activedescendant` names the option the keyboard is on.
+        role="combobox"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={open ? menuId : undefined}
+        aria-activedescendant={open ? optionId(active) : undefined}
+        onClick={toggle}
         className="inline-flex items-center gap-1.5 rounded-full border border-border bg-secondary/40 px-2.5 py-1 text-xs text-foreground hover:border-primary/40 tech-transition"
       >
         <span className={`w-1.5 h-1.5 rounded-full ${tone}`} />
         {label}
         <Icon name="ChevronDown" className="w-3 h-3 opacity-60" />
       </button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute left-0 z-50 mt-1 w-52 rounded-xl border border-border bg-card p-1 shadow-lg">
-            {[...statuses]
-              .sort((a, b) => a.position - b.position)
-              .map((option) => (
-                <button
-                  key={option.id}
-                  onClick={() => {
-                    setOpen(false);
-                    if (option.id !== status?.id) onChange(option.id);
-                  }}
-                  className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs tech-transition ${
-                    option.id === status?.id
-                      ? "bg-primary/10 text-foreground"
-                      : "text-muted-foreground hover:bg-secondary hover:text-foreground"
-                  }`}
-                >
-                  <span
-                    className={`w-1.5 h-1.5 rounded-full ${statusTone(option)}`}
-                  />
-                  <span className="flex-1 truncate">{option.name}</span>
-                  {/* The stage's default probability beside its name: moving a
-                      deal here is what makes it inherit that number, and the
-                      forecast changes the moment it does (§5.1). */}
-                  {option.probability !== null &&
-                  option.probability !== undefined ? (
-                    <span className="text-[10px] tabular-nums opacity-60">
-                      {option.probability}%
-                    </span>
-                  ) : null}
-                  {option.type === "won" || option.type === "lost" ? (
-                    <span className="text-[10px] uppercase opacity-60">
-                      {option.type}
-                    </span>
-                  ) : null}
-                </button>
-              ))}
-          </div>
-        </>
-      )}
+      <AnchoredPanel
+        anchor={trigger}
+        open={open}
+        className="w-52 p-1"
+        panelProps={{ id: menuId, role: "listbox", "aria-label": "Status" }}
+      >
+        {sorted.map((option, index) => (
+            <button
+              key={option.id}
+              id={optionId(index)}
+              type="button"
+              role="option"
+              tabIndex={-1}
+              aria-selected={option.id === status?.id}
+              onClick={() => choose(option)}
+              onMouseEnter={() => setActive(index)}
+              className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs tech-transition ${
+                option.id === status?.id
+                  ? "bg-primary/10 text-foreground"
+                  : "text-muted-foreground hover:bg-secondary hover:text-foreground"
+              } ${index === active ? "ring-1 ring-primary/40" : ""}`}
+            >
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${stageAccent(option, mode).dot}`}
+              />
+              <span className="flex-1 truncate">{option.name}</span>
+              {/* The stage's default probability beside its name: moving a
+                  deal here is what makes it inherit that number, and the
+                  forecast changes the moment it does (§5.1). */}
+              {option.probability !== null &&
+              option.probability !== undefined ? (
+                <span className="text-[10px] tabular-nums opacity-60">
+                  {option.probability}%
+                </span>
+              ) : null}
+              {option.type === "won" || option.type === "lost" ? (
+                <span className="text-[10px] uppercase opacity-60">
+                  {STATUS_TYPE_LABELS[option.type]}
+                </span>
+              ) : null}
+            </button>
+          ))}
+      </AnchoredPanel>
     </div>
   );
 }

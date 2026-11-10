@@ -17,7 +17,28 @@ Decision policy (see specs/permissions_sandbox_b6.md for the table):
                                                  NOT double-gate or it deadlocks
   * shell commands                             → APPROVE unless they match the
                                                  dangerous-command denylist
+  * shell commands of a SHARED agent (D85)     → DENY in every mode, until the
+                                                 sandbox covers it
+                                                 (:func:`guard_shared_agent_shell`)
+  * any request but a read, a write or a       → DENY in every mode
+    non-egress tool, in a run that a covered     (:func:`guard_shared_agent_shell`,
+    run delegated to (H-236)                     ``acb_skills.egress``)
   * file writes outside the agent workspace    → DENY (out of bounds)
+  * a read of a BINARY file in the workspace   → DENY in enforce AND audit,
+                                                 with a sentence that names
+                                                 ``read_attachment`` (incident
+                                                 2026-10-09, :func:`binary_file_note`)
+  * a tool of an MCP server (WS-8c, H-299)     → APPROVE with ``mcp_confirm``
+                                                 (the caller shows a card) unless
+                                                 it says read-only and not
+                                                 destructive (:func:`mcp_needs_confirmation`),
+                                                 or with ``mcp_always_confirm``
+                                                 for EVERY tool of a server that
+                                                 an admin set so (H-300), or
+                                                 with ``mcp_read_only_key`` (no
+                                                 card) for every tool of a
+                                                 server whose key an admin says
+                                                 can only read (MCP-C2)
   * network                                    → APPROVE (open_world is normal),
                                                  logged for exfil visibility
   * unknown / unclassifiable                   → APPROVE + WARN (fail-open-loud;
@@ -35,8 +56,10 @@ across SDK versions.
 """
 from __future__ import annotations
 
+import functools
 import os
 import re
+import threading
 from typing import Any
 
 from acb_common import get_logger
@@ -120,6 +143,54 @@ def _is_within(path: str, root: str) -> bool:
         return False
 
 
+# ── A tool of an MCP server (WS-8c, H-299) ───────────────────────────────────
+# A native MAF agent calls the tools of an org's MCP servers. The server sends
+# its own hints in ``tools/list`` (``annotations``, MCP 2025-03-26). The rule
+# is one line: a tool needs the member's confirmation card UNLESS it says it
+# is read-only AND does not say it is destructive. A missing hint, a hint that
+# is not a JSON boolean, and no annotations at all each need the card. So the
+# rule fails closed. The hints are the server's own claim, and a hostile
+# server can lie (``agent_architecture.md`` §12.2 WS-8c, known limit).
+# Fence: tests/unit/test_maf_mcp_confirm.py.
+
+#: The code of an MCP tool that needs the member's confirmation card.
+MCP_CONFIRM = "mcp_confirm"
+#: The code of an MCP tool that runs at once. Only this code and
+#: :data:`MCP_READ_ONLY_KEY` skip the card.
+MCP_READ_ONLY = "mcp_read_only"
+#: The code of an egress call in a run that read an answer of an agent that
+#: reads stranger text (WS-17 EM-G11d round 2, ``acb_skills.egress``). It needs
+#: the member's card, and with no card channel it is refused. The caller sets
+#: the fact ``after_untrusted_answer``, never a tool argument.
+UNTRUSTED_ANSWER_CONFIRM = "untrusted_answer_confirm"
+#: The code of a tool of a server that an admin set to "always confirm"
+#: (H-300). Every tool of that server needs the card, whatever its hints say,
+#: because the server writes its own hints and a hostile server can lie.
+MCP_ALWAYS_CONFIRM = "mcp_always_confirm"
+#: The code of a tool of a server whose key an admin says can only read
+#: (MCP-C2, ``agent_architecture.md`` §12.2 WS-8c item 32). The tool runs at
+#: once, as for :data:`MCP_READ_ONLY`, whatever its hints say. The admin's
+#: statement about the key, not the server's hints, is the ground.
+#: :data:`MCP_ALWAYS_CONFIRM` wins over it, and an untrusted answer (step 3a)
+#: still asks the card.
+MCP_READ_ONLY_KEY = "mcp_read_only_key"
+
+
+def mcp_needs_confirmation(annotations: Any) -> bool:
+    """True unless *annotations* say read-only and do not say destructive.
+
+    *annotations* is the ``annotations`` object of one MCP tool as a mapping,
+    with the MCP names (``readOnlyHint``, ``destructiveHint``). Only a real
+    ``True`` counts as read-only, and anything but a real ``True`` counts as
+    not destructive.
+    """
+    if not isinstance(annotations, dict):
+        return True
+    read_only = annotations.get("readOnlyHint") is True
+    destructive = annotations.get("destructiveHint") is True
+    return not (read_only and not destructive)
+
+
 # ── Pure decision function (unit-testable, no SDK types) ─────────────────────
 
 
@@ -141,7 +212,18 @@ def decide(request: Any) -> tuple[bool, str, str]:
     and it still runs — and still short-circuits to approve — once neither
     veto applies. Every existing single-field test call (no request combines
     ``tool_name`` with shell/write fields) is unaffected by the reorder.
+
+    The SDK 1.0 request shapes (fix round 1 of PR #598, 2026-10-03):
+    ``PermissionRequestWrite`` names its target ``file_name``, not ``path``,
+    so a Copilot CLI write used to skip both write vetoes and read as
+    ``write_in_workspace`` wherever it went. ``PermissionRequestRead`` has a
+    ``path`` and no ``read_only``, so a read used to take the write branch.
+    A read now has its own rule: inside the workspace it is approved, and
+    outside it, or with no workspace, it is refused. That is the outcome the
+    write branch gave a read before, under its own reason code. Fence:
+    tests/unit/test_shared_agent_shell_tools.py (WS43-F23).
     """
+    kind = str(_field(request, "kind") or "").strip().lower()
     read_only = bool(_field(request, "read_only"))
     tool_name = str(_field(request, "tool_name") or "")
     commands = _field(request, "commands")
@@ -150,10 +232,19 @@ def decide(request: Any) -> tuple[bool, str, str]:
     new_file = _field(request, "new_file_contents")
     path = str(_field(request, "path") or "")
     url = _field(request, "url") or _field(request, "possible_urls")
+    # The target of a write: ``file_name`` (SDK 1.0), else ``path`` (the
+    # older shape, and the run_script context). A read's path is not a write.
+    target = str(_field(request, "file_name") or "") or (
+        "" if kind == "read" else path
+    )
 
     # 1. Read-only → always safe.
     if read_only:
         return True, "read_only", "observation only"
+
+    # 1b. A file read → inside the workspace only, and never a write.
+    if kind == "read":
+        return _decide_read(path)
 
     # 2. Dangerous shell command → hard veto (fail-closed), regardless of
     #    what tool is asking for it.
@@ -169,15 +260,42 @@ def decide(request: Any) -> tuple[bool, str, str]:
 
     # 3. File write outside the agent workspace → hard veto (fail-closed),
     #    same reasoning: a tool's own annotation cannot waive this.
-    if has_write_redir or new_file is not None or path:
+    if has_write_redir or new_file is not None or target:
         root = _workspace_root()
         # H-201 (§21.16): a write to a path with NO run context has no
         # workspace to be inside, so it is refused. The old global dict hid
         # this case, because it always held the workspace of SOME run.
-        if path and not root:
-            return False, "write_without_workspace", path[:200]
-        if root and path and not _is_within(path, root):
-            return False, "write_out_of_workspace", path[:200]
+        if target and not root:
+            return False, "write_without_workspace", target[:200]
+        if root and target and not _is_within(target, root):
+            return False, "write_out_of_workspace", target[:200]
+
+    # 3a. WS-17 EM-G11d round 2: the run read an answer of an agent that reads
+    #     stranger text (``acb_skills.egress.mark_untrusted_answer``). Each
+    #     call that can reach outside now needs the member's card: an egress
+    #     tool, an MCP tool, or a request with a URL.
+    if _field(request, "after_untrusted_answer") and _reaches_out(request, tool_name, url):
+        return True, UNTRUSTED_ANSWER_CONFIRM, tool_name or str(url or "")[:200]
+
+    # 3b. A tool of an MCP server (WS-8c, H-299) → its own rule, BEFORE the
+    #     platform annotations, so a server tool never borrows the hints of a
+    #     platform tool of the same name. Approved, and the caller shows a
+    #     confirmation card for MCP_CONFIRM (orchestrator._maf_mcp).
+    #     H-300: a server that an admin set to "always confirm" needs the card
+    #     for EVERY tool, so the read-only shortcut never applies to it. The
+    #     MCP gate passes the flag as the fact ``mcp_always_confirm``.
+    #     MCP-C2: a server whose key an admin says can only read needs no
+    #     card, whatever its hints say (fact ``mcp_read_only_key``). The
+    #     order is the rule: step 3a first, then always confirm, then the
+    #     read-only key, then the hints. Only a real ``True`` counts.
+    if _field(request, "mcp_tool"):
+        if _field(request, "mcp_always_confirm"):
+            return True, MCP_ALWAYS_CONFIRM, tool_name or "(mcp tool)"
+        if _field(request, "mcp_read_only_key") is True:
+            return True, MCP_READ_ONLY_KEY, tool_name or "(mcp tool)"
+        if mcp_needs_confirmation(_field(request, "mcp_annotations")):
+            return True, MCP_CONFIRM, tool_name or "(mcp tool)"
+        return True, MCP_READ_ONLY, tool_name or "(mcp tool)"
 
     # 4. Named platform tool → consult risk annotations. Reached once the
     #    hard vetoes above have cleared (or didn't apply), so the common case
@@ -208,8 +326,8 @@ def decide(request: Any) -> tuple[bool, str, str]:
 
     # 6. File write that cleared containment (or no workspace configured) →
     #    approve.
-    if has_write_redir or new_file is not None or path:
-        return True, "write_in_workspace", path[:200] or "(workspace)"
+    if has_write_redir or new_file is not None or target:
+        return True, "write_in_workspace", target[:200] or "(workspace)"
 
     # 7. Network → open_world is expected; approve but surface for audit.
     if url:
@@ -217,6 +335,203 @@ def decide(request: Any) -> tuple[bool, str, str]:
 
     # 8. Unknown / unclassifiable → fail OPEN but LOUD (near-term slice).
     return True, "unknown_allowed", tool_name or "(unclassified request)"
+
+
+def _reaches_out(request: Any, tool_name: str, url: Any) -> bool:
+    """True when the call can send data off the platform (H-236's own test)."""
+    if _field(request, "mcp_tool") or url:
+        return True
+    if not tool_name:
+        return False
+    try:
+        from acb_skills.egress import is_egress_tool
+
+        return bool(is_egress_tool(tool_name))
+    except Exception:  # fail closed: an unreadable rule reaches out
+        return True
+
+
+def _decide_read(path: str) -> tuple[bool, str, str]:
+    """The decision for a ``read`` request (SDK ``PermissionRequestRead``).
+
+    Inside the run's workspace it is approved. Outside it, or with no run
+    context, it is refused, so the CLI cannot read the gateway's ``.env`` or
+    another tenant's dir. A read with no path names nothing, and it is
+    approved as an observation.
+
+    A read of a BINARY file inside the workspace is refused with the reason
+    :data:`BINARY_READ_REASON`, and the detail is the sentence that the model
+    reads (:func:`binary_file_note`). Containment runs first, so the check
+    never opens a path outside the workspace.
+    """
+    if not path:
+        return True, "read_only", "observation only"
+    root = _workspace_root()
+    if not root:
+        return False, "read_without_workspace", path[:200]
+    if not _is_within(path, root):
+        return False, "read_out_of_workspace", path[:200]
+    note = binary_file_note(path, root)
+    if note:
+        return False, BINARY_READ_REASON, note
+    return True, "read_in_workspace", path[:200]
+
+
+# ── A binary file is not text (incident 2026-10-09) ──────────────────────────
+# The Copilot CLI's built-in ``view`` tool reads any file as text. On an Excel
+# file it returned the raw bytes of the ZIP container, ``PK\x03\x04\x14\x00``.
+# That tool result failed every save of the chat with a 500, because Postgres
+# refuses a NUL. The CLI is a vendor binary, so the read request that reaches
+# ``decide()`` is the one place this repo can stop it. The persistence seam
+# (``acb_common.pg_text.storable``) still guards the save on its own.
+# Fence: tests/unit/test_chat_nul_persist.py.
+
+#: The reason code of a refused read of a binary file.
+BINARY_READ_REASON = "read_binary_file"
+
+#: How much of a file the check reads.
+_SNIFF_BYTES = 8192
+
+#: The start of each binary format that a text read can meet, and the kind
+#: that the sentence names when the file name has no suffix.
+_MAGIC: tuple[tuple[bytes, str], ...] = (
+    (b"PK\x03\x04", "zip"),
+    (b"PK\x05\x06", "zip"),
+    (b"%PDF-", "pdf"),
+    (b"\x89PNG\r\n\x1a\n", "png"),
+    (b"\xff\xd8\xff", "jpeg"),
+    (b"GIF87a", "gif"),
+    (b"GIF89a", "gif"),
+    (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1", "ole"),
+    (b"\x1f\x8b", "gzip"),
+    (b"7z\xbc\xaf\x27\x1c", "7z"),
+    (b"Rar!\x1a\x07", "rar"),
+)
+
+#: The kinds that ``acb_skills.attachment_tools.read_attachment`` reads.
+_ATTACHMENT_KINDS = frozenset({"docx", "xlsx", "pdf"})
+
+#: The suffixes that the Copilot CLI's ``view`` tool sends to the model as an
+#: IMAGE, not as text. ``view`` asks the native
+#: ``imageHelpersIsBinaryImageFile`` (``function Lk`` in CLI 1.0.66
+#: ``app.js``), which answers by the suffix alone, in any case. Its text
+#: result is "Viewed image file successfully.", with no NUL. So a read of such
+#: a name is always approved, whatever the bytes are, or a screenshot that a
+#: member attaches cannot be seen (fix rounds 1 and 2).
+#:
+#: ⚠️ This list follows CLI 1.0.66. Production fetches the CLI runtime of its
+#: SDK pin (``scripts/vps_apply.sh``, the H-181 fetch). A CLI upgrade must
+#: check this list again against ``imageHelpersIsBinaryImageFile``.
+_CLI_IMAGE_SUFFIXES = frozenset({
+    "png", "jpg", "jpeg", "gif", "webp",
+    "bmp", "ico", "tif", "tiff", "heic", "avif",
+})
+
+#: The byte order marks of UTF-32 and UTF-16 text. Such a file holds NULs and
+#: is still text. ``acb_common.pg_text.storable`` guards the save of a NUL
+#: that comes through.
+_TEXT_BOMS = (b"\xff\xfe\x00\x00", b"\x00\x00\xfe\xff", b"\xff\xfe", b"\xfe\xff")
+
+
+def _bomless_utf16(head: bytes) -> bool:
+    """True when *head* looks like UTF-16 text with no byte order mark.
+
+    In UTF-16 text that is mostly Latin, every second byte is zero. LE puts
+    the zero byte after the letter, and BE puts it before. Nine in ten byte
+    pairs must show the pattern, and the other byte must not be zero.
+    """
+    pairs = len(head) // 2
+    if pairs < 2:
+        return False
+    for zero_at in (1, 0):
+        hits = sum(
+            1 for i in range(pairs)
+            if head[2 * i + zero_at] == 0 and head[2 * i + 1 - zero_at] != 0
+        )
+        if hits * 10 >= pairs * 9:
+            return True
+    return False
+
+
+def _size_text(size: int) -> str:
+    if size < 1024:
+        return f"{size} bytes"
+    if size < 1024 * 1024:
+        return f"{round(size / 1024)} KB"
+    return f"{size / (1024 * 1024):.1f} MB"
+
+
+def binary_file_note(path: str, root: str) -> str | None:
+    """A sentence for the model when *path* is a binary file, else ``None``.
+
+    A file is binary when its first 8 KB hold a NUL, or when it starts with a
+    known magic number (ZIP, which holds .xlsx and .docx, PDF, PNG and more).
+    The sentence names the file, its kind and its size, and it points a
+    .docx, .xlsx or .pdf file at ``read_attachment``.
+
+    Two kinds of file are never binary here. A name with an image suffix of
+    :data:`_CLI_IMAGE_SUFFIXES` is an image to the CLI, so the file is not
+    opened at all. A file that starts with a UTF-16 or UTF-32 byte order mark
+    is text. UTF-16 text with no mark stays refused, with a sentence that
+    asks for a UTF-8 copy (:func:`_bomless_utf16`).
+
+    It opens the file through :mod:`acb_skills.safe_open` (a link at any depth
+    fails), so call it only after the containment check. Any failure, a
+    missing file and a folder return ``None``, and the read goes on as before.
+    """
+    from pathlib import Path, PurePosixPath
+
+    from acb_skills import safe_open
+
+    try:
+        base = os.path.normpath(os.path.abspath(root))
+        target = os.path.normpath(os.path.join(base, path))
+        rel = os.path.relpath(target, base).replace(os.sep, "/")
+        if rel == "." or rel.startswith("../") or rel == "..":
+            return None
+        if PurePosixPath(rel).suffix.lower().lstrip(".") in _CLI_IMAGE_SUFFIXES:
+            return None
+        fh = safe_open.open_read(Path(base), rel)
+        if fh is None:
+            return None
+        with fh:
+            size = os.fstat(fh.fileno()).st_size
+            head = fh.read(_SNIFF_BYTES)
+    except (safe_open.UnsafePath, OSError, ValueError):
+        return None
+    if head.startswith(_TEXT_BOMS):
+        return None
+    magic = next((kind for sig, kind in _MAGIC if head.startswith(sig)), None)
+    if magic is None and b"\x00" not in head:
+        return None
+    name = PurePosixPath(rel).name
+    kind = PurePosixPath(rel).suffix.lower().lstrip(".") or magic or "binary"
+    if magic is None and _bomless_utf16(head):
+        # Still refused: a text read gives a NUL after each letter. But the
+        # agent gets a way on (fix round 2).
+        return (
+            f"{name} ({kind}, {_size_text(size)}) looks like UTF-16 text with "
+            "no byte order mark, so a text read returns it with a NUL in each "
+            "letter. It was not read. Ask the member to save it again as UTF-8."
+        )
+    note = (
+        f"{name} is a binary file ({kind}, {_size_text(size)}), so a text "
+        "read returns only raw bytes. It was not read."
+    )
+    if kind in _ATTACHMENT_KINDS:
+        note += (
+            " If the member attached it in this chat, use read_attachment to "
+            "read its text."
+        )
+    else:
+        note += " Do not read it as text."
+    return note
+
+
+def _binary_read_result(note: str) -> Any:
+    """The SDK refusal for a read of a binary file. No person approves it."""
+    from copilot.generated.rpc import PermissionDecisionReject
+    return PermissionDecisionReject(feedback="Blocked by Metorite: " + note)
 
 
 # ── Per-tool call-context builders (BO-7 cheap win 1/3) ──────────────────────
@@ -246,8 +561,16 @@ def _run_script_context(kwargs: dict) -> dict:
     }
 
 
+def _run_command_context(kwargs: dict) -> dict:
+    """``run_command`` (WS-43d, ``maf_coding_engine.md`` §7.4): the command IS
+    the text that runs, so the denylist reads it whole. It runs in the
+    container, never on the host, so no ``path`` is mapped."""
+    return {"full_command_text": str(kwargs.get("command") or "")}
+
+
 _TOOL_CONTEXT_BUILDERS: dict[str, Any] = {
     "run_script": _run_script_context,
+    "run_command": _run_command_context,
 }
 
 
@@ -296,6 +619,357 @@ def _denied_result(reason: str) -> Any:
     )
 
 
+# ── D85: no shell for a shared agent until the sandbox covers it ─────────────
+# Owner decision, 2026-10-03 (work_plan.md D85, maf_coding_engine.md §7.9).
+# The injection seam withholds the shell TOOLS from a shared agent (a cover
+# may lift that). This half refuses the Copilot CLI's OWN shell, which
+# task-manager and app-builder hold. That shell runs on the HOST, so a cover
+# never lifts it. The run decides it once, at its boundary: the executor binds
+# ``host_shell_refused`` into the artifact context from
+# ``orchestrator._tool_injection._host_shell_refused``.
+# Fence: tests/unit/test_shared_agent_shell_tools.py (WS43-F23).
+
+#: The text the model reads when D85 refuses its shell.
+SHELL_WITHHELD_REASON = (
+    "Shell is disabled for shared agents until the sandbox covers them, D85"
+)
+
+#: Request kinds that run a shell command. The SDK sends every shell, bash and
+#: PowerShell command as ``shell``; the other names cover a future SDK.
+_SHELL_KINDS = frozenset({"shell", "bash", "powershell", "pwsh"})
+
+
+def is_shell_request(request: Any) -> bool:
+    """True when *request* asks to run a shell command (D85).
+
+    A ``shell`` kind is one. So is any request that carries command text, so a
+    shell request with an unknown kind does not slip through.
+    """
+    kind = str(_field(request, "kind") or "").strip().lower()
+    if kind in _SHELL_KINDS:
+        return True
+    return bool(
+        _field(request, "full_command_text")
+        or _field(request, "commands")
+        or _field(request, "command_segments")
+    )
+
+
+def host_shell_refused_for_this_run() -> bool:
+    """True unless the run on this frame says its host shell may run (D85).
+
+    Only an explicit ``host_shell_refused=False`` in the artifact context
+    allows the Copilot CLI's shell. A frame with no run context, or a context
+    with no such key, reads as refused. That fails closed, as every H-201
+    reader does.
+    """
+    try:
+        from acb_skills.write_artifact import artifact_context
+        return artifact_context().get("host_shell_refused", True) is not False
+    except Exception:
+        return True
+
+
+def _shell_withheld_result() -> Any:
+    """The SDK refusal for a D85 shell request.
+
+    It does not tell the model to ask the user, because no person can approve
+    this one. Only a Copilot CLI that runs inside a broker sandbox lifts it,
+    and none does yet.
+    """
+    from copilot.generated.rpc import PermissionDecisionReject
+    return PermissionDecisionReject(
+        feedback=(
+            "Blocked by Metorite: " + SHELL_WITHHELD_REASON + ". Do not try "
+            "the shell again in this chat. Use your own tools."
+        ),
+    )
+
+
+# ── A push of agent code needs the operator's reviewer (2026-10-19) ──────────
+# A push of agent code uses the operator's GITHUB_TOKEN. A push
+# from a chat run used to need only the member's words "commit and push": the
+# addendum told the model to run ``git push --no-verify``, and the executor
+# then recorded the commit as approved by ``chat:autopush``. So the push
+# skipped the reviewer of the self-mutation queue.
+#
+# Now the run decides once, at its boundary, from the member and the org of
+# the run binding (never the request): the executor binds ``agent_push_allowed``
+# from ``acb_auth.agent_operator.may_review_agent_commits``, the rule of the
+# queue. This guard refuses a git push of every other run, in every mode. A
+# context with no key refuses, so it fails closed. The commit stays local, and
+# ``_detect_agent_commits`` queues it for a reviewer.
+#
+# The command match is a regex, so a hidden push (a script, an alias) can pass
+# it. ``run_script`` checks the script text too, and ``_detect_agent_commits``
+# records a push that got past both as pending, never as approved.
+# Fence: tests/unit/test_chat_autopush_reviewer_gate.py.
+#
+# H-363: the clone and the shell hold NO credential now, so a push that the
+# shell runs fails, also for a reviewer. For a reviewer the guard still lets
+# the command run (the commit in it must happen), and it notes a push
+# request for the run (:func:`note_agent_push_request`). When the run ends,
+# ``orchestrator.executor._detect_agent_commits`` asks the reviewer rule
+# again and, on a yes, the GATEWAY pushes through
+# ``acb_common.git_credentials.push``. A request is only a wish: a run whose
+# member is not a reviewer gets no push, whatever it noted.
+# Fence: tests/unit/test_clone_token_h363.py.
+
+#: The text the model reads when the push gate refuses a push.
+AGENT_PUSH_WITHHELD_REASON = (
+    "Only an admin of the first-party organization or of a platform "
+    "operator organization may push agent "
+    "code. Do not push, and do not try another way. Your commit stays local, "
+    "and it is queued for a reviewer on the Agents page. Tell the member this "
+    "in plain words"
+)
+
+#: ``git ... push`` or ``git ... send-pack``, with any global options between
+#: (``-C <dir>``, ``-c <key=value>``, ``--no-pager``). A word such as "push"
+#: inside a commit message does not match, because only options may come
+#: between ``git`` and the verb. A path to the binary (``/usr/bin/git``,
+#: ``./git``, ``C:\...\git.exe``) and a shell escape (``\git``) count as git
+#: too (review of #1168), so ``/`` and ``\`` may come before it, and ``.exe``
+#: may follow it.
+_GIT_PUSH_RE = re.compile(
+    r"(?:^|[\s;&|(`'\"$/\\])git(?:\.exe)?"
+    r"(?:\s+(?:-[Cc]\s+(?:\"[^\"]*\"|'[^']*'|\S+)|--?[\w-]+(?:=\S+)?))*"
+    r"\s+(?:push|send-pack)\b",
+    re.IGNORECASE,
+)
+
+
+def is_git_push_text(text: str) -> bool:
+    """True when *text* (a command, or a script) runs ``git push``."""
+    return bool(text) and _GIT_PUSH_RE.search(str(text)) is not None
+
+
+def _command_texts(request: Any) -> list[str]:
+    """Every command text that a shell request carries."""
+    out: list[str] = []
+    for name in ("full_command_text", "commands", "command_segments"):
+        value = _field(request, name)
+        if not value:
+            continue
+        if isinstance(value, (list, tuple)):
+            out.extend(str(v) for v in value if v)
+        else:
+            out.append(str(value))
+    return out
+
+
+def is_git_push_request(request: Any) -> bool:
+    """True when *request* is a shell request that runs ``git push``."""
+    if not is_shell_request(request):
+        return False
+    return any(is_git_push_text(t) for t in _command_texts(request))
+
+
+def agent_push_allowed_for_this_run() -> bool:
+    """True only when the run on this frame bound ``agent_push_allowed=True``.
+
+    The executor binds it from the member and the org of the run binding. A
+    frame with no run context, or a context with no such key, reads as not
+    allowed.
+    """
+    try:
+        from acb_skills.write_artifact import artifact_context
+        return artifact_context().get("agent_push_allowed") is True
+    except Exception:
+        return False
+
+
+#: The run ids whose shell asked for a push, in arrival order. Only the
+#: guard and ``run_script`` add one, and only for a run that bound
+#: ``agent_push_allowed=True``. The executor takes it at the end of the run.
+_PUSH_REQUESTS: dict[str, None] = {}
+_PUSH_REQUESTS_LOCK = threading.Lock()
+#: A run that never reaches its commit scan must not grow the map forever.
+_PUSH_REQUESTS_MAX = 1024
+
+
+def note_agent_push_request() -> bool:
+    """Note that the run on this frame asked for a push (H-363).
+
+    It notes nothing for a run that did not bind ``agent_push_allowed=True``,
+    or that has no run id. True when it noted the request.
+    """
+    if not agent_push_allowed_for_this_run():
+        return False
+    try:
+        from acb_skills.write_artifact import artifact_context
+        run_id = str(artifact_context().get("run_id") or "").strip()
+    except Exception:
+        return False
+    if not run_id:
+        return False
+    with _PUSH_REQUESTS_LOCK:
+        _PUSH_REQUESTS.pop(run_id, None)
+        _PUSH_REQUESTS[run_id] = None
+        while len(_PUSH_REQUESTS) > _PUSH_REQUESTS_MAX:
+            _PUSH_REQUESTS.pop(next(iter(_PUSH_REQUESTS)))
+    return True
+
+
+def take_agent_push_request(run_id: str | None) -> bool:
+    """True once, when the run *run_id* noted a push request. It clears it."""
+    if not run_id:
+        return False
+    with _PUSH_REQUESTS_LOCK:
+        return _PUSH_REQUESTS.pop(str(run_id), False) is None
+
+
+def _agent_push_withheld_result() -> Any:
+    """The SDK refusal for a push that the member may not make."""
+    from copilot.generated.rpc import PermissionDecisionReject
+    return PermissionDecisionReject(
+        feedback="Blocked by Metorite: " + AGENT_PUSH_WITHHELD_REASON + ".",
+    )
+
+
+# ── H-236: no egress in a run that a covered run delegated to ────────────────
+# The executor binds ``no_egress`` into the artifact context of every run that
+# a covered run delegates to (``acb_skills.egress``). A Copilot sub-agent then
+# keeps only the requests that cannot reach the network: a file read, a file
+# write (which ``decide()`` contains) and a call to one of its own tools that
+# is not an egress tool. Everything else is refused, an unknown kind included:
+# the CLI's URL fetch, an MCP call, the shell, memory, hooks and extensions.
+# Fence: tests/unit/test_delegation_no_egress.py (WS43-F24).
+
+#: The text the model reads when the H-236 control refuses a request.
+EGRESS_WITHHELD_REASON = (
+    "A run that another agent called during a sandboxed turn may not send "
+    "data off the platform, H-236"
+)
+#: The same, when the run works for a conversation that read email from
+#: outside senders (EM-G11d). It names no other app, because a run cannot
+#: tell what another app may do (security review of #1173, P2).
+EGRESS_WITHHELD_MAIL_REASON = (
+    "This run works for a conversation that read email from outside "
+    "senders, so it may not send data off the platform, EM-G11d"
+)
+
+#: The request kinds that a ``no_egress`` run may still make.
+_NO_EGRESS_KINDS = frozenset({"read", "write", "custom-tool"})
+
+
+def is_egress_request(request: Any, tools: Any = None) -> bool:
+    """True when *request* could carry data off the platform (H-236).
+
+    Only a read, a write, and a call to a tool that is not an egress tool
+    pass. A request of any other kind, or with no kind, is an egress request,
+    so a new kind of a later SDK fails closed.
+
+    A custom-tool request carries a NAME only. *tools* is a zero-argument
+    callable that returns the session's own tool list. The name passes only
+    when that list holds a tool of that name and the tool OBJECT is not an
+    egress tool, so a tool of another repo that borrows a platform name fails
+    (fix round 2). A delegation name is no exception: the session must hold
+    the platform's own delegation tool under it (follow-up). With no *tools*,
+    or no such tool, it fails closed.
+    """
+    kind = str(_field(request, "kind") or "").strip().lower()
+    if kind not in _NO_EGRESS_KINDS or is_shell_request(request):
+        return True
+    if kind == "custom-tool":
+        from acb_skills.egress import is_egress_tool, tool_name
+
+        name = str(_field(request, "tool_name") or "")
+        try:
+            held = list(tools() if callable(tools) else [])
+        except Exception:
+            return True
+        match = [t for t in held if tool_name(t) == name]
+        return not match or any(is_egress_tool(t) for t in match)
+    return False
+
+
+def _egress_withheld_result() -> Any:
+    """The SDK refusal for an H-236 request. No person can approve it."""
+    from copilot.generated.rpc import PermissionDecisionReject
+
+    from acb_skills.egress import hold_is_for_mail
+
+    reason = EGRESS_WITHHELD_MAIL_REASON if hold_is_for_mail() else EGRESS_WITHHELD_REASON
+    return PermissionDecisionReject(
+        feedback=(
+            "Blocked by Metorite: " + reason + ". Read and "
+            "compute with your own tools, and give the answer back."
+        ),
+    )
+
+
+def guard_shared_agent_shell(handler: Any, *, tools: Any = None) -> Any:
+    """*handler*, with the D85 shell refusal and the H-236 egress refusal in front.
+
+    *tools* returns the session's own tool list, for the H-236 check of a
+    custom-tool request (:func:`is_egress_request`). The one install function
+    (``_copilot_session._install_copilot_permission_handler``) passes it.
+
+    It refuses every shell request of a run whose host shell is refused, and
+    every egress request (:func:`is_egress_request`) of a ``no_egress`` run.
+    It passes every other request to *handler* unchanged. It holds in EVERY
+    ``AGENT_PERMISSION_MODE``, and whatever handler the agent's factory set.
+    Production runs ``enforce`` (the box's ``.env`` sets no mode, read on
+    2026-10-03). The guard still ignores the mode, so a later switch to
+    ``audit`` or ``approve_all`` cannot waive an owner decision. Wrapping
+    twice is a no-op.
+    """
+    if getattr(handler, "__cc_d85_guard__", False):
+        return handler
+
+    @functools.wraps(handler)
+    def _guarded(request: Any, invocation: Any) -> Any:
+        from acb_skills.egress import no_egress_for_this_run, read_untrusted_answer
+
+        # WS-17 EM-G11d round 2: a run that read an untrusted agent's answer
+        # cannot show a card from this sync handler, so its egress is refused.
+        held = no_egress_for_this_run()
+        if (held or read_untrusted_answer()) and is_egress_request(request, tools):
+            _log.info(
+                "permission.decision",
+                mode=_mode(),
+                approved=False,
+                would_deny=True,
+                reason="no_egress" if held else UNTRUSTED_ANSWER_CONFIRM,
+                detail=str(_field(request, "kind") or "")[:40],
+                surface="copilot_no_egress",
+            )
+            return _egress_withheld_result()
+        if is_shell_request(request) and host_shell_refused_for_this_run():
+            command = str(_field(request, "full_command_text") or "")
+            _log.info(
+                "permission.decision",
+                mode=_mode(),
+                approved=False,
+                would_deny=True,
+                reason="host_shell_refused",
+                detail=command[:200],
+                surface="copilot_shell",
+            )
+            return _shell_withheld_result()
+        if is_git_push_request(request) and not agent_push_allowed_for_this_run():
+            command = " ".join(_command_texts(request))
+            _log.warning(
+                "permission.decision",
+                mode=_mode(),
+                approved=False,
+                would_deny=True,
+                reason="agent_push_needs_reviewer",
+                detail=command[:200],
+                surface="copilot_shell",
+            )
+            return _agent_push_withheld_result()
+        if is_git_push_request(request):
+            # A reviewer's push (H-363): the shell holds no credential, so
+            # the gateway pushes when the run ends.
+            note_agent_push_request()
+        return handler(request, invocation)
+
+    _guarded.__cc_d85_guard__ = True  # type: ignore[attr-defined]
+    return _guarded
+
+
 def risk_aware_permission_handler(request: Any, invocation: dict[str, str]) -> Any:
     """Drop-in replacement for ``PermissionHandler.approve_all`` (B6/HH-6).
 
@@ -312,15 +986,20 @@ def risk_aware_permission_handler(request: Any, invocation: dict[str, str]) -> A
         _log.warning("permission.decide_failed", error=str(exc))
         return _approved_result()
 
+    # A binary read is not a permission refusal, so audit mode does not waive
+    # it. An approval would only hand the model the raw bytes again.
+    redirect = (not approved) and code == BINARY_READ_REASON
     denied_would = (not approved) and mode == "enforce"
     _log.info(
         "permission.decision",
         mode=mode,
-        approved=(approved or mode == "audit"),
+        approved=(approved or mode == "audit") and not redirect,
         would_deny=not approved,
         reason=code,
         detail=detail,
     )
+    if redirect:
+        return _binary_read_result(detail)
     if denied_would:
         return _denied_result(f"{code}: {detail}")
     return _approved_result()

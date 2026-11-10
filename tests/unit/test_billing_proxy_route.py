@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -158,8 +159,13 @@ class TestThisFenceIsRegistered:
         workflow = (_ROOT / ".github/workflows/pr-check.yml").read_text(
             encoding="utf-8")
         assert "tests/unit/test_billing_proxy_route.py" in workflow
-        assert "test_billing_proxy_route)" in workflow, (
-            "named in the file list but not in the no-skip grep"
+        # The no-skip list is the `--never-skip` argument of
+        # scripts/ci_unit_guard.py, and it ends where `--must-run` starts.
+        never_skip = re.search(
+            r"--never-skip \\\n(.*?)--must-run \\\n", workflow, re.S)
+        assert never_skip, "the --never-skip argument is gone"
+        assert "tests/unit/test_billing_proxy_route.py" in never_skip.group(1), (
+            "named in the file list but not in the no-skip list"
         )
 
     def test_the_router_is_mounted_by_the_gateway(self):

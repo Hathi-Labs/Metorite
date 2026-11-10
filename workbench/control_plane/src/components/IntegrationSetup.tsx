@@ -3,7 +3,9 @@
 import Button from "@/components/ui/Button";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { IntegrationStatus } from "@/app/api/integrations/status/route";
-import GitHubDeviceConnect from "@/components/GitHubDeviceConnect";
+import GitHubAppConnect from "@/components/GitHubAppConnect";
+import ZohoInCrm from "@/components/ZohoInCrm";
+import { appOwnedTile } from "@/app/integrations/lib/connections";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -27,7 +29,7 @@ interface ServiceCardState {
 // Single integration card
 // ---------------------------------------------------------------------------
 
-function IntegrationCard({
+export function IntegrationCard({
   integration,
   cardState,
   onValuesChange,
@@ -41,7 +43,10 @@ function IntegrationCard({
   onTest: () => void;
 }) {
   const { values, saving, testing, testResult, saved, error } = cardState;
-  const allFilled = integration.env_vars.every((v) => values[v.key]?.trim());
+  // Zoho CRM connects in the CRM (WS-54). The card links there, and it has
+  // no form, so it never posts an empty save as "Configured".
+  const appOwned = appOwnedTile(integration.service) !== undefined;
+  const allFilled = !appOwned && integration.env_vars.every((v) => values[v.key]?.trim());
 
   return (
     <div
@@ -99,8 +104,11 @@ function IntegrationCard({
         </pre>
       )}
 
+      {/* The app-owned card: a link to the app, no inputs */}
+      {appOwned && <ZohoInCrm connected={integration.configured} connection={null} />}
+
       {/* Input fields */}
-      {!saved && (
+      {!saved && !appOwned && (
         <div className="space-y-3">
           {integration.env_vars.map((envVar) => (
             <div key={envVar.key}>
@@ -145,7 +153,7 @@ function IntegrationCard({
       )}
 
       {/* Action buttons */}
-      {!saved && (
+      {!saved && !appOwned && (
         <div className="flex gap-3 pt-1">
           <button
             onClick={onSave}
@@ -165,7 +173,7 @@ function IntegrationCard({
       )}
 
       {/* Re-test after saved */}
-      {saved && (
+      {saved && !appOwned && (
         <div className="flex gap-3 pt-1">
           <button
             onClick={onTest}
@@ -340,7 +348,7 @@ export default function IntegrationSetup({
     }
   };
 
-  // Mark a service as configured (used by special-case components like GitHubDeviceConnect)
+  // Mark a service as configured (used by special-case components like GitHubAppConnect)
   const handleServiceConfigured = (service: string) => {
     setCardStates((prev) => ({
       ...prev,
@@ -426,10 +434,10 @@ export default function IntegrationSetup({
       <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
         {integrations.map((intg) =>
           intg.service === "github" ? (
-            // GitHub uses the OAuth Device Flow wizard instead of plain inputs
-            <GitHubDeviceConnect
+            // WS-54 GH-7: GitHub uses its own card, never plain inputs.
+            <GitHubAppConnect
               key={intg.service}
-              integration={intg}
+              advancedOpen
               onConfigured={() => handleServiceConfigured("github")}
             />
           ) : (

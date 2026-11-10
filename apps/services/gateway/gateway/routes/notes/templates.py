@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from acb_llm.voice import voice_prompt
+
 
 @dataclass(frozen=True)
 class Section:
@@ -327,6 +329,7 @@ def build_system_prompt(template: Template) -> str:
         '"due_hint": str|null, "refs": [int], "confidence": float 0..1, '
         '"kind": "task"|"email"|"document", "email_to": str|null}], '
         '"open_questions": [str]}'
+        + "\n\n" + voice_prompt("summary", "title", json=True)
     )
 
 

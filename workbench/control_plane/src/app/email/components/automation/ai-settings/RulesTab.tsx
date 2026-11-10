@@ -5,6 +5,7 @@
 // Process past emails, artifact picker). Extracted from AISettingsView.tsx.
 
 import Button from "@/components/ui/Button";
+import SelectButton from "@/components/ui/SelectButton";
 import Icon from "@/components/Icon";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -21,7 +22,14 @@ import {
   RuleActionType,
 } from "../../../lib/types";
 import { useEmailStore } from "../../../lib/emailStore";
+import { moveFieldCopy, moveTargets } from "../../../lib/connect";
+import { guardedLoad, loadGuard } from "../../../lib/mailboxSettings";
+import { PROCESS_PAST_MAX_SPAN_DAYS } from "../../../lib/onboarding";
+import {
+  actionOptions, fetchReachStatus, REACH_OFF, type ReachStatus,
+} from "../../../lib/reachStatus";
 import { isPendingReview, PatternRow } from "./SettingsTab";
+import { CopyRulesDialog } from "./CopyRulesDialog";
 import { LabeledToggle, Modal } from "../ui";
 import {
   ACTION_META, ACTION_TYPES, ActionChip, ActionIcon, actionIconColor,
@@ -272,6 +280,7 @@ export function RulesTab({
 }) {
   const [rules, setRules] = useState<AutomationRule[]>([]);
   const [loading, setLoading] = useState(true);
+  const [rulesLoad] = useState(loadGuard);
   const [editing, setEditing] = useState<AutomationRule | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [installing, setInstalling] = useState(false);
@@ -287,6 +296,9 @@ export function RulesTab({
     onProcessPastOpened?.();
   }, [processPastFrom, onProcessPastOpened]);
   const [showAdd, setShowAdd] = useState(false);
+  // "Copy rules from..." shows for a member with two or more mailboxes.
+  const [showCopy, setShowCopy] = useState(false);
+  const mailboxes = useEmailStore((s) => s.accounts);
   // Learned patterns nested under their rule — the deterministic pre-AI stage
   // shown WHERE the rules live, so "why does mail from X get filed as Y?" has
   // one answer screen. Storage stays separate (approval gate + provenance);
@@ -358,12 +370,15 @@ export function RulesTab({
       return;
     }
     setLoading(true);
-    listRules(accountId)
-      .then(setRules)
-      .catch((e) => setError(e.message || "Failed to load rules"))
-      .finally(() => setLoading(false));
+    // Only the newest load lands, so the rules of the mailbox before a pick
+    // never show under the name of the next one (EM-T8f-2 review F1).
+    void guardedLoad(rulesLoad, () => listRules(accountId), {
+      data: setRules,
+      error: (e) => setError(e.message || "Failed to load rules"),
+      done: () => setLoading(false),
+    });
     loadPatterns();
-  }, [accountId, loadPatterns]);
+  }, [accountId, loadPatterns, rulesLoad]);
 
   const missingDefaults = PRESET_RULES.some(
     (p) => !rules.some((r) => r.name.toLowerCase() === p.name.toLowerCase())
@@ -460,6 +475,14 @@ export function RulesTab({
               Add defaults
             </button>
           )}
+          {mailboxes.length > 1 && (
+            <button
+              onClick={() => setShowCopy(true)}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-border text-xs text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors whitespace-nowrap"
+            >
+              <Icon name="Copy" size={13} /> Copy rules from…
+            </button>
+          )}
           {rules.length > 0 && (
             <button
               onClick={() => setShowPast(true)}
@@ -485,6 +508,14 @@ export function RulesTab({
             load();
           }}
           onClose={() => setShowAdd(false)}
+        />
+      )}
+      {showCopy && accountId && (
+        <CopyRulesDialog
+          targetId={accountId}
+          mailboxes={mailboxes}
+          onClose={() => setShowCopy(false)}
+          onCopied={load}
         />
       )}
       {showPast && accountId && (
@@ -860,6 +891,19 @@ function RuleEditor({
   // free-type for new labels), mirroring inbox-zero's LabelCombobox.
   const availableLabels = useEmailStore((s) => s.availableLabels);
 
+  // "Tell me on WhatsApp" is offered only when Reach can deliver it (WS-59
+  // RE-5, P1-4). Until the read answers, the action is not offered.
+  const [reach, setReach] = useState<ReachStatus>(REACH_OFF);
+  useEffect(() => {
+    let live = true;
+    void fetchReachStatus().then((r) => {
+      if (live) setReach(r);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+
   // Conditions visible in the builder: any pre-filled field, plus ones the user
   // explicitly adds. A new rule starts with the AI Prompt row.
   const prefilled = COND_ORDER.filter(
@@ -1027,9 +1071,11 @@ function RuleEditor({
                 title={ACTION_META[a.type].description}
                 className={`${INPUT_BASE} w-40 flex-shrink-0`}
               >
-                {ACTION_TYPES.map((t) => (
-                  <option key={t} value={t}>
-                    {ACTION_META[t].label}
+                {actionOptions(ACTION_TYPES, reach, a.type).map((o) => (
+                  <option key={o.type} value={o.type} disabled={o.disabled}>
+                    {o.hint
+                      ? `${ACTION_META[o.type].label} (${o.hint})`
+                      : ACTION_META[o.type].label}
                   </option>
                 ))}
               </select>
@@ -1096,11 +1142,17 @@ function RuleEditor({
 }
 
 /**
- * MOVE_FOLDER destination picker: a combobox of the account's real folders
- * (user folders + Archive/Junk) with an inline "Create folder" affordance when
- * the typed name doesn't exist yet. The stored value is the folder's display
- * name, which the backend resolves (system folders by key, user folders via
- * get-or-create) — inbox-zero parity for filing mail into folders.
+ * MOVE_FOLDER destination picker: a combobox of the places a rule can move
+ * mail into, with an inline create button when the typed name doesn't exist
+ * yet. The stored value is the display name, which the backend resolves
+ * (system folders by key, user folders via get-or-create) — inbox-zero parity
+ * for filing mail into folders.
+ *
+ * WS-17 EM-G8-f1 (§12.3.12.7): a Gmail mailbox has labels, not folders
+ * (O-GM-1). `moveTargets` gives its labels, and `moveFieldCopy` gives the
+ * words, so the field says "label". The create route is the same, and for
+ * Gmail it makes a user label. ⚠️ Outlook is LIVE: its list and its words
+ * match main (fence: `connect.test.ts`).
  */
 function MoveFolderField({
   value,
@@ -1112,16 +1164,29 @@ function MoveFolderField({
   idx: number;
 }) {
   const folders = useEmailStore((s) => s.folders);
+  const labels = useEmailStore((s) => s.availableLabels);
   const accountId = useEmailStore((s) => s.selectedAccountId);
+  const provider = useEmailStore((s) => s.accounts.find((a) => a.id === s.selectedAccountId)?.provider);
   const fetchFolders = useEmailStore((s) => s.fetchFolders);
+  const fetchLabels = useEmailStore((s) => s.fetchLabels);
   const [creating, setCreating] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const gmail = provider === "gmail";
+  const copy = moveFieldCopy(provider);
 
-  // Folders a message can be moved into: user folders + the Archive/Junk system
-  // targets (inbox/sent/drafts/trash aren't sensible rule destinations).
-  const targets = folders.filter(
-    (f) => f.type === "user" || f.key === "archive" || f.key === "junk",
-  );
+  // D-G8-f1-1: the labels of a Gmail mailbox come from the store. When it has
+  // not read them, the field asks once. A read always holds the standard
+  // categories, so an empty list means no read.
+  const labelsAsked = useRef<string | null>(null);
+  useEffect(() => {
+    if (!gmail || !accountId || labels.length > 0 || labelsAsked.current === accountId) return;
+    labelsAsked.current = accountId;
+    void fetchLabels(accountId);
+  }, [gmail, accountId, labels.length, fetchLabels]);
+
+  // Places a message can be moved into: Archive and Junk, and the user folders
+  // or the Gmail labels (inbox/sent/drafts/trash aren't sensible destinations).
+  const targets = moveTargets(provider, folders, labels);
   const typed = value.trim();
   const exists = targets.some(
     (t) => t.label.toLowerCase() === typed.toLowerCase(),
@@ -1134,10 +1199,10 @@ function MoveFolderField({
     setErr(null);
     try {
       const folder = await createEmailFolder(accountId, typed);
-      await fetchFolders(accountId);
+      await (gmail ? fetchLabels(accountId) : fetchFolders(accountId));
       onChange(folder.name);
     } catch {
-      setErr("Couldn't create that folder. Try again.");
+      setErr(copy.createError);
     } finally {
       setCreating(false);
     }
@@ -1149,7 +1214,7 @@ function MoveFolderField({
         list={dlId}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        placeholder="Choose or type a folder name"
+        placeholder={copy.placeholder}
         className={INPUT_CLS}
       />
       <datalist id={dlId}>
@@ -1164,8 +1229,8 @@ function MoveFolderField({
           disabled={creating || !accountId}
           className="flex items-center gap-1.5 text-[11px] px-2 py-1 rounded-md border border-dashed border-border text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors disabled:opacity-50"
         >
-          {creating ? <Icon name="Loader2" size={12} className="animate-spin" /> : <Icon name="FolderPlus" size={12} />}
-          Create folder “{typed}”
+          {creating ? <Icon name="Loader2" size={12} className="animate-spin" /> : <Icon name={copy.createIcon} size={12} />}
+          {copy.createLabel(typed)}
         </button>
       )}
       {err && <p className="text-[11px] text-destructive">{err}</p>}
@@ -1200,7 +1265,7 @@ function ActionConfig({
   const isDraftReply = action.type === "DRAFT_EMAIL" || action.type === "REPLY";
   const isForward = action.type === "FORWARD";
   const draftLike = isDraftReply || isForward;
-  const delayable = action.type !== "CALL_WEBHOOK";
+  const delayable = action.type !== "CALL_WEBHOOK" && action.type !== "NOTIFY_ME";
   // Forward is inherently manual (a note above the forwarded body); reply/draft
   // follow the explicit content_manual toggle (default = AI writes it).
   const manual = isForward ? true : !!action.content_manual;
@@ -1323,6 +1388,25 @@ function ActionConfig({
         />
       )}
 
+      {/* Tell me on WhatsApp (WS-59 RE-5): one option, kept in `label`. */}
+      {action.type === "NOTIFY_ME" && (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          {/* The SelectButton carries the name "Urgency", so the visible
+              word is hidden from a screen reader: it is said once. */}
+          <span aria-hidden="true">
+            <FieldLabel>Urgency</FieldLabel>
+          </span>
+          <SelectButton
+            label="Urgency"
+            value={action.label === "urgent" ? "urgent" : "normal"}
+            options={NOTIFY_URGENCY}
+            defaultValue="normal"
+            onChange={(v) => set({ label: v })}
+            widthClass="w-56"
+          />
+        </div>
+      )}
+
       {action.type === "CALL_WEBHOOK" && (
         <input
           value={action.url ?? ""}
@@ -1440,6 +1524,12 @@ function ActionConfig({
   );
 }
 
+/** The one option of "Tell me on WhatsApp" (WS-59 RE-5), kept in `label`. */
+const NOTIFY_URGENCY = [
+  { value: "normal", label: "Normal", description: "Inside my daily limit and my working hours." },
+  { value: "urgent", label: "Urgent", description: "Also in my quiet hours. One a day past my limit." },
+] as const;
+
 /** Small field label used inside the action config card. */
 function FieldLabel({ children }: { children: React.ReactNode }) {
   return (
@@ -1535,8 +1625,9 @@ const PAST_PRESETS: { label: string; days: number }[] = [
 ];
 
 /** Mirrors _PROCESS_PAST_MAX_SPAN_DAYS in the gateway, which is the real bound —
- *  this only stops the user reaching a range the API will refuse. */
-const PAST_MAX_SPAN_DAYS = 366;
+ *  this only stops the user reaching a range the API will refuse. The one
+ *  mirror lives in `lib/onboarding.ts`, and its test parses runner.py. */
+const PAST_MAX_SPAN_DAYS = PROCESS_PAST_MAX_SPAN_DAYS;
 
 /** Above this, the run is worth pausing over rather than just counting. Set at
  *  the point where a mistake costs real money instead of pennies. */
@@ -1587,6 +1678,10 @@ function ProcessPastEmailsDialog({
   const [error, setError] = useState<string | null>(null);
   const [estimate, setEstimate] = useState<ProcessPastEstimate | null>(null);
   const [estimating, setEstimating] = useState(false);
+  // EM-S10 fix round 1: a failed count shows "Count again", and a new value
+  // reads it again. The Process button stays disabled until a count shows.
+  const [estimateFailed, setEstimateFailed] = useState(false);
+  const [estimateTry, setEstimateTry] = useState(0);
 
   const span = spanDays(start, end);
   const tooWide = span > PAST_MAX_SPAN_DAYS;
@@ -1610,6 +1705,7 @@ function ProcessPastEmailsDialog({
     }
     let live = true;
     setEstimating(true);
+    setEstimateFailed(false);
     const t = setTimeout(() => {
       processPastEstimate({
         accountId,
@@ -1619,14 +1715,18 @@ function ProcessPastEmailsDialog({
         skipProcessed,
       })
         .then((e) => live && setEstimate(e))
-        .catch(() => live && setEstimate(null))
+        .catch(() => {
+          if (!live) return;
+          setEstimate(null);
+          setEstimateFailed(true);
+        })
         .finally(() => live && setEstimating(false));
     }, 300);
     return () => {
       live = false;
       clearTimeout(t);
     };
-  }, [accountId, start, end, includeRead, skipProcessed, tooWide]);
+  }, [accountId, start, end, includeRead, skipProcessed, tooWide, estimateTry]);
 
   const run = async () => {
     setBusy(true);
@@ -1670,7 +1770,9 @@ function ProcessPastEmailsDialog({
       footer={
         <button
           onClick={run}
-          disabled={busy || tooWide || !start}
+          // A run never starts without a count shown (owner, AI cost; EM-S10
+          // fix round 1): no estimate, or one still being read, keeps it off.
+          disabled={busy || tooWide || !start || estimating || !estimate}
           className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-medium hover:bg-emerald-700 transition-colors disabled:opacity-50"
         >
           {busy ? <Icon name="Loader2" className="animate-spin" size={13} /> : <Icon name="Play" size={13} />}
@@ -1730,6 +1832,13 @@ function ProcessPastEmailsDialog({
         <p className="text-[11px] text-muted-foreground px-2.5 py-2">
           Counting emails in this range…
         </p>
+      ) : estimateFailed ? (
+        <div role="alert" className="text-[11px] text-destructive px-2.5 py-2 space-y-1">
+          <p>Metorite could not count the emails in this range, so it cannot start a run yet.</p>
+          <Button variant="secondary" size="sm" icon="RefreshCw" onClick={() => setEstimateTry((n) => n + 1)}>
+            Count again
+          </Button>
+        </div>
       ) : estimate ? (
         <div
           className={`text-[11px] rounded-md px-2.5 py-2 space-y-1 ${

@@ -57,9 +57,7 @@
     "integrations": [
       "zoho-crm"
     ],
-    "optional_integrations": [
-      "gmail-send"
-    ]
+    "optional_integrations": []
   },
   {
     "name": "delivery",
@@ -82,7 +80,6 @@
     "status": "live",
     "agent_runtime": "maf",
     "integrations": [
-      "gmail",
       "zoho-crm"
     ],
     "optional_integrations": []

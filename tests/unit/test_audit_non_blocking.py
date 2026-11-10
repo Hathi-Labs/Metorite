@@ -19,6 +19,9 @@ import time
 import pytest
 from acb_audit import log as audit
 
+#: A hang guard, never a budget (#947). A held write waits at most this long.
+HANG_S = 30.0
+
 
 def _event() -> audit.AuditEvent:
     return audit.AuditEvent(actor="user:t@x", action="test", target="thing:1")
@@ -27,23 +30,27 @@ def _event() -> audit.AuditEvent:
 @pytest.mark.asyncio
 async def test_record_does_not_block_the_event_loop(monkeypatch) -> None:
     started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
 
-    def slow_persist(event: audit.AuditEvent) -> None:
+    def held_persist(event: audit.AuditEvent) -> None:
         started.set()
-        time.sleep(0.5)
+        release.wait(HANG_S)
+        finished.set()
 
-    monkeypatch.setattr(audit, "_persist", slow_persist)
+    monkeypatch.setattr(audit, "_persist", held_persist)
 
-    t0 = time.monotonic()
     audit.record(_event())
-    elapsed = time.monotonic() - t0
-
-    # The 0.5s write is on a worker thread; the call itself must be immediate.
-    assert elapsed < 0.1, f"record() blocked the loop for {elapsed:.3f}s"
+    # The write is held until the test lets it go. So record() came back
+    # before the write ended, and it did not run the write on the loop. An
+    # inline write would hold record() for the whole guard, then finish. A
+    # bound of 0.1 s against a write of 0.5 s measured the runner too.
+    assert not finished.is_set(), "record() ran the write on the loop"
+    release.set()
 
     # ...and it really is running, not silently dropped.
-    await audit.drain(timeout=2.0)
-    assert started.is_set()
+    await audit.drain(timeout=HANG_S)
+    assert started.is_set() and finished.is_set()
 
 
 @pytest.mark.asyncio
@@ -61,7 +68,7 @@ async def test_record_runs_the_write_off_the_loop_thread(monkeypatch) -> None:
     )
 
     audit.record(_event())
-    await audit.drain(timeout=2.0)
+    await audit.drain(timeout=HANG_S)
 
     assert seen and seen[0] != loop_thread
 
@@ -99,22 +106,35 @@ async def test_drain_waits_for_in_flight_writes(monkeypatch) -> None:
 
     audit.record(_event())
     assert finished == []          # still in flight
-    await audit.drain(timeout=5.0)
+    await audit.drain(timeout=HANG_S)
     assert finished == ["thing:1"]  # completed, not cancelled
 
 
 @pytest.mark.asyncio
 async def test_drain_is_bounded_by_its_timeout(monkeypatch) -> None:
-    """A wedged audit DB must not hold the shutdown open forever."""
-    monkeypatch.setattr(audit, "_persist", lambda event: time.sleep(3.0))
+    """A wedged audit DB must not hold the shutdown open forever.
+
+    The write is held until the test lets it go, so drain() can only come
+    back at its own timeout. A drain that ignored it would wait for the
+    write, which ends only at the hang guard. A bound of 1.5 s on a drain of
+    0.2 s measured the runner too."""
+    release = threading.Event()
+    finished = threading.Event()
+
+    def wedged(event: audit.AuditEvent) -> None:
+        release.wait(HANG_S)
+        finished.set()
+
+    monkeypatch.setattr(audit, "_persist", wedged)
 
     audit.record(_event())
-    t0 = time.monotonic()
     await audit.drain(timeout=0.2)
-    assert time.monotonic() - t0 < 1.5
+    assert not finished.is_set(), "drain() waited for the wedged write"
 
     # Leave no thread running into the next test.
-    await audit.drain(timeout=5.0)
+    release.set()
+    await audit.drain(timeout=HANG_S)
+    assert finished.is_set()
 
 
 @pytest.mark.asyncio
@@ -132,7 +152,7 @@ async def test_a_failing_write_never_reaches_the_caller(monkeypatch) -> None:
     audit.record(_event())  # must not raise
     with pytest.raises(RuntimeError):
         # The task itself does surface it — drain() gathers, it does not hide.
-        await asyncio.wait_for(next(iter(audit._PENDING)), timeout=2.0)
+        await asyncio.wait_for(next(iter(audit._PENDING)), timeout=HANG_S)
 
 
 @pytest.mark.asyncio
@@ -142,5 +162,5 @@ async def test_pending_set_does_not_grow_without_bound(monkeypatch) -> None:
     before = len(audit._PENDING)
     for _ in range(5):
         audit.record(_event())
-    await audit.drain(timeout=5.0)
+    await audit.drain(timeout=HANG_S)
     assert len(audit._PENDING) == before

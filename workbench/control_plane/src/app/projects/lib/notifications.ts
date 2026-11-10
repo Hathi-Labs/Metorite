@@ -8,6 +8,7 @@
  * to match — are provable without a browser.
  */
 
+import { clientName } from "./agentRuns";
 import type { NotificationRow } from "./api";
 
 /** Above this the badge stops counting and starts gesturing. */
@@ -72,6 +73,12 @@ const VERB: Record<string, string> = {
   assigned: "assigned you",
   mention: "mentioned you on",
   comment: "commented on",
+  // WS-55 EA-12c — an outside agent asks the member on a task (§12.1).
+  agent_question: "asked you about",
+  // Task 1054 — the stranded-run nudge: the run went quiet, the member decides.
+  nudge: "has gone quiet on",
+  // WS-ALN ALN-2a — one person decides: the asker needs this member's choice.
+  decision: "asks you to decide on",
 };
 
 /**
@@ -85,7 +92,21 @@ export function describe(row: NotificationRow): string {
   const who = actorLabel(row.actor);
   const verb = VERB[row.kind] ?? "updated";
   const task = taskLabel(row);
+  // No "since <time>": the notice time is when the sweep nudged, after the
+  // lease ran out, not when the run went quiet. The row shows its own time.
+  if (row.kind === "nudge") {
+    // Two producers share this kind. The sweep stamps the client (`mcp:` or
+    // `agent:`) as actor. A person's nudge (`nudge_task`) stamps their address.
+    if (!isRunActor(row.actor)) return `${who} nudged you about ${task}`;
+    return `${who} ${verb} ${task}. Resume or release it.`;
+  }
   return `${who} ${verb} ${task}`;
+}
+
+/** True when the actor is an agent or an outside client, not a person. */
+function isRunActor(actor: string | null | undefined): boolean {
+  const raw = (actor ?? "").trim();
+  return raw.startsWith("mcp:") || raw.startsWith("agent:");
 }
 
 export function actorLabel(actor: string | null | undefined): string {
@@ -94,6 +115,9 @@ export function actorLabel(actor: string | null | undefined): string {
   // An agent keeps its full handle: `agent:builder` reads as a name already,
   // and splitting it at the colon would render every agent as "agent".
   if (raw.startsWith("agent:")) return raw.slice("agent:".length) || raw;
+  // WS-55 EA-12c — an outside agent's stamp, `mcp:claude-code`, reads
+  // "Claude Code" (EA12-8 sets it as the actor of `agent_question`).
+  if (raw.startsWith("mcp:")) return clientName(raw);
   return raw.split("@")[0] || raw;
 }
 

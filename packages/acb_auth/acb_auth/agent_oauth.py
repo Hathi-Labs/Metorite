@@ -1,0 +1,1351 @@
+"""The OAuth vocabulary of outside-agent access — both halves share it (WS-55 EA-2a).
+
+Spec: ``project-docs/specs/external_agent_access.md`` §5.3, §5.5, §8 and §15
+EA-2a · decision D97.
+
+**What this module is.** The pure rules that the two halves of the
+authorization server must agree on: the scope vocabulary, the fixed addresses,
+the PKCE check, the shape of a Client ID Metadata Document URL, the redirect
+URI rules and the redirect that carries a code. It does no I/O.
+
+**The two halves.** The public half is the edge unit
+(``apps/services/agent_edge``): the metadata documents, ``token`` and
+``revoke``. The authenticated half is the gateway route
+``gateway/routes/agent_access.py``: validate an authorize request, then approve
+it. A rule that only one half kept would let the halves disagree, so each rule
+lives here once. ``acb_auth.agent_tokens`` is the store, and this module never
+touches it.
+
+**The flag.** :func:`enabled` is the one reader of ``agent_access_enabled``.
+While it is false, every EA-2a route answers 404.
+
+**The organization allowlist (EA-10p).** :func:`org_allowed` is the one
+reader of ``agent_access_orgs``. Agent access is live for an organization
+only when the flag is on AND the list allows it. The default allows none.
+Four doors check it (spec §10.6): the consent routes, the store's token
+issue, the edge bearer check and the connection read of branch 0.
+:func:`change_access_allowed` is the one reader of
+``agent_change_access_orgs``, the dark switch of Change access (EA-17c-1,
+spec §10.8).
+
+**First-party clients (D-EA-11, spec §10.7).** :func:`is_first_party` is
+the one reader of ``agent_first_party_client_ids``, and
+:func:`first_party_redirect_allowed` is the one redirect rule of the path
+with no consent click. The default list is empty, so it trusts no client.
+
+**The MCP surface (EA-3a, EA-6a).** :data:`MCP_ROUTES` is the one allowlist of
+gateway routes an outside agent may reach. :data:`MCP_WRITE_ROUTES` names its
+write pairs, and :func:`writes_enabled` is the one reader of the writes flag. :func:`actor_via_for` gives the
+``mcp:<host>:<slug>`` stamp of a connection (EA-13a). :data:`ACTOR_VIA_PATTERN`
+is the one shape of that stamp, and the Projects routes import it from here.
+:data:`CLIENT_LABELS` and :func:`client_label` give the name of a stamp.
+EA-19b adds the box stamp ``mcp:box:<slug>-<8 hex>`` (spec §10.9), and
+:func:`box_tokens_enabled` is the one reader of the box-token flag.
+
+**The app door (MCP-P1a, spec §19).** The app scopes come from
+``acb_common.app_manifests`` (:data:`APP_SCOPES`), and :func:`covered_scopes`
+is the one cover rule. :func:`door_apps` is the one reader of
+``agent_door_apps``. :func:`door_route` gives the door op of a pair from the
+manifests, and no hand list holds a door pair (AD-3).
+
+Fences: ``tests/unit/test_agent_oauth_server.py``,
+``tests/unit/test_mcp_edge_signing.py`` and
+``tests/unit/test_mcp_edge_coverage.py``.
+"""
+from __future__ import annotations
+
+import base64
+import functools
+import hashlib
+import hmac
+import re
+import uuid
+from collections.abc import Iterable, Mapping
+from types import MappingProxyType
+from typing import NamedTuple
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+from acb_common import app_manifests, get_settings
+
+# ── Scopes (spec §8) ────────────────────────────────────────────────────────
+
+PROJECTS_READ = "projects:read"
+PROJECTS_WRITE = "projects:write"
+CONTEXT_READ = "context:read"
+OFFLINE_ACCESS = "offline_access"
+
+#: The three fixed scopes of the resource.
+FIXED_RESOURCE_SCOPES: tuple[str, ...] = (PROJECTS_READ, PROJECTS_WRITE, CONTEXT_READ)
+
+#: MCP-P1a (spec §19.6). The scopes of the app door, from the manifests:
+#: ``<app>:read`` for each app with a door op, and ``<app>:write`` for each
+#: app with a door op of class B or C. Knowledge gives ``knowledge:read`` and
+#: ``knowledge:write``.
+APP_SCOPES: tuple[str, ...] = app_manifests.app_scopes()
+
+#: Every scope the server knows, in the order a consent screen shows them.
+#: The app scopes come after the three fixed scopes (§19.6).
+SUPPORTED_SCOPES: tuple[str, ...] = (
+    *FIXED_RESOURCE_SCOPES, *APP_SCOPES, OFFLINE_ACCESS)
+
+#: The scopes the resource itself needs. ``offline_access`` is not one: the MCP
+#: specification says a resource does not advertise it (spec §8).
+RESOURCE_SCOPES: tuple[str, ...] = (*FIXED_RESOURCE_SCOPES, *APP_SCOPES)
+
+
+def covered_by(scope: str) -> str | None:
+    """The cover rule (spec §7.1 step 4, §19.6): ``<x>:write`` covers
+    ``<x>:read``. The read scope that *scope* covers, or ``None``. The ONE
+    copy of the rule: :func:`covered_scopes` and :func:`scope_holds` call it."""
+    head, sep, tail = scope.rpartition(":")
+    return f"{head}:read" if sep and head and tail == "write" else None
+
+
+def covered_scopes(scopes: Iterable[str]) -> set[str]:
+    """The resource scopes that *scopes* hold, with each read scope that a
+    write scope among them covers. ``bearer.effective_scopes`` calls it on
+    each side of the intersection."""
+    held = {s for s in scopes if s in RESOURCE_SCOPES}
+    held |= {c for s in held if (c := covered_by(s)) in RESOURCE_SCOPES}
+    return held
+
+
+def scope_holds(scopes: Iterable[str], required: str) -> bool:
+    """True when *scopes* hold *required*, or a write scope that covers it.
+
+    Branch 0 calls it on the scopes of the connection row (AD-4). It does
+    not filter by :data:`RESOURCE_SCOPES`: the consent page already did, when
+    the member granted the scopes."""
+    held = set(scopes)
+    return required in held or any(covered_by(s) == required for s in held)
+
+
+#: SW-34b (``agent_coordination.md``). The read scopes of the resource:
+#: ``projects:read``, ``context:read`` and each ``<app>:read``. A scope that
+#: covers another scope (a write scope) is never one.
+READ_SCOPES: tuple[str, ...] = tuple(
+    s for s in RESOURCE_SCOPES if covered_by(s) is None and s.endswith(":read"))
+
+
+def read_only(scopes: Iterable[str]) -> frozenset[str]:
+    """The read scopes among *scopes* (SW-34b). The ONE narrowing rule of the
+    read-only door ``/mcp/readonly``. Call it on scopes that the cover rule
+    already expanded, so ``projects:write`` has given ``projects:read``. It
+    only removes a scope, so it can never widen a token.
+
+    Fence: ``tests/unit/test_mcp_edge_readonly.py``."""
+    return frozenset(s for s in scopes if s in READ_SCOPES)
+
+
+#: The longest ``scope`` string the server reads.
+MAX_SCOPE_CHARS = 1024
+
+#: A scope token per RFC 6749 §3.3: printable ASCII except space, ``"`` and ``\\``.
+_SCOPE_TOKEN = re.compile(r"^[\x21\x23-\x5B\x5D-\x7E]+$")
+
+
+def parse_scope(value: str | None) -> tuple[str, ...]:
+    """The supported scopes that *value* names, in the canonical order.
+
+    An unknown scope is dropped, because the server never grants what it does
+    not know. A malformed token raises ``ValueError``. ``None`` and an empty
+    string give an empty tuple.
+    """
+    if value is None:
+        return ()
+    if len(value) > MAX_SCOPE_CHARS:
+        raise ValueError("scope is too long")
+    tokens = value.split(" ")
+    named = set()
+    for token in tokens:
+        if token == "":
+            continue
+        if not _SCOPE_TOKEN.fullmatch(token):
+            raise ValueError("scope holds a bad token")
+        named.add(token)
+    return tuple(s for s in SUPPORTED_SCOPES if s in named)
+
+
+def scope_string(scopes: Iterable[str]) -> str:
+    """The space-separated form of *scopes*, in the canonical order."""
+    wanted = set(scopes)
+    return " ".join(s for s in SUPPORTED_SCOPES if s in wanted)
+
+
+# ── The flag and the fixed addresses (spec §5.5) ────────────────────────────
+
+
+def enabled() -> bool:
+    """True when ``agent_access_enabled`` is on. The ONE reader of the flag."""
+    return bool(get_settings().agent_access_enabled)
+
+
+def writes_enabled() -> bool:
+    """True when ``agent_access_writes_enabled`` is on (EA-6a, EA3-29).
+
+    The ONE reader of the writes flag, for both units. The edge leaves the
+    write tools out of ``tools/list`` and refuses a call of one while it is
+    false. Branch 0 refuses every signed write with
+    :data:`WRITES_DISABLED_CODE`. It does not read :func:`enabled`: a write
+    needs both.
+    """
+    return bool(get_settings().agent_access_writes_enabled)
+
+
+def runs_enabled() -> bool:
+    """True when ``agent_runs_enabled`` is on (EA-12a and EA-12b, spec §12.1).
+
+    The ONE reader of the agent-runs flag, for both units. The gateway
+    answers 404 on each agent-runs route while it is false. The edge leaves
+    the six agent-run tools out of ``tools/list`` and makes no request for
+    ``agent_runs`` in ``get_task``. So both units need the same value.
+    """
+    return bool(get_settings().agent_runs_enabled)
+
+
+def answer_change_enabled() -> bool:
+    """True when ``agent_answer_change_enabled`` is on (SW-43).
+
+    The ONE reader of the flag. While it is false, the withdraw route of an
+    answer answers 404 and the runs wire has no ``answer`` field.
+    """
+    return bool(get_settings().agent_answer_change_enabled)
+
+
+@functools.lru_cache(maxsize=16)
+def _parse_door_apps(raw: str) -> frozenset[str]:
+    """The door app ids that *raw* names. An entry that names no door app
+    allows nothing. Cached on the raw value and on nothing else, so it holds
+    for any registry."""
+    return frozenset(p.strip().lower() for p in raw.split(",") if p.strip())
+
+
+def door_apps() -> frozenset[str]:
+    """The apps that ``agent_door_apps`` names and that have a door manifest
+    (MCP-P1a, AD-15). Empty, the default, serves no app.
+
+    The ONE reader of the flag, for both units. The edge leaves the four
+    door tools out of ``tools/list`` while it serves no app, and refuses a
+    call for an app it does not name. Branch 0 refuses a door call for such
+    an app with the coded 403 of :data:`APP_OFF_CODE`.
+    """
+    named = _parse_door_apps(str(get_settings().agent_door_apps or ""))
+    return frozenset(a.id for a in app_manifests.APPS if a.id in named)
+
+
+def door_serves(app_id: object) -> bool:
+    """True when the door flag names the door app *app_id*."""
+    return isinstance(app_id, str) and app_id in door_apps()
+
+
+def advertised_resource_scopes() -> tuple[str, ...]:
+    """The resource scopes that the metadata documents name, and that an
+    authorize request with no ``scope`` asks for (MCP-P1a).
+
+    The three fixed scopes, then the scopes of each app that the door flag
+    names. So the scope of an app that ships dark never shows on the
+    consent page or in ``scopes_supported``. :data:`SUPPORTED_SCOPES` still
+    holds every app scope, so a token of a client that asked for one by name
+    keeps it.
+    """
+    served = door_apps()
+    return (*FIXED_RESOURCE_SCOPES,
+            *(s for a in app_manifests.APPS if a.id in served for s in a.scopes))
+
+
+def advertised_scopes() -> tuple[str, ...]:
+    """:func:`advertised_resource_scopes` and ``offline_access``."""
+    return (*advertised_resource_scopes(), OFFLINE_ACCESS)
+
+
+def mcp_sessions_enabled() -> bool:
+    """True when ``agent_mcp_sessions_enabled`` is on (SW-7, spec §12.5).
+
+    The ONE reader of the session flag. Only the edge reads it. While it is
+    false, ``initialize`` answers no ``Mcp-Session-Id``, an id that a client
+    sends is read as no session, and no ``X-Agent-Session`` is signed. The
+    gateway needs no flag: with no signed session it behaves as before SW-7.
+    """
+    return bool(get_settings().agent_mcp_sessions_enabled)
+
+
+def box_tokens_enabled() -> bool:
+    """True when ``agent_box_tokens_enabled`` is on (EA-19b, spec §10.9).
+
+    The ONE reader of the box-token flag, for both units. The edge bearer
+    check and ``agent_tokens.read_live_connection`` (branch 0) refuse a
+    connection of credential ``box`` while it is false, next to
+    :func:`org_allowed`. ``agent_tokens.lookup_token`` does not read it,
+    because ``/oauth/revoke`` must still find a box token (rule 8). It is a
+    pause, not a kill.
+    """
+    return bool(get_settings().agent_box_tokens_enabled)
+
+
+#: The ``detail`` of the 403 that branch 0 answers to a SIGNED write while the
+#: writes flag is off (EA-6a fix round 1). The edge maps it to a tool error,
+#: never to the MCP 401, so a client keeps its token and its reads.
+WRITES_DISABLED_CODE = "agent_writes_disabled"
+
+
+# ── The organization allowlist (EA-10p, spec §10.6, decision EA3-27) ────────
+
+#: The entry of ``agent_access_orgs`` that allows each organization.
+ALL_ORGS = "*"
+
+
+def _canonical_org(value: object) -> str | None:
+    """*value* as a canonical lower-case UUID string, else ``None``."""
+    text = str(value or "").strip().lower()
+    try:
+        canonical = str(uuid.UUID(text))
+    except ValueError:
+        return None
+    return canonical if canonical == text else None
+
+
+@functools.lru_cache(maxsize=16)
+def _parse_orgs(raw: str) -> frozenset[str]:
+    """The entries of *raw*: canonical organization ids, and ``*``.
+
+    The entries have a comma between them. Each entry loses its spaces and
+    goes to lower case. An entry that is not ``*`` and not a canonical UUID
+    is dropped, so it allows nothing. An empty *raw* gives an empty set.
+    Cached on the raw value.
+    """
+    entries: set[str] = set()
+    for part in raw.split(","):
+        entry = part.strip().lower()
+        if entry == ALL_ORGS:
+            entries.add(ALL_ORGS)
+        elif (org := _canonical_org(entry)) is not None:
+            entries.add(org)
+    return frozenset(entries)
+
+
+def allowed_orgs() -> frozenset[str]:
+    """The parsed ``agent_access_orgs``. Empty means no organization."""
+    return _parse_orgs(str(get_settings().agent_access_orgs or ""))
+
+
+def protocol_allowed(organization_id: object) -> bool:
+    """True when ``agent_protocol_orgs`` allows *organization_id*.
+
+    SW-56. The ONE reader of the flag. It keeps the ``protocol`` block of the
+    ``claim_task`` and ``my_work`` results dark: an organization that it
+    refuses gets results with no such key. The list has the shape of
+    ``agent_access_orgs`` and the same parser, and the default is empty. It
+    reads the settings at each call. The caller passes the organization of
+    the token row, never request input.
+    """
+    org = _canonical_org(organization_id)
+    if org is None:
+        return False
+    orgs = _parse_orgs(str(get_settings().agent_protocol_orgs or ""))
+    return ALL_ORGS in orgs or org in orgs
+
+
+def plan_order_allowed(organization_id: object) -> bool:
+    """True when ``my_work_plan_order_orgs`` allows *organization_id* (SW-68a).
+
+    The ONE reader of the flag. Off by default. The edge and the gateway route
+    both ask it, and the organization comes from the token row or the session,
+    never from request input. It reads the settings at each call.
+    """
+    org = _canonical_org(organization_id)
+    if org is None:
+        return False
+    orgs = _parse_orgs(str(get_settings().my_work_plan_order_orgs or ""))
+    return ALL_ORGS in orgs or org in orgs
+
+
+def org_allowed(organization_id: object) -> bool:
+    """True when ``agent_access_orgs`` allows *organization_id*.
+
+    The ONE reader of the allowlist. It does not read the flag: agent access
+    is live for an organization only when :func:`enabled` and this are both
+    true. A value that is not a UUID is false, also with ``*``. The caller
+    passes an organization from the session or from a token row, never from
+    request input.
+    """
+    org = _canonical_org(organization_id)
+    if org is None:
+        return False
+    orgs = allowed_orgs()
+    return ALL_ORGS in orgs or org in orgs
+
+
+def resources_allowed(organization_id: object) -> bool:
+    """True when ``agent_resources_orgs`` allows *organization_id*.
+
+    SW-34a. The ONE reader of the flag. It keeps the MCP resources dark: an
+    organization that it refuses gets an empty list and a not-found read. The
+    list has the shape of ``agent_access_orgs`` and the same parser, and the
+    default is empty. It reads the settings at each call. The caller passes
+    the organization of the token row, never request input.
+    """
+    org = _canonical_org(organization_id)
+    if org is None:
+        return False
+    orgs = _parse_orgs(str(get_settings().agent_resources_orgs or ""))
+    return ALL_ORGS in orgs or org in orgs
+
+
+def change_access_allowed(organization_id: object) -> bool:
+    """True when ``agent_change_access_orgs`` allows *organization_id*.
+
+    EA-17c-1 (D-EA-13, spec §10.8). The ONE reader of the flag. It keeps
+    ``PATCH /agent-access/connections/{id}`` dark: an organization that it
+    refuses gets 404. The list has the shape of ``agent_access_orgs`` and
+    the same parser, and the default is empty. It reads the settings at each
+    call, so a flag reload applies a change. The caller passes the
+    organization of the session, never request input.
+    """
+    org = _canonical_org(organization_id)
+    if org is None:
+        return False
+    orgs = _parse_orgs(str(get_settings().agent_change_access_orgs or ""))
+    return ALL_ORGS in orgs or org in orgs
+
+
+def issuer() -> str:
+    """The issuer, ``https://mcp.metorite.com`` by default. No trailing slash."""
+    return get_settings().agent_issuer.rstrip("/")
+
+
+def resource() -> str:
+    """The canonical resource, ``https://mcp.metorite.com/mcp`` by default."""
+    return get_settings().agent_resource
+
+
+def authorize_url() -> str:
+    """The consent page that EA-4 builds on the control plane."""
+    return get_settings().agent_authorize_url
+
+
+def token_endpoint() -> str:
+    return f"{issuer()}/oauth/token"
+
+
+def revocation_endpoint() -> str:
+    return f"{issuer()}/oauth/revoke"
+
+
+# ── PKCE (RFC 7636, S256 only) ──────────────────────────────────────────────
+
+#: An S256 challenge is the base64url SHA-256 of the verifier, with no padding.
+#: That is always 43 characters.
+_CHALLENGE = re.compile(r"^[A-Za-z0-9_-]{43}$")
+
+#: A verifier per RFC 7636 §4.1.
+_VERIFIER = re.compile(r"^[A-Za-z0-9._~-]{43,128}$")
+
+#: The one challenge method. ``plain`` is refused (OAuth 2.1).
+S256 = "S256"
+
+
+def is_valid_challenge(challenge: str | None) -> bool:
+    return bool(challenge) and bool(_CHALLENGE.fullmatch(challenge or ""))
+
+
+def is_valid_verifier(verifier: str | None) -> bool:
+    return bool(verifier) and bool(_VERIFIER.fullmatch(verifier or ""))
+
+
+def s256(verifier: str) -> str:
+    """The S256 challenge of *verifier*."""
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+
+def pkce_matches(verifier: str, challenge: str) -> bool:
+    """True when *verifier* is well formed and its S256 equals *challenge*."""
+    if not is_valid_verifier(verifier):
+        return False
+    return hmac.compare_digest(s256(verifier), challenge or "")
+
+
+# ── Client ID Metadata Documents ────────────────────────────────────────────
+
+#: The longest client id or redirect URI the server reads.
+MAX_URL_CHARS = 2048
+
+
+def is_cimd_client_id(client_id: str | None) -> bool:
+    """True when *client_id* has the shape of a Client ID Metadata Document URL.
+
+    The rules of the CIMD draft: an ``https`` URL with a host and a path, with
+    no user name, no password, no fragment and no dot segment. This server
+    also refuses a query and a backslash, so one URL has one spelling.
+
+    ⚠️ ASCII only (fix round 1). A Unicode host such as a Cyrillic look-alike
+    would show on the consent screen as the verified origin of a trusted
+    name. An international domain name is fine in its punycode form
+    (``xn--...``), which shows as itself.
+    """
+    if not client_id or len(client_id) > MAX_URL_CHARS or not client_id.isascii():
+        return False
+    if "\\" in client_id or any(ord(c) < 0x21 or ord(c) == 0x7F for c in client_id):
+        return False
+    try:
+        parts = urlsplit(client_id)
+        _ = parts.port  # a bad port raises here
+    except ValueError:
+        return False
+    if parts.scheme != "https" or not parts.hostname:
+        return False
+    if parts.username is not None or parts.password is not None:
+        return False
+    if parts.query or parts.fragment or "#" in client_id or "?" in client_id:
+        return False
+    path = parts.path
+    if not path or path == "/":
+        return False
+    return all(seg not in (".", "..") for seg in path.split("/"))
+
+
+def client_origin(client_id: str) -> str:
+    """The verified origin of a CIMD client: the scheme and host of its URL.
+
+    The server fetched the document from this origin, so this origin is what
+    the consent screen may show as verified (spec §7). A name inside the
+    document is only a claim. The host is always shown in ASCII (punycode),
+    so a look-alike letter of another script cannot pass for a trusted name.
+    """
+    parts = urlsplit(client_id)
+    host = ascii_host(parts.hostname or "")
+    port = f":{parts.port}" if parts.port else ""
+    return f"{parts.scheme}://{host}{port}"
+
+
+def ascii_host(host: str) -> str:
+    """*host* in ASCII. A Unicode host becomes its punycode form (IDNA).
+
+    The validators refuse a non-ASCII URL before this runs. This is the second
+    line: a host that cannot be encoded shows as ``"(invalid host)"``.
+    """
+    if host.isascii():
+        return host
+    try:
+        return host.encode("idna").decode("ascii")
+    except UnicodeError:
+        return "(invalid host)"
+
+
+# ── Redirect URIs ───────────────────────────────────────────────────────────
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+#: A private-use scheme of a native app (RFC 8252 §7.1): a reverse domain
+#: name, so it holds a dot, in lower case. ``com.example.app`` passes.
+#: ``cursor``, ``javascript`` and ``Com.Example`` do not.
+_PRIVATE_SCHEME = re.compile(r"[a-z][a-z0-9+-]*(?:\.[a-z0-9+-]+)+")
+
+
+def _is_private_use_redirect(uri: str) -> bool:
+    """True when *uri* is ``scheme:/path`` with a reverse-DNS *scheme*.
+
+    RFC 8252 §7.1 gives the form with ONE slash and no authority, such as
+    ``com.example.app:/oauth/callback``. Read on the RAW string, because
+    ``urlsplit`` lowers the case of the scheme.
+    """
+    scheme, colon, rest = uri.partition(":")
+    if not colon or not _PRIVATE_SCHEME.fullmatch(scheme):
+        return False
+    # One slash, then a path. ``scheme://...`` names an authority.
+    return rest.startswith("/") and not rest.startswith("//") and len(rest) > 1
+
+
+def is_allowed_redirect_uri(uri: str | None) -> bool:
+    """True when *uri* may carry an authorization response.
+
+    An ALLOW list of the three forms of RFC 8252 (EA-4a, spec §10.5), and
+    nothing else:
+
+    1. ``https``, with a host.
+    2. ``http`` to a loopback host (RFC 8252 §7.3).
+    3. A private-use scheme that holds a dot, as ``scheme:/path`` (§7.1).
+
+    Never a fragment, a user name or a password. The match against the
+    client's own list is a separate check, :func:`redirect_uri_matches`.
+    ASCII only, for the reason :func:`is_cimd_client_id` gives.
+    """
+    if not uri or len(uri) > MAX_URL_CHARS or not uri.isascii():
+        return False
+    if any(ord(c) < 0x21 or ord(c) == 0x7F for c in uri) or "\\" in uri:
+        return False
+    try:
+        parts = urlsplit(uri)
+        port = parts.port  # a bad port raises here
+    except ValueError:
+        return False
+    # An explicit port must be 1 to 65535. ``urlsplit`` reads ``:0`` as the
+    # port 0, and a later ``if port`` reads 0 as "no port" (fix round 1).
+    if port is not None and not 1 <= port <= _MAX_PORT:
+        return False
+    if "#" in uri or parts.username is not None or parts.password is not None:
+        return False
+    # The raw scheme, because ``urlsplit`` lowers its case.
+    raw_scheme = uri.partition(":")[0]
+    if raw_scheme == "https":
+        return bool(parts.hostname)
+    if raw_scheme == "http":
+        return (parts.hostname or "") in _LOOPBACK_HOSTS
+    return _is_private_use_redirect(uri)
+
+
+def redirect_display(uri: str) -> tuple[str, bool]:
+    """What the consent screen shows of *uri*, and whether it is an app.
+
+    EA-4a, spec §10.5. For ``http`` and ``https``: ``scheme://host:port``,
+    with the port of the FULL redirect URI, so a loopback client on port
+    53122 shows that port. No port in the URI shows ``scheme://host``. The
+    host is ASCII (:func:`ascii_host`), and an IPv6 host keeps its brackets.
+
+    For any other scheme: ``scheme://authority``, or ``scheme:`` with no
+    authority, and the second value is True, so the page adds "an app on
+    this computer". ``x-evil://claude.ai/cb`` shows as
+    ``x-evil://claude.ai``, never as ``claude.ai``.
+    """
+    parts = urlsplit(uri)
+    scheme = parts.scheme
+    if scheme in ("http", "https") and parts.hostname:
+        host = ascii_host(parts.hostname)
+        if ":" in host:
+            host = f"[{host}]"
+        try:
+            port = parts.port
+        except ValueError:
+            port = None
+        shown = f"{scheme}://{host}" if port is None else f"{scheme}://{host}:{port}"
+        return shown, False
+    if parts.netloc:
+        return f"{scheme}://{parts.netloc}", True
+    return f"{scheme}:", True
+
+
+# ── The redirect match (EA-2c, spec §10.4, decision EA3-23) ─────────────────
+
+#: The registered loopback hosts that accept any port, as RAW netloc strings.
+#: Case and form count: ``LOCALHOST``, ``localhost.``, ``127.0.0.2`` and
+#: ``[0:0:0:0:0:0:0:1]`` are not in this set, so they keep the exact match.
+_LOOPBACK_NETLOCS = frozenset({"localhost", "127.0.0.1", "[::1]"})
+
+#: A port in its one spelling: no sign, no leading zero, not ``0``. The upper
+#: bound 65535 is a separate check.
+_PORT = re.compile(r"[1-9][0-9]{0,4}")
+_MAX_PORT = 65535
+
+
+class _RawParts(NamedTuple):
+    """The parts of a URI, cut by hand and never normalised.
+
+    ``query`` and ``fragment`` keep their mark (``?``, ``#``), so a URI that
+    ends in a bare ``?`` or ``#`` differs from one with no mark.
+    """
+
+    scheme: str
+    netloc: str
+    path: str
+    query: str
+    fragment: str
+
+
+def _raw_parts(uri: str) -> _RawParts | None:
+    """*uri* cut into its parts as RAW strings, or ``None`` with no ``://``.
+
+    ⚠️ Not ``urlsplit``. It lowers the case of the scheme and removes a tab
+    or a line break from the URL, so two different strings could compare equal.
+    """
+    scheme, sep, after = uri.partition("://")
+    if not sep:
+        return None
+    end = len(after)
+    for mark in "/?#":
+        found = after.find(mark)
+        if found != -1:
+            end = min(end, found)
+    netloc, rest = after[:end], after[end:]
+    cut = rest.find("#")
+    rest, fragment = (rest, "") if cut == -1 else (rest[:cut], rest[cut:])
+    cut = rest.find("?")
+    path, query = (rest, "") if cut == -1 else (rest[:cut], rest[cut:])
+    return _RawParts(scheme, netloc, path, query, fragment)
+
+
+def _loopback_any_port(requested: str, registered: str) -> bool:
+    """True when *requested* is the loopback *registered* URI on some port.
+
+    The four rules of spec §10.4, each on RAW strings:
+
+    1. *registered* has the scheme ``http``, the netloc ``localhost``,
+       ``127.0.0.1`` or ``[::1]`` exactly, and so no port and no user name.
+    2. *requested* has the same scheme and the same path.
+    3. The netloc of *requested* is the registered netloc, a colon and a
+       port from 1 to 65535 with no leading zero.
+    4. The two queries are identical, and neither URI has a fragment.
+    """
+    reg = _raw_parts(registered)
+    req = _raw_parts(requested)
+    if reg is None or req is None:
+        return False
+    # Rule 1.
+    if reg.scheme != "http" or reg.netloc not in _LOOPBACK_NETLOCS:
+        return False
+    # Rule 2.
+    if req.scheme != reg.scheme or req.path != reg.path:
+        return False
+    # Rule 4.
+    if req.query != reg.query:
+        return False
+    if req.fragment or reg.fragment:
+        return False
+    # Rule 3.
+    host, colon, port = req.netloc.rpartition(":")
+    if not colon or host != reg.netloc:
+        return False
+    return _PORT.fullmatch(port) is not None and int(port) <= _MAX_PORT
+
+
+def redirect_uri_matches(requested: str | None, registered: Iterable[object]) -> bool:
+    """True when *requested* matches one URI of the client's *registered* list.
+
+    The ONE place that compares redirect URIs (spec §10.4). The exact string
+    match runs first. Then a loopback ``http`` registration with no port
+    accepts any port (RFC 8252 §7.3), by :func:`_loopback_any_port`. Every
+    other registration needs the exact string.
+
+    This widens the authorize check only. ``mint_code`` stores the requested
+    URI with its port, and the code spend matches that string exactly. The
+    caller still runs :func:`is_allowed_redirect_uri` on *requested*.
+    """
+    if not isinstance(requested, str) or not requested:
+        return False
+    for uri in registered:
+        if not isinstance(uri, str):
+            continue
+        if requested == uri or _loopback_any_port(requested, uri):
+            return True
+    return False
+
+
+def redirect_host(uri: str) -> str:
+    """The host a member sees on the consent screen, or the scheme for an app."""
+    parts = urlsplit(uri)
+    return ascii_host(parts.hostname) if parts.hostname else f"{parts.scheme}:"
+
+
+# ── First-party clients (D-EA-11, spec §10.7) ───────────────────────────────
+
+
+@functools.lru_cache(maxsize=16)
+def _parse_first_party(raw: str) -> frozenset[str]:
+    """The client ids of *raw*, each one a CIMD client id URL.
+
+    The entries have a comma between them, and each entry loses the spaces
+    around it. Nothing else changes: the case stays, so the match is exact.
+    An entry that :func:`is_cimd_client_id` refuses is dropped, and so is
+    ``*``. So no entry can trust more than one client. Cached on the raw value.
+    """
+    return frozenset(
+        entry for entry in (part.strip() for part in raw.split(","))
+        if entry and is_cimd_client_id(entry)
+    )
+
+
+def first_party_client_ids() -> frozenset[str]:
+    """The parsed ``agent_first_party_client_ids``. Empty, the default, trusts no client."""
+    return _parse_first_party(str(get_settings().agent_first_party_client_ids or ""))
+
+
+def is_first_party(client_id: object) -> bool:
+    """True when *client_id* is, string for string, an entry of the list.
+
+    The ONE reader of ``agent_first_party_client_ids``. A self-declared
+    ``client_name`` never counts, and neither does the host alone: only the
+    exact client id URL, which the server fetched the document from.
+    """
+    return isinstance(client_id, str) and client_id in first_party_client_ids()
+
+
+def first_party_redirect_allowed(client_id: str, redirect_uri: str) -> bool:
+    """True when the consent page may skip for a code to *redirect_uri*.
+
+    A narrower rule than :func:`is_allowed_redirect_uri`, for the path with no
+    click (D-EA-11). The redirect must be ``https``, with a host and no user
+    name or password, and at the same origin as *client_id*: the same scheme,
+    the same host and the same port. So no loopback URI, no private-use
+    scheme and no other host ever gets a code without the screen. The caller
+    still matches *redirect_uri* against the document's list, exactly.
+    """
+    if not is_allowed_redirect_uri(redirect_uri) or not is_cimd_client_id(client_id):
+        return False
+    try:
+        parts = urlsplit(redirect_uri)
+        _ = parts.port  # a bad port raises here
+    except ValueError:
+        return False
+    if redirect_uri.partition(":")[0] != "https" or not parts.hostname:
+        return False
+    return client_origin(redirect_uri) == client_origin(client_id)
+
+
+# ── The MCP read surface (EA-3a, spec §9.5 and §10.1) ──────────────────────
+
+#: The shape of an ``X-Actor-Via`` value, the provenance stamp of a write
+#: (D-PM-36). It lives here, and ``gateway/routes/projects/core.py`` imports
+#: it, because ``acb_auth`` may not import the gateway and branch 0 of
+#: ``deps.get_current_user`` checks the stamp too. ONE copy.
+ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
+
+#: The write pairs of the MCP edge (EA-6a, EA3-29). A subset of
+#: :data:`MCP_ROUTES`, and no pair here is a GET. Branch 0 admits a method
+#: other than GET only for one of these pairs, and only with the writes flag,
+#: ``projects:write`` on the connection, a fresh nonce and room under the cap.
+#: EA-6d adds the task create, the route of ``create_task``. The PATCH serves
+#: ``set_task_status`` and ``update_task``.
+#: EA-12a adds the three POST pairs of the agent runs (spec §12.1). They
+#: share the cap of EA3-30 (EA12-13).
+#: EA-6c adds the comment POST, the route of ``add_comment`` (EA3-35).
+#: EA-6b adds the claim, the route of ``claim_task`` (EA3-34).
+#: EA-6g adds the archive request, the route of ``request_task_archive``
+#: (EA3-40). ⚠️ The approval route ``POST
+#: /projects/agent-runs/{run_id}/archive-approval`` and ``POST
+#: /projects/tasks/{task_id}/archive`` stay OUT of both sets: only the
+#: member archives, and branch 0 refuses a signed request to either.
+#: EA-6h adds the agent delete, the route of ``delete_task`` (EA3-51). It
+#: is the ONE destructive pair. The route refuses it unless the member's
+#: switch is on, and it checks the version and the exact title. ⚠️ The plain
+#: ``DELETE /projects/tasks/{task_id}`` stays OUT of both sets.
+#: WS-55 MCP-G2 adds two pairs. The ``PUT`` of the assignees is the route of
+#: ``set_assignees``, the one ``PUT`` of the set. The task move is the route
+#: of the ``parent_task_id`` of ``update_task``, and the route refuses a
+#: signed move to another project.
+#: WS-55 MCP-G1 adds four pairs. The node POST and PATCH are the routes of
+#: ``create_project`` and ``update_project``, and the routes refuse a lead, a
+#: kind and each setting of a signed agent. The move preview and the move are
+#: the routes of ``preview_move_tasks`` and ``move_tasks``. The preview writes
+#: nothing, and it is a write pair only because it is a POST. ⚠️ The grant
+#: routes, the node move and the node archive stay OUT of both sets.
+#: WS-55 MCP-G15 adds the outside decision, the route of
+#: ``record_outside_decision``. An agent records a decision that its member
+#: made outside Metorite, on its OWN awaiting run. It writes an agent
+#: ``response`` and never a ``prompt``, and it refuses a typed request.
+#: SW-16a adds the link pair: the POST and the DELETE of a task link, the
+#: routes of ``add_task_link`` and ``remove_task_link``. The route checks that
+#: the member sees BOTH tasks. SW-16b owns the write fence for these routes.
+#: WS-55 MCP-G9 adds the PATCH and the DELETE of one comment, the routes of
+#: ``update_comment`` and ``delete_comment``. For a signed agent the route
+#: changes only a comment that the member wrote AND whose ``meta.via`` is the
+#: stamp of this client, on a task in the reach of the connection. Any other
+#: comment gets 403 or 404 (``activities._load_agent_comment``).
+#: ⚠️ WS-39 TPL-1a keeps the template save and the apply OFF this set. Both
+#: are class C in the chat manifest, and rule 2 refuses a class C pair. An MCP
+#: write of a template comes later, with a preview and a confirm step, as
+#: ``move_tasks`` has (EA3-53).
+#: Fence: ``tests/unit/test_mcp_edge_coverage.py`` (rules 1 and 2) and
+#: ``tests/unit/test_mcp_edge_comment_edit_r8.py``.
+#: WS-39 LP-1a adds the POST of a project update, the route of
+#: ``post_project_update``. The route needs the right of a task write on the
+#: project, so a pinned connection posts only inside its pin.
+#: Fence: ``tests/unit/test_mcp_edge_coverage.py`` (rules 1 and 2).
+MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
+    ("POST", "/projects/nodes"),
+    ("PATCH", "/projects/nodes/{project_id}"),
+    ("POST", "/projects/tasks/move/preview"),
+    ("POST", "/projects/tasks/move"),
+    ("PATCH", "/projects/tasks/{task_id}"),
+    ("PUT", "/projects/tasks/{task_id}/assignees"),
+    ("POST", "/projects/tasks/{task_id}/move"),
+    ("POST", "/projects/tasks/{task_id}/refs"),
+    # SW-16a: `add_task_link` and `remove_task_link`.
+    ("POST", "/projects/tasks/{task_id}/links"),
+    ("DELETE", "/projects/tasks/{task_id}/links/{link_id}"),
+    ("POST", "/projects/tasks"),
+    ("POST", "/projects/tasks/{task_id}/comments"),
+    # MCP-G9: `update_comment` and `delete_comment`, own client only.
+    ("PATCH", "/projects/comments/{activity_id}"),
+    ("DELETE", "/projects/comments/{activity_id}"),
+    ("POST", "/projects/tasks/{task_id}/claim"),
+    ("POST", "/projects/tasks/{task_id}/agent-runs"),
+    ("POST", "/projects/agent-runs/{run_id}/activities"),
+    ("POST", "/projects/agent-runs/{run_id}/finish"),
+    # EA-14a: the holder gives a task up. The route of ``release_task``.
+    ("POST", "/projects/agent-runs/{run_id}/release"),
+    # MCP-G15: the decision a member made outside Metorite.
+    ("POST", "/projects/agent-runs/{run_id}/outside-decision"),
+    ("POST", "/projects/tasks/{task_id}/archive-request"),
+    ("POST", "/projects/tasks/{task_id}/agent-delete"),
+    # WS-39 LP-1a: `post_project_update`. The route needs the right of a task
+    # write on the project, and it answers 404 while PROJECTS_UPDATES_ORGS
+    # does not hold the org.
+    ("POST", "/projects/nodes/{project_id}/updates"),
+})
+
+#: The ONE allowlist of the MCP edge (EA3-6). Each pair is a method and the
+#: full FastAPI route template. Branch 0 of ``deps.get_current_user`` refuses
+#: every other pair, and the edge client reads this set before it sends a
+#: request. EA-3 listed the GET routes of the seven read tools (§9.1). EA-6a
+#: adds the references read and the two write pairs of
+#: :data:`MCP_WRITE_ROUTES` (§9.2). EA-12a adds the three GET pairs of the
+#: agent runs (§12.1). EA-6h adds the read of the member's switch, which the
+#: edge sends at ``tools/list``. ⚠️ Its ``PUT`` stays out: only the member
+#: sets the switch. Fence: ``tests/unit/test_mcp_edge_coverage.py``.
+MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
+    ("GET", "/auth/me"),
+    ("GET", "/auth/me/agent-access"),
+    ("GET", "/projects/tree"),
+    ("GET", "/projects/nodes/{project_id}"),
+    ("GET", "/projects/nodes/{project_id}/statuses"),
+    ("GET", "/projects/nodes/{project_id}/types"),
+    ("GET", "/projects/nodes/{project_id}/fields"),
+    ("GET", "/projects/nodes/{project_id}/tags"),
+    ("GET", "/projects/tasks"),
+    # MCP-G19a: the counts of `board_stats`, over the same scope as the list.
+    ("GET", "/projects/tasks/stats"),
+    # SW-68a: the plan order of `my_work`. The answer holds ids, counts and
+    # `labels`: the number and title of the VISIBLE blockers, for the chat. The
+    # edge ignores `labels`, and a hidden blocker is never named.
+    ("GET", "/projects/plan/order"),
+    # MCP-G21: the members that `set_assignees` would accept, for `list_members`.
+    ("GET", "/projects/assignable-members"),
+    # SP-12: the order of work under one goal, epic or project, for `get_plan`.
+    # A read. The route narrows by the pin, and counts a hidden slice without a name.
+    ("GET", "/projects/plan/analysis"),
+    ("GET", "/projects/tasks/{task_id}"),
+    ("GET", "/projects/tasks/{task_id}/relations"),
+    ("GET", "/projects/tasks/{task_id}/timeline"),
+    ("GET", "/projects/tasks/{task_id}/refs"),
+    # MCP-G18: the metadata of the files on a task, for `get_task_context`.
+    # The row also holds a cookie URL, which the edge never returns.
+    ("GET", "/projects/tasks/{task_id}/attachments"),
+    # IMG-3 (projects_ai_chat.md §30.4, owner answer 2026-11-07): the bytes
+    # of one file, for `get_attachment`. The route checks only that the file
+    # hangs off SOME task that the member can see. So the tool first finds
+    # the id in the list of THIS task, and sends no bytes call otherwise.
+    ("GET", "/projects/attachments/{attachment_id}/{filename}"),
+    ("GET", "/projects/search"),
+    ("GET", "/projects/tasks/{task_id}/agent-runs"),
+    ("GET", "/projects/agent-runs"),
+    ("GET", "/projects/agent-runs/{run_id}"),
+    # WS-MCP SW-31a (agent_coordination.md SW-31): the org's guidance for a
+    # task, and the refs for `my_work`. Both answer 404 while
+    # `AGENT_GUIDANCE_ORGS` does not hold the org. The save and the history
+    # stay OFF the edge: only a member writes guidance.
+    ("GET", "/agent-guidance/tasks/{task_id}"),
+    ("GET", "/agent-guidance/refs"),
+    # MCP-P1a (spec §19.4 and §19.5): the two list routes of the app door,
+    # for `list_apps` and `describe_app`. They hold no data of an app.
+    ("GET", "/agent-access/apps"),
+    ("GET", "/agent-access/apps/{app}"),
+    # WS-39 LP-1a: `list_project_updates`, newest first. It answers 404 while
+    # PROJECTS_UPDATES_ORGS does not hold the org.
+    ("GET", "/projects/nodes/{project_id}/updates"),
+    # WS-39 TPL-1a: `list_templates`. It answers 404 while
+    # `PROJECTS_TEMPLATES_ORGS` does not hold the org.
+    ("GET", "/projects/templates"),
+    *MCP_WRITE_ROUTES,
+})
+
+#: IMG-3. The file name in the path of the bytes route. The route ignores
+#: it (the stored name wins), so the shape only keeps the path plain: the
+#: characters of the upload rule (``_safe_name``), 1 to 120 of them, no
+#: ``/``, no ``\\``, no ``..``, no control character, and no dot or space
+#: first. The edge sends a stand-in name for a stored name of another shape.
+ATTACHMENT_FILENAME_PATTERN = r"(?!.*\.\.)[A-Za-z0-9_-][A-Za-z0-9._ -]{0,119}"
+
+#: The path parameters of a pair of :data:`MCP_ROUTES` that are not ids, each
+#: with its pattern (MCP-P1a). The edge client refuses every other value.
+MCP_PATH_SHAPES: Mapping[tuple[str, str], Mapping[str, str]] = MappingProxyType({
+    ("GET", "/agent-access/apps/{app}"): MappingProxyType(
+        {"app": app_manifests.APP_ID_PATTERN}),
+    ("GET", "/projects/attachments/{attachment_id}/{filename}"): MappingProxyType(
+        {"filename": ATTACHMENT_FILENAME_PATTERN}),
+})
+
+# ── The app door (MCP-P1a, spec §19.3 to §19.7) ─────────────────────────────
+
+#: WS-39 LP-1a. The ``detail`` of the 404 of the two update routes while
+#: ``PROJECTS_UPDATES_ORGS`` does not hold the org. The gateway sends it and
+#: the edge maps it to a tool text that says the feature is off. ONE copy:
+#: the gateway may not be imported by the edge.
+PROJECT_UPDATES_OFF = "Project updates are off for this organization."
+
+#: The ``detail`` of the 403 of a door call for an app that the door flag
+#: does not name (§19.6). The edge maps it to a fixed tool error.
+APP_OFF_CODE = "app_off"
+
+#: AD-18. The ``detail`` of the 403 of a door write of class B or C that is
+#: not a proposal and carries no spent approval. Before MCP-P1b no approval
+#: can exist, so branch 0 refuses each such call. Never a 401, so the client
+#: keeps its token.
+APPROVAL_REQUIRED_CODE = "approval_required"
+
+#: AD-13. A connection makes at most :data:`DOOR_READ_CAP` door reads in
+#: :data:`DOOR_READ_WINDOW_S` seconds. Branch 0 counts in the tenant Redis
+#: wrapper, under :data:`DOOR_READ_NAMESPACE`, and the next read gets 429.
+DOOR_READ_CAP = 300
+DOOR_READ_WINDOW_S = 600
+DOOR_READ_NAMESPACE = "agent_door_reads"
+
+
+#: The code of a door change that waits for the writes flag of EA3-29.
+DOOR_WRITES_OFF_CODE = "writes_off"
+
+
+def door_available(door: app_manifests.DoorOp) -> tuple[bool, str | None]:
+    """``(available, code)`` of a door op, by the rules that the edge and the
+    gateway share (MCP-P1a). The ONE copy: ``describe_app`` on both sides
+    reads it.
+
+    * AD-18: a write of class B or C that is not a proposal waits for the
+      approval path of MCP-P1b, :data:`APPROVAL_REQUIRED_CODE`.
+    * A proposal needs the writes flag, :data:`DOOR_WRITES_OFF_CODE`.
+    * A read is available.
+    """
+    if door.asks != "never":
+        return False, APPROVAL_REQUIRED_CODE
+    if door.kind != "read" and not writes_enabled():
+        return False, DOOR_WRITES_OFF_CODE
+    return True, None
+
+
+def door_route(pair: tuple[str, str | None]) -> app_manifests.DoorOp | None:
+    """The door op of one ``(method, template)``, or ``None`` (AD-3).
+
+    The door pairs come from the manifests (``app_manifests.door_routes``),
+    never from a hand list. No pair is a door pair and a pair of
+    :data:`MCP_ROUTES` at once (``tests/unit/test_app_door_coverage.py``).
+    """
+    return app_manifests.door_route(pair)
+
+
+def path_shapes(method: str, template: str) -> Mapping[str, str]:
+    """The pattern of each path parameter of a pair that is not an id: the
+    ``path_shapes`` of a door row, or :data:`MCP_PATH_SHAPES`. Empty when
+    each parameter is an id."""
+    door = door_route((method, template))
+    if door is not None:
+        return dict(door.route.path_shapes)
+    return MCP_PATH_SHAPES.get((method, template), {})
+
+#: The cap of EA3-30: a connection makes at most :func:`write_cap` writes in
+#: :func:`write_window_s` seconds, counted from its first write of the window.
+#: Branch 0 counts in the tenant Redis wrapper, under the namespace
+#: :data:`WRITE_CAP_NAMESPACE`, and the write after the cap gets 429.
+#: MCP-G20: these two are the DEFAULTS. The settings ``AGENT_WRITE_CAP`` and
+#: ``AGENT_WRITE_WINDOW_S`` set the live values, and the two readers below
+#: are the one source of them.
+WRITE_CAP = 120
+WRITE_WINDOW_S = 600
+WRITE_CAP_NAMESPACE = "agent_writes"
+
+
+def _positive(value: object, default: int) -> int:
+    """*value* as a whole number of 1 or more, else *default* (MCP-G20)."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return default
+    return value
+
+
+def write_cap() -> int:
+    """The writes that one connection makes in one window (MCP-G20).
+
+    ``agent_write_cap``, or :data:`WRITE_CAP` for a value below 1. Branch 0
+    reads it at each write, and the edge names it in each write tool.
+    """
+    return _positive(get_settings().agent_write_cap, WRITE_CAP)
+
+
+def write_window_s() -> int:
+    """The seconds of one window of the cap (MCP-G20).
+
+    ``agent_write_window_s``, or :data:`WRITE_WINDOW_S` for a value below 1.
+    """
+    return _positive(get_settings().agent_write_window_s, WRITE_WINDOW_S)
+
+
+#: EA-13a (spec §12.2 item 1, EA3-47). The longest ``<slug>`` of a client
+#: stamp, and the endings of a CIMD path segment that name no client.
+CLIENT_SLUG_MAX = 24
+_SLUG_ENDINGS = ("-client-metadata", "-metadata")
+_SLUG_JUNK = re.compile(r"[^a-z0-9-]+")
+
+
+def client_slug(client_id: str | None) -> str:
+    """The ``<slug>`` of a CIMD client id, or ``""`` (EA3-47).
+
+    The last path segment in lower case. A ``.json`` end goes first, then a
+    ``-client-metadata`` or ``-metadata`` end. Each run of characters other
+    than ``[a-z0-9-]`` becomes one ``-``, and the slug keeps at most
+    :data:`CLIENT_SLUG_MAX` characters. A client id that is not a CIMD URL
+    (a dynamic registration) gives ``""``.
+    ``https://claude.ai/oauth/claude-code-client-metadata`` gives
+    ``claude-code``.
+    """
+    if not client_id or not is_cimd_client_id(client_id):
+        return ""
+    segment = urlsplit(client_id).path.rstrip("/").rsplit("/", 1)[-1].lower()
+    segment = segment.removesuffix(".json")
+    for ending in _SLUG_ENDINGS:
+        if segment.endswith(ending):
+            segment = segment.removesuffix(ending)
+            break
+    segment = _SLUG_JUNK.sub("-", segment).strip("-")
+    return segment[:CLIENT_SLUG_MAX].rstrip("-")
+
+
+#: EA-19b (spec §10.9 question 6). The ``credential`` of a box connection,
+#: its ``client_id``, and the longest ``<slug>`` of its stamp.
+BOX_CREDENTIAL = "box"
+BOX_CLIENT_ID = "urn:metorite:box"
+BOX_SLUG_MAX = 40
+#: The start of each box stamp. It keeps ``mcp:``, so a header from a person
+#: that names a box stamp starts branch 0 and fails the HMAC (§10.9 q. 1).
+BOX_STAMP_PREFIX = "mcp:box:"
+_BOX_LABEL = re.compile(r"(?P<slug>.+)-[0-9a-f]{8}")
+_BOX_HEX = re.compile(r"[0-9a-f]{8}")
+
+
+def box_slug(name: str | None) -> str:
+    """The ``<slug>`` of a box name (EA-19b, spec §10.9 question 1).
+
+    The name in lower case. Each run of characters other than ``[a-z0-9-]``
+    becomes one ``-``, a ``-`` at either end goes, and the slug keeps at most
+    :data:`BOX_SLUG_MAX` characters. A name with no such character gives
+    ``""``.
+    """
+    slug = _SLUG_JUNK.sub("-", (name or "").lower()).strip("-")
+    return slug[:BOX_SLUG_MAX].rstrip("-")
+
+
+def _box_stamp(connection_id: str | None, client_name: str | None) -> str:
+    """``mcp:box:<slug>-<8 hex>``, else ``mcp:box:<8 hex>``, else ``""``.
+
+    ``<8 hex>`` is the start of the canonical connection id, so two boxes of
+    one name stay apart. A stamp that does not fully match
+    :data:`ACTOR_VIA_PATTERN` falls back to the short form. A connection id
+    that is not a UUID gives ``""``, which branch 0 refuses.
+    """
+    try:
+        short = str(uuid.UUID(str(connection_id or "")))[:8]
+    except ValueError:
+        return ""
+    slug = box_slug(client_name)
+    if slug:
+        stamp = f"{BOX_STAMP_PREFIX}{slug}-{short}"
+        if ACTOR_VIA_PATTERN.fullmatch(stamp):
+            return stamp
+    return f"{BOX_STAMP_PREFIX}{short}"
+
+
+def actor_via_for(
+    client_origin: str | None,
+    *,
+    client_id: str | None,
+    credential: str | None = None,
+    connection_id: str | None = None,
+    client_name: str | None = None,
+) -> str:
+    """The ``X-Actor-Via`` stamp of a connection (spec §10.1, §12.2 item 1).
+
+    EA-19b (spec §10.9 question 1). For *credential* ``box`` the stamp is
+    ``mcp:box:<slug>-<8 hex>`` (:func:`_box_stamp`), from *client_name* (the
+    box name) and *connection_id*. The origin and the client id do not
+    count then. Every other credential, and the defaults, give the stamp
+    below, as before. An OAuth connection whose origin host is ``box`` gets
+    the hash stamp, so it can never read as a box.
+
+    EA-13a (EA3-47): ``mcp:<host>:<slug>``, where ``<host>`` is the
+    lower-case ASCII host of *client_origin* and ``<slug>`` is
+    :func:`client_slug` of *client_id*, the connection's own client id. The
+    slug counts only when the client id is at that same host. Claude Code
+    gives ``mcp:claude.ai:claude-code``.
+
+    The fallbacks, in order. With no slug, or a stamp that does not match
+    :data:`ACTOR_VIA_PATTERN`, the host stamp ``mcp:<host>`` (the stamp of
+    every connection before EA-13a). When that does not match either, the
+    first 16 hex characters of the SHA-256 of the origin. An empty origin
+    gives ``""``, which matches no pattern, so branch 0 refuses it (step 7).
+
+    *client_id* is keyword-only and has no default, so a caller names it.
+    ``client_id=None`` gives the legacy host stamp. When the row's client id
+    gives a slug, branch 0 and the open-run read of
+    ``routes/projects/agent_runs.py`` refuse that host stamp (H-356). When it
+    gives no slug (a DCR client, a client id that is not a URL, an IPv6 host,
+    or a client id at another host), ``mcp:<host>`` IS the row's stamp, and
+    both accept it. The label of an old row reads it, through
+    :data:`CLIENT_LABELS`.
+    """
+    if credential == BOX_CREDENTIAL:
+        return _box_stamp(connection_id, client_name)
+    origin = (client_origin or "").strip()
+    if not origin:
+        return ""
+    try:
+        host = (urlsplit(origin).hostname or "").lower()
+    except ValueError:
+        host = ""
+    # EA-19b: the host `box` is the namespace of the box stamps.
+    host_ok = bool(host) and host.isascii() and host != "box"
+    # An IPv6 host has colons of its own, so a slug after it could not be
+    # read back. Such a host keeps the host stamp (EA-13a fix round 1).
+    slug = client_slug(client_id) if host_ok and ":" not in host else ""
+    if slug and ascii_host(urlsplit(client_id or "").hostname or "").lower() == host:
+        stamp = f"mcp:{host}:{slug}"
+        if ACTOR_VIA_PATTERN.fullmatch(stamp):
+            return stamp
+    stamp = f"mcp:{host}"
+    if host_ok and ACTOR_VIA_PATTERN.fullmatch(stamp):
+        return stamp
+    return "mcp:" + hashlib.sha256(origin.encode("utf-8")).hexdigest()[:16]
+
+
+#: EA-13a (spec §12.2 item 1, EA3-45). The ONE curated name of a client
+#: stamp, keyed by the stamp without ``mcp:``. The map ``CLIENT_LABELS`` of
+#: ``app/projects/lib/agentRuns.ts`` mirrors it, key for key, and
+#: ``tests/fixtures/agent_client_names.json`` holds both. A pytest and a
+#: vitest test read that file, so the two cannot drift.
+#:
+#: ⚠️ The self-declared ``client_name`` of a metadata document never names a
+#: client alone. Any host can publish a document that says "Claude Code".
+CLIENT_LABELS: Mapping[str, str] = MappingProxyType({
+    "claude.ai:claude-code": "Claude Code",
+    # The legacy host stamp. It is true for every client on that host.
+    "claude.ai": "Claude",
+})
+
+
+def client_label(via: str | None) -> str:
+    """The name of a client stamp, for a person to read (EA3-45).
+
+    A known stamp reads its label. Else the label of its host, else the host
+    itself, so ``mcp:evil.example:claude-code`` reads ``evil.example``. An
+    empty value reads ``"Agent"``.
+
+    A body with more than one colon is an IPv6 host stamp, because
+    :func:`actor_via_for` adds no slug to an IPv6 host. It reads whole.
+
+    EA-19b: a box stamp ``mcp:box:<slug>-<8 hex>`` reads ``Box <slug>``. The
+    short form ``mcp:box:<8 hex>`` reads ``Box``.
+    """
+    raw = (via or "").strip().lower()
+    if raw.startswith(BOX_STAMP_PREFIX):
+        tail = raw.removeprefix(BOX_STAMP_PREFIX)
+        named = _BOX_LABEL.fullmatch(tail)
+        if named is not None:
+            return f"Box {named.group('slug')}"
+        return "Box" if not tail or _BOX_HEX.fullmatch(tail) else f"Box {tail}"
+    body = raw.removeprefix("mcp:")
+    host = body if body.count(":") > 1 else body.split(":", 1)[0]
+    return CLIENT_LABELS.get(body) or CLIENT_LABELS.get(host) or host or "Agent"
+
+
+def client_host(via: str | None) -> str:
+    """The host of a client stamp, for the run pill ``<client> · <host>``
+    (EA-13d). ``mcp:claude.ai:claude-code`` gives ``claude.ai``. An empty
+    value gives ``""``. An IPv6 host stamp reads whole, as in
+    :func:`client_label`. The host is the part that the gateway verified when
+    the member connected the client, so it is the part that no client names for
+    itself. A box stamp (EA-19b) gives ``box``.
+    """
+    body = (via or "").strip().lower().removeprefix("mcp:")
+    return body if body.count(":") > 1 else body.split(":", 1)[0]
+
+
+def authorization_redirect(redirect_uri: str, params: Mapping[str, str | None]) -> str:
+    """*redirect_uri* with *params* added to its query (RFC 6749 §4.1.2).
+
+    A parameter with the value ``None`` is left out. The query that the
+    redirect URI already holds stays, in front of the new parameters.
+    """
+    parts = urlsplit(redirect_uri)
+    query = parse_qsl(parts.query, keep_blank_values=True)
+    query += [(k, v) for k, v in params.items() if v is not None]
+    return urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, urlencode(query), ""))
+
+
+__all__ = [
+    "ACTOR_VIA_PATTERN",
+    "ALL_ORGS",
+    "APPROVAL_REQUIRED_CODE",
+    "APP_OFF_CODE",
+    "APP_SCOPES",
+    "ATTACHMENT_FILENAME_PATTERN",
+    "BOX_CLIENT_ID",
+    "BOX_CREDENTIAL",
+    "BOX_SLUG_MAX",
+    "BOX_STAMP_PREFIX",
+    "CLIENT_LABELS",
+    "CLIENT_SLUG_MAX",
+    "CONTEXT_READ",
+    "DOOR_READ_CAP",
+    "DOOR_READ_NAMESPACE",
+    "DOOR_READ_WINDOW_S",
+    "DOOR_WRITES_OFF_CODE",
+    "FIXED_RESOURCE_SCOPES",
+    "MAX_SCOPE_CHARS",
+    "MAX_URL_CHARS",
+    "MCP_PATH_SHAPES",
+    "MCP_ROUTES",
+    "MCP_WRITE_ROUTES",
+    "OFFLINE_ACCESS",
+    "PROJECTS_READ",
+    "PROJECTS_WRITE",
+    "PROJECT_UPDATES_OFF",
+    "READ_SCOPES",
+    "RESOURCE_SCOPES",
+    "S256",
+    "SUPPORTED_SCOPES",
+    "WRITES_DISABLED_CODE",
+    "WRITE_CAP",
+    "WRITE_CAP_NAMESPACE",
+    "WRITE_WINDOW_S",
+    "actor_via_for",
+    "advertised_resource_scopes",
+    "advertised_scopes",
+    "allowed_orgs",
+    "ascii_host",
+    "authorization_redirect",
+    "authorize_url",
+    "box_slug",
+    "box_tokens_enabled",
+    "client_host",
+    "client_label",
+    "client_origin",
+    "client_slug",
+    "covered_by",
+    "covered_scopes",
+    "door_apps",
+    "door_available",
+    "door_route",
+    "door_serves",
+    "enabled",
+    "is_allowed_redirect_uri",
+    "is_cimd_client_id",
+    "is_valid_challenge",
+    "is_valid_verifier",
+    "issuer",
+    "mcp_sessions_enabled",
+    "org_allowed",
+    "parse_scope",
+    "path_shapes",
+    "pkce_matches",
+    "protocol_allowed",
+    "read_only",
+    "redirect_display",
+    "redirect_host",
+    "redirect_uri_matches",
+    "resource",
+    "resources_allowed",
+    "revocation_endpoint",
+    "runs_enabled",
+    "s256",
+    "scope_holds",
+    "scope_string",
+    "token_endpoint",
+    "write_cap",
+    "write_window_s",
+    "writes_enabled",
+]

@@ -38,13 +38,35 @@
  * Add --warnings to show heuristic findings, --json for machine output.
  */
 
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = process.env.CLAUDE_PROJECT_DIR || path.resolve(HERE, '..', '..')
+
+// The checkout the caller stands in, for `--staged` and `--baseline`. They read
+// a git index, so they must read the index of the checkout the commit is made
+// in. CLAUDE_PROJECT_DIR names the SESSION's checkout, which is the main one
+// even when the session works in a worktree. Measured 2026-10-25 (Metorite
+// #460): in a worktree, `--staged` read the main checkout's index and reported
+// nothing. Falls back to ROOT when the caller stands in no repo.
+let gitRootMemo
+function gitRoot() {
+  if (gitRootMemo !== undefined) return gitRootMemo
+  try {
+    const top = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      encoding: 'utf-8',
+      cwd: process.cwd(),
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+    gitRootMemo = top || ROOT
+  } catch {
+    gitRootMemo = ROOT
+  }
+  return gitRootMemo
+}
 
 // ---------------------------------------------------------------- limits ----
 // ASD-STE100 Part 1. Procedural sentences are held shorter than descriptive
@@ -117,10 +139,11 @@ const STRICT_PATH = [
 /**
  * Files this repo does not own.
  *
- * `skills/upstream/` is rewritten every week by skills-upstream-sync.yml from
- * anthropics/skills and VoltAgent/awesome-agent-skills. A rewrite there is undone
- * by the next sync, and failing a sync pull request on somebody else's prose
- * stops the sync. A vendored file is not a style problem, it is a copy.
+ * `skills/upstream/` held a weekly mirror of anthropics/skills and
+ * VoltAgent/awesome-agent-skills. The cleanup of 2026-10-27 deleted the mirror
+ * and its sync workflow. The entry stays: a vendored copy that comes back is
+ * still not ours, and ste-lint.test.mjs pins that case. A vendored file is not
+ * a style problem, it is a copy.
  *
  * `.github/skills/` is NOT on this list. Nothing syncs it, so it is ours.
  */
@@ -129,7 +152,7 @@ const NOT_OURS = [
   // Vendored verbatim from github.com/dickwu/apple-design-skill @ d0bac1e.
   // A refresh re-copies the upstream files, so a rewrite here is undone too.
   /^\.claude\/skills\/apple-design\//,
-  // Adopted verbatim from skills/upstream/anthropics/ at SHA 53048666.
+  // Adopted verbatim from github.com/anthropics/skills at SHA 53048666.
   //
   // ⚠️ THE PATH CANNOT CARRY THE PROVENANCE, so this list carries it. Claude
   // Code reads `.claude/skills/<name>/SKILL.md` and finds nothing one level
@@ -141,14 +164,36 @@ const NOT_OURS = [
   /(^|\/)(CHANGELOG|LICENSE|NOTICE)(\.md)?$/i,
 ]
 
-const relOf = (file) => path.relative(ROOT, path.resolve(ROOT, file)).replace(/\\/g, '/')
-const ours = (file) => !NOT_OURS.some((re) => re.test(relOf(file)))
+// The checkout a file belongs to: the nearest folder that holds `.git` (a
+// folder in a clone, a file in a worktree). Measured 2026-10-16, two defects
+// came from resolving every path against ROOT, the session's checkout:
+//   * a worktree file (C:\wt-x\...) became `../../wt-x/...`, so the
+//     `^`-anchored NOT_OURS entries never matched, and vendored skills in a
+//     worktree were linted as if we wrote them;
+//   * a file in no repo at all was linted as a repo doc. Agent memory lives
+//     under ~/.claude/projects/, so `.claude/` made it STRICT, and each error
+//     forced a rewrite of a note no reader of the repo ever sees.
+// A Git Bash path (/c/wt-x/...) names drive C:, not a folder `c` on ROOT's drive.
+const absOf = (file) =>
+  path.resolve(ROOT, process.platform === 'win32' ? file.replace(/^\/([a-z])\//i, '$1:/') : file)
+
+function repoOf(file) {
+  let dir = path.dirname(absOf(file))
+  for (;;) {
+    if (existsSync(path.join(dir, '.git'))) return dir
+    const up = path.dirname(dir)
+    if (up === dir) return null
+    dir = up
+  }
+}
+const relOf = (file) =>
+  path.relative(repoOf(file) ?? ROOT, absOf(file)).replace(/\\/g, '/')
+const ours = (file) => repoOf(file) !== null && !NOT_OURS.some((re) => re.test(relOf(file)))
 
 function tierFor(file, text = '') {
   const marker = text.match(/<!--\s*ste-tier:\s*(strict|informed)\s*-->/i)
   if (marker) return marker[1].toLowerCase()
-  const rel = path.relative(ROOT, path.resolve(ROOT, file)).replace(/\\/g, '/')
-  return STRICT_PATH.some((re) => re.test(rel)) ? 'strict' : 'informed'
+  return STRICT_PATH.some((re) => re.test(relOf(file))) ? 'strict' : 'informed'
 }
 
 // -------------------------------------------------------------- stripping ----
@@ -506,7 +551,7 @@ function report(file, tier, findings, { showWarnings, json }) {
 function stagedAddedLines() {
   const diff = execFileSync('git', ['diff', '--cached', '-U0', '--', '*.md'], {
     encoding: 'utf-8',
-    cwd: ROOT,
+    cwd: gitRoot(),
     maxBuffer: 32 * 1024 * 1024,
   })
   const files = new Map()
@@ -565,6 +610,24 @@ async function main() {
     const errors = findings.filter((f) => f.severity === 'error')
     const warns = findings.filter((f) => f.severity === 'warning')
 
+    // Two-speed delivery (owner directive, 2026-10-19): while a feature is in
+    // build, an error is ADVISORY. The agent sees it and goes on. The hardening
+    // pass sets STE_LINT_BLOCK=1, and then an error is exit 2 and forces the
+    // rewrite. Contract: project-docs/specs/engineering_practice.md §7a.
+    if (errors.length && process.env.STE_LINT_BLOCK !== '1') {
+      process.stdout.write(
+        JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: 'PostToolUse',
+            additionalContext:
+              `STE (${tier}) advisory, ${errors.length} error${errors.length === 1 ? '' : 's'} on ${file} ` +
+              `(fix at the hardening pass, not now): ` +
+              errors.slice(0, 6).map((f) => `${f.rule} — ${f.message}`).join('; '),
+          },
+        }),
+      )
+      process.exit(0)
+    }
     if (errors.length) {
       process.stderr.write(
         `STE (${tier}) — ${errors.length} error${errors.length === 1 ? '' : 's'} in the text just written to ${file}:\n` +
@@ -594,15 +657,17 @@ async function main() {
   if (flags.has('--staged')) {
     let errors = 0
     for (const [file, added] of stagedAddedLines()) {
-      if (added.length === 0 || !ours(file)) continue
+      // Judge the file in the checkout whose index it came from, not ROOT.
+      const abs = path.join(gitRoot(), file)
+      if (added.length === 0 || !ours(abs)) continue
       const full = (() => {
         try {
-          return readFileSync(path.join(ROOT, file), 'utf-8')
+          return readFileSync(abs, 'utf-8')
         } catch {
           return ''
         }
       })()
-      const tier = tierFor(file, full)
+      const tier = tierFor(abs, full)
       // Rebuild a sparse document so line numbers stay the file's own.
       const maxLine = added[added.length - 1].n
       const sparse = new Array(maxLine).fill('')
@@ -621,16 +686,17 @@ async function main() {
 
   // ---- baseline: the whole repo, never fails ----
   if (flags.has('--baseline')) {
-    const list = execFileSync('git', ['ls-files', '*.md'], { encoding: 'utf-8', cwd: ROOT })
+    const list = execFileSync('git', ['ls-files', '*.md'], { encoding: 'utf-8', cwd: gitRoot() })
       .split(/\r?\n/)
       .filter(Boolean)
     const rows = []
     let totals = { error: 0, warning: 0 }
     for (const rel of list) {
-      if (!ours(rel)) continue
+      const abs = path.join(gitRoot(), rel)
+      if (!ours(abs)) continue
       let res
       try {
-        res = lintFile(path.join(ROOT, rel))
+        res = lintFile(abs)
       } catch {
         continue
       }

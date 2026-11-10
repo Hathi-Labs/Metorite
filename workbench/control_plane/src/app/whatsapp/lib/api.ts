@@ -4,7 +4,6 @@
 
 import type {
   WaAccount,
-  WaBridgeSession,
   WaCall,
   WaCallDiagnostics,
   WaCallList,
@@ -14,6 +13,7 @@ import type {
   WaChatContext,
   WaConnectionInfo,
   WaEmbeddedResult,
+  WaHistorySyncResult,
   WaLabel,
   WaMessage,
   WaPulse,
@@ -98,6 +98,15 @@ export function disconnectAccount(id: string) {
   return deleteJSON(`accounts/${id}`);
 }
 
+/** Start the coexistence history import again (WS-20 WA-C3 P4). The server
+ *  answers 409 after Meta's 24-hour window, and 400 when the import is off. */
+export function startHistoryImport(id: string) {
+  return postJSON<WaHistorySyncResult>(
+    `accounts/${encodeURIComponent(id)}/history-sync`,
+    {}
+  );
+}
+
 // ── Connect wizard (W11) ─────────────────────────────────────────────────────
 
 export function fetchConnectionInfo(): Promise<WaConnectionInfo> {
@@ -113,12 +122,14 @@ export function fetchConnectionInfo(): Promise<WaConnectionInfo> {
   });
 }
 
-// Complete Embedded Signup: exchange the FB.login code + selected number for a
-// connected account (W12).
+// Complete Embedded Signup: exchange the FB.login code for a connected account
+// (W12). `waba_id` is required. A coexistence connect (WS-20 WA-C2) sends no
+// `phone_number_id`, and the backend reads the number from the WABA.
 export function embeddedSignup(input: {
   code: string;
-  phone_number_id: string;
-  waba_id?: string | null;
+  waba_id: string;
+  phone_number_id?: string;
+  onboarding: "cloud" | "coexistence";
   display_name?: string;
 }) {
   return postJSON<WaEmbeddedResult>("connect/embedded", input);
@@ -142,22 +153,6 @@ export function createAccount(input: {
   credentials: { access_token: string };
 }) {
   return postJSON<WaAccount>("accounts", input);
-}
-
-// ── Personal number via whatsmeow QR bridge (W15) ─────────────────────────────
-
-// Begin QR pairing for a personal number: the gateway creates a 'pairing'
-// account and asks the local bridge for a QR to render.
-export function startBridgeSession() {
-  return postJSON<WaBridgeSession>("bridge/connect", {});
-}
-
-// Poll pairing status + the current QR for a pairing account.
-export function fetchBridgeStatus(accountId: string): Promise<WaBridgeSession> {
-  return getJSON<WaBridgeSession>(
-    `bridge/status?account_id=${encodeURIComponent(accountId)}`,
-    { account_id: accountId, qr: null, status: "unknown", bridge_reachable: false }
-  );
 }
 
 export function fetchStreams(accountId?: string): Promise<WaStreams> {

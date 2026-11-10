@@ -1,0 +1,795 @@
+"""The Google Drive adapter of a member source (WS-61 KC-1a and KC-3).
+
+Spec: ``project-docs/specs/knowledge_curation.md`` §7.1 and §7.2 steps 1 and
+5, and ``project-docs/specs/knowledge_base.md`` §7.1 and §7.2.
+
+**Metadata only.** Discovery reads ``files.list`` with a ``fields`` mask and
+``drives.list``. The change feed (KC-3) reads ``changes.getStartPageToken``
+and ``changes.list`` with a ``fields`` mask. Nothing asks ``alt=media`` and
+nothing calls ``files.export``. :meth:`GoogleDriveSource.fetch_text` and
+:meth:`GoogleDriveSource.fetch_bytes` raise ``NotImplementedError`` until KC-5.
+
+**The change feed (KC-3).** One page of ``changes.list`` becomes one
+:class:`ChangePage`. A removed change and a trashed file are a removal. A
+shared-drive change that is removed is a removal of the drive root, and one
+with a name is an upsert of the drive root. The adapter keeps the LAST event
+of each id, in feed order, so one upsert never changes a row twice.
+``content_hash`` is ``md5Checksum`` when Google gives one, else ``v`` and
+the ``version`` (a native Google Doc has no MD5). Discovery reads the same
+two fields, so both fill ``content_hash`` the same way.
+
+**A dead page token.** Google's reference for ``changes.list`` names no
+error code for an expired or unknown ``pageToken``. KC-3 could not check it
+against live Google, because the build has no Drive test account. So the
+adapter maps each answer that can mean "this cursor is dead" to
+:class:`CursorExpired`: HTTP 404, HTTP 410, and HTTP 400 whose error names
+the location ``pageToken`` (the answer Google gives for a token that it
+cannot read). The engine then takes a new start token and relists. A check
+against a live account is open (``knowledge_curation.md`` §22 KC-3).
+
+**The phases of one discovery.** The cursor walks four phases:
+
+1. ``root`` — ``files/root``: the member's own drive, as one root folder;
+2. ``drives`` — ``drives.list``: each shared drive the member can open, as a
+   root folder whose id is the drive id;
+3. ``files`` — ``files.list`` over every corpus (``corpora=allDrives``,
+   ``includeItemsFromAllDrives=true``, ``supportsAllDrives=true``), flat;
+4. ``children`` — the same call for the children of ONE folder. The level
+   walk of a tree past the node cap uses it (``kb_sync/discovery.py``).
+
+**The size of a page.** The guard keeps at most 64 KiB of an answer. A page
+whose body reached the cap is read again with half the page size, down to
+:data:`MIN_PAGE`. Past that the read raises :class:`SourceError`.
+
+**A throttle.** HTTP 429, a 403 with a rate reason, and HTTP 5xx wait 1, 2
+and 4 seconds, then raise :class:`RateLimited`. A 401 raises
+:class:`SourceError` with the code ``unauthorized``.
+
+**The readers (KC-4a).** :meth:`GoogleDriveSource.list_access` reads
+``files.list`` over every corpus with the ``permissions`` field mask
+(:data:`ACCESS_FIELDS`), so one call reads the readers of a page of files.
+Google leaves the field out for an item of a shared drive. Only for such an
+item, ``permissions.list`` reads the list (:data:`PERMISSION_FIELDS`,
+``supportsAllDrives``, ``pageSize`` 100, ``nextPageToken``). An item with no
+field that is not in a shared drive has no list, and it proves only the owner
+of the source. Each call is a GET, and no scope is new.
+
+* A ``deleted`` row is skipped, and ``pendingOwner`` changes nothing.
+* A ``domain`` or an ``anyone`` row is kept only when ``allowFileDiscovery``
+  is true. A link-only share grants nothing.
+* ``budget`` caps the calls of one read. A read never starts the
+  ``permissions.list`` of an item that it cannot finish in its budget. It
+  returns a cursor that reads the page again and goes on after the last
+  item it finished. An item with more than :data:`MAX_PERMISSION_PAGES`
+  pages keeps the readers of those pages only, which proves fewer members.
+* A ``403`` or a ``404`` of ``permissions.list`` that is not a throttle
+  means no list for that item. Any other error raises.
+* Each Drive call sends ``prettyPrint=false`` (fix round 1). A page whose
+  readers pass the guard's cap at :data:`MIN_PAGE` is read again slim
+  (:data:`SLIM_ACCESS_FIELDS`). Then each item calls ``permissions.list``
+  inside the budget, and an item that the budget does not reach has no
+  list. So one dense page never stops the pass.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import re
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import replace
+from datetime import datetime
+from typing import Any
+from urllib.parse import urlsplit
+
+from gateway.kb_sources.base import (
+    ANYONE,
+    KIND_FILE,
+    KIND_FOLDER,
+    NOT_IN_KC1,
+    READER_ANYONE,
+    READER_DOMAIN,
+    READER_GROUP,
+    READER_USER,
+    AccessCursor,
+    AccessPage,
+    AccessReader,
+    AccountIdentity,
+    ChangePage,
+    CursorExpired,
+    DiscoverCursor,
+    DiscoverPage,
+    NodeAccess,
+    OAuthClientConfig,
+    RateLimited,
+    SourceCredential,
+    SourceError,
+    SourceNode,
+)
+from gateway.kb_sources.google_drive import auth
+from gateway.kb_sources.http import GuardedHttp, Http, HttpAnswer
+
+PROVIDER = "google_drive"
+
+API = "https://www.googleapis.com/drive/v3"
+FOLDER_MIME = "application/vnd.google-apps.folder"
+
+PHASE_ROOT = "root"
+PHASE_DRIVES = "drives"
+PHASE_FILES = "files"
+PHASE_CHILDREN = "children"
+
+#: The first page size, and the smallest one a shrink may reach.
+PAGE_SIZE = 100
+MIN_PAGE = 10
+
+#: The fields of each file. Metadata only: no content, no export link.
+#: ``md5Checksum`` and ``version`` fill ``content_hash`` (KC-3).
+FILE_FIELDS = (
+    "nextPageToken,files(id,name,mimeType,size,modifiedTime,parents,driveId,webViewLink,"
+    "md5Checksum,version)"
+)
+DRIVE_FIELDS = "nextPageToken,drives(id,name)"
+
+#: The fields of one page of the change feed (KC-3). Metadata only: no
+#: content and no export link, as :data:`FILE_FIELDS`.
+CHANGE_FIELDS = (
+    "nextPageToken,newStartPageToken,changes(changeType,removed,fileId,driveId,"
+    "file(id,name,mimeType,size,modifiedTime,parents,driveId,webViewLink,trashed,"
+    "md5Checksum,version),drive(id,name))"
+)
+START_FIELDS = "startPageToken"
+
+#: The change type of a file. The only other type that Google sends is the
+#: change of a shared drive.
+CHANGE_FILE = "file"
+
+#: The fields of one permission (KC-4a). Readers only: no photo, no name.
+_PERMISSION = (
+    "id,type,role,emailAddress,domain,allowFileDiscovery,deleted,pendingOwner,"
+    "permissionDetails(inherited,inheritedFrom,role)"
+)
+#: The access listing: the id, the shared drive and the readers of each file.
+ACCESS_FIELDS = f"nextPageToken,files(id,driveId,permissions({_PERMISSION}))"
+#: ``permissions.list`` of one item of a shared drive.
+PERMISSION_FIELDS = f"nextPageToken,permissions({_PERMISSION})"
+#: The slim listing of fix round 1 (R2): the ids and the shared drive of a
+#: page whose readers do not fit the guard's cap at the smallest page size.
+SLIM_ACCESS_FIELDS = "nextPageToken,files(id,driveId)"
+
+#: The most ``permissions.list`` pages of one item. Past it, the item keeps
+#: the readers of these pages, which proves fewer members, never more.
+MAX_PERMISSION_PAGES = 5
+
+#: A provider role: a word, at most 32 characters (``kb_node_access.role``).
+_ROLE = re.compile(r"^[A-Za-z]{1,32}$")
+#: A reader email: one ``@``, no space, at most 320 characters.
+_READER_EMAIL = re.compile(r"^[^@\s]{1,200}@[^@\s]{1,119}$")
+#: A domain: labels of letters, digits and hyphens.
+_DOMAIN = re.compile(r"^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+                     r"(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$")
+
+#: The longest change cursor the adapter sends. A longer one is dead.
+MAX_TOKEN = 500
+
+#: Google's ``md5Checksum``: 32 hex characters.
+_MD5 = re.compile(r"^[0-9a-f]{32}$")
+#: Google's ``version``: a whole number, as text.
+_VERSION = re.compile(r"^[0-9]{1,30}$")
+
+#: A Drive id. Anything else is skipped, because an id goes into a query.
+_ID = re.compile(r"^[A-Za-z0-9_-]{1,200}$")
+
+#: The longest name a node keeps.
+MAX_NAME = 500
+
+#: The hosts a deep link may point at. A link off the list is dropped.
+_LINK_HOSTS = frozenset({"drive.google.com", "docs.google.com"})
+
+#: The waits of a throttled call, in seconds.
+_BACKOFF = (1.0, 2.0, 4.0)
+
+#: The reasons of a 403 that is a throttle, not a refusal.
+_RATE_REASONS = frozenset({"userRateLimitExceeded", "rateLimitExceeded"})
+
+Sleep = Callable[[float], Awaitable[None]]
+
+
+def _safe_id(value: Any) -> str | None:
+    text = str(value or "")
+    return text if _ID.match(text) else None
+
+
+def _link(value: Any) -> str | None:
+    url = str(value or "")
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return None
+    if parts.scheme == "https" and (parts.hostname or "") in _LINK_HOSTS:
+        return url
+    return None
+
+
+def _when(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _size(value: Any) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _name(value: Any) -> str:
+    return str(value or "").strip()[:MAX_NAME] or "(no name)"
+
+
+def _content_hash(item: Mapping[str, Any], kind: str) -> str | None:
+    """``md5Checksum``, else ``v<version>``, else ``None``. A folder has none."""
+    if kind == KIND_FOLDER:
+        return None
+    md5 = str(item.get("md5Checksum") or "").strip().lower()
+    if _MD5.match(md5):
+        return md5
+    version = str(item.get("version") or "").strip()
+    if _VERSION.match(version):
+        return f"v{version}"
+    return None
+
+
+def _node(item: Mapping[str, Any]) -> SourceNode | None:
+    """One ``files.list`` item as a node, or ``None`` for a malformed id."""
+    ext_id = _safe_id(item.get("id"))
+    if ext_id is None:
+        return None
+    parents = item.get("parents") or []
+    parent = _safe_id(parents[0]) if isinstance(parents, list) and parents else None
+    mime = str(item.get("mimeType") or "") or None
+    kind = KIND_FOLDER if mime == FOLDER_MIME else KIND_FILE
+    return SourceNode(
+        ext_id=ext_id,
+        parent_ext_id=parent,
+        kind=kind,
+        name=_name(item.get("name")),
+        mime=mime,
+        size=_size(item.get("size")),
+        modified_at=_when(item.get("modifiedTime")),
+        web_url=_link(item.get("webViewLink")),
+        drive_id=_safe_id(item.get("driveId")),
+        content_hash=_content_hash(item, kind),
+    )
+
+
+def _drive_root(drive_id: str, name: Any) -> SourceNode:
+    """The root folder of one shared drive. Its id is the drive id."""
+    return SourceNode(
+        ext_id=drive_id, parent_ext_id=None, kind=KIND_FOLDER, name=_name(name),
+        mime=FOLDER_MIME, size=None, modified_at=None,
+        web_url=f"https://drive.google.com/drive/folders/{drive_id}",
+        drive_id=drive_id,
+    )
+
+
+def _change_event(change: Mapping[str, Any]) -> tuple[str, SourceNode | None] | None:
+    """One change as ``(id, node)`` for an upsert, ``(id, None)`` for a
+    removal, or ``None`` for a change to skip (a malformed id)."""
+    removed = change.get("removed") is True
+    if str(change.get("changeType") or "") == CHANGE_FILE:
+        ext_id = _safe_id(change.get("fileId"))
+        if ext_id is None:
+            return None
+        item = change.get("file")
+        if removed or (isinstance(item, Mapping) and item.get("trashed") is True):
+            return ext_id, None
+        node = _node(item) if isinstance(item, Mapping) else None
+        if node is None or node.ext_id != ext_id:
+            return None
+        return ext_id, node
+    # The change of a shared drive. Its root node has the drive id.
+    drive_id = _safe_id(change.get("driveId"))
+    if drive_id is None:
+        return None
+    if removed:
+        return drive_id, None
+    drive = change.get("drive")
+    if isinstance(drive, Mapping) and str(drive.get("name") or "").strip():
+        return drive_id, _drive_root(drive_id, drive.get("name"))
+    return None
+
+
+def reader(perm: Any) -> AccessReader | None:
+    """One Drive permission as a reader, or ``None`` when it grants nothing.
+
+    A ``deleted`` row grants nothing. ``pendingOwner`` changes nothing. A
+    ``domain`` or an ``anyone`` row is a reader only when
+    ``allowFileDiscovery`` is true: a link-only share grants nothing.
+    """
+    if not isinstance(perm, Mapping) or perm.get("deleted") is True:
+        return None
+    role = str(perm.get("role") or "").strip()
+    if not role:
+        details = perm.get("permissionDetails")
+        if isinstance(details, list):
+            role = next((str(d.get("role") or "").strip() for d in details
+                         if isinstance(d, Mapping) and d.get("role")), "")
+    if not _ROLE.match(role):
+        return None
+    kind = str(perm.get("type") or "")
+    if kind in (READER_USER, READER_GROUP):
+        email = str(perm.get("emailAddress") or "").strip().lower()
+        if not _READER_EMAIL.match(email):
+            return None
+        return AccessReader(kind=kind, principal=email, role=role)
+    if kind not in (READER_DOMAIN, READER_ANYONE) or perm.get("allowFileDiscovery") is not True:
+        return None
+    if kind == READER_ANYONE:
+        return AccessReader(kind=READER_ANYONE, principal=ANYONE, role=role)
+    domain = str(perm.get("domain") or "").strip().lower()
+    if not _DOMAIN.match(domain):
+        return None
+    return AccessReader(kind=READER_DOMAIN, principal=domain, role=role)
+
+
+def readers(perms: Any) -> tuple[AccessReader, ...]:
+    """The readers of a permission list, once each, in list order."""
+    out: dict[tuple[str, str], AccessReader] = {}
+    for perm in perms if isinstance(perms, list) else []:
+        got = reader(perm)
+        if got is not None:
+            out.setdefault((got.kind, got.principal), got)
+    return tuple(out.values())
+
+
+def change_page(body: Any) -> ChangePage:
+    """One ``changes.list`` answer as a :class:`ChangePage`.
+
+    The last event of each id wins, and the ids keep the order of their last
+    event in the feed. So an id is an upsert or a removal, never both.
+    """
+    changes = body.get("changes") if isinstance(body, Mapping) else None
+    events: dict[str, SourceNode | None] = {}
+    for change in changes or []:
+        if not isinstance(change, Mapping):
+            continue
+        event = _change_event(change)
+        if event is None:
+            continue
+        ext_id, node = event
+        events.pop(ext_id, None)  # the last event moves to the end
+        events[ext_id] = node
+    nxt = body.get("nextPageToken") if isinstance(body, Mapping) else None
+    start = body.get("newStartPageToken") if isinstance(body, Mapping) else None
+    return ChangePage(
+        upserts=tuple(n for n in events.values() if n is not None),
+        removed=tuple(i for i, n in events.items() if n is None),
+        next_token=str(nxt) if nxt else None,
+        new_start_token=str(start) if start and not nxt else None,
+    )
+
+
+class GoogleDriveSource:
+    """:class:`gateway.kb_sources.base.KbSource` for Google Drive.
+
+    *client* is Metorite's one Google client, which the route reads and
+    passes in. *http* is the network door, :class:`GuardedHttp` on
+    :data:`auth.GOOGLE_HOSTS` by default. A test passes a fake.
+    """
+
+    provider = PROVIDER
+
+    def __init__(
+        self,
+        client: OAuthClientConfig,
+        *,
+        http: Http | None = None,
+        clock: auth.Clock = auth.utcnow,
+        sleep: Sleep = asyncio.sleep,
+    ) -> None:
+        self._client = client
+        self._http: Http = http or GuardedHttp(auth.GOOGLE_HOSTS)
+        self._clock = clock
+        self._sleep = sleep
+
+    # ── The token life ────────────────────────────────────────────────────
+
+    def consent_url(self, *, state: str, scope_kind: str) -> str:
+        return auth.consent_url(self._client, state=state, scope_kind=scope_kind)
+
+    async def exchange_code(self, *, code: str) -> SourceCredential:
+        return await auth.exchange_code(self._client, self._http, code=code, clock=self._clock)
+
+    async def refresh(self, cred: SourceCredential) -> SourceCredential:
+        return await auth.refresh(self._client, self._http, cred, clock=self._clock)
+
+    async def revoke(self, cred: SourceCredential) -> bool:
+        return await auth.revoke(self._http, cred)
+
+    # ── Reads ─────────────────────────────────────────────────────────────
+
+    async def _get(
+        self, cred: SourceCredential, path: str, params: Mapping[str, str],
+        *, cursor_read: bool = False,
+    ) -> HttpAnswer:
+        """One GET of the Drive API, with the backoff of the module doc.
+
+        *cursor_read* marks a read of the change feed on a stored page token.
+        An answer that means "this cursor is dead" then raises
+        :class:`CursorExpired` (the module doc).
+
+        KC-4a fix round 1: each call sends ``prettyPrint=false``. Google
+        indents its JSON without it, and an indented page of readers reaches
+        the guard's 64 KiB cap at about 28 readers a file. Every Drive read
+        of this adapter goes through here, so discovery and the change feed
+        get the smaller answer too.
+        """
+        headers = {"Authorization": f"Bearer {cred.access_token}"}
+        params = {**params, "prettyPrint": "false"}
+        for attempt in range(len(_BACKOFF) + 1):
+            answer = await self._http.get(f"{API}/{path}", params=params, headers=headers)
+            if answer.status_code == 200:
+                return answer
+            if answer.status_code == 401:
+                exc = SourceError("Google refused the Drive token")
+                exc.code = "unauthorized"
+                raise exc
+            if cursor_read and self._dead_cursor(answer):
+                raise CursorExpired(f"Google refused the change cursor ({answer.status_code})")
+            if not self._throttled(answer):
+                exc = SourceError(f"Google answered {answer.status_code}")
+                exc.code = f"http_{answer.status_code}"
+                raise exc
+            if attempt < len(_BACKOFF):
+                await self._sleep(_BACKOFF[attempt])
+        raise RateLimited("Google kept throttling the Drive read", tries=len(_BACKOFF) + 1)
+
+    @staticmethod
+    def _dead_cursor(answer: HttpAnswer) -> bool:
+        """404, 410, or a 400 whose error names the location ``pageToken``."""
+        if answer.status_code in (404, 410):
+            return True
+        if answer.status_code != 400:
+            return False
+        body = answer.json()
+        errors = (body.get("error") or {}).get("errors") if isinstance(body, Mapping) else None
+        return any(isinstance(e, Mapping) and e.get("location") == "pageToken"
+                   for e in errors or [])
+
+    @staticmethod
+    def _throttled(answer: HttpAnswer) -> bool:
+        if answer.status_code == 429 or answer.status_code >= 500:
+            return True
+        if answer.status_code != 403:
+            return False
+        body = answer.json()
+        errors = (body.get("error") or {}).get("errors") if isinstance(body, Mapping) else None
+        reasons = {str(e.get("reason")) for e in errors or [] if isinstance(e, Mapping)}
+        return bool(reasons & _RATE_REASONS)
+
+    async def account_identity(self, cred: SourceCredential) -> AccountIdentity:
+        answer = await self._get(
+            cred, "about", {"fields": "user(displayName,emailAddress,permissionId)"})
+        user = answer.json().get("user") if isinstance(answer.json(), Mapping) else None
+        if not isinstance(user, Mapping):
+            raise SourceError("Google gave no Drive account")
+        account_id = str(user.get("permissionId") or "").strip()
+        email = str(user.get("emailAddress") or "").strip().lower()
+        if not account_id or not email:
+            raise SourceError("Google gave no Drive account id or address")
+        return AccountIdentity(
+            account_id=account_id[:200], email=email[:320],
+            display_name=str(user.get("displayName") or "")[:200],
+        )
+
+    async def discover(
+        self, cred: SourceCredential, cursor: DiscoverCursor | None = None,
+    ) -> DiscoverPage:
+        cursor = cursor or DiscoverCursor(phase=PHASE_ROOT)
+        if cursor.phase == PHASE_ROOT:
+            return await self._root(cred)
+        if cursor.phase == PHASE_DRIVES:
+            return await self._drives(cred, cursor)
+        if cursor.phase in (PHASE_FILES, PHASE_CHILDREN):
+            return await self._files(cred, cursor)
+        raise ValueError(f"unknown discovery phase {cursor.phase!r}")
+
+    async def _root(self, cred: SourceCredential) -> DiscoverPage:
+        answer = await self._get(cred, "files/root", {"fields": "id,name"})
+        body = answer.json()
+        root_id = _safe_id(body.get("id") if isinstance(body, Mapping) else None)
+        nodes: tuple[SourceNode, ...] = ()
+        if root_id is not None:
+            nodes = (SourceNode(
+                ext_id=root_id, parent_ext_id=None, kind=KIND_FOLDER, name="My Drive",
+                mime=FOLDER_MIME, size=None, modified_at=None,
+                web_url="https://drive.google.com/drive/my-drive",
+            ),)
+        return DiscoverPage(nodes=nodes, next_cursor=DiscoverCursor(phase=PHASE_DRIVES))
+
+    async def _drives(self, cred: SourceCredential, cursor: DiscoverCursor) -> DiscoverPage:
+        params = {"pageSize": str(PAGE_SIZE), "fields": DRIVE_FIELDS}
+        if cursor.page_token:
+            params["pageToken"] = cursor.page_token
+        body = (await self._get(cred, "drives", params)).json()
+        nodes = []
+        for item in (body.get("drives") or []) if isinstance(body, Mapping) else []:
+            drive_id = _safe_id(item.get("id")) if isinstance(item, Mapping) else None
+            if drive_id is None:
+                continue
+            nodes.append(SourceNode(
+                ext_id=drive_id, parent_ext_id=None, kind=KIND_FOLDER,
+                name=_name(item.get("name")), mime=FOLDER_MIME, size=None,
+                modified_at=None,
+                web_url=f"https://drive.google.com/drive/folders/{drive_id}",
+                drive_id=drive_id,
+            ))
+        token = body.get("nextPageToken") if isinstance(body, Mapping) else None
+        nxt = (DiscoverCursor(phase=PHASE_DRIVES, page_token=str(token)) if token
+               else DiscoverCursor(phase=PHASE_FILES))
+        return DiscoverPage(nodes=tuple(nodes), next_cursor=nxt)
+
+    async def _files(self, cred: SourceCredential, cursor: DiscoverCursor) -> DiscoverPage:
+        query = "trashed = false"
+        if cursor.phase == PHASE_CHILDREN:
+            parent = _safe_id(cursor.parent_ext_id)
+            if parent is None:
+                raise ValueError("a children read names one folder by a plain id")
+            query = f"'{parent}' in parents and trashed = false"
+        size = cursor.page_size or PAGE_SIZE
+        while True:
+            params = {
+                "corpora": "allDrives",
+                "includeItemsFromAllDrives": "true",
+                "supportsAllDrives": "true",
+                "pageSize": str(size),
+                "q": query,
+                "fields": FILE_FIELDS,
+            }
+            if cursor.page_token:
+                params["pageToken"] = cursor.page_token
+            answer = await self._get(cred, "files", params)
+            if not answer.truncated:
+                break
+            if size <= MIN_PAGE:
+                exc = SourceError("a Drive page is larger than the guard's cap")
+                exc.code = "page_too_large"
+                raise exc
+            size = max(MIN_PAGE, size // 2)
+        body = answer.json()
+        items = body.get("files") if isinstance(body, Mapping) else None
+        nodes = tuple(n for n in (
+            _node(i) for i in (items or []) if isinstance(i, Mapping)) if n is not None)
+        token = body.get("nextPageToken") if isinstance(body, Mapping) else None
+        nxt = None
+        if token:
+            nxt = DiscoverCursor(phase=cursor.phase, page_token=str(token),
+                                 parent_ext_id=cursor.parent_ext_id, page_size=size)
+        return DiscoverPage(nodes=nodes, next_cursor=nxt)
+
+    # ── The change feed (KC-3) ────────────────────────────────────────────
+
+    async def changes_start_token(self, cred: SourceCredential) -> str:
+        """``changes.getStartPageToken`` for each drive that the member reads."""
+        answer = await self._get(cred, "changes/startPageToken", {
+            "supportsAllDrives": "true", "fields": START_FIELDS,
+        })
+        body = answer.json()
+        token = body.get("startPageToken") if isinstance(body, Mapping) else None
+        if not token or len(str(token)) > MAX_TOKEN:
+            exc = SourceError("Google gave no start page token")
+            exc.code = "no_start_token"
+            raise exc
+        return str(token)
+
+    async def list_changed(
+        self, cred: SourceCredential, cursor: str | None, folder_ext_ids: Sequence[str],
+    ) -> ChangePage:
+        """One page of ``changes.list`` after *cursor*. Metadata only.
+
+        The feed covers each drive that the member reads, so the adapter
+        does not use *folder_ext_ids*. A page that reaches the guard's cap is
+        read again with half the page size, as discovery does.
+        """
+        token = str(cursor or "")
+        if not token or len(token) > MAX_TOKEN:
+            raise CursorExpired("the change feed has no cursor that Google can read")
+        size = PAGE_SIZE
+        while True:
+            params = {
+                "pageToken": token,
+                "supportsAllDrives": "true",
+                "includeItemsFromAllDrives": "true",
+                "includeRemoved": "true",
+                "pageSize": str(size),
+                "fields": CHANGE_FIELDS,
+            }
+            answer = await self._get(cred, "changes", params, cursor_read=True)
+            if not answer.truncated:
+                break
+            if size <= MIN_PAGE:
+                exc = SourceError("a Drive change page is larger than the guard's cap")
+                exc.code = "page_too_large"
+                raise exc
+            size = max(MIN_PAGE, size // 2)
+        page = change_page(answer.json())
+        if page.next_token is None and page.new_start_token is None:
+            exc = SourceError("Google gave no next cursor for the change feed")
+            exc.code = "no_next_cursor"
+            raise exc
+        return page
+
+    # ── The readers (KC-4a) ───────────────────────────────────────────────
+
+    async def _access_listing(
+        self, cred: SourceCredential, cursor: AccessCursor, budget: int,
+    ) -> tuple[HttpAnswer | None, int, int, bool]:
+        """The listing page of *cursor*: ``(answer, calls, size, slim)``.
+
+        A page that reaches the guard's cap is read again with half the
+        size. At :data:`MIN_PAGE` it is read again slim, with no readers
+        (fix round 1, R2). ``answer`` is ``None`` when the budget ends first.
+        """
+        token = cursor.page_token
+        size = cursor.page_size or PAGE_SIZE
+        calls = 0
+        slim = False
+        while calls < budget:
+            params = {
+                "corpora": "allDrives",
+                "includeItemsFromAllDrives": "true",
+                "supportsAllDrives": "true",
+                "pageSize": str(size),
+                "q": "trashed = false",
+                "fields": SLIM_ACCESS_FIELDS if slim else ACCESS_FIELDS,
+            }
+            if token:
+                params["pageToken"] = token
+            calls += 1
+            answer = await self._get(cred, "files", params, cursor_read=bool(token))
+            if not answer.truncated:
+                return answer, calls, size, slim
+            if slim:  # ids and drive ids only: a page of ten cannot reach the cap
+                exc = SourceError("a Drive access page is larger than the guard's cap")
+                exc.code = "page_too_large"
+                raise exc
+            if size <= MIN_PAGE:
+                # The readers of the smallest page still pass the cap. Read
+                # the same page with no readers, then ask permissions.list for
+                # each item, inside the budget.
+                slim = True
+            else:
+                size = max(MIN_PAGE, size // 2)
+        return None, calls, size, slim
+
+    async def list_access(
+        self, cred: SourceCredential, cursor: AccessCursor | None, *, budget: int,
+    ) -> AccessPage:
+        """The readers of one page of files, from *cursor* (the module doc).
+
+        At most *budget* GET calls. The listing reads each corpus that the
+        member reads. A stored page token that Google refuses raises
+        :class:`CursorExpired`.
+        """
+        if budget < 1:
+            raise ValueError("an access read needs a budget of one call or more")
+        cursor = cursor or AccessCursor()
+        token = cursor.page_token
+        if token is not None and (not token or len(token) > MAX_TOKEN):
+            raise CursorExpired("the access listing has no cursor that Google can read")
+        answer, calls, size, slim = await self._access_listing(cred, cursor, budget)
+        if answer is None:
+            # No call is left for the next read. The next read goes on.
+            return AccessPage(nodes=(), next_cursor=replace(cursor, page_size=size),
+                              calls=calls)
+        body = answer.json()
+        items = [i for i in (body.get("files") or []) if isinstance(i, Mapping)] if (
+            isinstance(body, Mapping)) else []
+        ids = [_safe_id(i.get("id")) for i in items]
+        # A first read has no cursor.after, and ids holds None for a refused
+        # id. So a None must never match: it skipped each item before it.
+        start = ids.index(cursor.after) + 1 if (
+            cursor.after is not None and cursor.after in ids) else 0
+        nodes: list[NodeAccess] = []
+        last = cursor.after
+        for item, ext_id in zip(items[start:], ids[start:], strict=True):
+            if ext_id is None:
+                continue
+            perms = None if slim else item.get("permissions")
+            if isinstance(perms, list):
+                nodes.append(NodeAccess(ext_id=ext_id, readers=readers(perms), listed=True))
+            elif slim:
+                # The slim page lists no reader, so each item asks for its own
+                # list. An item that the budget does not reach has no list: it
+                # proves only the owner, and the pass goes on (fails closed).
+                left = budget - calls
+                if left < 1:
+                    nodes.append(NodeAccess(ext_id=ext_id, readers=(), listed=False))
+                else:
+                    listed, got, used = await self._permissions(
+                        cred, ext_id, max_pages=min(MAX_PERMISSION_PAGES, left))
+                    calls += used
+                    nodes.append(NodeAccess(ext_id=ext_id, readers=got, listed=listed))
+            elif _safe_id(item.get("driveId")) is not None:
+                if budget - calls < MAX_PERMISSION_PAGES:
+                    # This item may need more calls than are left. Stop before
+                    # it, and read the page again from here next time.
+                    return AccessPage(
+                        nodes=tuple(nodes), calls=calls,
+                        next_cursor=AccessCursor(page_token=token, after=last, page_size=size))
+                listed, got, used = await self._permissions(cred, ext_id)
+                calls += used
+                nodes.append(NodeAccess(ext_id=ext_id, readers=got, listed=listed))
+            else:
+                nodes.append(NodeAccess(ext_id=ext_id, readers=(), listed=False))
+            last = ext_id
+        nxt = body.get("nextPageToken") if isinstance(body, Mapping) else None
+        return AccessPage(
+            nodes=tuple(nodes), calls=calls,
+            next_cursor=AccessCursor(page_token=str(nxt), page_size=size) if nxt else None)
+
+    async def _permissions(
+        self, cred: SourceCredential, ext_id: str, *, max_pages: int = MAX_PERMISSION_PAGES,
+    ) -> tuple[bool, tuple[AccessReader, ...], int]:
+        """``permissions.list`` of one item: ``(listed, readers, calls)``, at
+        most *max_pages* calls (:data:`MAX_PERMISSION_PAGES` by default).
+
+        A 403 or a 404 that is not a throttle means no list, so the item
+        proves only the owner of the source. A page that reaches the guard's
+        cap ends the read with the readers of the pages before it.
+        """
+        perms: list[Any] = []
+        token: str | None = None
+        calls = 0
+        while calls < max_pages:
+            params = {"supportsAllDrives": "true", "pageSize": str(PAGE_SIZE),
+                      "fields": PERMISSION_FIELDS}
+            if token:
+                params["pageToken"] = token
+            calls += 1
+            try:
+                answer = await self._get(cred, f"files/{ext_id}/permissions", params)
+            except SourceError as exc:
+                if exc.code in ("http_403", "http_404"):
+                    return False, (), calls
+                raise
+            if answer.truncated:
+                break
+            body = answer.json()
+            page = body.get("permissions") if isinstance(body, Mapping) else None
+            perms.extend(page if isinstance(page, list) else [])
+            nxt = body.get("nextPageToken") if isinstance(body, Mapping) else None
+            if not nxt or len(str(nxt)) > MAX_TOKEN:
+                break
+            token = str(nxt)
+        return True, readers(perms), calls
+
+    # ── Later slices ──────────────────────────────────────────────────────
+
+    async def fetch_text(self, cred: SourceCredential, node: SourceNode) -> str:
+        raise NotImplementedError(NOT_IN_KC1)
+
+    async def fetch_bytes(self, cred: SourceCredential, node: SourceNode) -> bytes:
+        raise NotImplementedError(NOT_IN_KC1)
+
+    def deep_link(self, node: SourceNode) -> str:
+        return node.web_url or f"https://drive.google.com/open?id={node.ext_id}"
+
+
+__all__ = [
+    "ACCESS_FIELDS",
+    "CHANGE_FIELDS",
+    "FILE_FIELDS",
+    "MAX_PERMISSION_PAGES",
+    "PERMISSION_FIELDS",
+    "PROVIDER",
+    "SLIM_ACCESS_FIELDS",
+    "GoogleDriveSource",
+    "change_page",
+    "reader",
+    "readers",
+]

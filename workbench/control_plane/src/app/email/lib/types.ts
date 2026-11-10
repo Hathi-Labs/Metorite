@@ -25,10 +25,23 @@ export interface Email {
   subject: string;
   bodyText: string;
   bodyHtml?: string;
+  /**
+   * True when the provider holds the HTML of this message and Metorite holds
+   * none (WS-17 EM-S2, §14.4.2 item 3). The pane shows `bodyText` at once and
+   * then the HTML of `fetchMessageHtml`. With `EMAIL_HTML_FROM_PROVIDER` off,
+   * the gateway never sends true, and an absent field is false.
+   */
+  htmlRemote?: boolean;
   bodyTruncated: boolean;
   snippet: string;
   hasAttachments: boolean;
   attachments?: Attachment[];
+  /**
+   * "failed" when the gateway could not get the files of this mail from the
+   * provider (an expired token, a rate limit). An empty list with "ok" or no
+   * value is a mail with inline pictures only. Never guess it from the list.
+   */
+  attachmentsStatus?: "ok" | "failed";
   isRead: boolean;
   isStarred: boolean;
   isFlagged: boolean;
@@ -48,15 +61,42 @@ export interface Email {
   rank?: number;
   /** Search-only: highlighted snippet (<mark>…</mark>) showing why it matched. */
   highlight?: string;
+  /**
+   * "Also in" (WS-17 EM-T8g-3, D-EM-22): the id of each other mailbox of the
+   * member that holds a copy of this mail. The list and search send it. The
+   * gateway pairs two mailboxes only when neither one is separate (D-EM-30).
+   * The match is the Message-ID. Outlook and Gmail store it (Gmail since
+   * EM-G2), so a Gmail and an Outlook mailbox pair too (EM-G9). IMAP stores
+   * none, so an IMAP mailbox pairs with nothing. Empty when no copy is known.
+   */
+  alsoIn?: string[];
 }
 
 export interface EmailAccount {
   id: string;
   provider: "gmail" | "microsoft" | "imap";
   emailAddress: string;
+  /** The label the member stored. "" means none. Draw `displayLabel`. */
   label: string;
-  avatar: string; // initials
-  color: string; // hex color for avatar bg
+  /**
+   * The label to draw (EM-T8b, §11.4): the label the member chose, else one
+   * the gateway made from the address. A gateway before EM-T8b sends none,
+   * and the UI then draws the address.
+   */
+  displayLabel?: string;
+  /** The label the mailbox shows when the member clears its name (EM-T8b). */
+  defaultLabel?: string;
+  /** The domain of the address when it is an organization domain, else null.
+   *  The From row warns from it (EM-T8c). */
+  workDomain?: string | null;
+  /** True when the last sync failed on the sign-in, so the mailbox cannot
+   *  send until the member reconnects it (EM-T8c review). */
+  needsReconnect?: boolean;
+  /**
+   * The slot of the categorical ramp of the mailbox chip, 1 to 12 (EM-T8b,
+   * D-EM-21). Null or absent: the chip hashes the mailbox id.
+   */
+  colorSlot?: number | null;
   unreadCount: number;
   syncEnabled: boolean;
   lastSyncedAt?: string;
@@ -83,12 +123,68 @@ export interface EmailAccount {
   onboardingDone?: boolean;
   /** The oldest `received_at` the first import wrote so far (EM-T6b). */
   importReachedAt?: string | null;
-  /** `counting`, `importing` or `done` (EM-T6b). */
+  /**
+   * `counting`, `importing` or `done` (EM-T6b), or `limit` (EM-T6c): the
+   * first import stopped at the storage limit, and `initialSyncDone` is true.
+   */
   importPhase?: string | null;
   /** The rows the first import wrote so far (EM-T6b). */
   importCount?: number | null;
   /** The provider's count of the range, or null when it gave none (EM-T6b). */
   importEstimate?: number | null;
+  // ── Storage (EM-T6c meter, EM-T6e UI, spec §10.4.7) ──
+  /**
+   * The bytes of the copy that Metorite keeps of this mailbox (EM-T6c). Null
+   * before the first meter run, and a null meter is not at the limit. Absent
+   * from a gateway before EM-T6c. Read it through `atStorageLimit` in
+   * `lib/storage.ts`, never by hand.
+   */
+  storedBytes?: number | null;
+  /**
+   * The storage limit of each mailbox, in bytes (the setting in MB times
+   * 1,048,576). Absent from a gateway before EM-T6c, and then Email draws no
+   * storage UI.
+   */
+  storageLimitBytes?: number;
+  /**
+   * When the member connected the mailbox, as ISO text with six digits of
+   * microseconds (EM-T8f-1). A disconnect of the default makes the oldest
+   * mailbox that is left the default, and `nextDefaultAfter` in
+   * `lib/mailboxSettings.ts` reads this to name it (EM-T8f-2). Null or absent
+   * sorts last.
+   */
+  createdAt?: string | null;
+  /**
+   * False when the member keeps the mailbox separate (EM-T8g, D-EM-28). A
+   * separate mailbox stays out of All inboxes, its sums and its chat. Absent
+   * means true, so a gateway before EM-T8g-1 keeps each mailbox in All
+   * inboxes. Read it through `isSeparate` and `pooledMailboxes` in
+   * `lib/mailbox.ts`, never by hand.
+   */
+  inAllInboxes?: boolean;
+}
+
+// ── Remove older mail from Metorite (EM-T6c routes, EM-T6e UI) ─────────────
+
+/** The answer of `GET /email/accounts/{id}/storage/older?before=`. It writes
+ *  nothing, and it counts no draft (EM-T6c, G1). */
+export interface OlderMailPreview {
+  /** The cutoff as the gateway parsed it, as ISO text in UTC. */
+  before: string;
+  /** The messages received before the cutoff. */
+  messages: number;
+  /** The bytes of the meter that their removal would free. */
+  bytes: number;
+}
+
+/** The answer of `POST /email/accounts/{id}/storage/remove-older`. */
+export interface RemoveOlderResult {
+  before: string;
+  /** The messages that the removal took out of Metorite. */
+  removed: number;
+  /** The new meter of the mailbox. Null when the meter did not run. */
+  storedBytes: number | null;
+  storageLimitBytes: number;
 }
 
 // ── Contact card (the people card behind a sender's name/avatar) ────────────
@@ -426,6 +522,24 @@ export interface UnsubscribeResult {
 
 // ── Assistant rules ─────────────────────────────────────────────────────────
 
+/**
+ * The answer of `POST /email/rules/copy` (EM-T8f-1). `copied` holds the names
+ * in the target. `renamed` holds each rule whose name the target held.
+ * `leftOut` holds each rule the copy did not take, with the reason the
+ * gateway gives: `disabled`, `forward_to_own_address`, `reply_rule_exists` or
+ * `folder_not_in_target` (EM-S10).
+ *
+ * `willCreate` (EM-S10, D-EM-60) holds each folder or label name that a copied
+ * rule uses and the target does not hold. The provider makes it on first use.
+ * `rule` is the name in the target. A gateway before EM-S10 sends none.
+ */
+export interface RuleCopyResult {
+  copied: string[];
+  renamed: Array<{ name: string; copiedAs: string }>;
+  leftOut: Array<{ name: string; reason: string }>;
+  willCreate?: Array<{ rule: string; action: string; name: string }>;
+}
+
 export type RuleActionType =
   | "ARCHIVE"
   | "LABEL"
@@ -437,7 +551,9 @@ export type RuleActionType =
   | "REPLY"
   | "FORWARD"
   | "DRAFT_EMAIL"
-  | "CALL_WEBHOOK";
+  | "CALL_WEBHOOK"
+  // WS-59 RE-5: "Tell me on WhatsApp". `label` holds "normal" or "urgent".
+  | "NOTIFY_ME";
 
 /** A draft attachment sourced from the email-assistant workspace. */
 export interface RuleActionAttachment {
@@ -534,6 +650,8 @@ export interface ExecutedRule {
   conditions?: RuleConditions | null;
   /** Matched rule's full action specs (label/to/subject…), for the popover. */
   rule_actions?: RuleAction[];
+  /** The server says the mail was moved or deleted before the rule ran. */
+  mail_gone?: boolean;
 }
 
 /** One event in a single message's audit timeline (GET /messages/{id}/timeline).
@@ -549,6 +667,8 @@ export interface MessageTimelineEvent {
   /** rule/skipped: */
   rule_id?: string | null;
   rule_name?: string | null;
+  /** The server says the mail was moved or deleted before the rule ran. */
+  mail_gone?: boolean;
   /** APPLIED | SKIPPED | FAILED | UNDONE | REJECTED … */
   status?: string;
   automated?: boolean;
@@ -584,6 +704,12 @@ export interface RunMessageResult {
   unavailable?: boolean;
 }
 
+/** One link or image that the server's signature clean removed. */
+export interface SignatureRemoved {
+  kind: "link" | "image";
+  value: string;
+}
+
 export interface AssistantSettings {
   account_id: string;
   about: string;
@@ -593,16 +719,23 @@ export interface AssistantSettings {
    *  recognises it (a client-side re-derivation could drift by whitespace and
    *  get double-signed). */
   signature_text?: string;
+  /** What the server's clean took out of the signature at this save (WS-17
+   *  SG-1, D-EM-70): each link or image whose address is not https, mailto
+   *  or tel. Empty on a GET. */
+  signature_removed?: SignatureRemoved[];
+  /** False when this server has no https address to host a signature image,
+   *  so the editor turns its upload button off (§23.3.9). */
+  signature_image_upload?: boolean;
   auto_run: boolean;
+  /** Read-only: true when the member chose Auto-run (task 2267). The server
+   *  reads a stored choice stamp or a stored `auto_run: true` (task 2305). A
+   *  row that a save of another field wrote is no choice. False: no stored
+   *  choice. The PUT ignores it. Absent on an older server. */
+  auto_run_chosen?: boolean;
   cold_email_blocker: ColdBlockerMode;
-  /** Model for BACKGROUND draft writing — follow-ups, DRAFT_EMAIL rule actions
-   *  (default tier-powerful). */
-  draft_model: string;
-  /** Model for MANUAL drafting — the composer's "Draft with AI" button, where
-   *  the user is waiting (default tier-fast). */
-  compose_model: string;
-  /** Model the interactive email chat panel uses (default tier-powerful). */
-  chat_model: string;
+  // No model or tier field: our code picks the tier of each email AI task
+  // (D-EM-7, D-EM-61). The server answers none, and a fence keeps them out
+  // (noTierChoice.test.ts).
   /** Scheduled inbox-digest cadence. */
   digest_frequency: DigestFrequency;
   /** Global "always do this" guidance for the assistant. */
@@ -647,6 +780,14 @@ export interface AssistantSettings {
    *  Returned by GET/PUT for display; never sent back to change it. */
   own_domain?: string;
 }
+
+/**
+ * The body of a settings save (task 2305). `auto_run_choice` is the
+ * write-only marker of the member's own Auto-run act. With it, the PUT stamps
+ * the choice. Only `autoRunChoiceBody` (`lib/assistantSettings.ts`) sets it,
+ * and no answer carries it.
+ */
+export type AssistantSettingsSave = AssistantSettings & { auto_run_choice?: true };
 
 export type DraftConfidence = "ALL_EMAILS" | "STANDARD" | "HIGH_CONFIDENCE";
 
@@ -759,27 +900,6 @@ export interface VoiceProfileBuildStatus {
   sample_count?: number;
   suggested_knowledge?: number;
   error?: string;
-}
-
-/** A configurable LLM tier/provider, from GET /api/settings/llm. */
-export interface LLMTier {
-  tier_name: string;
-  tier_id: string;
-  model: string;
-  provider: string;
-  provider_configured: boolean;
-}
-
-export interface LLMProvider {
-  id: string;
-  label: string;
-  configured: boolean;
-  models: string[];
-}
-
-export interface LLMConfigResponse {
-  tiers: LLMTier[];
-  providers: LLMProvider[];
 }
 
 export interface RecentTestResult {

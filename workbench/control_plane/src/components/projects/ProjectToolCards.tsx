@@ -22,14 +22,31 @@
  * `- #<n> «title» · <facts>` and the NEXT line is `  full_id: <uuid>`.
  */
 
+import ShowMore from "@/components/ui/ShowMore";
 import Button from "@/components/ui/Button";
+import FencedText from "@/components/FencedText";
 import AppIcon from "@/components/Icon";
+import EntityPill from "@/components/ui/EntityPill";
+import Readout from "@/components/Readout";
+import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
+import { renderTemplate } from "@/components/genUITemplates";
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
 import type { ToolEvent } from "@/components/MarkdownMessage";
 import { ToolCardShell } from "@/components/ToolCardShell";
+import { placementOf } from "@/lib/chatPlacement";
+import { parseDatasetTable } from "@/lib/datasetTable";
+import { unfenced } from "@/lib/fencedText";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
-import { LEGEND, parseTaskRows, taskMetaForPeople, type ProjectTaskRow } from "@/lib/projectToolRows";
+import { StatusChip } from "@/components/StatusChip";
+import { useOverflowTip } from "@/components/ui/OverflowTip";
+import { LEGEND, parseTaskRows, taskRowFacts, type ProjectTaskRow } from "@/lib/projectToolRows";
+import { statusAccent } from "@/lib/statusAccent";
+import { noteReminderReceipt } from "@/lib/shell/reminderOpen";
+import { ALREADY_HEAD, readReminderReceipt } from "@/lib/reminderReceipt";
+import ReminderReceiptCard from "./ReminderReceiptCard";
+import { glassToneFrame } from "@/components/glassCard";
+import { PROJECTS_CHANGED_EVENT } from "@/lib/projectsEvents";
 
 // ── Tool → card routing ───────────────────────────────────────────────────────
 
@@ -63,6 +80,8 @@ const INFO_META: Record<string, { icon: string; label: string }> = {
   rebalance: { icon: "Scale", label: "Rebalance" },
   find_conflicts: { icon: "TriangleAlert", label: "Conflicts" },
   report_list: { icon: "FileText", label: "Reports" },
+  report_recipients: { icon: "Users", label: "Report recipients" },
+  waiting_agent_requests: { icon: "Bot", label: "Agent requests" },
   report_render: { icon: "FileText", label: "Report" },
   recurrence: { icon: "Repeat", label: "Repeat rule" },
   // The overlay line is the point of this read, and a list card drops it.
@@ -76,12 +95,23 @@ const INFO_META: Record<string, { icon: string; label: string }> = {
   status_report: { icon: "Flag", label: "Status report" },
   // S5 — the rest of the reads
   project_access: { icon: "Users", label: "Access" },
+  project_authorities: { icon: "Users", label: "Authority pages" },
+  // WS-39 LP-1a: the updates of a project, newest first.
+  list_project_updates: { icon: "Megaphone", label: "Project updates" },
+  // WS-39 TPL-1a: the templates of the organization.
+  list_templates: { icon: "LayoutList", label: "Templates" },
+  my_decisions: { icon: "Users", label: "Decisions" },
   project_views: { icon: "LayoutList", label: "Views" },
   my_contexts: { icon: "AtSign", label: "Contexts" },
   watchers: { icon: "Eye", label: "Watchers" },
   // S6 — navigation. The page usually opens the row itself; this card keeps
   // the link for a member who is not on the Projects page.
   open_in_app: { icon: "ExternalLink", label: "Open in Projects" },
+  show_view: { icon: "Filter", label: "Board view changed" },
+  // S7e — the on-the-fly table. It draws as a table (`lib/datasetTable.ts`).
+  task_dataset: { icon: "Table2", label: "Task dataset" },
+  my_led_projects: { icon: "FolderKanban", label: "Projects you lead" },
+  my_areas: { icon: "Layers", label: "Your areas" },
 };
 
 /**
@@ -100,6 +130,7 @@ export const OPENS_APP: Record<string, { app: "reports"; label: string }> = {
   team_capacity: { app: "reports", label: "Open Reports" },
   find_conflicts: { app: "reports", label: "Open Reports" },
   report_list: { app: "reports", label: "Open Reports" },
+  report_recipients: { app: "reports", label: "Open Reports" },
   report_render: { app: "reports", label: "Open Reports" },
   render_report: { app: "reports", label: "Open Reports" },
   status_report: { app: "reports", label: "Open Reports" },
@@ -112,14 +143,23 @@ export const OPENS_APP: Record<string, { app: "reports"; label: string }> = {
  * This card is the receipt: what changed, and a jump to the row.
  */
 const ACTION_META: Record<string, { icon: string; label: string }> = {
-  create_task: { icon: "Plus", label: "Task created" },
+  // RX-2: a task receipt wears a checked clipboard, and a reminder receipt wears a Bell.
+  create_task: { icon: "ClipboardCheck", label: "Task created" },
   update_task: { icon: "PenLine", label: "Task updated" },
   assign: { icon: "UserPlus", label: "Assignees changed" },
   comment: { icon: "MessageSquare", label: "Comment posted" },
+  // WS-39 LP-1a: one update of a project, with its health.
+  post_project_update: { icon: "Megaphone", label: "Project update posted" },
   add_subtasks: { icon: "ListTree", label: "Subtasks added" },
   link_tasks: { icon: "Link", label: "Tasks linked" },
   unlink_tasks: { icon: "Unlink", label: "Link removed" },
+  // WS-57 TR-3: a URL on a task, not a second task.
+  add_task_ref: { icon: "Link2", label: "Reference added" },
+  remove_task_ref: { icon: "Unlink", label: "Reference removed" },
   move_task: { icon: "MoveRight", label: "Task moved" },
+  file_tasks: { icon: "MoveRight", label: "Tasks filed" },
+  link_tasks_batch: { icon: "Link", label: "Tasks linked" },
+  update_tasks: { icon: "PenLine", label: "Tasks updated" },
   watch: { icon: "Eye", label: "Watching changed" },
   complete: { icon: "CheckCircle2", label: "Task done" },
   defer: { icon: "CalendarClock", label: "Deferred" },
@@ -138,14 +178,17 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   update_tag: { icon: "PenLine", label: "Tag updated" },
   edit_comment: { icon: "MessageSquare", label: "Comment edited" },
   set_recurrence: { icon: "Repeat", label: "Repeat rule set" },
-  create_personal_task: { icon: "Plus", label: "Private task captured" },
+  create_personal_task: { icon: "ClipboardCheck", label: "Private task captured" },
   set_my_overlay: { icon: "SlidersHorizontal", label: "Your triage updated" },
   // S3 — the guarded acts. Same receipt: the card BEFORE the act carried
   // the counts, this one says what the route reported.
   archive_project: { icon: "Archive", label: "Project archived" },
   unarchive_project: { icon: "ArchiveRestore", label: "Project restored" },
   move_project: { icon: "FolderInput", label: "Project moved" },
+  convert_folder_to_project: { icon: "FolderKanban", label: "Folder converted to a project" },
   archive_task: { icon: "Archive", label: "Task archived" },
+  delete_project: { icon: "Trash2", label: "Project deleted" },
+  delete_task: { icon: "Trash2", label: "Task deleted" },
   merge_tasks: { icon: "Merge", label: "Tasks merged" },
   bulk_update: { icon: "ListChecks", label: "Tasks changed" },
   delete_comment: { icon: "MessageSquareX", label: "Comment deleted" },
@@ -159,13 +202,47 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   delete_view: { icon: "Trash2", label: "View deleted" },
   report_delete: { icon: "Trash2", label: "Report deleted" },
   delete_attachment: { icon: "Paperclip", label: "File detached" },
+  rename_area: { icon: "Layers", label: "Area renamed" },
+  nudge_task: { icon: "Bell", label: "Person nudged" },
+  attach_to_task: { icon: "Paperclip", label: "File attached" },
+  grant_access: { icon: "UserPlus", label: "Access given" },
+  revoke_access: { icon: "UserMinus", label: "Access removed" },
+  pin_authority: { icon: "UserPlus", label: "Authority page pinned" },
+  unpin_authority: { icon: "UserMinus", label: "Authority page removed" },
+  // WS-39 LP-1a: the delete of a project update.
+  delete_project_update: { icon: "Trash2", label: "Project update deleted" },
+  // WS-39 TPL-1a: an org-wide template, and a project made from one.
+  save_as_template: { icon: "LayoutList", label: "Template saved" },
+  create_project_from_template: { icon: "FolderPlus", label: "Project made from a template" },
+  answer_decision: { icon: "UserPlus", label: "Decision answered" },
+  add_report_recipient: { icon: "UserPlus", label: "Recipient added" },
+  remove_report_recipient: { icon: "UserMinus", label: "Recipient removed" },
+  set_report_schedule: { icon: "CalendarClock", label: "Schedule changed" },
+  // WS-66 RM-3: the member's reminders. A reminder is not a task, so its
+  // receipt prints `reminder_id:` and no `full_id:`. Only the promote prints
+  // the `full_id:` of the task it made, which opens in Projects.
+  set_reminder: { icon: "Bell", label: "Reminder set" },
+  update_reminder: { icon: "PenLine", label: "Reminder changed" },
+  resolve_reminder: { icon: "CheckCircle2", label: "Reminder answered" },
+  reopen_reminder: { icon: "Undo2", label: "Reminder reopened" },
+  reschedule_reminder: { icon: "CalendarClock", label: "Reminder moved" },
+  promote_reminder: { icon: "Plus", label: "Reminder made a task" },
+  delete_area: { icon: "Trash2", label: "Area removed" },
   // S4 — the forms. The receipt is the wrapped tool's.
   edit_task: { icon: "PenLine", label: "Task updated" },
   edit_project: { icon: "PenLine", label: "Project updated" },
   propose_plan: { icon: "ListTodo", label: "Plan created" },
+  // WS-46 P13 — several new tasks in one project. Its receipt lists every
+  // task it made, so it draws through `BatchReceiptCard`, not one link.
+  create_tasks: { icon: "ListPlus", label: "Tasks created" },
+  // H-273 — several new tags or types. The receipt lists every word it
+  // added, so it draws through `BatchReceiptCard` too.
+  create_tags: { icon: "Tags", label: "Tags added" },
+  create_types: { icon: "Shapes", label: "Types added" },
   // S5 — the rest of the writes
   save_view: { icon: "LayoutList", label: "View saved" },
   capture_intake: { icon: "Inbox", label: "Captured into intake" },
+  create_area: { icon: "Layers", label: "Area made" },
   triage_intake: { icon: "Inbox", label: "Intake decided" },
   mark_notifications_read: { icon: "BellOff", label: "Bell cleared" },
 };
@@ -174,9 +251,10 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
  * The event the Projects page listens for to reload the board after a chat
  * write (S4). Fired once per receipt that reports a done write. The page
  * owns its loaders, so this is the one seam between the two; a card never
- * reaches into the page's state.
+ * reaches into the page's state. The name lives in `lib/projectsEvents.ts`,
+ * so the shell can listen with no import of this file (PKG-8a fix round 2).
  */
-export const PROJECTS_CHANGED_EVENT = "cc-projects-changed";
+export { PROJECTS_CHANGED_EVENT };
 const announced = new Set<string>();
 
 /**
@@ -197,7 +275,7 @@ export function isFreshReceipt(e: { endedAt?: number }, now: number = Date.now()
   return age >= 0 && age < FRESH_RECEIPT_MS;
 }
 
-function announceChange(eventId: string): void {
+export function announceChange(eventId: string): void {
   if (announced.has(eventId)) return;
   announced.add(eventId);
   try {
@@ -228,7 +306,10 @@ export const GUARDED_TOOLS: ReadonlySet<string> = new Set([
   "archive_project",
   "unarchive_project",
   "move_project",
+  "convert_folder_to_project",
   "archive_task",
+  "delete_project",
+  "delete_task",
   "merge_tasks",
   "bulk_update",
   "delete_comment",
@@ -242,6 +323,23 @@ export const GUARDED_TOOLS: ReadonlySet<string> = new Set([
   "delete_view",
   "report_delete",
   "delete_attachment",
+  "rename_area",
+  "delete_area",
+  "nudge_task",
+  "attach_to_task",
+  "grant_access",
+  "revoke_access",
+  "pin_authority",
+  "unpin_authority",
+  "delete_project_update",
+  "answer_decision",
+  "add_report_recipient",
+  "remove_report_recipient",
+  "set_report_schedule",
+  "promote_reminder",
+  // WS-39 TPL-1a
+  "save_as_template",
+  "create_project_from_template",
 ]);
 
 /**
@@ -300,11 +398,28 @@ export const VIEW_TOOLS: ReadonlySet<string> = new Set([
   "status_report",
 ]);
 
+/**
+ * A READ is evidence (`lib/chatPlacement.ts`, spec §24 rule 2): it draws in
+ * the working trail, under its step, and never as a card after the answer.
+ * A Projects tool the map does not name counts as a read here. The fences
+ * keep every exported tool named, so only a tool from a newer server lands
+ * here, and a hidden receipt is the smaller harm than a wall of cards.
+ */
+function isProjectEvidence(e: ToolEvent): boolean {
+  const p = placementOf(e.name);
+  return p === "evidence" || p === undefined;
+}
+
+/** A card in the FLOW: a write's receipt, or a view that failed. */
 function hasProjectCard(e: ToolEvent): boolean {
   if (e.status !== "done" && e.status !== "error") return false;
+  if (!isProjectsTool(e) || isProjectEvidence(e)) return false;
   if (e.status === "done" && VIEW_TOOLS.has(e.name)) return false;
-  return isProjectsTool(e);
+  return true;
 }
+
+/** Every tool name this file routes. The placement fence reads it. */
+export const PROJECT_CARD_TOOLS: readonly string[] = [...PROJECT_TOOLS];
 
 // ── Result-text parser ────────────────────────────────────────────────────────
 
@@ -323,75 +438,197 @@ function useOpenTask() {
 
 // ── Cards ─────────────────────────────────────────────────────────────────────
 
+/**
+ * The box of one listed row in a card: a task, a tag, a type (owner
+ * feedback, 2026-10-10). Rem padding, so compact density draws it denser.
+ * On a touch screen the row is at least 40 px tall, in px, so a finger
+ * keeps its target at every density.
+ */
+export const LIST_ROW_BOX = "px-1 py-0.5 pointer-coarse:min-h-[40px]";
+
+/**
+ * The list of rows in a card. It reaches 1 unit past the card's padding on
+ * each side, and its rows pad back by the same unit (`LIST_ROW_BOX`). So the
+ * text of a row starts at the card's content edge, in line with the
+ * header's chevron, and a row's hover fill still has room round its text.
+ */
+export const LIST_ROWS_BOX = "-mx-1 space-y-px";
+
+/**
+ * One task row, on ONE line (owner feedback, 2026-10-10): `#141` muted, the
+ * title (it truncates, and the whole text shows in a tip), the status as its
+ * pill, the open icon. It was two lines, "#141 title" over "status Backlog".
+ *
+ * ⚠️ The row wraps by its content, not by a measure. The title and the pill
+ * share one wrapping line box, and the title asks for 60 % of it
+ * (`basis-3/5`). When the pill does not fit beside that, the pill drops under
+ * the title. The open icon is outside that box, so it stays on the first line.
+ *
+ * The pill is the shared `StatusChip`, in the hue `statusAccent` gives the
+ * lane. It drops the "status " word, which only the screen reader hears now.
+ */
 function TaskRowView({ row }: { row: ProjectTaskRow }) {
   const openTask = useOpenTask();
+  const facts = taskRowFacts(row.meta);
+  const whole = [`${row.number} ${row.title}`, facts.status, facts.rest].filter(Boolean).join(" · ");
+  const { attachLabel, onPointerEnter, onPointerLeave, onFocus, onBlur, tip } = useOverflowTip(whole);
   return (
-    <div className="flex items-center gap-1 rounded-md border border-transparent hover:border-border transition-colors">
+    <div
+      data-task-row=""
+      className="flex min-w-0 items-center gap-0.5 rounded-md border border-transparent transition-colors hover:border-border"
+    >
       <button
         type="button"
         onClick={() => openTask(row.id)}
-        className="flex-1 min-w-0 text-left px-1.5 py-1 rounded-md hover:bg-secondary/60"
-        title="Open in Projects"
+        onFocus={onFocus}
+        onBlur={onBlur}
+        className={`cc-link flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-0.5 rounded-md text-left hover:bg-secondary/60 ${LIST_ROW_BOX}`}
       >
-        <span className="block text-[11px] text-foreground truncate">
-          <span className="text-muted-foreground mr-1">{row.number}</span>
+        <span
+          ref={attachLabel}
+          onPointerEnter={onPointerEnter}
+          onPointerLeave={onPointerLeave}
+          data-task-row-title=""
+          className="min-w-0 flex-1 basis-3/5 truncate text-[11px] text-foreground"
+        >
+          <span className="mr-1 tabular-nums text-muted-foreground">{row.number}</span>
           {row.title}
+          {facts.rest && <span className="text-muted-foreground"> · {facts.rest}</span>}
         </span>
-        {row.meta && (
-          <span className="block text-[10px] text-muted-foreground truncate">
-            {taskMetaForPeople(row.meta)}
-          </span>
+        {facts.status && (
+          <StatusChip
+            accent={statusAccent({ category: facts.category, name: facts.status })}
+            label={facts.status}
+            ariaLabel={`Status: ${facts.status}`}
+            className="shrink-0"
+          />
         )}
       </button>
       <Button
         variant="ghost"
         size="icon-xs"
         radius="keep"
-        layout=""
+        layout="inline-flex items-center justify-center"
         onClick={() => openTask(row.id)}
         title="Open in Projects"
         aria-label="Open in Projects"
-        className="rounded mr-0.5"
+        className="shrink-0 rounded pointer-coarse:min-h-[40px] pointer-coarse:min-w-[40px]"
       >
         <AppIcon name="ExternalLink" size={11} />
       </Button>
+      {tip}
     </div>
   );
 }
 
-function TaskListCard({ event: e }: { event: ToolEvent }) {
-  const result = e.result || "";
-  const rows = parseTaskRows(result);
+/** The words a task-list read is known by: "Search · extruder", "My inbox". */
+function listLabel(e: ToolEvent): string {
   const args = (e.args ?? {}) as Record<string, unknown>;
-  const label =
-    e.name === "find_tasks"
-      ? `Search${args.query ? ` · ${String(args.query)}` : ""}`
-      : e.name === "my_work"
-        ? String(args.view ?? "") === "inbox" ? "My inbox" : "Assigned to me"
-        : e.name === "calendar"
-          ? "Calendar"
-          : e.name === "intake_queue"
-            ? "Intake"
-            : e.name === "notifications"
-              ? "Notifications"
-              : "Tasks";
-  const title = `${label} (${rows.length})`;
-  if (rows.length === 0) {
-    return <InfoCard event={e} icon="ListChecks" label={label} />;
-  }
+  if (e.name === "find_tasks") return `Search${args.query ? ` · ${String(args.query)}` : ""}`;
+  if (e.name === "my_work") return String(args.view ?? "") === "inbox" ? "My task inbox" : args.untriaged ? "New in My tasks" : "Assigned to me";
+  if (e.name === "calendar") return "Calendar";
+  if (e.name === "intake_queue") return "Intake";
+  if (e.name === "notifications") return "Notifications";
+  return "Tasks";
+}
+
+// ── Evidence: a read, drawn inside its step (spec §24 rule 2) ─────────────────
+
+/** The `task_dataset` table: the dataGrid template, a caption, the notes. */
+function DatasetView({ result }: { result: string }) {
+  const table = parseDatasetTable(result);
+  if (!table) return <Readout result={result} legend={LEGEND} />;
   return (
-    <ToolCardShell
-      title={title}
-      icon={<AppIcon name="ListChecks" size={12} />}
-      onDismiss={() => dismissToolCard(e.id)}
-    >
-      <div className="space-y-0.5 max-h-80 overflow-y-auto overflow-x-hidden scrollbar-thin">
-        {rows.map((r) => (
-          <TaskRowView key={r.id} row={r} />
-        ))}
-      </div>
-    </ToolCardShell>
+    <div data-dataset-table="" className="min-w-0 space-y-1.5">
+      {renderTemplate("dataGrid", {
+        title: table.title,
+        columns: table.columns,
+        kinds: table.kinds,
+        rows: table.rows,
+      })}
+      {(table.caption || table.notes.length > 0) && (
+        <div className="space-y-0.5 text-[10px] text-muted-foreground">
+          {table.caption && <div>{table.caption}</div>}
+          {table.notes.map((n, i) => (
+            <div key={i}>{n}</div>
+          ))}
+        </div>
+      )}
+    </div>
   );
+}
+
+/**
+ * One Projects read as the member reads it, with no card chrome: the step
+ * row above it already says what it is. Rows open the task, a table draws as
+ * a table, and every other read draws through `Readout`.
+ */
+function ProjectEvidenceBody({ event: e }: { event: ToolEvent }) {
+  const router = useRouter();
+  const result = e.result || "";
+  if (e.status === "error") {
+    return (
+      <div className="text-[11px] whitespace-pre-wrap text-destructive">
+        <FencedText text={forPeopleFenced(result) || "(no result)"} pills={false} />
+      </div>
+    );
+  }
+  if (e.name === "task_dataset") return <DatasetView result={result} />;
+  const rows = parseTaskRows(result);
+  const opens = OPENS_APP[e.name];
+  const body = withoutLegend(result);
+  const link = body.match(/^\s*link:\s*(\/projects\?[\w=&-]+)\s*$/m)?.[1] ?? "";
+  const isList = LIST_TOOLS.has(e.name) || !(e.name in INFO_META);
+  return (
+    <div className="rounded-md border border-border/60 bg-card/60 px-2.5 py-2 min-w-0 text-[11px] glass:rounded-[10px] glass:border-transparent glass:bg-secondary glass:px-3 glass:text-footnote">
+      <ShowMore className="-mx-1 px-1">
+        {isList && rows.length > 0 ? (
+          <>
+            <div className="mb-1 text-[11px] font-medium text-foreground">
+              {listLabel(e)} <span className="text-muted-foreground">{rows.length}</span>
+            </div>
+            <div className={LIST_ROWS_BOX}>
+              {rows.map((r) => (
+                <TaskRowView key={r.id} row={r} />
+              ))}
+            </div>
+          </>
+        ) : (
+          <Readout result={result} legend={LEGEND} />
+        )}
+      </ShowMore>
+      {link && !opens && (
+        <div className="mt-2">
+          <Button variant="secondary" size="sm" icon="ExternalLink" onClick={() => router.push(link)}>
+            Open in Projects
+          </Button>
+        </div>
+      )}
+      {opens && (
+        <div className="mt-2">
+          <Button
+            variant="secondary"
+            size="sm"
+            icon="ExternalLink"
+            onClick={() => router.push(`/projects?app=${opens.app}`)}
+          >
+            {opens.label}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The receipt of a Projects READ for the trail (`ThinkingContainer`), or
+ * null when the event is not one. A finished or failed step only: a running
+ * step has no result yet.
+ */
+export function projectEvidence(e: ToolEvent): React.ReactNode | null {
+  if (e.status !== "done" && e.status !== "error") return null;
+  if (!isProjectsTool(e) || !isProjectEvidence(e)) return null;
+  return <ProjectEvidenceBody event={e} />;
 }
 
 /** Strip the data legend: the model needs it, a person does not. */
@@ -409,11 +646,22 @@ function withoutLegend(result: string): string {
  * lines (`full_id:`, `link:`, `<kind>_id:`, `done:`) the cards parse. None of
  * that is for the member; the other chat apps' cards show plain text
  * (visual review, 2026-09-23). Exported for its test; pure.
+ *
+ * The marks go too. A card draws `forPeopleFenced` through `FencedText`
+ * instead, so a name keeps its boundary as a quiet emphasis (owner report,
+ * 2026-10-07: a stripped receipt read "Created Fix the extruder in Ops").
  */
 export function forPeople(result: string): string {
+  return forPeopleFenced(result).replace(/[«»]/g, "");
+}
+
+/** `forPeople` with the «marks» kept, for `FencedText` to draw. Pure. */
+export function forPeopleFenced(result: string): string {
   return withoutLegend(result)
     .split("\n")
-    .filter((l) => !/^\s*(?:[a-z_]+_id|link|done):/.test(l))
+    // `fire_at`, `zone`, `undo` and `was_*` are the lines of a reminder
+    // receipt (RX-2): its card reads them, a person does not.
+    .filter((l) => !/^\s*(?:[a-z_]+_id|link|done|fire_at|zone|undo|was_[a-z_]+):/.test(l))
     // A gateway refusal leads with the route (`Projects PUT /projects/...: `).
     // The member needs the reason, not the address it came from.
     .map((l) =>
@@ -423,7 +671,6 @@ export function forPeople(result: string): string {
         // 2026-09-23): "· project_id <uuid>", "(activity id a1)".
         .replace(/\s*·\s*[a-z_]+_id:? [0-9a-f-]{8,}/gi, "")
         .replace(/\s*\(activity id [^)]*\)/g, "")
-        .replace(/[«»]/g, "")
         .replace(/^- /, ""),
     )
     .join("\n")
@@ -441,7 +688,7 @@ function InfoCard({
 }) {
   const router = useRouter();
   const body = withoutLegend(e.result || "");
-  const shown = forPeople(e.result || "");
+  const shown = forPeopleFenced(e.result || "");
   const failed = e.status === "error";
   const opens = failed ? undefined : OPENS_APP[e.name];
   // `open_in_app` prints `link: /projects?...`. Only an in-app link becomes
@@ -453,13 +700,17 @@ function InfoCard({
       icon={<AppIcon name={failed ? "AlertTriangle" : icon} size={12} />}
       onDismiss={() => dismissToolCard(e.id)}
     >
-      <div
-        className={`text-[11px] whitespace-pre-wrap max-h-80 overflow-y-auto scrollbar-thin ${
-          failed ? "text-destructive" : "text-muted-foreground"
-        }`}
-      >
-        {shown || "(no result)"}
-      </div>
+      {/* A read draws as UI (`Readout`): no id, no `[key]`, a status as its
+          chip. A failure stays one plain message. */}
+      <ShowMore>
+        {failed ? (
+          <div className="text-[11px] whitespace-pre-wrap text-destructive">
+            <FencedText text={shown || "(no result)"} pills={false} />
+          </div>
+        ) : (
+          <Readout result={e.result || ""} legend={LEGEND} />
+        )}
+      </ShowMore>
       {link && !opens && (
         <div className="mt-2">
           <Button variant="secondary" size="sm" icon="ExternalLink" onClick={() => router.push(link)}>
@@ -506,17 +757,27 @@ const DONE_LINE_TOOLS = new Set(["mark_notifications_read"]);
  */
 export const STOPPED_LINE = /^\s*stopped:\s*\S/im;
 
+/**
+ * A row of a batch whose create may or may not have landed
+ * (`forms.py::_write_batch`, WS-46 P13 review round 2). Something MAY exist,
+ * so the receipt is partial, never a muted "Not done".
+ */
+export const UNKNOWN_LINE = /^\s*unknown:\s*row\s/im;
+
 export function classifyActionResult(
   result: string,
   status: ToolEvent["status"],
   tool = "",
 ): ActionOutcome {
-  if (status === "error") return "failed";
   const text = (result || "").trim();
+  // A server refusal ("Refused: ...") now arrives with `success: false`, so
+  // its status is "error". It is still a refusal, not a fault: it keeps the
+  // muted "Not done" receipt it drew before the stream marked it.
+  if (status === "error") return /^Refused:/.test(text) ? "refused" : "failed";
   if (text.startsWith(CANCELLED)) return "cancelled";
   // A batch that stopped part way (WS-27bm S7d, §13.6 rule 9): something
   // exists, and the receipt says what did not happen. It is not a success.
-  if (receiptIdOf(text) && STOPPED_LINE.test(text)) return "partial";
+  if ((receiptIdOf(text) || UNKNOWN_LINE.test(text)) && STOPPED_LINE.test(text)) return "partial";
   if (receiptIdOf(text)) return "done";
   return DONE_LINE_TOOLS.has(tool) && /^\s*done:\s*\S/im.test(text) ? "done" : "refused";
 }
@@ -552,9 +813,17 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
     if ((outcome === "done" || outcome === "partial") && isFreshReceipt(e)) announceChange(e.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `endedAt` is read once, at the transition to done
   }, [outcome, e.id]);
+  // A reminder the model changed in this chat: the reminder card above reads
+  // the page's store, so the receipt writes the new state there (RM-4). A
+  // replayed receipt is old, and a chip may have moved the row since.
+  useEffect(() => {
+    if (outcome !== "done" || !isFreshReceipt(e)) return;
+    noteReminderReceipt(e.name, result);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `endedAt` is read once, at the transition to done
+  }, [outcome, e.id]);
   const rowId = rowIdOf(result);
   const openTask = useOpenTask();
-  const detail = forPeople(result);
+  const detail = forPeopleFenced(result);
   const tone = toneFor(outcome, e.name);
   const icon =
     outcome === "failed"
@@ -576,36 +845,321 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
         : outcome === "refused"
           ? "Not done"
           : meta.label;
+  // A write that names its task rows ("Updated:", "Assigned:", a new task)
+  // draws them as the one-line rows a batch draws (owner feedback,
+  // 2026-10-10), not as a paragraph of facts and a separate link.
+  const tasks = outcome === "done" || outcome === "partial" ? parseTaskRows(result) : [];
+  const lead = tasks.length > 0 ? receiptLead(result) : "";
+  const notes = tasks.length > 0 ? batchNotes(result) : [];
+  // The rows open their task. The link stays only for a task the rows do not
+  // list: the parent of new subtasks prints its id with no row.
+  const linkOut = (outcome === "done" || outcome === "partial") && !!rowId && !tasks.some((t) => t.id === rowId);
+  // A receipt whose whole body is one short line draws it on the title row:
+  // "Not done  Nothing was created." is one row, not two.
+  const aside = tasks.length === 0 && !linkOut && oneLine(detail) ? detail : "";
+  // A receipt is a card of the transcript: its arrival rolls up the long
+  // cards above it (`components/RollupCard.tsx`). It is short, so it draws
+  // no toggle of its own. Its title row is the header (`header="own"`).
+  // The folded row names the task(s), not the bare lead line ("Created:").
+  const foldedSummary = tasks.length ? tasks.map((r) => `${r.number} ${unfenced(r.title)}`).join(" · ") : unfenced(detail).split(NL)[0];
+  // A write that is done, or that the member cancelled, opens folded. A
+  // failed, partial or refused one still opens (task 1003).
   return (
-    <div className={`rounded-lg border px-2.5 py-2 ${tone}`}>
-      <div className="flex items-start gap-2">
-        <span className="mt-0.5 flex-shrink-0">
-          <AppIcon name={icon} size={13} />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="text-[11px] font-medium text-foreground">{heading}</div>
-          {detail && (
+    <RollupCard
+      id={`tool:${e.id}`}
+      title={heading}
+      icon={icon}
+      summary={foldedSummary}
+      receipt={outcome === "done" || outcome === "cancelled"}
+      header="own"
+    >
+    <div className={`rounded-lg border px-2.5 py-2 ${tone} ${glassToneFrame(tone)}`}>
+      <RollupHeader aside={aside ? <FencedText text={aside} pills={false} links={false} /> : undefined} />
+      <RollupBody>
+        {tasks.length > 0 ? (
+          <>
+            {lead && (
+              <div className="mt-0.5 text-[10px] text-muted-foreground whitespace-pre-wrap">
+                <FencedText text={lead} pills={false} />
+              </div>
+            )}
+            <div className={`mt-1 ${LIST_ROWS_BOX}`}>
+              {tasks.map((r) => (
+                <TaskRowView key={r.id} row={r} />
+              ))}
+            </div>
+            <ReceiptNotes notes={notes} />
+          </>
+        ) : (
+          detail && !aside && (
             <div className="mt-0.5 text-[10px] text-muted-foreground whitespace-pre-wrap line-clamp-4">
-              {detail}
+              <FencedText text={detail} pills={false} />
             </div>
-          )}
-          {(outcome === "done" || outcome === "partial") && rowId && (
-            <div className="mt-1">
-              <Button
-                variant="text"
-                size="none"
-                icon="ExternalLink"
-                onClick={() => openTask(rowId)}
-                className="gap-1 text-[10px]"
-              >
-                Open in Projects
-              </Button>
-            </div>
-          )}
+          )
+        )}
+        {linkOut && (
+          <div className="mt-1">
+            <Button
+              variant="text"
+              size="none"
+              icon="ExternalLink"
+              onClick={() => openTask(rowId)}
+              className="gap-1 text-[10px]"
+            >
+              Open in Projects
+            </Button>
+          </div>
+        )}
+      </RollupBody>
+    </div>
+    </RollupCard>
+  );
+}
+
+/** What one batch receipt lists, and its heading when nothing is known to exist. */
+export interface BatchKind {
+  rows: "task" | "tag" | "type";
+  maybe: string;
+}
+
+/**
+ * The write tools whose receipt lists SEVERAL rows, each with its own id
+ * line. `BatchReceiptCard` draws a task as a row that opens the task, a tag
+ * as a tag pill and a type as a pill, with the lines about the rows that
+ * failed under them.
+ */
+export const BATCH_TOOLS: ReadonlyMap<string, BatchKind> = new Map<string, BatchKind>([
+  ["create_tasks", { rows: "task", maybe: "Tasks may have been created" }],
+  // H-273: `forms.py` `_vocab_receipt` prints `- tag «q4» · facts` and then
+  // `  tag_id: <uuid>` for each word it added.
+  ["create_tags", { rows: "tag", maybe: "Tags may have been added" }],
+  ["create_types", { rows: "type", maybe: "Types may have been added" }],
+  // 2026-10-18: `writes.py` `_file_receipt` prints each task moved as a
+  // task row, and a `not moved:` or `left out:` line for each one that was not.
+  ["file_tasks", { rows: "task", maybe: "Tasks may have been moved" }],
+  // 2026-10-19: `writes.py` `link_tasks_batch` prints each link made as the
+  // row of its first task, with the link in the row's facts.
+  ["link_tasks_batch", { rows: "task", maybe: "Links may have been made" }],
+  // WS-PJP PJP-4: `writes.py` `update_tasks` prints each task changed as a task row.
+  ["update_tasks", { rows: "task", maybe: "Tasks may have been updated" }],
+]);
+
+const NL = "\n";
+
+/** One word a vocabulary batch added: a tag or a task type. */
+export interface VocabRow {
+  kind: "tag" | "type";
+  id: string;
+  name: string;
+  meta: string;
+}
+
+const VOCAB_ROW = /^\s*-\s*(tag|type)\s+«([^»]*)»\s*(?:·\s*(.*))?$/;
+const VOCAB_ID = /^\s*(tag|type)_id:\s*([0-9a-f-]{36})\s*$/i;
+
+/**
+ * Parse `- tag «name» · facts` + `  tag_id: <uuid>` pairs (and the same for
+ * a type) out of a batch receipt. A row whose id line is missing, or names
+ * the other kind, is not a row. Pure, exported for its test.
+ */
+export function parseVocabRows(result: string): VocabRow[] {
+  const rows: VocabRow[] = [];
+  const lines = result.split(NL);
+  for (let k = 1; k < lines.length; k++) {
+    const id = lines[k].match(VOCAB_ID);
+    if (!id) continue;
+    const head = (lines[k - 1] ?? "").match(VOCAB_ROW);
+    if (!head || head[1] !== id[1].toLowerCase()) continue;
+    rows.push({ kind: head[1] as "tag" | "type", id: id[2], name: head[2], meta: (head[3] ?? "").trim() });
+  }
+  return rows;
+}
+
+/**
+ * A batch receipt's lines for a person, without the head line and the task
+ * rows (the card draws those as rows). What stays: each row that failed, a
+ * follow-up that did not land, the stop line and the rows left out. The line
+ * that tells the MODEL not to make the tasks again is not for a person. Pure,
+ * exported for its test.
+ */
+export function batchNotes(result: string): string[] {
+  const lines = withoutLegend(result).split(NL);
+  const kept: string[] = [];
+  for (let k = 1; k < lines.length; k++) {
+    const line = lines[k];
+    const next = lines[k + 1] ?? "";
+    if (/^\s*-\s*#\S+\s*«/.test(line) && /^\s*full_id:/i.test(next)) {
+      k++; // the task row and its id line: drawn as a row
+      continue;
+    }
+    if (VOCAB_ROW.test(line) && VOCAB_ID.test(next)) {
+      k++; // a tag or a type and its id line: drawn as a pill (H-273)
+      continue;
+    }
+    if (/^\s*full_id:/i.test(line) || !line.trim()) continue;
+    if (/listed above exist\. Never create them again/.test(line)) continue;
+    // The same line of the batches of `writes.py` (`_batch_receipt`).
+    if (/listed above (?:moved|exist|changed)\. Do not (?:move|link|change) them again/.test(line)) continue;
+    kept.push(line);
+  }
+  return forPeopleFenced(kept.join(NL)).split(NL).filter((l) => l.trim());
+}
+
+/**
+ * The first line of a write's receipt, when it says more than the card's
+ * title. A bare lead-in ("Updated:", "Assigned:") restates the title, and a
+ * task row is drawn as a row. Pure, exported for its test.
+ */
+export function receiptLead(result: string): string {
+  const first = withoutLegend(result).split(NL)[0] ?? "";
+  if (/^\s*-\s*#\S+\s*«/.test(first)) return "";
+  const shown = forPeopleFenced(first);
+  return /^[A-Za-z]+:$/.test(shown.trim()) ? "" : shown;
+}
+
+/** Short enough to share the title row: one line, at most 100 characters. */
+function oneLine(text: string): boolean {
+  return !!text && !text.includes(NL) && unfenced(text).length <= 100;
+}
+
+/** The lines about a receipt's rows: a row that failed, a stop, a note. */
+function ReceiptNotes({ notes }: { notes: string[] }) {
+  if (notes.length === 0) return null;
+  return (
+    <div className="mt-1 space-y-0.5">
+      {notes.map((n, i) => (
+        <div key={i} className="text-[10px] text-muted-foreground whitespace-pre-wrap"
+          style={{ overflowWrap: "anywhere" }}>
+          <FencedText text={n} pills={false} />
         </div>
-      </div>
+      ))}
     </div>
   );
+}
+
+/** One word a vocabulary batch added. A tag is the tag pill, a type a plain pill. */
+function VocabRowView({ row }: { row: VocabRow }) {
+  return (
+    // `text-[11px]`: the pill sizes from its text (`0.9em`), so it matches the
+    // task rows' type and does not stand taller than them.
+    <div className={`flex min-w-0 items-center gap-2 text-[11px] ${LIST_ROW_BOX}`}>
+      <span className="inline-flex min-w-0 max-w-full">
+        <EntityPill fit kind={row.kind === "tag" ? "tag" : "unknown"} label={row.name} />
+      </span>
+      {row.meta && (
+        <span className="min-w-0 truncate text-[10px] text-muted-foreground">
+          <FencedText text={row.meta} pills={false} />
+        </span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The receipt of a batch (`BATCH_TOOLS`): a heading with the count, one row
+ * per task made (each opens the task in Projects) or one pill per word
+ * added, and the lines about each row that failed. A partial batch wears the
+ * warning tone, as `toneFor` gives it.
+ */
+function BatchReceiptCard({ event: e }: { event: ToolEvent }) {
+  const meta = ACTION_META[e.name] ?? { icon: "ListPlus", label: genericLabel(e.name) };
+  const kind: BatchKind = BATCH_TOOLS.get(e.name) ?? { rows: "task", maybe: "Tasks may have been created" };
+  const result = (e.result || "").trim();
+  const outcome = classifyActionResult(result, e.status, e.name);
+  useEffect(() => {
+    if ((outcome === "done" || outcome === "partial") && isFreshReceipt(e)) announceChange(e.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `endedAt` is read once, at the transition to done
+  }, [outcome, e.id]);
+  const tasks = kind.rows === "task" ? parseTaskRows(result) : [];
+  const words = kind.rows === "task" ? [] : parseVocabRows(result);
+  const rows: readonly unknown[] = kind.rows === "task" ? tasks : words;
+  const head = forPeopleFenced(withoutLegend(result).split(NL)[0] ?? "");
+  const notes = batchNotes(result);
+  const icon =
+    outcome === "failed" ? "X"
+      : outcome === "partial" ? "AlertTriangle"
+        : outcome === "cancelled" ? "Ban"
+          : outcome === "refused" ? "Info"
+            : meta.icon;
+  // The header draws the count after the title ("Tasks created · 5"), in
+  // both states, so the title does not carry it too.
+  const heading =
+    outcome === "failed" ? `${meta.label} — failed`
+      : outcome === "partial" && rows.length === 0 ? kind.maybe
+      : outcome === "partial" ? `${meta.label} — stopped part way`
+        : outcome === "cancelled" ? "Cancelled"
+          : outcome === "refused" ? "Not done"
+            : rows.length === 0 ? `${meta.label} (0)`
+              : meta.label;
+  // The owner's tall "Tasks created (5)" (2026-10-10). Five rows are long,
+  // so it rolls up when a newer card arrives, to its title row: its label,
+  // its count and the rows' names on one line. That row is the card's own
+  // (`header="own"`), so there is one title and one toggle.
+  // No rows and one short line (a refusal, "Nothing was created."): the line
+  // sits on the title row, and the card is one row.
+  const aside = rows.length === 0 && notes.length === 0 && oneLine(head) ? head : "";
+  const names = kind.rows === "task"
+    ? tasks.map((r) => `${r.number} ${unfenced(r.title)}`)
+    : words.map((r) => r.name);
+  return (
+    <RollupCard
+      id={`tool:${e.id}`}
+      title={heading}
+      icon={icon}
+      rows={rows.length || undefined}
+      summary={names.join(" · ") || unfenced(head)}
+      receipt={outcome === "done" || outcome === "cancelled"}
+      header="own"
+    >
+    <div className={`rounded-lg border px-2.5 py-2 ${toneFor(outcome, e.name)} ${glassToneFrame(toneFor(outcome, e.name))}`}>
+      <RollupHeader aside={aside ? <FencedText text={aside} pills={false} links={false} /> : undefined} />
+      <RollupBody>
+          {head && !aside && (outcome !== "done" || rows.length === 0) && (
+            <div className="mt-0.5 text-[10px] text-muted-foreground whitespace-pre-wrap">
+              <FencedText text={head} pills={false} />
+            </div>
+          )}
+          {rows.length > 0 && (
+            <ShowMore className={`mt-1 ${LIST_ROWS_BOX}`}>
+              {tasks.map((r, i) => (
+                <TaskRowView key={`${r.id}-${i}`} row={r} />
+              ))}
+              {words.map((r) => (
+                <VocabRowView key={r.id} row={r} />
+              ))}
+            </ShowMore>
+          )}
+          <ReceiptNotes notes={notes} />
+      </RollupBody>
+    </div>
+    </RollupCard>
+  );
+}
+
+/** Whether a tool event is the receipt of a reminder write that happened. */
+export function isReminderReceipt(e: ToolEvent): boolean {
+  const result = (e.result || "").trim();
+  return (
+    classifyActionResult(result, e.status, e.name) === "done" && readReminderReceipt(e.name, result) !== null
+  );
+}
+
+/** The reminder card of one receipt, with the same store note as a plain receipt. */
+function ReminderReceiptHost({ event: e, mine }: { event: ToolEvent; mine: boolean }) {
+  const result = (e.result || "").trim();
+  const receipt = readReminderReceipt(e.name, result);
+  const openTask = useOpenTask();
+  // The page's store learns the new state, as for any receipt (RM-4).
+  useEffect(() => {
+    if (!isFreshReceipt(e)) return;
+    noteReminderReceipt(e.name, result);
+    announceChange(e.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `endedAt` is read once, at the transition to done
+  }, [e.id]);
+  if (!receipt) return null;
+  const meta = ACTION_META[e.name] ?? { icon: "Bell", label: genericLabel(e.name) };
+  const label = receipt.already ? ALREADY_HEAD : meta.label;
+  return <ReminderReceiptCard id={e.id} label={label} receipt={receipt} openTask={openTask} mine={mine} />;
 }
 
 /** A label for a tool this file has no entry for — the generic card. */
@@ -616,17 +1170,26 @@ function genericLabel(name: string): string {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
-export default function ProjectToolCards({ toolEvents }: { toolEvents?: ToolEvent[] }) {
+export default function ProjectToolCards({
+  toolEvents,
+  mine = true,
+}: {
+  toolEvents?: ToolEvent[];
+  /** False when another member ran the turn: a reminder receipt then offers no act (RX-7). */
+  mine?: boolean;
+}) {
   const dismissed = useDismissedToolCards();
   const all = (toolEvents ?? []).filter(
     (e) => !dismissed.has(e.id) && hasProjectCard(e),
   );
   if (all.length === 0) return null;
 
+  // Only the FLOW is here: the receipts of writes, and a view that failed.
+  // Every read draws inside its step (`projectEvidence`, spec §24).
   const items: React.ReactNode[] = [];
   for (const e of all) {
-    if (LIST_TOOLS.has(e.name)) {
-      items.push(<TaskListCard key={e.id} event={e} />);
+    if (BATCH_TOOLS.has(e.name)) {
+      items.push(<BatchReceiptCard key={e.id} event={e} />);
       continue;
     }
     const meta = INFO_META[e.name];
@@ -634,18 +1197,15 @@ export default function ProjectToolCards({ toolEvents }: { toolEvents?: ToolEven
       items.push(<InfoCard key={e.id} event={e} icon={meta.icon} label={meta.label} />);
       continue;
     }
-    if (e.name in ACTION_META) {
-      items.push(<ActionResultCard key={e.id} event={e} />);
+    // A reminder the chat set, changed or moved draws as the reminder itself
+    // (RX-2). A refusal or a cancel still draws as a plain receipt.
+    if (isReminderReceipt(e)) {
+      items.push(<ReminderReceiptHost key={e.id} event={e} mine={mine} />);
       continue;
     }
-    // A tool the manifest added after this file was written. The generic
-    // card renders it from its name, so shipping the tool never waits on a
-    // card (spec §7.3). If it prints task rows, it gets the list card.
-    if (parseTaskRows(e.result || "").length > 0) {
-      items.push(<TaskListCard key={e.id} event={e} />);
-      continue;
-    }
-    items.push(<InfoCard key={e.id} event={e} icon="Wrench" label={genericLabel(e.name)} />);
+    // A write, known or new. A new one draws the generic receipt from its
+    // name, so shipping the tool never waits on a card (spec §7.3).
+    items.push(<ActionResultCard key={e.id} event={e} />);
   }
 
   return <div className="mt-3 space-y-2 min-w-0 overflow-hidden">{items}</div>;

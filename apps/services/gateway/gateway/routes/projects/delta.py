@@ -1,4 +1,4 @@
-"""Projects · delta — the sync feed for agents and mobile (WS-27ae / P-27).
+"""Projects · delta — a sync feed built for a client cache (WS-27ae / P-27).
 
 Spec: ``project-docs/specs/project_management_app.md`` §9.2 (WS-27ae) and
 §11.27 (the as-built). Research: ``plane_pm_research_2026-08.md`` §3.7 / P-27.
@@ -7,6 +7,12 @@ Spec: ``project-docs/specs/project_management_app.md`` §9.2 (WS-27ae) and
 
 *"Give me what changed since X"*, so a phone or an agent does not re-pull a
 board of six hundred tasks to learn that one moved lane.
+
+⚠️ **No caller reads this feed today** (measured 2026-10-14). The web client
+does not call it. ``skill_projects/manifest.py`` classes it ``X`` ("A chat
+holds no cache"), and the MCP edge does not route it (it is absent from
+``agent_oauth.MCP_ROUTES``). So nothing reads ``removed[]`` either. HANDOFF
+H-306 holds the seal-removal work that waits for the first such caller.
 
 Three things about this endpoint are load-bearing, and each of them is a trap
 the naive version falls into.
@@ -80,6 +86,7 @@ from uuid import UUID
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
+from gateway.routes.projects.authority import attach_can_delete
 from gateway.routes.projects.core import (
     TaskModel,
     _tenant_session,
@@ -91,6 +98,7 @@ from gateway.routes.projects.core import (
     triage_exclusion_clause,
 )
 from gateway.routes.projects.filters import (
+    attach_agent_state,
     attach_assignees,
     attach_parent_context,
     attach_relation_counts,
@@ -386,6 +394,10 @@ async def delta_tasks(
             # carry the same `parent` the list gives, or a synced card would
             # lose its "↳ Parent" line.
             await attach_parent_context(db, vis, page_rows)
+            # WS-55 EA-12c — a synced row carries the agent pill too.
+            await attach_agent_state(db, page_rows)
+            # WS-64 OP-8 — and the flag that hides Delete, as the list does.
+            await attach_can_delete(db, user, page_rows, kind="task")
             kept = {str(r["id"]) for r in page_rows}
             removed.extend(ident for ident in row_ids if ident not in kept)
 

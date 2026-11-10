@@ -106,8 +106,9 @@ def _column_default(col: str) -> str:
 def _settings_row(**over) -> SimpleNamespace:
     """A stored settings row, with every column the GET reads."""
     base = dict(
-        about="", signature="", auto_run=True, cold_email_blocker="OFF",
-        rule_model=None, draft_model=None, compose_model=None, chat_model=None,
+        about="", signature="", auto_run=True, auto_run_chosen_at=None,
+        cold_email_blocker="OFF",
+        rule_model=None,
         digest_frequency="OFF", personal_instructions="", writing_style="",
         learned_writing_style="", draft_replies=False, follow_up_days=0,
         draft_confidence="ALL_EMAILS", follow_up_awaiting_days=0,
@@ -115,21 +116,44 @@ def _settings_row(**over) -> SimpleNamespace:
         digest_categories=[], digest_day_of_week=1, digest_time_of_day="09:00",
         digest_send_to_email=True, morning_brief_enabled=False,
         multi_rule_execution=False, sensitive_data_protection=True,
-        org_domains=[],
+        org_domains=[], insights_enabled=False,
     )
     base.update(over)
     return SimpleNamespace(**base)
 
 
-def _db(*, settings=None, drafts: bool = False, sent: list[str] | None = None):
+def _db(*, settings=None, drafts: bool = False, sent: list[str] | None = None,
+        provider: str = "gmail"):
     """``settings`` is the stored row (None means no row). ``drafts`` is what
-    the reply-rule read answers. ``sent`` is the body text of sent mail."""
+    the reply-rule read answers. ``sent`` is the body text of sent mail.
+    ``provider`` is the mailbox's provider. A NEW mailbox here is a Gmail one.
+
+    WS-17 EM-G11c2 fix round 1: the join of ``rules.auto_run_on`` has its own
+    arm, ahead of the ``email_accounts`` arm that also matches it. Before, it
+    got the account row, with no provider and no ``settings_row``, so the
+    helper read ON whatever was stored."""
     def _exec(sql, params=None):
         s = str(sql)
+        if hits(s, "LEFT JOIN email_assistant_settings"):
+            one = SimpleNamespace(
+                provider=provider,
+                auto_run=getattr(settings, "auto_run", None),
+                settings_row=None if settings is None else "a0000000-0000-4000-8000-000000000001")
+            return MagicMock(fetchone=MagicMock(return_value=one),
+                             fetchall=MagicMock(return_value=[one]))
         if hits(s, "FROM email_rules"):
             one, many = SimpleNamespace(drafts=drafts), []
         elif hits(s, "INSERT INTO email_assistant_settings"):
-            one, many = SimpleNamespace(learned_writing_style=""), []
+            # Task 2305: the PUT RETURNs the stored Auto-run and its stamp.
+            # The fake keeps a stored stamp (the COALESCE) and adds one only
+            # for a bound ``choice``. R8 proves the real SQL.
+            p = params or {}
+            stamp = getattr(settings, "auto_run_chosen_at", None)
+            if p.get("choice") is True and stamp is None:
+                stamp = "2026-11-09T00:00:00Z"
+            one, many = SimpleNamespace(
+                learned_writing_style="", auto_run=p.get("auto"),
+                auto_run_chosen_at=stamp), []
         elif hits(s, "FROM email_assistant_settings"):
             one, many = settings, []
         elif hits(s, "FROM email_accounts"):
@@ -158,12 +182,12 @@ async def _get(db) -> dict:
     with patch.object(assistant_mod, "_tenant_session", bind_db(db)), \
             patch.object(assistant_mod, "_assert_account_owner", AsyncMock()):
         return await assistant_mod.get_assistant_settings(
-            account_id="acc-1", user=SimpleNamespace(email=_ME))
+            account_id="a0000000-0000-4000-8000-000000000001", user=SimpleNamespace(email=_ME))
 
 
 async def _put(db, body: dict) -> dict:
     """Run the REAL PUT handler over ``db``. The Needs Reply sync is a mock."""
-    req = AssistantSettingsModel.model_validate({"account_id": "acc-1", **body})
+    req = AssistantSettingsModel.model_validate({"account_id": "a0000000-0000-4000-8000-000000000001", **body})
     with patch.object(assistant_mod, "_tenant_session", bind_db(db)), \
             patch.object(assistant_mod, "_assert_account_owner", AsyncMock()), \
             patch.object(rules_mod, "sync_draft_reply_action",
@@ -179,7 +203,7 @@ async def _put(db, body: dict) -> dict:
 
 def test_live_reply_drafting_is_off_by_default() -> None:
     """The model default is what a PUT without the field stores."""
-    assert AssistantSettingsModel(account_id="acc-1").draft_replies is False
+    assert AssistantSettingsModel(account_id="a0000000-0000-4000-8000-000000000001").draft_replies is False
 
 
 def test_the_live_column_default_ends_up_off() -> None:
@@ -193,7 +217,7 @@ async def test_a_save_without_the_field_stores_false_and_adds_no_draft_action() 
     res = await _put(db, {})
     (_, insert), = _executed(db, "INSERT INTO email_assistant_settings")
     assert insert["dr"] is False
-    res["_sync"].assert_awaited_once_with(db, "acc-1", False)
+    res["_sync"].assert_awaited_once_with(db, "a0000000-0000-4000-8000-000000000001", False)
     assert res["draft_replies"] is False
 
 
@@ -211,9 +235,14 @@ async def test_the_get_for_a_new_mailbox_answers_the_shared_fixture() -> None:
     # on ON, so these lines pin the decision itself (D-EM-6).
     assert _FIXTURE["draft_replies"] is False
     assert _FIXTURE["follow_up_auto_draft"] is False
-    model = AssistantSettingsModel(account_id="a")
+    # Insights is OFF for a new mailbox (D-EM-39, EM-T14a).
+    assert _FIXTURE["insights_enabled"] is False
+    # Auto-run is OFF for a new GMAIL mailbox (WS-17 EM-G11c2, G2).
+    assert _FIXTURE["auto_run"] is False
+    model = AssistantSettingsModel(account_id="a0000000-0000-4000-8000-00000000000a")
     assert body["draft_replies"] is model.draft_replies
     assert body["follow_up_auto_draft"] is model.follow_up_auto_draft
+    assert body["insights_enabled"] is model.insights_enabled
 
 
 @pytest.mark.parametrize(("settings", "drafts", "expected"), [
@@ -254,6 +283,18 @@ async def test_the_put_answer_keeps_morning_brief_enabled() -> None:
     assert res["morning_brief_enabled"] is True
 
 
+async def test_the_put_stores_and_answers_insights_enabled() -> None:
+    """EM-T14a: the PUT binds the opt-in, and the answer carries it back."""
+    db = _db()
+    res = await _put(db, {"insights_enabled": True})
+    (sql, insert), = _executed(db, "INSERT INTO email_assistant_settings")
+    assert insert["ins"] is True
+    assert "insights_enabled = EXCLUDED.insights_enabled" in sql
+    assert res["insights_enabled"] is True
+    off = await _put(_db(), {})
+    assert off["insights_enabled"] is False
+
+
 # ── generate_writing_style can create the first settings row ────────────────
 
 
@@ -265,7 +306,7 @@ async def _generate(db) -> None:
                          AsyncMock(return_value="Short and direct.")), \
             patch.dict(sys.modules, {"acb_memory": memory}):
         await assistant_mod.generate_writing_style(
-            account_id="acc-1", user=SimpleNamespace(email=_ME))
+            account_id="a0000000-0000-4000-8000-000000000001", user=SimpleNamespace(email=_ME))
 
 
 @pytest.mark.parametrize("drafts", [False, True], ids=["new", "legacy"])
@@ -282,7 +323,115 @@ def test_the_style_insert_names_draft_replies() -> None:
     """The column default still binds every other INSERT that omits the column.
     This one names it, so the default never decides a legacy mailbox."""
     src = inspect.getsource(assistant_mod.generate_writing_style)
-    assert "(account_id, writing_style, draft_replies, updated_at)" in src
+    assert "(account_id, writing_style, draft_replies, auto_run, updated_at)" in src
+
+
+@pytest.mark.parametrize(("provider", "settings", "expected"), [
+    ("gmail", None, False),
+    ("microsoft", None, True),
+    ("microsoft", _settings_row(auto_run=False), False),
+    ("gmail", _settings_row(auto_run=True), True),
+])
+async def test_the_get_answers_the_effective_auto_run(provider, settings, expected) -> None:
+    """WS-17 EM-G11c2 fix round 1: the GET answers ``rules.auto_run_on``.
+    A stored value wins. With no row, Gmail reads OFF and Outlook reads ON."""
+    body = await _get(_db(settings=settings, provider=provider))
+    assert body["auto_run"] is expected
+
+
+_STAMP = "2026-11-08T10:00:00Z"
+
+
+@pytest.mark.parametrize(("provider", "settings", "auto_run", "chosen"), [
+    ("gmail", None, False, False),                          # no row: Gmail still OFF
+    # Task 2305: a row with OFF and no stamp is no choice. A save of another
+    # field wrote it from the GET body.
+    ("gmail", _settings_row(auto_run=False), False, False),
+    ("gmail", _settings_row(auto_run=False, auto_run_chosen_at=_STAMP), False, True),
+    ("gmail", _settings_row(auto_run=True), True, True),    # a stored ON: chosen
+    ("microsoft", None, True, False),                       # Outlook unchanged
+    ("microsoft", _settings_row(auto_run=False, auto_run_chosen_at=_STAMP), False, True),
+], ids=["gmail-no-row", "gmail-off-no-stamp", "gmail-off-stamped", "gmail-stored-on",
+        "outlook-no-row", "outlook-off-stamped"])
+async def test_the_get_tells_a_stored_choice_from_none(provider, settings, auto_run, chosen) -> None:
+    """Task 2267, with the rule of task 2305: ``auto_run_chosen`` is a stored
+    stamp OR a stored ON. It does not change ``auto_run``, so a Gmail mailbox
+    with no row still reads OFF and makes no background write (EM-G11c2)."""
+    body = await _get(_db(settings=settings, provider=provider))
+    assert body["auto_run_chosen"] is chosen
+    assert body["auto_run"] is auto_run
+
+
+@pytest.mark.parametrize(("row", "chosen"), [
+    (None, False),
+    (SimpleNamespace(auto_run=False, auto_run_chosen_at=None), False),
+    (SimpleNamespace(auto_run=None, auto_run_chosen_at=None), False),
+    (SimpleNamespace(auto_run=True, auto_run_chosen_at=None), True),
+    (SimpleNamespace(auto_run=False, auto_run_chosen_at=_STAMP), True),
+])
+def test_the_one_rule_of_a_choice(row, chosen) -> None:
+    """Task 2305: the GET and the PUT answer share one rule."""
+    assert assistant_mod.auto_run_chosen(row) is chosen
+
+
+async def test_the_put_ignores_the_read_only_auto_run_chosen() -> None:
+    """The settings screen PUTs the GET body back. The field is read-only: the
+    model has no such field. Task 2305: a save of another field on a Gmail
+    mailbox with no row stamps nothing, and the answer reads not chosen."""
+    assert "auto_run_chosen" not in AssistantSettingsModel.model_fields
+    get_body = await _get(_db())
+    assert get_body["auto_run_chosen"] is False
+    db = _db()
+    res = await _put(db, {**get_body, "signature": "— Me"})
+    assert res["auto_run_chosen"] is False
+    assert res["auto_run"] is False
+    (_, params), = _executed(db, "INSERT INTO email_assistant_settings")
+    assert params["choice"] is False
+    # An old client echoes the GET field. It is not the marker.
+    db = _db()
+    res = await _put(db, {**get_body, "auto_run_chosen": True})
+    (_, params), = _executed(db, "INSERT INTO email_assistant_settings")
+    assert params["choice"] is False and res["auto_run_chosen"] is False
+
+
+@pytest.mark.parametrize(("body", "choice"), [
+    ({"auto_run": True, "auto_run_choice": True}, True),    # Turn on
+    ({"auto_run": False, "auto_run_choice": True}, True),   # an OFF on purpose
+    ({"auto_run": False}, False),                           # an old client
+    ({"auto_run_choice": True}, False),                     # a marker with no value
+    ({"auto_run": True, "auto_run_choice": False}, False),
+], ids=["turn-on", "off-on-purpose", "old-client", "marker-no-value", "marker-false"])
+async def test_only_the_marker_with_a_value_stamps(body, choice) -> None:
+    """Task 2305: the PUT binds ``choice`` only for the marker AND a value of
+    ``auto_run``. The answer reads the row that the upsert RETURNs."""
+    db = _db()
+    res = await _put(db, body)
+    (_, params), = _executed(db, "INSERT INTO email_assistant_settings")
+    assert params["choice"] is choice
+    assert res["auto_run_chosen"] is (choice or res["auto_run"] is True)
+    assert "auto_run_choice" not in res
+
+
+def test_the_upsert_never_clears_the_stamp() -> None:
+    """Task 2305: the INSERT stamps only for ``choice``, and the DO UPDATE
+    keeps a stamp that exists. No statement sets it to NULL."""
+    src = inspect.getsource(assistant_mod.put_assistant_settings)
+    assert "CASE WHEN CAST(:choice AS boolean) THEN now() END" in src
+    update = src.split("DO UPDATE SET", 1)[1]
+    assert re.search(
+        r"auto_run_chosen_at = COALESCE\(\s*email_assistant_settings\.auto_run_chosen_at,"
+        r"\s*EXCLUDED\.auto_run_chosen_at\)", update)
+    assert "RETURNING learned_writing_style, auto_run, auto_run_chosen_at" in src
+    assert "auto_run_chosen_at = NULL" not in src
+
+
+@pytest.mark.parametrize(("provider", "expected"), [("gmail", False), ("microsoft", True)])
+async def test_a_new_row_from_the_style_keeps_the_effective_auto_run(provider, expected) -> None:
+    db = _db(sent=["Thanks, will do."], provider=provider)
+    await _generate(db)
+    (sql, params), = _executed(db, "INSERT INTO email_assistant_settings")
+    assert params["auto"] is expected
+    assert "auto_run" not in sql.split("DO UPDATE SET", 1)[1]
 
 
 # ── the agent path ──────────────────────────────────────────────────────────
@@ -305,6 +454,8 @@ async def test_the_agent_saving_another_field_keeps_drafting_off(monkeypatch) ->
     sent: list[dict] = []
 
     async def fake_get(path, params=None):
+        if path == "/email/accounts":
+            return []  # the card names the mailbox (EM-G11c1)
         assert path == "/email/assistant/settings"
         return dict(get_body)
 
@@ -312,13 +463,107 @@ async def test_the_agent_saving_another_field_keeps_drafting_off(monkeypatch) ->
         sent.append(body)
         return body
 
+    async def yes(**kw):
+        return True
+
     monkeypatch.setattr(agents, "_get", fake_get)
     monkeypatch.setattr(agents, "_patch_settings", fake_patch_settings)
-    await agents.update_assistant_settings("acc-1", signature="— Me")
+    # EM-G11c1 fix round 1: a new signature asks a card. The member says yes.
+    monkeypatch.setattr("acb_skills.ask_tools.request_confirmation", yes)
+    await agents.update_assistant_settings("a0000000-0000-4000-8000-000000000001", signature="— Me")
     assert len(sent) == 1
     assert sent[0]["signature"] == "— Me"
     assert sent[0]["draft_replies"] is False
     assert AssistantSettingsModel.model_validate(sent[0]).draft_replies is False
+    # EM-G11c2: and saving the signature leaves Auto-run OFF on a new Gmail box.
+    assert sent[0]["auto_run"] is False
+    # Task 2305: and it records no Auto-run choice.
+    assert "auto_run_choice" not in sent[0]
+    db = _db()
+    res = await _put(db, sent[0])
+    (_, params), = _executed(db, "INSERT INTO email_assistant_settings")
+    assert params["choice"] is False and res["auto_run_chosen"] is False
+
+
+async def _agent_saves(monkeypatch, call) -> list[dict]:
+    """Run one chat settings tool over the GET body of a new Gmail mailbox,
+    with a yes on each card. Returns each PUT body that the tool sent."""
+    agents = _load_agent()
+    get_body = await _get(_db())
+    sent: list[dict] = []
+
+    async def fake_get(path, params=None):
+        if path == "/email/accounts":
+            return []
+        assert path == "/email/assistant/settings"
+        return dict(get_body)
+
+    async def fake_accounts():
+        return [{"id": "a0000000-0000-4000-8000-000000000001",
+                 "email_address": _ME, "provider": "gmail"}]
+
+    async def fake_patch_settings(body):
+        sent.append(body)
+        return body
+
+    async def yes(**kw):
+        return True
+
+    monkeypatch.setattr(agents, "_get", fake_get)
+    monkeypatch.setattr(agents, "_accounts", fake_accounts)
+    monkeypatch.setattr(agents, "_patch_settings", fake_patch_settings)
+    monkeypatch.setattr("acb_skills.ask_tools.request_confirmation", yes)
+    # A run that may reach out: the held run has its own fence
+    # (``test_held_settings.py``). With no run context the check fails closed.
+    monkeypatch.setattr(agents, "_egress_held", lambda: False)
+    await call(agents)
+    return sent
+
+
+@pytest.mark.parametrize(("kw", "marked"), [
+    ({"auto_run": True}, True),
+    ({"auto_run": False}, True),       # an OFF on purpose is a choice too
+    ({"draft_replies": True}, False),
+    ({"signature": "— Me", "cold_email_blocker": "LABEL"}, False),
+], ids=["on", "off", "drafting-only", "other-fields"])
+async def test_the_chat_tool_marks_only_an_auto_run_change(monkeypatch, kw, marked) -> None:
+    """Task 2305, ``update_assistant_settings`` outside a held run: the PUT
+    body carries ``auto_run_choice`` only when the model passed ``auto_run``."""
+    sent = await _agent_saves(monkeypatch, lambda a: a.update_assistant_settings(
+        "a0000000-0000-4000-8000-000000000001", **kw))
+    [body] = sent
+    assert ("auto_run_choice" in body) is marked
+    if marked:
+        assert body["auto_run_choice"] is True and body["auto_run"] is kw["auto_run"]
+    req = AssistantSettingsModel.model_validate(body)
+    assert req.auto_run_choice is marked
+
+
+@pytest.mark.parametrize(("kw", "marked"), [
+    ({"auto_run": True}, True),
+    ({"auto_run": False}, True),
+    ({"draft_replies": True}, False),
+], ids=["on", "off", "drafting-only"])
+async def test_the_bulk_chat_tool_marks_only_an_auto_run_change(monkeypatch, kw, marked) -> None:
+    """Task 2305, ``apply_settings_to_mailboxes``: the same rule for each
+    mailbox body."""
+    sent = await _agent_saves(monkeypatch, lambda a: a.apply_settings_to_mailboxes(
+        account_ids=["a0000000-0000-4000-8000-000000000001"], **kw))
+    [body] = sent
+    assert ("auto_run_choice" in body) is marked
+
+
+def test_each_chat_settings_put_goes_through_the_marker() -> None:
+    """Task 2305: each chat path that PUTs the settings sets the marker through
+    the one helper, from the model's own ``auto_run`` and nothing else."""
+    src = _AGENT.read_text(encoding="utf-8")
+    assert src.count("_mark_auto_run_choice(body, auto_run)") == 1
+    assert src.count('_mark_auto_run_choice(body, wanted.get("auto_run"))') == 1
+    assert src.count('_mark_auto_run_choice(body, values.get("auto_run"))') == 1
+    assert src.count("await _patch_settings(body)") == 3
+    # No chat path writes the marker by hand: the one constant names it.
+    assert src.count('"auto_run_choice"') == 1
+    assert '_AUTO_RUN_CHOICE = "auto_run_choice"' in src
 
 
 # ── the stored choice that the preset seed reads ────────────────────────────
@@ -333,7 +578,7 @@ async def test_the_agent_saving_another_field_keeps_drafting_off(monkeypatch) ->
 async def test_stored_draft_replies_is_off_unless_stored_true(row, expected) -> None:
     db = AsyncMock()
     db.execute.return_value = MagicMock(fetchone=MagicMock(return_value=row))
-    assert await rules_mod.stored_draft_replies(db, "acc-1") is expected
+    assert await rules_mod.stored_draft_replies(db, "a0000000-0000-4000-8000-000000000001") is expected
 
 
 # ── follow-up nudges: OFF ───────────────────────────────────────────────────
@@ -343,7 +588,7 @@ def test_follow_up_auto_draft_is_off_by_default() -> None:
     """Nudges threads by AGE, so it is the hundreds-at-once case, not the
     just-arrived one — and its scan was dead until #84, so the first working run
     on a long-configured account releases the whole window."""
-    assert AssistantSettingsModel(account_id="acc-1").follow_up_auto_draft is False
+    assert AssistantSettingsModel(account_id="a0000000-0000-4000-8000-000000000001").follow_up_auto_draft is False
 
 
 def test_the_follow_up_column_default_ends_up_off() -> None:
@@ -357,7 +602,7 @@ def test_the_get_follow_up_fallback_matches_the_model() -> None:
         src, re.DOTALL,
     )
     assert m, "could not find the GET fallback for follow_up_auto_draft"
-    assert m.group(1) == str(AssistantSettingsModel(account_id="a").follow_up_auto_draft)
+    assert m.group(1) == str(AssistantSettingsModel(account_id="a0000000-0000-4000-8000-00000000000a").follow_up_auto_draft)
 
 
 # ── no migration rewrites a user's stored choice ────────────────────────────
@@ -549,13 +794,16 @@ class TestMigration224OnARealDatabase:
 # ── R8: the real handlers on the private database ───────────────────────────
 
 
-def _real_session(engine):
+def _real_session(engine, org: str):
     """A ``_tenant_session`` double over a REAL asyncpg connection.
 
     It opens one transaction and commits it on a clean exit, as the seam does.
-    The role is the ladder owner, so this proves the SQL and the account filter,
-    not RLS. ``test_email_tenant_bind_rls.py`` owns RLS.
+    It binds ``org`` as ``app.tenant_id``, as the seam does: the owner check
+    names the bound tenant (WS-29 H-334). The role is the ladder owner, so
+    this proves the SQL and the account filter, not RLS.
+    ``test_email_tenant_bind_rls.py`` owns RLS.
     """
+    from sqlalchemy import text
     from sqlalchemy.ext.asyncio import create_async_engine
 
     url = engine.url.set(drivername="postgresql+asyncpg")
@@ -565,6 +813,8 @@ def _real_session(engine):
         aeng = create_async_engine(url)
         try:
             async with aeng.connect() as conn, conn.begin():
+                await conn.execute(text("SELECT set_config('app.tenant_id', :o, true)"),
+                                   {"o": org})
                 yield conn
         finally:
             await aeng.dispose()
@@ -621,8 +871,8 @@ def _seed(engine):
     return _Seed()
 
 
-async def _real_get(engine, aid: str, email: str) -> dict:
-    with patch.object(assistant_mod, "_tenant_session", _real_session(engine)):
+async def _real_get(engine, aid: str, email: str, org: str) -> dict:
+    with patch.object(assistant_mod, "_tenant_session", _real_session(engine, org)):
         return await assistant_mod.get_assistant_settings(
             account_id=aid, user=SimpleNamespace(email=email))
 
@@ -635,13 +885,13 @@ class TestTheSwitchOnARealDatabase:
     async def test_no_row_and_no_rules_reads_off(self, upgraded) -> None:
         s = _seed(upgraded.engine)
         aid, me = s.mailbox()
-        assert (await _real_get(upgraded.engine, aid, me))["draft_replies"] is False
+        assert (await _real_get(upgraded.engine, aid, me, s.org))["draft_replies"] is False
 
     async def test_no_row_and_a_needs_reply_rule_that_drafts_reads_on(self, upgraded) -> None:
         s = _seed(upgraded.engine)
         aid, me = s.mailbox()
         s.rule(aid, "Needs Reply", ["LABEL", "DRAFT_EMAIL"])
-        assert (await _real_get(upgraded.engine, aid, me))["draft_replies"] is True
+        assert (await _real_get(upgraded.engine, aid, me, s.org))["draft_replies"] is True
 
     async def test_no_row_and_a_needs_reply_rule_that_labels_only_reads_off(
         self, upgraded,
@@ -649,13 +899,13 @@ class TestTheSwitchOnARealDatabase:
         s = _seed(upgraded.engine)
         aid, me = s.mailbox()
         s.rule(aid, "Needs Reply", ["LABEL"])
-        assert (await _real_get(upgraded.engine, aid, me))["draft_replies"] is False
+        assert (await _real_get(upgraded.engine, aid, me, s.org))["draft_replies"] is False
 
     async def test_a_reply_system_type_counts_under_any_name(self, upgraded) -> None:
         s = _seed(upgraded.engine)
         aid, me = s.mailbox()
         s.rule(aid, "Answer these", ["DRAFT_EMAIL"], system_type="TO_REPLY")
-        assert (await _real_get(upgraded.engine, aid, me))["draft_replies"] is True
+        assert (await _real_get(upgraded.engine, aid, me, s.org))["draft_replies"] is True
 
     async def test_a_draft_on_another_rule_does_not_count(self, upgraded) -> None:
         """Only the reply rule is the switch. A custom rule can draft too, and
@@ -663,20 +913,20 @@ class TestTheSwitchOnARealDatabase:
         s = _seed(upgraded.engine)
         aid, me = s.mailbox()
         s.rule(aid, "Newsletter", ["LABEL", "DRAFT_EMAIL"])
-        assert (await _real_get(upgraded.engine, aid, me))["draft_replies"] is False
+        assert (await _real_get(upgraded.engine, aid, me, s.org))["draft_replies"] is False
 
     async def test_a_stored_false_wins_over_a_rule_that_drafts(self, upgraded) -> None:
         s = _seed(upgraded.engine)
         aid, me = s.mailbox()
         s.rule(aid, "Needs Reply", ["LABEL", "DRAFT_EMAIL"])
         s.store(aid, draft_replies=False)
-        assert (await _real_get(upgraded.engine, aid, me))["draft_replies"] is False
+        assert (await _real_get(upgraded.engine, aid, me, s.org))["draft_replies"] is False
 
     async def test_a_stored_true_wins_with_no_rules(self, upgraded) -> None:
         s = _seed(upgraded.engine)
         aid, me = s.mailbox()
         s.store(aid, draft_replies=True)
-        assert (await _real_get(upgraded.engine, aid, me))["draft_replies"] is True
+        assert (await _real_get(upgraded.engine, aid, me, s.org))["draft_replies"] is True
 
     async def test_the_rule_read_is_per_mailbox(self, upgraded) -> None:
         """Two mailboxes in one tenant. Only the second has a drafting rule."""
@@ -684,8 +934,8 @@ class TestTheSwitchOnARealDatabase:
         plain, me_plain = s.mailbox()
         legacy, me_legacy = s.mailbox()
         s.rule(legacy, "Needs Reply", ["LABEL", "DRAFT_EMAIL"])
-        assert (await _real_get(upgraded.engine, plain, me_plain))["draft_replies"] is False
-        assert (await _real_get(upgraded.engine, legacy, me_legacy))["draft_replies"] is True
+        assert (await _real_get(upgraded.engine, plain, me_plain, s.org))["draft_replies"] is False
+        assert (await _real_get(upgraded.engine, legacy, me_legacy, s.org))["draft_replies"] is True
 
     async def test_stored_draft_replies_reads_each_mailbox_alone(self, upgraded) -> None:
         """Two mailboxes in one tenant: one stored true, one with no row. The
@@ -695,7 +945,7 @@ class TestTheSwitchOnARealDatabase:
         on, _ = s.mailbox()
         none, _ = s.mailbox()
         s.store(on, draft_replies=True)
-        async with _real_session(upgraded.engine)() as conn:
+        async with _real_session(upgraded.engine, s.org)() as conn:
             assert await rules_mod.stored_draft_replies(conn, on) is True
             assert await rules_mod.stored_draft_replies(conn, none) is False
 
@@ -706,17 +956,17 @@ class TestTheSwitchOnARealDatabase:
         aid, me = s.mailbox()
         s.store(aid, learned_writing_style="Drops pleasantries.",
                 morning_brief_enabled=False)
-        get_body = await _real_get(upgraded.engine, aid, me)
+        get_body = await _real_get(upgraded.engine, aid, me, s.org)
         req = AssistantSettingsModel.model_validate(
             {**get_body, "morning_brief_enabled": True})
         with patch.object(assistant_mod, "_tenant_session",
-                          _real_session(upgraded.engine)):
+                          _real_session(upgraded.engine, s.org)):
             put_body = await assistant_mod.put_assistant_settings(
                 req=req, user=SimpleNamespace(email=me))
         assert set(put_body) == set(get_body)
         assert put_body["morning_brief_enabled"] is True
         assert put_body["learned_writing_style"] == "Drops pleasantries."
-        again = await _real_get(upgraded.engine, aid, me)
+        again = await _real_get(upgraded.engine, aid, me, s.org)
         assert again["morning_brief_enabled"] is True
 
     @pytest.mark.parametrize(("legacy", "stored", "expected"), [
@@ -736,13 +986,13 @@ class TestTheSwitchOnARealDatabase:
         s.sent(aid, "Thanks, will do.")
         memory = SimpleNamespace(add_memories_background=AsyncMock())
         with patch.object(assistant_mod, "_tenant_session",
-                          _real_session(upgraded.engine)), \
+                          _real_session(upgraded.engine, s.org)), \
                 patch.object(assistant_mod, "_llm_writing_style",
                              AsyncMock(return_value="Short and direct.")), \
                 patch.dict(sys.modules, {"acb_memory": memory}):
             await assistant_mod.generate_writing_style(
                 account_id=aid, user=SimpleNamespace(email=me))
         assert _settings(upgraded.engine)[aid][0] is expected
-        body = await _real_get(upgraded.engine, aid, me)
+        body = await _real_get(upgraded.engine, aid, me, s.org)
         assert body["draft_replies"] is expected
         assert body["writing_style"] == "Short and direct."

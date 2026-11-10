@@ -9,6 +9,7 @@
 // never as more always-on chrome on the queue.
 
 import Button from "@/components/ui/Button";
+import RailRow from "@/components/ui/RailRow";
 import AppIcon from "@/components/Icon";
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
@@ -361,79 +362,53 @@ export default function WhatsAppPage() {
     <div className="flex h-full min-h-0 bg-background text-foreground">
       {/* ── Spine: triage streams ─────────────────────────────────── */}
       <nav className="w-52 shrink-0 space-y-0.5 border-r border-border p-2 flex flex-col">
-        <div className="px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground/70">
+        <div className="px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground/70 glass:normal-case glass:tracking-normal glass:text-caption glass:font-semibold glass:text-muted-foreground">
           Triage
         </div>
         {STREAMS.map((s) => {
           const active = s.key === activeStream;
           const count = streamCount(s.key);
           const Icon = s.icon;
+          // A rail row (owner, 2026-10-10): the count is the row's muted
+          // meta, as on every other rail.
           return (
-            <button
+            <RailRow
               key={s.key}
-              onClick={() => {
+              label={s.label}
+              selected={active}
+              onSelect={() => {
                 setActiveStream(s.key);
                 setSelectedChat(null);
               }}
-              className={`flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left transition-colors ${
-                active
-                  ? "bg-primary/15 text-primary"
-                  : "text-muted-foreground hover:bg-muted hover:text-foreground"
-              }`}
-            >
-              <Icon className="h-3.5 w-3.5 shrink-0" />
-              <span className="flex-1 truncate text-xs">{s.label}</span>
-              {count > 0 && (
-                <span
-                  className={`rounded-full px-1.5 py-0.5 text-[10px] tabular-nums ${
-                    active
-                      ? "bg-primary text-primary-foreground"
-                      : "bg-secondary text-muted-foreground"
-                  }`}
-                >
-                  {count}
-                </span>
-              )}
-            </button>
+              icon={<Icon className="h-3.5 w-3.5 shrink-0" />}
+              meta={count > 0 ? count : null}
+            />
           );
         })}
         {/* Native WhatsApp labels/lists the founder created, mirrored read-only
             (W16) — filter the queue to a label without leaving triage. */}
         {labels.length > 0 && (
           <div className="mt-3">
-            <div className="px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground/70">
+            <div className="px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground/70 glass:normal-case glass:tracking-normal glass:text-caption glass:font-semibold glass:text-muted-foreground">
               Labels
             </div>
             {labels.map((l) => {
               const key = labelKey(l.wa_label_id);
               const active = key === activeStream;
+              // A label is named by the founder in WhatsApp, so it can be long.
+              // The row cuts it and shows it whole in a tip.
               return (
-                <button
+                <RailRow
                   key={l.wa_label_id}
-                  onClick={() => {
+                  label={l.name}
+                  selected={active}
+                  onSelect={() => {
                     setActiveStream(key);
                     setSelectedChat(null);
                   }}
-                  className={`flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left transition-colors ${
-                    active
-                      ? "bg-primary/15 text-primary"
-                      : "text-muted-foreground hover:bg-muted hover:text-foreground"
-                  }`}
-                >
-                  <LabelDot color={l.color} />
-                  <span className="flex-1 truncate text-xs">{l.name}</span>
-                  {l.chat_count > 0 && (
-                    <span
-                      className={`rounded-full px-1.5 py-0.5 text-[10px] tabular-nums ${
-                        active
-                          ? "bg-primary text-primary-foreground"
-                          : "bg-secondary text-muted-foreground"
-                      }`}
-                    >
-                      {l.chat_count}
-                    </span>
-                  )}
-                </button>
+                  icon={<LabelDot color={l.color} />}
+                  meta={l.chat_count > 0 ? l.chat_count : null}
+                />
               );
             })}
           </div>
@@ -604,7 +579,7 @@ function TriageDrawer({
     (streams as unknown as Record<string, number>)[key] ?? 0;
   return (
     <div className="p-2">
-      <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground/70">
+      <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground/70 glass:normal-case glass:tracking-normal glass:text-caption glass:font-semibold glass:text-muted-foreground">
         Triage
       </div>
       {STREAMS.map((s) => {
@@ -639,7 +614,7 @@ function TriageDrawer({
       })}
       {labels.length > 0 && (
         <div className="mt-2 border-t border-border pt-2">
-          <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground/70">
+          <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground/70 glass:normal-case glass:tracking-normal glass:text-caption glass:font-semibold glass:text-muted-foreground">
             Labels
           </div>
           {labels.map((l) => {
@@ -675,7 +650,7 @@ function TriageDrawer({
       )}
       {accounts.length > 1 && (
         <div className="mt-2 border-t border-border pt-2">
-          <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground/70">
+          <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground/70 glass:normal-case glass:tracking-normal glass:text-caption glass:font-semibold glass:text-muted-foreground">
             Number
           </div>
           {accounts.map((a) => (
@@ -1407,7 +1382,7 @@ function ConnectEmptyState() {
         <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/15 text-primary">
           <AppIcon name="MessageCircle" className="h-7 w-7" />
         </div>
-        <h1 className="text-lg font-semibold">Connect WhatsApp Business</h1>
+        <h2 className="text-lg font-semibold">Connect WhatsApp Business</h2>
         <p className="mx-auto mt-2 max-w-sm text-[13px] text-muted-foreground">
           Link your WhatsApp Business number through Meta&apos;s official Cloud
           API. A short guided setup tests your credentials against Meta before

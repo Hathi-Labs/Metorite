@@ -82,7 +82,7 @@ export function NowNextBar({
       : 0;
 
   return (
-    <div className="flex items-stretch gap-3 border-b border-border bg-primary/[0.04] px-4 py-2">
+    <div className="flex items-stretch gap-3 border-b border-border bg-primary/[0.04] px-4 py-2 glass:mx-3 glass:mt-2 glass:rounded-xl glass:border-0">
       {/* NOW */}
       <div className="flex min-w-0 flex-1 items-center gap-2.5">
         <span className="flex shrink-0 items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-primary">

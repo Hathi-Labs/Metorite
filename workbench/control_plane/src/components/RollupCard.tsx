@@ -1,0 +1,327 @@
+"use client";
+
+/**
+ * RollupCard — the one seam that folds a long chat card (owner request,
+ * 2026-10-10). Every card in the transcript flow draws through it: the
+ * generative-UI cards (`MessageBubble`), the Projects receipts
+ * (`ProjectToolCards`) and the inline approval group (`AgentChat`).
+ *
+ * `lib/cardRollup.ts` holds the rules and says why. This file only wires
+ * them to the page:
+ *
+ * - the transcript's registry, so a card knows whether it is the newest;
+ * - the set of elements that wait (`lib/askPin.ts` `waitingTargets`);
+ * - a `ResizeObserver` on the body, so "long" is a measure;
+ * - the member's own toggle, kept for the page's life.
+ *
+ * Outside a transcript (no provider), and inside a step of the working trail
+ * (`InStepContext`), a card draws as it always did: no toggle, no fold. A
+ * read in the trail is already folded by its step.
+ *
+ * ## One toggle, one place, inside the card (owner feedback, 2026-10-10)
+ *
+ * The first cut drew a "Roll up" control ABOVE an open card, at the right,
+ * and the folded card's chevron at the LEFT. The pointer travelled across
+ * the card to undo what it had just done. Now the card's own title row is
+ * the toggle, in both states, with the chevron at its left:
+ *
+ * - a card that HAS a title row (a receipt, a titled generative-UI card)
+ *   passes `header="own"`, and draws {@link RollupHeader} where its title
+ *   row was and {@link RollupBody} round the rest. Its title draws once;
+ * - a card that has none (a table, a chart) keeps the default, and the
+ *   wrapper draws a frame with the header as its first row while it folds.
+ */
+
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useLayoutEffect,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
+
+import { InStepContext } from "@/components/ToolCardShell";
+import {
+  CardFoldProvider,
+  CollapsibleCard,
+  CollapsibleCardBody,
+  CollapsibleCardHeader,
+} from "@/components/ui/Collapsible";
+import Button from "@/components/ui/Button";
+import {
+  CLAMP_PX,
+  clampShows,
+  isLong,
+  manualStateOf,
+  rollupOpen,
+  setManualState,
+  showRollupToggle,
+  type ManualState,
+  type RollupRegistry,
+} from "@/lib/cardRollup";
+
+export interface RollupScope {
+  registry: RollupRegistry<Element>;
+  /** The `data-chat-ask` targets of the elements that wait on the member. */
+  waiting: ReadonlySet<string>;
+  /** Told when the member folds or opens a card by hand. The transcript
+   *  then keeps its place instead of following the bottom. */
+  onManualToggle?: () => void;
+}
+
+export const RollupContext = createContext<RollupScope | null>(null);
+
+export interface RollupCardProps {
+  /** Stable for the card's life, across a remount and a replay: a tool
+   *  call's id, a generative-UI target. */
+  id: string;
+  /** The header's words. */
+  title: string;
+  icon?: string;
+  /** The rows the body lists: drawn as the count, and more than four makes
+   *  the card long without a measure. */
+  rows?: number;
+  /** One line for the folded card. */
+  summary?: string;
+  /** The card waits on the member. */
+  pending?: boolean;
+  /**
+   * The card waited, and it has its answer now. It folds to its header,
+   * and `summary` says what happened (`lib/cardRollup.ts` rule 1a,
+   * `lib/askOutcome.ts`).
+   */
+  answered?: boolean;
+  /**
+   * The card reports a write that already happened and needs nothing from the
+   * member. It opens folded, and `summary` says what happened
+   * (`lib/cardRollup.ts` rule 3). A failed write is not a receipt.
+   */
+  receipt?: boolean;
+  /**
+   * A RESULT card: a long body opens cut at {@link CLAMP_PX}, with a
+   * "Show all" under it (`lib/cardRollup.ts` `clampShows`). A card that
+   * waits, or a receipt, never sets it.
+   */
+  clamp?: boolean;
+  /** The card's `data-chat-ask` target. It waits while `lib/askPin.ts` says so. */
+  askTarget?: string;
+  /**
+   * The card draws its own title row as {@link RollupHeader}, and its body
+   * inside {@link RollupBody}. Leave it out for a card with no title row.
+   */
+  header?: "own" | "frame";
+  className?: string;
+  children: React.ReactNode;
+}
+
+/**
+ * The card's title row: the one toggle while the card folds, and its plain
+ * title row otherwise. Draw it where the title row was.
+ */
+export const RollupHeader = CollapsibleCardHeader;
+
+/** The part of the card that folds away. Wrap everything under the title. */
+export const RollupBody = CollapsibleCardBody;
+
+export default function RollupCard(props: RollupCardProps) {
+  const scope = useContext(RollupContext);
+  const inStep = useContext(InStepContext);
+  if (!scope || inStep) {
+    // No fold here. A card with its own title row still draws that row.
+    return (
+      <CardFoldProvider
+        value={{ rooted: false, toggle: false, open: true, label: props.title, icon: props.icon, count: props.rows }}
+      >
+        {props.children}
+      </CardFoldProvider>
+    );
+  }
+  return <RollupCardIn scope={scope} {...props} />;
+}
+
+function RollupCardIn({
+  scope,
+  id,
+  title,
+  icon,
+  rows,
+  summary,
+  pending: pendingProp = false,
+  answered = false,
+  receipt = false,
+  clamp = false,
+  askTarget,
+  header = "frame",
+  className,
+  children,
+}: RollupCardProps & { scope: RollupScope }) {
+  const { registry, waiting, onManualToggle } = scope;
+  const rootRef = useRef<HTMLDivElement>(null);
+  // The body is drawn by the card (`header="own"`) or by the frame, so it
+  // reports its element instead of taking a ref from here.
+  const [body, setBody] = useState<HTMLDivElement | null>(null);
+
+  // Register before paint, so the newest card is known in the first frame.
+  useLayoutEffect(() => {
+    const el = rootRef.current;
+    if (!el) return;
+    registry.register(id, el);
+    return () => registry.unregister(id);
+  }, [registry, id]);
+
+  // A card counts as the newest until the registry knows better. The server
+  // render reads the same registry, which is empty there.
+  const isNewest = () => {
+    const n = registry.newest();
+    return n === null || n === id;
+  };
+  const newest = useSyncExternalStore(registry.subscribe, isNewest, isNewest);
+
+  // The body's height, measured. 0 is "not known" (a shut body measures 0).
+  const [height, setHeight] = useState(0);
+  // The body holds something to fold: text, or a visual element. Padding
+  // alone is not a body, so a one-line receipt draws no toggle. A shut body
+  // keeps its children, so this holds while the card is shut.
+  const [filled, setFilled] = useState(false);
+  useLayoutEffect(() => {
+    const el = body;
+    if (!el) return;
+    const readFilled = () =>
+      setFilled(
+        (el.textContent ?? "").trim().length > 0 ||
+          el.querySelector("img,svg,table,canvas,input,select,textarea,button,iframe") !== null,
+      );
+    readFilled();
+    const h = el.offsetHeight;
+    if (h > 0) setHeight(h);
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver((entries) => {
+      const next = entries[entries.length - 1]?.contentRect.height ?? 0;
+      if (next > 0) setHeight(Math.round(next));
+      readFilled();
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [body]);
+
+  const [manual, setManual] = useState<ManualState | undefined>(() => manualStateOf(id));
+  // A remount under a new id (rare) reads that card's own choice.
+  useEffect(() => {
+    setManual(manualStateOf(id));
+  }, [id]);
+  const [animate, setAnimate] = useState(false);
+  // The focus is inside: the card keeps the state it had when the focus came
+  // in, and an automatic change waits (`lib/cardRollup.ts`, `held`).
+  const [held, setHeld] = useState<boolean | undefined>(undefined);
+
+  const pending = pendingProp || (!!askTarget && waiting.has(askTarget));
+  const long = isLong(height, rows);
+  // Every card with a body may fold by hand (owner feedback, 2026-10-11).
+  const hasBody = filled || (rows ?? 0) > 0;
+  const toggle = showRollupToggle({ pending, hasBody });
+  const open = rollupOpen({ pending, answered, manual, receipt, newest, long, held });
+  // A long result card opens cut (`clampShows`). The wrapper is ALWAYS in
+  // the tree when `clamp` is set, and only its style changes: a swap of
+  // element types remounted the card's body, so a sandbox reloaded and a
+  // table lost its sort (review of #1160). The measure is the wrapper's
+  // unclipped `scrollHeight`. A cut ends on "Show all", or when the content
+  // shrinks to `UNCUT_PX` (`clampShows` has the rule and its gap).
+  const [all, setAll] = useState(false);
+  const [cut, setCut] = useState(false);
+  const clampRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = clampRef.current;
+    if (!clamp || !el) return;
+    const read = () =>
+      setCut((was) => clampShows({ clamp, pending, all, wasCut: was, naturalPx: el.scrollHeight }));
+    read();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(read);
+    ro.observe(el);
+    for (const child of Array.from(el.children)) ro.observe(child);
+    return () => ro.disconnect();
+  }, [clamp, pending, all]);
+  const shownCut = cut && open;
+
+  // An answer folds the card at once (rule 1a). The control the member
+  // pressed is gone, so the focus goes to the header, which says what
+  // happened, and never drops to the page.
+  const wasAnswered = useRef(answered);
+  useEffect(() => {
+    if (answered && !wasAnswered.current) {
+      const root = rootRef.current;
+      const at = document.activeElement;
+      if (root && (at === null || at === document.body || root.contains(at))) {
+        root.querySelector<HTMLElement>("[aria-expanded]")?.focus({ preventScroll: true });
+      }
+    }
+    wasAnswered.current = answered;
+  }, [answered]);
+  // What the member sees now, for the focus to hold. Read in a handler only.
+  const openRef = useRef(open);
+  useLayoutEffect(() => {
+    openRef.current = open;
+  });
+
+  const onOpenChange = useCallback(
+    (next: boolean) => {
+      const state: ManualState = next ? "open" : "closed";
+      setManualState(id, state);
+      setManual(state);
+      setAnimate(true);
+      onManualToggle?.();
+    },
+    [id, onManualToggle],
+  );
+
+  return (
+    <div
+      ref={rootRef}
+      data-rollup-card={id}
+      className={className}
+      onFocus={() => setHeld((h) => h ?? openRef.current)}
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setHeld(undefined);
+      }}
+    >
+      <CollapsibleCard
+        open={open}
+        onOpenChange={onOpenChange}
+        toggle={toggle}
+        label={title}
+        icon={icon}
+        count={rows}
+        summary={summary}
+        header={header}
+        bodyRef={setBody}
+        animate={animate}
+      >
+        {clamp ? (
+          <div
+            ref={clampRef}
+            data-rollup-cut={shownCut ? "on" : "off"}
+            className={shownCut ? "overflow-hidden" : undefined}
+            style={shownCut ? {
+              maxHeight: CLAMP_PX,
+              maskImage: "linear-gradient(to bottom, black calc(100% - 48px), transparent)",
+              WebkitMaskImage: "linear-gradient(to bottom, black calc(100% - 48px), transparent)",
+            } : undefined}
+          >
+            {children}
+          </div>
+        ) : (
+          children
+        )}
+      </CollapsibleCard>
+      {shownCut && (
+        <Button variant="ghost" size="sm" icon="ChevronDown" className="mt-0.5" data-rollup-show-all=""
+          onClick={() => setAll(true)}>
+          Show all
+        </Button>
+      )}
+    </div>
+  );
+}

@@ -140,7 +140,8 @@ describe("flag ON, Supabase not configured", () => {
     // there is no Microsoft button to press and no passphrase box either.
     expect(body).toContain(IDENTITY_FLAG);
     expect(body).toContain(RECOVERY);
-    expect(body).toContain("H-56");
+    // WS-50 slice 5: no internal ticket number on a page a person reads.
+    expect(body).not.toContain("H-56");
   });
 
   it("⚠️ renders NO passphrase form on this path", async () => {

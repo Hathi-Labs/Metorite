@@ -1,5 +1,7 @@
 # Development & delivery framework — how we ship to customers while still building
 
+> **Dated 2026-11-11, staging (D144).** The owner retired staging. Read each staging step in this spec as history. Production takes a release at 05:30, 13:30 and 21:30 UTC (D194).
+
 **Status:** ✅ **ADOPTED — 2026-08-26 by D55** *(proposed 2026-08-24; 🟠 PROPOSED
 until the owner recorded it)*. · **Owner:** vjvarada · **Classification:** CONTRACTS &
 DOCTRINE (`INDEX.md`) · **Board row: WS-38**, minted with D55 ·
@@ -737,6 +739,8 @@ Proposed, not recorded. An agent must not mint these.
 | **D-E** | **Promotion cadence.** `engineering_practice.md` §2 says a fixed clock is optional but the ring order is not. Name the soak: hours, or a working day? | Sets how long a fix takes to reach a customer, which is a business call |
 | **D-F** | **Who reviews what** — the CODEOWNERS map (7.4), once there is a second developer to name | Cannot be written before the people exist |
 | **D-G** | **Repository topology: one repo, with `site/` and `workbench/operator_console/` staying in it** (§2.4), and the named triggers that would reverse it — an outside agency on the landing page, or a separate ops team on the Operator Console | The question will be re-asked every time someone notices the two surfaces share no code; recording the *trigger* rather than just the answer is what stops that |
+
+> 🆕 **2026-10-15:** `specs/staging_and_daily_release.md` (PROPOSED) gives a concrete answer to **D-D** and a proposed amendment to **D-E**. It is not a decision. The owner records one.
 
 ---
 

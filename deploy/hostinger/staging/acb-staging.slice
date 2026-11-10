@@ -1,0 +1,9 @@
+# The staging services share the dev box with the agent sessions (WS-38 §5.2).
+# This caps them, so a runaway build cannot take the memory an agent needs, and
+# the reverse. The database container has its own --memory cap.
+[Unit]
+Description=Metorite STAGING services
+
+[Slice]
+MemoryMax=3G
+CPUWeight=50

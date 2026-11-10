@@ -19,6 +19,7 @@ dependencies = [
     "acb-skills",
     "acb-memory",
     "acb-auth",
+    "acb-playbook",
     "gateway",
     "orchestrator",
     "ingestion",
@@ -28,6 +29,9 @@ dependencies = [
     # below: the root test suite imports `customer_console`, so it must be installed
     # into the shared venv by `uv sync` or CI fails with ModuleNotFoundError.
     "customer-console",
+    # WS-55 EA-2a — the public edge for outside agents. Same reason: the root
+    # test suite imports `agent_edge` (tests/unit/test_agent_oauth_server.py).
+    "agent-edge",
     # Skill packages imported by the root test suite / evals — must be installed
     # into the shared venv by `uv sync` or CI fails with ModuleNotFoundError
     # (they resolve locally only because a dev venv already has them editable).
@@ -57,6 +61,19 @@ dev = [
     # radon = reporting (cc + mi); xenon = CI enforcement (fails past threshold).
     "radon>=6.0",
     "xenon>=0.9",
+    # WS-43v: the WS43-E12 checker opens the agent's .xlsx with openpyxl, on
+    # the host (evals/coding_engine/checkers.py). The sandbox image pins 3.1.5.
+    "openpyxl>=3.1",
+    # WS-43y1a: the host tests run the data engine of the sandbox image
+    # (apps/services/orchestrator/sandbox/data_engine.py). The pin matches the
+    # image lock, and tests/unit/test_data_engine.py fails when they differ.
+    # No module under apps/ or packages/ imports it, except that engine.
+    "duckdb==1.5.6",
+    "pytest-split>=0.11.0",
+    # The CI shards rerun a failed test once (`--reruns 1`). Of 70 red runs on
+    # 15-19 Oct, 18 were timing flakes or infrastructure, not the PR's code.
+    "pytest-rerunfailures>=15.0",
+    "pytest-timeout>=2.3",
 ]
 
 [tool.uv.workspace]
@@ -74,6 +91,10 @@ exclude = [
     # headless Chrome); it pins its own deps in requirements.txt and is not part
     # of the uv workspace (kept off the main app's dependency graph).
     "apps/services/meeting_bot",
+    # The web worker (WEB-6, web_research.md section 5.1) is a standalone
+    # Dockerized service. It pins its own closure in requirements.lock.txt, so
+    # Crawl4AI and its closure stay off the main app's dependency graph.
+    "apps/services/web_worker",
 ]
 
 [tool.uv.sources]
@@ -85,12 +106,14 @@ acb-audit     = { workspace = true }
 acb-skills     = { workspace = true }
 acb-memory     = { workspace = true }
 acb-auth       = { workspace = true }
+acb-playbook   = { workspace = true }
 gateway        = { workspace = true }
 orchestrator  = { workspace = true }
 ingestion     = { workspace = true }
 reconciler    = { workspace = true }
 action-broker  = { workspace = true }
 customer-console   = { workspace = true }
+agent-edge         = { workspace = true }
 email-ingestion = { workspace = true }
 whatsapp-ingestion = { workspace = true }
 skill-my-tasks  = { workspace = true }
@@ -132,10 +155,19 @@ disallow_untyped_decorators = false
 exclude = ["workbench/", "infra/", "build/", "dist/"]
 
 [tool.pytest.ini_options]
-addopts = "-ra --strict-markers -m 'not integration'"
+# `sandbox_docker` tests need a real Docker daemon, and they build the coding
+# sandbox image. The default run deselects them. The workflow
+# .github/workflows/sandbox-docker.yml runs them with `-m sandbox_docker`, and
+# it fails on any skip (maf_coding_engine.md §10).
+addopts = "-ra --strict-markers -m 'not integration and not sandbox_docker'"
 asyncio_mode = "auto"
+# CIV-15: one hung test fails after 10 min with a stack trace that names it.
+# The signal method raises in the test, so the run goes on to the next test.
+timeout = 600
+timeout_method = "signal"
 testpaths = ["tests", "apps", "packages"]
 markers = [
     "integration: requires docker-compose stack",
     "slow: long-running tests",
+    "sandbox_docker: needs a Docker daemon, and builds and runs the coding sandbox image (WS-43)",
 ]

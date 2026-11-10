@@ -44,6 +44,8 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from acb_common import get_logger
+from acb_common.tool_refusals import is_refusal
+from acb_llm.message_hygiene import PlaceholderStreamFilter, strip_placeholder_lines
 
 _log = get_logger("orchestrator.event_translator")
 
@@ -64,6 +66,10 @@ class ToolCallStreamState:
     seen: set[str] = field(default_factory=set)
     last_id: str | None = None
     counter: int = 0
+    # The argument text forwarded so far, per call id. MAF 1.19 puts the
+    # provider's call id on EVERY streamed chunk, not only the first, so a
+    # known id is not by itself a re-send: it can carry the next fragment.
+    args: dict[str, str] = field(default_factory=dict)
     # Name of the most recently STARTED tool call. A turn that ends on a
     # blocking HITL tool (ask_questions / ask_user / request_confirmation)
     # legitimately has no closing text — the question card IS the output — so
@@ -85,8 +91,13 @@ class TranslationState:
     # mint the same one), we must force a FRESH id — AG-UI requires distinct
     # message ids for distinct logical streams, and the client dedups by id.
     used_message_ids: set[str] = None  # type: ignore[assignment]
+    # Holds back a line that may be litellm's empty-text placeholder, so the
+    # member never sees it (task 1787). One per open text message.
+    placeholder_filter: PlaceholderStreamFilter = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
+        if self.placeholder_filter is None:
+            self.placeholder_filter = PlaceholderStreamFilter()
         if self.fc is None:
             self.fc = ToolCallStreamState(self.run_id)
         if self.used_message_ids is None:
@@ -107,6 +118,18 @@ class TranslatorHooks:
         [str, str, Any, str], list[dict[str, Any]]
     ] | None = None
     on_function_result: Callable[[str], None] | None = None
+
+
+def _complete_args(text: str) -> bool:
+    """True when *text* is a whole JSON object — the call's arguments are in."""
+    # A whole object ends in "}". Most fragments do not, so they cost no
+    # parse, and a long argument stream stays linear rather than quadratic.
+    if not text.rstrip().endswith("}"):
+        return False
+    try:
+        return isinstance(json.loads(text), dict)
+    except ValueError:
+        return False
 
 
 def function_call_events(
@@ -130,19 +153,30 @@ def function_call_events(
     if not cid:
         # Continuation chunk for the in-flight call — args only, no new row.
         if state.last_id is not None:
-            return (
-                [{"type": "TOOL_CALL_ARGS",
-                  "toolCallId": state.last_id, "delta": delta}]
-                if delta else []
-            )
+            if not delta:
+                return []
+            state.args[state.last_id] = state.args.get(state.last_id, "") + delta
+            return [{"type": "TOOL_CALL_ARGS",
+                     "toolCallId": state.last_id, "delta": delta}]
         # No call started yet (defensive) — mint a synthetic id.
         state.counter += 1
         cid = f"{state.run_id}:fc:{state.counter}"
-    # A re-sent id for an already-started call: the row exists.
+    # A known id never opens a second row. It is either the NEXT argument
+    # fragment of a streamed call (MAF 1.19 repeats the provider id on every
+    # chunk, and parallel calls interleave by id), or a complete call sent
+    # again. The arguments seen so far tell the two apart: once they parse as
+    # a whole JSON object the call is complete, and more text is a re-send.
+    # Dropping every known-id chunk, as this did before, sent NO arguments for
+    # a native MAF call, so the trail could not show a command or a path.
     if cid in state.seen:
-        return []
+        so_far = state.args.get(cid, "")
+        if not delta or _complete_args(so_far):
+            return []
+        state.args[cid] = so_far + delta
+        return [{"type": "TOOL_CALL_ARGS", "toolCallId": cid, "delta": delta}]
     state.seen.add(cid)
     state.last_id = cid
+    state.args[cid] = delta
     name = getattr(content, "name", "") or "tool"
     state.last_name = name
     out: list[dict[str, Any]] = [{
@@ -231,14 +265,18 @@ def translate_update(
             # Message-id-native segmentation (Phase 3a): runtimes mint a new
             # message id per assistant segment (text between tool rounds).
             # A changed id is a REAL message boundary — close the open
-            # segment and start the next, so downstream never has to infer
-            # narration-vs-answer from tool positions.
+            # segment (and flush the placeholder filter) BEFORE this delta is
+            # filtered, so the start of the next segment is not held back
+            # behind the end of the last one.
             if (
                 state.text_started
                 and update_msg_id
                 and update_msg_id != state.message_id
             ):
                 events.extend(close_text_message(state))
+            delta = state.placeholder_filter.feed(delta)
+            if not delta:
+                continue
             if not state.text_started:
                 state.text_started = True
                 # Pick the segment id: prefer the runtime's, but if it's absent
@@ -311,7 +349,10 @@ def translate_update(
                 "type": "TOOL_CALL_RESULT",
                 "toolCallId": tc_id,
                 "content": (str(exc) if exc else str(result))[:RESULT_CAP],
-                "success": exc is None,
+                # A refused call returns "Refused: ..." so the model reads
+                # it, and it is still no success: a card must never draw it
+                # as a done act ("Email sent"). `is_refusal` is the one test.
+                "success": exc is None and not is_refusal(result),
             })
             if hooks and hooks.on_function_result:
                 try:
@@ -327,7 +368,21 @@ def close_text_message(state: TranslationState) -> list[dict[str, Any]]:
     """TEXT_MESSAGE_END for the open message, if any (idempotent)."""
     if state.text_started and state.message_id:
         state.text_started = False
-        return [{"type": "TEXT_MESSAGE_END", "messageId": state.message_id}]
+        events: list[dict[str, Any]] = []
+        held = state.placeholder_filter.flush()
+        if held:
+            events.append({
+                "type": "TEXT_MESSAGE_CONTENT",
+                "messageId": state.message_id,
+                "delta": held,
+            })
+        events.append({"type": "TEXT_MESSAGE_END", "messageId": state.message_id})
+        return events
+    held = state.placeholder_filter.flush()
+    if held:
+        # Text the filter kept back (for example a lone "[") before any
+        # message opened. It is real text, so it gets a message of its own.
+        return text_message_events(held, words_per_chunk=10**6)
     return []
 
 
@@ -340,6 +395,7 @@ def text_message_events(
     fallback tier speaks the message-id-native protocol.
     """
     msg_id = message_id or str(uuid4())
+    text = strip_placeholder_lines(text)
     events: list[dict[str, Any]] = [{
         "type": "TEXT_MESSAGE_START", "messageId": msg_id, "role": "assistant",
     }]

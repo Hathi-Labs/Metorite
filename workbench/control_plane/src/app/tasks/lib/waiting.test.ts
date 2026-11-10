@@ -45,8 +45,10 @@ describe("daysWaiting — the 'since-when' of who/what/since-when (§1 line 46)"
 
 describe("isWaitingOverdue — 'flags rows past expected_by' (§6 line 540)", () => {
   it("is true only once expectedBy is in the past", () => {
-    expect(isWaitingOverdue(item({ expectedBy: ago(1) }), NOW)).toBe(true);
+    // A promised date is a day, so the line passes when that day ends (RX-5).
+    expect(isWaitingOverdue(item({ expectedBy: ago(DAY) }), NOW)).toBe(true);
     expect(isWaitingOverdue(item({ expectedBy: ago(30 * DAY) }), NOW)).toBe(true);
+    expect(isWaitingOverdue(item({ expectedBy: ago(1) }), NOW)).toBe(false);
     expect(isWaitingOverdue(item({ expectedBy: ahead(1) }), NOW)).toBe(false);
     // Exactly now is not yet past.
     expect(isWaitingOverdue(item({ expectedBy: new Date(NOW).toISOString() }), NOW))
@@ -58,7 +60,7 @@ describe("isWaitingOverdue — 'flags rows past expected_by' (§6 line 540)", ()
     // own deadline — read LIVE, so it can never be a stale copy.
     expect(isWaitingOverdue(item({ dueAt: ago(10 * DAY) }), NOW)).toBe(true);
     expect(isWaitingOverdue(item({ dueAt: ahead(DAY) }), NOW)).toBe(false);
-    expect(isWaitingOverdue(item({ expectedBy: undefined, dueAt: ago(1) }), NOW))
+    expect(isWaitingOverdue(item({ expectedBy: undefined, dueAt: ago(DAY) }), NOW))
       .toBe(true);
   });
 
@@ -135,7 +137,7 @@ describe("isStaleWaiting — same 5-day rule as the gateway's /tasks/insights", 
     expect(isStaleWaiting(quietButNotLate, NOW)).toBe(true);
     expect(isWaitingOverdue(quietButNotLate, NOW)).toBe(false);
     // Late already, but only asked for yesterday.
-    const lateButFresh = item({ delegatedAt: ago(DAY), expectedBy: ago(HOUR) });
+    const lateButFresh = item({ delegatedAt: ago(DAY), expectedBy: ago(DAY) });
     expect(isStaleWaiting(lateButFresh, NOW)).toBe(false);
     expect(isWaitingOverdue(lateButFresh, NOW)).toBe(true);
   });

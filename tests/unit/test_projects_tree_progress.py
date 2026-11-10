@@ -47,6 +47,31 @@ USER = projects_user()
 ASYNC = pytest.mark.asyncio
 
 
+@pytest.fixture(scope="module")
+def laddered() -> None:
+    """Lay the tenant ladder on the shared R8 database before a real query.
+
+    The two R8 tests below used to read whatever an earlier test had left, so
+    they passed only when an earlier test of the same CI shard had built the
+    schema. pytest-split cuts the suite in collection order by measured time,
+    so new tests in another file can move the cut. Then `pm_tasks` does not
+    exist (H-328 part (b), shard 6). `apply_ladder` is idempotent, so this is
+    safe on every run.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.pool import NullPool
+
+    from tests.unit._tenant_ladder import apply_ladder
+
+    eng = create_engine(os.environ["TENANT_LADDER_DATABASE_URL"], future=True,
+                        poolclass=NullPool)
+    try:
+        with eng.begin() as conn:
+            apply_ladder(conn)
+    finally:
+        eng.dispose()
+
+
 @pytest.fixture
 def db(monkeypatch: pytest.MonkeyPatch) -> FakeProjectsDB:
     fake = FakeProjectsDB()
@@ -118,6 +143,51 @@ def test_a_node_with_nothing_under_it_reports_zero_not_none():
     assert tree[0]["cancelled"] == 0
 
 
+def test_an_archived_child_leaves_the_parent_count_like_the_summary_walk():
+    """OP-12b. The sidebar count and the Overview "Open" read one number.
+
+    The summary walk (`NODE_DESCENDANTS_SQL`) skips archived children, so the
+    tree roll-up must too. Archiving changes no task row, so "Home" keeps its
+    own 3 open tasks, and the root must not add them.
+    """
+    tree = [{"id": "root", "children": [
+        {"id": "work", "children": []},
+        {"id": "home", "archived_at": "2026-10-30T00:00:00Z", "children": []},
+    ]}]
+    counts = {"root": (11, 7, 0), "work": (2, 0, 0), "home": (3, 0, 0)}
+
+    pm_tree._attach_progress(tree, counts)
+
+    root = tree[0]
+    assert (root["tasks"], root["done"]) == (13, 7)  # 11 + 2, never + 3
+    # The archived row still reports its own work, for the Archived fold.
+    assert root["children"][1]["tasks"] == 3
+    # The other read: the summary walk skips archived children in SQL.
+    assert "archived_at IS NULL" in pm_tree.NODE_DESCENDANTS_SQL
+
+
+def test_an_archived_parent_still_counts_its_archived_children():
+    """OP-12b. An archive stamps the whole subtree, so "Home" archived with
+    "Garden" and "Repairs" under it reads 5 open, as its Overview does
+    (`NODE_DESCENDANTS_ARCHIVED_SQL` keeps archived children)."""
+    stamp = "2026-10-30T00:00:00Z"
+    tree = [{"id": "root", "children": [
+        {"id": "home", "archived_at": stamp, "children": [
+            {"id": "garden", "archived_at": stamp, "children": []},
+            {"id": "repairs", "archived_at": stamp, "children": []},
+        ]},
+    ]}]
+    counts = {"root": (1, 0, 0), "garden": (3, 0, 0), "repairs": (2, 0, 0)}
+
+    pm_tree._attach_progress(tree, counts)
+
+    home = tree[0]["children"][0]
+    assert home["tasks"] == 5
+    # The live root still leaves the archived Home out of its own count.
+    assert tree[0]["tasks"] == 1
+    assert "p.archived_at IS NULL" not in pm_tree.NODE_DESCENDANTS_ARCHIVED_SQL
+
+
 def test_a_count_for_a_node_outside_the_tree_is_ignored():
     """A task in a project the forest read did not return - a personal
     project, say - belongs to no row here. The alternative is a total that
@@ -152,6 +222,7 @@ _VIS_SHAPES = [
     reason="TENANT_LADDER_DATABASE_URL unset - R8 needs a real Postgres",
 )
 @pytest.mark.parametrize("unrestricted", _VIS_SHAPES)
+@pytest.mark.usefixtures("laddered")
 @ASYNC
 async def test_the_count_query_runs_on_asyncpg(unrestricted: bool):
     """Either the driver accepts the statement and its binds, or it raises.
@@ -203,6 +274,7 @@ async def test_the_count_query_runs_on_asyncpg(unrestricted: bool):
     not os.environ.get("TENANT_LADDER_DATABASE_URL"),
     reason="TENANT_LADDER_DATABASE_URL unset - R8 needs a real Postgres",
 )
+@pytest.mark.usefixtures("laddered")
 @ASYNC
 async def test_a_cancelled_task_is_counted_apart_from_a_done_one():
     """🔴 The P1, against a real database rather than against the fake.

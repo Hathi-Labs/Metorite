@@ -78,15 +78,38 @@ export function pointAnchor(x: number, y: number): PanelAnchor {
  *
  * - `popover` (the default) is `z-[60]`, above a `Modal` at `z-50`.
  * - `top` is `z-[90]`, for a panel raised from inside a hand-rolled overlay
- *   that paints above `z-50`. My Tasks' `TaskFocusModal` is `z-[80]`, so a
+ *   that paints above `z-50`. My Tasks' `TaskFocusModal` is `z-[15]`, so a
  *   `popover` panel opened from a focused task drew BEHIND it. `top` stays
  *   under `Modal`'s `alert` (`z-[100]`), so a confirmation still wins.
+ * - `guide` is `z-[98]`, for the guided tour only (MOB-9). It paints over the
+ *   phone's bottom bar (`z-[96]`), because the tour dims the bar and rings
+ *   its Ask tab. Still under `alert`.
  */
-export type PanelLayer = "popover" | "top";
+export type PanelLayer = "popover" | "top" | "guide";
 
-const PANEL_LAYERS: Record<PanelLayer, string> = {
+export const PANEL_LAYERS: Record<PanelLayer, string> = {
   popover: "z-[60]",
   top: "z-[90]",
+  guide: "z-[98]",
+};
+
+/**
+ * What the panel IS, which decides its surface.
+ *
+ * - `panel` (the default) is a popover a member works in: the card surface,
+ *   a scroll, and the `PREVENT_OUTSIDE_CLICK` marker.
+ * - `tip` is a hint that only shows text (`OverflowTip`). It draws the dark
+ *   `--tooltip` surface, it takes no pointer, and it carries NO marker. A
+ *   tip is not a popup a click can land in, and the marker would tell
+ *   `InfoTip`'s Escape rule that another popup is open.
+ */
+export type PanelVariant = "panel" | "tip";
+
+/** The surface classes of each variant. Exported for the markup test. */
+export const PANEL_SURFACES: Record<PanelVariant, string> = {
+  panel:
+    "overflow-y-auto rounded-md border border-border bg-card shadow-md glass:rounded-2xl glass:border-transparent glass:glass-menu",
+  tip: "pointer-events-none rounded-md bg-tooltip text-tooltip-foreground shadow-md",
 };
 
 export interface AnchoredPanelProps {
@@ -111,30 +134,75 @@ export interface AnchoredPanelProps {
   align?: "start" | "end";
   /** Which layer it paints on. See {@link PanelLayer}. */
   layer?: PanelLayer;
+  /** What the panel is. See {@link PanelVariant}. */
+  variant?: PanelVariant;
 }
 
 /** Where the panel sits, measured from the anchor's box. Pure, so it is testable. */
 export interface PanelBox {
   left: number;
   right: number;
+  /**
+   * Below the anchor: the panel's top edge. Above it: the HIGHEST the panel's
+   * top may reach, which a full-height panel uses. The style pins a flipped
+   * panel by `bottom`, so a short one does not sit at this line.
+   */
   top: number;
+  /**
+   * Set when the panel opens ABOVE the anchor: its bottom edge, measured from
+   * the window's bottom, 2px clear of the anchor. `null` when it opens below.
+   */
+  bottom: number | null;
   width: number;
+  /**
+   * The tallest the panel may be on the side it opens to, 8px clear of the
+   * window edge. On a short window this is less than `maxHeight`, and the
+   * panel scrolls inside instead of running off the window.
+   */
+  height: number;
+}
+
+/**
+ * The top edge of the phone's bottom bar, or null when no bar shows. The bar
+ * paints above every panel (`LAYER_CLASS.bottomNav`), so a panel that opens
+ * downward must end above it (MOB-9). The phone layout sets `data-phone-nav`
+ * on <html>, and the bar wears `data-phone-nav-bar`.
+ */
+export function phoneBarTop(doc: Document = document): number | null {
+  if (!doc.documentElement.hasAttribute("data-phone-nav")) return null;
+  const bar = doc.querySelector("[data-phone-nav-bar]");
+  return bar ? bar.getBoundingClientRect().top : null;
 }
 
 export function panelBox(
   rect: { left: number; right: number; top: number; bottom: number; width: number },
-  viewport: { width: number; height: number },
+  /**
+   * `floor` is the lowest edge a panel may reach, when that is above the
+   * window's foot: on a phone, the top edge of the bottom bar (MOB-9). The
+   * room below the anchor ends there. A flipped panel still hangs from the
+   * window's real bottom, so `height` stays the window's.
+   */
+  viewport: { width: number; height: number; floor?: number },
   maxHeight: number,
 ): PanelBox {
-  const below = viewport.height - rect.bottom;
+  const below = Math.min(viewport.height, viewport.floor ?? viewport.height) - rect.bottom;
   const up = below < maxHeight && rect.top > below;
+  const room = (up ? rect.top : below) - 2 - 8;
+  const height = Math.max(0, Math.min(maxHeight, room));
   return {
     left: rect.left,
     right: viewport.width - rect.right,
     // Never off the top either: a flipped panel taller than the space above
     // it is the same defect upside down.
-    top: up ? Math.max(8, rect.top - maxHeight - 2) : rect.bottom + 2,
+    top: up ? Math.max(8, rect.top - height - 2) : rect.bottom + 2,
+    // ⚠️ A flipped panel hangs from its BOTTOM edge (2026-10-25, Metorite
+    // #412). `top` above assumes the panel is `height` tall, which is the
+    // most it MAY take. A 120px tip with a 480px limit then opened 360px
+    // above its icon, at the top of the Statuses dialog. Pinning the bottom
+    // puts any height right on the anchor, with no measure after render.
+    bottom: up ? viewport.height - rect.top + 2 : null,
     width: rect.width,
+    height,
   };
 }
 
@@ -146,9 +214,9 @@ export function panelStyle(
 ): React.CSSProperties {
   return {
     ...(align === "end" ? { right: box.right } : { left: box.left }),
-    top: box.top,
+    ...(box.bottom === null ? { top: box.top } : { bottom: box.bottom }),
     minWidth: box.width,
-    maxHeight,
+    maxHeight: Math.min(maxHeight, box.height),
   };
 }
 
@@ -161,6 +229,7 @@ export function AnchoredPanel({
   panelProps,
   align = "start",
   layer = "popover",
+  variant = "panel",
 }: AnchoredPanelProps) {
   const [box, setBox] = useState<PanelBox | null>(null);
 
@@ -169,7 +238,7 @@ export function AnchoredPanel({
     setBox(
       panelBox(
         anchor.getBoundingClientRect(),
-        { width: window.innerWidth, height: window.innerHeight },
+        { width: window.innerWidth, height: window.innerHeight, floor: phoneBarTop() ?? undefined },
         maxHeight,
       ),
     );
@@ -197,9 +266,9 @@ export function AnchoredPanel({
   return createPortal(
     <div
       {...panelProps}
-      {...{ [PREVENT_OUTSIDE_CLICK]: "" }}
+      {...(variant === "panel" ? { [PREVENT_OUTSIDE_CLICK]: "" } : {})}
       style={panelStyle(box, align, maxHeight)}
-      className={`fixed ${PANEL_LAYERS[layer]} overflow-y-auto rounded-md border border-border bg-card shadow-md ${className}`}
+      className={`fixed ${PANEL_LAYERS[layer]} ${PANEL_SURFACES[variant]} ${className}`}
     >
       {children}
     </div>,

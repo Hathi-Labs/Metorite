@@ -9,6 +9,8 @@ DELETE /chat/sessions/{session_id}             Delete session + all its messages
 
 GET    /chat/sessions/{session_id}/messages    Fetch messages the caller may read
 POST   /chat/sessions/{session_id}/messages    Upsert a batch of messages
+POST   /chat/sessions/{session_id}/supersede   An edit replaces the last message
+POST   /chat/sessions/{session_id}/continue    Continue a held chat in a fresh chat (WT-1)
 
 Authorization moved from ownership to membership (migration 138 + gateway/rooms.py).
 Every predicate that used to be ``WHERE user_id = :uid`` is now "is this person
@@ -35,11 +37,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user, require_feature_router
-from acb_common import get_logger, get_settings
-from fastapi import APIRouter, Depends, HTTPException, status
+from acb_common import get_logger
+from acb_common.assistant_profile import PROFILE_USED_EVENT
+from acb_common.chat_continue_flag import continue_allowed
+from acb_common.pg_text import storable
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from gateway.rooms import (
     SESSION_VISIBLE_SQL,
     RoomAccess,
@@ -83,6 +89,9 @@ class SessionPatchRequest(BaseModel):
     title: str | None = None
     last_preview: str | None = None
     message_count: int | None = None
+    #: D99 (migration 254). True archives the chat, False takes it back into
+    #: the list, None leaves it. An archive keeps its first time.
+    archived: bool | None = None
 
 
 class MessageRecord(BaseModel):
@@ -132,7 +141,13 @@ def _get_sessions(user_id: str, *, organization_id: str | None) -> list[dict]:
                 "       s.user_id, COALESCE(s.visibility, 'private') AS visibility, "
                 "       (SELECT count(*) FROM chat_session_participant p "
                 "          WHERE p.session_id = s.id) AS participant_count, "
-                "       me.role AS my_role "
+                # WS-62 CF-5 (review of #1216): whether a MEMBER wrote in it.
+                # The brief row is an agent turn, so a chat that holds only
+                # the brief reads false, and the nudge stays (§4.7).
+                "       EXISTS (SELECT 1 FROM chat_message m "
+                "               WHERE m.session_id = s.id AND m.role = 'user') "
+                "         AS has_user_message, "
+                "       me.role AS my_role, s.archived_at "
                 "FROM chat_session s "
                 # One join on the participant key, so no query per row.
                 "LEFT JOIN chat_session_participant me "
@@ -169,6 +184,10 @@ def _get_sessions(user_id: str, *, organization_id: str | None) -> list[dict]:
             # >1 means somebody else is in here too. The sidebar shows a shared
             # badge on exactly this signal, so it never lies about a solo thread.
             "participantCount": int(r.participant_count or 0),
+            "hasUserMessage": bool(r.has_user_message),
+            # D99 (migration 254): an archived chat stays in the list, and
+            # the assistant shows it under "Archived".
+            "archivedAt": r.archived_at.isoformat() if r.archived_at else None,
         }
         for r in rows
     ]
@@ -194,9 +213,78 @@ def _refuse_if_elsewhere(s: Any, session_id: str) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# A NEW chat never inherits files (H-227, fix round 3 of PR #616)
+# ---------------------------------------------------------------------------
+# A client chooses the id of a chat. Two ids reach files that are not the
+# new chat's:
+#
+# 1. The id of a chat that a member deleted before the delete route purged
+#    its files. Its thread folders, its loose files and their rows stay.
+# 2. ``<agent>:<run id>``, the thread that the executor mints for a run with
+#    no chat. The run id is in the card of its document, and before H-227
+#    such a document was a row of the actor ``agent`` with that session.
+#
+# So every door that makes a chat session refuses an id with a colon, and
+# purges the files of the id before the first row exists. Every client mints
+# a chat id with ``crypto.randomUUID()`` (``lib/sessions.ts``), so no real id
+# holds a colon. The server mints ``<agent>:<run id>`` and ``email-chat:...``
+# itself, through none of these doors, and an existing row keeps its id.
+
+
+def refuse_run_shaped_id(session_id: str) -> None:
+    """Refuse a NEW chat id with a colon (400). No chat can take a run's id."""
+    if ":" in (session_id or ""):
+        raise HTTPException(
+            status_code=400,
+            detail="A chat id cannot contain ':'. Start a new chat.",
+        )
+
+
+async def prepare_new_session(session_id: str, organization_id: str | None) -> None:
+    """Make *session_id* safe to create as a NEW chat. Call it before the row.
+
+    It refuses a run's id (:func:`refuse_run_shaped_id`), then removes every
+    file and row that the id left in the caller's organization
+    (``workspace.purge_thread_files``). When that fails, it answers 503 and
+    no row may be made, so the new chat never sees an old chat's files.
+    """
+    from gateway.routes.workspace import ThreadPurgeFailed, purge_thread_files
+
+    refuse_run_shaped_id(session_id)
+    try:
+        await purge_thread_files(session_id, organization_id)
+    except ThreadPurgeFailed:
+        raise HTTPException(
+            status_code=503,
+            detail="This chat could not be started. Try again.",
+        ) from None
+
+
+def _session_is_new(session_id: str, *, organization_id: str | None) -> bool:
+    """True when the caller's tenant has no row for *session_id*.
+
+    Raises ``SessionOfAnotherTenant`` when the id is a row of another tenant.
+    """
+    from acb_graph import tenant_session  # noqa: PLC0415
+
+    with tenant_session(organization_id) as s:
+        return not _refuse_if_elsewhere(s, session_id)
+
+
 def _upsert_session(
     user_id: str, req: SessionUpsertRequest, *, organization_id: str | None,
+    channel: str | None = None,
 ) -> None:
+    """Create or update one session row, in the caller's tenant.
+
+    ``channel`` is for a SERVER caller only (WS-47 WAC-3 writes
+    ``whatsapp``). It is a keyword and never a field of
+    :class:`SessionUpsertRequest`, so no request body can set it. It marks a
+    row that has no channel yet and that this ``user_id`` created, in the
+    same transaction as the upsert. With no channel the SQL is exactly as
+    before.
+    """
     from acb_graph import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
 
@@ -238,11 +326,21 @@ def _upsert_session(
                 "id": req.id,
                 "uid": user_id,
                 "agent_name": req.agent_name,
-                "title": req.title,
-                "last_preview": req.last_preview,
+                # The preview is the last reply, so it can hold a NUL too, and
+                # a SETUP marker of the model (WS-54 fix round 4, item 2).
+                "title": _storable_text(req.title),
+                "last_preview": _storable_text(req.last_preview),
                 "message_count": req.message_count,
             },
         )
+        if channel:
+            s.execute(
+                text(
+                    "UPDATE chat_session SET channel = :channel "
+                    "WHERE id = :id AND user_id = :uid AND channel IS NULL"
+                ),
+                {"channel": channel, "id": req.id, "uid": user_id},
+            )
 
 
 def _ensure_session(
@@ -273,53 +371,65 @@ def _ensure_session(
     first run, because that writer makes neither.
     """
     from acb_graph import tenant_session  # noqa: PLC0415
-    from sqlalchemy import text  # noqa: PLC0415
 
     with tenant_session(organization_id) as s:
-        # S15 fix round 1: `ON CONFLICT (id) DO NOTHING` also "succeeds" on
-        # another tenant's row, and the two inserts below would then attach
-        # rows of this tenant to it. So refuse first.
-        _refuse_if_elsewhere(s, session_id)
+        _ensure_session_rows(s, session_id, user_id, agent_name)
+
+
+def _ensure_session_rows(
+    s: Any, session_id: str, user_id: str, agent_name: str,
+) -> None:
+    """The body of :func:`_ensure_session`, on a bound session *s*.
+
+    The continue route (WT-1) calls it too, so the new chat and its link
+    are written in one transaction, by the same SQL.
+    """
+    from sqlalchemy import text  # noqa: PLC0415
+
+    # S15 fix round 1: `ON CONFLICT (id) DO NOTHING` also "succeeds" on
+    # another tenant's row, and the two inserts below would then attach
+    # rows of this tenant to it. So refuse first.
+    _refuse_if_elsewhere(s, session_id)
+    s.execute(
+        text(
+            """
+            INSERT INTO chat_session (id, user_id, agent_name)
+            VALUES (:id, :uid, :agent_name)
+            ON CONFLICT (id) DO NOTHING
+            """
+        ),
+        {"id": session_id, "uid": user_id or "default",
+         "agent_name": agent_name or "orchestrator"},
+    )
+    # A session is a room of one from birth. Creating the owner row here
+    # rather than only in migration 138's backfill means membership is
+    # never something a session acquires later — every read path can trust
+    # the participant table instead of falling back to chat_session.user_id.
+    if user_id and "@" in user_id:
         s.execute(
             text(
-                """
-                INSERT INTO chat_session (id, user_id, agent_name)
-                VALUES (:id, :uid, :agent_name)
-                ON CONFLICT (id) DO NOTHING
-                """
+                "INSERT INTO chat_session_participant (session_id, subject, role) "
+                "SELECT :id, :uid, 'owner' FROM chat_session "
+                "WHERE id = :id AND user_id = :uid "
+                # Round 2: only a room with no membership yet. A creator
+                # whom an owner removed must not win the role back.
+                "AND NOT EXISTS (SELECT 1 FROM chat_session_participant "
+                "WHERE session_id = :id) "
+                "ON CONFLICT DO NOTHING"
             ),
-            {"id": session_id, "uid": user_id or "default",
-             "agent_name": agent_name or "orchestrator"},
+            {"id": session_id, "uid": user_id},
         )
-        # A session is a room of one from birth. Creating the owner row here
-        # rather than only in migration 138's backfill means membership is
-        # never something a session acquires later — every read path can trust
-        # the participant table instead of falling back to chat_session.user_id.
-        if user_id and "@" in user_id:
-            s.execute(
-                text(
-                    "INSERT INTO chat_session_participant (session_id, subject, role) "
-                    "SELECT :id, :uid, 'owner' FROM chat_session "
-                    "WHERE id = :id AND user_id = :uid "
-                    # Round 2: only a room with no membership yet. A creator
-                    # whom an owner removed must not win the role back.
-                    "AND NOT EXISTS (SELECT 1 FROM chat_session_participant "
-                    "WHERE session_id = :id) "
-                    "ON CONFLICT DO NOTHING"
-                ),
-                {"id": session_id, "uid": user_id},
-            )
-        if agent_name:
-            s.execute(
-                text(
-                    "INSERT INTO chat_session_agent (session_id, agent_name, role) "
-                    "SELECT :id, :agent, 'primary' WHERE NOT EXISTS ("
-                    "  SELECT 1 FROM chat_session_agent "
-                    "  WHERE session_id = :id AND role = 'primary') "
-                    "ON CONFLICT DO NOTHING"
-                ),
-                {"id": session_id, "agent": agent_name},
-            )
+    if agent_name:
+        s.execute(
+            text(
+                "INSERT INTO chat_session_agent (session_id, agent_name, role) "
+                "SELECT :id, :agent, 'primary' WHERE NOT EXISTS ("
+                "  SELECT 1 FROM chat_session_agent "
+                "  WHERE session_id = :id AND role = 'primary') "
+                "ON CONFLICT DO NOTHING"
+            ),
+            {"id": session_id, "agent": agent_name},
+        )
 
 
 def _patch_session(
@@ -330,27 +440,76 @@ def _patch_session(
     from acb_graph import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
 
-    sets: list[str] = ["updated_at = now()"]
+    # D99: an archive alone does not move the chat to the top of the list.
+    # Every other change still stamps `updated_at`, as before.
+    touches = (
+        req.title is not None or req.last_preview is not None
+        or req.message_count is not None or req.archived is None
+    )
+    sets: list[str] = ["updated_at = now()"] if touches else []
     params: dict = {"id": session_id, "uid": user_id}
     if req.title is not None:
         sets.append("title = :title")
-        params["title"] = req.title
+        params["title"] = _storable_text(req.title)
     if req.last_preview is not None:
         sets.append("last_preview = :last_preview")
-        params["last_preview"] = req.last_preview
+        params["last_preview"] = _storable_text(req.last_preview)
     if req.message_count is not None:
         sets.append("message_count = :message_count")
         params["message_count"] = req.message_count
+    # D99: the archive is a column of the chat, so in a room it would hide
+    # the chat from every member. Only the member who may delete the chat
+    # may archive it (`_MAY_DELETE_SQL`). Anybody else gets the 404 of a chat
+    # they cannot see, and nothing of the request is written.
+    owner_only = ""
+    if req.archived is True:
+        sets.append("archived_at = COALESCE(s.archived_at, now())")
+        owner_only = " AND " + _MAY_DELETE_SQL
+    elif req.archived is False:
+        sets.append("archived_at = NULL")
+        owner_only = " AND " + _MAY_DELETE_SQL
 
     with tenant_session(organization_id) as s:
         result = s.execute(
             text(
                 f"UPDATE chat_session s SET {', '.join(sets)} "  # noqa: S608
-                "WHERE s.id = :id AND " + SESSION_VISIBLE_SQL
+                "WHERE s.id = :id AND " + SESSION_VISIBLE_SQL + owner_only
             ),
             params,
         )
         return result.rowcount > 0
+
+
+#: Who may delete a chat: its owner. Deliberately NOT the membership
+#: predicate: deleting takes the room away from everyone in it, so it stays an
+#: owner's act. A member who wants out leaves
+#: (DELETE /chat/sessions/{id}/participants/{me}). S14 round 3: the creator
+#: only while the room has no membership, the same rule as resolve_room_access.
+_MAY_DELETE_SQL = (
+    "s.id = :id AND ("
+    "    (s.user_id = :uid AND (s.user_id NOT LIKE '%@%' OR NOT EXISTS ("
+    "        SELECT 1 FROM chat_session_participant p0"
+    "        WHERE p0.session_id = s.id)))"
+    "    OR EXISTS (SELECT 1 FROM chat_session_participant p"
+    "               WHERE p.session_id = s.id AND p.subject = :uid"
+    "                 AND p.role = 'owner')"
+    ")"
+)
+
+
+def _may_delete_session(
+    session_id: str, user_id: str, *, organization_id: str | None,
+) -> bool:
+    """True when *user_id* may delete the chat (:data:`_MAY_DELETE_SQL`)."""
+    from acb_graph import tenant_session  # noqa: PLC0415
+    from sqlalchemy import text  # noqa: PLC0415
+
+    with tenant_session(organization_id) as s:
+        row = s.execute(
+            text("SELECT 1 FROM chat_session s WHERE " + _MAY_DELETE_SQL),
+            {"id": session_id, "uid": user_id},
+        ).first()
+        return row is not None
 
 
 def _delete_session(
@@ -360,26 +519,20 @@ def _delete_session(
     from sqlalchemy import text  # noqa: PLC0415
 
     with tenant_session(organization_id) as s:
-        # Deliberately NOT the membership predicate: deleting takes the room
-        # away from everyone in it, so it stays an owner's act. A member who
-        # wants out leaves (DELETE /chat/sessions/{id}/participants/{me}).
         result = s.execute(
-            text(
-                "DELETE FROM chat_session s "
-                "WHERE s.id = :id AND ("
-                # S14 round 3: the creator only while the room has no
-                # membership, the same rule as resolve_room_access.
-                "    (s.user_id = :uid AND (s.user_id NOT LIKE '%@%' OR NOT EXISTS ("
-                "        SELECT 1 FROM chat_session_participant p0"
-                "        WHERE p0.session_id = s.id)))"
-                "    OR EXISTS (SELECT 1 FROM chat_session_participant p"
-                "               WHERE p.session_id = s.id AND p.subject = :uid"
-                "                 AND p.role = 'owner')"
-                ")"
-            ),
+            text("DELETE FROM chat_session s WHERE " + _MAY_DELETE_SQL),
             {"id": session_id, "uid": user_id},
         )
-        return result.rowcount > 0
+        deleted = result.rowcount > 0
+        if deleted:
+            # WS-51 S2 (review of #813): a deleted chat asks nothing more. Its
+            # questions close in the SAME transaction, so no "needs you" and
+            # no late answer can bring the chat back.
+            from orchestrator import pending_ask  # noqa: PLC0415
+
+            if pending_ask.durable_asks_enabled():
+                pending_ask.close_thread_asks(s, session_id)
+        return deleted
 
 
 def _get_messages(
@@ -431,7 +584,7 @@ def _get_messages(
         cols = (
             "SELECT id, role, content, timestamp_ms, tool_events, progress_lines, "
             "reasoning, agent_state, custom_events, author_email, author_kind, "
-            "authority FROM chat_message WHERE session_id = :sid"
+            "authority, run_member_email FROM chat_message WHERE session_id = :sid"
             # S14 (§20): the gateway mints the agent row of a run with no
             # content before the first checkpoint. A reader does not see it
             # until it holds content, a tool event, a custom event or
@@ -476,6 +629,28 @@ REDACTION_NOTICE = (
     "content is not shown to you."
 )
 
+#: The custom events that only the member who ran the turn reads (PZ-20b,
+#: ``personalization.md`` §13.3 item 1). The "used your profile" mark says
+#: that the run member's own profile holds something. A solo chat can be
+#: shared later, so another reader of the same row never gets it.
+RUN_MEMBER_ONLY_EVENTS = frozenset({PROFILE_USED_EVENT})
+
+
+def _events_for_reader(events: list[Any], run_member: Any, viewer: str) -> list[Any]:
+    """*events* of one row as *viewer* may read them.
+
+    The member of the run (``run_member_email``) reads them all. Every other
+    reader, and every reader of a row that names no run member, gets them
+    without :data:`RUN_MEMBER_ONLY_EVENTS`. The member is the stored column
+    and the reader is the session, never a request field (R5). Fence:
+    ``tests/unit/test_profile_used_event.py``.
+    """
+    member = run_member.strip().lower() if isinstance(run_member, str) else ""
+    if member and member == (viewer or "").strip().lower():
+        return events
+    return [e for e in events
+            if not (isinstance(e, dict) and e.get("name") in RUN_MEMBER_ONLY_EVENTS)]
+
 
 def _render_message(
     r: Any, viewer: str, held: frozenset[str] | None,
@@ -490,7 +665,12 @@ def _render_message(
 
     ``authority`` is NULL on every solo and pre-135 row, which is why this
     function is a no-op for them rather than a filter they have to pass.
+
+    PZ-20b: a custom event of :data:`RUN_MEMBER_ONLY_EVENTS` reaches only the
+    member who ran the turn (:func:`_events_for_reader`). ``runMemberEmail``
+    goes out too, so the bubble can check the same rule a second time.
     """
+    run_member = getattr(r, "run_member_email", None)
     body = {
         "id": r.id,
         "role": r.role,
@@ -500,9 +680,10 @@ def _render_message(
         "progressLines": r.progress_lines or [],
         "reasoning": r.reasoning,
         "agentState": r.agent_state,
-        "customEvents": r.custom_events or [],
+        "customEvents": _events_for_reader(r.custom_events or [], run_member, viewer),
         "authorEmail": getattr(r, "author_email", None),
         "authorKind": getattr(r, "author_kind", None),
+        "runMemberEmail": run_member,
     }
 
     authority = getattr(r, "authority", None)
@@ -616,12 +797,20 @@ MONOTONIC_MESSAGE_COLUMNS = ("tool_events", "progress_lines", "custom_events")
 #: A conflict that fails the ``WHERE`` leaves the row alone and raises
 #: nothing. ``RETURNING id`` then gives no row, and ``_upsert_messages``
 #: reports that id as unchanged.
+#:
+#: 🔴 **``member_typed`` is the mark of a typed message** (WS-63 D-PZ-37,
+#: migration 337). Only the run route sets it, through the keyword of
+#: ``_upsert_messages``. Every other write binds NULL, so its insert stores
+#: NULL and its update keeps the stored value (the COALESCE). So a client
+#: save can neither set the mark nor clear it. ``RETURNING`` also says
+#: whether the row is new (``xmax = 0``), so the seam can move the chat's
+#: ``updated_at`` (``_TOUCH_SESSION_SQL``).
 _MESSAGE_UPSERT_SQL = """
     INSERT INTO chat_message
         (id, session_id, role, content, timestamp_ms,
          tool_events, progress_lines, reasoning, agent_state, custom_events,
          author_email, author_kind, authority,
-         run_member_email, run_final_at)
+         run_member_email, run_final_at, member_typed)
     SELECT
         CAST(:id AS text), CAST(:sid AS text), CAST(:role AS text),
         CAST(:content AS text), CAST(:ts AS bigint),
@@ -631,7 +820,8 @@ _MESSAGE_UPSERT_SQL = """
         CAST(:author_email AS text), CAST(:author_kind AS text),
         CAST(:authority AS jsonb),
         CAST(:run_member_email AS text),
-        CASE WHEN CAST(:author_from_run AS boolean) THEN now() END
+        CASE WHEN CAST(:author_from_run AS boolean) THEN now() END,
+        CAST(:member_typed AS boolean)
     WHERE CAST(:may_insert AS boolean)
        OR EXISTS (SELECT 1 FROM chat_message
                   WHERE session_id = CAST(:sid AS text)
@@ -651,6 +841,7 @@ _MESSAGE_UPSERT_SQL = """
         run_member_email = COALESCE(
             chat_message.run_member_email, EXCLUDED.run_member_email),
         run_final_at   = COALESCE(EXCLUDED.run_final_at, chat_message.run_final_at),
+        member_typed   = COALESCE(EXCLUDED.member_typed, chat_message.member_typed),
         tool_events    = CASE
             WHEN jsonb_array_length(COALESCE(EXCLUDED.tool_events, '[]'::jsonb)) > 0
             THEN EXCLUDED.tool_events ELSE chat_message.tool_events END,
@@ -686,8 +877,44 @@ _MESSAGE_UPSERT_SQL = """
             END
         ELSE false
         END
-    RETURNING id
+    RETURNING id, (xmax = 0) AS inserted
 """
+
+#: A new row moves its chat's ``updated_at`` (WS-63 PZ-33b round 4). The seed
+#: of the summary job reads only the chats that a row reached in its window,
+#: and it finds them by ``updated_at`` (``assistant_summaries.IDLE_SQL``). So
+#: each new row must move it. This seam holds the one ``INSERT INTO
+#: chat_message`` of the product: the browser save, the run route's save of
+#: the member's turn, the mint, the fold, the brief and WhatsApp all come
+#: through here. ``GREATEST`` never moves the time back. An update of a row
+#: that exists moves nothing, so a browser that saves an old chat again does
+#: not raise it in the list. Fence: ``tests/unit/test_chat_summary_r8.py``.
+_TOUCH_SESSION_SQL = """
+    UPDATE chat_session SET updated_at = GREATEST(updated_at, now())
+    WHERE id = CAST(:sid AS text)
+"""
+
+
+def _storable_text(value: str | None) -> str | None:
+    """A session title or preview, safe to store: no NUL, and no SETUP marker
+    of the model (WS-54 fix round 4, item 2). The browser sends the last reply
+    as the preview, and the native stream passes the marker on as it is."""
+    from acb_common.setup_markers import redact
+
+    if value is None:
+        return None
+    return storable(redact(value))
+
+
+def _without_setup_values(message: MessageRecord) -> MessageRecord:
+    """*message* with every SETUP marker replaced (WS-54 fix round 2, item 5)."""
+    from acb_common.setup_markers import redact_tree
+
+    return message.model_copy(update={
+        name: redact_tree(getattr(message, name))
+        for name in ("content", "tool_events", "progress_lines", "reasoning",
+                     "agent_state", "custom_events")
+    })
 
 
 def _upsert_messages(
@@ -699,6 +926,7 @@ def _upsert_messages(
     authority: dict[str, Any] | None = None,
     author_from_run: bool = False,
     mint: bool = False,
+    member_typed: bool | None = None,
     organization_id: str | None,
 ) -> list[str]:
     """Write a batch of turns, stamping who produced each one.
@@ -721,15 +949,43 @@ def _upsert_messages(
     creates the agent row of a run before it opens the stream. A mint only
     inserts. When a row with that id exists, the mint changes nothing.
 
+    ``member_typed`` is for ``routes/agent.py`` ONLY (WS-63 D-PZ-37,
+    ``_write_prompt_row``). It is the mark of the run request: True when the
+    member typed the turn in the message box, False for every other turn.
+    It reaches a human row only. ``None``, the value of every other caller,
+    stores NULL on an insert and keeps the stored mark on an update. So the
+    client save of the thread can neither set the mark nor clear it.
+    ``test_chat_summary_r8.py`` checks the source of each caller.
+
+    A write that inserts a row moves the chat's ``updated_at`` to now
+    (``_TOUCH_SESSION_SQL``, PZ-33b round 4). The seed of the summary job
+    finds the chats of its window by that column.
+
+    ⚠️ **No setup value is stored** (WS-54 fix round 2, item 5). Every text
+    field of every turn passes through ``acb_common.setup_markers``, so a
+    ``<<<SETUP:service:KEY=value>>>`` marker in a model answer leaves no
+    secret in ``chat_message``. This is the one write seam: the browser save,
+    the server fold and the mint all come through here.
+
     Only the server creates an agent row or a system row (S14). A client
     write of a new agent row or a new system row inserts nothing, and its id
     is in the return value. A client may still update an agent row that the
     server created, under the S13 rules.
 
+    🔴 **Every value passes through ``acb_common.pg_text.storable`` before
+    the bind** (incident 2026-10-09). A tool result can hold the raw bytes of
+    a file, and Postgres refuses a NUL in ``text`` and ``\\u0000`` in
+    ``jsonb``. One such row failed the whole save with a 500. Each NUL and
+    each lone surrogate becomes U+FFFD. The route and the fold both write
+    here, so this is the one place. Fence: ``test_chat_nul_persist.py``.
+
     Returns the ids whose write the SQL declined, in request order.
     """
+    messages = [_without_setup_values(m) for m in messages]
     from acb_graph import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
+
+    from gateway.chat_recovery import gate_card_answer_events  # noqa: PLC0415
 
     if not messages:
         return []
@@ -737,7 +993,9 @@ def _upsert_messages(
     authority_json = json.dumps(authority) if authority else None
     # An empty member is no member: store NULL, so only the fold may update.
     run_member = (actor_email or "").strip().lower() or None
+    typed_mark = None if member_typed is None else bool(member_typed)
     declined: list[str] = []
+    inserted = False
 
     with tenant_session(organization_id) as s:
         # S15 fix round 1: the `chat_message` foreign key ignores RLS, so a
@@ -752,20 +1010,31 @@ def _upsert_messages(
             # S14: a client inserts a human row only. The fold and the mint
             # are the server, and they may insert an agent row.
             may_insert = kind == "human" or bool(author_from_run) or bool(mint)
+            # The ids stay as sent: the client matches its rows by them.
+            # A card answer's display must agree with the turn's words, or
+            # it goes (review of #942): a member could otherwise show every
+            # viewer an "Approved" card that the model never read.
+            events = gate_card_answer_events(m.role, m.content, m.custom_events)
+            body = storable({
+                "content": m.content, "tool_events": m.tool_events,
+                "progress_lines": m.progress_lines, "reasoning": m.reasoning,
+                "agent_state": m.agent_state, "custom_events": events,
+            })
             result = s.execute(
                 text(_MESSAGE_UPSERT_SQL),
                 {
                     "id": m.id,
                     "sid": session_id,
                     "role": m.role,
-                    "content": m.content,
+                    "content": body["content"],
                     "ts": m.timestamp,
-                    "tool_events": json.dumps(m.tool_events),
-                    "progress_lines": json.dumps(m.progress_lines),
-                    "reasoning": m.reasoning,
-                    "agent_state": json.dumps(m.agent_state) if m.agent_state is not None else None,
-                    "custom_events": json.dumps(m.custom_events),
-                    "author_email": author,
+                    "tool_events": json.dumps(body["tool_events"]),
+                    "progress_lines": json.dumps(body["progress_lines"]),
+                    "reasoning": body["reasoning"],
+                    "agent_state": (json.dumps(body["agent_state"])
+                                    if body["agent_state"] is not None else None),
+                    "custom_events": json.dumps(body["custom_events"]),
+                    "author_email": storable(author),
                     "author_kind": kind,
                     # Only agent output carries a clearance — a human's own
                     # words are theirs regardless of what the run could reach.
@@ -775,12 +1044,20 @@ def _upsert_messages(
                     "may_insert": may_insert,
                     # Only an agent row belongs to a run (S13).
                     "run_member_email": run_member if kind == "agent" else None,
+                    # D-PZ-37: only the run route names the mark, and only a
+                    # human row takes it. NULL keeps the stored mark.
+                    "member_typed": typed_mark if kind == "human" else None,
                 },
             )
             # RETURNING gives no row when the WHERE declined the update, or
             # when the insert guard declined a new row (S14).
-            if result.first() is None:
+            row = result.first()
+            if row is None:
                 declined.append(m.id)
+            elif getattr(row, "inserted", False) is True:
+                inserted = True
+        if inserted:
+            s.execute(text(_TOUCH_SESSION_SQL), {"sid": session_id})
     return declined
 
 
@@ -826,10 +1103,14 @@ async def upsert_session(
     req: SessionUpsertRequest,
     user: UserContext = Depends(get_current_user),
 ) -> dict:
+    org = user.organization_id
     try:
+        # H-227 fix round 3: before a NEW row, refuse a run's id and purge
+        # what the id left. An update of an existing row skips both.
+        if await asyncio.to_thread(_session_is_new, req.id, organization_id=org):
+            await prepare_new_session(req.id, org)
         await asyncio.to_thread(
-            _upsert_session, user.email or "default", req,
-            organization_id=user.organization_id,
+            _upsert_session, user.email or "default", req, organization_id=org,
         )
     except SessionOfAnotherTenant:
         # The same answer as a session that does not exist for this caller.
@@ -857,12 +1138,48 @@ async def delete_session(
     session_id: str,
     user: UserContext = Depends(get_current_user),
 ) -> None:
-    found = await asyncio.to_thread(
-        _delete_session, session_id, user.email or "default",
-        organization_id=user.organization_id,
-    )
+    from gateway.routes.workspace import ThreadPurgeFailed, purge_thread_files
+
+    email, org = user.email or "default", user.organization_id
+    if not await asyncio.to_thread(
+        _may_delete_session, session_id, email, organization_id=org,
+    ):
+        raise HTTPException(status_code=404, detail="Session not found")
+    # H-227 (PR #616 review): a client chooses a session id, so a member who
+    # knows this id could make a new session with it. The files of the chat
+    # go first, so a failed purge keeps the chat and the member can try
+    # again (fix round 2). A second pass after the delete sweeps a file that
+    # a run wrote in between.
+    try:
+        # The member who deletes resolves the chat's own dir, for its zips.
+        await purge_thread_files(session_id, org, member=email)
+    except ThreadPurgeFailed:
+        raise HTTPException(
+            status_code=503,
+            detail="The files of this chat could not be removed, so the chat is kept. Try again.",
+        ) from None
+    found = await asyncio.to_thread(_delete_session, session_id, email, organization_id=org)
     if not found:
         raise HTTPException(status_code=404, detail="Session not found")
+    await _bump_my_day_after_delete(org)
+    await purge_thread_files(session_id, org, best_effort=True)
+
+
+async def _bump_my_day_after_delete(org: str | None) -> None:
+    """The delete closed the chat's waiting questions (``_delete_session``),
+    so their ``agent_asks`` cards must leave My Day at once (WS-58 MD-3f fix
+    round 1, ``my_day_feed.md`` §5.9 item 14). A question in a room may ask
+    any member of it, so the ORG version moves. The org is the session's.
+    Only while ``CHAT_DURABLE_ASKS`` is on, because only then did the delete
+    close a question. ``cache.bump_org_safe`` waits 0.5 seconds at most and
+    never raises, so the delete stands."""
+    from orchestrator import pending_ask
+
+    if not pending_ask.durable_asks_enabled():
+        return
+    from gateway.routes.shell import cache as feed_cache
+
+    await feed_cache.bump_org_safe(org)
 
 
 @router.get("/sessions/{session_id}/messages", summary="Fetch messages for a session")
@@ -952,7 +1269,7 @@ async def save_messages(
         organization_id=user.organization_id,
     )
     if not room.can_send:
-        raise HTTPException(status_code=403, detail=room.denied("save messages"))
+        raise HTTPException(status_code=room.refusal_status, detail=room.denied("save messages"))
 
     # A declined write is not an error (S13, §19.4 rule 5). The row stays as
     # it was, and ``unchanged`` names it so the caller can tell.
@@ -966,6 +1283,190 @@ async def save_messages(
         "saved": len(messages) - len(unchanged),
         "unchanged": unchanged,
     }
+
+
+class SupersedeRequest(BaseModel):
+    """The member edited their last message (``gateway/chat_supersede.py``)."""
+
+    superseded_id: str
+    #: The rows of the NEW turn, which a browser save may already have written.
+    keep_ids: list[str] = []
+
+
+@router.post(
+    "/sessions/{session_id}/supersede",
+    status_code=status.HTTP_200_OK,
+    summary="Remove the last message and its replies, because an edit replaces it",
+)
+async def supersede_message(
+    session_id: str,
+    req: SupersedeRequest,
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    """The edit path of a run that does not go through ``/agent/run/stream``.
+
+    ``/agent/run/stream`` does the same work inline, because it also composes
+    the supersede note for the new run. This route serves the paths with no
+    gateway run (the LiteLLM chat), where the history the browser sends is the
+    model's whole memory, so removing the rows is the whole job.
+    """
+    from gateway.chat_supersede import SupersedeRefused, supersede_turn
+
+    email = user.email or ""
+    room = await asyncio.to_thread(
+        resolve_room_access, session_id, email,
+        organization_id=user.organization_id,
+    )
+    if not room.can_send:
+        raise HTTPException(status_code=room.refusal_status, detail=room.denied("edit messages"))
+    try:
+        plan = await supersede_turn(
+            session_id, req.superseded_id,
+            actor=email, keep_ids=req.keep_ids[:4], shared=room.is_shared,
+            organization_id=user.organization_id,
+        )
+    except SupersedeRefused as refused:
+        raise HTTPException(status_code=refused.status, detail=refused.detail()) from None
+    return {"ok": True, "removed": plan.removed_ids}
+
+
+# ---------------------------------------------------------------------------
+# Continue a held chat in a fresh chat (one_assistant_context.md §9.3, WT-1)
+# ---------------------------------------------------------------------------
+# A held chat cannot do some acts. A fresh chat has no hold mark, so it can.
+# The carry takes ONE text across: the newest row that the caller typed. A
+# tool result lives in an assistant row, a pill or a card answer has
+# `member_typed` FALSE or NULL, and a row of another member has another
+# author, so none of them can cross. The route writes no `chat_message` row.
+# It gives the text back, the composer shows it, and the member sends it.
+# Then `routes/agent.py::_write_prompt_row` stays the one writer of the mark.
+#
+# 🔴 `continued_from` has three readers only: this route, the session list and
+# the chip of CO-5. Fence: `test_continued_from_readers.py`.
+
+#: The carry: the newest row that the caller typed in this chat. `content` is
+#: the only column that it reads (§9.3 item 5). `{waterline}` is empty, or the
+#: late-joiner bound of a `since_join` room, as `_get_messages` reads it.
+_CARRY_SQL = (
+    "SELECT content FROM chat_message "
+    "WHERE session_id = :sid AND role = 'user' AND member_typed IS TRUE "
+    "AND lower(author_email) = lower(:me){waterline} "
+    "ORDER BY timestamp_ms DESC, id DESC LIMIT 1"
+)
+
+#: The link. The EXISTS reads the source under the tenant of the caller
+#: (RLS), so a link never names a chat of another tenant.
+_LINK_SQL = (
+    "UPDATE chat_session SET continued_from = :src "
+    "WHERE id = :new AND user_id = :me AND continued_from IS NULL "
+    "AND EXISTS (SELECT 1 FROM chat_session src WHERE src.id = :src)"
+)
+
+
+class _NoLink(Exception):
+    """The link did not land, so the new chat rolls back."""
+
+
+def _carry_text(
+    session_id: str, me: str, *, since_ms: int | None, organization_id: str | None,
+) -> str | None:
+    """The ``content`` of the newest row that *me* typed, or None."""
+    from acb_graph import tenant_session
+    from sqlalchemy import text
+
+    params: dict[str, Any] = {"sid": session_id, "me": me}
+    waterline = ""
+    if since_ms is not None:
+        waterline = " AND timestamp_ms >= :waterline"
+        params["waterline"] = since_ms
+    with tenant_session(organization_id) as s:
+        row = s.execute(text(_CARRY_SQL.format(waterline=waterline)), params).first()
+    return None if row is None else str(row.content or "")
+
+
+def _open_continued_chat(
+    new_id: str, source_id: str, me: str, agent_name: str, *,
+    organization_id: str | None,
+) -> bool:
+    """Make the new chat and write its link, in one transaction.
+
+    True when the link landed. False writes nothing: the transaction rolls
+    back, so no chat without its link stays.
+    """
+    from acb_graph import tenant_session
+    from sqlalchemy import text
+
+    try:
+        with tenant_session(organization_id) as s:
+            _ensure_session_rows(s, new_id, me, agent_name)
+            linked = s.execute(
+                text(_LINK_SQL), {"src": source_id, "new": new_id, "me": me},
+            ).rowcount
+            if linked != 1:
+                raise _NoLink
+    except _NoLink:
+        return False
+    return True
+
+
+@router.post(
+    "/sessions/{session_id}/continue",
+    status_code=status.HTTP_200_OK,
+    summary="Continue a held chat in a fresh chat",
+)
+async def continue_session(
+    session_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    """Open a fresh chat that continues *session_id*. Answers ``{session_id, text}``.
+
+    ``text`` is the newest row that the caller typed in the source chat. The
+    web shell puts it in the composer of the new chat. The answer is 404
+    while ``CHAT_CONTINUE_ORGS`` does not hold the caller's org, and when the
+    caller cannot read the source. It is 409 when the source holds no row
+    that the caller typed. The request names no id, no org and no member.
+    """
+    org = user.organization_id
+    me = (user.email or "").strip()
+    if not continue_allowed(org) or not me:
+        raise HTTPException(status_code=404, detail="Not Found")
+    room = await asyncio.to_thread(
+        resolve_room_access, session_id, me, organization_id=org,
+    )
+    if room.resolve_failed:
+        # An outage and a refusal must never share an answer (`RoomAccess.refusal_status`).
+        raise HTTPException(status_code=room.refusal_status, detail=room.denied("continue this chat"))
+    if not room.can_read or room.unknown_session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    carried = await asyncio.to_thread(
+        _carry_text, session_id, me,
+        since_ms=room.since_message_ts, organization_id=org,
+    )
+    if carried is None:
+        raise HTTPException(
+            status_code=409,
+            detail="This chat holds no message that you typed, so nothing can continue.",
+        )
+
+    # §9.3 item 7: the server mints the id, and the new chat passes the two
+    # doors of every new chat.
+    new_id = str(uuid.uuid4())
+    try:
+        if not await asyncio.to_thread(_session_is_new, new_id, organization_id=org):
+            raise HTTPException(status_code=503, detail="Try again.")
+        await prepare_new_session(new_id, org)
+        linked = await asyncio.to_thread(
+            _open_continued_chat, new_id, session_id, me,
+            room.agent_name or "orchestrator", organization_id=org,
+        )
+    except SessionOfAnotherTenant:
+        raise HTTPException(status_code=503, detail="Try again.") from None
+    if not linked:
+        # The source left between the read and the write.
+        raise HTTPException(status_code=404, detail="Session not found")
+    _log.info("chat.continued", source=session_id[:12], session_id=new_id[:12])
+    return {"session_id": new_id, "text": carried}
 
 
 class MessageFeedbackRequest(BaseModel):
@@ -998,102 +1499,343 @@ async def record_message_feedback(
     return {"ok": True}
 
 
+async def _my_waiting_asks(org: str, me: str) -> dict[str, dict] | None:
+    """The caller's questions that still wait, by thread. ``{}`` when OFF.
+
+    WS-51 S2. Read under the caller's tenant (``acb_graph.tenant_session``),
+    so another org's rows never reach this list. A database error answers
+    ``None``, so the caller can mark its list partial (WS-51 S5): a parked
+    question that drops out of the list is not an answered one.
+
+    Each thread's entry is its OLDEST waiting row, so ``kind`` keeps its
+    meaning for ``list_active_sessions``. WS-58 MD-3f (fix round 1,
+    ``my_day_feed.md`` §5.9 item 4) adds a summary of every waiting row of
+    the thread: ``request_ids`` (sorted), ``newest_asked_at``,
+    ``newest_agent_name`` and ``latest_expires_at``. So a new question in a
+    thread that already waits moves the My Day card.
+    """
+    from orchestrator import pending_ask  # noqa: PLC0415
+
+    if not me or not pending_ask.durable_asks_enabled():
+        return {}
+    try:
+        rows = await asyncio.to_thread(
+            pending_ask.waiting_asks, org, actor_email=me,
+        )
+    except Exception:  # noqa: BLE001
+        _log.warning("chat.pending_asks_read_failed", exc_info=True)
+        return None
+    out: dict[str, dict] = {}
+    for row in rows:
+        entry = out.setdefault(str(row["thread_id"]), {
+            **row, "request_ids": [], "newest_asked_at": None,
+            "newest_agent_name": None, "latest_expires_at": None,
+        })
+        entry["request_ids"] = sorted({*entry["request_ids"], str(row.get("request_id") or "")})
+        if _later(row.get("asked_at"), entry["newest_asked_at"]):
+            entry["newest_asked_at"] = row.get("asked_at")
+            entry["newest_agent_name"] = row.get("agent_name")
+        if _later(row.get("expires_at"), entry["latest_expires_at"]):
+            entry["latest_expires_at"] = row.get("expires_at")
+    return out
+
+
+def _later(value: Any, than: Any) -> bool:
+    """Whether the ISO time ``value`` is later than ``than``. None is never
+    later, and anything is later than None."""
+    from datetime import datetime
+
+    def _at(v: Any) -> datetime | None:
+        try:
+            return datetime.fromisoformat(str(v)) if v else None
+        except ValueError:
+            return None
+
+    a, b = _at(value), _at(than)
+    if a is None:
+        return False
+    if b is None:
+        return True
+    try:
+        return a > b
+    except TypeError:  # a naive and an aware time: compare as text
+        return str(value) > str(than)
+
+
+@router.get(
+    "/pending-asks",
+    summary="The questions of one chat that still wait for an answer",
+)
+async def list_pending_asks(
+    thread_id: str = Query(..., min_length=1, max_length=200),
+    user: UserContext = Depends(get_current_user),
+) -> list[dict]:
+    """The cards a chat must show again: WS-51 S2.
+
+    A card lives in the run's stream. When the run parked, or its process
+    died, the open chat lost the card. This lists the thread's questions that
+    still wait, so the chat draws each card again, from the server, after a
+    reload or a restart.
+
+    Only the member who was ASKED gets a card back (``actor_email``), and only
+    while that member may still send in the room. ``POST
+    /agent/respond-input`` holds the same rule for a late answer. A thread
+    with no chat row passes the room gate for any member of the org
+    (``rooms._unsaved_thread``), so the room alone is not enough (review of
+    #813). The read is under the caller's tenant. Each row is ``requestId``, ``kind``,
+    ``event`` (the card's event name), ``payload`` (the card's own event
+    value), ``askedAt`` and ``answerBy``: ``run`` while the run that asked
+    still waits on it live, ``new_run`` when an answer starts a new run.
+
+    ``[]`` with ``CHAT_DURABLE_ASKS`` OFF. Fence (R7):
+    ``tests/unit/test_pending_ask_flow.py``.
+    """
+    from orchestrator import pending_ask  # noqa: PLC0415
+
+    if not pending_ask.durable_asks_enabled():
+        return []
+    org = (getattr(user, "organization_id", None) or "").strip()
+    email = (user.email or "").strip()
+    if not org or not email:
+        return []
+
+    from gateway.routes.agent import _resolve_room  # noqa: PLC0415
+
+    room = await asyncio.to_thread(_resolve_room, thread_id, email, org)
+    if room is None or not room.can_send:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You cannot answer a question in this conversation.",
+        )
+    try:
+        rows = await asyncio.to_thread(
+            pending_ask.waiting_asks, org, thread_id=thread_id, actor_email=email,
+        )
+    except Exception:  # noqa: BLE001
+        _log.warning("chat.pending_asks_read_failed", exc_info=True)
+        return []
+    if not rows:
+        return []
+    from orchestrator.run_liveness import run_liveness  # noqa: PLC0415
+
+    liveness = await run_liveness(thread_id)
+    out: list[dict] = []
+    for row in rows:
+        live = row.get("state") == "open" and liveness == "live"
+        out.append({
+            "requestId": row["request_id"],
+            "kind": row["kind"],
+            "event": pending_ask.EVENT_BY_KIND.get(str(row["kind"]), ""),
+            "payload": row.get("payload") or {},
+            "askedAt": row.get("asked_at"),
+            "answerBy": "run" if live else "new_run",
+        })
+    return out
+
+
+#: The response header that says the list is NOT complete (WS-51 S5). A
+#: degraded branch sets it, the BFF passes it on, and the browser keeps its
+#: last list instead of reading every missing run as finished. A header, not
+#: a 503: every own-API 5xx raises "Metorite is updating" in the shell
+#: (`lib/shell/serviceHealth.ts`), and the old callers read the body alone.
+RUNS_PARTIAL_HEADER = "X-Runs-Partial"
+
+
+def _mark_partial(response: Response | None) -> None:
+    if response is not None:
+        response.headers[RUNS_PARTIAL_HEADER] = "1"
+
+
 @router.get(
     "/active-sessions",
     summary="List session IDs that currently have an active (running) agent",
 )
 async def list_active_sessions(
     user: UserContext = Depends(get_current_user),
+    steps: bool = False,
+    response: Response = None,  # type: ignore[assignment]  # FastAPI injects it
 ) -> list[dict]:
-    """Return sessions whose agents are currently executing.
+    """Return the caller's live sessions: in their org, and visible to them.
 
-    Scans Redis ``cc:active:*`` keys (set by the executor's stream relay)
-    and cross-references with the ``chat_session`` table to include
-    agent names and titles.  Falls back to an empty list when Redis is
-    unavailable — the frontend will rely on its local chatStore in that
-    case.
+    Used by the conversations sidebar to show a pulsing green dot next to
+    sessions that are still running in the background, even after a browser
+    refresh. Each row is ``threadId``, ``agentName``, ``title`` and
+    ``startedAt``.
 
-    Used by the conversations sidebar to show a pulsing green dot next
-    to sessions that are still running in the background, even after a
-    browser refresh.
+    🔴 **Security fix (cross-tenant leak of live thread ids).** This route used
+    to SCAN ``cc:active:*``, a key with no tenant, so it read every org's live
+    runs. The ``chat_session`` row of another org is invisible under FORCE
+    RLS, so the "no row yet" fallback below returned that org's thread ids to
+    every caller, and the Postgres-error branch returned all of them.
+
+    Now:
+
+    * The candidates come from ONE hash, ``cc:<org>:liveruns``, built through
+      the tenant-prefix wrapper for the caller's org
+      (``stream_relay.list_live_runs``). Nothing scans the keyspace.
+    * A candidate with a ``chat_session`` row is listed only when
+      ``SESSION_VISIBLE_SQL`` passes for the caller, under the caller's tenant.
+    * A candidate with no row yet (the run started before the browser's upsert
+      landed) is listed only when the caller started it.
+    * On a Postgres error only the caller's own runs are listed.
+
+    A run that started before this code has no index entry, so it is not
+    listed. The relay lives in this process, so a deploy restart ends it.
+
+    **WS-51 S2: ``state``.** Each row carries ``state``, ``running`` or
+    ``needs_input`` (``chat_run_continuity.md`` §4 S2). ``needs_input`` comes
+    from the ``chat_pending_ask`` rows of the CALLER (their ``actor_email``),
+    read under the caller's tenant. A thread whose run parked, or died with a
+    question open, has no live run, and is still listed, as ``needs_input``,
+    when the caller may see its chat. With ``CHAT_DURABLE_ASKS`` OFF every row
+    is ``running``. ``askKind`` names the card.
+
+    **§4.10: ``runId``.** Each row carries the run's own id, or None. It is
+    stable for the whole run, and the open chat keys the run by it.
+
+    **§4.10: ``live``.** Each row says whether a run runs for the thread. A
+    ``needs_input`` row with ``live: false`` is parked: no run waits on the
+    card, and an answer starts a new run. The open chat draws "waiting for
+    you" and "parked" differently from it.
+
+    **WS-51 S3: ``lastStep``.** With ``?steps=1`` a running row carries the
+    run's latest step, for example "Search tasks" or "Writing a reply", read
+    from the tail of its own stream (``stream_relay.latest_step``). The step is
+    a tool NAME or a fixed label, never the text of a result or a progress
+    update. It is plain text, at most 60 characters, and None when there is no
+    step. The browser asks for it only while the activity panel is open, so
+    the 5 s badge poll reads no stream. It is read only for a row this route
+    already lists, so it widens nothing. Without ``steps`` every row carries
+    ``lastStep: None``.
+
+    **WS-51 S5: a partial list says so.** A Redis error, a Postgres error
+    and a failed read of the waiting questions each answer a list that may
+    lack runs that still run. Each sets ``X-Runs-Partial: 1``. The browser
+    then keeps its last list, so an outage never reads as "every run ended".
+
+    Fences (R7): ``tests/unit/test_active_sessions_tenant.py``,
+    ``tests/unit/test_pending_ask_flow.py`` and
+    ``tests/unit/test_run_last_step.py``.
     """
+    org = (getattr(user, "organization_id", None) or "").strip()
+    if not org:
+        return []  # no tenant, so no run can be the caller's to see
+    me = (user.email or "").strip().lower()
     user_id = user.email or "default"
-    active_threads: list[str] = []
 
-    # ── Scan Redis for cc:active:* keys ────────────────────────────────
+    # ── The caller's org's live runs: one hash, no SCAN ────────────────
     try:
-        import redis.asyncio as aioredis  # noqa: PLC0415
-        settings = get_settings()
-        r = aioredis.from_url(settings.redis_url, decode_responses=True)
-        try:
-            cursor = 0
-            while True:
-                cursor, keys = await r.scan(
-                    cursor, match="cc:active:*", count=100
-                )
-                for k in keys:
-                    # Strip the "cc:active:" prefix to recover the thread_id.
-                    tid = k.removeprefix("cc:active:")
-                    if tid:
-                        active_threads.append(tid)
-                if cursor == 0:
-                    break
-        finally:
-            await r.aclose()
+        from orchestrator.stream_relay import list_live_runs  # noqa: PLC0415
+
+        live = await list_live_runs(org)
     except Exception:  # noqa: BLE001
         _log.warning("chat.active_sessions_redis_failed", exc_info=True)
+        _mark_partial(response)
         return []  # Redis unavailable — frontend falls back to local store
 
-    if not active_threads:
-        return []
+    # ── The caller's own questions that still wait (WS-51 S2) ──────────
+    asks = await _my_waiting_asks(org, me)
+    if asks is None:
+        # The read failed: a parked question may be missing (WS-51 S5).
+        _mark_partial(response)
+        asks = {}
 
-    # ── Cross-reference with Postgres for agent name + title ───────────
+    if not live and not asks:
+        return []
+    by_tid = {run["threadId"]: run for run in live}
+    ids = list(dict.fromkeys([*by_tid, *asks]))
+
+    def _state(tid: str) -> dict:
+        # ``live``: a run runs for the thread. A ``needs_input`` row with no
+        # live run is a PARKED question: an answer starts a new run (owner
+        # report 2026-10-19, ``chat_run_continuity.md`` §4.10).
+        live = tid in by_tid
+        # ``runId``: the run's own id, written once per run in the index. The
+        # browser keys a run by it, so a re-register never reads as a new
+        # run (re-review of #1171). Only for a row this route already lists.
+        run_id = (by_tid.get(tid) or {}).get("runId") or None
+        ask = asks.get(tid)
+        if ask is None:
+            return {"state": "running", "askKind": None, "live": live, "runId": run_id}
+        return {"state": "needs_input", "askKind": ask.get("kind"), "live": live, "runId": run_id}
+
+    def _own_unknown(tid: str) -> dict:
+        return {
+            "threadId": tid,
+            "agentName": "unknown",
+            "title": None,
+            "startedAt": by_tid.get(tid, {}).get("startedAt") or None,
+            **_state(tid),
+        }
+
+    async def _with_steps(rows: list[dict]) -> list[dict]:
+        # WS-51 S3: the live step, read only for a row this route already
+        # lists, and only for a run that runs. A question has no step.
+        from orchestrator.stream_relay import latest_step  # noqa: PLC0415
+
+        async def _one(row: dict) -> str | None:
+            if not steps:
+                return None  # the badge poll: no stream read at all
+            if row.get("state") != "running" or row["threadId"] not in by_tid:
+                return None
+            return await latest_step(row["threadId"])
+
+        found = await asyncio.gather(*(_one(r) for r in rows), return_exceptions=True)
+        for row, step in zip(rows, found, strict=True):
+            row["lastStep"] = step if isinstance(step, str) else None
+        return rows
+
+    def _is_mine(tid: str) -> bool:
+        # A live run the caller started, or a question the caller was asked.
+        return bool(me) and (
+            by_tid.get(tid, {}).get("actor") == me or tid in asks
+        )
+
+    # ── Cross-reference with Postgres for visibility, name and title ───
     try:
         from acb_graph import tenant_session  # noqa: PLC0415
         from sqlalchemy import text  # noqa: PLC0415
 
-        with tenant_session(user.organization_id) as s:
+        with tenant_session(org) as s:
             rows = s.execute(
                 text(
                     "SELECT s.id, s.agent_name, s.title "
                     "FROM chat_session s "
                     "WHERE s.id = ANY(:ids) AND " + SESSION_VISIBLE_SQL
                 ),
-                {"ids": active_threads, "uid": user_id},
+                {"ids": ids, "uid": user_id},
             ).fetchall()
-
-        result = [
-            {
-                "threadId": r.id,
-                "agentName": r.agent_name,
-                "title": r.title,
-            }
-            for r in rows
-        ]
-
-        # Threads that are active in Redis but have no session row yet (the
-        # agent started before the frontend's upsert landed) still belong in
-        # the list. Threads that DO have a row and were filtered out belong to
-        # someone else: including them leaked a live thread id to every user,
-        # which the old `not in found_ids` fallback did on every poll.
-        with tenant_session(user.organization_id) as s:
+            # Every row this tenant holds, visible to the caller or not. A row
+            # here that is not in `rows` is somebody else's, and stays hidden.
             known = {
                 row.id for row in s.execute(
                     text("SELECT id FROM chat_session WHERE id = ANY(:ids)"),
-                    {"ids": active_threads},
+                    {"ids": ids},
                 ).fetchall()
             }
-        for tid in active_threads:
-            if tid not in known:
-                result.append({
-                    "threadId": tid,
-                    "agentName": "unknown",
-                    "title": None,
-                })
-        return result
     except Exception:  # noqa: BLE001
-        # Postgres unavailable — return thread IDs without metadata.
-        return [
-            {"threadId": tid, "agentName": "unknown", "title": None}
-            for tid in active_threads
-        ]
+        # Postgres unavailable: list only the runs the caller started. Their
+        # ids are already the caller's. Nobody else's id leaves this route.
+        _log.warning("chat.active_sessions_db_failed", exc_info=True)
+        _mark_partial(response)
+        return await _with_steps(
+            [_own_unknown(tid) for tid in ids if tid in by_tid and _is_mine(tid)],
+        )
+
+    result = [
+        {
+            "threadId": r.id,
+            "agentName": r.agent_name,
+            "title": r.title,
+            "startedAt": by_tid.get(r.id, {}).get("startedAt") or None,
+            **_state(r.id),
+        }
+        for r in rows
+    ]
+    # No session row yet: the run started before the browser's upsert landed.
+    # Only the person who started it may see it. A question with no live run
+    # and no chat row is a deleted chat's, and is never listed (WS-51 S2).
+    for tid in ids:
+        if tid not in known and tid in by_tid and _is_mine(tid):
+            result.append(_own_unknown(tid))
+    return await _with_steps(result)

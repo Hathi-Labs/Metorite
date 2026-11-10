@@ -40,13 +40,14 @@ from acb_auth.permissions import (
     permission_matches,
     validate_permission,
 )
-from acb_auth.roles import UserContext, UserRole
+from acb_auth.roles import AgentScope, UserContext, UserRole
 
 __all__ = [
     # identity
     "UserRole",
     "identity_read_failed",
     "UserContext",
+    "AgentScope",
     "get_current_user",
     # guards
     "require_role",

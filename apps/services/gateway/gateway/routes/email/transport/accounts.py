@@ -7,26 +7,55 @@ EM-T3d), which returns integers only.
 from __future__ import annotations
 
 import asyncio
+import imaplib
 import json
+import re
+from collections.abc import Awaitable, Callable
 from typing import Any
 from uuid import uuid4
 
 from acb_auth import UserContext, get_current_user, require_permission
+from email_ingestion.storage import storage_limit_bytes
 from fastapi import Depends, HTTPException, status
+from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
-    _decrypt_credentials,
+    MAILBOX_LIMIT_DETAIL,
+    MAX_MAILBOXES_PER_MEMBER,
+    _account_scope,
+    _bound_org,
     _default_label,
-    _instantiate_provider,
     _log,
     _tenant_session,
+    enforce_mailbox_limit,
+    member_mailbox_count,
     router,
 )
-from pydantic import BaseModel
+from gateway.routes.email.mailbox_access import (
+    connector_predicate,
+    mailbox_predicate,
+    private_predicate,
+)
+from gateway.routes.email.mailbox_identity import (
+    NEXT_SLOT_SQL,
+    default_labels,
+    display_labels,
+    reserved_label,
+    valid_slot,
+    work_domain,
+)
+from gateway.routes.email.memory_purge import (
+    RECORD_PURGE_SQL,
+    TASK_LEASE_S,
+    schedule_mailbox_memory_purge,
+)
+from gateway.routes.email.teardown import (
+    MailboxScope,
+    finish_teardowns,
+    read_teardown_plans,
+    stop_sync,
+)
+from pydantic import BaseModel, Field, StrictBool, StrictInt
 from sqlalchemy import text
-
-#: The bound on the best-effort Graph call of a disconnect (EM-T4f). A slow or
-#: failed call must never hold back the 204 of the route.
-SUBSCRIPTION_DELETE_TIMEOUT_S = 5.0
 
 #: The bound on the row locks that the DELETE of a disconnect waits for
 #: (EM-T4f). A sync outside the loop holds a KEY SHARE lock on the account row
@@ -43,10 +72,6 @@ _LOCK_NOT_AVAILABLE = "55P03"
 DISCONNECT_BUSY_DETAIL = (
     "A sync is still writing mail for this mailbox. Try again in a moment."
 )
-
-#: Graph statuses that mean the subscription is gone: 204 deleted it now, and
-#: 404 says it was gone before.
-_SUBSCRIPTION_GONE = frozenset({204, 404})
 
 
 class EmailAccountModel(BaseModel):
@@ -69,22 +94,112 @@ class EmailAccountModel(BaseModel):
     import_since: str | None = None
     #: True when the member closed the guided setup (EM-T6a item 11).
     onboarding_done: bool = False
+    #: The progress of the first import (EM-T6b item 11). The phase is
+    #: ``counting``, ``importing``, ``done`` or ``limit`` (EM-T6c), and
+    #: ``None`` before the first import or for a mailbox from before EM-T6.
+    #: ``import_reached_at`` is the oldest mail written so far, as ISO text.
+    #: ``import_estimate`` is ``None`` when the provider gives no count.
+    import_phase: str | None = None
+    import_count: int | None = None
+    import_estimate: int | None = None
+    import_reached_at: str | None = None
+    #: The slot of the categorical ramp of the mailbox chip, 1 to 12. ``None``
+    #: for a row that old code wrote, and the UI hashes the id (EM-T8b).
+    color_slot: int | None = None
+    #: The label to show, by the rules of §11.4: the label the member chose,
+    #: else one made from the address. Unique among the mailboxes of the
+    #: member unless the member chose two equal labels (EM-T8b, D-EM-21).
+    display_label: str = ""
+    #: The label the mailbox shows when the member clears its name. The
+    #: rename dialog draws it for a blank name (EM-T8b).
+    default_label: str = ""
+    #: The domain of the address when it is an organization domain, else
+    #: ``None``. The From row warns from it (EM-T8c, §11.4).
+    work_domain: str | None = None
+    #: True when the last sync failed on the sign-in of the provider, so the
+    #: mailbox cannot send until the member reconnects it. Any other sync
+    #: error leaves it False: a send does not read the sync status (EM-T8c).
+    needs_reconnect: bool = False
+    #: The most mailboxes one member connects (Q-MB-1). The chat reads it here,
+    #: so the number has one copy: ``core.MAX_MAILBOXES_PER_MEMBER``.
+    mailbox_limit: int = MAX_MAILBOXES_PER_MEMBER
+    #: When the member connected the mailbox, as ISO text with six digits of
+    #: microseconds, so two values sort as text in the order of time. A
+    #: disconnect makes the oldest mailbox that is left the default
+    #: (``ORDER BY created_at, id`` in ``delete_account``). The UI names that
+    #: mailbox before the removal (EM-T8f-1 item 3). ``None`` for a NULL.
+    created_at: str | None = None
+    #: False when the member keeps the mailbox separate (EM-T8g-1, D-EM-28).
+    #: A read of more than one mailbox then leaves it out. Migration 229 gives
+    #: each row true, so the model default is true too.
+    in_all_inboxes: bool = True
+    #: The storage meter of the mailbox in bytes, and its limit (EM-T6c item
+    #: 14). ``stored_bytes`` is ``None`` before the first meter run.
+    stored_bytes: int | None = None
+    storage_limit_bytes: int = Field(default_factory=storage_limit_bytes)
+
+
+#: The longest label a member can give a mailbox (EM-T8b).
+MAX_LABEL_LEN = 40
+
+#: The account columns that every account read returns, after the base ones.
+_PROGRESS_COLUMNS = (
+    "import_phase, import_count, import_estimate, import_reached_at, "
+    "stored_bytes")
+
+
+def _progress(row: Any) -> dict[str, Any]:
+    """The import progress and the meter of an account row."""
+    return {
+        "import_phase": row.import_phase,
+        "import_count": row.import_count,
+        "import_estimate": row.import_estimate,
+        "import_reached_at": _iso(row.import_reached_at),
+        "stored_bytes": row.stored_bytes,
+    }
 
 
 class AccountUpdateModel(BaseModel):
+    #: A blank label goes back to the default label (EM-T8b).
     label: str | None = None
     sync_enabled: bool | None = None
     #: True closes the guided setup, and false opens it again (EM-T6a).
     onboarding_done: bool | None = None
+    #: The slot of the mailbox chip, 1 to 12 (EM-T8b). Strict, so JSON
+    #: ``true`` or ``"3"`` answers 422 instead of turning into a slot.
+    color_slot: StrictInt | None = None
+    #: False keeps the mailbox separate, and true puts it back in All inboxes
+    #: (EM-T8g-1, D-EM-28). Strict, so ``"yes"``, ``"false"`` or ``0`` answers
+    #: 422 instead of turning into a choice the member did not make.
+    in_all_inboxes: StrictBool | None = None
 
 
 def _iso(value: Any) -> str | None:
     return value.isoformat() if value else None
 
 
+def _iso_us(value: Any) -> str | None:
+    """ISO text that always holds microseconds (EM-T8f-1).
+
+    ``isoformat()`` drops the fraction when it is zero, so two values would
+    not compare as text. The fixed form keeps the order of time.
+    """
+    return value.isoformat(timespec="microseconds") if value else None
+
+
+#: The providers that connect through the OAuth flow only (WS-17 EM-G7 review
+#: round 1). ``POST /email/accounts`` refuses each one with 403. Fence:
+#: ``tests/unit/test_email_gmail_connect.py``.
+_OAUTH_ONLY_PROVIDERS: frozenset[str] = frozenset({"gmail", "microsoft"})
+_OAUTH_ONLY_DETAIL = (
+    "Gmail and Microsoft 365 mailboxes connect through the sign-in flow only. "
+    "This route adds an IMAP mailbox."
+)
+
+
 class CreateAccountRequest(BaseModel):
-    """Manual account creation (IMAP/SMTP or other manual config)."""
-    provider: str  # 'imap' | 'gmail' | 'microsoft'
+    """Manual account creation (IMAP/SMTP). Gmail and Microsoft are refused."""
+    provider: str  # 'imap' only. 'gmail' and 'microsoft' answer 403.
     email_address: str
     label: str = ""
     credentials: dict[str, Any]  # Provider-specific credential dict
@@ -128,36 +243,105 @@ _ORG_CONNECTION_COUNTS_SQL = """
 """
 
 
+async def _unread_counts(
+    db: Any, owner: str, account_id: str | None = None,
+) -> dict[str, int]:
+    """The unread count of each mailbox of ``owner``, in ONE grouped read.
+
+    EM-T4e (``email_app_master_plan.md`` §10.4.6). Before it, each account
+    row cost one ``COUNT``. Both account reads that return ``unread_count``
+    call this. ``_account_scope`` holds the owner predicate, so the read
+    counts only the mailboxes of ``owner``. ``account_id`` narrows it to one
+    of them. A mailbox with no unread mail has no row here, and reads 0.
+
+    EM-T8d (MB-13): the count is the unread mail of the INBOX that the member
+    sees, so junk, deleted mail and snoozed mail do not count. The switcher
+    shows it for each mailbox, and All inboxes shows the sum.
+    """
+    params: dict[str, Any] = {"uid": owner}
+    scope = _account_scope(account_id, params, level="read")
+    rows = (await db.execute(text(
+        "SELECT em.account_id, count(*) AS unread FROM email_messages em "
+        f"WHERE {scope} AND em.is_read = false "
+        "AND LOWER(COALESCE(em.folder, '')) = 'inbox' "
+        "AND (em.snoozed_until IS NULL OR em.snoozed_until <= now()) "
+        "GROUP BY em.account_id"
+    ), params)).fetchall()
+    return {str(r.account_id): int(r.unread) for r in rows}
+
+
+#: The texts of a sync error that mean the sign-in failed. The scheduler
+#: writes ``str(exc)``: a failed ``authenticate``, a refused refresh at the
+#: token endpoint of Microsoft or Google, or a blob with no refresh token.
+_AUTH_FAILURE = re.compile(
+    r"Provider authentication failed|oauth2/v2\.0/token|oauth2\.googleapis\.com/token"
+    r"|accounts\.google\.com/o/oauth2|Missing OAuth credentials|invalid_grant"
+    r"|AADSTS(?:50173|50076|50078|50079|700082|70008|54005|65001|500011)\b",
+    re.IGNORECASE,
+)
+
+
+def needs_reconnect(sync_status: str | None, sync_error: str | None) -> bool:
+    """True when the last sync failed on the sign-in (EM-T8c review).
+
+    Only a sign-in failure blocks a send. A 429 or a 503 during an import also
+    writes ``sync_status = 'error'``, and a send still works then.
+    """
+    return sync_status == "error" and bool(_AUTH_FAILURE.search(sync_error or ""))
+
+
+async def _display_labels(db: Any, owner: str) -> tuple[dict[str, str], dict[str, str]]:
+    """The display label of each mailbox of ``owner``, in one read.
+
+    A default label depends on the other mailboxes of the member, so a route
+    that returns one mailbox still reads them all (EM-T8b, §11.4).
+
+    The read names the bound tenant, as :func:`list_accounts` does (R5,
+    H-334c). So a role that bypasses RLS counts no mailbox of another
+    organization. Each caller reads inside ``_tenant_session``.
+    """
+    rows = (await db.execute(text(
+        "SELECT id, email_address, label FROM email_accounts "
+        "WHERE " + mailbox_predicate(uid="uid", level="read")
+        + f" AND organization_id = {_bound_org()}"
+    ), {"uid": owner})).fetchall()
+    triples = [(str(r.id), r.email_address, r.label) for r in rows]
+    return display_labels(triples), default_labels(triples)
+
+
 @router.get("/accounts", response_model=list[EmailAccountModel])
 async def list_accounts(
     user: UserContext = Depends(get_current_user),
 ):
-    """List all connected email accounts for the current user."""
+    """List all connected email accounts for the current user.
+
+    Two reads for any number of accounts: the rows, then one grouped count
+    (EM-T4e). The rows read names the bound tenant, so a role that bypasses
+    RLS still lists one organization only (R5, H-334b).
+    """
+    owner = user.email or "anonymous"
     async with _tenant_session() as db:
         result = await db.execute(
             text(
-                """SELECT id, provider, email_address, label, avatar_color,
+                f"""SELECT id, provider, email_address, label, avatar_color,
                           sync_enabled, sync_status, sync_error, last_synced_at,
                           is_default, initial_sync_done, import_since,
-                          onboarding_done_at
+                          onboarding_done_at, color_slot, created_at,
+                          in_all_inboxes, {_PROGRESS_COLUMNS}
                    FROM email_accounts
-                   WHERE user_id = :user_id
+                   WHERE {mailbox_predicate(uid="user_id", level="read")}
+                     AND organization_id = {_bound_org()}
                    ORDER BY is_default DESC, created_at"""
             ),
-            {"user_id": user.email or "anonymous"},
+            {"user_id": owner},
         )
         rows = result.fetchall()
+        unread_by_account = await _unread_counts(db, owner) if rows else {}
+        triples = [(str(r.id), r.email_address, r.label) for r in rows]
+        labels, defaults = display_labels(triples), default_labels(triples)
         accounts: list[EmailAccountModel] = []
         for row in rows:
-            # Count unread messages for this account
-            unread_result = await db.execute(
-                text(
-                    """SELECT COUNT(*) FROM email_messages
-                       WHERE account_id = :account_id AND is_read = false"""
-                ),
-                {"account_id": row.id},
-            )
-            unread = unread_result.scalar() or 0
+            unread = unread_by_account.get(str(row.id), 0)
 
             accounts.append(EmailAccountModel(
                 id=str(row.id),
@@ -175,8 +359,43 @@ async def list_accounts(
                 initial_sync_done=bool(row.initial_sync_done),
                 import_since=_iso(row.import_since),
                 onboarding_done=row.onboarding_done_at is not None,
+                color_slot=row.color_slot,
+                display_label=labels.get(str(row.id), row.email_address),
+                default_label=defaults.get(str(row.id), row.email_address),
+                work_domain=work_domain(row.email_address),
+                needs_reconnect=needs_reconnect(row.sync_status, row.sync_error),
+                created_at=_iso_us(row.created_at),
+                in_all_inboxes=bool(row.in_all_inboxes),
+                **_progress(row),
             ))
         return accounts
+
+
+async def feed_mailboxes(user: UserContext) -> list[dict[str, Any]]:
+    """The member's own mailboxes, as the shell's needs feed reads them.
+
+    One read of ``email_accounts``, with the owner predicate of
+    :func:`list_accounts` and in its order. It gives the two fields the
+    feed uses, ``id`` and ``in_all_inboxes``. ⚠️ It runs no unread count:
+    ``list_accounts`` counts the unread mail of every mailbox
+    (``_unread_counts``), and the feed threw that count away on each read.
+
+    Not a route. The shell calls it after its own ``feature:email`` check.
+    The read names the bound tenant, as :func:`list_accounts` does (R5,
+    H-334b).
+    """
+    owner = user.email or "anonymous"
+    async with _tenant_session() as db:
+        rows = (await db.execute(
+            text(
+                f"""SELECT id, in_all_inboxes FROM email_accounts
+                   WHERE {mailbox_predicate(uid="user_id", level="read")}
+                     AND organization_id = {_bound_org()}
+                   ORDER BY is_default DESC, created_at"""
+            ),
+            {"user_id": owner},
+        )).fetchall()
+    return [{"id": str(r.id), "in_all_inboxes": bool(r.in_all_inboxes)} for r in rows]
 
 
 @router.get(
@@ -216,15 +435,159 @@ async def org_connection_counts(
     )
 
 
+#: The wall-clock limit, in seconds, for the whole login test of a new IMAP
+#: mailbox (connect, TLS and login together).
+_IMAP_LOGIN_TIMEOUT = 10.0
+#: Login tests that one member may start in 10 minutes. A wrong guess costs one.
+_IMAP_LOGIN_ATTEMPTS = 5
+_IMAP_LOGIN_WINDOW_S = 600
+#: Login tests in flight in THIS gateway process. Each process has its own
+#: 4-worker pool (``LOGIN_POOL``), so a process-local cap matches the pool and
+#: needs no shared state. One semaphore makes the check and the take ONE step.
+_IMAP_LOGINS_IN_FLIGHT_MAX = 4
+_imap_login_slots = asyncio.Semaphore(_IMAP_LOGINS_IN_FLIGHT_MAX)
+#: The busy key outlives the worst case of one test: 3 name lookups, a 10 s
+#: connect and login, and the queue wait. A late release never frees a newer key.
+_IMAP_LOGIN_BUSY_TTL_S = 60
+
+
+async def _release_if_mine(redis: Any, busy_key: Any, token: str) -> None:
+    """Delete the busy key only when it still holds OUR token, so a release
+    that comes after the key expired cannot free a newer request's key. The
+    tenant client has no script call, so this is a read then a delete. The
+    window is a few microseconds and the 60 s TTL makes it rare."""
+    held = await redis.get(busy_key)
+    if isinstance(held, bytes):
+        held = held.decode("utf-8", errors="replace")
+    if held == token:
+        await redis.delete(busy_key)
+
+
+async def _guard_imap_login(org: str, member: str) -> Callable[[], Awaitable[None]]:
+    """Admit ONE login test for this member, or answer 429. Returns the release.
+
+    Two limits through the tenant-prefixed Redis client (R5): one test in
+    flight for each member, and five attempts for each member in 10 minutes.
+    A Redis fault refuses the test (fail closed): the test makes a network
+    call for a member, so no limit means no call.
+    """
+    import hashlib
+    import secrets
+
+    from acb_common.tenant_redis import get_tenant_redis, key, organization_scope
+
+    token = secrets.token_hex(8)
+    who = hashlib.sha256(member.lower().encode("utf-8")).hexdigest()[:24]
+    try:
+        with organization_scope(org):
+            redis = get_tenant_redis()
+            busy_key = key("imap-login-busy", who)
+            count_key = key("imap-login-attempts", who)
+            if not await redis.set(busy_key, token, nx=True, ex=_IMAP_LOGIN_BUSY_TTL_S):
+                raise HTTPException(
+                    status_code=429,
+                    detail="A login test for your mailbox is already running. Wait and try again.")
+            attempts = int(await redis.incr(count_key))
+            if attempts == 1:
+                await redis.expire(count_key, _IMAP_LOGIN_WINDOW_S)
+            if attempts > _IMAP_LOGIN_ATTEMPTS:
+                await _release_if_mine(redis, busy_key, token)
+                raise HTTPException(
+                    status_code=429,
+                    detail="Too many tries to connect a mailbox. Wait 10 minutes and try again.")
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 - fail closed, say nothing of the fault
+        _log.warning("email.imap_login_guard_unavailable", error=type(exc).__name__)
+        raise HTTPException(
+            status_code=503,
+            detail="Metorite cannot test a mailbox login now. Try again soon.") from None
+
+    async def _release() -> None:
+        try:
+            with organization_scope(org):
+                await _release_if_mine(get_tenant_redis(), busy_key, token)
+        except Exception:  # noqa: BLE001 - the key expires by itself
+            pass
+
+    return _release
+
+
+async def _verify_imap_login(
+    credentials: dict[str, Any], *, org: str, member: str,
+) -> None:
+    """Log in to the IMAP server with the credentials before anything is saved.
+
+    Order: the per-member guard (429), then the address check on the IMAP and
+    SMTP hosts (a private address answers 422), then the login. A refused user
+    name or password answers 422. A server that Metorite cannot reach answers
+    502. The messages are fixed text: they never carry the password, the
+    server's own words or the credentials, and the log line holds the host,
+    the port and the error class only.
+    """
+    from acb_common.public_address import PublicAddressRefused, pinned_public_address
+    from email_ingestion.providers.imap import LOGIN_POOL, IMAPProvider
+
+    try:  # take a slot at once or answer 429: no check-then-take gap
+        await asyncio.wait_for(_imap_login_slots.acquire(), timeout=0.05)
+    except TimeoutError:
+        raise HTTPException(
+            status_code=429,
+            detail="Metorite is testing many mailboxes now. Try again in a minute.",
+        ) from None
+    try:
+        release = await _guard_imap_login(org, member)
+    except BaseException:
+        _imap_login_slots.release()
+        raise
+    host = str(credentials.get("imap_host", ""))
+    port = credentials.get("imap_port", 993)
+    try:
+        loop = asyncio.get_running_loop()
+        for name, p in (("imap", port), ("smtp", credentials.get("smtp_port", 587))):
+            h = str(credentials.get(f"{name}_host", ""))
+            try:
+                await loop.run_in_executor(LOGIN_POOL, pinned_public_address, h, int(p))
+            except (PublicAddressRefused, ValueError, TypeError):
+                _log.info("email.imap_host_refused", which=name, host=h[:100])
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Metorite cannot connect to {h[:100]}. Use the public address of your mail server.",
+                ) from None
+        try:
+            await IMAPProvider(dict(credentials)).verify_login(_IMAP_LOGIN_TIMEOUT)
+        except imaplib.IMAP4.error as exc:
+            _log.info("email.imap_login_refused", host=host, port=port,
+                      error=type(exc).__name__)
+            raise HTTPException(
+                status_code=422,
+                detail="The mail server refused the user name or password.",
+            ) from None
+        except (OSError, ValueError) as exc:
+            _log.info("email.imap_unreachable", host=host, port=port,
+                      error=type(exc).__name__)
+            raise HTTPException(
+                status_code=502,
+                detail=f"Metorite could not reach {host}:{port}.",
+            ) from None
+    finally:
+        _imap_login_slots.release()
+        await release()
+
+
 @router.post("/accounts", response_model=EmailAccountModel, status_code=201)
 async def create_account(
     req: CreateAccountRequest,
     user: UserContext = Depends(get_current_user),
 ):
-    """Add a new email account manually (IMAP/SMTP or pre-configured OAuth creds).
+    """Add a new IMAP/SMTP account manually.
 
-    For OAuth-based providers (gmail, microsoft), use the /oauth/{provider}/authorize
-    flow instead — it handles token exchange automatically.
+    Gmail and Microsoft connect through the OAuth flow only
+    (``/oauth/{provider}/authorize``). This route answers 403 for either one,
+    before it reads, encrypts or writes anything (WS-17 EM-G7 review round 1).
+    A body with tokens would skip each check of the flow: the signed state,
+    the member of the session, the scopes of D-EM-31, the refresh token and
+    ``EMAIL_GMAIL_CONNECT``. No caller sends either provider here.
 
     The organization and the member come from the session and from nowhere
     else (``user_management_contract.md`` R11). With either one missing, the
@@ -237,11 +600,15 @@ async def create_account(
         )
     org = str(user.organization_id)
 
+    if req.provider in _OAUTH_ONLY_PROVIDERS:
+        _log.info("email.manual_oauth_account_refused", provider=req.provider)
+        raise HTTPException(status_code=403, detail=_OAUTH_ONLY_DETAIL)
+
     # Validate provider
-    if req.provider not in ("gmail", "microsoft", "imap"):
+    if req.provider != "imap":
         raise HTTPException(
             status_code=400,
-            detail=f"Unknown provider: {req.provider}. Supported: gmail, microsoft, imap",
+            detail=f"Unknown provider: {req.provider}. Supported: imap",
         )
 
     # For IMAP, validate required credential fields
@@ -255,10 +622,41 @@ async def create_account(
                 detail=f"Missing IMAP credential fields: {', '.join(missing)}",
             )
 
+    # ``imap_timeout`` is read by the provider, and a member must not set it.
+    creds = {k: v for k, v in req.credentials.items() if k != "imap_timeout"}
+
+    # The cheap checks run BEFORE any network call: the duplicate (409), then
+    # the mailbox limit of Q-MB-1 (a plain count, with no lock). The locked
+    # check runs again at the insert below, because two tabs can race.
+    async with _tenant_session(org) as db:
+        if (await db.execute(
+            text(
+                # The duplicate check of a connect mirrors the unique index
+                # of migration 223, which counts each row of user_id, a
+                # shared row of the connector too (WS-65 SM-2).
+                f"""SELECT id FROM email_accounts
+                   WHERE organization_id = CAST(:org AS uuid)
+                     AND {connector_predicate(uid="user_id")} AND provider = :provider
+                     AND email_address = :email"""
+            ),
+            {"org": org, "user_id": user.email, "provider": req.provider,
+             "email": req.email_address},
+        )).fetchone():
+            raise HTTPException(
+                status_code=409,
+                detail=f"Account {req.email_address} already exists",
+            )
+        if await member_mailbox_count(db, user.email) >= MAX_MAILBOXES_PER_MEMBER:
+            raise HTTPException(status_code=409, detail=MAILBOX_LIMIT_DETAIL)
+
+    # Test the login BEFORE anything is encrypted or saved, so a wrong
+    # password is an error and not a mailbox that never syncs.
+    await _verify_imap_login(creds, org=org, member=user.email)
+
     # Encrypt credentials
     from acb_llm.key_store import get_key_store
     store = get_key_store()
-    encrypted_creds = store.encrypt(json.dumps(req.credentials))
+    encrypted_creds = store.encrypt(json.dumps(creds))
 
     async with _tenant_session(org) as db:
         # Check for duplicate account. The organization is in the predicate
@@ -266,6 +664,7 @@ async def create_account(
         # unique index of migration 223 with or without row level security.
         existing = await db.execute(
             text(
+                # private-only: the same index as the cheap check above.
                 """SELECT id FROM email_accounts
                    WHERE organization_id = CAST(:org AS uuid)
                      AND user_id = :user_id
@@ -285,6 +684,7 @@ async def create_account(
                 detail=f"Account {req.email_address} already exists",
             )
 
+        await enforce_mailbox_limit(db, user.email)
         account_id = str(uuid4())
         # The member's FIRST mailbox in this organization becomes the default
         # (the inbox the UI lands on). The partial unique index of migration
@@ -292,21 +692,25 @@ async def create_account(
         # names organization_id: a write names its tenant (R5).
         is_default_row = await db.execute(
             text(
-                """INSERT INTO email_accounts
+                # The first-mailbox test mirrors the partial unique index of
+                # one default for each user_id (migration 223).
+                f"""INSERT INTO email_accounts
                    (id, user_id, provider, email_address, label,
                     avatar_color, credentials_encrypted, is_default,
-                    organization_id)
+                    organization_id, color_slot)
                    VALUES (:id, :user_id, :provider, :email, :label,
                            :color, :creds,
                            NOT EXISTS (SELECT 1 FROM email_accounts
-                                       WHERE user_id = :user_id
+                                       WHERE {connector_predicate(uid="user_id")}
                                          AND organization_id = CAST(:org AS uuid)),
-                           CAST(:org AS uuid))
-                   RETURNING is_default"""
+                           CAST(:org AS uuid), {NEXT_SLOT_SQL})
+                   RETURNING is_default, color_slot, created_at,
+                             in_all_inboxes"""
             ),
             {
                 "id": account_id,
                 "user_id": user.email,
+                "member": user.email,
                 "org": org,
                 "provider": req.provider,
                 "email": req.email_address,
@@ -315,7 +719,9 @@ async def create_account(
                 "creds": encrypted_creds,
             },
         )
-        created_default = bool(is_default_row.scalar())
+        created = is_default_row.one()
+        created_default = bool(created.is_default)
+        labels, defaults = await _display_labels(db, user.email)
 
     # Start background sync for this account. It runs AFTER the tenant block,
     # so the row is committed and the interval read of the scheduler sees it.
@@ -338,6 +744,12 @@ async def create_account(
         last_synced_at=None,
         unread_count=0,
         is_default=created_default,
+        color_slot=created.color_slot,
+        display_label=labels.get(account_id, req.email_address),
+        default_label=defaults.get(account_id, req.email_address),
+        work_domain=work_domain(req.email_address),
+        created_at=_iso_us(created.created_at),
+        in_all_inboxes=bool(created.in_all_inboxes),
     )
 
 
@@ -352,10 +764,14 @@ async def set_default_account(
     index (one default per user) is never violated, then sets it on this one.
     """
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         owner = user.email or "anonymous"
         # Verify ownership before mutating anything.
+        # A default is the member's own private mailbox (WS-65 SM-2).
         owned = await db.execute(
-            text("SELECT 1 FROM email_accounts WHERE id = :id AND user_id = :uid"),
+            text("SELECT 1 FROM email_accounts WHERE id = :id AND "
+                 + private_predicate(uid="uid")),
             {"id": account_id, "uid": owner},
         )
         if not owned.fetchone():
@@ -365,6 +781,8 @@ async def set_default_account(
         # one-default-per-user index can't transiently see two.
         await db.execute(
             text(
+                # private-only: the demote mirrors the partial unique index of
+                # one default for each user_id (migration 223).
                 """UPDATE email_accounts SET is_default = false, updated_at = now()
                    WHERE user_id = :uid AND is_default AND id <> :id"""
             ),
@@ -372,26 +790,22 @@ async def set_default_account(
         )
         result = await db.execute(
             text(
-                """UPDATE email_accounts
+                f"""UPDATE email_accounts
                    SET is_default = true, updated_at = now()
-                   WHERE id = :id AND user_id = :uid
+                   WHERE id = :id AND {private_predicate(uid="uid")}
                    RETURNING id, provider, email_address, label, avatar_color,
                              sync_enabled, sync_status, sync_error,
                              last_synced_at, is_default, initial_sync_done,
-                             import_since, onboarding_done_at"""
+                             import_since, onboarding_done_at, color_slot,
+                             created_at, in_all_inboxes, {_PROGRESS_COLUMNS}"""
             ),
             {"id": account_id, "uid": owner},
         )
         row = result.fetchone()
 
-        unread_result = await db.execute(
-            text(
-                """SELECT COUNT(*) FROM email_messages
-                   WHERE account_id = :account_id AND is_read = false"""
-            ),
-            {"account_id": account_id},
-        )
-        unread = unread_result.scalar() or 0
+        unread = (await _unread_counts(db, owner, account_id)).get(
+            str(row.id), 0)
+        labels, defaults = await _display_labels(db, owner)
         return EmailAccountModel(
             id=str(row.id),
             provider=row.provider,
@@ -408,6 +822,14 @@ async def set_default_account(
             initial_sync_done=bool(row.initial_sync_done),
             import_since=_iso(row.import_since),
             onboarding_done=row.onboarding_done_at is not None,
+            color_slot=row.color_slot,
+            display_label=labels.get(str(row.id), row.email_address),
+            default_label=defaults.get(str(row.id), row.email_address),
+            work_domain=work_domain(row.email_address),
+            needs_reconnect=needs_reconnect(row.sync_status, row.sync_error),
+            created_at=_iso_us(row.created_at),
+            in_all_inboxes=bool(row.in_all_inboxes),
+            **_progress(row),
         )
 
 
@@ -440,24 +862,46 @@ async def delete_account(
     ``commit()`` (mechanism (A) of §10.4.2). EM-T4f part 2 makes one sync
     run at a time for each mailbox (``email_ingestion.scheduler``). The fence
     is ``tests/unit/test_email_disconnect_order.py``.
+
+    EM-T8f-1 (MB-17): after the block of step 3 commits, a task deletes the
+    Mem0 drafting memory of the mailbox (``memory_purge.py``). A 404, a 409 or
+    a failed ``DELETE`` raises first, so it starts no purge. The route does
+    not wait for the task. The fence is
+    ``tests/unit/test_email_disconnect_memory_purge.py``.
+
+    EM-G11f2 (§12.3.13.9): the block of step 3 also writes one
+    ``email_mailbox_purges`` row (migration 264), so the purge commits with
+    the delete. The task closes that row after its two passes. When the
+    process stops first, the sweeper of ``memory_purge.py`` finishes it. The
+    fence is ``tests/unit/test_email_mailbox_purge_durable.py``.
+
+    EM-G11f1 and EM-G11f1b (``email_app_master_plan.md`` §12.3.13.9 and
+    §12.3.13.9.2) put the disconnect on the two calls of
+    ``routes/email/teardown.py``. ``read_teardown_plans`` IS the ownership
+    read: it reads the plan of the mailbox, with the filter ids that Metorite
+    made, because the cascade deletes them. ``finish_teardowns`` runs only
+    after the ``DELETE`` commits, so a 404, a 409 or a failed ``DELETE``
+    changes nothing at Google or at Microsoft. No await sits between the stop
+    and the ``try`` that starts the loop again. After the commit, the filters
+    go at Gmail or at Outlook, the Google grant is revoked unless another
+    Metorite mailbox uses the same Gmail account, the Graph subscription goes,
+    and last the Redis keys of the mailbox go. No leg blocks the 204. The
+    fence is ``tests/unit/test_email_mailbox_teardown.py``.
     """
     owner = user.email or "anonymous"
 
-    # ── 1. the ownership read ───────────────────────────────────────────────
+    # ── 1. the ownership read: the plan of the mailbox, with its filter ids ─
     async with _tenant_session() as db:
-        found = (await db.execute(
-            text(
-                """SELECT organization_id FROM email_accounts
-                   WHERE id = :id AND user_id = :uid"""
-            ),
-            {"id": account_id, "uid": owner},
-        )).fetchone()
-        if found is None:
-            raise HTTPException(status_code=404, detail="Account not found")
-    org = str(found.organization_id) if found.organization_id else None
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
+        plans = await read_teardown_plans(db, MailboxScope(account_id, owner))
+    if not plans:
+        raise HTTPException(status_code=404, detail="Account not found")
+    [plan] = plans
+    org = plan.org
 
     # ── 2. stop the sync loop, with no session open ─────────────────────────
-    had_loop = await _stop_sync(account_id)
+    had_loop = await stop_sync(account_id)
 
     # ── 3. the delete and the default re-election, with a lock bound ────────
     try:
@@ -466,26 +910,35 @@ async def delete_account(
             result = await db.execute(
                 text(
                     """DELETE FROM email_accounts
-                       WHERE id = :id AND user_id = :user_id
+                       WHERE id = :id AND """
+                    + mailbox_predicate(uid="user_id", level="manage")
+                    + """
                        RETURNING is_default, provider, credentials_encrypted,
-                                 webhook_subscription_id"""
+                                 webhook_subscription_id, email_address"""
                 ),
                 {"id": account_id, "user_id": owner},
             )
             deleted = result.fetchone()
             if deleted is None:
                 raise HTTPException(status_code=404, detail="Account not found")
+            # EM-G11f2: the purge that this delete owes, in the SAME
+            # transaction. A stop after the commit leaves the row, and the
+            # sweeper of memory_purge.py runs the purge.
+            await db.execute(text(RECORD_PURGE_SQL), {
+                "owner": owner, "aid": account_id, "lease": TASK_LEASE_S})
             # If the deleted account was the default, re-elect the
             # earliest-created remaining account so the user always has a
             # default to land on.
             if bool(deleted.is_default):
                 await db.execute(
                     text(
-                        """UPDATE email_accounts
+                        # The re-election mirrors the partial unique index of
+                        # one default for each user_id.
+                        f"""UPDATE email_accounts
                            SET is_default = true, updated_at = now()
                            WHERE id = (
                                SELECT id FROM email_accounts
-                               WHERE user_id = :uid
+                               WHERE {connector_predicate(uid="uid")}
                                ORDER BY created_at, id
                                LIMIT 1
                            )"""
@@ -507,29 +960,20 @@ async def delete_account(
                 status_code=409, detail=DISCONNECT_BUSY_DETAIL) from None
         raise
 
-    # ── 4. the Graph subscription, best effort, with no session open ────────
-    await _drop_graph_subscription(account_id, deleted)
+    # ── 4. the Mem0 memory of the mailbox, in a task, after the commit ──────
+    # The owner predicate of the DELETE matched, so the row's user_id is
+    # ``owner``. The writers key the memory on that member (EM-T8f-1).
+    # The task closes the purge row of step 3 with the same session seam.
+    schedule_mailbox_memory_purge(owner, account_id, open_session=_tenant_session)
 
-
-async def _stop_sync(account_id: str) -> bool:
-    """Stop the sync loop of a mailbox. True when a loop ran before the stop.
-
-    The answer tells a failed disconnect whether to start the loop again. A
-    mailbox with sync off, or a box with ``EMAIL_SYNC_ENABLED`` off, has no
-    loop, and a failed disconnect must not start one.
-    """
-    try:
-        from email_ingestion.scheduler import (
-            get_scheduler_status,
-            remove_account_sync,
-        )
-        had_loop = account_id in get_scheduler_status()["accounts"]
-        await remove_account_sync(account_id)
-    except Exception as exc:
-        _log.warning("email.disconnect.stop_sync_failed",
-                     account_id=account_id, error=type(exc).__name__)
-        return False
-    return had_loop
+    # ── 5. the teardown, after the commit (EM-G11f1, EM-G11f1b) ─────────────
+    # After the purge task starts, so a cancel of these awaits cannot skip it.
+    # The RETURNING row wins over the plan: it was read after the loop
+    # stopped, and the loop can rotate the credentials or the subscription
+    # until then. The loop is already stopped, and the owner still exists.
+    await finish_teardowns(
+        org, [plan.with_deleted_row(deleted)], open_session=_tenant_session,
+        stop_loops=False, bump_owners=True)
 
 
 #: Restarts of a sync loop that a failed disconnect started. The set holds a
@@ -586,69 +1030,55 @@ def _is_lock_timeout(err: BaseException) -> bool:
     return False
 
 
-async def _drop_graph_subscription(account_id: str, row: Any) -> None:
-    """Remove the Graph push subscription of a deleted mailbox, best effort.
-
-    Only a ``microsoft`` row with a ``webhook_subscription_id`` gets a call.
-    The provider comes from ``_instantiate_provider``, the gateway adapter over
-    ``build_provider``, as ``_ensure_subscription`` builds it. The whole call
-    has a bound of ``SUBSCRIPTION_DELETE_TIMEOUT_S``.
-
-    ``delete_subscription`` returns the HTTP status of Graph. 204 and 404 mean
-    the subscription is gone, and log ``email.disconnect.subscription_deleted``.
-    Any other status, an error or a timeout logs
-    ``email.disconnect.subscription_delete_failed``, and the route still
-    answers 204. The log holds the status or the error class, never a token
-    or an error text. A refreshed token needs no write, because the row is
-    gone.
-
-    The provider has no close method, so the httpx client of this call stays
-    open until the process collects it. §10.4.6 records that follow-up.
-    """
-    sub_id = row.webhook_subscription_id
-    if row.provider != "microsoft" or not sub_id:
-        return
-    try:
-        async with asyncio.timeout(SUBSCRIPTION_DELETE_TIMEOUT_S):
-            creds, _store = _decrypt_credentials(row.credentials_encrypted)
-            provider = _instantiate_provider(row.provider, creds)
-            graph_status = await provider.delete_subscription(str(sub_id))
-    except Exception as exc:
-        response = getattr(exc, "response", None)
-        _log.warning(
-            "email.disconnect.subscription_delete_failed",
-            account_id=account_id,
-            error=type(exc).__name__,
-            status=getattr(response, "status_code", None),
-        )
-        return
-    if graph_status in _SUBSCRIPTION_GONE:
-        _log.info("email.disconnect.subscription_deleted",
-                  account_id=account_id, sub=str(sub_id)[:12],
-                  status=graph_status)
-        return
-    _log.warning("email.disconnect.subscription_delete_failed",
-                 account_id=account_id, error=None, status=graph_status)
-
-
 @router.patch("/accounts/{account_id}", response_model=EmailAccountModel)
 async def update_account(
     account_id: str,
     updates: AccountUpdateModel,
     user: UserContext = Depends(get_current_user),
 ):
-    """Update account settings (label, sync toggle, the guided setup).
+    """Update account settings (label, colour, sync toggle, the guided setup).
 
     ``onboarding_done`` true writes ``onboarding_done_at = now()``, and false
     writes NULL (EM-T6a item 11). The owner predicate binds every field.
+
+    EM-T8b: a blank ``label`` writes NULL, so the mailbox takes its default
+    label again. A label longer than ``MAX_LABEL_LEN`` answers 400.
+    ``color_slot`` must be 1 to 12, or the route answers 400. Neither field
+    restarts the sync loop.
+
+    EM-T8g-1: ``in_all_inboxes`` false keeps the mailbox separate, and true
+    puts it back in All inboxes (D-EM-28). The owner predicate binds it, so
+    the mailbox of another member answers 404 and changes nothing. It does
+    not restart the sync loop, because the loop does not read it.
     """
+    if updates.color_slot is not None and not valid_slot(updates.color_slot):
+        raise HTTPException(status_code=400, detail="color_slot is a whole number from 1 to 12.")
+    if updates.label is not None and len(updates.label.strip()) > MAX_LABEL_LEN:
+        raise HTTPException(
+            status_code=400,
+            detail=f"A mailbox name has at most {MAX_LABEL_LEN} characters.",
+        )
+    if updates.label is not None and reserved_label(updates.label):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Outlook, Gmail and Email are kept for the default name. "
+                "Choose another name, or leave it blank."
+            ),
+        )
+    owner = user.email or "anonymous"
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         set_clauses = []
-        params: dict[str, Any] = {"id": account_id, "user_id": user.email or "anonymous"}
+        params: dict[str, Any] = {"id": account_id, "user_id": owner}
 
         if updates.label is not None:
             set_clauses.append("label = :label")
-            params["label"] = updates.label
+            params["label"] = updates.label.strip() or None
+        if updates.color_slot is not None:
+            set_clauses.append("color_slot = :color_slot")
+            params["color_slot"] = updates.color_slot
         if updates.sync_enabled is not None:
             set_clauses.append("sync_enabled = :sync_enabled")
             params["sync_enabled"] = updates.sync_enabled
@@ -656,6 +1086,9 @@ async def update_account(
             set_clauses.append(
                 "onboarding_done_at = now()" if updates.onboarding_done
                 else "onboarding_done_at = NULL")
+        if updates.in_all_inboxes is not None:
+            set_clauses.append("in_all_inboxes = :in_all_inboxes")
+            params["in_all_inboxes"] = updates.in_all_inboxes
 
         if not set_clauses:
             raise HTTPException(status_code=400, detail="No fields to update")
@@ -666,17 +1099,19 @@ async def update_account(
             text(
                 f"""UPDATE email_accounts
                     SET {', '.join(set_clauses)}
-                    WHERE id = :id AND user_id = :user_id
+                    WHERE id = :id AND {mailbox_predicate(uid="user_id", level="manage")}
                     RETURNING id, provider, email_address, label, avatar_color,
-                              sync_enabled, sync_status, last_synced_at,
+                              sync_enabled, sync_status, sync_error, last_synced_at,
                               initial_sync_done, import_since,
-                              onboarding_done_at"""
+                              onboarding_done_at, color_slot, created_at,
+                              in_all_inboxes, {_PROGRESS_COLUMNS}"""
             ),
             params,
         )
         row = result.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Account not found")
+        labels, defaults = await _display_labels(db, owner)
 
     model = EmailAccountModel(
         id=str(row.id),
@@ -686,15 +1121,25 @@ async def update_account(
         avatar_color=row.avatar_color or "#6366f1",
         sync_enabled=row.sync_enabled,
         sync_status=row.sync_status or "idle",
+        sync_error=row.sync_error,
         last_synced_at=row.last_synced_at.isoformat()
         if row.last_synced_at else None,
         initial_sync_done=bool(row.initial_sync_done),
         import_since=_iso(row.import_since),
         onboarding_done=row.onboarding_done_at is not None,
+        color_slot=row.color_slot,
+        display_label=labels.get(str(row.id), row.email_address),
+        default_label=defaults.get(str(row.id), row.email_address),
+        work_domain=work_domain(row.email_address),
+        needs_reconnect=needs_reconnect(row.sync_status, row.sync_error),
+        created_at=_iso_us(row.created_at),
+        in_all_inboxes=bool(row.in_all_inboxes),
+        **_progress(row),
     )
-    # Closing the guided setup changes nothing that the sync loop reads. A
-    # restart cancels a sync in flight, so this PATCH does not restart it.
-    if updates.label is None and updates.sync_enabled is None:
+    # Only the sync toggle changes what the sync loop reads. A restart cancels
+    # a sync in flight, so a rename, a colour, the guided setup or "Keep
+    # separate" does not restart it (EM-T8b, EM-T8g-1; before, a rename did).
+    if updates.sync_enabled is None:
         return model
 
     # Refresh background sync: start/stop loop for this account. It runs AFTER

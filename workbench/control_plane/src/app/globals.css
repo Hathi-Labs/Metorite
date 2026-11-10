@@ -21,7 +21,9 @@
        generated-app sandbox, Monaco/Shiki, and the contrast test). It is a
        mirror, and mirrors go stale — so themes.test.ts parses this
        stylesheet and fails if the two drift. Change a value in both.
-     • Do not reintroduce a second look. See DESIGN_SYSTEM.md §1.
+     • Do not reintroduce a second look. See DESIGN_SYSTEM.md §1. The one
+       bounded exception is the glass trial (D143, DESIGN_SYSTEM.md §0a),
+       whose blocks sit below `.light` and apply only under data-look.
    ──────────────────────────────────────────────────────────────────────── */
 
 :root {
@@ -42,6 +44,17 @@
   --elevation: 0 4px 16px hsl(0 0% 0% / 0.25);
   --motion-duration: 0.2s;
   --motion-easing: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  /* A spring that overshoots and settles: a card let go after a drag. */
+  --spring-easing: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --spring-duration: 420ms;
+  /* The one motion of a side panel (`lib/panelMotion.ts`). The left sidebar's
+     fold and the assistant's open and close read the same two values, so the
+     two panels cannot drift. `panelMotion.test.ts` holds the mirror. */
+  --panel-duration: 320ms;
+  --panel-easing: cubic-bezier(0.22, 1, 0.36, 1);
+  --panel-expand-duration: 260ms;
+  --sheet-duration: 150ms;
+  --sheet-easing: ease-out;
   /* Control personality — consumed by the primitives in components/ui/. */
   --button-radius: var(--radius);
   --control-filled-border: 0px;
@@ -60,6 +73,12 @@
 
   --popover: hsl(220 13% 12%);
   --popover-foreground: hsl(210 40% 98%);
+
+  /* The hover tip that shows a whole name (`OverflowTip`). It is dark in
+     BOTH modes, as the owner's reference draws it. A lift above the rail
+     here, and a near-black panel on white in `.light`. */
+  --tooltip: hsl(220 13% 22%);
+  --tooltip-foreground: hsl(210 40% 98%);
 
   --primary: hsl(198 89% 50%);
   --primary-foreground: hsl(220 13% 8%);
@@ -174,6 +193,9 @@
   --popover: hsl(0 0% 100%);
   --popover-foreground: hsl(222.2 84% 4.9%);
 
+  --tooltip: hsl(222 47% 11%);
+  --tooltip-foreground: hsl(210 40% 98%);
+
   /* Deeper blue in light mode for proper contrast on white buttons */
   --primary: hsl(198 89% 35%);
   --primary-foreground: hsl(0 0% 100%);
@@ -248,6 +270,286 @@
   --sidebar-ring: hsl(198 89% 50%);
 }
 
+/* ── The glass look (D143, project-docs/specs/glass_look.md) ─────────────
+   Aroh's design language: Apple's current interface (the 26-series "Liquid
+   Glass" releases). Content fills the window. The controls that steer it
+   float above it as translucent glass. Source of record:
+   ../Aroh/apps/web/src/index.css and ../Aroh/docs/design.md.
+
+   ⚠️ A TRANSITION, not a second theme. Glass applies ONLY under
+   `<html data-look="glass">`. The server renders that attribute only when
+   the build gate NEXT_PUBLIC_UI_LOOK is `glass`. Production carries the
+   gate since 2026-10-31 (GL-9, the owner's word). The boot script and the
+   store remove it for a member who chose Classic, and a build with no gate
+   never matches these blocks and renders the classic `:root` / `.light`
+   above. GL-Z deletes the classic blocks once glass has settled.
+
+   Rules for these blocks:
+     • They come AFTER `:root` and `.light`. themes.test.ts reads the FIRST
+       `:root {` and `.light {` in this file as classic.
+     • `html[data-look="glass"]` (0,1,1) out-specifies `:root` (0,1,0), and
+       `…].light` (0,2,1) out-specifies `.light`. The density and accent
+       inline styles on <html> still win over both.
+     • A token named here must exist in classic, or be on the glass-only list
+       of glassLook.test.ts. Each glass-only token has a classic fallback in
+       `@theme inline` below, so a classic page that meets one renders classic.
+     • Dark is the first block, light the second, as classic does. */
+html[data-look="glass"] {
+  /* SF Pro where the OS has it (Apple devices). Inter, its closest open
+     relative, everywhere else. */
+  --font-app: -apple-system, BlinkMacSystemFont, "SF Pro Text", var(--font-inter), "Segoe UI Variable Text", system-ui, sans-serif;
+  --font-app-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, "Cascadia Mono", Consolas, monospace;
+  --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", var(--font-inter), "Segoe UI Variable Display", system-ui, sans-serif;
+  --heading-tracking: -0.022em;
+
+  /* Apple's spring-like ease: quick out, long settle. */
+  --motion-duration: 0.28s;
+  --motion-easing: cubic-bezier(0.32, 0.72, 0, 1);
+  --sheet-duration: 220ms;
+  --sheet-easing: cubic-bezier(0.32, 0.72, 0, 1);
+
+  /* The one decorative motion of glass is the composer's working glow. The
+     classic accent glow on hover goes. */
+  --glow-strength: 0;
+  --glass-blur: 28px;
+  --elevation: 0 10px 34px rgb(0 0 0 / 0.55), 0 1px 3px rgb(0 0 0 / 0.3);
+
+  /* Softer corners at desktop proportions (owner, 2026-10-31: the elements
+     were larger than needed). The steps are 6 · 8 · 12 · 14 · 16 · 20, in rem
+     so density scales them. Aroh's 18 · 22 · 28 are phone corners. Capsules
+     use rounded-full. */
+  --radius: 0.75rem;
+  --glass-radius-sm: 0.375rem;
+  --glass-radius-md: 0.5rem;
+  --glass-radius-xl: 0.875rem;
+  --glass-radius-2xl: 1rem;
+  --glass-radius-3xl: 1.25rem;
+  /* A row inside a 16 px panel with a 6 px inset: 16 - 6 = 10 px, the
+     concentric corner of a sidebar row. */
+  --glass-radius-row: 0.625rem;
+
+  /* The frame and the content card (GL-10). The shell, the top bar and the
+     rail sit on the grouped frame. Each app renders inside ONE rounded card
+     on `--background`, one step lighter than the frame in dark and white in
+     light, so every app's panes share the card's corners. */
+  --background: #121214;
+  --background-grouped: #000000;
+  --foreground: #f5f5f7;
+  --card: #1c1c1e;
+  --card-foreground: #f5f5f7;
+  --popover: #2c2c2e;
+  --popover-foreground: #f5f5f7;
+  --tooltip: #3a3a3c;
+  --tooltip-foreground: #f5f5f7;
+
+  /* The tint. Apple's dark-mode blue: 4.5 : 1 as text on black and on dark
+     cards. A member's or an organization's accent replaces it inline.
+     The ink on it is black, not Apple's white: white on #0a84ff is 3.65 : 1,
+     under AA for a button's label. `accentInk()` makes the same choice for
+     an accent this light. Open for the owner: glass_look.md §9 Q3. */
+  --primary: #0a84ff;
+  --primary-foreground: #000000;
+
+  /* Fills are translucent, as Apple's are, so they read on any surface. */
+  --secondary: rgb(118 118 128 / 0.24);
+  --secondary-foreground: #f5f5f7;
+  --muted: rgb(118 118 128 / 0.3);
+  --muted-foreground: #98989d;
+  /* Glass has one tint. `--accent` IS the tint, so the classic orange
+     highlight does not appear beside it, and a member's or an
+     organization's accent (which sets --primary inline) moves both. The
+     light block does not redefine these two: var() resolves on <html>, so
+     they follow the light --primary there. */
+  --accent: var(--primary);
+  --accent-foreground: var(--primary-foreground);
+  --field: rgb(118 118 128 / 0.18);
+  --segment: #636366;
+
+  /* Apple's higher-contrast status colours: they carry text. Red, blue and
+     violet sit a step lighter than Apple's, so each passes 4.5 : 1 on a
+     muted panel and on its own 10 % chip as well as on the card. */
+  --destructive: #ff7b72;
+  --destructive-foreground: #000000;
+  --success: #30d158;
+  --success-foreground: #000000;
+  --warning: #ffb340;
+  --warning-foreground: #000000;
+  /* A status blue, fixed: NOT the tint, so an accent change never repaints
+     what a status means (statusAccent.test.ts). */
+  --info: #5eb0ff;
+  --info-foreground: #000000;
+  --violet: #da8fff;
+  --violet-foreground: #000000;
+  /* The one categorical slot that misses 4.5 on the glass dark card
+     (#1c1c1e), a step lighter. The other eleven keep their classic values. */
+  --cat-10: hsl(240 85% 74%);
+
+  --border: rgb(84 84 88 / 0.5);
+  --input: rgb(84 84 88 / 0.65);
+  --ring: #0a84ff;
+
+  /* Apple system colours at full strength: icon tiles, switches, dots.
+     Never for text. */
+  --system-blue: #0a84ff;
+  --system-indigo: #5e5ce6;
+  --system-purple: #bf5af2;
+  --system-pink: #ff375f;
+  --system-red: #ff453a;
+  --system-orange: #ff9f0a;
+  --system-yellow: #ffd60a;
+  --system-green: #30d158;
+  --system-teal: #40c8e0;
+  --system-gray: #8e8e93;
+
+  /* Glass: chrome that floats over content. */
+  --glass-bg: rgb(30 30 32 / 0.66);
+  --glass-edge: rgb(255 255 255 / 0.1);
+  --glass-highlight: rgb(255 255 255 / 0.14);
+  --glass-shadow: 0 10px 34px rgb(0 0 0 / 0.55), 0 1px 3px rgb(0 0 0 / 0.3);
+  /* A panel that floats over the live page (the sidebar's peek): a crisp
+     edge and a deep lift, so it parts from the page under it. */
+  --glass-float-shadow: 0 0 0 0.5px rgb(255 255 255 / 0.16), 0 2px 6px rgb(0 0 0 / 0.35),
+    0 16px 40px rgb(0 0 0 / 0.55), 0 40px 90px rgb(0 0 0 / 0.45);
+  /* Menus: near-opaque, because a menu opened inside glass cannot blur what
+     is behind that glass (backdrop-filter stops at the nearest blurred
+     ancestor). */
+  --glass-thick-bg: rgb(40 40 43 / 0.95);
+  /* Content cards: a hairline and a soft lift instead of a border. */
+  --card-shadow: 0 0 0 0.5px rgb(255 255 255 / 0.06);
+
+  /* The glyph on a solid icon tile, white in both modes, as in Apple's
+     Settings. It does not follow the tint, so a member's accent never
+     recolours a tile. On the light orange and green tiles it is about
+     2.2 : 1; each tile sits beside a title that says the same thing, so the
+     glyph is not the only carrier (WCAG 1.4.11). */
+  --tile-foreground: #ffffff;
+
+  /* The spectrum round the composer while a run is live. */
+  --glow-1: #0a84ff;
+  --glow-2: #64d2ff;
+  --glow-3: #ff9f0a;
+  --glow-4: #ff375f;
+  --glow-5: #409cff;
+
+  --sidebar-background: rgb(30 30 32 / 0.66);
+  --sidebar-foreground: #f5f5f7;
+  --sidebar-primary: #0a84ff;
+  --sidebar-primary-foreground: #000000;
+  --sidebar-accent: rgb(118 118 128 / 0.28);
+  --sidebar-accent-foreground: #f5f5f7;
+  --sidebar-border: rgb(255 255 255 / 0.08);
+  --sidebar-ring: #0a84ff;
+}
+
+/* ── The glass look, light ──────────────────────────────────────────────── */
+html[data-look="glass"].light {
+  --elevation: 0 10px 34px rgb(0 0 0 / 0.08), 0 1px 3px rgb(0 0 0 / 0.05);
+
+  /* The frame is Apple's grouped grey, and the content card is white
+     (GL-10). Cards inside an app keep their hairline on the white card. */
+  --background: #ffffff;
+  --background-grouped: #f2f2f7;
+  --foreground: #1d1d1f;
+  --card: #ffffff;
+  --card-foreground: #1d1d1f;
+  --popover: #ffffff;
+  --popover-foreground: #1d1d1f;
+  --tooltip: #1d1d1f;
+  --tooltip-foreground: #f5f5f7;
+
+  /* Apple blue, a shade deeper than iOS's #007aff, so text in the tint
+     passes 4.5 : 1 on white and on the grouped grey. */
+  --primary: #0068d6;
+  --primary-foreground: #ffffff;
+
+  --secondary: rgb(120 120 128 / 0.12);
+  --secondary-foreground: #1d1d1f;
+  --muted: rgb(120 120 128 / 0.16);
+  --muted-foreground: #6e6e73;
+  --field: #ffffff;
+  --segment: #ffffff;
+
+  --destructive: #c0001a;
+  --destructive-foreground: #ffffff;
+  --success: #146c2b;
+  --success-foreground: #ffffff;
+  --warning: #b02e00;
+  --warning-foreground: #ffffff;
+  --info: #0059b8;
+  --info-foreground: #ffffff;
+  --violet: #8944ab;
+  --violet-foreground: #ffffff;
+  /* The dark block's --cat-10 also matches here and out-specifies classic
+     `.light`, so light restates classic's light value. */
+  --cat-10: hsl(240 85% 56%);
+
+  --border: rgb(60 60 67 / 0.13);
+  --input: rgb(60 60 67 / 0.2);
+  --ring: #007aff;
+
+  --system-blue: #007aff;
+  --system-indigo: #5856d6;
+  --system-purple: #af52de;
+  --system-pink: #ff2d55;
+  --system-red: #ff3b30;
+  --system-orange: #ff9500;
+  --system-yellow: #ffcc00;
+  --system-green: #34c759;
+  --system-teal: #30b0c7;
+  --system-gray: #8e8e93;
+
+  --glass-bg: rgb(250 250 252 / 0.72);
+  --glass-edge: rgb(0 0 0 / 0.07);
+  --glass-highlight: rgb(255 255 255 / 0.9);
+  --glass-shadow: 0 10px 34px rgb(0 0 0 / 0.08), 0 1px 3px rgb(0 0 0 / 0.05);
+  --glass-float-shadow: 0 0 0 0.5px rgb(0 0 0 / 0.12), 0 2px 6px rgb(0 0 0 / 0.06),
+    0 12px 32px rgb(0 0 0 / 0.14), 0 32px 80px rgb(0 0 0 / 0.12);
+  --glass-thick-bg: rgb(248 248 250 / 0.94);
+  --card-shadow: 0 0 0 0.5px rgb(0 0 0 / 0.07), 0 1px 2px rgb(0 0 0 / 0.04), 0 4px 14px rgb(0 0 0 / 0.035);
+
+  --glow-1: #007aff;
+  --glow-2: #5ac8fa;
+  --glow-3: #ff9500;
+  --glow-4: #ff2d55;
+  --glow-5: #409cff;
+
+  --sidebar-background: rgb(250 250 252 / 0.72);
+  --sidebar-foreground: #1d1d1f;
+  --sidebar-primary: #0068d6;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: rgb(120 120 128 / 0.14);
+  --sidebar-accent-foreground: #1d1d1f;
+  --sidebar-border: rgb(60 60 67 / 0.1);
+  --sidebar-ring: #007aff;
+}
+
+/* Without backdrop blur, glass falls back to an opaque surface. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  html[data-look="glass"] {
+    --glass-bg: #1c1c1e;
+    --sidebar-background: #1c1c1e;
+  }
+  html[data-look="glass"].light {
+    --glass-bg: #f5f5f7;
+    --sidebar-background: #f5f5f7;
+  }
+}
+
+/* The variant: `glass:<class>` applies only under the attribute. Under
+   classic it matches nothing. `:where` adds no specificity, so a glass class
+   and the classic class it replaces compete by order, and Tailwind emits a
+   variant after the bare utility. */
+@custom-variant glass (&:where([data-look="glass"], [data-look="glass"] *));
+
+/* "Touch" means a phone or a small tablet: a finger is the only pointer AND
+   the window is narrower than a laptop's. Tailwind's own `pointer-coarse` is
+   `(pointer: coarse)`. A Windows laptop with a touch screen can report
+   coarse, and even no hover, while its member uses the trackpad, so every
+   control drew at its 40 to 44 px touch size (owner, 2026-11-01: "the pills
+   ... seem a little large", twice). The window width is the signal a hybrid
+   device cannot get wrong: from 1024 px, a control takes the desktop size. */
+@custom-variant pointer-coarse (@media (hover: none) and (pointer: coarse) and (max-width: 1023px));
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -255,6 +557,8 @@
   --color-card-foreground: var(--card-foreground);
   --color-popover: var(--popover);
   --color-popover-foreground: var(--popover-foreground);
+  --color-tooltip: var(--tooltip);
+  --color-tooltip-foreground: var(--tooltip-foreground);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
   --color-secondary: var(--secondary);
@@ -310,19 +614,59 @@
   --color-sidebar-primary: var(--sidebar-primary);
   --color-sidebar-accent: var(--sidebar-accent);
   --color-sidebar-border: var(--sidebar-border);
+  /* Glass-only colour tokens (D143). Each falls back to the nearest classic token,
+     so a classic page that meets one renders classic. glassLook.test.ts
+     holds the list. */
+  --color-grouped: var(--background-grouped, var(--background));
+  --color-field: var(--field, var(--background));
+  --color-segment: var(--segment, var(--card));
+  --color-system-blue: var(--system-blue, var(--info));
+  --color-system-indigo: var(--system-indigo, var(--cat-10));
+  --color-system-purple: var(--system-purple, var(--violet));
+  --color-system-pink: var(--system-pink, var(--cat-7));
+  --color-system-red: var(--system-red, var(--destructive));
+  --color-system-orange: var(--system-orange, var(--warning));
+  --color-system-yellow: var(--system-yellow, var(--warning));
+  --color-system-green: var(--system-green, var(--success));
+  --color-system-teal: var(--system-teal, var(--cat-6));
+  --color-system-gray: var(--system-gray, var(--muted-foreground));
+  --color-tile-foreground: var(--tile-foreground, var(--primary-foreground));
+  --shadow-card: var(--card-shadow, none);
+  --shadow-glass: var(--glass-shadow, var(--elevation));
   --font-sans: var(--font-app);
   --font-mono: var(--font-app-mono);
+  /* The named text styles of glass, at desktop sizes (owner, 2026-10-31:
+     "the UI/UX elements are a little larger than needed"). Apple's iOS sizes
+     (body 17) are for a phone held close. A desktop reads body at 15 and UI
+     labels at 13 to 14, as macOS and the work apps do. In rem, so density
+     scales them. Nothing in glass is smaller than 12 px. A glass component
+     uses these, never text-[Npx]. */
+  --text-caption: 0.75rem;
+  --text-footnote: 0.8125rem;
+  --text-label: 0.8125rem;
+  --text-subhead: 0.875rem;
+  --text-callout: 0.875rem;
+  --text-body: 0.9375rem;
+  --text-headline: 1rem;
+  --text-title: 1.25rem;
+  --text-title-lg: 1.5rem;
+  --text-largetitle: 1.75rem;
   /* The whole radius scale is derived from --radius so a theme controls the
      app's roundness with one value. At RapidTool's 0.75rem these resolve to
      exactly Tailwind's own defaults (8/10/12/12/16/24px), so the shipped look
      is unchanged; Fluent's 0.25rem squares everything off and Material's 1rem
      rounds it. max() keeps a small --radius from producing negative values. */
-  --radius-sm: max(0px, calc(var(--radius) - 4px));
-  --radius-md: max(0px, calc(var(--radius) - 2px));
+  /* Glass (D143) sets its own steps through `--glass-radius-*`. Classic never
+     defines those, so each step falls back to its classic value unchanged. */
+  --radius-sm: var(--glass-radius-sm, max(0px, calc(var(--radius) - 4px)));
+  --radius-md: var(--glass-radius-md, max(0px, calc(var(--radius) - 2px)));
   --radius-lg: var(--radius);
-  --radius-xl: var(--radius);
-  --radius-2xl: calc(var(--radius) + 4px);
-  --radius-3xl: calc(var(--radius) + 12px);
+  --radius-xl: var(--glass-radius-xl, var(--radius));
+  --radius-2xl: var(--glass-radius-2xl, calc(var(--radius) + 4px));
+  --radius-3xl: var(--glass-radius-3xl, calc(var(--radius) + 12px));
+  /* `rounded-row` exists for glass only (used as `glass:rounded-row`). Its
+     classic fallback is the classic `rounded-lg`. */
+  --radius-row: var(--glass-radius-row, var(--radius));
 }
 
 /* Density: scales the root font size, and with it every rem-based size
@@ -352,10 +696,18 @@ h4 {
   letter-spacing: var(--heading-tracking);
 }
 
-/* Prevent accidental horizontal scrolling of the whole app on small screens. */
+/* The document never scrolls. Every frame of AppShell is one window tall and
+   holds its own scroller, so a scroll of `html` or `body` can only shift the
+   whole app and leave a blank band (owner report, 2026-10-10). `clip` on both
+   axes stops a wheel that reaches the end of a pane. It also keeps the old
+   rule here, no sideways scroll of the whole app on small screens. On the
+   root, the browser applies `clip` to the viewport as `hidden`, so a script
+   can still scroll the document. The `relative overflow-clip` shell roots in
+   AppShell keep the document one window tall, and that is the guard against
+   a script. Fence: `src/lib/scrollWithin.test.ts`. */
 html,
 body {
-  overflow-x: hidden;
+  overflow: clip;
 }
 
 /* ── Tech glass / glow effects ──────────────────────────────────────────
@@ -404,6 +756,385 @@ body {
   box-shadow: var(--elevation);
 }
 
+/* ── Glass materials (D143) ───────────────────────────────────────────────
+   Use each one behind the variant (`glass:glass-chrome`), or in a component
+   that renders only in glass. glassLook.test.ts fails on a bare use.
+
+   The blur rule: backdrop-filter blurs only what is inside the nearest
+   ancestor that has a mask, a filter, opacity < 1 or its own
+   backdrop-filter. So never put a mask, a filter or an opacity on a
+   scroller that holds glass, and a menu opened inside glass takes
+   glass-menu (near opaque), not glass-chrome.
+
+   The containing-block rule (GL-3 review): backdrop-filter also makes the
+   element the containing block of every `position: fixed` descendant. A
+   fixed menu, popover or scrim inside it is then placed and clipped by that
+   element, not by the window. So a surface that HOLDS fixed children (the
+   rail, which holds the account menu and the row menus; the phone drawer)
+   takes glass-chrome-flat or glass-menu-flat, which carry the colour, the
+   edge and the shadow with no filter. */
+
+/* Floating chrome: translucent, blurred, a lit top edge and a hairline. */
+@utility glass-chrome {
+  background-color: var(--glass-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  box-shadow:
+    inset 0 0.5px 0 0 var(--glass-highlight),
+    0 0 0 0.5px var(--glass-edge),
+    var(--glass-shadow);
+}
+
+/* The menu material: glass thick enough to read over anything. */
+@utility glass-menu {
+  background-color: var(--glass-thick-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  box-shadow:
+    inset 0 0.5px 0 0 var(--glass-highlight),
+    0 0 0 0.5px var(--glass-edge),
+    var(--glass-shadow);
+}
+
+/* The same two materials with no filter, for a surface that holds
+   `position: fixed` children (the containing-block rule above) and has
+   nothing moving behind it: the rail sits on the plain grouped surface, and
+   the phone drawer on its scrim. Blur over a plain surface shows nothing,
+   so these lose no look. They create no containing block and no stacking
+   context, so a fixed menu inside stays placed, sized and layered by the
+   window. (A ::before layer under `isolation: isolate` was tried first: it
+   kept the blur, but the stacking context put the account menu UNDER the
+   page. Measured in Chromium 148, 2026-10-31.) */
+@utility glass-chrome-flat {
+  background-color: var(--glass-bg);
+  box-shadow:
+    inset 0 0.5px 0 0 var(--glass-highlight),
+    0 0 0 0.5px var(--glass-edge),
+    var(--glass-shadow);
+}
+
+@utility glass-menu-flat {
+  background-color: var(--glass-thick-bg);
+  box-shadow:
+    inset 0 0.5px 0 0 var(--glass-highlight),
+    0 0 0 0.5px var(--glass-edge),
+    var(--glass-shadow);
+}
+
+/* A content card: opaque, a hairline and a soft lift, no border. */
+@utility glass-surface {
+  background-color: var(--card);
+  box-shadow: var(--card-shadow);
+}
+
+/* A press answers the finger: a control dips while it is held. 160 ms is
+   Aroh's press, shorter than a change of state on purpose. The motion sits
+   behind `no-preference`, so under reduced motion the control holds still.
+   The gate lives inside the utility, so the variant form
+   `glass:glass-press` carries it too. (A nested `reduce` block here would
+   come before the file's main reduce block, which tests read first.) */
+@utility glass-press {
+  @media (prefers-reduced-motion: no-preference) {
+    transition:
+      transform 160ms var(--motion-easing),
+      background-color 160ms ease,
+      color 160ms ease,
+      opacity 160ms ease;
+    &:active:not(:disabled) {
+      transform: scale(0.96);
+    }
+  }
+}
+
+/* The scroll edge: content blurs and fades as it passes under a bar. It is
+   an overlay hung below the bar, never a mask on the scroller (the blur
+   rule). `--edge-color` is the surface of the page. */
+@utility glass-scroll-edge {
+  background: linear-gradient(to bottom, var(--edge-color, var(--background)) 20%, transparent);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+  -webkit-mask-image: linear-gradient(to bottom, #000 35%, transparent);
+  mask-image: linear-gradient(to bottom, #000 35%, transparent);
+}
+
+/* ── Glass chat (GL-4, D143) ──────────────────────────────────────────────
+   The chat's own motion and materials. Each name carries the `glass-` prefix
+   and a component uses it only behind the variant (`glass:glass-glow-ring`),
+   so under classic it matches nothing. glassLook.test.ts fails on a bare use.
+
+   The animation of each one is a plain rule keyed on the variant's own class
+   (`.glass\:glass-glow-ring`), inside `html[data-look="glass"]`. motion.test.ts
+   reads plain rules, not `@utility` bodies, and it needs every keyframe
+   gated by `no-preference` in this section.
+
+   The working glow is the one decorative motion of glass. It means a run is
+   live and a message now steers it. It draws only while the run streams, and
+   it holds still under reduced motion. It is a SIBLING of the composer, never
+   an ancestor, so its filter does not break the composer's backdrop blur. */
+
+@property --glow-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+@keyframes glass-glow-turn {
+  to {
+    --glow-angle: 360deg;
+  }
+}
+
+@keyframes glass-caret-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.2; }
+}
+
+@keyframes glass-dot-rise {
+  0%, 80%, 100% { opacity: 0.3; transform: translateY(0); }
+  40% { opacity: 1; transform: translateY(-2px); }
+}
+
+@keyframes glass-shimmer-sweep {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* The bloom: the box blurs the ring after the ring is cut, so both edges are soft. */
+@utility glass-working-glow {
+  pointer-events: none;
+  filter: blur(10px);
+  opacity: 0.95;
+}
+
+/* The colour edge round the chat (GL-10, owner 2026-10-31: "the color
+   highlight around the chat interface is missing"). The glow element is
+   always present in glass and says its state in `data-glow`:
+     rest      a still, soft spectrum: the chat is here, waiting for words
+     live      Aroh's turning spectrum, at full strength: a run is live, and
+               a message now steers it (the one decorative motion)
+     waiting   still and bright: the run waits on the member (attention
+               never loops, DESIGN_SYSTEM.md §4b)
+   `data-glow-focus="true"` (the composer has focus) lifts the rest state;
+   it is the composer's focus cue in glass, beside its ring.
+   An element with no `data-glow` is the GL-4 markup, which rendered only
+   while live, so it keeps the live look. */
+html[data-look="glass"] .glass\:glass-working-glow {
+  transition: opacity var(--motion-duration) var(--motion-easing);
+}
+html[data-look="glass"] .glass\:glass-working-glow[data-glow="rest"] {
+  opacity: 0.6;
+  inset: -0.3125rem;
+}
+html[data-look="glass"] .glass\:glass-working-glow[data-glow="rest"][data-glow-focus="true"] {
+  opacity: 0.95;
+}
+html[data-look="glass"] .glass\:glass-working-glow[data-glow="waiting"] {
+  opacity: 0.85;
+}
+html[data-look="glass"] .glass\:glass-working-glow[data-glow="live"] {
+  opacity: 1;
+  inset: -0.5rem;
+  filter: blur(14px);
+}
+/* The top-bar Ask field is 32 px high, so its edge is a thinner, tighter
+   ring than the composer's. */
+html[data-look="glass"] [data-testid="ask-glow"].glass\:glass-working-glow {
+  inset: -0.125rem;
+  filter: blur(6px);
+}
+html[data-look="glass"] [data-testid="ask-glow"] > .glass\:glass-glow-ring {
+  padding: 3px;
+}
+/* The field's own edge brightens with the bloom: on focus, and while a run
+   is live or waits on the member. The field follows its glow, so `+` reads
+   the glow's state. */
+html[data-look="glass"] [data-glow-focus="true"] + .glass\:glass-spectrum-edge::before,
+html[data-look="glass"] [data-glow="live"] + .glass\:glass-spectrum-edge::before,
+html[data-look="glass"] [data-glow="waiting"] + .glass\:glass-spectrum-edge::before {
+  opacity: 1;
+}
+
+/* The crisp edge of the field itself (GL-10, owner 2026-10-31). On a white
+   page the bloom alone fades to a pastel haze, so the field carries a 2 px
+   hairline in the same spectrum. It replaces the blue focus outline: focus
+   lifts the hairline and the bloom together. The field must be positioned. */
+@utility glass-spectrum-edge {
+  &::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 2px;
+    pointer-events: none;
+    background: conic-gradient(from var(--glow-angle), var(--glow-1), var(--glow-2), var(--glow-3), var(--glow-4), var(--glow-5), var(--glow-1));
+    -webkit-mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask:
+      linear-gradient(#000 0 0) content-box exclude,
+      linear-gradient(#000 0 0);
+    opacity: 0.6;
+    transition: opacity var(--motion-duration) var(--motion-easing);
+  }
+}
+
+/* A card in the chat thread, one step above the page surface (owner,
+   2026-10-31: the cards did not lift from the page). The page and the chat
+   are the card colour, so a card takes the popover step: #2c2c2e on #1c1c1e
+   in dark, white with the card shadow in light, as Aroh's cards on its
+   thread. Never on a panel or a page: those are the surface itself. */
+@utility glass-raised {
+  /* Inside the card, "the card" is this surface: a template's inline
+     `var(--card)` fill (a table head, a column, a chart box) blends with it
+     instead of drawing a darker block. */
+  --card: var(--popover);
+  background-color: var(--popover);
+  box-shadow: var(--card-shadow);
+}
+
+/* The spectrum, cut to a ring by a mask so the field itself stays clear. */
+@utility glass-glow-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 6px;
+  background: conic-gradient(from var(--glow-angle), var(--glow-1), var(--glow-2), var(--glow-3), var(--glow-4), var(--glow-5), var(--glow-1));
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box exclude,
+    linear-gradient(#000 0 0);
+}
+
+/* The answer's own text styles. The headings of a Markdown body keep their
+   classic class strings (markdownChatGolden.test.ts holds them byte for byte),
+   so glass sizes them from the wrapper. They step up with the 17 px body. */
+@utility glass-prose {
+  & h1 {
+    font-size: var(--text-title);
+    border-bottom-color: transparent;
+  }
+  & h2 {
+    font-size: var(--text-headline);
+  }
+  & h3,
+  & h4 {
+    font-size: var(--text-body);
+  }
+}
+
+/* Three dots: the run has started and no word has arrived. */
+@utility glass-typing-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background-color: currentColor;
+  opacity: 0.6;
+}
+
+/* A card's icon is a solid tile in a system colour, with the ink of the tint
+   on it. `--tile` names the colour and defaults to system blue. The utility
+   goes on the card's frame and finds the icon that sits before the title (the
+   header lives in ui/Collapsible, which this slice does not edit). */
+@utility glass-card-tile {
+  & :is(svg, span.flex):not([data-rollup-chevron]):has(+ [data-rollup-title]) {
+    box-sizing: border-box;
+    width: 1.75rem;
+    height: 1.75rem;
+    padding: 0.4375rem;
+    border-radius: 0.5rem;
+    background-color: var(--tile, var(--system-blue));
+    color: var(--tile-foreground);
+    align-items: center;
+    justify-content: center;
+  }
+  & [data-rollup-title] {
+    font-size: var(--text-subhead);
+  }
+}
+
+/* A sweeping highlight on the label of something that works. */
+@utility glass-shimmer-text {
+  background: linear-gradient(90deg, var(--muted-foreground) 0%, var(--foreground) 45%, var(--muted-foreground) 90%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+/* Each loop runs only for a member who has not asked for less motion. Under
+   reduced motion the glow holds still and still says "working", and the
+   dots and the shimmer hold still as well. The caret keeps the classic
+   `animate-pulse` of `lib/streamCaret.ts`, as it does in classic. */
+@media (prefers-reduced-motion: no-preference) {
+  /* Only a live run turns the spectrum. At rest and while the run waits on
+     the member, it holds still. */
+  html[data-look="glass"] .glass\:glass-glow-ring {
+    animation: glass-glow-turn 5s linear infinite;
+  }
+  html[data-look="glass"] [data-glow="rest"] > .glass\:glass-glow-ring,
+  html[data-look="glass"] [data-glow="waiting"] > .glass\:glass-glow-ring {
+    animation: none;
+  }
+  html[data-look="glass"] [data-glow="live"] + .glass\:glass-spectrum-edge::before {
+    animation: glass-glow-turn 5s linear infinite;
+  }
+  html[data-look="glass"] .stream-caret {
+    animation: glass-caret-blink 1s ease-in-out infinite;
+  }
+  html[data-look="glass"] .glass\:glass-typing-dot {
+    animation: glass-dot-rise 1.2s ease-in-out infinite;
+  }
+  html[data-look="glass"] .glass\:glass-typing-dot:nth-child(2) {
+    animation-delay: 0.18s;
+  }
+  html[data-look="glass"] .glass\:glass-typing-dot:nth-child(3) {
+    animation-delay: 0.36s;
+  }
+  html[data-look="glass"] .glass\:glass-shimmer-text {
+    animation: glass-shimmer-sweep 2.2s linear infinite;
+  }
+}
+html[data-look="glass"] .stream-caret {
+  background-color: var(--primary);
+}
+
+/* The surfaces every app already uses take the glass materials. These two
+   rules are the widest lever of GL-1: each panel, popover, drawer and modal
+   that wears tech-glass becomes Aroh's glass with no change to its code. */
+html[data-look="glass"] .tech-glass {
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  border-color: transparent;
+  box-shadow:
+    inset 0 0.5px 0 0 var(--glass-highlight),
+    0 0 0 0.5px var(--glass-edge),
+    var(--glass-shadow);
+}
+html[data-look="glass"] .tech-glass-subtle {
+  background: var(--glass-thick-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  border-color: transparent;
+  box-shadow:
+    inset 0 0.5px 0 0 var(--glass-highlight),
+    0 0 0 0.5px var(--glass-edge),
+    var(--glass-shadow);
+}
+
+/* Glass type: SF Pro's tracking. Headlines tighten, as SF Pro Display does
+   at large sizes. */
+html[data-look="glass"] body {
+  letter-spacing: -0.006em;
+  font-optical-sizing: auto;
+}
+
 /* ── Control primitives ─────────────────────────────────────────────────
    The shared <Button>/<Input>/<Badge> in components/ui/ build on these. They
    exist as CSS rather than Tailwind classes because two of them cannot be
@@ -420,14 +1151,16 @@ body {
    was a raw input wearing the PLATFORM's paint: a faint outline in dark, a
    solid black square in light. */
 .cc-checkbox:checked,
-.cc-checkbox:indeterminate {
+.cc-checkbox:indeterminate,
+.kb-editor ul[data-type="taskList"] input[type="checkbox"]:checked {
   -webkit-mask-repeat: no-repeat;
   mask-repeat: no-repeat;
   -webkit-mask-position: center;
   mask-position: center;
 }
 .cc-checkbox:checked::after,
-.cc-checkbox:indeterminate::after {
+.cc-checkbox:indeterminate::after,
+.kb-editor ul[data-type="taskList"] input[type="checkbox"]:checked::after {
   content: "";
   position: absolute;
   inset: 0;
@@ -439,10 +1172,12 @@ body {
   -webkit-mask-size: 80% 80%;
   mask-size: 80% 80%;
 }
-.cc-checkbox {
+.cc-checkbox,
+.kb-editor ul[data-type="taskList"] input[type="checkbox"] {
   position: relative;
 }
-.cc-checkbox:checked::after {
+.cc-checkbox:checked::after,
+.kb-editor ul[data-type="taskList"] input[type="checkbox"]:checked::after {
   -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
   mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
 }
@@ -484,6 +1219,11 @@ select optgroup {
   text-transform: var(--control-label-transform);
   transition: all var(--motion-duration) var(--motion-easing);
 }
+/* Glass: what a member types is text, not a label. The label weight made a
+   draft reply read as bold (owner, 2026-11-01). */
+html[data-look="glass"] .cc-control:is(input, textarea) {
+  font-weight: 400;
+}
 
 /* Keyboard focus only — a mouse click should not draw a ring.
    `.cc-link` is the same contract for something that is focusable but is NOT a
@@ -497,6 +1237,19 @@ select optgroup {
 .cc-link:focus-visible {
   outline: var(--control-focus-ring) solid var(--ring);
   outline-offset: 2px;
+}
+
+/* A TEXT FIELD draws its ring ON its own border, never outside it (owner,
+   2026-10-12: the rail's rename field "merges" with the Save beside it).
+   A field matches :focus-visible whenever it is focused, so it always wore
+   BOTH its `focus:border-primary` border and this 2px ring 2px outside it:
+   two outlines 3px apart, reaching 4px past the box into the button beside
+   it and past a dense row's edge. Inset by the border's width, the ring
+   covers the border and the box keeps its size. A button keeps the outer
+   ring, because it has no border state of its own. Fence:
+   src/lib/theme/fieldFocus.test.ts. */
+.cc-control:is(input, textarea, select):focus-visible {
+  outline-offset: -1px;
 }
 
 /* ── Prose that follows the theme ───────────────────────────────────────
@@ -613,19 +1366,260 @@ select optgroup {
    its real height grows by the inset on iPhones. A bare pb-14 covered only
    the content, and the bottom ~30px of every page (e.g. the email
    composer's action row) hid under the bar. */
+/* The phone bar's foot and height, in ONE place (owner, 2026-11-07: "on
+   iPhone the corners are quite rounded ... you might need to have some space
+   at the bottom"). The foot is the home-indicator inset, and never less than
+   0.75rem, so the labels keep clear of a rounded screen corner where the
+   inset reads 0. Every clearance of the bar reads `--phone-bar-h`; none adds
+   3.5rem and the inset by hand. Fence: `layers.test.ts`. */
+:root {
+  --phone-bar-foot: max(env(safe-area-inset-bottom, 0px), 0.75rem);
+  --phone-bar-h: calc(3.5rem + var(--phone-bar-foot));
+}
 .pb-nav {
-  padding-bottom: calc(3.5rem + env(safe-area-inset-bottom, 0px));
+  padding-bottom: var(--phone-bar-h);
+}
+/* ── The phone's bottom bar always shows (MOB-9, task 2002) ───────────────
+   The bar (AppShell, `data-phone-nav-bar`) is 3.5rem plus the safe-area inset
+   and paints at `LAYER_CLASS.bottomNav` (z-96), above every overlay of the
+   tree. While the phone layout shows, AppShell sets `data-phone-nav` on
+   <html>, and `--phone-nav-h` is the bar's height. Every full-height fixed
+   layer then ENDS at the bar's top edge, so no sheet, scrim or card hides a
+   tab, and no band of page shows between the layer and the bar.
+   Unlayered, so it beats a Tailwind utility (see `.pb-askbar`). An element
+   that is not spelled `fixed inset-0` opts in with `phone-nav-clear`.
+   The bar covers the home-indicator inset, so inside such a layer the foot's
+   safe-area padding drops to its gap (`pb-safe` to 0, `pb-safe-full` to
+   0.5rem). The peek strip (`.assistant-peek-bottom`) is NOT in this rule: it
+   runs under the bar by design.
+   Fences: `layers.test.ts`, `e2e/phone-bar-always.spec.ts`. */
+:root {
+  --phone-nav-h: 0px;
+}
+:root[data-phone-nav] {
+  --phone-nav-h: var(--phone-bar-h);
+}
+:root[data-phone-nav] :is(.fixed.inset-0, .fixed.inset-y-0, .fixed.bottom-0, .phone-nav-clear):not([data-phone-nav-bar]) {
+  bottom: var(--phone-nav-h);
+}
+:root[data-phone-nav] :is(.fixed.inset-0, .fixed.inset-y-0, .fixed.bottom-0, .phone-nav-clear):not([data-phone-nav-bar]).pb-safe,
+:root[data-phone-nav] :is(.fixed.inset-0, .fixed.inset-y-0, .fixed.bottom-0, .phone-nav-clear):not([data-phone-nav-bar]) .pb-safe {
+  padding-bottom: 0;
+}
+:root[data-phone-nav] :is(.fixed.inset-0, .fixed.inset-y-0, .fixed.bottom-0, .phone-nav-clear):not([data-phone-nav-bar]).pb-safe-full,
+:root[data-phone-nav] :is(.fixed.inset-0, .fixed.inset-y-0, .fixed.bottom-0, .phone-nav-clear):not([data-phone-nav-bar]) .pb-safe-full {
+  padding-bottom: 0.5rem;
+}
+/* Clearance for the floating Ask bar of the desktop shell (`ChatBar.tsx`,
+   `bottom-5`, a 44 px field). A page whose last line sits at the foot of its
+   scroller takes it, so the bar never covers that line. From `sm` up only:
+   the phone's Ask tab sits in the bottom nav, which `.pb-nav` clears. */
+@media (min-width: 640px) {
+  /* Unlayered, so it beats a Tailwind utility such as `p-4`, which sits in a layer. */
+  .pb-askbar {
+    padding-bottom: 5.5rem;
+  }
+}
+/* Room under the last line of a pane that the floating Ask bar overlaps
+   (task 2242). `askBarClearance.ts` marks the innermost scroller under the bar
+   and sets both properties: the padding it had, and the extra the bar needs.
+   Unlayered, like `.pb-askbar`. Only the desktop hook marks, so a phone never
+   sees it. Fences: `askBarClearance.test.ts`, `e2e/askbar-clearance.spec.ts`. */
+[data-askbar-clear] {
+  padding-bottom: calc(var(--askbar-pb, 0px) + var(--askbar-extra, 0px));
+}
+/* Where the page column itself takes the room (Email Cleaner's fixed last
+   row), the panes stop above the bar and their vertical lines ended in mid-air
+   (owner, 2026-11-08). One hairline closes them. The negative margin makes its
+   net height zero, so the column cannot grow a 1 px scroll. */
+main[data-askbar-clear]::after {
+  content: "";
+  display: block;
+  position: relative;
+  height: 1px;
+  margin-top: -1px;
+  background: var(--border);
 }
 /* The shared toast viewport's bottom edge. On a phone it sits ABOVE the fixed
    bottom nav (the same 3.5rem + safe-area clearance as .pb-nav, plus a gap),
    or every toast covers the nav for its whole life. From `sm` up there is no
    bottom nav, so it keeps the 1rem it always had. Fence: toastViewport.test.ts. */
 .toast-viewport-bottom {
-  bottom: calc(3.5rem + env(safe-area-inset-bottom, 0px) + 0.5rem);
+  bottom: calc(var(--phone-bar-h) + 0.5rem);
 }
 @media (min-width: 640px) {
   .toast-viewport-bottom {
     bottom: 1rem;
+  }
+}
+
+/* ── The phone's agent pill (WS-51 S5, `lib/shell/RunSignals.tsx`) ─────────
+   It sits on the fixed bottom nav: the nav's height, the safe-area inset and
+   a gap. While it shows, `AgentPill` sets `data-agent-pill` on <html>, and
+   the toasts and the page's last row move up by the pill's height (2.5rem)
+   and a gap, so the pill never covers a composer or a toast. Only the phone
+   layout mounts the pill, so the attribute is the gate, not a width.
+   Fence: runSignals.test.ts. */
+.agent-pill-bottom {
+  bottom: calc(var(--phone-bar-h) + 0.5rem);
+}
+:root[data-agent-pill] .toast-viewport-bottom {
+  bottom: calc(var(--phone-bar-h) + 3.5rem);
+}
+:root[data-agent-pill] .pb-nav {
+  padding-bottom: calc(var(--phone-bar-h) + 3rem);
+}
+
+/* ── The chat nudge on a phone (CF-2, `lib/shell/ChatNudge.tsx`) ──────────
+   One bubble above the Ask tab, on the fixed bottom nav. While it shows,
+   `ChatNudge` sets `data-chat-nudge` on <html>, and the page's last row
+   moves up by the bubble's height and a gap (3rem), so it never covers a
+   composer's action row. The peek strip's rule below wins when both show,
+   and the strip hides the bubble anyway. Only the phone sets the attribute. */
+:root[data-chat-nudge] .pb-nav {
+  padding-bottom: calc(var(--phone-bar-h) + 3rem);
+}
+
+/* ── The assistant's peek strip on a phone (CF-1, `lib/shell/AssistantDock.tsx`) ──
+   A 56 px row on the fixed bottom nav. It takes the place the agent pill
+   takes. While it shows, `AssistantDock` sets `data-assistant-peek` on
+   <html>, and the toasts and the page's last row move up by the strip's
+   height (3.5rem). Only the phone draws the strip, so the attribute is the
+   gate, not a width.
+   ⚠️ The box starts at the screen's foot and runs UNDER the nav (z-50 over
+   z-40). The row sits on top of the nav's clearance (3.5rem and the inset,
+   as `.pb-nav` reserves it). The nav's real height comes from its content
+   and is less than 3.5rem (measured 49 px at 390 px wide), so a box that
+   started at 3.5rem left a gap where the page showed through. */
+.assistant-peek-bottom {
+  bottom: 0;
+  height: calc(var(--phone-bar-h) + 3.5rem);
+  padding-bottom: var(--phone-bar-h);
+}
+/* The sheet's body stays laid out under the strip, hidden and inert, so the
+   chat keeps its scroll and its draft. Its height is the sheet's. */
+.assistant-peek-body {
+  top: 3.5rem;
+  height: 100dvh;
+}
+:root[data-assistant-peek] .toast-viewport-bottom {
+  bottom: calc(var(--phone-bar-h) + 4rem);
+}
+:root[data-assistant-peek] .pb-nav {
+  padding-bottom: calc(var(--phone-bar-h) + 3.5rem);
+}
+/* The phone's task card (TC-1, `lib/layers.ts` TASK_CARD_FRAME.phone). The box
+   is `fixed ... bottom-0`, so the phone-nav rule above ends it at the bar's top
+   edge (MOB-9). It needs no foot padding of its own. While the peek strip
+   shows, the strip runs under the bar by design and covers the card's foot,
+   so the card pads by the strip's height. */
+:root {
+  --task-card-peek-h: 3.5rem;
+}
+.task-card-phone {
+  padding-bottom: 0;
+}
+:root[data-assistant-peek] .task-card-phone {
+  padding-bottom: var(--task-card-peek-h);
+}
+/* The thin progress line. It slides only when the member allows motion. With
+   reduced motion it is a still third of the line. */
+@keyframes agent-pill-progress {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .agent-pill-progress {
+    animation: agent-pill-progress 1.6s ease-in-out infinite;
+  }
+}
+
+/* EA-13g, EA-13h: an agent's card looks alive while the agent holds it. The
+   `<li>` of a board card carries `data-agent-edge` (`agentCardLook`). No edge
+   is dashed (owner, 2026-10-30). Tokens only, so each organisation's accent
+   shows through the quiet edges.
+   - live: the chat box's spectrum (`--glow-1` … `--glow-5`) turns round the
+     card at the chat box's speed (owner, 2026-11-04: "use the same colored
+     spinner that we use for the text box of the chat"). It turns a layer
+     (transform only, §4), where the chat box turns `--glow-angle`.
+   - breathing (idle): a soft accent glow rises and falls. The glow is a still
+     layer (`::after`) whose opacity moves (§4: transform and opacity only).
+   - steady (queued): a still, thin, solid accent edge.
+   - warning, destructive: a 2px solid border.
+   EVERY edge is 2px on each side (a border, or the padding of live), so a
+   change of state never moves the card or the cards below it. The corner of
+   the edge is the card's own corner plus 2px (`--radius-lg` of
+   TaskCardShell), so the band is even round each corner. The card's own
+   1px border hides inside an edge, so one clean ring shows.
+   Under reduced motion each edge stays still: live stays lit, breathing is a
+   soft still glow. */
+[data-agent-edge] {
+  border-radius: calc(var(--radius-lg) + 2px);
+}
+[data-agent-edge] > [role="button"] {
+  border-color: transparent;
+}
+[data-agent-edge="steady"] {
+  border: 2px solid color-mix(in srgb, var(--primary) 40%, transparent);
+}
+[data-agent-edge="breathing"] {
+  position: relative;
+  border: 2px solid color-mix(in srgb, var(--primary) 30%, transparent);
+}
+[data-agent-edge="breathing"]::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--primary) 45%, transparent),
+    0 0 10px 2px color-mix(in srgb, var(--primary) 26%, transparent);
+  opacity: 0.45;
+}
+[data-agent-edge="warning"] { border: 2px solid var(--warning); }
+[data-agent-edge="destructive"] { border: 2px solid var(--destructive); }
+[data-agent-edge="live"] {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  padding: 2px;
+  background: conic-gradient(var(--glow-1), var(--glow-2), var(--glow-3), var(--glow-4), var(--glow-5), var(--glow-1));
+}
+[data-agent-edge="live"] > [role="button"] {
+  z-index: 1;
+}
+@keyframes agent-edge-travel {
+  from { transform: translate(-50%, -50%) rotate(0deg); }
+  to   { transform: translate(-50%, -50%) rotate(360deg); }
+}
+@keyframes agent-edge-breathe {
+  0%, 100% { opacity: 0.15; }
+  50%      { opacity: 1; }
+}
+@keyframes agent-live-dot {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  [data-agent-edge="live"]::before {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 300%;
+    aspect-ratio: 1;
+    z-index: 0;
+    background: conic-gradient(var(--glow-1), var(--glow-2), var(--glow-3), var(--glow-4), var(--glow-5), var(--glow-1));
+    transform: translate(-50%, -50%);
+    /* 5 s: the turn of the chat box's live edge (`glass-glow-turn`). */
+    animation: agent-edge-travel 5s linear infinite;
+  }
+  [data-agent-edge="breathing"]::after {
+    animation: agent-edge-breathe 3.5s ease-in-out infinite;
+  }
+  .agent-live-dot {
+    animation: agent-live-dot 1.6s ease-in-out infinite;
   }
 }
 
@@ -695,6 +1689,590 @@ select optgroup {
   pointer-events: none;
 }
 
+/* ── The Knowledge block editor (WS-61 KB-2b, knowledge_base.md §21.4) ───
+   One renderer for a page: the read view and the edit both draw the body
+   through `KnowledgeEditor`. The body sits in `cc-prose prose`, so it reads
+   like any Markdown in the app. These rules cover what the typography
+   plugin does not know: callouts, toggles, task lists, the code bar, raw
+   HTML kept as text, the drag handle and the bubble menus. Every colour is
+   a token, so light mode, density and accent all reach it. */
+.kb-editor-shell { position: relative; }
+.kb-editor { outline: none; }
+.kb-editor-shell.is-editing .kb-editor { min-height: 16rem; padding-bottom: 6rem; }
+/* One canvas (WS-61, 2026-10-22): the edit surface draws no box, no ring
+   and no background. The caret is the focus signal, as in Notion. The shell
+   adds no padding or margin either, so the first line sits where it sits in
+   the read view. */
+/* The page title, read and edit alike: one class, so the h2 and the
+   textarea draw the same glyphs on the same line. */
+.kb-title {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--foreground);
+  font: inherit;
+  font-size: 1.875rem;
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
+}
+textarea.kb-title { resize: none; overflow: hidden; outline: none; box-shadow: none; }
+textarea.kb-title::placeholder { color: var(--muted-foreground); opacity: 0.6; }
+/* The body reads at 1rem on a 1.7 line, whatever the typography plugin's
+   small size says. Rem, so the density setting reaches it. */
+.kb-editor.prose { font-size: 1rem; line-height: 1.7; }
+.kb-editor :where(p) { margin: 0.75em 0; }
+.kb-editor :where(h2, h3, h4, h5, h6) { color: var(--foreground); font-weight: 600; line-height: 1.3; }
+/* A body heading draws one level down: the app bar owns the one h1. The
+   editor's own level sits in data-md-level, so the sizes follow it. */
+.kb-editor :where(h2, h3, h4, h5, h6) { margin: 1.6em 0 0.4em; }
+.kb-editor [data-md-level="1"] { font-size: 1.875rem; }
+.kb-editor [data-md-level="2"] { font-size: 1.5rem; }
+.kb-editor [data-md-level="3"] { font-size: 1.25rem; }
+.kb-editor [data-md-level="4"], .kb-editor [data-md-level="5"], .kb-editor [data-md-level="6"] { font-size: 1.0625rem; }
+.kb-editor > :first-child { margin-top: 0; }
+.kb-editor :where(ul, ol) { margin: 0.75em 0; }
+.kb-editor :where(li) { margin: 0.3em 0; }
+.kb-editor :where(li > p) { margin: 0; }
+.kb-editor :where(hr) { margin: 1.5em 0; }
+.kb-editor :where(blockquote) { font-style: normal; color: var(--muted-foreground); }
+.kb-editor :where(blockquote p)::before,
+.kb-editor :where(blockquote p)::after { content: none; }
+.kb-editor p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  color: var(--muted-foreground);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
+.kb-editor .ProseMirror-selectednode { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: calc(var(--radius) - 6px); }
+.kb-editor-shell .ProseMirror-dropcursor,
+.kb-editor + .ProseMirror-dropcursor { background: var(--primary); }
+.kb-editor .ProseMirror-gapcursor::after { border-top-color: var(--foreground); }
+
+/* A link to a page of this app draws as a mention chip, as in Notion: a page
+   glyph, then the title, no underline, a soft hover and rounded corners. The
+   `<a>` gets `kb-page-chip` from the Link mark (`lib/editor/schema.ts`), and
+   the first text of the link gets `kb-page-glyph` (`lib/editor/pageChips.ts`).
+   With no emoji the glyph is a file icon cut from `currentColor` by a mask,
+   so it follows the text colour in every mode. The stored form is still a
+   Markdown link. */
+.kb-editor a.kb-page-chip {
+  color: var(--foreground);
+  text-decoration: none;
+  border-radius: calc(var(--radius) - 0.25rem);
+  font-weight: inherit;
+  padding: 0.05em 0.1em 0.05em 0.2em;
+  margin: 0 -0.05em 0 -0.15em;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+.kb-editor a.kb-page-chip:hover { background-color: var(--muted); }
+.kb-editor a.kb-page-chip .kb-page-glyph::before {
+  content: "";
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  margin-right: 0.25em;
+  vertical-align: -0.15em;
+  background-color: var(--muted-foreground);
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z'/%3E%3Cpath d='M14 2v4a2 2 0 0 0 2 2h4'/%3E%3Cpath d='M10 9H8'/%3E%3Cpath d='M16 13H8'/%3E%3Cpath d='M16 17H8'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z'/%3E%3Cpath d='M14 2v4a2 2 0 0 0 2 2h4'/%3E%3Cpath d='M10 9H8'/%3E%3Cpath d='M16 13H8'/%3E%3Cpath d='M16 17H8'/%3E%3C/svg%3E");
+}
+.kb-editor a.kb-page-chip .kb-page-glyph[data-emoji]::before {
+  content: attr(data-emoji);
+  width: auto;
+  background: none;
+  -webkit-mask-image: none;
+  mask-image: none;
+  vertical-align: baseline;
+}
+
+/* KB-2k1: a link to a person (`/people/<id>`) draws as a person chip. It is
+   the page chip's twin: the same soft hover and rounded corners, and a user
+   icon cut from `currentColor` by a mask in place of the page glyph. The
+   stored form is a plain Markdown link, `[@Name](/people/<id>)`. */
+.kb-editor a.kb-person-chip {
+  color: var(--foreground);
+  text-decoration: none;
+  border-radius: calc(var(--radius) - 0.25rem);
+  font-weight: inherit;
+  padding: 0.05em 0.2em 0.05em 0.2em;
+  margin: 0 -0.05em 0 -0.15em;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+.kb-editor a.kb-person-chip:hover { background-color: var(--muted); }
+.kb-editor a.kb-person-chip::before {
+  content: "";
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  margin-right: 0.25em;
+  vertical-align: -0.15em;
+  background-color: var(--muted-foreground);
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2'/%3E%3Ccircle cx='12' cy='7' r='4'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2'/%3E%3Ccircle cx='12' cy='7' r='4'/%3E%3C/svg%3E");
+}
+
+/* KB-2g: the marks of a compare in the page history (`lib/historyDiff.ts`).
+   An added word takes a tint of --success, and a removed word shows struck
+   through in --destructive: the status vocabulary, never a palette class. */
+.kb-diff-added {
+  background: color-mix(in srgb, var(--success) 20%, transparent);
+  color: var(--foreground);
+  border-radius: 2px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+.kb-diff-removed {
+  color: var(--destructive);
+  background: color-mix(in srgb, var(--destructive) 12%, transparent);
+  text-decoration: line-through;
+  border-radius: 2px;
+  padding: 0 2px;
+  margin-right: 0.25em;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+.kb-diff-node-added { outline: 2px solid var(--success); outline-offset: 2px; border-radius: 4px; }
+.kb-diff-current { box-shadow: 0 0 0 2px var(--primary); }
+
+/* Task lists: the box, then the item's own blocks. */
+.kb-editor ul[data-type="taskList"] { list-style: none; padding-left: 0.25em; }
+.kb-editor ul[data-type="taskList"] li { display: flex; align-items: flex-start; gap: 0.5em; padding-left: 0; }
+.kb-editor ul[data-type="taskList"] li::marker { content: none; }
+.kb-editor ul[data-type="taskList"] li > label { flex-shrink: 0; display: flex; align-items: center; height: 1.7em; margin: 0; user-select: none; }
+.kb-editor ul[data-type="taskList"] li > div > p { margin: 0; }
+.kb-editor ul[data-type="taskList"] li > div { flex: 1 1 auto; min-width: 0; }
+/* The task box wears the shared checkbox look (`Checkbox.tsx` and
+   `.cc-checkbox` above), because TipTap draws its own input. */
+.kb-editor ul[data-type="taskList"] input[type="checkbox"] {
+  appearance: none;
+  flex-shrink: 0;
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  background: var(--background);
+  cursor: pointer;
+}
+.kb-editor ul[data-type="taskList"] input[type="checkbox"]:checked { border-color: var(--primary); background: var(--primary); }
+.kb-editor ul[data-type="taskList"] input[type="checkbox"]:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.kb-editor ul[data-type="taskList"] input[type="checkbox"]:disabled { cursor: default; }
+.kb-editor ul[data-type="taskList"] li[data-checked="true"] > div { color: var(--muted-foreground); text-decoration: line-through; }
+
+/* Callouts: a tinted panel with the tone's glyph and name. */
+.kb-callout {
+  --kb-tone: var(--info);
+  margin: 1em 0;
+  border: 1px solid color-mix(in srgb, var(--kb-tone) 35%, var(--border));
+  border-left-width: 3px;
+  border-left-color: var(--kb-tone);
+  border-radius: calc(var(--radius) - 4px);
+  background: color-mix(in srgb, var(--kb-tone) 8%, var(--card));
+  padding: 0.5em 0.875em;
+}
+.kb-callout[data-callout="tip"] { --kb-tone: var(--success); }
+.kb-callout[data-callout="important"] { --kb-tone: var(--violet); }
+.kb-callout[data-callout="warning"] { --kb-tone: var(--warning); }
+.kb-callout[data-callout="caution"] { --kb-tone: var(--destructive); }
+.kb-callout-head { display: flex; align-items: center; gap: 0.5em; min-height: 1.75em; user-select: none; }
+.kb-callout-icon { color: var(--kb-tone); }
+.kb-callout-label { font-size: 0.8125em; font-weight: 600; color: var(--kb-tone); }
+.kb-callout-body > :first-child,
+.kb-callout-body > div > :first-child { margin-top: 0.25em; }
+.kb-callout-body > :last-child,
+.kb-callout-body > div > :last-child { margin-bottom: 0.25em; }
+
+/* Toggles: a fold button, the summary, and the body under it. */
+.kb-toggle { display: flex; align-items: flex-start; gap: 0.25em; margin: 0.75em 0; }
+.kb-toggle-fold { flex-shrink: 0; padding-top: 0.125em; }
+.kb-toggle-inner { flex: 1 1 auto; min-width: 0; }
+.kb-toggle-summary { font-weight: 600; color: var(--foreground); padding: 0.125em 0; }
+.kb-toggle-summary:has(> br.ProseMirror-trailingBreak:only-child)::before {
+  content: "Toggle title";
+  color: var(--muted-foreground);
+  font-weight: 400;
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
+.kb-toggle[data-open="false"] .kb-toggle-content { display: none; }
+.kb-toggle-content > :first-child { margin-top: 0.25em; }
+
+/* Code: a bar with the language and Copy, then the code. */
+.kb-code {
+  margin: 1em 0;
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--background);
+  overflow: hidden;
+}
+.kb-code-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5em;
+  padding: 0.25em 0.5em;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  background: color-mix(in srgb, var(--secondary) 80%, transparent);
+  user-select: none;
+}
+.kb-code pre { margin: 0; border-radius: 0; background: transparent; padding: 0.875em 1em; }
+.kb-code pre code { font-size: 0.85em; color: var(--foreground); }
+
+/* Raw HTML the editor keeps as text. It reads as code, never as HTML. */
+.kb-editor pre.kb-raw-html {
+  background: var(--muted);
+  color: var(--muted-foreground);
+  border: 1px dashed var(--border);
+  font-size: 0.8em;
+  white-space: pre-wrap;
+}
+.kb-editor code.kb-raw-html { color: var(--muted-foreground); }
+
+/* Images draw through MarkdownImage, which gates a remote one. */
+.kb-image-wrap { display: inline-block; max-width: 100%; }
+.kb-image { max-width: 100%; height: auto; border-radius: calc(var(--radius) - 4px); }
+
+/* Tables keep the prose look, with a cell outline while editing. */
+.kb-editor .tableWrapper {
+  margin: 1em 0;
+  overflow-x: auto;
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  border-radius: calc(var(--radius) - 4px);
+}
+.kb-editor table { table-layout: auto; width: 100%; margin: 0; border-collapse: collapse; }
+.kb-editor :where(th) {
+  background: color-mix(in srgb, var(--secondary) 60%, transparent);
+  color: var(--muted-foreground);
+  font-size: 0.85em;
+  font-weight: 600;
+  text-align: left;
+}
+.kb-editor :where(th, td) { padding: 0.4em 0.75em; vertical-align: top; }
+.kb-editor :where(td) { border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+/* While a member edits, a table leaves room under it for its tools (KB-2i:
+   they hang under the table, as in Docmost), so they never cover the block
+   below, and room above it for the column grips. */
+.kb-editor-shell.is-editing .kb-editor .tableWrapper { margin-top: 1.25rem; margin-bottom: 3rem; }
+.kb-editor-shell.is-editing .kb-editor :where(td, th) { position: relative; border: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+.kb-editor-shell.is-editing .kb-editor .selectedCell::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+  pointer-events: none;
+}
+.kb-editor :where(td, th) > p { margin: 0; }
+
+/* The block handle: a grip in the gutter, left of the block. A phone has
+   no pointer to drag with and no gutter, so the handle is not drawn there. */
+.kb-drag-handle { display: flex; align-items: center; justify-content: center; }
+@media (max-width: 640px) {
+  .kb-drag-handle { display: none; }
+}
+.kb-drag-grip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.5rem;
+  border-radius: calc(var(--radius) - 6px);
+  color: var(--muted-foreground);
+  cursor: grab;
+}
+.kb-drag-grip:hover { background: var(--secondary); color: var(--foreground); }
+
+/* The bubble menus float over the text, on the popover surface. */
+.kb-bubble {
+  z-index: 60;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--popover);
+  padding: 0.25rem;
+}
+
+/* ── KB-2i (knowledge_base.md §21.7): table grips, footnotes, find ──────── */
+/* A grip above a column and left of a row. It sits on the cell's edge, on
+   the card surface, so the table line does not run through it. */
+.kb-table-handle {
+  position: absolute;
+  z-index: 20;
+  transform: translate(-50%, -50%);
+  border-radius: calc(var(--radius) - 6px);
+  background: var(--card);
+}
+.kb-table-handle.is-col { width: 1.75rem; height: 1rem; }
+.kb-table-handle.is-row { width: 1rem; height: 1.75rem; }
+.kb-table-handle .cc-control { cursor: grab; }
+.kb-table-handle .cc-control:active { cursor: grabbing; }
+@media (max-width: 640px) {
+  .kb-table-handle { display: none; }
+}
+@media print {
+  .kb-table-handle { display: none; }
+}
+/* The copy of a row or column under the pointer, and the line where it lands. */
+.kb-table-drag-preview {
+  position: fixed;
+  z-index: 70;
+  pointer-events: none;
+  opacity: 0.85;
+  border: 1px solid var(--primary);
+  border-radius: calc(var(--radius) - 6px);
+  background: var(--card);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--foreground) 12%, transparent);
+}
+.kb-table-drag-preview table { width: 100%; margin: 0; border-collapse: collapse; }
+.kb-table-drop-line {
+  position: fixed;
+  z-index: 71;
+  pointer-events: none;
+  background: var(--primary);
+  border-radius: 1px;
+}
+
+/* Footnotes: the mark draws its number, and a note draws it in a gutter.
+   The number comes from a decoration (`--kb-fn-label`, `footnotes.ts`). */
+.kb-footnote-ref {
+  color: var(--primary);
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0 1px;
+}
+.kb-footnote-ref::after { content: var(--kb-fn-label, "?"); }
+.kb-footnote {
+  display: flex;
+  gap: 0.5em;
+  font-size: 0.875em;
+  color: var(--muted-foreground);
+  margin: 0.25em 0;
+}
+.kb-footnote:not(.kb-footnote + .kb-footnote) {
+  margin-top: 2rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+.kb-footnote-label {
+  flex-shrink: 0;
+  min-width: 1.25em;
+  font-weight: 600;
+  color: var(--foreground);
+  user-select: none;
+}
+.kb-footnote-label::before { content: var(--kb-fn-label, "?") "."; }
+.kb-footnote-body { flex: 1 1 auto; min-width: 0; }
+.kb-footnote-body > :first-child { margin-top: 0; }
+.kb-footnote-body > :last-child { margin-bottom: 0; }
+
+/* Find in the page: a bar at the top right of the body that stays in view,
+   and a mark on each match. The match in focus takes the primary tint. */
+.kb-find-anchor {
+  position: sticky;
+  top: 0.5rem;
+  z-index: 30;
+  height: 0;
+}
+.kb-find {
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: min(26rem, 100%);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--popover);
+  padding: 0.25rem;
+}
+/* ── KB-2p: the stored forms (knowledge_base.md §21.7) ──────────────────────
+   A colour name of `lib/editor/colors.ts` maps to a slot of the categorical
+   ramp, which clears AA on the card in both modes. A hex value from another
+   tool comes as a checked inline style instead. Never rename a name. */
+.kb-text-color[data-color="gray"] { color: var(--muted-foreground); }
+.kb-text-color[data-color="blue"] { color: var(--cat-1); }
+.kb-text-color[data-color="orange"] { color: var(--cat-2); }
+.kb-text-color[data-color="green"] { color: var(--cat-3); }
+.kb-text-color[data-color="purple"] { color: var(--cat-4); }
+.kb-text-color[data-color="red"] { color: var(--cat-5); }
+.kb-text-color[data-color="teal"] { color: var(--cat-6); }
+.kb-text-color[data-color="pink"] { color: var(--cat-7); }
+.kb-text-color[data-color="yellow"] { color: var(--cat-12); }
+.kb-highlight {
+  --kb-mark: var(--cat-12);
+  background: color-mix(in srgb, var(--kb-mark) 28%, transparent);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 0.1em;
+}
+/* KB-3d: a matched word in a search snippet. The look of `.kb-highlight`. */
+.kb-search-mark {
+  background: color-mix(in srgb, var(--cat-12) 32%, transparent);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 0.1em;
+}
+.kb-editor [data-align="center"] { text-align: center; }
+.kb-editor [data-align="right"] { text-align: right; }
+.kb-editor [data-align="justify"] { text-align: justify; }
+/* The panels of the bubble menu: the alignment and the colour picker. */
+.kb-bubble-panel {
+  position: absolute;
+  top: calc(100% + 0.375rem);
+  left: 0;
+  z-index: 1;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--popover);
+  padding: 0.25rem;
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--foreground) 12%, transparent);
+}
+@media print {
+  .kb-find-anchor { display: none; }
+}
+.kb-editor .kb-find-match {
+  background: color-mix(in srgb, var(--warning) 35%, transparent);
+  border-radius: 2px;
+}
+.kb-editor .kb-find-match-current {
+  background: color-mix(in srgb, var(--primary) 40%, transparent);
+  outline: 1px solid var(--primary);
+}
+/* KB-2p adds buttons to the bubble, so on a phone its row wraps. */
+.kb-bubble { max-width: calc(100vw - 1rem); }
+/* A panel under the last button of a bar hangs from its right edge. */
+.kb-bubble-panel-end { left: auto; right: 0; }
+/* A phone wraps the bubble's row, so a panel hangs from the whole bubble. */
+@media (max-width: 640px) {
+  .kb-panel-anchor { position: static; }
+  .kb-bubble-panel, .kb-bubble-panel-end { left: 0; right: auto; max-width: calc(100vw - 2rem); }
+}
+.kb-color-panel { display: flex; flex-direction: column; gap: 0.25rem; width: max-content; }
+.kb-color-heading { padding: 0.125rem 0.25rem 0; font-size: 0.6875rem; font-weight: 600; color: var(--muted-foreground); }
+.kb-color-grid { display: grid; grid-template-columns: repeat(5, auto); gap: 0.125rem; }
+.kb-color-glyph { font-weight: 600; text-decoration: underline; text-underline-offset: 2px; }
+.kb-swatch-mark, .kb-swatch-none { display: inline-block; min-width: 1.125rem; border-radius: 3px; font-weight: 600; }
+.kb-swatch-none { box-shadow: inset 0 0 0 1px var(--border); }
+/* The status badge and the date: inline chips on the text line. */
+.kb-status-wrap, .kb-date-wrap { display: inline; }
+.kb-status {
+  padding: 0 0.4em;
+  font-size: 0.75em;
+  font-weight: 600;
+  line-height: 1.6;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  vertical-align: 0.08em;
+}
+.kb-status-button, .kb-date-button { cursor: pointer; border: 0; font-family: inherit; }
+.kb-status-button:focus-visible, .kb-date-button:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.kb-date { font-size: 0.875em; line-height: 1.6; vertical-align: 0.02em; }
+
+/* Columns: side by side, and stacked on a phone. */
+.kb-columns { margin: 1em 0; }
+.kb-columns-grid { display: grid; gap: 1.25rem; grid-template-columns: repeat(var(--kb-cols, 2), minmax(0, 1fr)); }
+.kb-columns[data-count="3"] { --kb-cols: 3; }
+.kb-columns[data-count="4"] { --kb-cols: 4; }
+.kb-columns[data-count="5"] { --kb-cols: 5; }
+/* The React node view puts the columns in one more element. It takes no box,
+   so each column is a cell of the grid. */
+.kb-columns-grid > [data-node-view-content-react] { display: contents; }
+.kb-column { min-width: 0; }
+.kb-column > :first-child { margin-top: 0; }
+.kb-column > :last-child { margin-bottom: 0; }
+.kb-editor-shell.is-editing .kb-column {
+  border: 1px dashed color-mix(in srgb, var(--border) 80%, transparent);
+  border-radius: calc(var(--radius) - 4px);
+  padding: 0.5rem 0.75rem;
+}
+.kb-columns-bar { display: flex; align-items: center; gap: 0.125rem; margin-bottom: 0.375rem; user-select: none; }
+.kb-columns-label { margin-right: 0.25rem; font-size: 0.75em; color: var(--muted-foreground); }
+@media (max-width: 767px) {
+  .kb-columns-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* The sub-pages list: a card of links to the child pages. */
+.kb-subpages {
+  margin: 1em 0;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--card);
+  padding: 0.625rem 0.75rem;
+}
+.kb-subpages-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; min-height: 2rem; }
+.kb-subpages-title { display: inline-flex; align-items: center; gap: 0.375rem; font-size: 0.8125em; font-weight: 600; color: var(--foreground); }
+.kb-subpages-count { font-weight: 500; color: var(--muted-foreground); }
+.kb-subpages-list { list-style: none; margin: 0.25rem 0 0; padding: 0; }
+.kb-subpages-list li { margin: 0; }
+.kb-subpage {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2rem;
+  border-radius: calc(var(--radius) - 4px);
+  padding: 0 0.375rem;
+  color: var(--foreground);
+  text-decoration: none;
+}
+a.kb-subpage:hover { background: var(--secondary); }
+a.kb-subpage:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.kb-subpage svg { flex-shrink: 0; color: var(--muted-foreground); }
+.kb-subpages-note { margin: 0.25rem 0 0; font-size: 0.8125em; color: var(--muted-foreground); }
+
+/* The page break: a labelled rule on screen, a new page in print. */
+.kb-page-break {
+  position: relative;
+  margin: 1.5em 0;
+  border-top: 1px dashed var(--border);
+}
+.kb-page-break::after {
+  content: "Page break";
+  position: absolute;
+  top: -0.7em;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0 0.5em;
+  background: var(--background);
+  font-size: 0.6875rem;
+  color: var(--muted-foreground);
+}
+@media print {
+  .kb-page-break { border: 0; margin: 0; break-after: page; page-break-after: always; }
+  .kb-page-break::after { content: none; }
+  .kb-columns-bar { display: none; }
+}
+/* A cell colour: a tint of the same name as a highlight. */
+.kb-editor :where(td, th)[data-color] { background: color-mix(in srgb, var(--kb-mark, var(--cat-12)) 18%, transparent); }
+.kb-cell-swatch { display: inline-block; width: 1rem; height: 1rem; border-radius: 3px; box-shadow: inset 0 0 0 1px var(--border); }
+.kb-cell-swatch[data-color] { background: color-mix(in srgb, var(--kb-mark, var(--cat-12)) 40%, transparent); }
+:where(.kb-editor td, .kb-editor th, .kb-cell-swatch, .kb-highlight)[data-color="gray"] { --kb-mark: var(--muted-foreground); }
+:where(.kb-editor td, .kb-editor th, .kb-cell-swatch, .kb-highlight)[data-color="blue"] { --kb-mark: var(--cat-1); }
+:where(.kb-editor td, .kb-editor th, .kb-cell-swatch, .kb-highlight)[data-color="orange"] { --kb-mark: var(--cat-2); }
+:where(.kb-editor td, .kb-editor th, .kb-cell-swatch, .kb-highlight)[data-color="green"] { --kb-mark: var(--cat-3); }
+:where(.kb-editor td, .kb-editor th, .kb-cell-swatch, .kb-highlight)[data-color="purple"] { --kb-mark: var(--cat-4); }
+:where(.kb-editor td, .kb-editor th, .kb-cell-swatch, .kb-highlight)[data-color="red"] { --kb-mark: var(--cat-5); }
+:where(.kb-editor td, .kb-editor th, .kb-cell-swatch, .kb-highlight)[data-color="teal"] { --kb-mark: var(--cat-6); }
+:where(.kb-editor td, .kb-editor th, .kb-cell-swatch, .kb-highlight)[data-color="pink"] { --kb-mark: var(--cat-7); }
+:where(.kb-editor td, .kb-editor th, .kb-cell-swatch, .kb-highlight)[data-color="yellow"] { --kb-mark: var(--cat-12); }
+/* KB-2p stored forms: end */
+
 @keyframes chat-shimmer {
   0%   { background-position: 200% 0; }
   100% { background-position: -200% 0; }
@@ -749,7 +2327,7 @@ select optgroup {
   to   { opacity: 1; transform: translateY(0); }
 }
 .chat-fade-in {
-  animation: chat-fade-in 0.15s ease-out;
+  animation: chat-fade-in var(--sheet-duration) var(--sheet-easing);
 }
 
 /* ── Message animations ───────────────────────────────────────────────── */
@@ -761,6 +2339,427 @@ select optgroup {
 }
 .animate-fade-in {
   animation: fade-in-up 0.2s ease-out;
+}
+
+/* ── The sidebar fold (`lib/sidebarFold.ts`, navigation_shell.md §3.2) ──── */
+/* The rail eases its width, and the list that fits the new width fades in
+   behind it, so a fold reads as one movement and not a snap. Then the expand
+   button pulses three times in the accent, so the member sees where the
+   sidebar went. Tokens only: every colour is `--primary`, mixed down. */
+.sidebar-rail {
+  transition: width var(--panel-duration) var(--panel-easing);
+}
+
+/* Hover to expand (owner, 2026-11-01). A folded rail's rows keep their
+   place while it widens, so the row under the pointer stays under it. Each
+   name takes no width while folded, fades in once the rail has widened, and
+   leaves at once when it narrows. The rows hold one geometry in both states
+   (below), so no icon moves on the way out or on the way back. */
+.sidebar-rail [data-rail-label] {
+  max-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  transition: opacity 100ms ease-out;
+}
+.sidebar-rail[data-peek="open"] [data-rail-label] {
+  max-width: 12rem;
+  margin-left: 0.75rem;
+  opacity: 1;
+  transition: opacity 160ms ease-out 110ms;
+}
+/* One geometry for the folded rail, peeking or not, so nothing moves when
+   the peek ends (owner, 2026-11-01: "a slight shift between where the icons
+   are supposed to be"). An icon sits at a fixed left inset, the centred x of
+   an 18 px icon in a 40 px row, and never re-centres. A count or a dot
+   keeps its place on the icon's top-right corner, measured from the left,
+   so a wider row does not carry it away. The head's mark does the same. */
+html[data-look="glass"] .sidebar-rail[data-collapsed="true"] [data-rail-row] {
+  justify-content: flex-start;
+  padding-left: 0.6875rem;
+}
+html[data-look="glass"] .sidebar-rail[data-collapsed="true"] [data-account-foot] [data-rail-row] {
+  padding-left: 0.375rem;
+}
+html[data-look="glass"] .sidebar-rail[data-collapsed="true"] [data-rail-row] > .absolute {
+  left: 1.625rem;
+  right: auto;
+}
+/* A count sits on the icon's top-right corner, and it may cross the rail's
+   edge (owner, 2026-11-01: "the color number bubble ... on top of the bar's
+   boundaries"). At rest the folded rail does not clip, and its list reaches
+   8 px past the rail, over the frame's gap, so a wide count ("26+") draws
+   whole. A ring in the rail's tone parts it from the icon. A peek clips
+   again: there the count fades and the row's trailing pill shows it. */
+html[data-look="glass"] .sidebar-rail[data-collapsed="true"]:not([data-peek]) {
+  overflow: visible;
+}
+html[data-look="glass"] .sidebar-rail[data-collapsed="true"] > nav {
+  margin-right: -0.5rem;
+  padding-right: 0.5rem;
+}
+html[data-look="glass"] .sidebar-rail[data-collapsed="true"] [data-rail-row] > [data-rail-corner] {
+  left: 1.25rem;
+  top: 0.125rem;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--background-grouped) 30%, var(--card));
+}
+/* The head's brand clips to its mark while the rail is folded, and opens to
+   the name as the rail widens, at the rail's own pace. It keeps one width,
+   and a clip moves, not the layout (motion.test.ts G3). */
+html[data-look="glass"] .sidebar-rail [data-head-brand] {
+  max-width: 11rem;
+  overflow: hidden;
+  clip-path: inset(0 0 0 0);
+  transition: clip-path var(--panel-duration) var(--panel-easing);
+}
+html[data-look="glass"] .sidebar-rail[data-collapsed="true"]:not([data-peek="open"]) [data-head-brand] {
+  clip-path: inset(0 calc(100% - 1.5rem) 0 0);
+}
+/* A folded rail shows the organization's square mark, and the open sidebar
+   its wide logo (owner, 2026-11-01). Until the mark has drawn, the wide logo
+   stays, clipped to its left. */
+html[data-look="glass"] .sidebar-rail[data-collapsed="true"]:not([data-peek="open"]) [data-head-brand] [data-brand-mark] {
+  display: flex;
+}
+html[data-look="glass"] .sidebar-rail[data-collapsed="true"]:not([data-peek="open"]) [data-head-brand]:has([data-brand-mark]) [data-brand-wide] {
+  display: none;
+}
+/* A section's cap: the rule while folded, the name while it peeks. */
+.sidebar-rail[data-peek="open"] [data-rail-rule] {
+  display: none;
+}
+/* A wide count would sit on a row's name while it peeks, so the corner
+   count fades out and a trailing pill fades in at the row's end. Neither
+   moves. */
+.sidebar-rail [data-rail-trail] {
+  max-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  opacity: 0;
+  padding-inline: 0;
+  transition: opacity 100ms ease-out;
+}
+.sidebar-rail[data-peek="open"] [data-rail-trail] {
+  max-width: 4rem;
+  padding-inline: 0.375rem;
+  opacity: 1;
+  transition: opacity 160ms ease-out 110ms;
+}
+.sidebar-rail [data-rail-corner] {
+  transition: opacity 100ms ease-out;
+}
+/* No count in the sidebar ever wraps (owner, 2026-11-01: "the numbers ...
+   never go to two lines across all the sidebar pills"). */
+.sidebar-rail [data-rail-corner],
+.sidebar-rail [data-rail-trail],
+.sidebar-rail [data-nav-needs] {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.sidebar-rail[data-peek="open"] [data-rail-corner] {
+  opacity: 0;
+}
+/* While it peeks, the names read as the open sidebar's do. */
+html[data-look="glass"] .sidebar-rail[data-peek] [data-rail-row]:not([aria-current="page"]) [data-rail-label] {
+  color: color-mix(in srgb, var(--sidebar-foreground) 85%, transparent);
+}
+/* One material, folded or peeking (owner, 2026-11-01: "it sort of changes
+   color drastically"). One layer under the rail's content draws the rail's
+   own tint over the frame's colour, as the folded rail shows it, so over the
+   page it reads as the same panel, and the page shows through it, blurred.
+   The blur sits on this layer, never on the rail itself, so a fixed menu
+   inside the rail (the account menu) is not trapped by it. */
+html[data-look="glass"] .sidebar-rail[data-peek] {
+  background-color: transparent;
+}
+/* The peek lies over the live page, and its tint is within a few percent of
+   the page's own (owner, 2026-11-03: "they are mixing into each other"). So
+   it parts from the page by its edge and its lift, never by a second colour:
+   a crisp hairline and a deeper shadow than a menu's. The lift holds while
+   the peek closes, so it does not drop off mid-motion. */
+html[data-look="glass"] .sidebar-rail[data-peek] {
+  box-shadow:
+    inset 0 0.5px 0 0 var(--glass-highlight),
+    var(--glass-float-shadow);
+}
+html[data-look="glass"] .sidebar-rail[data-peek]::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  /* The rail's tint on top, the frame's colour under it: what the folded
+     rail shows, over the frame or over the page. */
+  background:
+    linear-gradient(var(--glass-bg), var(--glass-bg)),
+    color-mix(in srgb, var(--background-grouped) 88%, transparent);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  backdrop-filter: blur(24px) saturate(1.4);
+}
+
+@keyframes sidebar-swap {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.sidebar-swap {
+  animation: sidebar-swap 220ms ease-out 60ms both;
+}
+
+/* The tint lives inside the keyframes, so it leaves with the pulse. A tint
+   that stayed would read as a selected state. */
+@keyframes sidebar-beacon {
+  0% {
+    color: var(--primary);
+    background: color-mix(in srgb, var(--primary) 14%, transparent);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 55%, transparent);
+  }
+  70% {
+    color: var(--primary);
+    background: color-mix(in srgb, var(--primary) 14%, transparent);
+    box-shadow: 0 0 0 8px color-mix(in srgb, var(--primary) 0%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 0%, transparent);
+  }
+}
+.sidebar-beacon {
+  animation: sidebar-beacon 1.1s ease-out 340ms 3;
+}
+
+/* The tip slides in from the rail, a short way, after the fold settles. */
+@keyframes sidebar-tip {
+  from { opacity: 0; transform: translateX(-6px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+.sidebar-tip {
+  animation: sidebar-tip 200ms ease-out 300ms both;
+}
+
+/* ── The assistant's open, close and full view (`lib/shell/AssistantDock.tsx`) ── */
+/* The mirror of the sidebar fold, from the right (owner, 2026-10-14). The
+   spacer eases its width on the sidebar's tokens, so the page reflows as it
+   does for a fold. The panel rides the spacer's edge with a transform on the
+   same tokens, so the chat inside never reflows while it moves. A floating
+   panel (a narrow desktop) has no spacer, and slides over the page. The full
+   view fades. A phone sheet moves as the shell drawer does. The motion runs
+   only while the panel moves (`data-moving`), so a drag of its edge never
+   lags. Closed, the panel stays mounted, hidden and inert. */
+.assistant-spacer[data-moving] {
+  transition: width var(--panel-duration) var(--panel-easing);
+}
+.assistant-panel[data-panel-form="dock"] {
+  transform: translateX(100%);
+}
+.assistant-panel[data-panel-form="full"] {
+  opacity: 0;
+}
+.assistant-panel[data-panel-form="sheet"] {
+  opacity: 0;
+  transform: translateY(-2px);
+}
+/* The peek strip tucks under the bottom nav when it closes. */
+.assistant-panel[data-panel-form="peek"] {
+  opacity: 0;
+  transform: translateY(100%);
+}
+.assistant-panel[data-shown] {
+  opacity: 1;
+  transform: none;
+}
+/* In glass the side panel sits 8 px in from the window's edge, so it rides
+   out its own width plus that gap. */
+html[data-look="glass"] .assistant-panel[data-panel-form="dock"]:not([data-shown]) {
+  transform: translateX(calc(100% + 0.5rem));
+}
+.assistant-panel[data-moving][data-panel-form="dock"] {
+  transition: transform var(--panel-duration) var(--panel-easing);
+}
+.assistant-panel[data-moving][data-panel-form="full"] {
+  transition: opacity var(--panel-expand-duration) var(--panel-easing);
+}
+.assistant-panel[data-moving][data-panel-form="sheet"] {
+  transition:
+    opacity var(--sheet-duration) var(--sheet-easing),
+    transform var(--sheet-duration) var(--sheet-easing);
+}
+.assistant-panel[data-moving][data-panel-form="peek"] {
+  transition:
+    opacity var(--sheet-duration) var(--sheet-easing),
+    transform var(--sheet-duration) var(--sheet-easing);
+}
+/* The sheet drops to the strip while it is open, so no phase moves. The
+   strip rises from the nav as it appears, on the sheet's tokens. With
+   reduced motion it shows at once. */
+@keyframes assistant-peek-rise {
+  from { opacity: 0; transform: translateY(100%); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .assistant-panel[data-panel-form="peek"][data-shown]:not([data-moving]) {
+    animation: assistant-peek-rise var(--sheet-duration) var(--sheet-easing);
+  }
+}
+.assistant-panel[data-panel-phase="closed"] {
+  visibility: hidden;
+}
+
+/* The side panel to the full view, and back (`swapPanelForm`). A view
+   transition keeps a picture of each form. The panel's box glides between
+   the two rects on the panel tokens, and each picture keeps its own size,
+   pinned to the right edge, while they cross-fade. So nothing stretches, and
+   the page beside the panel does not move. `.panel-swap` scopes it to this
+   one transition. */
+html.panel-swap::view-transition-old(root),
+html.panel-swap::view-transition-new(root) {
+  animation: none;
+}
+/* ⚠️ The box is solid, and the pictures FADE THROUGH it (measured on the
+   first frames, 2026-10-14). A plain cross-fade let the page show through
+   the growing box, and drew both forms' text on top of each other. Now the
+   old form leaves in the first half, and the new one arrives from the first
+   quarter on. The overlap is short, so the box is never empty for a frame,
+   and never shows two clear texts. A line marks the moving edge. */
+html.panel-swap::view-transition-group(assistant-panel) {
+  animation-duration: var(--panel-expand-duration);
+  animation-timing-function: var(--panel-easing);
+  background: var(--background);
+  box-shadow: inset 1px 0 0 var(--border);
+}
+html.panel-swap::view-transition-image-pair(assistant-panel) {
+  overflow: clip;
+}
+html.panel-swap::view-transition-old(assistant-panel),
+html.panel-swap::view-transition-new(assistant-panel) {
+  inset: 0 0 auto auto;
+  width: 100%;
+  height: 100%;
+  object-fit: none;
+  object-position: right top;
+  mix-blend-mode: normal;
+}
+@keyframes panel-swap-out {
+  to { opacity: 0; }
+}
+@keyframes panel-swap-in {
+  from { opacity: 0; }
+}
+html.panel-swap::view-transition-old(assistant-panel) {
+  animation: panel-swap-out calc(var(--panel-expand-duration) * 0.5) var(--panel-easing) both;
+}
+html.panel-swap::view-transition-new(assistant-panel) {
+  animation: panel-swap-in calc(var(--panel-expand-duration) * 0.75) var(--panel-easing)
+    calc(var(--panel-expand-duration) * 0.25) both;
+}
+
+/* The Ask bar becomes the chat's composer, and back (`morphAskBox`, owner
+   2026-11-01: "it's the same box"). The bar's box carries the name before
+   the change and the composer's box after it, so ONE box glides between the
+   two on the panel tokens. The page does not cross-fade: it is live under
+   the box, and the panel rides in or out as it always does. The box draws
+   its own edge and fill, and each picture fades through it at its own size,
+   pinned to the top left, where both boxes put their words. So nothing
+   stretches. `.ask-morph` scopes it to this one transition. */
+html.ask-morph {
+  --ask-morph-edge: 1px;
+}
+html.ask-morph[data-look="glass"] {
+  --ask-morph-edge: 2px;
+}
+html.ask-morph::view-transition-old(root),
+html.ask-morph::view-transition-new(root) {
+  animation: none;
+}
+/* The box flies above the panel it lands in. */
+html.ask-morph::view-transition-group(ask-box) {
+  z-index: 1;
+  animation-duration: var(--panel-duration);
+  animation-timing-function: var(--panel-easing);
+  border-radius: 22px;
+  background: var(--border);
+  box-shadow: var(--card-shadow);
+}
+/* In glass the edge is the field's spectrum, as both boxes draw it. */
+html.ask-morph[data-look="glass"]::view-transition-group(ask-box) {
+  background: conic-gradient(from var(--glow-angle), var(--glow-1), var(--glow-2), var(--glow-3), var(--glow-4), var(--glow-5), var(--glow-1));
+  box-shadow: var(--glass-shadow);
+}
+html.ask-morph::view-transition-image-pair(ask-box) {
+  inset: var(--ask-morph-edge);
+  border-radius: calc(22px - var(--ask-morph-edge));
+  background: var(--card);
+  overflow: clip;
+}
+html.ask-morph::view-transition-old(ask-box),
+html.ask-morph::view-transition-new(ask-box) {
+  inset: 0 auto auto 0;
+  width: 100%;
+  height: 100%;
+  object-fit: none;
+  object-position: calc(-1 * var(--ask-morph-edge)) calc(-1 * var(--ask-morph-edge));
+  mix-blend-mode: normal;
+}
+/* ⚠️ The arriving picture FILLS the box, its own edge on the box's edge.
+   At its own size it drew a second ring inside the box on the last frames
+   (measured 2026-11-01). It arrives late, when the box is within a few per
+   cent of its size, so the fill does not show as a stretch. */
+html.ask-morph::view-transition-new(ask-box) {
+  inset: calc(-1 * var(--ask-morph-edge)) auto auto calc(-1 * var(--ask-morph-edge));
+  width: calc(100% + 2 * var(--ask-morph-edge));
+  height: calc(100% + 2 * var(--ask-morph-edge));
+  object-fit: fill;
+}
+html.ask-morph::view-transition-old(ask-box) {
+  animation: panel-swap-out calc(var(--panel-duration) * 0.4) var(--panel-easing) both;
+}
+html.ask-morph::view-transition-new(ask-box) {
+  animation: panel-swap-in calc(var(--panel-duration) * 0.6) var(--panel-easing)
+    calc(var(--panel-duration) * 0.4) both;
+}
+/* While the box moves, the live glows wait, so no ring shows round an empty
+   slot. Their own fade brings them back. A closing panel's composer hides:
+   its picture is the box on its way to the bar. */
+html.ask-morph .assistant-panel [data-glow],
+html.ask-morph [data-ask-bar] [data-glow] {
+  opacity: 0;
+}
+/* ⚠️ `.tech-transition` moves `all`, and a transition holds `visible` to its
+   end. So the hide takes no transition. */
+html.ask-morph .assistant-panel[data-assistant="closed"] [data-chat-composer] {
+  visibility: hidden;
+  transition: none;
+}
+/* ⚠️ The browser takes no picture of a hidden box. An opening panel is
+   hidden for its first two frames (`usePanelPhase`), so the composer would
+   have no picture and the box would only fade. During the morph the panel
+   shows from the change on. */
+html.ask-morph .assistant-panel[data-panel-phase="closed"]:not([data-assistant="closed"]) {
+  visibility: visible;
+}
+/* Into the side panel, the panel sits in its place from the change on, so
+   the composer holds still and the box flies straight to it. Its picture
+   (`ask-panel`) slides in on the panel's own tokens, as the panel does.
+   The page still reflows on the spacer. */
+html.ask-morph[data-ask-morph="into-chat"] .assistant-panel[data-panel-form="dock"]:not([data-shown]) {
+  transform: none;
+}
+@keyframes ask-panel-in {
+  from { transform: translateX(calc(100% + 0.5rem)); }
+}
+html.ask-morph::view-transition-new(ask-panel) {
+  animation: ask-panel-in var(--panel-duration) var(--panel-easing) both;
+}
+
+/* The Ask bar takes a new resting form (`lib/shell/askBarRest.ts`): the
+   field, the pill or the corner button springs into its place. Scale only:
+   an opacity under 1 on an ancestor of the glass would switch its blur off
+   until the fade ends. The morph to and from the chat draws its own glide. */
+@keyframes ask-rest-in {
+  from { transform: translateY(4px) scale(0.92); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  html:not(.ask-morph) [data-ask-form] {
+    animation: ask-rest-in var(--spring-duration) var(--spring-easing) both;
+  }
 }
 
 /* Subtle bounce for the scroll-to-bottom button */
@@ -872,6 +2871,42 @@ select optgroup {
   display: none;
 }
 
+/* Glass scrollbars (GL-10, owner 2026-10-31: "scroll wheel on side is
+   bad"). Apple draws the thumb only while you are over the pane, so a
+   floating panel never shows a grey bar along its edge. The thumb is
+   transparent until the pointer is over the scroller, then it is the same
+   thin pill as classic. Keyboard and wheel scrolling do not change. Both
+   syntaxes, for the reason the classic block gives. `.scrollbar-hide` still
+   wins: it sets the width to none, and these rules set only the colour. */
+html[data-look="glass"] * {
+  scrollbar-color: transparent transparent;
+}
+html[data-look="glass"] *:hover {
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+html[data-look="glass"] *::-webkit-scrollbar-thumb {
+  background-color: transparent;
+}
+html[data-look="glass"] *:hover::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+}
+/* The list fades at an edge while apps sit beyond it (task 998 hid the
+   folded rail's bar, and the open list's bar shows only on hover).
+   `Sidebar.tsx` sets each attribute only in glass, and only while the list
+   can still scroll that way. */
+html[data-look="glass"] nav[data-more-below] {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 2.5rem), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 2.5rem), transparent);
+}
+html[data-look="glass"] nav[data-more-above] {
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 2rem);
+  mask-image: linear-gradient(to bottom, transparent, #000 2rem);
+}
+html[data-look="glass"] nav[data-more-above][data-more-below] {
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 2rem, #000 calc(100% - 2.5rem), transparent);
+  mask-image: linear-gradient(to bottom, transparent, #000 2rem, #000 calc(100% - 2.5rem), transparent);
+}
+
 /* ── Reveal on hover ──────────────────────────────────────────────────── */
 /*
  * 🔴 `opacity-0 group-hover:opacity-100` HIDES THE CONTROL FOREVER on a
@@ -915,15 +2950,162 @@ select optgroup {
   }
 }
 
+/*
+ * A toolbar that reveals with `reveal-on-hover` also takes its CLICKS only
+ * when it shows. `opacity: 0` alone still takes a tap, so a tap on the end of
+ * a card would hit a hidden button. `group-hover:pointer-events-auto` is the
+ * broken spelling: Tailwind wraps it in `@media (hover: hover)`, which never
+ * matches on a touch-capable display, so the buttons are shown and dead.
+ * This rule has no media query, and it uses `:has(:focus-visible)`, never
+ * `:focus-within`, so a mouse click does not hold the toolbar live.
+ *
+ * Fence: `src/lib/revealOnHover.test.ts`.
+ */
+@utility reveal-on-hover-live {
+  pointer-events: none;
+
+  .group:hover &,
+  &:has(:focus-visible) {
+    pointer-events: auto;
+  }
+}
+
+/* ── A rail row's trailing zone (`components/ui/RailRow.tsx`) ─────────── */
+/*
+ * One zone at the right end of a row holds two things in turn. At rest it
+ * shows the row's `meta`, such as a count. On hover, on keyboard focus in
+ * the row, or while the row is pinned, it shows the row's actions.
+ *
+ * The actions also carry `reveal-on-hover`, so they keep the house reveal.
+ * These two utilities add what a row needs on top of it:
+ *
+ *   - At rest the actions take NO width. A row that keeps room for its
+ *     "···" and "+" takes about 60px from every name, which is what the
+ *     owner saw on 2026-10-10. `max-width: 0` keeps the buttons in the tab
+ *     order, which `display: none` would not.
+ *   - Hidden actions take no click. An invisible button at the row's end
+ *     swallows the tap that was meant to select the row.
+ *   - Keyboard focus ANYWHERE in the row reveals them, not only focus on the
+ *     actions themselves.
+ *   - `data-pinned` on the row holds them open: while the row's menu is open,
+ *     and for the selected row on a phone, where nothing can hover.
+ *
+ * No media query, for the reason the block above gives. Fences:
+ * `components/ui/RailRow.test.ts` and `e2e/rail-rows.spec.ts`.
+ */
+@utility rail-row-actions {
+  max-width: 0;
+  overflow: hidden;
+  pointer-events: none;
+
+  .group:hover &,
+  .group:has(:focus-visible) &,
+  .group[data-pinned] &,
+  &:has(:focus-visible) {
+    max-width: none;
+    overflow: visible;
+    pointer-events: auto;
+    opacity: 1;
+  }
+}
+
+/*
+ * The count gives its place to the actions, and ONLY on a row that has
+ * actions (`data-has-actions`). A row with none, such as an Email folder,
+ * keeps its count on hover and on focus. Nothing would take its place.
+ *
+ * ⚠️ Hidden from SIGHT only, never with `display: none`. The count is part
+ * of the label button's accessible name ("Finance & Accounts 6 open tasks").
+ * `display: none` took it out of the name the moment a keyboard focused the
+ * row. This is the screen-reader-only clip: no width, no paint, still read.
+ */
+@utility rail-row-meta {
+  .group[data-has-actions]:hover &,
+  .group[data-has-actions]:has(:focus-visible) &,
+  .group[data-has-actions][data-pinned] & {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
+/*
+ * The icon slot of a row that can open. The expand chevron sits over the
+ * icon, transparent at rest. On hover or keyboard focus in the row, the
+ * chevron shows and the icon gives way. The chevron is a real button the
+ * whole time, so Tab reaches it at rest, and reaching it shows it.
+ *
+ * ⚠️ At rest it takes NO pointer, so a hidden chevron never catches a
+ * press meant for the icon. ⚠️ That is NOT enough for a finger. Chromium
+ * sets `:hover` at the start of a tap, so the tap's click lands on the
+ * chevron this rule has just switched on (measured 2026-10-10). The touch
+ * half is `togglePress` in `RailRow.tsx`: a tap on a row that is not
+ * selected selects it. A phone does not use this utility at all, because
+ * there the chevron is always shown.
+ */
+@utility rail-row-chevron {
+  opacity: 0;
+  pointer-events: none;
+
+  .group:hover &,
+  .group:has(:focus-visible) &,
+  .group[data-pinned] & {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+@utility rail-row-icon {
+  .group:hover &,
+  .group:has(:focus-visible) &,
+  .group[data-pinned] & {
+    opacity: 0;
+  }
+}
+
 /* ── Reduced motion ───────────────────────────────────────────────────── */
 /* Entrance/pulse animations become instant; the state they convey (a new
    step arriving, a spinner turning) is still carried by the content itself.
    Spinners keep turning but slow down — a frozen spinner reads as a hang. */
 @media (prefers-reduced-motion: reduce) {
+  /* The shimmer stops, and the text keeps its still gradient. The words and
+     the status dot still say the agent is working. */
+  .chat-shimmer-text,
   .chat-fade-in,
   .animate-fade-in,
-  .animate-bounce-subtle {
+  .animate-bounce-subtle,
+  .sidebar-swap,
+  .sidebar-beacon,
+  .sidebar-tip {
     animation: none;
+  }
+
+  /* The fold still happens, at once. A still tint on the expand button
+     replaces the pulse, so the member still sees where the sidebar went. */
+  .sidebar-rail {
+    transition: none;
+  }
+  .sidebar-rail [data-rail-label],
+  .sidebar-rail [data-rail-trail],
+  .sidebar-rail [data-rail-corner] {
+    transition: none;
+  }
+  html[data-look="glass"] .sidebar-rail [data-head-brand] {
+    transition: none;
+  }
+  /* The assistant opens, closes and changes form at once, as the fold does.
+     `usePanelPhase` and `swapPanelForm` skip the moving phases too. */
+  .assistant-spacer[data-moving],
+  .assistant-panel[data-moving] {
+    transition: none;
+  }
+  .sidebar-beacon {
+    color: var(--primary);
+    background: color-mix(in srgb, var(--primary) 12%, transparent);
   }
 
   .animate-spin {
@@ -931,9 +3113,18 @@ select optgroup {
   }
 
   /* Themes set their own motion feel; honouring the OS preference has to
-     override whichever one is active. */
+     override whichever one is active. The glass block (D143) is more
+     specific than `:root`, so it is named here too, or glass would keep its
+     0.28 s and 220 ms under reduced motion. glassLook.test.ts fences it.
+     The classic rule stays as it was, so classic does not change. */
   :root {
     --motion-duration: 0.01ms;
+    --spring-duration: 0.01ms;
+  }
+  html[data-look="glass"] {
+    --motion-duration: 0.01ms;
+    --spring-duration: 0.01ms;
+    --sheet-duration: 0.01ms;
   }
 
   *,
@@ -943,3 +3134,46 @@ select optgroup {
   }
 }
 
+/* ── GL-6, app group B: Projects, Tasks, People, Knowledge, Approvals,
+   Organisation, Integrations, Settings ──────────────────────────────────
+   Two floors that glass sets for the whole look. They live here because the
+   apps hold hundreds of `text-[10px]`, `text-[11px]` and `uppercase` uses.
+   A per-class edit would touch every file, and GL-Z2 folds the classes later.
+   • Nothing in glass is smaller than 12 px (the `--text-caption` step).
+   • A small heading is sentence case. The uppercase micro-label belongs to
+     classic. A badge keeps its shape and loses only the capitals.
+   The `main` scope keeps the shell chrome and the chat out of the rule. */
+html[data-look="glass"] main :is(.text-\[9px\], .text-\[10px\], .text-\[11px\]) {
+  font-size: var(--text-caption);
+}
+html[data-look="glass"] :is(main, [role="dialog"], [role="menu"], [role="listbox"]) .uppercase {
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+/* ── GL-10, one surface (owner, 2026-10-31) ───────────────────────────────
+   The content card is the app's surface (`AppShell`'s FULL_MAIN, bg-card).
+   An app root that fills the card and paints the page colour would draw a
+   second tone under the title bar, so in glass it takes the card's surface.
+   Its panes keep their own.
+   ⚠️ Not an <aside>, and not an element that names its own glass fill: a
+   panel over the page is not an app root, and a clear one let the board's
+   text show through the task panel (owner, 2026-11-01). The rule outranked
+   a `glass:bg-card` too, so a panel could not ask for its own surface. */
+html[data-look="glass"] main .h-full.bg-background:not(aside):not([class*="glass:bg-"]) {
+  background-color: transparent;
+}
+
+/* ── GL-6, controls slice: the toolbar size ────────────────────────────────
+   One height for a toolbar row: 28 px. `Input sm`, `SelectButton`, `Button sm`
+   and a segment track all draw it. A title-bar action is a toolbar control, so
+   a text button there takes the same size, whatever size the app asked for.
+   The rule is unlayered, so it beats the utility classes of `Button`. An icon
+   button carries `glass:w-*` and keeps its own box. A touch screen keeps 40 px. */
+@media (min-width: 1024px) {
+  html[data-look="glass"] [data-app-bar-actions] .cc-button:not([class*="glass:w-"]) {
+    height: 1.75rem;
+    padding-inline: 0.75rem;
+    font-size: var(--text-footnote);
+  }
+}

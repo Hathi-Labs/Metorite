@@ -1,14 +1,16 @@
 "use client";
 
 import Button from "@/components/ui/Button";
+import SelectButton from "@/components/ui/SelectButton";
 import Icon from "@/components/Icon";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   type TaskSettings,
   type EnergyWindow,
   type DayTemplate,
 } from "@/app/tasks/lib/api";
 import { DEFAULT_PLANNING_PROMPT, hourLabel } from "./shared";
+import { zoneOptions } from "../lib/zoneChoices";
 
 const DOW_LABELS = ["S", "M", "T", "W", "T", "F", "S"]; // 0=Sun … 6=Sat
 
@@ -57,6 +59,9 @@ export function CalendarSettings({
 }) {
   const wins = settings.energyWindows ?? [];
   const [showDefault, setShowDefault] = useState(false);
+  // The time zone (RX-7): the zone that "today", reminders and the morning
+  // summary read. The list is built once per saved zone.
+  const zones = useMemo(() => zoneOptions(settings.timezone), [settings.timezone]);
   const num = (v: string, fallback: number) => {
     const n = parseInt(v, 10);
     return Number.isFinite(n) ? n : fallback;
@@ -92,7 +97,7 @@ export function CalendarSettings({
           padded so nothing hides behind the home indicator / menu bar);
           anchored popover on ≥sm. */}
       <div
-        className="fixed inset-x-0 bottom-0 z-[80] flex max-h-[88vh] flex-col rounded-t-2xl border border-border bg-card text-xs shadow-2xl sm:absolute sm:inset-x-auto sm:bottom-auto sm:right-0 sm:top-full sm:z-30 sm:mt-2 sm:max-h-[80vh] sm:w-80 sm:rounded-lg sm:shadow-xl"
+        className="fixed inset-x-0 bottom-0 z-[80] flex max-h-[calc(88vh-var(--phone-nav-h))] flex-col rounded-t-2xl border border-border bg-card text-xs shadow-2xl sm:absolute sm:inset-x-auto sm:bottom-auto! sm:right-0 sm:top-full sm:z-30 sm:mt-2 sm:max-h-[80vh] sm:w-80 sm:rounded-lg sm:shadow-xl"
       >
         {/* grab handle (mobile affordance) */}
         <div className="flex shrink-0 justify-center pt-2 sm:hidden">
@@ -109,7 +114,7 @@ export function CalendarSettings({
             safe-area bottom padding so the last control clears the menu bar. */}
         <div
           className="min-h-0 flex-1 overflow-y-auto px-3"
-          style={{ paddingBottom: "max(1rem, env(safe-area-inset-bottom))" }}
+          style={{ paddingBottom: "1rem" }}
         >
           {/* How the AI plans your day — the standing planning philosophy. */}
           <div className="mb-3 rounded-md border border-primary/20 bg-primary/[0.04] p-2">
@@ -152,6 +157,23 @@ export function CalendarSettings({
           </div>
 
           <p className={sectionCls}>When you work</p>
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <span className="text-muted-foreground">Time zone</span>
+            <SelectButton
+              label="Time zone"
+              value={settings.timezone || "UTC"}
+              options={zones}
+              onChange={(zone) => onChange({ timezone: zone })}
+              widthClass="w-44"
+              filterAbove={8}
+              layer="top"
+              align="end"
+            />
+          </div>
+          <p className="mb-2 text-[10px] text-muted-foreground">
+            Your day, your reminders and your morning summary follow this zone.
+            Metorite sets it from your browser the first time.
+          </p>
           <label className="mb-1 flex items-center justify-between gap-2">
             <span className="text-muted-foreground">Working hours</span>
             <span className="flex items-center gap-1">

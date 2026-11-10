@@ -205,7 +205,7 @@ def test_internal_bulk_is_the_documented_exception() -> None:
 
 
 def test_sent_and_disposed_mail_stay_excluded() -> None:
-    assert "<> 'sent'" in c._CLEANUP_SCOPE
+    assert c.NOT_OUTBOUND_SQL in c._CLEANUP_SCOPE  # sent, drafts, outbox (#467)
     assert "trash" in c._CLEANUP_SCOPE and "junk" in c._CLEANUP_SCOPE
 
 

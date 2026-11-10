@@ -8,14 +8,22 @@ package (it is the leaf), so importing it never pulls in a feature layer.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
-from contextlib import asynccontextmanager
+import time
+from contextlib import asynccontextmanager, suppress
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
+from uuid import UUID
 
+from acb_auth import require_feature_router
 from acb_common import get_logger
+from email_ingestion import html_tier
+from email_ingestion import storage as ingest_storage
+from email_ingestion.body_backfill import _html_to_text
 from fastapi import APIRouter, HTTPException
 
 # The shared gateway engine (BO-10) — see the DB section below.
@@ -39,9 +47,16 @@ from gateway.db import get_session_factory as _get_session_factory
 # `_get_db` site left in the package is the discovery read of
 # `scheduler_hooks.mailbox_owner` (fence: test_email_request_jobs_tenancy.py).
 from gateway.db import tenant_session as _tenant_session
+
+# The ONE mailbox access seam (WS-65 SM-2). A leaf too: it imports nothing
+# from this package.
+from gateway.routes.email.mailbox_access import (
+    assert_mailbox_access,
+    mailbox_ids_sql,
+    mailbox_predicate,
+)
 from pydantic import BaseModel
 from sqlalchemy import text
-from acb_auth import require_feature_router
 
 _log = get_logger("gateway.email")
 
@@ -56,8 +71,14 @@ router = APIRouter(
     #   webhook/microsoft— Graph change notification. It echoes the
     #                      validationToken, verifies the signed `org` in its
     #                      own URL, then checks clientState inside that tenant.
+    #   signature-image  — WS-17 SG-1 (D-EM-68). A mail reader fetches a
+    #                      signature logo with no session. The 256-bit token in
+    #                      the URL is the capability, and the route reads it
+    #                      under tenant_session(org) and RLS. Never gated, so a
+    #                      mail that went out keeps its logo.
     dependencies=[require_feature_router("email", exempt=[
         "/email/webhook/microsoft",
+        "/email/signature-image/{org}/{token}.{ext}",
     ])],
 )
 
@@ -96,10 +117,24 @@ class EmailMessageModel(BaseModel):
     subject: str = ""
     body_text: str = ""
     body_html: str | None = None
+    # True when the provider holds the HTML of this message, and the store
+    # holds none: ``body_html`` is NULL and the message is older than the HTML
+    # hot window (WS-17 EM-S1, D-EM-49). The pane then calls
+    # ``GET /email/messages/{id}/html``. With the flag of ``html_tier`` off it
+    # is always false. :func:`_html_remote` is the one rule.
+    html_remote: bool = False
     body_truncated: bool = False
+    # True when ``GET /email/messages/{id}?trim=true`` cut the quoted thread,
+    # the signature or a legal footer from ``body_text`` (WS-17, 2026-10-09,
+    # ``quoting.strip_for_reading``). Without ``trim`` it is always false.
+    body_trimmed: bool = False
     snippet: str = ""
     has_attachments: bool = False
     attachments: list[AttachmentModel] = []
+    # "failed" only when the provider call for the files failed, so the
+    # reader can offer a retry. An empty list with "ok" is a mail whose parts
+    # are all inline pictures (Graph sets ``hasAttachments`` for those).
+    attachments_status: Literal["ok", "failed"] = "ok"
     is_read: bool = False
     is_starred: bool = False
     is_flagged: bool = False
@@ -147,6 +182,12 @@ def _instantiate_provider(provider_name: str, creds: dict[str, Any]):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+def _scope_provider(provider: Any, account_id: str) -> None:
+    """Name the mailbox on a provider that keeps a shared folder-id cache."""
+    if hasattr(provider, "folder_cache_scope"):
+        provider.folder_cache_scope = account_id
+
+
 def _decrypt_credentials(blob: str) -> tuple[dict, Any]:
     """Decrypt a stored credential blob. Returns the credentials and the store.
 
@@ -165,6 +206,9 @@ async def _provider_for_message(db: Any, message_id: str, user_email: str):
     Returns (provider, provider_message_id, account_id, store) or raises 404.
     Persisting rotated OAuth tokens is the caller's responsibility via
     ``_persist_rotated_creds``.
+
+    The owner check is the seam at its default level, ``manage``, so a
+    shared mailbox fails closed until SM-4 names the level of each write.
     """
     result = await db.execute(
         text(
@@ -172,7 +216,8 @@ async def _provider_for_message(db: Any, message_id: str, user_email: str):
                       ea.provider, ea.credentials_encrypted
                FROM email_messages em
                JOIN email_accounts ea ON em.account_id = ea.id
-               WHERE em.id = :mid AND ea.user_id = :user_id"""
+               WHERE em.id = :mid AND """
+            + mailbox_predicate("ea", uid="user_id")
         ),
         {"mid": message_id, "user_id": user_email},
     )
@@ -181,6 +226,7 @@ async def _provider_for_message(db: Any, message_id: str, user_email: str):
         raise HTTPException(status_code=404, detail="Message not found")
     creds, store = _decrypt_credentials(row.credentials_encrypted)
     provider = _instantiate_provider(row.provider, creds)
+    _scope_provider(provider, str(row.account_id))
     return provider, row.provider_message_id, str(row.account_id), store
 
 
@@ -190,11 +236,13 @@ async def _provider_for_account(db: Any, account_id: str, user_email: str):
     Returns (provider, store, owner_email) or raises 404. Used by the draft
     write-path, which creates/updates/sends provider drafts that aren't tied to
     a single stored message. Persisting rotated creds is the caller's job.
+    The owner check is the seam at ``manage``, as in ``_provider_for_message``.
     """
     row = (await db.execute(
         text(
             """SELECT provider, credentials_encrypted, email_address
-               FROM email_accounts WHERE id = :id AND user_id = :uid"""
+               FROM email_accounts WHERE id = :id AND """
+            + mailbox_predicate(uid="uid")
         ),
         {"id": account_id, "uid": user_email},
     )).fetchone()
@@ -202,6 +250,7 @@ async def _provider_for_account(db: Any, account_id: str, user_email: str):
         raise HTTPException(status_code=404, detail="Account not found")
     creds, store = _decrypt_credentials(row.credentials_encrypted)
     provider = _instantiate_provider(row.provider, creds)
+    _scope_provider(provider, str(account_id))
     return provider, store, row.email_address
 
 
@@ -223,6 +272,7 @@ async def _provider_for_account_any(db: Any, account_id: str):
         raise HTTPException(status_code=404, detail="Account not found")
     creds, store = _decrypt_credentials(row.credentials_encrypted)
     provider = _instantiate_provider(row.provider, creds)
+    _scope_provider(provider, str(account_id))
     return provider, store, row.email_address
 
 
@@ -361,6 +411,190 @@ async def _savepoint(db: Any):
         yield
 
 
+#: One provider body fetch of `hydrate_message_body` (WS-17 EM-T17 PR-A,
+#: `email_app_master_plan.md` §17.3.7). The httpx bound of the provider is 30 s
+#: for each phase, not a total. Fence: tests/unit/test_email_draft_no_stall.py.
+BODY_FETCH_TIMEOUT_S = 8.0
+
+#: The times, in ms, of each provider body fetch of `hydrate_message_body` in
+#: this context. The stream route sets a list, and `email.draft_timing` sums it
+#: as `fetch_ms`. With no list set (each other caller) nothing is recorded. A
+#: hydrate that finds the body stored makes no fetch and records nothing.
+body_fetch_times: ContextVar[list[int] | None] = ContextVar(
+    "email_body_fetch_times", default=None)
+
+
+def _note_body_fetch(started: float) -> None:
+    """Record the time of one provider body fetch, if a caller asked for it."""
+    times = body_fetch_times.get()
+    if times is not None:
+        times.append(int((time.monotonic() - started) * 1000))
+
+
+# ── The write rules of a hydrate (one seam, two callers) ────────────────────
+# `hydrate_message_body` runs the three steps in one session. `BodyFetch` runs
+# them with no session across the provider (WS-17 EM-T17 PR-A1, §17.3.7). Both
+# read the row, shape the columns and write them through the helpers below, so
+# the storage limit and the cold-HTML rule are written once.
+
+
+async def _hydrate_row(db: Any, message_id: str) -> Any:
+    """The stored body columns of one message, and the meter of its mailbox."""
+    return (await db.execute(
+        text(
+            """SELECT em.body_text, em.body_html, em.snippet, em.received_at,
+                      ea.stored_bytes
+                 FROM email_messages em
+                 LEFT JOIN email_accounts ea ON ea.id = em.account_id
+                WHERE em.id = :id"""
+        ),
+        {"id": message_id},
+    )).fetchone()
+
+
+def _hydrated_columns(full: Any, received_at: Any) -> tuple[str, str | None]:
+    """The ``body_text`` and ``body_html`` to keep from a provider body.
+
+    🔴 No cold HTML (WS-17 EM-S3, §14.4.3 item 4). With `html_tier.hot_only()`
+    true, a cold row stores its text only, and keeps the HTML that it holds.
+    An HTML-only mail gets a text made from its HTML first, as the upsert
+    does, so the drafter reads a body and the next call fetches nothing
+    (fix round 1).
+    """
+    body_text = _truncate_body(full.body_text or "", MAX_BODY_TEXT_BYTES)
+    body_html = (
+        _truncate_body(full.body_html, MAX_BODY_HTML_BYTES)
+        if full.body_html else None
+    )
+    if (full.body_html and not body_text.strip()
+            and html_tier.drops_html(received_at)):
+        body_text = _truncate_body(
+            _html_to_text(full.body_html), MAX_BODY_TEXT_BYTES)
+    return body_text, body_html
+
+
+async def _store_hydrated_body(
+    db: Any, message_id: str, body_text: str, body_html: str | None,
+    *, stored_bytes: Any,
+) -> None:
+    """Write a fetched body. At the storage limit, write none (EM-T6c G2)."""
+    if ingest_storage.at_limit(stored_bytes):
+        _log.info("hydrate_message_body.not_stored_at_limit",
+                  message_id=message_id)
+        return
+    await db.execute(
+        text(
+            f"""UPDATE email_messages
+               SET body_text = :bt, {html_tier.COLD_SAFE_HTML_SET},
+                   updated_at = now()
+               WHERE id = :id"""
+        ),
+        {"id": message_id, "bt": body_text, "bh": body_html,
+         "html_cold_before": html_tier.cold_before()},
+    )
+
+
+@dataclass
+class BodyFetch:
+    """``hydrate_message_body`` in three steps, with no session across the
+    provider (WS-17 EM-T17 PR-A1, ``email_app_master_plan.md`` §17.3.7).
+
+    1. :meth:`load` runs in a session block. It reads the row and loads the
+       provider of the mailbox. It returns None when the body is stored.
+    2. :meth:`fetch` runs with no session. One bound covers ``authenticate()``
+       and ``get_message_body``.
+    3. :meth:`store` runs in a later block. It writes the body and the rotated
+       creds (the EM-T4c idiom), each in its own savepoint.
+
+    Only ``_compose_assist_run`` uses it. Each other caller keeps
+    ``hydrate_message_body(db, message_id, user_email)``.
+    """
+
+    message_id: str
+    row: Any
+    provider: Any
+    provider_message_id: str
+    account_id: str
+    store_handle: Any
+    body_text: str | None = None
+    body_html: str | None = None
+
+    @classmethod
+    async def load(cls, db: Any, message_id: str, user_email: str) -> BodyFetch | None:
+        """Step 1, in a block. A 404 of the owner check raises, as the
+        hydrate does. Any other failure logs and fetches nothing.
+
+        The reads run in a savepoint, as the hydrate's provider step does. A
+        failed statement (a lock or statement timeout) then rolls back only
+        the savepoint, and the caller's block goes on."""
+        try:
+            async with _savepoint(db):
+                row = await _hydrate_row(db, message_id)
+                if row is None or (row.body_text or "").strip():
+                    return None
+                provider, pmid, account_id, store = await _provider_for_message(
+                    db, message_id, user_email)
+        except HTTPException:
+            raise
+        except Exception as exc:  # a draft goes on without it
+            _log.warning("hydrate_message_body.failed", message_id=message_id,
+                         error=str(exc)[:200])
+            return None
+        return cls(message_id=message_id, row=row, provider=provider,
+                   provider_message_id=pmid, account_id=account_id,
+                   store_handle=store)
+
+    async def fetch(self, *, bound_s: float) -> None:
+        """Step 2, with NO session open. It sets :attr:`body_text` and
+        :attr:`body_html`, and leaves them None past the bound or on a
+        failure. A token that ``authenticate()`` refreshed stays on the
+        provider, and :meth:`store` writes it."""
+        started = time.monotonic()
+        try:
+            async with asyncio.timeout(bound_s):
+                if not await self.provider.authenticate():
+                    return
+                # The body only, never `get_message` (EM-T17 PR-A).
+                full = await self.provider.get_message_body(
+                    self.provider_message_id)
+        except TimeoutError:
+            _log.warning("hydrate_message_body.timeout",
+                         message_id=self.message_id, bound_s=bound_s)
+            return
+        except Exception as exc:  # never break the draft
+            _log.warning("hydrate_message_body.failed",
+                         message_id=self.message_id, error=str(exc)[:200])
+            return
+        finally:
+            _note_body_fetch(started)
+        self.body_text, self.body_html = _hydrated_columns(
+            full, getattr(self.row, "received_at", None))
+
+    def needs_store(self) -> bool:
+        """True when step 3 has a body or a rotated token to write."""
+        return self.body_text is not None or bool(self.provider.credentials_dirty())
+
+    async def store(self, db: Any) -> None:
+        """Step 3, in a block. Each write runs in a savepoint and logs its own
+        failure, so a failed body write still keeps the rotated token."""
+        if self.body_text is not None:
+            try:
+                async with _savepoint(db):
+                    await _store_hydrated_body(
+                        db, self.message_id, self.body_text, self.body_html,
+                        stored_bytes=getattr(self.row, "stored_bytes", None))
+            except Exception as exc:  # a cache write
+                _log.warning("hydrate_message_body.store_failed",
+                             message_id=self.message_id, error=str(exc)[:200])
+        try:
+            async with _savepoint(db):
+                await _persist_rotated_creds(
+                    db, self.store_handle, self.account_id, self.provider)
+        except Exception as exc:
+            _log.warning("hydrate_message_body.creds_failed",
+                         account_id=self.account_id, error=str(exc)[:200])
+
+
 async def hydrate_message_body(db: Any, message_id: str, user_email: str) -> str:
     """Ensure a message's full ``body_text`` is present, fetching it if needed.
 
@@ -376,16 +610,28 @@ async def hydrate_message_body(db: Any, message_id: str, user_email: str) -> str
     text body, e.g. a pure-HTML or attachment-only message).  Best-effort: a
     provider/auth failure logs and returns whatever is already stored — never
     raises, so it can't break a draft/classify call.
+
+    At the storage limit of the mailbox it returns the body and writes none
+    (WS-17 EM-T6c gap G2, owner answer Q4). The reply drafter and the
+    follow-up path then load the body live again at each call. The same read
+    returns the meter, so the check costs no query.
+
+    The fetch reads the body alone (``get_message_body``), and it ends at
+    ``BODY_FETCH_TIMEOUT_S`` (WS-17 EM-T17 PR-A, §17.3.7). Each caller gets
+    this: the reply drafter, the rule draft and the follow-up nudge.
+
+    Compose-assist holds no session across the provider, so it runs the same
+    steps through :class:`BodyFetch` (EM-T17 PR-A1). Both write through
+    ``_hydrated_columns`` and ``_store_hydrated_body``.
     """
-    row = (await db.execute(
-        text("SELECT body_text, body_html, snippet FROM email_messages WHERE id = :id"),
-        {"id": message_id},
-    )).fetchone()
+    row = await _hydrate_row(db, message_id)
     if row is None:
         return ""
     if (row.body_text or "").strip():
         return row.body_text  # already hydrated
     # Header-only row: fetch the full body from the provider and persist it.
+    # `email.draft_timing` reads the time of this path as `fetch_ms`.
+    fetch_started = time.monotonic()
     try:
         # The savepoint covers the UPDATE and the creds persist on exit, so a
         # failed write here never aborts the caller's transaction.
@@ -394,20 +640,21 @@ async def hydrate_message_body(db: Any, message_id: str, user_email: str) -> str
         ) as sess:
             if not sess.authed:
                 return row.body_text or ""
-            full = await sess.provider.get_message(sess.provider_message_id)
-            body_text = _truncate_body(full.body_text or "", MAX_BODY_TEXT_BYTES)
-            body_html = (
-                _truncate_body(full.body_html, MAX_BODY_HTML_BYTES)
-                if full.body_html else None
-            )
-            await db.execute(
-                text(
-                    """UPDATE email_messages
-                       SET body_text = :bt, body_html = :bh, updated_at = now()
-                       WHERE id = :id"""
-                ),
-                {"id": message_id, "bt": body_text, "bh": body_html},
-            )
+            # EM-T17 PR-A (§17.3.7): the body only, never `get_message`, which
+            # makes Graph send each file in base64. One bound for the fetch.
+            try:
+                full = await asyncio.wait_for(
+                    sess.provider.get_message_body(sess.provider_message_id),
+                    timeout=BODY_FETCH_TIMEOUT_S)
+            except TimeoutError:
+                _log.warning("hydrate_message_body.timeout",
+                             message_id=message_id, bound_s=BODY_FETCH_TIMEOUT_S)
+                return row.body_text or ""
+            body_text, body_html = _hydrated_columns(
+                full, getattr(row, "received_at", None))
+            await _store_hydrated_body(
+                db, message_id, body_text, body_html,
+                stored_bytes=getattr(row, "stored_bytes", None))
         # No commit here: the CALLER owns the transaction boundary. Converted
         # request handlers pass a `_tenant_session` session, and a mid-block
         # commit would end that transaction and silently drop the tenant GUC
@@ -423,6 +670,8 @@ async def hydrate_message_body(db: Any, message_id: str, user_email: str) -> str
             "hydrate_message_body.failed", message_id=message_id, error=str(exc)[:200],
         )
         return row.body_text or ""
+    finally:
+        _note_body_fetch(fetch_started)
 
 
 # ── DB (the one shared gateway engine — gateway/db.py, BO-10) ────────────────
@@ -446,18 +695,57 @@ async def _get_db(request_id: str | None = None):
     return _get_session_factory()()
 
 
-def _account_scope(account_id: str | None, params: dict[str, Any]) -> str:
+#: The predicate that leaves out a separate mailbox (EM-T8g-1, D-EM-28). It
+#: reads the column of migration 229 on ``email_accounts``. A caller that joins
+#: the table as ``ea`` writes ``ea.`` in front of it.
+IN_ALL_INBOXES_SQL = "in_all_inboxes"
+
+
+def _owned_accounts_sql(
+    account_id: str | None, params: dict[str, Any], *, pooled_only: bool = False,
+    level: str = "manage",
+) -> str:
+    """The ids of the mailboxes of ``:uid``, as a subquery with no alias.
+
+    ``account_id`` narrows it to that one mailbox, and binds ``:aid``. With
+    ``pooled_only`` and no ``account_id``, the subquery leaves out each
+    separate mailbox (EM-T8g-1, D-EM-30). A named mailbox is never left out,
+    so a read by its ``account_id`` still gets its rows.
+
+    ``level`` is the level of the act (WS-65 SM-2), and the default
+    ``manage`` fails closed for a shared mailbox. With the flag off the text
+    is ``SELECT id FROM email_accounts WHERE user_id = :uid``, as before.
+    """
+    frag = mailbox_ids_sql(uid="uid", level=level)
+    if account_id:
+        frag += " AND id = :aid"
+        params["aid"] = account_id
+    elif pooled_only:
+        frag += f" AND {IN_ALL_INBOXES_SQL}"
+    return frag
+
+
+def _account_scope(
+    account_id: str | None, params: dict[str, Any], *, pooled_only: bool = False,
+    level: str = "manage",
+) -> str:
     """Return a SQL fragment scoping email_messages `em` to the user's accounts.
 
     Adds :uid (and optionally :aid) to `params`. The caller must have already
     set params["uid"] to the user's email.
+
+    ``pooled_only`` is for a read of more than one mailbox: the list, the
+    facets, search and ``/senders`` (EM-T8g-1). With it and no
+    ``account_id``, the fragment leaves out each separate mailbox. With no
+    flag the text does not change, and ``test_crm_email_timeline.py`` pins
+    that text. A read by mail id, a thread load and a bulk act by ids keep
+    the owner scope only (D-EM-30).
     """
-    frag = "em.account_id IN (SELECT id FROM email_accounts WHERE user_id = :uid"
-    if account_id:
-        frag += " AND id = :aid"
-        params["aid"] = account_id
-    frag += ")"
-    return frag
+    return (
+        "em.account_id IN ("
+        + _owned_accounts_sql(account_id, params, pooled_only=pooled_only, level=level)
+        + ")"
+    )
 
 
 # The scope sentinel behind both the sidebar's All folder and the search bar's
@@ -495,6 +783,14 @@ FOLDER_ALL_EXCLUDES = ("junk", "trash", "sent", "drafts")
 # but a perfectly good thing to go looking for. Junk/trash stay out of both —
 # search offers them as explicit scopes.
 FOLDER_ALL_SEARCH_EXCLUDES = ("junk", "trash")
+
+# The folders whose mail is NOT a copy of a mail in another mailbox (WS-17
+# EM-T8g-3, §11.6 edge cases 10 and 11). "Also in" and the draft dedupe both
+# read it, so one mail never counts as a copy in one place and not the other.
+# A draft is unfinished text with no counterparty, and the member threw junk
+# and trash away. Canonical keys only, for the reason above: the ingest maps
+# "draft" to "drafts" and "spam" to "junk".
+NOT_A_COPY_FOLDERS = ("drafts", "junk", "trash")
 
 
 # ── Label vocabulary ────────────────────────────────────────────────────────
@@ -547,9 +843,22 @@ HUMAN_SENDER_CATEGORIES_LOWER: list[str] = [
 # all": a user's own hand-made label doesn't make a message categorized as far
 # as the rules are concerned, and treating it as such would hide exactly the
 # mail the cleaner exists to find.
+#
+# OUTBOUND MAIL IS NEVER UNCATEGORIZED (#467). The rules run reads inbox mail
+# only, so a message the member wrote or has not sent yet never gets a label,
+# and "carries no label" would put every one of them in the chip and the count.
+# Cleanup categories describe inbound mail. ``NOT_INBOUND_FOLDERS`` names the
+# canonical folder keys of such mail, and the Email Cleaner's scope reads the
+# same fragment (``NOT_OUTBOUND_SQL``), so the two views cannot disagree.
+NOT_INBOUND_FOLDERS = ("sent", "drafts", "outbox")
+NOT_OUTBOUND_SQL = (
+    "LOWER(COALESCE(em.folder, '')) NOT IN ("
+    + ", ".join(f"'{f}'" for f in NOT_INBOUND_FOLDERS) + ")"
+)
 UNCATEGORIZED_SQL = (
+    f"({NOT_OUTBOUND_SQL} AND "
     "NOT EXISTS (SELECT 1 FROM unnest(COALESCE(em.categories, '{}')) AS c"
-    " WHERE LOWER(TRIM(c)) = ANY(:known_labels))"
+    " WHERE LOWER(TRIM(c)) = ANY(:known_labels)))"
 )
 
 # "Uncategorized" is a STATE — the absence of any known label — never a label
@@ -601,14 +910,69 @@ def folder_scope(
     return "LOWER(em.folder) = LOWER(:folder)"
 
 
-async def _assert_account_owner(db: Any, account_id: str, user_email: str) -> None:
-    """Raise 404 if the account isn't owned by the user."""
-    res = await db.execute(
-        text("SELECT 1 FROM email_accounts WHERE id = :id AND user_id = :uid"),
-        {"id": account_id, "uid": user_email},
-    )
-    if not res.fetchone():
-        raise HTTPException(status_code=404, detail="Account not found")
+def _bound_org() -> str:
+    """The SQL of the session's bound tenant, the one GUC predicate of the
+    gateway (``tasks.settings._BOUND_ORG``). Imported at the call, so this
+    module takes no import of the tasks package at load."""
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    return _BOUND_ORG
+
+
+async def _assert_account_owner(
+    db: Any, account_id: str, user_email: str, *,
+    # On: every caller opens tenant_session, which refuses an unbound tenant.
+    # A session with no app.tenant_id compares to NULL and gets 404.
+    this_tenant: bool = True,
+    level: str = "manage",
+) -> None:
+    """Raise 404 if the user may not act on the account at ``level``.
+
+    ``this_tenant`` also names the session's bound tenant in the SQL (WS-58
+    MD-3d). A member may own one mailbox in each of two organizations. RLS
+    keeps the other one out for production's role ``acb_app``, so the
+    predicate is defence in depth (R5). It holds also for a role that
+    bypasses RLS. It is on by default (WS-29 H-334). Each caller runs in a
+    bound tenant. With no tenant bound, the predicate compares to NULL, so
+    the check fails closed with 404. No caller passes ``False``.
+    R8: ``tests/unit/test_email_owner_tenant_r8.py``.
+
+    ``level`` is ``read``, ``send`` or ``manage`` (WS-65 SM-2). The default
+    ``manage`` fails closed for a shared mailbox. The check is
+    ``mailbox_access.assert_mailbox_access``, and with the flag off its SQL
+    is the text of before WS-65."""
+    await assert_mailbox_access(
+        db, account_id, user_email, level, this_tenant=this_tenant)
+
+
+#: A mail of the mailbox ``:aid`` has the thread ``:tid`` (D-EM-19).
+THREAD_IN_MAILBOX_SQL = (
+    "SELECT 1 FROM email_messages "
+    "WHERE account_id = :aid AND thread_id = :tid LIMIT 1")
+
+
+async def _assert_thread_in_mailbox(
+    db: Any, account_id: str, thread_id: str,
+) -> None:
+    """404 when no mail of ``account_id`` has ``thread_id`` (D-EM-19,
+    EM-T8e-1). A route that takes the pair calls this before it writes, so a
+    thread of another mailbox never gets a row of this one."""
+    row = (await db.execute(text(THREAD_IN_MAILBOX_SQL),
+                            {"aid": account_id, "tid": thread_id})).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Thread not found")
+
+
+async def _assert_mail_in_mailbox(
+    db: Any, account_id: str, message_id: str,
+) -> None:
+    """404 when ``message_id`` is not a mail of ``account_id`` (D-EM-19,
+    EM-T8e-1)."""
+    row = (await db.execute(text(
+        "SELECT 1 FROM email_messages WHERE id = :mid AND account_id = :aid"
+    ), {"mid": message_id, "aid": account_id})).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Message not found")
 
 
 def _safe_json(content: str) -> Any | None:
@@ -651,12 +1015,39 @@ def _safe_json(content: str) -> Any | None:
     return None
 
 
+#: The names of the email model calls on the usage report (AI-call
+#: attribution, 2026-10-10). A call binds ``agent=email.<feature>``. The five
+#: ``decide`` features of ``gateway.decide_features.FEATURES`` keep their
+#: names. Spec: ``customer_console.md`` §4.3a. Fence:
+#: ``tests/unit/test_usage_attribution.py::TestEveryEmailCallNamesItsFeature``.
+EMAIL_AI_FEATURES: frozenset[str] = frozenset({
+    "rule_match", "thread_status", "cold_check", "sender_pin", "draft",
+    "compose_assist", "draft_consult", "reply_memory", "voice_profile",
+    "digest", "template_fill", "rules_generate", "insights_screen",
+})
+
+
+def email_feature_agent(feature: str | None) -> str | None:
+    """``email.<feature>`` for a name in :data:`EMAIL_AI_FEATURES`, else None.
+
+    An unknown name binds nothing, so the call keeps the name the job bound
+    (``email.automation``). It never fails a model call over a report.
+    """
+    if feature in EMAIL_AI_FEATURES:
+        return f"email.{feature}"
+    if feature:
+        _log.warning("email.ai_feature_unknown", feature=str(feature)[:40])
+    return None
+
+
 async def _llm_json(
     model: str,
     messages: list[dict[str, Any]],
     *,
     max_tokens: int,
     temperature: float = 0.0,
+    feature: str | None = None,
+    **extra: Any,
 ) -> tuple[Any, str, str]:
     """The single seam for the email package's "ask the LLM, get JSON" calls.
 
@@ -672,15 +1063,38 @@ async def _llm_json(
     Errors are the caller's concern: each call site wraps this in its own
     try/except with a fail-closed default, so this helper does not swallow
     exceptions.
+
+    WS-17 EM-T4b: the model await sits inside ``llm_slot``. In the automation
+    scope it holds one permit of the cap and counts one request against the
+    daily budget of the mailbox. In ``enforce`` past the limit it raises
+    ``LLMBudgetExhausted`` and makes no call. Outside the scope it does
+    nothing. The signature does not change: the scope carries the account.
+
+    ``extra`` holds the options of the request that the Router forwards, for
+    example ``thinking``. ``acompletion_with_fallback`` sends only the keys
+    that ``acb_llm.routed._FORWARDABLE`` names to the Router. A caller with
+    no option sends the same request as before.
+
+    ``feature`` is a name of :data:`EMAIL_AI_FEATURES`, as ``rule_match``. The
+    call reports the agent ``email.<feature>`` for itself alone, unless a chat
+    agent such as ``email-assistant`` runs it (AI-call attribution,
+    2026-10-10). It changes nothing else about the call.
     """
     from acb_llm.context import acompletion_with_fallback
-    resp, used = await acompletion_with_fallback(
-        model=model,
-        messages=messages,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        response_format={"type": "json_object"},
-    )
+    from email_ingestion.llm_cap import llm_slot
+
+    # Built before the slot, which holds the leaf model await only (EM-T4b).
+    agent = email_feature_agent(feature)
+    async with llm_slot():
+        resp, used = await acompletion_with_fallback(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format={"type": "json_object"},
+            feature=agent,
+            **extra,
+        )
     content = resp.choices[0].message.content or ""
     return _safe_json(content), content, used
 
@@ -782,6 +1196,45 @@ def _date_range_clause(
     return clause, params
 
 
+#: Q-MB-1 (``email_app_master_plan.md`` §11.8), owner, 2026-10-23: the most
+#: mailboxes that one member connects. The ONE copy of the number. The chat
+#: agent reads it from ``GET /email/accounts`` (``mailbox_limit``) and never
+#: keeps its own.
+MAX_MAILBOXES_PER_MEMBER = 5
+MAILBOX_LIMIT_DETAIL = (
+    f"You have {MAX_MAILBOXES_PER_MEMBER} mailboxes connected, the most one "
+    "member can have. Disconnect one first."
+)
+
+
+async def member_mailbox_count(db: Any, member: str) -> int:
+    """How many mailboxes ``member`` has in the bound tenant.
+
+    A disconnect deletes the row (``DELETE /email/accounts/{id}``), so every
+    row counts. The caller holds the ``tenant_session``.
+    """
+    return int((await db.execute(
+        # private-only: the cap of Q-MB-1 counts the member's own rows. SM-3
+        # leaves a shared row out of the count (Q-SM-5, WS-65).
+        text("SELECT count(*) FROM email_accounts WHERE lower(user_id) = :m"),
+        {"m": (member or "").strip().lower()},
+    )).scalar() or 0)
+
+
+async def enforce_mailbox_limit(db: Any, member: str) -> None:
+    """Raise 409 when ``member`` already has the most mailboxes.
+
+    Call it inside the block that inserts the new row, and never for a
+    reconnect. A transaction lock on the member serializes two tabs that race,
+    so both cannot pass the count (Q-MB-1).
+    """
+    key = (member or "").strip().lower()
+    await db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"),
+                     {"k": f"email-mailbox-limit:{key}"})
+    if await member_mailbox_count(db, key) >= MAX_MAILBOXES_PER_MEMBER:
+        raise HTTPException(status_code=409, detail=MAILBOX_LIMIT_DETAIL)
+
+
 def _default_label(provider: str) -> str:
     labels = {"gmail": "Gmail", "microsoft": "Outlook", "imap": "Email"}
     return labels.get(provider, "Email")
@@ -803,9 +1256,21 @@ def email_memory_scope(user_email: str, account_id: str | None) -> str:
     NOT pushed into the agent's memory ContextVar — the email-assistant reuses
     that same var as its ``X-User-Email`` gateway-auth identity, so a scoped
     value there would break the agent's tool calls.
+
+    The account id goes into the key in canonical form, ``str(UUID(id))``,
+    when it parses as a UUID (WS-17 EM-T8f-1, review round 2). Some writers
+    take the id from the REQUEST. Postgres finds the row for an id in
+    capitals or with no hyphens, and the key then differed from the key of
+    the database id, so the disconnect purge missed it. An id that is not a
+    UUID stays as it is. The canonical form of a canonical id is the same id,
+    so a key that a writer built from a database id does not change.
     """
     uid = (user_email or "").strip().lower()
-    aid = (account_id or "").strip()
+    aid = str(account_id or "").strip()
+    if aid:
+        # Not a UUID: the key keeps the id as it is.
+        with suppress(ValueError):
+            aid = str(UUID(aid))
     return f"{uid}#acct:{aid}" if (uid and aid) else uid
 
 
@@ -816,6 +1281,21 @@ def _is_body_truncated(body_text: str, body_html: str) -> bool:
     if body_html and len(body_html.encode("utf-8", errors="replace")) >= MAX_BODY_HTML_BYTES:
         return True
     return False
+
+
+def _html_remote(body_html: str | None, received_at: Any) -> bool:
+    """True when the provider holds the HTML and the store holds none.
+
+    The ONE rule of ``html_remote`` (WS-17 EM-S1, §14.4.2 item 3). It is true
+    only with the flag of ``html_tier.from_provider`` on, ``body_html`` NULL,
+    and a cold message. The test is ``IS NULL``, so an empty string that a
+    writer stored is not remote. ``html_tier`` owns the window.
+    """
+    return (
+        body_html is None
+        and html_tier.is_cold(received_at)
+        and html_tier.from_provider()
+    )
 
 
 def _row_to_message(row: Any) -> EmailMessageModel:
@@ -862,6 +1342,7 @@ def _row_to_message(row: Any) -> EmailMessageModel:
         subject=row.subject or "",
         body_text=row.body_text or "",
         body_html=row.body_html,
+        html_remote=_html_remote(row.body_html, row.received_at),
         body_truncated=_is_body_truncated(
             row.body_text or "", row.body_html or ""
         ),
@@ -881,16 +1362,20 @@ def _row_to_message(row: Any) -> EmailMessageModel:
     )
 
 
-async def _upsert_message(db: Any, account_id: str, msg: Any) -> None:
+async def _upsert_message(
+    db: Any, account_id: str, msg: Any, *, reclaim: bool = False,
+) -> None:
     """Insert/update one normalized provider message into ``email_messages``.
 
     Thin gateway adapter over the shared ingest helper
     (:func:`email_ingestion.persist.upsert_message`) — the ONE upsert every
     ingest path shares. Used here by the on-demand history backfill.
+    ``reclaim`` goes to the upsert. The caller passes the
+    ``REKEYS_MESSAGE_IDS`` attribute of its provider (WS-17 EM-G1, D-EM-34).
     """
     from email_ingestion.persist import upsert_message
 
-    await upsert_message(db, account_id, msg)
+    await upsert_message(db, account_id, msg, reclaim=reclaim)
 
 
 async def _fetch_attachments(db: Any, message_id: str) -> list[AttachmentModel]:

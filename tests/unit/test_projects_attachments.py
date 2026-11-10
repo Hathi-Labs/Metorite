@@ -181,7 +181,7 @@ def test_serving_asks_whether_the_caller_can_see_a_task_it_hangs_off(db):
         run(pm_attachments.serve_attachment("a1", "x.png", user=user()))
     sql = db.sql_touching("FROM pm_task_attachments ta JOIN pm_tasks t")[-1]
     # The grant closure, not the file's owner column.
-    assert "root_project_id IN" in sql
+    assert "t.project_id IN" in sql
     assert "user_id" not in sql
 
 
@@ -211,7 +211,7 @@ def test_an_unrestricted_viewer_is_scoped_to_their_own_organization(db, monkeypa
     # Still no GRANT closure — that is what `unrestricted` buys.
     assert "pm_project_grants" not in sql
     # But the tenant is there, and it is bound.
-    assert "t.root_project_id IN" in sql
+    assert "t.project_id IN" in sql
     assert "organization_id = CAST(:vis_org AS uuid)" in sql
     params = db.params_touching("FROM pm_task_attachments ta JOIN pm_tasks t")[-1]
     assert params["vis_org"] == "org-a"

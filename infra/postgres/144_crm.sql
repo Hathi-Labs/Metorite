@@ -1,5 +1,5 @@
 -- ============================================================================
--- 144_crm.sql — the native CRM spine: organizations, contacts, leads, deals,
+-- 144_crm.sql — the native CRM spine: companies, contacts, leads, deals,
 --               statuses-as-data, one activity timeline, a status-change log.
 --
 -- What: spec project-docs/specs/crm_app.md §3.1–§3.10 (WS-26a). Four
@@ -24,12 +24,56 @@
 -- this file as text — §10 runs no database, so an idempotency claim that is
 -- only true by inspection is not a claim.
 --
+-- WS-53 CRM-T1 (2026-10-11): the table was `crm_organizations` and the
+-- company column was `organization_id`. Guarded blocks below rename both, and
+-- each seed INSERT runs only on a table with no tenant column. Migration 241
+-- then adds the tenant column, row level security and per-tenant keys. The
+-- real-database fence for all three states is
+-- tests/unit/test_crm_rename_upgrade.py.
+--
 -- Depends on: 130_org_access_control.sql (feature_catalog).
 -- ============================================================================
 
--- ── Organizations (Zoho: Accounts) ─────────────────────────────────────── §3.1
+-- ── Companies (Zoho: Accounts) ─────────────────────────────────────────── §3.1
 
-CREATE TABLE IF NOT EXISTS crm_organizations (
+-- == The rename to crm_companies (WS-53 CRM-T1, D95.2, 2026-10-11) ==========
+--
+-- Everywhere else in Metorite, "organization" is the tenant. In the CRM it
+-- was also the customer company. So this table and its column on contacts,
+-- deals and activities now say "company", and the tenant column can take the
+-- name `organization_id` (migration 241).
+--
+-- The rename lives in the file that creates the table, the same as the gtd
+-- rename in 49_gtd_people.sql. One file then answers all three states:
+--
+--   * Fresh install: nothing to rename. The CREATE below makes the new name.
+--   * Upgrade: the old table is renamed WITH ITS ROWS. The CREATE below then
+--     finds the name taken and skips.
+--   * Replay: the guard matches nothing.
+--
+-- relkind = 'r', so a view that has the old name stays where it is. Index,
+-- constraint and policy names keep their old spelling.
+--
+-- WARNING: the old name occurs ONCE, as the quoted literal in the block. A
+-- sweep that rewrites it makes the block a silent no-op. Fence:
+-- tests/unit/test_crm_rename_upgrade.py.
+
+DO $rename_crm_companies$
+DECLARE
+    old_name CONSTANT text := 'crm_organizations';
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE c.relname = old_name AND c.relkind = 'r'
+           AND n.nspname = current_schema()
+    ) AND to_regclass('public.crm_companies') IS NULL THEN
+        EXECUTE format('ALTER TABLE %I RENAME TO %I', old_name, 'crm_companies');
+        RAISE NOTICE 'renamed % -> crm_companies', old_name;
+    END IF;
+END
+$rename_crm_companies$;
+
+CREATE TABLE IF NOT EXISTS crm_companies (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name                TEXT NOT NULL,
     website             TEXT,
@@ -53,15 +97,50 @@ CREATE TABLE IF NOT EXISTS crm_organizations (
 );
 
 CREATE INDEX IF NOT EXISTS idx_crm_organizations_name
-    ON crm_organizations (name);
+    ON crm_companies (name);
 -- The query predicate is lower(owner_email) = :owner (R10), so the index must
 -- fold case too — a plain column index can never serve it.
 CREATE INDEX IF NOT EXISTS idx_crm_organizations_owner_email
-    ON crm_organizations (lower(owner_email));
+    ON crm_companies (lower(owner_email));
 CREATE INDEX IF NOT EXISTS idx_crm_organizations_last_activity_at
-    ON crm_organizations (last_activity_at);
+    ON crm_companies (last_activity_at);
 
 -- ── Contacts (Zoho: Contacts) ──────────────────────────────────────────── §3.2
+
+-- The company column takes its new name before the CREATE, for the same three
+-- states as the table above. It renames only when all three hold:
+-- `organization_id` exists, `company_id` does not, and the foreign key on
+-- `organization_id` points at crm_companies. The last check is what keeps a
+-- replay from renaming the TENANT column that migration 241 adds, because
+-- that one points at `organization`.
+
+DO $rename_crm_contacts_company_id$
+DECLARE
+    old_col CONSTANT text := 'organization_id';
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_attribute
+         WHERE attrelid = to_regclass('public.crm_contacts')
+           AND attname = old_col AND NOT attisdropped
+    ) AND NOT EXISTS (
+        SELECT 1 FROM pg_attribute
+         WHERE attrelid = to_regclass('public.crm_contacts')
+           AND attname = 'company_id' AND NOT attisdropped
+    ) AND EXISTS (
+        SELECT 1 FROM pg_constraint c
+          JOIN pg_attribute a
+            ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+         WHERE c.conrelid = to_regclass('public.crm_contacts')
+           AND c.contype = 'f'
+           AND a.attname = old_col
+           AND c.confrelid = to_regclass('public.crm_companies')
+    ) THEN
+        EXECUTE format('ALTER TABLE %I RENAME COLUMN %I TO %I',
+                       'crm_contacts', old_col, 'company_id');
+        RAISE NOTICE 'renamed crm_contacts.% -> company_id', old_col;
+    END IF;
+END
+$rename_crm_contacts_company_id$;
 
 CREATE TABLE IF NOT EXISTS crm_contacts (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -71,7 +150,7 @@ CREATE TABLE IF NOT EXISTS crm_contacts (
     phone               TEXT,
     mobile              TEXT,
     title               TEXT,
-    organization_id     UUID REFERENCES crm_organizations (id) ON DELETE SET NULL,
+    company_id          UUID REFERENCES crm_companies (id) ON DELETE SET NULL,
     description         TEXT,
     linkedin_url        TEXT,
     owner_email         TEXT,
@@ -90,7 +169,7 @@ CREATE TABLE IF NOT EXISTS crm_contacts (
 CREATE INDEX IF NOT EXISTS idx_crm_contacts_email
     ON crm_contacts (lower(email));
 CREATE INDEX IF NOT EXISTS idx_crm_contacts_organization_id
-    ON crm_contacts (organization_id);
+    ON crm_contacts (company_id);
 CREATE INDEX IF NOT EXISTS idx_crm_contacts_owner_email
     ON crm_contacts (lower(owner_email));
 CREATE INDEX IF NOT EXISTS idx_crm_contacts_last_activity_at
@@ -150,7 +229,7 @@ CREATE TABLE IF NOT EXISTS crm_leads (
     email                       TEXT,
     phone                       TEXT,
     mobile                      TEXT,
-    -- Free text. Becomes a crm_organizations row only on conversion (§3.7).
+    -- Free text. Becomes a crm_companies row only on conversion (§3.7).
     organization_name           TEXT,
     website                     TEXT,
     industry                    TEXT,
@@ -168,7 +247,7 @@ CREATE TABLE IF NOT EXISTS crm_leads (
     -- Conversion provenance (§3.7 step 4).
     converted_at                TIMESTAMPTZ,
     converted_contact_id        UUID REFERENCES crm_contacts (id) ON DELETE SET NULL,
-    converted_organization_id   UUID REFERENCES crm_organizations (id) ON DELETE SET NULL,
+    converted_organization_id   UUID REFERENCES crm_companies (id) ON DELETE SET NULL,
     -- FK added in the guarded DO $$ below, once crm_deals exists: crm_deals
     -- references crm_leads for provenance, so the two cannot both be inline.
     converted_deal_id           UUID,
@@ -191,10 +270,40 @@ CREATE INDEX IF NOT EXISTS idx_crm_leads_last_activity_at
 
 -- ── Deals (Zoho: Deals) ────────────────────────────────────────────────── §3.4
 
+-- The company column, renamed under the same guard as on crm_contacts.
+
+DO $rename_crm_deals_company_id$
+DECLARE
+    old_col CONSTANT text := 'organization_id';
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_attribute
+         WHERE attrelid = to_regclass('public.crm_deals')
+           AND attname = old_col AND NOT attisdropped
+    ) AND NOT EXISTS (
+        SELECT 1 FROM pg_attribute
+         WHERE attrelid = to_regclass('public.crm_deals')
+           AND attname = 'company_id' AND NOT attisdropped
+    ) AND EXISTS (
+        SELECT 1 FROM pg_constraint c
+          JOIN pg_attribute a
+            ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+         WHERE c.conrelid = to_regclass('public.crm_deals')
+           AND c.contype = 'f'
+           AND a.attname = old_col
+           AND c.confrelid = to_regclass('public.crm_companies')
+    ) THEN
+        EXECUTE format('ALTER TABLE %I RENAME COLUMN %I TO %I',
+                       'crm_deals', old_col, 'company_id');
+        RAISE NOTICE 'renamed crm_deals.% -> company_id', old_col;
+    END IF;
+END
+$rename_crm_deals_company_id$;
+
 CREATE TABLE IF NOT EXISTS crm_deals (
     id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name                    TEXT NOT NULL,
-    organization_id         UUID REFERENCES crm_organizations (id) ON DELETE SET NULL,
+    company_id              UUID REFERENCES crm_companies (id) ON DELETE SET NULL,
     status_id               UUID NOT NULL
                                 REFERENCES crm_deal_statuses (id) ON DELETE RESTRICT,
     -- The stage-age clock: re-stamped by every status transition, so "how long
@@ -229,7 +338,7 @@ CREATE TABLE IF NOT EXISTS crm_deals (
 CREATE INDEX IF NOT EXISTS idx_crm_deals_status_id
     ON crm_deals (status_id);
 CREATE INDEX IF NOT EXISTS idx_crm_deals_organization_id
-    ON crm_deals (organization_id);
+    ON crm_deals (company_id);
 CREATE INDEX IF NOT EXISTS idx_crm_deals_owner_email
     ON crm_deals (lower(owner_email));
 CREATE INDEX IF NOT EXISTS idx_crm_deals_expected_close_date
@@ -273,6 +382,36 @@ CREATE TABLE IF NOT EXISTS crm_deal_contacts (
 -- nullable and a CHECK requires at least one: an activity attached to nothing
 -- is invisible in every timeline and would accumulate silently.
 
+-- The company column, renamed under the same guard as on crm_contacts.
+
+DO $rename_crm_activities_company_id$
+DECLARE
+    old_col CONSTANT text := 'organization_id';
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_attribute
+         WHERE attrelid = to_regclass('public.crm_activities')
+           AND attname = old_col AND NOT attisdropped
+    ) AND NOT EXISTS (
+        SELECT 1 FROM pg_attribute
+         WHERE attrelid = to_regclass('public.crm_activities')
+           AND attname = 'company_id' AND NOT attisdropped
+    ) AND EXISTS (
+        SELECT 1 FROM pg_constraint c
+          JOIN pg_attribute a
+            ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+         WHERE c.conrelid = to_regclass('public.crm_activities')
+           AND c.contype = 'f'
+           AND a.attname = old_col
+           AND c.confrelid = to_regclass('public.crm_companies')
+    ) THEN
+        EXECUTE format('ALTER TABLE %I RENAME COLUMN %I TO %I',
+                       'crm_activities', old_col, 'company_id');
+        RAISE NOTICE 'renamed crm_activities.% -> company_id', old_col;
+    END IF;
+END
+$rename_crm_activities_company_id$;
+
 CREATE TABLE IF NOT EXISTS crm_activities (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     type                TEXT NOT NULL
@@ -286,7 +425,7 @@ CREATE TABLE IF NOT EXISTS crm_activities (
     lead_id             UUID REFERENCES crm_leads (id) ON DELETE CASCADE,
     deal_id             UUID REFERENCES crm_deals (id) ON DELETE CASCADE,
     contact_id          UUID REFERENCES crm_contacts (id) ON DELETE CASCADE,
-    organization_id     UUID REFERENCES crm_organizations (id) ON DELETE CASCADE,
+    company_id          UUID REFERENCES crm_companies (id) ON DELETE CASCADE,
     -- An email address, or `agent:<name>` when the platform wrote it.
     created_by          TEXT NOT NULL,
     meta                JSONB,
@@ -296,7 +435,7 @@ CREATE TABLE IF NOT EXISTS crm_activities (
         lead_id IS NOT NULL
         OR deal_id IS NOT NULL
         OR contact_id IS NOT NULL
-        OR organization_id IS NOT NULL
+        OR company_id IS NOT NULL
     )
 );
 
@@ -307,7 +446,7 @@ CREATE INDEX IF NOT EXISTS idx_crm_activities_lead_id_created_at
 CREATE INDEX IF NOT EXISTS idx_crm_activities_contact_id_created_at
     ON crm_activities (contact_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_crm_activities_organization_id_created_at
-    ON crm_activities (organization_id, created_at);
+    ON crm_activities (company_id, created_at);
 -- Partial: the only question asked of due_at is "what is still open", and the
 -- completed tail is the majority of the table within a quarter.
 CREATE INDEX IF NOT EXISTS idx_crm_activities_due_at
@@ -339,34 +478,71 @@ CREATE INDEX IF NOT EXISTS idx_crm_status_changes_entity
 -- ON CONFLICT DO NOTHING throughout: these are starting points, not managed
 -- rows. The owner reshapes the pipeline in the app and a redeploy must not
 -- reinstate a stage they deleted or undo a rename.
+--
+-- Each seed runs ONLY when its table has no `organization_id` column. That is
+-- a fresh install before migration 241 (WS-53 CRM-T1). After 241 the column
+-- is NOT NULL under FORCE row level security, and a migration binds no tenant.
+-- The deploy applies a changed file again (scripts/apply_migrations.sh), so an
+-- unguarded INSERT here would stop it. An organization gets its own stages
+-- from CRM-T5, not from this file.
 
-INSERT INTO crm_lead_statuses (name, color, position, type, is_default) VALUES
-    ('New',       'gray',  10, 'open',    true),
-    ('Contacted', 'blue',  20, 'ongoing', false),
-    ('Nurture',   'amber', 30, 'ongoing', false),
-    -- `won` for a LEAD means qualified — it left the lead funnel upward. §3.7
-    -- step 4 moves a converted lead to the first won-type status.
-    ('Qualified', 'green', 40, 'won',     false),
-    ('Lost',      'red',   50, 'lost',    false)
-ON CONFLICT (name) DO NOTHING;
+DO $seed_crm_lead_statuses$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_attribute
+         WHERE attrelid = to_regclass('public.crm_lead_statuses')
+           AND attname = 'organization_id' AND NOT attisdropped
+    ) THEN
+        INSERT INTO crm_lead_statuses (name, color, position, type, is_default) VALUES
+            ('New',       'gray',  10, 'open',    true),
+            ('Contacted', 'blue',  20, 'ongoing', false),
+            ('Nurture',   'amber', 30, 'ongoing', false),
+            -- `won` for a LEAD means qualified — it left the lead funnel upward. §3.7
+            -- step 4 moves a converted lead to the first won-type status.
+            ('Qualified', 'green', 40, 'won',     false),
+            ('Lost',      'red',   50, 'lost',    false)
+        ON CONFLICT (name) DO NOTHING;
+    END IF;
+END
+$seed_crm_lead_statuses$;
 
-INSERT INTO crm_deal_statuses (name, color, position, type, is_default, probability) VALUES
-    ('Qualification',  'gray',   10, 'open',    true,   10),
-    ('Needs Analysis', 'blue',   20, 'ongoing', false,  25),
-    ('Proposal',       'violet', 30, 'ongoing', false,  50),
-    ('Negotiation',    'amber',  40, 'ongoing', false,  75),
-    ('Closed Won',     'green',  50, 'won',     false, 100),
-    ('Closed Lost',    'red',    60, 'lost',    false,   0)
-ON CONFLICT (name) DO NOTHING;
+DO $seed_crm_deal_statuses$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_attribute
+         WHERE attrelid = to_regclass('public.crm_deal_statuses')
+           AND attname = 'organization_id' AND NOT attisdropped
+    ) THEN
+        INSERT INTO crm_deal_statuses (name, color, position, type, is_default, probability) VALUES
+            ('Qualification',  'gray',   10, 'open',    true,   10),
+            ('Needs Analysis', 'blue',   20, 'ongoing', false,  25),
+            ('Proposal',       'violet', 30, 'ongoing', false,  50),
+            ('Negotiation',    'amber',  40, 'ongoing', false,  75),
+            ('Closed Won',     'green',  50, 'won',     false, 100),
+            ('Closed Lost',    'red',    60, 'lost',    false,   0)
+        ON CONFLICT (name) DO NOTHING;
+    END IF;
+END
+$seed_crm_deal_statuses$;
 
-INSERT INTO crm_lost_reasons (label, position) VALUES
-    ('Price',               10),
-    ('Competitor',          20),
-    ('No budget',           30),
-    ('No response',         40),
-    ('Requirement dropped', 50),
-    ('Other',               60)
-ON CONFLICT (label) DO NOTHING;
+DO $seed_crm_lost_reasons$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_attribute
+         WHERE attrelid = to_regclass('public.crm_lost_reasons')
+           AND attname = 'organization_id' AND NOT attisdropped
+    ) THEN
+        INSERT INTO crm_lost_reasons (label, position) VALUES
+            ('Price',               10),
+            ('Competitor',          20),
+            ('No budget',           30),
+            ('No response',         40),
+            ('Requirement dropped', 50),
+            ('Other',               60)
+        ON CONFLICT (label) DO NOTHING;
+    END IF;
+END
+$seed_crm_lost_reasons$;
 
 -- ── Feature registration ────────────────────────────────────────────────────
 --

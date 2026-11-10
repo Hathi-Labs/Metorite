@@ -56,6 +56,21 @@ describe("the People app is reachable", () => {
     expect(featureForPath(PEOPLE_HREF)).toBe(PEOPLE_FEATURE);
   });
 
+  it("keeps My access ungated inside the People app", () => {
+    // Owner directive, 2026-10-05: My access is a People tab now. Under the
+    // `/people` PREFIX it would inherit the directory's `people` slug, and the
+    // page that explains a missing grant would itself need a grant.
+    expect(featureForPath("/people/access")).toBeNull();
+    // The old address only redirects, and it stays ungated too.
+    expect(featureForPath("/access")).toBeNull();
+  });
+
+  it("gives My access no sidebar pane", () => {
+    const hrefs = NAV_SECTIONS.flatMap((s) => s.items).map((i) => i.href);
+    expect(hrefs).not.toContain("/access");
+    expect(hrefs).not.toContain("/people/access");
+  });
+
   it("does NOT ride the tasks feature", () => {
     // The whole reason `people` exists as its own slug: a manager who needs the
     // org chart and the assignee picker should not have to be handed the

@@ -29,6 +29,9 @@
  *   2. **category** — Projects' six machine-readable values
  *      (`routes/projects/core.py` `STATUS_CATEGORIES`). Projects *knows* what a
  *      lane means; guessing from its name would be worse information.
+ *   2b. **CRM stage type** (WS-53 CRM-C2) — `won`, `lost`, `on_hold` and
+ *      `ongoing`. The CRM has no category, and its type is the same kind of
+ *      fact. The two never both arrive, so their order is free.
  *   3. **name keyword** — /tasks' stages are user-named and have no category, so
  *      "Done"/"Waiting"/"In progress" are read out of the words. The regexes are
  *      ported unchanged from `stageColors.ts`.
@@ -92,7 +95,12 @@ const ACCENTS: Record<AccentHue, StatusAccent> = {
     bar: "border-l-muted-foreground/40",
     // Deliberately not `soft`+`text`: a tag chip sits on a card and needs a
     // solid-enough fill to read as a chip, which `bg-muted/40` does not give.
-    chip: "bg-secondary text-muted-foreground",
+    //
+    // ⚠️ The ink is `secondary-foreground`, the partner of the fill (WS-53
+    // CRM-C2 review). It was `text-muted-foreground`, which measures 4.33 : 1
+    // on `--secondary` in light mode, under AA. `contrast.test.ts` measures
+    // the pair this slot uses, for every hue, and fails an unmeasured one.
+    chip: "bg-secondary text-secondary-foreground",
   },
   red: {
     dot: "bg-destructive",
@@ -163,8 +171,14 @@ const ACCENTS: Record<AccentHue, StatusAccent> = {
   },
 };
 
-/** Spellings a stored value may legitimately use. */
-const COLOR_ALIASES: Record<string, AccentHue> = {
+/**
+ * Spellings a stored value may legitimately use.
+ *
+ * The second group came in with the CRM (WS-53 CRM-C2). Its stage colour is
+ * free text, and its own map accepted these names until this module took it
+ * over. So a stored `sky` or `rose` still draws, as the nearest hue here.
+ */
+export const COLOR_ALIASES: Record<string, AccentHue> = {
   grey: "gray",
   gray: "gray",
   red: "red",
@@ -175,6 +189,77 @@ const COLOR_ALIASES: Record<string, AccentHue> = {
   blue: "blue",
   violet: "violet",
   purple: "violet",
+  slate: "gray",
+  sky: "blue",
+  cyan: "blue",
+  emerald: "green",
+  teal: "green",
+  rose: "red",
+  pink: "violet",
+};
+
+/**
+ * Hex colour → hue (PJP-1, D168.2). A saturation under `GRAY_SATURATION` is
+ * gray. Otherwise the hue angle picks a band: `[from, to)` in degrees, and
+ * red wraps through 0. `skill_projects/hues.py` holds the same numbers, and a
+ * parity test holds the two together through a JSON fixture.
+ */
+export const GRAY_SATURATION = 0.3;
+export const HUE_BANDS: ReadonlyArray<{ hue: AccentHue; from: number; to: number }> = [
+  { hue: "red", from: 345, to: 15 },
+  { hue: "amber", from: 15, to: 65 },
+  { hue: "green", from: 65, to: 170 },
+  { hue: "blue", from: 170, to: 250 },
+  { hue: "violet", from: 250, to: 345 },
+];
+
+/** The hue of a `#RGB` or `#RRGGBB` code, or null when the text is not hex. */
+export function hueOfHex(value: string): AccentHue | null {
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(value.trim());
+  if (!m) return null;
+  let h = m[1];
+  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+  const r = parseInt(h.slice(0, 2), 16) / 255;
+  const g = parseInt(h.slice(2, 4), 16) / 255;
+  const b = parseInt(h.slice(4, 6), 16) / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  const d = max - min;
+  if (d === 0) return "gray";
+  // Round both, as the server does: the two float paths differ in the last
+  // bit, and a code on a band edge must land on the same side of it.
+  const round6 = (x: number) => Math.round(x * 1e6) / 1e6;
+  const sat = round6(d / (1 - Math.abs(2 * l - 1)));
+  if (sat < GRAY_SATURATION) return "gray";
+  let deg: number;
+  if (max === r) deg = 60 * (((g - b) / d) % 6);
+  else if (max === g) deg = 60 * ((b - r) / d + 2);
+  else deg = 60 * ((r - g) / d + 4);
+  if (deg < 0) deg += 360;
+  deg = round6(deg);
+  for (const band of HUE_BANDS) {
+    const inBand =
+      band.from < band.to ? deg >= band.from && deg < band.to : deg >= band.from || deg < band.to;
+    if (inBand) return band.hue;
+  }
+  return "red";
+}
+
+/**
+ * A CRM stage type → hue (WS-53 CRM-C2).
+ *
+ * The type is a closed CHECK vocabulary (`crm_*_statuses.type`), so it says
+ * what a lane means even where nobody chose a colour. That matters most in
+ * Mirror mode, where the sync never writes a colour and every row is `gray`.
+ * `open` is not here: an open stage means only "not closed", so it falls
+ * through to its name and its position.
+ */
+const STAGE_TYPE_HUES: Record<string, AccentHue> = {
+  won: "green",
+  lost: "red",
+  on_hold: "amber",
+  ongoing: "blue",
 };
 
 /**
@@ -244,6 +329,11 @@ export interface AccentInput {
   color?: string | null;
   /** A machine-readable category — Projects' `STATUS_CATEGORIES`. */
   category?: string | null;
+  /**
+   * A CRM stage type — `open`, `ongoing`, `on_hold`, `won` or `lost`. It
+   * comes after the stored colour and before the name (WS-53 CRM-C2).
+   */
+  stageType?: string | null;
   /** The human-facing name, for axes nobody categorised (/tasks' stages). */
   name?: string | null;
   /** Where this lane sits on its axis, for the positional fallback. */
@@ -267,9 +357,16 @@ export interface AccentInput {
 export function resolveHue(input: AccentInput): AccentHue {
   const stored = input.color?.trim().toLowerCase();
   if (stored && stored in COLOR_ALIASES) return COLOR_ALIASES[stored];
+  if (stored) {
+    const fromHex = hueOfHex(stored);
+    if (fromHex) return fromHex;
+  }
 
   const category = input.category?.trim().toLowerCase();
   if (category && category in CATEGORY_HUES) return CATEGORY_HUES[category];
+
+  const stageType = input.stageType?.trim().toLowerCase();
+  if (stageType && stageType in STAGE_TYPE_HUES) return STAGE_TYPE_HUES[stageType];
 
   if (input.name) {
     const keyword = keywordHue(input.name);
@@ -373,4 +470,134 @@ export function projectState(value?: string | null): ProjectStateVisual | null {
 export function projectStateAccent(value?: string | null): StatusAccent {
   const state = projectState(value);
   return ACCENTS[state ? state.hue : "gray"];
+}
+
+/* ── Project health (WS-39 LP-1a, `project_management_app.md` §14.2a) ──────
+ *
+ * The health of a project UPDATE: how the lead says the project goes. A
+ * fourth axis, beside a task's status, a project's run state and an agent's
+ * state, and this is still the one module it becomes a colour in (rule 4).
+ * It is a CLOSED lookup, like `PROJECT_STATES`, and never goes through
+ * `resolveHue`, because "track" and "risk" are no keyword of that chain.
+ *
+ * The three values map onto existing hues of this palette, and add none:
+ * On track is green (`--success`), At risk is amber (`--warning`) and Off
+ * track is red (`--destructive`). Each also carries a glyph and its words, so
+ * the chip never depends on colour alone.
+ */
+
+export interface ProjectHealthVisual {
+  /** What a person reads. Never the stored value. */
+  label: string;
+  hue: AccentHue;
+  /** Lucide name for `<Icon name=… />`. */
+  icon: string;
+}
+
+export const PROJECT_HEALTHS: Record<string, ProjectHealthVisual> = {
+  on_track: { label: "On track", hue: "green", icon: "CircleCheck" },
+  at_risk: { label: "At risk", hue: "amber", icon: "TriangleAlert" },
+  off_track: { label: "Off track", hue: "red", icon: "CircleX" },
+};
+
+/** How a health draws, or `null` when the value is not one. */
+export function projectHealth(value?: string | null): ProjectHealthVisual | null {
+  const key = value?.trim().toLowerCase();
+  return (key && Object.hasOwn(PROJECT_HEALTHS, key) && PROJECT_HEALTHS[key]) || null;
+}
+
+/** The chip's class pair (fill and ink) for a health. Unknown is gray. */
+export function projectHealthChip(value?: string | null): string {
+  const visual = projectHealth(value);
+  return ACCENTS[visual ? visual.hue : "gray"].chip;
+}
+
+/* ── Agent run state (WS-55 EA-12c, `external_agent_access.md` §12.1) ──────
+ *
+ * The pill on a task that an outside agent works on. A third axis, beside a
+ * task's status and a project's run state, and this is still the one module
+ * it becomes a colour in (rule 4). It is a CLOSED lookup, like
+ * `PROJECT_STATES`, and never goes through `resolveHue`: `keywordHue` reads
+ * "working" as blue, and the spec says neutral.
+ *
+ * The spec names five tones. They map onto this palette as follows:
+ * attention is amber, info is blue, error is red. Neutral is the gray CHIP.
+ * Muted is the gray `soft` fill with the gray `text`, the faintest pair this
+ * palette has. Each state also carries a glyph, so the pill never depends on
+ * colour alone.
+ */
+
+export interface AgentStateVisual {
+  hue: AccentHue;
+  /** Draw the gray `soft`+`text` pair, not the chip. Only gray uses it. */
+  muted?: boolean;
+  /** Lucide name for `<Icon name=… />`. */
+  icon: string;
+}
+
+export const AGENT_STATES: Record<string, AgentStateVisual> = {
+  awaiting: { hue: "amber", icon: "MessageCircleQuestion" },
+  answered: { hue: "blue", icon: "CircleCheck" },
+  working: { hue: "gray", icon: "Bot" },
+  queued: { hue: "gray", icon: "CircleDashed" },
+  stale: { hue: "gray", muted: true, icon: "CirclePause" },
+  stopping: { hue: "gray", muted: true, icon: "CircleStop" },
+  failed: { hue: "red", icon: "CircleAlert" },
+};
+
+/** How an agent state draws, or `null` when the value is not one. */
+export function agentStateVisual(value?: string | null): AgentStateVisual | null {
+  const key = value?.trim().toLowerCase();
+  return (key && AGENT_STATES[key]) || null;
+}
+
+/** The pill's class pair (fill and ink) for an agent state. Unknown is gray. */
+export function agentStateChip(value?: string | null): string {
+  const visual = agentStateVisual(value);
+  const accent = ACCENTS[visual ? visual.hue : "gray"];
+  return visual?.muted ? `${accent.soft} ${accent.text}` : accent.chip;
+}
+
+/* ── Pull request chip (WS-55 EA-13d, `external_agent_access.md` §12.2 item 2) ──
+ *
+ * The chip on a card that names one pull request of the task and its CI. This
+ * is still the one module where a status becomes a tone (rule 4). The card
+ * descriptor (`taskCard.pullRequestChip`) asks here, and `TaskMeta` is the only
+ * file that turns the tone into a class. The words of the chip carry the state
+ * too, so the tone is never the only signal.
+ *
+ * The rule (EA3-41): a merged pull request takes the done tone, which is the
+ * green of a finished lane. Failing checks take danger. Pending checks take
+ * the warning tone. Every other chip takes muted, so an open pull request with
+ * passing checks stays quiet and one that needs a person is the one that shows.
+ */
+
+/** The tone names of the chip. `taskCard.MetaTone` holds the same four. */
+export type PrChipTone = "success" | "danger" | "warning" | "muted";
+
+/** The `state` of a pull request reference (`pm_task_refs.state`). */
+export type PrState = "open" | "draft" | "merged" | "closed";
+
+/** The `checks_state` of a reference (migration 282). Null: never read. */
+export type PrChecksState = "pending" | "passing" | "failing" | "none";
+
+/** The glyph and the word of each state. The icon is a Lucide name. */
+export const PR_STATES: Record<PrState, { icon: string; word: string }> = {
+  open: { icon: "GitPullRequest", word: "Open" },
+  draft: { icon: "GitPullRequestDraft", word: "Draft" },
+  merged: { icon: "GitMerge", word: "Merged" },
+  closed: { icon: "GitPullRequestClosed", word: "Closed" },
+};
+
+/** How a pull request chip draws, by its state and its checks. */
+export function prChipTone(
+  state?: string | null,
+  checksState?: string | null,
+): PrChipTone {
+  if (state === "merged") return "success";
+  // A merged or closed pull request has no live checks to report.
+  if (state === "closed") return "muted";
+  if (checksState === "failing") return "danger";
+  if (checksState === "pending") return "warning";
+  return "muted";
 }

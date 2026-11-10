@@ -18,12 +18,15 @@ POST /agent/webhook/{source}
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import hmac
 import json
 import os
 import re
+import time
 import uuid
+from contextvars import ContextVar
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -32,18 +35,21 @@ if TYPE_CHECKING:  # import-cycle-free: the runtime import is function-local
 
 from acb_auth import (
     UserContext,
+    UserRole,
     assert_can_run_agent_in_session,
     get_current_user,
     require_internal_auth,
     require_permission,
 )
 from acb_common import get_logger, get_settings
+from acb_common.child_env import child_env
 from fastapi import (APIRouter, BackgroundTasks, Depends, Header,
                      HTTPException, Request, status)
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from gateway.connections import github as github_connection
 from gateway.db import TenantUnbound, current_tenant
 from gateway.room_stream import publish_room_event
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictBool, model_validator
 
 _log = get_logger("gateway.agent")
 
@@ -181,7 +187,7 @@ async def _route_incoming_turn(
     will ever apply. ``run_detached``'s own guard still stands behind that, so
     engaging on a bad read cannot destroy a transcript — it raises instead.
     """
-    from orchestrator.steer import Route, TurnDecision, route_turn
+    from orchestrator.steer import Route, TurnDecision, is_bare_stop, route_turn
 
     if not thread_id:
         return TurnDecision(Route.ENGAGE, "no_thread")
@@ -194,12 +200,146 @@ async def _route_incoming_turn(
         _log.warning("agent.turn_route_probe_failed", thread_id=thread_id[:12])
         return TurnDecision(Route.ENGAGE, "probe_failed")
 
+    # ── A dead run is never steered into (incident 2026-10-09) ───────────────
+    # ``cc:active`` outlives the process that held the run. When the owner
+    # process has no heartbeat key, close the run here (its partial reply is
+    # saved with an "interrupted" marker) and route as if nothing ran. A bare
+    # "stop" to a dead run has nothing left to stop.
+    #
+    # ONE recovery at a time (``cc:recover:{tid}``). A request that loses the
+    # claim waits for the winner, then routes as usual: into the winner's new
+    # run as a steer, so a second run never starts (two held sends that flush
+    # together are the likely case).
+    from orchestrator.run_liveness import (  # noqa: PLC0415
+        recovery_in_progress, run_liveness, wait_out_recovery,
+    )
+
+    async def _reread() -> tuple[bool, str]:
+        a = await is_active(thread_id)
+        return a, (await get_run_source(thread_id) if a else "")
+
+    try:
+        if await recovery_in_progress(thread_id):
+            await wait_out_recovery(thread_id)
+            active, source = await _reread()
+        if active and await run_liveness(thread_id) == "dead":
+            from gateway.chat_recovery import recover_dead_run  # noqa: PLC0415
+
+            stop = is_bare_stop(text)
+            rec = await recover_dead_run(thread_id, why="owner_gone", hold=not stop)
+            if rec is not None:
+                if stop:
+                    return TurnDecision(Route.DROP, "dead_run_stopped")
+                return TurnDecision(Route.ENGAGE, "dead_run_recovered")
+            await wait_out_recovery(thread_id)
+            active, source = await _reread()
+    except Exception:  # noqa: BLE001
+        _log.warning("agent.turn_recovery_failed", thread_id=thread_id[:12])
+
     return route_turn(
         author_kind="human" if actor else "agent",
         text=text,
         run_active=active,
         target_run_kind=_run_kind_for_source(source),
     )
+
+
+async def _keep_card_draft(user: UserContext, thread_id: str, raw: Any) -> None:
+    """Hand a steer's ``card_draft`` to the email module (§18.11 step 2).
+
+    The tenant and the member are the session's (*user*), never the body's.
+    ``keep_card_draft`` checks the snapshot against the card's own record, and
+    the flag (``EMAIL_EDIT_CARD_ORGS``). A fault keeps nothing and never stops
+    the steer."""
+    try:
+        from gateway.routes.email.automation.redraft import keep_card_draft
+
+        await keep_card_draft(user, thread_id, raw)
+    except Exception as exc:  # a snapshot never stops a steer
+        _log.warning("agent.card_draft_failed", error=type(exc).__name__)
+
+
+def _followup_refused(thread_id: str, reason: str) -> Response:
+    """The 202 of a steer follow-up that starts no run. The chat drops its
+    placeholder on it, as it does for a steer."""
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={
+            "steered": False, "followUp": False,
+            "reason": reason, "threadId": thread_id,
+        },
+    )
+
+
+async def _steer_followup_gate(thread_id: str) -> Response | None:
+    """``None`` when a steer follow-up may start its run, else its 202.
+
+    Owner, 2026-10-12: a message sent during a run always steers it, and it
+    always gets an answer. A steer rides the next tool result, so a steer
+    that arrives while the model writes its last answer is never read in
+    that run. The run gives it back to the durable store at its end
+    (``steer.return_unconsumed``), and the chat then asks for this follow-up.
+
+    * A run still going: ``run_in_flight``. Its own steers reach it.
+    * No steer stored: ``nothing_pending``. The run read every one.
+    * A store or probe that fails: ``probe_failed``. The steer stays stored,
+      and the next message replays it through ENGAGE.
+    """
+    if not thread_id:
+        return _followup_refused(thread_id, "no_thread")
+    try:
+        from orchestrator.steer import has_pending_steers  # noqa: PLC0415
+        from orchestrator.stream_relay import is_active  # noqa: PLC0415
+
+        if await is_active(thread_id):
+            return _followup_refused(thread_id, "run_in_flight")
+        # A Stop asks for no follow-up: the stopped run's steers go, for
+        # every tab and every member (review of #920, round 2).
+        from orchestrator.steer import discard_pending, was_stopped  # noqa: PLC0415
+
+        if await was_stopped(thread_id):
+            await discard_pending(thread_id)
+            return _followup_refused(thread_id, "stopped")
+        if not await has_pending_steers(thread_id):
+            return _followup_refused(thread_id, "nothing_pending")
+    except Exception:  # noqa: BLE001
+        _log.warning("agent.steer_followup_probe_failed", thread_id=thread_id[:12])
+        return _followup_refused(thread_id, "probe_failed")
+    _log.info("agent.steer_followup", thread_id=thread_id[:12])
+    return None
+
+
+async def _resume_note_for(
+    thread_id: str, member: str, organization_id: str | None,
+) -> str | None:
+    """The server's Continue note, built from the thread's saved partial reply.
+
+    Reads the last assistant row of the thread under the caller's tenant.
+    ``None`` unless that row carries the restart marker: any member who can
+    send may set ``resume: true``, so the flag counts only for an answer a
+    restart cut. The caller then sends the message as it came.
+    """
+    import asyncio  # noqa: PLC0415
+
+    from gateway.chat_recovery import (  # noqa: PLC0415
+        compose_resume_note, row_was_interrupted,
+    )
+
+    try:
+        from gateway.routes.chat import _get_messages  # noqa: PLC0415
+
+        rows = await asyncio.to_thread(
+            _get_messages, thread_id, (member or "").strip() or "anonymous",
+            limit=20, organization_id=organization_id,
+        )
+    except Exception:  # noqa: BLE001
+        _log.warning("agent.resume_partial_unread", thread_id=thread_id[:12])
+        return None
+    last = next((r for r in reversed(rows or []) if r.get("role") == "assistant"), None)
+    if last is None or not row_was_interrupted(last):
+        _log.info("agent.resume_refused_no_marker", thread_id=thread_id[:12])
+        return None
+    return compose_resume_note(str(last.get("content") or ""))
 
 
 #: Sources whose runs nobody is standing in. A person's message arriving during
@@ -226,6 +366,21 @@ def _run_kind_for_source(source: str) -> str:
     )
 
 
+#: The steers that this request's ENGAGE took from the durable store. The
+#: route reads it after a refusal and gives them back (review of #920). A
+#: context variable, so ``_apply_turn_decision`` keeps its signature.
+_TAKEN_STEERS: "ContextVar[list[dict[str, Any]] | None]" = ContextVar(
+    "agent_taken_steers", default=None,
+)
+
+#: WS-63 PZ-31: True when the member typed this request's message, so a
+#: steer of it may ground a profile write. The route sets False for a card
+#: answer and a Continue turn. The default is False, so a caller that does
+#: not set it stores a steer that grounds nothing. A context variable, for
+#: the same reason as :data:`_TAKEN_STEERS`.
+_STEER_TYPED: ContextVar[bool] = ContextVar("agent_steer_typed", default=False)
+
+
 async def _apply_turn_decision(
     decision: "TurnDecision",
     req: AgentRunRequest,
@@ -249,14 +404,26 @@ async def _apply_turn_decision(
     """
     from orchestrator.steer import (
         Route, format_replayed, is_inside_run_floor, send_steer,
-        take_pending_steers,
+        take_pending_steers, without_replayed,
     )
 
     thread_id = req.thread_id or ""
 
     if decision.route is Route.ENGAGE:
         if thread_id:
+            from orchestrator.steer import (  # noqa: PLC0415
+                clear_stopped, discard_pending, was_stopped,
+            )
+            # The member stopped the last run: its steers are not replayed.
+            # Their words stay in the transcript, so the history carries
+            # them. This run starts clean (review of #920, round 2).
+            if await was_stopped(thread_id):
+                await discard_pending(thread_id)
+                await clear_stopped(thread_id)
             pending = await take_pending_steers(thread_id)
+            _taken = _TAKEN_STEERS.get()
+            if _taken is not None:
+                _taken.extend(pending)
             replayed = format_replayed(pending)
             if replayed:
                 _log.info(
@@ -271,6 +438,12 @@ async def _apply_turn_decision(
                 req.payload["message"] = (
                     f"{replayed}\n\n{existing}" if existing else replayed
                 )
+                # The chat also sends each steered message as a user turn of
+                # the history. The model reads each steer once (2026-10-12).
+                if isinstance(req.payload.get("messages"), list):
+                    req.payload["messages"] = without_replayed(
+                        req.payload["messages"], pending,
+                    )
         return None
 
     if decision.route is Route.DROP:
@@ -335,7 +508,41 @@ async def _apply_turn_decision(
         )
 
     text = str(req.payload.get("message") or req.payload.get("user_query") or "")
-    signal = await send_steer(thread_id, actor, text, run_id=req.run_id)
+    # The author is the session's member (`actor`), never a body field. The
+    # flag says the member typed `text` (PZ-31, `_STEER_TYPED`).
+    signal = await send_steer(
+        thread_id, actor, text, run_id=req.run_id, typed=_STEER_TYPED.get() is True,
+    )
+
+    # ── A steer that NO process heard (incident 2026-10-09) ──────────────────
+    # The owner may still have a heartbeat (it is in its graceful stop) while
+    # its control listener is already gone. Nothing will ever apply this
+    # steer. So close the dead run, take THIS steer back out of the store (the
+    # message itself carries it), and start the next run in this request. The
+    # ENGAGE branch replays the steers stored earlier, such as a "Continue"
+    # that an earlier request left behind.
+    #
+    # "Nobody heard it" alone proves nothing (a listener can be a moment from
+    # subscribing on another worker). The run must ALSO have lost its owner's
+    # heartbeat. And only the request that wins the recovery claim engages: a
+    # loser keeps its steer stored for replay, as before.
+    if signal.get("undelivered"):
+        from orchestrator.run_liveness import run_liveness  # noqa: PLC0415
+
+        if await run_liveness(thread_id) == "dead":
+            from orchestrator.steer import Route as _Route  # noqa: PLC0415
+            from orchestrator.steer import TurnDecision as _Decision  # noqa: PLC0415
+            from orchestrator.steer import discard_signal  # noqa: PLC0415
+
+            from gateway.chat_recovery import recover_dead_run  # noqa: PLC0415
+
+            rec = await recover_dead_run(thread_id, why="steer_undelivered", hold=True)
+            if rec is not None:
+                await discard_signal(thread_id, str(signal.get("id") or ""))
+                return await _apply_turn_decision(
+                    _Decision(_Route.ENGAGE, "dead_run_recovered"),
+                    req, agent_name, actor, room,
+                )
 
     # The room sees WHO redirected the run and when. Deliberately on
     # `cc:room:` and not on the run stream: run events are folded into the
@@ -389,6 +596,17 @@ class UserInputResponseRequest(BaseModel):
     # Thread the parked run belongs to — used to relay the answer to whichever
     # worker owns the run when it's not parked on THIS worker (P1-2).
     thread_id: str | None = None
+    # The member's "Not now" (owner request, 2026-10-18). A JSON boolean
+    # only: ``"yes"`` or ``1`` is refused, never read as a decline. A decline
+    # carries no answer (:meth:`_a_decline_has_no_answer`).
+    declined: StrictBool = False
+
+    @model_validator(mode="after")
+    def _a_decline_has_no_answer(self) -> UserInputResponseRequest:
+        """A decline with words in it is malformed: is it an answer or not?"""
+        if self.declined and self.answer.strip():
+            raise ValueError("A declined card carries no answer.")
+        return self
 
 
 class WebhookEvent(BaseModel):
@@ -429,6 +647,17 @@ _AGENT_REGISTRY: list[dict] = [
         "tags": ["tasks", "project-management"],
         "status": "live",
         # Runs through MAF (MetoriteCopilotAgent wrapper) with BYOK model support.
+        # ⚠️ HELD on the Copilot path (Tier 1.5) on purpose, 2026-10-03
+        # (agent_architecture.md §11.3.1, HANDOFF H-215). Its confirm turn
+        # ("yes" after a my_tasks_clarify proposal) needs the ids in the
+        # tool output of the turn before. The Copilot session keeps them,
+        # and Tier 1 sends earlier turns as text only. Flip this label and
+        # the factory together, and only after H-215.
+        # While it says "github-copilot", task-manager is the agent of the
+        # My Tasks rail only. It is no specialist of another run: the
+        # orchestrator does not list it, and a delegation to it is refused
+        # (D84, D92, loader.refuse_copilot_specialist). Task and project
+        # work of the main chat goes to projects-assistant (D52 to D54).
         "agent_runtime": "github-copilot",
         "local_path": "apps/agents/agent-task-manager",
         "integrations": [],
@@ -444,7 +673,12 @@ _AGENT_REGISTRY: list[dict] = [
         ),
         "tags": ["configuration", "apis", "setup", "admin"],
         "status": "live",
-        "agent_runtime": "github-copilot",
+        # A native MAF agent since 2026-10-03 (agent_architecture.md §11.3):
+        # build_agents() returns an agent_framework.Agent. The executor reads
+        # THIS label as well as the agent's shape, so "github-copilot" here
+        # would send a MAF agent down the Copilot path, and that path assumes
+        # _default_options. Keep it "maf".
+        "agent_runtime": "maf",
         "local_path": "apps/agents/agent-apis-config",
         "integrations": [],
         "optional_integrations": ["serpapi"],
@@ -453,7 +687,7 @@ _AGENT_REGISTRY: list[dict] = [
         "name": "email-assistant",
         "description": (
             "Email Assistant — checks the inbox, categorizes mail, and drafts "
-            "context-aware replies, handing off to the sales and task-manager "
+            "context-aware replies, handing off to the sales and projects "
             "agents and reading memory when an email needs their context."
         ),
         "tags": ["email", "gmail", "outlook", "drafting", "apps"],
@@ -470,18 +704,27 @@ _AGENT_REGISTRY: list[dict] = [
     },
     {
         "name": "app-builder",
+        # Owner, 2026-11-07 (task 1909): the chat gave a Studio build to this
+        # agent. The description now keeps every new app away from it. The
+        # tool stays, so the base count of the chat and the pack budget do
+        # not move (test_projects_packs.py pins them).
         "description": (
-            "App Workshop builder — turns chat into small internal web apps "
-            "(Custom Apps). Each Workshop session is bound to its app's "
-            "workspace; the agent edits index.html and the app.json manifest "
-            "and keeps the preview renderable after every round."
+            "Legacy App Workshop editor. Use it ONLY when the member names an "
+            "existing App Workshop app (an index.html app) and asks to change "
+            "that app. NEVER use it to build a new app, tracker, board, form "
+            "or tool: AI Studio builds those with the studio tools "
+            "(studio_plan, studio_draft, studio_save)."
         ),
-        "tags": ["apps", "builder", "workshop"],
+        "tags": ["workshop", "legacy"],
         "status": "live",
-        # Copilot-SDK engine: the builder needs native file/shell tools to
-        # edit the app workspace. BYOK-routed through the gateway tiers like
-        # the sales-assistant (no GitHub quota dependency).
-        "agent_runtime": "github-copilot",
+        # WS-43h (D84, maf_coding_engine.md §7.8): "maf", so the OBJECT that
+        # the factory builds decides the path at every executor site. With
+        # `app_builder:<org>` in MAF_CODING_SCOPE the factory builds a MAF
+        # harness agent, and the run takes the native path. Every other org
+        # gets the GitHubCopilotAgent, whose `_default_options` still sends
+        # it down the Copilot path, as before. The label alone sent a MAF
+        # object down the Copilot path, where it fails.
+        "agent_runtime": "maf",
         "local_path": "apps/agents/agent-app-builder",
         "integrations": [],
         "optional_integrations": [],
@@ -598,6 +841,46 @@ _AGENT_REGISTRY: list[dict] = [
     },
 ]
 
+# Agents the platform runs for itself, and no person or model picks (WS-67
+# OA-9a, one_assistant_context.md §4.5 narrowing 5). They are in NO list that
+# a picker, a specialist tool, the workflow catalog or a route reads: not in
+# `_AGENT_REGISTRY`, not in `_KNOWN_AGENTS`. Only the executor reads this list,
+# in the lookups that load an agent by name (`_run_sub_agent_streaming`,
+# `_run_agent_inner`), and it reads it FIRST, so a dynamic agent that is
+# named like one cannot take its place. `worker` runs one job of
+# `spawn_subagents` and refuses to run with no job
+# (`subagent_contract.worker_refusal`). Fence: tests/unit/test_subagent_worker.py.
+_INTERNAL_AGENTS: list[dict] = [
+    {
+        "name": "worker",
+        "description": "Runs one read-only job of spawn_subagents and ends with items.",
+        "agent_runtime": "maf",
+        "local_path": "apps/agents/agent-worker",
+        "integrations": [],
+        "optional_integrations": [],
+    },
+]
+
+# The owners of a tool pack that never run as an agent (STU-G1, ai_studio.md
+# section 6.2). An owner here only gives its tools to the pack of the one
+# assistant (D99, D125). Like the list above, it is in NO list that a picker,
+# a specialist tool, the registry block, the workflow catalog or a route reads.
+# The executor does not read it either, so no lookup by name can run one. Only
+# the pack loader reads it, for the folder of the owner
+# (`_tool_injection._import_pack_owner`). A hand-off to an owner here, and a
+# run of one, is refused in every run (`tool_packs.pack_only_refusal`).
+# Fence: tests/unit/test_tool_packs_registry.py, sections 8 and 9.
+_PACK_OWNER_AGENTS: list[dict] = [
+    {
+        "name": "studio-builder",
+        "description": "Owns the studio tool pack. It never runs as an agent.",
+        "agent_runtime": "maf",
+        "local_path": "apps/agents/agent-studio-builder",
+        "integrations": [],
+        "optional_integrations": [],
+    },
+]
+
 
 # ---------------------------------------------------------------------------
 # Dynamic (user-registered) agent persistence — Postgres-backed.
@@ -612,11 +895,12 @@ def _normalize_runtime(val: object) -> str | None:
     """
     if not isinstance(val, str):
         return None
+    from acb_skills.loader import COPILOT_RUNTIME_LABELS
+
     v = val.strip().lower()
     if v == "maf":
         return "maf"
-    if v in ("github-copilot", "github_copilot", "githubcopilot",
-             "copilot", "copilot-sdk"):
+    if v in COPILOT_RUNTIME_LABELS:
         return "github-copilot"
     return None
 
@@ -670,6 +954,12 @@ def _load_dynamic_agents() -> list[dict]:
         from acb_graph import get_session  # noqa: PLC0415
         from sqlalchemy import text  # noqa: PLC0415
 
+        # A session with no tenant bound sees no rows (RLS) and cannot insert
+        # (the organization_id default casts '' to uuid and fails). Read the
+        # file and stop: the DB path only ever errored here, once per call.
+        if not _tenant_is_bound():
+            return _read_agents_file()
+
         # ── Always sync agents.json → DB for missing agents ─────────────
         _sync_file_into_db()
 
@@ -712,6 +1002,31 @@ def _load_dynamic_agents() -> list[dict]:
         return _migrate_from_file()
     except Exception:  # noqa: BLE001
         return _migrate_from_file()
+
+
+def _tenant_is_bound() -> bool:
+    """True when the session binds ``app.tenant_id`` to a non-empty value."""
+    from acb_graph import get_session  # noqa: PLC0415
+    from sqlalchemy import text  # noqa: PLC0415
+
+    with get_session() as s:
+        return bool(
+            s.execute(
+                text("SELECT NULLIF(current_setting('app.tenant_id', true), '')")
+            ).scalar()
+        )
+
+
+def _read_agents_file() -> list[dict]:
+    """Return the stripped agents.json entries, or [] when absent or bad."""
+    try:
+        path = _get_agents_file()
+        if not path.exists():
+            return []
+        agents: list[dict] = json.loads(path.read_text(encoding="utf-8"))
+        return [_strip_agent_strings(a) for a in agents]
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def _sync_file_into_db() -> None:
@@ -910,7 +1225,7 @@ _UNRESOLVED_AGENT_SENTINELS = {"unknown", "", "undefined", "null", "none"}
 
 
 #: A leading ``@name`` addresses one agent in a room. Only leading, and only
-#: one: "@sales what about @finance's number" asks sales about finance, it does
+#: one: "@crm what about @finance's number" asks crm about finance, it does
 #: not start two runs. Multi-agent rooms work by ADDRESSING, not by broadcast —
 #: a message that reaches every agent produces N answers to one question and
 #: N times the cost, which is not what anyone means by "ask the room".
@@ -946,6 +1261,51 @@ def _resolve_room(thread_id: str, email: str, organization_id: str | None):
         return None
 
 
+async def _prepare_if_new_thread(
+    room: Any, thread_id: str | None, organization_id: str | None,
+) -> None:
+    """A run on a thread with no row makes a NEW chat, so prepare the id first.
+
+    H-227, fix round 3 of PR #616. The run's mint inserts the chat row, so
+    the run doors do what ``POST /chat/sessions`` does before a new row
+    (``chat.prepare_new_session``): refuse a run's id, then purge what the
+    id left. A room that exists, or that the lookup could not resolve, is
+    not new.
+    """
+    if (
+        room is None or not thread_id or not getattr(room, "unknown_session", False)
+        or getattr(room, "resolve_failed", False)
+    ):
+        return
+    from gateway.routes.chat import prepare_new_session
+
+    await prepare_new_session(thread_id, organization_id)
+
+
+async def _guard_run_thread(user: UserContext, thread_id: str | None) -> None:
+    """The room check and the new-chat step of the two run doors with no stream.
+
+    H-227, fix round 3 of PR #616. ``POST /agent/run`` and ``/agent/run/async``
+    took a client thread id with no room check, so a member who knew the id
+    of another member's chat ran a shared agent in it and read that thread's
+    folders. They now refuse a caller who may not send in the room, as the
+    stream door does. The internal service principal has no room to check.
+    """
+    import asyncio
+
+    if not thread_id:
+        return
+    if user.role is UserRole.AGENT and user.has_permission("*"):
+        return
+    org = getattr(user, "organization_id", None)
+    room = await asyncio.to_thread(
+        _resolve_room, thread_id, getattr(user, "email", "") or "", org,
+    )
+    if room is not None and not room.can_send:
+        raise HTTPException(status_code=room.refusal_status, detail=room.denied("send messages"))
+    await _prepare_if_new_thread(room, thread_id, org)
+
+
 def _room_agents(
     thread_id: str, organization_id: str | None,
 ) -> list[tuple[str, str]]:
@@ -974,7 +1334,7 @@ def _room_agents(
 def _match_mention(mention: str, candidates: list[str]) -> str | None:
     """Match a typed ``@name`` against the agents present, forgivingly.
 
-    People type ``@sales`` for ``agent-sales-assistant``. Exact match wins,
+    People type ``@crm`` for ``crm-assistant``. Exact match wins,
     then the ``agent-`` prefix is optional, then a unique prefix match — but
     only if it is unique: an ambiguous mention falls through to the primary
     agent rather than guessing which colleague's agent to spend money on.
@@ -1143,6 +1503,86 @@ class RegisterAgentRequest(BaseModel):
 # Endpoints
 # ---------------------------------------------------------------------------
 
+async def _org_github_token() -> str:
+    """The GitHub token of the caller's organization, or ``""``.
+
+    WS-54 IN-7. A request for a customer reads the org connection only. It
+    never reads the deployment ``GITHUB_TOKEN``, which is the operator's. With
+    no connection the fetch goes out with no token, so it reads a public repo.
+
+    WS-54 GH-3 (§6.3): an ``app`` row gives ``""``. The fetch needs Contents
+    (read), and the App asks for none, so a public repo still works and a
+    private one does not. An org with a private agent repo keeps the Advanced
+    token.
+    """
+    org = current_tenant()
+    if not org:
+        return ""
+    try:
+        return await github_connection.stored_token_or_none(str(org)) or ""
+    except Exception as exc:
+        _log.warning("agent.github_token_unreadable", error=type(exc).__name__)
+        return ""
+
+
+#: Fix round 1, item 3: the words when an org on the GitHub App names a
+#: private agent repository. The App has no Contents permission (G-9).
+#: GitHub answers 404 to an unauthenticated read of a private repository AND of
+#: one that does not exist, so the words name both (fix round 2, item 6).
+PRIVATE_REPO_IN_APP_MODE = (
+    "This repository is private or does not exist. If it is private, add an "
+    "Advanced GitHub token in Integrations to read it."
+)
+
+_REPO_SLUG_RE = re.compile(r"\A[A-Za-z0-9._-]{1,100}/[A-Za-z0-9._-]{1,100}\Z")
+
+
+async def _github_app_without_token() -> bool:
+    """True when the org reads GitHub through the App only (no token row)."""
+    org = current_tenant()
+    if not org:
+        return False
+    try:
+        return github_connection.is_app_row(await github_connection.connection(str(org)))
+    except Exception as exc:
+        _log.warning("agent.github_mode_unreadable", error=type(exc).__name__)
+        return False
+
+
+async def _private_repo_refusal(slug: str) -> HTTPException | None:
+    """For an org on the App with no token: the refusal for a repository that
+    GitHub does not show without a token, or ``None`` (fix round 1, item 3).
+
+    raw.githubusercontent.com answers 404 for a private repository AND for a
+    public one with no ``config.json``. So an unauthenticated ``GET
+    /repos/{o}/{r}`` through the one GitHub door tells the two apart. A
+    public repository with no ``config.json`` keeps the ``maf`` default. Any
+    other case is a clear 422, never a silent ``maf`` registration.
+    """
+    from gateway.connections import github_app
+
+    if not _REPO_SLUG_RE.match(slug) or not await _github_app_without_token():
+        return None
+    try:
+        answer = await github_app.call("GET", f"/repos/{slug}")
+    except github_app.GitHubCallFailed:
+        return HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"GitHub did not answer for {slug!r}. Try again.",
+        )
+    body = answer.body if isinstance(answer.body, dict) else {}
+    if answer.status == 200 and body.get("private") is False:
+        return None
+    if answer.rate_limited():
+        return HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="GitHub is busy. Try again in a minute.",
+        )
+    return HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=PRIVATE_REPO_IN_APP_MODE,
+    )
+
+
 @router.get("/config", summary="Fetch config.json from a GitHub agent repo or local path")
 async def get_agent_config(
     repo: str,
@@ -1178,9 +1618,8 @@ async def get_agent_config(
     # ── GitHub ──────────────────────────────────────────────────────────────
     slug = raw.removeprefix("https://github.com/").removeprefix("http://github.com/")
 
-    settings = get_settings()
     headers: dict[str, str] = {"Accept": "application/vnd.github.raw+json"}
-    token: str = getattr(settings, "github_token", "") or ""
+    token: str = await _org_github_token()
     if token:
         headers["Authorization"] = f"token {token}"
 
@@ -1194,6 +1633,10 @@ async def get_agent_config(
                 except Exception:  # noqa: BLE001
                     raise HTTPException(status_code=422, detail="config.json is not valid JSON.")
 
+    if not token:
+        refusal = await _private_repo_refusal(slug)
+        if refusal is not None:
+            raise refusal
     raise HTTPException(
         status_code=404,
         detail=f"config.json not found in {slug!r} (tried main, master, HEAD).",
@@ -1260,6 +1703,28 @@ def _set_agent_alias(name: str, alias: str) -> str:
     return alias
 
 
+def _stamp_tier_routing(agents: list[dict]) -> None:
+    """Set ``tier_routed`` on each entry (WS-45 S3, ``ai_tier_routing.md`` §9).
+
+    True when ``AI_TIER_ROUTING`` covers the agent. The value comes from
+    ``tier_policy.tier_routing_on``, the ONE reader of the flag, so the chat
+    and the executor cannot disagree. It fails closed: a fault marks every
+    agent False, and the chat then draws its picker as today. The field
+    carries a yes or no only, never a tier or a model.
+    """
+    # Imported here, as the other acb_skills reads of this module are. A
+    # broken import must not arm the UI, so it marks every agent False.
+    try:
+        from acb_skills.tier_policy import tier_routing_on
+    except Exception:
+        tier_routing_on = None
+    for a in agents:
+        try:
+            a["tier_routed"] = bool(tier_routing_on and tier_routing_on(a.get("name")))
+        except Exception:
+            a["tier_routed"] = False
+
+
 @router.get("", summary="List all registered agents")
 async def list_agents(
     user: UserContext = Depends(get_current_user),
@@ -1273,19 +1738,19 @@ async def list_agents(
     dynamic = _load_dynamic_agents()
     dynamic_names = {a["name"] for a in dynamic}
     # Static agents not overridden by dynamic entries come first
-    static = [a for a in _AGENT_REGISTRY if a["name"] not in dynamic_names]
+    # A COPY of each entry. The loop below writes each declared runtime into
+    # the entry, and the executor reads ``_AGENT_REGISTRY`` for its label. A
+    # write into the shared dict changed the label of the process on the first
+    # GET /agent (WS-43n review): task-manager declares "maf" in config.json
+    # and is labelled "github-copilot" here, on purpose.
+    static = [dict(a) for a in _AGENT_REGISTRY if a["name"] not in dynamic_names]
     # Back-fill agent_runtime for legacy dynamic entries that predate the field
-    # or have NULL in the DB column.  Rule: only entries registered FROM a
-    # GitHub repo URL are "github-copilot"; everything else (local path,
-    # unknown) is plain MAF.
+    # or have NULL in the DB column. WS-43n (§15.5): the default is "maf" for
+    # every source. A repo URL no longer implies the Copilot SDK. An entry
+    # that names a runtime keeps it, and its config.json still wins below.
     for a in dynamic:
         if not a.get("agent_runtime"):
-            a["agent_runtime"] = (
-                "github-copilot"
-                if (a.get("repo_name") or a.get("repo_url"))
-                and not a.get("local_path")
-                else "maf"
-            )
+            a["agent_runtime"] = "maf"
     merged = static + dynamic
 
     # Honor each agent's declared config.json runtime (authoritative over the
@@ -1311,6 +1776,7 @@ async def list_agents(
         clone_path = repos_root / a["name"]
         if not (clone_path / ".git").is_dir():
             continue
+        _pin_registry_clone(a["name"], clone_path)  # H-363
         behind = await _git_behind_count(str(clone_path))
         if behind > 0:
             a["behind_by"] = behind
@@ -1338,6 +1804,10 @@ async def list_agents(
     for a in merged:
         a["display_name"] = aliases.get(a["name"], "")
 
+    # WS-45 S3: which agents the tier policy covers, so the chat can drop
+    # its model picker for exactly those, and name none itself.
+    _stamp_tier_routing(merged)
+
     # ── Access filter (org access control, enforcement seam 2) ────────────
     # This list feeds both the chat agent picker and the /agents management
     # pane. Anyone who can manage agents sees the whole registry; everyone
@@ -1349,7 +1819,98 @@ async def list_agents(
     return merged
 
 
-@router.post("/{name}/pull", summary="Pull latest commits for an agent's local clone", dependencies=[require_permission("agents:manage")])
+def _registry_orgs() -> frozenset[str]:
+    # The one parse of AGENT_REGISTRY_ORGS. The chat push gate of the executor
+    # reads the same rule (``acb_auth.agent_operator``).
+    from acb_auth.agent_operator import registry_operator_orgs  # noqa: PLC0415
+
+    return registry_operator_orgs(str(get_settings().agent_registry_orgs or ""))
+
+
+async def _require_registry_operator(
+    user: UserContext = Depends(get_current_user),
+) -> None:
+    """Only the platform operator changes the agent registry.
+
+    ``agents:manage`` alone is not enough: every org's owner and admin hold
+    it. The registry is deployment-wide, a register clones a repo with the
+    operator's ``GITHUB_TOKEN`` (or reads a path on the server), and the code
+    runs inside the shared gateway. ``AGENT_REGISTRY_ORGS`` names the orgs
+    that may do it. Empty means none (fail closed). The org comes from the
+    server-side ``UserContext``, never from the request.
+    """
+    org = str(user.organization_id or "").strip().lower()
+    allowed = _registry_orgs()
+    if org and ("*" in allowed or org in allowed):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Only the platform operator can change the agent registry.",
+    )
+
+
+#: The 403 detail of the self-mutation queue, for an org that may not review.
+_MUTATION_REVIEWER_DENIED = (
+    "Only an admin of the first-party organization or of a platform operator "
+    "organization can review the self-mutation commits of an agent."
+)
+
+
+async def _require_mutation_reviewer(
+    user: UserContext = Depends(get_current_user),
+) -> None:
+    """Only a first-party org or an operator org reviews self-mutation commits.
+
+    The org passes when it is ``organization.first_party`` or it is in
+    ``AGENT_REGISTRY_ORGS``. ``require_permission("agents:manage")`` runs
+    first on each route, so the caller is also an owner or an admin.
+
+    Why ``first_party`` and not only the registry list: self-mutation writes
+    ``pending_commit`` rows only for a first-party org (MT-0b,
+    ``orchestrator.mutation._self_mutation_permitted``), and RLS keeps each row
+    in its org. On production the first-party org is not in the registry list,
+    so the registry check alone locked out everyone who can see a row.
+
+    The org comes from the server-side ``UserContext``, never from the request.
+    A missing org, a missing row or a failed read is a 403 (fail closed).
+
+    The rule itself is ``acb_auth.agent_operator.may_review_agent_commits``,
+    the ONE implementation, with the one read of ``first_party``. The chat push
+    gate of the executor calls it too, so the queue and a push from chat cannot
+    drift. It never reads ``first_party`` for an empty org, which would answer
+    for a sole org. Fences: ``tests/unit/test_mutation_queue_operator_only.py``
+    and ``tests/unit/test_chat_autopush_reviewer_gate.py``.
+    """
+    from acb_auth.agent_operator import may_review_agent_commits  # noqa: PLC0415
+
+    if await may_review_agent_commits(user.organization_id, user.has_permission):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN, detail=_MUTATION_REVIEWER_DENIED,
+    )
+
+
+#: The gate of the self-mutation review queue (2026-10-19). Every route under
+#: ``/agent/mutations`` carries it, reads included.
+#:
+#: Before this, the eight routes checked only that the caller was signed in.
+#: ``require_internal_auth`` proves the Next.js server sent the call, and every
+#: BFF call carries that token. So any member of the org that owns a row, an
+#: ``employee`` included, could approve it, which pushes to the agent's remote
+#: or opens a monorepo PR with the operator's credentials. Reject and remutate
+#: reset the shared clone, and delete removes the row with no trace.
+#:
+#: Two checks, in order: an org admin (``agents:manage``, owner and admin only,
+#: migration 130), then an org that may review (``_require_mutation_reviewer``).
+#: The reads take it too, because a diff is the source of a shared agent.
+#: Fence: ``tests/unit/test_mutation_queue_operator_only.py``.
+_MUTATION_QUEUE_GATE = [
+    require_permission("agents:manage"),
+    Depends(_require_mutation_reviewer),
+]
+
+
+@router.post("/{name}/pull", summary="Pull latest commits for an agent's local clone", dependencies=[require_permission("agents:manage"), Depends(_require_registry_operator)])
 async def pull_agent(
     name: str,
     user: UserContext = Depends(get_current_user),
@@ -1384,6 +1945,7 @@ async def pull_agent(
             cwd=str(clone_path),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            env=child_env(),
         )
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
         if proc.returncode == 0:
@@ -1391,7 +1953,10 @@ async def pull_agent(
     except Exception:  # noqa: BLE001
         pass
 
-    # Pull latest
+    # Pull latest. H-363: pin the clone from the registry first, so the
+    # read credential goes to the agent's own repo, never to a rewritten
+    # origin.
+    _pin_registry_clone(agent_name, clone_path)
     pull_info: dict[str, Any] = {"strategy": "skipped"}
     try:
         from acb_skills.loader import _pull_latest  # noqa: PLC0415
@@ -1410,6 +1975,7 @@ async def pull_agent(
             cwd=str(clone_path),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            env=child_env(),
         )
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
         if proc.returncode == 0:
@@ -1427,6 +1993,7 @@ async def pull_agent(
                 cwd=str(clone_path),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
+                env=child_env(),
             )
             out, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
             if proc.returncode == 0:
@@ -1462,7 +2029,7 @@ async def pull_agent(
     }
 
 
-@router.post("", status_code=status.HTTP_201_CREATED, summary="Register an agent from a GitHub repo", dependencies=[require_permission("agents:manage")])
+@router.post("", status_code=status.HTTP_201_CREATED, summary="Register an agent from a GitHub repo", dependencies=[require_permission("agents:manage"), Depends(_require_registry_operator)])
 async def register_agent(
     req: RegisterAgentRequest,
     background_tasks: BackgroundTasks,
@@ -1484,6 +2051,17 @@ async def register_agent(
             detail="Agent name must be 2-50 lowercase letters, digits, or hyphens (no leading/trailing hyphens).",
         )
 
+    # WS-67 OA-9b hardening: the name of an internal agent is reserved. A
+    # registered ``worker`` would share ``cache_root/worker`` with the spawn child.
+    # STU-G1: the name of a pack-only owner is reserved too, so no registered
+    # agent shows in a list under the name of an owner that never runs.
+    reserved = {a["name"] for a in (*_INTERNAL_AGENTS, *_PACK_OWNER_AGENTS)}
+    if req.name.strip().lower() in reserved:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Agent name {req.name!r} is reserved for the platform.",
+        )
+
     dynamic = _load_dynamic_agents()
     all_names = {a["name"] for a in _AGENT_REGISTRY} | {a["name"] for a in dynamic}
     if req.name in all_names:
@@ -1502,6 +2080,12 @@ async def register_agent(
     repo_url: str = (req.repo_url or "").strip().rstrip("/")
     repo_name: str = ""
 
+    # WS-43n (maf_coding_engine.md §15.5): the repo's own config.json
+    # "runtime" is the one source of the runtime. The request carries no
+    # runtime field. So config.json is read on EVERY registration, not only
+    # when the request leaves the metadata empty.
+    declared_runtime: str | None = None
+
     # Detect local path: req.local_path set, or repo_url is an absolute path
     raw_input = req.local_path or (repo_url if Path(repo_url).is_absolute() else None)
     if raw_input:
@@ -1512,81 +2096,135 @@ async def register_agent(
                 detail=f"Local path does not exist: {raw_input}",
             )
         local_path = str(resolved)
-        # Auto-read config.json from disk if metadata is missing
-        if not description or not integrations:
-            config_file = resolved / "config.json"
-            if config_file.exists():
-                try:
-                    cfg: dict = json.loads(config_file.read_text(encoding="utf-8"))
+        config_file = resolved / "config.json"
+        if config_file.exists():
+            try:
+                cfg: dict = json.loads(config_file.read_text(encoding="utf-8"))
+                if isinstance(cfg, dict):
+                    declared_runtime = _normalize_runtime(cfg.get("runtime"))
+                    # Fill only the metadata that the request left empty.
                     description = description or cfg.get("description", "")
                     tags = tags or cfg.get("tags", [])
                     integrations = integrations or cfg.get("integrations", [])
                     optional_integrations = optional_integrations or cfg.get("optional_integrations", [])
-                    _log.info("agent.config_read_local", name=req.name, path=local_path)
-                except Exception as exc:  # noqa: BLE001
-                    _log.warning("agent.config_parse_failed", name=req.name, error=str(exc))
+                _log.info("agent.config_read_local", name=req.name, path=local_path)
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("agent.config_parse_failed", name=req.name, error=str(exc))
     else:
         # GitHub URL
         repo_name = repo_url.removeprefix("https://github.com/").removeprefix("http://github.com/")
-        if not description or not integrations:
-            settings = get_settings()
-            gh_token: str = getattr(settings, "github_token", "") or ""
-            headers: dict[str, str] = {"Accept": "application/vnd.github.raw+json"}
-            if gh_token:
-                headers["Authorization"] = f"token {gh_token}"
-            last_status: int = 0
-            try:
-                async with httpx.AsyncClient(timeout=8) as client:
-                    cfg = {}
-                    for branch in ("main", "master", "HEAD"):
-                        url = (
-                            "https://raw.githubusercontent.com"
-                            f"/{repo_name}/{branch}/config.json"
-                        )
-                        resp = await client.get(url, headers=headers)
-                        last_status = resp.status_code
-                        if resp.status_code == 200:
-                            try:
-                                cfg = resp.json()
-                            except Exception:  # noqa: BLE001
-                                cfg = {}
-                            break
-                    if cfg:
-                        description = description or cfg.get("description", "")
-                        tags = tags or cfg.get("tags", [])
-                        integrations = integrations or cfg.get(
-                            "integrations", []
-                        )
-                        optional_integrations = (
-                            optional_integrations
-                            or cfg.get("optional_integrations", [])
-                        )
-                        _log.info(
-                            "agent.config_fetched",
-                            name=req.name,
-                            repo=repo_name,
-                        )
-                    elif last_status in (403, 404):
-                        _log.warning(
-                            "agent.config_not_found_or_forbidden",
-                            name=req.name,
-                            repo=repo_name,
-                            status=last_status,
-                            hint=(
-                                "Repo may be private or the GitHub token "
-                                "may not have access to this organisation."
-                            ),
-                        )
-            except Exception as exc:  # noqa: BLE001
-                _log.warning(
-                    "agent.config_fetch_failed",
-                    name=req.name,
-                    error=str(exc),
-                )
+        # WS-43n: config.json is fetched on every registration, for its
+        # "runtime". The fetch fails CLOSED: when GitHub cannot answer, the
+        # gateway cannot tell a Copilot repo from a MAF one, so it registers
+        # nothing. A 404 means the repo declares nothing, so it gets "maf".
+        # A 403 also registers as before, because the loader cannot clone a
+        # repo that the token cannot read.
+        gh_token: str = await _org_github_token()
+        headers: dict[str, str] = {"Accept": "application/vnd.github.raw+json"}
+        if gh_token:
+            headers["Authorization"] = f"token {gh_token}"
+        last_status: int = 0
+        cfg = {}
+        try:
+            async with httpx.AsyncClient(timeout=8) as client:
+                for branch in ("main", "master", "HEAD"):
+                    url = (
+                        "https://raw.githubusercontent.com"
+                        f"/{repo_name}/{branch}/config.json"
+                    )
+                    resp = await client.get(url, headers=headers)
+                    last_status = resp.status_code
+                    if resp.status_code == 200:
+                        try:
+                            cfg = resp.json()
+                        except Exception:  # noqa: BLE001
+                            cfg = {}
+                        break
+                    # Only a 404 tries the next branch. Any other status
+                    # stops here, so a 5xx on main is not hidden by a 404 on
+                    # master and HEAD.
+                    if resp.status_code != 404:
+                        break
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "agent.config_fetch_failed",
+                name=req.name,
+                error=str(exc),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=(
+                    f"Could not read config.json from {repo_name!r}, so the "
+                    "agent runtime is unknown. Try again."
+                ),
+            ) from exc
+        if last_status not in (200, 403, 404):
+            _log.warning(
+                "agent.config_fetch_failed",
+                name=req.name,
+                repo=repo_name,
+                status=last_status,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=(
+                    f"GitHub answered {last_status} for the config.json of "
+                    f"{repo_name!r}, so the agent runtime is unknown. Try again."
+                ),
+            )
+        if cfg and isinstance(cfg, dict):
+            declared_runtime = _normalize_runtime(cfg.get("runtime"))
+            description = description or cfg.get("description", "")
+            tags = tags or cfg.get("tags", [])
+            integrations = integrations or cfg.get("integrations", [])
+            optional_integrations = (
+                optional_integrations
+                or cfg.get("optional_integrations", [])
+            )
+            _log.info(
+                "agent.config_fetched",
+                name=req.name,
+                repo=repo_name,
+            )
+        elif last_status in (403, 404):
+            # Fix round 1, item 3: an org on the App reads no private repo.
+            # Refuse clearly, and never register it as `maf` with nothing.
+            refusal = None if gh_token else await _private_repo_refusal(repo_name)
+            if refusal is not None:
+                raise refusal
+            _log.warning(
+                "agent.config_not_found_or_forbidden",
+                name=req.name,
+                repo=repo_name,
+                status=last_status,
+                hint=(
+                    "Repo may be private or the GitHub token "
+                    "may not have access to this organisation."
+                ),
+            )
 
-    # agent_runtime: only agents registered FROM a GitHub repo URL run via the
-    # GitHub Copilot SDK (GitHubCopilotAgent). Local-path agents are plain MAF.
-    agent_runtime = "github-copilot" if (repo_name and not local_path) else "maf"
+    # WS-43n (D84, D92): a repo whose config.json DECLARES the Copilot
+    # runtime gets a 400 with the migration text of §15.5. A repo that
+    # declares nothing gets "maf". If such a repo still builds a Copilot
+    # agent, the loader logs its deprecation line and the executor finds it
+    # by the object (``is_copilot_agent``) until WS-43r refuses it. Agents
+    # registered before this change keep their row and still run.
+    if declared_runtime == "github-copilot":
+        from acb_skills.loader import COPILOT_MIGRATION_TEXT
+
+        _log.info(
+            "agent.register_refused_copilot",
+            name=req.name,
+            source="local" if local_path else "github",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Agent {req.name!r}: its config.json declares the runtime "
+                "\"github-copilot\". " + COPILOT_MIGRATION_TEXT
+            ),
+        )
+    agent_runtime = "maf"
 
     entry: dict = {
         "name": req.name,
@@ -1657,7 +2295,7 @@ def _cleanup_agent_workspace(agent_name: str) -> bool:
         return False
 
 
-@router.delete("/{name}", summary="Remove a user-registered agent", dependencies=[require_permission("agents:manage")])
+@router.delete("/{name}", summary="Remove a user-registered agent", dependencies=[require_permission("agents:manage"), Depends(_require_registry_operator)])
 async def remove_agent(
     name: str,
     user: UserContext = Depends(get_current_user),
@@ -1718,7 +2356,7 @@ class PatchAgentRequest(BaseModel):
     status: str | None = None
 
 
-@router.patch("/{name}", summary="Update metadata for a user-registered agent", dependencies=[require_permission("agents:manage")])
+@router.patch("/{name}", summary="Update metadata for a user-registered agent", dependencies=[require_permission("agents:manage"), Depends(_require_registry_operator)])
 async def patch_agent(
     name: str,
     req: PatchAgentRequest,
@@ -1813,7 +2451,7 @@ def fold_message_id(assistant_message_id: str | None, thread_id: str) -> str:
 
 def _mint_run_row(
     thread_id: str, message_id: str, *, member: str, agent_name: str,
-    organization_id: str | None,
+    organization_id: str | None, prompt: PromptToSave | None = None,
 ) -> None:
     """Create the agent row of a run before its stream opens (WS-27bm S14, §20).
 
@@ -1826,6 +2464,12 @@ def _mint_run_row(
     The mint only inserts. When a row with this id exists, the mint changes
     nothing. It is best effort. On a failure it logs ``agent.mint_failed``
     and the run goes on, because the fold still inserts the row at the end.
+
+    WS-51 S4: *prompt* is the member's turn, which goes in FIRST, in the
+    same worker call and after the same ``_ensure_session``. One call keeps
+    one time budget on the path to the first byte. A failed prompt write
+    logs ``agent.prompt_save_failed`` and the mint still runs. The browser
+    save still writes the turn.
     """
     import time
 
@@ -1839,12 +2483,25 @@ def _mint_run_row(
     try:
         # The parent session must exist before the message FK insert. It
         # takes the email as the session stores it, the same as the fold.
-        # S15 (§21): both writes bind the run's tenant, which the route
+        # S15 (§21): every write binds the run's tenant, which the route
         # resolved from the server-side identity. No tenant fails closed.
         _ensure_session(
             thread_id, (member or "").strip(), agent_name,
             organization_id=organization_id,
         )
+    except Exception as exc:  # The mint must never stop a run.
+        _log.warning(
+            "agent.mint_failed",
+            thread_id=thread_id[:12], message_id=message_id[:40],
+            error=str(exc)[:200],
+        )
+        return
+    if prompt is not None:
+        _write_prompt_row(
+            thread_id, prompt, member=member, agent_name=agent_name,
+            organization_id=organization_id,
+        )
+    try:
         _upsert_messages(
             thread_id,
             [MessageRecord(
@@ -1866,20 +2523,24 @@ def _mint_run_row(
 
 #: How long the run waits for its mint before it opens the stream (S14 fix
 #: round 1). The mint is best effort, so a slow database must not hold the
-#: first byte of the reply.
+#: first byte of the reply. WS-51 S4: the prompt save shares this budget.
 _MINT_TIMEOUT_S = 2.0
 
 
 async def _mint_run_row_bounded(
     thread_id: str, message_id: str, *, member: str, agent_name: str,
-    organization_id: str | None,
+    organization_id: str | None, prompt: PromptToSave | None = None,
 ) -> None:
-    """``_mint_run_row`` in a worker thread, bounded by ``_MINT_TIMEOUT_S``.
+    """``_mint_run_row`` in ONE worker thread, bounded by ``_MINT_TIMEOUT_S``.
+
+    The member's turn (*prompt*) and the agent row share the one call and
+    the one budget, so a stalled database holds the first byte for 2 s at
+    most, and holds one worker, not two.
 
     On a timeout it logs ``agent.mint_failed`` with the reason ``timeout``,
     and the run goes on. The thread can still finish later. The mint only
-    inserts, so a late mint changes no row that a checkpoint or the fold
-    wrote first.
+    inserts, and the prompt upsert is idempotent by id, so a late write
+    changes no row that a checkpoint, the browser or the fold wrote first.
     """
     import asyncio
 
@@ -1888,7 +2549,7 @@ async def _mint_run_row_bounded(
             asyncio.to_thread(
                 _mint_run_row, thread_id, message_id,
                 member=member, agent_name=agent_name,
-                organization_id=organization_id,
+                organization_id=organization_id, prompt=prompt,
             ),
             _MINT_TIMEOUT_S,
         )
@@ -1898,6 +2559,290 @@ async def _mint_run_row_bounded(
             thread_id=thread_id[:12], message_id=message_id[:40],
             reason="timeout",
         )
+        if prompt is not None:
+            _log.warning(
+                "agent.prompt_save_failed",
+                thread_id=thread_id[:12], message_id=prompt.message_id[:40],
+                reason="timeout",
+            )
+
+
+#: The longest browser message id that the run route saves (WS-51 S4). A
+#: browser id is a nanoid of 21 characters.
+_PROMPT_ID_MAX = 128
+
+
+class PromptToSave(BaseModel):
+    """The member's turn that the run route saves for the browser (WS-51 S4)."""
+
+    message_id: str
+    content: str
+    timestamp_ms: int
+    custom_events: list[Any] = []
+    #: WS-63 D-PZ-37: True only when the member typed the turn in the
+    #: message box (the request's mark). The row keeps it in
+    #: ``chat_message.member_typed``, and only a True row is the member's
+    #: own words for the summary job.
+    member_typed: bool = False
+
+
+def prompt_to_save(
+    *, thread_id: str | None, message_id: str, text: str, timestamp: Any,
+    actor: str, room: Any, supersedes: str = "", card_answer: Any = None,
+    typed: bool = False,
+) -> PromptToSave | None:
+    """The turn to save at run start, or ``None`` when the server saves nothing.
+
+    WS-51 S4 (``chat_run_continuity.md`` §4). The browser saves the member's
+    turn too, a moment later. The server writes the SAME row id, so the
+    browser's save updates that row and never adds a second one. So the server
+    saves only when the browser named its id. An old bundle, or an API caller,
+    sends no id, and keeps the old behaviour.
+
+    The author is never in this record. ``_upsert_messages`` stamps a human
+    turn with the caller, from the session. A caller who may not send in the
+    room (``can_send``) saves nothing, and so does a room that the lookup could
+    not resolve.
+
+    The time is the browser's own stamp of the turn, which the browser save
+    writes too. Its earlier turns carry the browser clock, so a server clock
+    could sort this turn above the reply before it. With no stamp, the server
+    clock is used.
+
+    *typed* is the request's mark (WS-63 D-PZ-37): True only when the member
+    typed the turn in the message box. A card answer is never typed, so the
+    mark of a card answer is False.
+    """
+    import time
+
+    mid = (message_id or "").strip()
+    words = text or ""
+    if not thread_id or not mid or len(mid) > _PROMPT_ID_MAX or not words.strip():
+        return None
+    if not (actor or "").strip():
+        return None
+    if room is None or getattr(room, "resolve_failed", False):
+        return None
+    if not getattr(room, "can_send", False):
+        return None
+    ts = timestamp if isinstance(timestamp, int) and not isinstance(timestamp, bool) else 0
+    if not 0 < ts < 2**53:
+        ts = int(time.time() * 1000)
+    # An edit keeps its "Edited" marker after a reload, as the browser's own
+    # save writes it (lib/chatEdit.ts `editedMarker`).
+    marker = [{"name": "edited", "value": {"supersedes": supersedes}}] if supersedes else []
+    # A card answer that went as a new message keeps its display (owner
+    # report, 2026-10-13), as the browser's own save writes it
+    # (`lib/cardAnswer.ts`). Only an envelope that says the same thing takes
+    # one, so no other turn can draw as an answered card (review of #942).
+    from gateway.chat_recovery import card_answer_marker  # noqa: PLC0415
+
+    card = card_answer_marker(words, card_answer) if card_answer is not None else None
+    if card is not None:
+        marker.append(card)
+    return PromptToSave(
+        message_id=mid, content=words, timestamp_ms=ts, custom_events=marker,
+        member_typed=typed is True and card_answer is None,
+    )
+
+
+def _write_prompt_row(
+    thread_id: str, prompt: PromptToSave, *, member: str, agent_name: str,
+    organization_id: str | None,
+) -> bool:
+    """Write the member's turn (WS-51 S4). True on a write. Never raises.
+
+    The caller has made the chat row (``_ensure_session``). The write goes
+    through the one upsert seam, ``_upsert_messages``, bound to the run's
+    tenant, which the route took from the server-side identity. The seam
+    passes the text through ``storable`` and stamps the author from
+    ``member``. The id comes from the browser, so the seam declines it when
+    it names a row that is not this member's own turn: an agent row, a
+    system row, or another member's turn.
+
+    It is best effort, as the mint is. On a failure it logs
+    ``agent.prompt_save_failed`` and the run goes on, because the browser save
+    still writes the turn. That row then has no mark, so it counts for
+    nothing (D-PZ-37).
+
+    It is the one writer of ``chat_message.member_typed`` (WS-63 D-PZ-37):
+    the mark of the request, True or False. The browser save names no mark,
+    so it cannot change this one.
+    """
+    from gateway.routes.chat import MessageRecord, _upsert_messages
+
+    try:
+        declined = _upsert_messages(
+            thread_id,
+            [MessageRecord(
+                id=prompt.message_id, role="user", content=prompt.content,
+                timestamp=prompt.timestamp_ms,
+                custom_events=list(prompt.custom_events),
+            )],
+            actor_email=member, agent_name=agent_name,
+            member_typed=prompt.member_typed is True,
+            organization_id=organization_id,
+        )
+        return not declined
+    except Exception as exc:  # The save must never stop a run.
+        _log.warning(
+            "agent.prompt_save_failed",
+            thread_id=thread_id[:12], message_id=prompt.message_id[:40],
+            error=str(exc)[:200],
+        )
+        return False
+
+
+def _save_steered_prompt(
+    thread_id: str, prompt: PromptToSave, *, member: str, agent_name: str,
+    organization_id: str | None,
+) -> bool:
+    """Save a steered turn (WS-51 S4). It runs AFTER the 202 is sent.
+
+    The route adds it as a background task, so a slow database never holds
+    the answer to a steer. A steer starts no run, so no mint shares this
+    call. The chat row is made first when it is missing.
+    """
+    from gateway.routes.chat import _ensure_session
+
+    try:
+        _ensure_session(
+            thread_id, (member or "").strip(), agent_name,
+            organization_id=organization_id,
+        )
+    except Exception as exc:  # A background save must never raise.
+        _log.warning(
+            "agent.prompt_save_failed",
+            thread_id=thread_id[:12], message_id=prompt.message_id[:40],
+            error=str(exc)[:200],
+        )
+        return False
+    return _write_prompt_row(
+        thread_id, prompt, member=member, agent_name=agent_name,
+        organization_id=organization_id,
+    )
+
+
+async def _extract_run_memory(
+    run_id: str,
+    extract_user: str,
+    history: list[dict[str, str]],
+    message: str,
+    folded: dict[str, Any] | None,
+    *,
+    agent_name: str,
+    thread_id: str,
+    member: str = "",
+    holds_mail: bool | None = None,
+) -> bool:
+    """Extract one finished turn into Mem0, and record its Graphiti episode.
+    Returns True when it extracted into Mem0.
+
+    Best-effort: it never raises, so it never kills the relay.
+
+    WS-17 EM-G11f3 (section 12.3.13.9.1, item 2): a run that holds mail
+    writes to neither store. *holds_mail* is the answer of
+    ``acb_skills.egress.run_holds_mail`` that the route took at the run end.
+    With ``None`` this function asks the predicate itself, with the session
+    and the *member* of the run. An error reads as mail. The Graphiti episode
+    of the member's message went at the run START, before the mark was
+    known. It goes here now, after the same check.
+
+    H-236: a covered run's conversation holds member data from a sandboxed
+    turn, and memory is a store that later runs read. So the extraction is
+    skipped for a run that bound ``no_egress``. The run decided that at its
+    own start and recorded it by run id (``executor.run_was_no_egress``).
+    Nothing in the request reaches that answer, and an error skips the
+    extraction too. Fences: ``tests/unit/test_delegation_no_egress.py`` and
+    ``tests/unit/test_mail_copies_in_chat_stores.py``.
+    """
+    if not (extract_user and folded):
+        return False
+    if holds_mail is None:
+        try:
+            from acb_skills.egress import run_holds_mail
+            holds_mail = await run_holds_mail(
+                agent_name, {"session_id": thread_id, "member": member})
+        except Exception:  # fail closed: the run holds mail
+            holds_mail = True
+    if holds_mail:
+        _log.info("agent.run_end_memory_extraction_skipped_mail",
+                  thread_id=thread_id[:12])
+        return False
+    try:
+        from orchestrator.executor import run_was_no_egress
+        skip = run_was_no_egress(run_id)
+    except Exception:  # fail closed: no extraction
+        skip = True
+    if skip:
+        _log.info("agent.run_end_memory_extraction_skipped_no_egress",
+                  thread_id=thread_id[:12])
+        return False
+    extracted = False
+    try:
+        from acb_memory import add_memories_background
+        from gateway.chat_fold import build_extraction_conversation
+
+        conv = build_extraction_conversation(history, message, folded)
+        if conv:
+            await add_memories_background(extract_user, conv, agent_id=agent_name)
+            extracted = True
+    except Exception:  # extraction must never kill the relay
+        _log.warning("agent.run_end_memory_extraction_failed",
+                     thread_id=thread_id[:12])
+    if member and message:
+        try:
+            from acb_memory import add_episode
+            await add_episode(
+                name=f"agent:{agent_name}:{member[:20]}",
+                content=message[:500],
+                source_description=f"agent_{agent_name}",
+                # KG-9: the bound tenant names the episode's group.
+            )
+        except Exception:  # an episode must never kill the relay
+            _log.warning("agent.run_end_episode_failed", thread_id=thread_id[:12])
+    return extracted
+
+
+#: The first event of each type that the member sees, and the name of its mark.
+_TIMING_MARKS: dict[str, str] = {
+    "RUN_STARTED": "started_ms",
+    "TOOL_CALL_START": "first_tool_ms",
+    "SUB_AGENT_TEXT_DELTA": "first_sub_text_ms",
+    "TEXT_MESSAGE_CONTENT": "first_text_ms",
+}
+
+
+class _RunTiming:
+    """The times the member waits in one streamed run (chat speed, 2026-10-25).
+
+    Each mark counts from the arrival of the request. It reads the TYPE of an
+    event and never its text. :func:`run_agent_stream_endpoint` logs one line,
+    ``agent.run_timing``, when the stream ends: at the finish, at an error, or
+    when the client goes away (the run itself goes on). Fence:
+    ``tests/unit/test_chat_speed_slice2.py``.
+    """
+
+    def __init__(self, started: float) -> None:
+        self._started = started
+        self._marks: dict[str, int] = {}
+        self.outcome = "disconnected"
+
+    def _ms(self) -> int:
+        return round((time.monotonic() - self._started) * 1000)
+
+    def see(self, evt: Any) -> None:
+        kind = evt.get("type") if isinstance(evt, dict) else None
+        mark = _TIMING_MARKS.get(str(kind))
+        if mark and mark not in self._marks:
+            self._marks[mark] = self._ms()
+        if kind == "RUN_FINISHED":
+            self.outcome = "finished"
+        elif kind == "RUN_ERROR":
+            self.outcome = "error"
+
+    def fields(self) -> dict[str, Any]:
+        return {**self._marks, "total_ms": self._ms(), "outcome": self.outcome}
 
 
 @router.post("/run/stream", summary="Stream a named agent run as AG-UI SSE events")
@@ -1920,6 +2865,7 @@ async def run_agent_stream_endpoint(
     Use this instead of ``POST /agent/run`` whenever the caller wants live
     tool-call visibility (e.g. the control-plane chat UI).
     """
+    _route_started = time.monotonic()
     import asyncio
 
     from orchestrator.executor import run_agent_stream  # noqa: PLC0415
@@ -1934,42 +2880,264 @@ async def run_agent_stream_endpoint(
         _resolve_room, req.thread_id or "", actor_email, _room_org,
     )
     if room is not None and not room.can_send:
-        raise HTTPException(status_code=403, detail=room.denied("send messages"))
+        raise HTTPException(status_code=room.refusal_status, detail=room.denied("send messages"))
 
     agent_name = _address_agent(req, room, _room_org)
     # Org access control, enforcement seam 2: the picker is filtered, but the
     # endpoint is the boundary of record — a hand-crafted request naming an
     # agent the member cannot run is refused here, not in the UI.
     await assert_can_run_agent_in_session(user, agent_name, req.thread_id)
+    await _prepare_if_new_thread(room, req.thread_id, _room_org)
+
+    # ── An edited message SUPERSEDES the last one (owner, 2026-10-09) ────────
+    # Step 1 of 3, and it changes no row. Refuse an edit the rules forbid,
+    # then stop the member's OWN run, so the edit starts a run of its own and
+    # never folds into the old one as a steer. Steps 2 and 3 are below: the
+    # route refuses an edit it would steer, and the rows go only after
+    # `_refuse_if_another_run_is_active`, so a refusal deletes nothing.
+    # gateway/chat_supersede.py holds the rules.
+    _supersede_note = ""
+    _superseded_ids: list[str] = []
+    _supersedes = str(req.payload.pop("supersedes", "") or "").strip()
+    _new_user_id = str(req.payload.pop("user_message_id", "") or "").strip()
+    # The display of a card answer that went as a new message. It is for the
+    # saved turn only, and never reaches the executor.
+    _card_answer = req.payload.pop("card_answer", None)
+    # §18.11: the member's own version of an open new-mail card, sent with a
+    # message during the run. Popped HERE, so it never reaches the executor.
+    # Only a STEER keeps it (`_keep_card_draft` below), and the email module
+    # checks it against the card's own record.
+    _card_draft = req.payload.pop("card_draft", None)
+    # WS-67 OA-7d: the app slug of the dock, a hint for the tool packs. Popped
+    # so the payload never carries it on. Cleaned against the packs that name
+    # an app, bound for the run below, and never read for a tenant or a member.
+    _surface = req.payload.pop("surface", None)
+    # H-337: the session names the member, never the body. The claim goes
+    # HERE, before the saved turn and the turn route read the payload. It
+    # goes always, so a room run keeps its `room:` memory id.
+    _drop_identity_claims(req.payload, user)
+    _edit_keep = [_new_user_id, req.assistant_message_id or ""]
+    # WS-63 D-PZ-37 (the owner, 2026-11-02): the ONE positive mark of a
+    # message that the member typed in the message box. Only the composer of
+    # the chat sends it, and only JSON `true` counts. A tapped pill, a
+    # choice, a card action, a feed starter and the Fix prompt send none.
+    # Popped HERE, so it never reaches the executor. It can make words count
+    # only for the member's own writes in their own session, so a client
+    # that sends it gets nothing more.
+    _typed_mark = req.payload.pop("typed", None) is True and _card_answer is None
+    _sent_words = str(req.payload.get("message") or req.payload.get("user_query") or "")
+    # WS-51 S4: the member's turn, as they typed it. The server saves it
+    # below, before the run starts, so a tab closed at once keeps it. The
+    # words are read HERE, before a Continue note, a replayed steer or the
+    # supersede note changes `message`.
+    _prompt = prompt_to_save(
+        thread_id=req.thread_id, message_id=_new_user_id,
+        text=_sent_words,
+        timestamp=req.payload.pop("user_message_ts", None),
+        actor=actor_email, room=room, supersedes=_supersedes,
+        card_answer=_card_answer, typed=_typed_mark,
+    )
+    # WS-63 PZ-6a fix round 2 (P1-a): the member's TYPED words, the only
+    # words that may ground a profile write (`assistant_profile.member_typed`).
+    # Read HERE, before the Continue note, a replayed steer or the supersede
+    # note changes `message`. A card answer sent as a message holds the
+    # card's text, which the model wrote, so it grounds nothing.
+    # D-PZ-37: a turn with no mark binds "" too. Its words open only the
+    # confirm card of a profile write (`_sent_text` below), never a save.
+    # PZ-31: the member's own typed steers that the run reads are typed words
+    # too. `count_member_steers` in `_serve` below adds them, apart from this.
+    _typed = _sent_words if _typed_mark else ""
+    _edit_shared = bool(room is not None and room.is_shared)
+    if _supersedes and req.thread_id:
+        from gateway.chat_supersede import (  # noqa: PLC0415
+            SupersedeRefused as _EditRefused,
+            check_supersede,
+            settle_active_run,
+        )
+        try:
+            await asyncio.to_thread(
+                check_supersede, req.thread_id, _supersedes,
+                actor=actor_email, keep_ids=_edit_keep, shared=_edit_shared,
+                organization_id=_room_org,
+            )
+            await settle_active_run(req.thread_id, actor_email)
+        except _EditRefused as _refused:
+            raise HTTPException(
+                status_code=_refused.status, detail=_refused.detail(),
+            ) from None
 
     # The other people in the room find out what was asked, and by whom, the
-    # moment it is asked — the run stream carries only the agent's side.
-    if room is not None and room.is_shared:
-        await publish_room_event(req.thread_id or "", {
+    # moment it is asked — the run stream carries only the agent's side. The
+    # preview is read HERE, before a Continue note changes `message`. It is
+    # published after the run cap below, so a refused send shows nobody a
+    # turn that never ran (review of #821).
+    _room_event = (
+        {
             "type": "USER_MESSAGE",
             "author": actor_email,
             "agentName": agent_name,
             "content": _room_preview(req),
-        })
+        }
+        if room is not None and room.is_shared else None
+    )
 
     # ── Steer instead of 409 (§4.6, §QM-1) ────────────────────────────────────
     # Before anything expensive — before memory assembly, before the executor —
     # decide what this message DOES. Four outcomes; only one of them starts a
     # run. See _route_incoming_turn / orchestrator.steer.route_turn.
-    _incoming_text = str(
-        req.payload.get("message") or req.payload.get("user_query") or ""
-    )
-    _decision = await _route_incoming_turn(
-        req.thread_id or "", actor_email, _incoming_text,
-    )
-    _steered = await _apply_turn_decision(
-        _decision, req, agent_name, actor_email, room,
-    )
-    if _steered is not None:
-        return _steered
+    # ── Continue after a restart (incident 2026-10-09) ───────────────────────
+    # The chat's Continue button sends ``resume: true``. The words the model
+    # reads are the SERVER's, built from the saved partial reply, so a client
+    # cannot write that instruction. See gateway.chat_recovery.
+    _resume = bool(req.payload.pop("resume", None))
+    if _resume:
+        _typed = ""  # a Continue turn: the member typed nothing (PZ-6a)
+        _typed_mark = False  # and its row is not typed (D-PZ-37)
+        _prompt = None if _prompt is None else _prompt.model_copy(
+            update={"member_typed": False})
+    if _resume and req.thread_id:
+        _note = await _resume_note_for(req.thread_id, actor_email, _room_org)
+        if _note is not None:
+            req.payload["message"] = _note
+
+    # ── The steer follow-up (owner, 2026-10-12) ──────────────────────────────
+    # The chat asks for it once the run it steered has ended. It carries no
+    # words: the ENGAGE seam below takes the steers that the run never read
+    # from the durable store and makes them the run's message. Nothing owed
+    # (or a run still going) answers 202 and starts nothing.
+    from orchestrator.steer import Route as _FuRoute  # noqa: PLC0415
+    from orchestrator.steer import TurnDecision as _FuDecision  # noqa: PLC0415
+
+    _followup = bool(req.payload.pop("steer_followup", None)) and not _supersedes
+    if _followup:
+        _room_event = None
+        _gate = await _steer_followup_gate(req.thread_id or "")
+        if _gate is not None:
+            return _gate
+        req.payload["message"] = ""
+        # This request carries no words. The member's own typed steers that
+        # the ENGAGE seam replays count through `count_member_steers` (PZ-31).
+        _typed = ""
+        _decision = _FuDecision(_FuRoute.ENGAGE, "steer_followup")
+    else:
+        _incoming_text = str(
+            req.payload.get("message") or req.payload.get("user_query") or ""
+        )
+        _decision = await _route_incoming_turn(
+            req.thread_id or "", actor_email, _incoming_text,
+        )
+    # Edit, step 2: an edit is never a steer. A run that started since step 1
+    # (another member's) refuses the edit, and no row has gone yet.
+    if _supersedes and _decision.route.name != "ENGAGE":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "run_in_progress",
+                "message": "A run is in progress on this conversation. "
+                           "Wait for it to end, then edit your message.",
+            },
+        )
 
     run_id = req.run_id or str(uuid.uuid4())
     user_id: str = getattr(user, "email", "") or "anonymous"
+
+    # ── The run cap (WS-51 D-3, owner decision 2026-10-10) ───────────────────
+    # At most CHAT_MAX_RUNS_PER_MEMBER live runs per member, and no org cap.
+    # Only ENGAGE starts a run, so a steer, a stop or a dropped turn never
+    # counts. This runs before the room event, the memory read, the Graphiti
+    # episode, the supersede and the mint, so a refused run saves no prompt,
+    # files no memory, mints no row and shows the room nothing. The member
+    # and the org come from the session. orchestrator/run_cap.py holds the
+    # rules.
+    _cap_thread = req.thread_id or f"{agent_name}:{run_id}"
+    from orchestrator.run_cap import (  # noqa: PLC0415
+        admit_member_run,
+        release_member_slot,
+    )
+    if _decision.route.name == "ENGAGE":
+        _admission = await admit_member_run(
+            organization_id=_room_org, member=_session_member(user),
+            thread_id=_cap_thread,
+        )
+        if not _admission.admitted:
+            return JSONResponse(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                content={
+                    "error": "too_many_runs",
+                    "limit": _admission.limit,
+                    "running": list(_admission.running),
+                },
+            )
+
+    async def _release_cap_slot() -> None:
+        await release_member_slot(
+            organization_id=_room_org, thread_id=_cap_thread,
+        )
+
+    if _room_event is not None:
+        await publish_room_event(req.thread_id or "", _room_event)
+
+    _taken_steers: list[dict[str, Any]] = []
+    _TAKEN_STEERS.set(_taken_steers)
+    # PZ-31: a steer of this request is typed only when the member typed it.
+    # A card answer holds the card's text, and a Continue turn the server's.
+    # D-PZ-37: the same mark as the turn. A steer with no mark is not typed,
+    # so a pill tapped during a run grounds nothing.
+    _STEER_TYPED.set(_typed_mark and _card_answer is None and not _resume)
+    # D-PZ-37: the words that the member sent in this turn, typed or tapped.
+    # A tap grounds no profile write, and it may only ask the confirm card of
+    # one (`profile_tools._ground`). The tool-pack chooser reads them too
+    # (`assistant_profile.sent_words`), so a tapped pill about a mail still
+    # loads the email pack. A Continue, a card answer, a steer follow-up and
+    # a paste send none, so they never get that card (PZ-32 repair 1).
+    _sent_text = (_sent_words
+                  if _card_answer is None and not _resume and not _followup else "")
+    # §18.11 step 2: a steer of the web chat keeps the member's version of an
+    # open new-mail card BEFORE the steer goes out, so the tool that the
+    # steer wakes finds it. This door is the web chat's: no WhatsApp turn
+    # reaches it. Any other route drops it.
+    if _card_draft is not None and _decision.route.name == "STEER":
+        await _keep_card_draft(user, req.thread_id or "", _card_draft)
+    _steered = await _apply_turn_decision(
+        _decision, req, agent_name, actor_email, room,
+    )
+
+    async def _give_back_taken() -> None:
+        # A refusal after ENGAGE starts no run: the steers it took go back.
+        if _taken_steers and req.thread_id:
+            from orchestrator.steer import give_back  # noqa: PLC0415
+
+            await give_back(req.thread_id, list(_taken_steers))
+            _taken_steers.clear()
+    if _steered is not None:
+        # WS-51 S4: a steer is stored for the live run (#797), and the
+        # member's words show on a reload too, as their own turn. The spec
+        # is silent here, so the turn is saved with its actor. A stop and a
+        # dropped turn save nothing.
+        # It runs as a background task, after the 202 is sent, so a slow
+        # database never holds the answer to a steer.
+        if _decision.route.name == "STEER" and _prompt is not None:
+            # The row carries the steer mark, so a reload in any browser
+            # draws it as "added to the reply" (lib/chatSteer.ts STEERED).
+            _prompt = _prompt.model_copy(update={
+                "custom_events": [*_prompt.custom_events, {"name": "steered", "value": {}}],
+            })
+            background_tasks.add_task(
+                _save_steered_prompt, req.thread_id or "", _prompt,
+                member=actor_email, agent_name=agent_name,
+                organization_id=_room_org,
+            )
+        # An ENGAGE that the decision still turned into an answer (a
+        # recovery that steered) starts no run, so its reservation goes.
+        if _decision.route.name == "ENGAGE":
+            await _release_cap_slot()
+        return _steered
+
+    # A second follow-up, or a new run, took the steers between the gate and
+    # here. With no words there is nothing to answer, so no run starts.
+    if _followup and not str(req.payload.get("message") or "").strip():
+        await _release_cap_slot()
+        return _followup_refused(req.thread_id or "", "nothing_pending")
 
     # ── Set user + agent context for memory tools ─────────────────────────
     # user_id scopes THIS user's private memory (remember/save_memory); the
@@ -1987,12 +3155,16 @@ async def run_agent_stream_endpoint(
 
     # Which compartments this run may read, and the one it may write. Solo
     # resolves to exactly the three scopes and the write target it always had.
+    # `room_is_solo` is the profile block's bit (personalization.md §5.1).
     from acb_memory import resolve_clearance
+    from gateway.rooms import room_is_solo
     _clearance = resolve_clearance(
         actor=user_id if user_id != "anonymous" else "",
         agent_name=agent_name,
         thread_id=req.thread_id,
         shared=_room_is_shared,
+        # KG-9: the org compartment is this member's org, from the session.
+        organization_id=_room_org,
     )
 
     try:
@@ -2015,103 +3187,29 @@ async def run_agent_stream_endpoint(
     # — otherwise Mem0's per-query semantic search returns a different block
     # every turn and defeats cross-turn prompt caching on the memory portion.
     _mem_thread_id = req.thread_id or f"{agent_name}:{run_id}"
-    try:
-        from acb_memory import (  # noqa: PLC0415
-            get_memory_context,
-            get_scoped_context,
-            get_session_memory,
-            scope_key,
-            search_entity_timeline,
+    # WS-47 WAC-P2: ONE builder of the block, which the WhatsApp run calls too.
+    from gateway.memory_preread import memory_preread  # noqa: PLC0415
+
+    user_msg = (
+        req.payload.get("message")
+        or req.payload.get("user_query")
+        or ""
+    )
+    memory_context = await memory_preread(
+        user_id=user_id,
+        agent_name=agent_name,
+        thread_id=_mem_thread_id,
+        message=str(user_msg),
+        shared=_room_is_shared,
+        clearance=_clearance,
+    )
+    if memory_context:
+        req.payload["memory_context"] = memory_context
+        _log.debug(
+            "agent.memory_enriched",
+            agent=agent_name,
+            user=user_id[:20],
         )
-        user_msg = (
-            req.payload.get("message")
-            or req.payload.get("user_query")
-            or ""
-        )
-        # Agent + org memory are NOT user-scoped, so they load even for an
-        # anonymous user; the per-user Mem0/Graphiti blocks stay gated on a
-        # real user_id.
-        if user_msg:
-            _has_user = user_id != "anonymous" and not _room_is_shared
-
-            async def _build_memory_block() -> str:
-                parts: list[str] = []
-                # Mem0: this user's private episodic facts. Never in a room —
-                # not the owner's, not the typer's. The scope key is simply not
-                # passed, so there is no retrieval to leak (memory-clearance.md
-                # §3.3: a boundary, not a request in a system prompt).
-                if _has_user:
-                    mem_ctx = await get_memory_context(user_id, user_msg)
-                    if mem_ctx:
-                        parts.append("## Memory from past conversations\n" + mem_ctx)
-                # What this room has established. Replaces the personal
-                # compartment rather than adding to it: shared work is
-                # remembered where everyone in the room can see it.
-                if _clearance.room:
-                    room_ctx = await get_scoped_context(
-                        _clearance.room, user_msg, header="Room memory",
-                    )
-                    if room_ctx:
-                        parts.append(
-                            "## What this room has established\n" + room_ctx
-                        )
-                # How the person being answered likes to work. Safe to carry
-                # into a room: they are in it, and preferences describe them
-                # rather than disclosing what they told the agent in private.
-                if _clearance.prefs:
-                    prefs_ctx = await get_scoped_context(
-                        _clearance.prefs, user_msg, header="Preferences",
-                    )
-                    if prefs_ctx:
-                        parts.append("## How to answer this person\n" + prefs_ctx)
-                # Agent memory: shared across every user of this agent
-                agent_ctx = await get_scoped_context(
-                    scope_key(agent=agent_name), user_msg, header="Agent memory"
-                )
-                if agent_ctx:
-                    parts.append("## This agent's shared memory\n" + agent_ctx)
-                # Org memory: organisation-wide, shared by every agent + user
-                org_ctx = await get_scoped_context(
-                    scope_key(org=True), user_msg, header="Organisation memory"
-                )
-                if org_ctx:
-                    parts.append("## Organisation-wide memory\n" + org_ctx)
-                # Graphiti: time-aware facts about entities in the query
-                if _has_user:
-                    graph_ctx = await search_entity_timeline(user_msg[:80], user_msg)
-                    if graph_ctx:
-                        parts.append(
-                            "## Timeline facts from knowledge graph\n" + graph_ctx
-                        )
-                return "\n\n".join(parts)
-
-            _redis = None
-            try:
-                from orchestrator.stream_relay import (  # noqa: PLC0415
-                    _get_client,
-                )
-                _redis = await _get_client()
-            except Exception:  # noqa: BLE001 — no Redis → fetch fresh each turn
-                _redis = None
-
-            memory_context = await get_session_memory(
-                redis=_redis,
-                thread_id=_mem_thread_id,
-                build=_build_memory_block,
-                # Without this a thread cached while solo would keep serving
-                # the owner's private block to the room for the rest of the
-                # TTL, undoing the read rule above.
-                clearance=_clearance.fingerprint,
-            )
-            if memory_context:
-                req.payload["memory_context"] = memory_context
-                _log.debug(
-                    "agent.memory_enriched",
-                    agent=agent_name,
-                    user=user_id[:20],
-                )
-    except ImportError:
-        pass
 
     # ── Memory extraction: save conversation facts after the run completes ──
     # NOTE: Mem0 episodic extraction is handled by the Next.js route
@@ -2121,23 +3219,9 @@ async def run_agent_stream_endpoint(
     # so a background task here would save an incomplete conversation and
     # produce poor-quality memory facts.
     #
-    # Graphiti knowledge-graph ingestion is still done here because it
-    # operates on entity mentions in the user's query — it doesn't need
-    # the assistant's response.
-    try:
-        from acb_memory import add_episode  # noqa: PLC0415
-
-        user_msg = req.payload.get("message") or ""
-        if user_msg and user_id != "anonymous":
-            background_tasks.add_task(
-                add_episode,
-                name=f"agent:{agent_name}:{user_id[:20]}",
-                content=user_msg[:500],
-                source_description=f"agent_{agent_name}",
-                group_id=user_id,
-            )
-    except ImportError:
-        pass
+    # The Graphiti episode of the member's message is written at the run END
+    # (``_extract_run_memory``), never here. At the start the session's mail
+    # mark is not known yet (WS-17 EM-G11f3, section 12.3.13.9.1 item 2).
 
     _log.info("agent.stream_run_start", agent=agent_name, run_id=run_id, actor=user.email)
 
@@ -2177,6 +3261,9 @@ async def run_agent_stream_endpoint(
                 for r in rows
                 if r.get("role") in ("user", "assistant")
                 and str(r.get("content") or "").strip()
+                # WS-51 S4: the current turn is saved before the run, and
+                # it reaches the model as `message`. Not twice.
+                and not (_new_user_id and r.get("id") == _new_user_id)
             ]
 
         req.payload["_history_loader"] = _load_history_from_store
@@ -2204,47 +3291,97 @@ async def run_agent_stream_endpoint(
     ]
 
     async def _persist_on_complete() -> None:
+        # WS-17 EM-G11f3: ONE answer of the mail predicate for the run end,
+        # asked before the fold. The trace and both memory writes read it.
+        # The member is in the context, so a Redis fault reads as mail.
+        try:
+            from acb_skills.egress import run_holds_mail  # noqa: PLC0415
+            _holds_mail = await run_holds_mail(
+                agent_name, {"session_id": thread_id, "member": _mem_user})
+        except Exception:  # noqa: BLE001 — fail closed: the run holds mail
+            _holds_mail = True
         folded = await persist_final_assistant_message(
             thread_id, _persist_message_id,
             user_id=_mem_user, agent_name=agent_name,
             run_id=run_id, model=req.model,
             # S15 (§21): the fold binds the run's tenant.
             organization_id=_room_org,
+            holds_mail=_holds_mail,
+            # A run that a new run cancelled folds late. By then the new run
+            # has reset the thread's stream, so the replay holds the NEW run's
+            # events. Without this guard the old run wrote them again under
+            # its own message id: one reply, two rows (task 1533, bug B3).
+            # Fence: tests/unit/test_chat_fold_other_run.py.
+            expect_run_id=run_id,
         )
+        if _superseded_ids:
+            # A cancelled run on another worker can fold its row after the
+            # edit deleted it. Delete the superseded rows again, by id.
+            from gateway.chat_supersede import delete_rows  # noqa: PLC0415
+            try:
+                await asyncio.to_thread(
+                    delete_rows, thread_id, _superseded_ids,
+                    organization_id=_room_org,
+                )
+            except Exception:  # noqa: BLE001 — best effort, never fail the fold
+                _log.warning(
+                    "agent.supersede_redelete_failed", thread_id=thread_id[:12],
+                )
         # Memory extraction at the SAME run boundary (review P1-9): the Next
         # translator only extracted while its reader was alive, so turns
         # completed after a browser-gone/reconnect contributed nothing to
         # Mem0. The gateway is now the single extraction owner for this path
         # (route.ts no longer extracts for named agents). Best-effort.
-        if not (_extract_user and folded):
-            return
-        try:
-            from acb_memory import add_memories_background  # noqa: PLC0415
-
-            from gateway.chat_fold import (  # noqa: PLC0415
-                build_extraction_conversation,
-            )
-            conv = build_extraction_conversation(
-                _mem_history, _mem_message, folded,
-            )
-            if conv:
-                await add_memories_background(
-                    _extract_user, conv, agent_id=agent_name,
-                )
-        except Exception:  # noqa: BLE001 — extraction must never kill the relay
-            _log.warning("agent.run_end_memory_extraction_failed",
-                         thread_id=thread_id[:12])
+        await _extract_run_memory(
+            run_id, _extract_user, _mem_history, _mem_message, folded,
+            agent_name=agent_name, thread_id=thread_id,
+            member=_mem_user, holds_mail=_holds_mail,
+        )
 
     _actor = (getattr(user, "email", "") or "").strip()
-    await _refuse_if_another_run_is_active(thread_id, _actor)
+    try:
+        await _refuse_if_another_run_is_active(thread_id, _actor)
+    except HTTPException:
+        # The run will not start, so its cap reservation goes too.
+        await _release_cap_slot()
+        await _give_back_taken()
+        raise
+
+    # Edit, step 3: every refusal is behind us, so the old turn and its
+    # replies go now, in one locked transaction that decides again. The note
+    # is composed from their stored tool events.
+    if _supersedes and req.thread_id:
+        from gateway.chat_supersede import (  # noqa: PLC0415
+            SupersedeRefused as _EditRefused,
+            compose_supersede_note,
+            supersede_rows,
+        )
+        try:
+            _plan = await asyncio.to_thread(
+                supersede_rows, req.thread_id, _supersedes,
+                actor=actor_email, keep_ids=_edit_keep, shared=_edit_shared,
+                organization_id=_room_org,
+            )
+        except _EditRefused as _refused:
+            await _release_cap_slot()
+            await _give_back_taken()
+            raise HTTPException(
+                status_code=_refused.status, detail=_refused.detail(),
+            ) from None
+        _supersede_note = compose_supersede_note(_plan)
+        _superseded_ids = _plan.removed_ids
 
     # WS-27bm S14 (§20): the server creates the agent row of this run, here
     # and once. It runs after the steer decision and the refusal above, so a
     # steered or refused turn mints nothing.
+    # WS-51 S4: the same worker call first saves the member's turn, under the
+    # browser's own id. It comes after the supersede above, so an edit's old
+    # turn is gone first. One call and one time budget, so a stalled database
+    # holds the first byte for one budget, not two.
     await _mint_run_row_bounded(
         thread_id, _persist_message_id,
         member=_mem_user, agent_name=agent_name,
-        organization_id=_room_org,
+        organization_id=_room_org, prompt=_prompt,
     )
 
     _think_mode = _resolve_think_mode(req)
@@ -2260,6 +3397,18 @@ async def run_agent_stream_endpoint(
     # user_management_contract.md; §0.9.3). No DB write is converted this slice.
     _organization_id = getattr(user, "organization_id", None)
 
+    # The supersede note goes in LAST, after memory search, the Graphiti
+    # episode and the extraction input read the message: memory files the
+    # member's words, never the platform's note. `message` is what every
+    # runtime reads as the current turn (the Copilot SDK path, the MAF string
+    # path and a MAF native session alike), so the note reaches the model on
+    # each of them.
+    if _supersede_note:
+        _edited = str(req.payload.get("message") or "")
+        req.payload["message"] = (
+            f"{_supersede_note}\n\n{_edited}" if _edited else _supersede_note
+        )
+
     agent_gen = run_agent_stream(
         agent_name,
         req.payload,
@@ -2270,6 +3419,20 @@ async def run_agent_stream_endpoint(
         organization_id=_organization_id,
         # H-73: WHO pays is the session's answer, never the body's.
         session_user=_session_member(user),
+        # The web chat draws each card (`AgentChat`, `useAgentChat` and
+        # `confirmationQueue.ts` read the CUSTOM card events of this stream).
+        shows_cards=True,
+        # WS-63 PZ-2 (personalization.md §5.1): the member's own profile
+        # block goes only into a solo run. Solo is a private room of one,
+        # from the server's room and never the body. A room of one that
+        # other members can read (visibility org or people) is not solo.
+        solo_room=room_is_solo(room),
+        # PZ-39: the ids of this turn's own rows, so the greeting gap leaves
+        # them out. The request supplies both ids (`user_message_id` and
+        # `assistant_message_id`). A client can only skip rows of its own
+        # chat, so the worst case is one extra greeting for this member. The
+        # read stays bound to the run's org, member and session.
+        turn_row_ids=(_persist_message_id, _new_user_id),
     )
 
     # The roster this run's authority intersection is folded over, recorded so a
@@ -2278,7 +3441,32 @@ async def run_agent_stream_endpoint(
     # nothing, so nothing about single-player behaviour changes.
     _floor = list(room.members) if (room is not None and room.is_shared) else None
 
+    from acb_common.assistant_profile import (  # noqa: PLC0415
+        count_member_steers,
+        member_typed,
+    )
+    from acb_skills.tool_packs import surface_scope  # noqa: PLC0415
+
     async def _serve():
+        timing = _RunTiming(_route_started)
+        try:
+            # WS-63 PZ-6a fix round 2: the typed words reach the run through
+            # this ONE binding. The drain task that `run_detached` starts
+            # copies the context here, so the run reads them, and nothing
+            # else does. D-PZ-37: `sent` is the sent words. They open only
+            # the confirm card, and they feed the tool-pack chooser.
+            with member_typed(_typed, sent=_sent_text), surface_scope(_surface):
+                # PZ-31: the session's member is the run member. Their own
+                # typed steers that ENGAGE took count now, and a tool result
+                # that carries one later adds it (`steer.decorate_tool_result`).
+                count_member_steers(_actor, _taken_steers)
+                async for chunk in _serve_run(timing):
+                    yield chunk
+        finally:
+            _log.info("agent.run_timing", agent=agent_name, run_id=run_id,
+                      **timing.fields())
+
+    async def _serve_run(timing: _RunTiming):
         try:
             async for evt in run_detached(
                 thread_id, agent_gen, tee=False,
@@ -2290,7 +3478,16 @@ async def run_agent_stream_endpoint(
                 # never req.payload. Binds the detached drain task's own scope so
                 # the on_complete persist hook sees the right tenant (R11).
                 organization_id=_organization_id,
+                # What the restart sweep needs to save this run's partial
+                # reply if this process dies (orchestrator.run_liveness).
+                record={
+                    "messageId": _persist_message_id,
+                    "agent": agent_name,
+                    "runId": run_id,
+                    "model": req.model,
+                },
             ):
+                timing.see(evt)
                 yield f"data: {json.dumps(evt)}\n\n"
         except SupersedeRefused:
             # The inner §5.2 invariant fired: between routing this turn and
@@ -2303,6 +3500,9 @@ async def run_agent_stream_endpoint(
                 "agent.stream_supersede_refused",
                 agent=agent_name, thread_id=thread_id[:12],
             )
+            await _release_cap_slot()
+            await _give_back_taken()
+            timing.outcome = "superseded"
             yield "data: " + json.dumps({
                 "type": "RUN_ERROR",
                 "message": (
@@ -2325,6 +3525,9 @@ async def run_agent_stream_endpoint(
             # Redis was unavailable from the start — degrade to direct
             # streaming with no relay (old behaviour).
             _log.warning("agent.stream_relay_unavailable", agent=agent_name)
+            # These lines are SSE text, so the marks stay empty. The outcome
+            # says why, not "disconnected".
+            timing.outcome = "direct"
             async for line in agent_gen:
                 yield line
 
@@ -2335,8 +3538,147 @@ async def run_agent_stream_endpoint(
             "Cache-Control": "no-cache, no-transform",
             "X-Accel-Buffering": "no",
             "Connection": "keep-alive",
+            # The run this response follows. The Next translator binds its
+            # reader to it, so a cancelled send never adopts the newer run's
+            # RUN_STARTED (task 1533, B3). Fence: test_run_started_producers.py.
+            "X-Run-Id": run_id,
         },
     )
+
+
+async def _late_answer_from_row(
+    req: UserInputResponseRequest, user: UserContext,
+) -> tuple[Any, bool]:
+    """``(CardResend, the card has a row)`` for an answer no run took.
+
+    WS-51 S2 (``CHAT_DURABLE_ASKS``, default OFF; OFF returns
+    ``(None, False)`` and the route keeps its old path). The row is read under
+    the CALLER's tenant, which ``get_current_user`` bound from the session,
+    never from the request (R5e). A row of another org is invisible under
+    FORCE row level security, so a member of a second org finds no row and
+    answers nothing.
+
+    The row moves to ``answered`` in one statement, so two late answers to
+    one card resend once. The loser gets ``(None, True)``, the old 409.
+    Fence: ``tests/unit/test_pending_ask_flow.py``.
+    """
+    import asyncio  # noqa: PLC0415
+
+    from orchestrator import pending_ask  # noqa: PLC0415
+
+    if not pending_ask.durable_asks_enabled():
+        return None, False
+    org = (getattr(user, "organization_id", None) or "").strip()
+    if not org or not req.thread_id:
+        return None, False
+    try:
+        row = await asyncio.to_thread(pending_ask.read_ask, org, req.request_id)
+    except Exception:  # noqa: BLE001 — the old path still answers
+        _log.warning("agent.pending_ask_read_failed", exc_info=True)
+        return None, False
+    if row is None:
+        return None, False
+    # Only the member who was asked answers a card whose run has ended
+    # (review of #813). A thread with no chat row passes the room gate for
+    # any member of the org, so the room alone is not enough.
+    me = (getattr(user, "email", "") or "").strip().lower()
+    if not me or str(row.get("actor_email") or "") != me:
+        return None, True
+
+    from gateway.chat_recovery import card_answer_from_ask  # noqa: PLC0415
+
+    resend = await card_answer_from_ask(req.thread_id, row, req.answer)
+    if resend is None:
+        return None, True
+    try:
+        moved = await asyncio.to_thread(
+            pending_ask.move_ask, org, req.request_id,
+            to="answered", from_states=pending_ask.WAITING, answer=req.answer,
+        )
+    except Exception:  # noqa: BLE001
+        _log.warning("agent.pending_ask_answer_failed", exc_info=True)
+        return None, True
+    if moved is None:
+        return None, True
+    # WS-53 CRM-Q32-8: a late answer of a CRM question card is the member's
+    # own act, so it opens the gate of `crm_answer_question` once, for the
+    # option picked. The org and the member are the session's (R5, R11).
+    from gateway.routes.crm.questions import record_late_answer
+
+    await record_late_answer(org, me, str(row.get("kind") or ""), row.get("payload"), req.answer)
+    # The question no longer waits, so its My Day card leaves at once (WS-58
+    # MD-3f fix round 1, §5.9 item 14). `bump_member_safe` waits 0.5 seconds
+    # at most and never raises, so the answer stands.
+    from gateway.routes.shell import cache as feed_cache
+
+    await feed_cache.bump_member_safe(org, str(moved.get("actor_email") or me))
+    _log.info(
+        "agent.pending_ask_answered_late",
+        request_id=req.request_id[:12], thread_id=req.thread_id[:12],
+        state=str(row.get("state") or ""),
+    )
+    return resend, True
+
+
+async def _late_decline_from_row(
+    req: UserInputResponseRequest, user: UserContext,
+) -> bool:
+    """Close the durable row of a card no run waits on. True when closed.
+
+    The member's "Not now" (owner request, 2026-10-18) on a card whose run
+    parked or died. It starts no run. It closes the row, so the chat draws
+    the card no more and My Day drops it. The same rules as a late answer
+    (:func:`_late_answer_from_row`): the caller's own tenant (R5e), the
+    thread that asked, and only the member who was asked (review of #813).
+    The move is one statement, so a second decline or answer finds nothing.
+    """
+    import asyncio  # noqa: PLC0415
+
+    from orchestrator import pending_ask  # noqa: PLC0415
+
+    if not pending_ask.durable_asks_enabled():
+        return False
+    org = (getattr(user, "organization_id", None) or "").strip()
+    if not org or not req.thread_id:
+        return False
+    try:
+        row = await asyncio.to_thread(pending_ask.read_ask, org, req.request_id)
+    except Exception:  # noqa: BLE001 — the 409 still answers
+        _log.warning("agent.pending_ask_read_failed", exc_info=True)
+        return False
+    if row is None or str(row.get("thread_id") or "") != req.thread_id:
+        return False
+    me = (getattr(user, "email", "") or "").strip().lower()
+    if not me or str(row.get("actor_email") or "") != me:
+        return False
+    if str(row.get("state") or "") == "open":
+        # The same liveness rule as a late answer
+        # (``chat_recovery.card_answer_from_ask``). An open row of a LIVE run
+        # still has a run that waits, so the row stays open, and the member
+        # can try again. A dead run is closed and saved first.
+        from orchestrator.run_liveness import run_liveness  # noqa: PLC0415
+
+        liveness = await run_liveness(req.thread_id)
+        if liveness == "dead":
+            from gateway.chat_recovery import recover_dead_run  # noqa: PLC0415
+
+            await recover_dead_run(req.thread_id, why="card_decline_undelivered")
+        elif liveness != "idle":
+            return False
+    try:
+        moved = await asyncio.to_thread(
+            pending_ask.move_ask, org, req.request_id,
+            to="closed", from_states=pending_ask.WAITING,
+        )
+    except Exception:  # noqa: BLE001
+        _log.warning("agent.pending_ask_decline_failed", exc_info=True)
+        return False
+    if moved is None:
+        return False
+    from gateway.routes.shell import cache as feed_cache
+
+    await feed_cache.bump_member_safe(org, me)
+    return True
 
 
 @router.post(
@@ -2383,32 +3725,111 @@ async def respond_user_input(
         )
 
     # Fast path: the run is parked on THIS worker — resolve its Future inline.
+    # WS-53 CRM-Q33 fix round 2: the responder is the session's member, so a
+    # CRM card counts a pick only of the run's own member.
+    _responder = (getattr(user, "email", None) or "").strip().lower() or None
+    # A decline ("Not now", owner request 2026-10-18) resolves it too, so
+    # the run RESUMES and reads the decline as its tool result.
     delivered = resolve_user_input(
         req.request_id, req.answer, req.was_freeform, thread_id=req.thread_id,
+        responder=_responder, declined=req.declined,
     )
     # Cross-worker (P1-2): the run may be parked on another worker.  Relay the
     # answer over the control bus so the owning worker resolves its own Future.
+    _command: dict[str, Any] = {
+        "cmd": "respond_input",
+        "request_id": req.request_id,
+        "answer": req.answer,
+        "was_freeform": req.was_freeform,
+        "responder": _responder,
+    }
+    if req.declined:
+        # Only on a decline, so an answer's command is exactly as before.
+        _command["declined"] = True
     if not delivered:
         from orchestrator.stream_relay import dispatch_control  # noqa: PLC0415
 
-        delivered = await dispatch_control(
-            req.thread_id,
-            {
-                "cmd": "respond_input",
-                "request_id": req.request_id,
-                "answer": req.answer,
-                "was_freeform": req.was_freeform,
-            },
+        delivered = await dispatch_control(req.thread_id, _command)
+    if delivered and not req.declined:
+        # EM-CR (email_app_master_plan.md §18, review of #1191): the record of
+        # a reply card's answer, only AFTER the thread that owns the card took
+        # it, so a request id seen from another room records nothing (H-201).
+        # The key names that thread. Only a reply answer is recorded, with this
+        # caller's own tenant and email. The act waits for the record
+        # (``reply_card.take_reply_answer``), and sends only with it.
+        from acb_skills.reply_card import record_reply_answer  # noqa: PLC0415
+
+        await record_reply_answer(
+            getattr(user, "organization_id", None), req.request_id, _responder or "",
+            req.answer, req.thread_id,
+        )
+    if not delivered and req.declined:
+        # No run waits on this card. A decline starts no new run: the member
+        # chose to do something else. A card with a durable row closes, so
+        # it never draws again. Anything else is the plain 409.
+        if await _late_decline_from_row(req, user):
+            _log.info(
+                "agent.pending_ask_declined_late",
+                request_id=req.request_id[:12], thread_id=req.thread_id[:12],
+            )
+            return {"ok": True, "declined": True}
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No pending question matches that request_id "
+            "(the run may have already finished).",
         )
     if not delivered:
+        # ── A card answer across a restart (incident 2026-10-09) ─────────────
+        # The run that asked may have died with its process. Then a bare 409
+        # drops the answer. Instead, close the dead run and hand the answer
+        # back, with the question it answers, as a message the browser sends.
+        # That message starts the next run (it ENGAGEs, the run is closed).
+        from orchestrator.stream_relay import delivery_of  # noqa: PLC0415
+
+        from gateway.chat_recovery import card_answer_after_restart  # noqa: PLC0415
+
+        # WS-51 S2: the card's durable row, when it has one. A PARKED run
+        # ended on purpose, so its answer always starts a new run, and the
+        # question comes from the row, which outlives the stream.
+        resend, has_row = await _late_answer_from_row(req, user)
+        if not has_row:
+            resend = await card_answer_after_restart(
+                req.thread_id, req.request_id, req.answer,
+                delivery=delivery_of(_command),
+            )
+        if resend is not None:
+            _log.info(
+                "agent.user_input_after_restart",
+                request_id=req.request_id[:12], thread_id=req.thread_id[:12],
+            )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "run_restarted",
+                    "message": (
+                        "The assistant restarted, so your answer goes as "
+                        "a new message."
+                    ),
+                    # What the model reads: the fenced envelope.
+                    "resumeMessage": resend.message,
+                    # What the member reads (owner report, 2026-10-13). The
+                    # chat draws the answered card from it, and the saved
+                    # turn keeps it as the ``card_answer`` custom event.
+                    "resumeDisplay": resend.display,
+                    "threadId": req.thread_id,
+                },
+            )
         # The run may have ended or the request id is stale.
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="No pending question matches that request_id "
             "(the run may have already finished).",
         )
-    _log.info("agent.user_input_resolved", request_id=req.request_id[:12])
-    return {"ok": True}
+    _log.info(
+        "agent.user_input_resolved", request_id=req.request_id[:12],
+        declined=req.declined,
+    )
+    return {"ok": True, "declined": True} if req.declined else {"ok": True}
 
 
 @router.get(
@@ -2480,6 +3901,20 @@ async def reconnect_agent_stream(
         _since = since
         if _since.startswith("local-"):
             _since = "0-0"
+
+        # A dead run never holds a reconnect open (incident 2026-10-09). Its
+        # flag outlives its process, and Phase 2 below would then wait on it
+        # for up to an hour, with the chat showing "Reconnecting…". Close it
+        # first: the replay then carries its "interrupted" marker and ends.
+        try:
+            from orchestrator.run_liveness import run_liveness  # noqa: PLC0415
+
+            if await is_active(thread_id) and await run_liveness(thread_id) == "dead":
+                from gateway.chat_recovery import recover_dead_run  # noqa: PLC0415
+
+                await recover_dead_run(thread_id, why="reconnect")
+        except Exception:  # noqa: BLE001 — never block a replay on this check
+            _log.warning("agent.reconnect_liveness_failed", thread_id=thread_id[:12])
 
         # Track the replay cursor so Phase 2 subscribes from the exact spot —
         # subscribing from "$" would silently drop any events pushed between
@@ -2638,6 +4073,47 @@ def _session_member(user: Any) -> str | None:
     return email if "@" in email else None
 
 
+#: The body keys that name a person. ``executor._payload_user`` reads them.
+#: A source scan in the fence fails when ``executor.py`` reads, by a constant
+#: key through the name ``event_payload``, a known person key that this list
+#: does not hold. It sees no other module and no key outside its own list.
+_IDENTITY_CLAIMS = ("user_email", "user_id")
+
+
+def _drop_identity_claims(
+    payload: dict[str, Any], user: Any, *, keep_own: bool = False,
+) -> None:
+    """Remove the body's claim of the run's member, in place. H-337.
+
+    🔴 **The session names the member, never the body.** The executor binds
+    the memory id and the acting user of the gateway-calling tools from
+    ``user_email`` or ``user_id`` (``executor._bind_run_identity``). So a
+    body claim could rebind them to another member, in a solo chat too.
+    ``_run_member`` lets the session win for billing only.
+
+    A service caller has no person (``_session_member`` is None). Its claim
+    is the only identity it has, so the claim stays.
+
+    ``keep_own=True`` keeps a claim that names the session's member, in any
+    letter case, under the same key. The session's own address replaces the
+    body's text, so a padded or other-case copy never becomes the memory id
+    or the instance key. The stream route removes each claim, because a room
+    run keeps the ``room:`` id that the route sets. Fence:
+    ``tests/unit/test_chat_payload_identity_claims.py``.
+    """
+    member = _session_member(user)
+    if member is None:
+        return
+    for key in _IDENTITY_CLAIMS:
+        if key not in payload:
+            continue
+        claim = str(payload.get(key) or "").strip()
+        if keep_own and claim.lower() == member.lower():
+            payload[key] = member
+            continue
+        payload.pop(key, None)
+
+
 @router.post("/run", response_model=AgentRunResponse)
 async def run_agent_sync(
     req: AgentRunRequest,
@@ -2655,12 +4131,18 @@ async def run_agent_sync(
         organization_id=getattr(user, "organization_id", None),
     )
     await assert_can_run_agent_in_session(user, agent, req.thread_id)
+    # H-227 fix round 3: the room check of the stream route, and the new-chat
+    # step before the run's first row.
+    await _guard_run_thread(user, req.thread_id)
     # H-201 part 3: the same live-run guard as the stream route. The thread id
     # is client input, and a run on it must not supersede another person's.
     if req.thread_id:
         await _refuse_if_another_run_is_active(
             req.thread_id, (getattr(user, "email", "") or "").strip(),
         )
+    # H-337: a claim that names another member goes. An API caller's own
+    # claim stays, because this route sets no memory id of its own.
+    _drop_identity_claims(req.payload, user, keep_own=True)
     run_id = req.run_id or str(uuid.uuid4())
 
     try:
@@ -2684,6 +4166,14 @@ async def run_agent_sync(
             result=final_state.get("result"),
         )
     except AgentRunError as exc:
+        from orchestrator.executor import AgentNotFound
+
+        if isinstance(exc.original, AgentNotFound):
+            # maf_coding_engine.md §15.4: a first-party-admin-only agent,
+            # refused as absent.
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail=str(exc.original),
+            ) from exc
         return AgentRunResponse(
             run_id=run_id,
             agent=agent,
@@ -2711,12 +4201,17 @@ async def run_agent_async(
         organization_id=getattr(user, "organization_id", None),
     )
     await assert_can_run_agent_in_session(user, agent, req.thread_id)
+    # H-227 fix round 3: the room check of the stream route, and the new-chat
+    # step before the run's first row.
+    await _guard_run_thread(user, req.thread_id)
     # H-201 part 3: the same live-run guard as the stream route. The thread id
     # is client input, and a run on it must not supersede another person's.
     if req.thread_id:
         await _refuse_if_another_run_is_active(
             req.thread_id, (getattr(user, "email", "") or "").strip(),
         )
+    # H-337: the same rule as `run_agent_sync`.
+    _drop_identity_claims(req.payload, user, keep_own=True)
     run_id = req.run_id or str(uuid.uuid4())
 
     async def _run() -> None:
@@ -2752,6 +4247,26 @@ def _member_graph_session(user: UserContext) -> Any:
     from acb_graph import tenant_session  # noqa: PLC0415
 
     return tenant_session(getattr(user, "organization_id", None))
+
+
+def _mutation_audit(user: UserContext, event: Any) -> None:
+    """Record one mutation-queue decision in the reviewer's tenant (task 2221).
+
+    The approve, reject and re-mutate rows name the reviewer, the agent, the
+    commit and the PR. This stamps ``user.organization_id``, the tenant that
+    ``get_current_user`` resolved from the identity and that
+    ``_member_graph_session`` wrote the ``pending_commit`` row in. It never
+    reads a request field (R5). With no org and ``ACB_GRAPH_TENANT_BIND`` on,
+    ``refuse_tenantless`` skips the row, so it never lands under the operator
+    org. Fence: ``tests/unit/test_mutation_queue_audit_org_r8.py`` (R8).
+    """
+    import acb_audit
+
+    org = getattr(user, "organization_id", None)
+    event.organization_id = str(org) if org else None
+    if acb_audit.refuse_tenantless(event):
+        return
+    acb_audit.record(event)
 
 
 @router.get("/run/{run_id}/status")
@@ -2794,7 +4309,7 @@ async def get_run_status(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@router.get("/mutations")
+@router.get("/mutations", dependencies=_MUTATION_QUEUE_GATE)
 async def list_mutations(
     limit: int = 50,
     user: UserContext = Depends(get_current_user),
@@ -2900,7 +4415,7 @@ async def list_mutations(
 # Pending commit HITL endpoints (commit-gate flow — M2.7)
 # ---------------------------------------------------------------------------
 
-@router.get("/mutations/pending")
+@router.get("/mutations/pending", dependencies=_MUTATION_QUEUE_GATE)
 async def list_pending_commits(
     limit: int = 50,
     user: UserContext = Depends(get_current_user),
@@ -2946,7 +4461,9 @@ async def list_pending_commits(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@router.get("/mutations/pending/{commit_id}/diff")
+@router.get(
+    "/mutations/pending/{commit_id}/diff", dependencies=_MUTATION_QUEUE_GATE,
+)
 async def get_pending_commit_diff(
     commit_id: str,
     user: UserContext = Depends(get_current_user),
@@ -2984,7 +4501,7 @@ async def get_pending_commit_diff(
 
 @router.post(
     "/mutations/pending/{commit_id}/approve", status_code=200,
-    dependencies=[Depends(require_internal_auth)],
+    dependencies=[Depends(require_internal_auth), *_MUTATION_QUEUE_GATE],
 )
 async def approve_pending_commit(
     commit_id: str,
@@ -3001,7 +4518,7 @@ async def approve_pending_commit(
     """
     import asyncio  # noqa: PLC0415
 
-    from acb_audit import AuditEvent, record  # noqa: PLC0415
+    from acb_audit import AuditEvent  # noqa: PLC0415
 
     try:
         from sqlalchemy import text  # noqa: PLC0415
@@ -3034,6 +4551,7 @@ async def approve_pending_commit(
             cwd=clone_dir,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
+            env=child_env(),
         )
         await verify.communicate()
         if verify.returncode != 0:
@@ -3051,6 +4569,7 @@ async def approve_pending_commit(
             cwd=clone_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            env=child_env(),
         )
         branch_out, _ = await branch_proc.communicate()
         local_branch = branch_out.decode(errors="replace").strip().splitlines()[0].strip() if branch_out else "main"
@@ -3065,6 +4584,7 @@ async def approve_pending_commit(
             cwd=clone_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            env=child_env(),
         )
         await remote_proc.communicate()
         has_remote = remote_proc.returncode == 0
@@ -3072,6 +4592,10 @@ async def approve_pending_commit(
         reviewer = getattr(user, "sub", None) or getattr(user, "email", "unknown")
         new_sha: str | None = None
         if has_remote:
+            # H-363: the push goes to the repo that the REGISTRY names for
+            # this agent. The seam refuses a clone with no pin, so a clone
+            # whose origin a run rewrote cannot take the operator's token.
+            _pin_registry_clone(row.agent_name, clone_dir)
             # Push.  If the fast-forward fails, rebase and retry.
             push_ok, new_sha = await _git_push_with_rebase(clone_dir, commit_sha)
             if not push_ok:
@@ -3129,7 +4653,8 @@ async def approve_pending_commit(
                         },
                     )
                     sess.commit()
-                record(
+                _mutation_audit(
+                    user,
                     AuditEvent(
                         actor=f"human:{reviewer}",
                         action="mutation_monorepo_pr_opened",
@@ -3204,6 +4729,7 @@ async def approve_pending_commit(
                     cwd=clone_dir,
                     stdout=asyncio.subprocess.DEVNULL,
                     stderr=asyncio.subprocess.DEVNULL,
+                    env=child_env(),
                 )
                 await anc_proc.communicate()
                 if anc_proc.returncode == 0:
@@ -3231,7 +4757,8 @@ async def approve_pending_commit(
             # Non-fatal — the primary commit is already approved
             _log.warning("mutation.cascade_failed", error=str(_cascade_exc))
 
-        record(
+        _mutation_audit(
+            user,
             AuditEvent(
                 actor=f"human:{reviewer}",
                 action="mutation_commit_approved",
@@ -3264,7 +4791,7 @@ async def approve_pending_commit(
 
 @router.post(
     "/mutations/pending/{commit_id}/reject", status_code=200,
-    dependencies=[Depends(require_internal_auth)],
+    dependencies=[Depends(require_internal_auth), *_MUTATION_QUEUE_GATE],
 )
 async def reject_pending_commit(
     commit_id: str,
@@ -3277,7 +4804,7 @@ async def reject_pending_commit(
     """
     import asyncio  # noqa: PLC0415
 
-    from acb_audit import AuditEvent, record  # noqa: PLC0415
+    from acb_audit import AuditEvent  # noqa: PLC0415
 
     try:
         from sqlalchemy import text  # noqa: PLC0415
@@ -3306,6 +4833,7 @@ async def reject_pending_commit(
             cwd=clone_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            env=child_env(),
         )
         head_out, _ = await head_proc.communicate()
         head_sha = head_out.decode().strip()
@@ -3324,7 +4852,8 @@ async def reject_pending_commit(
             )
             sess.commit()
 
-        record(
+        _mutation_audit(
+            user,
             AuditEvent(
                 actor=f"human:{reviewer}",
                 action="mutation_commit_rejected",
@@ -3352,7 +4881,7 @@ async def reject_pending_commit(
 
 @router.post(
     "/mutations/pending/{commit_id}/remutate", status_code=200,
-    dependencies=[Depends(require_internal_auth)],
+    dependencies=[Depends(require_internal_auth), *_MUTATION_QUEUE_GATE],
 )
 async def remutate_pending_commit(
     commit_id: str,
@@ -3371,7 +4900,7 @@ async def remutate_pending_commit(
     """
     import asyncio  # noqa: PLC0415
 
-    from acb_audit import AuditEvent, record  # noqa: PLC0415
+    from acb_audit import AuditEvent  # noqa: PLC0415
 
     try:
         from sqlalchemy import text  # noqa: PLC0415
@@ -3400,6 +4929,7 @@ async def remutate_pending_commit(
             cwd=clone_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            env=child_env(),
         )
         head_out, _ = await head_proc.communicate()
         head_sha = head_out.decode().strip()
@@ -3418,7 +4948,8 @@ async def remutate_pending_commit(
             )
             sess.commit()
 
-        record(
+        _mutation_audit(
+            user,
             AuditEvent(
                 actor=f"human:{reviewer}",
                 action="mutation_commit_remutate_requested",
@@ -3453,7 +4984,7 @@ async def remutate_pending_commit(
 
 @router.delete(
     "/mutations/pending/{commit_id}", status_code=200,
-    dependencies=[Depends(require_internal_auth)],
+    dependencies=[Depends(require_internal_auth), *_MUTATION_QUEUE_GATE],
 )
 async def delete_pending_commit(
     commit_id: str,
@@ -3477,6 +5008,20 @@ async def delete_pending_commit(
             sess.commit()
 
         _log.info("mutation.commit_deleted", commit_id=commit_id, rows=deleted, by=reviewer)
+        if deleted:
+            # The row is gone, so the audit line is the only record that it
+            # existed and of who removed it.
+            from acb_audit import AuditEvent, record  # noqa: PLC0415
+
+            record(
+                AuditEvent(
+                    actor=f"human:{reviewer}",
+                    action="mutation_commit_deleted",
+                    target=f"pending_commit:{commit_id}",
+                    payload={"pending_commit_id": commit_id, "rows_deleted": deleted},
+                    organization_id=user.organization_id,
+                )
+            )
         return {"deleted": commit_id, "rows_deleted": deleted}
 
     except TenantUnbound:
@@ -3487,7 +5032,7 @@ async def delete_pending_commit(
 
 @router.delete(
     "/mutations/audit/{run_id}", status_code=200,
-    dependencies=[Depends(require_internal_auth)],
+    dependencies=[Depends(require_internal_auth), *_MUTATION_QUEUE_GATE],
 )
 async def dismiss_mutation_event(
     run_id: str,
@@ -3515,6 +5060,20 @@ async def dismiss_mutation_event(
             sess.commit()
 
         _log.info("mutation.audit_dismissed", run_id=run_id, rows=deleted, by=reviewer)
+        if deleted:
+            # This route deletes audit rows. A human actor writes this one, so
+            # the route never matches it and a later dismiss cannot erase it.
+            from acb_audit import AuditEvent, record  # noqa: PLC0415
+
+            record(
+                AuditEvent(
+                    actor=f"human:{reviewer}",
+                    action="mutation_audit_dismissed",
+                    target=f"run:{run_id}",
+                    payload={"run_id": run_id, "rows_deleted": deleted},
+                    organization_id=user.organization_id,
+                )
+            )
         return {"dismissed": run_id, "rows_deleted": deleted}
 
     except TenantUnbound:
@@ -3526,6 +5085,36 @@ async def dismiss_mutation_event(
 # ---------------------------------------------------------------------------
 # Git helpers for the approve endpoint
 # ---------------------------------------------------------------------------
+
+def _pin_registry_clone(agent_name: str | None, clone_dir: str | Path) -> bool:
+    """Pin *clone_dir* to the repo that the registry names for *agent_name* (H-363).
+
+    The seam pushes only to a pinned repo, and reads an unpinned clone with
+    no credential, because a run can rewrite the clone's ``origin``. After a
+    gateway restart no clone is pinned until its agent loads, so each route
+    that fetches or pushes pins the clone first, from the REGISTRY. An agent
+    with no registry entry, or a ``local_path`` agent with no repo, gets no
+    pin, so it gets no credential. True when it pinned.
+    """
+    from acb_common import git_credentials as git_auth  # noqa: PLC0415
+
+    if not agent_name:
+        return False
+    try:
+        entries = _load_dynamic_agents() + list(_AGENT_REGISTRY)
+    except Exception:  # noqa: BLE001
+        entries = list(_AGENT_REGISTRY)
+    entry = next((e for e in entries if e.get("name") == agent_name), None)
+    if entry is None or (entry.get("local_path") and not entry.get("repo_name")):
+        return False
+    from acb_skills.loader import agent_remote  # noqa: PLC0415
+
+    remote = agent_remote(agent_name, entry.get("repo_name"))
+    if remote is None:
+        return False
+    git_auth.pin_remote(clone_dir, remote)
+    return True
+
 
 async def _git_behind_count(clone_dir: str) -> int:
     """Return how many commits the local clone is behind origin/HEAD.
@@ -3543,15 +5132,17 @@ async def _git_behind_count(clone_dir: str) -> int:
     if rc != 0:
         return 0
 
-    # Fetch latest (short timeout — non-blocking for the UI)
+    # Fetch latest (short timeout — non-blocking for the UI). H-363: through
+    # the credential seam, so the clone never holds the read credential.
     try:
-        fetch_proc = await asyncio.create_subprocess_exec(
-            "git", "fetch", "origin",
-            cwd=clone_dir,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
+        from acb_common import git_credentials as git_auth  # noqa: PLC0415
+
+        fetched = await asyncio.wait_for(
+            asyncio.to_thread(functools.partial(git_auth.fetch, clone_dir, timeout=5)),
+            timeout=8,
         )
-        await asyncio.wait_for(fetch_proc.communicate(), timeout=5)
+        if not fetched.ok:
+            return 0
     except (TimeoutError, Exception):
         return 0  # fetch timed out — return 0, don't block the response
 
@@ -3562,6 +5153,7 @@ async def _git_behind_count(clone_dir: str) -> int:
             cwd=clone_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            env=child_env(),
         )
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
         if proc.returncode == 0:
@@ -3581,6 +5173,7 @@ async def _git_exec(cwd: str, args: list[str]) -> int:
         cwd=cwd,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
+        env=child_env(),
     )
     await proc.communicate()
     return proc.returncode
@@ -3602,51 +5195,47 @@ async def _git_push_with_rebase(
     """
     import asyncio  # noqa: PLC0415
 
-    # Discover the remote's default branch (HEAD branch from
-    # `git remote show origin`).  Falls back to "master" then "main".
+    # H-363: every network step goes through the credential seam. The clone
+    # holds no token. The push credential reaches ONE git process, in a
+    # gateway temp dir, and only here: the caller is the approve route, which
+    # ``_require_mutation_reviewer`` gates. ``--no-verify`` is in the seam,
+    # because the pre-push hook blocks agent pushes.
+    from acb_common import git_credentials as git_auth  # noqa: PLC0415
+
+    # Discover the remote's default branch (the remote HEAD).  Falls back to
+    # "master", as before.
     remote_branch = "master"
     try:
-        rb_proc = await asyncio.create_subprocess_exec(
-            "git", "remote", "show", "origin",
-            cwd=clone_dir,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+        found = await asyncio.wait_for(
+            asyncio.to_thread(git_auth.remote_default_branch, clone_dir), timeout=20,
         )
-        rb_out, _ = await asyncio.wait_for(rb_proc.communicate(), timeout=15)
-        for line in rb_out.decode(errors="replace").splitlines():
-            line = line.strip()
-            if line.startswith("HEAD branch:"):
-                remote_branch = line.split("HEAD branch:", 1)[1].strip()
-                break
+        if found:
+            remote_branch = found
     except Exception:  # noqa: BLE001
         pass
 
-    # Push <commit_sha>:<remote_branch> (or HEAD if no specific sha given)
-    push_src = commit_sha if commit_sha else "HEAD"
-    push_target = f"{push_src}:{remote_branch}"
+    async def _push(src: str) -> git_auth.GitResult:
+        return await asyncio.wait_for(
+            asyncio.to_thread(functools.partial(
+                git_auth.push, clone_dir, src=src, branch=remote_branch,
+                credential=git_auth.push_token(),
+            )),
+            timeout=90,
+        )
 
-    # First attempt — fast-forward.
-    # --no-verify bypasses the pre-push hook (which blocks agent pushes
-    # but also accidentally blocks the legitimate approval push).
-    proc = await asyncio.create_subprocess_exec(
-        "git", "push", "--no-verify", "origin", push_target,
-        cwd=clone_dir,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    _, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=60)
-    if proc.returncode == 0:
+    # Push <commit_sha> (or HEAD if no specific sha given) — fast-forward.
+    pushed = await _push(commit_sha if commit_sha else "HEAD")
+    if pushed.ok:
         return True, commit_sha  # SHA unchanged on clean fast-forward
 
-    stderr = stderr_bytes.decode(errors="replace")
     _log.warning(
         "mutation.push_rejected",
-        remote_branch=remote_branch, reason=stderr[:300],
+        remote_branch=remote_branch, reason=pushed.stderr[:300],
     )
 
     # Fetch + rebase on top of the remote branch, then retry.
-    fetch_rc = await _git_exec(clone_dir, ["fetch", "origin"])
-    if fetch_rc != 0:
+    fetched = await asyncio.to_thread(git_auth.fetch, clone_dir)
+    if not fetched.ok:
         return False, None
 
     # ── Stash uncommitted changes so rebase has a clean tree ──────────
@@ -3665,8 +5254,7 @@ async def _git_push_with_rebase(
             cwd=clone_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env={**__import__("os").environ,
-                 "GIT_SEQUENCE_EDITOR": "true"},
+            env=child_env(extra={"GIT_SEQUENCE_EDITOR": "true"}),
         )
         _, rebase_err = await asyncio.wait_for(
             rebase_proc.communicate(), timeout=60,
@@ -3711,6 +5299,7 @@ async def _git_push_with_rebase(
             cwd=clone_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            env=child_env(),
         )
         sha_out, _ = await asyncio.wait_for(sha_proc.communicate(), timeout=10)
         if sha_proc.returncode == 0:
@@ -3724,17 +5313,8 @@ async def _git_push_with_rebase(
         pass
 
     # Push the new HEAD (which includes our rebased commit)
-    new_head = new_sha if new_sha else "HEAD"
-    push_target_retry = f"{new_head}:{remote_branch}"
-
-    retry_proc = await asyncio.create_subprocess_exec(
-        "git", "push", "--no-verify", "origin", push_target_retry,
-        cwd=clone_dir,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
-    await asyncio.wait_for(retry_proc.communicate(), timeout=60)
-    success = retry_proc.returncode == 0
+    retried = await _push(new_sha if new_sha else "HEAD")
+    success = retried.ok
     return success, new_sha if success else None
 
 
@@ -3787,6 +5367,21 @@ def verify_webhook_signature(source: str, body: bytes, presented: str | None) ->
     expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
     if not supplied or not hmac.compare_digest(expected, supplied):
         raise HTTPException(status_code=401, detail="Invalid webhook signature.")
+
+
+def _webhook_run_payload(
+    source: str, event_type: str, payload: dict[str, Any],
+) -> dict[str, Any]:
+    """The run payload of a signed webhook. A webhook run has no member. H-165.
+
+    🔴 The HMAC proves the sender holds the shared secret. It does not prove
+    a person. The executor binds the run's member from ``user_email`` or
+    ``user_id``, so the sender's claim of one would name the member without
+    proof. This function removes both keys. The trust level of a webhook run
+    is memberless (H-152). Fence: ``tests/unit/test_webhook_run_memberless.py``.
+    """
+    clean = {k: v for k, v in payload.items() if k not in _IDENTITY_CLAIMS}
+    return {**clean, "source": source, "event_type": event_type}
 
 
 @router.post("/webhook/{source}", status_code=status.HTTP_202_ACCEPTED)
@@ -3878,7 +5473,7 @@ async def receive_webhook(
         try:
             await run_agent(
                 agent_name,
-                {"source": source, "event_type": event.event_type, **event.payload},
+                _webhook_run_payload(source, event.event_type, event.payload),
                 run_id=run_id,
             )
         except Exception as exc:  # noqa: BLE001

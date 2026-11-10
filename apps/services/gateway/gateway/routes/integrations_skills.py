@@ -13,6 +13,11 @@ Toggles (settings table + PUT) are S2. Gated exactly like the sibling
 ``/integrations`` endpoints: router-level ``require_feature_router
 ("integrations")`` + the app-wide default-deny auth, ``get_current_user`` on
 the endpoint.
+
+WS-67 OA-7a: a tool pack (a family with an ``owner``) is priced from its
+owner's own tools, which ``_platform_tools_by_name`` never sees, so
+:func:`_pack_tools_by_name` adds them. The matrix shows no pack for any
+agent, because no run is injected with one.
 """
 from __future__ import annotations
 
@@ -62,12 +67,72 @@ def _platform_tools_by_name() -> dict[str, Any]:
     return out
 
 
+def _owner_module(owner: str) -> Any | None:
+    """The ``agents.py`` module of in-repo agent *owner*, or None.
+
+    WS-67 OA-7b: the ONE loader of a pack owner is
+    ``orchestrator._tool_injection._pack_owner_module``, which the run
+    builder uses too. It imports the module once for this process, from the
+    STATIC ``_AGENT_REGISTRY`` only. It keeps a failed import as None, so a
+    catalog GET does not import a broken owner again (OA-7a verifier F2).
+    An owner that raises ``SystemExit`` at import gives None and cannot stop
+    the process (F3). The catalog reads the signature and the docstring of
+    each tool for the price, and it calls no tool.
+    """
+    from orchestrator._tool_injection import _pack_owner_module
+
+    return _pack_owner_module(owner)
+
+
+def _pack_tools_by_name() -> dict[str, Any]:
+    """name → callable for the tools of each tool pack (WS-67 OA-7a).
+
+    A pack holds its owner's own tools, which injection never offers. The
+    tools are the ones the owner builds (``tool_packs.owner_tools``), so the
+    price follows the owner's real signatures and docstrings. Best-effort:
+    an owner that does not load prices nothing, as an unimportable platform
+    tool does in :func:`_platform_tools_by_name`.
+    """
+    from acb_skills import skill_families
+    from acb_skills.tool_guard import tool_name
+    from orchestrator._tool_injection import _owner_pack_tools
+
+    out: dict[str, Any] = {}
+    for slug in skill_families.pack_slugs():
+        owner = str(skill_families.SKILL_FAMILIES[slug]["owner"])
+        try:
+            module = _owner_module(owner)
+            if module is None:
+                _log.warning("skills.pack_owner_unavailable", pack=slug, owner=owner)
+                continue
+            # OA-8b: the run path's per-owner cache, so a catalog read does
+            # not build the 120 Projects tools again for each pack.
+            for fn in _owner_pack_tools(slug, owner, module):
+                # OA-8b: a MAF ``FunctionTool`` (the Projects tools) has a
+                # ``name`` and no ``__name__``, so ``tool_name`` reads both.
+                out[tool_name(fn)] = fn
+        except Exception as exc:  # a price never breaks the catalog
+            _log.warning(
+                "skills.pack_tools_unavailable", pack=slug, owner=owner,
+                error_type=type(exc).__name__,
+            )
+    out.pop("", None)
+    return out
+
+
 def _addendum_for_scope(scope: frozenset[str] | None) -> str:
     """Render the real injected-tools addendum for an effective scope."""
     from orchestrator._tool_injection import (  # noqa: PLC0415
         _build_injected_tools_addendum,
     )
-    return _build_injected_tools_addendum(effective_scope=scope)
+    from acb_common.assistant_profile import image_analysis_for  # noqa: PLC0415
+    from acb_common.db import current_tenant  # noqa: PLC0415
+
+    # WS-VOX VOX-3: the text depends on the org flag, so the key says it.
+    return _build_injected_tools_addendum(
+        effective_scope=scope,
+        image_org_on=bool(image_analysis_for(current_tenant())),
+    )
 
 
 def _count_tokens(text: str) -> int:
@@ -83,7 +148,9 @@ def _core_tool_names() -> frozenset[str]:
     return frozenset(_CORE_STANDARD_TOOL_NAMES)
 
 
-def _disabled_families_by_agent() -> dict[str, frozenset[str]]:
+def _disabled_families_by_agent(
+    organization_id: str | None,
+) -> dict[str, frozenset[str]]:
     """agent name → families an admin disabled (WS-23 S2), best-effort.
 
     Reads the same ``agent_skill_setting`` rows the enforcement seam
@@ -91,11 +158,16 @@ def _disabled_families_by_agent() -> dict[str, frozenset[str]]:
     start, so the matrix shows the EFFECTIVE surface — stored settings on top
     of declared scope. Any failure (table not migrated, DB down) returns
     empty: the catalog then shows declared scope only, exactly S1's view.
+
+    H-201: the read binds the caller's tenant (``agent_skill_setting`` has
+    FORCE RLS). With no tenant it reads nothing and returns empty.
     """
+    if not organization_id:
+        return {}
     try:
-        from acb_graph import get_session  # noqa: PLC0415
+        from acb_graph import tenant_session  # noqa: PLC0415
         from sqlalchemy import text as _text  # noqa: PLC0415
-        with get_session() as s:
+        with tenant_session(organization_id) as s:
             rows = s.execute(
                 _text(
                     "SELECT agent_name, family FROM agent_skill_setting "
@@ -170,14 +242,17 @@ async def skills_catalog(
         _resolve_injected_scope,
     )
 
+    # A pack is priced from its owner's tools (WS-67 OA-7a). A pack name
+    # never shadows a platform tool: the drift gate keeps each name in one
+    # family.
     catalog = skill_families.build_catalog(
-        tools_by_name=_platform_tools_by_name(),
+        tools_by_name={**_pack_tools_by_name(), **_platform_tools_by_name()},
         addendum_for_scope=_addendum_for_scope,
         count_tokens=_count_tokens,
         core_tool_names=_core_tool_names(),
     )
 
-    disabled_map = _disabled_families_by_agent()
+    disabled_map = _disabled_families_by_agent(user.organization_id)
 
     agents_out: list[dict[str, Any]] = []
     for a in _list_agents():

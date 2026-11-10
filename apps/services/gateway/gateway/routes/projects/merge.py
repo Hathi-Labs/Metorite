@@ -72,7 +72,8 @@ from gateway.routes.projects.core import (
     touch_task,
     update_row,
 )
-from gateway.routes.projects.relations import assert_no_block_cycle
+from gateway.routes.projects.filters import attach_agent_state
+from gateway.routes.projects.relations import assert_no_block_cycle, lock_block_graph
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -407,19 +408,26 @@ async def _reparent_children(db: Any, source_id: str, target: Any) -> list[str]:
     own: `parent_task_id` changes and `updated_at` does not, so no delta
     client would ever see it — the failure `tasks.py` already names on its
     own promote path.
+
+    WS-55 MCP-G7: both UPDATEs stamp ``updated_at`` themselves. The trigger
+    of migration 304 then sees the parent change and moves ``fields_at``, so
+    an old token of a moved task is 412. The touches in ``merge_tasks`` come
+    second and are no-ops at the same ``now()``.
     """
     if await _descends_from(db, str(target.id), source_id):
         await db.execute(
             text(
                 "UPDATE pm_tasks SET parent_task_id = "
-                "(SELECT parent_task_id FROM pm_tasks WHERE id = CAST(:src AS uuid)) "
+                "(SELECT parent_task_id FROM pm_tasks WHERE id = CAST(:src AS uuid)), "
+                "updated_at = now() "
                 "WHERE id = CAST(:dst AS uuid)"
             ),
             {"src": source_id, "dst": str(target.id)},
         )
     moved = (await db.execute(
         text(
-            "UPDATE pm_tasks SET parent_task_id = CAST(:dst AS uuid) "
+            "UPDATE pm_tasks SET parent_task_id = CAST(:dst AS uuid), "
+            "updated_at = now() "
             "WHERE parent_task_id = CAST(:src AS uuid) "
             "AND id <> CAST(:dst AS uuid) RETURNING id"
         ),
@@ -465,6 +473,9 @@ async def merge_tasks(
             )
         sources = [await _load_mergeable(db, vis, t, target) for t in wanted]
 
+        # SW-16a: `_move_links` takes this lock through the loop check. Taken
+        # here too, before the first row write, so that one lock order holds.
+        await lock_block_graph(db)
         bumped: list[str] = []
         for source in sources:
             await _move_links(db, str(source.id), task_id)
@@ -530,6 +541,8 @@ async def merge_tasks(
         for child in dict.fromkeys(bumped):
             await touch_task(db, child)
         result = row_to_dict(row, TaskModel)
+        # WS-55 EA-12c — the kept task keeps its agent pill (EA12-10).
+        await attach_agent_state(db, [result])
         result["merged"] = [str(s.id) for s in sources]
 
     for source in sources:

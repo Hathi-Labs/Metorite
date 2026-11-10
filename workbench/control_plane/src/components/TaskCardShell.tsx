@@ -29,6 +29,7 @@
 
 import type React from "react";
 
+import { accentForHue } from "@/lib/statusAccent";
 import type { ParentFact } from "@/lib/taskCard";
 
 import { ParentCrumb } from "./TaskMeta";
@@ -39,6 +40,7 @@ export function TaskCardShell({
   atCursor = false,
   draggable = false,
   completed = false,
+  overdue = false,
   className = "",
   innerRef,
   onActivate,
@@ -47,6 +49,7 @@ export function TaskCardShell({
   onDragEnd,
   ariaLabel,
   parent,
+  dense = false,
 }: {
   children: React.ReactNode;
   /** Multi-selected — a primary border plus a ring, so it reads at a glance. */
@@ -56,6 +59,13 @@ export function TaskCardShell({
   draggable?: boolean;
   /** Drawn quieter: a finished task is context, not work. */
   completed?: boolean;
+  /**
+   * A red left edge: the next step is late (WS-53 CRM-X3). The CRM card asks
+   * for it, and CRM-C2 moved that card onto this shell. The hue comes from
+   * `statusAccent`, and the hover keeps the edge red, because the hover
+   * border recolours all four sides.
+   */
+  overdue?: boolean;
   className?: string;
   innerRef?: (element: HTMLDivElement | null) => void;
   /**
@@ -76,6 +86,13 @@ export function TaskCardShell({
    * member must not be able to hide it, like the Archived badge.
    */
   parent?: ParentFact | null;
+  /**
+   * A tighter box for a narrow list, the Calendar's Unscheduled rail: 10 px
+   * of padding and a 6 px gap in place of 12 and 8. A prop, not a class, for
+   * the reason `CLAMP_OVERRIDE` gives: two padding classes on one element
+   * resolve by CSS source order, which no review can see.
+   */
+  dense?: boolean;
 }) {
   return (
     // A div with role=button rather than a real <button>: both apps put their
@@ -99,7 +116,8 @@ export function TaskCardShell({
         }
       }}
       className={[
-        "group tech-transition relative flex cursor-pointer flex-col gap-2 rounded-lg border bg-card p-3 text-left shadow-sm hover:shadow-md",
+        "group tech-transition relative flex cursor-pointer flex-col rounded-lg border bg-card text-left shadow-sm hover:shadow-md",
+        dense ? "gap-1.5 p-2.5" : "gap-2 p-3",
         selected
           ? "border-primary ring-1 ring-primary"
           : "border-border hover:border-primary/40",
@@ -108,6 +126,8 @@ export function TaskCardShell({
         // and "what did I pick" become the same signal.
         atCursor ? "ring-2 ring-ring" : "",
         completed ? "opacity-70" : "",
+        // Literal classes, because Tailwind cannot see a built one.
+        overdue ? `border-l-2 ${accentForHue("red").bar} hover:border-l-destructive` : "",
         className,
       ].join(" ")}
     >

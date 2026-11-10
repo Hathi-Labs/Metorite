@@ -1,0 +1,445 @@
+"""R8 — My Day's feed preferences, ``GET`` and ``PUT /shell/feed/prefs`` (MD-2d).
+
+Migration 259 adds ``user_settings.my_day_prefs``. The two routes in
+``routes/shell/prefs.py`` read and write it through the tenant session.
+Spec: ``my_day_feed.md`` §13.3 and §16 MD-2d.
+
+What this proves against a REAL Postgres (R8), as the NON-privileged role of
+the phase-4 rehearsal (``acb_app_h3rls``: no superuser, no BYPASSRLS), on a
+database with the whole ladder (so 239, 240 and 259) and two organizations:
+
+- a saved correction survives a layout save through ``PUT /auth/me/shell``,
+  and a layout survives a preference save (the §13.3 fence);
+- a second key does not erase the first, because the write merges one key
+  with ``jsonb_set``;
+- a member with no settings row gets the calendar seed with the new row
+  (D-PC-16);
+- another organization neither reads nor writes the member's preferences;
+- the column is nullable with no default (R6).
+
+A hermetic fake agrees with any SQL it is handed, so none of these could be
+proved without the database.
+"""
+from __future__ import annotations
+
+import contextlib
+import uuid
+
+import pytest
+
+pytest.importorskip("sqlalchemy")
+
+from acb_auth import UserContext, UserRole, build_access
+from acb_common.db import bind_tenant, release_tenant
+from sqlalchemy import text
+
+from tests.unit._tenant_ladder import tenant_engine_scope
+from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
+    _DB_GATE,
+    app_engine,
+    promoted,
+)
+
+# ⚠️ Every test here needs the real database. Without this gate the suite
+# ERRORS where no ladder URL is set (the deploy run), and the deploy stops.
+pytestmark = _DB_GATE
+
+
+def _address() -> str:
+    return f"prefs.{uuid.uuid4().hex[:8]}@md2d.test"
+
+
+@pytest.fixture
+def db(promoted):  # noqa: F811 — a fixture
+    """The promoted catalog, with this module's rows removed after."""
+    made: list[str] = []
+    promoted.made = made
+    yield promoted
+    with promoted.admin_engine.begin() as c:
+        for email in made:
+            c.execute(text("DELETE FROM user_settings WHERE user_id = :u"), {"u": email})
+            c.execute(text("DELETE FROM people WHERE email = :u"), {"u": email})
+
+
+@contextlib.contextmanager
+def _tenant(org: str):
+    token = bind_tenant(org)
+    try:
+        yield
+    finally:
+        release_tenant(token)
+
+
+def _app_dsn(ns) -> str:
+    return ns.app_url.render_as_string(hide_password=False)
+
+
+def _member(email: str) -> UserContext:
+    return UserContext(
+        email=email, role=UserRole.EMPLOYEE,
+        access=build_access(["feature:tasks", "feature:projects"], roles=["member"]),
+    )
+
+
+async def _put(org: str, user: UserContext, key: str, value: object) -> dict:
+    from gateway.routes.shell.prefs import put_feed_prefs
+
+    with _tenant(org):
+        return await put_feed_prefs(body={"key": key, "value": value}, user=user)
+
+
+async def _get(org: str, user: UserContext) -> dict:
+    from gateway.routes.shell.prefs import get_feed_prefs
+
+    with _tenant(org):
+        return await get_feed_prefs(user=user)
+
+
+async def _put_shell(org: str, user: UserContext, body: dict) -> dict:
+    from gateway.routes.admin.me import put_my_shell
+
+    with _tenant(org):
+        return await put_my_shell(body=body, user=user)
+
+
+async def _get_shell(org: str, user: UserContext) -> dict:
+    from gateway.routes.admin.me import get_my_shell
+
+    with _tenant(org):
+        return await get_my_shell(user=user)
+
+
+def _stored(ns, email: str) -> list[tuple[str, object]]:
+    with ns.admin_engine.connect() as c:
+        return [tuple(r) for r in c.execute(text(
+            "SELECT organization_id::text, my_day_prefs FROM user_settings "
+            "WHERE user_id = :u ORDER BY 1"), {"u": email})]
+
+
+_LAYOUT = {"preset": "engineer", "answered": "answered", "pins": ["/projects", "/tasks"]}
+_LINE = "Acme's \"newsletter\" never needs me — skip it"
+
+
+# ── The §13.3 fence: a layout save and a preference save keep each other ───
+
+
+async def test_a_correction_survives_a_layout_save(db) -> None:
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _put(db.org_a, user, "corrections", [_LINE])
+        await _put_shell(db.org_a, user, _LAYOUT)
+        prefs = await _get(db.org_a, user)
+        shell = await _get_shell(db.org_a, user)
+    assert prefs == {"corrections": [_LINE]}
+    assert (shell["preset"], shell["pins"]) == ("engineer", ["/projects", "/tasks"])
+
+
+async def test_a_layout_survives_a_preference_save(db) -> None:
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    async with tenant_engine_scope(_app_dsn(db)):
+        # The layout makes the row, so the column is NULL when the merge runs.
+        await _put_shell(db.org_a, user, _LAYOUT)
+        await _put(db.org_a, user, "mutes", ["block_soon"])
+        shell = await _get_shell(db.org_a, user)
+        prefs = await _get(db.org_a, user)
+    assert (shell["preset"], shell["answered"], shell["pins"]) == (
+        "engineer", "answered", ["/projects", "/tasks"])
+    assert prefs == {"mutes": ["block_soon"]}
+
+
+# ── One key at a time ──────────────────────────────────────────────────────
+
+
+async def test_a_second_key_does_not_erase_the_first(db) -> None:
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _put(db.org_a, user, "mutes", ["overdue", "block_soon"])
+        await _put(db.org_a, user, "corrections", [_LINE])
+        answer = await _put(db.org_a, user, "open_in_app", ["needs_reply"])
+        # A new value for one key replaces that key only.
+        again = await _put(db.org_a, user, "mutes", ["no_plan_yet"])
+        read = await _get(db.org_a, user)
+    assert answer == {"mutes": ["overdue", "block_soon"], "corrections": [_LINE],
+                      "open_in_app": ["needs_reply"]}
+    assert again == read == {"mutes": ["no_plan_yet"], "corrections": [_LINE],
+                             "open_in_app": ["needs_reply"]}
+    [(org, stored)] = _stored(db, email)
+    assert org == db.org_a
+    assert stored == read
+
+
+# ── A member with no settings row ──────────────────────────────────────────
+
+
+async def test_a_member_with_no_row_gets_the_calendar_seed(db) -> None:
+    """``/tasks/settings`` seeds the day window from the People schedule while
+    the member has no row. The preference write makes the row, so it carries
+    the seed, and the calendar opens on the same hours after it."""
+    from gateway.routes.tasks.settings import get_user_settings
+
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    with db.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO people (id, name, email, status, skills, source, "
+            "source_key, organization_id, updated_by, updated_at, working_hours) "
+            "VALUES (gen_random_uuid(), 'Prefs Seed', :e, 'active', ARRAY[]::text[], "
+            "'manual', :k, CAST(:o AS uuid), 'test', now(), "
+            "CAST(:wh AS jsonb))"),
+            {"e": email, "k": f"manual:{email}", "o": db.org_a,
+             "wh": '{"start": "11:00", "end": "15:00"}'})
+    assert _stored(db, email) == []
+    async with tenant_engine_scope(_app_dsn(db)):
+        with _tenant(db.org_a):
+            before = await get_user_settings(user=user)
+        await _put(db.org_a, user, "mutes", ["overdue"])
+        with _tenant(db.org_a):
+            after = await get_user_settings(user=user)
+    # The seed is not the column default, or this test would prove nothing.
+    assert (before.day_start_hour, before.day_end_hour) == (10, 16)
+    assert (after.day_start_hour, after.day_end_hour) == (10, 16)
+    assert _stored(db, email) == [(db.org_a, {"mutes": ["overdue"]})]
+
+
+# ── The tenant wall ────────────────────────────────────────────────────────
+
+
+async def test_another_organization_neither_reads_nor_writes_the_prefs(db, app_engine) -> None:  # noqa: F811
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _put(db.org_a, user, "corrections", [_LINE])
+        # The same address in org B has no preferences there.
+        assert await _get(db.org_b, user) == {}
+        # A save in org B makes org B's own row, and org A's stays.
+        await _put(db.org_b, user, "corrections", ["Org B line"])
+        a = await _get(db.org_a, user)
+        b = await _get(db.org_b, user)
+    assert a == {"corrections": [_LINE]}
+    assert b == {"corrections": ["Org B line"]}
+    assert [org for org, _ in _stored(db, email)] == sorted([db.org_a, db.org_b])
+
+    # A raw session bound to org B sees no row of org A, and cannot change it.
+    with app_engine.begin() as c:
+        c.execute(text("SELECT set_config('app.tenant_id', :o, true)"), {"o": db.org_b})
+        seen = c.execute(text(
+            "SELECT count(*) FROM user_settings "
+            "WHERE user_id = :u AND organization_id = CAST(:a AS uuid)"),
+            {"u": email, "a": db.org_a}).scalar()
+        changed = c.execute(text(
+            "UPDATE user_settings SET my_day_prefs = CAST('{}' AS jsonb) "
+            "WHERE user_id = :u AND organization_id = CAST(:a AS uuid)"),
+            {"u": email, "a": db.org_a}).rowcount
+    assert (seen, changed) == (0, 0)
+    assert dict(_stored(db, email))[db.org_a] == {"corrections": [_LINE]}
+
+
+async def test_hide_push_details_is_one_members_own(db) -> None:
+    """WS-66 RE-9a: member B in the same org, and the same address in org B,
+    read nothing of member A's ``hide_push_details``."""
+    a_email, b_email = _address(), _address()
+    db.made.extend([a_email, b_email])
+    a, b = _member(a_email), _member(b_email)
+    async with tenant_engine_scope(_app_dsn(db)):
+        saved = await _put(db.org_a, a, "hide_push_details", True)
+        assert saved == {"hide_push_details": True}
+        assert await _get(db.org_a, a) == {"hide_push_details": True}
+        # Another member of the same org reads nothing.
+        assert await _get(db.org_a, b) == {}
+        # The same address in org B reads nothing.
+        assert await _get(db.org_b, a) == {}
+        # A second key keeps the flag.
+        both = await _put(db.org_a, a, "mutes", ["overdue"])
+    assert both == {"hide_push_details": True, "mutes": ["overdue"]}
+    assert _stored(db, b_email) == []
+    assert dict(_stored(db, a_email)) == {db.org_a: both}
+
+
+def test_an_unbound_write_is_refused(db, app_engine) -> None:  # noqa: F811
+    from gateway.routes.shell.prefs import _MERGE_PREFS, _NEW_PREFS
+    from gateway.routes.tasks.settings import upsert_settings_sql
+    from sqlalchemy.exc import DBAPIError
+
+    email = _address()
+    db.made.append(email)
+    sql = upsert_settings_sql(["my_day_prefs"], lambda k: _NEW_PREFS,
+                              update=["my_day_prefs"], merge={"my_day_prefs": _MERGE_PREFS})
+    with pytest.raises(DBAPIError), app_engine.begin() as c:
+        c.execute(text(sql), {"uid": email, "pkey": "mutes", "pval": '["overdue"]'})
+    assert _stored(db, email) == []
+
+
+# ── The column ─────────────────────────────────────────────────────────────
+
+
+def test_the_column_is_nullable_jsonb_with_no_default(db) -> None:
+    with db.admin_engine.connect() as c:
+        row = c.execute(text(
+            "SELECT data_type, is_nullable, column_default "
+            "FROM information_schema.columns "
+            "WHERE table_name = 'user_settings' AND column_name = 'my_day_prefs'"
+        )).one()
+    assert tuple(row) == ("jsonb", "YES", None)
+
+
+async def test_push_prompt_is_one_members_own(db) -> None:
+    """WS-OB OB-8: member B in the same org, and the same address in org B,
+    read nothing of member A's ``push_prompt``. A write keeps the other keys."""
+    a_email, b_email = _address(), _address()
+    db.made.extend([a_email, b_email])
+    a, b = _member(a_email), _member(b_email)
+    state = {"never": True, "last_shown_at": "2026-10-30T09:00:00+00:00"}
+    async with tenant_engine_scope(_app_dsn(db)):
+        saved = await _put(db.org_a, a, "push_prompt", state)
+        assert saved == {"push_prompt": state}
+        assert await _get(db.org_a, a) == {"push_prompt": state}
+        assert await _get(db.org_a, b) == {}
+        assert await _get(db.org_b, a) == {}
+        both = await _put(db.org_a, a, "mutes", ["overdue"])
+        # A second write of the key replaces the whole object.
+        again = await _put(db.org_a, a, "push_prompt", {"never": False})
+    assert both == {"push_prompt": state, "mutes": ["overdue"]}
+    assert again == {"push_prompt": {"never": False}, "mutes": ["overdue"]}
+    assert _stored(db, b_email) == []
+
+
+async def _muted(org: str, email: str) -> frozenset[str]:
+    from acb_common.db import tenant_session
+    from gateway.routes.shell.prefs import muted_rules
+
+    async with tenant_session(org) as session:
+        return await muted_rules(session, email)
+
+
+async def test_muted_rules_unions_case_variants_and_isolates_tenants(db) -> None:
+    """BR-5: the mute holds under any spelling of the address, only in the
+    bound tenant, and a value that is not an array reads as no mute."""
+    low = _address()
+    mixed = low.replace("prefs.", "Prefs.").upper().replace("@MD2D.TEST", "@md2d.test")
+    db.made.extend([low, mixed])
+    assert mixed != low and mixed.lower() == low
+    with db.admin_engine.begin() as c:
+        for org, email, val in ((db.org_a, low, '["agent_asks"]'),
+                                (db.org_a, mixed, '["source_sync_failed", "gone"]'),
+                                (db.org_b, low, '["approval_waiting"]')):
+            c.execute(text(
+                "INSERT INTO user_settings (user_id, organization_id, my_day_prefs) "
+                "VALUES (:u, CAST(:o AS uuid), "
+                "jsonb_build_object('rule_mutes', CAST(:v AS jsonb)))"),
+                {"u": email, "o": org, "v": val})
+    async with tenant_engine_scope(_app_dsn(db)):
+        assert await _muted(db.org_a, low) == {"agent_asks", "source_sync_failed"}
+        assert await _muted(db.org_b, low) == {"approval_waiting"}
+        assert await _muted(db.org_a, "nobody@md2d.test") == frozenset()
+
+
+async def test_muted_rules_ignores_a_value_that_is_not_an_array(db) -> None:
+    email = _address()
+    db.made.append(email)
+    with db.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO user_settings (user_id, organization_id, my_day_prefs) "
+            "VALUES (:u, CAST(:o AS uuid), "
+            "CAST('{\"rule_mutes\": \"agent_asks\"}' AS jsonb))"),
+            {"u": email, "o": db.org_a})
+    async with tenant_engine_scope(_app_dsn(db)):
+        assert await _muted(db.org_a, email) == frozenset()
+
+
+async def _block_notify(org: str, email: str) -> bool:
+    from acb_common.db import tenant_session
+    from gateway.routes.shell.prefs import block_notify
+
+    async with tenant_session(org) as session:
+        return await block_notify(session, email)
+
+
+def _mixed(address: str) -> str:
+    return address.replace("prefs.", "Prefs.").upper().replace("@MD2D.TEST", "@md2d.test")
+
+
+async def test_block_notify_fails_closed_over_spellings_and_isolates_tenants(db) -> None:
+    """BR-5 slice 2b-2: the read FAILS CLOSED. The switch is on only when
+    each spelling of the address that holds the key holds ``true``. A member
+    who turned it on as ``Ravi.K@`` and off as ``ravi.k@`` gets no interrupt.
+    A value that is not ``true``, or no row, is off. Only the bound tenant
+    counts."""
+    split = _address()
+    on = _address()
+    off = _address()
+    db.made.extend([split, _mixed(split), on, _mixed(on), off])
+    with db.admin_engine.begin() as c:
+        for org, email, val in ((db.org_a, split, "false"),
+                                (db.org_a, _mixed(split), "true"),
+                                (db.org_a, _mixed(on), "true"),
+                                (db.org_b, on, "false"),
+                                (db.org_a, off, '"true"')):
+            c.execute(text(
+                "INSERT INTO user_settings (user_id, organization_id, my_day_prefs) "
+                "VALUES (:u, CAST(:o AS uuid), "
+                "jsonb_build_object('block_notify', CAST(:v AS jsonb)))"),
+                {"u": email, "o": org, "v": val})
+        # A spelling row with no block_notify key does not vote.
+        c.execute(text(
+            "INSERT INTO user_settings (user_id, organization_id, my_day_prefs) "
+            "VALUES (:u, CAST(:o AS uuid), CAST('{}' AS jsonb))"),
+            {"u": on, "o": db.org_a})
+    async with tenant_engine_scope(_app_dsn(db)):
+        # A true row and a false row disagree: off, under each spelling.
+        assert await _block_notify(db.org_a, split) is False
+        assert await _block_notify(db.org_a, _mixed(split)) is False
+        # Only true rows hold the key: on, under each spelling.
+        assert await _block_notify(db.org_a, on) is True
+        assert await _block_notify(db.org_a, _mixed(on)) is True
+        # The false row of org B does not reach org A, nor the reverse.
+        assert await _block_notify(db.org_b, on) is False
+        # A JSON string "true" is not true.
+        assert await _block_notify(db.org_a, off) is False
+        # No row: off.
+        assert await _block_notify(db.org_a, "nobody@md2d.test") is False
+
+
+async def _hidden(org: str, email: str) -> bool:
+    from acb_common.db import tenant_session
+    from gateway.routes.shell.prefs import hide_push_details
+
+    async with tenant_session(org) as session:
+        return await hide_push_details(session, email)
+
+
+async def test_hide_can_be_turned_off_under_the_other_spelling(db) -> None:
+    """Task 1209: on as one spelling, off as the other, and the read says
+    false. The PUT writes every spelling of the address, in the bound tenant
+    only. The other keys of those rows stay."""
+    low = _address()
+    mixed = low.replace("prefs.", "Prefs.")
+    db.made.extend([low, mixed])
+    assert mixed != low and mixed.lower() == low
+    with db.admin_engine.begin() as c:
+        # A row of the other organization, under the same address: untouched.
+        c.execute(text(
+            "INSERT INTO user_settings (user_id, organization_id, my_day_prefs) "
+            "VALUES (:u, CAST(:o AS uuid), "
+            "jsonb_build_object('hide_push_details', true))"),
+            {"u": low, "o": db.org_b})
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _put(db.org_a, _member(mixed), "hide_push_details", True)
+        await _put(db.org_a, _member(low), "mutes", ["overdue"])
+        assert await _hidden(db.org_a, low) is True
+        # Off as the OTHER spelling than the one that turned it on.
+        saved = await _put(db.org_a, _member(low), "hide_push_details", False)
+        assert saved["hide_push_details"] is False
+        assert await _hidden(db.org_a, low) is False
+        assert await _hidden(db.org_a, mixed) is False
+        # The tenant wall: the row of org B still hides.
+        assert await _hidden(db.org_b, low) is True
+    rows = dict(_stored(db, mixed))
+    assert rows[db.org_a]["hide_push_details"] is False

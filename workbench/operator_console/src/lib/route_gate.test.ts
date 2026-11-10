@@ -123,10 +123,14 @@ describe("server components carry the caller's session too", () => {
     name,
     // How many arguments come BEFORE the optional deps. `catalog(d?)` is 0;
     // `billingSummary(orgSlug, d?)` is 1; `updateOperator(id, body, d?)` is 2.
-    required: params
-      .split(",")
-      .map((p) => p.trim())
-      .filter((p) => p.length > 0 && !/^d\?\s*:/.test(p)).length,
+    // ⚠️ Counted UP TO the deps, not "everything but the deps": an optional
+    // argument AFTER `d?` (WS-50's `rangeQ?`) is not one a caller must pass
+    // first, and counting it would demand an argument the read does not need.
+    required: (() => {
+      const ps = params.split(",").map((p) => p.trim()).filter((p) => p.length > 0);
+      const at = ps.findIndex((p) => /^d\?\s*:/.test(p));
+      return at === -1 ? ps.length : at;
+    })(),
   }));
   const READS = SIGNATURES.map((s) => s.name);
 

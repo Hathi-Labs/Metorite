@@ -32,6 +32,7 @@
  */
 
 import type { EmptyStateAction } from "@/components/EmptyState";
+import { MIN_QUERY, isSearchableQuery } from "./search";
 
 /** Which surface is empty. They differ only where they honestly differ. */
 export type EmptyCanvas = "board" | "list";
@@ -87,7 +88,22 @@ export function emptyStateCopy(input: {
    * default has to be the behaviour they already have.
    */
   canCreate?: boolean;
+  /**
+   * The filter box's text, `filters.q`. D-PM-31: the list endpoint matches
+   * NOTHING for text under `MIN_QUERY` characters. Without this arm the
+   * board said "No tasks match your filters" for "qa", which is false.
+   */
+  query?: string;
 }): EmptyStateCopy {
+  const query = (input.query ?? "").trim();
+  if (input.filtered && query && !isSearchableQuery(query)) {
+    return {
+      icon: "SearchX",
+      message: `Type at least ${MIN_QUERY} characters to search.`,
+      hint: "A task number works at any length: #7.",
+      filtered: true,
+    };
+  }
   if (input.filtered) {
     return {
       icon: "SearchX",

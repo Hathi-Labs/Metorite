@@ -28,7 +28,8 @@
 #   cd /opt/acb/app && APP_DIR=/opt/acb/app bash scripts/vps_apply.sh
 #
 # ⚠️ but NOT from a checkout you are about to have rewritten. Step 0 below is
-# `git reset --hard origin/main` — it replaces THIS FILE while bash is still
+# `git reset --hard` to the target commit — DEPLOY_REF, else origin/release
+# (WS-38; it was origin/main until 2026-10-16) — it replaces THIS FILE while bash is still
 # reading it, and bash reads a script incrementally by byte offset. Measured,
 # all three outcomes, none of which raise an alarm you would notice:
 #   • git replaces by RENAME, so the open fd keeps the old inode: every step
@@ -37,11 +38,67 @@
 #     remaining steps silently do not happen at all. Exit 0.
 #   • an in-place rewrite that merely SHIFTS bytes: bash resumes mid-token
 #     (`--quiet` → `iet: command not found`). Exit 127.
-# Copy it out first — `git show origin/main:scripts/vps_apply.sh > /tmp/a.sh`
+# Copy it out first — `git show origin/release:scripts/vps_apply.sh > /tmp/a.sh`
 # — and run THAT. This is what vps_pull.sh does, and why.
+#
+# ⚠️ A copy taken out first is still the WRONG copy when a merge lands during
+# the apply. So every step AFTER the pull runs from the pulled commit's own
+# copy of this file ("Run the pulled commit's own copy" below). The pull block
+# itself (ownership repair, agents.json backup, fetch, reset) runs from the
+# copy that started. A change to the pull block takes effect on the next apply.
 set -e
+
+# The sha256 of the copy that bash runs now, read before anything can rewrite
+# it. It stays empty when bash reads the script from stdin, as the push path
+# does (`ssh … bash -s`), because no file then holds it.
+VPS_APPLY_SELF_SUM=""
+if [ -f "${BASH_SOURCE[0]:-}" ]; then
+  VPS_APPLY_SELF_SUM="$(sha256sum < "${BASH_SOURCE[0]}" | cut -d' ' -f1)" || VPS_APPLY_SELF_SUM=""
+fi
+# A re-executed copy runs from a temp file that the first copy wrote. Remove
+# it now, after the hash and before any step can exit, so no exit path leaves
+# it behind. bash keeps its fd open, so it reads on. The name must match, so
+# this never removes a file that a person ran by hand. Limit: a revert to a
+# target older than this code has no such line, and its temp copy stays.
+if [ "${VPS_APPLY_REEXECED:-0}" = "1" ]   && [ "${VPS_APPLY_REEXEC_FILE:-}" = "${BASH_SOURCE[0]:-}" ]; then
+  case "$VPS_APPLY_REEXEC_FILE" in
+    "${TMPDIR:-/tmp}"/acb-vps-apply-reexec.*) rm -f "$VPS_APPLY_REEXEC_FILE" ;;
+  esac
+fi
 APP_DIR="${APP_DIR:-/opt/acb/app}"
 cd "$APP_DIR"
+
+# ── WHICH DEPLOYMENT THIS BOX IS (WS-38 S-4) ────────────────────────────────
+# One setting, DEPLOY_ENV in the box's own .env, says production or staging.
+# Absent means production, so the production box needs no edit. Any other
+# value stops here: a typo must not quietly deploy a box as the wrong thing.
+# vps_pull.sh reads it the same way. Fence: tests/unit/test_deploy_env.py.
+#   production  release ref `release`, ./caddy/Caddyfile, every timer
+#   staging     release ref `staging`, ./caddy/Caddyfile.staging, two timers
+# ⚠️ `|| true` is load-bearing: vps_pull.sh runs under `set -euo pipefail`, and
+# a grep that finds no line (the production box today) exits 1 and would kill
+# the script at this line.
+DEPLOY_ENV="$( { grep -E '^DEPLOY_ENV=' "$APP_DIR/.env" 2>/dev/null || true; } | tail -1 | cut -d= -f2- | tr -d "\"' \r")"
+# Fail closed on the two shapes that would otherwise read as production on a
+# staging box: an .env that exists and cannot be read, and a DEPLOY_ENV line in
+# any other form (`export DEPLOY_ENV=…`, `DEPLOY_ENV = …`, a leading space).
+# awk, not a grep pipe: under pipefail an early `grep -q` exit is a SIGPIPE.
+if [ -e "$APP_DIR/.env" ] && [ ! -r "$APP_DIR/.env" ]; then
+  echo "!! $APP_DIR/.env exists and cannot be read, so DEPLOY_ENV is unknown. This round did NOTHING."
+  exit 1
+fi
+if awk '/^[[:space:]]*(export[[:space:]]+)?DEPLOY_ENV[[:space:]]*=/ && !/^DEPLOY_ENV=/ { bad = 1 } END { exit !bad }' "$APP_DIR/.env" 2>/dev/null; then
+  echo "!! $APP_DIR/.env names DEPLOY_ENV in a form other than DEPLOY_ENV=<value>. This round did NOTHING."
+  exit 1
+fi
+DEPLOY_ENV="${DEPLOY_ENV:-production}"
+case "$DEPLOY_ENV" in
+  production) ;;
+  staging) RELEASE_REF="${RELEASE_REF:-staging}" ;;
+  *)
+    echo "!! DEPLOY_ENV=$DEPLOY_ENV in $APP_DIR/.env is not production or staging. This round did NOTHING."
+    exit 1 ;;
+esac
 
 # ── ONE DEPLOY AT A TIME ON THIS BOX (H-89, H-164) ──────────────────────────
 #
@@ -139,7 +196,21 @@ deploy_already_applied() {
 
 # Written ONLY on the success path, just before the final line. It records
 # "a complete apply of this sha finished", which is the claim the skip needs.
+#
+# $2, when given, is the sha256 of the script that ran the steps. The marker
+# is then written only when $1's own copy of this file has that sha256. A
+# marker for a sha whose steps did not run is how the BH-7 drop-ins were lost
+# on 2026-10-08, with every deploy green. The call at the end of this file
+# always passes $2. Fence: `tests/unit/test_deploy_reexec.py`.
 record_applied_sha() {
+  if [ "$#" -ge 2 ]; then
+    ras_want="$(git -C "$APP_DIR" show "$1:scripts/vps_apply.sh" 2>/dev/null | sha256sum | cut -d' ' -f1)"
+    if [ -z "$2" ] || [ "$2" != "$ras_want" ]; then
+      echo "    !! NOT recording ${1:0:12} as applied: the steps that ran are not that commit's"
+      echo "       copy of scripts/vps_apply.sh. The next deploy applies it again."
+      return 0
+    fi
+  fi
   printf '%s %s\n' "$1" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     > "$DEPLOY_MARKER.tmp.$$" 2>/dev/null \
     && mv -f "$DEPLOY_MARKER.tmp.$$" "$DEPLOY_MARKER" 2>/dev/null \
@@ -370,8 +441,12 @@ if [ "${DEPLOY_TETHER:-1}" = "1" ]; then
 fi
 
 echo "==> Taking the deploy lock ($DEPLOY_LOCK)"
+echo "    deployment: $DEPLOY_ENV (WS-38 S-4)"
 if [ "${DEPLOY_LOCK_HELD:-0}" = "1" ]; then
-  echo "    held by the caller (vps_pull.sh)"
+  # vps_pull.sh holds it on fd 8, or the first copy of this script held it on
+  # fd 8 before its re-exec. The fd stays open through `exec`, so the lock
+  # does too. A second acquire here would wait on that same lock.
+  echo "    held by the caller (vps_pull.sh, or this script before its re-exec)"
 else
   lock_rc=0
   deploy_lock_acquire "${DEPLOY_LOCK_MODE:-wait}" || lock_rc=$?
@@ -391,77 +466,182 @@ fi
 # before a tether can read it.
 rm -f "$DEPLOY_BUILD_PIDFILE" 2>/dev/null || true
 if deploy_session_ended; then
-  echo "    !! the deploy session $DEPLOY_SESSION_ANCHOR ended while this apply waited."
-  echo "       This round did NOTHING: no fetch, no migration, no build, no restart."
+  if [ "${VPS_APPLY_REEXECED:-0}" = "1" ]; then
+    # The first copy already did the fetch and the reset, so "did NOTHING"
+    # would be false here.
+    echo "    !! the deploy session $DEPLOY_SESSION_ANCHOR ended before the re-executed copy began its steps."
+    echo "       The checkout is already reset to ${DEPLOY_TARGET_SHA:0:12}, but no service was restarted."
+    echo "       No marker was written, so the next deploy applies ${DEPLOY_TARGET_SHA:0:12} again."
+  else
+    echo "    !! the deploy session $DEPLOY_SESSION_ANCHOR ended while this apply waited."
+    echo "       This round did NOTHING: no fetch, no migration, no build, no restart."
+  fi
   exit 1
 fi
-tether_to_session
+# After a re-exec, the watcher of the first copy still watches this pid,
+# because `exec` keeps the pid. A second watcher would do the same work twice.
+if [ "${VPS_APPLY_REEXECED:-0}" != "1" ]; then
+  tether_to_session
+fi
 
-echo "==> Pulling latest from origin/main"
-
-# 🔴 **REPAIR THE CHECKOUT'S OWNERSHIP FIRST (H-89).** Same bug as the `.venv`
-# one below, one directory over — and this one is worse, because it blocks the
-# `git reset` that would have delivered its own fix.
-#
-# `git reset --hard` UNLINKS a tracked file to rewrite it, and unlinking needs
-# write permission on the CONTAINING DIRECTORY. A directory owned `root:root`
-# with `drwxr-xr-x` therefore stops the app user dead:
-#
-#   error: unable to unlink old
-#   'workbench/operator_console/src/app/models/ModelDetails.tsx':
-#   Permission denied
-#
-# Measured 2026-08-31: that killed the deploys of PR #190 and PR #198, three
-# rounds each, both with green CI. The box sat on 3ad494bd for a day while
-# `main` moved two merges ahead — and stayed UP the whole time, serving old
-# code, so nothing alarmed. 113 root-owned paths in the tracked tree, created
-# 2026-08-30 16:49 by something in that deploy running as root.
-#
-# `.venv` gets this treatment at line ~270 and the source tree never did, which
-# is why the earlier fix could not save this case: `uv sync` is far downstream
-# of the checkout that now fails.
-#
-# ⚠️ Scoped to what git must rewrite. `.next` is ~66k root-owned build files and
-# is gitignored, so `git reset` never touches it — chowning it here would turn
-# a fast repair into a minutes-long one for no benefit. `node_modules` likewise.
-#
-# `find -exec … +` rather than `chown $(find …)`: the command substitution
-# splits on whitespace, so it breaks on any path with a space in it, and a tree
-# this size can overflow the argument list. `find` under `sudo` also keeps the
-# traversal quiet on directories the app user cannot read.
-CHECKOUT_OWNER="$(stat -c '%U:%G' "$APP_DIR")"
-CHECKOUT_USER="${CHECKOUT_OWNER%%:*}"
-if sudo find "$APP_DIR" \( -name .next -o -name node_modules \) -prune -o \
-     ! -user "$CHECKOUT_USER" -exec chown "$CHECKOUT_OWNER" {} + 2>/dev/null; then
-  echo "    checkout ownership normalised to $CHECKOUT_OWNER before reset"
+echo "==> Pulling latest refs, then the one commit to deploy"
+if [ "${VPS_APPLY_REEXECED:-0}" = "1" ]; then
+  # The first copy did the fetch, the skip check and the reset, and then ran
+  # this copy. Do not fetch again: a newer origin/main is the next deploy's job.
+  echo "    the first copy pulled ${DEPLOY_TARGET_SHA:0:12}. This is that commit's own copy of the script"
 else
-  echo "    WARNING: could not repair checkout ownership — git reset may fail"
-  echo "             with 'unable to unlink old' (see H-89)."
-fi
+  # 🔴 **REPAIR THE CHECKOUT'S OWNERSHIP FIRST (H-89).** Same bug as the `.venv`
+  # one below, one directory over — and this one is worse, because it blocks the
+  # `git reset` that would have delivered its own fix.
+  #
+  # `git reset --hard` UNLINKS a tracked file to rewrite it, and unlinking needs
+  # write permission on the CONTAINING DIRECTORY. A directory owned `root:root`
+  # with `drwxr-xr-x` therefore stops the app user dead:
+  #
+  #   error: unable to unlink old
+  #   'workbench/operator_console/src/app/models/ModelDetails.tsx':
+  #   Permission denied
+  #
+  # Measured 2026-08-31: that killed the deploys of PR #190 and PR #198, three
+  # rounds each, both with green CI. The box sat on 3ad494bd for a day while
+  # `main` moved two merges ahead — and stayed UP the whole time, serving old
+  # code, so nothing alarmed. 113 root-owned paths in the tracked tree, created
+  # 2026-08-30 16:49 by something in that deploy running as root.
+  #
+  # `.venv` gets this treatment at line ~270 and the source tree never did, which
+  # is why the earlier fix could not save this case: `uv sync` is far downstream
+  # of the checkout that now fails.
+  #
+  # ⚠️ Scoped to what git must rewrite. `.next` is ~66k root-owned build files and
+  # is gitignored, so `git reset` never touches it — chowning it here would turn
+  # a fast repair into a minutes-long one for no benefit. `node_modules` likewise.
+  #
+  # `find -exec … +` rather than `chown $(find …)`: the command substitution
+  # splits on whitespace, so it breaks on any path with a space in it, and a tree
+  # this size can overflow the argument list. `find` under `sudo` also keeps the
+  # traversal quiet on directories the app user cannot read.
+  CHECKOUT_OWNER="$(stat -c '%U:%G' "$APP_DIR")"
+  CHECKOUT_USER="${CHECKOUT_OWNER%%:*}"
+  if sudo find "$APP_DIR" \( -name .next -o -name node_modules \) -prune -o \
+       ! -user "$CHECKOUT_USER" -exec chown "$CHECKOUT_OWNER" {} + 2>/dev/null; then
+    echo "    checkout ownership normalised to $CHECKOUT_OWNER before reset"
+  else
+    echo "    WARNING: could not repair checkout ownership — git reset may fail"
+    echo "             with 'unable to unlink old' (see H-89)."
+  fi
 
-# Preserve runtime-managed state that lives in tracked files but is
-# mutated on the VPS (agents.json = Control-Plane agent registry).
-# git reset --hard would otherwise wipe agents registered via the UI.
-cp apps/services/gateway/agents.json /tmp/acb-agents.json.bak 2>/dev/null || true
-git fetch origin main
-DEPLOY_TARGET_SHA="$(git rev-parse origin/main)"
+  # Preserve runtime-managed state that lives in tracked files but is
+  # mutated on the VPS (agents.json = Control-Plane agent registry).
+  # git reset --hard would otherwise wipe agents registered via the UI.
+  cp apps/services/gateway/agents.json /tmp/acb-agents.json.bak 2>/dev/null || true
+  git fetch origin main
+  # ── WHICH COMMIT THIS APPLY DEPLOYS (WS-38, staging_and_daily_release.md) ──
+  # This line read `git rev-parse origin/main` until 2026-10-16. Both callers
+  # meant something else. vps_pull.sh passed DEPLOY_REF=<the release sha> and
+  # this script ignored it. deploy.yml meant "the commit CI just tested" and
+  # got whatever merged a second later. While `release` moved on every merge,
+  # the two were nearly the same. Under the daily release they are not: an
+  # apply of origin/main ships the day's untested merges to customers.
+  #
+  # So the target is ONE NAMED COMMIT, and never the tip of a moving branch:
+  #   • DEPLOY_REF, when a caller names one. deploy.yml sends its GITHUB_SHA,
+  #     and vps_pull.sh sends origin/$RELEASE_REF as a sha.
+  #   • origin/$RELEASE_REF otherwise (default `release`). That covers a hand
+  #     run during an incident: it re-applies what production should serve.
+  # The commit must be on main. A sha that is not cannot have passed CI.
+  # Fence: tests/unit/test_deploy_target_ref.py.
+  RELEASE_REF="${RELEASE_REF:-release}"
+  git fetch origin "$RELEASE_REF" 2>/dev/null \
+    || echo "    !! cannot fetch origin/$RELEASE_REF (it is only needed when DEPLOY_REF is unset)"
+  if [ -n "${DEPLOY_REF:-}" ]; then
+    DEPLOY_TARGET_FROM="DEPLOY_REF"
+    DEPLOY_TARGET_SHA="$(git rev-parse --verify --quiet "${DEPLOY_REF}^{commit}" || true)"
+  else
+    DEPLOY_TARGET_FROM="origin/$RELEASE_REF"
+    DEPLOY_TARGET_SHA="$(git rev-parse --verify --quiet "origin/${RELEASE_REF}^{commit}" || true)"
+  fi
+  if [ -z "$DEPLOY_TARGET_SHA" ]; then
+    echo "    !! cannot resolve the commit to deploy from $DEPLOY_TARGET_FROM (${DEPLOY_REF:-unset})."
+    echo "       This round did NOTHING: no reset, no migration, no build, no restart."
+    exit 1
+  fi
+  if ! git merge-base --is-ancestor "$DEPLOY_TARGET_SHA" origin/main; then
+    echo "    !! ${DEPLOY_TARGET_SHA:0:12} (from $DEPLOY_TARGET_FROM) is not on origin/main."
+    echo "       Refusing to deploy a commit that CI never gated. This round did NOTHING."
+    exit 1
+  fi
+  # Never move the box BACK past `release`. deploy.yml checks this before it
+  # opens ssh (the "Skip a commit that release has already passed" step).
+  # This is the same rule where a hand run or a stale caller meets it. A
+  # forced apply does not bypass it: a CI rerun sends DEPLOY_FORCE=1, and a
+  # rerun of an old run is the case this exists for. Roll forward (R6).
+  DEPLOY_RELEASE_SHA="$(git rev-parse --verify --quiet "origin/${RELEASE_REF}^{commit}" || true)"
+  if [ -n "$DEPLOY_RELEASE_SHA" ] && [ "$DEPLOY_TARGET_SHA" != "$DEPLOY_RELEASE_SHA" ] \
+     && git merge-base --is-ancestor "$DEPLOY_TARGET_SHA" "$DEPLOY_RELEASE_SHA"; then
+    echo "    !! ${DEPLOY_TARGET_SHA:0:12} (from $DEPLOY_TARGET_FROM) is older than origin/$RELEASE_REF ${DEPLOY_RELEASE_SHA:0:12}."
+    echo "       Refusing to roll production back. This round did NOTHING."
+    exit 1
+  fi
+  echo "    target ${DEPLOY_TARGET_SHA:0:12}, from $DEPLOY_TARGET_FROM"
 
-# 🟢 **THE SECOND PATH NO LONGER REBUILDS WHAT THE FIRST JUST SHIPPED.**
-# Measured 2026-09-26: a CI build at 06:34, and root's pull rebuilt the SAME
-# commit at 06:47. The pull gate reads its own marker only, so a CI deploy
-# never counted. Now both paths write one marker, and both check it here,
-# INSIDE the lock. A skip prints the final line on purpose: a complete apply
-# of this exact sha has finished, which is what deploy.yml's gate asks.
-# DEPLOY_FORCE=1 (`vps_pull.sh --force`) always re-applies, for an .env edit.
-if [ "${DEPLOY_FORCE:-0}" != "1" ] && deploy_already_applied "$DEPLOY_TARGET_SHA"; then
-  echo "    already at ${DEPLOY_TARGET_SHA:0:12}, skipping — a complete apply of it finished at ${DEPLOY_APPLIED_AT:-?}"
-  echo "==> Deployment complete"
-  exit 0
-fi
-git reset --hard origin/main
-if [ -s /tmp/acb-agents.json.bak ]; then
-  cp /tmp/acb-agents.json.bak apps/services/gateway/agents.json
-  echo "    restored runtime agents.json ($(wc -l < apps/services/gateway/agents.json) lines)"
+  # 🟢 **THE SECOND PATH NO LONGER REBUILDS WHAT THE FIRST JUST SHIPPED.**
+  # Measured 2026-09-26: a CI build at 06:34, and root's pull rebuilt the SAME
+  # commit at 06:47. The pull gate reads its own marker only, so a CI deploy
+  # never counted. Now both paths write one marker, and both check it here,
+  # INSIDE the lock. A skip prints the final line on purpose: a complete apply
+  # of this exact sha has finished, which is what deploy.yml's gate asks.
+  # DEPLOY_FORCE=1 (`vps_pull.sh --force`) always re-applies, for an .env edit.
+  if [ "${DEPLOY_FORCE:-0}" != "1" ] && deploy_already_applied "$DEPLOY_TARGET_SHA"; then
+    echo "    already at ${DEPLOY_TARGET_SHA:0:12}, skipping — a complete apply of it finished at ${DEPLOY_APPLIED_AT:-?}"
+    echo "==> Deployment complete"
+    exit 0
+  fi
+  git reset --hard "$DEPLOY_TARGET_SHA"
+  if [ -s /tmp/acb-agents.json.bak ]; then
+    cp /tmp/acb-agents.json.bak apps/services/gateway/agents.json
+    echo "    restored runtime agents.json ($(wc -l < apps/services/gateway/agents.json) lines)"
+  fi
+  # ── Run the pulled commit's own copy of this script ───────────────────────
+  # 🔴 **THE STEPS THAT RUN MUST BE THE STEPS OF THE SHA THAT IS RECORDED.**
+  # Measured 2026-10-08: a deploy of 90fc39e3 ran its own copy of this file.
+  # Its reset moved the checkout to 469f5081, which merged during the apply
+  # and added the BH-7 step. The old copy ran its old steps and recorded
+  # 469f5081 as applied. Each later deploy of 469f5081 then skipped. So the
+  # BH-7 drop-ins never went in, and every deploy job was green.
+  #
+  # So read the target's own copy out of the object database, as vps_pull.sh
+  # does, and compare it with the copy that runs now. When they differ, or
+  # when this copy came from stdin and has no hash, `exec` the target's copy
+  # ONE time. Every step after this point then runs from the target's copy.
+  # This pull block does not: it ran from the copy that started, and a change
+  # to it takes effect on the next apply. `exec` keeps the pid, so the deploy lock on fd 8 and the watcher
+  # of the deploy session stay. VPS_APPLY_REEXECED=1 makes the new copy skip
+  # the lock, the watcher and this pull step, so it cannot exec again. stdin
+  # becomes /dev/null, because on the push path it holds the rest of the OLD
+  # script. The new copy removes its temp file as its first act.
+  #
+  # Fence: `tests/unit/test_deploy_reexec.py`. It runs an old copy against a
+  # merge that adds a step, and it fails unless that step runs exactly once.
+  VPS_APPLY_NEXT="$(mktemp "${TMPDIR:-/tmp}/acb-vps-apply-reexec.XXXXXX")"
+  if ! git show "$DEPLOY_TARGET_SHA:scripts/vps_apply.sh" > "$VPS_APPLY_NEXT"; then
+    rm -f "$VPS_APPLY_NEXT"
+    echo "    !! cannot read scripts/vps_apply.sh at ${DEPLOY_TARGET_SHA:0:12}. Refusing to run the steps of another commit"
+    exit 1
+  fi
+  if [ -n "$VPS_APPLY_SELF_SUM" ] && [ "$(sha256sum < "$VPS_APPLY_NEXT" | cut -d' ' -f1)" = "$VPS_APPLY_SELF_SUM" ]; then
+    rm -f "$VPS_APPLY_NEXT"
+  else
+    if [ -z "$VPS_APPLY_SELF_SUM" ]; then
+      echo "    this copy came from stdin and cannot be compared. Running the copy of ${DEPLOY_TARGET_SHA:0:12} now (re-exec)"
+    else
+      echo "    this copy differs from the copy of ${DEPLOY_TARGET_SHA:0:12}. Running that copy now (re-exec)"
+    fi
+    exec env VPS_APPLY_REEXECED=1 VPS_APPLY_REEXEC_FILE="$VPS_APPLY_NEXT" \
+      DEPLOY_TARGET_SHA="$DEPLOY_TARGET_SHA" DEPLOY_LOCK_HELD=1 \
+      DEPLOY_TETHER_ANCHOR="$DEPLOY_SESSION_ANCHOR" \
+      APP_DIR="$APP_DIR" DEPLOY_LOCK="$DEPLOY_LOCK" DEPLOY_MARKER="$DEPLOY_MARKER" \
+      bash "$VPS_APPLY_NEXT" "$@" < /dev/null
+  fi
 fi
 
 echo "==> Skipping deprecated LiteLLM proxy cleanup (already removed)"
@@ -476,10 +656,50 @@ echo "==> Ensuring memory-layer env vars (Neo4j disabled for low-memory VPS)"
 # secrets into the live box while you thought you were in a sandbox. Until this
 # is unified (owner's call), hand-run it only with APP_DIR=/opt/acb/app.
 ENV_FILE="/opt/acb/app/.env"
+
+# ── WS-49 BH-2: a writer of .env must keep its inode ─────────────────────────
+# 🔴 The gateway sandbox (50-hardening.conf) lists .env on ReadWritePaths.
+# systemd bind-mounts the INODE that .env has when the gateway starts. A
+# writer that replaces the file by rename (`sed -i`, `tmp && mv`) leaves the
+# running gateway on the old, unlinked copy. The saves of the gateway then go
+# to that dead copy, and the next restart drops them. So every edit of .env
+# here builds the new content in a temp file and writes it back INTO the same
+# inode. The mode and the owner stay, because the inode stays. An append
+# (`>>`) keeps the inode already.
+# This apply holds the deploy lock, so no other deploy writes .env at once.
+# Fence: tests/unit/test_env_inode.py.
+# >>> env helpers
+# env_edit_in_place <file> <cmd> [args...] — run "<cmd> [args...] <file>" into
+# a temp file, then write the result INTO <file>. A failed command changes
+# nothing. `grep -v` exits 1 when it prints no line, and that is a result.
+env_edit_in_place() {
+  local f="$1" tmp rc=0
+  shift
+  tmp="$(mktemp "$(dirname "$f")/.env-edit.XXXXXX")"
+  "$@" "$f" > "$tmp" || rc=$?
+  if [ "$rc" -gt 1 ] || { [ "$rc" = 1 ] && [ "$1" != grep ]; }; then
+    rm -f "$tmp"
+    echo "    !! could not edit $f (exit $rc). It is unchanged."
+    return 1
+  fi
+  # 🔴 The write truncates first. ENOSPC or a kill in the middle leaves a
+  # short .env, and the next restart then starts the gateway with no
+  # DATABASE_URL. So compare, and keep the full copy when they differ.
+  # ensure_gateway_rw_paths also refuses a restart on a .env with no
+  # DATABASE_URL, which catches a short file from any writer.
+  if ! cat "$tmp" > "$f" || ! cmp -s "$tmp" "$f"; then
+    echo "    !! .env write failed, the full copy is at $tmp"
+    return 1
+  fi
+  rm -f "$tmp"
+}
+# <<< env helpers
+
 for _var in MEM0_ENABLED GRAPHITI_ENABLED; do
   if ! grep -qE "^${_var}=" "$ENV_FILE" 2>/dev/null; then
     case "$_var" in
-      MEM0_ENABLED)       echo "MEM0_ENABLED=true" >> "$ENV_FILE" ;;
+      # WS-17 EM-G11f3: a missing line means OFF. Mem0 on is an owner act (WS-7).
+      MEM0_ENABLED)       echo "MEM0_ENABLED=false" >> "$ENV_FILE" ;;
       GRAPHITI_ENABLED)   echo "GRAPHITI_ENABLED=false" >> "$ENV_FILE" ;;
     esac
     echo "    + added $_var to .env"
@@ -497,11 +717,18 @@ echo "==> Ensuring public-URL env vars"
 # company's. Directory pinning is a per-deployment decision: set those keys by
 # hand in .env for a single-tenant silo; leave them unset for the multi-directory
 # default (`organizations`, see workbench auth.ts and email transport oauth.py).
+# WS-38 S-4: the default hosts follow DEPLOY_ENV, and match the Caddyfile
+# that this apply installs. A staging box must never default to production's.
+if [ "$DEPLOY_ENV" = "staging" ]; then
+  _gw_default="https://api.dev.metorite.com"; _wb_default="https://dev.metorite.com"
+else
+  _gw_default="https://api.metorite.com";     _wb_default="https://app.metorite.com"
+fi
 for _var in GATEWAY_PUBLIC_URL WORKBENCH_PUBLIC_URL; do
   if ! grep -qE "^${_var}=" "$ENV_FILE" 2>/dev/null; then
     case "$_var" in
-      GATEWAY_PUBLIC_URL)              echo "GATEWAY_PUBLIC_URL=https://api.metorite.com" >> "$ENV_FILE" ;;
-      WORKBENCH_PUBLIC_URL)            echo "WORKBENCH_PUBLIC_URL=https://app.metorite.com" >> "$ENV_FILE" ;;
+      GATEWAY_PUBLIC_URL)              echo "GATEWAY_PUBLIC_URL=$_gw_default" >> "$ENV_FILE" ;;
+      WORKBENCH_PUBLIC_URL)            echo "WORKBENCH_PUBLIC_URL=$_wb_default" >> "$ENV_FILE" ;;
     esac
     echo "    + added $_var to .env"
   fi
@@ -540,8 +767,253 @@ else
   fi
 fi
 
+# STU-B2c-1: the direct proof key follows the same rule. The workbench BFF signs
+# the direct proof of a Studio write under STUDIO_DIRECT_KEY, and the gateway
+# checks it, so both files must hold ONE value. .env is the source. This step
+# copies the key when .env has one. It NEVER generates a key: setting it on a
+# box is the env-write act. With no key in .env it removes any stale copy from
+# .env.local, so the workbench signs nothing and no write is direct.
+# ⚠️ It reads the LAST line of the key in .env, because systemd and dotenv use
+# the last line. The first line would copy a value that no service uses.
+# Fence: tests/unit/test_studio_direct_proof.py (test_the_deploy_line_syncs_the_key_from_env_to_env_local).
+echo "==> Reconciling the workbench's STUDIO_DIRECT_KEY (.env.local <- .env, STU-B2c-1)"
+DIRECT_KEY="$(grep -E '^STUDIO_DIRECT_KEY=' "$ENV_FILE" 2>/dev/null | tail -n 1 | cut -d= -f2-)"
+if [ ! -f "$WB_ENV" ]; then
+  echo "    ! $WB_ENV missing — skipping (the token step above names the cause)"
+elif [ -z "$DIRECT_KEY" ]; then
+  if grep -q '^STUDIO_DIRECT_KEY=' "$WB_ENV"; then
+    ( umask 077; grep -v '^STUDIO_DIRECT_KEY=' "$WB_ENV" > "$WB_ENV.tmp" || true )
+    cat "$WB_ENV.tmp" > "$WB_ENV"; rm -f "$WB_ENV.tmp"
+    echo "    - removed a STUDIO_DIRECT_KEY line from .env.local (.env has none, so no write is direct)"
+  else
+    echo "    STUDIO_DIRECT_KEY not set in .env: no write is direct (the slice is dark)"
+  fi
+elif [ "$(grep -E '^STUDIO_DIRECT_KEY=' "$WB_ENV" 2>/dev/null | head -1 | cut -d= -f2-)" = "$DIRECT_KEY" ] \
+     && [ "$(grep -c '^STUDIO_DIRECT_KEY=' "$WB_ENV")" = "1" ]; then
+  echo "    already in sync (sha8=$(printf %s "$DIRECT_KEY" | sha256sum | cut -c1-8))"
+else
+  # umask 077 and a write IN PLACE: .env.local holds secrets, and an `mv` would
+  # give the file the mode of the temp file.
+  ( umask 077; grep -v '^STUDIO_DIRECT_KEY=' "$WB_ENV" > "$WB_ENV.tmp" || true )
+  printf 'STUDIO_DIRECT_KEY=%s\n' "$DIRECT_KEY" >> "$WB_ENV.tmp"
+  cat "$WB_ENV.tmp" > "$WB_ENV"; rm -f "$WB_ENV.tmp"
+  echo "    updated .env.local STUDIO_DIRECT_KEY to match .env (sha8=$(printf %s "$DIRECT_KEY" | sha256sum | cut -c1-8))"
+fi
+
+echo "==> Reconciling the workbench's DEPLOY_ENV (.env.local <- .env, WS-38 S-7)"
+# The workbench reads DEPLOY_ENV from ITS OWN env file, for the staging band and
+# the "[Staging]" tab title. The root .env stays the one source: this copies the
+# value across, before the build below, because a static page takes it at
+# `next build` (a restart alone does not repaint it). On production it REMOVES
+# any DEPLOY_ENV line from .env.local, so a stray copy can never draw the band
+# on the production site. Fence: tests/unit/test_deploy_env.py.
+if [ ! -f "$WB_ENV" ]; then
+  echo "    ! $WB_ENV missing — skipping (the token step above names the cause)"
+elif [ "$DEPLOY_ENV" = "staging" ]; then
+  # Exactly one line, and it says staging. A second DEPLOY_ENV line of any
+  # value is rewritten away, so the last-line-wins rule cannot hide the band.
+  if [ "$(grep -c '^DEPLOY_ENV=' "$WB_ENV" || true)" != "1" ] || ! grep -qx 'DEPLOY_ENV=staging' "$WB_ENV"; then
+    # umask 077, and a write IN PLACE: .env.local holds secrets, and an `mv`
+    # would give the file the temp file's mode.
+    ( umask 077; grep -v '^DEPLOY_ENV=' "$WB_ENV" > "$WB_ENV.tmp" || true )
+    echo 'DEPLOY_ENV=staging' >> "$WB_ENV.tmp"
+    cat "$WB_ENV.tmp" > "$WB_ENV"; rm -f "$WB_ENV.tmp"
+    echo "    + DEPLOY_ENV=staging written to .env.local"
+  else
+    echo "    already DEPLOY_ENV=staging"
+  fi
+elif grep -q '^DEPLOY_ENV=' "$WB_ENV"; then
+  ( umask 077; grep -v '^DEPLOY_ENV=' "$WB_ENV" > "$WB_ENV.tmp" || true )
+  cat "$WB_ENV.tmp" > "$WB_ENV"; rm -f "$WB_ENV.tmp"
+  echo "    - removed a DEPLOY_ENV line from .env.local (this box is production)"
+else
+  echo "    production: no DEPLOY_ENV in .env.local, as it should be"
+fi
+
+# ── WS-49 BH-6: the root units run only root-owned files ────────────────────
+# 🔴 acb-backup, acb-health-watchdog and acb.service run as root. They ran
+# scripts and read the compose project from this checkout, which acb owns, and
+# they loaded the acb-writable .env. Now they run the ROOT COPY at
+# /usr/local/lib/acb and read /etc/acb/root.env. Spec: box_hardening.md §5 BH-6.
+#
+# Steps 1 to 3 run HERE: after the pull block, so the target's own copy of
+# this script runs them, and before the first compose call. The .env steps
+# above write no name of root_env_names.txt, so root.env sees .env as the
+# first compose call sees it.
+#   1. Sync the copy: `git archive "$DEPLOY_TARGET_SHA"` of the paths of
+#      deploy/hostinger/root_lib_files.txt, into a 0700 root stage, then one
+#      rsync to the literal /usr/local/lib/acb/. It never reads the working
+#      tree, and it refuses a symlink. It runs ONLY when bh2_rollback.sh
+#      status exits 1 (no rollback). While the BH-2 sandbox is off, the
+#      gateway can write .git, so `git archive` would not prove the bytes.
+#      A skip keeps the last synced copy. With no copy yet, a skip stops the
+#      deploy.
+#   2. Write /etc/acb/root.env with the root copy of root_env.sh. It runs
+#      again after the meeting-bot env block, which can write four names.
+#   3. `config -q` of the compose file. A failure stops the deploy.
+# Step 4 installs acb.service and joins its restart to the gateway restart.
+# ⚠️ Measured on Compose v5.6.0: `config -q` does NOT see a missing bind
+# source or build context. So step 1 checks that each path of the list is in
+# the archive, and stops the deploy when one is not.
+# Fence: tests/unit/test_root_units_root_owned.py (BH-F4). It sources the
+# block between the two marker lines below. Keep it free of side effects:
+# definitions and defaults only.
+# >>> bh6 helpers
+BH6_LIST="deploy/hostinger/root_lib_files.txt"
+BH6_CORE_CHANGED=0
+
+# acb_compose [--timeout SECS] ARGS... — EVERY compose call of the deploy.
+# The project dir and the compose file are the root copy, and the env file is
+# root.env. sudo, because root.env is 0600. `env -i` keeps the HOME of acb
+# away from root docker (BH-6a, F1). `-p acb` stops a COMPOSE_PROJECT_NAME
+# line from renaming the project.
+acb_compose() {
+  local -a pre=()
+  if [ "${1:-}" = "--timeout" ]; then pre=(timeout "$2"); shift 2; fi
+  "${pre[@]}" sudo env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root \
+    docker compose --project-directory /usr/local/lib/acb/infra --env-file /etc/acb/root.env \
+    -p acb -f /usr/local/lib/acb/infra/docker-compose.yml "$@"
+}
+
+# bh6_ensure_rsync — the apt pattern of the off-box tool step below. That
+# step comes after every compose call, so it is too late for the sync.
+bh6_ensure_rsync() {
+  command -v rsync >/dev/null 2>&1 && return 0
+  echo "    installing rsync (WS-49 BH-6 needs it)"
+  sudo apt-get -o DPkg::Lock::Timeout=120 update -qq >/dev/null 2>&1 < /dev/null \
+    || echo "    !! apt-get update FAILED — trying the install from the package lists on the box"
+  sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y -qq rsync >/dev/null 2>&1 < /dev/null || true
+  command -v rsync >/dev/null 2>&1 && return 0
+  echo "    !! rsync is missing, and apt could not install it"
+  return 1
+}
+
+# bh6_sync_root_copy SHA — step 1. Sets BH6_CORE_CHANGED=1 when the compose
+# file or a SQL file of the copy changed. False on any failure, and then the
+# copy on the box is not changed.
+bh6_sync_root_copy() {
+  local sha="$1" list stage tarf src dst i links
+  local -a srcs=() dsts=()
+  BH6_CORE_CHANGED=0
+  if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "    !! BH-6: the target sha '$sha' is not 40 hex"
+    return 1
+  fi
+  # The list of the TARGET commit, from the object database.
+  list="$(GIT_NO_REPLACE_OBJECTS=1 git show "$sha:$BH6_LIST")" || return 1
+  while read -r src dst _; do
+    case "$src" in ''|'#'*) continue ;; esac
+    if ! [[ "$src" =~ ^[A-Za-z0-9_][A-Za-z0-9._/-]*$ && "$dst" =~ ^[A-Za-z0-9_][A-Za-z0-9._/-]*$ ]] \
+       || [[ "/$src/$dst/" == */../* ]]; then
+      echo "    !! BH-6: $BH6_LIST holds a line that is not two plain relative paths"
+      return 1
+    fi
+    srcs+=("$src"); dsts+=("$dst")
+  done <<< "$list"
+  [ "${#srcs[@]}" -gt 0 ] || { echo "    !! BH-6: $BH6_LIST is empty"; return 1; }
+  tarf="$(mktemp "${TMPDIR:-/tmp}/acb-bh6-archive.XXXXXX")" || return 1
+  if ! GIT_NO_REPLACE_OBJECTS=1 git archive --format=tar -o "$tarf" "$sha" -- "${srcs[@]}"; then
+    rm -f "$tarf"
+    echo "    !! BH-6: git archive of ${sha:0:12} failed"
+    return 1
+  fi
+  stage="$(sudo mktemp -d /usr/local/lib/acb-stage.XXXXXX)" || { rm -f "$tarf"; return 1; }
+  case "$stage" in /usr/local/lib/acb-stage.?*) ;; *) rm -f "$tarf"; return 1 ;; esac
+  if ! sudo mkdir "$stage/tree" "$stage/copy" || ! sudo tar -xf "$tarf" -C "$stage/tree" --no-same-owner; then
+    rm -f "$tarf"; sudo rm -rf -- "$stage"
+    echo "    !! BH-6: could not unpack the archive"
+    return 1
+  fi
+  rm -f "$tarf"
+  for i in "${!srcs[@]}"; do
+    src="${srcs[$i]}"; dst="${dsts[$i]}"
+    if ! sudo test -e "$stage/tree/$src" || ! sudo mkdir -p "$(dirname "$stage/copy/$dst")" \
+       || ! sudo mv "$stage/tree/$src" "$stage/copy/$dst"; then
+      sudo rm -rf -- "$stage"
+      echo "    !! BH-6: $src is not in ${sha:0:12}. The copy is NOT changed"
+      return 1
+    fi
+  done
+  links="$(sudo find "$stage" -type l)"
+  if [ -n "$links" ]; then
+    sudo rm -rf -- "$stage"
+    echo "    !! BH-6: the archive holds a symlink. Root runs no linked file. The copy is NOT changed"
+    return 1
+  fi
+  printf '%s\n' "$sha" | sudo tee "$stage/copy/deployed_sha" >/dev/null
+  # rsync -a gives the destination root the mode of the source root (N1).
+  sudo chmod 0755 "$stage/copy"
+  for i in infra/docker-compose.yml infra/postgres/00_create_databases.sql infra/postgres/01_schema.sql; do
+    sudo cmp -s "$stage/copy/$i" "/usr/local/lib/acb/$i" || BH6_CORE_CHANGED=1
+  done
+  # --delay-updates and --delete-delay put each new file in, and delete each
+  # old one, at the END of the transfer. That makes the window short, and it
+  # is NOT atomic: the renames and deletes still come one at a time. A root
+  # unit that starts in that window can see files of two commits.
+  if ! sudo rsync -a --delete --delete-delay --delay-updates --chown=root:root --chmod=go-w "$stage/copy/" /usr/local/lib/acb/; then
+    sudo rm -rf -- "$stage"
+    echo "    !! BH-6: rsync to /usr/local/lib/acb/ failed"
+    return 1
+  fi
+  sudo rm -rf -- "$stage"
+  echo "    root copy: /usr/local/lib/acb is at ${sha:0:12} (core inputs changed: $BH6_CORE_CHANGED)"
+}
+
+# bh6_install_root_units DIR — install acb-backup.service and
+# acb-health-watchdog.service from DIR now, right after steps 1 to 3. The
+# reset of the pull block already put the BH-6 scripts in the checkout, and
+# the BH-6 backup_db.sh refuses a root run from there. So the old units must
+# not wait for the BO-23 loop at the end: a failure between here and that
+# loop would leave the nightly backup failing. No restart: both are oneshot
+# units of a timer. The BO-23 loop then finds them unchanged.
+bh6_install_root_units() {
+  local dir="$1" u changed=0
+  for u in acb-backup.service acb-health-watchdog.service; do
+    if ! sudo cmp -s "$dir/$u" "/etc/systemd/system/$u"; then
+      sudo install -m 0644 "$dir/$u" "/etc/systemd/system/$u" || return 1
+      echo "    installed $u: it runs the root copy now"
+      changed=1
+    fi
+  done
+  if [ "$changed" = "1" ]; then sudo systemctl daemon-reload || return 1; fi
+}
+
+# bh6_root_steps — steps 1 to 3. False stops the deploy before any compose call.
+bh6_root_steps() {
+  local rb_rc=0
+  bash "$APP_DIR/scripts/bh2_rollback.sh" status >/dev/null 2>&1 || rb_rc=$?
+  if [ "$rb_rc" = "1" ]; then
+    bh6_ensure_rsync || return 1
+    bh6_sync_root_copy "${DEPLOY_TARGET_SHA:-}" || return 1
+  elif sudo test -f /usr/local/lib/acb/deployed_sha; then
+    echo "WARN BH-6: the BH-2 rollback is not off, so the root copy stays at $(sudo head -c 40 /usr/local/lib/acb/deployed_sha)"
+    echo "    After bh2_rollback.sh off, run: sudo MODE=force bash $APP_DIR/scripts/vps_pull.sh"
+  else
+    echo "    !! BH-6: the BH-2 rollback is not off (status $rb_rc), and this box has no root copy yet."
+    echo "       The nightly backup stays down until a deploy passes: its unit runs the root copy."
+    echo "       Turn the rollback off (sudo bash $APP_DIR/scripts/bh2_rollback.sh off), then run:"
+    echo "       sudo MODE=force bash $APP_DIR/scripts/vps_pull.sh"
+    return 1
+  fi
+  sudo bash /usr/local/lib/acb/root_env.sh || return 1
+  acb_compose --profile core --profile meetingbot config -q || return 1
+}
+# <<< bh6 helpers
+
+echo "==> WS-49 BH-6: the root copy, root.env and the compose check"
+bh6_root_steps || {
+  echo "BH-6 FAILED: the root copy, root.env or the compose file is not right. Read the lines above."
+  echo "    No compose call ran, and no service was restarted. Fix the cause, then deploy again."
+  exit 1
+}
+bh6_install_root_units "$APP_DIR/deploy/hostinger" || {
+  echo "BH-6 FAILED: acb-backup.service or acb-health-watchdog.service was not installed."
+  echo "    No compose call ran, and no service was restarted. Fix the cause, then deploy again."
+  exit 1
+}
+
 echo "==> Bootstrapping Docker Compose stack (core only)"
-docker compose -f infra/docker-compose.yml --profile core up -d --remove-orphans
+acb_compose --profile core up -d --remove-orphans
 
 echo "==> Waiting for healthchecks (up to 90s)"
 deadline=$(( $(date +%s) + 90 ))
@@ -766,7 +1238,7 @@ SEG_MODEL="$MODELS_DIR/segmentation.onnx"
 EMB_MODEL="$MODELS_DIR/embedding.onnx"
 upsert_env() {  # key value — set-or-replace in $ENV_FILE (paths ok)
   if grep -qE "^$1=" "$ENV_FILE" 2>/dev/null; then
-    sed -i "s|^$1=.*|$1=$2|" "$ENV_FILE"
+    env_edit_in_place "$ENV_FILE" sed "s|^$1=.*|$1=$2|"
   else
     echo "$1=$2" >> "$ENV_FILE"
   fi
@@ -809,6 +1281,250 @@ else
   echo "    LOCAL_DIAR=0 — local diarization OFF"
 fi
 
+# ── WS-49 BH-7: the .env strip and the systemd drop-ins ─────────────────────
+# Spec: project-docs/specs/box_hardening.md §5 BH-7 (B7-2, B7-3, Q3c, Q3e).
+#
+# 🔴 **THIS RUNS BEFORE THE FIRST SERVICE RESTART OF THE APPLY.** That is the
+# WhatsApp bridge restart below, and then the gateway restart. A drop-in that
+# goes in after a restart applies only at the NEXT restart, so the BH-2 strict
+# check would read stale properties. The BO-23 unit loop near the end stays
+# where it is, after the restarts, on purpose.
+#
+# 1. strip_t2_vendor_env_line removes a CUSTOM_APPS_T2_VENDOR_DIR line from
+#    .env, and warns. It never refuses, because the gateway writes .env, and a
+#    refusal would let the gateway stop every deploy. An EnvironmentFile line
+#    wins over the Environment line of 40-agent-site.conf, so the line must go.
+# 2. install_dropins installs each deploy/hostinger/*.service.d/*.conf, then
+#    runs daemon-reload. It writes only the names that the repo holds, and it
+#    deletes nothing. It never writes a 90-* name: that is the BH-2 rollback
+#    (scripts/bh2_rollback.sh), and a deploy must keep a rollback in place.
+# 3. restart_stale_dropin_units (near the end) restarts ONCE each active unit
+#    that started before its newest installed drop-in. A unit that a step of
+#    this apply restarted after the install is current, and gets no second
+#    restart. The test reads the box, not this apply, so an apply that died
+#    after the install is repaired by the next one.
+#
+# tests/unit/test_agent_deps_target.py and tests/unit/test_unit_hardening.py
+# source the block between the two marker lines below. Keep it free of side
+# effects: definitions and defaults only.
+# >>> bh7 helpers
+SYSTEMD_UNIT_DIR="${SYSTEMD_UNIT_DIR:-/etc/systemd/system}"
+
+strip_t2_vendor_env_line() {  # <env file>
+  local f="$1" pat='^[[:space:]]*(export[[:space:]]+)?CUSTOM_APPS_T2_VENDOR_DIR[[:space:]]*='
+  [ -f "$f" ] || return 0
+  grep -qE "$pat" "$f" || return 0
+  # A write INTO the file keeps its inode, mode and owner (env helpers above,
+  # WS-49 BH-2). `sed -i` would replace the inode. No value is printed.
+  env_edit_in_place "$f" sed -E "/$pat/d"
+  echo "    WARN BH-7: removed a CUSTOM_APPS_T2_VENDOR_DIR line from $f."
+  echo "    WARN BH-7: the T2 vendor dir is /opt/acb/t2-vendor, from 40-agent-site.conf."
+}
+
+install_dropins() {  # <dir that holds the *.service.d dirs>
+  local src="$1" d unit_d conf name dest
+  for d in "$src"/*.service.d; do
+    [ -d "$d" ] || continue
+    unit_d="$(basename "$d")"
+    for conf in "$d"/*.conf; do
+      [ -f "$conf" ] || continue
+      name="$(basename "$conf")"
+      case "$name" in
+        90-*)
+          echo "    !! skipped $unit_d/$name: a 90-* name is a rollback on the box, never a repo file"
+          continue ;;
+      esac
+      dest="$SYSTEMD_UNIT_DIR/$unit_d/$name"
+      if sudo cmp -s "$conf" "$dest"; then
+        continue
+      fi
+      sudo install -d -m 0755 "$SYSTEMD_UNIT_DIR/$unit_d"
+      sudo install -m 0644 "$conf" "$dest"
+      echo "    installed $unit_d/$name"
+    done
+  done
+  sudo systemctl daemon-reload
+}
+
+restart_stale_dropin_units() {  # <dir that holds the *.service.d dirs>
+  local src="$1" d unit_d unit f m newest since started
+  for d in "$src"/*.service.d; do
+    [ -d "$d" ] || continue
+    unit_d="$(basename "$d")"
+    unit="${unit_d%.d}"
+    newest=0
+    for f in "$SYSTEMD_UNIT_DIR/$unit_d"/*.conf; do
+      [ -f "$f" ] || continue
+      m="$(stat -c %Y "$f" 2>/dev/null || echo 0)"
+      if [ "$m" -gt "$newest" ]; then newest="$m"; fi
+    done
+    [ "$newest" -gt 0 ] || continue
+    if ! systemctl is-active --quiet "$unit"; then
+      echo "    $unit is not active: its drop-ins apply at its next start"
+      continue
+    fi
+    # --timestamp=unix gives "@<epoch>". A zone name (AEST) is not something
+    # `date -d` can parse, and a failed parse would restart the unit on every
+    # deploy (fix round 1, B). A value that is not an epoch counts as 0.
+    since="$(systemctl show "$unit" -p ActiveEnterTimestamp --timestamp=unix --value 2>/dev/null || true)"
+    started="${since#@}"
+    case "$started" in ''|*[!0-9]*) started=0 ;; esac
+    if [ "$started" -ge "$newest" ]; then
+      echo "    $unit started after its newest drop-in: no restart"
+      continue
+    fi
+    echo "    restarting $unit once, so that its new drop-in applies"
+    sudo systemctl restart "$unit" || echo "    !! could not restart $unit — check: systemctl status $unit"
+  done
+}
+# <<< bh7 helpers
+
+echo "==> WS-49 BH-7: the .env strip and the systemd drop-ins"
+strip_t2_vendor_env_line "$ENV_FILE"
+install_dropins "$APP_DIR/deploy/hostinger"
+echo "    drop-ins installed and systemd reloaded"
+
+# ── WS-49 BH-2: the gateway sandbox, its write list and its strict check ────
+# Spec: project-docs/specs/box_hardening.md §5 BH-2 items 2, 5 and 6.
+#
+# deploy/hostinger/acb-gateway.service.d/50-hardening.conf went in with the
+# drop-ins above, so the gateway restart below runs the sandbox.
+#
+# 1. compile_bytecode and ensure_gateway_rw_paths run before that restart. A
+#    path on ReadWritePaths with no "-" must exist, or systemd cannot set up
+#    the sandbox and the gateway does not start. The step makes each such
+#    path but .env, and the home dirs of the "-" entries. A missing .env
+#    stops the deploy HERE, before the restart, so the gateway that runs now
+#    keeps serving.
+# 2. bh2_strict_check runs near the end, after the last restart and before
+#    the marker. It passes ONLY when acb-gateway is active, with
+#    NoNewPrivileges=yes and ProtectSystem=strict. A valid rollback
+#    (scripts/bh2_rollback.sh status = 0) passes too, and prints the WARN.
+#    Anything else fails the deploy, and no marker is written.
+#
+# tests/unit/test_bh2_strict_check.py sources the block between the two
+# marker lines below. Keep it free of side effects: definitions and defaults
+# only.
+# >>> bh2 helpers
+BH2_UNIT="${BH2_UNIT:-acb-gateway}"
+BH2_ROLLBACK_SCRIPT="${BH2_ROLLBACK_SCRIPT:-$APP_DIR/scripts/bh2_rollback.sh}"
+# The home of the service user, as 50-hardening.conf names it.
+BH2_HOME="${BH2_HOME:-/home/acb}"
+
+# Each path on the ReadWritePaths of 50-hardening.conf, before the restart.
+# - .env is the one path the deploy cannot make: it holds the secrets. A
+#   missing .env stops the deploy, and the gateway that runs keeps serving.
+# - data/ and the two JSON files are made when absent. Git tracks the JSON
+#   files today, but a later commit that drops one must not stop every deploy.
+#   agents.json holds a list, and the models cache holds an object.
+# - The "-" home dirs are made as the service user, so they bind on a fresh
+#   box. ~/.cache/github-copilot-sdk comes from the Copilot CLI fetch above.
+ensure_gateway_rw_paths() {  # <app dir> [<home of the service user>]
+  local app="$1" home="${2:-$BH2_HOME}" owner user f body d
+  owner="$(stat -c '%U:%G' "$app")"
+  user="${owner%%:*}"
+  if [ ! -f "$app/.env" ]; then
+    echo "    !! $app/.env is missing. It is on the ReadWritePaths of 50-hardening.conf,"
+    echo "       so the sandboxed gateway cannot start without it."
+    return 1
+  fi
+  # A .env that a failed write cut short has lost its later lines. With no
+  # DATABASE_URL the gateway starts and serves nothing, so refuse the restart
+  # and keep the gateway that runs now. This catches a short file from any
+  # writer. No value is printed.
+  if ! grep -q '^DATABASE_URL=.' "$app/.env"; then
+    echo "    !! $app/.env holds no DATABASE_URL. A write may have cut it short."
+    echo "       Restore it (a .env-edit.* or .env.bak-* file beside it holds a full copy)."
+    return 1
+  fi
+  # This function runs under `|| {…}`, so `set -e` is off here. Each write
+  # checks itself.
+  if [ ! -d "$app/data" ]; then
+    mkdir -p "$app/data" || return 1
+    if [ "$(id -u)" = "0" ]; then chown "$owner" "$app/data" || return 1; fi
+    echo "    made $app/data, a ReadWritePaths dir of the gateway"
+  fi
+  for f in "$app/infra/provider_models_cache.json" "$app/apps/services/gateway/agents.json"; do
+    [ -f "$f" ] && continue
+    case "$f" in */agents.json) body='[]' ;; *) body='{}' ;; esac
+    mkdir -p "$(dirname "$f")" || return 1
+    printf '%s\n' "$body" > "$f" || return 1
+    if [ "$(id -u)" = "0" ]; then chown "$owner" "$f" || return 1; fi
+    echo "    made $f as $body: it is on the ReadWritePaths of the gateway"
+  done
+  for d in "$home/.acb/agents" "$home/.copilot" "$home/.cache/copilot"; do
+    [ -d "$d" ] && continue
+    if [ "$(id -un)" = "$user" ]; then
+      mkdir -p "$d" || return 1
+    else
+      sudo -u "$user" mkdir -p "$d" || return 1
+    fi
+    echo "    made $d as $user, so its ReadWritePaths entry binds"
+  done
+}
+
+# The gateway cannot write __pycache__ under .venv, apps/ or packages/ in
+# the sandbox. Python then skips the write with no error, and compiles each
+# changed module again at every start. So the deploy compiles them, as the
+# owner of the checkout, before the restart. Best-effort: a file that does
+# not compile is logged, and the deploy goes on. The timestamp mode is right
+# here, because `git reset` and `uv sync` give a changed file a new mtime.
+compile_bytecode() {  # <app dir>
+  local app="$1" owner py rc=0
+  owner="$(stat -c '%U' "$app")"
+  py="${BH2_PYTHON:-$app/.venv/bin/python}"
+  if [ ! -x "$py" ]; then
+    echo "    ! no $py, so no bytecode was compiled (non-fatal)"
+    return 0
+  fi
+  local -a cmd=("$py" -m compileall -q -j 0 --invalidation-mode timestamp
+                -x '[/\\](node_modules|\.next|\.git)[/\\]' "$app/.venv/lib" "$app/apps" "$app/packages")
+  if [ "$(id -un)" = "$owner" ]; then
+    "${cmd[@]}" >/dev/null 2>&1 || rc=$?
+  else
+    sudo -u "$owner" -H "${cmd[@]}" >/dev/null 2>&1 || rc=$?
+  fi
+  if [ "$rc" = "0" ]; then
+    echo "    compiled the bytecode of .venv, apps/ and packages/"
+  else
+    echo "    ! compileall exited $rc: a file did not compile (non-fatal). Python compiles it at start."
+  fi
+  return 0
+}
+
+# On a failure it sets BH2_FAIL_WHY to the reason, for the deploy's last line.
+bh2_strict_check() {
+  local active nnp psys rb_out rb_rc=0
+  BH2_FAIL_WHY=""
+  active="$(systemctl show "$BH2_UNIT" -p ActiveState --value 2>/dev/null || true)"
+  nnp="$(systemctl show "$BH2_UNIT" -p NoNewPrivileges --value 2>/dev/null || true)"
+  psys="$(systemctl show "$BH2_UNIT" -p ProtectSystem --value 2>/dev/null || true)"
+  # status reads the root-only ack with sudo, and takes no deploy lock.
+  rb_out="$(bash "$BH2_ROLLBACK_SCRIPT" status 2>&1)" || rb_rc=$?
+  if [ "$rb_rc" = "0" ]; then
+    printf '%s\n' "$rb_out" | sed 's/^/    /'
+  fi
+  if [ "$active" != "active" ]; then
+    echo "    !! BH-2 strict check: $BH2_UNIT is '${active:-unknown}', not active."
+    BH2_FAIL_WHY="$BH2_UNIT is not active ('${active:-unknown}'). A rollback does not pass an inactive gateway"
+    return 1
+  fi
+  if [ "$nnp" = "yes" ] && [ "$psys" = "strict" ]; then
+    echo "    BH-2 strict check: $BH2_UNIT is active, NoNewPrivileges=yes, ProtectSystem=strict"
+    return 0
+  fi
+  if [ "$rb_rc" = "0" ]; then
+    echo "    BH-2 strict check: the sandbox is off (NoNewPrivileges=${nnp:-?}, ProtectSystem=${psys:-?}),"
+    echo "    and a valid rollback holds it off. Fix the cause, then run bh2_rollback.sh off."
+    return 0
+  fi
+  echo "    !! BH-2 strict check: NoNewPrivileges=${nnp:-?}, ProtectSystem=${psys:-?},"
+  echo "       and no valid rollback (bh2_rollback.sh status gave $rb_rc: $(printf '%s\n' "$rb_out" | head -n 1))."
+  BH2_FAIL_WHY="$BH2_UNIT is not sandboxed, and no valid rollback is on"
+  return 1
+}
+# <<< bh2 helpers
+
 # ── WhatsApp bridge (whatsmeow, personal-number QR) ───────────────
 # A localhost-only Go service that links a PERSONAL number by QR and
 # streams messages to the gateway's /whatsapp/bridge/ingest (same
@@ -832,7 +1548,7 @@ grep -qE '^WHATSAPP_BRIDGE_CALL_RETENTION_DAYS=' "$ENV_FILE" || echo "WHATSAPP_B
 # Generate a strong shared secret once (used by BOTH gateway + bridge).
 if ! grep -qE '^WHATSAPP_BRIDGE_SECRET=.+' "$ENV_FILE"; then
   _wbsecret="$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-  grep -vE '^WHATSAPP_BRIDGE_SECRET=' "$ENV_FILE" > "$ENV_FILE.wb.tmp" && mv "$ENV_FILE.wb.tmp" "$ENV_FILE"
+  env_edit_in_place "$ENV_FILE" grep -vE '^WHATSAPP_BRIDGE_SECRET='
   echo "WHATSAPP_BRIDGE_SECRET=$_wbsecret" >> "$ENV_FILE"
   echo "    + generated WHATSAPP_BRIDGE_SECRET"
 fi
@@ -907,10 +1623,17 @@ grep -qE '^MEET_VNC=' "$ENV_FILE" || echo "MEET_VNC=0" >> "$ENV_FILE"
 # worker's live-segment callback). Generated once, then reused.
 if ! grep -qE '^MEETING_BOT_TOKEN=.+' "$ENV_FILE"; then
   _mbtoken="$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-  grep -vE '^MEETING_BOT_TOKEN=' "$ENV_FILE" > "$ENV_FILE.mb.tmp" && mv "$ENV_FILE.mb.tmp" "$ENV_FILE"
+  env_edit_in_place "$ENV_FILE" grep -vE '^MEETING_BOT_TOKEN='
   echo "MEETING_BOT_TOKEN=$_mbtoken" >> "$ENV_FILE"
   echo "    + generated MEETING_BOT_TOKEN"
 fi
+# WS-49 BH-6, step 2 again. The block above can write MEETING_BOT_TOKEN,
+# NOTES_LIVE_TOKEN_URL, MEET_PROFILE_DIR and MEET_VNC, and the compose call
+# below reads root.env. Without this run, a new box starts the bot with no token.
+sudo bash /usr/local/lib/acb/root_env.sh || {
+  echo "BH-6 FAILED: /etc/acb/root.env was not written again. No service was restarted."
+  exit 1
+}
 
 MB_ENABLED="$(grep -E '^MEETING_BOT_ENABLED=' "$ENV_FILE" | head -1 | cut -d= -f2-)"
 # Never recreate the worker while a bot is in a live call — each
@@ -924,8 +1647,8 @@ if [ "$MB_ENABLED" = "1" ] && [ -n "$MB_ACTIVE" ] && [ "$MB_ACTIVE" -gt 0 ] 2>/d
 elif [ "$MB_ENABLED" = "1" ]; then
   # --build is cheap after the first run (layer cache); the first
   # deploy pulls the Playwright base image, which is large.
-  # --env-file is explicit on purpose: compose resolves a bare .env
-  # against the project directory (infra/), not the app root.
+  # acb_compose (WS-49 BH-6) builds from the root copy of the meeting-bot
+  # dir, and reads /etc/acb/root.env.
   #
   # `timeout` and </dev/null are both scar tissue: an apt postinst
   # that prompts (tzdata asking "Geographic area:") hung this build
@@ -934,8 +1657,7 @@ elif [ "$MB_ENABLED" = "1" ]; then
   # bot image stayed live. Bounded + no tty means a prompt fails
   # fast instead of eating the deploy.
   MB_IMAGE_BEFORE="$(docker images -q acb-meeting-bot:latest 2>/dev/null || true)"
-  if timeout 900 docker compose --env-file "$ENV_FILE" \
-       -f infra/docker-compose.yml --profile meetingbot \
+  if acb_compose --timeout 900 --profile meetingbot \
        up -d --build meeting-bot </dev/null 2>&1 | tail -5; then
     sleep 5
     if curl -fsS --max-time 10 http://127.0.0.1:8095/health >/dev/null 2>&1; then
@@ -958,8 +1680,7 @@ elif [ "$MB_ENABLED" = "1" ]; then
   fi
 else
   echo "    MEETING_BOT_ENABLED=0 — meeting bot OFF (join-by-link unavailable)"
-  docker compose --env-file "$ENV_FILE" -f infra/docker-compose.yml \
-    --profile meetingbot rm -sf meeting-bot >/dev/null 2>&1 || true
+  acb_compose --profile meetingbot rm -sf meeting-bot >/dev/null 2>&1 || true
 fi
 
 echo "==> Installing the Caddy config (H-60)"
@@ -987,6 +1708,9 @@ echo "==> Installing the Caddy config (H-60)"
 # and that would have taken three hostnames down. It now matches the box.
 CADDY_LIVE=/etc/caddy/Caddyfile
 CADDY_REPO="$APP_DIR/deploy/hostinger/caddy/Caddyfile"
+# WS-38 S-4: a staging box installs its own two-host file, never production's.
+[ "$DEPLOY_ENV" = "staging" ] && CADDY_REPO="$APP_DIR/deploy/hostinger/caddy/Caddyfile.staging"
+echo "    caddy config: ${CADDY_REPO#"$APP_DIR"/} ($DEPLOY_ENV)"
 CADDY_BAK=""
 CADDY_CHANGED=0
 echo "    caddy state: $(systemctl is-active caddy 2>&1 || true)"
@@ -1062,11 +1786,39 @@ echo "==> Restarting gateway (systemd)"
 # :3001 from 2026-09-26 to 2026-09-27 is in that second. The unit now says
 # `Wants=`, which keeps the start order and drops the restart. It must be on
 # the box before this restart, or this deploy still takes the workbench down.
+#
+# The drop-ins (acb-gateway.service.d/40-agent-site.conf and the rest) went in
+# at the BH-7 step above, before any restart, so this restart runs with them.
+# That includes the BH-2 sandbox (50-hardening.conf). Its ReadWritePaths must
+# exist first, or the gateway does not start (ensure_gateway_rw_paths).
+echo "==> WS-49 BH-2: compile the Python bytecode (best-effort)"
+compile_bytecode "$APP_DIR"
+ensure_gateway_rw_paths "$APP_DIR" || {
+  echo "GATEWAY NOT RESTARTED: .env is missing or holds no DATABASE_URL, or a write-list path could not be made."
+  echo "    The gateway that runs now keeps serving. Fix the cause above, then deploy again."
+  exit 1
+}
 sudo cp "$APP_DIR/deploy/hostinger/acb-gateway.service" /etc/systemd/system/acb-gateway.service
 sudo cp "$APP_DIR/deploy/hostinger/acb-workbench.service" /etc/systemd/system/acb-workbench.service
+# WS-49 BH-6, step 4. Here, after ensure_gateway_rw_paths: acb-gateway holds
+# Requires=acb.service, so a restart of acb.service restarts the gateway too,
+# and a restart before that guard would skip it. acb.service restarts only
+# when its unit file or a core input of the root copy changed (step 1). Then
+# ONE transaction restarts both, so the gateway restarts one time.
+BH6_ACB_RESTART=0
+if ! sudo cmp -s "$APP_DIR/deploy/hostinger/acb.service" /etc/systemd/system/acb.service; then
+  sudo install -m 0644 "$APP_DIR/deploy/hostinger/acb.service" /etc/systemd/system/acb.service
+  BH6_ACB_RESTART=1
+fi
+if [ "${BH6_CORE_CHANGED:-0}" = "1" ]; then BH6_ACB_RESTART=1; fi
 sudo systemctl daemon-reload
 sudo systemctl enable acb-gateway >/dev/null 2>&1 || true
-sudo systemctl restart acb-gateway
+if [ "$BH6_ACB_RESTART" = "1" ]; then
+  echo "    acb.service or a core input of the root copy changed: one restart of acb.service and acb-gateway"
+  sudo systemctl restart acb.service acb-gateway
+else
+  sudo systemctl restart acb-gateway
+fi
 sleep 3
 systemctl is-active --quiet acb-gateway || { echo "GATEWAY FAILED TO START"; exit 1; }
 # Wait until it ANSWERS. The build below does not need it, but the verify at
@@ -1074,6 +1826,48 @@ systemctl is-active --quiet acb-gateway || { echo "GATEWAY FAILED TO START"; exi
 wait_ready "gateway" "http://127.0.0.1:8080/health" 120 \
   || { echo "GATEWAY FAILED TO START: active, but /health never answered"; exit 1; }
 echo "Gateway is active"
+
+echo "==> Restarting the agent edge (systemd, WS-55 EA-10a)"
+# The public door for outside agents (mcp.metorite.com), spec
+# external_agent_access.md §15.3. The same pattern as the Customer Console
+# step below: `git reset --hard` moves the code, and only a restart loads it.
+#
+# 🔴 **ONLY WHEN THE UNIT IS ENABLED.** The BO-23 loop below installs the unit
+# file and the BH-7 step installed its drop-in, and neither one enables a
+# service. So a box where the owner has not enabled the edge keeps it OFF, and
+# this step says so. Enabling it is an owner act, after the edge env file
+# exists.
+#
+# When it is enabled, the unit file goes in HERE, before the restart, so the
+# restart runs the unit of this commit and not the one of the last deploy.
+# The wait accepts any HTTP answer: with the flag off, every route is a 404.
+# Fence: tests/unit/test_agent_edge_deploy.py.
+#
+# EA-13a fix round 1: this step runs RIGHT AFTER the gateway restart. The
+# gateway checks the stamp that the edge signs, so a gap between the two
+# restarts is a window of 401s. Branch 0 also accepts the legacy stamp for
+# one release, which is the real fix. This order makes the window short.
+# >>> ea10 edge restart
+edge_unit="acb-agent-edge"
+if systemctl is-enabled --quiet "$edge_unit" 2>/dev/null; then
+  if ! sudo cmp -s "$APP_DIR/deploy/hostinger/$edge_unit.service" "/etc/systemd/system/$edge_unit.service"; then
+    sudo install -m 0644 "$APP_DIR/deploy/hostinger/$edge_unit.service" "/etc/systemd/system/$edge_unit.service"
+    sudo systemctl daemon-reload
+  fi
+  sudo systemctl restart "$edge_unit"
+  sleep 3
+  if systemctl is-active --quiet "$edge_unit" \
+    && wait_ready "agent edge" "http://127.0.0.1:8091/.well-known/oauth-authorization-server" 60; then
+    echo "    agent edge is active (127.0.0.1:8091)"
+  else
+    echo "AGENT EDGE FAILED TO START"
+    sudo journalctl -u "$edge_unit" --no-pager -n 40 || true
+    exit 1
+  fi
+else
+  echo "    $edge_unit is not enabled here — skipping restart (the edge stays off)"
+fi
+# <<< ea10 edge restart
 
 echo "==> Restarting the Customer Console (systemd)"
 # The unit FILE arrives via the BO-23 sync loop below, which deliberately does
@@ -1105,26 +1899,37 @@ fi
 # app-builder agent's build script
 # (apps/agents/agent-app-builder/build/build_t2.mjs) resolves
 # against via esbuild's nodePaths — installed ONCE here, never
-# per-app. Same default-resolution as CUSTOM_APPS_ROOT (already
-# proven in production for the App Workshop): read an override
-# from .env, else {AGENTS_CLONE_DIR:-$HOME/.acb/agents}.
+# per-app.
 # lucide-react: zero runtime deps of its own (only a react peer
 # dep, already here) — pinned to the exact version
 # workbench/control_plane itself uses, so every T2 app gets real
 # icon components for free instead of hand-rolled SVGs.
+#
+# 🔴 WS-49 BH-7 (P5 variant 2). This step runs `npm install` as a user with
+# sudo, so nothing the gateway can write may steer it:
+#   • The dir is the constant /opt/acb/t2-vendor. This step reads NO path from
+#     .env, because the gateway writes .env. The gateway unit gets the same
+#     value from 40-agent-site.conf, and BH-2 leaves the dir read-only to it.
+#   • `rm -f /opt/acb/t2-vendor/.npmrc` and `--userconfig /dev/null`: no
+#     planted npm config applies.
+#   • `--ignore-scripts`: no package script runs. esbuild still works without
+#     its postinstall, because npm installs its platform binary
+#     (@esbuild/linux-x64) as an optional dependency, not by a script.
+# Fence: tests/unit/test_agent_deps_target.py (BH-F6).
 echo "==> Provisioning T2 (React) vendor cache for the App Workshop builder"
-T2_VENDOR_DIR="$(grep -E '^CUSTOM_APPS_T2_VENDOR_DIR=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2-)"
-if [ -z "$T2_VENDOR_DIR" ]; then
-  CLONE_DIR="$(grep -E '^AGENTS_CLONE_DIR=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2-)"
-  T2_VENDOR_DIR="${CLONE_DIR:-$HOME/.acb/agents}/vendor/t2-react"
+T2_VENDOR_DIR="/opt/acb/t2-vendor"
+if [ ! -d "$T2_VENDOR_DIR" ]; then
+  sudo install -d -m 0755 -o "${VENV_OWNER%%:*}" -g "${VENV_OWNER##*:}" "$T2_VENDOR_DIR"
 fi
-mkdir -p "$T2_VENDOR_DIR"
+# A planted .npmrc DIRECTORY makes `rm -f` fail. Under `set -e` that would
+# let the gateway stop every deploy, so the second form removes it.
+rm -f /opt/acb/t2-vendor/.npmrc 2>/dev/null || rm -rf /opt/acb/t2-vendor/.npmrc
 printf '%s\n' \
   '{ "name": "cc-app-workshop-t2-vendor", "private": true,' \
   '  "dependencies": { "react": "18.3.1", "react-dom": "18.3.1", "esbuild": "0.24.0", "lucide-react": "1.17.0" } }' \
   > "$T2_VENDOR_DIR/package.json"
 if [ ! -d "$T2_VENDOR_DIR/node_modules/react" ] || [ ! -d "$T2_VENDOR_DIR/node_modules/esbuild" ] || [ ! -d "$T2_VENDOR_DIR/node_modules/lucide-react" ]; then
-  (cd "$T2_VENDOR_DIR" && npm install --no-audit --no-fund --omit=dev) \
+  (cd "$T2_VENDOR_DIR" && npm install --no-audit --no-fund --omit=dev --ignore-scripts --userconfig /dev/null) \
     && echo "    + T2 vendor cache installed ($T2_VENDOR_DIR)" \
     || echo "    ! T2 vendor install failed — T2 (React) apps will fail to build; T1 apps unaffected"
 else
@@ -1390,11 +2195,11 @@ echo "Workbench is active"
 # was up, Caddy routed it, and nothing in this script rebuilt it — so every
 # operator feature merged to `main` stayed on `main`.
 #
-# ⚠️ **The unit file is NOT in this repo.** Every other service here is copied
-# from `deploy/hostinger/*.service`; this one was stood up by hand on the box,
-# so there is nothing to `cp`. That is a real gap and it is recorded in the
-# handoff queue — until it closes, this block manages an artefact it cannot
-# reproduce.
+# The unit file is `deploy/hostinger/acb-operator-console.service` (WS-49
+# BH-2, 2026-10-09). It is the unit that ran on the box, byte for byte, and
+# the BO-23 unit loop below installs it. Its drop-in
+# (`acb-operator-console.service.d/50-hardening.conf`) went in at the BH-7
+# step, before this restart, so this restart runs with it.
 #
 # ⚠️ **Deliberately AFTER the workbench.** Customer surfaces come up first, so
 # a failure here fails the job loudly without having delayed a single customer
@@ -1475,7 +2280,7 @@ else
   echo "    $OC_UNIT is not enabled here — skipping the Operator Console."
   echo "    If it runs under another name, set OPERATOR_CONSOLE_UNIT in .env"
   echo "    on the box. If it runs on this host at all, it is NOT being"
-  echo "    rebuilt by this script and it WILL drift (see HANDOFF H-75)."
+  echo "    rebuilt by this script and it WILL drift."
 fi
 
 echo "==> Checking Caddy is still serving"
@@ -1498,10 +2303,8 @@ echo "==> Installing health watchdog (systemd timer)"
 # Self-heals services between deploys and captures network forensics
 # every 10 min. Deliberately installed here so it can never drift
 # from the repo. See deploy/hostinger/health-watchdog.sh.
-# The script is already in place via git reset; just make sure it is
-# executable. (Do NOT `install` it onto itself — src == dest is an
-# error, which is how it ended up non-executable the first time.)
-sudo chmod 0755 "$APP_DIR/deploy/hostinger/health-watchdog.sh" || true
+# The unit runs the ROOT COPY /usr/local/lib/acb/health-watchdog.sh, which
+# the BH-6 step wrote. It runs it through bash, so no mode bit matters.
 sudo cp "$APP_DIR/deploy/hostinger/acb-health-watchdog.service" /etc/systemd/system/
 sudo cp "$APP_DIR/deploy/hostinger/acb-health-watchdog.timer"   /etc/systemd/system/
 sudo systemctl daemon-reload
@@ -1512,6 +2315,40 @@ else
   # Non-fatal: a missing watchdog must never block shipping the app.
   echo "    ! watchdog timer NOT active (non-fatal)"
   sudo systemctl status acb-health-watchdog.timer --no-pager 2>&1 | head -15 || true
+fi
+
+echo "==> Ensuring the off-box backup tools (H-123)"
+# backup_offbox.sh uploads the nightly copy with rclone, after zstd and gpg. The
+# box has gpg and zstd. rclone comes from apt HERE, so no hand install drifts
+# from the repo, and a rebuilt box gets it on the first deploy. Idempotent: a
+# tool that is present costs one `command -v`.
+# Non-fatal on purpose. A missing tool must never block shipping the app, and
+# the nightly unit then fails LOUDLY on its own (`needs 'rclone'`).
+# ⚠️ `< /dev/null`: this file IS the shell's stdin on the push path, and a
+# command that reads stdin eats the rest of the deploy.
+_offbox_missing=""
+command -v rclone >/dev/null 2>&1 || _offbox_missing="$_offbox_missing rclone"
+command -v gpg    >/dev/null 2>&1 || _offbox_missing="$_offbox_missing gnupg"
+command -v zstd   >/dev/null 2>&1 || _offbox_missing="$_offbox_missing zstd"
+# ⚠️ `DPkg::Lock::Timeout=120`: unattended-upgrades holds the dpkg lock for
+# minutes at a time, and without a wait the install fails at once. A failed
+# `apt-get update` does NOT stop the install: the package lists already on the
+# box can still hold the package. Each outcome is logged.
+if [ -n "$_offbox_missing" ]; then
+  echo "    installing:$_offbox_missing"
+  if sudo apt-get -o DPkg::Lock::Timeout=120 update -qq >/dev/null 2>&1 < /dev/null; then
+    echo "    apt-get update ok"
+  else
+    echo "    !! apt-get update FAILED — trying the install from the package lists on the box"
+  fi
+  # shellcheck disable=SC2086 # one word per package, on purpose
+  if sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y -qq $_offbox_missing >/dev/null 2>&1 < /dev/null; then
+    echo "    + installed:$_offbox_missing"
+  else
+    echo "    !! could not install:$_offbox_missing — the nightly off-box copy FAILS until it is"
+  fi
+else
+  echo "    rclone, gpg and zstd are present"
 fi
 
 echo "==> Syncing systemd units (BO-23)"
@@ -1555,17 +2392,97 @@ fi
 # it, and `backup_db.sh` EXITS 1 in local mode when no Postgres answers. The
 # false green needs `PG_MODE=docker`, which now needs the EnvironmentFile to be
 # missing. `test_the_backup_service_must_load_its_credentials` is that fence.
+# ── WS-38 S-4: the staging box's timers, and ONLY the staging box's ────────
+# H-132's rule stands for production, and its loop below is unchanged: every
+# timer the repo ships arrives scheduled, with no carve-out. A staging box is a
+# different deployment, so it gets its own branch. It runs two timers. The
+# backup timer would dump a database that the nightly rebuild replaces, and
+# the chat smoke check talks to the production organization. It DISABLES every
+# other timer and logs each one, so a box that once ran as production stops
+# them. This branch cannot run on production: DEPLOY_ENV=staging also installs
+# the staging Caddyfile, so a production box set to staging would stop serving
+# its own hosts at once, loudly. Fence: tests/unit/test_deploy_env.py.
+staging_timers="acb-pull.timer acb-health-watchdog.timer"
+if [ "$DEPLOY_ENV" = "staging" ]; then
+  for st_timer in "$APP_DIR"/deploy/hostinger/*.timer; do
+    [ -e "$st_timer" ] || continue
+    st_name="$(basename "$st_timer")"
+    if printf ' %s ' "$staging_timers" | grep -q " $st_name "; then
+      sudo systemctl enable --now "$st_name" >/dev/null 2>&1 \
+        || echo "    !! could not enable $st_name — check: systemctl status $st_name"
+    else
+      sudo systemctl disable --now "$st_name" >/dev/null 2>&1 || true
+      echo "    staging: $st_name disabled"
+    fi
+  done
+  # ── WS-38 T-9: the units that ONLY the staging box runs ──────────────────
+  # deploy/hostinger/staging/ holds them, and production never reads it: the
+  # loop below globs deploy/hostinger/*.timer, so H-132 is untouched. They are
+  # the staging database, the Console tunnel, the nightly rebuild and the slice
+  # that caps the staging services. README.md in that folder lists them.
+  st_dir="$APP_DIR/deploy/hostinger/staging"
+  for st_unit in "$st_dir"/*.service "$st_dir"/*.timer "$st_dir"/*.slice; do
+    [ -e "$st_unit" ] || continue
+    st_name="$(basename "$st_unit")"
+    if ! sudo cmp -s "$st_unit" "/etc/systemd/system/$st_name"; then
+      sudo install -m 0644 "$st_unit" "/etc/systemd/system/$st_name"
+      echo "    staging: installed $st_name"
+    fi
+  done
+  install_dropins "$st_dir"
+  # The slice drop-ins apply at a unit's next start, so restart a unit that
+  # started before its newest one (the BH-7 rule, for this folder).
+  restart_stale_dropin_units "$st_dir"
+  # The nightly rebuild runs as root, so it runs a ROOT-OWNED copy (BH-6).
+  sudo install -d -m 0755 -o root -g root /usr/local/lib/acb-staging
+  sudo install -m 0755 -o root -g root "$APP_DIR/scripts/staging_refresh.sh" /usr/local/lib/acb-staging/staging_refresh.sh
+  sudo systemctl enable --now acb-staging-db.service acb-staging-refresh.timer >/dev/null 2>&1 \
+    || echo "    !! staging: could not enable acb-staging-db or acb-staging-refresh.timer"
+  sudo systemctl enable --now acb-console-tunnel.service >/dev/null 2>&1 \
+    || echo "    staging: the Console tunnel is not up (no link key yet, or production has not authorised it)"
+else
 for timer in "$APP_DIR"/deploy/hostinger/*.timer; do
   [ -e "$timer" ] || continue
   sudo systemctl enable --now "$(basename "$timer")" >/dev/null 2>&1 \
     || echo "    !! could not enable $(basename "$timer") — check: systemctl status $(basename "$timer")"
 done
+fi
 systemctl list-timers --no-pager 'acb-*' 2>/dev/null | head -5 || true
+
+echo "==> WS-49 BH-7: one restart for a unit whose drop-in changed"
+# The BH-7 step installed the drop-ins before every restart of this apply. A
+# unit that this apply restarted after that already runs with them. A unit
+# that is active and started BEFORE its newest drop-in (the WhatsApp bridge
+# when its build is off, for one) gets ONE restart here. A unit that is not
+# active (the oneshot acb-smoke-chat) gets none: its next start applies them.
+restart_stale_dropin_units "$APP_DIR/deploy/hostinger"
+
+echo "==> WS-49 BH-2: the strict check of the gateway sandbox"
+# 🔴 **THIS GOES AFTER THE LAST RESTART AND BEFORE THE MARKER.** The last
+# restart is restart_stale_dropin_units just above. A restart after this check
+# could start a unit that the check never read. The marker is
+# record_applied_sha at the end. A failure here exits 1 BEFORE it, so the
+# next deploy applies this sha again.
+#
+# ⚠️ That retry has a cost. vps_pull.sh tries one target sha at most 3 times
+# (MAX_FAILS), and each try restarts the gateway before it reaches this check.
+# So a strict check that is broken costs 3 gateway restarts, and then the
+# timer stops and says so. The way out is the rollback, which passes this
+# check for 72 hours:
+#   sudo bash /opt/acb/app/scripts/bh2_rollback.sh on
+# Fence: tests/unit/test_bh2_strict_check.py.
+if ! bh2_strict_check; then
+  echo "BH-2 STRICT CHECK FAILED: ${BH2_FAIL_WHY:-the check failed}."
+  echo "    No marker was written, so the next deploy applies this sha again."
+  echo "    Read: systemctl show acb-gateway -p ActiveState -p NoNewPrivileges -p ProtectSystem"
+  echo "    Rollback for 72 h: sudo bash $APP_DIR/scripts/bh2_rollback.sh on"
+  exit 1
+fi
 
 echo "==> Running infra health probe"
 cd "$APP_DIR"
 uv run python scripts/check_infra.py || {
-  echo "INFRA PROBE FAILED — check logs: docker compose -f infra/docker-compose.yml logs --tail=100"
+  echo "INFRA PROBE FAILED — check logs: sudo env -i PATH=/usr/bin:/bin HOME=/root docker compose --project-directory /usr/local/lib/acb/infra --env-file /etc/acb/root.env -p acb -f /usr/local/lib/acb/infra/docker-compose.yml logs --tail=100"
   exit 1
 }
 
@@ -1576,5 +2493,6 @@ uv run python scripts/check_infra.py || {
 # ⚠️ Do not reword it, and do not move it. It must stay the LAST echo here.
 # `test_deploy_pipeline.py::TestTheApplyMustReachItsEnd` fences both sides.
 # The marker goes first, so it can only record an apply that got this far.
-record_applied_sha "$(git -C "$APP_DIR" rev-parse HEAD)"
+# It records HEAD only when HEAD's own copy of this file ran the steps.
+record_applied_sha "$(git -C "$APP_DIR" rev-parse HEAD)" "$VPS_APPLY_SELF_SUM"
 echo "==> Deployment complete"

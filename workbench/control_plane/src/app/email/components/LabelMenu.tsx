@@ -16,15 +16,25 @@ import { ColorSwatch, LabelColorGrid } from "./LabelChip";
 export function LabelMenu({
   email,
   embedded = false,
+  menu = false,
+  onApplied,
 }: {
   email: Email;
   /** When rendered inside another popover/flyout (e.g. the right-click submenu),
    *  drop this component's own panel chrome + fixed width so it doesn't create a
    *  box-in-a-box with a nested scrollbar. */
   embedded?: boolean;
+  /** Inside a `role="menu"` panel (`MessageActions`): each label is a
+   *  `menuitemcheckbox`, and the create box is a stop of the menu's keys. */
+  menu?: boolean;
+  /** Called after each toggle, so a caller can show the change on its own copy. */
+  onApplied?: (name: string, add: boolean) => void;
 }) {
-  const { availableLabels, labelColors, applyLabel, setLabelColor } =
+  const { availableLabels, labelColors, applyLabel, setLabelColor, viewAll, selectedAccountId } =
     useEmailStore();
+  // The colours are those of the selected mailbox. A mail of another mailbox
+  // (All inboxes) gets labels but no colour edit here (EM-T8d review).
+  const canColor = !viewAll || email.accountId === selectedAccountId;
   const [newLabel, setNewLabel] = useState("");
   const [newColor, setNewColor] = useState<string | null>(null);
   const [pickNew, setPickNew] = useState(false);
@@ -35,8 +45,9 @@ export function LabelMenu({
   const create = () => {
     const name = newLabel.trim();
     if (!name) return;
-    applyLabel(email.id, name, true);
-    if (newColor) setLabelColor(name, newColor);
+    applyLabel(email.id, name, true, email.categories);
+    onApplied?.(name, true);
+    if (newColor && canColor) setLabelColor(name, newColor, email.accountId);
     setNewLabel("");
     setNewColor(null);
     setPickNew(false);
@@ -72,8 +83,17 @@ export function LabelMenu({
               <div key={name}>
                 <div className="w-full flex items-center gap-2 px-3 py-1.5 text-foreground/80 hover:bg-secondary transition-colors">
                   <button
-                    onClick={() => applyLabel(email.id, name, !on)}
-                    className="flex items-center gap-2 flex-1 min-w-0 text-left hover:text-foreground"
+                    type="button"
+                    // The labels of the message go with the change: a message
+                    // of a thread is often not a row of the list.
+                    onClick={() => {
+                      applyLabel(email.id, name, !on, email.categories);
+                      onApplied?.(name, !on);
+                    }}
+                    role={menu ? "menuitemcheckbox" : undefined}
+                    aria-checked={menu ? on : undefined}
+                    tabIndex={menu ? -1 : undefined}
+                    className="flex items-center gap-2 flex-1 min-w-0 text-left rounded outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
                   >
                     <span
                       className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 ${
@@ -86,18 +106,21 @@ export function LabelMenu({
                     </span>
                     <span className="truncate">{name}</span>
                   </button>
-                  <ColorSwatch
-                    name={name}
-                    title={open ? "Close colours" : "Set colour"}
-                    onClick={() => setOpenColorFor(open ? null : name)}
-                  />
+                  {canColor && (
+                    <ColorSwatch
+                      name={name}
+                      title={open ? "Close colours" : "Set colour"}
+                      onClick={() => setOpenColorFor(open ? null : name)}
+                      menuStop={menu}
+                    />
+                  )}
                 </div>
-                {open && (
+                {open && canColor && (
                   <div className="px-3 pb-1.5">
                     <LabelColorGrid
                       value={presetForLabel(name, labelColors)}
                       onPick={(c) => {
-                        setLabelColor(name, c);
+                        setLabelColor(name, c, email.accountId);
                         setOpenColorFor(null);
                       }}
                     />
@@ -113,7 +136,10 @@ export function LabelMenu({
           <button
             type="button"
             title="Pick a colour for the new label"
+            aria-label="Pick a colour for the new label"
             onClick={() => setPickNew((v) => !v)}
+            data-menu-stop={menu ? "" : undefined}
+            tabIndex={menu ? -1 : undefined}
             style={{ backgroundColor: newPreviewHex }}
             className="w-3.5 h-3.5 rounded-full border border-black/20 ring-1 ring-inset ring-white/20 flex-shrink-0 hover:scale-110 transition-transform"
           />
@@ -127,18 +153,24 @@ export function LabelMenu({
               }
             }}
             placeholder="Create label…"
-            className="flex-1 bg-transparent text-xs text-foreground placeholder:text-muted-foreground outline-none px-1 py-1"
+            aria-label="Create label"
+            data-menu-stop={menu ? "" : undefined}
+            className="flex-1 rounded bg-transparent text-xs text-foreground placeholder:text-muted-foreground outline-none px-1 py-1 focus-visible:ring-1 focus-visible:ring-ring"
           />
           <button
+            type="button"
             onClick={create}
             disabled={!newLabel.trim()}
             title="Create label"
-            className="text-primary hover:opacity-80 disabled:opacity-40"
+            aria-label="Create the label"
+            data-menu-stop={menu ? "" : undefined}
+            tabIndex={menu ? -1 : undefined}
+            className="rounded text-primary outline-none hover:opacity-80 focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40"
           >
             <Icon name="Plus" size={13} />
           </button>
         </div>
-        {pickNew && (
+        {pickNew && canColor && (
           <div className="pt-1">
             <LabelColorGrid
               value={newColor}

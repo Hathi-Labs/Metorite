@@ -123,13 +123,11 @@ const CASES = [
       && typeof j.hookSpecificOutput.additionalContext === 'string'
   }],
 
-  // The board is the authority; this file must keep saying so in the prompt,
-  // or it slowly becomes the thing agents trust for state.
-  ['the injected text defers to work_plan.md §2 for state', () => {
+  // Metorite is the state authority (D118). This file must keep saying so in
+  // the prompt, or it slowly becomes the thing agents trust for state.
+  ['the injected text defers to Metorite for state', () => {
     const r = run(`# OPEN\n\n${entry('H-1 · x · [AGENT]')}\n# DONE\n`)
-    // `work_plan.md`&nbsp;§2 — the backtick is part of the emitted markdown, so
-    // the pattern allows it rather than assuming a bare space.
-    return /work_plan\.md`? §2/.test(r.context) && /not state/i.test(r.context)
+    return /Metorite holds the state/.test(r.context) && /not state/i.test(r.context)
   }],
 ]
 

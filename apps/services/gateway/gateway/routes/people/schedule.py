@@ -41,6 +41,21 @@ from gateway.work_schedule import (
 from pydantic import BaseModel
 from sqlalchemy import text
 
+#: The policy upsert. ⚠️ It names ``organization_id`` and arbitrates on
+#: ``(organization_id, key)``, the primary key since migration 234. Before 234
+#: the key was ``key`` alone, and ``ON CONFLICT (key)`` now matches no
+#: constraint and answers 500. The tenant is the session's own bound one, the
+#: same value RLS checks. Fence: ``tests/unit/test_org_settings_tenancy_r8.py``.
+UPSERT_POLICY_SQL = (
+    "INSERT INTO org_settings (organization_id, key, value, updated_by, updated_at) "
+    "VALUES (CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid), "
+    "        :key, CAST(:value AS JSONB), :by, now()) "
+    "ON CONFLICT (organization_id, key) DO UPDATE "
+    "SET value = EXCLUDED.value, "
+    "    updated_by = EXCLUDED.updated_by, "
+    "    updated_at = now()"
+)
+
 
 class PolicyResponse(BaseModel):
     policy: dict[str, Any]
@@ -138,14 +153,7 @@ async def put_policy(
         impact = _impact(current, policy, rows)
         if not body.dry_run:
             await db.execute(
-                text(
-                    "INSERT INTO org_settings (key, value, updated_by, updated_at) "
-                    "VALUES (:key, CAST(:value AS JSONB), :by, now()) "
-                    "ON CONFLICT (key) DO UPDATE "
-                    "SET value = EXCLUDED.value, "
-                    "    updated_by = EXCLUDED.updated_by, "
-                    "    updated_at = now()"
-                ),
+                text(UPSERT_POLICY_SQL),
                 {"key": POLICY_KEY, "value": json.dumps(policy),
                  "by": getattr(user, "email", None) or "anonymous"},
             )

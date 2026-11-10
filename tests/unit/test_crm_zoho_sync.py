@@ -19,6 +19,7 @@ back dirty.
 from __future__ import annotations
 
 import itertools
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -97,6 +98,24 @@ def db(monkeypatch: pytest.MonkeyPatch) -> FakeCrmDB:
     fake = FakeCrmDB()
     bind_db(monkeypatch, fake, CRM_MODULES)
     return fake
+
+
+@pytest.fixture
+def approver_tenant() -> Iterator[str]:
+    """The tenant the ``approve`` call binds before it runs a handler.
+
+    The approval handler reads ``current_tenant()`` and refuses with none
+    bound (WS-53 CRM-T3). The fake does not model RLS, so any id works here.
+    The R8 suite ``test_crm_sync_tenancy.py`` proves the cross-tenant case.
+    """
+    from acb_common.db import bind_tenant, release_tenant
+
+    org = "99999999-9999-9999-9999-999999999999"
+    token = bind_tenant(org)
+    try:
+        yield org
+    finally:
+        release_tenant(token)
 
 
 @pytest.fixture
@@ -270,16 +289,19 @@ def test_all_three_gated_actions_have_a_registered_handler() -> None:
 
 async def test_an_approved_queued_push_really_executes(
     db: FakeCrmDB, zoho: FakeZoho, writer: FakeWriter, audit: list,
+    approver_tenant: str,
 ) -> None:
     """The registered handler re-enters through ``execute_push``, so an
     approval months later needs nothing that was only in memory."""
     from types import SimpleNamespace
 
+    row = db.seed(ORGANIZATIONS.table, name="Fracktal", zoho_id="z-acc-1")
     proposal = SimpleNamespace(
         action="crm.zoho_update",
         payload={"args": {
             "module": "Accounts", "op": "update", "record_id": "z-acc-1",
             "body": {"Account_Name": "Renamed"},
+            "table": ORGANIZATIONS.table, "native_id": str(row.id),
         }},
     )
     result = await crm_broker._handle_crm_zoho_write(proposal)
@@ -290,6 +312,7 @@ async def test_an_approved_queued_push_really_executes(
 
 async def test_an_approved_push_records_its_outcome_locally(
     db: FakeCrmDB, zoho: FakeZoho, writer: FakeWriter, audit: list,
+    approver_tenant: str,
 ) -> None:
     """The approval path must write back exactly what the inline path does.
 
@@ -320,6 +343,7 @@ async def test_an_approved_push_records_its_outcome_locally(
 
 async def test_an_approved_tombstone_delete_is_stamped_pushed(
     db: FakeCrmDB, zoho: FakeZoho, writer: FakeWriter, audit: list,
+    approver_tenant: str,
 ) -> None:
     from types import SimpleNamespace
 
@@ -417,9 +441,9 @@ async def test_the_acquired_zoho_id_is_committed_before_anything_else_runs(
     await crm_sync.run_cycle()
 
     kinds = [
-        "stamp" if s.startswith("UPDATE crm_organizations SET") else "commit"
+        "stamp" if s.startswith("UPDATE crm_companies SET") else "commit"
         for s in db.statements
-        if s.startswith("UPDATE crm_organizations SET") or s == "COMMIT"
+        if s.startswith("UPDATE crm_companies SET") or s == "COMMIT"
     ]
     # The fake records commits as a counter, not a statement, so assert the
     # weaker-but-real property: two creates, two stamps, and at least one
@@ -436,13 +460,13 @@ async def test_a_push_that_succeeds_but_cannot_be_stamped_is_loud(
     local stamp failed. It must be an ERROR in the report, not a silent
     success — a human has to reconcile it."""
     db.seed(ORGANIZATIONS.table, name="One", zoho_dirty=True)
-    db.fail_on("UPDATE crm_organizations SET", times=1)
+    db.fail_on("UPDATE crm_companies SET", times=1)
 
     report = await crm_sync.run_cycle()
 
     assert len(writer.creates) == 1
     assert report.pushed.created == 0
-    assert any("crm_organizations" in e for e in report.pushed.errors)
+    assert any("crm_companies" in e for e in report.pushed.errors)
 
 
 # ── Retry, backoff and giving up ───────────────────────────────────────────
@@ -483,7 +507,7 @@ async def test_a_row_inside_its_backoff_window_is_not_offered(
     assert writer.pushes == 0
     [statement] = [
         s for s in db.statements
-        if s.startswith("SELECT * FROM crm_organizations WHERE zoho_dirty")
+        if s.startswith("SELECT * FROM crm_companies WHERE zoho_dirty")
     ]
     assert "coalesce(zoho_next_attempt_at, :epoch) <= :now" in statement
 
@@ -574,12 +598,16 @@ def test_the_writer_treats_a_404_delete_as_done() -> None:
 
 # ── One cycle at a time ────────────────────────────────────────────────────
 
-async def test_a_second_concurrent_cycle_is_refused_with_409(
+async def test_a_second_concurrent_cycle_is_refused(
     db: FakeCrmDB, zoho: FakeZoho, writer: FakeWriter, audit: list,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Two overlapping cycles both see the same dirty rows and both create
-    them upstream — and Zoho has no idempotency token to undo that."""
+    them upstream — and Zoho has no idempotency token to undo that.
+
+    Asserted on the ENGINE, which CRM-Z5 reuses. The route answers 409 for
+    another reason until CRM-Z5 (``test_crm_sync_tenancy.py``), so a route
+    assertion here would pass without the lock."""
     import asyncio
 
     released = asyncio.Event()
@@ -595,9 +623,8 @@ async def test_a_second_concurrent_cycle_is_refused_with_409(
     await asyncio.sleep(0)  # let it take the lock
     assert crm_sync.cycle_in_progress() is True
 
-    with pytest.raises(HTTPException) as exc:
-        await crm_sync.run_sync_cycle_now(USER)
-    assert exc.value.status_code == 409
+    with pytest.raises(crm_sync.CycleAlreadyRunning):
+        await crm_sync.run_cycle()
 
     released.set()
     await first
@@ -636,7 +663,9 @@ async def test_stopping_signals_and_waits_instead_of_cancelling(
 
     monkeypatch.setattr(crm_sync, "run_cycle", _slow_cycle)
     crm_sync._sync_task = None
-    assert await crm_sync.start_crm_zoho_sync() is True
+    # The loop body CRM-Z5 reuses. `start_crm_zoho_sync` starts no loop until
+    # then (WS-53 CRM-T3), so the stop path is driven from the task itself.
+    assert await crm_sync._start_sync_task() is True
     await started.wait()
 
     await crm_sync.stop_crm_zoho_sync()
@@ -710,7 +739,7 @@ async def test_a_deal_push_carries_its_stage_name_not_its_status_uuid(
     org = db.seed(ORGANIZATIONS.table, name="Fracktal", zoho_id="z-acc-1")
     db.seed(
         DEALS.table, name="10 printers", amount=450000,
-        status_id=deal_status.id, organization_id=org.id, zoho_dirty=True,
+        status_id=deal_status.id, company_id=org.id, zoho_dirty=True,
     )
     await crm_sync.run_cycle()
 
@@ -780,7 +809,7 @@ async def test_a_driver_level_statement_error_does_not_take_the_cycle_with_it(
     going, the savepoint takes the hit, the cursor is still written, and the
     cycle still commits.
     """
-    db.fail_on("INSERT INTO crm_organizations")
+    db.fail_on("INSERT INTO crm_companies")
     zoho.data["Accounts"] = [
         {"id": "z-bad", "Account_Name": "Boom",
          "Modified_Time": "2026-08-01T00:00:00+00:00"},
@@ -853,7 +882,7 @@ async def test_the_cursor_upsert_is_keyed_on_the_module(
 
     inserts = db.statements_touching("INSERT INTO crm_sync_cursors")
     assert inserts
-    assert "ON CONFLICT (module) DO UPDATE SET" in inserts[0]
+    assert "ON CONFLICT (organization_id, module) DO UPDATE SET" in inserts[0]
 
 
 async def test_the_deleted_records_read_uses_the_PRE_cycle_cursor(
@@ -1162,7 +1191,7 @@ async def test_a_conflict_where_zoho_is_newer_applies_the_pull(
     # measuring the mirror's gap, not the engine.
     [(statement, params)] = [
         (s, p) for s, p in db.calls
-        if s.startswith("INSERT INTO crm_organizations (")
+        if s.startswith("INSERT INTO crm_companies (")
     ]
     assert params["name"] == "Zoho name"
     assert params["zoho_dirty"] is False
@@ -1289,7 +1318,7 @@ async def test_a_pull_never_rewrites_the_source_provenance(
 
     await crm_sync.run_cycle()
 
-    [statement] = db.statements_touching("INSERT INTO crm_organizations (")
+    [statement] = db.statements_touching("INSERT INTO crm_companies (")
     arm = statement.split("DO UPDATE SET", 1)[1]
     assert "source = EXCLUDED.source" not in arm
     assert "zoho_id = EXCLUDED.zoho_id" not in arm
@@ -1511,7 +1540,7 @@ def test_the_dirty_flag_is_set_at_the_one_write_choke_point() -> None:
     Reusing it means the pull's ``touch=False`` and "do not push this back"
     are ONE switch that cannot disagree, and a route added tomorrow inherits
     both without remembering either."""
-    tracked = "crm_organizations"
+    tracked = "crm_companies"
     assert crm_core.mark_dirty_on_update(
         tracked, {"name": "x"}, touch=True,
     ) == {"name": "x", "zoho_dirty": True}
@@ -1567,7 +1596,7 @@ async def test_a_native_delete_writes_a_tombstone_inside_the_transaction(
     ]
     deletes = [
         i for i, s in enumerate(db.statements)
-        if s.startswith("DELETE FROM crm_organizations")
+        if s.startswith("DELETE FROM crm_companies")
     ]
     assert inserts[0] < deletes[0]
     assert db.committed == 1
@@ -1654,7 +1683,7 @@ async def test_a_native_note_pushes_as_a_zoho_note(
     org = db.seed(ORGANIZATIONS.table, name="Fracktal", zoho_id="z-acc-1")
     db.seed(
         "crm_activities", type="note", subject="Called", body="Wants a quote",
-        organization_id=org.id, created_by="vjvarada@fracktal.in", zoho_id=None,
+        company_id=org.id, created_by="vjvarada@fracktal.in", zoho_id=None,
     )
     report = await crm_sync.run_cycle()
 
@@ -1676,9 +1705,9 @@ async def test_a_status_change_activity_is_never_pushed(
     the PREDICATE, so a new push path cannot reach them by another route."""
     org = db.seed(ORGANIZATIONS.table, name="Fracktal", zoho_id="z-acc-1")
     db.seed("crm_activities", type="status_change", subject="New → Won",
-            organization_id=org.id, created_by="platform", zoho_id=None)
+            company_id=org.id, created_by="platform", zoho_id=None)
     db.seed("crm_activities", type="system", subject="Imported",
-            organization_id=org.id, created_by="platform", zoho_id=None)
+            company_id=org.id, created_by="platform", zoho_id=None)
 
     report = await crm_sync.run_cycle()
 
@@ -1696,7 +1725,7 @@ async def test_an_activity_whose_parent_has_no_zoho_id_yet_waits(
     given the parent an id."""
     org = db.seed(ORGANIZATIONS.table, name="Fracktal")
     db.seed("crm_activities", type="note", subject="Called",
-            organization_id=org.id, created_by="a@b.in", zoho_id=None)
+            company_id=org.id, created_by="a@b.in", zoho_id=None)
 
     report = await crm_sync.run_cycle()
 
@@ -1730,10 +1759,12 @@ async def test_with_the_flag_off_no_loop_is_registered(
     assert crm_sync.sync_status()["running"] is False
 
 
-async def test_the_flag_on_starts_exactly_one_loop(
+async def test_the_loop_task_starts_exactly_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(crm_sync, "sync_enabled", lambda: True)
+    """The start CRM-Z5 reuses is idempotent. With the flag on,
+    ``start_crm_zoho_sync`` itself starts nothing until CRM-Z5 — that half is
+    ``test_crm_sync_tenancy.py``'s."""
     monkeypatch.setattr(crm_sync, "SYNC_INTERVAL_SECS", 3600)
 
     async def _never() -> Any:  # the loop must not actually reach Zoho here
@@ -1742,8 +1773,8 @@ async def test_the_flag_on_starts_exactly_one_loop(
     monkeypatch.setattr(crm_sync, "run_cycle", _never)
     crm_sync._sync_task = None
     try:
-        assert await crm_sync.start_crm_zoho_sync() is True
-        assert await crm_sync.start_crm_zoho_sync() is True  # idempotent
+        assert await crm_sync._start_sync_task() is True
+        assert await crm_sync._start_sync_task() is True  # idempotent
         task = crm_sync._sync_task
         assert task is not None
     finally:
@@ -1817,17 +1848,18 @@ async def test_a_timeline_bump_alone_does_not_dirty_the_row(
 
 # ── The manual cycle endpoint ──────────────────────────────────────────────
 
-async def test_the_manual_cycle_runs_without_the_flag(
+async def test_the_engine_cycle_runs_without_the_flag(
     db: FakeCrmDB, zoho: FakeZoho, writer: FakeWriter, audit: list,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """§7.1 — a hand-run cycle is an explicit admin act, so it does not need
-    the scheduling flag; the flag only decides whether the platform does this
-    unattended."""
+    """§7.1 — the flag only decides whether the platform runs a cycle
+    unattended. The engine itself does not read it. The route answers 409
+    until CRM-Z5 (``test_crm_sync_tenancy.py``), so this drives the engine
+    CRM-Z5 reuses."""
     monkeypatch.setattr(crm_sync, "sync_enabled", lambda: False)
     db.seed(ORGANIZATIONS.table, name="Fracktal", zoho_dirty=True)
 
-    report = await crm_sync.run_sync_cycle_now(USER)
+    report = await crm_sync.run_cycle()
 
     assert report.pushed.created == 1
     assert report.finished_at is not None

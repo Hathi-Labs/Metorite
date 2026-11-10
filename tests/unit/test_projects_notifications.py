@@ -214,8 +214,9 @@ class FakeDB:
         # test. The probe is matched FIRST, and the audience branch keys off
         # `assignee AS who`, which only its own query has.
         if statement.startswith("SELECT 1 FROM pm_tasks"):
-            # `vis_email` is absent for an unrestricted caller, whose clause is
-            # the literal TRUE.
+            # The fake's own shortcut: a statement with no `vis_email` reads as
+            # seen. The real clause binds `vis_email` for every caller now, the
+            # unrestricted one too (H-304, and WS-64 OP-9's personal line).
             who = args.get("vis_email")
             seen = who is None or who in self.visible_to
             return _Result([SimpleNamespace(x=1)] if seen else [])

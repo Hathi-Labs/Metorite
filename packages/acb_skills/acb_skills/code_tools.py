@@ -32,10 +32,11 @@ sandbox remains the hardening path for untrusted code.
 from __future__ import annotations
 
 import os
-import re
 import sys
 import time
 from pathlib import Path
+
+from acb_common.child_env import AGENT_GIT_VALUES, AGENT_PATH_VALUES, child_env
 
 from acb_skills.write_artifact import (
     artifact_context,
@@ -57,11 +58,6 @@ _SWEEP_MAX_FILES = 200
 # the run is harmless (the mirror is an idempotent write-through).
 _SWEEP_MTIME_SLACK = 2.0
 
-# Env allowlist for script subprocesses, plus a deny-pattern so nothing
-# secret-shaped leaks even through allowed names.
-_ENV_ALLOW = ("PATH", "HOME", "LANG", "LC_ALL", "TZ", "TMPDIR", "PYTHONPATH")
-_ENV_DENY_RE = re.compile(r"(TOKEN|SECRET|KEY|PASSWORD|CREDENTIAL)", re.I)
-
 
 def _workspace_root() -> Path | None:
     root = artifact_context().get("workspace_root")
@@ -77,7 +73,8 @@ def _script_env() -> dict[str, str]:
     """Minimal environment for script subprocesses: base allowlist + exactly
     the agent's DECLARED integrations' credentials.
 
-    The base allowlist is secret-free (deny-pattern on top). On top of it, the
+    The base allowlist is ``acb_common.child_env`` (WS-49 BH-1), the one
+    allowlist of every child of the gateway. On top of it, the
     canonical env vars of the integrations this agent declared in its
     ``config.json`` — and that resolved for this run — are passed through
     (``acb_skills.integrations.FIELD_TO_ENV``). So a script gets the Zoho
@@ -95,10 +92,10 @@ def _script_env() -> dict[str, str]:
     concurrent run cannot widen *which names* are looked up. A true per-run
     boundary for the process itself is the Tier-2 container env (MT-0c).
     """
-    env = {
-        k: v for k, v in os.environ.items()
-        if k in _ENV_ALLOW and not _ENV_DENY_RE.search(k)
-    }
+    # WS-49 BH-7 adds its fixed paths in AGENT_PATH_VALUES, not here.
+    # H-363: AGENT_GIT_VALUES make a git push of the script fail at once, as
+    # the script holds no GitHub credential.
+    extra: dict[str, str | None] = {**AGENT_PATH_VALUES, **AGENT_GIT_VALUES}
     declared = _declared_integrations()
     if declared:
         try:
@@ -109,11 +106,11 @@ def _script_env() -> dict[str, str]:
             for var in env_var_names(declared):
                 val = credential(var)
                 if val:
-                    env[var] = val
+                    extra[var] = val
         except ImportError:
             pass
-    env.setdefault("PYTHONUNBUFFERED", "1")
-    return env
+    extra.setdefault("PYTHONUNBUFFERED", "1")
+    return child_env(extra=extra)
 
 
 def _cap(text: str) -> str:
@@ -127,6 +124,68 @@ def _cap(text: str) -> str:
     )
 
 
+#: The walk of one sweep stops after this many entries, so a tree of a
+#: million files cannot hold a worker thread for minutes.
+_SWEEP_WALK_LIMIT = 20_000
+
+
+def _collect_changed(
+    root: Path, since: float, subdirs: tuple[str, ...],
+) -> list[tuple[str, bytes]]:
+    """``[(rel, bytes)]`` of the files under *subdirs* changed after *since*.
+
+    Every walk and every read goes through the safe opener
+    (``maf_coding_engine.md`` §7.5 rule B): no link is followed at any depth,
+    also one that a container or a script swaps in during the sweep. So a
+    session that drops ``agent-data/x -> /`` can never smuggle a host file
+    (a service-account key, another agent's credentials) into this agent's
+    durable, downloadable blob store.
+    """
+    from acb_skills import safe_open
+
+    cutoff = since - _SWEEP_MTIME_SLACK
+    out: list[tuple[str, bytes]] = []
+    for sub in subdirs:
+        try:
+            entries = safe_open.walk_files(root, sub, max_files=_SWEEP_WALK_LIMIT)
+        except (safe_open.UnsafePath, OSError):
+            continue
+        for rel, size, mtime in entries:
+            if len(out) >= _SWEEP_MAX_FILES:
+                return out
+            if mtime < cutoff or size > _SWEEP_MAX_BYTES:
+                continue
+            try:
+                data = safe_open.read_bytes(root, rel, limit=_SWEEP_MAX_BYTES)
+            except (safe_open.UnsafePath, OSError):
+                continue
+            if data is not None:
+                out.append((rel, data))
+    return out
+
+
+async def sweep_changed_files(
+    root: Path, *, since: float, subdirs: tuple[str, ...] = ("agent-data", "outputs"),
+) -> list[tuple[str, bytes]]:
+    """Mirror the files changed after *since* under *subdirs* into the blob store.
+
+    Returns ``[(rel, bytes)]`` of each file it mirrored. The walk and the reads
+    run OFF the event loop, so a large sweep cannot stall every concurrent run.
+    The sandbox tools call this inside ``broker.host_files()``.
+    """
+    import asyncio
+
+    collected = await asyncio.to_thread(_collect_changed, Path(root), since, subdirs)
+    mirrored: list[tuple[str, bytes]] = []
+    for rel, data in collected:
+        try:
+            await mirror_to_blob_store(rel, data, actor="agent")
+        except Exception:
+            continue
+        mirrored.append((rel, data))
+    return mirrored
+
+
 async def _sweep_to_blob_store(
     root: Path, *, since: float, subdirs: tuple[str, ...] = ("agent-data", "outputs"),
 ) -> int:
@@ -135,61 +194,13 @@ async def _sweep_to_blob_store(
     Closes the durability gap for files written by NATIVE tools (the Copilot
     CLI, or a script's own writes), which bypass the write_artifact mirror.
     Best-effort: any failure leaves the on-disk file intact and is skipped.
-    Returns the number of files mirrored.
-
-    Containment: a swept file's REAL (symlink-resolved) path must stay inside
-    *root*. ``rglob`` follows symlinked DIRECTORIES on Python < 3.13, so without
-    this a ``code_task`` session (or script) that drops ``agent-data/x -> /``
-    could smuggle host files — service-account keys, another agent's creds —
-    into this agent's durable, downloadable blob store. The leaf ``is_symlink``
-    check alone misses files reached through a symlinked parent.
-
-    The tree walk + file reads (up to ``_SWEEP_MAX_FILES`` × ``_SWEEP_MAX_BYTES``)
-    run OFF the event loop so a large sweep can't stall every concurrent run.
+    Returns the number of files mirrored. :func:`sweep_changed_files` does
+    the work, with the safe opener.
     """
-    import asyncio
-
-    cutoff = since - _SWEEP_MTIME_SLACK
-
-    def _collect() -> list[tuple[str, bytes]]:
-        root_r = root.resolve()
-        out: list[tuple[str, bytes]] = []
-        for sub in subdirs:
-            base = root / sub
-            if not base.is_dir():
-                continue
-            for p in sorted(base.rglob("*")):
-                if len(out) >= _SWEEP_MAX_FILES:
-                    return out
-                try:
-                    if p.is_symlink() or not p.is_file():
-                        continue
-                    # Real path must remain inside the workspace (blocks a
-                    # symlinked-directory escape rglob would otherwise follow).
-                    try:
-                        p.resolve().relative_to(root_r)
-                    except ValueError:
-                        continue
-                    st = p.stat()
-                    if st.st_mtime < cutoff or st.st_size > _SWEEP_MAX_BYTES:
-                        continue
-                    out.append((p.relative_to(root).as_posix(), p.read_bytes()))
-                except Exception:
-                    continue
-        return out
-
     try:
-        collected = await asyncio.to_thread(_collect)
+        return len(await sweep_changed_files(root, since=since, subdirs=subdirs))
     except Exception:
         return 0
-    mirrored = 0
-    for rel, data in collected:
-        try:
-            await mirror_to_blob_store(rel, data, actor="agent")
-            mirrored += 1
-        except Exception:
-            continue
-    return mirrored
 
 
 async def run_script(path: str, args: str = "") -> str:
@@ -233,6 +244,25 @@ async def run_script(path: str, args: str = "") -> str:
         cmd = ["bash", str(target)]
     else:
         return f"run_script failed: unsupported script type {suffix!r} (py|sh)."
+    # A push of agent code needs the operator's reviewer (2026-10-19). The
+    # Copilot permission guard reads the command; a script hides it, so read
+    # the script text too. Fence: test_chat_autopush_reviewer_gate.py.
+    from acb_skills.permission_policy import (
+        AGENT_PUSH_WITHHELD_REASON,
+        agent_push_allowed_for_this_run,
+        is_git_push_text,
+        note_agent_push_request,
+    )
+    try:
+        script_text = target.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        script_text = ""
+    if is_git_push_text(script_text):
+        if not agent_push_allowed_for_this_run():
+            return f"run_script blocked: {AGENT_PUSH_WITHHELD_REASON}."
+        # H-363: the script holds no GitHub credential, so its own push
+        # fails. The gateway pushes this run's commits when the run ends.
+        note_agent_push_request()
     try:
         cmd += shlex.split(args or "")
     except ValueError as exc:
@@ -301,11 +331,14 @@ def _commit_repo_changes(root: Path, task: str) -> str | None:
 
     if not (root / ".git").exists():
         return None
+    if not _host_git_ok(root):
+        return None
 
     def _git(*args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             ["git", *args], cwd=str(root),
             capture_output=True, text=True, timeout=30,
+            env=child_env(),
         )
 
     try:
@@ -335,6 +368,95 @@ def _commit_repo_changes(root: Path, task: str) -> str | None:
         return sha or None
     except Exception:
         return None
+
+
+def _host_git_ok(root: Path) -> bool:
+    """True when host git may run in *root* (§7.5 rule A, WS-43e).
+
+    ``sandbox_broker.host_git_allowed``. A dir that a coding sandbox mounts
+    now, or mounted, answers ``False``: a container could have written its
+    ``.git/config`` or a hook, and host git would run it. Fence WS43-F13.
+    With no orchestrator in this process, no container can mount the dir.
+    """
+    try:
+        from orchestrator.sandbox_broker import host_git_allowed
+    except ImportError:
+        return True
+    try:
+        return host_git_allowed(root)
+    except Exception:  # fail closed
+        return False
+
+
+def _maf_engine() -> bool:
+    """True when this run's ``code_task`` runs on the MAF engine (WS-43e, §7.6).
+
+    ``MAF_CODING_SCOPE`` names ``code_task`` for the run's own org. It is read
+    on each call. With no orchestrator, the answer is ``False``.
+    """
+    try:
+        from orchestrator.code_session import maf_engine_for_run
+    except ImportError:
+        return False
+    try:
+        return maf_engine_for_run()
+    except Exception:  # an unreadable scope is no scope: the Copilot path
+        return False
+
+
+async def _maf_code_task(root: Path, task: str) -> str:
+    """``code_task`` on the MAF engine (WS-43e, spec ``maf_coding_engine.md`` §7.6).
+
+    The session runs its commands in the sandbox broker's container. A broker
+    that refuses or fails is an error, and nothing runs on the host: no
+    Copilot fallback (§7.1 rule 14). After the session, the sweep runs under
+    the dir lock with the safe opener. ``_commit_repo_changes`` never runs:
+    a container could write the dir's ``.git`` (§7.5 rule A). The scripts get
+    no credential, so the session text names no integration env var.
+    """
+    from orchestrator.code_session import (
+        CodeSessionError,
+        CodeSessionRefused,
+        run_maf_code_session,
+    )
+
+    started = time.time()
+    try:
+        report = await run_maf_code_session(task=task, workspace=str(root))
+        error = ""
+    except CodeSessionRefused as exc:
+        # No container ran, so there is nothing to sweep.
+        return f"code_task failed: {exc} Nothing ran on the host."
+    except CodeSessionError as exc:
+        report, error = None, str(exc)
+    except TimeoutError:
+        report, error = None, "the coding session ran past its time limit."
+    except Exception as exc:
+        report, error = None, f"{type(exc).__name__}: {exc}"
+    swept = await _sweep_under_lock(root, since=started)
+    if report is None:
+        return (
+            f"code_task failed: {error} Nothing ran on the host."
+            + (f"\n[{swept} file(s) it wrote were still persisted]" if swept else "")
+        )
+    tail = f"\n\n[{swept} file(s) persisted to the durable store]" if swept else ""
+    return _cap(report) + tail
+
+
+async def _sweep_under_lock(root: Path, *, since: float) -> int:
+    """The after-session sweep, inside the broker's dir lock (§7.6, §7.5 rule B)."""
+    try:
+        from orchestrator import sandbox_broker as sb
+
+        async with sb.get_broker().host_dir():
+            return await _sweep_to_blob_store(root, since=since)
+    except Exception as exc:  # each command already mirrored its own files
+        from acb_common import get_logger
+
+        get_logger("acb_skills.code_tools").warning(
+            "code_task.maf_sweep_failed", error=str(exc)[:300],
+        )
+        return 0
 
 
 async def code_task(task: str) -> str:
@@ -369,6 +491,9 @@ async def code_task(task: str) -> str:
         return "code_task failed: no active workspace for this run."
     if not (task or "").strip():
         return "code_task failed: describe what to build or change."
+
+    if _maf_engine():
+        return await _maf_code_task(root, task)
 
     started = time.time()
     try:

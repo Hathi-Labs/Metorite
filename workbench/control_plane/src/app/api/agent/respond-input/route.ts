@@ -8,11 +8,20 @@
  * `user_input_requested` SSE event).  Posting the answer here unblocks the
  * run so it continues in the SAME stream — the answer is never queued as a
  * separate chat message.
+ *
+ * WS-51 S2: the answer belongs to the account that drew the card. The chat
+ * sends that account's address as `as`. When the browser is now signed in
+ * to ANOTHER account (a switch in another tab changes the cookie under this
+ * one), the route refuses with 409 `answer_in_other_account` and calls no
+ * gateway, so the answer never reaches the other account's org. `as` can only
+ * refuse, never grant: the gateway still checks `can_send` in the room, under
+ * the session's own tenant. Fence: `src/lib/respondInput.test.ts`.
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
+import { malformedDecline, otherAccountRefusal } from "@/lib/respondInput";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,6 +33,11 @@ interface RespondInputRequest {
   /** Thread the parked run belongs to — lets the gateway relay the answer to
    *  whichever worker owns the run (P1-2 cross-worker control bus). */
   thread_id?: string;
+  /** The account that drew the card (WS-51 S2). Refuses only, never grants. */
+  as?: string;
+  /** The member's "Not now" (`lib/declineAnswer.ts`). A boolean, with an
+   *  empty answer. The run resumes and reads the decline. */
+  declined?: boolean;
 }
 
 export async function POST(req: NextRequest) {
@@ -54,6 +68,13 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  const malformed = malformedDecline(body.declined, body.answer);
+  if (malformed) return malformed;
+
+  // A decline is refused for another account like an answer (WS-51 S2).
+  const refused = otherAccountRefusal(body.as, me.email);
+  if (refused) return refused;
+
   try {
     const res = await gatewayFetch(`${GATEWAY_URL}/agent/respond-input`, {
       method: "POST",
@@ -63,6 +84,8 @@ export async function POST(req: NextRequest) {
         answer: body.answer,
         was_freeform: body.was_freeform ?? true,
         thread_id: body.thread_id ?? null,
+        // Only on a decline, so an answer's body is exactly as before.
+        ...(body.declined === true ? { declined: true } : {}),
       }),
     });
 

@@ -114,6 +114,32 @@ describe("what a right-click offers", () => {
     expect(entries.some((e) => e.kind === "sep")).toBe(false);
   });
 
+  it("Ask an agent shows only where the surface can raise the dialog, and runs askAgent", () => {
+    // WS-55 EA-13e (EA3-43). Mutation: drop `when` from `task.askAgent` -- the
+    // first assertion fails. Mutation: `run` calls `rename` -- the third fails.
+    expect(ids(taskMenuItems(board()))).not.toContain("task.askAgent");
+    const entries = taskMenuItems(board({ canAskAgent: true }));
+    expect(ids(entries)).toContain("task.askAgent");
+    // After every shared act, behind its own rule: it is the one act that only
+    // Projects offers.
+    expect(ids(entries).at(-1)).toBe("task.askAgent");
+    const asked: string[] = [];
+    const found = entries.find((e) => e.kind === "item" && e.id === "task.askAgent");
+    if (found?.kind !== "item") throw new Error("not offered");
+    expect(found.label).toBe("Ask an agent…");
+    found.run(
+      { ...spyActions(), askAgent: (t) => asked.push(t.id) },
+      board({ canAskAgent: true }),
+    );
+    expect(asked).toEqual(["t1"]);
+  });
+
+  it("Ask an agent is not a strip button: the strip stays four", () => {
+    expect(taskQuickActions(board({ canAskAgent: true })).map((a) => a.id)).not.toContain(
+      "task.askAgent",
+    );
+  });
+
   it("the select row says what the click will do, not what the row is", () => {
     const label = (selected: boolean) =>
       taskMenuItems(board({ selected })).find(
@@ -842,5 +868,25 @@ describe("the lifecycle verbs (owner request, 2026-09-20)", () => {
     run(filed(), "task.unarchive");
     run(live(), "task.delete");
     expect(spy.calls).toEqual(["archive:t1", "unarchive:t1", "delete:t1"]);
+  });
+});
+
+describe("Make it an epic (SP-6)", () => {
+  it("shows only where the project has an epic type and the task is not one", () => {
+    expect(ids(taskMenuItems(board()))).not.toContain("task.makeEpic");
+    expect(ids(taskMenuItems(board({ epicTypeId: "e1" })))).toContain("task.makeEpic");
+    expect(ids(taskMenuItems(board({ epicTypeId: "e1", isEpic: true })))).not.toContain(
+      "task.makeEpic",
+    );
+  });
+
+  it("runs makeEpic", () => {
+    const made: string[] = [];
+    const ctx = board({ epicTypeId: "e1" });
+    const found = taskMenuItems(ctx).find((e) => e.kind === "item" && e.id === "task.makeEpic");
+    if (found?.kind !== "item") throw new Error("not offered");
+    expect(found.label).toBe("Make it an epic");
+    found.run({ ...spyActions(), makeEpic: (t) => made.push(t.id) }, ctx);
+    expect(made).toEqual(["t1"]);
   });
 });

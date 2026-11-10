@@ -8,17 +8,23 @@ from typing import Any
 from uuid import uuid4
 
 from acb_auth import UserContext, get_current_user
+from acb_llm.voice import voice_prompt
 from fastapi import Depends, HTTPException, Query, status
+from gateway.routes.email.account_ref import resolve_account_filter
+from gateway.routes.email.automation.identity import resolve_self
 from gateway.routes.email.automation.senders import DISPOSED_FOLDERS
 from gateway.routes.email.core import (
     _assert_account_owner,
-    _tenant_session,
+    _assert_mail_in_mailbox,
+    _assert_thread_in_mailbox,
     _llm_json,
     _log,
+    _tenant_session,
     provider_session,
     router,
 )
-from pydantic import BaseModel
+from gateway.routes.email.mailbox_access import mailbox_predicate
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
 
 
@@ -28,7 +34,11 @@ class RuleActionAttachment(BaseModel):
     ``path`` is the workspace-relative path (e.g. ``agent-data/budget.pdf``)
     the file was uploaded to / picked from; ``name`` is the display name.
     ``ai_selected`` marks sources the assistant may pick from at draft time
-    rather than always attaching."""
+    rather than always attaching. An unknown key is a 422 (EM-T13a review
+    round 2): each caller sends these four keys, and the store writes only
+    these."""
+    model_config = ConfigDict(extra="forbid")
+
     path: str | None = None
     artifact_id: str | None = None
     name: str | None = None
@@ -36,6 +46,10 @@ class RuleActionAttachment(BaseModel):
 
 
 class RuleActionModel(BaseModel):
+    # An unknown key is a 422 (EM-T13a review round 2). The rules UI, the
+    # email assistant and the GET of a rule send only these fields.
+    model_config = ConfigDict(extra="forbid")
+
     id: str | None = None
     type: str
     label: str | None = None
@@ -118,8 +132,30 @@ NEW_MAIL_FLOOR_SQL = (
 )
 
 
+#: The actions of EVERY rule of one account, in one read (EM-T4e). Binds
+#: ``:aid``. Before it, ``_load_rules`` read the actions once for each rule.
+#: ``ORDER BY created_at, ctid`` keeps the order of the old read in each rule.
+#: One write puts all the actions of a rule in one transaction, so they share
+#: ``created_at``. The old read then gave them in the order of the table
+#: (``ctid``), and the sort kept that order. One sort over all the rules does
+#: not keep it, so ``ctid`` is named.
+_ACCOUNT_ACTIONS_SQL = """
+    SELECT a.rule_id, a.id, a.type, a.label, a.subject, a.content,
+           a.to_address, a.cc_address, a.bcc_address, a.url,
+           a.delay_minutes, a.attachments, a.label_ai, a.content_manual
+      FROM email_actions a
+      JOIN email_rules r ON r.id = a.rule_id
+     WHERE r.account_id = :aid
+     ORDER BY a.created_at, a.ctid
+"""
+
+
 async def _load_rules(db: Any, account_id: str) -> list[dict[str, Any]]:
-    """Load rules + their actions for an account, in canonical system order."""
+    """Load rules + their actions for an account, in canonical system order.
+
+    Two reads for any number of rules (EM-T4e): the rules, then the actions
+    of all of them, which Python groups by rule. With no rule, one read.
+    """
     rule_rows = (await db.execute(text(
         """SELECT id, account_id, name, instructions, enabled, automated,
                   run_on_threads, conditional_operator, from_pattern, to_pattern,
@@ -127,15 +163,15 @@ async def _load_rules(db: Any, account_id: str) -> list[dict[str, Any]]:
            FROM email_rules WHERE account_id = :aid
            ORDER BY created_at"""
     ), {"aid": account_id})).fetchall()
+    if not rule_rows:
+        return []
+    actions_by_rule: dict[str, list[Any]] = {}
+    for a in (await db.execute(
+            text(_ACCOUNT_ACTIONS_SQL), {"aid": account_id})).fetchall():
+        actions_by_rule.setdefault(str(a.rule_id), []).append(a)
     rules: list[dict[str, Any]] = []
     for r in rule_rows:
-        act_rows = (await db.execute(text(
-            """SELECT id, type, label, subject, content, to_address, cc_address,
-                      bcc_address, url, delay_minutes, attachments,
-                      label_ai, content_manual
-               FROM email_actions WHERE rule_id = :rid
-               ORDER BY created_at"""
-        ), {"rid": r.id})).fetchall()
+        act_rows = actions_by_rule.get(str(r.id), [])
         rules.append({
             "id": str(r.id), "account_id": str(r.account_id), "name": r.name,
             "instructions": r.instructions, "enabled": r.enabled,
@@ -168,7 +204,9 @@ async def list_rules(
 ):
     """List assistant rules (with actions) for an account."""
     async with _tenant_session() as db:
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="send")
         return {"rules": await _load_rules(db, account_id)}
 
 
@@ -335,6 +373,8 @@ async def install_preset_rules(
     """Install the default inbox-zero-style rule set (skips ones already present
     by name). Used by the UI's 'Add defaults' and the assistant's setup flow."""
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         await _assert_account_owner(db, account_id, user.email or "anonymous")
         # The account's provider decides whether cleanup categories become
         # folders (Outlook) or labels (Gmail) — inbox-zero parity.
@@ -364,6 +404,8 @@ async def reset_rules(
     genuinely gone with it, which is the expected meaning of 'reset'.
     """
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         await _assert_account_owner(db, account_id, user.email or "anonymous")
         provider = await _account_provider(db, account_id)
         # Snapshot the learned patterns keyed by their rule's NAME — the reseed
@@ -450,6 +492,58 @@ async def stored_draft_replies(db: Any, account_id: str) -> bool:
     ), {"aid": account_id})).fetchone()
     # ``is True``, not ``bool()``: only a stored true turns drafting on.
     return getattr(row, "draft_replies", None) is True
+
+
+#: The providers whose mailbox runs no background write until the member
+#: chooses Auto-run (WS-17 EM-G11c2, ``email_app_master_plan.md``
+#: §12.3.13.7). For these, a missing settings row reads OFF. Outlook and IMAP
+#: keep the old read, ON, so a live mailbox does not stop.
+AUTO_RUN_OFF_WITHOUT_ROW = frozenset({"gmail"})
+
+
+async def auto_run_on(db: Any, account_id: str) -> bool:
+    """The account's "Run rules automatically on new mail" choice.
+
+    🔴 **The ONE reader of ``email_assistant_settings.auto_run``** (WS-17
+    EM-G11c2, §12.3.13.7). Four callers use it: the rule run of each sync
+    cycle (``scheduler_hooks.auto_run_rules_for_account``), the Reply Zero
+    backfill, the cleanup sweep of each sync cycle and
+    ``GET /email/assistant/settings``. The GET must give the same answer,
+    because the settings screen and the agent tool PUT its body back. A
+    different answer there would store ON for a member who chose nothing.
+
+    - A stored row gives its stored value.
+    - A missing row gives OFF for a provider in
+      :data:`AUTO_RUN_OFF_WITHOUT_ROW` (Gmail), and ON for the others.
+    - A missing mailbox gives OFF, so a failed read writes nothing.
+
+    The read joins ``email_accounts``, so it runs under the RLS of the bound
+    tenant and needs no organization argument.
+    """
+    row = (await db.execute(text(
+        "SELECT a.provider, s.auto_run, s.account_id AS settings_row "
+        "FROM email_accounts a "
+        "LEFT JOIN email_assistant_settings s ON s.account_id = a.id "
+        "WHERE a.id = :aid"
+    ), {"aid": account_id})).fetchone()
+    if row is None:
+        return False
+    if getattr(row, "settings_row", None) is None:
+        return (getattr(row, "provider", "") or "") not in AUTO_RUN_OFF_WITHOUT_ROW
+    # ``is True``: only a stored true runs the background writes.
+    return getattr(row, "auto_run", None) is True
+
+
+def proposes_only(rule: dict[str, Any]) -> bool:
+    """True for a rule with ``automated=false`` (WS-17 EM-G11c2, G5).
+
+    ``create_rule`` promises such a rule "proposes for approval". So the
+    runner logs it as a PENDING row in the History and changes nothing in
+    the mailbox. The member approves it there
+    (``POST /email/rules/history/{id}/approve``). A rule dict with no
+    ``automated`` key keeps the old behaviour and applies.
+    """
+    return rule.get("automated", True) is False
 
 
 # The rule that the "Auto draft replies" switch governs.
@@ -541,12 +635,31 @@ async def _insert_rule(db: Any, req: RuleModel) -> str:
     return rule_id
 
 
+def refuse_move_into_sent(actions: Any) -> None:
+    """422 when an action moves mail into Sent or Drafts (H-395).
+
+    Called by every rule SAVE (create, update, batch, generate). It is not in
+    ``_replace_actions``, because the Reply toggle also calls that function
+    on a rule saved before this check, and the toggle must keep working.
+    """
+    from email_ingestion.providers.base import move_refusal
+
+    for a in actions or []:
+        get = a.get if isinstance(a, dict) else (lambda k, _a=a: getattr(_a, k, None))
+        if (get("type") or "").upper() != "MOVE_FOLDER":
+            continue
+        refusal = move_refusal(get("label"))
+        if refusal:
+            raise HTTPException(status_code=422, detail=refusal)
+
+
 @router.post("/rules")
 async def create_rule(
     req: RuleModel,
     user: UserContext = Depends(get_current_user),
 ):
     """Create an assistant rule with its actions."""
+    refuse_move_into_sent(req.actions)
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, user.email or "anonymous")
         rule_id = await _insert_rule(db, req)
@@ -554,19 +667,72 @@ async def create_rule(
         return next((r for r in rules if r["id"] == rule_id), {"id": rule_id})
 
 
+_GEN_TEXT_FIELDS = ("label", "to_address", "subject", "content", "url")
+
+
+class _NotText(ValueError):
+    """A field of a generated action that is not a string or a number."""
+
+
+def _gen_text(value: Any) -> str | None:
+    """A text field of a generated action, as the route saves it.
+
+    The model can answer a number where the route wants a string. So a number
+    becomes its text, and an object, a list or a bool refuses the action (EM-T13a
+    review round 1). A 422 on one spec once saved the specs before it."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise _NotText(type(value).__name__)
+    return str(value) or None
+
+
 _GEN_ACTION_TYPES = {
     "ARCHIVE", "LABEL", "MARK_READ", "STAR", "MARK_SPAM", "TRASH",
     "MOVE_FOLDER", "REPLY", "FORWARD", "DRAFT_EMAIL", "CALL_WEBHOOK",
+    # WS-59 RE-5: "Tell me on WhatsApp". Its label is "normal" or "urgent".
+    "NOTIFY_ME",
 }
 
 
-async def _llm_generate_rules(prompt: str) -> list[dict[str, Any]]:
+#: The words of the generator prompt about NOTIFY_ME. They go in only when
+#: "Tell me on WhatsApp" is available to the member (review of RE-5, P1-4).
+_GEN_NOTIFY_ME_TEXT = (
+    "NOTIFY_ME tells the mailbox owner about the email on WhatsApp. Its "
+    'label is "urgent" when the user says urgent, else "normal". It '
+    "never messages anyone else. 'tell me on WhatsApp' → NOTIFY_ME.\n"
+)
+
+
+async def _notify_me_available(user: Any) -> bool:
+    """True when "Tell me on WhatsApp" is available to *user* (RE-5)."""
+    from gateway.reach import requests as reach_requests
+
+    try:
+        available, _ = await reach_requests.reach_status(
+            str(getattr(user, "organization_id", None) or ""), user.email)
+    except Exception as exc:
+        _log.warning("email.generate_rules_reach_status_failed",
+                     error=type(exc).__name__)
+        return False
+    return available
+
+
+async def _llm_generate_rules(prompt: str, *,
+                              notify_me: bool = False) -> list[dict[str, Any]]:
     """Turn a natural-language rule description (one or several, often a bullet
     list) into structured rule specs — inbox-zero's plain-text → rules flow.
 
     Returns a list of dicts shaped like RuleModel (minus account_id). Best
-    effort: returns [] if the LLM is unavailable or nothing parses."""
+    effort: returns [] if the LLM is unavailable or nothing parses.
+
+    *notify_me* offers NOTIFY_ME to the model. The caller passes True only
+    when "Tell me on WhatsApp" is available to the member (RE-5). Else the
+    prompt does not name it, and an answer that holds it drops it."""
     try:
+        action_names = ("ARCHIVE, LABEL, MARK_READ, STAR, MARK_SPAM, TRASH, "
+                        "MOVE_FOLDER, REPLY, FORWARD, DRAFT_EMAIL, CALL_WEBHOOK"
+                        + (", NOTIFY_ME" if notify_me else ""))
         sys_prompt = (
             "You convert a user's plain-English description of email rules into "
             "structured automation rules. The user may describe several rules "
@@ -580,9 +746,9 @@ async def _llm_generate_rules(prompt: str) -> list[dict[str, Any]]:
             'LABEL/MOVE_FOLDER>", "to_address": "<for FORWARD>", "subject": '
             '"<optional>", "content": "<optional draft text; leave empty to let '
             'the AI write it>", "url": "<for CALL_WEBHOOK>"}]}\n'
-            "ACTION must be one of: ARCHIVE, LABEL, MARK_READ, STAR, MARK_SPAM, "
-            "TRASH, MOVE_FOLDER, REPLY, FORWARD, DRAFT_EMAIL, CALL_WEBHOOK.\n"
-            "Rules of thumb: 'label X as Y' → LABEL with label Y; 'archive' → "
+            f"ACTION must be one of: {action_names}.\n"
+            + (_GEN_NOTIFY_ME_TEXT if notify_me else "")
+            + "Rules of thumb: 'label X as Y' → LABEL with label Y; 'archive' → "
             "ARCHIVE; 'forward to a@b.com' → FORWARD to_address a@b.com; 'draft a "
             "reply' → DRAFT_EMAIL; 'reply with …' → REPLY content. Prefer an AI "
             "`instructions` condition for fuzzy intent; use from_pattern/"
@@ -590,18 +756,32 @@ async def _llm_generate_rules(prompt: str) -> list[dict[str, Any]]:
             'short. Omit empty fields. Output {"rules": []} if nothing parses.'
         )
         # Rule authoring is quality-sensitive generation → powerful tier; JSON
-        # forced; generous budget so several rules aren't truncated.
+        # forced. A judgement job: the model thinks first, so the cap holds
+        # the thinking and several rules (task 1128).
         data, _content, _used = await _llm_json(
             "tier-powerful",
-            [{"role": "system", "content": sys_prompt},
+            [{"role": "system", "content": sys_prompt + "\n\n" + voice_prompt("title", json=True)},
              {"role": "user", "content": prompt[:4000]}],
-            max_tokens=2500,
+            max_tokens=8000,
+            feature="rules_generate",
+            job="judgement",
         )
         rules = data.get("rules") if isinstance(data, dict) else data
-        return _normalize_generated_rules(rules)
+        got = _normalize_generated_rules(rules)
+        return got if notify_me else _without_notify_me(got)
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.generate_rules_failed", error=str(exc)[:200])
         return []
+
+
+def _without_notify_me(specs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """*specs* with no NOTIFY_ME action. A spec left with no action goes."""
+    out = []
+    for spec in specs:
+        actions = [a for a in spec.get("actions") or [] if a.get("type") != "NOTIFY_ME"]
+        if actions:
+            out.append({**spec, "actions": actions})
+    return out
 
 
 def _normalize_generated_rules(data: Any) -> list[dict[str, Any]]:
@@ -624,14 +804,11 @@ def _normalize_generated_rules(data: Any) -> list[dict[str, Any]]:
             atype = str(a.get("type", "")).upper()
             if atype not in _GEN_ACTION_TYPES:
                 continue
-            actions.append({
-                "type": atype,
-                "label": a.get("label") or None,
-                "to_address": a.get("to_address") or None,
-                "subject": a.get("subject") or None,
-                "content": a.get("content") or None,
-                "url": a.get("url") or None,
-            })
+            try:
+                fields = {f: _gen_text(a.get(f)) for f in _GEN_TEXT_FIELDS}
+            except _NotText:
+                continue
+            actions.append({"type": atype, **fields})
         if not actions:
             continue
         op = str(spec.get("conditional_operator", "AND")).upper()
@@ -662,7 +839,9 @@ async def rule_policies(
     failing the screen — the local policies still render.
     """
     async with _tenant_session() as db:
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="send")
         cb_row = (await db.execute(text(
             "SELECT cold_email_blocker FROM email_assistant_settings "
             "WHERE account_id = :aid"
@@ -719,6 +898,46 @@ class RuleGenerateRequest(BaseModel):
     prompt: str
 
 
+class GeneratedRuleSpec(BaseModel):
+    """One rule as ``_normalize_generated_rules`` makes it, with no account."""
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    instructions: str | None = None
+    from_pattern: str | None = None
+    subject_pattern: str | None = None
+    conditional_operator: str = "AND"
+    actions: list[RuleActionModel]
+
+
+class RuleBatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    account_id: str
+    rules: list[GeneratedRuleSpec] = Field(min_length=1, max_length=50)
+
+
+async def _insert_specs(
+    db: Any, account_id: str, specs: list[dict[str, Any]],
+) -> list[str]:
+    """Insert each spec as a rule of ``account_id``. Caller commits, so the
+    caller's one session makes the list all or nothing."""
+    created_ids: list[str] = []
+    for spec in specs:
+        refuse_move_into_sent(spec.get("actions"))
+        model = RuleModel(
+            account_id=account_id,
+            name=spec["name"],
+            instructions=spec.get("instructions"),
+            from_pattern=spec.get("from_pattern"),
+            subject_pattern=spec.get("subject_pattern"),
+            conditional_operator=spec.get("conditional_operator", "AND"),
+            actions=[RuleActionModel(**a) for a in spec["actions"]],
+        )
+        created_ids.append(await _insert_rule(db, model))
+    return created_ids
+
+
 @router.post("/rules/generate")
 async def generate_rules(
     req: RuleGenerateRequest,
@@ -728,29 +947,63 @@ async def generate_rules(
 
     The text may describe several rules at once; each is turned into a
     structured rule and created. Returns the created rules."""
+    # Read before the session opens: the read opens a tenant session of its own.
+    notify_me = await _notify_me_available(user)
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, user.email or "anonymous")
         if not (req.prompt or "").strip():
             return {"created": [], "error": "Describe at least one rule."}
-        specs = await _llm_generate_rules(req.prompt)
+        specs = await _llm_generate_rules(req.prompt, notify_me=notify_me)
         if not specs:
             return {"created": [],
                     "error": "Couldn't turn that into a rule — try rephrasing."}
-        created_ids: list[str] = []
-        for spec in specs:
-            model = RuleModel(
-                account_id=req.account_id,
-                name=spec["name"],
-                instructions=spec.get("instructions"),
-                from_pattern=spec.get("from_pattern"),
-                subject_pattern=spec.get("subject_pattern"),
-                conditional_operator=spec.get("conditional_operator", "AND"),
-                actions=[RuleActionModel(**a) for a in spec["actions"]],
-            )
-            created_ids.append(await _insert_rule(db, model))
+        created_ids = await _insert_specs(db, req.account_id, specs)
         rules = await _load_rules(db, req.account_id)
         created = [r for r in rules if r["id"] in set(created_ids)]
         return {"created": created}
+
+
+@router.post("/rules/generate/preview")
+async def preview_generated_rules(
+    req: RuleGenerateRequest,
+    user: UserContext = Depends(get_current_user),
+):
+    """The specs of a plain-English description, and NO save (EM-T13a, §10.4.15).
+
+    The email assistant asks the member with a card when a spec sends mail
+    out, then saves the specs through ``POST /rules/batch``. This is a path of
+    its own, not a field of ``/rules/generate``: an older gateway answers 404
+    here, so the tool saves nothing, where it would ignore a field and save.
+    The model call runs with no session open."""
+    async with _tenant_session() as db:
+        await _assert_account_owner(db, req.account_id, user.email or "anonymous")
+    if not (req.prompt or "").strip():
+        return {"specs": [], "error": "Describe at least one rule."}
+    specs = await _llm_generate_rules(
+        req.prompt, notify_me=await _notify_me_available(user))
+    if not specs:
+        return {"specs": [],
+                "error": "Couldn't turn that into a rule — try rephrasing."}
+    return {"specs": specs}
+
+
+@router.post("/rules/batch")
+async def create_rules_batch(
+    req: RuleBatchRequest,
+    user: UserContext = Depends(get_current_user),
+):
+    """Create a list of rules in ONE tenant session: all of them or none.
+
+    EM-T13a review round 1. The body is checked whole before the first insert,
+    and a failed insert rolls the session back. So a retry never makes a
+    second copy of the rules before a bad one. Returns the created rules."""
+    async with _tenant_session() as db:
+        await _assert_account_owner(db, req.account_id, user.email or "anonymous")
+        created_ids = await _insert_specs(
+            db, req.account_id, [spec.model_dump() for spec in req.rules])
+        rules = await _load_rules(db, req.account_id)
+        ids = set(created_ids)
+        return {"created": [r for r in rules if r["id"] in ids]}
 
 
 @router.patch("/rules/{rule_id}")
@@ -760,11 +1013,13 @@ async def update_rule(
     user: UserContext = Depends(get_current_user),
 ):
     """Update a rule and replace its actions."""
+    refuse_move_into_sent(req.actions)
     async with _tenant_session() as db:
         owner = (await db.execute(text(
             """SELECT er.account_id FROM email_rules er
                JOIN email_accounts ea ON er.account_id = ea.id
-               WHERE er.id = :rid AND ea.user_id = :uid"""
+               WHERE er.id = :rid AND """
+            + mailbox_predicate("ea", uid="uid", level="manage")
         ), {"rid": rule_id, "uid": user.email or "anonymous"})).fetchone()
         if not owner:
             raise HTTPException(status_code=404, detail="Rule not found")
@@ -799,7 +1054,8 @@ async def delete_rule(
             """DELETE FROM email_rules er
                USING email_accounts ea
                WHERE er.id = :rid AND er.account_id = ea.id
-                 AND ea.user_id = :uid"""
+                 AND """
+            + mailbox_predicate("ea", uid="uid", level="manage")
         ), {"rid": rule_id, "uid": user.email or "anonymous"})
         if res.rowcount == 0:
             raise HTTPException(status_code=404, detail="Rule not found")
@@ -852,14 +1108,20 @@ async def _upsert_rule_pattern(
         if key in {"REPLY", "AWAITING_REPLY", "FYI", "DONE",
                    "TO_REPLY", "ACTIONED"}:
             return False
-    # (2) Never pin the mailbox's own address (FROM patterns only).
+    # (2) Never pin an address of the member's own mailboxes (FROM patterns
+    #     only). Two halves (EM-T8e-1 review round 1):
+    #     - THIS mailbox keeps the old substring rule, so its address and its
+    #       domain ("fracktal.in" is in "vj@fracktal.in") are both refused.
+    #     - ANOTHER mailbox of the member (D-EM-27) is refused on an exact
+    #       address only. A substring test there refused "gmail.com" in a work
+    #       mailbox because a second mailbox was vj@gmail.com.
     if ptype == "FROM":
-        acct = (await db.execute(text(
-            "SELECT email_address FROM email_accounts WHERE id = :aid"
-        ), {"aid": account_id})).fetchone()
-        own = (getattr(acct, "email_address", "") or "").strip().lower()
         val_l = value.strip().lower()
+        me = await resolve_self(db, account_id)
+        own = me.address.strip().lower()
         if own and (own in val_l or val_l in own):
+            return False
+        if val_l in me.self_addresses:
             return False
     # (3) A pattern the user REJECTED must not come straight back. The auto-
     #     learner fires on any sender with three consistent AI matches, which is
@@ -948,7 +1210,9 @@ async def list_rule_guidance(
     """Corrections that teach the classifier — the "improves the AI" half of the
     Learned Patterns screen."""
     async with _tenant_session() as db:
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="send")
         rows = (await db.execute(text(
             """SELECT g.id, g.rule_id, r.name AS rule_name, g.guidance,
                       g.source, g.thread_id, g.created_at
@@ -972,12 +1236,19 @@ async def add_rule_guidance(
     req: RuleGuidanceRequest,
     user: UserContext = Depends(get_current_user),
 ):
-    """Write a correction by hand, without going through a specific email."""
+    """Write a correction by hand, without going through a specific email.
+
+    A ``rule_id`` must be a rule of ``account_id``, or the answer is 404 and
+    nothing is stored (D-EM-19, EM-T8e-1 review round 1)."""
     text_ = (req.guidance or "").strip()
     if not text_:
         raise HTTPException(status_code=400, detail="Guidance cannot be empty")
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, user.email or "anonymous")
+        if req.rule_id:
+            _refuse_foreign_rules(
+                {r["id"]: r for r in await _load_rules(db, req.account_id)},
+                "none", [req.rule_id])
         await _upsert_rule_guidance(
             db, req.account_id, req.rule_id, text_, "USER")
         return {"ok": True}
@@ -993,6 +1264,8 @@ async def delete_rule_guidance(
     rejected PATTERN, nothing re-infers guidance, so there is no verdict to
     remember and a leftover row would just be clutter the user cannot see."""
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         await _assert_account_owner(db, account_id, user.email or "anonymous")
         await db.execute(text(
             "DELETE FROM email_rule_guidance "
@@ -1022,6 +1295,42 @@ class RuleFeedbackRequest(BaseModel):
     pin_sender: bool = False
 
 
+#: The values of ``expected`` that name no rule.
+_NO_RULE = frozenset({"none", "new"})
+
+
+def _refuse_foreign_rules(
+    rules_of_mailbox: dict[str, Any], expected: str, matched: list[str],
+) -> None:
+    """404 when ``expected`` or a value of ``matched`` is not a rule of the
+    mailbox (D-EM-19, EM-T8e-1). The ids compare without case. An empty
+    value of ``matched`` names nothing and passes, as the route skips it."""
+    known = {str(k).strip().lower() for k in rules_of_mailbox}
+    named = [r for r in matched if r]
+    if expected not in _NO_RULE:
+        named.append(expected)
+    if any(str(r).strip().lower() not in known for r in named):
+        raise HTTPException(status_code=404, detail="Rule not found")
+
+
+async def _refuse_foreign_pair(
+    db: Any, req: RuleFeedbackRequest, rules_of_mailbox: dict[str, Any],
+) -> None:
+    """404 for a Fix that names anything outside ``req.account_id``.
+
+    Each rule the request names is a rule of the mailbox. ``_upsert_rule_pattern``
+    reads a rule by its id alone, so a rule of another mailbox would otherwise
+    reach its guards. The mail and the thread are of the mailbox too (review
+    round 1): a mail of another mailbox got this mailbox's label, and a thread
+    of another mailbox got a status row of this one."""
+    _refuse_foreign_rules(rules_of_mailbox, req.expected, req.matched_rule_ids)
+    if req.message_id:
+        await _assert_mail_in_mailbox(db, req.account_id, req.message_id)
+    thread_id = (req.thread_id or "").strip()
+    if thread_id:
+        await _assert_thread_in_mailbox(db, req.account_id, thread_id)
+
+
 @router.post("/rules/feedback")
 async def rule_feedback(
     req: RuleFeedbackRequest,
@@ -1049,6 +1358,9 @@ async def rule_feedback(
         # sticks is to set the thread status directly. Cleanup categories
         # (Newsletter/Receipt/…) are sender-stable → learn FROM/SUBJECT patterns.
         meta = {r["id"]: r for r in await _load_rules(db, req.account_id)}
+        # The pair must match (D-EM-19, EM-T8e-1), or the answer is 404 and
+        # nothing is written.
+        await _refuse_foreign_pair(db, req, meta)
 
         # The Fix dialog passes the message id; derive its thread for a status fix.
         thread_id = (req.thread_id or "").strip()
@@ -1205,7 +1517,9 @@ async def list_rule_patterns(
     explicitly-opened review screen.
     """
     async with _tenant_session() as db:
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="send")
         try:
             rows = (await db.execute(text(
                 f"""SELECT p.id, p.rule_id, r.name AS rule_name, p.pattern_type,
@@ -1231,7 +1545,7 @@ async def list_rule_patterns(
                    FROM email_rule_patterns p
                    LEFT JOIN email_rules r ON p.rule_id = r.id
                    WHERE p.account_id = :aid
-                   ORDER BY p.approved_at NULLS FIRST, p.created_at DESC"""
+                   ORDER BY p.approved_at NULLS FIRST, p.created_at DESC, p.id DESC"""
             ), {"aid": account_id})).fetchall()
         except Exception as e:  # noqa: BLE001 — table may not exist pre-migration
             _log.warning("email.list_rule_patterns_failed",
@@ -1301,7 +1615,8 @@ async def delete_rule_pattern(
     async with _tenant_session() as db:
         res = await db.execute(text(
             """DELETE FROM email_rule_patterns p USING email_accounts ea
-               WHERE p.id = :id AND p.account_id = ea.id AND ea.user_id = :uid"""
+               WHERE p.id = :id AND p.account_id = ea.id AND """
+            + mailbox_predicate("ea", uid="uid", level="manage")
         ), {"id": pattern_id, "uid": user.email or "anonymous"})
         if res.rowcount == 0:
             raise HTTPException(status_code=404, detail="Not found")

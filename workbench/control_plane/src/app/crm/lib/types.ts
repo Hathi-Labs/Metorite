@@ -9,6 +9,8 @@
 //
 // Spec: project-docs/specs/crm_app.md §3, §4, §5.
 
+import type { SkippedValue } from "./convertMapping";
+
 /** The four record types, and the URL segment each one lives at. */
 export const ENTITIES = ["deals", "leads", "contacts", "organizations"] as const;
 export type EntitySlug = (typeof ENTITIES)[number];
@@ -23,7 +25,7 @@ export type Status = {
   position: number;
   type: StatusType;
   is_default: boolean;
-  /** Deal statuses only — a lead status has no win probability. */
+  /** The win chance in percent. Both kinds carry it since migration 288. */
   probability?: number | null;
   /**
    * Deal statuses only (WS-26h) — the deal columns a deal must carry before it
@@ -34,12 +36,39 @@ export type Status = {
   required_fields?: string[];
   /** Deal statuses only (WS-26h) — days before a card rots. Null = never. */
   max_dwell_days?: number | null;
+  // ── WS-53 CRM-C3, crm_platform.md §20.6 ──
+  // `position`, `probability` and `color` above carry the EFFECTIVE value: the
+  // Metorite overlay when an admin set one, else the source value. The source
+  // is Zoho in Mirror mode and the admin in Native mode. Optional for the R6
+  // window in which a newer bundle meets an older gateway.
+  /** The values the source gave. */
+  source_position?: number;
+  source_probability?: number | null;
+  source_color?: string;
+  /** The overlay as stored. Null means "not set", so the source value applies. */
+  ui_position?: number | null;
+  ui_probability?: number | null;
+  ui_color?: string | null;
+  /** No picker offers a hidden row, except as the current value of a record. */
+  hidden?: boolean;
+  /** When the Zoho picklist stopped listing the value. Settings: "Removed in Zoho". */
+  source_gone_at?: string | null;
+  /** The id of the Zoho picklist value, or null. */
+  ext_id?: string | null;
+  /** True when an admin ordered this kind, so the admin order applies. */
+  admin_order?: boolean;
 };
 
 /** The two status vocabularies, and the URL segment each lives at. */
 export type StatusKind = "deal" | "lead";
 
-export type LostReason = { id: string; label: string; position: number };
+export type LostReason = {
+  id: string;
+  label: string;
+  position: number;
+  /** CRM-C3: no picker offers a hidden reason. */
+  hidden?: boolean;
+};
 
 // ── The WS-26f f1 stage-metadata report ───────────────────────────────────
 //
@@ -109,19 +138,35 @@ export type StageMetadataReport = {
 // rather than one bundled payload: they answer four different questions, and a
 // single endpoint would make the slowest one decide when any of them renders.
 
-export type StageTotals = {
-  status: Status;
-  count: number;
+/**
+ * The figures of ONE currency. The report routes never add two currencies
+ * (HANDOFF H-333): a scalar is in the `currency` beside it, and the rest sit
+ * in `others`, each with its own code. `others` is empty for one currency.
+ */
+export type MoneyTotals = {
+  currency: string;
   amount: number;
   weighted: number;
+};
+
+export type StageTotals = {
+  status: Status;
+  /** Deals of every currency. */
+  count: number;
+  currency: string;
+  amount: number;
+  weighted: number;
+  others: MoneyTotals[];
 };
 
 /** Only open/ongoing stages appear — won is booked, lost is nothing. */
 export type PipelineReport = {
   stages: StageTotals[];
   count: number;
+  currency: string;
   amount: number;
   weighted: number;
+  others: MoneyTotals[];
 };
 
 export type FunnelStage = {
@@ -160,7 +205,9 @@ export type FunnelReport = {
 export type LostReasonShare = {
   label: string;
   deals: number;
+  currency: string;
   amount: number;
+  others: { currency: string; amount: number }[];
   /** False for the unattributed bucket — missing data, not a chosen reason. */
   attributed: boolean;
 };
@@ -171,8 +218,10 @@ export type WinLossReport = {
   won: number;
   lost: number;
   win_rate: number;
+  currency: string;
   won_amount: number;
   lost_amount: number;
+  others: { currency: string; won_amount: number; lost_amount: number }[];
   average_cycle_days: number | null;
   /**
    * Deals in a won/lost lane with NO `closed_at` — every imported closed deal,
@@ -187,8 +236,10 @@ export type OwnerRow = {
   /** `null` (or blank) is the unassigned bucket — see `ownerLabel`. */
   owner_email: string | null;
   open_deals: number;
+  currency: string;
   weighted: number;
   won_amount: number;
+  others: { currency: string; weighted: number; won_amount: number }[];
 };
 
 export type OwnerLeaderboard = {
@@ -196,6 +247,42 @@ export type OwnerLeaderboard = {
   window_days: number;
   /** Owners past the server's cap, reported rather than silently cut. */
   omitted: number;
+};
+
+/**
+ * One row of a digest part (WS-53 CRM-Q28). `value` is the server's one
+ * text of the number, or "no values recorded" for an empty field.
+ */
+export type DigestRow = { label: string; value: string };
+
+/** One part of a weekly digest: the answer of one CRM-Q25 aggregate. */
+export type DigestPart = {
+  key: string;
+  title: string;
+  unit: string;
+  rows: DigestRow[];
+  total?: string;
+  other_groups?: string;
+  cut?: boolean;
+};
+
+/** The numbers of one digest, exactly as the prompt held them. */
+export type DigestNumbers = {
+  week_start?: string;
+  week_end?: string;
+  zone?: string;
+  parts: DigestPart[];
+  missing: string[];
+};
+
+/** One weekly digest (`GET /crm/digests`). */
+export type CrmDigest = {
+  week_start: string;
+  week_end: string;
+  numbers: DigestNumbers;
+  text: string;
+  created_at: string;
+  stored_at: string | null;
 };
 
 /** The four blocks the reports tab loads together. */
@@ -213,6 +300,16 @@ type Provenance = {
   created_at?: string | null;
   updated_at?: string | null;
   owner_email?: string | null;
+  /**
+   * Mirror fields (WS-53 CRM-Z6). `ext_source` names the system that owns the
+   * record (`zoho`). Null or absent means a record made in Metorite.
+   */
+  ext_source?: string | null;
+  ext_id?: string | null;
+  ext_modified_at?: string | null;
+  /** The "Open in Zoho" link of a mirrored record (CRM-Q1). Null or absent: none. */
+  ext_url?: string | null;
+  custom?: Record<string, unknown> | null;
 };
 
 export type Organization = Provenance & {
@@ -236,7 +333,7 @@ export type Contact = Provenance & {
   phone?: string | null;
   mobile?: string | null;
   title?: string | null;
-  organization_id?: string | null;
+  company_id?: string | null;
   description?: string | null;
   linkedin_url?: string | null;
 };
@@ -254,6 +351,8 @@ export type Lead = Provenance & {
   industry?: string | null;
   annual_revenue?: number | null;
   status_id?: string | null;
+  /** The status by name, projected by the gateway (CRM-X1). */
+  status_name?: string | null;
   lead_source?: string | null;
   description?: string | null;
   lost_reason_id?: string | null;
@@ -263,15 +362,34 @@ export type Lead = Provenance & {
   converted_organization_id?: string | null;
   /** The link that decides "converted", never the timestamp (§3.3 / B6). */
   converted_deal_id?: string | null;
+  /** CRM-X3. Null: nothing is planned. Absent: an older gateway. */
+  next_activity?: NextActivity | null;
+};
+
+/**
+ * The next open activity of a deal or a lead (CRM-X3, `core.attach_next_activity`):
+ * the open task with the soonest due date, or the next call or meeting.
+ * `all_day` is true for a task, whose `at` is a date at 00:00 UTC.
+ */
+export type NextActivity = {
+  id: string;
+  type: string;
+  subject: string | null;
+  at: string;
+  all_day: boolean;
 };
 
 export type Deal = Provenance & {
   id: string;
   name: string;
-  organization_id?: string | null;
+  company_id?: string | null;
+  /** The deal pipeline (CRM-Q2). Absent while the gateway has one implicit pipeline. */
+  pipeline_id?: string | null;
   /** Projected by the gateway's LEFT JOIN — never client-side joined. */
   organization_name?: string | null;
   status_id?: string | null;
+  /** The stage by name, projected by the gateway (CRM-X1). */
+  status_name?: string | null;
   status_changed_at?: string | null;
   amount?: number | null;
   currency?: string;
@@ -283,6 +401,8 @@ export type Deal = Provenance & {
   next_step?: string | null;
   lead_id?: string | null;
   description?: string | null;
+  /** CRM-X3. Null: nothing is planned. Absent: an older gateway. */
+  next_activity?: NextActivity | null;
 };
 
 export type CrmRecord = Deal | Lead | Contact | Organization;
@@ -306,9 +426,56 @@ export type PipelineLane = {
    * Zero on lanes whose type is not open/ongoing (D-CRM-10).
    */
   weighted: number;
+  /**
+   * `amount` and `weighted` are in this currency ONLY: the primary one of the
+   * lane (INR first, then code order). The lane's other currencies sit in
+   * `others`, which is empty for a lane of one currency (HANDOFF H-333, task
+   * 887). `count` is of every currency. Optional for the R6 window, when a new
+   * bundle meets an older gateway: absent reads as INR and no others.
+   */
+  currency?: string;
+  others?: MoneyTotals[];
+  /**
+   * The stage's place in the chosen pipeline. Null with no pipeline chosen,
+   * and for a stage the pipeline does not list that still holds its deals.
+   * Optional for the R6 window, when a new bundle meets an older gateway.
+   */
+  pipeline_position?: number | null;
 };
 
 export type Pipeline = { lanes: PipelineLane[] };
+
+/** One stage of a deal pipeline, as `GET /crm/pipelines` sends it (CRM-Q2). */
+export type PipelineStage = {
+  id: string;
+  name: string;
+  position: number;
+  type: StatusType;
+  probability?: number | null;
+  forecast_category?: string | null;
+};
+
+/**
+ * A deal pipeline. Not an object in Zoho: a property of a Deal, with its own
+ * ordered stages (spec section 18.1). Named `DealPipeline` because `Pipeline`
+ * above is the board payload.
+ */
+export type DealPipeline = {
+  id: string;
+  name: string;
+  is_default: boolean;
+  position: number;
+  ext_url?: string | null;
+  stages: PipelineStage[];
+  /**
+   * WS-CRM CRM-M4a: `deal` or `lead`. A lead pipeline's stages are lead
+   * statuses. `GET /crm/pipelines` serves the deal ones, and `?kind=lead`
+   * the lead ones. Left out by a gateway from before CRM-M4a.
+   */
+  kind?: "deal" | "lead";
+  /** CRM-M4a: the deal pipeline that a lead pipeline feeds. Absent: the default one. */
+  feeds_pipeline_id?: string | null;
+};
 
 export type Activity = {
   id: string;
@@ -320,6 +487,8 @@ export type Activity = {
   completed_at?: string | null;
   created_by?: string | null;
   created_at?: string | null;
+  /** Set on an activity that Zoho owns (CRM-Z6). Null: only in Metorite. */
+  ext_source?: string | null;
 };
 
 export type StatusChange = {
@@ -384,4 +553,6 @@ export type ConvertResult = {
   contact?: Contact | null;
   organization?: Organization | null;
   deal: Deal;
+  /** CRM-C6a: the lead values that the conversion mapping did not copy. */
+  skipped?: SkippedValue[];
 };

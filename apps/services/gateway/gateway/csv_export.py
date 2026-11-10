@@ -22,7 +22,7 @@ from __future__ import annotations
 import csv
 import io
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from typing import Any
 
 #: The first characters a spreadsheet treats as the start of a FORMULA.
@@ -102,12 +102,35 @@ def csv_document(
     Body cells go through :func:`csv_cell`; the header does not, because those
     strings are ours.
     """
+    return "".join(csv_lines(header, rows))
+
+
+def csv_lines(
+    header: Sequence[str] | None, rows: Iterable[Sequence[Any]],
+) -> Iterator[str]:
+    """The same file as :func:`csv_document`, one line at a time.
+
+    The first line carries the :data:`BOM` and the header. With ``header``
+    ``None``, it gives the body lines only, for the next part of a file that is
+    written in parts. A stream (the CRM's ``GET /crm/export/all.zip``,
+    WS-53 CRM-X0) uses it, so a large file never sits whole in memory. It is
+    the same writer, with the same guard, and never a second one.
+    """
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator="\r\n", quoting=csv.QUOTE_MINIMAL)
-    writer.writerow(list(header))
+
+    def take() -> str:
+        line = buffer.getvalue()
+        buffer.seek(0)
+        buffer.truncate(0)
+        return line
+
+    if header is not None:
+        writer.writerow(list(header))
+        yield BOM + take()
     for row in rows:
         writer.writerow([csv_cell(cell) for cell in row])
-    return BOM + buffer.getvalue()
+        yield take()
 
 
 __all__ = [
@@ -116,4 +139,5 @@ __all__ = [
     "INJECTION_GUARD",
     "csv_cell",
     "csv_document",
+    "csv_lines",
 ]

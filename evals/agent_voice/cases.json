@@ -1,0 +1,80 @@
+[
+  {
+    "id": "V01",
+    "surface": "chat",
+    "records": "Task #141 \"Renew the AWS reserved instances\". Status: In progress. Owner: Priya Raman. Due: 14 Oct 2026. Last comment (8 Oct, Priya): waiting on the finance approval.",
+    "ask": "What is the status of task #141?"
+  },
+  {
+    "id": "V02",
+    "surface": "chat",
+    "records": "Invoices: INV-2207 from Kaveri Steel, Rs 1,84,000, due 2 Oct 2026, unpaid. INV-2211 from Nilgiri Freight, Rs 42,500, due 20 Oct 2026, unpaid. INV-2190 from Kaveri Steel, Rs 96,000, paid 28 Sep 2026.",
+    "ask": "Which invoices are overdue today, 10 Oct 2026?"
+  },
+  {
+    "id": "V03",
+    "surface": "chat",
+    "records": "Deploy run 4411 on 9 Oct 2026 failed at step 'migrate'. Log line: migration 238 failed, column 'due_at' already exists. The previous run 4410 passed.",
+    "ask": "Why did the deploy fail, and what should I do?"
+  },
+  {
+    "id": "V04",
+    "surface": "title",
+    "records": "Member note: the export to CSV button on the Reports page does nothing in Safari, Chrome works, a customer reported it on 7 Oct.",
+    "ask": "Write a task title for this note."
+  },
+  {
+    "id": "V05",
+    "surface": "title",
+    "records": "Project brief: move the company email from the old provider to Google Workspace for 40 people before 1 Dec 2026, including the shared mailboxes.",
+    "ask": "Write a project title."
+  },
+  {
+    "id": "V06",
+    "surface": "description",
+    "records": "Member note: the export to CSV button on the Reports page does nothing in Safari, Chrome works, a customer reported it on 7 Oct.",
+    "ask": "Write the task description."
+  },
+  {
+    "id": "V07",
+    "surface": "description",
+    "records": "Project brief: move the company email from the old provider to Google Workspace for 40 people before 1 Dec 2026, including the shared mailboxes.",
+    "ask": "Write the project description."
+  },
+  {
+    "id": "V08",
+    "surface": "email",
+    "records": "Thread: on 3 Oct 2026 Priya Raman (priya@kaveristeel.example) wrote: 'We shipped the second batch. Can you confirm the PO number so we can raise the invoice?' The member's PO for this order is PO-5531.",
+    "ask": "Draft a reply to Priya from the member."
+  },
+  {
+    "id": "V09",
+    "surface": "email",
+    "records": "Vendor Nilgiri Freight has not sent the delivery proof for shipment NF-882, delivered on 30 Sep 2026. The member needs it by 15 Oct 2026 to close the month.",
+    "ask": "Draft a follow-up email to the vendor from the member."
+  },
+  {
+    "id": "V10",
+    "surface": "summary",
+    "records": "Meeting 9 Oct 2026, attendees Priya, Arjun, Meera. Decided: launch the pilot with two customers on 20 Oct. Arjun owns the onboarding script. Open: Meera to confirm the pricing for the pilot. Discussed the delay of the API docs, no decision.",
+    "ask": "Write the meeting notes summary."
+  },
+  {
+    "id": "V11",
+    "surface": "summary",
+    "records": "Yesterday: 14 tasks completed, 3 new tasks overdue (#141, #152, #160), 2 emails from customers flagged urgent (Kaveri Steel about INV-2207, Nilgiri Freight about NF-882).",
+    "ask": "Write the morning digest for the member."
+  },
+  {
+    "id": "V12",
+    "surface": "summary",
+    "records": "Week 41: the Design team closed 22 of 30 planned tasks. Two tasks slipped to week 42 because the brand review moved. Meera was on leave on 8 and 9 Oct. No task is blocked.",
+    "ask": "Write the weekly report for the Design team."
+  },
+  {
+    "id": "V13",
+    "surface": "message",
+    "records": "WhatsApp chat with Arjun (contact). Arjun on 9 Oct 2026: 'Can we move tomorrow's call to 4 pm?' The member is free at 4 pm on 11 Oct 2026.",
+    "ask": "Draft the member's WhatsApp reply to Arjun."
+  }
+]

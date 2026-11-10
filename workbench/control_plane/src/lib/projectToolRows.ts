@@ -112,3 +112,30 @@ export function taskMetaForPeople(meta: string): string {
   );
   return cleaned.replace(/[«»]/g, "");
 }
+
+/** A task row's facts, split for a one-line row: the status draws as a pill. */
+export interface TaskRowFacts {
+  /** The status NAME, unfenced, or null when the row prints none. */
+  status: string | null;
+  /** The bare category printed after the status, when it is a known one. */
+  category: string | null;
+  /** Every other fact, as `taskMetaForPeople` gives it. */
+  rest: string;
+}
+
+/**
+ * Split a task row's facts into the status and the rest (owner feedback,
+ * 2026-10-10: one line per receipt row, the status as its pill). The row
+ * drops the "status " word, because the pill says what it is. The category
+ * goes to `statusAccent`, so the pill takes the lane's own hue.
+ *
+ * Matched on the RAW meta, for the reason `taskMetaForPeople` gives. Pure.
+ * `projectToolRows.test.ts` is the fence.
+ */
+export function taskRowFacts(meta: string): TaskRowFacts {
+  const cats = STATUS_CATEGORIES.join("|");
+  const m = meta.match(new RegExp(`^status «([^»]*)»(?: · (${cats}))?(?= · |$)`));
+  if (!m || !m[1].trim()) return { status: null, category: null, rest: taskMetaForPeople(meta) };
+  const rest = meta.slice(m[0].length).replace(/^ · /, "");
+  return { status: m[1].trim(), category: m[2] ?? null, rest: taskMetaForPeople(rest) };
+}

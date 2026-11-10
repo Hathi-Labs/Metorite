@@ -30,6 +30,7 @@ import {
 } from "../lib/priority";
 import { CELL_ICON } from "../lib/priorityIcons";
 import { contextAccent } from "../lib/contextColors";
+import { filterWord, shellBarOn } from "@/lib/shell/registry";
 
 // The unified filter + sort + group bar (Jira/Linear-style). One row:
 //   [Search icon]  [Filter (N)] [chips…]        [Group by]  [Sort] [⇅]
@@ -38,12 +39,12 @@ import { contextAccent } from "../lib/contextColors";
 // every toggle is a `Button`. The look is Projects'. The options and what they
 // do are My Tasks' own, unchanged.
 // The Filter popover holds every facet (Context / Priority / Energy, + Assignee
-// off My Next Actions) as MULTI-select checklists — a task matches ANY value
+// off My tasks) as MULTI-select checklists — a task matches ANY value
 // within a facet (OR) and must pass EVERY active facet (AND). Active values show
 // as removable chips inline, so the state is always visible without opening the
 // popover. This scales to more facets without stacking pill rows (no cognitive
 // overload — one control, progressive disclosure).
-// Per-view exceptions: Assignee is hidden on My Next Actions (all mine), and
+// Per-view exceptions: Assignee is hidden on My tasks (all mine), and
 // Sort is hidden on Waiting For (that view derives its own order).
 
 // SORT_LABEL moved to lib/ordering.ts — the board's drop-refusal overlay names
@@ -93,7 +94,7 @@ export function TaskToolbar({ items }: { items: MyTask[] }) {
   const groupBy = useTaskStore((s) => s.groupBy);
   const setGroupBy = useTaskStore((s) => s.setGroupBy);
   const view = useTaskStore((s) => s.selectedView);
-  // My Next Actions is only ever tasks assigned to me, so an assignee facet
+  // My tasks is only ever tasks assigned to me, so an assignee facet
   // there is meaningless. It's offered on the other views (e.g. Waiting For).
   const showAssignee = view !== "next";
   // Waiting For orders itself: WaitingForView re-derives the whole order
@@ -189,8 +190,9 @@ export function TaskToolbar({ items }: { items: MyTask[] }) {
             inputSize="sm"
             value={filters.query}
             onChange={(e) => setFilters({ query: e.target.value })}
-            aria-label="Search tasks"
-            placeholder="Search tasks…"
+            aria-label={`${filterWord()} tasks`}
+            placeholder={`${filterWord()} tasks…`}
+            data-page-filter={shellBarOn() ? "tasks" : undefined}
             onKeyDown={(e) => {
               if (e.key === "Escape") setOpened(false);
             }}
@@ -202,10 +204,13 @@ export function TaskToolbar({ items }: { items: MyTask[] }) {
           variant="secondary"
           size="icon-sm"
           icon="Search"
-          aria-label="Search tasks"
+          aria-label={`${filterWord()} tasks`}
           aria-expanded={false}
-          title="Search titles and notes"
+          title={`${filterWord()} titles and notes`}
           onClick={() => setOpened(true)}
+          // §6.1: `/` opens this, then lands in the box it opens.
+          data-page-filter={shellBarOn() ? "tasks" : undefined}
+          data-page-filter-opener={shellBarOn() ? "" : undefined}
         />
       )}
 

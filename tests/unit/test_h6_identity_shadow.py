@@ -646,7 +646,7 @@ class TestTheReadCutoverFlag:
 
     def test_the_flag_defaults_off_and_reads_the_env_idiom(self, monkeypatch):
         """UNSET = OFF, fail-closed, and only the truthy tokens flip it on — the
-        same idiom as `deps._refuse_llm_key_identity`."""
+        same idiom as `deps._trust_unverified_sso_headers`."""
         from acb_auth.access import identity_cutover_enabled
 
         monkeypatch.delenv("IDENTITY_CUTOVER", raising=False)
@@ -1459,6 +1459,22 @@ def _reset_identity_read_flag():
     access_mod._identity_read_failed.reset(token)
 
 
+@pytest.fixture(autouse=True)
+def _access_tables_present(monkeypatch):
+    """Every test here starts with ``access._tables_missing`` OFF.
+
+    The latch is process-wide. An earlier suite that resolved access against a
+    database with no access tables sets it, and then ``resolve_access`` returns
+    ``is_active=False`` with no query. ``TestFlagOnAndFlagOffAgree`` then
+    reads "the OFF path did not admit the member" (task 1332, pr-check run
+    41305223510). ``tests/conftest.py`` clears it for every test too. This
+    suite states its own precondition all the same.
+    """
+    import acb_auth.access as access_mod
+
+    monkeypatch.setattr(access_mod, "_tables_missing", False)
+
+
 class TestAFailedReadIsNotNoMembership:
     """🔴 These two were ONE return value, and a member paid for it.
 
@@ -1543,3 +1559,116 @@ class TestAFailedReadIsNotNoMembership:
 
         assert await access_mod.resolve_identity(None) == (None, None)
         assert await access_mod.resolve_identity("") == (None, None)
+
+
+# ── H6a (b): flag ON and flag OFF agree on a NON-promoted catalog ────────────
+#
+# On the replayed ladder `app_user` carries no FORCE RLS yet, so the flag-OFF
+# read works, and the two paths can be compared on one member. On the
+# phase-4-promoted catalog the OFF path bricks by design, and
+# `test_h3_rls_promotion_rehearsal.py::TestTheReadCutoverIdentityLeg` keeps
+# that RED test. The `user_id` is NOT compared: OFF it is `app_user.id`, ON it
+# is `user_identity.id`, a different id space by design (P2b).
+def _seed_member_with_role(engine, *, org_slug: str, email: str,
+                           role_slug: str) -> str:
+    """Org, role, permission, app_user and user_role, committed. Returns org id."""
+    with engine.begin() as conn:
+        org = str(conn.execute(
+            text("INSERT INTO organization (slug, display_name) "
+                 "VALUES (:s, :s) RETURNING id"), {"s": org_slug}).scalar_one())
+        role_id = str(conn.execute(
+            text("INSERT INTO org_role (organization_id, slug, display_name, "
+                 "is_system, rank) VALUES (CAST(:o AS uuid), :r, :r, false, 100) "
+                 "RETURNING id"), {"o": org, "r": role_slug}).scalar_one())
+        conn.execute(
+            text("INSERT INTO org_role_permission (role_id, permission) "
+                 "VALUES (CAST(:r AS uuid), 'feature:chat')"), {"r": role_id})
+        uid = str(conn.execute(
+            text("INSERT INTO app_user (email, display_name, role, status, "
+                 "organization_id, joined_at) VALUES (:e, :e, 'employee', "
+                 "'active', CAST(:o AS uuid), now()) RETURNING id"),
+            {"e": email, "o": org}).scalar_one())
+        conn.execute(
+            text("INSERT INTO user_role (user_id, role_id, assigned_by) "
+                 "VALUES (CAST(:u AS uuid), CAST(:r AS uuid), 'h6a-test')"),
+            {"u": uid, "r": role_id})
+    return org
+
+
+def _unseed_member_with_role(engine, *, org_slug: str, email: str) -> None:
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM app_user WHERE lower(email) = lower(:e)"),
+                     {"e": email})
+        conn.execute(text(
+            "DELETE FROM org_membership m USING user_identity ui "
+            " WHERE m.user_id = ui.id AND lower(ui.email) = lower(:e)"),
+            {"e": email})
+        conn.execute(text("DELETE FROM user_identity WHERE lower(email) = lower(:e)"),
+                     {"e": email})
+        # CASCADE removes org_role and org_role_permission with the org.
+        conn.execute(text("DELETE FROM organization WHERE slug = :s"),
+                     {"s": org_slug})
+
+
+@_DB_GATE
+class TestFlagOnAndFlagOffAgree:
+    """H6a (b), R7 name: ``flag-on-equals-flag-off``.
+
+    For a clean active member on the replayed (non-promoted) ladder, the
+    cutover path and the dark path give the same org, roles, permissions and
+    email through the REAL ``deps._with_resolved_access``. Mutation: an
+    identity leg that reads a different org, or a role leg that reads no role
+    under the bind, breaks the equality.
+    """
+
+    async def test_the_two_paths_give_the_same_answer(self, replayed, monkeypatch):
+        import acb_auth.access as access_mod
+        from acb_auth.deps import _with_resolved_access
+        from acb_auth.roles import UserContext, UserRole
+        from acb_common.db import clear_tenant
+
+        tag = uuid.uuid4().hex[:8]
+        slug = f"h6a-agree-{tag}"
+        email = f"agree-{tag}@h6.example"
+        role_slug = f"h6a-role-{tag}"
+        org = _seed_member_with_role(
+            replayed, org_slug=slug, email=email, role_slug=role_slug)
+
+        def _shape(ctx):
+            return (
+                str(ctx.organization_id),
+                ctx.email,
+                ctx.access.is_active,
+                tuple(sorted(ctx.access.roles)),
+                tuple(sorted(ctx.access.role_granted)),
+            )
+
+        try:
+            async with tenant_engine_scope(_URL):
+                await mirror_identity_membership(
+                    email=email, org_id=org, status="active")
+
+                monkeypatch.delenv("IDENTITY_CUTOVER", raising=False)
+                access_mod.invalidate()
+                clear_tenant()
+                off = await _with_resolved_access(
+                    UserContext(email=email, role=UserRole.EMPLOYEE))
+                clear_tenant()
+
+                monkeypatch.setenv("IDENTITY_CUTOVER", "1")
+                access_mod.invalidate()
+                on = await _with_resolved_access(
+                    UserContext(email=email, role=UserRole.EMPLOYEE))
+                clear_tenant()
+
+            assert _shape(off)[0] == org, "the OFF path did not resolve the org"
+            assert off.access.is_active is True and role_slug in off.access.roles, (
+                "the OFF path did not admit the member: the comparison is vacuous")
+            assert _shape(on) == _shape(off), (
+                f"flag ON and flag OFF disagree: on={_shape(on)} off={_shape(off)}")
+            assert on.user_id != off.user_id, (
+                "ON and OFF returned the same user_id: the ON path read app_user")
+        finally:
+            clear_tenant()
+            access_mod.invalidate()
+            _unseed_member_with_role(replayed, org_slug=slug, email=email)

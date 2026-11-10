@@ -27,7 +27,7 @@ from pathlib import Path
 from gateway.routes.email import quoting as qt
 from gateway.routes.email.automation import drafting as dr
 from gateway.routes.email.quoting import split_quoted_html, split_quoted_text
-from gateway.routes.email.signature import build_signed_bodies
+from gateway.routes.email.signature import build_signed_bodies, sign_html
 
 _SIG = "Vijay"
 _QUOTE = (
@@ -248,3 +248,60 @@ def test_both_splitters_recognise_the_same_markers() -> None:
         assert any(fragment in rx.pattern for rx in qt._TEXT_BOUNDARY), (
             f"marker missing from quoting.py: {fragment}"
         )
+
+
+# ── WS-17 EM-G3a-f7 PR-C1b: the signature in the HTML of a Gmail-web draft ──
+#
+# ``build_signed_bodies`` returns the HTML unchanged when the TEXT already
+# holds the signature (D-G3a-f7-7). The upsert always puts it in the text, so
+# the signed send of a kept HTML needs ``sign_html``.
+
+_GMAIL_HTML = (
+    '<div dir="ltr">Please find the layout.<img src="cid:ii_m1"></div>'
+    '<br><div class="gmail_quote"><div>On Mon, Ravi wrote:</div>'
+    "<blockquote>Can you send it?</blockquote></div>")
+
+
+def test_sign_html_adds_the_signature_once_above_the_quote() -> None:
+    """Acceptance 7, D-G3a-f7-7. The signature HTML goes under the new text
+    and above the quote. A second call adds nothing, so a kept draft goes out
+    with the signature once."""
+    signed = sign_html("<b>Vijay</b> | Contoso", _GMAIL_HTML)
+
+    assert signed.count("<b>Vijay</b> | Contoso") == 1
+    new, quoted = split_quoted_html(signed)
+    assert "<b>Vijay</b> | Contoso" in new
+    assert new.startswith('<div dir="ltr">Please find the layout.')
+    assert quoted == _GMAIL_HTML[_GMAIL_HTML.index('<div class="gmail_quote"'):]
+    assert 'src="cid:ii_m1"' in signed
+    assert sign_html("<b>Vijay</b> | Contoso", signed) == signed
+
+    plain = sign_html("Vijay\nContoso", _GMAIL_HTML)
+    assert plain.count("Vijay<br>Contoso") == 1
+    assert plain.index("Vijay<br>Contoso") < plain.index("gmail_quote")
+    assert sign_html("Vijay\nContoso", plain) == plain
+
+
+def test_sign_html_finds_a_signature_that_gmail_wrote_again() -> None:
+    """Gmail can write the HTML again, with other spaces or tags. The text of
+    the signature still counts, so no second copy goes in."""
+    rewritten = ('<div dir="ltr">Thanks.<br><br><div><b>Vijay</b>  |'
+                 "\n Contoso</div></div>")
+    assert sign_html("<b>Vijay</b> | Contoso", rewritten) == rewritten
+
+
+def test_sign_html_reads_only_the_new_part() -> None:
+    """A quote of an earlier mail of the member holds the signature too. That
+    copy does not count, so the new text still gets the signature."""
+    html = ("<div>Done.</div><div class=\"gmail_quote\"><blockquote>"
+            "Earlier.<br><br>Vijay<br>Contoso</blockquote></div>")
+    signed = sign_html("Vijay\nContoso", html)
+    new, _quoted = split_quoted_html(signed)
+    assert "Vijay<br>Contoso" in new
+    assert signed.count("Vijay<br>Contoso") == 2
+
+
+def test_sign_html_with_no_signature_or_no_html_changes_nothing() -> None:
+    assert sign_html("", _GMAIL_HTML) == _GMAIL_HTML
+    assert sign_html("   ", _GMAIL_HTML) == _GMAIL_HTML
+    assert sign_html("Vijay", "") == ""

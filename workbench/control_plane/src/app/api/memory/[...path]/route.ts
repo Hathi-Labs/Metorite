@@ -9,6 +9,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
+import { refuseUnsafePath } from "@/lib/gatewayPath";
 
 export const dynamic = "force-dynamic";
 
@@ -31,6 +32,8 @@ export async function GET(
   const me = await requireIdentity();
   if (me instanceof NextResponse) return me;
   const { path } = await params;
+  const refused = refuseUnsafePath(path);
+  if (refused) return refused;
   const upstream = `${GATEWAY_URL}/memory/${path.join("/")}`;
   try {
     const res = await gatewayFetch(upstream, {
@@ -51,6 +54,8 @@ export async function POST(
   const me = await requireIdentity();
   if (me instanceof NextResponse) return me;
   const { path } = await params;
+  const refused = refuseUnsafePath(path);
+  if (refused) return refused;
   const upstream = `${GATEWAY_URL}/memory/${path.join("/")}`;
   try {
     const body = await req.json().catch(() => ({}));
@@ -77,6 +82,8 @@ export async function DELETE(
   const me = await requireIdentity();
   if (me instanceof NextResponse) return me;
   const { path } = await params;
+  const refused = refuseUnsafePath(path);
+  if (refused) return refused;
   const upstream = `${GATEWAY_URL}/memory/${path.join("/")}`;
   try {
     const res = await gatewayFetch(upstream, {

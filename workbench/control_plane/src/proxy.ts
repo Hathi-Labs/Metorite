@@ -29,6 +29,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { auth, isAuthEnabled, isAuthConfigured } from "@/auth";
+import { isSlotCookieName } from "@/lib/accountSlots";
 
 /** NextAuth's own endpoints, which must stay reachable to sign anybody in. */
 const AUTH_ROUTES = "/api/auth";
@@ -48,10 +49,35 @@ const PUBLIC_PAGES = new Set([
   "/signin",
   "/signin/code",
   "/favicon.ico",
+  // The app's icons and its manifest. The sign-in page shows them to a person
+  // with no session, and a browser fetches the manifest with no cookie. They
+  // are fixed brand files (`brand/make_icons.py`) and carry no member data.
+  // The two dot icons are here too, so a tab that a sign-out left hidden
+  // cannot show a broken one.
+  "/icon.svg",
+  "/apple-icon.png",
+  "/manifest.webmanifest",
+  "/icon-192.png",
+  "/icon-512.png",
+  "/icon-maskable-512.png",
+  "/favicon-needs.png",
+  "/favicon-reply.png",
+  "/favicon-needs.svg",
+  "/favicon-reply.svg",
+  // WS-66 PN-1: the service worker of web push. A browser fetches the script
+  // again with no cookie to check for an update, and a redirect to /signin is
+  // not a script, so the update fails. It is a fixed file with no member data
+  // and no fetch handler (`public/sw.js`).
+  "/sw.js",
   // WS-17 EM-T3c: where an IT admin lands after approving Metorite in
   // Microsoft. That admin has no Metorite session. The page reads one token
   // from a fixed set, makes no fetch and renders fixed copy only.
   "/oauth/approved",
+  // WS-54 IN-8a: Metorite's OAuth client metadata document (CIMD) for MCP
+  // servers. An auth server fetches it with no session, and its URL is the
+  // client id. It is the same public JSON for every caller and names nobody.
+  // With MCP_OAUTH_ENABLED off the route answers 404.
+  "/oauth/mcp-client.json",
 ]);
 
 /**
@@ -64,10 +90,50 @@ const PUBLIC_PAGES = new Set([
  * a `code` and `state` included, still meets `requireIdentity()` there, so a
  * signed-out member still gets 401 and never reaches the gateway. Fences:
  * `proxy.test.ts` and the callback's `route.test.ts`.
+ *
+ * `/api/health` (`navigation_shell.md` §7.3): the probe of the shell's update
+ * notice, so the sign-in page can say "updating" too. It answers up or down
+ * and a build id, and reads nothing private. Fence: `proxy.test.ts`.
  */
-const PUBLIC_API_PATHS = new Set(["/api/email/oauth/microsoft/callback"]);
+const PUBLIC_API_PATHS = new Set([
+  "/api/email/oauth/microsoft/callback",
+  "/api/health",
+]);
+
+/**
+ * The account switcher's slots end with the session (MT-1k slice A2, rule 4).
+ *
+ * ⚠️ Enforced HERE, on every request, and not beside each sign-out button.
+ * Four paths end a session: the switcher's "Sign out of all accounts", a plain
+ * `signOut()` (the sign-up page, the old footer), Auth.js's own sign-out page,
+ * and an expiry. Only the first cleared the slots, so after the other three the
+ * next person at that computer could switch into the accounts left behind
+ * (security review, 2026-10-07). A request that carries slot cookies and no
+ * live session now gets them deleted, whichever way the session ended.
+ *
+ * `auth()` runs only when a slot cookie is present, so a browser that never
+ * used the switcher pays nothing. Fence: `proxy.test.ts`.
+ */
+async function sweepOrphanSlots(req: NextRequest, res: NextResponse): Promise<NextResponse> {
+  const slots = (req.cookies?.getAll?.() ?? []).filter((c) => isSlotCookieName(c.name));
+  if (slots.length === 0 || (await auth())) return res;
+  for (const c of slots) {
+    res.cookies.set(c.name, "", {
+      httpOnly: true,
+      secure: c.name.startsWith("__Host-"),
+      sameSite: "lax",
+      path: "/",
+      maxAge: 0,
+    });
+  }
+  return res;
+}
 
 export async function proxy(req: NextRequest) {
+  return sweepOrphanSlots(req, await gate(req));
+}
+
+async function gate(req: NextRequest): Promise<NextResponse> {
   // The laptop case, and ONLY the laptop case, runs open. This used to be
   // `!isAuthEnabled` where that merely meant "no client id configured", so a
   // production box whose auth env went missing served every route to anyone
@@ -115,8 +181,12 @@ export async function proxy(req: NextRequest) {
     return NextResponse.json({ error: "Sign in to continue" }, { status: 401 });
   }
 
+  // The WHOLE link comes back after the sign-in, query included. An
+  // org-aware link (`lib/orgLink.ts`) carries `?org=` and a record id there,
+  // so the path alone opened the wrong page. Auth.js's own redirect check
+  // keeps the callback on this origin. Fence: `proxy.test.ts`.
   const url = new URL("/signin", req.url);
-  url.searchParams.set("callbackUrl", pathname);
+  url.searchParams.set("callbackUrl", `${pathname}${req.nextUrl.search}`);
   return NextResponse.redirect(url);
 }
 

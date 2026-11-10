@@ -20,11 +20,33 @@
  * email-assistant tools take `account_id`, `email_id`, `rule_id`), falling back
  * to the optional `accountId` / `emailId` props the email app passes from its
  * current selection — so they work in the chat app too.
+ *
+ * ## One look with the other chat cards (follow-up of #945)
+ *
+ * Each card draws through `RollupCard` with `header="own"`. Its title row is
+ * the shared header (`RollupHeader`, through {@link CardHead}), with an icon
+ * of the set. A control of the card (Disable, Open, Read all) sits BESIDE the
+ * header, never inside it: the header is the fold's button. Every control is
+ * the shared `Button`. The draft card waits on the member, so it never folds
+ * until the draft is saved or sent. A read card in the trail draws through
+ * `ToolCardShell`. Each act sends the same request as before the move.
+ * Fences: `src/lib/chatCardConformance.test.ts`,
+ * `src/lib/cardHeaderTrigger.test.ts`, `src/components/email/emailCards.test.ts`
+ * and `e2e/email-chat-cards.spec.ts`.
  */
 
+import ShowMore from "@/components/ui/ShowMore";
 import Button from "@/components/ui/Button";
+import ConfirmDialog from "@/components/ui/ConfirmDialog";
+import Badge from "@/components/ui/Badge";
+import { Textarea } from "@/components/ui/Input";
+import { CARD_FRAME_CLASS } from "@/components/ui/Collapsible";
+import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
 import AppIcon from "@/components/Icon";
-import { useState, useEffect } from "react";
+import { clipWords } from "@/lib/fencedText";
+import Readout from "@/components/Readout";
+import { withoutIds } from "@/lib/readout";
+import { useContext, useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import type { ToolEvent } from "@/components/MarkdownMessage";
 import {
@@ -37,12 +59,14 @@ import type { Email } from "@/app/email/lib/types";
 import { MessageContent } from "@/app/email/components/MessageContent";
 import { LabelChip } from "@/app/email/components/LabelChip";
 import { useEmailStore } from "@/app/email/lib/emailStore";
+import { emailLink } from "@/app/email/lib/emailLink";
 import { ToolCardShell, DismissableCard } from "@/components/ToolCardShell";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
+import { placementOf } from "@/lib/chatPlacement";
+import { DRAFT_TOOLS, DraftPinContext } from "@/lib/pinnedDraft";
 
 // ── Tool → card routing ───────────────────────────────────────────────────────
 
-const DRAFT_TOOLS = new Set(["draft_reply", "draft_email"]);
 const RULE_TOOLS = new Set(["create_rule", "update_rule"]);
 // Tools whose result is a list of emails (each line carries `id=<id>`) — these
 // render as a clickable list that opens the message. Includes the assistant's
@@ -128,6 +152,7 @@ const ACTION_META: Record<string, { icon: string; label: string; danger?: boolea
   move_to_folder: { icon: "FolderInput", label: "Moved to folder" },
   create_label: { icon: "Tag", label: "Label ready" },
   send_email: { icon: "Send", label: "Email sent" },
+  forward_email: { icon: "Forward", label: "Email forwarded" },
   send_reply: { icon: "Reply", label: "Reply sent" },
   send_draft: { icon: "Send", label: "Draft sent" },
   delete_rule: { icon: "Trash2", label: "Rule deleted", danger: true },
@@ -185,6 +210,9 @@ function hasEmailCard(e: ToolEvent): boolean {
 function renderCard(
   e: ToolEvent, accountId?: string | null, emailId?: string | null,
 ): React.ReactNode {
+  // A result that did not act is never drawn as a done act (EM-T8e-2).
+  const none = noActionOf(e.result);
+  if (none) return <NoActionCard event={e} kind={none} />;
   if (DRAFT_TOOLS.has(e.name)) {
     return <DraftResultCard event={e} accountId={accountId} emailId={emailId} />;
   }
@@ -203,6 +231,43 @@ function renderCard(
       : <ManageInboxCard event={e} />;
   }
   return <ActionResultCard event={e} />;
+}
+
+/** Every tool name this file routes. The placement fence reads it. */
+export const EMAIL_CARD_TOOLS: readonly string[] = [
+  ...DRAFT_TOOLS,
+  ...RULE_TOOLS,
+  ...LIST_TOOLS,
+  READ_TOOL,
+  READ_THREAD_TOOL,
+  SETTINGS_TOOL,
+  GROUPS_TOOL,
+  ...INFO_TOOLS,
+  ...PATTERN_TOOLS,
+  ...Object.keys(ACTION_META),
+];
+const EMAIL_CARD_SET: ReadonlySet<string> = new Set(EMAIL_CARD_TOOLS);
+
+/**
+ * The receipt of an email READ for the trail (`ThinkingContainer`), or null.
+ * Spec `projects_ai_chat.md` §24 rule 2: a read draws under its step, and
+ * never as a card after the answer. Each read draws its own card there: the
+ * merged list and the folded reads were for a flow with no steps to hold
+ * them.
+ */
+export function emailEvidence(e: ToolEvent, accountId?: string | null): React.ReactNode | null {
+  if (e.status !== "done") return null;
+  if (!EMAIL_CARD_SET.has(e.name) || placementOf(e.name) !== "evidence") return null;
+  const none = noActionOf(e.result);
+  if (none) return <NoActionCard event={e} kind={none} />;
+  if (LIST_TOOLS.has(e.name)) return <EmailListCard events={[e]} />;
+  if (e.name === READ_TOOL) return <EmailPreviewCard event={e} />;
+  if (e.name === READ_THREAD_TOOL) return <ThreadCard event={e} accountId={accountId} />;
+  if (PATTERN_TOOLS.has(e.name)) return <PatternListCard event={e} meta={patternMeta(e)} />;
+  if (e.name === "get_rules_and_settings") return <RulesOverviewCard event={e} accountId={accountId} />;
+  if (e.name === "list_labels") return <LabelsCard event={e} />;
+  if (INFO_TOOLS.has(e.name)) return <InfoResultCard event={e} />;
+  return null;
 }
 
 /** Folded "Read N message(s)" card for a run of read_email context calls — one
@@ -232,13 +297,7 @@ function ReadGroupCard({ events }: { events: ToolEvent[] }) {
  *  N separate email cards. The body fetches the real conversation (so each
  *  message is openable) and falls back to the tool's text summary if that fails. */
 function ThreadCard({ event, accountId }: { event: ToolEvent; accountId?: string | null }) {
-  const first = (event.result || "").split("\n")[0] || "Email thread";
-  // "Thread: <subject> — N message(s), oldest first:" → just the subject + count.
-  const title =
-    first
-      .replace(/^Thread:\s*/i, "")
-      .replace(/,?\s*oldest first:?\s*$/i, "")
-      .trim() || "Email thread";
+  const title = threadTitle(event.result);
   return (
     <ToolCardShell
       title={title}
@@ -257,7 +316,7 @@ function ThreadBody({ event, accountId }: { event: ToolEvent; accountId?: string
   const args = event.args as Record<string, unknown> | undefined;
   const threadId = (args?.thread_id as string) || "";
   const emailId = (args?.email_id as string) || "";
-  const acct = (args?.account_id as string) || accountId || undefined;
+  const acct = resolvedMailboxId(event.name, event.result) || (args?.account_id as string) || accountId || undefined;
   const [msgs, setMsgs] = useState<Email[] | null>(null);
   const [state, setState] = useState<"loading" | "error" | "done">("loading");
 
@@ -265,14 +324,26 @@ function ThreadBody({ event, accountId }: { event: ToolEvent; accountId?: string
     let alive = true;
     (async () => {
       try {
+        // A read that refused (a thread id in two mailboxes, say) has no
+        // "Thread:" head. Show its text, and fetch nothing: a fetch with no
+        // mailbox would merge the two mailboxes it refused to merge.
+        if (!emailId && !isThreadRead(event.result)) {
+          // The text view of the error state draws the result as it is.
+          if (alive) setState("error");
+          return;
+        }
         let tid = threadId;
+        let box = acct;
         let single: Email | null = null;
-        if (!tid && emailId) {
+        // The mail wins, as it does in the agent: the thread is read in the
+        // mailbox of the mail, never the mailbox of the chat (EM-T8e-2).
+        if (emailId) {
           single = await getEmail(emailId);
-          tid = single.threadId || "";
+          tid = single.threadId || tid;
+          box = single.accountId || box;
         }
         const list = tid
-          ? await listThread(acct, tid)
+          ? await listThread(box, tid)
           : single
             ? [single]
             : [];
@@ -297,12 +368,14 @@ function ThreadBody({ event, accountId }: { event: ToolEvent; accountId?: string
     );
   }
   // Couldn't fetch the conversation — show the tool's text summary so the user
-  // still gets the content.
+  // still gets the content. The bodies are a sender's text, so they keep
+  // their lines, and only the ids go (`withoutIds`). `Readout` would read a
+  // body line "Done: …" as a machine line and drop it (review round 1).
   if (state === "error" || !msgs) {
     return (
-      <div className="text-xs whitespace-pre-wrap break-words text-foreground/90 max-h-80 overflow-y-auto overflow-x-hidden scrollbar-thin">
-        {event.result}
-      </div>
+      <ShowMore className="text-xs whitespace-pre-wrap break-words text-foreground/90">
+        {threadText(event.result)}
+      </ShowMore>
     );
   }
   if (msgs.length === 0) {
@@ -345,6 +418,7 @@ export default function EmailToolCards({
   emailId?: string | null;
 }) {
   const dismissed = useDismissedToolCards();
+  const pin = useContext(DraftPinContext);
   const all = (toolEvents ?? []).filter((e) => !dismissed.has(e.id));
 
   // When the agent read a whole thread, the thread card IS the canonical view —
@@ -374,6 +448,8 @@ export default function EmailToolCards({
     }
   };
   for (const e of all) {
+    // A read draws in its step (`emailEvidence`, spec §24), never here.
+    if (placementOf(e.name) === "evidence") continue;
     // Fold consecutive read_email context calls into one group — dropped
     // entirely when a thread card is present (subsumed by the thread).
     if (e.status === "done" && e.name === READ_TOOL) {
@@ -385,6 +461,17 @@ export default function EmailToolCards({
     // shown — both subsume the raw list the lookup produced.
     if ((hasThread || hasGroups) && LIST_TOOLS.has(e.name)) continue;
     flushReads();
+    // A result that did not act is never drawn as a done act, whatever card
+    // its tool has: the info, rule and settings cards too (EM-T8e-2 review).
+    const none = noActionOf(e.result);
+    if (none) {
+      items.push(
+        <DismissableCard key={e.id} onDismiss={() => dismissToolCard(e.id)}>
+          <NoActionCard event={e} kind={none} />
+        </DismissableCard>,
+      );
+      continue;
+    }
     // Merge ALL list-tool results into ONE interactive card at the position of
     // the first list event; the rest are folded in (not rendered separately).
     if (LIST_TOOLS.has(e.name)) {
@@ -408,12 +495,10 @@ export default function EmailToolCards({
       continue;
     }
     // Agent-driven categorized board — grouped, interactive sections.
+    // It is a RESULT: it folds, and it never closes, because it is the
+    // record of the answer (spec `projects_ai_chat.md` §29 rule 2).
     if (e.name === GROUPS_TOOL) {
-      items.push(
-        <DismissableCard key={e.id} onDismiss={() => dismissToolCard(e.id)}>
-          <EmailGroupsCard event={e} />
-        </DismissableCard>,
-      );
+      items.push(<EmailGroupsCard key={e.id} event={e} />);
       continue;
     }
     // Editable learned-pattern list (delete per row) — own chrome.
@@ -440,6 +525,12 @@ export default function EmailToolCards({
       items.push(<InfoResultCard key={e.id} event={e} />);
       continue;
     }
+    // The draft above the composer, and a draft a newer one replaced, draw
+    // one line here, not a second editable copy (`lib/pinnedDraft.ts`).
+    if (DRAFT_TOOLS.has(e.name) && (e.id === pin.pinnedId || pin.superseded.has(e.id))) {
+      items.push(<DraftLine key={e.id} />);
+      continue;
+    }
     items.push(
       <DismissableCard key={e.id} onDismiss={() => dismissToolCard(e.id)}>
         {renderCard(e, accountId, emailId)}
@@ -458,10 +549,13 @@ export default function EmailToolCards({
 
 /** Open an email in the email app: select it, leave any full-screen scene (the
  *  Chat scene now covers the inbox, so we must exit it for the email to show),
- *  and route to /email (a no-op in the email app, navigation from the chat app). */
+ *  and route to the email's own link (`lib/emailLink.ts`). The link holds the
+ *  id, so a refresh opens the same email (owner report, 2026-10-09). The
+ *  page's deep-link reader skips an id that is already open, so the open
+ *  here and the link never open the mail twice. */
 function useOpenEmail() {
   const router = useRouter();
-  return (id: string) => {
+  return (id: string, accountId?: string | null) => {
     try {
       // Fetch-and-show even when the message isn't in the current folder's list,
       // so opening works from any view (not just when the inbox is active).
@@ -474,8 +568,96 @@ function useOpenEmail() {
     if (typeof window !== "undefined") {
       window.dispatchEvent(new CustomEvent("cc-email-open", { detail: id }));
     }
-    router.push("/email");
+    router.push(emailLink(id, accountId) ?? "/email");
   };
+}
+
+// ── The shared parts of a card ────────────────────────────────────────────────
+
+/** The frame of a receipt, and the tone of its icon. The same classes as the
+ *  Tasks receipts (`TaskToolCards`), so the two apps draw one receipt. */
+export function receiptTone(failed: boolean, danger = false): { frame: string; icon: string } {
+  if (failed) return { frame: "rounded-lg border px-2.5 py-2 border-destructive/40 bg-destructive/5 glass:rounded-[16px] glass:p-3", icon: "text-destructive" };
+  if (danger) return { frame: "rounded-lg border px-2.5 py-2 border-warning/40 bg-warning/5 glass:rounded-[16px] glass:p-3", icon: "text-warning" };
+  return { frame: "rounded-lg border px-2.5 py-2 border-sidebar-border bg-secondary/40 glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3", icon: "text-success" };
+}
+
+/** A small control in a dense card row. The shared `Button`, at the card's
+ *  type size. */
+const DENSE = "gap-0.5 px-1.5 py-0.5 text-[10px]";
+
+/**
+ * A card's title row: the shared header (the fold's one toggle), and the
+ * card's own controls BESIDE it, never inside it. The right padding leaves
+ * room for the dismiss control of `DismissableCard`.
+ */
+function CardHead({
+  tone = "",
+  aside,
+  children,
+}: {
+  tone?: string;
+  aside?: React.ReactNode;
+  children?: React.ReactNode;
+}) {
+  return (
+    <div className="flex min-w-0 items-center gap-2 pr-5">
+      <div className="min-w-0 flex-1">
+        <RollupHeader className={`text-[11px] ${tone}`.trim()} aside={aside} />
+      </div>
+      {children ? <div className="flex shrink-0 items-center gap-1">{children}</div> : null}
+    </div>
+  );
+}
+
+// ── The acts of a card ────────────────────────────────────────────────────────
+//
+// Each act sends the request it sent before the cards moved onto the shared
+// header. Two of them take more than one request, so they are named here,
+// and `emailCards.test.ts` holds each request by value. The browser twin is
+// `e2e/email-chat-cards.spec.ts`, which ran green on `main` first.
+
+/** Send a draft reply: save the text as the draft, then send that draft.
+ *  "saved" when the save named no draft id, so the draft stays in Drafts. */
+export async function sendDraftReply(accountId: string, messageId: string, body: string): Promise<"sent" | "saved"> {
+  const res = await saveDraftText(accountId, messageId, body);
+  if (!res?.id) return "saved";
+  await sendDraft(accountId, res.id);
+  return "sent";
+}
+
+/** Turn a rule on or off: read the account's rules, and write the whole
+ *  rule back with `enabled` changed. False when the rule is not there. */
+export async function setRuleEnabled(accountId: string, ruleId: string, enabled: boolean): Promise<boolean> {
+  const rules = await listRules(accountId);
+  const rule = rules.find((r) => r.id === ruleId);
+  if (!rule) return false;
+  await updateRule(ruleId, { ...rule, enabled });
+  return true;
+}
+
+/** Where each tool prints the mailbox it RESOLVED (`_mailbox_line` in
+ *  agent-email-assistant). The twin of `MAILBOX_LINE_TOOLS` in
+ *  `acb_skills/email_chat_context.py`. Only that line counts: a read carries
+ *  a stranger's text, and that text can hold "Mailbox:". */
+export const MAILBOX_LINE_TOOLS: Readonly<Record<string, "last" | "second">> = {
+  create_rule: "last",
+  read_thread: "second",
+};
+const MAILBOX_LINE_RE = /^Mailbox: .* \(account_id ([^)\s]+)\)$/;
+
+/**
+ * The id of the mailbox that the tool says it acted in, or null. The model
+ * can name a mailbox in words ("Personal"), so `args.account_id` is not an
+ * id (navigation_shell.md §7.1.1 rule 4, review P3). A card reads this
+ * first, then the arguments.
+ */
+export function resolvedMailboxId(name: string, result: string | null | undefined): string | null {
+  const where = MAILBOX_LINE_TOOLS[name];
+  const lines = (result || "").split("\n").map((l) => l.trim()).filter(Boolean);
+  if (!where || lines.length < (where === "second" ? 2 : 1)) return null;
+  const hit = MAILBOX_LINE_RE.exec(where === "last" ? lines[lines.length - 1] : lines[1]);
+  return hit ? hit[1] : null;
 }
 
 // ── Draft card ────────────────────────────────────────────────────────────────
@@ -491,15 +673,22 @@ function DraftResultCard({
   emailId?: string | null;
 }) {
   const args = e.args as Record<string, unknown> | undefined;
-  // draft_reply returns "Draft[ (saved…)]:\n\n<body>".
+  // draft_reply returns "Draft from <label · address> (mailbox <id>)[ (saved…)]:\n\n<body>".
   const raw = e.result || "";
   const initial = raw.includes("\n\n")
     ? raw.slice(raw.indexOf("\n\n") + 2).trim()
     : raw.trim();
+  const head = draftReplyHead(raw);
   const targetId = (args?.email_id as string) || emailId || "";
-  const acctId = (args?.account_id as string) || accountId || "";
+  // The tool drafts in the mailbox OF THE MAIL, whatever account the model
+  // named, so the card acts there too (EM-T8a, D-EM-19).
+  const acctId = head.mailboxId || (args?.account_id as string) || accountId || "";
   const [body, setBody] = useState(initial);
-  const [state, setState] = useState<"idle" | "saving" | "saved" | "sending" | "sent" | "error">("idle");
+  // A draft that the tool saved after a yes on its card starts saved
+  // (EM-G11c1b), so its Save cannot make a second provider draft.
+  const [state, setState] = useState<"idle" | "saving" | "saved" | "sending" | "sent" | "error">(
+    () => draftCardStart(raw),
+  );
 
   const canAct = !!acctId && !!targetId && !!body.trim();
 
@@ -514,61 +703,70 @@ function DraftResultCard({
     }
   };
 
+  // The send asks once, in the shared dialog, never the browser's
+  // confirm box (UXD-3). Undo send (task 901) will replace the ask.
+  const [asking, setAsking] = useState(false);
   const send = async () => {
-    if (!canAct || !confirm("Send this reply now?")) return;
+    if (!canAct) return;
+    setAsking(false);
     setState("sending");
     try {
-      const res = await saveDraftText(acctId, targetId, body);
-      if (res?.id) {
-        await sendDraft(acctId, res.id);
-        setState("sent");
-      } else {
-        // Couldn't resolve a draft id to send — left it in Drafts.
-        setState("saved");
-      }
+      // "saved": the save named no draft id to send, so it stays in Drafts.
+      setState(await sendDraftReply(acctId, targetId, body));
     } catch {
       setState("error");
     }
   };
 
   const done = state === "saved" || state === "sent";
+  const acting = state === "saving" || state === "sending";
 
+  // The draft waits on the member until it is saved or sent, so it never
+  // folds (`lib/cardRollup.ts` rule 1). Then it is a receipt, and may fold.
   return (
-    <div className="rounded-lg border border-primary/40 bg-primary/5 px-2.5 py-2">
-      <div className="flex items-center gap-1.5 mb-1.5">
-        <AppIcon name="PenLine" size={12} className="text-primary" />
-        <span className="text-[11px] font-medium text-foreground">Draft reply</span>
-      </div>
-      <textarea
+    <RollupCard id={`tool:${e.id}`} title="Draft reply" icon="PenLine" header="own" pending={!done}>
+    <div data-email-card="draft" className={`${CARD_FRAME_CLASS} ${done ? "glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3" : "glass:rounded-[16px] glass:p-3 glass:border-primary/35 glass:glass-raised"}`}>
+      <CardHead tone="text-primary" aside={head.from ? `from ${head.from}` : undefined} />
+      <RollupBody className="pt-1.5">
+      <Textarea
+        inputSize="sm"
+        aria-label="Draft reply"
         value={body}
         onChange={(ev) => setBody(ev.target.value)}
         rows={5}
         disabled={done}
-        className="w-full bg-background border border-border rounded-md px-2 py-1.5 text-[11px] text-foreground outline-none focus:border-primary resize-y leading-relaxed disabled:opacity-70"
+        className="leading-relaxed"
       />
-      <div className="flex items-center gap-2 mt-1.5">
+      <div className="flex flex-wrap items-center gap-2 mt-1.5">
         {state === "sent" ? (
-          <span className="flex items-center gap-1 text-[10px] text-success">
-            <AppIcon name="Send" size={11} /> Sent
-          </span>
+          <Badge tone="success" icon="Send">Sent</Badge>
         ) : state === "saved" ? (
-          <span className="flex items-center gap-1 text-[10px] text-success">
-            <AppIcon name="CheckCircle2" size={11} /> Saved to Drafts
-          </span>
+          <Badge tone="success" icon="CheckCircle2">Saved to Drafts</Badge>
         ) : (
           <>
-            <button
+            <Button
+              variant="secondary"
+              size="sm"
+              icon="PenLine"
+              loading={state === "saving"}
               onClick={save}
-              disabled={!canAct || state === "saving" || state === "sending"}
-              className="flex items-center gap-1 text-[10px] px-2 py-1 rounded-md border border-border text-foreground hover:bg-secondary disabled:opacity-50"
+              disabled={!canAct || acting}
             >
-              {state === "saving" ? <AppIcon name="Loader2" size={11} className="animate-spin" /> : <AppIcon name="PenLine" size={11} />}
               Save to Drafts
-            </button>
-            <Button size="none" radius="keep" layout="flex items-center" onClick={send} disabled={!canAct || state === "saving" || state === "sending"} className="gap-1 text-[10px] px-2 py-1 rounded-md">
-              {state === "sending" ? <AppIcon name="Loader2" size={11} className="animate-spin" /> : <AppIcon name="Send" size={11} />}
+            </Button>
+            <Button size="sm" icon="Send" loading={state === "sending"} onClick={() => setAsking(true)} disabled={!canAct || acting}>
               Send
             </Button>
+            <ConfirmDialog
+              open={asking}
+              title="Send this reply?"
+              body={head.from ? `It goes from ${head.from}.` : "It goes now."}
+              confirmLabel="Send"
+              confirmVariant="primary"
+              icon="Send"
+              onConfirm={() => void send()}
+              onCancel={() => setAsking(false)}
+            />
           </>
         )}
         {state === "error" && (
@@ -578,6 +776,18 @@ function DraftResultCard({
           <span className="text-[10px] text-muted-foreground">Open the email to enable saving.</span>
         )}
       </div>
+      </RollupBody>
+    </div>
+    </RollupCard>
+  );
+}
+
+/** One line in the thread for a draft that a newer one replaced. */
+function DraftLine() {
+  return (
+    <div data-email-card="draft-line" className="flex items-center gap-2 px-1 text-[11px] text-muted-foreground">
+      <AppIcon name="PenLine" size={12} className="shrink-0" />
+      <span className="min-w-0 truncate">Earlier draft · a newer draft replaced it</span>
     </div>
   );
 }
@@ -586,8 +796,9 @@ function DraftResultCard({
 
 const RULE_ID_RE = /id=([0-9a-fA-F-]{8,})/;
 
-/** Condition rows ("When") from a create/update_rule tool call's args. */
-function ruleConditions(a: Record<string, unknown>): { label: string; value: string }[] {
+/** Condition rows ("When") from a create/update_rule tool call's args.
+ *  Exported for its test. */
+export function ruleConditions(a: Record<string, unknown>): { label: string; value: string }[] {
   const out: { label: string; value: string }[] = [];
   const push = (label: string, v: unknown) => {
     if (v != null && String(v).trim()) out.push({ label, value: String(v).trim() });
@@ -600,8 +811,9 @@ function ruleConditions(a: Record<string, unknown>): { label: string; value: str
   return out;
 }
 
-/** Action badges ("Then") from a create/update_rule tool call's args. */
-function ruleActions(a: Record<string, unknown>): string[] {
+/** Action badges ("Then") from a create/update_rule tool call's args.
+ *  Exported for its test. */
+export function ruleActions(a: Record<string, unknown>): string[] {
   const out: string[] = [];
   const norm = (t: unknown) => String(t).replace(/_/g, " ");
   if (a.action_type) {
@@ -628,7 +840,8 @@ function RuleResultCard({
   accountId?: string | null;
 }) {
   const args = e.args as Record<string, unknown> | undefined;
-  const acctId = (args?.account_id as string) || accountId || "";
+  // The id the tool resolved, never the model's words for the mailbox.
+  const acctId = resolvedMailboxId(e.name, e.result) || (args?.account_id as string) || accountId || "";
   const ruleId = (args?.rule_id as string) || (e.result?.match(RULE_ID_RE)?.[1] ?? "");
   const name = (args?.name as string) || e.result?.match(/'([^']+)'/)?.[1] || "rule";
   const created = e.name === "create_rule";
@@ -636,10 +849,12 @@ function RuleResultCard({
   const conds = ruleConditions(a);
   const actions = ruleActions(a);
   const op = String(a.conditional_operator ?? "OR").toUpperCase() === "AND" ? "and" : "or";
-  const [state, setState] = useState<"idle" | "busy" | "deleted" | "disabled">("idle");
+  const [state, setState] = useState<"idle" | "busy" | "deleted" | "disabled" | "failed">("idle");
 
+  const [asking, setAsking] = useState(false);
   const del = async () => {
-    if (!ruleId || !confirm(`Delete rule "${name}"?`)) return;
+    if (!ruleId) return;
+    setAsking(false);
     setState("busy");
     try {
       await deleteRule(ruleId);
@@ -652,61 +867,84 @@ function RuleResultCard({
     if (!ruleId || !acctId) return;
     setState("busy");
     try {
-      const rules = await listRules(acctId);
-      const r = rules.find((x) => x.id === ruleId);
-      if (r) await updateRule(ruleId, { ...r, enabled: false });
-      setState("disabled");
+      // False when the mailbox holds no such rule: say so, never a silent reset.
+      setState((await setRuleEnabled(acctId, ruleId, false)) ? "disabled" : "failed");
     } catch {
-      setState("idle");
+      setState("failed");
     }
   };
 
+  const title = `${created ? "Created rule" : "Updated rule"}: ${name}`;
+  // The rule is written. Disable and Delete are optional, so the card is a
+  // receipt and opens folded (task 1003). The folded row says what it does.
+  const ruleSummary = [conds.length ? `${conds.length} condition${conds.length > 1 ? "s" : ""}` : "",
+    actions.length ? `${actions.length} action${actions.length > 1 ? "s" : ""}` : ""]
+    .filter(Boolean).join(", ");
+  // The folded row keeps the one warning of the open card (task 1003).
+  const ruleSummaryFull = [ruleSummary || title, a.automated === false ? "proposes for approval" : ""]
+    .filter(Boolean).join(" · ");
+  const tone = receiptTone(false);
   return (
-    <div className="rounded-lg border border-primary/40 bg-primary/5 px-2.5 py-2">
-      <div className="flex items-center gap-2 pr-5">
-        <AppIcon name="Sparkles" size={13} className="text-primary flex-shrink-0" />
-        <div className="min-w-0 flex-1">
-          <div className="text-[11px] font-medium text-foreground">
-            {created ? "Created rule" : "Updated rule"}: {name}
-          </div>
-          {state === "deleted" && <div className="text-[10px] text-destructive">Deleted.</div>}
-          {state === "disabled" && <div className="text-[10px] text-muted-foreground">Disabled.</div>}
-        </div>
+    <RollupCard
+      id={`tool:${e.id}`}
+      title={title}
+      icon="Sparkles"
+      summary={ruleSummaryFull}
+      receipt={e.status !== "error" && state !== "failed"}
+      header="own"
+    >
+    <div data-email-card="rule" className={tone.frame}>
+      {/* The result of an act sits BESIDE the header, with the buttons it
+          replaces. The header's aside shows only while the card is open, so
+          a member who folds the card and clicks Disable still sees it. */}
+      <CardHead tone={tone.icon}>
+        {state === "deleted" && <span data-rule-status="" className="text-[10px] text-destructive">Deleted.</span>}
+        {state === "disabled" && <span data-rule-status="" className="text-[10px] text-muted-foreground">Disabled.</span>}
+        {state === "failed" && (
+          <span data-rule-status="" role="alert" className="text-[10px] text-destructive">
+            Could not disable the rule.
+          </span>
+        )}
         {state === "idle" && ruleId && (
-          <div className="flex items-center gap-1 flex-shrink-0">
+          <>
             {acctId && (
-              <button
-                onClick={disable}
-                className="text-[10px] px-1.5 py-0.5 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-secondary"
-              >
+              <Button variant="secondary" size="none" className={DENSE} onClick={disable}>
                 Disable
-              </button>
+              </Button>
             )}
-            <button
-              onClick={del}
-              className="text-[10px] px-1.5 py-0.5 rounded border border-border text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-            >
+            <Button variant="secondary" size="none" className={DENSE} onClick={() => setAsking(true)}>
               Delete
-            </button>
-          </div>
+            </Button>
+            <ConfirmDialog
+              open={asking}
+              title="Delete this rule?"
+              subject={name}
+              body="The rule stops at once. Mail it already moved stays where it is."
+              confirmLabel="Delete"
+              confirmVariant="destructive"
+              icon="Trash2"
+              onConfirm={() => void del()}
+              onCancel={() => setAsking(false)}
+            />
+          </>
         )}
         {state === "busy" && <AppIcon name="Loader2" size={12} className="animate-spin text-muted-foreground" />}
-      </div>
+      </CardHead>
 
       {/* When → Then summary (from the tool-call args). For update_rule these
-          are just the changed fields; for create_rule, the whole rule. */}
+          are just the changed fields; for create_rule, the whole rule. The
+          whole value shows: a cut at a fixed length ended inside a word. */}
+      <RollupBody>
       {state !== "deleted" && (conds.length > 0 || actions.length > 0) && (
-        <div className="mt-1.5 pl-[21px] space-y-1">
+        <div className="mt-1.5 space-y-1">
           {conds.length > 0 && (
-            <div className="text-[10px] leading-relaxed">
+            <div className="text-[10px] leading-relaxed break-words">
               <span className="text-muted-foreground">When </span>
               {conds.map((c, i) => (
                 <span key={i}>
                   {i > 0 && <span className="text-muted-foreground/70"> {op} </span>}
                   <span className="text-muted-foreground">{c.label}:</span>{" "}
-                  <span className="text-foreground">
-                    {c.value.length > 60 ? c.value.slice(0, 60) + "…" : c.value}
-                  </span>
+                  <span className="text-foreground">{c.value}</span>
                 </span>
               ))}
             </div>
@@ -715,12 +953,7 @@ function RuleResultCard({
             <div className="flex flex-wrap items-center gap-1 text-[10px]">
               <span className="text-muted-foreground">Then</span>
               {actions.map((act, i) => (
-                <span
-                  key={i}
-                  className="px-1.5 py-0.5 rounded bg-secondary/70 text-foreground"
-                >
-                  {act}
-                </span>
+                <Badge key={i}>{act}</Badge>
               ))}
             </div>
           )}
@@ -731,7 +964,9 @@ function RuleResultCard({
           )}
         </div>
       )}
+      </RollupBody>
     </div>
+    </RollupCard>
   );
 }
 
@@ -757,51 +992,58 @@ const SETTING_LABELS: Record<string, string> = {
   digest_send_to_email: "Email the digest",
   multi_rule_execution: "Multi-rule execution",
   sensitive_data_protection: "Sensitive-data protection",
-  draft_model: "Draft model",
-  chat_model: "Chat model",
 };
 
-function fmtVal(v: unknown): string {
+/** A setting's value as one short phrase. A long text is cut at a word, with
+ *  an ellipsis, as the server cuts (`clip_words`). Exported for its test. */
+export function fmtVal(v: unknown): string {
   if (typeof v === "boolean") return v ? "on" : "off";
   if (Array.isArray(v)) return v.length ? v.join(", ") : "all";
-  const s = String(v);
-  return s.length > 40 ? s.slice(0, 40) + "…" : s;
+  return clipWords(String(v), 40);
+}
+
+/** The settings a call changed, as `[label, value]`, in the order of the
+ *  call's args. Exported for its test. */
+export function changedSettings(args: Record<string, unknown> | undefined): [string, string][] {
+  return Object.entries(args ?? {})
+    .filter(([k, v]) => k !== "account_id" && v !== null && v !== undefined && k in SETTING_LABELS)
+    .map(([k, v]) => [SETTING_LABELS[k], fmtVal(v)]);
 }
 
 /** Shows which settings the assistant changed, with a shortcut to the settings UI. */
 function SettingsUpdatedCard({ event: e }: { event: ToolEvent }) {
   const router = useRouter();
-  const args = e.args as Record<string, unknown> | undefined;
-  const changed = Object.entries(args ?? {}).filter(
-    ([k, v]) => k !== "account_id" && v !== null && v !== undefined && k in SETTING_LABELS,
-  );
+  const changed = changedSettings(e.args as Record<string, unknown> | undefined);
+  const tone = receiptTone(false);
 
   return (
-    <div className="rounded-lg border border-primary/40 bg-primary/5 px-2.5 py-2">
-      <div className="flex items-center gap-2 pr-5">
-        <AppIcon name="Settings2" size={13} className="text-primary flex-shrink-0" />
-        <span className="text-[11px] font-medium text-foreground flex-1">Settings updated</span>
-        <button
-          onClick={() => router.push("/email")}
-          className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-secondary"
-        >
+    <RollupCard
+      id={`tool:${e.id}`}
+      title="Settings updated"
+      icon="Settings2"
+      header="own"
+      summary={changed.map(([label, value]) => `${label}: ${value}`).join(", ") || undefined}
+      receipt
+    >
+    <div data-email-card="settings" className={tone.frame}>
+      <CardHead tone={tone.icon}>
+        <Button variant="secondary" size="none" className={DENSE} onClick={() => router.push("/email")}>
           <AppIcon name="ExternalLink" size={10} /> Open
-        </button>
-      </div>
+        </Button>
+      </CardHead>
+      <RollupBody>
       {changed.length > 0 && (
         <div className="mt-1.5 flex flex-wrap gap-1">
-          {changed.map(([k, v]) => (
-            <span
-              key={k}
-              className="text-[10px] px-1.5 py-0.5 rounded bg-secondary/70 text-muted-foreground"
-              title={`${SETTING_LABELS[k]}: ${fmtVal(v)}`}
-            >
-              {SETTING_LABELS[k]}: <span className="text-foreground">{fmtVal(v)}</span>
-            </span>
+          {changed.map(([label, value]) => (
+            <Badge key={label} title={`${label}: ${value}`}>
+              {label}: <span className="text-foreground">{value}</span>
+            </Badge>
           ))}
         </div>
       )}
+      </RollupBody>
     </div>
+    </RollupCard>
   );
 }
 
@@ -989,31 +1231,17 @@ function EmailListCard({ events }: { events: ToolEvent[] }) {
   );
 
   return (
-    <div className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2">
-      {/* pr-5 leaves room for the dismiss (X) overlay at the card's corner. */}
-      <div className="flex items-center gap-1.5 mb-1.5 pr-5">
-        <AppIcon name={iconName} size={12} className="text-primary" />
-        <span className="text-[11px] font-medium text-foreground">{meta.label}</span>
-        <span className="text-[10px] text-muted-foreground">({rows.length})</span>
+    <RollupCard id={`tool:${events[0].id}`} title={meta.label} icon={iconName} rows={rows.length} header="own">
+    <div data-email-card="list" className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2 glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3">
+      <CardHead tone="text-primary">
         {actionable.length > 1 && (
-          <div className="ml-auto flex items-center gap-1">
-            <button
-              onClick={() => actionable.forEach((r) => markRead(r.id))}
-              title="Mark all as read"
-              className="flex items-center gap-0.5 text-[9px] px-1.5 py-0.5 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-secondary"
-            >
-              <AppIcon name="MailOpen" size={10} /> Read all
-            </button>
-            <button
-              onClick={() => actionable.forEach((r) => archive(r.id))}
-              title="Archive all"
-              className="flex items-center gap-0.5 text-[9px] px-1.5 py-0.5 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-secondary"
-            >
-              <AppIcon name="Archive" size={10} /> Archive all
-            </button>
-          </div>
+          <BulkButtons
+            onRead={() => actionable.forEach((r) => markRead(r.id))}
+            onArchive={() => actionable.forEach((r) => archive(r.id))}
+          />
         )}
-      </div>
+      </CardHead>
+      <RollupBody className="pt-1.5">
       <div className="space-y-1">
         {shown.map((r) => (
           <EmailRow
@@ -1027,14 +1255,36 @@ function EmailListCard({ events }: { events: ToolEvent[] }) {
         ))}
       </div>
       {rows.length > 5 && (
-        <button
-          onClick={() => setExpanded((v) => !v)}
-          className="mt-1 text-[10px] text-primary hover:opacity-80"
-        >
+        <Button variant="text" size="none" className="mt-1 text-[10px]" onClick={() => setExpanded((v) => !v)}>
           {expanded ? "Show less" : `Show ${rows.length - 5} more`}
-        </button>
+        </Button>
       )}
+      </RollupBody>
     </div>
+    </RollupCard>
+  );
+}
+
+/** "Read all" and "Archive all" of a list or a group, as shared buttons. */
+function BulkButtons({
+  onRead,
+  onArchive,
+  scope = "",
+}: {
+  onRead: () => void;
+  onArchive: () => void;
+  /** Words after "all" in the tooltip: " in this group". */
+  scope?: string;
+}) {
+  return (
+    <>
+      <Button variant="secondary" size="none" className={DENSE} onClick={onRead} title={`Mark all${scope} as read`}>
+        <AppIcon name="MailOpen" size={10} /> Read all
+      </Button>
+      <Button variant="secondary" size="none" className={DENSE} onClick={onArchive} title={`Archive all${scope}`}>
+        <AppIcon name="Archive" size={10} /> Archive all
+      </Button>
+    </>
   );
 }
 
@@ -1114,16 +1364,17 @@ function EmailGroupsCard({ event: e }: { event: ToolEvent }) {
   };
 
   return (
-    <div className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2 min-w-0 overflow-hidden">
-      <div className="flex items-center gap-1.5 mb-2 pr-5">
-        <AppIcon name="Layers" size={12} className="text-primary" />
-        <span className="text-[11px] font-medium text-foreground">
-          Categorized emails
-        </span>
-        <span className="text-[10px] text-muted-foreground">
-          ({total} in {groups.length} group{groups.length > 1 ? "s" : ""})
-        </span>
-      </div>
+    <RollupCard
+      id={`tool:${e.id}`}
+      title="Categorized emails"
+      icon="Layers"
+      rows={total}
+      header="own"
+      summary={groups.map((g) => g.title).join(", ")}
+    >
+    <div data-email-card="groups" className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2 min-w-0 overflow-hidden glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3">
+      <CardHead tone="text-primary" aside={`in ${groups.length} group${groups.length > 1 ? "s" : ""}`} />
+      <RollupBody className="pt-2">
       <div className="space-y-1.5">
         {groups.map((g, i) => (
           <GroupSection
@@ -1135,7 +1386,9 @@ function EmailGroupsCard({ event: e }: { event: ToolEvent }) {
           />
         ))}
       </div>
+      </RollupBody>
     </div>
+    </RollupCard>
   );
 }
 
@@ -1158,12 +1411,15 @@ function GroupSection({
     (r) => !["archived", "read", "busy"].includes(statuses[r.id] ?? "idle"),
   );
   return (
-    <div className="rounded-md border border-border/70 bg-background/40">
+    <div className="rounded-md border border-border/70 bg-background/40 glass:rounded-[10px] glass:border-transparent glass:bg-secondary">
       <div className="flex items-center gap-1.5 px-2 py-1.5">
-        <button
+        <Button
+          variant="text"
+          size="none"
+          layout="flex items-center"
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
-          className="flex items-center gap-1.5 flex-1 min-w-0 text-left"
+          className="gap-1.5 flex-1 min-w-0 text-left"
         >
           <AppIcon name="ChevronDown"
             size={11}
@@ -1180,23 +1436,14 @@ function GroupSection({
               — {group.note}
             </span>
           )}
-        </button>
+        </Button>
         {open && actionable.length > 1 && (
           <div className="flex items-center gap-1 flex-shrink-0">
-            <button
-              onClick={() => actionable.forEach((r) => onMarkRead(r.id))}
-              title="Mark all in this group as read"
-              className="flex items-center gap-0.5 text-[9px] px-1.5 py-0.5 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-secondary"
-            >
-              <AppIcon name="MailOpen" size={10} /> Read all
-            </button>
-            <button
-              onClick={() => actionable.forEach((r) => onArchive(r.id))}
-              title="Archive all in this group"
-              className="flex items-center gap-0.5 text-[9px] px-1.5 py-0.5 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-secondary"
-            >
-              <AppIcon name="Archive" size={10} /> Archive all
-            </button>
+            <BulkButtons
+              scope=" in this group"
+              onRead={() => actionable.forEach((r) => onMarkRead(r.id))}
+              onArchive={() => actionable.forEach((r) => onArchive(r.id))}
+            />
           </div>
         )}
       </div>
@@ -1309,10 +1556,14 @@ function EmailRow({
       } ${archived ? "opacity-60" : ""}`}
     >
       <div className="flex items-center gap-1">
-        <button
+        <Button
+          variant="text"
+          size="none"
+          radius="keep"
+          layout="flex items-center"
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
-          className="flex items-center gap-1.5 flex-1 min-w-0 text-left px-1.5 py-1 rounded-md hover:bg-secondary/60"
+          className="gap-1.5 flex-1 min-w-0 text-left px-1.5 py-1 rounded-md hover:bg-secondary/60"
         >
           <AppIcon name="ChevronDown"
             size={11}
@@ -1349,7 +1600,7 @@ function EmailRow({
               )}
             </span>
           </span>
-        </button>
+        </Button>
         <div className="flex items-center flex-shrink-0 mr-0.5">
           {done ? (
             <span className="flex items-center gap-0.5 text-[9px] text-success px-1">
@@ -1359,21 +1610,28 @@ function EmailRow({
             <AppIcon name="Loader2" size={12} className="animate-spin text-muted-foreground mx-1" />
           ) : (
             <>
-              <button
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                radius="keep"
+                layout=""
                 onClick={() => setCatOpen((v) => !v)}
                 title="Categorize"
                 aria-label="Categorize"
                 aria-expanded={catOpen}
-                className={`p-1 rounded hover:text-foreground hover:bg-secondary ${
-                  catOpen ? "text-primary" : "text-muted-foreground"
-                }`}
+                // The house tint while its menu is open. The explicit role
+                // keeps `aria-expanded` its one state: `Button` adds no
+                // `aria-pressed` to a control that names its role.
+                selected={catOpen}
+                role="button"
+                className="rounded"
               >
                 {catBusy ? (
                   <AppIcon name="Loader2" size={11} className="animate-spin" />
                 ) : (
                   <AppIcon name="Tag" size={11} />
                 )}
-              </button>
+              </Button>
               <Button variant="ghost" size="icon-xs" radius="keep" layout="" onClick={markRead} title="Mark as read" aria-label="Mark as read" className="rounded">
                 <AppIcon name="MailOpen" size={11} />
               </Button>
@@ -1391,13 +1649,16 @@ function EmailRow({
         <div className="px-2 pb-2 pt-1 flex flex-wrap items-center gap-1 border-t border-border/50">
           <span className="text-[10px] text-muted-foreground mr-0.5">Label as:</span>
           {QUICK_CATEGORIES.map((c) => (
-            <button
+            <Button
               key={c}
+              variant="secondary"
+              size="none"
+              radius="keep"
               onClick={() => categorize(c)}
-              className="px-1.5 py-0.5 rounded-full border border-border text-[10px] text-foreground hover:bg-secondary"
+              className="px-1.5 py-0.5 rounded-full text-[10px]"
             >
               {c}
-            </button>
+            </Button>
           ))}
         </div>
       )}
@@ -1410,9 +1671,9 @@ function EmailRow({
           ) : error ? (
             <div className="text-[10px] text-muted-foreground py-1">
               Couldn&apos;t load this email.{" "}
-              <button onClick={() => openEmail(row.id)} className="text-primary underline">
+              <Button variant="text" size="none" layout="inline" onClick={() => openEmail(row.id)} className="underline">
                 Open in inbox
-              </button>
+              </Button>
             </div>
           ) : body ? (
             <>
@@ -1421,9 +1682,9 @@ function EmailRow({
                   From: {body.from}
                 </div>
               )}
-              <div className="max-h-72 overflow-y-auto overflow-x-hidden rounded">
-                <MessageContent html={body.body_html} text={body.body_text} />
-              </div>
+              <ShowMore className="rounded">
+                <MessageContent html={body.body_html} text={body.body_text} messageId={row.id} />
+              </ShowMore>
             </>
           ) : null}
         </div>
@@ -1446,20 +1707,16 @@ function EmailPreviewCard({ event: e }: { event: ToolEvent }) {
   // Without an id we can't fetch/open — fall back to a static header.
   if (!id) {
     return (
-      <div className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2">
-        <div className="flex items-center gap-2">
-          <AppIcon name="Mail" size={13} className="text-primary flex-shrink-0" />
-          <div className="min-w-0 flex-1">
-            <div className="text-[11px] font-medium text-foreground truncate">{subject}</div>
-            {from && <div className="text-[10px] text-muted-foreground truncate">{from}</div>}
-          </div>
-        </div>
+      <RollupCard id={`tool:${e.id}`} title={subject} icon="Mail" header="own">
+      <div data-email-card="preview" className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2 glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3">
+        <CardHead tone="text-primary" aside={from || undefined} />
       </div>
+      </RollupCard>
     );
   }
 
   return (
-    <div className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2 min-w-0 overflow-hidden">
+    <div className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2 min-w-0 overflow-hidden glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3">
       <EmailRow
         row={{ id, sender: from || "(unknown sender)", subject }}
         defaultOpen
@@ -1485,24 +1742,21 @@ function LabelUpdateCard({ event: e }: { event: ToolEvent }) {
   // Nothing structured to show → fall back to the generic confirmation.
   if (add.length === 0 && remove.length === 0) return <ActionResultCard event={e} />;
   const failed = e.status === "error";
+  const tone = receiptTone(failed);
+  // The count reads after the title, on the title row ("Labels updated · 2
+  // emails"), as before.
+  const title = failed ? "Couldn't update labels" : "Labels updated";
+  const labelSummary = [add.length ? `Added ${add.join(", ")}` : "", remove.length ? `Removed ${remove.join(", ")}` : ""]
+    .filter(Boolean).join(". ");
 
   return (
-    <div
-      className={`rounded-lg border px-2.5 py-2 ${
-        failed ? "border-destructive/40 bg-destructive/5" : "border-sidebar-border bg-secondary/40"
-      }`}
-    >
-      <div className="flex items-center gap-1.5">
-        <AppIcon name="Tag" size={12} className={failed ? "text-destructive" : "text-primary"} />
-        <span className="text-[11px] font-medium text-foreground">
-          {failed ? "Couldn't update labels" : "Labels updated"}
-          {count > 0 && (
-            <span className="text-muted-foreground font-normal">
-              {" "}· {count} email{count > 1 ? "s" : ""}
-            </span>
-          )}
-        </span>
-      </div>
+    <RollupCard id={`tool:${e.id}`} title={title} icon="Tag" summary={labelSummary} receipt={!failed} header="own">
+    <div data-email-card="label" className={tone.frame}>
+      <CardHead
+        tone={failed ? tone.icon : "text-primary"}
+        aside={count > 0 ? `· ${count} email${count > 1 ? "s" : ""}` : undefined}
+      />
+      <RollupBody>
       {add.length > 0 && (
         <div className="mt-1.5 flex flex-wrap items-center gap-1">
           <span className="text-[10px] text-muted-foreground">Added</span>
@@ -1515,16 +1769,13 @@ function LabelUpdateCard({ event: e }: { event: ToolEvent }) {
         <div className="mt-1 flex flex-wrap items-center gap-1">
           <span className="text-[10px] text-muted-foreground">Removed</span>
           {remove.map((l) => (
-            <span
-              key={l}
-              className="text-[10px] px-2 py-0.5 rounded-full bg-secondary text-muted-foreground line-through"
-            >
-              {l}
-            </span>
+            <Badge key={l} className="line-through">{l}</Badge>
           ))}
         </div>
       )}
+      </RollupBody>
     </div>
+    </RollupCard>
   );
 }
 
@@ -1556,34 +1807,18 @@ function ManageInboxCard({ event: e }: { event: ToolEvent }) {
   if (!meta || count === 0) return <ActionResultCard event={e} />;
   const failed = e.status === "error";
   const iconName = failed ? "X" : meta.icon;
+  const tone = receiptTone(failed, meta.danger);
+  const title =
+    `${failed ? `Couldn't ${meta.verb.toLowerCase()}` : meta.verb} ${count} email${count > 1 ? "s" : ""}` +
+    (action === "move" && args?.folder ? ` → ${String(args.folder)}` : "");
 
+  // One row, and no body: nothing folds, so it draws no toggle.
   return (
-    <div
-      className={`rounded-lg border px-2.5 py-2 ${
-        failed
-          ? "border-destructive/40 bg-destructive/5"
-          : meta.danger
-            ? "border-warning/40 bg-warning/5"
-            : "border-sidebar-border bg-secondary/40"
-      }`}
-    >
-      <div className="flex items-center gap-2">
-        <span
-          className={
-            failed ? "text-destructive" : meta.danger ? "text-warning" : "text-success"
-          }
-        >
-          <AppIcon name={iconName} size={13} />
-        </span>
-        <span className="text-[11px] font-medium text-foreground">
-          {failed ? `Couldn't ${meta.verb.toLowerCase()}` : meta.verb}{" "}
-          {count} email{count > 1 ? "s" : ""}
-          {action === "move" && args?.folder
-            ? ` → ${String(args.folder)}`
-            : ""}
-        </span>
-      </div>
+    <RollupCard id={`tool:${e.id}`} title={title} icon={iconName} receipt={!failed} header="own">
+    <div data-email-card="manage" className={tone.frame}>
+      <CardHead tone={tone.icon} />
     </div>
+    </RollupCard>
   );
 }
 
@@ -1649,9 +1884,11 @@ function PatternListCard({
         icon={<AppIcon name={iconName} size={12} />}
         onDismiss={() => dismissToolCard(e.id)}
       >
-        <div className="text-[11px] text-muted-foreground whitespace-pre-wrap break-words">
-          {(e.result || "").trim() || "Nothing learned yet."}
-        </div>
+        {(e.result || "").trim() ? (
+          <Readout result={(e.result || "").trim()} />
+        ) : (
+          <div className="text-[11px] text-muted-foreground">Nothing learned yet.</div>
+        )}
       </ToolCardShell>
     );
   }
@@ -1679,19 +1916,21 @@ function PatternListCard({
             <span className="text-[11px] text-foreground/90 flex-1 min-w-0 break-words leading-relaxed">
               {r.text}
             </span>
-            <button
+            <Button
+              variant="ghost"
+              size="icon-xs"
               onClick={() => forget(r.id)}
               disabled={busy === r.id}
               title="Forget this pattern"
               aria-label="Forget this pattern"
-              className="p-0.5 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 flex-shrink-0 disabled:opacity-50"
+              className="flex-shrink-0"
             >
               {busy === r.id ? (
                 <AppIcon name="Loader2" size={11} className="animate-spin" />
               ) : (
                 <AppIcon name="Trash2" size={11} />
               )}
-            </button>
+            </Button>
           </div>
         ))}
       </div>
@@ -1789,6 +2028,8 @@ function RulesOverviewCard({
   const [rules, setRules] = useState(parsed.rules);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState(false);
+  // The row whose Delete waits in the shared dialog (UXD-3).
+  const [asking, setAsking] = useState<ParsedRuleRow | null>(null);
 
   // Unparseable output (error text, older format) → the plain-text card.
   if (parsed.rules.length === 0) return <InfoResultCard event={e} />;
@@ -1798,10 +2039,7 @@ function RulesOverviewCard({
     setBusy(row.id);
     setError(false);
     try {
-      const all = await listRules(acctId);
-      const full = all.find((r) => r.id === row.id);
-      if (!full) throw new Error("rule not found");
-      await updateRule(row.id, { ...full, enabled: !row.enabled });
+      if (!(await setRuleEnabled(acctId, row.id, !row.enabled))) throw new Error("rule not found");
       setRules((rs) =>
         rs.map((r) => (r.id === row.id ? { ...r, enabled: !row.enabled } : r)),
       );
@@ -1813,7 +2051,8 @@ function RulesOverviewCard({
   };
 
   const del = async (row: ParsedRuleRow) => {
-    if (busy || !confirm(`Delete rule "${row.name}"?`)) return;
+    setAsking(null);
+    if (busy) return;
     setBusy(row.id);
     setError(false);
     try {
@@ -1832,11 +2071,11 @@ function RulesOverviewCard({
       icon={<AppIcon name="Sparkles" size={12} />}
       onDismiss={() => dismissToolCard(e.id)}
     >
-      <div className="space-y-1 max-h-80 overflow-y-auto overflow-x-hidden scrollbar-thin pr-0.5">
+      <ShowMore className="space-y-1">
         {rules.map((r) => (
           <div
             key={r.id}
-            className="rounded-md border border-border/70 bg-background/40 px-2 py-1.5"
+            className="rounded-md border border-border/70 bg-background/40 px-2 py-1.5 glass:rounded-[10px] glass:border-transparent glass:bg-secondary"
           >
             <div className="flex items-center gap-1.5 min-w-0">
               <span className="text-[11px] font-medium text-foreground truncate flex-1 min-w-0">
@@ -1857,9 +2096,12 @@ function RulesOverviewCard({
                 />
               ) : (
                 <>
-                  <button
+                  <Button
+                    variant="secondary"
+                    size="none"
                     onClick={() => toggle(r)}
                     disabled={!acctId}
+                    selected={r.enabled}
                     title={
                       acctId
                         ? r.enabled
@@ -1867,22 +2109,20 @@ function RulesOverviewCard({
                           : "Turn this rule on"
                         : undefined
                     }
-                    className={`text-[9px] px-1.5 py-0.5 rounded-full flex-shrink-0 transition-colors ${
-                      r.enabled
-                        ? "bg-success/15 text-success hover:bg-success/25"
-                        : "bg-secondary text-muted-foreground hover:text-foreground"
-                    } ${acctId ? "" : "cursor-default"}`}
+                    className={`${DENSE} flex-shrink-0`}
                   >
                     {r.enabled ? "On" : "Off"}
-                  </button>
-                  <button
-                    onClick={() => del(r)}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    onClick={() => setAsking(r)}
                     title="Delete this rule"
                     aria-label="Delete this rule"
-                    className="p-0.5 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 flex-shrink-0"
+                    className="flex-shrink-0"
                   >
                     <AppIcon name="Trash2" size={11} />
-                  </button>
+                  </Button>
                 </>
               )}
             </div>
@@ -1902,7 +2142,18 @@ function RulesOverviewCard({
             )}
           </div>
         ))}
-      </div>
+      </ShowMore>
+      <ConfirmDialog
+        open={asking !== null}
+        title="Delete this rule?"
+        subject={asking?.name ?? null}
+        body="The rule stops at once. Mail it already moved stays where it is."
+        confirmLabel="Delete"
+        confirmVariant="destructive"
+        icon="Trash2"
+        onConfirm={() => { if (asking) void del(asking); }}
+        onCancel={() => setAsking(null)}
+      />
       {parsed.settings && (
         <div className="mt-1.5 text-[10px] text-muted-foreground">
           {parsed.settings}
@@ -1974,50 +2225,183 @@ function InfoResultCard({ event: e }: { event: ToolEvent }) {
       icon={<AppIcon name={iconName} size={12} />}
       onDismiss={() => dismissToolCard(e.id)}
     >
-      <div className="text-[11px] whitespace-pre-wrap break-words text-foreground/90 max-h-72 overflow-y-auto overflow-x-hidden scrollbar-thin">
-        {text || "(no result)"}
-      </div>
+      {/* The read as UI through the one `Readout`: no id, a labelled fact
+          for each `key: value`, a chip for a category (follow-up of #716
+          and #735). It drew the result as it is before. */}
+      <ShowMore>
+        <Readout result={text} />
+      </ShowMore>
     </ToolCardShell>
   );
 }
 
 // ── Generic action card ───────────────────────────────────────────────────────
 
+/**
+ * `run_rules` is a read when the member asked for a preview, an estimate or a
+ * status. It changes mail only for `past` and `retry_failed`, and for `new`
+ * or `message` with `dry_run` false (`agents.py` `run_rules`). A read is not a
+ * receipt, so its card opens (task 1003).
+ */
+export function readsOnly(e: ToolEvent): boolean {
+  if (e.name !== "run_rules" && e.name !== "run_rules_now") return false;
+  const a = (e.args ?? {}) as Record<string, unknown>;
+  const scope = String(a.scope ?? "new").trim().toLowerCase();
+  if (scope === "estimate" || scope === "status") return true;
+  if (scope === "past" || scope === "retry_failed" || scope === "retry") return false;
+  return String(a.dry_run ?? "true").trim().toLowerCase() !== "false";
+}
+
 /** Confirmation card for any mutating tool — icon + label + result summary. */
 function ActionResultCard({ event: e }: { event: ToolEvent }) {
   const meta = ACTION_META[e.name] ?? { icon: "Wrench", label: e.name.replace(/_/g, " ") };
   const failed = e.status === "error";
   const iconName = failed ? "X" : meta.icon;
-  const result = (e.result || "").trim();
-  const detail = result.length > 160 ? result.slice(0, 160) + "…" : result;
+  const detail = (e.result || "").trim();
+
+  const tone = receiptTone(failed, meta.danger);
 
   return (
-    <div
-      className={`rounded-lg border px-2.5 py-2 ${
-        failed
-          ? "border-destructive/40 bg-destructive/5"
-          : meta.danger
-            ? "border-warning/40 bg-warning/5"
-            : "border-sidebar-border bg-secondary/40"
-      }`}
+    <RollupCard
+      id={`tool:${e.id}`}
+      title={meta.label}
+      icon={iconName}
+      summary={withoutIds(detail.split(/\r?\n/)[0] ?? "")}
+      receipt={!failed && !readsOnly(e)}
+      header="own"
     >
-      <div className="flex items-start gap-2">
-        <span
-          className={`mt-0.5 flex-shrink-0 ${
-            failed ? "text-destructive" : meta.danger ? "text-warning" : "text-success"
-          }`}
-        >
-          <AppIcon name={iconName} size={13} />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="text-[11px] font-medium text-foreground">{meta.label}</div>
+    <div data-email-card="action" className={tone.frame}>
+      <CardHead tone={tone.icon} />
+      <RollupBody>
+          {/* Compact, and through `Readout`, so an id never shows. The
+              body shows about three lines, and "Show all" opens the rest. */}
           {detail && (
-            <div className="mt-0.5 text-[10px] text-muted-foreground whitespace-pre-wrap line-clamp-3">
-              {detail}
+            <ShowMore cap={64} className="mt-0.5">
+              <Readout result={detail} />
+            </ShowMore>
+          )}
+      </RollupBody>
+    </div>
+    </RollupCard>
+  );
+}
+
+// ── A result that did not act ────────────────────────────────────────────────
+
+/** What a tool result that did NOT act is. It can be a question back to the
+ *  member, a send that the tool refused, or a cancel. The card for it never
+ *  says the act is done. Before EM-T8e-2, "Email sent" stood over a "Not sent."
+ *  answer, which told the member that mail went out. */
+export type NoAction = "question" | "not-sent" | "unchanged" | "cancelled" | "refused" | "revised";
+
+export function noActionOf(raw: string | null | undefined): NoAction | null {
+  const t = (raw || "").trimStart();
+  // The server refused the call (`acb_common.tool_refusals.REFUSED`). The
+  // stream marks it failed too, and this keeps a success card off it in any
+  // case: no "Email sent" over a refused send, and no draft with a Send
+  // button whose body is the refusal.
+  if (/^Refused:/.test(t)) return "refused";
+  if (/^(Send from which mailbox\?|Which mailbox\?)/.test(t)) return "question";
+  // §18.11: a chat message closed the card, and the model writes the new
+  // draft. Nothing was sent, so the card never says "Email sent".
+  if (/^The member wrote in the chat while the card was open/.test(t)) return "revised";
+  if (/^Not sent\./.test(t)) return "not-sent";
+  if (/^Nothing changed\./.test(t)) return "unchanged";
+  if (/^(Send cancelled|Cancelled)\b/.test(t)) return "cancelled";
+  return null;
+}
+
+const NO_ACTION_META: Record<NoAction, { icon: string; label: string }> = {
+  question: { icon: "CircleHelp", label: "Needs your answer" },
+  "not-sent": { icon: "MailX", label: "Not sent" },
+  unchanged: { icon: "CircleSlash", label: "Nothing changed" },
+  cancelled: { icon: "X", label: "Cancelled" },
+  refused: { icon: "CircleSlash", label: "Not done" },
+  revised: { icon: "PencilLine", label: "Draft being changed" },
+};
+
+/** The words of a closed card that a chat message revised. The result itself
+ *  is the model's instruction, so the member never reads it. Fix round 6:
+ *  when the revise did not run, the same card comes back under it, so the
+ *  words name that case too. */
+export const REVISED_NOTE =
+  "You wrote in the chat, so this card closed. Nothing was sent. A new draft can follow, or the same card can come back.";
+
+function NoActionCard({ event: e, kind }: { event: ToolEvent; kind: NoAction }) {
+  const meta = NO_ACTION_META[kind];
+  const result = (e.result || "").trim();
+  // A question back to the member waits on the member: it never folds.
+  return (
+    <RollupCard id={`tool:${e.id}`} title={meta.label} icon={meta.icon} header="own" pending={kind === "question"}>
+    <div data-email-card="no-action" className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2 glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3">
+      <CardHead tone="text-muted-foreground" />
+      <RollupBody>
+          {/* No clamp: a question lists each mailbox, and each one matters. */}
+          {kind === "revised" ? (
+            <p className="mt-0.5 text-xs text-muted-foreground">{REVISED_NOTE}</p>
+          ) : result && (
+            <div className="mt-0.5">
+              <Readout result={result} />
             </div>
           )}
-        </div>
-      </div>
+      </RollupBody>
     </div>
+    </RollupCard>
   );
+}
+
+/** A `read_thread` result as a member reads it: each line as sent, with no
+ *  id. Exported for its test. */
+export function threadText(raw: string | null | undefined): string {
+  return (raw || "")
+    .split(/\r?\n/)
+    .map((line) => withoutIds(line))
+    .join("\n")
+    .trim();
+}
+
+/** The title of a `read_thread` card: the subject and the count.
+ *  WS-17 EM-G11d: a sender writes the subject, so the agent puts it inside
+ *  the framed block as a `Subject:` line, and the first line holds only
+ *  "Thread: N message(s), oldest first:". An older result kept the subject
+ *  in the first line ("Thread: <subject> — N message(s), …"), and it still
+ *  reads as before. Exported for its test. */
+export function threadTitle(raw: string | null | undefined): string {
+  const text = raw || "";
+  const first = (text.split("\n")[0] || "")
+    .replace(/^Thread:\s*/i, "")
+    .replace(/,?\s*oldest first:?\s*$/i, "")
+    .trim();
+  const subject = text.match(/^Subject:\s*(.+)$/m)?.[1]?.trim() ?? "";
+  if (subject && /^\d+ message\(s\)$/.test(first)) return `${subject} — ${first}`;
+  return first || subject || "Email thread";
+}
+
+/** True when a `read_thread` result read a thread: it starts "Thread:". */
+export function isThreadRead(raw: string | null | undefined): boolean {
+  return /^Thread:/.test((raw || "").trimStart());
+}
+
+/** The first line of a `draft_reply` result: the From mailbox and its id,
+ *  and whether the tool saved the draft. The mailbox is absent from a result
+ *  of an agent before EM-T8a. `saved` is true only when the first line says
+ *  "(saved to Drafts)", which the tool writes after a yes on its card
+ *  (EM-G11c1b). The note of an unsaved draft says "Drafts is unchanged".
+ *  The note must END the head, right after the mailbox id: a mailbox label
+ *  that holds the same words does not count (review round 1). */
+export function draftReplyHead(
+  raw: string,
+): { from: string | null; mailboxId: string | null; saved: boolean } {
+  const first = (raw || "").split("\n", 1)[0];
+  const saved = /\(mailbox [^)\s]+\) \(saved to Drafts\):\r?$/.test(first);
+  const m = /^Draft from (.+?) \(mailbox ([^)\s]+)\)/.exec(first);
+  return m ? { from: m[1], mailboxId: m[2], saved } : { from: null, mailboxId: null, saved };
+}
+
+/** The state the draft card starts in. A draft that the tool saved starts
+ *  as after a manual save: no Save, so one click cannot make a second
+ *  provider draft, and no Send, because the result names no draft id
+ *  (Q-GM-15). Every other draft starts `idle`, as before EM-G11c1b. */
+export function draftCardStart(raw: string): "saved" | "idle" {
+  return draftReplyHead(raw).saved ? "saved" : "idle";
 }

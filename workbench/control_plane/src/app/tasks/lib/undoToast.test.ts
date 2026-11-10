@@ -97,7 +97,7 @@ function harness(opts: { productionDefer?: boolean; keys?: boolean } = {}) {
       sync();
       flush();
     },
-    /** The `u` key or ⌘Z: the store undoes, and the toast follows. */
+    /** Ctrl+Z or ⌘Z: the store undoes, and the toast follows. */
     undoKey() {
       store.undo();
       sync();
@@ -136,7 +136,7 @@ describe("the purge runs exactly once", () => {
     expect(h.up.size).toBe(0);
   });
 
-  it("NOT when the u key undoes it", () => {
+  it("NOT when Ctrl+Z undoes it", () => {
     const h = harness();
     h.change(DELETE());
     h.undoKey();
@@ -196,10 +196,11 @@ describe("the shipped default defer (no queue injected)", () => {
 });
 
 describe("the key hint is said only where the keys work", () => {
-  it("with keys bound, the toast names U and Ctrl+Z", () => {
+  it("with keys bound, the toast names Ctrl+Z, and no longer U", () => {
+    // The bare `u` went with the Tasks letter shortcuts (owner, 2026-10-13).
     const h = harness();
     h.change(DELETE());
-    expect(h.up.get(UNDO_TOAST_KEY)?.description).toMatch(/Press U or Ctrl\+Z/);
+    expect(h.up.get(UNDO_TOAST_KEY)?.description).toBe("Press Ctrl+Z to undo.");
   });
 
   it("on a phone, or after the page unmounts, it names only the button", () => {
@@ -214,8 +215,13 @@ describe("the key hint is said only where the keys work", () => {
       fileURLToPath(new URL("../components/UndoToast.tsx", import.meta.url)),
       "utf8",
     );
-    expect(src).toMatch(/\{ keys: !isMobile \}/);
-    const cleanup = src.slice(src.indexOf("return () => {"));
+    // NS-6 moved the sync into `useUndoToastSync`, so the shell bell's
+    // fallback can say the same toast with no keys. The page still passes
+    // `!isMobile`, and the hook still drops the hint on unmount.
+    expect(src).toMatch(/useUndoToastSync\(!isMobile\)/);
+    const hook = src.slice(src.indexOf("function useUndoToastSync("));
+    expect(hook).toMatch(/syncUndoToast\(undoSnapshot, toast, store, \{ keys \}\);/);
+    const cleanup = hook.slice(hook.indexOf("return () => {"));
     expect(cleanup).toMatch(/^return \(\) => \{\s*syncUndoToast\([\s\S]*?\{ keys: false \}\);/);
   });
 });

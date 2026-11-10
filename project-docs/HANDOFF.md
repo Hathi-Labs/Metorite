@@ -11,7 +11,7 @@ remember what was in flight.
 > ⚠️ **Never restate state here. Point at it, and carry the command that
 > re-derives it.**
 
-`work_plan.md` §2 is **the only current-state authority** (CLAUDE.md §1). A
+**Metorite holds the current state** (D118, CLAUDE.md §1). A
 handoff file that also described state would be a second board, and a second
 board is the CLAUDE.md §5 defect by construction: two descriptions of one truth,
 one of which stops being updated first, and the stale one is trusted because it
@@ -30,13 +30,15 @@ running something that would have contradicted it.
 whatever you were asked to do:
 
 1. Run the **Check** for every entry.
-2. **Delete every entry whose Check shows it is done.** In your first commit.
+2. **Delete every entry whose Check shows it is done**, and move its Metorite
+   task to done. In your first commit.
    Deleting a finished entry is not optional housekeeping — an entry that
    outlives its work is how this file starts lying.
 3. Report what is left to the user in one short list, then proceed.
 
-**During a session** — add an entry the moment you create the obligation, not at
-the end when context is short. The entry you write while you still remember why
+**During a session** — the moment you create an obligation, create its Metorite
+task (`create_task`) with the why and the steps. Then add the four-line entry
+here. Do it then, not at the end when context is short. The entry you write while you still remember why
 is worth five you reconstruct.
 
 **Before ending a session** — add an entry for anything you are handing over:
@@ -48,34 +50,20 @@ nothing; the thing nobody wrote down costs a session.
 
 ## The shape of an entry
 
+The full text of an entry lives on its Metorite task (D118). This file keeps
+four lines: the title, the pointer, the Check and the date. The hook lists the
+titles, and a session runs each Check.
+
 ```
-### H-150 · The right-click menu on a task cannot be opened on a phone · [AGENT]
-
-- **What happens.** At 390px the board draws its cards, and a right-click
-  on one opens nothing. Measured 2026-09-21 in the visual rig: the card is
-  in the DOM, and `Copy link` — the second entry in the menu — has a count
-  of zero after the gesture.
-- **⚠️ It is EVERY entry, not one.** Open, Copy link, Select, Move to
-  project, Merge into, Change status, Rename, Add subtask, Archive, Restore
-  and Delete are all in that menu and all unreachable. Six of them have no
-  other door on a phone at all.
-- **It is pre-existing**, and predates the Merge entry that found it. The
-  entry itself is fine — it draws and works at every desktop width.
-- **Why a phone has no right-click, and what that means.** A touch device
-  does not fire `contextmenu` from a tap, and a long press raises the
-  platform's own menu instead. So the surface needs a different door: the
-  card's overflow button, or a long press the component handles itself.
-  `TaskCardActions` already draws a "more" button on hover, and hover does
-  not exist on a phone either — so the two gaps are one gap.
-- **Check:** open `/projects` at 390px, pick a project, and long-press a
-  card. If no menu appears, this is open.
-
 ### H-<n> · <one line, imperative> · [AGENT|OWNER]
+- **Metorite:** #<task number>. The task holds the full entry.
 - **Check:** `<command>` → <what output means STILL PENDING>
-- **Why:** <one or two sentences — the reason, not the status>
-- **Authority:** <file §section, or board row>
 - **Added:** <date> · <session or PR that created it>
 ```
+
+An entry with no Metorite task yet keeps its full text here (Why, Do this,
+Authority). When you next touch it, create its task, move the text there, and
+shrink the entry to the four lines.
 
 `[OWNER]` marks an entry an agent **must refuse by name** (`work_plan.md` §6).
 An agent may verify an OWNER entry's Check and report it; it may never do it.
@@ -95,589 +83,591 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-444 · Close five gaps before the `PROJECTS_AGENT_DISPATCH` flip · [AGENT]
+- **Metorite:** no task yet, so the full entry is here. The parent is #688 (H-240).
+- **Why:** H-240 gives a dispatched run the member who assigned the task. The flag stays OFF, because five gaps stay open:
+  1. Nothing limits how many dispatched runs are live. Each run spends the credits of the organization.
+  2. A workflow node that assigns an agent no longer waits for the run. The sink starts the run and returns.
+  3. A `skill-projects` write shows a card. A dispatched run has no chat, so each of those cards denies. Other writes need no card. The `task-manager` agent calls `my_tasks_delegate`, `my_tasks_update` and `my_tasks_move`, and these send no card. So the run can write in some tools and not in others. No test shows which, because the R8 test approves every card.
+  4. **The run has the full access of the assigner.** Spec §6.4 wants `EffectiveAccess.intersect()` with `agent:<name>`. Text that another member wrote in the task description drives the run. That text can make the run read the assigner's private tasks, and the reply lands on the shared timeline. It can also call `my_tasks_delegate` as the assigner. This is a confused-deputy case. Do not flip the flag before this gap closes.
+  5. A write of a dispatched run shows `created_by=<assigner>` and `meta.via=chat:projects-assistant`. The assigner confirmed nothing and no chat existed. Bind an `agent:<name>` actor and a dispatch `via`. D-PM-9 wants every agent edit attributable.
+- **Do this:** Fix each gap with a fence, or record the owner's answer in `project_management_app.md` §9.12.10. Gap 3 is question 2 there. Gap 4 needs the intersect in code, not an answer.
+- **Check:** `grep -c 'live_run_count() >=' apps/services/gateway/gateway/routes/projects/agent_dispatch.py`. A count of 0 means gap 1 is open. `grep -c 'EffectiveAccess' apps/services/gateway/gateway/routes/projects/agent_dispatch.py` with a count of 0 means gap 4 is open. Gaps 2, 3 and 5 stay open until a PR names their fences here. The cap of gap 1 must hold across gateway workers, because `_LIVE` is per process.
+- **Authority:** `specs/project_management_app.md` §6.4 and §9.12.10.
+- **Added:** 2026-11-07 · H-240, branch `h240-mt-526d36b7`
+
+### H-442 · Confirm migration 337 and its backup on production after the 2026-11-03 release · [AGENT]
+- **Why:** PZ-33b (merged 952e4315d) adds `chat_message.member_typed` in `infra/postgres/337_chat_message_member_typed.sql`. A migration is one-way (R6), and a deploy once reported success while it shipped nothing (CLAUDE.md §3 rule 8).
+- **Check:** on the box, read the ledger: `SELECT filename, applied_at FROM schema_migrations WHERE filename LIKE '337_%'`. No row means STILL PENDING. With a row, also read the deploy log for the pre-migration backup line of that release, and run `SELECT count(*) FROM information_schema.columns WHERE table_name = 'chat_message' AND column_name = 'member_typed'`. A count of 1 closes the entry.
+- **Authority:** `specs/personalization.md` §15.11 (D-PZ-37). Metorite task 1131.
+- **Added:** 2026-11-03 · PZ-33b merge, recorded on branch `mt-907c0244-cf4b-action-pills`
+
+### H-441 · A restore through the production pooler still builds indexes at 64 MB, and `restore_db.sh` hides a failed restore · [AGENT]
+- **Metorite:** no task yet, so the full entry is here. The parent is #1229 (LD-8c).
+- **Why:** LD-8c sends `maintenance_work_mem=256MB` to each restore through `PGOPTIONS`.
+  - **Measured on production, 2026-10-31:** with the PG names of `/etc/acb/root.env`, the Supabase session pooler (port 5432) takes the connection and ignores the option. `show maintenance_work_mem` reads 64MB with and without it.
+  - So a disaster restore there still fails on a large IVFFlat index (lists = 100, about 9,500 rows or more), such as `email_embeddings` or `wa_message_embeddings`.
+  - Also, `restore_db.sh` ends each `pg_restore` with `| tail -20 || true`. The error prints, and the script goes on as if the restore worked.
+- **Do this:**
+  1. Find a way that reaches the server, and measure it with `show maintenance_work_mem`. Options:
+     - a direct connection, not the pooler
+     - `ALTER ROLE <restore role> SET maintenance_work_mem = '256MB'` for the restore, then `RESET`
+     - a rebuild of each failed index after the restore, in a session that runs `SET maintenance_work_mem`
+  2. In `restore_db.sh`, keep the exit code of `pg_restore`. Print each `pg_restore: error` line, and exit 1 on one. Fence it in `tests/unit/test_backup_deploy_wiring.py`.
+- **Check:** `rg -n 'tail -20 \|\| true' scripts/restore_db.sh`. A hit means part 2 is open. Part 1 stays open until a PR records a `show maintenance_work_mem` of `256MB` through the path that the restore uses.
+- **Authority:** LD-8c review, 2026-10-31, finding 2. `specs/backup_and_restore.md` §2 holds the 256 MB rule.
+- **Added:** 2026-10-31 · LD-8c repair round 1, branch `ld8c-backup-minimise-mt-d6426e98`
+
+### H-433 · Check the chat prompt for notifications on a real phone, on production · [OWNER]
+- **Metorite:** #600 (OB-8). The task holds the checks and the state.
+- **Check:** task #600 is not Done → still pending. `PUSH_PROMPT_ORGS=*` is set in production since 2026-10-31 (D144, staging retired). The owner checks the three choices on an Android phone and in the iPhone Home Screen app.
+- **Added:** 2026-10-30 · WS-OB OB-8 session · rewritten 2026-10-31
+
+### H-436 · Decide whether work words stop tripping the sensitive-fact card · [OWNER]
+- **Metorite:** #1116. The task holds the question and a recommendation.
+- **Check:** task #1116 is not Done → still pending.
+- **Added:** 2026-10-30 · WS-63 PZ-32 session
+
+### H-440 · Confirm migration 318 and the first reminder push on production after the release · [AGENT]
+- **Metorite:** #1119.
+- **Check:** `curl -s https://api.metorite.com/version`. An `applied_sha` without the RE-9b merge means that the release has not run. After it runs, find `318_reach_outbox_web_push.sql` in the migration ledger. Then count the `reach_outbox` rows with `channel = 'web_push'` by `state` and `reason`. Many `no_keys` or `error` rows mean that the send step needs a look.
+- **Added:** 2026-10-31 · WS-66 RE-9b session. Minted as H-437, and renumbered to H-440 at merge because main took H-437 first. The owner merged RE-9b with no staging test, because the staging box expired on 2026-10-31.
+
+### H-431 · Look at Settings → Assistant settings, and say what still feels stiff · [OWNER]
+- **Metorite:** #261 (PZ-11). The task holds the checks and the state.
+- **Check:** task #261 is not Done → still pending. On app.metorite.com: reload, open the account menu, choose Settings → Assistant settings, then start an empty chat and press "Yes, start". Tell the agent what looks wrong and what feels stiff.
+- **Added:** 2026-10-27 · WS-63 session end (first minted as H-419, renumbered: main took it)
+
+### H-335 · Finish the staging box: DNS, two OAuth clients, one sudo run · [OWNER]
+- **Metorite:** #640. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `curl -s https://api.dev.metorite.com/version` answers a `sha` equal
+  to `git rev-parse origin/staging`. If it does, delete this entry.
+- **Added:** 2026-10-16 · WS-38 staging session
+
+### H-361 · Raise the WSL2 CPU cap, so local CI runs in about 10 minutes · [OWNER]
+- **Metorite:** #772. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `grep -E "^processors=" ~/.wslconfig` on the owner's PC reads 16
+  or more. If it does, delete this entry.
+- **Added:** 2026-10-19 · CI speed-up session
+
+### H-283 · Prove the first `credit_draw` row on production · [AGENT]
+- **Metorite:** #516. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** on the box, query the Console database:
+  `SELECT count(*), max(created_at) FROM credit_draw;`. A count above zero
+  means the write path runs in production, and this entry is done.
+- **Added:** 2026-10-09 · WS-50
+
+### H-284 · Two revenue figures the Money page cannot show yet · [AGENT]
+- **Metorite:** #532. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `rg -n "price_paid_inr" apps/services/customer_console/customer_console/main.py`
+  inside `ManualActivationRequest`. No hit means gap 1 is open.
+  `rg -n "def all_lots|credits_paid_total" apps/services/customer_console`
+  with no hit means gap 2 is open.
+- **Added:** 2026-10-09 · WS-50
+
+### H-150 · The right-click menu on a task cannot be opened on a phone · [AGENT]
+- **Metorite:** #486. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** open `/projects` at 390px, pick a project, and long-press a
+  card. If no menu appears, this is open.
+
+### H-417 · Build WS-67 OA-7b to OA-10: one chat, tool packs, dynamic sub-agents · [AGENT]
+- **Metorite:** #452. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** the WS-67 row of `project-docs/work_plan.md` says OA-10 is BUILT. Then delete this entry. OA-1 to OA-5, OA-6 (D117), OA-7a, OA-7g and the design are done.
+- **Added:** 2026-10-26 · chat-speed session
+
+### H-415 · After single mailbox: the shared mailbox SM-3 to SM-9, then multiple mailboxes · [AGENT]
+- **Metorite:** #733. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** the WS-65 row of `work_plan.md` says SM-9 is BUILT. Then delete this entry.
+- **Added:** 2026-10-25 · email single-mailbox session
+
+### H-412 · The chat-speed work: build the delegated-path slices for the paths that stay after WS-67 · [AGENT]
+- **Metorite:** #26. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** the next chat-speed PR after #1323 names WS-67 and `specs/one_assistant_context.md` §7. When it does, delete this entry.
+- **Added:** 2026-10-25 · email single-mailbox session
+
+### H-366 · Harden the CRM UX batch of 2026-10-20 (CRM-U6 to U9) · [AGENT] · security
+- **Metorite:** #662. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** `git log --oneline origin/main | grep -c "harden.*CRM-U[6-9]"` is 0. Then this is open.
+- **Added:** 2026-10-20 · `crm-module-filters`
+
+### H-365 · Replay the CRM answer check on stored answers, then decide `on` · [OWNER]
+- **Metorite:** #735. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** on the production box, `grep -E '^CRM_ANSWER_CHECK=' /opt/acb/app/.env`
+  reads `shadow`, and no replay result is in the round 8 PR. Then this is open.
+- **Added:** 2026-10-20 · `crm-check-explain`
+
+### H-294 · BH-6 moved the root units to /usr/local/lib/acb, and the runbooks still name the checkout · [AGENT]
+- **Metorite:** #769. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** run `rg -n "opt/acb/app/scripts/backup_db.sh|compose -f infra/docker-compose.yml" deploy/hostinger/README.md project-docs/specs/backup_and_restore.md README.md project-docs/specs/development_and_delivery_framework.md`. A hit means this is open.
+- **Added:** 2026-10-10 · branch `sec-bh6-build`. It was H-288, and main took
+  H-288 to H-293 first, so it moved to H-294 at the merge.
+
+### H-295 · Remove the one-release belt of `backup_db.sh` after BH-6 · [AGENT]
+- **Metorite:** #769. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** run `rg -n "belt for ONE release" scripts/backup_db.sh`. A hit means this is open.
+- **Added:** 2026-10-10 · branch `sec-bh6-build`
+
+### H-292 · Show the org's plan, credits and AI usage in Settings → Organization · [AGENT] · OWNER note
+- **Metorite:** #518. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** run `rg -n "usage|credit|billing" workbench/control_plane/src/app/settings/organization/OrganizationAdmin.tsx`.
+  No tab that names billing or usage means this is open.
+- **Added:** 2026-10-10 · branch `ws51-run-cap-and-todos`
+
+### H-291 · Settle a parked question when its move to `answered` fails · [AGENT]
+- **Metorite:** #782. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** run `rg -n -B2 -A4 'to="answered"' apps/services/orchestrator/orchestrator/pending_ask.py`.
+  If the move after `_answered(fut)` is still inside
+  `contextlib.suppress(Exception)` with no retry, this is open.
+- **Added:** 2026-10-10 · branch `ws51-run-cap-and-todos`
+
+### H-289 · Send WS-51 S7's two chat events, "needs your answer" and "finished", over web push · [AGENT]
+- **Metorite:** #761. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** run `rg -n "send_to_member" apps/services/gateway/gateway --glob '!gateway/push/**'`.
+  No hit outside `gateway/push/` means no chat event sends a push yet.
+- **Added:** 2026-10-10 · branch `ws51-run-cap-and-todos`
+
+### H-288 · Build WS-51 S6, the runs of the other signed-in accounts · [AGENT]
+- **Metorite:** #761. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** run `rg -n "slot|accounts" workbench/control_plane/src/app/api/chat/active-sessions/route.ts`.
+  No read of a second account's cookie means S6 is open.
+- **Added:** 2026-10-10 · branch `ws51-run-cap-and-todos`
+
+### H-287 · Three AI paths spend money and write no usage row · [AGENT]
+- **Metorite:** #517. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** run `rg -n "litellm|_litellm" packages/acb_llm/acb_llm/context.py apps/services/gateway/gateway/routes/integrations.py`
+  and `rg -n "v1/embeddings" apps/services/gateway/gateway/main.py`. If
+  `acompletion_stream_text` still calls `acompletion` directly, this is open.
+- **Added:** 2026-10-10 · branch `ai-call-attribution`
+
+### H-285 · Stop the webhook classify from running beside the scheduler classify · [AGENT]
+- **Metorite:** #731. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** run `rg -n "H-285" apps/services/email_ingestion apps/services/gateway/gateway/routes/email`.
+  No hit means this is open.
+- **Added:** 2026-10-09 · branch `email-em-t16-pra` (EM-T16 PR-A). It was
+  H-283. #789 took H-283 and H-284 on `main` first, so this entry moved to
+  H-285 at the merge.
+
+### H-282 · Remove the retired email model fields, then their columns · [AGENT]
+- **Metorite:** #774. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** run `rg -n "draft_model|compose_model|chat_model" apps/services/gateway/gateway/routes/email/automation/assistant.py`,
+  then `rg -n "^    (draft|compose|chat|rule)_model" infra/postgres/schema.generated.sql`.
+  A hit in either means this is open.
+- **Added:** 2026-10-09 · branch `email-no-tier-settings` (EM-T15).
+
+### H-275 · Measure the WhatsApp narrowing on a real run · [OWNER]
+- **Metorite:** #782. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** run `rg -n "compare run" project-docs/specs/data_narrowing_pipeline.md`.
+  No line with a measured recall and a date under §9 N4 means this is open.
+- **Added:** 2026-10-08 · branch `ws48-n4-whatsapp` (WS-48 N4).
+
+### H-278 · The cost check of PICK uses the eval card, not the Router's prices · [AGENT]
+- **Metorite:** #782. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** `rg -n "TODO\(H-278\)" packages/acb_skills/acb_skills/narrowing.py`.
+  A hit means this is open.
+- **Added:** 2026-10-08 · branch `ws48-pick-cost` (H-276).
+
+### H-281 · Old auto-synced tool wrappers in the agent clones still give a script the whole env · [AGENT] · security
+- **Metorite:** #691. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** on the box, run
+  `ssh metorite 'grep -l "\*\*_os.environ" /home/acb/.acb/agents/repos/*/agents.py | wc -l'`.
+  A count above 0 means this is open.
+- **Added:** 2026-10-08 · branch `sec-bh1-child-env` (WS-49 BH-1, fix round 1).
+
+### H-274 · The chat has no batch tool for several new statuses · [AGENT]
+- **Metorite:** #499. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** `grep -n "create_statuses" apps/skills/skill-projects/skill_projects/__init__.py`.
+  While it prints nothing, this is open.
+- **Added:** 2026-10-08 · H-273, branch `projects-vocab-batch`
+
+### H-272 · plan-guard cannot see the secrets drop folder · [AGENT] · security
+- **Metorite:** #726. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** `rg -c "metorite\[" .claude/hooks/plan-guard.mjs` → no hit
+  means the guard does not know the drop folder, and this is open.
+- **Added:** 2026-10-08 · secrets drop, security review of fix round 1
+
+### H-271 · acb has the same power as root, so an app compromise can delete the off-box backups · [OWNER] · security
+- **Metorite:** #769. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** on the box, run each of these:
+  `sudo cat /etc/sudoers.d/acb` · `id acb` · `stat -c '%U' /opt/acb/app/scripts/backup_offbox.sh`.
+  While any one shows `NOPASSWD:ALL`, the `docker` group, or the owner `acb`, this is open.
+- **Added:** 2026-10-08 · off-box backup, security review of fix round 2
+
+### H-269 · Make the long-header test of the data engine pass on a busy CI runner · [AGENT]
+- **Metorite:** #772. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** run `gh run list --workflow pr-check.yml --limit 50 --json databaseId,conclusion`,
+  then search the logs of the failed runs for
+  `test_a_long_header_keeps_each_answer_under_1_mb`. Each new failure with `error: memory` means
+  this is open. If the test still loads 400 header names of 5000 characters with no change to
+  the memory cap of the engine, this is open too.
+- **Added:** 2026-10-08 · branch `email-s2-reading-pane` (WS-17 EM-S2 fix round 2). PR #722
+  added H-268.
+
+### H-267 · Stop an Outlook rule move from making a second copy of a nested folder · [AGENT]
+- **Metorite:** #729. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** run `rg -n "mailFolders" apps/services/email_ingestion/email_ingestion/providers/outlook.py`.
+  If `_get_or_create_folder_id` still searches only `/me/mailFolders` with a
+  `displayName` filter, this is open.
+- **Added:** 2026-10-07 · branch `email-s10-rules-estimate` (WS-17 EM-S10
+  fix round 1). PR #719 added H-266.
+
+### H-268 · Measure the email narrowing saving on a real run · [OWNER]
+- **Metorite:** #782. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** run `rg -n "compare run" project-docs/specs/data_narrowing_pipeline.md`.
+  No line with a measured recall and a date under §9 N2 means this is open.
+- **Added:** 2026-10-07 · branch `ws48-n2-email` (WS-48 N2). Renumbered from
+  H-267 at merge, because main took H-267.
+
+### H-266 · Redis has no maxmemory policy, and the email HTML and attachment caches are bounded only by TTL · [AGENT]
+- **Metorite:** #620. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** run `grep -rn "maxmemory" infra/ deploy/`. No `maxmemory` with a
+  `maxmemory-policy` for the Redis of the gateway means this is open.
+- **Added:** 2026-10-07 · branch `email-s1-html-route` (WS-17 EM-S1)
+
+### H-265 · Measure the agreement of the two System-1 engines before `SYSTEM_ONE_ON_DECIDE` goes on · [AGENT]
+- **Metorite:** #782. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** run `rg -n "engine agreement" project-docs/specs/data_narrowing_pipeline.md`.
+  No line with a measured percent under §9 N3 means this is open.
+- **Added:** 2026-10-07 · branch `ws48-n3-decide-tier` (WS-48 N3). It was
+  H-264, and it moved to H-265 because N1 (#711) merged first with H-264.
+
+### H-264 · Let a decide request say that the narrowing pipeline sent it · [AGENT]
+- **Metorite:** #771. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** run
+  `grep -n "X-CC-Source" packages/acb_auth/acb_auth/console_resolve.py`.
+  No match in `_attribution_headers` means this is open.
+
+### H-263 · Start `acb-pull.timer` again on the box, and prove that #702 serves · [AGENT]
+- **Metorite:** #629. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** run `ssh metorite 'systemctl is-active acb-pull.timer'`. Any
+  output other than `active` means this is open. Then run
+  `curl -fsS https://api.metorite.com/version` and read `sha` and
+  `applied_sha`. For each, run `git merge-base --is-ancestor 82d09830b <sha>`.
+  A non-zero exit means #702 does not serve, and this is open. Last, run
+  `ssh metorite 'docker image inspect pgvector/pgvector:pg17 >/dev/null && echo present'`.
+  No `present` means the image is not on the box, and this is open.
+- **Added:** 2026-10-07 · branch `ops-backup-io` (the backup I/O fix)
+
+### H-262 · Decide if the Supabase compute size is large enough · [OWNER]
+- **Metorite:** #508. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** `rg -n "H-262" project-docs/work_plan.md project-docs/specs/backup_and_restore.md`
+  → no hit means the owner has not recorded a decision, and this is open.
+- **Added:** 2026-10-07 · branch `ops-backup-io` (the backup I/O fix)
+
+### H-261 · Stop the email sync from holding a transaction open while it waits on the provider (EM-T4a-4) · [AGENT]
+- **Metorite:** #599. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** `rg -n "EM-T4a-4( PR-[A-Z0-9]+)? MERGED" project-docs/specs/email_app_master_plan.md`
+  → no hit means this is open. The pattern also matches a part, for example
+  `EM-T4a-4 PR-A MERGED`. If the slice ships in parts, the section
+  "EM-T4a-4 — the request jobs" lists them. Then this stays open until each
+  listed part has a hit. On the box, this query shows the symptom:
+  `SELECT pid, now() - state_change AS age, query FROM pg_stat_activity WHERE state = 'idle in transaction' AND wait_event = 'ClientRead' ORDER BY age DESC;`
+  A row older than a few seconds is a session that holds a transaction
+  across I/O. The split of `_compose_assist_run` left EM-T4a-4 on 2026-10-12
+  (§10.4.6 item 6). EM-T17 PR-A1 owns it, so this entry does not wait on it.
+- **Added:** 2026-10-07 · branch `ops-backup-io` (the incident record)
+
+### H-260 · Bind the gateway to 127.0.0.1, so the box cannot reach it on a public address · [AGENT]
+- **Metorite:** #619. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** `rg -n "\-\-host 0.0.0.0" deploy/hostinger/acb-gateway.service`
+  → a hit means this is open.
+- **Added:** 2026-10-07 · WS-17 EM-T13b-2 review round 1 (branch
+  `email-t13b-2`)
+
+### H-257 · Keep a node with a hidden parent out of the top level of the tree drag · [AGENT]
+- **Metorite:** #483. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** `rg -n "parentId === null\) return \[\.\.\.roots\]" workbench/control_plane/src/app/projects/lib/treeDrop.ts`
+  → a hit means this is open.
+- **Added:** 2026-10-06 · WS-46 P7 review round 1
+
+### H-256 · Show on production that `user_settings` has a key for each organization · [AGENT]
+- **Metorite:** #690. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** on production, as an owner role, run
+  `SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = 'user_settings'::regclass AND contype = 'p'`.
+  The answer `PRIMARY KEY (organization_id, user_id)`, and a ledger line for
+  `239_user_settings_per_org.sql`, close this entry. Delete it then.
+- **Added:** 2026-10-06 · WS-46 P7 · built 2026-10-10
+
+### H-255 · Check the pop-out and the discard of a reply by eye (EM-G3c-3) · [OWNER]
+- **Metorite:** #658. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** `rg -n "EM-G3c-3 visual check passed" project-docs/specs/email_app_master_plan.md`
+  → no hit means open. The owner reports the result. An agent then writes that
+  line, with the date, under §12.3.3c. Then it deletes this entry.
+- **Added:** 2026-10-06 · the EM-G3c-3 session
+
+### H-254 · Count a task's subtasks with one gateway read, as the cascade counts them · [AGENT]
+- **Metorite:** #498. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** `rg -n "_subtask_counts" apps/skills/skill-projects/skill_projects/writes.py`
+  and read the function. A loop over `/projects/tasks/{tid}/relations` means
+  this is open.
+- **Added:** 2026-10-06 · WS-46 P6 review round 2
+
+### H-253 · One member can still hold both parse slots of the gateway (EM-T11) · [AGENT]
+- **Metorite:** #659. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** `rg -n "EM-T11 slot gap closed" project-docs/specs/email_app_master_plan.md`
+  → no hit means open.
+- **Added:** 2026-10-06 · the EM-T11 session
+
+### H-252 · Ask a chat to summarise a PDF that came in a mail (EM-T11) · [OWNER]
+- **Metorite:** #658. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** `rg -n "EM-T11 live check passed" project-docs/specs/email_app_master_plan.md`
+  → no hit means open. The owner reports the result. An agent then writes that
+  line, with the date, under §10.4.12. Then it deletes this entry.
+- **Added:** 2026-10-06 · the EM-T11 session
+
+### H-251 · Set up the Metorite WhatsApp bot number at Meta · [OWNER]
+- **Metorite:** #741. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** on the box, `grep -c '^WHATSAPP_ASSISTANT_PHONE_NUMBER_ID=.' /opt/acb/app/.env`.
+  An output of 0 means this is open. Do not print the line, because the
+  file holds secrets.
+- **Added:** 2026-10-06 · the WS-47 spec session.
+
+### H-250 · Bring the last database connections inside the pool budget · [AGENT]
+- **Metorite:** #699. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** `rg -n "psycopg.connect\(" packages/acb_common/acb_common/org_settings.py packages/acb_llm/acb_llm/model_config.py packages/acb_llm/acb_llm/key_store.py`.
+  A hit means part 1 is open.
+- **Added:** 2026-10-06 · the NS-11 session.
+
+### H-245 · Close the four P3 edges of skill privacy that the PR #635 review left · [AGENT]
+- **Metorite:** #618. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** run these four checks. Each one stays open until its step closes.
+  1. `rg -n "SKILL_UNCLAIMED" packages/acb_skills/acb_skills/tenant_file_store.py`.
+     No hit means step 1 is open.
+  2. `rg -n "acb_memory" packages/acb_skills/acb_skills/agent_paths.py`.
+     No import of the store in `claim_skill` means step 2 is open.
+  3. `rg -n "skill_owner" packages/acb_skills/acb_skills/note_tools.py`.
+     No hit means step 3 is open.
+  4. `rg -n "_odd_name_form" apps/services/gateway/gateway/routes/workspace.py`.
+     Step 4 is open while no hit lies inside `get_workspace_tree`.
+- **Added:** 2026-10-05 · the approval review of PR #635 (four P3s).
+
+### H-244 · Decide whether an agent may set an env var through a SETUP token · [OWNER]
+- **Metorite:** #769. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** `rg -n "<<<SETUP" apps/services/orchestrator/orchestrator/executor.py workbench/control_plane/src/app/api/agent/chat/route.ts`.
+  A hit means the model-output path to configure still exists, and the
+  decision is open.
+- **Added:** 2026-10-05 · branch `integrations-env-hardening`. The box results
+  are from 2026-10-05.
+
+### H-243 · Answer WS-44's open questions before a shell flag goes on · [OWNER]
+- **Metorite:** #766. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** read `project-docs/specs/navigation_shell.md` §13.3. A row that
+  still shows only a default means that question is open.
+- **Added:** 2026-10-05 · the session that wrote `navigation_shell.md`.
+
+### H-228 · Give `get_errors` and `run_diagnostics` a containment check · [AGENT]
+- **Metorite:** #768. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** `rg -n "resolve_in_workspace|relative_to" packages/acb_skills/acb_skills/error_tools.py`.
+  No hit means the tool still has no containment check, and this is open.
+
+### H-237 · Close what H-227 left: the member purge, the shared `agent-data/`, and a live check · [AGENT]
+- **Metorite:** #617. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** `rg -n "purge_thread_files" apps/services/gateway/gateway/routes/admin/members.py`.
+  No hit means step 1 is open. Steps 2 and 3 stay open until a decision
+  and a live check are on record.
+- **Added:** 2026-10-04 · the H-227 PR. Fix round 1 of PR #616 closed its
+  first scope, `save_note` and `recall_notes`. These three items replaced it.
+
+### H-239 · Count the loose files with no history row, and decide on an admin view · [AGENT]
+- **Metorite:** #769. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** count the loose files of the tenant dirs on production that
+  have no row in `agent_file_history`. A loose file lies in `inputs/` or
+  `outputs/`, in no thread folder. Read `agent_blob` for the store side, and
+  walk `state/*/o_*` for the disk side. Until a count and a decision are on
+  record, this is open.
+- **Added:** 2026-10-04 · fix round 1 of PR #616. The batch decision gave the
+  document of an assigned task's run a home (rule 8). So this id now holds
+  the count.
+
+### H-242 · Close the three edges of the H-227 new-chat purge · [AGENT]
+- **Metorite:** #689. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** run these three searches.
+  1. `rg -n "room is None or not thread_id" apps/services/gateway/gateway/routes/agent.py`.
+     A hit means step 1 is open.
+  2. `rg -n "_last_write" apps/services/gateway/gateway/routes/workspace.py`.
+     A hit means step 2 is open.
+  3. `rg -n "pg_advisory_xact_lock" apps/services/gateway/gateway/routes/chat.py`.
+     No hit means step 3 is open, unless the run doors insert the row
+     before the run (the second form of Do 3).
+- **Added:** 2026-10-05 · the round 3 review of PR #616 (approved with nits).
+
+### H-214 · Add a plan-guard rule `ws43-sandbox-flip` for the three WS-43 flags · [OWNER]
+- **Metorite:** #772. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** `rg -n "ws43-sandbox-flip|MAF_CODING_SCOPE|SANDBOX_EGRESS_ENABLED|MAF_NATIVE_SESSIONS" .claude/hooks/plan-guard.mjs`.
+  No hit, or a hit with no `MAF_NATIVE_SESSIONS`, means this is open.
+- **Added:** 2026-10-03 · PR #584 fix round 1
+
+### H-211 · Remove `approve_all` from the root `metorite` agent · [AGENT]
+- **Metorite:** #560. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** `rg -n "approve_all" agents.py` at the repo root. A hit on the
+  `on_permission_request` line means this is open.
+- **Added:** 2026-10-03 · the WS-43 spec session
+
+### H-213 · The WS-3 board row says WS-3a and WS-3b shipped, and the code has neither · [AGENT]
+- **Metorite:** #578. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** `rg -n "IsolationTierUnavailable|ISOLATION_TIER_ENFORCE" apps packages`.
+  No hit means WS-3a is still unbuilt. Then run
+  `rg -n -e '--read-only' -e '"--network"' apps/services/orchestrator/orchestrator/copilot_sandbox.py apps/services/orchestrator/orchestrator/mutation.py`.
+  No hit means WS-3b is still unbuilt.
+- **Added:** 2026-10-03 · the WS-43 spec session
+
 ### H-198 · 🟡 DEFERRED — agent webhooks need an owner before they can use AI · [OWNER+AGENT]
+- **Metorite:** #777. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `rg -n "^AGENT_WEBHOOK_SECRET" /opt/acb/app/.env` on the box. No
   hit means the door is still closed, and this stays deferred.
-- **Status: do NOT build yet.** Owner direction, 2026-09-28: record it, and
-  build it only when a customer needs an outside system to start an agent.
-- **What the door is.** `POST /agent/webhook/{source}` (`routes/agent.py`,
-  `receive_webhook`) lets an outside system start an agent run. Examples are
-  Zapier or a customer's own server. An HMAC over the body, signed with
-  `AGENT_WEBHOOK_SECRET` or `AGENT_WEBHOOK_SECRET_<SOURCE>`, authenticates
-  the call. No signed-in person makes it.
-- **Why it cannot use AI today.** The box serves AI on the deployment key
-  (H-152), and the Router bills the organization of the PROVEN member who
-  made the call. A webhook run has no member, so the Router refuses its model
-  calls. This refusal is correct. It never bills a guessed organization.
-- **Measured 2026-09-28, so nothing is broken.** The box sets no webhook
-  secret, so the door answers 503 to every caller. `_WEBHOOK_ROUTES` is
-  empty, and no dynamic agent declares a `webhook_routes` entry. The gateway
-  log holds no call to it this month. Workflows that an event starts already
-  bill the workflow owner (PR #507), so only the direct agent run is open.
-- **The owner decision: who pays for a run that no person started?**
-  1. **Recommended: the webhook belongs to ONE organization.** An admin
-     creates it in Settings, and the product issues a secret bound to that
-     organization. Its runs bill that organization.
-  2. **A named member.** Setup names an owner, such as the admin who made the
-     webhook. Runs bill as that person and appear in that person's usage.
-- **What to build, once decided.**
-  1. A tenant-scoped `agent_webhook` table (R5): organization, source,
-     owner member, secret hash, created by, revoked at. Expand only (R6).
-  2. A secret per webhook instead of one global env secret. Look it up by
-     `source` and verify the HMAC against that row.
-  3. Bind the run like every background job. Call
-     `job_member_scope(owner, app=...)` and pass `session_user=owner` to
-     `run_agent`. The owner comes from the row, never from the payload.
-  4. A settings surface to create, show once, rotate and revoke a webhook,
-     and a record of each delivery.
-  5. Fences: a delivery bills the webhook's organization (R8). A payload that
-     names another member changes nothing. A revoked webhook is refused.
-     Update the allowlist entry in `tests/unit/test_background_ai_member.py`.
-- **Authority:** H-152 · `specs/customer_console.md` §6A · PR #507 · PR #511
 - **Added:** 2026-09-28 · the deployment-key switch session
 
 ### H-208 · Keep a copy of `ACB_MASTER_KEY` off the box · [OWNER]
+- **Metorite:** #614. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** ask the owner whether the password manager holds the current
   `ACB_MASTER_KEY` of `/opt/acb/app/.env`. If it does not, this is open.
-- **Why.** On 2026-10-02 the first Outlook connect failed with
-  `callback_failed_500`, because the box had no `ACB_MASTER_KEY`. An agent
-  generated the key on the box, so the value never entered a transcript. The
-  key encrypts each stored mailbox token. If the key is lost, every member must
-  connect the mailbox again.
-- **Do.** Copy the value from the box into the password manager. Do not paste
-  it into a chat.
-- **Authority:** `specs/email_app_master_plan.md` §10 · `acb_llm/key_store.py`
-- **Added:** 2026-10-02 · the Outlook onboarding session
-
-### H-209 · The two migration-order tests of 223 skip in CI · [AGENT]
-- **Check:** in the log of a `pr-check.yml` unit-test job, find
-  `test_email_account_unique_per_tenant.py::TestTheProductionOrder` and
-  `TestTheFreshLadderOrder`. If they show SKIPPED, this is open.
-- **Why.** CI did not prove migration 223 in the production order or on a fresh
-  ladder (run 36974344368). They passed on a local real database, and the box
-  showed the right indexes after the deploy. A later migration of the same
-  shape would ship with no CI proof.
-- **Do.** Find the condition that skips the two classes in CI, and make CI meet
-  it. Do not weaken the tests.
-- **Authority:** `specs/email_app_master_plan.md` §10.4.5 (EM-T2a) · R8
 - **Added:** 2026-10-02 · the Outlook onboarding session
 
 ### H-207 · 🔴 Rotate the Microsoft app secret that reached a chat transcript · [OWNER]
+- **Metorite:** #613. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** in Entra, open the app `3bfeff54-14fb-4cee-8b17-2c8d41cad6a8` →
   Certificates & secrets. If a secret whose value ends `…scaAH` still exists,
   this is open.
-- **Why.** On 2026-10-01 the owner pasted the client secret into an agent chat.
-  An agent then installed it on the box as `MSFT_OAUTH_CLIENT_SECRET` and
-  `AUTH_MICROSOFT_ENTRA_ID_SECRET`, in `/opt/acb/app/.env` and in
-  `workbench/control_plane/.env.local`.
-- **Do.**
-  1. In Entra, create a new client secret.
-  2. Write the new value into the four keys on the box. An agent can do this
-     under gate `env-write`. Do not paste the value into a chat.
-  3. Run `sudo systemctl restart acb-gateway acb-workbench`.
-  4. Connect a mailbox to prove the new secret.
-  5. Delete the old secret in Entra.
-- **Authority:** `specs/email_app_master_plan.md` §10.2 (D-EM-2, interim) · §10.5
 - **Added:** 2026-10-01 · the Outlook onboarding session
 
+### H-241 · Register the Metorite Google mail app, so Gmail can connect · [OWNER]
+- **Metorite:** #601. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** `rg -n "^\*\*Step 9 done \(20[0-9][0-9]-" project-docs/specs/email_app_master_plan.md`
+  → no hit means open. Only §12.4 step 9 writes that line, after an agent puts
+  the client of the owner on the box and both values measure non-empty.
+- ⚠️ **The Check changed on 2026-10-12.** The old Check keyed on the answer to
+  Q-GM-6. PR-D0 answered Q-GM-6 on 2026-10-12: the box holds no client. So the
+  old Check would delete this OWNER entry while the app still does not exist.
+- ⚠️ **Do not count the key lines on the box.** The box holds both
+  `GMAIL_OAUTH_*` names with EMPTY values (measured by length, 2026-10-12,
+  §12.1). A count of the names gives 1 with no client. Count by length only,
+  with the command of §12.4 step 9, and never print a value.
+- **Added:** 2026-10-04 · the EM-G0 spec session
+
+### H-249 · The tenant session commits an aborted transaction with no error · [AGENT]
+- **Metorite:** #561. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** `rg -n "aborted" packages/acb_common/acb_common/db.py` → no hit
+  in `tenant_session` means this entry is still open.
+- **Added:** 2026-10-06 · the EM-T4a-2 PR-B1 session
+
+### H-248 · Check that a reopened Outlook draft keeps its recipients (EM-T10) · [OWNER]
+- **Metorite:** #658. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** `rg -n "EM-T10 live check passed" project-docs/specs/email_app_master_plan.md`
+  → no hit means open. The owner reports the result. An agent then writes that
+  line, with the date, under §10.4.11. Then it deletes this entry.
+- **Added:** 2026-10-05 · the EM-T10 session
+
+### H-247 · Send three test mails from Outlook, to prove the fix of a lost file (EM-T9) · [OWNER]
+- **Metorite:** #658. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** `rg -n "EM-T9 live check passed" project-docs/specs/email_app_master_plan.md`
+  → no hit means open. The owner reports the result of the three mails. An agent
+  then writes that line, with the date, under §10.4.10. Then it deletes this entry.
+- **Added:** 2026-10-05 · the EM-T9 session
+
 ### H-180 · Carry reasoning on the STREAM path too · [AGENT]
+- **Metorite:** #771. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `rg -n "publish_reasoning_alias" apps/services/customer_console`
   → no hit in the stream relay means this entry is still open.
-- **Why.** H-179 fixed the buffered path only. `relay_stream` promises that a
-  frame leaves exactly as it arrived, and a mirror on each delta breaks that
-  promise.
-- ⚠️ **Latent today.** Every stream already falls back to the buffered path,
-  because the stream open answers 422 `extra_forbidden`. Fix that 422 and this
-  bug appears on the stream path at once. Do both in one slice.
 
 ### H-191 · Prove the 2026-09-28 dependency upgrade on the box · [AGENT]
+- **Metorite:** #715. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** on the box, read `usage_event` for a Router chat, a transcription
   and a picture made after the deploy. Then export one PDF and open one call
   audio socket. → A row with no tokens, or a failed PDF or socket, means this
   is still open.
-- **Why.** The upgrade moved litellm 1.86.0 to 1.103.0, FastAPI 0.133 to
-  0.141, uvicorn 0.48 to 0.54 and pymupdf 1.28.0 to 1.28.2. The tests drive
-  stubs and litellm's own transforms. No test sent a call to a real vendor.
-- ⚠️ **uvicorn changed its WebSocket server.** 0.54 picks the sans-I/O
-  implementation when `ws` is `auto`, and 0.48 picked the legacy one. A local
-  echo round trip passed. The box has not carried a real call yet.
 - **Added:** 2026-09-28 · the dependency upgrade
 
 ### H-192 · The WhatsApp call-audio socket fails on every connection · [AGENT]
+- **Metorite:** #776. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** open a websocket to `/whatsapp/calls/audio` on a dev gateway.
   A `TypeError` naming `require_authenticated.<locals>._check()` and a
   missing `request` means this is open.
-- **Why.** The gateway's app-level default-deny dependency asks for a
-  `Request`, and a websocket supplies none. So the route raises before its
-  own handler runs. Measured 2026-09-28 on `main` and on PR #500 alike, so
-  the dependency upgrade did not cause it.
-- **Fix.** Make the guard accept `HTTPConnection`, or exempt the socket and
-  authenticate inside it. Keep default-deny for every HTTP route.
-- **Blocks:** the socket step of H-191.
 - **Added:** 2026-09-28 · the review of PR #500
 
 ### H-190 · A streamed OpenRouter call records our computed cost, not the vendor's · [AGENT]
+- **Metorite:** #531. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `rg -n "usage.cost|\"cost\"" apps/services/customer_console/customer_console/router.py`
   → no reader of `usage.cost` means this is still open.
-- **Why.** On a buffered call, litellm puts OpenRouter's `usage.cost` in
-  `_hidden_params`, and the Router reads it. On a stream, the cost arrives in
-  the final chunk as `usage.cost`. `relay_stream` reads only `_hidden_params`,
-  so it records `None` and the computed cost wins. litellm 1.86.0 and 1.103.0
-  both do this. Measured 2026-09-28.
-- ⚠️ **This changes a money column.** `provider_cost_usd` gets the vendor's
-  figure where it held ours. Read `usage.cost` only when the provider is
-  OpenRouter, because litellm 1.103.0 gates its own copy the same way. Add a
-  test that drives litellm's real OpenRouter stream parser.
-- 🔴 **litellm 1.103.0 writes its OWN computed `usage.cost` into the last
-  streamed frame, for every provider** (`litellm/main.py`
-  `_stamp_streaming_usage_cost`, no flag). So a `usage.cost` on a stream is
-  NOT proof the vendor sent it. If OpenRouter omits it, litellm fills in its
-  estimate, and a naive reader stores that as `cost_source = 'vendor'`. Tell
-  the two apart before trusting the figure. Found by the PR #500 review.
 - **Added:** 2026-09-28 · the dependency upgrade
 
-### H-189 · The out-of-workspace write veto never fires for a real write · [AGENT]
-- **Check:** in `apps/services/orchestrator/orchestrator/permission_policy.py`,
-  find the key that `decide` reads for a write's target. `path` alone means
-  this is open.
-- **Found 2026-09-26, by the SDK upgrade (H-181).** `decide` reads `path`, and
-  an SDK write request carries `file_name`. The 0.1.32 SDK did the same. So a
-  Copilot agent can write outside its workspace, and the veto never runs.
-- ⚠️ **The fix changes what production denies.** Build it as its own slice,
-  with a test that sends the SDK's real write request shape.
-
 ### H-181 · Prove the upgraded Copilot path on the live Router · [AGENT]
+- **Metorite:** #771. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** run one `task-manager` chat on the box. Then read its
   `usage_event` rows. → A row with an empty member, app or run means this is
   still open.
-- **Built 2026-09-26, on the `worktree-agent-a48231615ce91464f` branch.** The
-  lock now holds `agent-framework-core` 1.19.0, `agent-framework-openai`
-  1.14.4 and `agent-framework-github-copilot` 2.0.0. The wrapper pins
-  `github-copilot-sdk` to 1.0.11 exactly, so the SDK is 1.0.11, not 1.0.14.
-  Version 1.0.11 already has `ProviderConfig.headers`.
-- **This branch closes the attribution gap in code.** The orchestrator stamps the
-  `X-CC-*` headers when each run creates or resumes its Copilot session. It
-  also stamps them on every turn. `TestTheCopilotPathCarriesTheRun` in
-  `tests/unit/test_usage_attribution.py` is the fence.
-- **Done when:** all four agents and the orchestrator hold a tool conversation
-  through the live Router on DeepSeek V4. A stubbed test does not count.
-- ⚠️ **The 1.x SDK wheel does not bundle the CLI.** `vps_apply.sh` now runs
-  `python -m copilot download-runtime` as the service user after `uv sync`,
-  and a failure fails the deploy. Measured 2026-09-26: the box reaches GitHub
-  releases as `acb`.
-- ⚠️ **A signed member proof lives 3600 s, and a Copilot session reuses it.**
-  After 3600 s in one long turn, `_member_for` reads the member as unproven.
-  On the deployment key the Router then REFUSES the rest of that turn
-  (PR #511). The per-request seam is `CopilotClient(request_handler=)`.
-- 📌 **Background runs now name a member (2026-09-28).** A workflow agent
-  node runs as the member who pressed Run, or else as the workflow owner.
-  The email loop, the WhatsApp summaries and graphiti run as the owner of the
-  mailbox or account. The mutation sandbox gets the headers of the run that
-  failed, in `MUTATION_ROUTER_HEADERS`. The fence is
-  `tests/unit/test_background_ai_member.py`.
-- ⚠️ **Two paths still reach the Router with no member.** H-152 names them.
-  The deployment key refuses both with a 400.
-- ⚠️ **Rebuild two images.** `Dockerfile.copilot-sandbox` and
-  `Dockerfile.mutation` now pin the SDK and download the CLI at build time.
-- ⚠️ **An upgrade does NOT fix H-179.** Version 1.14.4 still reads only
-  `reasoning_details`. Keep the Router adapter.
-
-### H-178 · An operator can take a job off the air. Two callers cannot yet · [AGENT]
-- **Check:** `rg -c "model IS NOT NULL" packages/acb_llm apps/services/gateway`
-  → a zero in a file that reads `tier_binding` means a reader was added
-  without the tombstone filter, and this is open again.
-- 📌 **BUILT 2026-09-24.** `DELETE /catalog/bindings` takes a job off the air
-  by APPENDING a row whose `model` is NULL. Migration 034 makes the column
-  nullable. The tiers board offers it where the dead Save used to be.
-- 🔴 **Why it was needed.** `tier-stt` pointed at a Groq model on a box
-  holding only a DeepSeek credential, so every transcription failed at the
-  provider and billed zero. The answer was to unbind it and the console could
-  not: `POST /catalog/bindings` refuses an empty chain.
-- ⚠️ **A SEPARATE verb, and that is the safety of it.** Letting `POST` accept
-  an empty `models` list would mean a caller that simply forgot the field
-  takes a tier off the air. A different verb cannot be reached by forgetting.
-- 🔴 **Two things the tests caught that reading did not.**
-  `resolve_tier` took the newest ROW that had a model, so it stepped over a
-  tombstone and kept serving the superseded binding — unbinding would have
-  changed nothing the Router does. And migration 010 backfills
-  `model_capability.model` from `tier_binding.model`, which is NOT NULL, so a
-  ladder replay against a database holding one tombstone died outright.
-- ⚠️ **Two fences moved from a VERB to the rule they stood for.**
-  `test_no_route_updates_or_deletes_a_binding_or_a_rate` and its frontend twin
-  banned the `DELETE` method. The rule is *no row is destroyed*, and this
-  route destroys none. Both now read the SQL, which is where the rule can be
-  true or false. `PATCH` and `PUT` stay banned on their names.
-- ⚠️ **WHAT IS LEFT: two readers outside the Console.** The check above names
-  them. `packages/acb_llm` and the gateway do not read `tier_binding` today,
-  and if either starts, it needs the filter or it will resolve a model named
-  NULL.
-- **Fences:** `tests/unit/test_unbind_a_tier.py` (11, R8).
-- **Authority:** owner report, 2026-09-24 — *"Shouldn't you be able to allow
-  me to remove a model from a tier?"* · §6A.5
-- **Added:** 2026-09-24 · the unbind session.
 
 ### H-177 · Nobody can prove an organization owns the domain it claims · [AGENT]
+- **Metorite:** #684. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `rg -n "domain" infra/postgres/*.sql | rg -i "verif|token|txt"`
   → no hit means verification is unbuilt, and this is open. Also
   `SELECT slug, domain FROM organization WHERE domain IS NOT NULL;` on the
   TENANT database: every row there routes sign-in knocks on trust alone.
-- **Why this outranks H-176.** `organization.domain` decides whose Requests
-  tab a colleague's knock reaches (H-118, 2026-09-24). It is a plain text
-  column and nothing checks it. So one customer can claim another's domain and
-  receive their colleagues' knocks — names, addresses, and that they even
-  tried. H-176 is about knocks that reach NOBODY. This is about knocks that
-  reach the WRONG somebody, which is the worse direction.
-- **What already narrows it.** `_PUBLIC_MAIL_DOMAINS` (2026-09-24) refuses
-  `gmail.com` and 23 other hosts nobody owns, so the unbounded case is closed.
-  The bounded one is not: a claim on a real company's domain still routes.
-  ⚠️ **That list is a guard and not the verification.** Its own comment says
-  so, so nobody reads it as this ticket being done.
-- **The shape, and it is well trodden.** Atlassian's approved domains, Slack's
-  workspace domains and Google Workspace all do the same thing: the
-  organization publishes a DNS TXT record carrying a token this product
-  generated, and the domain routes nothing until a check finds it.
-  ⚠️ The owner asked on 2026-09-24 whether domains need DNS work today. They
-  do NOT — matching is a string compare. This ticket is what would introduce
-  that requirement, and it introduces it deliberately, for the organizations
-  that opt in.
-- 📌 **Not urgent while the owner sets every domain by hand.** It becomes
-  urgent the first time a CUSTOMER can set one. Build it before that, not
-  after.
-- **Authority:** D15 · `colleague_onboarding.md` §6 · H-175 · owner decision
-  2026-09-24 (invite is the main way in, a domain is opt-in)
 - **Added:** 2026-09-24 · the H-118 session
 
 ### H-176 · An unrouted sign-in reaches nobody, and only journald remembers · [AGENT]
+- **Metorite:** #711. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `rg -n "access_request_no_matching_org" packages/acb_auth/` → the
   log line exists. Then look for a READER: `rg -n "unrouted|no_matching_org"
   apps/services/customer_console/ workbench/operator_console/` → no hit means
   nothing but journald holds it, and this is open.
-- **What happens today.** A person signs in, no organization claims their
-  email domain, and the resolver logs `access_request_no_matching_org` and
-  files nothing. That is CORRECT — filing them into a customer's queue would
-  mislead that admin and disclose that the address knocked (owner decision,
-  2026-09-24). The gap is that the operator never learns it happened.
-- **Why it is worth something.** It is the only signal that a customer is
-  misconfigured, or that somebody is trying to reach a tenant that will never
-  answer them. On a young product that is the difference between hearing about
-  a problem and being told about it weeks later.
-- ⚠️ **MEASURED 2026-09-24, because this looked like "add a view" and is not.**
-  There is NO home for a tenant-less record on either plane:
-  * **Tenant plane** — 137 of 152 tables carry row-level security. Every audit
-    candidate (`app_audit`, `audit_event`, `copilot_event`) is FORCE RLS keyed
-    on `app.tenant_id`. A knock with no tenant hits the identical
-    chicken-and-egg that made H-118 fail.
-  * **Console plane** — 39 tables and none for this. Reaching it needs a new
-    table, a new HTTP door, a new entry on the `console_resolve` allowlist
-    (the fence that rations seat allocation) and Operator Console UI.
-    **Four layers across two deployables.**
-- ⚠️ **Do not ship the cheap half.** A new RLS-exempt tenant table is twenty
-  minutes of work and would be a table NOBODY CAN READ, because the Operator
-  Console reads the other database. That is the defect this queue keeps
-  recording: `/people/overview` sat built and unreachable for a month, and
-  `seal_counts` shipped with no caller. Build the reader in the same slice, or
-  do not start.
-- 📌 **The capability already exists, undocumented.** Until somebody builds
-  this, the operator can ask the box directly:
-  `sudo journalctl -u acb-gateway --since '7 days ago' | grep
-  access_request_no_matching_org`
-- **Authority:** owner decision 2026-09-24 · H-118 · H-109 (the two planes)
 - **Added:** 2026-09-24 · the H-118 session
 
 ### H-175 · 🟡 OPTIONAL — a tenant org's DOMAIN is opt-in, and nothing is blocked without it · [OWNER]
+- **Metorite:** #768. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** ask the TENANT database, and not the Console:
   `SELECT slug, domain FROM organization ORDER BY created_at;`
   A NULL `domain` is a legitimate resting state, so this entry never becomes
   "overdue". Read it when somebody asks why a colleague's knock did not appear.
-- **Measured 2026-09-24:** `default` (Fracktal Works) carries
-  `domain = 'fracktal.in'`. `hathi-labs-llp` carries **NULL**.
-- ⚠️ **Re-scoped the same day, after the owner asked whether this needs DNS.**
-  It does not. `organization.domain` is a plain text column, and the resolver
-  folds the part of the address after `@` and compares. Nothing is published,
-  nothing is verified, and neither side touches a DNS zone.
-- **What the owner decided, 2026-09-24.** **Invite is the main way in.** A
-  domain is an OPT-IN shortcut per organization, which is the shape Atlassian
-  (approved domains) and Slack both use. With no domain set, a colleague who
-  signs in reaches the self-serve path and an admin invites them — the
-  ordinary flow, and the default for every product of this kind.
-- **So what setting it BUYS:** a colleague who signs in before anybody invites
-  them lands in that organization's Requests tab, in place of a dead end. That
-  is worth having when people onboard themselves faster than an admin can
-  invite them. It is worth nothing while the admin invites first.
-- ⚠️ **What it COSTS, and the part still missing.** Nothing proves the
-  organization owns the domain it claims. The public mail domains are refused
-  by name now (`_PUBLIC_MAIL_DOMAINS`, 2026-09-24), which removes the
-  unbounded case. The bounded one remains: one customer could claim another's
-  domain and receive their colleagues' knocks. **The real answer is domain
-  verification — a DNS TXT record, the Atlassian model — and it is NOT built.**
-  Build it before a customer sets a domain you did not set for them.
-- **The act, when it is wanted:** set `organization.domain` on the TENANT
-  database, for the organizations that should accept knocks.
-  📌 Two organizations must never claim ONE domain. The resolver refuses to
-  guess between them and files nothing, which is safe and also silent.
-- **Authority:** D15 · `colleague_onboarding.md` §6 · H-109 (the two planes) ·
-  owner decision 2026-09-24
 - **Added:** 2026-09-24 · the H-118 session, re-scoped the same day
 
 ### H-172 · The shared scratch DB cannot replay the migration ladder any more · [AGENT]
+- **Metorite:** #724. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** on the scratch DB, `SELECT max(attnum) FROM pg_attribute WHERE
   attrelid = 'email_assistant_settings'::regclass` → 1600 means this is open.
-- **Why:** `42_email_model_roles.sql` drops columns that earlier migrations
-  add back. Each `apply_ladder` replay uses up attribute numbers, and dropped
-  columns keep theirs. The table hit Postgres's 1600-column limit, so every
-  R8 suite that replays the ladder on `metorite-scratch-tenant` now fails
-  with `TooManyColumns`. Found by the S7a build, 2026-09-23.
-- **Do:** Make migration 42 replay-safe, so a replay adds and drops nothing.
-  Then rebuild the shared DB with `bash scripts/dev_db.sh --down` and
-  `bash scripts/dev_db.sh`, at a time when no other checkout uses it.
-- **Authority:** R6 · R8 · `engineering_practice.md` §1.1
 - **Added:** 2026-09-23 · the S7a build
 
 ### H-170 · A Console migration runs with NO backup of the Console database · [AGENT]
+- **Metorite:** #507. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** on the box, run
   `for d in $(ls -1t /opt/acb/backups | head -14); do ls /opt/acb/backups/$d; done | grep -ci console`.
   A zero means no backup on the box holds the Console database, and this is
   open.
-- **What happens.** Measured 2026-09-23 on the deploy of `13988178`. The
-  pre-migration step calls `scripts/backup_db.sh` from
-  `scripts/apply_migrations.sh:91`. That environment has no
-  `CUSTOMER_CONSOLE_DATABASE_URL`, so the script prints "the Console database
-  is NOT in this backup" (`backup_db.sh:322`). Then
-  `apply_customer_console_migrations.sh` applies the Console ladder with no
-  backup of its own. It applied `033_decide_task.sql` that way.
-- 🔴 **The nightly dump does not save it.** `KEEP_DAILY` is 14
-  (`backup_db.sh:44`), and every deploy adds one dump. Fourteen deploys on
-  2026-09-23 pushed the 02:33 UTC nightly dump out. At 16:40 UTC, all 14
-  dumps on the box held `postgres.dump` and `globals.sql` only.
-- **The warning text points at a closed entry.** It says "that is H-98".
-  H-98 closed on 2026-09-19 for the TIMER's unit, which loads the Console
-  env file. The deploy path does not load it, and nothing tracked that.
-- **Fix, in order.** Make the deploy's backup call load
-  `/opt/acb/app/apps/services/customer_console/.env`, as `acb-backup.service`
-  does. Then refuse the Console ladder when that dump failed, as
-  `apply_migrations.sh:100` refuses the tenant ladder. Then keep the newest
-  nightly dump out of the retention count, so deploys cannot evict it.
-- ⚠️ **Supabase may hold its own backups of this project.** Nobody has checked
-  what the plan keeps. Check it before you call the risk closed.
-- 📌 **033 carried no real risk.** It is two `INSERT ... ON CONFLICT DO
-  NOTHING` rows. The next Console migration may not be so small.
-- **Authority:** `CLAUDE.md` §3a "A production migration is still one-way"
-  · R6
 - **Added:** 2026-09-23 · the CP-13a deploy check
 
-### H-165 · CP-13 is built through CP-13d. Stop the gateway taking the member from the body, so `decide` serves a shared box · [AGENT]
-- **Check:** `rg -n 'member=None' packages/acb_skills/acb_skills/decide_tools.py`
-  → a hit means the `decide` tool still sends no member, and this is open.
-  CP-13a to CP-13d are BUILT (2026-09-23 and 2026-09-24).
-- **Why:** the R11 finding in `specs/customer_console.md` §6A.14 CP-13d. The
-  executor binds each run's member from `event_payload["user_email"]`.
-  `POST /agent/run/stream`, `POST /agent/run` and `POST /agent/run/async` pass
-  the caller's payload unchanged, and the webhook door spreads the sender's
-  payload. On the deployment arm `X-CC-Member` selects the tenant. So the tool
-  sends no member, and a deployment-key box gets the unavailable text.
-- **Do this:** make the three `/agent/run*` doors drop `user_email` and
-  `user_id` from the body, and stamp the session's member instead. For
-  the webhook door, find which senders name a member, and keep only a member
-  the server can prove. Then let the tool send `_get_memory_user_id()` when it
-  is an email. Add a fence for each door.
-- ⚠️ **The same gap reaches three other consumers.** The memory tools and the
-  integration filter read the member that the payload names. And
-  `acb_llm/routed.py::_attribution` sends the run-context `user`, which the
-  executor binds from the same payload, as `member` on every routed
-  completion. On the deployment arm that selects the tenant. So `member=None`
-  on the tool does not close the gap alone. Fix it at the doors, never in
-  each consumer.
-- **Severity: a defence-in-depth P2** (the reviewer, 2026-09-24). Only a
-  holder of the internal bearer or the webhook HMAC secret can reach it, and
-  both can already assert any identity (`acb_auth/deps.py`, branch 1b). The
-  browser path, the Control Plane chat proxy, cannot name a member.
-- **What else is left of CP-13.** The owner acts in H-166. CP-13e to CP-13g are
-  the app slices, and each one needs its own audit first (§6A.14).
-- 🔴 **Do not set `DECIDE_ENABLED` on a live box.** It is owner-only, and
-  the §3a window does not open it (H-166).
-- **Authority:** `specs/customer_console.md` §6A.14 CP-13d ·
-  `specs/user_management_contract.md` R11 · `work_plan.md` §3 D75 · board WS-31
-- **Added:** 2026-09-23 · the Jev planning session · **rewritten 2026-09-24**
-  when CP-13d was built
-
-### H-166 · Turn on `decide` for email on the box · [OWNER]
-- **Check:** on the box, run `grep -E 'DECIDE_ENABLED|CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY' /opt/acb/app/.env`. Two lines with `true` mean steps 2 and 3 are done. Then look for one `decide.decided` line in the gateway journal. In `shadow` the line is `decide.shadow`. A line means the box gets answers.
-- **Done, by owner report on 2026-10-02 (not measured):** the AI/ML API account, the key, and `tier-decide` bound to `aimlapi/typesafe/jev`. D-EM-9 answers residency for email triage.
-- **Done, by owner report on 2026-10-02 (decision (a), `email_app_master_plan.md` §10.2):** `DECIDE_ENABLED=true` is ON in production since 12:16 UTC. One smoke `decide` call from the box reached Jev, with a probability of 0.99 in 1.5 s. So step 3 below is done.
-- **Next, after EM-T5b ships:** the orchestrator sets `DECIDE_FEATURE_MODES=email.rule_match=on` and `DECIDE_FEATURE_ORGS=*` on the box (decisions (b) and (c)). Then it reports one `decide.decided` line with a `request_id`.
-- **Do this, in order:**
-  1. Give the deployment key of the box the `serve` capability. It is a hand edit (§8 gate 7), as H-152 says.
-  2. Set `CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY=true`. Leave `ROUTER_SERVING_ENABLED` unset, so chat stays on its current path.
-  3. Set `DECIDE_ENABLED=true`. No agent sets it (§6.1 WS-31 (i)).
-  4. Bind a backup step on `tier-decide` when a second decision model exists. Today one vendor outage stops triage for every mailbox (D-EM-8).
-  5. Say whether D-EM-9 also covers the chat `decide` tool. On an org key, the switch opens that tool too. On the deployment key, the tool sends no member and stays dark.
-  6. Accept or reject the D61.1 amendment (D75 clause 3). The build does not wait.
-  7. Say whether the shadow window may start before EM-T4b, the shared cap. The 2026-10-02 note of this entry tied each mode to that cap. With one live mailbox, the runner asks about one email at a time.
-- ⚠️ **Add AI/ML API AND TypeSafe to the sub-processor list** when WS-37 writes one (H-36). A reseller call passes through both.
-- **Then:** the agents run the shadow window of `email_app_master_plan.md` §10.4.8.
-- **Authority:** D-EM-7 to D-EM-9 · `work_plan.md` §6.1 WS-31 (i) · `customer_console.md` §6A.14
-- **Added:** 2026-09-23 · **rewritten 2026-10-02** by the EM-T5b audit
-
 ### H-163 · My Tasks: a signed-in member checks capture into Projects · [OWNER]
+- **Metorite:** #549. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** a signed-in member opens My Tasks on app.metorite.com. The
   member picks a project with the capture chip, or types `#<project>`, and
   captures a task. The task shows on that project's board in Projects without
   a page reload. Delete this entry when the member sees it.
-- **Why a person.** An agent cannot sign in. Every slice of the cutover is
-  merged and served. S6g is the last one (#454, `3c1a8512`, served
-  2026-09-24). `specs/my_tasks_cutover.md` §6 step 9 names this check.
-- **If it fails.** Record what the member saw, and open an [AGENT] entry for
-  the fix.
-- **Authority:** D73 · `specs/my_tasks_cutover.md` · `work_plan.md` §2 WS-39
 - **Added:** 2026-09-23 · the My Tasks planning session. **Re-cut**
   2026-09-24 when S6g merged. Only the signed-in check is left.
+
 ### H-104 · The generated tenancy files are NOT on the migration ladder · [AGENT]
+- **Metorite:** #608. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `ls infra/postgres/generated/*.sql`, and read the glob in
   `scripts/apply_migrations.sh` (it matches numbered files in `infra/postgres`
   only). Files in that subdirectory, with a glob that does not reach them, means
   this is open.
-- **✅ The half that BLOCKED M1 is fixed — it took THREE migrations, not one.**
-  Each fix showed the next, because nothing could see past the one in hand.
-  Migrations 200, 201 and 202, all on 2026-09-15:
-  - **200** — `provision_org_roles` raised
-    `null value in column "organization_id"` on `org_role_permission`.
-  - **201** — `provision_org_owner` raised the same on `user_role`, one
-    statement later. 200's fence added the column to ONE table. Production
-    carries it on SEVEN, so that fence could not see this head.
-  - **202** — provisioning then succeeded as `postgres` and still FAILED as
-    `acb_app` with `new row violates row-level security policy`. A superuser
-    bypasses FORCE RLS, so a hand-run SQL check proves nothing about the path
-    the application takes.
-- **⚠️ Migration 185 was in the ledger and its fix was NOT in the function.**
-  185 binds `app.tenant_id` before the FORCE-RLS'd writes. Production ran 179's
-  body. `schema.generated.sql` carries that same pre-185 body, which is the
-  shape a snapshot restore leaves. **The ledger records that we RAN a file, and
-  never that the object still SAYS it.** For a `CREATE OR REPLACE` migration,
-  later drift is invisible and un-repairable in place. Editing 185 reaches
-  nothing, because the runner skips it on checksum. Only three functions in the
-  whole ladder are ever redefined, and all three are the provisioning ones.
-- **✅ Two fences now exist, and each one proves it can fail.**
-  `tests/unit/test_tenancy_insert_fence.py` counts every ladder `INSERT` into a
-  tenant-scoped table that omits `organization_id`. It found 30, records each
-  with a reason, and fails on a new one.
-  `tests/unit/test_org_provisioning_rls.py` provisions as a NON-OWNER role with
-  the real policy applied, which no earlier suite did.
-- **What is STILL open, and it is the cause and not the symptom.** A fresh
-  developer database and CI's replay have a DIFFERENT SCHEMA from production, so
-  every test runs on a shape production does not have. The next defect of this
-  class is invisible in exactly the same way these three were.
-- **⚠️ Measured 2026-09-15: a fresh install now FAILS on a tenancy-applied
-  database.** Apply `generated/{01,02,03}` to a scratch tenant database, then
-  replay the ladder. 92 suites error, all of them on 130's seed block, which
-  inserts into `org_role_permission` without naming the column. Production never
-  replays 130, because it is in the ledger. A new box has no such protection.
-- **Why it was not fixed with 200:** putting those files on the ladder changes
-  what every developer database and every CI run contains, and it needs its own
-  rehearsal. It is a bigger act than unblocking M1, and doing both in one PR
-  would hide the risky half behind the urgent one.
-- **The shape of the repair:** give the generated files numbered names on the
-  ladder, or teach the runner a second directory. Then delete the `ELSE` arm in
-  migration 200, which exists ONLY for the schema this divergence creates.
-- **Authority:** `saas_multitenancy.md` §11 MT-1j · the headers of migrations 200, 201 and 202
 - **Added:** 2026-09-06, from the WS-27 status-sets deploy · **narrowed
   2026-09-15** when the provisioning half was fixed.
-### H-101 · The weekly skills sync cannot open its PR, and has failed since 2026-08-24 · [OWNER]
-- **Check:** `gh run list --workflow=skills-upstream-sync.yml --limit 3`. A
-  `failure` on the most recent scheduled run means this is still open. The log
-  line to look for is `GitHub Actions is not permitted to create or approve
-  pull requests`.
-- **Why:** `.github/workflows/skills-upstream-sync.yml` mirrors
-  anthropics/skills into `skills/upstream/` every Monday, then opens a PR. The
-  repository setting that lets a workflow open a PR is off, so the job dies
-  after 15 seconds. It last succeeded on 2026-08-10.
-- **What it costs:** the mirror froze at SHA `f17010c9` for 24 days. Two new
-  upstream skills, `academy-guide` and `discernment-nudge`, never arrived. This
-  PR refreshed the mirror by hand to `53048666`. **A hand refresh is not a
-  fix.** The next Monday fails the same way.
-- **The fix, and it is yours:** GitHub → repository **Settings → Actions →
-  General → Workflow permissions** → turn on *Allow GitHub Actions to create
-  and approve pull requests*. Then run the workflow once with
-  `gh workflow run skills-upstream-sync.yml` and watch it to green.
-- **⚠️ A workflow that fails reports nothing.** The schedule is weekly and no
-  alert fires, so this stayed silent for three weeks. Whoever flips the setting
-  must also decide whether a sync that fails tells anybody.
-- **If you prefer not to grant that permission:** change the job to push a
-  branch and stop there. A person then opens the PR. That edit is an agent job,
-  and it needs your word first, because it changes CI.
-- **Authority:** `.github/workflows/skills-upstream-sync.yml` ·
-  `skills/upstream/README.md`
-- **Added:** 2026-09-03 · skills-adopt PR (the adoption found the dead sync)
 
 ### H-99 · ⏳ `bypassPermissions` has NO EXPIRY, and everything around it does · [OWNER]
+- **Metorite:** #769. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `grep defaultMode .claude/settings.local.json` on the owner's
   machine. `bypassPermissions` means this is live. **Due 2026-09-30**, with the
   rest of the dev-phase window.
-- **Why:** the owner set it on 2026-09-02 to unblock in-place edits of the
-  production `.env` over `ssh`, which the harness classifier refused. It works,
-  and it is broader than the thing it fixed. It removes every permission prompt
-  and the classifier, for every tool, in every session on that machine.
-  🔴 **Everything ELSE in this window expires by itself.** The grants carry
-  `ALLOW-UNTIL 2026-09-30`. `CLAUDE.md` §3a says delete the section.
-  `.claude/settings.json` says delete the block. **This one setting carries no
-  date, and `.gitignore` hides it, so no review will ever surface it.** It is
-  the single change most likely to outlive the phase that justified it.
-  📌 **It also weakens a fence nothing else covers.** The `deny` list — VM
-  destroy, snapshot restore, DNS reset, domain transfer — may not be consulted
-  in this mode, and `plan-guard.mjs` does not cover those acts. Today they rest
-  on an agent's judgement alone.
-- **The fix, on or before 2026-09-30:** set `defaultMode` back to
-  `acceptEdits` in `.claude/settings.local.json`, then restart. The broad
-  `allow` list in the tracked `.claude/settings.json` keeps ordinary work
-  prompt-free, which is what it was widened for.
-- **Reconsider it, do not reflex-revert.** One task in two days needed it. If
-  that rate holds, `acceptEdits` plus the allow list is enough, and the rare
-  production `.env` edit belongs in an interactive session where a human
-  approves it.
-- **Authority:** `CLAUDE.md` §3a (the window) · D45 · this session, 2026-09-02
 - **Added:** 2026-09-02 · guardrail-relaxation session, at close-out
 
 ### H-97 · 🔴 FOUR database passwords have reached agent transcripts · [OWNER]
+- **Metorite:** #626. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** has somebody rotated all four credentials below since 2026-09-02?
   ⚠️ The original entry named the OLD Tokyo project, and the owner deleted it
   on 2026-09-02. That half is now moot. The three from the Mumbai bring-up are
   live and they are the ones that matter.
-- **🔴 The three live ones (2026-09-02).** All reached the transcript of the
-  Mumbai migration session. The owner pasted two, and the agent generated the
-  third and then echoed all three inside `ssh` and `psql` commands:
-  1. `postgres` owner on **Metorite Application Database** (`wbjpwtxigkileyjsgahk`)
-  2. `acb_app` on the same project — the role the gateway runs as
-  3. `postgres` owner on **Metorite Tenant Database** (`uttxlicdccfkramtjfpi`)
-  Together they reach all 157 application tables and the console's credit
-  ledger, operator rows and provider credentials.
-- **What to do:** reset all three in the Supabase dashboard. Then update
-  `PGPASSWORD` and `DATABASE_URL` in `/opt/acb/app/.env`, and
-  `CUSTOMER_CONSOLE_DATABASE_URL` in the console's `.env`. Restart
-  `acb-gateway` and `acb-customer-console`.
-- **📌 The lesson the original entry missed.** It names an ACCIDENT — `psql`
-  echoing a DSN on stderr. The 2026-09-02 exposure was deliberate and routine:
-  a credential travels in the command that uses it, and the command is the
-  transcript. An agent that runs `psql "postgresql://user:pass@host"` discloses
-  the password every time, even when the command succeeds. Pass credentials
-  through `PGPASSWORD` in the environment, never inside a URI on a command line.
-- **Why:** on 2026-09-01 an agent ran `psql "$DATABASE_URL"` on the box and
-  piped **stderr** into the transcript. `psql` rejects the DSN, because
-  `DATABASE_URL` carries the SQLAlchemy form `postgresql+psycopg://`. Its error
-  message quotes the connection string **in full, with the password**.
-  🔴 The credential is the `acb_app` role on the tenant Supabase pooler. That
-  role reads and writes all 157 public tables.
-  📌 **Nobody used it, and that does not matter.** This is the same class as
-  **H-3**: a secret in a transcript is a disclosed secret.
-  📌 **The trap is general, and it is worth naming.** A tool that fails on a
-  credential usually echoes the credential. Never pipe stderr from `psql`,
-  `pg_dump`, `redis-cli` or `curl -u` into a transcript. Send it to
-  `/dev/null` and report the exit code.
-- **Rotate the DSN form too:** it is a papercut of its own. `psql` cannot
-  read `postgresql+psycopg://`, so every ad-hoc query needs a `sed` first.
-  Consider a `PSQL_URL` beside `DATABASE_URL`, or a small wrapper.
-- **Authority:** H-3 (same class) · `work_plan.md` §6 credentials
 - **Added:** 2026-09-01 · guardrail-relaxation session, self-reported
 
 ### H-93 · 🔴 DEF-1's trigger has FIRED — a second operator `admin` exists · [OWNER]
+- **Metorite:** #713. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** run this on the Console database.
 
   ```sql
@@ -689,58 +679,10 @@ line — never reclaim a number by deleting the other entry.
   four-eyes approval is no longer deferrable**, and this entry is still real.
   One row, or none, would mean somebody deactivated an admin and the trigger
   un-fired.
-- **What fired it, measured 2026-09-01.** The production read returned two
-  rows: `nithin@hathilabs.com` and `vjvarada@hathilabs.com`. Both are `admin`.
-  Both are `active`. Both were created 2026-08-30.
-- **Why this is an entry and not a note.** `operator_identity_and_access.md` §9
-  DEF-1 says the trigger *"must not be allowed to pass unnoticed"*, and the §9
-  table had no place to record a firing. §9.1 now records it. This entry is the
-  queue half, so the fact reaches a session that never opens the spec.
-- **What is deferred no longer.** Four-eyes approval on purge, suspend and
-  large credit grants. DEF-1 deferred it because *"four-eyes needs two people
-  to mean anything, and today it would only lock the owner out."* There are two
-  people now.
-- 🔴 **This entry does NOT authorize an agent to build four-eyes.** The control
-  needs its own slice, its own acceptance and a board row. `work_plan.md` §6.0
-  **C4** already says the two decisions arrive together and must not be
-  separated. The owner takes the shape. An agent then builds it.
-- 📌 **§9.1a holds the menu — read it before you ask the owner
-  anything.** It holds the one decision that matters (what happens when the
-  second admin is asleep), the four that follow with defaults, and the five
-  guards `POST /orgs/purge` ALREADY carries. ⚠️ That list matters: those five
-  guards close the mis-click case. So four-eyes buys protection against a
-  compromised admin and not a tired one. Do not re-derive this in chat.
-- **Authority:** `specs/operator_identity_and_access.md` §9 DEF-1 · §9.1 ·
-  **§9.1a (the shape)** ·
-  `work_plan.md` §6.0 C4 · D64.6
 - **Added:** 2026-09-01 · WS-31 D70 documentation session
 
 ### H-92 · A Projects test passes alone and fails in the suite · [AGENT]
-- **🔴 2026-09-22 — THE OLD CHECK NO LONGER DETECTS IT. Widen it.**
-  `-k "projects"` now passes. Measured six consecutive runs, 1490 tests each,
-  all green. A session read that as a fix and nearly deleted this entry.
-  Nobody fixed it. The WIDER selection still reproduces it:
-
-      -k "projects"                                6 runs: all pass
-      -k "(project or tree or task or personal)    run 1: FAIL
-          and not memory and not calendar"         run 2: pass
-                                                   run 3: FAIL (another test)
-
-  So the suite that leaks the state is one the narrow filter EXCLUDES. Look at
-  what `tree`, `task` and `personal` pull in and `projects` does not.
-- **⚠️ 2026-09-23 — `-k "projects"` FAILED once, so yesterday's line above is
-  too strong.** It read as though the narrow selection had stopped failing.
-  Six green runs is not "stopped" — it is intermittent under that selection
-  too, and one run out of 2151 tests reproduced it the next day. The wider
-  selection remains the reliable reproduction. **Neither selection is a
-  clean bill of health**, which is the real hazard: a branch that touches
-  nothing near this can go red, and a branch that breaks something can go
-  green. It still passes alone, every time.
-- **🔴 A THIRD test fails the same way, and it is not a Projects test.** Run 3
-  above failed
-  `test_customer_console_catalog.py::TestRemovingAModelFromTheCatalog::test_removing_one_task_is_not_blocked_by_a_binding_on_ANOTHER`
-  — pulled into the selection by the word "task" in its name. Either the leak
-  is wider than Projects, or there are two of them. Nobody has looked.
+- **Metorite:** #772. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** run `uv run pytest tests/unit/ -k "(project or tree or task or
   personal) and not memory and not calendar" -q` **three times**. A failure on
   `test_projects_hardening.py::test_an_intervening_activity_breaks_the_run` on
@@ -749,178 +691,21 @@ line — never reclaim a number by deleting the other entry.
   never reports (WS-9, and [[H-88]] carries the same trap).
   ⚠️ Do not use `-k "projects"` alone. It has stopped failing, and it now reads
   green while the defect is live.
-- **What happens:** the test asserts two `field_change` activities and reads
-  one. On its own it reads two. So something survives between tests. The
-  `FakeProjectsDB` fixture and any module-level cache are the first two places
-  to look.
-- **⚠️ Why this is not a flake.** A flake fails at random. This one fails on
-  the suite and passes alone, every time, which is state that leaks across
-  tests. Two costs follow. The suite can go red for a change that did not
-  cause it, and — the worse one — it can go GREEN for a change that did.
-- **📌 It has already misled one investigation.** On 2026-09-01 it
-  first read as damage from a filter change. The control was to run the same
-  test alone, and then to run the whole suite against `main`. Both passed the
-  blame back. Do that control first.
-- **Not caused by the watching filter (WS-27bk).** The suite fails the same way
-  with `main`'s `tasks.py` in place.
-- **Same CLASS as [[H-91]], and a different defect.** H-91 leaks rows into a
-  shared database, and this leaks state inside one process. The lesson is the
-  same one H-91 states: a red that comes and goes hides a real red. Whoever
-  takes either should read both.
 - **Added:** 2026-09-01 · WS-27bk Wave 1 · minted as H-91 and renumbered to
   H-92 the same day. H-91 merged first, from the WS-31 fixture work, and
   `test_handoff_ids_are_unique` caught the collision.
 
 ### H-142 · The deploy goes red on a 30-second ssh blip, and the retry cannot outlast it · [AGENT]
-
-- 🟢 **2026-09-29 — the deploy-ssh-resilience PR changes the deploy. Keep
-  this entry until a real blip proves the change.**
-  - **What we measured.** 200 deploy runs from 2026-09-20 to 2026-09-28.
-    9 runs went red on `ssh exited 255`. Each one lost all three rounds,
-    so 27 of 27 connects failed. The 163 green runs hold no 255 round. A
-    different runner connected 10 s after the last failed round, twice.
-    The box served the commit in all 9 cases. The pull timer applied it 7
-    times, and an apply of a later commit carried the other 2.
-  - **What the PR changes.** A cheap `ssh … true` probe runs before each
-    round, with backoff, inside one connect budget of 300 s for the job. A
-    connect failure does not spend a round. When the budget runs out, the
-    `deploy` job hands off. It says whether an apply started from its runner
-    and then lost ssh. In that case the box can hold a half-done apply, and
-    the pull timer applies it again because the marker was not written. A
-    new job, `Confirm delivery by the pull path`, then runs on a fresh
-    runner. It reads `/version` over HTTPS for up to 1500 s. An auth failure
-    goes red at once and does not hand off.
-  - **The evidence it accepts.** `/version` now also reports `applied_sha`,
-    the box's deploy marker. `vps_apply.sh` writes that marker only at its
-    last line, after the web build. The job is green only when `sha` and
-    `applied_sha` both contain this commit and the web app answers. `sha`
-    alone speaks for the gateway only, because the gateway restarts before
-    the web build.
-  - **How the next blip reads in CI.** The `deploy` job is green with the
-    warning "Deploy runner could not reach the box". Then the confirm job
-    is green with the warning "Delivered, confirmed by the served SHA", or red with
-    "Not delivered" or "Box unreachable from GitHub". A forced rerun never
-    hands off, and it goes red.
+- **Metorite:** #723. The task holds the full entry (moved 2026-10-28, D118).
 - **Check:** find the next deploy run that shows the warning "Deploy
   runner could not reach the box". Use `gh run list --workflow deploy`,
   then `gh run view <id> --log | grep -F "could not reach the box"`. If the
   confirm job in that run shows the served SHA and no false red, delete
   this entry. Also delete it if no such run occurs by 2026-11-30, because
   the tests in `tests/unit/test_deploy_reach.py` then carry the fence.
-- **What happened, 2026-09-21.** The deploy for #344 failed. All three
-  rounds ended `ssh: connect to host *** port ***: Connection timed out`,
-  30 seconds each. A plain re-run minutes later succeeded with no change,
-  so the box was reachable throughout from elsewhere — I held an
-  interactive ssh session to it during the failure and ran commands.
-- **The retry window is too short for the thing it retries.** Rounds are
-  60s and 120s apart, so the whole ladder finishes inside about 4.5
-  minutes and every try carries the same 30-second connect timeout.
-  A blip that lasts five minutes defeats it, and the job then reports a
-  failed RELEASE for what was a failed CONNECTION.
-- **⚠️ The two are not the same failure and must not read the same.**
-  H-137 made a half-finished apply go red, which was right. This is the
-  opposite case: nothing was applied, nothing is half-done, and the
-  last build is still serving. Telling those apart is the difference
-  between "re-run this" and "go and look at the box".
-- **Why it did not cost a release this time**, which is its own problem:
-  `acb-pull.timer` delivered the commit anyway. See [[H-89]].
-- **What to do.** Give the connect failure its own exit path and message,
-  separate from an apply that started and stopped. Then widen the backoff,
-  or raise `ConnectTimeout`, so a minutes-long blip does not read as a
-  broken deploy.
-- **The old Check, now passed:** the deploy step prints "THE APPLY NEVER
-  STARTED" when ssh never connects. It prints "NOTHING WAS APPLIED" when the
-  round waited for the lock and gave up.
-- 📌 **2026-09-26 — a third shape of the same sentence.** After the
-  deploy-serialize PR, a CI round can connect, wait 900s for the box's
-  deploy lock, and stop with nothing applied. The apply log then says
-  `another deploy holds the lock since <time>, pid <pid>`, and the workflow
-  still prints "THE APPLY DID NOT REACH ITS FINAL LINE". The fix for this
-  entry must separate that case too. The round applied nothing, and the
-  box's own pull held the lock to deliver the release.
 
 ### H-89 · Something on the box writes into the checkout as root · [OWNER]
-- 🟢 **2026-09-26 — the deploy-serialize PR removes the writer. Do not delete
-  this entry until the box proves it.**
-  - **What it changes.** `acb-pull.service` runs as `User=acb`, not root.
-    `vps_pull.sh` also runs itself again as the checkout owner when root
-    starts it. That covers the runbook's `sudo` and the first tick after the
-    merge. Both deploy paths take one `flock` on `/opt/acb/acb-deploy.lock`.
-  - **Measured on the box before the merge.** 50220 root-owned paths sat
-    under `workbench/control_plane/node_modules`. `.next` was `root:root`.
-    `/etc/sudoers.d/acb` grants `acb ALL=(ALL) NOPASSWD:ALL`, so every
-    `sudo systemctl` in the apply works as `acb`.
-  - **What to measure.** `reclaim_build_tree` now covers `node_modules` too,
-    and it prints a total on every build. The first deploy after the merge
-    reclaims the old root files. From the second deploy, every line must
-    read `reclaimed 0 path(s)`:
-
-        sudo journalctl -u acb-pull --since "1 day ago" | grep "build tree ownership"
-
-  - **The decision this entry asked the owner for** is in that PR. It
-    changes a systemd unit on production, and the merge is the owner's
-    decision.
-- **📌 2026-09-21 — MEASURED, and one part of it is still unexplained.**
-  H-137's gate turned a deploy red for the first time. The cause was this
-  entry. `.next` was `root:root` with 3803 paths under it in the control
-  plane, and 759 in the operator console. Every Next build died at
-  `EACCES … .next.staging/trace`. Run 35588464803.
-  - **Handled, not cured.** `reclaim_build_tree` in `vps_apply.sh` (#358) now
-    reclaims `.next`, `.next.staging` and `.next.previous` before each build,
-    and PRINTS the count it repaired. So every deploy is a measurement of
-    this entry from now on. Watch that number: it should trend to zero once
-    the cause is found, and it is a time series nobody had before.
-  - 🔴 **THE PART I COULD NOT EXPLAIN.** I reclaimed all 4562 paths by hand
-    and verified zero remained. The next deploy, about ten minutes later,
-    reclaimed **3807** under the same directory. So something re-created them
-    inside that window.
-  - **What it is NOT.** All four units run as `acb`, and so do their main
-    processes (`systemctl show <unit> -p User`). No root-owned file had been
-    written in the previous twenty minutes. `drop_dir`'s `sudo rm -rf`
-    deletes and creates nothing. The sherpa-onnx step at line ~401 runs
-    `uv pip install` WITHOUT sudo.
-  - **What is left root-owned**, and it looks historical instead of active:
-    20 paths, all under `.venv/lib/python3.12/site-packages/sherpa_onnx*`
-    and `.git`. The `.venv` repair higher up this script already exists for
-    exactly that shape.
-  - **The next step for whoever takes this.** Instrument, do not reason.
-    A `find -newermt` sweep on a timer, or an audit rule on the checkout,
-    will name the writer in a day. Reasoning from the unit files did not.
-- **⚠️ 2026-09-21 — the PULL path is now load-bearing, not redundant.**
-  The deploy for #344 failed: ssh timed out on all three rounds from the
-  GitHub runner. Production came up on the new commit anyway, because
-  `acb-pull.timer` fetched and applied it. Evidence: `/version` served
-  `cc17db99` while the deploy job was still red, and `acb-gateway`
-  entered active at 07:04:39 UTC with `acb-workbench` at 07:06:53, both
-  after the merge at 06:56 and neither from the push path.
-- **This changes what the entry is about.** It reads today as a
-  housekeeping defect — root-owned files that break the other path.
-  It is also the reason a release landed while CI said it had not. Both
-  halves of that are bad, and the ownership fix must not delete
-  the timer without noticing what it is carrying. See [[H-142]].
-- **🟢 2026-09-20 — THE WRITER IS FOUND, and no guess is needed.**
-  `acb-pull.service` carries `User=root` and runs `vps_pull.sh`, which
-  executes the same `vps_apply.sh`. `acb-pull.timer` fires every five
-  minutes and is enabled. So every build the PULL path does writes
-  root-owned files, and the PUSH path, which connects as the deploy user,
-  then cannot touch them. The two delivery paths disagree about who owns
-  the build tree.
-- **What it cost:** three deploys on 2026-09-20 died on EACCES. Two of
-  them reported SUCCESS and shipped no UI. See the note below.
-- **The harm is contained, the cause is not.** `npm_install_here` in
-  `scripts/vps_apply.sh` (PR #323) reclaims the tree with sudo and
-  retries, so drift no longer costs a release. The ownership still flips
-  on every pull-side build.
-- **The decision this needs:** run `acb-pull.service` as the deploy user,
-  or accept the flip and keep the self-heal. Running it as the deploy user
-  is the smaller surface. It is a systemd change on production, so it is
-  yours.
-- **🔴 2026-09-20 — this caused a shipped outage.** 50237 files under
-  `/opt/acb/app/workbench` were root-owned. The apply runs as the deploy
-  user, so `npm ci` and `rm -rf .next.previous` both returned EACCES, and
-  two deploys reported SUCCESS while shipping no UI. An agent chowned the
-  tree back to the deploy user to deliver PR #318. The WRITER is still
-  unidentified, so the ownership will drift again.
+- **Metorite:** #772. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** on the box, run `sudo find /opt/acb/app -name .next -prune -o
   ! -user acb -print | head`. Any line means a root-owned path is back in the
   checkout, and the cause is still there.
@@ -930,55 +715,11 @@ line — never reclaim a number by deleting the other entry.
   which kills `vps_apply.sh` before it syncs systemd units. The old Check
   stepped over that directory, so this entry read clear while every deploy
   was truncating. H-137 records the truncation.
-- **⚠️ Do NOT check this with the SHA comparison.** The old Check compared
-  `/version` against `origin/main`. That reads the SYMPTOM, and the symptom is
-  now repaired automatically. So the SHA check will pass while the cause runs
-  on. Read the ownership directly.
-- **A one-off `chown` CLEARED the block.** Measured 2026-08-31 16:40 UTC:
-  `/version` and `git rev-parse origin/main` both read `0f8fdb5a`. The tracked
-  tree now holds no root-owned path.
-  `scripts/vps_apply.sh` now normalises the checkout's ownership
-  before `git reset --hard`, so the next occurrence self-heals. That is the
-  repair, and this entry is the cause.
-- **What it was.** `workbench/operator_console/src/app/models/` was `root:root`,
-  created 2026-08-30 16:49. `git` unlinks a file through its parent directory,
-  so one root-owned directory blocks the rewrite of every file inside it. The
-  deploy's `git` step then failed with `unable to unlink old …
-  ModelDetails.tsx: Permission denied`, three rounds, twice — for PR #190 at
-  13:29 and PR #198 at 13:57, both on fully green CI. 113 tracked paths were
-  root-owned, and the remaining 66681 were `.next` build output, which git
-  ignores.
-- **🟢 ANSWERED 2026-09-01 — the writer is the deploy unit itself.**
-  `deploy/hostinger/acb-pull.service:29` sets `User=root`, and it runs
-  `vps_pull.sh` → `vps_apply.sh`. So every `npm ci` and `npm run build` that
-  script invokes writes root-owned files into an `acb`-owned
-  checkout. Measured on the box that morning, `.next` under
-  `workbench/control_plane` was `root root` inside an `acb acb` parent.
-  ⚠️ It is not a container and not a bind mount, which is where this entry
-  pointed. It is also **not only the operator console** — the same unit builds
-  the workbench, so the whole tree is exposed.
-  📌 `tests/unit/test_deploy_venv_ownership.py` had already recorded this
-  asymmetry for `.venv` in its own docstring. The fact was in the repo before
-  this entry asked the question.
-- **What is still owed.** The correct fix drops to `acb` for the build instead
-  of repairing ownership afterwards. A `chown` is another repair that hides
-  the next occurrence, which this entry already warns against. That change
-  touches how the deploy runs and nobody can test it off the box, so it stays
-  owner-gated.
-- **Why this stays open although the repair landed.** The repair lives inside
-  `vps_apply.sh`. A hand-run deploy, or any other path that resets the
-  checkout, meets the same failure with no repair. The repair also hides the
-  symptom, so nobody sees the next occurrence.
-- **⚠️ The shape to remember.** The app stayed UP on old code for hours.
-  `health` returned 200 and the workbench returned 307, so nothing alarmed. A
-  deploy that takes the site down reports itself. A deploy that silently does
-  not land does not.
-- **Authority:** `work_plan.md` §6 (box access is owner-gated) · CLAUDE.md §3.8
-  (verify by evidence, never by a green job)
 - **Added:** 2026-08-31 · projects UI/UX session, on the PR #198 deploy ·
   rewritten the same day, after the block cleared and the repair landed
 
 ### H-87 · Give the vendor image price a SIZE dimension, before we offer sizes · [AGENT]
+- **Metorite:** #771. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** the DELIVERABLE first, and the request body only after it.
   *(Rewritten 2026-08-31. The old Check read the body field alone. So anybody
   who restored `size` with no size dimension behind it flipped this entry to
@@ -995,48 +736,11 @@ line — never reclaim a number by deleting the other entry.
   🔴 **Close this entry only when step 1 shows a size dimension on
   `model_profile` and a feed that fills it.** The body field is the last step
   of the work, and never the measure of it.
-- **Why:** the vendor prices a picture BY SIZE. Our own price column carries no
-  size axis at all. `feed.py:245` reads `output_cost_per_image` and
-  `input_cost_per_image` off the BARE model key, so exactly one number reaches
-  the profile. `019_per_unit_vendor_costs.sql:97` states
-  `model_profile.vendor_per_image_usd` as *"USD per generated image"*, with no
-  size in it. Measured in litellm 1.86.0: `standard/1024-x-1024/dall-e-3` is
-  3.81469e-08 per pixel, which is $0.040. `standard/1024-x-1792/dall-e-3` is
-  4.359e-08 per pixel, which is $0.080.
-- 🔴 **This was a live revenue defect for one round.** The build forwarded a
-  caller-chosen `size` to the vendor. A caller who sent
-  `{"model": "tier-image", "n": 4, "size": "1024x1792"}` cost us 4 x $0.080
-  while the row recorded 4 x $0.04. Review round 2 removed the field, and
-  `extra="forbid"` answers 422 for it now.
-- 📌 **The fix shape:** a size dimension on the vendor price, in the feed
-  projection and in `model_profile`. The feed already holds the sized keys —
-  it reads the bare key by choice, not by lack. `quality` is the same shape of
-  axis (`hd/1024-x-1024/dall-e-3` is twice `standard`), so one dimension
-  should carry both.
-- ⚠️ **It must land BEFORE the owner offers image sizes to customers.** Until
-  it does, one number per model is the only honest thing we can record.
-- **Authority:** `specs/customer_console.md` §6A.10c clause 1 · board row WS-31
 - **Added:** 2026-08-31 · WS-31 H-46 review round 2 · **renumbered from H-84 on
   2026-08-31**. The router-guards slice took that id first.
 
-### H-86 · One serving prelude for all FOUR Router doors · [AGENT]
-- **Check:** `rg -c '_serving_prelude' apps/services/customer_console/customer_console/main.py`.
-  A count under 5 means fewer than four doors share it, and this entry is still
-  real. One definition plus four call sites reads 5.
-- **Why:** `main._serving_prelude` resolves the chain, loads the keys and the
-  verbs, and stands the three customer walls. H-46 built it for the image door
-  and the speak door. The transcribe route keeps its own copy of the same body,
-  and the chat route wrote the shape first. Three implementations of one gate
-  is root `CLAUDE.md` §5's defect by name, and the copy nobody edits is the one
-  that drifts.
-- 📌 **The fix shape:** move the transcribe route and the chat route onto the
-  prelude. The chat route needs one extra return, because it resolves a vision
-  chain (D-AI-2). Do it as its own slice, and not inside a feature diff.
-- **Authority:** `specs/customer_console.md` §6A.10c · root `CLAUDE.md` §5
-  · board row WS-31
-- **Added:** 2026-08-31 · WS-31 H-46 review round 2
-
 ### H-81 · Decide the TWO open resolution rules for the vision chain · [OWNER]
+- **Metorite:** #772. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `grep -n "def resolve_vision_chain" -A3 apps/services/customer_console/customer_console/router.py`
   and `grep -n "if not attempts:" -A7 apps/services/customer_console/customer_console/main.py`
   and `grep -n "_models_that_read_images" apps/services/customer_console/customer_console/router.py`.
@@ -1057,462 +761,126 @@ line — never reclaim a number by deleting the other entry.
 - ⚠️ **This entry carries TWO shapes** *(the second one arrived 2026-08-31)*.
   Shape 1 costs a correct 200. Shape 2 lets a blind model answer. Close them
   together, because both add a resolution rule to the same function.
-- **Why (shape 1):** WS-31's blind-step guard filters the lift chain on `reads_images`,
-  and one chain shape pays a CORRECT 200 for it. The shape is a BLIND rank 1,
-  then a SEEING rank 2 that the service holds no key for, with `tier-vision`
-  bound and healthy. The old rank-1 read found FALSE, fell to `tier-vision`,
-  and answered 200 from a model that saw the image. The filter keeps the
-  unkeyed seeing step, `main.py:5255-5258` empties the chain, and the route
-  answers 503. A verifier drove both sides on 2026-08-31.
-- 🔴 **The loss is AVAILABILITY, and never correctness.** No blind model
-  answers in either version. So the customer trades a right answer for a
-  refusal, and never a refusal for a wrong answer.
-- 🔴 **Two candidate closes, and each one is a THIRD resolution rule.**
-  (a) The resolver reads `provider_credential` BEFORE it filters, so a step
-  the service cannot call never enters the chain. (b) The credential filter
-  re-resolves to `tier-vision` when it empties `attempts` on a declared vision
-  task. §3.2 records no decision on either shape, so an agent may not mint one
-  (CLAUDE.md §5). That is why this entry is the owner's.
-- 🔴 **Why (shape 2) — a blind step can still enter a tier's OWN vision
-  chain.** §3.2 step 0.5 returns `resolve_chain(conn, tier, VISION_TASK)` with
-  NO `reads_images` filter (`router.py:338`). Step 3b narrows the LIFT chain
-  and narrows nothing else. So take an operator who binds `tier-vision` to
-  `[openai/gpt-4o, deepseek/deepseek-chat]`. Rank 1 returns a retryable 500.
-  `walk_chain` moves to the blind rank 2, and that model answers a confident
-  200 about a picture it never saw.
-- 🔴 **Shape 2 is a CORRECTNESS gap, and it is the older one.** It sits on the
-  path §3.2 step 3 sends the image down as the safe one. Shape 1 trades a right
-  answer for a refusal. Shape 2 gives a wrong answer.
-- 🔴 **Shape 2 needs two answers, and each one is a resolution rule.** Does a
-  declared `vision` chain drop its blind steps? Does an emptied declared chain
-  refuse, or does it fall to something? §3.2 records no decision on either, so
-  an agent may not mint one (CLAUDE.md §5).
-- 📌 **Both shapes are latent today.** Nothing binds `tier-vision` (F3) and
-  nothing writes `model_profile.reads_images` (§3.7 rule 4). Building either
-  shape takes all three operator acts of
-  `ai_metering_and_analytics.md` §8.5 clause 3.
-- ⏰ **Deadline: decide before H-69 arms the lift.** That flip is what makes
-  both shapes reachable on a live box.
-- **Authority:** `ai_metering_and_analytics.md` §8.5 clauses 8 and 9 · board
-  row WS-31
 - **Added:** 2026-08-31 · WS-31 router-guards repair round · **shape 2 added
   2026-08-31**, WS-31 router-guards final repair round
 
 ### H-80 · Decide the thread budget for the stream walk · [OWNER]
+- **Metorite:** #771. The task holds the full entry (moved 2026-10-28, D118).
 - **Check:** `grep -n "CapacityLimiter\|Semaphore\|total_tokens" apps/services/customer_console/customer_console/main.py`.
   No hit means nobody has capped the stream walk, and this entry is still real.
   ⚠️ **The grep reads `main.py` alone** *(named 2026-08-31)*. A cap that lands
   in a NEW module still reads as no hit, so this entry would say STILL PENDING
   after the repair. Widen the path to the package when you close it.
-- **Why:** WS-31 slice 11 moved the provider stream open into the route. A
-  `def` route now holds one of anyio's 40 DEFAULT threadpool tokens for the
-  length of the walk. That is up to `3 x 120` seconds. The `asyncify` helper in
-  litellm borrows from the SAME default pool, because `asyncify.py:60` and
-  `:66` pass `limiter=None`. Then anyio resolves `limiter or
-  cls.current_default_thread_limiter()` (`anyio/_backends/_asyncio.py:2480`),
-  and that factory builds `CapacityLimiter(40)` (`:2957`). Put 40 stream walks
-  beside one asyncify-bound model, and nothing recovers.
-- ⛔ **The fix shape this entry carried is WITHDRAWN** *(2026-08-31)*. It read
-  "a bounded semaphore in front of `_open_stream_chain`". FastAPI takes the
-  threadpool token BEFORE the route body runs. `run_endpoint_function` calls
-  `run_in_threadpool(dependant.call, **values)` (`fastapi/routing.py:315`). So
-  a semaphore inside the route blocks a thread that ALREADY holds a token. It
-  reserves no headroom, and the deadlock stands.
-- 📌 **The scope is narrower than it looks.** Both buffered paths call
-  `asyncio.run` (`main.py:5398`, `:5733`), which builds a PRIVATE loop. A
-  `RunVar` (`_asyncio.py:2085`) keys anyio's default limiter, so a private loop
-  gets its own 40 tokens. Only `_open_stream_chain` shares the serving loop's
-  limiter, because it alone calls `anyio.from_thread.run`.
-- 🔴 **Two shapes WOULD work, and both change throughput.** An `async def`
-  dependency runs on the loop BEFORE FastAPI takes the token, so it can cap
-  stream requests. That cap makes the 9th concurrent stream WAIT. The other shape
-  raises `total_tokens` on the default limiter at startup, which changes the
-  thread budget of EVERY route. §3.6 records no decision on either, so this
-  entry is the owner's.
-- 📌 **Latent, and one row from live.** Every model bound today (deepseek,
-  groq) reaches httpx and borrows no thread. Two request-serving `asyncify(`
-  sites exist: Vertex AI (`vertex_llm_base.py:718`) and SageMaker
-  (`sagemaker/completion/handler.py:428`, `:499`). A vendor swap is one
-  `tier_binding` row, which is an operator act that no code review sees.
-- **Authority:** `ai_metering_and_analytics.md` §8.6 "The threadpool hazard"
-  · board row WS-31
 - **Added:** 2026-08-31 · WS-31 slice 11 review round 2 · **rewritten
   2026-08-31**. The WS-31 router-guards slice withdrew the fix shape and moved
   the label to OWNER.
 
 ### H-55 · Decide whether `pr-check.yml` runs the STE gate, and blocks · [OWNER]
+- **Metorite:** #772. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `grep -n ste-lint .github/workflows/pr-check.yml`. A hit means the
   owner decided and this entry is dead.
-- **Why:** the rule holds in two places today. `ste-lint.mjs` runs as a
-  PostToolUse hook, and `.pre-commit-config.yaml` runs it on staged markdown.
-  Both are local. A person who does not install pre-commit is not bound, and CI
-  never looks. ✅ **The blocker is cleared.** PR #115 took `paths-ignore` off the
-  `pull_request` trigger on 2026-08-26, so a docs-only pull request now reports.
-  PR #116 proved it and ran 7 checks on a branch that was mostly documents. What
-  is left is the owner's call: add the `--staged` step, and require the context.
-- 📌 **`main` is now PROTECTED** (2026-08-26), with 7 required contexts.
-  So "require the context" is a settings change now, not a project. The
-  decision left is whether the STE gate BLOCKS or only reports.
-- **Authority:** owner directive 2026-08-26 · `docs/style_ste.md` §8 Q2
-  · PR #115 · PR #116
 - **Added:** 2026-08-26 · STE harness session
 
-### H-19 · WS-34: theme-switch the new Organisation surface by eye · [AGENT]
-- **Check:** nothing in the repo can answer this — that is the point. Ask whether
-  anybody has switched the org theme to Fluent → Material → Graphite and LOOKED at
-  **Organisation → Seat assignments** and at a neighbouring app. Unanswered → pending.
-- **Why:** `workbench/control_plane/AGENTS.md` is explicit that the conformance
-  suite checks eight regexes and **nothing in this tree tests layout or cross-app
-  continuity**, so the theme switch is the real gate. WS-34 added two surfaces
-  (the seat roster, the four-tab strip) and moved a third (branding into a tab).
-  The suite is green and that proves no hardcoded colour, not that the surface
-  looks like the product beside it.
-- **Authority:** `specs/launch_surface.md` §10 · `workbench/control_plane/AGENTS.md`
-- **Added:** 2026-08-24 · WS-34 build session
-
 ### H-20 · WS-34 LS-11: decide the fate of seats held on plans D49 retired · [OWNER]
+- **Metorite:** #534. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `SELECT o.slug, sa.plan_slug, count(*) FROM seat_assignment sa
   JOIN organization o ON o.id = sa.organization_id
   WHERE sa.released_at IS NULL AND sa.plan_slug <> 'core' GROUP BY 1, 2;` on the
   Console database. Any row means a customer holds a seat on a retired plan and the
   decision is still owed. Zero rows → delete this entry.
-- **Why:** Migration 008 deactivates every Center package, add-on and bundle so the
-  checkout cannot SELL them, and deliberately **touches no `seat_assignment` or
-  `seat_grant` row** — repricing, converting, refunding or prorating a seat somebody
-  already holds is money on a live system. Their seats keep working meanwhile; what
-  they should cost is the owner's call. Expected to be empty or Fracktal-only (D42's
-  ₹0 onboarding) today, which is why 008 could land as data now.
-- **Authority:** `specs/launch_surface.md` §4.4 · LS-11 · `work_plan.md` §6
 - **Added:** 2026-08-24 · WS-34 build session
-
-### H-21 · Promoting a `preview` app to `live` is an owner decision, not a code change · [OWNER]
-- **Check:** compare `specs/launch_surface.md` §2's live table against
-  `rg -c 'launch: "live"' workbench/control_plane/src/lib/nav.ts` → **9** means
-  nothing has been promoted. ⚠️ **Corrected 2026-08-26: this said `8`.** D54 added the
-  Calendar pane on 2026-08-24 — the same day this entry was written — so the Check
-  was born wrong and would have read *"something was promoted"* on every future run.
-  The number to compare against is `nav.test.ts`'s own fence, never a remembered one. This entry never "completes"; it is the standing rule
-  for the next person who finishes an app.
-- **Why:** Sixteen panes are `preview` — routes, API and tests intact, nav entry
-  absent. Turning one on is the judgement "this is finished enough to sell", which
-  is the owner's; the registry edit plus its `nav.test.ts` line is trivial once the
-  call is made. ⚠️ **Never promote an app by granting its feature** — `preview` is
-  not a permission (§3.4), and confusing the two makes a product decision into a
-  data migration and makes `/access` lie about why a pane is missing.
-- **2026-10-02:** the owner promoted Email on 2026-10-01, and WS-17 EM-T3b
-  ships it. The live set is now **11**. `nav.test.ts` and §2 moved in the same
-  change. The `rg` count of the Check reads 11 on that tree.
-- **Authority:** `specs/launch_surface.md` §2 · §3 · §11 item 4
-- **Added:** 2026-08-24 · WS-34 build session
-
-
-### H-2 · Count archived projects on prod BEFORE migration 171 applies · [OWNER]
-- **Check:** `SELECT count(*) FROM pm_projects WHERE status = 'archived';` on
-  prod. If 171 has already applied, this number is no longer recoverable this
-  way and the query becomes `WHERE archived_root_id = id` — which answers a
-  *different* question. Unanswered → still pending.
-- **Why:** ⚠️ **Time-sensitive.** 171 changes what "archived" means; the
-  pre-migration count is the only baseline that can tell us whether the lifecycle
-  sweep behaved.
-  🔴 **Corrected 2026-08-26 — this said "ordered against H-1", and H-1 no longer
-  exists** (its Check passed and the entry was deleted, correctly). Worse, its
-  premise is now false: the 2026-08-25 deploy reported *"0 applied, 186 already
-  recorded"*, so the box is current with `main` and **171 has almost certainly
-  already applied**. Treat the baseline as **probably lost**: run the count, and if
-  171 is on the box, record that it was lost rather than substituting
-  `WHERE archived_root_id = id`, which answers a different question.
-- **Authority:** `work_plan.md` §2 WS-27 row
-- **Added:** 2026-08-14 · session that built WS-27bj
 
 ### H-3 · Rotate the production SSH credentials pasted into a session · [OWNER]
+- **Metorite:** #622. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** can the old password still authenticate? If nobody has rotated it,
   it can. Treat as pending until rotation is confirmed.
-- **Why:** 🔴 Root credentials for the production VPS were pasted into an agent
-  transcript. They were **refused and never used** (`work_plan.md` §6), but a
-  secret in a transcript is a disclosed secret. Rotate, and replace root password
-  auth with a key while you are there.
-- **Authority:** `work_plan.md` §6 · `specs/engineering_practice.md` (security)
 - **Added:** 2026-08-14 · carried from the session that refused them
 
 ### H-7 · `now()` can move backwards, and migration 168's keyset cursor assumes it cannot · [AGENT]
+- **Metorite:** #698. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `rg -n "updated_at, id" infra/postgres/168*.sql` → the delta feed's
   cursor still ordering on `(updated_at, id)` with no monotonic guarantee means
   still pending. Needs its own board row and a decision before anyone builds.
-- **Why:** `now()` is the **transaction-start** timestamp, so a transaction that
-  opens early and commits late stamps a time earlier than a row already written
-  by a newer, faster-committing transaction — reproduced on a real database, 201
-  ms backwards. Harmless to the `If-Match` precondition (an exact comparison
-  still differs). **A real gap in the delta feed**: a client whose cursor has
-  passed the newer value never receives the row stamped behind it, and that
-  change leaves the stream silently.
-- **Authority:** `specs/project_management_app.md` §9.10.2 · already-merged code,
-  so CLAUDE.md §5 says record it, do not refactor it
 - **Added:** 2026-08-14 · PR #439
 
 ### H-121 · 🟡 DOCUMENTED, DEFERRED — a READ grant can destroy a space · [OWNER]
-- **⚠️ The owner DEFERRED this on 2026-09-19 and asked for a record instead.**
-  The design now lives in `specs/org_access_control.md` **§8d**, and the board
-  carries it as **WS-40**. Do not build it. Read §8d.4 first — it holds the four
-  questions an owner answers before anybody writes code.
-- **This entry is what remains: the risk, so that it is not lost.**
+- **Metorite:** #575. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `grep -rn "require_permission" apps/services/gateway/gateway/routes/projects/`
   → no output means no Projects route gates a write, and this is still open.
-- **Why it is urgent now.** `DELETE /projects/nodes/{id}` cascades over the
-  subtree, every task and every grant. Its only guard is **read** visibility.
-  `resolve_visibility` returns a read closure. It carries no write axis and no
-  role axis.
-- **⚠️ This slice widened NO server rule. It made the gap live.** Until
-  2026-09-19 the cascade had no control in the product, so only a direct API
-  call reached it. H-8 put it on the row menu. A member who holds a
-  `group:<slug>` read grant on a space can now delete that space, every project
-  under it, every task and every grant.
-- **⚠️ MEASURED, and it is wider than one route.** `grep -rn "require_permission"
-  apps/services/gateway/gateway/routes/projects/` returns **nothing**. No route
-  in the Projects app carries a permission check. Rename, move, archive and
-  every task write are all authorised by visibility alone.
-- **So this is the app's authorisation model, not a hole in one endpoint.**
-  Delete is simply the first act that cannot be taken back. Rename, move and
-  archive were already reachable by any viewer, and all three are reversible.
-- **What that means for the fix.** Adding a guard to `delete_node` alone would
-  mint a second authority vocabulary in an app that has none (CLAUDE.md §5).
-  The question is whether Projects needs a WRITE axis beside D12's visibility
-  axis. That is one decision for the app, and not a patch on one route.
-- **⚠️ Measured 2026-09-19, and CORRECTED the same day.** `require_permission`
-  returns nothing under `projects/`, `email/` or `notes/`. Visibility alone
-  authorises every write there.
-- **🟢 One content app DOES gate writes**, and an earlier version of this entry
-  wrongly said none did. `workflows/publish.py` guards publish, rollback and
-  disable with `workflows:publish`. So the shape to copy is `<app>:<verb>`, and
-  it is already in the tree.
-- **The decision.** Which subject may act. Three candidates, and they are not
-  the same: the row's creator, a role, or a per-node write grant that does not
-  exist yet. Visibility is *who can see*, and D12 says it is not *who may act*.
-  §8d.4 states all four questions.
-- **Until it is answered**, the menu entry is reachable by anybody who can open
-  the row. Hiding it client-side is NOT a fix. The endpoint stays open.
-- **Authority:** `specs/org_access_control.md` §8d (the design record) ·
-  `work_plan.md` §2 **WS-40** · `routes/projects/tree.py` `delete_node` ·
-  D12 · R5 · `specs/project_management_app.md` §11
 - **Added:** 2026-09-19 · found by the adversarial review of the H-8 diff.
 
 ### H-128 · A fence that counts `text(` sites cannot see a statement change · [AGENT]
+- **Metorite:** #772. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `grep -n "pm_tags" tests/unit/test_projects_move_sql_asyncpg.py`
   → it exercises `WHERE project_id = CAST(:root AS uuid)`. Now
   `grep -n "pm_tags" apps/services/gateway/gateway/routes/projects/move.py`
   → the code runs `WHERE {vocabulary_scope()}`, a two-arm predicate with a
   correlated subquery. Two different statements.
-- **Why the fence missed it.** `test_every_SQL_statement_in_move_py_is_covered`
-  counts `text(` sites and compares the count to a hardcoded 5. A statement
-  can change completely without the count moving. The file header claims to
-  close the "a partial fence reads like a whole one" failure, and this is that
-  failure inside the fence written to prevent it.
-- **Measured 2026-09-20.** A reviewer ran the REAL statement against the
-  ladder database on asyncpg and it passed, so this is a fence gap and not a
-  live bug. That is what makes it easy to leave and wrong to leave.
-- **The fix.** Compare the statement TEXT, not the count. Extract each SQL
-  string to a module constant and have the test execute the constant, the way
-  `_BUDGET_LOCK_SQL` now does in the attachments arm.
-- **Authority:** R7 · R8 · `tests/unit/test_projects_move_sql_asyncpg.py`
 - **Added:** 2026-09-20 · found by the round-2 verifier on PR #301.
 
 ### H-129 · A hand-supplied field map can still pick its winner by JSONB order · [AGENT]
+- **Metorite:** #496. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `grep -n "claimed" apps/services/gateway/gateway/routes/projects/move.py`
   → `resolve_field_map` keeps a `claimed` dict. The caller-supplied branch in
   `_plan` checks `compatible()` for each entry and never checks `claimed`.
-- **What happens.** Two source keys may name one destination key. Nothing is
-  lost silently — `apply_field_map` keeps the first and records the other with
-  its VALUE — but the WINNER follows each task's JSONB key order. So inside
-  ONE bulk move, task A can land `a` and task B can land `b`.
-- **⚠️ A test pins the wrong thing.** `test_a_HAND_SUPPLIED_map_cannot_collide_either`
-  asserts the order-dependent outcome instead of removing it, so it will pass
-  after the fix is wrong and after it is right.
-- **The fix.** Run the caller's map through the same `claimed` check the
-  resolved map uses, and refuse a colliding pair with 422. One rule, not two.
-- **Authority:** `specs/project_management_app.md` §9.13 · D-PM-29 · CLAUDE.md §5
 - **Added:** 2026-09-20 · found by the round-2 verifier on PR #301.
 
 ### H-127 · The move has no end-to-end test, and that is where its P0s live · [AGENT]
+- **Metorite:** #485. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `grep -rn "move_tasks" tests/unit/test_projects_move_routes.py`
   → only the refusals. No test drives a cross-status-set move to completion.
-- **⚠️ BOTH P0-class defects WS-27bl shipped lived in the endpoint bodies.**
-  One silently overwrote a custom value. The other — introduced by the FIX for
-  a P2 — routed the status through `apply_status_transition`, which reads the
-  lane owner off `task.project_id`, still the SOURCE inside the loop. Every
-  cross-set move raised 422 and rolled back. **The feature was dead and 30
-  green tests said nothing.**
-- **Why the hermetic suite cannot close it.** The landing lane resolves through
-  `_REMAP_TARGET_SQL`, a COALESCE over three correlated subqueries.
-  `FakeProjectsDB` cannot evaluate that. Teaching it to would re-implement the
-  rule in Python and assert against the mirror — what the harness header warns
-  about, and what R8 exists to prevent.
-- **What is needed.** One end-to-end against a real Postgres: seed two roots
-  with different lanes, move a task, assert it lands in a DESTINATION lane with
-  `completed_at` correct. `scripts/dev_db.sh` provides the database and
-  `test_projects_move_sql_asyncpg.py` has the engine fixture to copy.
-  ⚠️ **Use `apply_ladder` from `tests/unit/_tenant_ladder.py`.** `dev_db.sh`
-  alone leaves the tenant database empty (H-96), so a suite that skips it
-  fails on `relation "pm_tasks" does not exist` and reads as a code fault.
-- **⚠️ The fake blocks the PREVIEW too, and a review said otherwise.** A round-2
-  review held that a move between two projects sharing one status home would
-  be fully hermetic, because the lanes do not change. Measured 2026-09-20 by
-  writing that test: `_status_proposal` runs `_REMAP_TARGET_SQL` on every
-  path, with no same-home short circuit, so the fake raises whatever the
-  vocabularies are. Nothing hermetic can drive a successful move OR preview.
-  (A cheap side finding: the remap query runs even when it cannot change
-  anything. Worth a short circuit, and that is a separate act.)
-- **What WAS closable and is now closed.** `assert_move_keeps_privacy` had no
-  test, though the shared fake grew `_IN_CAST_LIST` for exactly that. Both
-  endpoints now have one. Still open here: the `accept_drops` 422 and the
-  `accepted_drops` 409.
-- **Authority:** `specs/project_management_app.md` §9.13 · R8 · H-114 · H-96
 - **Added:** 2026-09-19 · filed by the session that shipped the defects.
   ⚠️ **Minted as H-122 and renumbered to H-127 on merge.** PR #302 merged
   first and took 122 for the Operator Console rig. This is the collision
   `test_handoff_queue.py` exists to catch, and it caught it.
 
 ### H-120 · "Move to…" opens NOTHING on a phone · [AGENT]
+- **Metorite:** #548. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `grep -n "if (isMobile) {" workbench/control_plane/src/app/projects/page.tsx`
   → note the line. Then find `movingNode ? (`. It sits **after** that early
   return, so the phone branch never renders it.
-- **Why it is invisible.** The menu entry is drawn, the click lands, and the
-  handler sets `movingNode`. No dialog exists in the phone tree to render it.
-  Nothing errors and nothing appears. A member reads it as a dead menu item.
-- **Measured 2026-09-19** in the visual rig, at 390px. The row menu opens, the
-  drawer closes, and the screen does not change.
-- **The fix, and the trap in it.** Move the mount into `overlays`, which BOTH
-  returns render. `DeleteProjectDialog` is mounted there for this reason and
-  its comment records it. ⚠️ On a phone the tree IS the drawer sheet, so the
-  entry must also close the drawer, or the dialog opens behind it.
-- **⚠️ Check every other dialog in the desktop return the same way.** This is
-  one instance of a pattern, not one bug. Nothing in the tree tests layout.
-- **Authority:** `app/projects/page.tsx` · `DESIGN_SYSTEM.md` §8 · H-8
 - **Added:** 2026-09-19 · found while building the Delete affordance (H-8).
 
-### H-119 · ✅ DISSOLVED — a stop closes nothing, so there is no lane · [RESOLVED]
-- **Answered 2026-09-19, and the question turned out to be wrong.** The owner:
-  *"Stopping a project does not change its status, so the status of those
-  individual tasks remains the same as before. Only the project gets stopped."*
-- So there is no bulk close and no lane to choose. **D-PM-26's offer to close
-  open tasks on Stop is WITHDRAWN**, and the derive-never-write half of that
-  decision stands unchanged. Nothing was built against the withdrawn half.
-- **What replaced it: D-PM-32(b).** A stopped project's tasks leave the
-  reports. Paused and queued work stays, because hiding a stalled project from
-  the one surface that would reveal the stall is how its work goes missing.
-- **Delete this entry** once somebody has read it. Kept for one cycle because
-  H-8 and the WS-27 board row both pointed here.
-
 ### H-8 · Still owed on WS-27bg slice 2, and WS-27bg slice 3 / WS-27bh unbuilt · [AGENT]
+- **Metorite:** #502. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** the WS-27 row in `work_plan.md` §2 — it names what is built. Read
   it rather than this entry; this entry only says *look there*.
-- **Why:** Two of the three acts this entry named are now built. **Rename**
-  landed earlier, and the entry did not record it. **Delete** landed on
-  2026-09-19: the row menu offers it last, alone, in the destructive colour,
-  and `DeleteProjectDialog` reads the subtree counts and takes the project
-  name back before it writes.
-- **⚠️ What is still owed here is the bulk close on Stop, and it is BLOCKED.**
-  D-PM-26 says that a stop must offer to close the open tasks. The offer cannot
-  be built on the endpoints we have. `POST /projects/tasks/bulk` takes a lane
-  **name**, and migration 196 lets each project own its lanes. So one name
-  cannot close a subtree.
-- **The decision somebody must take.** Which lane closes a task when a project
-  stops. Two shapes:
-  1. The server picks each project's first lane with a closing category. This
-     needs a new endpoint and no decision from the owner.
-  2. Stopping means **cancelled**, not **done**, and the lane is chosen by that
-     category. This is a product call, because the two read differently in
-     every report.
-  Ask before you build either. See **H-119**.
-- **Also still unbuilt:** slice 3 (overdue suppression across four predicates)
-  and WS-27bh (task-type chip, derived urgency and the "Urgent" → "Critical"
-  relabel, recurring indicator, source badge).
-  ⚠️ WS-27bh's source badge must **promote** `/tasks`' existing `SourceBadge`.
-  Do not author a fourth copy.
-- **Authority:** `work_plan.md` §2 WS-27 row · `specs/project_management_app.md`
-  §9.8.4 · §9.9 · D-PM-26
 - **Added:** 2026-08-14 · session that built WS-27bj. *(Rewritten 2026-09-19:
   rename and delete are done, and the bulk close turned out to be blocked.)*
 
 ### H-10 · HALF the R1 blind window is still open — the cross-branch collision · [AGENT]
+- **Metorite:** #639. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `rg -n "merge_group|merge-base origin/main" .github/workflows/pr-check.yml`
   → only the secret-scan's `merge-base` hit (no `merge_group:` trigger, and no job
   that checks out the head ref and merges the base before running the fence) means
   the remaining half is still open.
-- **Why:** ⚠️ **This entry is NOT closed by the `push` trigger — it is halved, and
-  the surviving half is the one that actually bites.** What `push` fixed: a
-  CONFLICTED PR used to run zero jobs, because `pull_request` builds check out
-  `refs/pull/N/merge` and GitHub does not compute that ref while a PR is dirty
-  (#439 sat `dirty` at `check_runs: 0`). A `push` build has no merge ref to
-  compute, so the branch is now checked whatever its mergeability.
-  **What remains:** `test_migration_prefixes.py` globs the **working tree**, so it
-  only ever sees one branch's migrations. Two branches that each add `172_*.sql`
-  are individually valid and both go green; the duplicate exists **only in the
-  merge result**, which no build in this repo ever materialises. The fence cannot
-  see the collision it exists to catch. Closing it needs a `merge_group:` trigger
-  (checks the queued merge commit) or a job that checks out the head and merges
-  the base itself before running the fence — **which is exactly ticket T-6**, whose
-  acceptance is the right proof: open a deliberately conflicted PR carrying a
-  duplicate migration number and watch it go **red**.
-  ⚠️ Do not delete this entry on the strength of the `push` trigger. Delete it when
-  T-6's acceptance has been demonstrated.
-- **Authority:** `specs/development_and_delivery_framework.md` §5 and §8 **T-6**
-  (🟢 AGENT-SAFE; sequenced with T-3 as a cheap measured hole) · `work_plan.md` §2
-  WS-27 row (the R1-collision record) · R1
 - **Added:** 2026-08-14 · session that built WS-27bj · **halved 2026-08-25** by the
   push trigger (PR #46); re-pointed at T-6
 
 ### H-14 · Create the Razorpay TEST-mode account; set the three payment env vars · [OWNER]
+- **Metorite:** #513. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** ask the owner whether a Razorpay test account exists; on the box or
   in CI, `env | grep -c CUSTOMER_CONSOLE_RAZORPAY` → `3` means done. (No repo
   command can see this — it is an external account plus deployment env.)
-- **Why:** CP-9's provider seam fails closed: `POST /billing/orders` answers 503
-  until `CUSTOMER_CONSOLE_RAZORPAY_KEY_ID` / `_KEY_SECRET` / `_WEBHOOK_SECRET`
-  are set — **and the ₹0 discount path also goes through order creation**, so
-  Fracktal's free onboarding purchase (D42) is blocked on this account existing.
-  Test-mode keys suffice for the whole rehearsal; live keys stay §6(b). Creating
-  any external account is owner-side (`customer_console_infrastructure.md` §7).
-- **Authority:** `work_plan.md` §6(b) · `customer_console.md` §9.4/§8 gate 3
 - **Added:** 2026-08-19 · CP-9 substrate session
 
 ### H-12 · Decide fate of FracktalWorks satellite-repo references · [OWNER]
+- **Metorite:** #769. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `rg -n "FracktalWorks/" apps/services/gateway/agents.json README.md`
   → hits mean still pending.
-- **Why:** The rebrand moved this repo's slug to `Hathi-Labs/Metorite`, but
-  the satellite agent/skill repos (`FracktalWorks/agent-sales-assistant`,
-  `FracktalWorks/agent-*`, `FracktalWorks/skill-*`) referenced in
-  `agents.json`, `README.md` and `system_architecture.md` are separate real
-  repositories that were NOT forked. An agent cannot know whether they stay
-  upstream, get forked into Hathi-Labs, or get dropped — that is an org
-  decision.
-- **Authority:** CLAUDE.md §3 (never trust/invent external repo identity)
 - **Added:** 2026-08-16 · rebrand session (branch `rebrand/metorite`)
 
 ### H-16 · Rotate the go-live secret set; put GITHUB_TOKEN on the box · [OWNER]
+- **Metorite:** #611. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** ask the owner — no repo command can see this. The set: both
   Supabase database passwords (Console + tenant planes) · the Google OAuth
   client secret · the DeepSeek API key. All four transited agent chat
   2026-08-18/19. Plus: `grep -c GITHUB_TOKEN /opt/acb/app/.env` on the box →
   `0` means still pending.
-- **Why:** A secret in a transcript is a disclosed secret (the H-3 principle;
-  these are its four new instances). None is rotated yet; the owner said "I
-  will change it later on" — this entry is the *later*. `GITHUB_TOKEN` is
-  separate: without it the gateway's agent warm-clones fail on every restart
-  and account for most of the ~90 s cold start.
-- **Authority:** `work_plan.md` §6 (credentials) · `specs/engineering_practice.md`
-- **Added:** 2026-08-19 · VPS bring-up session
-
-### H-18 · Verify the first production sign-in by evidence (session → owner chain) · [AGENT]
-- **Check:** on the box, `journalctl -u acb-gateway | grep -i "owner bootstrap"`
-  plus a session row for `vjvarada@gmail.com` after a real browser sign-in at
-  `app.metorite.com` → both present means done. Needs box reach, i.e. a dated
-  D45 `ALLOW <date> deploy` grant or the owner running it.
-- **Why:** `ensure_owner_bootstrap()` fired at startup (log-verified), but no
-  one has verified the full chain — Google OAuth → NextAuth session →
-  gateway identity → owner of `default` — from a real browser. CLAUDE.md §3.8:
-  verify by evidence, never by a green job.
-- **Authority:** `work_plan.md` §2 WS-31 row (CP-2b) · CLAUDE.md §3.8
 - **Added:** 2026-08-19 · VPS bring-up session
 
 ### H-32 · Revoke the ClickUp tokens at ClickUp · [OWNER]
+- **Metorite:** #693. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** on the box, **both** credential homes plus the vendor:
   `SELECT count(*) FROM provider_keys WHERE credential_type = 'integration' AND service = 'clickup';`
   **and** `SELECT count(*) FROM task_accounts WHERE provider = 'clickup';` —
@@ -1528,14 +896,11 @@ line — never reclaim a number by deleting the other entry.
   ⚠️ A repo-side grep cannot answer this and never could: WS-39 S1 deleted every
   *reader* of the token, which is not the same as the token being dead. A
   credential nobody reads is still a live credential at the vendor.
-- **Why:** D52 retires ClickUp outright. `work_plan.md` §6 WS-27 **(c-1)** — a
-  credential act, so an agent must refuse it by name. Also drop the `CLICKUP_*`
-  values from the box `.env` while you are there (env-write, gated).
-- **Authority:** `work_plan.md` §6 WS-27 (c-1) · D52.1
 - **Added:** 2026-08-24 · WS-39 S1 session *(renumbered H-27→H-32 on 2026-08-25:
   `main` took H-27 for the e2e entry via PR #47; ids are never reused)*
 
 ### H-164 · The deploy restarts the workbench while npm is still installing · [AGENT]
+- **Metorite:** #772. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** on the box, grep the workbench journal for `next: not found`.
   Any hit means this is still real:
 
@@ -1560,59 +925,18 @@ line — never reclaim a number by deleting the other entry.
 - 🔴 **MEASURED 2026-09-23, and it turned a deploy RED across all three
   rounds.** PR #406's run 35855523275 ended `WORKBENCH FAILED TO START`. The
   box was healthy the whole time and the next deploy started it fine.
-- **The line that names it**, at 11:51:54 UTC:
-
-      npm[2736540]: > next start -p 3001
-      npm[2736540]: sh: 1: next: not found
-
-  The unit started while `node_modules` was being replaced, so the `next`
-  binary was absent for that moment. It is a RACE, not a broken build — the
-  build had already printed its route table and swapped in.
-- **What it costs.** A deploy goes red at random, on a branch that may have
-  nothing to do with the workbench. #406 touched two Python files and the
-  Console, and none of them is imported by a Next app. The next merge then
-  deploys the same code green, which teaches people that a red deploy means
-  nothing. That is the belief this repo can least afford.
-- ⚠️ **NOT H-60.** That entry is the ~3 minute 502 WINDOW while the workbench
-  restarts, and it assumes the process comes back. This is the process failing
-  to come back at all. Same file, different fault.
-- ⚠️ **NOT the EACCES fault either.** H-89 and the `reclaim_build_tree` work
-  cover `npm ci` refused by root-owned paths. Here `npm ci` was working. The
-  unit started in the middle of it.
-- **What to build.** Order the two: finish the dependency install, THEN swap
-  the build, THEN restart. Or gate the restart on the `next` binary existing.
-  `scripts/vps_apply.sh` owns both halves.
-- 📌 **A second fault was in the same window and has since stopped.** The OLD
-  workbench process logged `TypeError: o is not a function` every ~60 seconds
-  from a minified server chunk. Zero occurrences since the 11:52:36 restart,
-  so it is not currently live. Worth a look if it returns — a repeating
-  handler error on the customer app is its own entry.
-- **Authority:** run 35855523275 · `journalctl -u acb-workbench`
 - **Added:** 2026-09-23 · the H-152 gateway slice.
 
 ### H-195 · Two Caddy follow-ups that only the owner can do · [OWNER]
+- **Metorite:** #769. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** (1) GitHub branch protection on `main` lists
   "Caddy config (validate)" as a required check. (2) The owner decides the
   identity-header strip, and the live `/etc/caddy/Caddyfile` matches that
   decision. Delete this entry when both are done.
-- **(1) The required check.** PR #498 added the CI job "Caddy config
-  (validate)". It is not a required check, so a red run does not block a
-  merge. An invalid Caddyfile can then merge, and every later deploy refuses
-  to install it. The live site stays up, but deploys stop. Only the owner can
-  change branch protection.
-- **(2) The identity-header strip is NOT on the box.**
-  `colleague_onboarding.md` G1 says that the owner added
-  `header_up -X-User-Email` and `header_up -X-User-Role` to the live file on
-  2026-08-04. The live file on 2026-09-28 has neither line. The exposure is
-  low: the gateway trusts `X-User-Email` only with the internal token, and
-  `:8080` is closed to the outside. The strip is defence in depth.
-  To restore it, an agent adds the two lines, `test_caddy_auth_gate.py`
-  refuses the merge, and the owner approves the printed hash with
-  `CADDY-AUTH-APPROVED <sha256>` in `.claude/OWNER_GRANTS.md` (gate (a)).
-- **Authority:** `work_plan.md` §6 gate (a) · PR #498
 - **Added:** 2026-09-28 · the H-60 close-out
 
 ### H-31 · Re-home the `event=` structlog AST guard · [AGENT]
+- **Metorite:** #772. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `rg -n "ast\." tests/unit/test_ingestion_receiver_parity.py` → no AST walk
   asserting that no receiver passes a bare `event=` to a structlog logger means it is
   still advisory. ⚠️ **Corrected 2026-08-26: the old Check was**
@@ -1622,53 +946,21 @@ line — never reclaim a number by deleting the other entry.
   A Check that matches a function name rather than the guard reads *done* while the
   guard is still missing, which is the one failure this file's protocol exists to
   make impossible.
-- **Why:** Passing `event=` to a structlog logger raises `TypeError` at call
-  time, so receivers must use `<source>_event=`. The AST guard that enforced
-  this lived in `tests/unit/test_clickup_normalise_dlq.py`, **deleted by D52
-  with the receiver it covered**. `apps/AGENTS.md` still states the rule, and
-  under R7 a rule with no fence is advisory — it now says so, but the honest
-  fix is to re-home the guard over the surviving Gmail/Zoho receivers.
-- **Authority:** R7 (`work_plan.md` §1) · `apps/AGENTS.md` ingestion section
 - **Added:** 2026-08-24 · WS-39 S1 session
 
 ### H-52 · Phase 0 (D55.2) has ALREADY ENDED by trigger (b) — decide which way · [OWNER]
+- **Metorite:** #720. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `gh api repos/Hathi-Labs/Metorite/collaborators --jq '.[] | select(.type=="User") | select(.permissions.push or .permissions.admin) | .login'`
   → more than one login means trigger (b) holds. Two today: `vjvarada`, `nithinjak`.
-- **Why:** 🔴 **Measured 2026-08-26, and the dates are the finding.** D55.2
-  (`development_and_delivery_framework.md` §3.5) ends Phase 0 at *"a second human
-  gets commit access"*. `nithinjak` has held push+admin and **committed on
-  2026-08-21** — five days before D55 was written on 2026-08-26. **Phase 0 was
-  adopted already-expired**, which is precisely the failure §3.5 predicts of
-  itself: *"a bridge with no trigger is a destination… somebody has to notice one
-  firing."* Nobody did, including me, until a tripwire was pointed at it.
-  ⚠️ **Why this is not cosmetic.** The pipeline today is CONTINUOUS DEPLOYMENT —
-  merge → CI green → `release` fast-forwards → the box polls every 5 min and
-  applies. §5 says that once Phase 0 ends, `release-promote` becomes a
-  `workflow_dispatch` **OWNER-GATE** with a one-working-day soak. Nothing connects
-  those two states, so the change does not happen by itself.
-  🟢 **Two honest answers, and it is a decision rather than a fix:**
-  1. **Phase 0 has ended.** Do T-7/T-8/T-9, flip `release-promote` to owner-gated,
-     write the end down in §3.5, delete `.github/workflows/phase-0-tripwire.yml`.
-  2. **The wording does not match the intent.** If "a second human" meant "a second
-     *regular contributor*", or these accounts sit inside one trust boundary, amend
-     §3.5 to say so. ⚠️ Do not simply mute it — an unamended clause everybody knows
-     is not really in force is worse than no clause, because the next reader cannot
-     tell which of the three triggers are live.
-  📌 **Triggers (a) and (c) are still unwatched.** A second organization being
-  provisioned, and H3 (the RLS promotion), both need production visibility. The open
-  design question is whether `/version` grows a `phase0` BOOLEAN — it is public and
-  unauthenticated, so never the org count — or whether that belongs on an
-  authenticated operator endpoint.
-- **Authority:** D55.2 · `development_and_delivery_framework.md` §3.5, §5 ·
-  `.github/workflows/phase-0-tripwire.yml`
 - **Added:** 2026-08-26 · guardrails/CI session
 
-### H-49 · D63's seal is BUILT. The dialog and the watched door are not · [AGENT]
-- **Check:** `rg -n "seal_personal_tree" apps/services/gateway/gateway/routes/`
-  → hits in `admin/members.py` mean slice 1 landed. Then
-  `rg -n "seal_counts|unseal_personal_tree" apps/services/gateway --include=*.py`
-  → if the only hits are the definitions in `projects/seal.py`, nothing calls
-  them and this entry is still live.
+### H-49 · D63's seal and dialog are BUILT. The watched door is not · [AGENT]
+- **Metorite:** #697. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** `rg -n "unseal_personal_tree" apps/services/gateway --include=*.py`.
+  The entry is open while the only caller is the reactivation branch of
+  `PATCH /admin/members/{email}` (`admin/members.py:362`). That branch gives
+  the tree back to its owner. No owner-only, logged route lets somebody ELSE
+  open a sealed tree yet.
 - ✅ **SLICE 1 LANDED 2026-09-23.** Migration **215** adds
   `pm_projects.sealed_at`. Both visibility clauses filter it on both arms, so
   a sealed tree leaves the grant closure AND the `data:org:read` answer. Both
@@ -1680,57 +972,10 @@ line — never reclaim a number by deleting the other entry.
   consults the project. Sealing removes the grant arm and leaves that one, so a
   task the leaver assigned outward stays visible to its assignee. No row moves,
   and there is no half-finished state to recover from.
-- **Measured on production before the build, 2026-09-23:** 1 personal tree, 2
-  tasks, **0** assigned to anybody but the owner, 4 members, all `active`. Two
-  guards (`assert_move_keeps_privacy`, `assert_assignable_here`) already refuse
-  to create the cross-assigned state, so `handed_over` reads 0 on a healthy
-  tenant. That is correct, not broken.
-- **What is still owed, and both are D63's own words:**
-  1. **The dialog states the split in numbers BEFORE the click** — *"14 tasks
-     — 3 handed over, 11 sealed, not deleted; later access is recorded"*.
-     `projects/seal.py::seal_counts` computes exactly that and **no route calls
-     it**. A policy nobody is told about at the moment it applies is one they
-     discover by being surprised.
-  2. **One owner-only, LOGGED door** to open or export a sealed tree.
-     `unseal_personal_tree` is the mechanism and no route calls it either.
-     ⚠️ Reactivation already unseals, and that is NOT this door: it returns
-     the tree to its owner. This door lets somebody ELSE read it.
-- 📌 `app_user.status` still only ever holds `'active'` on production, so
-  nothing has exercised this against real data yet.
-- **Authority:** `work_plan.md` §3 D63 · §6 (member/role writes) · D53.7/D53.8
 - **Added:** 2026-08-26 · WS-39 personal-tree session *(minted as H-35; renumbered to H-49 the same session — `test_handoff_ids_are_unique` caught the collision with the WS-36 restore-spec entry. Ids are never reused.)*
 
 ### H-27 · 33 browser tests are red, and CI gates only the half that is green · [AGENT]
-- **🟢 2026-09-22 — CI RUNS THE BROWSER SUITE.** `pr-check.yml` has an `e2e`
-  job. It is BLOCKING, it needs no gateway and no database, and it takes about
-  four minutes. The original defect — nothing ran `e2e/` at all — is closed.
-- **🔴 What replaced it, and why this entry stays open.** The first full run
-  anybody had done measured **62 passed, 33 failed, 18 fixme**, in 8 minutes.
-  So the job gates a SUBSET, and the rest is quarantined by name in the `ci`
-  project's `testIgnore` in `playwright.config.ts`:
-
-      project-state.spec.ts   10 of 10 failing   <- nothing in it passes
-      modal.spec.ts            9 of 10 failing   <- a shared primitive
-      chat.spec.ts             6 of  9 failing
-      theming.spec.ts          4 of 12 failing
-      email-search.spec.ts     2 of 13 failing
-      email.spec.ts            1 of  1 failing
-      project-rename.spec.ts   1 of  8 failing
-
-  Gated and green, 3 runs out of 3: the four Projects specs, `toast`,
-  `status-accent`, `sandbox-theming`, `react-artifact` — 32 tests.
-  `org-branding` rides along as 18 `fixme`, which is honest and deliberate.
-- **What is owed:** empty that list. `modal` and `project-state` first —
-  `modal` because it is a shared primitive, `project-state` because nothing in
-  it passes at all, so it fences nothing today. A sample failure reads
-  `getByText("Memory (2)")` finding nothing: the surface moved and the spec did
-  not follow, which is what a suite nobody runs does over time.
-- **⚠️ The register only shrinks by hand.** Nothing removes an entry
-  automatically, and nothing notices if it only ever grows.
-  `src/lib/e2eGate.test.ts` fences the shape of the list — every entry names a
-  real spec, no spec is listed twice, the local `--project=chromium` run is
-  never narrowed, and the eight green specs stay gated so the job can never
-  pass vacuously. It does NOT and cannot judge whether the list is too long.
+- **Metorite:** #725. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `rg -n "project=ci" .github/workflows/pr-check.yml` → no hit means
   CI has stopped running the browser suite. Then read `testIgnore` in
   `workbench/control_plane/playwright.config.ts` → a non-empty list means this
@@ -1741,125 +986,36 @@ line — never reclaim a number by deleting the other entry.
   trap coming back. It matches the `webServer.url` readiness probe, which is
   correct and harmless — `baseURL` is what must stay `localhost`, and it is.
   As written that check cried wolf on a healthy config.
-- **Why:** D-PM-21 makes a real browser the **only** fence for UI behaviour here —
-  `vitest.config.ts` is `environment: "node"` and does not even collect `.tsx`, and
-  jsdom is refused by decision. That fence was **completely dead** and nothing said
-  so: `playwright.config.ts` addressed the dev server as `127.0.0.1`, Next 16 blocks
-  `/_next/*` as cross-origin from the IP, so the server-rendered shell arrived, the
-  client bundle did not, hydration never completed, **no fetch was ever issued**, and
-  every spec timed out against a page reading "Loading …". Measured 2026-08-21 with
-  hostname as the only variable; fixed on `ws-27bg-project-rename` by pointing the
-  config at `localhost`. ⚠️ **The failure mode is the point**: a page that renders
-  its whole shell looks alive, so this reads as a backend fault and cost most of a
-  session to isolate. The specs' own as-builts record them running green, so the rot
-  set in after they were written and **no job would ever have reported it** — the
-  suite is absent from `pr-check.yml` entirely. Wanted: either e2e in CI (it needs a
-  browser image and ~13 s per spec), or an explicit board decision that it stays a
-  local-only gate, recorded so the next person does not assume CI has their back.
-- **Authority:** `specs/project_management_app.md` §8 D-PM-21 · CLAUDE.md §3.8
-  (verify by evidence, never by a green job)
 - **Added:** 2026-08-21 · session that built WS-27bg slice 2's rename
 
 ### H-35 · Write the owning spec for WS-36 (per-tenant restore) · [AGENT]
+- **Metorite:** #631. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `rg -n "WS-36" project-docs/INDEX.md` → a hit in the **"BOARD ROWS WITH
   NO OWNING SPEC"** section (rather than in ACTIVE) means the spec is still unwritten
   and the row is still 🔴 not dispatchable.
-- **Why:** D31 recorded on 2026-08-11 that there is **no per-tenant restore, only a
-  whole-cluster one** — BO-23 restores the box, so serving one customer's recovery
-  **rolls every other customer back**. `saas_operations_doctrine.md` §5 then named it
-  one of only **two domains with no owner** and said both need one *before customer
-  #1*. Fifteen days later it still had no board row; WS-36 was minted 2026-08-26 and
-  is deliberately 🔴 because §1's contract needs an owning spec with testable
-  acceptance, and there is none. **What is owed is a spec, not code.**
-  ⚠️ Two constraints the spec must carry or it will be written wrong: the filtered
-  export **must** be driven by the same `discover_tables()` set the RLS policies use
-  (a second table list forks silently the first time a table is added), which means
-  it cannot be finished before **MT-1b promotion**; and this is a **customer-#2**
-  defect, not a customer-#1 gate — which is exactly how it becomes a customer-#3
-  emergency if it keeps being true.
-- **Authority:** `work_plan.md` §2 WS-36 · §2.0 M1 · D31 ·
-  `saas_operations_doctrine.md` §5 finding 9 · `saas_multitenancy_handover.md` H8
 - **Added:** 2026-08-26 · multi-tenancy product pass
 
 ### H-36 · Write the owning spec for WS-37 (trust & compliance) — and take the positions it needs · [OWNER]
+- **Metorite:** #635. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `rg -n "WS-37" project-docs/INDEX.md` → a hit in the **"BOARD ROWS WITH
   NO OWNING SPEC"** section means it is still unwritten.
-- **Why:** The second unowned domain in `saas_operations_doctrine.md` §5: consent
-  model, subprocessor disclosure, retention/deletion policy, breach-notification
-  path, customer-readable audit trail. ⏳ **It carries a date that is not ours to
-  move — §3.3 puts DPDP at November 2026.**
-  🟢 **The AGENT-SAFE half:** write the spec — name each obligation, name where it is
-  enforced, name the fence (R7). 🔴 **The OWNER half, and why this entry is [OWNER]:**
-  the *positions* — what we retain, whom we disclose as a subprocessor, what we
-  promise on breach — are commitments to customers, and an agent must not invent a
-  compliance position.
-  📌 **The one item that is cheap only now:** doctrine §6 item 4, *model the consent
-  record while the tables are still empty*. Retrofitting consent onto rows already
-  collected is a customer conversation, not a migration. Also belonging here rather
-  than to a console ticket: capping default auto-top-up **below ₹15,000** per the RBI
-  e-mandate framework (§3.2) — *"a config default with a legal reason — write the
-  reason down"*.
-- **Authority:** `work_plan.md` §2 WS-37 · §2.0 M3 · `saas_operations_doctrine.md`
-  §2.7 · §3.3 · §5 · §6
-- **Added:** 2026-08-26 · multi-tenancy product pass
-
-### H-37 · §2 rows have re-grown past the size D18 was minted to fix · [AGENT]
-- **Check:** `awk '{ print length($0) }' project-docs/work_plan.md | sort -rn | head -1`
-  → anything above ~20,000 means a single board row is still carrying a session's
-  narrative. Measured 2026-08-26: **71,702**.
-- **Why:** D18 (2026-08-09) moved row narrative into the owning specs' *"Board record"*
-  sections because §2 had reached ~77k tokens and was *"unreadable in one pass by the
-  dispatch loop it serves"*. Measured 2026-08-26 the rows are **past where they were**:
-  WS-31 71,702 characters on one line, WS-29 46,587, WS-27 41,319, WS-26 20,779,
-  WS-30 12,607 — roughly 190k characters of narrative in five cells.
-  **The mechanism is not carelessness and naming it matters:** a build session appends
-  its findings to the row because the row is where it is already looking, and each
-  append is individually correct. D18 is a rule with no fence, so under R7 it is
-  advisory — which is precisely why it decayed twice.
-  **What to do:** relocate each row's narrative into its owning spec's Board-record
-  section, leaving state, gates and pointers (D18's own shape), **and give the rule a
-  fence** — a test asserting no line in `work_plan.md` §2 exceeds a stated length is
-  cheap, structural, and is the thing that stops a third recurrence.
-  ⚠️ **Do it as its own PR.** It was deliberately not folded into the 2026-08-26
-  product pass: a ~190k-character move inside a diff that also changes states is how
-  a real correction gets lost.
-- **Authority:** `work_plan.md` §5 residual 8 item 9 · D18 · R7
 - **Added:** 2026-08-26 · multi-tenancy product pass
 
 ### H-38 · Decide D-D (where staging runs, and what it costs) · [OWNER]
+- **Metorite:** #853. The task holds the full entry (moved 2026-10-28, D118).
 - **Check:** `rg -n "D-D" project-docs/work_plan.md` → a hit only inside **D55.9's
   "still owed"** clause (rather than a recorded answer in §3) means it is still open.
-- **Why:** D55 adopted the delivery framework and answered five of its seven open
-  decisions. **D-D is money plus an external account, which is owner-side by
-  `customer_console_infrastructure.md` §7** — a second VPS, a second Supabase pair, or
-  both. It is the one thing between here and the staging half of WS-38: **T-7
-  (`staging` ref), T-8 (`release-promote`) and T-9 (the nightly anonymised rebuild) all
-  wait on it.** Everything else on WS-38 — T-1, T-2, T-3, T-6, T-5 — is buildable during
-  Phase 0 and needs no staging box, which is why the order puts them first.
-  📌 **Worth knowing before deciding:** staging is a *nightly re-derivation* of
-  production, not a maintained copy (D55.5), so it can be smaller than production and can
-  be torn down and rebuilt. It is a cost that scales with nothing.
-- **Authority:** `work_plan.md` D55.9 · §2 WS-38 ·
-  `specs/development_and_delivery_framework.md` §9 D-D · §3.5
 - **Added:** 2026-08-26 · delivery + model-management decision session
 
 ### H-39 · Decide D-F (the CODEOWNERS map) — when there is a second person to name · [OWNER]
+- **Metorite:** #719. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `ls .github/CODEOWNERS` → absent means still open. ⚠️ This entry is
   **deliberately not actionable yet** and should not be closed by writing a CODEOWNERS
   file naming one person.
-- **Why:** D55 answered D-A/B/C/E/G and left D-F open **because it cannot be written
-  before the people exist** — a CODEOWNERS map with one name in it is a rule that
-  enforces nothing and a file that goes stale. The seams it would map are already written
-  down (`development_and_delivery_framework.md` §7.4), so the work when the time comes is
-  a lookup, not a design. **T-13 is the ticket; enabling the requirement is a GitHub
-  settings change (§6).**
-  📌 Sequence note: T-13 is downstream of **T-2**. Required reviewers on an unprotected
-  branch are advisory, like every other gate here.
-- **Authority:** `work_plan.md` D55.9 · `specs/development_and_delivery_framework.md`
-  §7.4 · §9 D-F · T-13
 - **Added:** 2026-08-26 · delivery + model-management decision session
 
 ### H-42 · Price the AI rate card, then flip the spend gate — in that order · [OWNER]
+- **Metorite:** #524. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** on the Console database,
   `SELECT count(*) FROM tier_rate_card WHERE pricing_mode = 'priced';` → `0` means the
   card is still unpriced and nothing draws credits down. Then
@@ -1870,242 +1026,31 @@ line — never reclaim a number by deleting the other entry.
   the tier. `model_rate_card` is read-only history. The console's /pricing
   page sets both numbers and shows the margin live. Migration `017` added
   `credit_price` for the rupee side.)*
-- **Why:** Credit **assignment** works end to end already (§6B.1) — but a granted credit
-  is currently a number that nothing consumes, because the shipped rate card is **all
-  zero** and `test_the_rate_card_ships_unpriced` refuses a priced ladder by design.
-  ⚠️ **The order is not a preference and getting it backwards is the expensive mistake.**
-  Flipping the gate against a zero card delivers **every cost of enforcement and none of
-  the benefit**: a zero-balance org — the state provisioning leaves *every* org in — is
-  refused on all AI calls, while a funded org can never reach 402 because nothing bills.
-  📌 The card is meant to be set **against measurement**, not estimates: CP-4 ships the
-  Router unpriced so a month of real per-org burn lands in `usage_event` first
-  (`002_seed_catalog.sql`'s own header). CP-11 is what finally produces that traffic, so
-  this entry becomes actionable only after CP-11 has been serving for a while.
-  🔴 Pricing live is an owner act (D19.2, §6) and **must not be done through a migration**.
-- 📌 **Added 2026-09-23 (D75): one more tier, `tier-decide`, and one more
-  question.** One decision costs about USD 0.000042. So choose one: exempt
-  `decide` from `MIN_CHARGE`, as `embed` is, or absorb it.
-  `credit_pricing.md` §5.4 clause 6 holds the question.
-- **Authority:** `work_plan.md` §6 · §2.0 M2.9c · D19.2 · **D57.4** clause 5 ·
-  `specs/customer_console.md` CP-6
 - **Added:** 2026-08-26 · AI credits + keys session
 
 ### H-79 · Flip the `/me/billing` money fields to strings (two releases, R6) · [AGENT]
+- **Metorite:** #543. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `grep -c "float(balance)" apps/services/customer_console/customer_console/main.py`
   → `1` means the Console still sends floats.
-- **Why:** `GET /me/billing` sends `balanceCredits` and `burnThisCycle` as floats.
-  Every other money read sends strings. The float is exact for `NUMERIC(14,4)`
-  magnitudes, so the defect is latent. But this endpoint is the customer's
-  dispute surface, and one outlier invites the next. The flip takes two
-  releases (R6). Release one: the workbench billing page
-  (`workbench/control_plane/src/app/settings/billing/`) parses both shapes.
-  Release two: the Console sends strings.
-- **Authority:** the strings-for-money rule stated three times in `main.py`
-  (search "reformatted through a float")
 - **Added:** 2026-08-30 · console-review session
 
 ### H-43 · Close the process-global credential injection (D58.2) · [AGENT]
+- **Metorite:** #625. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `rg -n "os.environ\[" packages/acb_llm/acb_llm/key_store.py` → hits inside
   `configure_litellm` mean the tenant path still writes process-global credentials.
-- **Why:** **D58 settled the architecture and this is the one code consequence.** The
-  Console Router already does it right — `call_kwargs["api_key"] = secret`, per call, no
-  shared state. The tenant gateway does not: `_ensure_keys_loaded()` →
-  `key_store.configure_litellm()` is a once-per-process latch assigning
-  `litellm.<provider>_api_key` **and** `os.environ[...]`, which is the §6 (f) blocker.
-  `client.py:262`'s own docstring states the consequence: *"Calling it per organization
-  would not scope anything; it would make the LAST organization's key the one every caller
-  sends."*
-  **The fix is the shape `router.py` already uses — pass credentials per call.** No new
-  infrastructure, and D58.3 explains at length why a proxy is the wrong way to buy a
-  keyword argument.
-  📌 **Sequencing:** CP-11 shrinks the blast radius first (Router-served traffic stops
-  using this path at all), so this is worth doing *after* CP-11 lands, when it is a
-  cleanup rather than a live-path change. ⚠️ It does **not** close §6 (f) on its own —
-  the credential-scope redesign for `require_llm_api_auth` is the other half.
-- **Authority:** `work_plan.md` §3 **D58** · §6 (f) · `specs/customer_console.md` §4
 - **Added:** 2026-08-26 · AI architecture session
 
-### H-171 · The product's OWN AI is never metered, so it is free forever · [AGENT+OWNER]
-- **Check:** `rg -c "console_resolve|customer_console" packages/acb_llm/` → a
-  zero means `acb_llm` still reaches no meter, and this is open.
-- 🔴 **MEASURED 2026-09-23.** `acb_llm.acompletion_with_fallback` imports
-  litellm and calls `acompletion` directly. `acb_llm` holds **zero**
-  references to the Console. The only litellm callback registered anywhere is
-  `"otel"`, which is a trace and not a bill.
-- **So there are TWO AI paths and only one is metered.**
-  `POST /v1/chat/completions` reaches the Console Router behind
-  `ROUTER_SERVING_ENABLED`. Every in-product feature — the apps runtime, the
-  email automation, the assistants, the agents, **29 files** — takes the other
-  path and is billed to nobody.
-- 🔴 **What it costs.** A customer uses the AI inside the product for free, on
-  our vendor account, for ever. Turning the Router on does not change that,
-  because the Router is not on that path. It is a larger hole than the blank
-  cached-input box, and it does not close itself.
-- **The spec reads against it.** `launch_surface.md` §4.1: *"AI usage is
-  metered separately in credits"*. Not API usage. AI usage.
-- ⚠️ **It also empties the feature the owner asked for.** Per-app, per-agent
-  and per-person credit reporting all read `usage_event`. The apps and agents
-  people use write no row there, so those screens would be honest and
-  blank.
-- **Two shapes, and the choice is the owner's because it trades money against
-  latency and failure.**
-  1. **Proxy.** Send `acompletion_with_fallback` through the Console Router.
-     One path, one meter, the balance gate applies BEFORE spending. Costs a
-     Console round trip on every internal call, and D57.7 says a routed call
-     that fails, fails.
-  2. **Report.** Keep litellm serving and POST the result to
-     `/usage/record`, which exists, takes the internal token and is idempotent
-     on `(organization_id, request_id)`. No latency change and no new failure
-     mode. The balance gate cannot refuse before the spend, so a customer can
-     overrun by one call.
-- ⚠️ **Attribution is the real work in either shape.** The meter needs the
-  member, the agent and the module at 29 call sites. H-73 landed the identity
-  seam. H-44 records the same 80+ sites for tier selection, so sweep the two
-  together and not twice.
-- 📌 **THE OWNER CHOSE SHAPE 1 (proxy), 2026-09-24, and it is built.**
-  `acb_llm/routed.py` is the seam. `acompletion_with_fallback`,
-  `client.complete` and `client.complete_with_tools` all route when
-  `routing_is_on()`. The TIER travels, never a resolved model, so the
-  operator's ranked `tier_binding` chain decides. Attribution comes from
-  `get_run_context()`, so none of the call sites changed.
-- 🔴 **Two mistakes worth keeping, because both were caught by a fence and
-  not by me.** The first payload sent `{"tier": ...}` and spread the caller's
-  `**extra`. `CompletionRequest` forbids extras, and its field is called
-  `model`. So EVERY routed call would have been a 422. The suite stayed green,
-  because it stubbed the client. The second left tool-calling on the
-  direct path, on the belief that the Router had no `tools` field. It has,
-  with `tool_choice` beside it. A test that validates against the REAL
-  pydantic model caught both, and it is the fence to keep.
-- ⚠️ **STILL UNROUTED, and each for a reason.**
-  `context.acompletion_stream_text` — the Console streams through a different
-  client (`stream_completion_on_console`) with a different contract, so it is
-  its own slice. `gateway.main._prewarm_prompt_cache` — a startup warm-up with
-  no tenant and no member to bill, so routing it would invent a payer.
-- ⚠️ **It ships DARK.** `routing_is_on()` needs `ROUTER_SERVING_ENABLED` AND a
-  reachable Console. Every box that has not turned billing on behaves exactly
-  as before, and a test pins that for both the completion and the agent paths.
-- **Fences:** `tests/unit/test_internal_ai_is_routed.py` (20) ·
-  `test_console_dependency_boundary.py` gained the seventh allowed caller,
-  which is the same KIND as the `v1_compat` Router hop.
-- **Authority:** `launch_surface.md` §4.1 · D19.2 · D57.7 · CP-6 · H-73 · H-44
-- **Added:** 2026-09-23 · the H-73 session. **Renumbered from H-170 to H-171** the same day (R1): another branch minted the same next free id against a different base and merged first. An id is never reused.
-
 ### H-44 · Feature→tier binding is hardcoded at 80+ call sites · [AGENT]
+- **Metorite:** #771. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `rg -c '"tier-(fast|balanced|powerful|stt)"' --glob '*.py' --glob '*.ts' apps/ packages/ workbench/`
   → any file with a count means that feature's tier is still a literal, not a
   configuration. Measured 2026-08-26: `assistant.py` 21 · `settings.py` 8 · `_common.py` 8
   · `drafting.py` 7 · `tasks/ai.py` 6 · `notes/summaries.py` 5 · `taskStore.ts` 4 · plus
   five more files.
-- **Why:** The owner asked that *"different features could use the different model
-  tiers"*. **They already do — by string literal at the call site**, so changing which tier
-  the email digest uses is a code change and a deploy, not an operator action. Making it
-  configurable needs a **feature→tier registry**, and at 80+ sites it is **its own ticket,
-  deliberately NOT a CP-10 slice** (D59.6 step 3).
-  📌 **Generalise, do not invent:** the Apps feature already declares its tier in its
-  **manifest** — scope `ai:tier-1` → `_SCOPE_TIER_MAP` → `tier-fast`, with a documented
-  fallback to the cheapest alias (`routes/apps/_common.py:66-79`). That is a declarative
-  feature→tier binding that works. The registry is that idea widened; a second vocabulary
-  beside it is the CLAUDE.md §5 defect.
-  ⚠️ **Blocked on nothing, but pointless before D59.6 steps 1–2** — a registry pointing at
-  tiers whose modality is a Python frozenset can only bind text tiers.
-- **Authority:** `work_plan.md` §3 **D59.4 / D59.6** (re-expressed over `(task, tier)` by
-  **D60.10**) · `specs/customer_console.md` **§6A.9**
 - **Added:** 2026-08-26 · AI architecture session
 
-
-### H-46 · Build the Router's non-chat endpoints — shape DECIDED (D61.1) · [AGENT]
-- ✅ **The `transcribe` half is BUILT, 2026-08-31.**
-  `POST /v1/audio/transcriptions` serves the second of D60's six tasks, and
-  `customer_console.md` §6A.10a is now BUILT.
-- ✅ **The image half and the speak half are BUILT too, 2026-08-31.**
-  `POST /v1/images/generations` and `POST /v1/audio/speech` serve the third
-  task and the fourth, and §6A.10c is now BUILT. H-47's handler seam is what
-  is left. Keep this entry until it lands.
-- 📌 **Both media routes are BUILT to `customer_console.md` §6A.10c.** An
-  audit minted that section on 2026-08-31, and the build answered it the same
-  day. It holds twelve clauses and a fence table.
-  ⚠️ **§6A.10c seeds NO `tier_binding` row.** The choice of the vendor model
-  we resell for pictures and for speech is a commercial act, and it belongs to
-  the owner. So each route answers 400 `tier_unknown` until the owner binds
-  `tier-image` and `tier-tts`. Arming each route is ONE `tier_binding` INSERT,
-  beside the three prerequisites H-69 lists.
-  📌 **§6A.10c gave H-47 no first caller.** `aimage_generation` and `aspeech`
-  are litellm verbs already, so neither route needed a native handler.
-- ✅ **REPAIRED 2026-08-31, review round 2.** An adversarial review returned
-  REQUEST-CHANGES on one P1 and four P2s, and the same branch answered all
-  five. The P1 was a revenue defect: the image body forwarded a caller-chosen
-  `size`, and the vendor prices a picture by size. **H-87** now carries the
-  real follow-up. **H-85** carries the unmeasured-call log, and **H-86**
-  carries the one prelude for four doors. §6A.10c holds each answer.
-- ✅ **The mixed-lift-chain finding is CLOSED, 2026-08-31.** It rode here from
-  WS-31 slice 4, and the router-guards slice filtered the chain.
-  `resolve_vision_chain` now keeps only the steps that set `reads_images`, and
-  an empty result falls to `tier-vision`. `ai_metering_and_analytics.md` §3.2
-  step 3b holds the rule under a D16 marker, and §8.5 clauses 7 and 8 hold the
-  done-when.
-- **⚠️ Three review findings are still OPEN, and they ride with H-47
-  (recorded 2026-08-31):**
-  1. The Router sends `verbose_json` to EVERY transcribe model. The precedent
-     (`acb_stt/litellm_provider.py:252`) sends it to the whisper family alone.
-     A tier repointed at Deepgram or `gpt-4o-transcribe` gets a vendor 400,
-     which reads as "upstream provider error". The family branch belongs in
-     H-47's handler seam.
-  2. An unmeasured transcription writes `quantity` 0, and a silent file also
-     writes 0. Cost gets the NULL-means-unknown rule (D-AI-7) and quantity
-     does not. Decide one way when a reader of `quantity` exists.
-  3. A capability row with a wrong verb (for example `aspeech` on a
-     transcribe pair) burns the failover walk and answers 502 "upstream
-     provider error" for OUR configuration error. `_nothing_to_try` shows the
-     precise-503 shape the refusal should copy.
-- **Check:** `rg -n '@app\.post\("/v1/' apps/services/customer_console/customer_console/main.py`
-  → four routes means every endpoint D61.1 named is built. A tree missing
-  `/v1/images/generations` or `/v1/audio/speech` means this half regressed.
-- **Why:** D60's catalog can **describe** `transcribe` / `image` / `speak`; the Router has
-  **nowhere to serve them**. The fork is real and is an owner call because it is a public
-  wire-protocol commitment: **(a)** per-task OpenAI-shaped endpoints
-  (`/v1/audio/transcriptions`, `/v1/images/generations`, `/v1/audio/speech`) — every SDK
-  already speaks them, but each needs its own upload/streaming story; or **(b)** one
-  generic `/v1/invoke` taking `(task, tier, payload)` — one route, but we invent a
-  protocol nothing speaks and file upload gets awkward.
-  ✅ **DECIDED 2026-08-26 by D61.1: (a), one task at a time, starting with `transcribe`.**
-  ⚠️ **And the [OWNER] label on this entry was wrong** — the Router is an **internal seam**
-  (our gateway → our Console, on a credential we issue), not a public API, so its shape
-  commits us to nobody outside. OpenAI's shapes are also what litellm implements on *both*
-  sides, so following them costs nothing and keeps the option of exposing the Router
-  publicly later. Re-labelled [AGENT].
-  📌 **Build `transcribe` only when a caller needs it.** An endpoint nobody calls is CP-4's
-  mistake repeated — which is the entire lesson of the first-caller ticket (D57.3).
-  ✅ **Not blocking:** CP-10 slice 1 and CP-11 both proceed — chat is **96 of the 110**
-  measured call sites. This bounds the multimodal reach, not the next two tickets.
-- **Done when:** `customer_console.md` **§6A.10a** holds the transcribe
-  clauses, and **§6A.10c** holds the twelve clauses for the image endpoint and
-  the speak endpoint. Build to those two sections, and to nothing written in
-  this entry.
-  ✅ **H-78 landed on 2026-08-31, and this change removes its entry.** Clause 5 reads
-  `model_profile.vendor_per_minute_usd`, and H-78 built that column and the
-  seam that fills it. A profile with no price still leaves
-  `provider_cost_usd` NULL (D-AI-7 rule 3), because only a staff save writes
-  the profile.
-  📌 **H-47 folds in as this entry's dispatch clause.** The handler seam lands
-  WITH its first caller (D57.3). §6A.10b clause 7 says so.
-  📌 **The `video` verb is H-78's one handover, and it rides here.** A map of
-  litellm's `video_generation` mode needs a sixth verb in
-  `KNOWN_INVOCATIONS` (`catalog.py`). `check_invocation` (`catalog.py`) is the
-  refuser, and it rejects a video capability until that verb lands. This slice
-  of H-46 adds no verb. Check: `rg -n "KNOWN_INVOCATIONS" -A8
-  apps/services/customer_console/customer_console/catalog.py` — five verbs
-  means the follow-up is open.
-- **Authority:** `customer_console.md` **§6A.10a** and **§6A.10c** (the
-  done-when) ·
-  `work_plan.md` §3 **D61.1** (the decision) · D60.11(b) · `specs/customer_console.md` **§6A.10 G-1**
-- **Added:** 2026-08-26 · AI design audit · **amended 2026-08-30** with a
-  done-when section and the H-78 order · **amended 2026-08-31** with the
-  mixed-lift-chain finding from WS-31 slice 4. **Amended again 2026-08-31**
-  with H-78's `video` follow-up, after H-78 closed. **Amended a third time
-  2026-08-31** with §6A.10c, the contract for the two routes that are left.
-  **Amended a fourth time 2026-08-31**, after the build closed §6A.10c
-
 ### H-47 · Widen `acb_stt`'s provider pattern instead of inventing a handler abstraction (G-2) · [AGENT]
+- **Metorite:** #771. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `rg -n "class SttProvider|resolve_stt_provider" packages/acb_stt/` → present
   and still STT-only means the generalisation has not happened.
   ⚠️ **Repaired 2026-08-30. This Check read two things as one.** A DATA READ of
@@ -2114,63 +1059,11 @@ line — never reclaim a number by deleting the other entry.
   its first caller on the serving path. The defect this entry guards is a second
   handler-OBJECT seam — a second provider hierarchy beside `acb_stt`'s. Read the
   two apart before you call a hit a defect.
-- **Why:** D60 originally said the capability row carries *"the litellm verb"*. **That is
-  wrong** — `acb_stt` exists because AssemblyAI's batch API is submit-then-poll and, in the
-  package's own words, *"can't be expressed as a LiteLLM `atranscription` call"*. So
-  `invocation` names a **handler**, of which litellm verbs are one family and native
-  providers another.
-  ✅ **The reuse finding is the valuable half:** `acb_stt` already implements D60's step 2
-  — `SttProvider` as the one interface, `resolve_stt_provider(alias)` resolving alias →
-  concrete model → the provider that speaks it, with `LiteLLMSTT` and `AssemblyAISTT`
-  behind it. **That is `(model, task) → invocation`, built, for one task.** Widen it to
-  all tasks. Authoring a second dispatch abstraction beside it is the CLAUDE.md §5 defect
-  in the one place this design has been most careful to avoid it.
-  ⚠️ Consequence for G-5: `invocation` values are an **allowlist the Router knows**, never
-  free text — an operator must not be able to bind a handler that does not exist.
-- **Done when:** `customer_console.md` **§6A.10b** holds the seven clauses.
-  Build to that section, and to nothing written in this entry.
-  📌 **This entry gets NO dispatch of its own.** §6A.10b clause 7 folds it into
-  H-46's build order as that entry's dispatch clause. The seam lands with its
-  first caller, and never before it (D57.3).
-  📌 **Home: `customer_console/handlers.py`**, and `packages/acb_stt` stays the
-  tenant package. §6A.10b clause 1 holds the plane-boundary argument and the
-  rejected `acb_provider` alternative.
-  📌 **2026-09-23: the first caller exists. It is TypeSafe's Jev** (D75).
-  H-165 builds this seam in CP-13a, with `native_typesafe` as its first value.
-  When H-165 merges, delete this entry.
-- **Authority:** `customer_console.md` **§6A.10b** (the done-when) ·
-  `work_plan.md` §3 **D60.11(a)** · `specs/customer_console.md` **§6A.10
-  G-2 / G-5** · CLAUDE.md §5 · `work_plan.md` §4 (the seam's owner row)
 - **Added:** 2026-08-26 · AI design audit · **amended 2026-08-30** with a
   done-when section and a repaired Check
 
-
 ### H-54 · Configure the Supabase GOOGLE WORKSPACE staff provider, the SIX `OPERATOR_*` values, and turn identity linking OFF · [OWNER]
-- ✅ **The ENV half is DONE, 2026-09-02, and only the BROWSER half is left.**
-  An agent set all six values, and `OPERATOR_CONSOLE_ORIGIN` beside them, in
-  the two files this table names. Both files stay `acb:acb 600`. The agent then
-  restarted `acb-customer-console`, and local health answered 200.
-  ⚠️ **`OPERATOR_IDENTITY_ENABLED` stays UNSET on purpose.** Turn it on before
-  the Supabase project holds a Google provider, and the page replaces the
-  passphrase form with a button that cannot work. H-56 step 1 owns that flip.
-  📌 **The owner must still do four acts, and all four are in a browser.**
-  Make the Google Cloud OAuth client. Turn on the Supabase Google provider.
-  Add the redirect allowlist entry. Turn manual identity linking OFF.
-  H-96 listed the same four as its items 5 to 8.
-- 📌 **A tenth thing, learned from the move H-96 describes.** The rows do not
-  travel with the schema. The owner applied the ladder to the new project and
-  started the data again from nothing.
-- **⛔ REWRITTEN 2026-09-01 for D70.** The provider is **Google Workspace**, not
-  Microsoft. `OPERATOR_GOOGLE_HD` replaces `OPERATOR_ENTRA_TENANT_ID`. We have
-  no Entra directory, and `hathilabs.com` is a Google Workspace domain with an
-  admin console.
-- **⛔ AMENDED 2026-09-01, same day, after CP-12h shipped.** This entry said
-  **five** values and named five. There are **six**. It also carried a Check
-  that the code half of CP-12h has now made false.
-- **⛔ AMENDED AGAIN 2026-09-01** by the second repair round. This entry named
-  six values and said WHERE none of them goes. Two of the six go in **both**
-  containers, and a copy in one only fails with a bare 401. The table below is
-  now the placement of record, and it holds eight rows.
+- **Metorite:** #708. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `ssh` to the box and read **TWO** env files, not one.
   1. The API file, `/opt/acb/app/apps/services/customer_console/.env`
      (`acb-customer-console.service`, `EnvironmentFile`). It must hold
@@ -2195,97 +1088,6 @@ line — never reclaim a number by deleting the other entry.
   `rg -n "OPERATOR_GOOGLE_HD" workbench/operator_console/ apps/services/customer_console/`
   returned nothing before CP-12h and returns hits now, so it says only that the
   CODE half is built. It says nothing about the box.
-- **Why:** CP-12a builds the three-check staff gate. It cannot admit anybody
-  until the owner configures the provider and sets the values. Until then
-  the console stays on **one shared passphrase**. That box has been reachable
-  since 2026-08-22.
-- **The SIX values, and the first one is the switch.**
-  **`OPERATOR_SIGNIN_PROVIDER=google`**, `OPERATOR_GOOGLE_HD`,
-  `OPERATOR_STAFF_DOMAINS`, `OPERATOR_BOOTSTRAP_EMAIL`,
-  `OPERATOR_SUPABASE_URL` and `OPERATOR_SUPABASE_ANON_KEY`.
-- **WHERE each value goes, and TWO of the six go in BOTH containers.**
-  Added 2026-09-01, because this entry gave no location at all. The API is
-  `acb-customer-console.service`, and it reads
-  `/opt/acb/app/apps/services/customer_console/.env`. The operator console is a
-  second process, Next, with an env of its own.
-
-  | Value | API `.env` | Operator console env | Owner |
-  |---|---|---|---|
-  | **`OPERATOR_SIGNIN_PROVIDER=google`** | ✅ | ✅ **BOTH** | H-54 |
-  | `OPERATOR_SUPABASE_URL` | ✅ | ✅ **BOTH** | H-54 |
-  | `OPERATOR_SUPABASE_ANON_KEY` | ✅ | — | H-54 |
-  | `OPERATOR_GOOGLE_HD` | ✅ | — | H-54 |
-  | `OPERATOR_STAFF_DOMAINS` | ✅ | — | H-54 |
-  | `OPERATOR_BOOTSTRAP_EMAIL` | ✅ | — | H-54 |
-  | `OPERATOR_CONSOLE_ORIGIN` | — | ✅ | H-56 |
-  | `OPERATOR_IDENTITY_ENABLED` | — | ✅ | H-56, and it is the last act |
-
-  🔴 **`OPERATOR_CONSOLE_ORIGIN` is NOT one of the six, and sign-in cannot work
-  without it.** `login/page.tsx` builds the authorize link out of it, and an
-  unset value prints "Sign-in is not configured on this deployment" instead of
-  the button. So the console needs THREE values before the flag flip, and H-56
-  step 1 now says so. An owner walk of these two entries found it on
-  2026-09-01.
-  ⚠️ **A one-container copy of the switch fails QUIETLY.** Put it in the API
-  only, and the page still offers "Sign in with Microsoft". Put it in the Next
-  process only, and Supabase returns a `google` identity while the API computes
-  `azure`. The two disagree, and the gate answers **401** with no message that
-  names the cause.
-  Measured on `ws-31-google-signin`, 2026-09-01. The API reads the value in
-  `customer_console/operators.py::signin_provider`. The Next process reads it
-  in `workbench/operator_console/src/lib/identity.ts::signinProvider`, at
-  request time, because `login/page.tsx` is `force-dynamic`.
-- ⚠️ **Set the other five and skip the switch, and the box stays on `azure`.**
-  Every Google sign-in then answers **401**, and no message names the unset
-  variable. This entry named five values until 2026-09-01, and that gap is
-  what an owner would have spent a day on.
-  ⚠️ `deploy/hostinger/customer_console.env.example` still documents the Entra
-  name. `deploy/` is OWNER-GATE, so an agent may not correct it there.
-- **Turn manual identity linking OFF in the Supabase project.** A staff
-  account that links a second provider can be signed in through that
-  provider. The Console refuses such a sign-in, because it reads
-  `app_metadata.provider`. That claim is not per-session, so linking is
-  the condition the bypass needs, and removal is the durable fix.
-  ⚠️ **A SECOND fact, measured 2026-09-01, and it sits here because linking
-  closes both.** `app_metadata.provider` holds a provider NAME, so it cannot
-  separate two identities that share that name. An operator can link a
-  personal Google account to their own Supabase user. That operator then holds
-  two `google` identities, and `_google_hd` reads the `hd` off either one.
-  That reader proves *"this account holds an identity from our Workspace"*,
-  and not *"this sign-in came from our Workspace"*. No outsider can reach it.
-  Turning linking off removes it.
-- 🔴 **Measure one real Supabase GOOGLE payload. Read TWO claims off it.**
-  1. Does `hd` appear in `identities[].identity_data`?
-  2. Does **`email_verified`** appear in the same place, and is it `true`?
-  Both are **unmeasured and load-bearing.** `operator_signin` reads a shape
-  nobody has seen. It fails CLOSED, so a wrong guess refuses everybody instead
-  of admits anybody. ⚠️ **Spec done-when 31 makes `email_verified is True` on
-  the SIGN-IN identity the ONLY accepted proof of a verified address. If
-  Supabase leaves that key out when the value is false, nobody signs in at
-  all.** It is one read, and the second answer costs nothing.
-  ⚠️ The old part 3 of this entry asked for the **Azure** claim shape. That
-  question is dead. This one replaces it.
-- 📌 **HOW to read the payload, and what to do when the sign-in refuses you.**
-  A refusal at step 4 answers a deliberately uninformative 403, because §4.1
-  gives one refusal for every failed check. **The log holds the real answer.**
-  1. Read the payload directly. Sign in once, take the `access_token` the
-     callback puts in the URL fragment, then
-     `curl -H "apikey: $OPERATOR_SUPABASE_ANON_KEY"
-     -H "Authorization: Bearer $TOKEN" "$OPERATOR_SUPABASE_URL/auth/v1/user"`.
-     `identities[].identity_data` is the object both claims live in.
-  2. Read why the Console said no.
-     `journalctl -u acb-customer-console | grep operator.refused`.
-     The line carries `operator_check` and `operator_tid`. A `directory` check
-     with `operator_tid=<none>` means Supabase sent no `hd`, so part 1 above
-     answered NO and `_google_hd` is the one function to change.
-  ⚠️ Without this, a refused sign-in gives the owner a 403 and no next action.
-- ⚠️ **A payload with NO `hd` must refuse.** Google issues an account on any
-  address it verifies by mail, and such an account carries `email_verified:
-  true` and no `hd`. Do not read a missing claim as a pass. Spec §8.1 done-when
-  30 is the acceptance.
-- **Authority:** `specs/operator_identity_and_access.md` §4.1 · §8.1 done-whens
-  30 to 33 · §10 G1–G2 · `work_plan.md` §6.0 B5 · §6.1 (CP-12 block) ·
-  **D70.1** · D64.1
 - **Added:** 2026-08-26 · operator-identity spec session · **rewritten
   2026-09-01** for D70 · **amended 2026-09-01** by the CP-12h repair round,
   which found the sixth value and the false Check.
@@ -2294,161 +1096,32 @@ line — never reclaim a number by deleting the other entry.
   `OPERATOR_CONSOLE_ORIGIN`.
 
 ### H-58 · Name the first operators and their roles · [OWNER]
+- **Metorite:** #712. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `rg -n "OPERATOR_BOOTSTRAP_EMAIL" deploy/ .env.example` → no hit
   means nobody has been named yet.
-- **Why:** CP-12d ships the add, re-role and deactivate routes. Who is a
-  `viewer`, who is an `editor` and who is an `admin` is an owner judgement, and
-  no agent may take it. ⚠️ Naming a **second** `admin` is also the trigger that
-  pulls four-eyes approval (DEF-1) out of deferral. The two arrive together.
-- **Authority:** `specs/operator_identity_and_access.md` §5 · §9 DEF-1 ·
-  `work_plan.md` §6.0 C4 · D64.3
 - **Added:** 2026-08-26 · operator-identity spec session · **renumbered from
   H-55 on 2026-08-26**, because the STE session minted its own H-55 against a
   different base and merged first. `test_handoff_ids_are_unique` caught it. Ids
   are never reused, so H-55 stays with the STE entry.
 
 ### H-56 · **CP-12g slice 2** — delete the passphrase, AFTER one real sign-in · [AGENT+OWNER]
+- **Metorite:** #709. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `rg -n "OPERATOR_CONSOLE_STAFF_SECRET" workbench/` → a hit means
   the deletion has not run. That is the CORRECT state until the owner has
   flipped the flag and signed in once.
-- **⚠️ Amended 2026-08-27.** CP-12a to CP-12g slice 1 are built. The console
-  now has both sign-in paths, and `OPERATOR_IDENTITY_ENABLED` chooses.
-- **The order, and it is the reverse of what it looks like:**
-  0. **[AGENT]** ✅ **BUILT 2026-09-01** on `ws-31-google-signin` as CP-12h,
-     and repaired the same day after an independent verification.
-     `OPERATOR_SIGNIN_PROVIDER` names the directory, and the gate reads the
-     Google Workspace `hd` claim against `OPERATOR_GOOGLE_HD`. Spec §8.1
-     done-whens 1, 5 and 30 to 33 are MET.
-     ⚠️ **This step is done in the CODE only.** Nobody has merged that branch,
-     and nobody has set a variable on the box. Step 1 is still owed.
-  1. **[OWNER]** Finish **H-54**. Configure the Supabase **Google Workspace**
-     provider, set the **six** `OPERATOR_*` values, turn identity linking OFF,
-     and add `<origin>/login/callback` to the redirect allowlist.
-     ⚠️ **`OPERATOR_SIGNIN_PROVIDER=google` is one of the six.** Without it the
-     box stays on `azure`, and every Google sign-in answers 401. This step read
-     "five" until 2026-09-01.
-     ⚠️ **TWO of the six go in BOTH env files** — the switch itself and
-     `OPERATOR_SUPABASE_URL`. Set the switch in one container only, and sign-in
-     fails with no message that names the cause. H-54 holds the placement
-     table, one row per value.
-     🔴 **Set `OPERATOR_CONSOLE_ORIGIN` on the console in this step too.** It
-     is not one of the six, and the sign-in button does not appear without it.
-     The console therefore needs three values here: the switch,
-     `OPERATOR_SUPABASE_URL` and `OPERATOR_CONSOLE_ORIGIN`. Step 3 flips the
-     fourth. This step named none of them until 2026-09-01, and an owner who
-     followed it exactly reached a page that said "Sign-in is not configured".
-  2. ✅ **DONE.** The Console ladder is applied on production. Measured
-     2026-09-01: the `operator` table exists, and migrations 019 to 021 are
-     recorded. **H-64 carried this and the owner closed it**, so that entry is
-     deleted.
-  3. **[OWNER]** Set `OPERATOR_BOOTSTRAP_EMAIL` to your own address, then
-     flip `OPERATOR_IDENTITY_ENABLED` on the console app.
-     ⚠️ **The bootstrap is already spent.** The 2026-09-01 read found two
-     `active` `admin` rows. `operators.bootstrap` refuses once any row exists,
-     so this variable does nothing now. Set it anyway. It costs nothing, and it
-     matters again on a fresh box.
-  4. **[OWNER]** Sign in once. ⚠️ **You are already an `admin` row**, so the
-     sign-in proves the gate rather than creates you. Then add the rest of the
-     team (**H-58**).
-  5. **[AGENT]** ONLY THEN: delete `staff.ts`, `InterimForm.tsx` and the
-     interim branch of the session route. Remove the constant from
-     `route.ts`, `session.ts` and `identity.ts`.
-  6. **[OWNER]** Remove `OPERATOR_CONSOLE_STAFF_SECRET` from the box.
-- **⚠️ Run step 5 before step 4 and nobody can sign in at all.** That is why
-  slice 1 keeps both paths.
-- **Two console env values are still undocumented**, because
-  `deploy/` is OWNER-GATE and I may not write there. Add to the operator
-  console's env: `OPERATOR_IDENTITY_ENABLED` (the flag, default off) and
-  `OPERATOR_CONSOLE_ORIGIN` (the console's own public URL, used to build the
-  Supabase callback). Both are console-only.
-- ⚠️ **BOTH services read TWO of the values**, and this line named one of
-  them until 2026-09-01. They are `OPERATOR_SUPABASE_URL` and
-  **`OPERATOR_SIGNIN_PROVIDER`**. The switch is the one that fails quietly.
-  The API computes the provider from it. The console builds the authorize link
-  from it. A mismatch answers **401** and names nothing.
-  H-54 carries the full table, container by container.
-- **Authority:** `specs/operator_identity_and_access.md` §8 · `work_plan.md` §2
-  WS-31 (CP-12 clause) · D64
 - **Added:** 2026-08-26 · operator-identity spec session
+
 ### H-65 · plan-guard cannot see a write made by an interpreter reading a heredoc · [AGENT]
+- **Metorite:** #772. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** read `.claude/hooks/plan-guard.mjs` near the `scanned` constant.
   A regex still strips every heredoc body before the protected-path scan, and
   `plan-guard.test.mjs` names no interpreter case. Both mean still open.
-- **What I did, by accident, on 2026-08-27.** I edited
-  `deploy/hostinger/customer_console.env.example` with `python - <<'PY'`. The
-  path is protected by the `deploy-write` gate. The guard did not fire.
-- **Why it does not fire.** The guard strips heredoc bodies on purpose, and
-  the reason is sound: a body is usually FILE CONTENT, and content that
-  mentions `.env` must not block an ordinary commit. The comment argues that a
-  real write still blocks, because in `cat > .env <<'EOF'` the `> .env` sits
-  in the command half.
-- **⚠️ That argument holds for `cat`. It does not hold for an INTERPRETER.**
-  In `python - <<'PY'` the body is a PROGRAM, and the program does the write.
-  The path never appears in the command half at all. The same is true of
-  `node -e`, `perl`, `ruby` and `sh` reading from a heredoc.
-- **Suggested fence:** when the command runs an interpreter that reads its
-  program from stdin or from `-e`, scan the body as COMMAND instead of
-  stripping it. Add a case to `plan-guard.test.mjs` first, and show it red.
-- **⚠️ Do not treat this as licence.** The gate is the rule. A gap in the
-  enforcement does not widen it.
-- **Authority:** `work_plan.md` §6 · D45 · `.claude/hooks/plan-guard.mjs`
 - **Added:** 2026-08-27 · WS-31 CP-12g session
 
 ### H-69 · Flip `ROUTER_SERVING_ENABLED` — after three prerequisites · [OWNER]
+- **Metorite:** #510. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** on the box, `grep ROUTER_SERVING_ENABLED /opt/acb/app/.env`. No
   line, or `0`, means the hop is inert and this is still pending.
-- **What the flip does.** `/v1/chat/completions` stops calling litellm locally
-  and calls the Console Router instead. The tier binding, the rate card and OUR
-  provider account then decide every call, streamed or not.
-- **⚠️ Three things must be true FIRST, and none of them is code.**
-  1. A provider credential is installed on the Console (**H-40 built the door**,
-     and `provider_credential` held 0 rows when I measured it on 2026-08-27).
-  2. `CUSTOMER_CONSOLE_ORG_KEY` is on the box. Mint it from the operator
-     console's **API keys** panel, which CP-11 slice 1 added.
-  3. ~~Streaming stays unmetered.~~ ✅ **CLOSED 2026-08-27** — CP-4b and
-     CP-11 slice 5 route and meter a stream. The flip now covers ALL
-     traffic, which is what makes the revenue number readable.
-- **⚠️ A routed call that fails FAILS (D57.7).** It does not fall back to
-  litellm. So an unreachable Console means the AI stops, instead of quietly
-  serving unmetered traffic. That is the intended trade, and it is why the flag
-  is worth flipping deliberately and not by default.
-- **⚠️ On a SHARED box one org key cannot be right for every tenant.** The
-  setting is correct on a single-org silo only. Somebody must resolve the key
-  per-organization before this goes on anywhere else.
-- **📌 MEASURED ON THE BOX, 2026-09-21.** The three prerequisites, and what
-  else the flip would meet:
-  1. ✅ **A platform vendor account exists** — `deepseek`, live. It is the
-     ONLY one.
-  2. ❌ **`CUSTOMER_CONSOLE_ORG_KEY` is UNSET**, and `llm_api_key` holds **no
-     rows at all**. There is nothing to put on the box yet.
-     ⚠️ `CUSTOMER_CONSOLE_URL` IS set, to `http://127.0.0.1:8090`.
-  3. ✅ Streaming, closed as above.
-- **🔴 THE FLAG ALONE IS INERT, and that is worth knowing before anyone tries
-  it.** `_router_should_serve` needs the flag AND `router_is_wired()` — the
-  URL and the org key together. With the key unset the flip logs
-  `v1.router_enabled_but_unwired` and falls back to the local path. So turning
-  it on early breaks nothing. It also achieves nothing.
-- **🔴 `tier-stt` WOULD FAIL EVERY CALL.** It binds
-  `groq/whisper-large-v3-turbo`, and there is no groq credential. Install one
-  or re-point the tier BEFORE the flip. Both acts are `admin` + elevation.
-- **⚠️ Seven registry tiers have NO binding** and answer 400 after the flip:
-  `tier-code`, `tier-vision`, `tier-image`, `tier-tts`, `tier-embed`,
-  `tier-video`, `tier-music`. Only the three chat tiers and `tier-stt` are
-  bound. Anything in the product that asks for one of those breaks.
-- **⚠️ What serves customer AI TODAY is the TENANT-LOCAL `DEEPSEEK_API_KEY`**
-  in `/opt/acb/app/.env`, through local litellm, unmetered. The vendor keys in
-  the operator console are the PLATFORM account. They serve nothing until this
-  flip. Removing the local key before the Router is proven serving takes AI
-  down for the live customer. D57.7 leaves no fallback.
-- **✅ H-72 IS CLOSED, and its Check was looking in the wrong place.** It named
-  a `task_settings` table. No such table exists. The columns live on
-  `user_settings` and `email_assistant_settings`. BOTH hold **zero rows** on the
-  tenant database. So no raw model id is stored anywhere, and nothing breaks
-  on the flip. ⚠️ A Check that names a table that does not exist reads
-  as "closed" whatever the truth is. Confirm you are on the tenant database by
-  finding `pm_tasks` before believing an absence there.
-- **Authority:** `work_plan.md` §6 (d)/(e) · **D57** · **D57.7** ·
-  `specs/customer_console.md` §6B.7
 - **Added:** 2026-08-27 · WS-31 CP-11 slice 3 session
 
 ---
@@ -2460,237 +1133,35 @@ line — never reclaim a number by deleting the other entry.
 ---
 
 ### H-73 · CP-7's per-member cap rests on an identity the member controls · [AGENT+OWNER]
+- **Metorite:** #12. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `grep -n "x-cc-member" apps/services/gateway/gateway/routes/v1_compat.py`
   → a `request.headers.get(...)` hit means the member identity is still taken
   from the inbound request, and this is open. A hit that reads it from a
   verified session means somebody fixed it, and CP-7's engine can proceed.
-- **Why:** 🔴 **The cap engine is built and must stay unwired.**
-  `credits.decide_member_cap` and the `member_ai_cap` table both exist. Wiring
-  them to today's inputs would ship a control that does not control anything.
-  The chain is measured, not inferred:
-  1. `auth.py:497` binds `Caller.member` from the **`X-CC-Member` header**.
-  2. `auth.py:211` says so out loud: *"Attribution only. Never used to select
-     rows, never used to authorise."*
-  3. `v1_compat.py:490` forwards it **verbatim from the inbound request** —
-     `request.headers.get("x-cc-member")`. It is not derived from the session.
-  4. So the capped party chooses which cap applies. **Omit the header and
-     there is no cap row, and no cap row means unlimited** — which is correct
-     behaviour for an absent policy and a total bypass for a present one.
-- **⚠️ This is migration 005's defect class, one column over.** 005 moved
-  `request_id` server-side because *"the party being invoiced must not control
-  whether it exists."* The same sentence with two words changed: **the party
-  being capped must not control which cap applies.**
-- **📌 Why the gateway cannot fix it alone.** On `/v1/chat/completions` there
-  is no session to derive from. `require_llm_api_auth` is a pure token check
-  that binds no identity. So `current_tenant()` is `None` by construction.
-  That is the `work_plan.md` §6 (f) H4 finding. `saas_multitenancy.md` §3082
-  records the same for `X-CC-Agent`. The gateway has nothing true to put in
-  the header.
-- **🟢 The reads did NOT wait for this, and shipped.** `/my/usage/activity`
-  and `/my/usage/members` (CP-7 slice 1) report the same attribution and are
-  safe, because a cost report is not an authorisation decision. **Attribution
-  is good enough to REPORT and not good enough to ENFORCE.**
-- **Both questions are ANSWERED, 2026-09-23.**
-  1. **Where a trustworthy identity comes from: a signed claim, not a new
-     door.** `acb_auth/member_proof.py` mints and verifies an HMAC over
-     `member:nonce:exp` under `gateway_session_secret`, with a 300s TTL.
-     `v1_compat._member_for` prefers a verified proof over the header and
-     returns `(member, proven)`. `console_resolve` carries `proven` to the
-     Console as `X-CC-Member-Proven`. **No fifth auth scheme**, so §4's
-     registry is not engaged — the credential set is unchanged and one header
-     gained a signature.
-  2. The owner answered yes on 2026-09-23, asking for per-member budgets,
-     redistribution and per-person usage.
-- ⚠️ **What is CLOSED: a member can no longer choose which cap applies.** Only
-  a holder of `gateway_session_secret` can mint, and that secret never reaches
-  a browser. A forged `X-CC-Member` loses to a proof, and a test asserts it.
-- 🔴 **What is NOT closed, and it is the remaining half.**
-  (a) **Nothing MINTS a proof yet.** Measured: no code in this tree sends
-  `X-CC-Member` to the gateway's `/v1` at all, which is consistent with
-  `usage_event` holding zero rows. The minter belongs wherever the workbench
-  originates an AI call with a session in hand.
-  (b) **"No cap row means unlimited" still stands.** A cap keyed on `proven`
-  is unforgeable, but an UNPROVEN caller still matches no row. The policy for
-  that case — refuse, fall back to an org-wide default, or allow — is a
-  decision, not an implementation, and it is the owner's.
-- **Authority:** **D32.8** · `specs/customer_console.md` §4.5 · §6 CP-7 ·
-  `work_plan.md` §6 (f) · migration `005_metering_identity.sql`
-- **Fences:** `tests/unit/test_member_proof.py` (24) · the three attribution clauses in `test_v1_router_serving.py`.
 - **Added:** 2026-08-28 · WS-31 CP-7 slice 1. **Updated:** 2026-09-23.
 
 ### H-74 · mypy is strict over a tree nobody has swept — 1508 errors · [AGENT]
+- **Metorite:** #270. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `uv run mypy apps packages --exclude '^apps/agents/' 2>&1 | tail -1`
   → a count above zero means the sweep has not happened and this is open.
-- **Why:** **Two dead halves of one ratchet, both found while fixing H-28.**
-  The pre-commit hook passed no target, so it type-checked nothing. The CI step
-  ran `uv run mypy apps packages`, which aborts on a duplicate-module error and
-  checked almost nothing. CI is `continue-on-error`, so its "Found 1 error"
-  read as a clean report for as long as the step has existed.
-- **📌 Both halves now report.** The hook is diff-scoped and report-only. CI
-  excludes `apps/agents/` and reaches 418 files. **Neither blocks**, which is
-  the honest state — 1508 errors in 271 files, measured 2026-08-28.
-- **⚠️ Do not flip either one to blocking before the sweep.** A blocking
-  diff-scoped hook stops your commit on somebody else's errors in the file you
-  touched. The only thing that teaches is `--no-verify`, and a bypass habit is
-  worse than a report.
-- **📌 The seven colliding modules are the other half of the story.**
-  `apps/agents/*/agents.py` — seven files, one module name, no `__init__.py`.
-  Until they are packaged, no tool that walks the tree can see past them.
-- **Authority:** `work_plan.md` §1 R7 · `.pre-commit-config.yaml` ·
-  `.github/workflows/pr-check.yml`
 - **Added:** 2026-08-28 · H-28 fix session
 
-### H-75 · The Operator Console's systemd unit and Caddy block are NOT in the repo · [OWNER]
-- **Check:** `rg -l "operator" deploy/hostinger/` → no hit means the unit file
-  is still only on the box, and this is open.
-- **Why:** 🔴 **The console is deployed and was never reproducible.**
-  `operator.metorite.com` serves, Caddy routes it, a process answers — and
-  none of that exists in version control. Every other service here is copied
-  from `deploy/hostinger/*.service` by `vps_apply.sh`. This one was stood up
-  by hand.
-- **📌 The drift it caused is measured, not theoretical.** On 2026-08-28 both
-  `/models` (merged 08-27) and `/providers` (merged 08-28) answered **404** on
-  the live console. The site was up and the code was two days behind, because
-  nothing rebuilt it.
-- **✅ Half of this is now closed.** `scripts/vps_apply.sh` builds and restarts
-  the console on every deploy, guarded on the unit being enabled and
-  overridable by `OPERATOR_CONSOLE_UNIT`.
-  `test_operator_console_deploy_wiring.py` fences all three properties.
-- **⚠️ What is STILL open, and it is the owner's half:**
-  1. Commit `acb-operator-console.service` to `deploy/hostinger/` to match
-     what runs on the box, and add the `sudo cp` line the workbench block
-     already has. **`deploy/` is §6 owner-gate and plan-guard blocks an agent
-     from writing there** — the same wall as H-13's three patches.
-  2. Commit the Caddy site block for `operator.metorite.com`.
-  3. Confirm the running unit is called `acb-operator-console`. If it is not,
-     set `OPERATOR_CONSOLE_UNIT` on the box or rename the unit.
-- **📌 Until 1 and 2 land, the deploy manages an artefact it cannot
-  reproduce.** Losing the box loses the console's configuration entirely.
-- ✅ **DE-ESCALATED 2026-09-05. The deploy is NOT blocked.** This banner said
-  it was. The last six runs succeeded. Run `33937646678` for SHA
-  `00b61bf9` reported *"Customer Console ladder applied (29 files)"*. It also
-  reported *"serving 00b61bf9…"* and verified on round 1. That is delivery by
-  evidence and not by a green tick (CLAUDE.md §3.8): the file count and the
-  served SHA both appear in the log.
-- ⚠️ **So the two paragraphs below are HISTORY, kept because they name the
-  failure mode.** Somebody corrected the ownership on the box between
-  2026-08-31 and 2026-09-03. Nobody updated this entry, and a session reading
-  it would have believed deploys were blocked and stopped. That is the exact
-  shape `HANDOFF.md` warns about — an entry that outlives its work starts
-  lying.
-- 📌 **What that leaves is the DURABLE half, and it is smaller but not
-  smaller in consequence.** The risk is no longer a broken deploy. It is that
-  `operator.metorite.com` serves, Caddy routes it and a process answers, and
-  **none of that exists in version control**. Lose the box and the console's
-  configuration is gone.
-- 🕐 **HISTORY — the escalation of 2026-08-31, which no longer holds.** Deploy
-  run `33397261968` for SHA `301d0e59` failed all three
-  rounds on one line. `error: unable to unlink old
-  'workbench/operator_console/src/app/models/ModelDetails.tsx': Permission
-  denied`, and then `fatal: Could not reset index file to revision
-  'origin/main'`. The box builds the console in place. So files under
-  `workbench/operator_console/` belong to a user the deploy does not run as,
-  and `git reset --hard origin/main` stops there. No code lands. No migration
-  applies. No service restarts.
-- 🕐 **HISTORY.** Measured after that run: migrations 019, 020 and 021 were
-  ABSENT from the production Console database and the box served `3ad494bd`.
-  ✅ **No longer true.** The 2026-09-05 run applied the whole 29-file ladder,
-  so 019 to 029 are on the box.
-- ✅ **The deploy verifier did its work.** It refused to read a healthy app as
-  a landed deploy, and it said so. "The app is UP but on a DIFFERENT commit."
-  Nothing broke, and the commit from before still serves.
-- ✅ **DONE.** The ownership fix landed and the workflow ran. This is the step
-  the de-escalation above measures.
-- 📌 **Item 1 above is the durable repair.** A console that the deploy BUILDS
-  but does not OWN does this again on the next file it must replace.
-- ✅ **Item 3 is ANSWERED, 2026-09-02.** An agent read the box. The unit
-  is `acb-operator-console.service` and it is active. So nobody needs to set
-  `OPERATOR_CONSOLE_UNIT`. Items 1 and 2 stay open, and both are owner-gate.
-- **Authority:** `work_plan.md` §6 (deploy reach) · D35 (own hostname, own
-  app) · `scripts/vps_apply.sh`
-- **Added:** 2026-08-28 · operator-console deploy session · **escalated
-  2026-08-31** after run `33937646678`'s predecessor failed · **de-escalated
-  2026-09-05** against run `33937646678`, credit-pricing merge session
-
 ### H-76 · `usage_by_org` sorts by spend, so the quiet funded customer falls off the cap · [AGENT]
+- **Metorite:** #533. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** read the docstring of `usage_by_org` in
   `apps/services/customer_console/customer_console/store.py` and the `ORDER BY`
   under it. An order that still sorts on credits alone means this is open.
-- **Why:** the read LEFT JOINs `organization` to `usage_event` so that an
-  organization with no use appears with zeros. "This customer bought credits
-  and used none" is the most actionable row on the page. The `ORDER BY` then
-  sorts on credits descending, and `SPEND_PAGE_SIZE` cuts the list. So that
-  row sorts LAST and drops off the end. The two rules cancel out.
-- **📌 Measured, not theoretical.** Found on 2026-08-30 against a scratch
-  database of 563 organizations. Dev, CI and production hold 2 organizations,
-  so all three agree the read is fine.
-- **What is already done:** the read returns `total`, and the console says
-  "100 of 563". The truncation is never silent.
-- **What is open:** the ordering itself. An operator wants the biggest
-  spenders **and** the quiet ones. That is two queries or one union, not one
-  `ORDER BY`. Nobody has chosen the shape.
-- **⚠️ The number stands even after the fix.** Handoff ids are never reused.
-  `store.py` cites "HANDOFF H-76" by name.
-- **Authority:** `specs/ai_metering_and_analytics.md` §5 O2 · `store.py`
-  `usage_by_org`
-- **⚠️ Widened 2026-08-31 by slice 5.** A walled organization bills 0, so it
-  also sorts last. The `walled` flag rides the capped table, and only `silent`
-  has the cap-proof banner. Above `SPEND_PAGE_SIZE` organizations, a walled
-  customer appears nowhere. The fix for the sort must cover both classes.
 - **Added:** 2026-08-30 · WS-31 spec remediation session
 
 ### H-77 · Set the vendor feed's clock on the box · [OWNER]
+- **Metorite:** #541. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** on the box, `grep CUSTOMER_CONSOLE_FEED_SYNC_HOURS /opt/acb/app/.env`.
   No line, or `0`, means the feed only updates when somebody presses the
   button, and this is still open.
-- **Why:** the owner's directive (2026-08-30) asks for vendor prices that
-  update on their own. Migration `014` and `feed.py` built the machinery.
-  The loop ships dark (CLAUDE.md §4), so the clock is an env var the owner
-  sets. `24` is the sensible value — litellm moves near-daily.
-- **What it does NOT touch:** `model_profile`, the rate card, or any billing
-  read. The sync fills `vendor_price_feed` and the console shows drift. The
-  operator still clicks to copy a price into a profile.
-- **The button works today.** "Fetch the latest" on `/models` syncs once with
-  the flag unset. The flag only adds the clock.
-- **Authority:** `customer_console.md` §6A.11 · `work_plan.md` §6
-  (enforcement flips)
 - **Added:** 2026-08-30 · vendor-feed session
 
 ### H-88 · A field-change coalescing test flakes on a UUID tiebreak · [AGENT]
-- **🔴 2026-09-21 — this is [[H-92]], and H-92's diagnosis is the right
-  one.** Two entries name ONE test:
-  `test_an_intervening_activity_breaks_the_run`. This entry calls it a UUID
-  tiebreak flake. H-92 calls it state leaking between tests. Measured today,
-  on this branch and on its base:
-
-      alone, 5 runs:     pass pass pass pass pass
-      in suite, 3 runs:  FAIL FAIL FAIL
-      in suite on BASE:  FAIL pass FAIL
-
-  A tiebreak flake does not pass five times alone and fail three times in a
-  suite. That is leakage, so look where H-92 says to look — `FakeProjectsDB`
-  and any module-level cache — and not at a UUID sort.
-- **⚠️ Fold the two entries into one when you take it.** Two ids for one
-  defect is how a fix lands against the wrong description.
-- **It cost time again today.** A comment-threading branch touched
-  `core.py` and `activities.py`, and the suite went red. Isolating it needed
-  the base files copied back in and the suite re-run three times. That is
-  the camouflage this entry already warns about, paid a second time.
-- **🔴 2026-09-20 — measured: it fails FOUR runs in five.** Five
-  identical runs of `tests/unit/test_projects_hardening.py` with
-  `-p no:randomly`: fail, fail, fail, fail, pass. "Flakes" undersells it.
-  At that rate the suite is red more often than green, so the honest
-  reading is a BROKEN test, not an occasional one.
-- **⚠️ It is also camouflage.** A branch that genuinely breaks this file
-  cannot be told from a clean one without running it several times. That
-  cost real minutes on 2026-09-20, when a lifecycle change had to be
-  isolated from it by reverting the test file and re-running.
-- **The failing case:** `test_an_intervening_activity_breaks_the_run`.
-- **🔴 2026-09-22 — the Check below HUNG, and a hung check reads as a slow
-  one.** `-k "project or tree or task or personal"` over `tests/unit/` never
-  reported. It is WS-9's directory hang, which the board already warns about.
-  A session waited on it, killed it, and re-ran with the hanging suites
-  deselected. Corrected command below. Fix the command, not the run.
+- **Metorite:** #772. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** run `uv run pytest tests/unit/ -k "(project or tree or task or
   personal) and not memory and not calendar" -q` three times. If
   `test_projects_hardening.py::test_an_intervening_activity_breaks_the_run`
@@ -2700,32 +1171,14 @@ line — never reclaim a number by deleting the other entry.
   DIFFERENT test — see [[H-92]], which now carries the sharper evidence.
   ⚠️ **`-k "projects"` alone no longer reproduces it** — six green runs while
   the defect is live. Do not narrow this selection.
-- **What happens:** `_coalescible_prior` in
-  `apps/services/gateway/gateway/routes/projects/core.py` reads the last
-  activity with `ORDER BY created_at DESC, id DESC LIMIT 1`. The test writes
-  a field change, then a comment, then a second field change. All three land
-  inside one clock tick on a fast box. `created_at` then ties, and `id DESC`
-  decides — but `id` is a random UUID. So the query returns the comment or
-  the field change at random. When it returns the field change, the two
-  edits coalesce and the count is 1 instead of 2.
-- **Why it is real, not only a test problem:** the same tie decides
-  production behaviour. Two activities written in the same tick coalesce or
-  do not coalesce at random, so an edit can fold over a comment that came
-  after it. The timeline then shows the wrong order.
-- **The likely fix:** order on a monotonic tiebreak instead of the UUID. The
-  table needs a sequence, or `created_at` needs a guaranteed-distinct value
-  per row. Do not "fix" the test — the test states the correct rule.
-- **NOT caused by the Spaces work.** The baseline commit flakes the same way.
-  `git stash` the branch and run the same selection to see it.
-- **Authority:** `project_management_app.md` §9.10 (the coalescing rule)
 - **Added:** 2026-08-31 · projects UI/UX session · **minted as H-80, renumbered
   to H-88 on 2026-08-31** — `main` had meanwhile taken H-80 for "Decide the
   thread budget for the stream walk" and run on to H-87. Two branches minted
   the same next-free id against different bases, which is R1 one level up. This
   entry merged second, so this entry moved.
 
-
 ### H-111 · Arm the weekly report send. The audience is DECIDED · [OWNER]
+- **Metorite:** #482. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** on the box, `grep -c '^PROJECT_REPORT_EMAIL_ENABLED=true' /opt/acb/app/.env`.
   A zero means this is open.
   ⚠️ **The second half of this Check was wrong within one day of being
@@ -2734,300 +1187,54 @@ line — never reclaim a number by deleting the other entry.
   audience unbuilt forever. Corrected 2026-09-17, and it is the same drift
   H-105 carried for eleven days. A Check that names a file is a Check that
   rots when the work moves.
-- **⚠️ The two questions this entry was gated on are ANSWERED.** The owner
-  delegated them on 2026-09-17 and the answers are in migration 205 and in
-  `reports.py`. **A recipient is an address the directory already knows, never
-  free text** — anything else is an open mail relay from our one verified
-  sender. **Any member may add any member**, because the send renders once per
-  recipient with that recipient's own visibility, so adding somebody can never
-  show them more than they could already see.
-- **⚠️ The HR grant is part of "that recipient's own" view** (S11, 2026-09-26).
-  `render_body` passes `can_read_hr_fields(user)` to the Forecast (`outlook`)
-  section, so leave lowers its hours only for an admin reader. The job must
-  render with each recipient as `user`. If it renders once as the author, a
-  non-admin recipient gets the leave-applied rate
-  (`projects_ai_chat.md` §17.3 rule 5).
-- **What exists.** §9.12.8 slices 1 and 2 are merged. A definition saves
-  (`pm_reports`, migration 204), renders in the app (the Reports pane), and
-  renders to an email body with no colour (`src/lib/reportEmail.ts`).
-  `sendReportEmail` THROWS while the flag is off, instead of returning
-  quietly. A send path that reports success while it sends nothing is how a
-  scheduled report runs unnoticed for a month.
-- **What is missing is now ONE thing: the job.** Nothing calls
-  `sendReportEmail`. The audience, the schedule column, `last_sent_at` and the
-  two locks all exist (migration 205). No timer reads them.
-- **Two locks, and you hold one.** A member can arm a report's schedule. Only
-  the deployment arms delivery. Both are off, and
-  `test_projects_report_recipients.py` fails if the second one turns on in
-  this repo.
-- **⚠️ Why this is OWNER.** §3a rule 3 is explicit: *"do not send mail to a
-  real person"*. A job that emails colleagues on a timer is an outward act,
-  and the first send is the one nobody can take back. Two decisions come
-  before the flag. **Who receives a report**, and **whether a member may add
-  somebody else** to a recipient list.
-- **Related:** H-107's MX gap. `privacy@` and `support@` do not resolve, and a
-  report people reply to needs an address that works.
 
 ### H-112 · `test_tenant_coverage`'s live checks are invisible to CI · [AGENT]
+- **Metorite:** #609. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `uv run pytest tests/unit/test_tenant_coverage.py -q` with
   `DATABASE_URL` unset. Two tests SKIP. Their own skip message says why that
   matters: *"a green run without it proves the SQL was written, not that it
   works."*
-- **What happens.** CI never sets `DATABASE_URL` for that file. So
-  `test_live_catalog_has_column_force_and_policy` and
-  `test_app_role_cannot_bypass_rls` never run there. The committed-set test
-  beside them DOES run. It caught `pm_reports` on 2026-09-16, so the file is
-  not dead. It is half awake.
-- **Measured 2026-09-17.** Run against the scratch tenant database, both fail.
-  About 130 legacy tables carry no RLS there. That is the MT-1 phase-4 gap,
-  not a regression. The scratch database replays the numbered ladder and not
-  `infra/postgres/generated/`. `pm_reports` is not among them.
-- **Decide what the check should mean.** Either point it at a database that
-  HAS the generated phases, so it can fail honestly. Or state that phase 4 is
-  unapplied and mark the two tests expected-fail with that reason. Today they
-  are neither, which is the worst of the three.
-
-### H-117 · An outage tells a member they belong to no organization · [AGENT]
-- **Check:** `rg -n "no_organization" apps/services/gateway/gateway/main.py` →
-  the 403 arm answers on the presence of a user header alone.
-- **Why:** `_tenant_unbound` (shipped 2026-09-18, #293) answers **403
-  `no_organization`** whenever a request carries `X-User-Email` and no tenant
-  is bound. That is right for the ordinary case and WRONG during an outage:
-  `resolve_identity` also returns `(None, None)` when the database refuses the
-  read, so a member of long standing is told, in so many words, that they are
-  not a member of any organization.
-- **It is not hypothetical.** `EMAXCONNSESSION — max clients reached in session
-  mode, pool_size: 15` fired twice at 13:06:08 UTC on 2026-09-18, and
-  `auth.identity_resolve_failed` fired with it. That log line exists precisely
-  to tell the two apart — it was added in the same pull request — but it only
-  helps the operator. The member still reads the accusation.
-- **What it needs.** The distinction already exists at the point of failure and
-  is thrown away before the handler sees it. Carry it: mark the request when
-  `resolve_identity` raised rather than found nothing, and answer **503** for
-  that arm. A person should be told "we could not reach your workspace", never
-  "you have none".
-- **Related:** the pool blip above is its own question — two events in one
-  second during a restart is not yet a pattern, and `pool_size: 15` is the
-  Supabase session-mode pooler's limit, not ours. Watch it before tuning it.
-- **Authority:** `gateway/main.py` `_tenant_unbound` ·
-  `acb_auth/access.py` `resolve_identity` · D-MT-1c
-- **Added:** 2026-09-18 · the risk was named in #293's own description, and the
-  first day in production produced it.
 
 ### H-114 · R8 suites still run psycopg. The gateway runs asyncpg · [AGENT]
+- **Metorite:** #717. The task holds the full entry (moved 2026-10-28, D118).
 - **Check:** `uv run pytest tests/unit/test_projects_sql_asyncpg.py
   tests/unit/test_auth_sql_asyncpg.py -q` with `TENANT_LADDER_DATABASE_URL`
   set. If either SKIPS in CI, the strong half of the fence does not fire
   there — which is H-112's gap, on two files now.
-- **What is CLOSED — TWO modules now.**
-  1. **Projects.** `test_projects_sql_asyncpg.py` runs every `analytics.py`
-     builder and both `tree.py` reads on **asyncpg**, the driver
-     `acb_common.db` rewrites every production DSN onto.
-  2. **The sign-in path, added 2026-09-18.** `test_auth_sql_asyncpg.py` runs
-     all **38** SQL statements in `acb_auth` — `access.py`, `console_resolve.py`
-     and `email_otp.py` — each with the parameter TYPES its real call site
-     binds. It went ahead of the route modules on blast radius: a broken route
-     breaks one pane, and a broken statement in `access.py` breaks sign-in for
-     everybody, because every request resolves identity and access before it
-     reaches any route.
-  3. `test_sql_interval_shape.py` refuses `CAST(:param AS interval)` anywhere
-     under `gateway/` or `packages/`, needs no database, and so runs in CI
-     today.
-- **⚠️ The auth suite carries its OWN completeness fence.** A new `_SQL`
-  constant in any of those three modules fails `test_every_SQL_constant_in_
-  these_modules_is_covered` by name. Without it the suite stops being complete
-  the first time somebody adds a statement, and a partial fence reads exactly
-  like a whole one.
-- **Measured, not assumed.** Retyping one `datetime` bind to an ISO string —
-  the precise psycopg-accepts / asyncpg-refuses divergence — turns **5** of the
-  38 red, and all five are `CAST(… AS TIMESTAMPTZ)` statements the lint below
-  cannot cover. Dropping one case from the list turns the completeness fence
-  red with that statement's name.
-- **⚠️ What is STILL OPEN.** The route modules — **CRM, email, tasks, people,
-  notes, chat, admin, workflows, whatsapp** — still prove their SQL on psycopg
-  alone. The pattern to copy is now in two files: a parametrised `_cases()`
-  list, a module-scoped `apply_ladder` fixture, and a **function-scoped** async
-  engine with `NullPool`. ⚠️ A module-scoped engine binds its pool to the first
-  test's event loop and every later test fails with *"another operation is in
-  progress"*, which reads exactly like a SQL fault and is not one.
-  ⚠️ Many route modules hold their SQL **inline inside route functions** rather
-  than as module constants, so they cannot be run without the route. Extracting
-  those is the real cost of the remaining work, and it is worth doing anyway:
-  an unextractable statement is also an untestable one.
-  ⚠️ **Roll back.** Half of the auth statements are writes. `begin()` as a
-  context manager COMMITS on a clean exit, so the transaction is driven by hand
-  and rolled back in a `finally`.
-- **Not linted: `CAST(:x AS timestamptz)`.** Binding a real `datetime`
-  through it is correct, and `email/automation/followups.py` does that. A
-  lint there would fail correct code and grow an allowlist. The asyncpg
-  suites are the answer for that half.
 
 ### H-110 · Operator OTP sends now. Two dashboard acts are still unverified · [OWNER]
+- **Metorite:** #710. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** ask Supabase project `uttxlicdccfkramtjfpi` for an OTP at an address
   that is NOT a project member. `POST /auth/v1/otp {"email":"…","create_user":true}`.
   A **200** means the send half is fixed. Then ask an operator whether the email
   carried a six-digit code, and whether the link signed them in.
-- **⚠️ The send half is DONE.** The owner configured custom SMTP on 2026-09-16.
-  The same probe returned **400 `email_address_invalid`** before, and **200**
-  after. Supabase now sends through the Resend account the customer app uses.
-- **What this entry is reduced to.** Two dashboard settings that nobody has
-  confirmed. Each one is invisible until a real operator tries to sign in.
-  1. **The Magic Link template.** It must render `{{ .Token }}` beside the link.
-     Without the token the email carries a link and no digits. The six-digit box
-     in `EmailCodeForm.tsx` then has nothing to accept, and the form's own copy
-     says *"or, if it shows a six-digit code, type it here"*.
-  2. **The redirect allowlist.** Authentication → URL Configuration must carry
-     `https://operator.metorite.com/login/callback`. Without it the emailed LINK
-     returns nobody. The route exists and answers 200.
-- **⚠️ Do NOT port Auth.js and Resend into the operator console instead.** The
-  operator session is a Supabase access token. `POST /api/operator/session`
-  exchanges it for a `cc_sess_` cookie, and the Console validates that token.
-  Replacing it touches a security boundary across two services. It also reopens
-  D71. The SMTP route reached the same end and changed no code.
-- **No code change is owed.** The form copy stays correct before and after.
-- **Why an agent must not do this:** these are live authentication settings on a
-  third-party account (CLAUDE.md §3a rule 3). The Supabase MCP server exposes no
-  auth-configuration tool.
-- **Authority:** `operator_identity_and_access.md` §4.1b · D71.3 ·
-  `workbench/operator_console/src/lib/otp.ts`
 - **Added:** 2026-09-16 · signup-flow session, after the owner asked why operator
   OTP cannot reuse the customer app's mechanism. **Reduced the same day**, once
   the owner fixed the send half and a probe proved it.
-- **Related:** H-54 (the operator provider values), H-56 (delete the passphrase
-  fallback after one real sign-in — `OPERATOR_PASSPHRASE_FALLBACK=1` today).
 
 ### H-108 · 🔴 The Console's database auto-pauses, which is a total onboarding outage · [OWNER]
+- **Metorite:** #553. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** ask Supabase for project `uttxlicdccfkramtjfpi`. Anything other than
   `ACTIVE_HEALTHY`, or a free tier that pauses on inactivity, means this is open.
-- **What happened on 2026-09-15.** The project was `INACTIVE`. The Customer
-  Console was running and `/health` was 200, because that endpoint touches
-  nothing. Every endpoint that READS 500'd. The gateway logged
-  `console_resolve.unreachable`. Sign-in resolve, self-serve signup and the
-  operator customer list were all down together. It was resumed on owner
-  authorisation the same day.
-- **Why it is an OWNER entry.** The fix is not the resume, it is the tier. A
-  registry that pauses on inactivity takes the whole onboarding path with it,
-  and it will do it again. A quiet week is the likeliest moment, and that is
-  exactly when nobody is watching.
-- **It was invisible for an unknown period.** `/health` stayed green throughout,
-  so no health check and no watchdog reported it. Whatever replaces this should
-  probe an endpoint that touches the database.
-- 📌 **H-98 is CLOSED (2026-09-19).** The backup job now dumps the Console
-  database as a second cluster, and a verified run sits on the box. Also
-  **H-109** below. The project names are inverted, which is the likely reason
-  the wrong database got backed up.
-- **Authority:** `work_plan.md` §2.0 row **M0.4b** · `customer_console.md` §8
 - **Added:** 2026-09-15 · signup-flow session, found by surveying the box
 
 ### H-109 · One word, "tenant", names both planes and points at each · [OWNER]
+- **Metorite:** #772. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** ask whether `saas_multitenancy.md` still calls
   `wbjpwtxigkileyjsgahk` the *tenant plane* while the Supabase project named
   *"Metorite Tenant Database"* is `uttxlicdccfkramtjfpi`. Both true means this
   is open.
-- **⚠️ CORRECTED 2026-09-16, by the owner.** This entry said the project names
-  were *"inverted"* and *"each is named after the other's job"*. **That was
-  wrong, and the agent that wrote it did not check the reading it was
-  dismissing.** The owner's naming is coherent:
-  - *"Application Database"* (`wbjpwtxigkileyjsgahk`) holds `app_user`,
-    `organization` and `pm_tasks` — the application's own data.
-  - *"Tenant Database"* (`uttxlicdccfkramtjfpi`) holds `operator`,
-    `deployment`, `org_subscription` and `seat_grant` — the register OF
-    tenants, which the Operator Console manages.
-  Read as *"the database that tracks tenants"*, the second name is exact.
-- **What is really wrong is a COLLISION, and it is in our prose.** The specs use
-  *tenant plane* to mean **where one tenant's rows live**, which is the
-  **Application** Database. The project name uses *tenant* to mean **the list of
-  tenants**, which is the other project. Two defensible meanings, one word, and
-  they point at opposite projects.
-- **Why it still matters.** An instruction that says *"the tenant database"*
-  resolves two ways. **H-98 closed on 2026-09-19** and the job now covers the
-  Console database, but the ambiguity that hid the gap has not moved. Somebody
-  could have backed up "the tenant database" and meant the other one. That is
-  UNPROVEN. Check it before anybody repeats it as the cause.
-- **The cheap repair, and it keeps the owner's names.** Append the role to each
-  Supabase project name. Then no reader must resolve the word at all:
-  *"Metorite Application Database (tenant plane · customer data)"* and
-  *"Metorite Tenant Database (control plane · registry and operators)"*.
-  Renaming the PROJECTS outright is not needed and was never the defect.
-- **The alternative, which is larger:** stop saying *tenant plane* in the specs.
-  D15 and `saas_multitenancy.md` §0.9.2 rest on that term, so this is a
-  vocabulary change across the plan and is not free.
-- **The planes are correctly SEPARATE** — this is a labelling question, never an
-  architecture one. D15 holds.
-- **Why it is OWNER.** Renaming a Supabase project is an infrastructure act, and
-  the names may appear in dashboards, alerts and runbooks that must move too.
-- **Authority:** `saas_multitenancy.md` §0.9.2 (the two planes) · D15
 - **Added:** 2026-09-15 · signup-flow session · **corrected 2026-09-16** when
   the owner challenged the "inverted" claim and was right.
 
 ### H-116 · plan-guard reads a MENTION of a commit as a commit on main · [AGENT]
+- **Metorite:** #772. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `grep -n "test(cmd)" .claude/hooks/plan-guard.mjs`. A hit means
   this is open. No hit means somebody applied the repair.
-- **What I measured, 2026-09-18.** I wrote a throwaway script from the root
-  checkout, which sits on `main`. The script text named the git verb inside a
-  heredoc body. plan-guard refused the whole command as *"committing/pushing
-  directly on main"*. Nothing in that command committed anything.
-- **The cause is one word.** Line 443 tests `cmd`, which is the raw command.
-  Every other rule on that page tests `scanned`. `stripNoise()` has already
-  cleaned `scanned` of heredoc bodies and `-m` message payloads.
-- **This is the FOURTH false positive of one family.** H-95 and H-103 were the
-  second and the third, and both are now fixed and fenced. The guard asks
-  whether the text CONTAINS the thing, and never whether the command DOES it.
-- 🔴 **The refusal must stay.** A real commit on main sits in the command half,
-  which `stripNoise()` never touches. This entry asks for a narrower test. It
-  never asks for a weaker gate.
-- **The repair is one word.** At line 443, `.test(cmd)` becomes
-  `.test(scanned)`.
-- ⚠️ **An agent cannot apply it.** The Claude Code auto-mode classifier refuses
-  an agent edit to its own hook files, and it names the reason
-  `Self-Modification`. The owner's `guard-write` grant does not reach that
-  layer, because the classifier sits above plan-guard. A human must make this
-  edit.
-- ⚠️ **The suite cannot see this case today.** `plan-guard.test.mjs` runs its
-  branch check against the real repository. From a worktree it reports
-  `onMain=false` and asserts nothing. A fence needs a temporary repository on
-  `main`, and that is the second half of this entry.
-- **Authority:** `.claude/hooks/plan-guard.mjs` line 443 · CLAUDE.md §3.2 ·
-  related: H-95, H-103, H-65
 - **Added:** 2026-09-18 · operator console workspace session
 
-### H-133 · The customer's page shows their BALANCE and never their USAGE · [AGENT]
-- **Check:** open `workbench/operator_console/src/app/customers/[slug]/page.tsx`
-  and read `loadOrg`. Five reads, none of them a usage read, means this is open.
-- 🔴 **It is the page where the question gets asked.** A customer writes in
-  saying their credits went faster than they expected. The operator opens that
-  customer and sees the balance, the lots and the ledger. The ledger says
-  `usage -1.29` eight hundred times. It cannot say which tier, which app or
-  which person, so the operator cannot answer.
-- ⚠️ **The read already exists and nothing calls it.** `GET
-  /admin/usage/daily?org_slug=<slug>` serves a per-organization series, and
-  `usageDaily(days, orgSlug)` in `lib/console.ts` already takes the slug. The
-  fleet board at `/usage` computes calls, credits, cost, margin, runway and
-  the silent flag per organization, and the per-customer page reads none of it.
-- **The slice.** One panel under Credit lots: the 30-day series, the same row
-  the fleet board draws for this organization, and a link to `/usage`. Judge
-  it with the functions in `lib/usage.ts` — a second verdict on one row is the
-  defect `golive.ts` and `fallback.ts` already record.
-- **Authority:** `specs/ai_metering_and_analytics.md` §5 · `customer_console.md` §6B
-- **Added:** 2026-09-20 · credit and usage review session
-
-### H-134 · D66 is BUILT and unwired — a customer sees a total and no breakdown · [AGENT]
-- **Check:** grep the workbench for `my/usage/activity` and `my/usage/members`.
-  No consumer means this is open.
-- 🔴 **Two endpoints answer "what did we spend it ON" and nothing asks them.**
-  `GET /my/usage/activity` is D66 (a), spend by activity. `GET
-  /my/usage/members` is D66 (b), spend per person. Both are implemented,
-  tested and reachable. `settings/billing` reads only `/me/billing`, so the
-  customer sees a balance, a burn figure and a runway.
-- ⚠️ **A customer who cannot see the breakdown cannot manage the spend.** They
-  can only ask us, which makes every credit question a support conversation.
-- ⚠️ **`/my/usage/members` must NOT grow a cap column.** Its own docstring says
-  so: showing a cap beside a spend implies the cap is enforced, and
-  `member_ai_cap` is not enforced. H-73 owns that.
-- **Authority:** D66 · `customer_console.md` · `specs/launch_surface.md` §7
-- **Added:** 2026-09-20 · credit and usage review session
-
 ### H-137 · 🔴 The deploy reports SUCCESS while `vps_apply.sh` dies half way · [AGENT]
+- **Metorite:** #630. The task holds the full entry (moved 2026-10-28, D118).
 - **Check:** open the newest green `deploy.yml` run, job *Deploy to Hostinger*,
   and search the log for `ssh exited non-zero`. A hit inside a run marked
   success means this is open.
@@ -3053,36 +1260,10 @@ line — never reclaim a number by deleting the other entry.
   A healthy gateway says the services that were ALREADY running still run. It
   cannot say whether the steps after the failure ran. Root `CLAUDE.md` §3 rule
   8 names this. Verify by evidence, never by a green job.
-- **The fix, in two parts.** Make the workflow FAIL when the apply exits
-  non-zero, instead of falling through to the health probe. Then repair the
-  ownership so the install stops failing — H-89 owns the cause.
-- ✅ **PART ONE SHIPPED, PR #343, 2026-09-21.** The workflow now greps the
-  apply output for the script's own last line, and a round needs BOTH a
-  finished apply and a passing verify. A non-zero ssh AFTER the marker is
-  still tolerated, because a teardown flake is not a failed release.
-  `test_deploy_pipeline.py::TestTheApplyMustReachItsEnd` fences both halves of
-  that string contract. Verified on its own deploy: the marker check ran and
-  the tail step was reached.
-  ⚠️ **The Check above is now the WRONG question.** A green run may hold
-  `ssh exited non-zero` legitimately. Ask instead whether a run that did not
-  finish went red.
-- ⚠️ **PART TWO IS STILL OPEN**, and it is the cause. `npm ci` hits EACCES on
-  root-owned paths inside `node_modules`. The ownership repair at the top of
-  `vps_apply.sh` deliberately prunes that directory. **H-89** owns it. Until it
-  closes, some deploys go red — correctly, and visibly.
-- 🟢 **2026-09-26 — part two is in the deploy-serialize PR.** The pull path
-  runs as `acb`, so no root-owned path reaches `node_modules` again, and both
-  paths take one lock. This PR keeps the success gate. The final line
-  `==> Deployment complete` now also prints when the apply SKIPS, because a
-  complete apply of that same sha already finished. The apply writes the
-  marker file `/opt/acb/acb-deploy.applied` only just before that line.
-  ⚠️ A CI round that waits 900s for the lock and does not get it prints
-  `another deploy holds the lock since …` and exits 1 with nothing changed.
-  That round is red on purpose, and the next round then usually skips.
-- **Authority:** `.github/workflows/deploy.yml` · `scripts/vps_apply.sh` · H-89
 - **Added:** 2026-09-20 · credit and usage review session
 
 ### H-136 · Every AI-spend signal is PULL-ONLY — nobody is told anything · [AGENT+OWNER]
+- **Metorite:** #514. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** grep the Customer Console for a scheduled report or digest. None,
   and no timer on the box, means this is open.
 - 🔴 **The board computes the alarms and then waits to be visited.** `/usage`
@@ -3095,123 +1276,30 @@ line — never reclaim a number by deleting the other entry.
   with time instead of stopping at zero. The backup timer closed on
   2026-09-20 was the same shape of failure. It ran only when a human
   remembered, and for 25 days nobody did.
-- **The narrow first slice.** One daily digest to the operator, naming only
-  what changed: organizations that crossed zero, organizations that became
-  silent, and the unbilled count. Reuse `analytics.py` — a second judgement
-  would disagree with the board within a month.
-- ⚠️ **Where it SENDS is the owner's call**, which is why this is both. Mail
-  to a real person is §3a rule 3. The computation and the digest are not.
-- ⚠️ **Vendor balance alerts exist now, and they still SEND nothing
-  (2026-09-28).** The DeepSeek account ran dry and all AI failed for two
-  days. The operator console now shows each vendor's balance and refusals on
-  Providers, with a banner on every page (migration 035,
-  `provider_balance.py`). The Console logs `provider.refusing` and
-  `provider.balance_low` once per change. Nobody receives either line. Mail or
-  push for them is the owner's call, for the same reason as the digest.
-- **Authority:** `specs/ai_metering_and_analytics.md` §6 · H-111 (the other report)
 - **Added:** 2026-09-20 · credit and usage review session
 
 ### H-123 · Backups exist now, and live only on the box they protect · [OWNER]
-- **Check:** on the box, `sudo grep -c '^BACKUP_REMOTE=' /opt/acb/app/.env`.
-  A zero means every dump still lives on one disk, and this is open.
-- 🔴 **Filed because closing two entries orphaned their caveats.** H-98
-  and H-105 closed on 2026-09-19. The nightly timer runs, and the job covers
-  the Console database. A restore is verified. That day's deploy took a
-  pre-migration dump. Both entries carried this warning as a sub-point, so
-  deleting them deleted the only record of it.
-- 🔴 **CORRECTION, same day: the TIMER was never armed.** H-98 and
-  H-105 closed on the strength of `Result=success`, a verified restore and
-  14 dumps on disk. All three were true. The timer was
-  `UnitFileState=disabled` throughout, with an empty
-  `NextElapseUSecRealtime`, so no night was ever covered. Today's run was a
-  manual one. `systemctl enable --now acb-backup.timer` armed it at 12:17
-  UTC, and it now prints NEXT `Sun 2026-09-20 02:30:16 UTC`.
-- 🔴 **SECOND CORRECTION, 2026-09-20: the timer was DISABLED again.** The
-  arming above held for one day. `systemctl list-unit-files` reported
-  `acb-backup.timer disabled` this morning, and no NEXT date. The cause is
-  `scripts/vps_apply.sh` lines 917 to 919. On a `PG_MODE=local` box it runs
-  `systemctl disable --now acb-backup.timer` on every apply. Its own comment
-  says it disables rather than skips, so that a hand-enable does not survive
-  a deploy. That is exactly what happened to mine.
-- ✅ **The carve-out is GONE (2026-09-20), and H-132 closed with it.**
-  `vps_apply.sh` disabled the timer on every apply. The reason was written on
-  2026-08-17, when the unit loaded no `EnvironmentFile` and would dump an
-  empty container. The service gained `EnvironmentFile=/opt/acb/app/.env` on
-  2026-09-19, so the guard outlived the hole. The timer is now armed by the
-  deploy like every other one. Two fences replaced it:
-  `test_the_backup_service_must_load_its_credentials` and
-  `test_no_timer_is_carved_out_of_the_enable_loop`.
-- **The lesson, so it is not learned twice.** A manual `systemctl start`
-  proves the SERVICE. It says nothing about the SCHEDULE. Read
-  `systemctl list-timers <unit> --all` and require a NEXT date.
-  `Result=success` is also the default for a service that never ran.
-- **What is still true.** `backup_db.sh` says it on every run: a backup on
-  the same disk as the database survives a bad migration and a dropped
-  table. It does not survive the disk, the box, or the provider account.
-- ⚠️ **Supabase PITR is UNCONFIRMED and is a separate claim.** The
-  Supabase MCP reports project health, not backup configuration, so an
-  agent cannot produce the evidence. Our logical dumps stand on their own
-  and are not the provider's point-in-time recovery.
-- **Why OWNER.** Choosing where the copies go is a money and third-party
-  decision: another host, an object store, or the provider's own retention.
-  📌 Once a destination exists, setting `BACKUP_REMOTE` is the whole
-  change — the script already rsyncs to it and warns while it is unset.
-- **Authority:** `scripts/backup_db.sh` · `deploy/hostinger/BACKUP-RESTORE.md`
-- **Added:** 2026-09-19 · operator console session, after the backup repair
-
-### H-140 · `POST /tasks/people` has no caller. Decide whether it stays · [OWNER]
-- **Check:** `rg -n "peopleWriteApi.create|createPerson" workbench/control_plane/src`
-  → no hit means nothing in the product calls it, and this is open.
-- **Why:** the owner removed the People app's "Add person" control on
-  2026-09-21. One door into the organization, and it is Organisation. The
-  endpoint behind the old form is now unreachable from the product.
-- **Kept instead of deleted, on purpose.** It is the door an importer or a
-  re-enabled form would use. A working admin endpoint with no UI is not the
-  same defect as a second door in the product. Its docstring says so, so
-  nobody "restores" the button by accident.
-- **The decision to take:** delete it with its tests and spec sections, or
-  keep it as the seam a future importer uses. Deleting is tidier. Keeping is
-  reversible. Neither is urgent, and both are the owner's call because the
-  question is product shape.
-- 📌 `PATCH /people/{id}` is untouched and still reachable. An administrator
-  still corrects a colleague's title or department from the person page.
-- **Authority:** owner directive 2026-09-21 · `people_center_app.md` §2
-- **Added:** 2026-09-21 · the one-door session · **minted as H-133 and
-  renumbered to H-140** — another branch merged H-133 first, and
-  `test_handoff_queue` caught the reuse. Ids are never reclaimed.
+- **Metorite:** #545. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** `ssh metorite "sudo journalctl -u acb-backup --since -26h --no-pager | grep -c 'off-box copy ok'"`.
+  A zero means no night left the box in the last day, and this is open.
+- ✅ **The code is BUILT (2026-10-08, branch `ops-offbox-backup`).** The
+  owner chose a private Supabase Storage bucket, through its S3 endpoint.
+  Each night, `acb-backup.service` runs `backup_db.sh --offbox`. It encrypts
+  the dumps, the manifest, the file data and the meeting-bot volume to your
+  PUBLIC key. Then rclone sends them. No other caller uploads. The copy stays
+  OFF until you do the four steps below.
+- **Added:** 2026-09-19 · operator console session, after the backup repair.
+  Rewritten 2026-10-08, when the off-box copy was built.
 
 ### H-141 · An admin cannot hide an app from a ROLE · [AGENT]
+- **Metorite:** #768. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `rg -n "is a system role and cannot be edited" apps/services/gateway/gateway/routes/admin/roles.py`
   → a hit means `PATCH /admin/roles/{slug}` still refuses every built-in
   role, and this is open.
-- **Why:** migration 207 opened every app to `member` and `manager`. The
-  owner's rule is that a role narrows what you may DO, not what you may see.
-  The owner asked for the other half in the same breath. *"Later on, we
-  might need to be able to have an admin hide certain apps and features from
-  some non-admin roles."*
-- **What works today:** per-PERSON Deny, at
-  `/settings/members/<email>`. Set any feature to Deny and it beats the role.
-- **What does not:** per-ROLE. `member`, `manager`, `admin`, `owner` and
-  `guest` are all `is_system`, and the edit route refuses them by name.
-  An administrator who wants "no Approvals for members" has two options
-  today. Deny it one person at a time. Or build a custom role and move
-  everybody onto it.
-- **Three shapes, and the choice is the work:**
-  - Let a system role's PERMISSIONS be edited. Its slug, name and rank stay
-    fixed. Smallest change. The risk is an org that edits `member` into
-    something support no longer recognises.
-  - A "duplicate this role" action, so a custom role starts from `member`
-    instead of from nothing. No new rules, and it makes the existing path
-    usable.
-  - A per-role Deny list layered over the seeds, which keeps the seed as the
-    baseline and records the subtraction.
-- 📌 Not urgent. The default is now the permissive one the owner asked for,
-  so nobody is locked out while this is open.
-- **Authority:** owner directive 2026-09-21 · `org_access_control.md` §3 ·
-  migration 207
 - **Added:** 2026-09-21 · the every-app-by-default session
 
 ### H-152 · A SELF-SERVE customer can never be served AI · [AGENT]
+- **Metorite:** #515. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `rg -n "CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY" /opt/acb/app/.env`
   on the box. No hit means the shared-box arm is built and not turned on.
 - 🔴 **Why this exists.** `CUSTOMER_CONSOLE_ORG_KEY` is ONE value naming ONE
@@ -3219,440 +1307,635 @@ line — never reclaim a number by deleting the other entry.
   first and was dark for the rest, and it never failed while doing so.
   Minting more organization keys does not help, because the second has
   nowhere to live.
-- **The answer was already proved out one plane over.** D-SEAT-4 moved the
-  Seats tab onto the per-box DEPLOYMENT key and derived the organization
-  Console-side. This is the same move for the Router.
-- 📌 **BUILT, in two slices, 2026-09-23.** Slice 1: the Console door.
-  `auth.organization_from_key_or_deployment` and the `ServingCaller` alias,
-  gated on a new `serve` capability, deriving the tenant from `X-CC-Member`
-  through `deployment_visible_orgs`. Slice 2: all FOUR serving doors take it,
-  and the gateway can present the key —
-  `console_resolve.router_credential()` picks and `router_is_wired()` asks it.
-- 🔴 **The arm is behind `CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY`, and
-  that flag is not optional design.** A first try armed on the key being
-  PRESENT, and `test_the_deployment_key_alone_does_not_arm_the_router` caught
-  it. Every box holds a deployment key already, because resolve, provision and
-  the seat doors have needed one since CP-2b. Arming on presence would turn
-  the Router on everywhere the day somebody configured sign-in. That fence
-  holds a real property. Do not relax it.
-- ⚠️ **The ORG key wins a tie, for compatibility and not preference.** A box
-  already serving one tenant must not change behaviour the day somebody sets
-  the flag. So the shared arm arms only where the single-tenant answer is
-  absent, and the whole change ships dark.
-- ⚠️ **What is LEFT is three acts on the BOX, and none of them is code.**
-  Widen the deployment key to hold `serve`, which is a hand edit under §8
-  gate 7 because no route grants a capability. Unset
-  `CUSTOMER_CONSOLE_ORG_KEY`. Set the new flag. The third alone changes
-  nothing, by design.
-- 📌 **The billing READS left the org key, 2026-09-28.** The summary, seats,
-  members, catalog and usage reads travel this path: browser → Next →
-  gateway `GET /billing/*` → the Console's `POST /registry/{billing,usage}/*`.
-  The gateway holds the deployment key, and the Console derives the org from
-  the session member. Fences: `test_customer_console_billing_reads.py` (R8),
-  `test_billing_proxy_route.py`, `billing/reads.test.ts`.
-- 📌 **The box's key holds `billing_read` and `billing_purchase`.** Granted
-  2026-09-28 by a hand edit to `deployment_key.capabilities` on the Console
-  database, before the reads merged. Without them every billing door answers
-  503 "not configured", and it never falls back to the org key.
-- 📌 **The checkout left the org key too.** `api/billing/orders`,
-  `orders/[id]` and `orders/[id]/redeem` go through the gateway's
-  `/billing/orders*` to `POST /registry/billing/orders*`, on the
-  `billing_purchase` capability. The gateway checks the tenant's
-  `billing:purchase` before any hop. `_console.ts` is deleted, and no file in
-  `api/billing` reads `CUSTOMER_CONSOLE_*` (`checkout.test.ts`). Fence:
-  `test_customer_console_billing_checkout.py` (R8). The Next tier no longer
-  reads `CUSTOMER_CONSOLE_ORG_KEY`, so the three box acts above can run.
-- 📌 **Every background job now names a member (2026-09-28).** Agent
-  completions stamp the run's member through `attributed_openai`. A job with
-  no session binds the member who OWNS its row, through
-  `acb_common.job_member_scope`: the workflow owner, the mailbox owner, the
-  WhatsApp account owner. The Console then derives the organization from that
-  member, so the job bills the organization it belongs to. The fence is
-  `tests/unit/test_background_ai_member.py`, and it refuses a new
-  `run_agent()` call with no `session_user` and no recorded reason.
-- ⚠️ **The owner reads stop working under FORCE RLS.** The reads of
-  `app_user`, `email_accounts` and `wa_accounts` decide which organization
-  pays, so they run on an unbound session. H4 resolvers such as
-  `_workflow_organization` have the same limit. Once FORCE RLS covers these
-  tables, each read returns zero rows. The job then fails CLOSED: it runs
-  memberless, and the deployment key refuses it with a 400. It never bills
-  a guessed member. `test_db_engine_seam.H2_TENANT_DISCOVERY_SITES` names
-  the two new reads. Move them to an RLS-EXEMPT read before FORCE RLS
-  reaches these tables.
-- 📌 **FLIPPED on the box, 2026-09-28.** The deployment key holds `serve`,
-  `billing_read` and `billing_purchase`. `CUSTOMER_CONSOLE_ORG_KEY` is
-  commented out in `/opt/acb/app/.env`, and the backup is
-  `.env.bak-20260928-deployment-key`.
-  `CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY=true`. Proof: one call as
-  `vjvarada@hathilabs.com` billed `hathi-labs-llp`, and one call as
-  `vjvarada@fracktal.in` billed `fracktalworks`, on one box credential.
-  Rollback: restore the backup and restart `acb-gateway`.
-- ⚠️ **Two paths still send no member, and the Router refuses them.**
-  1. `/agent/webhook/{source}`. It is dormant and deferred. H-198 holds the
-     design and the owner decision it needs.
-  2. mem0 (`acb_memory/mem0_client.py`). mem0 builds its own OpenAI client
-     and calls it on its own threads, so no run context reaches the call.
-     `MEM0_ENABLED` is off by default. Attribute it before you turn it on.
-- 📌 **The deployment arm serves only a PROVEN member (PR #511).** An
-  expired or missing proof is refused. The proof lives 3600 s. So every
-  background job above binds its owner VERIFIED, and a body claim, which
-  is never signed, is refused on that arm. The email specialist run keeps
-  its proof because `_run_member` keeps a claim verified when it names the
-  member the task already holds verified.
-- ⚠️ **The Notes pipeline bills the viewer, not the meeting owner.** A
-  recording found by poll-on-read runs in the request of whoever opened the
-  list. It names a member of the right organization, so the Console serves
-  it. The per-person report is wrong.
-- **Fences:** `tests/unit/test_router_deployment_arm.py` (12) ·
-  `tests/unit/test_console_router_client.py` (5 new) ·
-  `tests/unit/test_background_ai_member.py` (37).
-- **Authority:** owner directive, 2026-09-22 — *"you are automatically
-  creating the connections for when they sign up"*
 - **Added:** 2026-09-22 · the auto-mint session. **Updated:** 2026-09-28.
 
 ### H-126 · `build_sha()` returns None in EVERY git worktree · [AGENT]
+- **Metorite:** #772. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** from a worktree, `uv run pytest tests/unit/test_build_info.py -q`
   → a failure that names `build_sha() disagrees with git rev-parse HEAD` means
   this is open. The same command passes in the main checkout.
-- **Why:** `_sha_from_git_dir` reads `HEAD`, finds `ref: refs/heads/<branch>`,
-  then looks for that ref below the worktree gitdir. A worktree keeps its
-  branch refs in the COMMON git dir, which its `commondir` file names. The
-  function does not follow that file. `build_info.py` already handles the
-  `.git` FILE, so the repair is one more hop and not a rewrite.
-- **⚠️ This greets every session.** CLAUDE.md §4 tells each one to start in a
-  worktree, so each one meets a red suite that is not theirs. That is how
-  people learn to ignore a failing test.
-- 📌 **Production is unaffected.** The box is a plain clone, so `/version`
-  reports the real SHA. The damage is to trust in the suite, not to the deploy.
-- **Authority:** `apps/services/gateway/gateway/build_info.py:128` ·
-  `tests/unit/test_build_info.py`
 - **Added:** 2026-09-20 · the My Profile session
 
 ### H-139 · 🔴 A cleared `organization` row silently destroys the Projects data · [AGENT]
+- **Metorite:** #610. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** read the delete rule on the organization key.
 
       select confdeltype from pg_constraint
        where conrelid = 'pm_projects'::regclass;
 
   → `c` is the cascade. This entry is then open.
-- **Why:** `pm_projects.organization_id` is `ON DELETE CASCADE`. Anything
-  that clears an `organization` row takes that tenant's projects, tasks,
-  statuses and tags with it. It gives no message. Measured 2026-09-20 on the
-  scratch tenant: a seeded review board became `pm_projects = 0`. At the same
-  time `organization` churned from 83 rows to 148, every row minutes old.
-- **⚠️ Not attributed, and that is part of the finding.** `log_statement`
-  is `none` on that container, so no statement survives. What is certain is
-  the CASCADE and the churn. Anybody hunting the fixture leak should look for
-  one that DELETES or truncates `organization`, not only for one that creates.
-- **What it costs today:** the local review loop the owner asked for on
-  2026-09-20 rests on that data. A test run can erase it in silence.
-  Re-seeding the Projects rows is easy. Re-seeding the identity chain is not.
-  `org_membership.user_id` references `user_identity`, not `app_user`. So a
-  hand-seeded developer lands on the invite wall, and the app is unusable.
-- **The repair is a decision, not a patch.** A cascade is right for a real
-  tenant deletion and wrong for a test fixture. Either the fixtures stop
-  deleting organizations, or the scratch tenant stops being the same database
-  the UI is reviewed against.
-- **Authority:** `pm_projects_organization_id_fkey` ·
-  `scripts/dev_db.sh` · `tests/live/README.md`
 - **Added:** 2026-09-20 · the task lifecycle session
 
-### H-155 · WS-27bm: build the Projects chat slices S2 to S5 · [AGENT]
-- **Check:** `uv run python -c "import skill_projects.manifest as m; print(sorted(m.PLANNED))"`
-  → a non-empty list means at least one slice is still open. The value is
-  the slice each tool belongs to.
-- **Why:** S1 shipped the reads, S2 the fifteen daily writes, S2b the
-  rest of class B, S3 the seventeen guarded acts and S4 the workflows, the
-  views and the forms, and S5 the rest of the manifest (2026-09-23).
-  `PLANNED` is empty of WS-27bm names. Left: the visual review after the
-  flag flip (H-157), and the frontend-tool dispatcher (H-164). Delete
-  this entry when both are closed. `specs/projects_ai_chat.md` §10 is the
-  order and §10.2 the acceptance. `writes.py` is the shape to copy, and it
-  copied the CRM's. Move a tool out of `PLANNED` when it ships. The fence
-  refuses a tool that is both built and planned.
-- **Authority:** `specs/projects_ai_chat.md` §3.2, §3.3, §5, §10 ·
-  `skill_projects/manifest.py`
-- **Added:** 2026-09-22 · the Projects chat design session. Minted as H-152 to H-154, renumbered the same day because main took H-152 first
-
-### H-168 · The gateway refuses the LLM key on `/v1/embeddings` · [AGENT]
-- **Check:** `grep -n '"/v1/embeddings"' apps/services/gateway/gateway/main.py`
-  → one hit, on the route only, and not in `PUBLIC_ROUTES`, means this is open.
-- **Why:** PR #407 let the LLM key reach `/v1/chat/completions`. The app-wide
-  gate still refuses that key on `/v1/embeddings`, because the key is not an
-  identity. Four callers send it there: `acb_memory/mem0_client.py`,
-  `whatsapp_ingestion/wa_embeddings.py`, `email_ingestion/email_embeddings.py`
-  and `routes/tasks/capability.py`. Each one gets 401 today. The gateway log shows no call in seven days, so
-  nothing is broken in use yet.
-- **Do:** Put `Depends(require_llm_api_auth)` on the route. Then add the
-  template to `PUBLIC_ROUTES`. Extend `tests/unit/test_v1_llm_key_gate.py`,
-  including `test_only_the_completion_routes_are_listed`. Do not list the
-  route without its own lock, because it spends a stored provider key.
-- **Authority:** BO-2 residual #4 · `packages/acb_auth/acb_auth/deps.py` `require_llm_api_auth`
-- **Added:** 2026-09-23 · the review of PR #407
-
 ### H-161 · The seats matrix cannot PROPOSE, because the queue is the wrong shape · [OWNER]
+- **Metorite:** #773. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `rg -n "CREATE TABLE IF NOT EXISTS access_request" -A 12
   infra/postgres/143_access_request.sql` → a unique index on `lower(email)`
   and no column naming what is asked means this is still open.
-- **What is built:** `/people/seats` (WS-28f, 2026-09-22). The matrix, the
-  role pill, the read tier, and live checkboxes for a caller who holds
-  `admin:members:manage`.
-- **What is not, and it is not an oversight.** `people_center_app.md` §5.6
-  asks that a caller WITHOUT that permission have their toggle "produce a
-  request in the existing access-request queue". That queue cannot carry it:
-  `access_request` is the SIGN-IN queue, unique on `lower(email)`, one row per
-  person, with no column for what is being asked. Approving a row provisions
-  an `app_user` through `_provision_member`. There is nowhere to put "please
-  add Priya to Sales", and the index refuses a second row for that address.
-- **The decision, and it is a product one:**
-  - **Do nothing.** A caller who cannot write is told which permission would
-    let them, which is what ships today. Cheapest, and it may be enough for
-    an org of four.
-  - **A new `membership_request` table** — subject, group, requested_by,
-    status — read by the same Requests tab. Honest, and it is a migration
-    plus a route plus a tab, so it is a slice, not a detail.
-  - **Reuse the access-request queue by widening it** — a `kind` column and
-    dropping the unique index for a partial one. ⚠️ That index is what stops
-    one knocking address producing 53 rows, so widening it needs care.
-- 📌 Not urgent. Nobody is blocked: an admin can act, and a non-admin gets a
-  sentence instead of a silent 403.
-- **Authority:** `people_center_app.md` §5.6 · `work_plan.md` §6 (d)
 - **Added:** 2026-09-22 · the seats-and-roles session
 
 ### H-162 · Two Projects chat follow-ups from the S2 review · [AGENT]
+- **Metorite:** #487. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `grep -n 'if "@" in raw' apps/skills/skill-projects/skill_projects/writes.py`
   → a hit means the first item is still open.
-- **Why:** (1) `_resolve_assignee` passes any address-shaped string
-  through to `PUT /tasks/{id}/assignees`, which accepts any string
-  (D-PM-4). The card shows the address, so consent holds. The chat is still
-  wider than the picker. One directory read before the card would let the
-  card say "the directory does not know this address". (2)
-  `ActionResultCard` jumps to the FIRST `full_id` in a result. So the
-  receipt for `add_subtasks` opens the first subtask, under a heading that
-  names the parent. Print the parent's id first, or jump to it. Both are
-  small. Neither loses data.
-- **Authority:** `specs/projects_ai_chat.md` §3.2 · the S2 review, 2026-09-22
 - **Added:** 2026-09-22 · the Projects chat S2 session. Minted as H-161, renumbered to H-162 because main took H-161 first
 
 ### H-184 · Four small follow-ups from the R2b review of the report visuals · [AGENT]
+- **Metorite:** #497. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `grep -n "current_week_partial\|so far" workbench/control_plane/src/lib/reportEmail.ts`
   → no hit means item 1 is still open. Check each other item by hand.
-- **Why:** the R2b review (PR for `ws-27bn-r2b-visuals`) found these. None
-  loses data, and none blocked the merge.
-  1. The email and the download draw the running week as a normal bar. On
-     a Monday the last bar reads 0, and nothing says that the week has only
-     started. The in-app panel dims that bar for this reason. Mark it "so
-     far" in `reportLayout`.
-  2. The throughput list in `reportLayout` ignores `maxRows`. A report of
-     26 weeks prints 26 bar lines in the email.
-  3. `Collapsible.tsx` and `ReportsView.tsx` say that `keepMounted` lets
-     find-in-page reach a folded table. It does not, because Base UI sets
-     `hidden`. Pass `hiddenUntilFound` too, or delete the claim.
-  4. The arithmetic check of fence (c) in `reportVisuals.test.ts` does not
-     catch a binary `+`. It copies `capacity.test.ts:182`, so widen both.
-- **Authority:** `specs/projects_reports.md` §8 R2b · the R2b review and
-  verification, 2026-09-24
 - **Added:** 2026-09-24 · the WS-27bn R2b session
 
-### H-187 · Make the apply reset to the ref that the caller names, not to origin/main · [AGENT]
-- **Check:** `grep -n "git fetch origin main\|git reset --hard origin/main" scripts/vps_apply.sh`
-  → a hit means this is still open.
-- **Why:** `vps_pull.sh` applies the `release` ref and passes
-  `DEPLOY_REF=<release sha>`. `vps_apply.sh` ignores `DEPLOY_REF` and resets
-  to `origin/main`. So the pull path applies the tip of main, and CI gating
-  on `release` does not hold. A commit that failed CI can reach the box
-  through the pull path when it is the tip of main.
-  - The fix must keep the skip check on the sha that the apply resets to.
-  - It must also keep the CI path on main, because CI passes no DEPLOY_REF.
-- **Authority:** `specs/deploy_delivery_path.md` · `scripts/vps_pull.sh`
-  header, "Why it polls `release` and NOT `main`"
-- **Added:** 2026-09-26 · the deploy-serialize review of PR #484. Kept out of
-  that PR on purpose, because it changes what the pull path deploys.
-
 ### H-199 · A lead who left a team cannot remove their old report through the chat · [AGENT]
+- **Metorite:** #497. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `grep -n "refusal=" apps/skills/skill-projects/skill_projects/guarded.py apps/skills/skill-projects/skill_projects/writes.py`
   → no hit means the chat still reads the report through the read rule.
-- **Why:** R5d lets the author change or delete their report after they
-  lose access to its subject (spec §8 R5d, test (t) and (z)). The server
-  allows it. But `report_delete` (`guarded.py`) and the change path of
-  `report_save` (`writes.py`) first call `GET /projects/reports/{id}`. That
-  read applies the subject check and returns 403, so the chat stops before
-  it reads `can_delete` or `can_edit`. The UI has no delete control, and the
-  list hides the row. So no product surface reaches the author path today.
-  It fails closed and leaks nothing.
-- **Do:** let the two tools read the row through the change rule. A read
-  that passes `refusal` lets the author reach the card. Add a chat test
-  for a lead who left team B.
-- **Authority:** `specs/projects_reports.md` §8 R5d · the R5d review, 2026-09-28
 - **Added:** 2026-09-28 · the WS-27bn R5d session
 
 ### H-201 · Bind the tenant in the other readers that still open an unbound session · [AGENT]
-- **Check:** `grep -rn "with get_session() as" apps/services/gateway/gateway/routes/observability.py apps/services/gateway/gateway/routes/debug.py apps/services/gateway/gateway/routes/integrations_skills.py`.
-  A hit means this is open.
-- **Done in part 4 (2026-09-30, `projects_ai_chat.md` §21.16).** The run's
-  artifact context is a ContextVar, and `artifact_context()` is its one
-  reader. The process-global `_WRITE_ARTIFACT_CONTEXT` is gone. Two runs of
-  two orgs on one loop now write their own dirs, rows and sessions.
-  `carry_run_context` carries the context into the Copilot SDK callbacks. A
-  sub-agent derives its own copy. A delegated personal agent works in the
-  parent member's `u:` dir, and with no member it is refused (P2-c). A shared
-  run stamps `o:<org>`. With no context, every reader fails closed. The fence
-  is `tests/unit/test_h201_run_context.py`. Do not do it again.
-- **Still open from part 4.**
-  - `/copilot/chat` and the `/pull` routes run the orchestrator agent with no
-    artifact context. Its `delegate_to_agent` starts a batch run that is not
-    seen as a delegation, so a personal agent there still works in
-    `o:<org>`. Bind a context for those routes, with the session's member.
-- **Done in part 3 (2026-09-30, `projects_ai_chat.md` §21.15).** A shared
-  agent works in a tenant dir, `state/<agent>/<slug of o:<org>>`, and never
-  in its clone. The executor takes the tenant from the run binding. A run
-  with no tenant is refused and writes nothing. `write_artifact`, the
-  rehydrate and the blob rows use the key `o:<org>`. Step 2 of
-  `_get_workspace_path` gives the caller's tenant dir, and the `repos/`
-  read arm is gone. The chat upload to a shared agent works again. The
-  email follow-ups of the part 2 review are done. The fence is
-  `tests/unit/test_h201_tenant_workdirs.py`. Do not do it again.
-- **Done in part 2 (2026-09-30, `projects_ai_chat.md` §21.14).** The four
-  global artifact routes serve only the caller's own `personal` workspace,
-  through `workspace._member_agent_workspace`. A shared agent, a team agent
-  and an agent with no clone answer 404, and the list leaves them out. The
-  blob write-through and the fault-in take `user.organization_id`.
-  `tests/unit/test_h201_artifact_routes.py` is the fence. Do not do it again.
-- **Done in part 2, P0-B.** The email attach and `POST
-  /email/artifacts/import` read only the sender's own workspace, through
-  `_safe_resolve`, and refuse `_is_blocked_path`. The fence is
-  `tests/unit/test_h201_email_artifact_sources.py`.
-- **Still open from parts 2 and 3.**
-  - The files left in `repos/<agent>/outputs|inputs|agent-data` have no
-    known tenant. No route serves them now. The owner decides whether an
-    operator deletes them. A Projects chat document from before S15 has no
-    blob row, so its link now answers 404.
-  - The `t:<team>` key has no tenant, so two orgs with one team name share
-    one folder.
-  - An agent with a `workspace_root` in `config.json` still works in that
-    one folder for every tenant. No agent in `apps/agents/` declares one.
-  - An App Workshop run (the session override) writes blob rows with
-    `instance=''`. Two tenants can collide on the primary key there.
-  - `notes/dispatch.py` writes its document draft into the clone of the
-    document agent, and to the blob store with `instance=''`.
-  - Three background callers pass no tenant, so a shared agent there is
-    now refused. Each is best-effort.
-    - The webhook route in `routes/agent.py`. Pass the tenant of the
-      webhook's record.
-    - A CRON workflow run of an agent node. A manual run has the request's
-      tenant, so it is not refused. Pass `_workflow_organization`.
-      Workflows is `preview`.
-    - The background email specialist consult (`drafting.py:1526`). It runs
-      from `email_ingestion/scheduler.py` with no `bind_tenant`, and
-      `EMAIL_SYNC_ENABLED` is ON by default. The draft goes on without the
-      specialist's answer. Email is a `preview` pane. Pass the tenant of the
-      mailbox's account.
-  - The `u:<email>` key has no tenant. `app_user.email` is unique across
-    orgs, so the case is purge, then rejoin. The old folder stays on disk.
-  - P2. A link planted at `<state dir>/<category>` moves an artifact
-    upload out of the folder. The upload does not resolve `upload_dir`.
-  - P2. On a box where `email-assistant` never ran, the artifact list is
-    empty and the upload answers 404 until the first run.
-- **Done in part 1 (2026-09-30, `projects_ai_chat.md` §21.13).** Part 1
-  bound the workspace read and PATCH, `query_history`, and the
-  `pending_commit` and `audit_event` routes in `routes/agent.py`. It also
-  added the room check on `POST /agent/respond-input`. Fix round 1 added
-  four more. Do not do them again.
-  - The workspace path check.
-  - The room check on each workspace route.
-  - The member scope of `query_history`.
-  - The owner thread of each `ask_user` request.
-  - Fix round 2: the one agent-name rule, `agent_paths.AGENT_NAME_RE`.
-- **What happens.** These modules still open the unbound
-  `acb_graph.get_session()` on a FORCE-RLS table. In production a read there
-  sees no row, and the database refuses a write there.
-- **Still open, one verdict per module.**
-  - `routes/agent.py` `_load_dynamic_agents`, `_sync_file_into_db`,
-    `_save_dynamic_agents` and `remove_agent` use `dynamic_agents`, which is
-    tenant-scoped. The gateway lifespan and the executor also read it, with
-    no request. First record whether the Agent Registry is per tenant or per
-    deployment. Today an unbound read finds nothing, and the code falls back
-    to `agents.json`.
-  - `routes/projects/assignees.py:269` reads `dynamic_agents` through the
-    bound `get_db`. The Agent Registry reads it unbound and so falls back to
-    `agents.json`. So the assignee picker and the registry can disagree
-    about which agents exist. Resolve both with the registry-scope decision.
-  - `routes/observability.py` reads `agent_run`, `agent_avatars` and `apps`.
-    Tenant-scoped. Its feed shows no run in production.
-  - `routes/debug.py` reads `agent_run`. Tenant-scoped.
-  - `routes/integrations.py` reads `custom_api_definitions` (tenant-scoped)
-    and `mcp_servers` (no policy).
-  - `routes/integrations_skills.py` reads `agent_skill_setting`.
-    Tenant-scoped.
-  - `action_broker/broker.py` writes `pending_actions`. Tenant-scoped.
-  - `acb_skills/loader.py` writes `pending_commit`. Tenant-scoped.
-  - Already bound behind `ACB_GRAPH_TENANT_BIND`, no work: `executor.py`,
-    `mutation.py`, `_tool_injection.py` and `acb_audit/log.py`.
-- **The stream relay keys (S15 fix round 1). Its own PR.** `cc:stream`,
-  `cc:active`, `cc:runactor`, `cc:runsource`, `cc:runfloor` and `cc:steer`
-  carry the bare thread id, with no tenant prefix. The room check denies
-  another tenant's id, and that check is the boundary. A prefix is defence
-  in depth. It reaches 10 importing modules and 16 client sites, and it moves
-  the `stream_relay.py`, `steer.py` and `room_stream.py` entries in the
-  `tests/unit/test_tenant_redis.py` ratchet. Use `acb_common.tenant_redis`.
-  Choose the deploy shape first: read both key forms for one release, or
-  accept that a run in flight at the deploy loses its stream.
-- **Also found.** `acb_auth.access` records an unprovisioned sign-in into
-  `access_request`. It has no tenant yet, so it needs its own design.
-  `/chat/active-sessions` scans Redis keys with no tenant prefix. A thread
-  of another org can appear there as "unknown".
-- **Found in fix round 2.** Four local agent-name regexes remain, in
-  `routes/apps/grants.py`, `routes/observability.py`, `routes/agent.py`
-  (`_sync_file_into_db`) and the executor registry path. Move each one to
-  `agent_paths.AGENT_NAME_RE`, so the product has one rule.
-  `import_artifact` in `routes/email/transport/send.py` also checks
-  containment with `startswith`. Use `is_relative_to`.
-- **Found in part 1 fix round 1.** The `write_artifact` tool PATCHes the
-  session workspace with the internal token and no member. That call has no
-  tenant, so the room check refuses it. It was already a no-op in production under
-  FORCE RLS. Give it the run's tenant and member, or drop the PATCH.
-  `tests/integration/test_chat_features.py::test_resolve_user_input_endpoint`
-  posts with no `thread_id`, so it now gets 422. It is a live-only test.
-  `apps` slugs are unique across the deployment, but the lookup reads them
-  in one tenant, so two tenants can collide on one app folder.
-- **From the S15 fix-round review.** (P3) `chat_session_exists` fails
-  closed with NULL if its owner loses BYPASSRLS. Then the gateway refuses
-  every new chat. Add a startup self-check or a smoke-check step, which
-  asserts that a random id gives false.
-- **Do:** give each module the tenant from the server-side identity or the
-  run, and open `acb_graph.tenant_session`. Add each one to the R8 suite
-  `tests/unit/test_h201_readers_under_rls.py`.
-- **Authority:** `specs/projects_ai_chat.md` §21.9 and §21.13 · R5
+- **Metorite:** #612. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** `grep -rn "with get_session() as" apps/services/gateway/gateway/routes/agent.py packages/acb_skills/acb_skills/loader.py`.
+  A hit means this is open. The Redis activity feeds are task 1718, and the
+  `agent_avatars` key is task 1719.
+- **Part 2:** closed the Postgres reads of `observability.py`, `debug.py`,
+  `integrations_skills.py` and the two plugin routes of `integrations.py` on
+  2026-11-05.
+- **Part 3 (task 1718, H-201c):** keys the Redis feed of `observability.py`
+  for each tenant. Built 2026-11-05 on branch `h201c-mt-dea97a06`, not merged.
+- **Part 4 (task 1748, H-201e):** keys the `/cost` rollup for each tenant
+  (`cc:<org>:cost:{day}`). Built 2026-11-05 on branch `h201e-mt-2e03e787`,
+  not merged.
+- **Part 5 (task 1719, H-201d):** the expand half of the `agent_avatars` key.
+  Migration 354 adds the unique index on `(organization_id, agent_name)`, and
+  `_save_avatar` names it. Built 2026-11-07 on branch `h201d-mt-66c5a664`,
+  not merged. H-443 carries the contract half.
 - **Added:** 2026-09-29 · the WS-27bm S15 session. Part 1 built 2026-09-30.
 
+### H-443 · H-201d contract: drop the old agent_avatars primary key one release after the expand migration ships · [AGENT]
+- **Metorite:** #1719. Do it only when the migration ledger of production
+  holds `354_agent_avatars_key_per_tenant.sql` from an EARLIER release. In the same
+  release as 354, the old gateway's `ON CONFLICT (agent_name)` fails on each
+  save until the restart. The contract file drops `agent_avatars_pkey` and
+  flips the two cross-org pins in `test_agent_avatars_key_per_tenant_r8.py`
+  and `test_h201_readers_under_rls.py`.
+- **Check:** `grep -lnE "DROP CONSTRAINT (IF EXISTS )?agent_avatars_pkey" infra/postgres/*.sql`
+  → no hit means the contract is still open.
+- **Added:** 2026-11-07 · the H-201d expand session (task 1719)
+
 ### H-202 · Two small follow-ups from the Reports UX pass · [AGENT]
+- **Metorite:** #497. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `grep -n '"Project"' workbench/control_plane/src/app/projects/components/ReportsView.tsx`
   → a hit in `scopeName` means item 2 is still open.
-- **Why:** the verifier of the Reports UX pass found these. Neither blocks.
-  1. Four test titles sit under the wrong §6.5 item. `reportsUx.test.ts`
-     :179, :184 and :210 test the empty line and the rail scope, which are
-     item 12, under `describe("(11) the gallery")`. `reportBuilderUx.test.ts`
-     :444 tests `reportCardLine`, also item 12, under `describe("(5) …")`.
-  2. `scopeName` in `ReportsView.tsx` shows "Project" while the tree loads,
-     or when the tree does not hold the node. The chips never use that
-     word. Use the same words as `scopePhrase`, for example "In a project".
-- **Authority:** `specs/projects_reports.md` §6.5 · the UX pass verification, 2026-09-29
 - **Added:** 2026-09-29 · the WS-27bn R5b-2 and UX pass session
 
 ### H-206 · A browser that blocks storage breaks the whole app · [AGENT]
+- **Metorite:** #685. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `grep -n "window.localStorage" workbench/control_plane/src/components/OrgBrandLockup.tsx`
   → an access with no try/catch around it means the entry is still open.
-- **Why:** `OrgBrandLockup.tsx` reads `window.localStorage` with no
-  try/catch. A browser can block site data, for example in a private window
-  or by policy. The access then throws, the sidebar fails, and no page
-  renders. The R5g implementer found this and could not run the
-  blocked-storage check of Overview in a browser. Wrap each access in
-  try/catch, and render the default when storage fails.
-- **Authority:** `specs/projects_reports.md` §8 R5g
 - **Added:** 2026-10-01 · the WS-27bn R5g session
 
-# DONE — deleted, not archived
+### H-210 · Drop the old thread index `idx_email_messages_thread` in a migration of its own · [AGENT]
+- **Metorite:** #774. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** `grep -rn "DROP INDEX IF EXISTS idx_email_messages_thread;" infra/postgres/`
+  → no hit means the entry is still open.
+- **Added:** 2026-10-03 · the EM-T4e review (branch `email-t4e`)
 
-Nothing lives here. When an entry's Check passes, **delete the block**. Git
-history is the archive; a "done" section in a loaded-into-context file is just
-tokens that make the open items harder to find.
+### H-215 · Keep tool results across turns on Tier 1, then move task-manager to MAF · [AGENT]
+- **Metorite:** #765. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** `grep -n -A 25 '"name": "task-manager"' apps/services/gateway/gateway/routes/agent.py | grep agent_runtime`
+  → `github-copilot` means the entry is still open.
+- **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
+
+### H-219 · A steer note shows as extra detail rows on a tool card · [AGENT]
+- **Metorite:** #782. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** `grep -rn "arrived from a participant" workbench/control_plane/src/`
+  → no hit means the cards still show the note as rows, and the entry is still open.
+- **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
+
+### H-220 · With the Router off, Thinking and Max do nothing on the local /v1 path · [AGENT]
+- **Metorite:** #530. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** `grep -n "reasoning_effort" apps/services/gateway/gateway/routes/v1_compat.py`
+  → no hit means the local path still drops it, and the entry is still open.
+- **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
+
+### H-221 · On DeepSeek, Max is the same as Thinking, and a plain model can refuse both · [AGENT]
+- **Metorite:** #771. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** `grep -rn "drop_params" apps/services/customer_console/`
+  → no hit means the Console still refuses the field for a model with no reasoning support.
+- **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
+
+### H-222 · A native sub-agent takes the parent's steer note · [AGENT]
+- **Metorite:** #782. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** `grep -n "decorate_tool_result(result)" apps/services/orchestrator/orchestrator/_tool_injection.py`
+  → a hit means the entry is still open.
+- **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
+
+### H-223 · The sandbox quota flag lives on one handle, and two handles can share one dir · [AGENT]
+- **Metorite:** #782. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `grep -n "handle.over_quota = used" apps/services/orchestrator/orchestrator/sandbox_broker.py`
+  → a hit means the entry is still open.
+- **Added:** 2026-10-03 · WS-43c, the sandbox broker
+
+### H-224 · A cancelled `docker run` can leave a Created sandbox container · [AGENT]
+- **Metorite:** #782. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** `grep -n "_remove_container(handle.container_id, handle.start_id)" apps/services/orchestrator/orchestrator/sandbox_broker.py`
+  → a hit, and no retry of the start-label removal, means the entry is still open.
+- **Added:** 2026-10-03 · WS-43c, the sandbox broker
+
+### H-225 · Take the shell tools from personal agents too, once the sandbox covers them · [AGENT]
+- **Metorite:** #808. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** `grep -n 'return instancing == "personal"' apps/services/orchestrator/orchestrator/_tool_injection.py`
+  → a hit means a personal agent still keeps its host shell tools.
+- **Added:** 2026-10-03 · the D85 interim block
+
+### H-230 · Put the first-party check in front of `spawn_copilot_agent`'s mutation sandbox · [AGENT]
+- **Metorite:** #615. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `grep -n "_self_mutation_permitted\|_read_first_party" apps/services/orchestrator/orchestrator/agents.py`
+  → no hit means `spawn_copilot_agent` still starts the sandbox for any organization.
+- **Added:** 2026-10-04 · fix round 2 of PR #598
+
+### H-231 · Confirm that `metorite` is registered in production, so its exempt name is taken · [AGENT]
+- **Metorite:** #686. The task holds the full entry (moved 2026-10-27, D118).
+- **Check:** read-only, on the box: `SELECT name FROM dynamic_agents WHERE lower(name)='metorite';`
+  → no row means the name is free, and an `agents:manage` holder could register another agent under it.
+- **Added:** 2026-10-04 · fix round 2 of PR #598
+
+### H-233 · Make the refused root agent look absent everywhere · [AGENT]
+- **Metorite:** #768. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `grep -n '"code": type(exc).__name__' apps/services/orchestrator/orchestrator/executor.py`
+  → a hit means a refused stream still says `AgentNotFound`, a code that no unknown agent gives.
+- **Added:** 2026-10-04 · fix round 2 of PR #598
+
+### H-234 · Run a real Copilot CLI session, to see whether it writes outside its workspace · [AGENT]
+- **Metorite:** #716. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `grep -c "write_out_of_workspace" <the log of a real task-manager turn on the local stack>`
+  → no run on record means this is still unverified.
+- **Added:** 2026-10-04 · fix round 2 of PR #598
+
+### H-235 · Finish chat attachments: `.xlsx`, and one live read · [AGENT]
+- **Metorite:** #782. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `grep -c '".xlsx"' packages/acb_skills/acb_skills/attachment_text.py`
+  → `0` means `.xlsx` is still unread. Step 2 stays open until a live read is on record.
+- **Added:** 2026-10-04 · the H-229 slice
+
+### H-238 · Add an app-wide CSP that limits `img-src` and `script-src` · [AGENT]
+- **Metorite:** #687. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `grep -rn "Content-Security-Policy" workbench/control_plane/next.config.ts workbench/control_plane/src/proxy.ts`
+  → no hit means no app-wide CSP is set.
+- **Added:** 2026-10-04 · the chat click-to-load PR
+
+### H-297 · Register Metorite's Zoho OAuth client, and drop its two values · [OWNER]
+- **Metorite:** #736. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `grep -cE '^CRM_ZOHO_CLIENT_(ID|SECRET)=.+' "$HOME/.metorite/secrets/app.env"`
+  on the owner's PC. A count below 2, or no file, means this is open. When it
+  prints 2, an agent pushes the values and runs
+  `scripts/secrets.sh status app-env`. `in-sync` closes the entry. Neither
+  command prints a value.
+- **Added:** 2026-10-11 · branch `crm-z0`
+
+### H-298 · Nine directory names are email addresses, and two paths still write more · [AGENT]
+- **Metorite:** #773. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `SELECT count(*) FROM people WHERE name LIKE '%@%'` on production
+  → above 0 means this is open. 9 of 38 on 2026-10-10.
+- **Added:** 2026-10-10 · the person names session
+
+### H-301 · Drop `mcp_servers` one release after IN-4 · [AGENT]
+- **Metorite:** #772. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `grep -c "FROM mcp_servers" apps/services/gateway/gateway/connections/mcp.py`
+  → a count above `0` means this is open.
+- **Added:** 2026-10-12 · IN-4
+
+### H-302 · Every page mounts twice on a cold load (OrgLinkGate's Suspense fallback) · [AGENT]
+- **Metorite:** #779. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** in `workbench/control_plane/e2e/shell-bar.spec.ts`, remove
+  `.fixme` from "a cold load of /tasks mounts the app bar once". Run that
+  test. "Expected: 1, Received: 2" means this entry is open.
+- **Added:** 2026-10-12 · shell follow-ups of #918
+
+### H-304 · A full run of `gen_tenant_migration.py` renames 12 tables' keys and policies · [AGENT]
+- **Metorite:** #768. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** run `uv run python scripts/gen_tenant_migration.py`, then
+  `git diff --stat infra/postgres/generated`. A diff means this is open. Put
+  the files back with `git checkout -- infra/postgres/generated` after.
+- **Added:** 2026-10-14 · WS-58 MD-2a
+
+### H-306 · Seal removals in the delta feed wait for a caller that reads `removed[]` · [AGENT]
+- **Metorite:** #698. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `git grep -n "delta/tasks" -- workbench apps packages`. Look for a
+  hit outside `routes/projects/` and outside the `X` row of
+  `skill_projects/manifest.py`. Also look for `delta` in `MCP_ROUTES` in
+  `packages/acb_auth/acb_auth/agent_oauth.py`. No new hit means the trigger
+  has not come, and this entry stays.
+- **Added:** 2026-10-14 · closed PR #1010
+
+### H-307 · Delete the orphan Mem0 memories of mailboxes that no longer exist · [OWNER]
+- **Metorite:** #774. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `git grep -n "def reconcile_orphan" -- apps/services/gateway/gateway/routes/email`.
+  No hit means no reconcile exists, and this entry stays.
+- **Added:** 2026-10-14 · PR-G8 (`gmail-purge-durable`), fix round 2
+
+### H-309 · Create the WS-59 tasks in the Metorite project "Proactive Intelligence" · [AGENT]
+- **Metorite:** #854. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** in a session with the Metorite MCP, run `search_tasks` with the
+  query `RE-1`. A hit in the project "Proactive Intelligence" means the tasks
+  exist, and this entry goes.
+- **Added:** 2026-10-14 · WS-59 RE-0
+
+### H-310 · A WhatsApp Confirm refuses a name that the `decide` engine resolved at the ask · [AGENT]
+- **Metorite:** #742. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `rg -n "bind_run_context|set_run_context|artifact_context" apps/services/gateway/gateway/routes/whatsapp_channel/acts.py`.
+  No hit means this is open.
+- **Added:** 2026-10-15 · branch `wa-calendar-blocks`
+
+### H-311 · One WhatsApp message can ask for only one change · [AGENT]
+- **Metorite:** #776. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `rg -n "One change waits at a time" apps/services/gateway/gateway/routes/whatsapp_channel/bot_run.py`.
+  A hit means this is open.
+- **Added:** 2026-10-15 · branch `wa-calendar-blocks`
+
+### H-312 · Ten statements in the task routes name no tenant (seven reads, three writes), and their tables have no org column · [AGENT]
+- **Metorite:** #1646. It waits on H-104 (#608). The five `user_settings` reads of the first entry closed on 2026-11-04 (#562).
+- **Check:** `git grep -n -A2 "WHERE user_id = :uid" -- apps/services/gateway/gateway/routes/tasks`.
+  A statement that names no `organization_id` means this entry stays.
+- **Added:** 2026-10-15 · MD-3c review · narrowed 2026-11-04
+
+### H-313 · An operator viewer can reach the tenant org purge · [AGENT]
+- **Metorite:** #523. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `rg -c "operators/session" workbench/operator_console/src/app/api/operator/purge/route.ts`.
+  No hit means this is open.
+- **Added:** 2026-10-15 · branch `member-remove`
+
+### H-314 · A feed approvals test fails at one time of day · [AGENT]
+- **Metorite:** #772. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** run `tests/unit/test_feed_handled_r8.py::TestApprovals::test_iii_org_bs_admin_sees_no_approval_of_org_a`
+  with the clock frozen at 2026-10-15 07:14 UTC. A failure means this is open.
+- **Added:** 2026-10-15 · branch `member-remove`
+
+### H-315 · Submit the two Reach templates at Meta, then name them on the box · [OWNER]
+- **Metorite:** #855. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** on the box, `grep -E "^REACH_(BRIEF|NEEDS_YOU)_TEMPLATE=" /opt/acb/app/.env`
+  shows `metorite_daily_brief` and `metorite_needs_you`. Then this entry goes.
+- **Added:** 2026-10-15 · WS-59 RE-2a
+
+### H-323 · A DSML stream shows a first tag that a delta cut before its `>` · [AGENT]
+- **Metorite:** #771. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** in `tests/unit/test_router_dsml_tool_calls.py`, compare
+  `_events(TASK_TOOLS, deltas)` with `_events(TASK_TOOLS, [whole])` for the
+  three cases in `specs/customer_console.md` §6A.15, "The known gap". A
+  difference in any case means this is open.
+- **Added:** 2026-10-15 · PR #1047
+
+### H-316 · The member writers of assignee rows take the row and the key in different orders · [AGENT]
+- **Metorite:** #500. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `git grep -n -e "ids = dedupe_ids(payload.task_ids)" -e "await _move_satellites(db, str(source.id), task_id)" -- apps/services/gateway/gateway/routes/projects/bulk.py apps/services/gateway/gateway/routes/projects/merge.py`. The first anchor is the unsorted selection of the bulk edit. The second is the merge, which moves the assignee keys before `update_row` of the target. Two hits mean this entry stays. With fewer hits, read the changed code, and delete this entry when the orders agree.
+- **Added:** 2026-10-15 · EA-6b fix round 3 review (taken as H-313, renumbered to H-316 at merge because main took H-313 to H-315)
+
+### H-317 · Reach must send the needs-you template for an approval only · [AGENT]
+- **Metorite:** #743. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `git grep -n "needs_you_template" -- apps/services/gateway/gateway/reach/loop.py`.
+  Read the branch that sends the template. No test of the `approval` kind
+  beside it means this is open.
+- **Added:** 2026-10-15 · H-315 template submission
+
+### H-318 · A preview app's jobs reach the tier-2 coordinator · [AGENT]
+- **Metorite:** #768. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `rg -n "launch" apps/services/gateway/gateway/routes/shell/intent.py`.
+  No hit inside `held_jobs` means this is open.
+- **Added:** 2026-10-15 · WS-61 KB-0 audit
+
+### H-319 · Two spellings of the subject grammar: a bare email and `user:<email>` · [AGENT]
+- **Metorite:** #692. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `rg -n "user:" infra/postgres/268_artifacts.sql packages/acb_auth/acb_auth/permissions.py apps/services/gateway/gateway/routes/projects/core.py`.
+  A `user:` prefix in the artifacts CHECK and a bare email in
+  `validate_grant_subject` means this is open.
+- **Added:** 2026-10-15 · WS-61 KB-0 audit
+
+### H-328 · The workflow run lifecycle outside the agent tools names no tenant (H4 slice 6c) · [AGENT]
+- **Metorite:** #856. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `git grep -n "await _get_db()" -- apps/services/gateway/gateway/routes/workflows/`.
+  Each hit is an unbound read or write on a FORCE RLS table. This entry is
+  open until the only hits left are tenant-discovery reads.
+- **State (2026-11-03):** Part (b) is built: the scans bind each listed org, and the list `WORKFLOW_UNATTENDED_ORGS` ships empty.
+  A scheduled run of a listed org has no billing member, so an agent node fails, and five failures disable the workflow.
+  Before the owner lists an org, read two lists for that org: its published workflows with an agent node, and its paused waits of a kind other than schedule, webhook and event.
+- **Added:** 2026-10-15 · PR #1052 review round 1
+
+### H-320 · An unticked checkbox has no visible edge · [AGENT]
+- **Metorite:** #754. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `rg -n "border-border" workbench/control_plane/src/components/ui/Checkbox.tsx`.
+  A hit in the `BASE` string means the defect is open.
+- **Added:** 2026-10-15 · WS-53 CRM-Q16
+
+### H-321 · A generic module held for a long time keeps its deleted rows · [AGENT]
+- **Metorite:** #603. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `rg -n "def _module_reread" apps/services/gateway/gateway/crm_sync/engine.py`.
+  If that function still runs a full re-read only for a module that hides
+  `Modified_Time`, this entry is open.
+- **Added:** 2026-10-15 · WS-53 CRM-Q16 review
+
+### H-322 · An artifact on a Knowledge page must count as kept · [AGENT]
+- **Metorite:** #746. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `rg -n "kb_page_files" apps/services/gateway packages/acb_memory infra/postgres`.
+  No hit in the artifact sweep's `keep` rule means this is open.
+- **Added:** 2026-10-15 · WS-61 KB-1 audit
+
+### H-325 · Three calls on the CRM mapping design · [OWNER]
+- **Metorite:** #775. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** read `crm_platform.md` §18.9.1, "Open, with a recommendation".
+  If it still lists three open calls, this entry is open.
+- **Added:** 2026-10-16 · WS-53 §18.9 spec
+
+### H-326 · A Zoho module count is higher than the records the sync keeps · [AGENT]
+- **Metorite:** #551. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** on prod, compare `crm_sync_runs.estimate` with the rows in
+  `crm_module_records` for DEWiN (`f01d029f-…`). If Payment_Made still holds
+  3,003 rows against an estimate of 4,947, this entry is open.
+- **Added:** 2026-10-16 · WS-53, DEWiN import
+
+### H-327 · A Zoho task on a custom-module record is skipped · [AGENT]
+- **Metorite:** #604. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** on prod, read the counts of DEWiN's last run. If `tasks` shows
+  `unlinked` equal to `seen` (1,145 on 2026-10-15), this entry is open.
+- **Added:** 2026-10-16 · WS-53, DEWiN import
+
+### H-331 · `test_fifteen_for_each_source` fails in the full unit run, and passes alone · [AGENT]
+- **Metorite:** #772. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** in a CI log of the whole `tests/unit` run, search for
+  `test_feed_handled.py::TestTheCap::test_fifteen_for_each_source FAILED`.
+  A hit in a run whose diff touches no My Day file means this is open.
+- **Added:** 2026-10-16 · WS-61 KB-2a CI
+
+### H-332 · With two panes open, the chat column on `/chat` is too narrow for a card · [AGENT]
+- **Metorite:** #757. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** open `/chat` at a width of 1440 px. Open the Documents pane and
+  the Files pane. Measure the message column. A width under 400 px means
+  this is open.
+- **Added:** 2026-10-16 · WS-27bm §14.10.9 B3 review
+
+### H-336 · W10: the chat's unmount save can copy mail into Mem0, so WS-7 keeps Mem0 off · [AGENT]
+- **Metorite:** #694. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** run the two commands. Either one closes this entry.
+  1. `git grep -c "run_holds_mail" -- apps/services/gateway/gateway/routes/memory.py`
+     gives a count: the save route asks the mail predicate.
+  2. `git grep -n "saveConversationOnUnmount" -- workbench/control_plane/src ":!*.test.ts" ":!*.test.tsx"`
+     gives no hit: the unmount save is gone.
+  While both fail, this is open. ⚠️ While it is open, WS-7 must not turn
+  Mem0 on for any organization. The WS-7 row of `work_plan.md` names it.
+- **Added:** 2026-10-16 · PR-G8b (`gmail-chat-copies`), fix round 1
+
+### H-352 · Email work holds a pool connection across provider and model calls · [AGENT] · finding
+- **Metorite:** #660. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** in `apps/services/gateway/gateway/routes/email/automation/runner.py`,
+  find "Block W" in `_run_rules_job`. If `_apply_matches` still runs inside
+  that `async with _tenant_session()`, this is open. Also check
+  `_ensure_subscription` in `transport/sync.py`, and the hydrate in
+  `get_message` in `transport/messages.py`.
+- **Added:** 2026-10-18 · email route errors (gateway log, 7 days)
+
+### H-354 · A refusal looks wrong in two chat places · [AGENT] · finding
+- **Metorite:** #782. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** (1) In `ProjectToolCards.tsx`, if `ProjectEvidenceBody` and
+  `InfoCard` still branch only on `status === "error"`, a refused Projects
+  read is red. (2) In `acb_common/tool_refusals.py`, if `is_refusal` reads
+  the result of every tool, this is open.
+- **Added:** 2026-10-18 · review of #1126
+
+### H-355 · Email request bodies still pass a raw account id to SQL · [AGENT] · finding
+- **Metorite:** #732. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** grep the request models under
+  `apps/services/gateway/gateway/routes/email/` for an `account_id` field.
+  If a route passes that field to SQL without `resolve_account_filter`,
+  this is open.
+- **Added:** 2026-10-18 · PR #1128 and its review
+
+### H-409 · Harden EA-14a: a task that closes, and two small gaps · [AGENT]
+- **Metorite:** #748. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `grep -n "organization_id" apps/services/gateway/gateway/routes/projects/filters.py`
+  near `unheld_clause`. When the clause, `_HOLDER_SQL` and `_RUN_SELECT` all
+  carry the org predicate, item 3 is done. Read items 1 and 2 against the code.
+- **Added:** 2026-10-20 · PR #1192 review, P2 and P3
+
+### H-357 · 🔴 A key that a chat saw must be rotated, and old rows scrubbed · [OWNER] · security
+- **Metorite:** #624. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** ask each org whose chats set up a key, a GitHub token first.
+  Did it rotate that key after 2026-10-18? Then count the rows that still
+  hold a value, on production and on staging. In `chat_message`, test
+  `content`, `reasoning`, `tool_events`, `progress_lines`, `agent_state` and
+  `custom_events` for `<<<SETUP:` and for `ghp_`, `gho_`, `github_pat_` and
+  `ghs_`. Test `chat_session.last_preview` and `chat_session.title` too. Do
+  the same for `maf_agent_session.session_json` and `agent_run.trace`. If
+  every key is rotated and every count is 0, delete this entry.
+- **Added:** 2026-10-18 · WS-54 Batch A fix round 2, item 5. Widened in fix round 3.
+
+### H-359 · Three staging file races that the acb-staging-flag review left · [AGENT] · security
+- **Metorite:** #772. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** in `scripts/staging_refresh.sh`, the write of `$file.tmp` runs as
+  `acb` (through `setpriv` or `runuser`), and `acb-staging-flag` checks the pin
+  file before it writes `.env`. If both hold, delete this entry.
+- **Added:** 2026-10-18 · H-358 security review
+
+### H-370 · Set the date the repo takes AGPL-3.0, as ported Docmost code ships · [OWNER]
+- **Metorite:** #700. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** the repo root holds a `LICENSE` file that names AGPL-3.0, or the
+  owner has written the date in `work_plan.md` D107. If either holds, delete
+  this entry.
+- **Added:** 2026-10-19
+
+### H-360 · Widen acb-staging-flag: NEXT_PUBLIC_ rebuilds, a production mode, and an unset that lasts · [AGENT]
+- **Metorite:** #772. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `deploy/hostinger/staging/acb-staging-flag` (or its successor) can set a
+  `NEXT_PUBLIC_*` flag on staging and start a rebuild, and can set a flag on
+  production with `--production --reason`. If both hold, delete this entry.
+- **Added:** 2026-10-18
+
+### H-364 · Harden the CRM consistency batch of §18.16 · [AGENT] · security
+- **Metorite:** #738. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** each item below has its own test or review record, or a later
+  entry owns it. If all hold, delete this entry.
+- **Added:** 2026-10-19
+
+### H-368 · A host shell can still reach a GitHub token outside the clone · [OWNER] · security
+- **Metorite:** #565. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** on the box, run
+  `grep -cE '^(GITHUB_READ_TOKEN|COPILOT_GITHUB_TOKEN)=.' /opt/acb/app/.env`.
+  A count below 2 means steps 1 and 2 are open.
+- **Added:** 2026-10-20 · H-363
+
+### H-372 · Move file bytes out of Postgres and off the box's disk (MT-1g) · [AGENT] · data
+- **Metorite:** #701. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `git grep -l "object_store" origin/main -- packages/acb_common`
+  prints a file, and `git grep -n "BYTEA" origin/main -- infra/postgres/*.sql`
+  shows `agent_blob.content` dropped or unused. If both hold, delete this entry.
+- **Added:** 2026-10-20 · artifacts session
+
+### H-373 · Try the email chat fixes of #1201, #1202 and #1203 on real mail · [OWNER]
+- **Metorite:** #552. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** an agent cannot run this. It cannot sign in as the owner. The
+  entry stays open until the owner says in a session that the three tries
+  below worked, or names the one that failed.
+- **Added:** 2026-10-21 · email chat collaboration session
+
+### H-376 · Turn on images in reply drafts when a tier reads images · [OWNER]
+- **Metorite:** #774. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** an agent cannot read the box's settings without the `secrets`
+  grant. The owner confirms that `EMAIL_DRAFT_READS_IMAGES` is on in the
+  gateway's environment, and that the AI Router serves the email calls.
+- **Added:** 2026-10-21 · email chat collaboration session
+
+### H-379 · Turn on send later: staging first, then production · [OWNER]
+- **Metorite:** #730. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** an agent cannot read the box's settings without the `secrets`
+  grant. The owner confirms that `EMAIL_SEND_LATER` is `true` in the gateway's
+  environment on production. Until then, the chat says that send later is
+  not on.
+- **Added:** 2026-10-21 · email chat collaboration session
+
+### H-381 · A chat plan cannot make subprojects or repeat rules (WS-46 P8, G19, G20) · [AGENT]
+- **Metorite:** #490. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `uv run python -m evals.projects_ops.run --scripted`. PO-3 reads
+  `xfail` while P8 and P9 are open.
+- **Added:** 2026-10-23 · Projects chat parity session
+
+### H-383 · The Projects chat has no agent-run tools (WS-55 EA-12e, G23) · [AGENT]
+- **Metorite:** #490. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `grep -n "EA-12e" apps/skills/skill-projects/skill_projects/manifest.py`.
+  A hit in `PLANNED` means the four tools are not built.
+- **Added:** 2026-10-23 · Projects chat parity session
+
+### H-384 · Run the Projects eval with the live model, and add tasks for delete and show_view · [OWNER]
+- **Metorite:** #488. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `ls evals/projects_ops/results/`. No run made with `--tier` means
+  the sweep has never run. `grep -n "show_view\|delete_task" evals/projects_ops/tasks.py`
+  shows whether the new tasks exist.
+- **Added:** 2026-10-23 · Projects chat parity session
+
+### H-385 · Decide which excluded Projects acts move into the chat · [OWNER]
+- **Metorite:** #501. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `uv run python -c "import skill_projects.manifest as m; print(sum(r.cls=='X' for r in m.MANIFEST))"`
+  from `apps/skills/skill-projects`. It printed 38 on 2026-10-22.
+- **Added:** 2026-10-23 · Projects chat parity session
+
+### H-386 · Try the three Projects chat changes of 2026-10-22 in a browser · [OWNER]
+- **Metorite:** #554. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** the owner confirms each item below on `app.metorite.com`. An agent
+  cannot sign in with Google or Microsoft.
+- **Added:** 2026-10-23 · Projects chat parity session
+
+### H-387 · Check that the Projects tools run from the assistant outside /projects · [AGENT]
+- **Metorite:** #484. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** nobody has measured it. Delete this entry when the answer is
+  recorded in `projects_agent_parity.md`.
+- **Added:** 2026-10-23 · Projects chat parity session
+
+### H-390 · Email reads answer 503 when the gateway's database pool is full · [AGENT]
+- **Metorite:** #633. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `ssh metorite "sudo journalctl -u acb-gateway --since -24h -o cat
+  | grep -c 'QueuePool limit'"` prints 0. If it does for a week, delete this
+  entry.
+- **Added:** 2026-10-23 · email chat session
+
+### H-391 · An email write over WhatsApp says "ask in the app" · [AGENT]
+- **Metorite:** #744. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** in a WhatsApp chat, ask the assistant to archive one mail. If it
+  does so after a confirm, delete this entry.
+- **Added:** 2026-10-23 · email chat session
+
+### H-396 · Try the chat fixes of 2026-10-22 on a phone · [OWNER]
+- **Metorite:** #758. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** the owner says each item below works. Then delete this entry.
+- **Added:** 2026-10-23 · email chat session
+
+### H-397 · Turn on AI proposals in Knowledge once the Review view is live · [OWNER]
+- **Metorite:** #370. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `ssh metorite 'sudo grep -c "^KNOWLEDGE_PROPOSALS=true" /opt/acb/app/.env'` prints 1, and so does the staging `.env`. If both print 1, delete this entry.
+- **Added:** 2026-10-23 · Knowledge session
+
+### H-398 · Turn on knowledge gaps and the kb_gap My Day card · [OWNER]
+- **Metorite:** #371. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `KNOWLEDGE_GAPS` names the org and `MY_DAY_PROVIDERS` holds `knowledge` in the production `.env`. If both hold, delete this entry.
+- **Added:** 2026-10-23 · Knowledge session
+
+### H-399 · Build the next Knowledge AI slices of §22 · [AGENT]
+- **Metorite:** #366. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `grep -nE "KB-AI-2|KB-AI-3|KB-AI-4|KB-AI-6" project-docs/specs/knowledge_base.md`. Delete this entry when each row reads BUILT.
+- **Added:** 2026-10-23 · Knowledge session
+
+### H-400 · Finish the Notion and Confluence parity of wave 2 · [AGENT]
+- **Metorite:** #366. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** the wave 2 table of `knowledge_base.md` §21.7 marks KB-2j, KB-2o and KB-2c BUILT. If all three are BUILT, delete this entry.
+- **Added:** 2026-10-23 · Knowledge session
+
+### H-401 · Run the hardening pass of the Knowledge build · [AGENT]
+- **Metorite:** #410. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `grep -c "^| K-" project-docs/hardening_backlog.md` prints 0. If it prints 0, delete this entry.
+- **Added:** 2026-10-23 · Knowledge session
+
+### H-403 · Check that the last two Knowledge PRs of 2026-10-23 merged and reached staging · [AGENT]
+- **Metorite:** #745. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `gh pr view 1241 --json state` reads MERGED, and `curl -s https://api.dev.metorite.com/version` shows a SHA at or after its merge. If both hold, delete this entry.
+- **Added:** 2026-10-23 · Knowledge session
+
+### H-407 · Mem0 memory reads a member's private facts into an org-visible room of one · [AGENT] · security
+- **Metorite:** #696. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `grep -n "shared=_room_is_shared\|_clearance.write if _room_is_shared" apps/services/gateway/gateway/routes/agent.py` prints nothing, because the memory pre-read and the extraction use `not room_is_solo(room)` from `gateway/rooms.py`. If it holds, delete this entry.
+- **Added:** 2026-10-24 · WS-63 PZ-2 repair round
+
+### H-418 · Finish PR #1400, the chat wave 2 of WS-64 · [AGENT]
+- **Metorite:** #874. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `gh pr view 1400 --json state -q .state` prints OPEN. If it prints MERGED, check that staging and production serve its SHA, then delete this entry.
+- **Added:** 2026-10-27 · WS-64 session
+
+### H-419 · Merge PR #1399, the manifest decisions for the OP-11 routes · [AGENT]
+- **Metorite:** #875. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `gh pr view 1399 --json state -q .state` prints OPEN.
+- **Added:** 2026-10-27 · WS-64 session
+
+### H-420 · Build wave 3: task ids with a space prefix, such as OPS-447 · [AGENT]
+- **Metorite:** #876. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `git log origin/main --oneline -i --grep "prefixed task id"` prints nothing.
+- **Added:** 2026-10-27 · WS-64 session
+
+### H-421 · Finish the My tasks leftovers of OP-11 · [AGENT]
+- **Metorite:** #877. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `git grep -n "MY_TASKS_MAX_ROWS" origin/main -- workbench/control_plane/src/app/projects/lib/myTasks.ts` prints a line. The 2000-row cap still exists.
+- **Added:** 2026-10-27 · WS-64 session
+
+### H-422 · OP-5: retire the old Tasks code and merge the backend · [AGENT]
+- **Metorite:** #878. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `test -d apps/services/gateway/gateway/routes/tasks && echo PENDING`
+- **Added:** 2026-10-27 · WS-64 session
+
+### H-423 · Decide how a space summary counts what a member cannot see · [OWNER]
+- **Metorite:** #879. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** read `fold_node_summary` in `apps/services/gateway/gateway/routes/projects/tree.py`. If its child walk has no `project_clause`, this is pending.
+- **Added:** 2026-10-27 · WS-64 session
+
+### H-424 · Two loose ends of the chat timeout fix · [AGENT]
+- **Metorite:** #880. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `git grep -n "run_task = asyncio.create_task" origin/main -- apps/services/orchestrator` prints `executor.py`. The Tier-2 fallback still starts a task that nothing cancels.
+- **Added:** 2026-10-27 · WS-64 session
+
+### H-425 · Move six Fracktal tasks out of the space Company Operations · [OWNER]
+- **Metorite:** #881. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** ask the chat in Fracktal to list the tasks of the space Company Operations. Six tasks (#447 to #452) mean it is pending. An admin may read `pm_tasks` through the ap-south-1 pooler instead.
+- **Added:** 2026-10-27 · WS-64 session
+
+### H-426 · Decide how a repeating task behaves when it leaves Done · [OWNER]
+- **Metorite:** #882. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** Metorite task #49 is not Done.
+- **Added:** 2026-10-27 · WS-64 session
+
+### H-427 · Find the cause of the duplicate board names, and look at the chat task table · [AGENT]
+- **Metorite:** #883. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** Metorite tasks #48 and #50 are not Done.
+- **Added:** 2026-10-27 · WS-64 session
+
+### H-428 · Pin the other CI jobs to ubuntu-24.04, and look at one flaky browser test · [AGENT]
+- **Metorite:** #884. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `git grep -n "ubuntu-latest" origin/main -- .github/workflows` prints lines.
+- **Added:** 2026-10-27 · WS-64 session
+
+### H-429 · Small gaps that wave 2 left · [AGENT]
+- **Metorite:** #885. The task holds the full entry (moved 2026-10-28, D118).
+- **Check:** `git grep -n "no-offset\|without an offset" origin/main -- apps/services/gateway/gateway/routes/projects/due.py` prints nothing.
+- **Added:** 2026-10-27 · WS-64 session
+

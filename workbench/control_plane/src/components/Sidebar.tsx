@@ -2,14 +2,48 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode, type RefObject } from "react";
 import { useSession, signOut } from "next-auth/react";
+import { forgetThisDevice } from "@/lib/push";
+import { useInstallNav } from "@/lib/shell/packageManifest";
 import { NAV_SECTIONS, visibleSections, type NavPane, type NavSection } from "@/lib/nav";
 import { useAccess } from "@/components/AccessProvider";
 import { shouldPollWorkspace } from "@/lib/access";
-import Icon from "@/components/Icon";
+import { autoFoldEnabled, floatingOpen, isWorkEvent, shouldFold } from "@/lib/sidebarFold";
+import Icon, { themedIcon } from "@/components/Icon";
+import NavBadge, { type NavBadgeTone } from "@/components/NavBadge";
+import { useRunActivity } from "@/hooks/useActiveSessions";
+import { runBadge } from "@/lib/runActivity";
 import OrgBrandLockup from "@/components/OrgBrandLockup";
+import { SidebarFoldButton, useSidebarFold } from "@/components/SidebarFold";
+import { useDocumentLook } from "@/lib/theme/glassTokens";
+import { shellDockOn } from "@/lib/shell/dockFlag";
+import { shellChatOn } from "@/lib/shell/chatFlag";
+import { shellBarOn } from "@/lib/shell/registry";
 import ThemeToggle from "@/components/ThemeToggle";
+import { AccountFoot, SidebarAccountFooter, useAccounts } from "@/components/AccountSwitcher";
+import AppLauncher from "@/lib/shell/AppLauncher";
+import {
+  ADD_APPS_HINT,
+  CHAT_PANE_HREF,
+  accountLinks,
+  homePane,
+  isActive,
+  launcherGroups,
+  shellNavOn,
+  shellSidebar,
+} from "@/lib/shell/shellNav";
+import { useAssistantProfileEnabled } from "@/lib/useAssistantProfileEnabled";
+import { latestShell, saveShellPrefs, useShellPending, useShellPrefs } from "@/lib/shell/shellPrefs";
+import { EMPTY_SHELL, toggleStar } from "@/lib/shell/presets";
+import { foldHeading, isFolded, readFolds, writeFolds, type Folds } from "@/lib/shell/sidebarFolds";
+import { needsLabel, needsSuffix, rowMeta, rowName } from "@/lib/shell/navNeeds";
+import { useNavNeeds } from "@/lib/shell/useNavNeeds";
+import { useMyDayCount } from "@/lib/shell/myDayCount";
+import { chatScope } from "@/lib/sessions";
+import { ContextMenu } from "@/components/ContextMenu";
+import { useToast } from "@/components/ui/Toast";
+import Button from "@/components/ui/Button";
 
 /** Mirrors gateway/routes/apps/pins.py's PinnedApp — GET /api/apps/pins. */
 type PinnedApp = { slug: string; name: string; icon?: string };
@@ -21,8 +55,53 @@ type PinnedApp = { slug: string; name: string; icon?: string };
 
 export default function Sidebar() {
   const pathname = usePathname();
-  const [collapsed, setCollapsed] = useState(false);
+  // The fold state has one owner, `SidebarFold.tsx`, because the fold control
+  // may live in the shell bar rather than in this rail's head (owner,
+  // 2026-10-09). This rail reads it, and runs the work listener below, which
+  // needs to know what is inside the rail.
+  const fold = useSidebarFold();
+  const { collapsed: storedCollapsed, armedRef, foldForWork } = fold;
+  // Hover to expand (owner, 2026-11-01: "have the sidebar open on hover ...
+  // and automatically contract when I move the mouse away"). A folded rail
+  // widens over the page while the pointer rests on it, and every row keeps
+  // its place: only the names fade in beside the icons, so the row under the
+  // pointer stays under it. The page never moves. It floats over the page
+  // until it has narrowed again ("closing"), and only then takes its slot
+  // back, so the page does not jump at the end. A touch never opens it.
+  // Keyboard focus inside opens it. The fold control pins it open.
+  const [peekPhase, setPeekPhase] = useState<"off" | "open" | "closing">("off");
+  const peekTimer = useRef<number | undefined>(undefined);
+  const collapsed = storedCollapsed;
+  const peeking = storedCollapsed && peekPhase !== "off";
+  const peekOpen = storedCollapsed && peekPhase === "open";
+  const openPeek = (delay: number) => {
+    if (!storedCollapsed) return;
+    window.clearTimeout(peekTimer.current);
+    if (peekPhase === "open") return;
+    peekTimer.current = window.setTimeout(() => setPeekPhase("open"), peekPhase === "closing" ? 0 : delay);
+  };
+  const closePeek = (delay: number) => {
+    window.clearTimeout(peekTimer.current);
+    if (peekPhase === "off") return;
+    peekTimer.current = window.setTimeout(() => {
+      setPeekPhase("closing");
+      peekTimer.current = window.setTimeout(() => setPeekPhase("off"), PEEK_SETTLE_MS);
+    }, delay);
+  };
+  const armFold = fold.arm;
+  // `placement === "bar"`: the full-width bar carries the logo and the
+  // control, so this rail draws no head.
+  const head = fold.placement === "rail";
+  // The shell bar draws the activity control when it is on (WS-51 S3).
+  const [barOn] = useState(() => shellBarOn());
+  // NS-6: and the one bell, with its own flag on, beside the activity control.
+  const [dockOn] = useState(() => shellDockOn());
+  const [chatOn] = useState(() => shellChatOn());
+  const asideRef = useRef<HTMLElement>(null);
   const { data: session } = useSession();
+  // The account switcher (MT-1k A2). Off, `accounts.enabled` is false and the
+  // footer below is the one this sidebar always had.
+  const { accounts, reload: reloadAccounts } = useAccounts();
   const [agentUpdateCount, setAgentUpdateCount] = useState(0);
   const [pinnedApps, setPinnedApps] = useState<PinnedApp[]>([]);
   // Org access control (spec §5, seam 5): the sidebar shows only what this
@@ -39,6 +118,56 @@ export default function Sidebar() {
     accessLoading ? null : access.features,
     access.is_admin,
   );
+  // The shell nav (NS-2, `lib/shell/shellNav.ts`). Read once: the flag is
+  // build-time, and the dev override must not flip mid-session.
+  const [shellNav] = useState(() => shellNavOn());
+  // WS-63 PZ-25: the "Assistant settings" account row, only with the profile on for this org.
+  const assistant = useAssistantProfileEnabled();
+  // "Home", or "My Day" with that flag on (NS-3). Read once, as above.
+  // ⚠️ Read in `useState`, as `shellNavOn` is: with the dev-only
+  // `localStorage` override the server and the browser can disagree, and
+  // React warns once. Production reads the build-time flag on both sides,
+  // so it never disagrees. `app/page.tsx` needs `useSyncExternalStore`
+  // because it swaps the whole page; a label here does not.
+  const [home] = useState(() => homePane());
+  const [launcherOpen, setLauncherOpen] = useState(false);
+  // The hint All apps shows when "Add apps" opened it, and none otherwise.
+  const [launcherHint, setLauncherHint] = useState<string | undefined>(undefined);
+  const openLauncher = (hint?: string) => {
+    setLauncherHint(hint);
+    setLauncherOpen(true);
+  };
+  // The member's stars (owner, 2026-10-11): each category lists only the
+  // apps they starred. While the first read is out, with no browser copy,
+  // the skeleton holds the place (`useShellPending`). A failed read, or a
+  // read that takes longer than the proxy's timeout, draws every held app.
+  const shell = useShellPrefs();
+  const shellPending = useShellPending(shellNav && shell.loading);
+  // PKG-6: the panes an install gives join "Apps" AFTER `visibleSections` and
+  // the stars. With the package host off the list is empty and the SAME
+  // array comes back, so the rail is as it was. The phone drawer of `AppShell`
+  // calls the same hook (PKG-8a), so the two navs show the same installs.
+  const railBase = shellNav
+    ? shellSidebar(sections, shell.loading ? undefined : shell.layout)
+    : sections;
+  const railSections = useInstallNav(railBase, access.features);
+  useEffect(() => {
+    window.clearTimeout(peekTimer.current);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- the peek ends when the fold or the page changes
+    setPeekPhase("off");
+  }, [storedCollapsed, pathname]);
+  useEffect(() => () => window.clearTimeout(peekTimer.current), []);
+  // Glass: the list fades at an edge while apps sit beyond it, folded or
+  // open, since a long list has no bar at rest to show that it scrolls
+  // (review of GL-10, a 1366x768 window; owner, 2026-11-01: "account for when
+  // we have more apps"). The head and the foot stay put, and only the list
+  // scrolls.
+  const navRef = useRef<HTMLElement>(null);
+  const edges = useScrollEdges(
+    navRef,
+    useDocumentLook() === "glass",
+    `${accessLoading}-${shellPending}-${railSections.length}-${collapsed}`,
+  );
   /**
    * ONE predicate for "is there a workspace behind this person yet", used by
    * the two polls below AND by the `return null` further down.
@@ -49,33 +178,112 @@ export default function Sidebar() {
    * is what stops that shape coming back.
    */
   const canPoll = shouldPollWorkspace(access, accessLoading);
+  // The run badge (WS-51 S1): live assistant runs, counted on their app. A
+  // run on a pane this rail does not show counts on Chat. A run that waits on
+  // the member's answer (S2) turns the badge amber.
+  const railHrefs = useMemo(
+    () => new Set(railSections.flatMap((s) => s.items.map((p) => p.href))),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [railSections.map((s) => s.items.map((p) => p.href).join(",")).join("|")],
+  );
+  const {
+    byApp: runCounts,
+    needsByApp: needsCounts,
+    unreadByApp: unreadCounts,
+    total: runningTotal,
+    needsTotal: runsWaiting,
+  } = useRunActivity(railHrefs, canPoll);
+  // What needs the member in each app (owner, 2026-10-11): the one feed of
+  // My Day and the bell, counted on its app's row (`useNavNeeds`).
+  // ⚠️ "Add apps" carries NO count (owner, 2026-11-01: "why does this have
+  // a number ... the home's approvals view would have this"). What waits in
+  // an app the sidebar does not show, and a chat run that waits, counts on
+  // My Day, the one surface. The 2026-10-11 rule put it on Add apps.
+  const heldHrefs = sections.flatMap((s) => s.items.map((p) => p.href));
+  const navNeeds = useNavNeeds(shellNav && canPoll, heldHrefs);
+  const appNeeds = navNeeds.counts;
 
-  // Per-section fold state, persisted so the layout survives reloads. Stored
-  // as a map of FOLDED ids — unknown/new sections therefore default to open.
-  const [foldedSections, setFoldedSections] = useState<Record<string, boolean>>({});
+  // Per-category fold state, kept per ACCOUNT (owner, 2026-10-11), so a
+  // reload keeps it and another account on this browser never reads it
+  // (`lib/shell/sidebarFolds.ts`). Stored as a map of FOLDED ids, so a new
+  // category starts open.
+  const foldScope = accessLoading ? null : chatScope(access.email, access.organization?.id);
+  const [foldedSections, setFoldedSections] = useState<Folds>({});
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(FOLD_KEY);
-      if (raw) setFoldedSections(JSON.parse(raw));
-    } catch {
-      // Corrupt/unavailable storage — start with everything open.
-    }
-  }, []);
+    setFoldedSections(readFolds(foldScope));
+  }, [foldScope]);
   const toggleSection = (id: string) =>
-    setFoldedSections((prev) => persistFolds({ ...prev, [id]: !prev[id] }));
+    setFoldedSections((prev) => {
+      const next = { ...prev, [id]: !prev[id] };
+      writeFolds(foldScope, next);
+      return next;
+    });
+
+  // "Hide from sidebar" on a row (owner, 2026-10-11). The same optimistic
+  // save as the star in All apps, built on the latest layout, and it goes
+  // back when the server refuses it. The toast offers Undo.
+  const toast = useToast();
+  const canHide = shellNav && shell.enabled && shell.stored !== undefined;
+  const flipStar = (href: string) => {
+    const base = { ...EMPTY_SHELL, ...(latestShell() ?? shell.stored) };
+    return saveShellPrefs({ ...base, ...toggleStar(base, sections, href) });
+  };
+  const hideFromSidebar = (pane: NavPane) => {
+    // Undo puts back the layout from BEFORE the hide, exactly. A second
+    // toggle would build on whatever changed since.
+    const before = { ...EMPTY_SHELL, ...(latestShell() ?? shell.stored) };
+    // The focus goes to the next row, as the hidden row leaves the page.
+    const next = nextFocusAfterHide(asideRef.current, pane.href);
+    requestAnimationFrame(() => {
+      const target = next();
+      target?.focus();
+    });
+    flipStar(pane.href).then(
+      () =>
+        toast.show({
+          key: "sidebar-hide",
+          title: `${pane.label} hidden from your sidebar.`,
+          action: {
+            label: "Undo",
+            onClick: () => {
+              saveShellPrefs(before).catch(() =>
+                toast.show({ key: "sidebar-hide", variant: "error", title: "Your sidebar was not saved. Try again." }),
+              );
+            },
+          },
+        }),
+      () => toast.show({ key: "sidebar-hide", variant: "error", title: "Your sidebar was not saved. Try again." }),
+    );
+  };
+  // The row menu: at the pointer for a right-click, under the "···" for a
+  // press. `trigger` gets the focus back when the menu closes.
+  const [rowMenu, setRowMenu] = useState<{ pane: NavPane; x: number; y: number; keyboard: boolean; trigger: HTMLElement | null } | null>(null);
+  const closeRowMenu = () => {
+    const back = rowMenu?.trigger;
+    setRowMenu(null);
+    back?.focus();
+  };
+  const rowMenuFor = canHide
+    ? (pane: NavPane, at: { x: number; y: number; keyboard: boolean; trigger: HTMLElement | null }) =>
+        setRowMenu({ pane, ...at })
+    : undefined;
 
   // Navigating into a folded section unfolds it (once per navigation — the
   // user can still fold it again while staying on the page).
   useEffect(() => {
     if (!pathname) return;
     setFoldedSections((prev) => {
-      const owner = NAV_SECTIONS.find((s) =>
-        s.items.some((p) => pathname.startsWith(p.href)),
-      );
+      // The shape on screen. The shell nav groups by team, so its ids differ.
+      // The FIRST owner only, as before: on /people/me the "Apps" group (it
+      // holds /people) keeps the fold its member chose.
+      const shape = shellNav ? shellSidebar(NAV_SECTIONS) : NAV_SECTIONS;
+      const owner = shape.find((s) => s.items.some((p) => pathname.startsWith(p.href)));
       if (!owner || !prev[owner.id]) return prev;
-      return persistFolds({ ...prev, [owner.id]: false });
+      const next = { ...prev, [owner.id]: false };
+      writeFolds(foldScope, next);
+      return next;
     });
-  }, [pathname]);
+  }, [pathname, shellNav, foldScope]);
 
   // Poll agent list for behind_by counts — shows "N updates" badge on Agents
   useEffect(() => {
@@ -142,9 +350,51 @@ export default function Sidebar() {
     // rather than on the next full reload.
   }, [canPoll]);
 
+  // Fold on the member's first work inside the app they opened from here.
+  // Capture phase, so an app that stops propagation still counts as work.
+  useEffect(() => {
+    const onWork = (e: Event) => {
+      // A script's `.click()` is not the member working.
+      if (!armedRef.current || !e.isTrusted) return;
+      const target = e.target instanceof Element ? e.target : null;
+      if (!target) return;
+      const inSidebar = !!asideRef.current?.contains(target);
+      const inMain = !!target.closest("main");
+      const work = isWorkEvent({
+        type: e.type,
+        key: (e as KeyboardEvent).key,
+        button: (e as globalThis.MouseEvent).button,
+      });
+      // Work in the app spends the arm, whether or not it folds. A member who
+      // chose "Keep it open" must not get a fold three clicks later.
+      if (inMain && work && !inSidebar) armedRef.current = false;
+      if (!shouldFold({ armed: true, enabled: autoFoldEnabled(), collapsed, inSidebar, inMain, work })) {
+        return;
+      }
+      // One frame later, so the click's own handler has run. Two things need
+      // that. If the click opened a menu, the fold waits for the next work
+      // (`floatingOpen` says why). And the setting is read AFTER the click, so
+      // "Keep it open" on the Appearance page saves before the fold looks.
+      requestAnimationFrame(() => {
+        if (floatingOpen(document, asideRef.current)) {
+          armedRef.current = true;
+          return;
+        }
+        if (!autoFoldEnabled()) return;
+        foldForWork();
+      });
+    };
+    document.addEventListener("click", onWork, true);
+    document.addEventListener("keydown", onWork, true);
+    return () => {
+      document.removeEventListener("click", onWork, true);
+      document.removeEventListener("keydown", onWork, true);
+    };
+  }, [collapsed, foldForWork, armedRef]);
+
   // A signed-in person with NO organization is mid-onboarding, not in a
   // workspace — AccessGate is showing them the join-vs-create chooser, and a
-  // sidebar beside it (My Profile, My Access, Appearance) narrates a product
+  // sidebar beside it (My Profile, Appearance) narrates a product
   // they have not joined (owner directive 2026-08-24, riding D51.2's "the
   // org is unmistakable": no org, no workspace chrome). Gated on the
   // resolution having LANDED — hiding on `loading` would flash the whole
@@ -157,57 +407,212 @@ export default function Sidebar() {
     return null;
   }
 
+
   return (
+    <>
+    {/* While it peeks, its slot stays in the row, so the page does not move. */}
+    {peeking ? <div aria-hidden data-sidebar-peek-space="" className="w-14 shrink-0 glass:m-2" /> : null}
     <aside
-      className={`shrink-0 border-r flex flex-col transition-all duration-200 bg-sidebar border-sidebar-border ${
-        collapsed ? "w-14" : "w-64"
-      }`}
+      ref={asideRef}
+      data-collapsed={collapsed ? "true" : "false"}
+      data-peek={peekOpen ? "open" : peeking ? "closing" : undefined}
+      onPointerEnter={storedCollapsed ? (e) => { if (e.pointerType !== "touch") openPeek(PEEK_OPEN_MS); } : undefined}
+      onPointerLeave={storedCollapsed ? (e) => { if (e.pointerType !== "touch") closePeek(PEEK_CLOSE_MS); } : undefined}
+      onFocus={storedCollapsed ? () => openPeek(0) : undefined}
+      onBlur={storedCollapsed ? (e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) closePeek(0); } : undefined}
+      // A fold widens <main> but fires no window `resize`, and some layouts
+      // measure only on that event. Tell them once the width settles.
+      onTransitionEnd={(e) => {
+        // A peek floats over the page and changes no page width, so it asks
+        // no layout to measure again: a forced re-measure nudged the app
+        // (owner, 2026-11-01).
+        if (e.target === e.currentTarget && e.propertyName === "width" && peekPhase === "off") {
+          window.dispatchEvent(new Event("resize"));
+        }
+      }}
+      className={`sidebar-rail shrink-0 border-r flex flex-col overflow-hidden bg-sidebar border-sidebar-border glass:m-2 glass:rounded-2xl glass:border-r-0 glass:glass-chrome-flat ${
+        collapsed && !peekOpen ? "w-14" : "w-64"
+      } ${peeking ? "absolute inset-y-0 left-0 z-40" : ""} ${peekOpen ? "shadow-2xl" : ""}`}
     >
-      {/* Header */}
-      <div className={`flex items-center border-b border-sidebar-border ${collapsed ? "justify-center p-3" : "justify-between px-4 py-4"}`}>
-        {!collapsed && (
-          // The customer's mark when they have uploaded one, ours when they
-          // have not. `maxWidth` is what stops a wide wordmark from pushing the
-          // collapse control off the 256px rail.
-          <OrgBrandLockup fallbackCaption="Control Plane" maxWidth={152} />
-        )}
-        <button
-          onClick={() => setCollapsed((c) => !c)}
-          className="shrink-0 rounded-lg p-1.5 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition"
-          title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+      {/* Header. With the full-width shell bar, the bar carries the logo and
+          the fold control instead, so the logo stays in view when this rail
+          folds (owner, 2026-10-09). */}
+      {head && (
+        // One head in every state (owner, 2026-11-01: "the icon of the
+        // organization ... a different kind of behavior"). Its row keeps the
+        // open sidebar's width, so a folded rail shows only the mark, and a
+        // peek or the open sidebar reveals the name beside it as the rail
+        // widens: nothing is swapped. The mark sits on the icons' column.
+        <div
+          data-sidebar-head=""
+          className={`shrink-0 overflow-hidden border-b border-sidebar-border glass:border-b-0 ${collapsed ? "py-3" : "py-4"} glass:pt-3 glass:pb-1`}
         >
-          {collapsed ? <Icon name="ChevronRight" size={16} /> : <Icon name="ChevronLeft" size={16} />}
-        </button>
-      </div>
+          <div className="flex w-64 items-center gap-2 pl-4 pr-2">
+            <div data-head-brand="" className="min-w-0 flex-1">
+              {/* The customer's mark when they have uploaded one, ours when
+                  they have not. One line, as the bar drew it. */}
+              <OrgBrandLockup fallbackCaption="Control Plane" height={24} maxWidth={176} compact />
+            </div>
+            {/* WS-51 S3: with the shell bar off, this head is the top of the
+                page, so the activity control sits here, beside the fold. The
+                one bell (NS-6) sits before it while its flag is on. */}
+            <div className="flex shrink-0 items-center gap-1">
+              {/* The head holds only the fold (owner, 2026-11-01). The bell is
+                  the Needs you row, the runs show on the Chat row and in the
+                  Ask bar, and the Ask bar opens the assistant. */}
+              <SidebarFoldButton />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Nav sections */}
       {/* `scrollbar-thin` is not cosmetic here. Without it this container gets the
           platform's default scrollbar, which on Linux/Windows is ~15px wide with
-          stepper arrows — a quarter of the 56px COLLAPSED rail, shoving every
-          icon off-centre and painting a light-grey bar down a dark sidebar. The
+          stepper arrows, and paints a light-grey bar down a dark sidebar. The
           themed utility already existed in globals.css; this scroller just never
           opted in. */}
-      <nav className="scrollbar-thin flex flex-col flex-1 overflow-y-auto">
-        {accessLoading ? (
+      {/* ⚠️ The FOLDED rail hides its bar instead (task 998). A thin bar still
+          takes 8-11px of the 56px rail, and the icons are flex items, so they
+          shrank to fit: 9px where "All apps" drew 18px. The rail still scrolls
+          by wheel, touch and focus. Fence: `e2e/sidebar-rail-icons.spec.ts`. */}
+      {/* `key` swaps the whole list on a fold, so the new shape fades in while
+          the width moves (`.sidebar-swap`), rather than snapping. */}
+      <nav
+        data-guide="home.app-list"
+        ref={navRef}
+        key={collapsed ? "rail" : "full"}
+        data-more-below={edges.below ? "" : undefined}
+        data-more-above={edges.above ? "" : undefined}
+        className={`sidebar-swap flex flex-col flex-1 overflow-y-auto overflow-x-hidden glass:overscroll-contain ${
+          collapsed ? "scrollbar-hide" : "scrollbar-thin"
+        }`}
+      >
+        {accessLoading || shellPending ? (
           <NavSkeleton collapsed={collapsed} />
         ) : (
-          sections.map((section) => (
+          <>
+          {shellNav && (
+            // The same column as a group's items, so Home lines up with them.
+            <div className={collapsed ? "flex flex-col gap-1 p-2 pb-0" : "flex flex-col gap-0.5 px-2 pt-2"}>
+              {/* My Day holds what needs the member: one row, one page. */}
+              <MyDayRow
+                pane={home}
+                active={isActive(pathname, home.href)}
+                count={navNeeds.total}
+                waiting={runsWaiting}
+                collapsed={collapsed}
+                onNavigate={armFold}
+              />
+              {chatOn ? (
+                <ChatRow collapsed={collapsed} running={runningTotal} active={isActive(pathname, CHAT_PANE_HREF)} onNavigate={armFold} />
+              ) : null}
+            </div>
+          )}
+          {railSections.map((section) => {
+            const holdsCurrent = section.items.some((p) =>
+              shellNav ? isActive(pathname, p.href) : pathname?.startsWith(p.href),
+            );
+            return (
             <NavSectionBlock
               key={section.id}
               section={section}
               pathname={pathname}
               collapsed={collapsed}
-              folded={!!foldedSections[section.id]}
+              folded={isFolded(foldedSections, section.id, holdsCurrent)}
+              holdsCurrent={shellNav && holdsCurrent}
+              onRowMenu={rowMenuFor}
+              menuHref={rowMenu?.pane.href ?? null}
               onToggle={() => toggleSection(section.id)}
+              onNavigate={armFold}
               agentUpdateCount={agentUpdateCount}
+              runCounts={runCounts}
+              needsCounts={needsCounts}
+              unreadCounts={unreadCounts}
+              appNeeds={appNeeds}
+              appFloors={navNeeds.floors}
               pinnedApps={pinnedApps}
+              shellNav={shellNav}
             />
-          ))
+            );
+          })}
+          {shellNav && (
+            <AddAppsRow collapsed={collapsed} onOpen={() => openLauncher(ADD_APPS_HINT)} />
+          )}
+          </>
         )}
       </nav>
 
-      {/* User / sign-out footer */}
-      {!collapsed && (
+      {rowMenu && (
+        <ContextMenu
+          x={rowMenu.x}
+          y={rowMenu.y}
+          autoFocus={rowMenu.keyboard}
+          onClose={closeRowMenu}
+          items={[
+            {
+              kind: "item",
+              label: "Hide from sidebar",
+              icon: themedIcon("EyeOff"),
+              onSelect: () => hideFromSidebar(rowMenu.pane),
+            },
+            {
+              kind: "item",
+              label: "Open in new tab",
+              icon: themedIcon("ExternalLink"),
+              onSelect: () => window.open(rowMenu.pane.href, "_blank", "noopener"),
+            },
+          ]}
+        />
+      )}
+
+      {/* All apps (NS-2): every app the member holds, each with its purpose. */}
+      {shellNav && !accessLoading && launcherGroups(sections).length > 0 && (
+        <div className={`border-t border-sidebar-border ${collapsed ? "flex justify-center p-2" : "px-2 py-2"}`}>
+          <button
+            type="button"
+            onClick={() => openLauncher()}
+            title={collapsed ? "All apps" : undefined}
+            aria-label="All apps"
+            aria-haspopup="dialog"
+            // `cc-link`: the house focus ring, as the account foot wears it.
+            data-rail-row={collapsed ? "" : undefined}
+            className={`cc-link flex items-center rounded-lg glass:rounded-row text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition ${
+              collapsed ? "w-full justify-center p-2.5" : "w-full gap-2.5 px-3 py-2 text-[13px] glass:text-subhead font-medium"
+            }`}
+          >
+            <Icon name="LayoutGrid" size={collapsed ? 18 : 16} className="glass:text-muted-foreground" />
+            {collapsed ? <RailPeekLabel>All apps</RailPeekLabel> : <span>All apps</span>}
+          </button>
+        </div>
+      )}
+      {shellNav && (
+        <AppLauncher
+          open={launcherOpen}
+          onClose={() => setLauncherOpen(false)}
+          sections={sections}
+          pathname={pathname}
+          hint={launcherHint}
+        />
+      )}
+
+      {/* The foot. With the shell bar on, it is the account row, and its
+          one menu holds the accounts, the member's pages and the settings
+          (owner, 2026-10-14). The classic frame keeps its account foot. */}
+      {barOn ? (
+        // With the shell nav off, this rail already lists My Profile and
+        // Appearance, so the menu gets none of the account rows (the rule the
+        // old foot kept with `you`). It keeps the colour mode.
+        <AccountFoot collapsed={collapsed} sections={shellNav ? sections : []} layout={shellNav} />
+      ) : (
+        <SidebarAccountFooter
+          collapsed={collapsed}
+          accounts={accounts}
+          reload={reloadAccounts}
+          you={shellNav ? accountLinks(sections, { assistant }) : undefined}
+        />
+      )}
+      {!barOn && !shellNav && !accounts.enabled && !collapsed && (
         <div className="border-t border-sidebar-border px-4 py-3">
           {session?.user ? (
             <div className="flex items-center justify-between">
@@ -220,7 +625,9 @@ export default function Sidebar() {
                 </div>
               </div>
               <button
-                onClick={() => signOut({ callbackUrl: "/signin" })}
+                // WS-66 PN-1: forget this device's push first. It never
+                // throws and gives up after a few seconds.
+                onClick={() => void forgetThisDevice().then(() => signOut({ callbackUrl: "/signin" }))}
                 className="ml-2 shrink-0 rounded-lg p-1.5 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition"
                 title="Sign out"
               >
@@ -236,11 +643,68 @@ export default function Sidebar() {
         </div>
       )}
     </aside>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// "Add apps" — the last item of the list (owner, 2026-10-11)
+// ---------------------------------------------------------------------------
+
+/**
+ * The way to add an app, always at the end of the list, so a member who
+ * starred nothing still sees where to start. It opens All apps, where the
+ * star on each app says what the sidebar shows.
+ *
+ * ⚠️ It takes the geometry of `NavLink` on purpose, and not that of
+ * `RailRow`. The block is `px-2`, the row is `px-3 py-2`, and the icon
+ * column is the same, so its icon sits in line with the app icons above it,
+ * open or folded. `e2e/shell-presets.spec.ts` measures that. It is a button
+ * that opens a dialog, not a place, so it has no active state. `cc-link`
+ * gives both forms the house focus ring, as the account foot wears it.
+ *
+ * It carries no count (owner, 2026-11-01). It is a door, not a place where
+ * things wait: My Day counts what waits in an app the sidebar does not show.
+ */
+function AddAppsRow({ collapsed, onOpen }: { collapsed: boolean; onOpen: () => void }) {
+  if (collapsed) {
+    return (
+      <div className="flex flex-col gap-1 p-2" data-nav-add-apps="">
+        <button
+          type="button"
+          onClick={onOpen}
+          title="Add apps"
+          aria-label="Add apps"
+          aria-haspopup="dialog"
+          data-rail-row=""
+          className="cc-link relative flex items-center justify-center rounded-lg glass:rounded-row p-2.5 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition"
+        >
+          <Icon name="Plus" size={18} className="shrink-0 glass:text-muted-foreground" />
+          <RailPeekLabel>Add apps</RailPeekLabel>
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-0.5 px-2 py-1.5" data-nav-add-apps="">
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-haspopup="dialog"
+        className="cc-link rounded-lg glass:rounded-row px-3 py-2 text-left text-sm text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition"
+      >
+        <span className="flex items-center gap-2.5">
+          <Icon name="Plus" size={16} />
+          <span className="text-[13px] glass:text-subhead">Add apps</span>
+        </span>
+      </button>
+    </div>
   );
 }
 
 // ---------------------------------------------------------------------------
 // Nav skeleton — what an unresolved viewer sees
+
 // ---------------------------------------------------------------------------
 
 /**
@@ -252,6 +716,124 @@ export default function Sidebar() {
  * rail that then fills. Nothing here is a link, so there is nothing to click
  * that could turn out not to exist.
  */
+/**
+ * Whether a scroller holds more above and below its visible edges. `on`
+ * false skips the work and says no. `content` changes when the list does, so
+ * a list that loads after the first paint is measured again.
+ */
+function useScrollEdges(
+  ref: RefObject<HTMLElement | null>,
+  on: boolean,
+  content: string,
+): { above: boolean; below: boolean } {
+  const [edges, setEdges] = useState({ above: false, below: false });
+  useEffect(() => {
+    const el = ref.current;
+    if (!on || !el) {
+      setEdges({ above: false, below: false });
+      return;
+    }
+    const check = () => {
+      const above = el.scrollTop > 1;
+      const below = el.scrollTop + el.clientHeight < el.scrollHeight - 1;
+      setEdges((prev) => (prev.above === above && prev.below === below ? prev : { above, below }));
+    };
+    check();
+    el.addEventListener("scroll", check, { passive: true });
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    for (const child of Array.from(el.children)) ro.observe(child);
+    return () => {
+      el.removeEventListener("scroll", check);
+      ro.disconnect();
+    };
+  }, [ref, on, content]);
+  return edges;
+}
+
+/** Hover to expand: the rest before it opens, and the grace before it closes. */
+const PEEK_OPEN_MS = 150;
+const PEEK_CLOSE_MS = 250;
+/** How long the rail narrows: `--panel-duration`, with a little room. */
+const PEEK_SETTLE_MS = 340;
+
+/**
+ * A folded row's name. It takes no width while the rail is folded, and it
+ * fades in beside the icon while the rail peeks (`globals.css`, "Hover to
+ * expand"). The link's own name says it already, so it is hidden from
+ * assistive tech.
+ */
+function RailPeekLabel({ children }: { children: ReactNode }) {
+  return (
+    <span data-rail-label="" aria-hidden className="truncate text-[13px] font-medium glass:text-subhead">
+      {children}
+    </span>
+  );
+}
+
+/**
+ * The chat, as a place (owner, 2026-11-01: "add an AI chat icon on the
+ * left-hand side sidebar so that we can access the full-screen mode"). It
+ * opens the full chat, where the conversations live. The Ask bar opens the
+ * chat beside the page. Its badge is the count of live runs.
+ */
+function ChatRow({
+  collapsed,
+  running,
+  active,
+  onNavigate,
+}: {
+  collapsed: boolean;
+  running: number;
+  active: boolean;
+  onNavigate: (e: MouseEvent) => void;
+}) {
+  const rowLabel = running > 0 ? `Chat, ${running} running` : "Chat";
+  return (
+    <Link
+      href={CHAT_PANE_HREF}
+      onClick={onNavigate}
+      aria-label={rowLabel}
+      title={collapsed ? rowLabel : undefined}
+      data-nav-chat=""
+      data-rail-row={collapsed ? "" : undefined}
+      className={`rounded-lg glass:rounded-row tech-transition ${
+        active
+          ? "bg-primary/15 text-primary glass:bg-sidebar-accent glass:text-sidebar-foreground"
+          : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground"
+      } ${collapsed ? "relative flex items-center justify-center p-2.5" : "flex items-center gap-2.5 px-3 py-2 text-sm glass:text-sidebar-foreground/85"}`}
+    >
+      <Icon name="Sparkles" size={collapsed ? 18 : 16} className="shrink-0 glass:text-muted-foreground" />
+      {collapsed ? <RailPeekLabel>Chat</RailPeekLabel> : <span className="font-medium text-[13px] glass:text-subhead">Chat</span>}
+      {running > 0 ? (
+        collapsed ? (
+          <>
+            <span data-rail-corner="" className="pointer-events-none absolute top-1 right-1 h-4 min-w-4 whitespace-nowrap rounded-full bg-success px-1 text-center text-[10px] font-semibold leading-4 tabular-nums text-success-foreground">
+              {running}
+            </span>
+            <span data-rail-trail="" aria-hidden className="ml-auto inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-success/15 px-1.5 text-[11px] font-semibold tabular-nums text-success glass:text-caption">
+              <RunningDot />
+              {running}
+            </span>
+          </>
+        ) : (
+          // The count alone, as the Needs you pill has it (owner, 2026-11-01:
+          // "2 running" wrapped). The dot says it runs, the label says how many.
+          <span className="ml-auto inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-success/15 px-1.5 text-[11px] font-semibold tabular-nums text-success glass:text-caption">
+            <RunningDot />
+            {running}
+          </span>
+        )
+      ) : null}
+    </Link>
+  );
+}
+
+/** The live dot of a run count: it pulses while a run is live. */
+function RunningDot() {
+  return <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-success motion-safe:animate-pulse" />;
+}
+
 function NavSkeleton({ collapsed }: { collapsed: boolean }) {
   // Two groups of four, which is the shape of a typical resolved sidebar.
   return (
@@ -285,17 +867,35 @@ function NavSkeleton({ collapsed }: { collapsed: boolean }) {
 // Section block
 // ---------------------------------------------------------------------------
 
-/** localStorage key for the folded-section map (Record<sectionId, true>). */
-const FOLD_KEY = "cc-nav-folded-sections";
-
-function persistFolds(next: Record<string, boolean>): Record<string, boolean> {
-  try {
-    localStorage.setItem(FOLD_KEY, JSON.stringify(next));
-  } catch {
-    // Storage unavailable (private mode) — fold state just won't persist.
-  }
-  return next;
+/**
+ * Where the focus goes when a row is hidden: the next row of its category,
+ * else the one before it, else the next row of the sidebar, else "Add
+ * apps". Read now, while the row is on the page. The returned function
+ * resolves the target after the row has gone.
+ */
+function nextFocusAfterHide(aside: HTMLElement | null, href: string): () => HTMLElement | null {
+  if (!aside) return () => null;
+  const rows = [...aside.querySelectorAll<HTMLElement>("[data-nav-section] [data-nav-row]")];
+  const at = rows.findIndex((r) => r.dataset.navRow === href);
+  const section = rows[at]?.closest("[data-nav-section]");
+  const same = rows.filter((r) => r.closest("[data-nav-section]") === section && r.dataset.navRow !== href);
+  const after = same.find((r) => rows.indexOf(r) > at) ?? [...same].reverse().find((r) => rows.indexOf(r) < at);
+  const pick = (after ?? rows[at + 1] ?? null)?.dataset.navRow ?? null;
+  return () => {
+    if (pick) {
+      const row = aside.querySelector<HTMLElement>(`[data-nav-row="${pick}"]`);
+      const link = row?.matches("a") ? row : row?.querySelector<HTMLElement>("a");
+      if (link) return link;
+    }
+    return aside.querySelector<HTMLElement>("[data-nav-add-apps] button");
+  };
 }
+
+/** Opens a row's menu at a point. `keyboard` moves the focus into it. */
+type RowMenuOpen = (
+  pane: NavPane,
+  at: { x: number; y: number; keyboard: boolean; trigger: HTMLElement | null },
+) => void;
 
 function NavSectionBlock({
   section,
@@ -303,62 +903,119 @@ function NavSectionBlock({
   collapsed,
   folded,
   onToggle,
+  onNavigate,
   agentUpdateCount = 0,
+  runCounts = {},
+  needsCounts = {},
+  unreadCounts = {},
+  appNeeds = {},
+  appFloors,
   pinnedApps = [],
+  shellNav = false,
+  onRowMenu,
+  menuHref = null,
+  holdsCurrent = false,
 }: {
   section: NavSection;
   pathname: string | null;
   collapsed: boolean;
   folded: boolean;
   onToggle: () => void;
+  /** Arms the fold (`lib/sidebarFold.ts`). Every link in the rail calls it. */
+  onNavigate: (e: MouseEvent) => void;
   agentUpdateCount?: number;
+  /** Live assistant runs per pane href (WS-51 S1). */
+  runCounts?: Record<string, number>;
+  /** The runs per pane href that wait on the member's answer (WS-51 S2). */
+  needsCounts?: Record<string, number>;
+  /** The unread chats per pane href (WS-51 S5). */
+  unreadCounts?: Record<string, number>;
+  /** The needs rows per pane href (`useNavNeeds`). */
+  appNeeds?: Record<string, number>;
+  /** The hrefs whose needs count is a floor ("15+"). */
+  appFloors?: ReadonlySet<string>;
   pinnedApps?: PinnedApp[];
+  /** The shell nav's line under each item: the manifest's purpose. */
+  shellNav?: boolean;
+  /** Opens a row's menu (owner, 2026-10-11). Absent: the rows have none. */
+  onRowMenu?: RowMenuOpen;
+  /** The href whose menu is open. Its "···" stays in view. */
+  menuHref?: string | null;
+  /**
+   * The member is on one of this category's apps. Its fold is off while
+   * they are there, so the toggle never seems to do nothing (the current
+   * row would stay in view).
+   */
+  holdsCurrent?: boolean;
 }) {
+  const badgeFor = (href: string) => paneBadge(href, agentUpdateCount, runCounts, needsCounts, unreadCounts);
   if (collapsed) {
     return (
-      <div>
-        <div className="flex flex-col gap-1 p-2">
+      <div data-nav-section={section.id}>
+        {/* Glass: the section's cap, one height in both states. Folded it is a
+            short rule. While the rail peeks the section's name fades in, in
+            the same place, so no row moves (owner, 2026-11-01: "keep the
+            subsections of personal, across teams, etc."). */}
+        <div data-rail-heading="" aria-hidden className="relative hidden h-6 items-center pl-[7px] glass:flex">
+          <span data-rail-rule="" className="absolute left-[18px] h-px w-5 bg-sidebar-border" />
+          <span data-rail-label="" className="text-[11px] font-medium text-muted-foreground glass:text-caption">
+            {section.label}
+          </span>
+        </div>
+        <div className="flex flex-col gap-1 p-2 glass:pt-0">
           {section.items.map((p) => (
             <NavLink
               key={p.href}
               pane={p}
               pathname={pathname}
               collapsed
-              badge={p.href === "/agents" && agentUpdateCount > 0 ? agentUpdateCount : undefined}
+              onNavigate={onNavigate}
+              {...badgeFor(p.href)}
+              needs={appNeeds[p.href]}
+              needsFloor={appFloors?.has(p.href)}
+              shellNav={shellNav}
+              onRowMenu={onRowMenu}
+              menuOpen={menuHref === p.href}
             />
           ))}
         </div>
-        <div className="mx-3 border-t border-sidebar-border/50" />
+        <div className="mx-3 border-t border-sidebar-border/50 glass:hidden" />
       </div>
     );
   }
 
   // A folded section keeps showing the item you are ON — the current location
-  // must never vanish from the nav.
+  // must never vanish from the nav. With the shell nav, the category of the
+  // current route is never folded at all (`isFolded`).
   const items = folded
     ? section.items.filter((p) => pathname?.startsWith(p.href))
     : section.items;
 
   return (
-    <div className="px-2 py-1.5">
+    <div className="px-2 py-1.5" data-nav-section={section.id}>
       {/* Section heading — click to fold/unfold */}
       <button
-        onClick={onToggle}
+        onClick={holdsCurrent ? undefined : onToggle}
         aria-expanded={!folded}
-        className={`group flex w-full items-center justify-between rounded-md px-2 text-left uppercase tracking-wider font-semibold hover:text-sidebar-foreground tech-transition ${
+        aria-disabled={holdsCurrent || undefined}
+        title={holdsCurrent ? "Stays open while you use one of its apps" : undefined}
+        data-nav-heading=""
+        className={`group flex w-full items-center justify-between rounded-md px-2 text-left uppercase tracking-wider font-semibold hover:text-sidebar-foreground tech-transition glass:normal-case glass:tracking-normal ${
           section.sub
-            ? "py-1 text-[10px] text-muted-foreground/70"
-            : "py-1.5 text-[11px] text-muted-foreground"
+            ? "py-1 text-[10px] text-muted-foreground/70 glass:text-caption"
+            : "py-1.5 text-[11px] text-muted-foreground glass:text-footnote"
         }`}
       >
-        <span>{section.label}</span>
-        <Icon
-          name="ChevronDown"
-          size={12}
-          className={`shrink-0 text-muted-foreground/50 group-hover:text-muted-foreground tech-transition ${
-            folded ? "-rotate-90" : ""
-          }`}
-        />
+        <span>{shellNav ? foldHeading(section.label, section.items.length, folded) : section.label}</span>
+        {holdsCurrent ? null : (
+          <Icon
+            name="ChevronDown"
+            size={12}
+            className={`shrink-0 text-muted-foreground/50 group-hover:text-muted-foreground tech-transition ${
+              folded ? "-rotate-90" : ""
+            }`}
+          />
+        )}
       </button>
 
       {/* Section items */}
@@ -369,8 +1026,14 @@ function NavSectionBlock({
               key={p.href}
               pane={p}
               pathname={pathname}
-              badge={p.href === "/agents" && agentUpdateCount > 0 ? agentUpdateCount : undefined}
-              pinnedApps={p.href === "/build/apps" ? pinnedApps : undefined}
+              onNavigate={onNavigate}
+              {...badgeFor(p.href)}
+              needs={appNeeds[p.href]}
+              needsFloor={appFloors?.has(p.href)}
+              pinnedApps={p.href === "/studio" ? pinnedApps : undefined}
+              shellNav={shellNav}
+              onRowMenu={onRowMenu}
+              menuOpen={menuHref === p.href}
             />
           ))}
         </div>
@@ -379,69 +1042,228 @@ function NavSectionBlock({
   );
 }
 
+/**
+ * The one badge a pane wears. /agents keeps its "updates" count, in the
+ * `warning` tone. Every other pane shows its live runs, in `success`
+ * (WS-51 S1), unless a run there waits on the member's answer: then the
+ * badge counts those runs in `warning` (S2, `runBadge`). Exported for
+ * `navBadge.test.ts`.
+ */
+export function paneBadge(
+  href: string,
+  agentUpdateCount: number,
+  runCounts: Record<string, number>,
+  needsCounts: Record<string, number> = {},
+  unreadCounts: Record<string, number> = {},
+): { badge?: number; badgeTone?: NavBadgeTone; badgeLabel?: string } {
+  if (href === "/agents") {
+    return agentUpdateCount > 0
+      ? {
+          badge: agentUpdateCount,
+          badgeTone: "warning",
+          badgeLabel: `${agentUpdateCount} agent ${agentUpdateCount === 1 ? "update" : "updates"}`,
+        }
+      : {};
+  }
+  const b = runBadge(runCounts[href] ?? 0, needsCounts[href] ?? 0, unreadCounts[href] ?? 0);
+  return b ? { badge: b.count, badgeTone: b.tone, badgeLabel: b.label } : {};
+}
+
 // ---------------------------------------------------------------------------
 // Individual nav link
 // ---------------------------------------------------------------------------
 
-function NavLink({
+export function NavLink({
   pane,
   pathname,
   collapsed = false,
+  onNavigate,
   badge,
+  badgeTone = "warning",
+  badgeLabel,
+  needs,
+  needsFloor = false,
   pinnedApps,
+  shellNav = false,
+  onRowMenu,
+  menuOpen = false,
 }: {
   pane: NavPane;
   pathname: string | null;
   collapsed?: boolean;
+  onNavigate: (e: MouseEvent) => void;
   badge?: number;
+  /** The badge's meaning: `warning` waits for the member, `success` runs. */
+  badgeTone?: NavBadgeTone;
+  /** The badge's spoken name. Defaults to the bare count. */
+  badgeLabel?: string;
+  /**
+   * The rows that need the member in this app (`useNavNeeds`). A quiet
+   * number in the trailing slot, which a run badge wins (`rowMeta`).
+   */
+  needs?: number;
+  /** That count is a floor: "15+", "15 or more need you". */
+  needsFloor?: boolean;
   pinnedApps?: PinnedApp[];
+  shellNav?: boolean;
+  /**
+   * The row's menu: "Hide from sidebar" and "Open in new tab" (owner,
+   * 2026-10-11). A right-click opens it, open or folded. Open, a "···" at
+   * the row's end opens it too. It is a SIBLING of the link, so the link
+   * keeps its own name and stays the click target. Home passes none.
+   */
+  onRowMenu?: RowMenuOpen;
+  /** This row's menu is open, so its "···" stays in view (`data-pinned`). */
+  menuOpen?: boolean;
 }) {
-  const active = pathname?.startsWith(pane.href);
+  // The shell nav matches by segment, so Home ("/") is active on Home only.
+  const active = shellNav ? isActive(pathname, pane.href) : pathname?.startsWith(pane.href);
+  // ⚠️ The shell nav draws ONE line per item, and the purpose is the hover
+  // text. Measured on 2026-10-09: a second line under every item made the
+  // sidebar taller than a 900px screen. A member who opens it every day reads
+  // that line once and then scrolls past it for ever. The purpose matters when
+  // a member is finding out what an app is, and All apps prints it there.
+  // Off, the older operator line, as before.
+  const purpose = pane.blurb ?? pane.note;
+  // One trailing slot: a run badge wins it, else the needs count (`rowMeta`).
+  // The count stays in the link's name either way (`rowName`).
+  const meta = rowMeta(badge, needs, needsFloor);
+  const spoken = needsSuffix(needs, needsFloor);
+  const name = rowName(
+    pane.label,
+    needs,
+    badge !== undefined && badge > 0 ? (badgeLabel ?? String(badge)) : undefined,
+    needsFloor,
+  );
 
   if (collapsed) {
     return (
       <Link
         key={pane.href}
         href={pane.href}
-        title={pane.label}
-        className={`rounded-lg tech-transition flex items-center justify-center p-2.5 relative ${
+        title={
+          (shellNav ? `${pane.label}: ${purpose}` : pane.label) +
+          (spoken && needs !== undefined ? ` (${needsLabel(needs, needsFloor)})` : "")
+        }
+        onClick={onNavigate}
+        onContextMenu={
+          onRowMenu
+            ? (e) => {
+                e.preventDefault();
+                onRowMenu(pane, { x: e.clientX, y: e.clientY, keyboard: false, trigger: e.currentTarget });
+              }
+            : undefined
+        }
+        data-nav-row={pane.href}
+        data-rail-row=""
+        aria-label={name}
+        className={`rounded-lg glass:rounded-row tech-transition flex items-center justify-center p-2.5 relative ${
           active
-            ? "bg-primary/15 text-primary"
+            ? "bg-primary/15 text-primary glass:bg-sidebar-accent glass:text-sidebar-foreground"
             : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground"
         }`}
       >
-        <Icon name={pane.icon} size={18} strokeWidth={active ? 2.5 : 2} />
-        {badge !== undefined && badge > 0 && (
-          <span className="absolute -top-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-warning text-[8px] font-bold text-warning-foreground">
-            {badge > 9 ? "9+" : badge}
-          </span>
-        )}
+        {/* `shrink-0`: a squeezed rail must not shrink the icon (task 998). */}
+        <Icon name={pane.icon} size={18} strokeWidth={active ? 2.5 : 2} className="shrink-0" />
+        <RailPeekLabel>{pane.label}</RailPeekLabel>
+        {/* The icon has no text, so the link's name starts with the pane's. */}
+        {badge !== undefined && badge > 0 && <span className="sr-only">{pane.label}</span>}
+        <NavBadge
+          count={badge ?? 0}
+          tone={badgeTone}
+          label={badgeLabel ?? String(badge ?? 0)}
+          placement="corner"
+        />
+        {/* Folded, the needs count is a bubble on the icon's corner, and a
+            pill at the row's end while the rail peeks. */}
+        {meta?.kind === "needs" ? <NeedsDot text={meta.text} /> : null}
       </Link>
     );
   }
 
-  return (
-    <>
+  // Glass (owner's reference, 2026-10-31): white labels and grey icons, and
+  // the open app takes a neutral fill. The tint is for what a member acts on.
+  const tone = active
+    ? "bg-primary/15 text-primary glass:bg-sidebar-accent glass:text-sidebar-foreground"
+    : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground glass:text-sidebar-foreground/85";
+  const link = (
       <Link
         key={pane.href}
         href={pane.href}
-        className={`rounded-lg tech-transition px-3 py-2 text-sm ${
-          active
-            ? "bg-primary/15 text-primary"
-            : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground"
-        }`}
+        onClick={onNavigate}
+        onContextMenu={
+          onRowMenu
+            ? (e) => {
+                e.preventDefault();
+                onRowMenu(pane, { x: e.clientX, y: e.clientY, keyboard: false, trigger: e.currentTarget });
+              }
+            : undefined
+        }
+        title={shellNav ? purpose : undefined}
+        aria-label={name}
+        data-nav-row={onRowMenu ? undefined : pane.href}
+        // With a menu, the ROW carries the tone, so the "···" sits on the
+        // same tint. The link keeps the full width at rest.
+        className={`rounded-lg glass:rounded-row tech-transition px-3 py-2 text-sm ${onRowMenu ? "min-w-0 flex-1" : tone}`}
       >
         <div className="flex items-center gap-2.5">
-          <Icon name={pane.icon} size={16} strokeWidth={active ? 2.5 : 2} />
-          <span className="font-medium text-[13px]">{pane.label}</span>
-          {badge !== undefined && badge > 0 && (
-            <span className="ml-auto rounded-full bg-warning px-1.5 py-0.5 text-[10px] font-bold text-warning-foreground">
-              {badge}
-            </span>
-          )}
+          <Icon name={pane.icon} size={16} strokeWidth={active ? 2.5 : 2} className={active ? "glass:text-sidebar-foreground" : "glass:text-muted-foreground"} />
+          <span className="font-medium text-[13px] glass:text-subhead">{pane.label}</span>
+          {/* With a menu, the badge gives its place to the "···" on hover or
+              focus, as a `RailRow` count does (`rail-row-meta`). It is
+              hidden from sight only, so it stays in the link's name. The
+              slot sits at the row's end, as a `RailRow` count does. */}
+          <span className={onRowMenu ? "rail-row-meta ml-auto" : "contents"}>
+            {meta?.kind === "needs" ? (
+              <NeedsCount text={meta.text} />
+            ) : (
+              <NavBadge count={badge ?? 0} tone={badgeTone} label={badgeLabel ?? String(badge ?? 0)} />
+            )}
+          </span>
         </div>
-        <div className="ml-[26px] text-[11px] text-muted-foreground/60 leading-tight mt-0.5">{pane.note}</div>
+        {!shellNav && (
+          <div className="ml-[26px] text-[11px] text-muted-foreground/60 leading-tight mt-0.5">{pane.note}</div>
+        )}
       </Link>
+  );
+
+  return (
+    <>
+      {onRowMenu ? (
+        // The `RailRow` idiom (`rail-row-actions`, `rail-row-meta` in
+        // globals.css): at rest the "···" takes NO width, so the name keeps
+        // the whole row (the owner saw 60px lost on 2026-10-10). Hover, or
+        // keyboard focus anywhere in the row, shows it, and `data-pinned`
+        // holds it while its menu is open. It takes no click at rest.
+        <div
+          className={`group relative flex items-center rounded-lg glass:rounded-row tech-transition ${tone}`}
+          data-nav-row={pane.href}
+          data-has-actions=""
+          data-pinned={menuOpen ? "" : undefined}
+        >
+          {link}
+          <span className="reveal-on-hover rail-row-actions flex shrink-0 items-center">
+            {/* The gap lives INSIDE the zone, so it folds away with it at rest. */}
+            <span className="flex items-center pr-1.5">
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              icon="MoreHorizontal"
+              aria-label={`More for ${pane.label}`}
+              aria-haspopup="menu"
+              title="More"
+              data-row-more=""
+              onClick={(e) => {
+                const r = e.currentTarget.getBoundingClientRect();
+                onRowMenu(pane, { x: r.left, y: r.bottom + 4, keyboard: e.detail === 0, trigger: e.currentTarget });
+              }}
+            />
+          </span>
+          </span>
+        </div>
+      ) : (
+        link
+      )}
       {pinnedApps && pinnedApps.length > 0 && (
         <div className="flex flex-col gap-0.5 ml-[26px] mt-0.5 mb-1">
           {pinnedApps.map((a) => {
@@ -451,6 +1273,7 @@ function NavLink({
               <Link
                 key={a.slug}
                 href={href}
+                onClick={onNavigate}
                 className={`flex items-center gap-1.5 rounded-md px-2 py-1 text-[11.5px] tech-transition truncate ${
                   appActive
                     ? "text-primary"
@@ -464,6 +1287,111 @@ function NavLink({
           })}
         </div>
       )}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// The needs count (owner, 2026-10-11)
+// ---------------------------------------------------------------------------
+
+/**
+ * The needs count in a row's trailing slot: the number in a pill, as the My
+ * Day row draws it (owner, 2026-11-01: "add number pills on the side bar like
+ * my day for email, messages, projects/tasks, calendar"). A screen reader
+ * skips it, because the link's name says it in words (`needsSuffix`). The
+ * phone drawer draws the same one.
+ */
+export function NeedsCount({ text }: { text: string }) {
+  return (
+    <span aria-hidden data-nav-needs="count" className="ml-auto shrink-0 whitespace-nowrap rounded-full bg-primary/15 px-1.5 text-[11px] font-semibold tabular-nums text-primary glass:text-caption">
+      {text}
+    </span>
+  );
+}
+
+/**
+ * My Day, with everything that waits on the member (owner, 2026-11-01: "fold
+ * needs you into my day from the side bar, so that there is only one
+ * surface. Open as a page"). The count is the apps' needs counts and the AI
+ * runs that wait on an answer. The row opens the My Day page, where the AI
+ * waiting card and the Needs you list hold them. The app rows show a quiet
+ * dot.
+ */
+function MyDayRow({
+  pane,
+  active,
+  count,
+  waiting = 0,
+  collapsed,
+  onNavigate,
+}: {
+  pane: NavPane;
+  active: boolean;
+  /** My Day's own number, the one its sentence says (`useNavNeeds`). */
+  count: number;
+  /** AI runs that wait on the member's answer or confirmation (HITL). */
+  waiting?: number;
+  collapsed: boolean;
+  onNavigate: (e: MouseEvent) => void;
+}) {
+  // One number with the page: its sentence counts the feed and the AI runs
+  // that wait (owner, 2026-11-01). Before My Day drew in this tab, the needs
+  // view's count stands in.
+  const said = useMyDayCount();
+  const total = said ?? count + waiting;
+  const text = total > 99 ? "99+" : String(total);
+  const rowLabel = total > 0 ? `${pane.label}, ${total} need you` : pane.label;
+  return (
+    <Link
+      href={pane.href}
+      onClick={onNavigate}
+      aria-label={rowLabel}
+      aria-current={active ? "page" : undefined}
+      title={collapsed ? rowLabel : undefined}
+      data-nav-my-day=""
+      data-rail-row={collapsed ? "" : undefined}
+      className={`rounded-lg glass:rounded-row tech-transition ${
+        active
+          ? "bg-primary/15 text-primary glass:bg-sidebar-accent glass:text-sidebar-foreground"
+          : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground"
+      } ${collapsed ? "relative flex items-center justify-center p-2.5" : "flex items-center gap-2.5 px-3 py-2 text-sm glass:text-sidebar-foreground/85"}`}
+    >
+      <Icon name={pane.icon} size={collapsed ? 18 : 16} className="shrink-0 glass:text-muted-foreground" />
+      {collapsed ? <RailPeekLabel>{pane.label}</RailPeekLabel> : <span className="font-medium text-[13px] glass:text-subhead">{pane.label}</span>}
+      {total > 0 ? (
+        collapsed ? (
+          <>
+            <span data-rail-corner="" className="pointer-events-none absolute top-1 right-1 h-4 min-w-4 whitespace-nowrap rounded-full bg-primary px-1 text-center text-[10px] font-semibold leading-4 tabular-nums text-primary-foreground">
+              {text}
+            </span>
+            <span data-rail-trail="" aria-hidden className="ml-auto whitespace-nowrap rounded-full bg-primary/15 px-1.5 text-[11px] font-semibold tabular-nums text-primary glass:text-caption">
+              {text}
+            </span>
+          </>
+        ) : (
+          <span className="ml-auto whitespace-nowrap rounded-full bg-primary/15 px-1.5 text-[11px] font-semibold tabular-nums text-primary glass:text-caption">
+            {text}
+          </span>
+        )
+      ) : null}
+    </Link>
+  );
+}
+
+/**
+ * The folded rail's form of the count, as the My Day row has it: a bubble on
+ * the icon's corner, and a pill at the row's end while the rail peeks.
+ */
+function NeedsDot({ text }: { text: string }) {
+  return (
+    <>
+      <span aria-hidden data-nav-needs="dot" data-rail-corner="" className="pointer-events-none absolute top-1 right-1 h-4 min-w-4 whitespace-nowrap rounded-full bg-primary px-1 text-center text-[10px] font-semibold leading-4 tabular-nums text-primary-foreground">
+        {text}
+      </span>
+      <span aria-hidden data-rail-trail="" className="ml-auto whitespace-nowrap rounded-full bg-primary/15 px-1.5 text-[11px] font-semibold tabular-nums text-primary glass:text-caption">
+        {text}
+      </span>
     </>
   );
 }

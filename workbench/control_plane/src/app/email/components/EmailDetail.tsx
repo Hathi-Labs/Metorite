@@ -5,26 +5,58 @@ import AppIcon, { themedIcon } from "@/components/Icon";
 import { useState, useEffect, useRef } from "react";
 import { Email } from "../lib/types";
 import { fullDateLabel, initials, buildOptimisticSent, bodyMatchKey } from "../lib/utils";
-import { useEmailStore, isRealFolder } from "../lib/emailStore";
+import { useEmailStore, isRealFolder, foldersInScope } from "../lib/emailStore";
+import {
+  fromWarning, mailboxOf, ownAddresses, replyRecipients, sendBlocked, swapSignature,
+} from "../lib/mailbox";
+import { getSentFrom } from "../lib/api";
+import { withFailedFiles } from "../lib/attachmentRow";
+import { FromRow } from "./FromRow";
+import { MailboxChip, mailboxLabel } from "./MailboxChip";
 import {
   fetchFullBody, getEmail, listThread, createRule,
-  fileToSendAttachment,
+  fileToSendAttachment, forwardEmail,
   type SendAttachment, type ArtifactAttachmentRef,
 } from "../lib/api";
+import {
+  OUTLOOK_SUBSET_UNSENT, forwardFailure, forwardFilesOf, forwardRequest, outlookSubset,
+  type ForwardFile,
+} from "../lib/forward";
+import { ForwardFileChips } from "./ForwardFileChips";
+
+/** Why Pop out is off on a forward that keeps a file of the email. */
+const POP_OUT_LOSES_FILES =
+  "The full composer cannot send the files of the email. Take the files out to open it.";
 import { useDraftSession } from "../lib/useDraftSession";
 import { ArtifactAttachPicker } from "./ArtifactAttachPicker";
 import { ComposerQuote, AiButton } from "./ComposerAI";
+import { draftCc } from "../lib/draftRecipients";
 import { DraftAssistant } from "./DraftAssistant";
+import { ComposerBody, ComposerExpandButton, useComposerSize } from "./ComposerSize";
 import { MessageContent } from "./MessageContent";
+import { remoteHtmlId } from "../lib/htmlPrefetch";
 import { AttachmentList } from "./AttachmentList";
 import { getSignatureText, seededBody, stripSignature } from "../lib/signature";
 import { RecipientInput } from "./RecipientInput";
 import { ConversationView, DraftCard, isDraftEmail } from "./ConversationView";
-import { ContactTrigger, RecipientList } from "./ContactCard";
+import { ContactTrigger, RecipientSummary } from "./ContactCard";
 import { LabelMenu } from "./LabelMenu";
 import { LabelChip } from "./LabelChip";
 import { MessageTimelineModal } from "./MessageTimelineModal";
+import { MessageActions, MessageReplyBar } from "./MessageActions";
+import { showsReplyBar } from "../lib/messageActions";
+import { toggleLightVersion, useLightVersions } from "../lib/lightVersion";
 import { useViewMode } from "@/components/ViewModeProvider";
+import { revealWithin } from "@/lib/scrollWithin";
+import { useLiveRefresh } from "@/lib/liveRefresh";
+import {
+  FILES_TOO_LARGE, autosaveWait, createAutosave, draftsToDiscard, failedSaveStatus,
+  continuedBody, draftToContinue, isForwardSubject, draftToUpdate, holdPick, pickProblem, recordSave,
+  saveFailureText, sendFailureText,
+  supersededDraft, NO_COMPOSER_DRAFTS, draftsAfterSend, markGone, newReplyDrafts, ownDraft,
+  retireDrafts, threadWithoutComposerDrafts,
+  type ComposerDrafts, type DraftHandOver, type DraftStatus, type SavedDraft,
+} from "../lib/draftAutosave";
 
 interface EmailDetailProps {
   email: Email | null;
@@ -35,14 +67,45 @@ export function EmailDetail({ email }: EmailDetailProps) {
     updateEmail, deleteEmail, openCompose, hydrateEmail, folders,
     accounts, selectedAccountId, sendEmail, saveDraft, sendDraft,
     viewerCommand, setViewerCommand, triggerSync, softRefresh,
-    captureEmailToTasks,
+    captureEmailToTasks, authErrors, viewAll, selectFolder,
+    composeOpen, composeDraftId,
   } = useEmailStore();
+  // The mailbox of the open mail. Every act on it runs there: the signature,
+  // the thread, the drafts, the AI draft and the send. The selected view never
+  // decides it (EM-T8a, D-EM-19, MB-2).
+  const mailboxId = mailboxOf(email, selectedAccountId);
+  // ── The sending mailbox of the inline reply (EM-T8c, D-EM-20) ──
+  // It starts on the mailbox of the mail. The From row can pick another one
+  // for this mail; a new reply (startReply) starts on the mail's mailbox again.
+  const [fromPick, setFromPick] = useState<{ mail: string; id: string } | null>(null);
+  const fromId = fromPick && fromPick.mail === email?.id ? fromPick.id : mailboxId;
+  // From another mailbox the reply goes as new mail: the provider cannot
+  // answer a mail of another mailbox, and the gateway refuses it (MB-6).
+  const sameConversation = fromId === mailboxId;
+  // Drafts of an old mailbox, deleted once the new mailbox has its own copy.
+  const staleDraftsRef = useRef<string[]>([]);
+  // The From of NOW, for a save that started before a change of From.
+  const liveFromRef = useRef(fromId);
+  useEffect(() => {
+    liveFromRef.current = fromId;
+  }, [fromId]);
+  /** Delete each draft of an old mailbox. Call it only once the new mailbox
+   *  holds the message, or the member could lose it. The list empties in
+   *  place, so a save that holds the same list cannot delete a draft twice. */
+  const dropDrafts = (list: string[]) => {
+    for (const id of list.splice(0)) void deleteEmail(id);
+  };
+  const dropStaleDrafts = () => dropDrafts(staleDraftsRef.current);
+  const [usualSender, setUsualSender] = useState<Record<string, string>>({});
   const { isMobile } = useViewMode();
   const [starred, setStarred] = useState(email?.isStarred ?? false);
   const [read, setRead] = useState(email?.isRead ?? true);
   const [flagged, setFlagged] = useState(email?.isFlagged ?? false);
   const [showMoreMenu, setShowMoreMenu] = useState(false);
-  const [showTimeline, setShowTimeline] = useState(false);
+  // The message whose activity is open. Each card of a thread can open its own.
+  const [timelineFor, setTimelineFor] = useState<Email | null>(null);
+  // The messages the member asked to see as sent, on their light sheet.
+  const lightVersions = useLightVersions();
   const [showMoveMenu, setShowMoveMenu] = useState(false);
   const [showLabelMenu, setShowLabelMenu] = useState(false);
   const [replyMode, setReplyMode] = useState<"reply" | "reply-all" | "forward" | null>(
@@ -71,20 +134,40 @@ export function EmailDetail({ email }: EmailDetailProps) {
   const [sigText, setSigText] = useState("");
   useEffect(() => {
     let alive = true;
-    void getSignatureText(selectedAccountId).then((s) => {
+    void getSignatureText(fromId).then((s) => {
       if (alive) setSigText(s);
     });
     return () => {
       alive = false;
     };
-  }, [selectedAccountId]);
+  }, [fromId]);
   const [replyAttachments, setReplyAttachments] = useState<SendAttachment[]>([]);
   const [replyArtifacts, setReplyArtifacts] = useState<ArtifactAttachmentRef[]>([]);
+  // The files of the email in a forward, each kept by default. The forward
+  // sends through POST /email/forward, which carries them (follow-up 4 of #766).
+  const [forwardFiles, setForwardFiles] = useState<ForwardFile[]>([]);
+  // The files of now, for a send in the same click that changed them.
+  const forwardFilesRef = useRef<ForwardFile[]>([]);
+  forwardFilesRef.current = forwardFiles;
+  // A refused forward that a forward without files can fix (413, Outlook, IMAP).
+  const [offerNoFiles, setOfferNoFiles] = useState(false);
+  // The pane got no answer about a forward, so the mail can still go out
+  // (review round 1, P2). The pane offers "Open Sent", never a retry.
+  const [forwardUnsure, setForwardUnsure] = useState(false);
   const [sendErr, setSendErr] = useState<string | null>(null);
+  // One inline send at a time (EM-T10 item 7, EM-G3c-2-f10). The ref is the
+  // guard, because a second click or Ctrl+Enter can come before a render.
+  // The state draws the Send button as loading.
+  const sendingRef = useRef(false);
+  const [sending, setSending] = useState(false);
   // ── Auto-save (Gmail-style): the reply persists as a Drafts message as you
   //    type, so closing the composer never loses it. draftIdRef holds the local
   //    id of the saved draft so repeated saves update it in place (no dupes). ──
   const draftIdRef = useRef<string | null>(null);
+  // The drafts that the inline reply holds, as state, not a ref. The thread
+  // hides them while the reply is open, in the same render that gets the
+  // refetched row. Else the reply showed twice (owner report, 2026-10-14).
+  const [composerDrafts, setComposerDrafts] = useState<ComposerDrafts>(NO_COMPOSER_DRAFTS);
   // The resolved message object the composer is replying to — kept in a ref so
   // the auto-save effect / send handlers (which sit above the early return) read
   // the live target without re-subscribing. Set each render once `view` exists.
@@ -92,6 +175,14 @@ export function EmailDetail({ email }: EmailDetailProps) {
   // The reply/forward composer block — scrolled into view when opened from a
   // conversation card so the draft box isn't off-screen below a long thread.
   const composerRef = useRef<HTMLDivElement>(null);
+  // The text box of the reply. A new reply puts the focus there (UI review,
+  // 2026-11-06).
+  const replyBoxRef = useRef<HTMLTextAreaElement>(null);
+  // The thread scroller. The composer reveal scrolls this box and no other.
+  const threadRef = useRef<HTMLDivElement>(null);
+  // The size of the reply body: auto-grow, a dragged height, or the whole
+  // pane (owner request, 2026-10-14, `ComposerSize.tsx`).
+  const composerSize = useComposerSize(composerRef, replyMode !== null, isMobile);
   const replyDirty = useRef(false);
   // The AI drafting session for this reply: live backend steps + the revision
   // history of each refine round.
@@ -102,14 +193,32 @@ export function EmailDetail({ email }: EmailDetailProps) {
     },
     onError: setSendErr,
   });
-  const [draftStatus, setDraftStatus] = useState<"idle" | "saving" | "saved">("idle");
+  const [draftStatus, setDraftStatus] = useState<DraftStatus>("idle");
+  // The pending autosave of the reply. A close, a switch to another mail and
+  // an unmount run it at once (EM-G3c-2 item 11). Each reply is a session, so
+  // a save that ends after the reply changed leaves the new reply alone.
+  const [autosave] = useState(() => createAutosave());
+  const replySessionRef = useRef(0);
+  // The draft that the last autosave saved. A save of a reply that ended
+  // reads its draft here, never in `draftIdRef` (EM-G3c-2 review round 1).
+  const lastSaveRef = useRef<SavedDraft | null>(null);
+  // `hasAttachments` of the row that the last save returned (EM-G3c-2 item 12).
+  const replyHasFileRef = useRef(false);
+  // The bytes of the picks that are being read (EM-G3c-3 item 5).
+  const readingRef = useRef(0);
   const [loadingFullBody, setLoadingFullBody] = useState(false);
   const [fullBodyText, setFullBodyText] = useState<string | null>(null);
   // Full message detail (body + attachments) fetched lazily on selection. The
   // list row often carries an empty body (Outlook syncs headers only), so we
   // always fetch the authoritative copy from the gateway when an email opens.
   const [detail, setDetail] = useState<Email | null>(null);
-  const [loadingDetail, setLoadingDetail] = useState(false);
+  // The message whose detail is loading. An id, not a flag: a flag that the
+  // last mail set stayed true when a mail with a body opened before that
+  // fetch ended, and that mail showed "Loading message…" for good.
+  // Each fetch has its own number too, so after A, B, A the end of the first
+  // fetch of A cannot clear the second one (review fix round 1).
+  const [loadingDetailFor, setLoadingDetailFor] = useState<{ id: string; seq: number } | null>(null);
+  const detailSeqRef = useRef(0);
   // The full conversation (all messages sharing this thread_id), if any.
   const [thread, setThread] = useState<Email[] | null>(null);
   // Just-sent replies shown optimistically until the provider sync mirrors the
@@ -141,9 +250,13 @@ export function EmailDetail({ email }: EmailDetailProps) {
       optimisticSentRef.current = [...optimisticSentRef.current, sent];
       setThread((cur) => mergeThread(cur ?? []));
     }
-    const acct = selectedAccountId ?? undefined;
+    const acct = mailboxId ?? undefined;
+    // A reply from another mailbox lands there, so that mailbox syncs too.
+    // No member asked for these syncs, so a sync that runs already is no
+    // error. The gateway runs the mailbox again (owner report, 2026-10-14).
+    if (fromId && fromId !== acct) void triggerSync(fromId, { quiet: true });
     const threadId = email?.threadId;
-    if (acct) void triggerSync(acct);
+    if (acct) void triggerSync(acct, { quiet: true });
     if (!threadId) return;
     [1500, 4000, 8000].forEach((d) =>
       setTimeout(() => {
@@ -155,11 +268,13 @@ export function EmailDetail({ email }: EmailDetailProps) {
     setTimeout(() => void softRefresh(), 5000);
   };
 
-  // Create an archive rule for this sender, then archive the open message.
-  const blockSender = async () => {
-    if (!email) return;
-    const sender = email.from.email;
-    const accountId = email.accountId || selectedAccountId;
+  // Create an archive rule for the sender of `target` (the open message by
+  // default), then archive that message.
+  const blockSender = async (target: Email | null = email) => {
+    if (!target) return;
+    const sender = target.from.email;
+    // The mailbox of that message. A thread lives in one mailbox (§11.6).
+    const accountId = target.accountId || mailboxId;
     if (!sender || !accountId) return;
     try {
       await createRule({
@@ -176,29 +291,61 @@ export function EmailDetail({ email }: EmailDetailProps) {
     } catch {
       /* best-effort — still archive below */
     }
-    updateEmail(email.id, { folder: "archive" });
+    actOn(target, { folder: "archive" });
   };
 
-  // Download the open message as a .eml file.
-  const downloadEml = () => {
-    if (!email) return;
-    const body = detail?.bodyText || email.bodyText || fullBodyText || "";
+  // Download `target` (the open message by default) as a .eml file.
+  const downloadEml = (target: Email | null = email) => {
+    if (!target) return;
+    const body =
+      target.id === detail?.id
+        ? detail.bodyText || target.bodyText || fullBodyText || ""
+        : target.bodyText || "";
     const eml =
-      `From: ${email.from.name} <${email.from.email}>\n` +
-      `To: ${email.to.map((t) => t.email).join(", ")}\n` +
-      `Subject: ${email.subject}\n` +
-      `Date: ${email.receivedAt}\n\n` +
+      `From: ${target.from.name} <${target.from.email}>\n` +
+      `To: ${target.to.map((t) => t.email).join(", ")}\n` +
+      `Subject: ${target.subject}\n` +
+      `Date: ${target.receivedAt}\n\n` +
       body;
     const url = URL.createObjectURL(
       new Blob([eml], { type: "message/rfc822" })
     );
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${(email.subject || "email")
+    a.download = `${(target.subject || "email")
       .replace(/[^a-z0-9]+/gi, "_")
       .slice(0, 40)}.eml`;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  /** The store's `updateEmail` for one message, and the same change in the
+   *  open thread, so the card shows it before the next refetch. */
+  const actOn = (
+    target: Email,
+    updates: Partial<Pick<Email, "isRead" | "isStarred" | "isFlagged" | "folder">>,
+  ) => {
+    void updateEmail(target.id, updates);
+    setThread((cur) => cur && cur.map((m) => (m.id === target.id ? { ...m, ...updates } : m)));
+  };
+
+  /** A label change of one message, on the open thread too. The store keeps
+   *  a patch only while its write is in flight (fix round 3, P3). */
+  const labelOn = (target: Email, name: string, add: boolean) => {
+    setThread((cur) =>
+      cur &&
+      cur.map((m) => {
+        if (m.id !== target.id) return m;
+        const cats = m.categories ?? [];
+        return { ...m, categories: add ? (cats.includes(name) ? cats : [...cats, name]) : cats.filter((c) => c !== name) };
+      }),
+    );
+  };
+
+  /** The store's `deleteEmail` for one message. A thread hides it at once. */
+  const deleteOne = (target: Email) => {
+    void deleteEmail(target.id);
+    setThread((cur) => cur && cur.map((m) => (m.id === target.id ? { ...m, folder: "trash" } : m)));
   };
 
   // Background refresh of the OPEN conversation (~20s) so an assistant-created
@@ -210,16 +357,35 @@ export function EmailDetail({ email }: EmailDetailProps) {
     const threadId = email.threadId;
     const tick = () => {
       if (document.visibilityState !== "visible") return;
-      listThread(selectedAccountId ?? undefined, threadId)
+      listThread(mailboxId ?? undefined, threadId)
         .then((t) => setThread(mergeThread(t)))
         .catch(() => {});
     };
     const id = setInterval(tick, 20000);
     return () => clearInterval(id);
-  }, [email?.threadId, selectedAccountId]);
+  }, [email?.threadId, mailboxId]);
+
+  // Task #124: the assistant wrote to the mailbox, so the open conversation
+  // reads now (a draft it made shows at once), not at the next tick.
+  useLiveRefresh(() => {
+    if (!email?.threadId) return;
+    listThread(mailboxId ?? undefined, email.threadId)
+      .then((t) => setThread(mergeThread(t)))
+      .catch(() => {});
+  }, "email");
 
   // Fetch full content whenever the selected email changes.
   useEffect(() => {
+    // A switch to another mail runs the pending save of the reply at once,
+    // while `draftIdRef` still names its draft (EM-G3c-2 item 11). The
+    // cleanup of the autosave effect ran first and held it.
+    autosave.flush();
+    replySessionRef.current += 1;
+    replyHasFileRef.current = false;
+    // The pane stays mounted across a switch, so the AI round of the mail
+    // before ends here, and so does a delete or an archive of the open mail.
+    // Else its draft lands in the next reply (EM-T17).
+    ai.reset();
     if (!email) {
       setDetail(null);
       setThread(null);
@@ -236,11 +402,12 @@ export function EmailDetail({ email }: EmailDetailProps) {
     setAiOpen(false);
     setAiInstruction("");
     draftIdRef.current = null;
+    setComposerDrafts(NO_COMPOSER_DRAFTS);
     replyDirty.current = false;
     setDraftStatus("idle");
     // Pull the whole conversation so we can show a Gmail-style thread view.
     if (email.threadId) {
-      listThread(selectedAccountId ?? undefined, email.threadId)
+      listThread(mailboxId ?? undefined, email.threadId)
         .then((t) => { if (!cancelled) setThread(mergeThread(t)); })
         .catch(() => { if (!cancelled) setThread(null); });
     }
@@ -250,7 +417,9 @@ export function EmailDetail({ email }: EmailDetailProps) {
       setDetail(email);
       return;
     }
-    setLoadingDetail(true);
+    detailSeqRef.current += 1;
+    const loading = { id: email.id, seq: detailSeqRef.current };
+    setLoadingDetailFor(loading);
     getEmail(email.id)
       .then((full) => {
         if (!cancelled) {
@@ -259,10 +428,12 @@ export function EmailDetail({ email }: EmailDetailProps) {
         }
       })
       .catch(() => {
-        if (!cancelled) setDetail(email); // fall back to list row
+        // Fall back to the list row. The fetch threw, so its files did not load.
+        if (!cancelled) setDetail(withFailedFiles(email));
       })
       .finally(() => {
-        if (!cancelled) setLoadingDetail(false);
+        // Each fetch clears its own id, also after a switch to another mail.
+        setLoadingDetailFor((cur) => (cur?.seq === loading.seq ? null : cur));
       });
     return () => {
       cancelled = true;
@@ -276,10 +447,27 @@ export function EmailDetail({ email }: EmailDetailProps) {
   // NOTE: must stay ABOVE the `if (!email) return` early-return so the hook is
   // called on every render (moving it below crashes with a hooks-order error).
   useEffect(() => {
-    if (!replyMode || !selectedAccountId || !email) return;
-    if (!replyDirty.current) return; // ignore the prefilled quote — wait for edits
+    // ignore the prefilled quote — wait for edits
+    if (!replyMode || !fromId || !email || !replyDirty.current) {
+      autosave.cancel();
+      return;
+    }
+    // A forward in flight freezes its draft: the inputs are read-only, and no
+    // save starts until the send ends (review round 1, P3-a).
+    if (replyMode === "forward" && sendingRef.current) {
+      autosave.cancel();
+      return;
+    }
     const toArr = replyTo.split(",").map((s) => s.trim()).filter(Boolean);
-    if (!replyBody.trim() && toArr.length === 0) return;
+    if (!replyBody.trim() && toArr.length === 0) {
+      autosave.cancel();
+      return;
+    }
+    // Each save carries the Cc and the Bcc of the reply. The gateway writes
+    // the lists that it gets, so a save without them cleared both on Outlook,
+    // and the send read the cleared row (EM-G3c-2 review round 2).
+    const ccArr = replyCc.split(",").map((s) => s.trim()).filter(Boolean);
+    const bccArr = replyBcc.split(",").map((s) => s.trim()).filter(Boolean);
     const isForward = replyMode === "forward";
     const target = replyTargetRef.current ?? email;
     const subj0 = target.subject || "";
@@ -290,27 +478,95 @@ export function EmailDetail({ email }: EmailDetailProps) {
     const body = replyQuote
       ? `${replyBody.replace(/\s+$/, "")}\n\n${replyQuote}`
       : replyBody;
-    const handle = setTimeout(async () => {
+    const savingFrom = fromId;
+    const session = replySessionRef.current;
+    // The drafts that this reply left in another mailbox (EM-G3c-2 review
+    // round 1). A save that ends after the reply ended still deletes them.
+    const stale = staleDraftsRef.current;
+    autosave.schedule(async () => {
+      // The save runs after the save before it settled, so it reads the
+      // draft id now. A first save that made the draft gave it the id.
+      const draftId = draftToUpdate(
+        { session, from: savingFrom },
+        { session: replySessionRef.current, draftId: draftIdRef.current },
+        lastSaveRef.current,
+      );
       try {
-        setDraftStatus("saving");
+        if (replySessionRef.current === session) setDraftStatus("saving");
         const saved = await saveDraft({
-          accountId: selectedAccountId,
-          draftId: draftIdRef.current ?? undefined,
-          // Reply/Reply-All thread onto the target message; Forward is standalone.
-          replyToMessageId: isForward ? undefined : target.id,
+          accountId: savingFrom,
+          draftId: draftId ?? undefined,
+          // Reply/Reply-All thread onto the target message; Forward is
+          // standalone, and so is a reply from another mailbox (EM-T8c).
+          replyToMessageId: isForward || !sameConversation ? undefined : target.id,
           to: toArr,
+          cc: ccArr,
+          bcc: bccArr,
           subject,
           body,
         });
+        // The reply or the mail changed while this save ran. The save holds
+        // the message, so the drafts that its reply left can go, unless the
+        // save wrote one of them. It sets nothing of the new reply.
+        if (replySessionRef.current !== session) {
+          // A change of From left the draft that this reply saved last in the
+          // old mailbox, and no list holds it (EM-G3c-3 item 4).
+          const superseded = supersededDraft({ session, from: savingFrom }, lastSaveRef.current, saved.id);
+          if (superseded && !stale.includes(superseded)) void deleteEmail(superseded);
+          lastSaveRef.current = recordSave(lastSaveRef.current, { session, from: savingFrom, id: saved.id });
+          if (!stale.includes(saved.id)) dropDrafts(stale);
+          return;
+        }
+        if (liveFromRef.current !== savingFrom) {
+          // The From changed while this save ran: its draft belongs to the
+          // old mailbox (EM-T8c review).
+          staleDraftsRef.current.push(saved.id);
+          setComposerDrafts((d) => ownDraft(d, saved.id));
+          setDraftStatus("idle");
+          return;
+        }
         draftIdRef.current = saved.id;
+        replyHasFileRef.current = saved.hasAttachments;
+        lastSaveRef.current = recordSave(lastSaveRef.current, { session, from: savingFrom, id: saved.id });
+        // The same step records the draft for the thread, so no render shows
+        // the draft before the hide (owner report, 2026-10-14).
+        setComposerDrafts((d) => ownDraft(d, saved.id));
+        // A provider draft cannot move between mailboxes (§11.6 case 7).
+        dropStaleDrafts();
         setDraftStatus("saved");
-      } catch {
-        setDraftStatus("idle");
+      } catch (err) {
+        // The next edit tries again (EM-G3c-2 item 13).
+        if (replySessionRef.current === session) setDraftStatus(failedSaveStatus(err));
       }
-    }, 1200);
-    return () => clearTimeout(handle);
+    }, autosaveWait(
+      accounts.find((a) => a.id === savingFrom)?.provider,
+      replyHasFileRef.current,
+    ), session);
+    // Stop the timer and keep the save, so a close or a switch can flush it.
+    return () => autosave.hold();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [replyBody, replyQuote, replyTo, replyCc, replyMode, selectedAccountId, email?.id]);
+  }, [replyBody, replyQuote, replyTo, replyCc, replyBcc, replyMode, fromId, email?.id]);
+
+  // An unmount runs the pending save at once (EM-G3c-2 item 11).
+  useEffect(() => () => autosave.flush(), [autosave]);
+
+  // Which mailbox last wrote to each recipient, for the From warning. Only
+  // for a member with two or more mailboxes, after a short pause.
+  useEffect(() => {
+    if (!replyMode || accounts.length < 2) return;
+    const list = [...replyTo.split(","), ...replyCc.split(",")]
+      .map((s) => s.trim()).filter(Boolean);
+    let alive = true;
+    const handle = setTimeout(() => {
+      void getSentFrom(list).then((map) => {
+        if (alive) setUsualSender(map);
+      });
+    }, 600);
+    return () => {
+      alive = false;
+      clearTimeout(handle);
+    };
+  }, [replyTo, replyCc, replyMode, accounts.length]);
 
   // Bridge for the desktop unified toolbar: it issues a transient store command
   // (reply/forward/block/download) that this viewer executes via the live
@@ -389,14 +645,43 @@ export function EmailDetail({ email }: EmailDetailProps) {
   }
 
   // Render the fullest copy we have (the lazily-fetched detail, or the list row).
-  const view: Email = detail ?? email;
+  // `detail` resets only after the first render of a new mail, so it can still
+  // hold the last mail. Read it only when it is this mail (EM-T10 item 5, C2).
+  const view: Email = detail?.id === email.id ? detail : email;
+  // "Loading message…" shows only while THIS mail has no body to draw. A mail
+  // that has its body and waits for its file list draws the body at once.
+  const loadingDetail = loadingDetailFor?.id === email.id && !view.bodyHtml && !view.bodyText;
 
   // The message the composer replies to. Defaults to the open message; a
   // conversation card can target any message in the thread (Outlook parity).
   const replyTarget: Email =
     (replyTargetId ? thread?.find((m) => m.id === replyTargetId) : undefined) ??
     view;
+  // The thread as drawn: the drafts that the inline reply holds are not in
+  // it, nor the draft of the full composer after a pop-out (review round 1).
+  const shownThread = thread
+    ? threadWithoutComposerDrafts(
+        thread, composerDrafts,
+        { replyOpen: replyMode !== null, composeOpen, composeDraftId },
+        isDraftEmail,
+      )
+    : null;
   replyTargetRef.current = replyTarget;
+  // The files of the email can arrive after the forward opened (the detail
+  // loads lazily). The chips take them once, while the forward has none. Only
+  // a non-empty list is set, so a file with no id cannot loop the render.
+  const lateForwardFiles =
+    replyMode === "forward" && forwardFiles.length === 0 ? forwardFilesOf(replyTarget.attachments) : [];
+  if (lateForwardFiles.length > 0) setForwardFiles(lateForwardFiles);
+
+  // "Not saved" or "Too large to save" after a failed save (EM-G3c-2 item 13).
+  const saveFailure = saveFailureText(draftStatus);
+
+  // A forward in flight: its inputs are read-only (review round 1, P3-a).
+  const forwarding = sending && replyMode === "forward";
+  // The full composer sends a new mail with none of the files of the email.
+  // So Pop out is off while the forward keeps a file (review round 1).
+  const popOutLosesFiles = replyMode === "forward" && forwardFiles.some((f) => f.checked);
 
   const replyLabel =
     replyMode === "forward"
@@ -405,10 +690,12 @@ export function EmailDetail({ email }: EmailDetailProps) {
         ? "Reply All"
         : "Reply";
 
-  // The address of the account we're viewing from — excluded from reply-all
-  // recipients so we don't reply to ourselves.
-  const ownEmail = accounts
-    .find((a) => a.id === selectedAccountId)?.emailAddress?.toLowerCase();
+  // The address of the mailbox that sends (the mailbox of the mail), for the
+  // optimistic sent row. Reply-all leaves out EVERY address of the member, not
+  // only this one (D-EM-27, MB-7).
+  const mailboxAccount = accounts.find((a) => a.id === mailboxId);
+  const sendingAddress = mailboxAccount?.emailAddress?.toLowerCase();
+  const own = ownAddresses(accounts);
 
   /** Open the inline composer with recipients + a quoted body prefilled.
    *  `target` is the message being replied to (defaults to the open message);
@@ -418,17 +705,41 @@ export function EmailDetail({ email }: EmailDetailProps) {
     target?: Email
   ) => {
     const src = target ?? view;
+    // A new reply closes the one before, so its pending save runs at once
+    // (EM-G3c-2 item 11).
+    autosave.flush();
+    replySessionRef.current += 1;
     setReplyTargetId(src.id);
+    setFromPick(null);
+    staleDraftsRef.current = [];
     setSendErr(null);
     // New reply session: forget any previous draft so we don't update it.
-    draftIdRef.current = null;
+    // A closed reply keeps its draft, and the thread shows it again.
+    // A reply continues the draft that the conversation holds, from the chat
+    // or an earlier reply, so no second draft starts (owner, 2026-10-22).
+    // A draft with no text here (an HTML-only copy) is not opened, so an
+    // edit cannot write over text that this pane does not show.
+    // Reply continues a reply draft, never a forward draft (review P2).
+    const isReplyDraft = (m: Email) => isDraftEmail(m) && !isForwardSubject(m.subject);
+    const found =
+      mode === "forward" ? null : draftToContinue(thread, composerDrafts.gone, isReplyDraft);
+    const held = found && (found.bodyText || "").trim() ? found : null;
+    draftIdRef.current = held?.id ?? null;
+    setComposerDrafts((d) => (held ? ownDraft(newReplyDrafts(d), held.id) : newReplyDrafts(d)));
+    replyHasFileRef.current = held?.hasAttachments ?? false;
     replyDirty.current = false;
     setDraftStatus("idle");
-    setReplyBcc("");
+    // A continued draft keeps its Bcc, or the first save would clear it.
+    setReplyBcc(held ? (held.bcc ?? []).map((a) => a.email).filter(Boolean).join(", ") : "");
     setReplyAttachments([]);
     setReplyArtifacts([]);
+    setForwardFiles(mode === "forward" ? forwardFilesOf(src.attachments) : []);
+    setOfferNoFiles(false);
+    setForwardUnsure(false);
     setAiOpen(false);
     setAiInstruction("");
+    // A new reply ends the AI round of the reply before (EM-T17).
+    ai.reset();
     // HTML-only mail (e.g. Outlook) has no bodyText — fall back to the snippet.
     const quoteSrc = src.bodyText || src.snippet || "";
     // The editable box starts with just the SIGNATURE (Gmail-style — it's part
@@ -437,7 +748,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
     // chain is kept separate in `replyQuote`, shown collapsed below the box and
     // reattached on send — so it can never be edited or AI-rewritten by mistake.
     setReplyBody("");
-    void getSignatureText(selectedAccountId).then((sig) => {
+    void getSignatureText(mailboxId).then((sig) => {
       // Seed only while the box is still untouched — never clobber typing.
       if (sig) setReplyBody((prev) => (prev.trim() ? prev : seededBody(sig)));
     });
@@ -452,50 +763,45 @@ export function EmailDetail({ email }: EmailDetailProps) {
         `Date: ${src.receivedAt}\nSubject: ${src.subject}\n\n${quoteSrc}`
       );
     } else {
-      const recips =
-        mode === "reply-all"
-          ? [src.from.email, ...(src.to || []).map((t) => t.email)]
-          : [src.from.email];
-      const to = recips.filter(
-        (e, i) => e && recips.indexOf(e) === i && e.toLowerCase() !== ownEmail
-      );
-      const cc =
-        mode === "reply-all"
-          ? (src.cc || [])
-              .map((c) => c.email)
-              .filter((e) => e && e.toLowerCase() !== ownEmail)
-          : [];
-      setReplyTo(to.join(", "));
-      setReplyCc(cc.join(", "));
-      setReplyQuote(
+      const { to, cc } = replyRecipients(src, mode, own, sendingAddress);
+      const quote =
         `On ${src.receivedAt}, ${src.from.name} wrote:\n> ` +
-        quoteSrc.replace(/\n/g, "\n> ")
-      );
+        quoteSrc.replace(/\n/g, "\n> ");
+      if (held) {
+        // The draft keeps its own text and recipients.
+        const kept = continuedBody(held.bodyText || "", quote);
+        const heldCc = (held.cc ?? []).map((a) => a.email).filter(Boolean);
+        setReplyBody(kept.text);
+        setReplyQuote(kept.quote);
+        setReplyTo(held.to.length ? held.to.map((a) => a.email).join(", ") : to.join(", "));
+        setReplyCc(held.to.length ? heldCc.join(", ") : cc.join(", "));
+        if (heldCc.length || (held.bcc ?? []).length) setShowReplyCc(true);
+      } else {
+        setReplyTo(to.join(", "));
+        setReplyCc(cc.join(", "));
+        setReplyQuote(quote);
+      }
     }
     setReplyMode(mode);
     // Bring the composer into view (it renders below a possibly-long thread).
-    setTimeout(
-      () => composerRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }),
-      60
-    );
+    // Scroll the thread only. `scrollIntoView` also scrolls each box above it,
+    // and that moved the app shell (owner report, 2026-10-10).
+    // The focus goes to the text box. A press below another message keeps the
+    // composer mounted, so `autoFocus` does not run again, and the pressed
+    // button is gone: the focus fell to the page (UI review, 2026-11-06).
+    // A focus already in the composer stays: the member may be in To.
+    setTimeout(() => {
+      revealWithin(threadRef.current, composerRef.current, "smooth");
+      if (!composerRef.current?.contains(document.activeElement)) {
+        replyBoxRef.current?.focus({ preventScroll: true });
+      }
+    }, 60);
   };
 
   /** Switch reply mode without resetting the body/draft — only rebuilds recipients. */
   const switchReplyMode = (mode: "reply" | "reply-all") => {
     const src = replyTargetRef.current ?? view;
-    const recips =
-      mode === "reply-all"
-        ? [src.from.email, ...(src.to || []).map((t: {email: string}) => t.email)]
-        : [src.from.email];
-    const to = recips.filter(
-      (e, i) => e && recips.indexOf(e) === i && e.toLowerCase() !== ownEmail
-    );
-    const cc =
-      mode === "reply-all"
-        ? (src.cc || [])
-            .map((c: {email: string}) => c.email)
-            .filter((e: string | undefined) => e && e.toLowerCase() !== ownEmail)
-        : [];
+    const { to, cc } = replyRecipients(src, mode, own, sendingAddress);
     setReplyTo(to.join(", "));
     setReplyCc(cc.join(", "));
     // Reply All reveals Cc/Bcc; narrowing to Reply hides them (and drops Bcc).
@@ -517,7 +823,15 @@ export function EmailDetail({ email }: EmailDetailProps) {
   };
 
   const resetReplySession = () => {
+    // A discard and a send end the reply. Each drained the chain before, and
+    // the cancel drops a save that an edit scheduled since then.
+    autosave.cancel();
+    replySessionRef.current += 1;
+    replyHasFileRef.current = false;
     draftIdRef.current = null;
+    // The send or the discard ends each draft of the reply. The thread keeps
+    // them hidden until the refetch no longer holds them.
+    setComposerDrafts((d) => retireDrafts(d));
     replyDirty.current = false;
     setDraftStatus("idle");
     setReplyMode(null);
@@ -529,9 +843,37 @@ export function EmailDetail({ email }: EmailDetailProps) {
     setShowReplyCc(false);
     setReplyAttachments([]);
     setReplyArtifacts([]);
+    setForwardFiles([]);
+    setOfferNoFiles(false);
+    setForwardUnsure(false);
     setAiOpen(false);
     setAiInstruction("");
     ai.reset(); // a new reply starts a fresh drafting session
+  };
+
+  /** Discard the reply and its auto-saved draft. The X keeps the draft
+   *  instead. The reply closes at once. The chain drains first, so no save
+   *  that waited writes the draft again, and a first save that runs gives its
+   *  id to the delete (EM-G3c-2 review round 2). The delete takes each draft
+   *  of the reply, in each mailbox (EM-G3c-3 item 3). */
+  const discardReply = async () => {
+    const session = replySessionRef.current;
+    const stale = staleDraftsRef.current;
+    const drained = autosave.drain(session);
+    setSendErr(null);
+    resetReplySession();
+    await drained;
+    // The reset ended the session, so this reads the last save of the reply,
+    // in the mailbox that it saved to, not the From of now.
+    const ids = draftsToDiscard(
+      session,
+      { session: replySessionRef.current, draftId: draftIdRef.current },
+      lastSaveRef.current,
+      stale.splice(0),
+    );
+    // A save that ran during the drain can name a draft that no record holds.
+    setComposerDrafts((d) => retireDrafts(d, ids));
+    for (const id of ids) void deleteEmail(id);
   };
 
   /** The full outgoing body: the user's new text plus the quoted trailing chain. */
@@ -543,10 +885,13 @@ export function EmailDetail({ email }: EmailDetailProps) {
    *  panel, draft text lands live, and the panel stays open so the next
    *  instruction refines this draft instead of starting over. */
   const runAiDraft = async () => {
-    if (!selectedAccountId || ai.busy) return;
+    if (!fromId || ai.busy) return;
     setSendErr(null);
     const target = replyTargetRef.current ?? email;
     const toArr = replyTo.split(",").map((s) => s.trim()).filter(Boolean);
+    // A forward goes to the people in To and Cc, so the draft is a note to
+    // them and not an answer to the sender (task 1817). A reply sends no Cc.
+    const ccArr = draftCc(replyMode, replyCc);
     // A dashboard nudge seeds a follow-up instruction (consumed once); a
     // manual AI draft uses whatever the user typed in the AI box.
     const seeded = autoDraftInstructionRef.current;
@@ -554,12 +899,14 @@ export function EmailDetail({ email }: EmailDetailProps) {
     const instruction = seeded || aiInstruction.trim();
     const draft = await ai.run(
       {
-        accountId: selectedAccountId,
+        accountId: fromId,
         body: replyBody, // NEW text only — the quote is excluded by design
         instruction,
         mode: replyMode === "forward" ? "forward" : "reply",
-        messageId: target.id,
+        // The drafter reads the thread only inside the mailbox of the mail.
+        messageId: sameConversation ? target.id : undefined,
         to: toArr,
+        cc: ccArr,
         subject: replyTarget.subject,
       },
       { instruction },
@@ -568,12 +915,71 @@ export function EmailDetail({ email }: EmailDetailProps) {
     if (draft) setAiInstruction("");
   };
 
+  /** True when a forward cannot go yet, with its words set. The route sends
+   *  from the mailbox that holds the email and refuses any other one. Outlook
+   *  forwards every file or none (follow-up 4 of #766). */
+  const forwardBlocked = (files: readonly ForwardFile[]): boolean => {
+    if (!mailboxId || fromId !== mailboxId) {
+      const box = accounts.find((a) => a.id === mailboxId);
+      setSendErr(
+        `A forward goes out from the mailbox that holds the email. Pick ${box ? mailboxLabel(box) : "that mailbox"} in From.`,
+      );
+      return true;
+    }
+    if (outlookSubset(mailboxAccount?.provider, files)) {
+      // The notice above the error says why, and holds the two choices. A
+      // second "Forward without files" here would be a second button for
+      // one choice (the screenshots of follow-up 5 of #766).
+      setSendErr(OUTLOOK_SUBSET_UNSENT);
+      return true;
+    }
+    return false;
+  };
+
+  /** After a sent forward: the forward is a new mail in Sent, so the copy
+   *  that the autosave kept in Drafts goes, as a discard takes it. */
+  const finishForward = async (session: number, stale: string[]) => {
+    // A save that an edit scheduled after the first drain goes, and a save
+    // that runs settles first, so its draft id is known. Then the reset ends
+    // the session, as in `discardReply` (review round 1, P3-a). A reply that
+    // the member opened during the send stays open, with its drafts.
+    const drained = autosave.drain(session);
+    const live = replySessionRef.current === session;
+    if (live) resetReplySession();
+    await drained;
+    const ids = draftsToDiscard(
+      session,
+      { session: replySessionRef.current, draftId: draftIdRef.current },
+      lastSaveRef.current,
+      stale.splice(0),
+    );
+    setComposerDrafts((d) => markGone(d, ids));
+    for (const id of ids) void deleteEmail(id);
+    refreshThreadAfterSend();
+  };
+
   /** Send the reply/forward. If it was auto-saved as a draft we send that draft
-   *  natively (Drafts → Sent, no duplicate); otherwise we send a fresh message. */
+   *  natively (Drafts → Sent, no duplicate); otherwise we send a fresh message.
+   *  A forward sends POST /email/forward, with the files the member kept
+   *  (follow-up 4 of #766). The route builds the subject, the forwarded
+   *  header and the original, so the pane sends the note only. */
   const handleInlineSend = async () => {
+    // A send runs already: the click or the Ctrl+Enter does nothing (f10).
+    if (sendingRef.current) return;
     if (!email) return;
-    if (!selectedAccountId) {
-      setSendErr("No account selected");
+    // No answer came for the last forward, so it can be in Sent already. The
+    // member says "I checked Sent" first, and Ctrl+Enter waits for it too
+    // (verifier F3).
+    if (replyMode === "forward" && forwardUnsure) return;
+    // An old send error must not hide a later "Not saved" (review round 1).
+    setSendErr(null);
+    if (!fromId) {
+      setSendErr("This mail has no mailbox to send from");
+      return;
+    }
+    const fromAccount = accounts.find((a) => a.id === fromId);
+    if (sendBlocked(fromAccount, authErrors)) {
+      setSendErr(`Reconnect ${fromAccount ? mailboxLabel(fromAccount) : "this mailbox"} to send from it.`);
       return;
     }
     const toArr = replyTo.split(",").map((s) => s.trim()).filter(Boolean);
@@ -585,18 +991,50 @@ export function EmailDetail({ email }: EmailDetailProps) {
     const bccArr = replyBcc.split(",").map((s) => s.trim()).filter(Boolean);
     const isForward = replyMode === "forward";
     const target = replyTargetRef.current ?? email;
+    // The ref, not the state: "Forward without files" sends in the same
+    // click that takes the files out.
+    const files = forwardFilesRef.current;
+    if (isForward && forwardBlocked(files)) return;
+    const session = replySessionRef.current;
+    const stale = staleDraftsRef.current;
+    // The send starts here, after the early returns and before the drain, so
+    // the Send button shows it while the drain waits (EM-T10 item 7).
+    sendingRef.current = true;
+    setSending(true);
+    setOfferNoFiles(false);
+    setForwardUnsure(false);
+    // The draft that this send sent, so it hides once the send ends.
+    let sentDraftId: string | null = null;
     try {
+      // The send carries the last edit, so each queued autosave goes. A save
+      // that runs settles first: a first save gives its draft id, and no older
+      // text without Cc lands after this save (EM-G3c-2 review round 2). A
+      // save of a reply that the member closed still runs (EM-G3c-3 item 1).
+      await autosave.drain(replySessionRef.current);
       // Native draft-send now carries Cc/Bcc AND attachments (all stored on the
       // provider draft), so whenever there's a draft OR attachments we save the
       // draft with everything and send it natively (Drafts → Sent, no duplicate,
       // reply stays threaded). A plain reply with no draft/attachments still
       // sends fresh.
       const hasAtt = replyAttachments.length > 0 || replyArtifacts.length > 0;
-      if (draftIdRef.current || hasAtt) {
+      // A change of From with an old draft takes the draft path too: it awaits
+      // the real send, so the old draft goes only after the send (§11.6
+      // case 8). The direct path returns before the send runs.
+      if (isForward) {
+        await forwardEmail(forwardRequest({
+          messageId: target.id,
+          accountId: fromId,
+          to: toArr,
+          cc: ccArr,
+          bcc: bccArr,
+          note: replyBody,
+          files,
+        }));
+      } else if (draftIdRef.current || hasAtt || staleDraftsRef.current.length > 0) {
         const saved = await saveDraft({
-          accountId: selectedAccountId,
+          accountId: fromId,
           draftId: draftIdRef.current ?? undefined,
-          replyToMessageId: isForward ? undefined : target.id,
+          replyToMessageId: isForward || !sameConversation ? undefined : target.id,
           to: toArr,
           cc: ccArr,
           bcc: bccArr,
@@ -605,28 +1043,54 @@ export function EmailDetail({ email }: EmailDetailProps) {
           attachments: replyAttachments.length ? replyAttachments : undefined,
           artifacts: replyArtifacts.length ? replyArtifacts : undefined,
         });
-        await sendDraft(selectedAccountId, saved.id);
+        // When the send fails, the next autosave updates this draft, and it
+        // holds the files now (EM-G3c-2 item 12).
+        if (saved.id === draftIdRef.current) replyHasFileRef.current = saved.hasAttachments;
+        // The reply holds this draft too, so the reset ends it. A reply that
+        // the member opened since then does not take it (review round 1, P2).
+        if (replySessionRef.current === session) setComposerDrafts((d) => ownDraft(d, saved.id));
+        sentDraftId = saved.id;
+        await sendDraft(fromId, saved.id);
+        dropStaleDrafts();
       } else {
         sendEmail({
-          accountId: selectedAccountId,
+          accountId: fromId,
           to: toArr,
           cc: ccArr.length ? ccArr : undefined,
           bcc: bccArr.length ? bccArr : undefined,
           subject: replySubject(),
           bodyText: composedReply(replyBody),
-          replyToMessageId: isForward ? undefined : target.providerMessageId,
+          replyToMessageId: isForward || !sameConversation ? undefined : target.providerMessageId,
         });
       }
-    } catch (e: any) {
-      setSendErr(e?.message || "Failed to send");
+    } catch (e) {
+      if (isForward) {
+        // Each answer of the route has its own words (`lib/forward.ts`).
+        const failure = forwardFailure(e);
+        setSendErr(failure.text);
+        setOfferNoFiles(failure.offerNoFiles && files.some((f) => f.checked));
+        setForwardUnsure(failure.unsure);
+        return;
+      }
+      // A 413 shows "This mail is too large to send." (EM-G3c-2 item 14).
+      setSendErr(sendFailureText(e));
+      return;
+    } finally {
+      sendingRef.current = false;
+      setSending(false);
+    }
+    if (isForward) {
+      await finishForward(session, stale);
       return;
     }
     // Show the reply in the conversation at once, then pull the real synced copy.
-    const sent = email.threadId
+    // A reply from another mailbox starts a conversation THERE, so it does not
+    // join this thread.
+    const sent = email.threadId && sameConversation
       ? buildOptimisticSent({
-          accountId: selectedAccountId,
+          accountId: fromId,
           threadId: email.threadId,
-          fromEmail: ownEmail || "",
+          fromEmail: sendingAddress || "",
           to: toArr,
           cc: ccArr,
           subject: replySubject(),
@@ -635,28 +1099,123 @@ export function EmailDetail({ email }: EmailDetailProps) {
             replyAttachments.length > 0 || replyArtifacts.length > 0,
         })
       : undefined;
-    resetReplySession();
+    // The member can open another reply while the send runs. That reply
+    // stays open, and its drafts stay its own. Only the draft that went out
+    // ends (review round 1, P2).
+    const live = replySessionRef.current === session;
+    setComposerDrafts((d) => draftsAfterSend(d, sentDraftId ? [sentDraftId] : [], live));
+    if (live) resetReplySession();
     refreshThreadAfterSend(sent);
   };
 
-  /** Read picked files into base64 and append them to the reply's attachments. */
+  /** Read picked files into base64 and append them to the reply's attachments.
+   *  A pick that makes the files pass 7.5 MB is refused whole (EM-G3c-2 item 10).
+   *  The limit counts the picks that are being read too (EM-G3c-3 item 5). */
   const addReplyFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
+    const picked = Array.from(files);
+    const problem = pickProblem(replyAttachments, picked, readingRef.current);
+    if (problem) {
+      setSendErr(problem);
+      return;
+    }
     replyDirty.current = true;
+    const release = holdPick(readingRef, picked);
     try {
-      const added = await Promise.all(Array.from(files).map(fileToSendAttachment));
+      const added = await Promise.all(picked.map(fileToSendAttachment));
       setReplyAttachments((prev) => [...prev, ...added]);
+      setSendErr((prev) => (prev === FILES_TOO_LARGE ? null : prev));
     } catch {
       setSendErr("Couldn't read one of the attachments");
+    } finally {
+      release();
     }
+  };
+
+  /** Change the sending mailbox of the inline reply. The signature follows
+   *  it, and a saved draft moves to the new mailbox on the next save. */
+  const changeFrom = async (next: string) => {
+    if (!email || !next || next === fromId) return;
+    const [oldSig, newSig] = await Promise.all([
+      getSignatureText(fromId), getSignatureText(next),
+    ]);
+    if (draftIdRef.current) {
+      staleDraftsRef.current.push(draftIdRef.current);
+      draftIdRef.current = null;
+    }
+    // The next save makes a new draft in the new mailbox, with no file.
+    replyHasFileRef.current = false;
+    replyDirty.current = true;
+    setReplyBody((prev) => swapSignature(prev, oldSig, newSig));
+    setFromPick({ mail: email.id, id: next });
+  };
+
+  /** Keep or take out one file of the forward. */
+  const toggleForwardFile = (id: string, checked: boolean) => {
+    setForwardFiles((prev) => prev.map((f) => (f.id === id ? { ...f, checked } : f)));
+    setOfferNoFiles(false);
+  };
+
+  /** Take every file out of the forward. With `send`, forward at once: the
+   *  member already pressed Send, and the files were the refusal. */
+  const forwardWithoutFiles = (send: boolean) => {
+    const none = forwardFiles.map((f) => ({ ...f, checked: false }));
+    forwardFilesRef.current = none;
+    setForwardFiles(none);
+    setOfferNoFiles(false);
+    setSendErr(null);
+    if (send) void handleInlineSend();
   };
 
   /** Hand the current draft off to the full composer (Cc/Bcc, attachments). */
   const popOutToComposer = () => {
+    const session = replySessionRef.current;
+    const from = fromId ?? "";
+    const stale = staleDraftsRef.current;
+    // The full composer takes over the draft, so the chain of the reply
+    // drains: no save of the reply writes the draft after the hand-over. A
+    // save that runs settles first, so a first save gives its draft id. A
+    // flush here would make two drafts (EM-G3c-2 review rounds 1 and 2).
+    const drained = autosave.drain(session);
+    setReplyMode(null);
+    // The inline reply closes, so its AI round ends (EM-T17).
+    ai.reset();
+    // The draft of the reply goes to the full composer when the drain
+    // settles. The composer opens now, so a New in that gap cannot take the
+    // composer first (EM-G3c-3 item 6, EM-G3c-2-f8).
+    const handOver: Promise<DraftHandOver> = drained.then(() => {
+      const draftId = draftToUpdate(
+        { session, from },
+        { session: replySessionRef.current, draftId: draftIdRef.current },
+        lastSaveRef.current,
+      );
+      // The new mailbox holds the reply once its own draft exists, so the
+      // drafts of an old mailbox can go. Without one they stay, as a copy.
+      if (draftId) dropDrafts(stale);
+      // The full composer has no Bcc row, so its saves would clear a Bcc. A
+      // reply with a Bcc keeps its draft, and the composer makes its own.
+      const kept = draftId && !replyBcc.trim() ? draftId : undefined;
+      return { draftId: kept, draftHasFile: kept ? replyHasFileRef.current : undefined };
+    });
     openCompose({
+      // The pop-out opens on the mailbox of the mail (EM-T8a, MB-2), and it
+      // keeps the From that the member chose (EM-T8c review). The composer
+      // drops the reply target itself while the From is another mailbox.
+      accountId: mailboxId ?? undefined,
+      fromAccountId: fromId && fromId !== mailboxId ? fromId : undefined,
       to: replyTo,
+      // The composer saves the draft that it updates with this Cc.
+      cc: replyCc,
       subject: replySubject(),
       replyToBody: replyBody,   // the typed new text
+      // The composer opens dirty in each case, so its first save writes the
+      // text that the member sees, at the cost of one save. The drain cannot
+      // tell a save that failed, and this closure cannot see `draftStatus`
+      // change (EM-G3c-3 item 2, EM-G3c-2-f9).
+      unsavedEdit: true,
+      // The composer updates the draft of the reply, in the mailbox of the
+      // From above, and makes no second draft (EM-G3c-2 review round 2).
+      handOver,
       quote: replyQuote,        // the collapsed trailing chain
       replyToMessageId:
         replyMode === "forward" ? undefined : replyTarget.providerMessageId,
@@ -664,17 +1223,42 @@ export function EmailDetail({ email }: EmailDetailProps) {
       // (a forward isn't a reply, so no context to carry).
       messageId: replyMode === "forward" ? undefined : replyTarget.id,
     });
-    setReplyMode(null);
   };
 
   // Keep the command bridge pointed at the live handlers (runs each render).
-  cmdRef.current = { reply: startReply, block: blockSender, download: downloadEml };
+  cmdRef.current = { reply: startReply, block: () => void blockSender(), download: () => downloadEml() };
+
+  /** The action row of one message: the single email, or one card of a
+   *  thread. Every handler gets that message (owner, 2026-10-10). */
+  const messageActions = (m: Email) => (
+    <MessageActions
+      message={m}
+      onReply={(mode) => startReply(mode, m)}
+      onUpdate={(updates) => actOn(m, updates)}
+      onDelete={() => deleteOne(m)}
+      onTasks={() => captureEmailToTasks(m.id, m.accountId)}
+      onBlock={() => void blockSender(m)}
+      onDownload={() => downloadEml(m)}
+      onActivity={() => setTimelineFor(m)}
+      onLabel={(name, add) => labelOn(m, name, add)}
+      lightVersion={lightVersions.has(m.id)}
+      onToggleLight={() => toggleLightVersion(m.id)}
+    />
+  );
+  /** The Reply, Reply all and Forward buttons below the body of one message
+   *  (owner, 2026-11-06). The message that the composer answers has none. */
+  const replyBar = (m: Email) =>
+    showsReplyBar(m.id, replyMode, replyTargetId) ? (
+      <MessageReplyBar message={m} onReply={(mode) => startReply(mode, m)} />
+    ) : null;
   // Point the auto-draft ref at the current-render closure so the nonce effect
   // reads fresh reply state (recipients/mode startReply just set).
   runAiDraftRef.current = runAiDraft;
 
   return (
-    <div className="flex flex-col h-full overflow-hidden">
+    // `overflow-clip`, not `hidden`: a script cannot scroll a clip box, so no
+    // reveal or focus can shift the pane (owner report, 2026-10-10).
+    <div className="flex flex-col h-full overflow-clip">
       {/* ── Main toolbar (MOBILE ONLY — on desktop the unified EmailToolbar
           below the page top bar provides these actions) ── */}
       {isMobile && (
@@ -702,7 +1286,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
 
           <TBtn
             icon={themedIcon("ListChecks")}
-            label="Add to My Tasks"
+            label="Add to My work"
             onClick={() => {
               if (email) captureEmailToTasks(email.id);
             }}
@@ -733,7 +1317,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
                   <div className="px-3 py-1 text-[10px] uppercase tracking-wide text-muted-foreground">
                     Move to
                   </div>
-                  {folders
+                  {foldersInScope(folders, viewAll)
                     .filter((f) => isRealFolder(f.key) && f.key !== email?.folder)
                     .map((f) => (
                       <button
@@ -830,7 +1414,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
                 {[
                   {
                     label: "View activity",
-                    run: () => setShowTimeline(true),
+                    run: () => setTimelineFor(email),
                   },
                   {
                     label: "Mark as spam",
@@ -868,7 +1452,13 @@ export function EmailDetail({ email }: EmailDetailProps) {
       )}
 
       {/* ── Email content ── */}
-      <div className="flex-1 overflow-y-auto scrollbar-hide px-6 py-5">
+      {/* `overscroll-contain`: a wheel at the end of the thread stops here,
+          and never moves the page (owner report, 2026-10-10). */}
+      <div
+        ref={threadRef}
+        data-email-thread=""
+        className="flex-1 overflow-y-auto overscroll-contain scrollbar-hide px-6 py-5"
+      >
         {/* Subject + status badges */}
         <div className="flex items-start gap-2 mb-4">
           <h2 className="flex-1 text-foreground text-lg font-semibold">
@@ -893,6 +1483,16 @@ export function EmailDetail({ email }: EmailDetailProps) {
           </div>
         </div>
 
+        {/* The mailbox that holds this mail, for a member with two or more
+            mailboxes (EM-T8b, §11.4 "Reading pane"). */}
+        {mailboxAccount && accounts.length > 1 && (
+          <div className="-mt-2 mb-4 flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
+            <span>In</span>
+            <MailboxChip account={mailboxAccount} />
+            <span className="truncate">· to {mailboxAccount.emailAddress}</span>
+          </div>
+        )}
+
         {/* Categories / labels — rendered in their assigned colours */}
         {view.categories && view.categories.length > 0 && (
           <div className="flex flex-wrap gap-1 mb-4">
@@ -907,18 +1507,23 @@ export function EmailDetail({ email }: EmailDetailProps) {
           </div>
         )}
 
-        {thread && thread.length > 1 ? (
+        {shownThread && shownThread.length > 1 ? (
           /* Conversation view — the whole thread, stacked */
           <ConversationView
-            messages={thread}
+            messages={shownThread}
             openedId={email.id}
-            onReply={(m, mode) => startReply(mode, m)}
+            renderActions={messageActions}
+            renderReplyBar={replyBar}
+            lightVersions={lightVersions}
             onSent={refreshThreadAfterSend}
           />
         ) : isDraftEmail(email) ? (
-          /* Standalone draft — editable composer. Pass the reply target so the
-             Reply / Reply All toggle can appear when it's a reply to a message. */
-          <DraftCard draft={email} replyTo={replyTarget} />
+          /* Standalone draft — editable composer. The key mounts a fresh card
+             for each draft. Without it, opening draft B after draft A kept A's
+             text, and an edit saved it into B (EM-G3c-2-f1). The card gets
+             `view`, never the last mail, so it starts with the recipients of
+             its own draft (EM-T10 item 5, C2). */
+          <DraftCard key={email.id} draft={email} replyTo={view} />
         ) : (
         <>
         {/* Sender info — the avatar, name and every recipient open a contact card */}
@@ -943,34 +1548,42 @@ export function EmailDetail({ email }: EmailDetailProps) {
                 &lt;{email.from.email}&gt;
               </span>
             </div>
-            <div className="mt-0.5">
-              <RecipientList
-                label="To"
-                people={email.to}
-                accountId={email.accountId}
-              />
-            </div>
-            <RecipientList
-              label="Cc"
-              people={email.cc ?? []}
+            {/* To, Cc and Bcc in one line until the member asks (owner,
+                2026-11-01). A Bcc shows only on a mail the member sent:
+                the provider gives no Bcc of a received mail. */}
+            <RecipientSummary
+              to={email.to}
+              cc={email.cc}
+              bcc={email.bcc}
               accountId={email.accountId}
+              className="mt-0.5"
             />
             <div className="text-xs text-muted-foreground">
               {fullDateLabel(email.receivedAt)}
             </div>
           </div>
-          {/* Card-level capture: turn this email (with its thread + who's on it)
-              into a routed task in My Tasks — always visible with the message. */}
-          <button
-            type="button"
-            onClick={() => captureEmailToTasks(email.id)}
-            title="Add to My Tasks — the assistant reads the thread and files a routed task (follow-up / delegated / next action) with a due date if implied."
-            className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:border-primary/40 hover:text-primary transition-colors"
-          >
-            <AppIcon name="ListChecks" size={14} />
-            <span className="hidden sm:inline">Add to My Tasks</span>
-          </button>
+          {/* The same action row as each card of a thread. "Add to My work"
+              is its first menu item (owner, 2026-10-10). */}
+          {messageActions(email)}
         </div>
+
+        {/* The files of this mail, on top of its body as in Outlook (owner,
+            2026-11-06). The fetch sets `detail` when it ends, also on a failure,
+            so the space holds only while the list can still arrive. */}
+        {view.hasAttachments && (
+          <AttachmentList
+            attachments={view.attachments}
+            status={view.attachmentsStatus}
+            onRetry={async () => {
+              // One message only: the thread and the pane stay as they are.
+              const full = await getEmail(email.id);
+              setDetail((cur) => (cur?.id === full.id || cur === null ? full : cur));
+              hydrateEmail(full);
+            }}
+            pending={detail?.id !== email.id}
+            className="mb-4"
+          />
+        )}
 
         {/* Body */}
         {loadingDetail ? (
@@ -1002,7 +1615,13 @@ export function EmailDetail({ email }: EmailDetailProps) {
             </button>
           </div>
         ) : (
-          <MessageContent html={view.bodyHtml} text={view.bodyText} />
+          <MessageContent
+            html={view.bodyHtml}
+            text={view.bodyText}
+            remoteId={remoteHtmlId(view)}
+            lightVersion={lightVersions.has(view.id)}
+            messageId={view.id}
+          />
         )}
 
         {/* "Load full message" button — appears when body was truncated at sync */}
@@ -1032,13 +1651,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
           </div>
         )}
 
-        {/* Attachments — same card UI the conversation view uses per message. */}
-        {view.hasAttachments && (
-          <AttachmentList
-            attachments={view.attachments}
-            className="mt-6 pt-4 border-t border-border"
-          />
-        )}
+        {/* While the body loads, the buttons wait, or they would jump down. */}
+        {!loadingDetail && replyBar(view)}
         </>
         )}
 
@@ -1046,16 +1660,21 @@ export function EmailDetail({ email }: EmailDetailProps) {
         {replyMode && (
           <div
             ref={composerRef}
-            className="mt-8 border border-primary/30 rounded-lg overflow-hidden bg-secondary/30"
+            data-email-composer=""
+            data-ask-clear=""
+            style={composerSize.rootStyle}
+            className={`mt-8 border border-primary/30 rounded-lg bg-secondary/30 ${composerSize.rootClass || "overflow-hidden"}`}
           >
             <div className="px-4 py-2 bg-secondary text-xs text-muted-foreground border-b border-border flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <span>
-                  Replying to{" "}
-                  <span className="text-foreground">
-                    {replyMode === "forward" ? "…" : replyTarget.from.name}
+                {replyMode === "forward" ? (
+                  <span>Forwarding with the files of the email</span>
+                ) : (
+                  <span>
+                    Replying to{" "}
+                    <span className="text-foreground">{replyTarget.from.name}</span>
                   </span>
-                </span>
+                )}
                 {/* Reply / Reply All mode toggle (hidden for forward) */}
                 {replyMode !== "forward" && (
                   <div className="flex items-center bg-background rounded-md p-0.5 ml-2">
@@ -1080,20 +1699,59 @@ export function EmailDetail({ email }: EmailDetailProps) {
                   </div>
                 )}
               </div>
-              <button
-                className="text-muted-foreground hover:text-foreground transition-colors"
-                onClick={() => setReplyMode(null)}
-              >
-                <AppIcon name="X" size={14} />
-              </button>
+              <div className="flex items-center gap-1">
+                {/* Expand fills the pane. Esc does not collapse it: Esc
+                    already closes the AI panel and the recipient list. */}
+                <ComposerExpandButton
+                  expanded={composerSize.state.expanded}
+                  onToggle={() => composerSize.dispatch({ type: "toggleExpand" })}
+                />
+                <button
+                  type="button"
+                  aria-label="Close the draft"
+                  className="text-muted-foreground hover:text-foreground transition-colors"
+                  onClick={() => {
+                    // The X keeps the draft, so the pending save runs at once
+                    // (EM-G3c-2 item 11).
+                    autosave.flush();
+                    setReplyMode(null);
+                    // The reply closes, so its AI round ends (EM-T17).
+                    ai.reset();
+                  }}
+                >
+                  <AppIcon name="X" size={14} />
+                </button>
+              </div>
             </div>
+            {/* From — two or more mailboxes (EM-T8c, D-EM-20) */}
+            {accounts.length > 1 && fromId && (
+              <div className="px-4 py-1.5 border-b border-border">
+                <FromRow
+                  accounts={accounts}
+                  value={fromId}
+                  defaultValue={mailboxId ?? undefined}
+                  onChange={(id) => void changeFrom(id)}
+                  warning={fromWarning({
+                    fromId,
+                    accounts,
+                    conversationAccountId: replyMode === "forward" ? null : mailboxId,
+                    recipients: [...replyTo.split(","), ...replyCc.split(",")],
+                    usualSender,
+                    authErrors,
+                  })}
+                  authErrors={authErrors}
+                  labelClassName="text-[10px] text-muted-foreground w-7 flex-shrink-0"
+                />
+              </div>
+            )}
             {/* Recipients */}
             <div className="px-4 py-1.5 border-b border-border flex items-center gap-2">
               <span className="text-[10px] text-muted-foreground w-7 flex-shrink-0">To</span>
               <RecipientInput
                 value={replyTo}
                 onChange={(v) => { replyDirty.current = true; setReplyTo(v); }}
-                accountId={selectedAccountId}
+                readOnly={forwarding}
+                accountId={fromId}
                 ariaLabel="To recipients"
                 placeholder="Recipients (comma-separated)…"
                 className="w-full bg-transparent text-xs text-foreground placeholder:text-muted-foreground outline-none"
@@ -1112,7 +1770,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
                   <RecipientInput
                     value={replyCc}
                     onChange={(v) => { replyDirty.current = true; setReplyCc(v); }}
-                    accountId={selectedAccountId}
+                    readOnly={forwarding}
+                    accountId={fromId}
                     ariaLabel="Cc recipients"
                     placeholder="Cc…"
                     className="w-full bg-transparent text-xs text-foreground placeholder:text-muted-foreground outline-none"
@@ -1123,7 +1782,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
                   <RecipientInput
                     value={replyBcc}
                     onChange={(v) => { replyDirty.current = true; setReplyBcc(v); }}
-                    accountId={selectedAccountId}
+                    readOnly={forwarding}
+                    accountId={fromId}
                     ariaLabel="Bcc recipients"
                     placeholder="Bcc…"
                     className="w-full bg-transparent text-xs text-foreground placeholder:text-muted-foreground outline-none"
@@ -1131,8 +1791,11 @@ export function EmailDetail({ email }: EmailDetailProps) {
                 </div>
               </>
             )}
+            <ComposerBody size={composerSize} value={replyBody}>
             <textarea
+              ref={replyBoxRef}
               value={replyBody}
+              readOnly={forwarding}
               onChange={(e) => { replyDirty.current = true; setReplyBody(e.target.value); }}
               onKeyDown={(e) => {
                 if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
@@ -1143,8 +1806,26 @@ export function EmailDetail({ email }: EmailDetailProps) {
               placeholder={`Write your ${replyLabel.toLowerCase()}…`}
               rows={6}
               autoFocus
+              // No `overscroll-contain` here. On a short window, a wheel at
+              // the end of the draft must go on to the thread, so the member
+              // reaches the AI bar and Send. The thread holds the wheel.
               className="w-full bg-transparent px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground outline-none resize-none"
             />
+            </ComposerBody>
+            {replyMode === "forward" && (
+              <ForwardFileChips
+                files={forwardFiles}
+                onToggle={toggleForwardFile}
+                outlookSubset={outlookSubset(mailboxAccount?.provider, forwardFiles)}
+                onKeepAll={() => {
+                  setForwardFiles((prev) => prev.map((f) => ({ ...f, checked: true })));
+                  setOfferNoFiles(false);
+                  setSendErr(null);
+                }}
+                onWithoutFiles={() => forwardWithoutFiles(false)}
+                disabled={sending}
+              />
+            )}
             {(replyAttachments.length > 0 || replyArtifacts.length > 0) && (
               <div className="px-4 pb-2 flex flex-wrap gap-1.5">
                 {replyAttachments.map((a, i) => (
@@ -1205,18 +1886,53 @@ export function EmailDetail({ email }: EmailDetailProps) {
                 revisions={ai.revisions}
                 activeRevision={ai.activeRevision}
                 elapsedMs={ai.elapsedMs}
+                notice={ai.notice}
+                onStop={ai.stop}
                 onRun={runAiDraft}
                 onRestore={(id) => ai.restore(id)}
                 onClose={() => setAiOpen(false)}
               />
             )}
+            {/* A failed send, a refused pick or a failed save (EM-G3c-2 items
+                10, 13 and 14). It takes its own line: the footer holds six
+                controls, and its status text truncates at 1440 px. */}
+            {(sendErr || saveFailure) && (
+              <p role="alert" className="px-4 py-1.5 text-[10px] text-destructive">
+                {sendErr ?? saveFailure}
+              </p>
+            )}
+            {/* A forward that its files stopped (413, Outlook, IMAP). */}
+            {replyMode === "forward" && offerNoFiles && sendErr && (
+              <div className="px-4 pb-1.5" data-forward-offer="">
+                <Button variant="secondary" size="sm" onClick={() => forwardWithoutFiles(true)} disabled={sending}>
+                  Forward without files
+                </Button>
+              </div>
+            )}
+            {/* No answer about the forward: Send stays off until the member
+                says that Sent does not hold it (verifier F3). */}
+            {replyMode === "forward" && forwardUnsure && (
+              <div className="px-4 pb-1.5 flex flex-wrap gap-2" data-forward-unsure="">
+                <Button variant="secondary" size="sm" icon="Send" onClick={() => selectFolder("sent")}>
+                  Open Sent
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setForwardUnsure(false);
+                    setSendErr(null);
+                  }}
+                >
+                  I checked Sent, send again
+                </Button>
+              </div>
+            )}
             {/* Footer — on phones the labels compress to icons so the full
                 action row (incl. Send) always fits inside the card. */}
             <div className="px-3 sm:px-4 py-2 bg-secondary/50 border-t border-border flex items-center justify-between gap-2">
               <span className="text-[10px] truncate min-w-0">
-                {sendErr ? (
-                  <span className="text-red-500">{sendErr}</span>
-                ) : draftStatus === "saving" ? (
+                {draftStatus === "saving" ? (
                   <span className="text-muted-foreground">Saving draft…</span>
                 ) : draftStatus === "saved" ? (
                   <span className="text-muted-foreground">Draft saved · Ctrl+Enter to send</span>
@@ -1226,6 +1942,9 @@ export function EmailDetail({ email }: EmailDetailProps) {
               </span>
               <div className="flex gap-1 sm:gap-2 flex-shrink-0 items-center">
                 <AiButton active={aiOpen} onClick={() => setAiOpen((v) => !v)} />
+                {/* POST /email/forward carries the files of the email, and no
+                    file of the member's own. Pop out for a forward with more. */}
+                {replyMode !== "forward" && (<>
                 <label
                   className="px-2 py-1 text-xs rounded-md text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors cursor-pointer flex items-center"
                   title="Attach files"
@@ -1249,21 +1968,16 @@ export function EmailDetail({ email }: EmailDetailProps) {
                       prev.some((a) => a.path === ref.path) ? prev : [...prev, ref]);
                   }}
                 />
-                <Button variant="ghost" size="none" radius="keep" layout="flex items-center" onClick={popOutToComposer} title="Open in the full composer (Bcc, attachments)" aria-label="Pop out to full composer" className="px-2 sm:px-3 py-1 text-xs rounded-md gap-1">
+                </>)}
+                <Button variant="ghost" size="none" radius="keep" layout="flex items-center" onClick={() => void popOutToComposer()} disabled={popOutLosesFiles || forwarding} title={popOutLosesFiles ? POP_OUT_LOSES_FILES : "Open in the full composer (Bcc, attachments)"} aria-label="Pop out to full composer" className="px-2 sm:px-3 py-1 text-xs rounded-md gap-1">
                   <AppIcon name="ExternalLink" size={13} />
                   <span className="hidden sm:inline">Pop out</span>
                 </Button>
-                <Button variant="ghost" size="none" radius="keep" layout="flex items-center" onClick={() => {
-                    // Discard the auto-saved draft too (the X keeps it instead).
-                    if (draftIdRef.current) void deleteEmail(draftIdRef.current);
-                    setSendErr(null);
-                    resetReplySession();
-                  }} title="Discard this draft" aria-label="Discard this draft" className="px-2 sm:px-3 py-1 text-xs rounded-md gap-1">
+                <Button variant="ghost" size="none" radius="keep" layout="flex items-center" onClick={() => void discardReply()} title="Discard this draft" aria-label="Discard this draft" className="px-2 sm:px-3 py-1 text-xs rounded-md gap-1">
                   <AppIcon name="Trash2" size={13} />
                   <span className="hidden sm:inline">Discard</span>
                 </Button>
-                <Button size="none" radius="keep" layout="flex items-center" disabled={!replyTo.trim() || !replyBody.trim()} onClick={handleInlineSend} className="px-4 py-1 text-xs rounded-md gap-1.5">
-                  <AppIcon name="Send" size={12} />
+                <Button size="none" radius="keep" layout="flex items-center" icon="Send" loading={sending} disabled={!replyTo.trim() || (replyMode !== "forward" && !replyBody.trim()) || (replyMode === "forward" && forwardUnsure)} onClick={() => void handleInlineSend()} className="px-4 py-1 text-xs rounded-md gap-1.5">
                   Send
                 </Button>
               </div>
@@ -1272,11 +1986,11 @@ export function EmailDetail({ email }: EmailDetailProps) {
         )}
       </div>
 
-      {showTimeline && email && (
+      {timelineFor && (
         <MessageTimelineModal
-          messageId={email.id}
-          subject={email.subject}
-          onClose={() => setShowTimeline(false)}
+          messageId={timelineFor.id}
+          subject={timelineFor.subject}
+          onClose={() => setTimelineFor(null)}
         />
       )}
     </div>

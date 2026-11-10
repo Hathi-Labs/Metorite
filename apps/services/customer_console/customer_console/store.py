@@ -15,6 +15,7 @@ against a real Postgres and skips loudly when none is configured.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
@@ -31,12 +32,20 @@ from customer_console.credits import (
     LEDGER_REASON_PURCHASE,
     LEDGER_REASON_RELEASE,
     LEDGER_REASON_USAGE,
+    quantize_credits,
 )
 
 __all__ = [
     "activate_subscription",
+    "active_owner_count",
     "active_plans",
     "add_credit",
+    "add_deployment_key_capabilities",
+    "app_connection_row",
+    "app_deployment",
+    "app_seat_holders",
+    "app_usage",
+    "app_visible_orgs",
     "apply_discount_to_order",
     "capture_provider_refs",
     "count_redemptions",
@@ -46,17 +55,25 @@ __all__ = [
     "credit_ref_row",
     "cross_org_summary",
     "current_placement",
+    "deployment_app",
     "deployment_by_label",
+    "deployment_key_capabilities",
+    "deployment_row",
     "deployment_visible_orgs",
     "detach_provider",
     "ensure_identity",
     "ensure_organization",
     "grant_seats",
     "has_live_seat",
+    "identity_id_for_email",
+    "insert_deployment",
     "issue_deployment_key",
     "issue_discount_code",
     "lock_discount_capacity",
+    "lock_org_owners",
     "lock_seat_capacity",
+    "make_owner",
+    "membership_status",
     "operator_active_admin_count",
     "operator_by_email",
     "operator_by_id",
@@ -79,22 +96,31 @@ __all__ = [
     "order_lines",
     "order_row",
     "orders_page",
+    "org_app_row",
     "org_members",
     "place_organization",
     "plan_price",
     "priced_plan",
+    "record_app_connection",
+    "record_app_connection_result",
     "record_payment_event",
     "record_usage",
     "redemption_for_order",
     "release_seat",
+    "remove_member",
+    "rename_org",
     "resolve_deployment_key",
     "resolve_discount_code",
     "resolve_key",
+    "revoke_deployment_key",
     "run_spend",
+    "save_app_connection_settings",
     "seat_rows",
+    "set_deployment_app",
     "set_order_status",
     "set_provider_order_id",
     "try_assign_seat",
+    "upsert_org_app",
     "write_redemption",
 ]
 
@@ -131,6 +157,30 @@ def ensure_organization(
     ).first()
     assert row is not None  # guaranteed by DO UPDATE
     return str(row[0])
+
+
+def rename_org(conn: Connection, *, org_id: str, name: str) -> dict[str, Any] | None:
+    """Set ``organization.name`` and return the slug, the name and the old name.
+
+    CP-8 "Rename an organization" (2026-10-27). The name is the only one the
+    Console stores. The slug is never written here.
+
+    Returns None when no row has this id. The sub-select reads the row as it
+    was when the statement began, so ``previous_name`` is the name this call
+    replaced. The caller has checked the name, so this decides nothing.
+    """
+    row = conn.execute(
+        text(
+            """
+            UPDATE organization o SET name = :name, updated_at = now()
+              FROM (SELECT id, name FROM organization WHERE id = :id) p
+             WHERE o.id = p.id
+            RETURNING o.slug, o.name, p.name AS previous_name
+            """
+        ),
+        {"name": name, "id": org_id},
+    ).mappings().first()
+    return None if row is None else dict(row)
 
 
 def ensure_identity(conn: Connection, *, email: str, display_name: str | None = None) -> str:
@@ -489,6 +539,7 @@ def add_credit(
         # recorded fully in `credit_lot.credits_used`; this column names where
         # it started, so a human reading one ledger row has somewhere to look.
         lot_id = drawn[0]["lot_id"] if drawn else None
+        record_draws(conn, org_id=org_id, charged=-delta, drawn=drawn)
 
     conn.execute(
         text(
@@ -759,6 +810,171 @@ def draw_from_lots(conn: Connection, *, org_id: str, credits: Decimal) -> list[d
         drawn.append({"lot_id": lot.id, "credits": take, "source": lot.source})
         left -= take
     return drawn
+
+
+def record_draws(
+    conn: Connection,
+    *,
+    org_id: str,
+    charged: Decimal,
+    drawn: list[dict[str, Any]],
+) -> None:
+    """Write one `credit_draw` row per lot a charge spent (migration 036).
+
+    🔴 **The credits no lot covered get a row too, with a NULL `lot_id`.** The
+    balance went below zero to pay them. Without that row, the window read
+    would count fewer charged credits than `usage_event` did, and the console
+    could not tell an overdraft from a charge that predates this table.
+    """
+    if charged <= 0:
+        return
+    covered = sum((Decimal(d["credits"]) for d in drawn), Decimal(0))
+    pairs = [(d["lot_id"], Decimal(d["credits"])) for d in drawn]
+    if charged > covered:
+        pairs.append((None, charged - covered))
+    # ⚠️ Quantized to the ledger's 4 places, and a row that rounds to zero is
+    # dropped. `/usage/record` passes `billed_credits` unrounded, and a
+    # sub-quantum draw would round to 0.0000 in Postgres and trip the CHECK,
+    # which would roll back the whole usage charge (review of PR #779).
+    rows = [
+        {"org": org_id, "lot": lot, "c": q}
+        for lot, c in pairs
+        if (q := quantize_credits(c)) > 0
+    ]
+    if not rows:
+        return
+    conn.execute(
+        text(
+            "INSERT INTO credit_draw (organization_id, lot_id, credits) "
+            "VALUES (CAST(:org AS uuid), :lot, :c)"
+        ),
+        rows,
+    )
+
+
+#: Lot sources that are revenue when a customer spends them. Every other
+#: source (trial, promo, grant, refund) was given, not sold.
+LOT_PAID_SOURCES: tuple[str, ...] = ("purchase",)
+
+
+def draws_by_org(
+    conn: Connection,
+    *,
+    days: int,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> dict[str, Any]:
+    """Paid and free credits each organization SPENT in the window. Operator-only.
+
+    Spec: `operator_console_money.md` §3. Returns
+    ``{"since": <first draw ever, or None>, "rows": {slug: {...}}}``.
+
+    Each row carries, as Decimals:
+
+    - ``paid_credits``: drawn from a purchase lot.
+    - ``paid_value_inr``: what those credits cost the customer, at the price
+      that lot was SOLD at. Covers only priced purchase lots.
+    - ``unpriced_paid_credits``: drawn from a purchase lot with no price on
+      record (a manual grant typed without one). The console values them at
+      the current credit price and says so.
+    - ``free_credits``: drawn from a trial, promo, grant or refund lot.
+    - ``unbacked_credits``: no lot covered them, so the balance went negative.
+
+    And lifetime figures from `credit_lot`, which the console uses to estimate
+    the part of a window that predates migration 036:
+    ``life_paid_used``, ``life_paid_value_inr``, ``life_unpriced_paid_used``
+    and ``life_free_used``. ⚠️ ``life_paid_value_inr`` covers only PRICED
+    lots, so a per-credit average must divide by ``life_paid_used`` minus
+    ``life_unpriced_paid_used``, or an unpriced grant drags it toward zero.
+
+    ⚠️ **`since` is fleet-wide, not per organization.** It says when draws
+    began to be recorded at all. A window that starts before it is partly
+    estimated, for every customer alike.
+    """
+    window = conn.execute(
+        text(
+            """
+            SELECT o.slug AS slug,
+                   COALESCE(SUM(d.credits) FILTER
+                       (WHERE l.source = ANY(:paid)), 0)        AS paid_credits,
+                   COALESCE(SUM(d.credits * l.price_paid_inr / l.credits) FILTER
+                       (WHERE l.source = ANY(:paid)
+                          AND l.price_paid_inr IS NOT NULL), 0) AS paid_value_inr,
+                   COALESCE(SUM(d.credits) FILTER
+                       (WHERE l.source = ANY(:paid)
+                          AND l.price_paid_inr IS NULL), 0)     AS unpriced_paid_credits,
+                   COALESCE(SUM(d.credits) FILTER
+                       (WHERE l.id IS NOT NULL
+                          AND NOT (l.source = ANY(:paid))), 0)  AS free_credits,
+                   COALESCE(SUM(d.credits) FILTER
+                       (WHERE d.lot_id IS NULL), 0)             AS unbacked_credits
+            FROM credit_draw d
+            JOIN organization o ON o.id = d.organization_id
+            LEFT JOIN credit_lot l ON l.id = d.lot_id
+            WHERE d.created_at >= COALESCE(CAST(:start AS timestamptz), now() - make_interval(days => :days))
+              AND d.created_at < COALESCE(CAST(:end AS timestamptz), 'infinity'::timestamptz)
+            GROUP BY o.slug
+            """
+        ),
+        {"days": days, "start": start, "end": end, "paid": list(LOT_PAID_SOURCES)},
+    ).all()
+    lifetime = conn.execute(
+        text(
+            """
+            SELECT o.slug AS slug,
+                   COALESCE(SUM(l.credits_used) FILTER
+                       (WHERE l.source = ANY(:paid)), 0)        AS paid_used,
+                   COALESCE(SUM(l.credits_used * l.price_paid_inr / l.credits)
+                       FILTER (WHERE l.source = ANY(:paid)
+                                 AND l.price_paid_inr IS NOT NULL), 0)
+                                                                AS paid_value_inr,
+                   COALESCE(SUM(l.credits_used) FILTER
+                       (WHERE l.source = ANY(:paid)
+                          AND l.price_paid_inr IS NULL), 0)     AS unpriced_used,
+                   COALESCE(SUM(l.credits_used) FILTER
+                       (WHERE NOT (l.source = ANY(:paid))), 0)  AS free_used
+            FROM credit_lot l
+            JOIN organization o ON o.id = l.organization_id
+            GROUP BY o.slug
+            """
+        ),
+        {"paid": list(LOT_PAID_SOURCES)},
+    ).all()
+    since = conn.execute(text("SELECT MIN(created_at) FROM credit_draw")).scalar_one_or_none()
+
+    zero = Decimal(0)
+    out: dict[str, dict[str, Decimal]] = {}
+
+    def row(slug: str) -> dict[str, Decimal]:
+        return out.setdefault(
+            slug,
+            {
+                "paid_credits": zero,
+                "paid_value_inr": zero,
+                "unpriced_paid_credits": zero,
+                "free_credits": zero,
+                "unbacked_credits": zero,
+                "life_paid_used": zero,
+                "life_paid_value_inr": zero,
+                "life_unpriced_paid_used": zero,
+                "life_free_used": zero,
+            },
+        )
+
+    for r in window:
+        x = row(r.slug)
+        x["paid_credits"] = Decimal(r.paid_credits)
+        x["paid_value_inr"] = Decimal(r.paid_value_inr)
+        x["unpriced_paid_credits"] = Decimal(r.unpriced_paid_credits)
+        x["free_credits"] = Decimal(r.free_credits)
+        x["unbacked_credits"] = Decimal(r.unbacked_credits)
+    for r in lifetime:
+        x = row(r.slug)
+        x["life_paid_used"] = Decimal(r.paid_used)
+        x["life_paid_value_inr"] = Decimal(r.paid_value_inr)
+        x["life_unpriced_paid_used"] = Decimal(r.unpriced_used)
+        x["life_free_used"] = Decimal(r.free_used)
+    return {"since": since.isoformat() if since else None, "rows": out}
 
 
 def add_credit_lot(
@@ -1099,6 +1315,8 @@ def usage_by_activity(
     *,
     org_id: str,
     days: int = SPEND_WINDOW_DAYS,
+    start: datetime | None = None,
+    end: datetime | None = None,
     member: str | None = None,
 ) -> list[dict[str, Any]]:
     """What this organization ran, and what it cost. **Never what it ran ON.**
@@ -1125,7 +1343,8 @@ def usage_by_activity(
                    COALESCE(SUM(billed_credits), 0)            AS credits
             FROM usage_event
             WHERE organization_id = :org
-              AND created_at >= now() - make_interval(days => :days)
+              AND created_at >= COALESCE(CAST(:start AS timestamptz), now() - make_interval(days => :days))
+              AND created_at < COALESCE(CAST(:end AS timestamptz), 'infinity'::timestamptz)
               -- 🔴 A REFUSAL IS NOT A CALL (migration 020, §8.1). Without
               -- this the call count inflates while the credit sum stays
               -- right, because a refusal bills 0 — so the two columns
@@ -1146,7 +1365,7 @@ def usage_by_activity(
         ),
         {
             "org": org_id,
-            "days": days,
+            "days": days, "start": start, "end": end,
             "member": member,
             "unattributed": UNATTRIBUTED_ACTIVITY,
             "lim": SPEND_PAGE_SIZE,
@@ -1163,6 +1382,8 @@ def usage_by_member(
     *,
     org_id: str,
     days: int = SPEND_WINDOW_DAYS,
+    start: datetime | None = None,
+    end: datetime | None = None,
 ) -> list[dict[str, Any]]:
     """Per-member cost for one organization — D66 (b), the admin's read.
 
@@ -1193,7 +1414,8 @@ def usage_by_member(
                    COALESCE(SUM(billed_credits), 0)               AS credits
             FROM usage_event
             WHERE organization_id = :org
-              AND created_at >= now() - make_interval(days => :days)
+              AND created_at >= COALESCE(CAST(:start AS timestamptz), now() - make_interval(days => :days))
+              AND created_at < COALESCE(CAST(:end AS timestamptz), 'infinity'::timestamptz)
               -- 🔴 A REFUSAL IS NOT A CALL (migration 020, §8.1). Same
               -- argument as `usage_by_activity`: the count inflates and the
               -- credits do not, so the admin reads two numbers that disagree.
@@ -1205,7 +1427,7 @@ def usage_by_member(
         ),
         {
             "org": org_id,
-            "days": days,
+            "days": days, "start": start, "end": end,
             "unattributed": UNATTRIBUTED_ACTIVITY,
             "lim": SPEND_PAGE_SIZE,
         },
@@ -1220,6 +1442,8 @@ def usage_by_app(
     *,
     org_id: str,
     days: int = SPEND_WINDOW_DAYS,
+    start: datetime | None = None,
+    end: datetime | None = None,
     member: str | None = None,
 ) -> list[dict[str, Any]]:
     """What each APP spent, and which agents inside it spent it. Usage slice 2.
@@ -1256,7 +1480,8 @@ def usage_by_app(
                    COALESCE(SUM(billed_credits), 0)     AS credits
             FROM usage_event
             WHERE organization_id = :org
-              AND created_at >= now() - make_interval(days => :days)
+              AND created_at >= COALESCE(CAST(:start AS timestamptz), now() - make_interval(days => :days))
+              AND created_at < COALESCE(CAST(:end AS timestamptz), 'infinity'::timestamptz)
               -- 🔴 A REFUSAL IS NOT A CALL (migration 020, §8.1). The same
               -- filter `usage_by_activity` carries, for the same reason.
               AND refusal_reason IS NULL
@@ -1266,7 +1491,7 @@ def usage_by_app(
             GROUP BY 1, 2
             """
         ),
-        {"org": org_id, "days": days, "member": member,
+        {"org": org_id, "days": days, "start": start, "end": end, "member": member,
          "unattributed": UNATTRIBUTED_ACTIVITY},
     )
     apps: dict[str, dict[str, Any]] = {}
@@ -1307,6 +1532,8 @@ def usage_cost_by(
     org_id: str,
     by: str,
     days: int = SPEND_WINDOW_DAYS,
+    start: datetime | None = None,
+    end: datetime | None = None,
 ) -> dict[Any, Decimal]:
     """What the VENDOR charged us, per app, per member or per app-and-agent.
 
@@ -1338,12 +1565,13 @@ def usage_cost_by(
                    COALESCE(SUM(provider_cost_usd), 0) AS cost
             FROM usage_event
             WHERE organization_id = :org
-              AND created_at >= now() - make_interval(days => :days)
+              AND created_at >= COALESCE(CAST(:start AS timestamptz), now() - make_interval(days => :days))
+              AND created_at < COALESCE(CAST(:end AS timestamptz), 'infinity'::timestamptz)
               AND refusal_reason IS NULL
             GROUP BY {group}
             """  # every fragment is a literal from _COST_DIMENSIONS
         ),
-        {"org": org_id, "days": days, "unattributed": UNATTRIBUTED_ACTIVITY},
+        {"org": org_id, "days": days, "start": start, "end": end, "unattributed": UNATTRIBUTED_ACTIVITY},
     )
     out: dict[Any, Decimal] = {}
     for r in rows:
@@ -1411,8 +1639,19 @@ def visible_tiers(conn: Connection) -> list[dict[str, Any]]:
 #: unbounded window lets one request scan the whole table.
 USAGE_MAX_DAYS = 365
 
+#: WS-50 slice 7: a chosen date range starts and ends at midnight in India,
+#: where the business runs. The default "last N days" window keeps its UTC
+#: day buckets, so no existing caller changes.
+RANGE_TZ = "Asia/Kolkata"
 
-def unbilled_fleet_total(conn: Connection, *, days: int = SPEND_WINDOW_DAYS) -> dict[str, int]:
+
+def unbilled_fleet_total(
+    conn: Connection,
+    *,
+    days: int = SPEND_WINDOW_DAYS,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> dict[str, int]:
     """Consumption we served and did not bill, over EVERY organization.
 
     🔴 **This read exists because computing it from the page would never
@@ -1439,10 +1678,11 @@ def unbilled_fleet_total(conn: Connection, *, days: int = SPEND_WINDOW_DAYS) -> 
                    COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS tokens
             FROM usage_event
             WHERE metering_fault IS NOT NULL
-              AND created_at >= now() - make_interval(days => :days)
+              AND created_at >= COALESCE(CAST(:start AS timestamptz), now() - make_interval(days => :days))
+              AND created_at < COALESCE(CAST(:end AS timestamptz), 'infinity'::timestamptz)
             """
         ),
-        {"days": days},
+        {"days": days, "start": start, "end": end},
     ).one()
     return {
         "orgs": int(row.orgs),
@@ -1478,6 +1718,8 @@ def usage_by_org(
     conn: Connection,
     *,
     days: int = SPEND_WINDOW_DAYS,
+    start: datetime | None = None,
+    end: datetime | None = None,
     limit: int = SPEND_PAGE_SIZE,
     slug: str | None = None,
 ) -> dict[str, Any]:
@@ -1598,7 +1840,8 @@ def usage_by_org(
             FROM organization o
             LEFT JOIN usage_event u
                    ON u.organization_id = o.id
-                  AND u.created_at >= now() - make_interval(days => :days)
+                  AND u.created_at >= COALESCE(CAST(:start AS timestamptz), now() - make_interval(days => :days))
+              AND u.created_at < COALESCE(CAST(:end AS timestamptz), 'infinity'::timestamptz)
             -- 🔴 **A WHERE on `o`, and it does NOT undo the LEFT JOIN.** The
             -- rule this file repeats is about the RIGHT-hand table: a WHERE on
             -- `u` drops the rows the join exists to keep. `o.slug` is the LEFT
@@ -1614,7 +1857,7 @@ def usage_by_org(
             LIMIT :lim
             """
         ),
-        {"days": days, "lim": max(1, int(limit)), "slug": slug},
+        {"days": days, "start": start, "end": end, "lim": max(1, int(limit)), "slug": slug},
     )
     out = [
         {
@@ -1658,6 +1901,8 @@ def usage_daily(
     conn: Connection,
     *,
     days: int = SPEND_WINDOW_DAYS,
+    start: datetime | None = None,
+    end: datetime | None = None,
     org_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """AI usage per day. One series, two callers.
@@ -1681,9 +1926,15 @@ def usage_daily(
         text(
             """
             WITH span AS (
+              -- WS-50 slice 7: a chosen range draws its own days, cut at
+              -- midnight in :tz. With no range, the last :days days, as before.
               SELECT generate_series(
-                       date_trunc('day', now() - make_interval(days => :days - 1)),
-                       date_trunc('day', now()),
+                       COALESCE(date_trunc('day', CAST(:start AS timestamptz) AT TIME ZONE :tz),
+                                date_trunc('day', now() AT TIME ZONE :tz
+                                                  - make_interval(days => :days - 1))),
+                       COALESCE(date_trunc('day', (CAST(:end AS timestamptz) - interval '1 second')
+                                                  AT TIME ZONE :tz),
+                                date_trunc('day', now() AT TIME ZONE :tz)),
                        interval '1 day'
                      ) AS day
             )
@@ -1698,14 +1949,15 @@ def usage_daily(
                    COALESCE(SUM(u.billed_credits), 0) AS credits
             FROM span s
             LEFT JOIN usage_event u
-                   ON date_trunc('day', u.created_at) = s.day
+                   ON date_trunc('day', u.created_at AT TIME ZONE :tz) = s.day
                   AND (CAST(:org AS UUID) IS NULL
                        OR u.organization_id = CAST(:org AS UUID))
             GROUP BY s.day
             ORDER BY s.day
             """
         ),
-        {"days": days, "org": org_id},
+        {"days": days, "start": start, "end": end, "org": org_id,
+         "tz": "UTC" if start is None else RANGE_TZ},
     )
     return [
         {"day": r.day.isoformat(), "calls": int(r.calls), "credits": Decimal(r.credits)}
@@ -2164,6 +2416,13 @@ def deployment_placed_orgs(conn: Connection, *, deployment_id: str) -> list[dict
 
     ``ORDER BY o.slug`` so a caller comparing two answers, and a fence asserting
     a list, do not depend on the planner.
+
+    ⚠️ **One row per organization, and the ACTIVE owner wins** (2026-10-15).
+    Since the member-remove door hands ownership on (``make_owner``), an org
+    can hold two ``role = 'owner'`` rows: the removed founder, who keeps the
+    role on the removed row, and the active heir. ``DISTINCT ON (o.slug)``
+    keeps one row, and the ``ORDER BY`` puts an active owner first, then the
+    earliest join. A plain join would list the org twice.
     """
     return [
         {
@@ -2177,7 +2436,8 @@ def deployment_placed_orgs(conn: Connection, *, deployment_id: str) -> list[dict
         for r in conn.execute(
             text(
                 """
-                SELECT o.slug, o.name, o.status, ui.email, o.gstin,
+                SELECT DISTINCT ON (o.slug)
+                       o.slug, o.name, o.status, ui.email, o.gstin,
                        o.billing_state
                 FROM organization o
                 JOIN org_placement p ON p.organization_id = o.id
@@ -2185,7 +2445,8 @@ def deployment_placed_orgs(conn: Connection, *, deployment_id: str) -> list[dict
                        ON m.organization_id = o.id AND m.role = 'owner'
                 LEFT JOIN user_identity ui ON ui.id = m.user_identity_id
                 WHERE p.deployment_id = :dep
-                ORDER BY o.slug
+                ORDER BY o.slug, (m.status = 'active') DESC NULLS LAST,
+                         m.joined_at NULLS LAST
                 """
             ),
             {"dep": deployment_id},
@@ -2193,8 +2454,476 @@ def deployment_placed_orgs(conn: Connection, *, deployment_id: str) -> list[dict
     ]
 
 
+# ── Apps (CP-APP, migration 038) ────────────────────────────────────────────
+#
+# An app (Aroh) runs on its own box. `deployment.app` names the app a box
+# serves, and `org_app` says that an organization has the app on that box. An
+# organization keeps its ONE `org_placement` row on its Metorite box, so the
+# app box can never see it through `deployment_visible_orgs`. These reads are
+# the app box's own, and only the doors that serve an app call them.
+
+
+def deployment_app(conn: Connection, *, deployment_id: str) -> str | None:
+    """The app this box serves, or ``None`` for a Metorite tenant box."""
+    row = conn.execute(
+        text("SELECT app FROM deployment WHERE id = :dep"),
+        {"dep": deployment_id},
+    ).first()
+    return row[0] if row else None
+
+
+def app_deployment(conn: Connection, *, app: str) -> dict[str, Any] | None:
+    """The box that serves *app*, or ``None`` when no box is registered for it.
+
+    This is a NAMED designation, never an inference: ``deployment.app`` is set
+    by hand when the box is registered, and a unique partial index allows one
+    box for each app. No ``count(*) = 1`` guess is made here (D46.6 item 3).
+    """
+    row = conn.execute(
+        text("SELECT id, label, base_url FROM deployment WHERE app = :app"),
+        {"app": app},
+    ).first()
+    if row is None:
+        return None
+    return {"id": str(row[0]), "label": row[1], "base_url": row[2]}
+
+
+def deployment_row(conn: Connection, *, deployment_id: str) -> dict[str, Any] | None:
+    """One deployment's label, base URL and app, or ``None``."""
+    row = conn.execute(
+        text("SELECT id, label, base_url, app FROM deployment WHERE id = :dep"),
+        {"dep": deployment_id},
+    ).first()
+    if row is None:
+        return None
+    return {"id": str(row[0]), "label": row[1], "base_url": row[2], "app": row[3]}
+
+
+def insert_deployment(conn: Connection, *, label: str, base_url: str) -> str:
+    """Register a new box. Raises on a label that exists (``UNIQUE``)."""
+    row = conn.execute(
+        text(
+            "INSERT INTO deployment (label, base_url) VALUES (:label, :url) "
+            "RETURNING id"
+        ),
+        {"label": label, "url": base_url},
+    ).first()
+    assert row is not None
+    return str(row[0])
+
+
+def set_deployment_app(conn: Connection, *, deployment_id: str, app: str) -> None:
+    """Name the app a box serves.
+
+    The caller checks first that the box serves no OTHER app. A second box for
+    the same app fails on ``deployment_app_uniq``, which is the refusal.
+    """
+    conn.execute(
+        text("UPDATE deployment SET app = :app WHERE id = :dep"),
+        {"app": app, "dep": deployment_id},
+    )
+
+
+def add_deployment_key_capabilities(
+    conn: Connection, *, prefix: str, capabilities: list[str]
+) -> list[str] | None:
+    """Add capabilities to one LIVE deployment key. Returns the new set.
+
+    ``None`` when no live key has this prefix. The set only grows here: a
+    capability that is there stays, and the order of the stored array is kept,
+    with each new one at the end.
+
+    ⚠️ Growing a REAL key's set is OWNER-GATE (``customer_console.md`` §8
+    gate 7). No HTTP route calls this. The operator CLI
+    (:mod:`customer_console.deployment_keys`) is its one caller.
+    """
+    row = conn.execute(
+        text(
+            """
+            UPDATE deployment_key
+               SET capabilities = capabilities || ARRAY(
+                       SELECT c FROM unnest(CAST(:caps AS TEXT[])) AS c
+                       WHERE NOT (c = ANY (deployment_key.capabilities)))
+             WHERE prefix = :prefix AND revoked_at IS NULL
+            RETURNING capabilities
+            """
+        ),
+        {"prefix": prefix, "caps": capabilities},
+    ).first()
+    return list(row[0]) if row else None
+
+
+def revoke_deployment_key(conn: Connection, *, prefix: str) -> bool:
+    """Revoke one live deployment key. False when no live key has the prefix."""
+    row = conn.execute(
+        text(
+            "UPDATE deployment_key SET revoked_at = now() "
+            "WHERE prefix = :p AND revoked_at IS NULL RETURNING id"
+        ),
+        {"p": prefix},
+    ).first()
+    return row is not None
+
+
+def deployment_key_capabilities(conn: Connection, *, prefix: str) -> list[str] | None:
+    """The capability set of one LIVE deployment key, or ``None``."""
+    row = conn.execute(
+        text(
+            "SELECT capabilities FROM deployment_key "
+            "WHERE prefix = :p AND revoked_at IS NULL"
+        ),
+        {"p": prefix},
+    ).first()
+    return list(row[0]) if row else None
+
+
+def app_connection_row(conn: Connection, *, app: str) -> dict[str, Any] | None:
+    """How the Console reaches the hub of *app*, or ``None``.
+
+    ⚠️ Carries ``operator_token_enc``, the ENCRYPTED hub token. The caller
+    decrypts it only to make the call, and never puts either form on a wire.
+    """
+    row = conn.execute(
+        text(
+            """
+            SELECT base_url, operator_token_enc, operator_token_last4, key_prefix,
+                   connected_at, last_result, updated_by, updated_at
+            FROM app_connection WHERE app = :app
+            """
+        ),
+        {"app": app},
+    ).first()
+    if row is None:
+        return None
+    return {
+        "base_url": row[0],
+        "operator_token_enc": row[1],
+        "operator_token_last4": row[2],
+        "key_prefix": row[3],
+        "connected_at": row[4],
+        "last_result": row[5],
+        "updated_by": row[6],
+        "updated_at": row[7],
+    }
+
+
+def save_app_connection_settings(
+    conn: Connection,
+    *,
+    app: str,
+    base_url: str,
+    operator_token_enc: str | None,
+    operator_token_last4: str | None,
+    actor: str,
+) -> None:
+    """Write the hub's base URL and, when given, its ENCRYPTED operator token.
+
+    A ``None`` token keeps the stored one, so the operator can change the URL
+    without pasting the token again.
+    """
+    conn.execute(
+        text(
+            """
+            INSERT INTO app_connection
+                (app, base_url, operator_token_enc, operator_token_last4, updated_by)
+            VALUES (:app, :url, :enc, :last4, :actor)
+            ON CONFLICT (app) DO UPDATE
+                SET base_url = EXCLUDED.base_url,
+                    operator_token_enc = COALESCE(EXCLUDED.operator_token_enc,
+                                                  app_connection.operator_token_enc),
+                    operator_token_last4 = COALESCE(EXCLUDED.operator_token_last4,
+                                                    app_connection.operator_token_last4),
+                    updated_by = EXCLUDED.updated_by,
+                    updated_at = now()
+            """
+        ),
+        {
+            "app": app,
+            "url": base_url,
+            "enc": operator_token_enc,
+            "last4": operator_token_last4,
+            "actor": actor,
+        },
+    )
+
+
+def record_app_connection(
+    conn: Connection,
+    *,
+    app: str,
+    key_prefix: str | None,
+    connected: bool,
+    result: dict[str, Any],
+    actor: str,
+) -> None:
+    """Record what the last connect, rotate or disconnect did.
+
+    ``connected`` False clears ``connected_at``. ``result`` holds public
+    fields only (``app_hub.public_fields``), never a token or a key.
+    """
+    conn.execute(
+        text(
+            """
+            UPDATE app_connection
+               SET key_prefix = :prefix,
+                   connected_at = CASE WHEN :connected THEN now() ELSE NULL END,
+                   last_result = CAST(:result AS jsonb),
+                   updated_by = :actor,
+                   updated_at = now()
+             WHERE app = :app
+            """
+        ),
+        {
+            "app": app,
+            "prefix": key_prefix,
+            "connected": connected,
+            "result": json.dumps(result, default=str),
+            "actor": actor,
+        },
+    )
+
+
+def record_app_connection_result(
+    conn: Connection, *, app: str, result: dict[str, Any], actor: str
+) -> None:
+    """Record a FAILED act: the result only. The key the hub holds is unchanged."""
+    conn.execute(
+        text(
+            """
+            UPDATE app_connection
+               SET last_result = CAST(:result AS jsonb),
+                   updated_by = :actor,
+                   updated_at = now()
+             WHERE app = :app
+            """
+        ),
+        {"app": app, "result": json.dumps(result, default=str), "actor": actor},
+    )
+
+
+def org_app_row(conn: Connection, *, org_id: str, app: str) -> dict[str, Any] | None:
+    """This organization's row for *app*, with its box, or ``None``."""
+    row = conn.execute(
+        text(
+            """
+            SELECT a.enabled, a.deployment_id, d.label, d.base_url,
+                   a.updated_at, a.updated_by
+            FROM org_app a
+            JOIN deployment d ON d.id = a.deployment_id
+            WHERE a.organization_id = :org AND a.app = :app
+            """
+        ),
+        {"org": org_id, "app": app},
+    ).first()
+    if row is None:
+        return None
+    return {
+        "enabled": bool(row[0]),
+        "deployment_id": str(row[1]),
+        "deployment_label": row[2],
+        "deployment_base_url": row[3],
+        "updated_at": row[4],
+        "updated_by": row[5],
+    }
+
+
+def upsert_org_app(
+    conn: Connection,
+    *,
+    org_id: str,
+    app: str,
+    deployment_id: str,
+    enabled: bool,
+    actor: str,
+) -> None:
+    """Turn *app* on or off for an organization.
+
+    ⚠️ **The box is written on the FIRST insert only.** A conflict updates
+    ``enabled`` and the stamps, never ``deployment_id``: a placement does not
+    move as a side effect of a toggle (D46.6 item 4).
+    """
+    conn.execute(
+        text(
+            """
+            INSERT INTO org_app
+                (organization_id, app, deployment_id, enabled, updated_by)
+            VALUES (:org, :app, :dep, :enabled, :actor)
+            ON CONFLICT (organization_id, app) DO UPDATE
+                SET enabled = EXCLUDED.enabled,
+                    updated_by = EXCLUDED.updated_by,
+                    updated_at = now()
+            """
+        ),
+        {
+            "org": org_id,
+            "app": app,
+            "dep": deployment_id,
+            "enabled": enabled,
+            "actor": actor,
+        },
+    )
+
+
+def app_visible_orgs(
+    conn: Connection, *, deployment_id: str, app: str, email: str
+) -> list[dict[str, Any]]:
+    """Every organization an APP box may see for this email.
+
+    The app twin of :func:`deployment_visible_orgs`. The predicate is: the
+    email holds a membership in an organization whose ``org_app`` row for this
+    app names this box AND is enabled. The same row shape comes back, so a
+    caller reads ``organization_id``, ``slug``, ``status`` and ``identity_id``
+    the same way.
+
+    ⚠️ **The membership status IS read here, unlike the Metorite read.** A
+    Metorite box has its own gate for a removed member: the tenant plane
+    refuses them. The app box has no tenant plane, so the Console is its only
+    gate. A ``removed`` or ``suspended`` membership is invisible to the app.
+    """
+    return [
+        {
+            "organization_id": str(r[0]),
+            "slug": r[1],
+            "status": r[2],
+            #: An app box has no tenant database. The key stays on the row so
+            #: the answer has the shape of the Metorite one.
+            "placement": None,
+            "identity_id": str(r[3]),
+            "trial_ends_at": r[4],
+            "membership_role": r[5],
+            "membership_status": r[6],
+        }
+        for r in conn.execute(
+            text(
+                """
+                SELECT o.id, o.slug, o.status, ui.id, s.trial_ends_at,
+                       m.role, m.status
+                FROM user_identity ui
+                JOIN org_membership m ON m.user_identity_id = ui.id
+                JOIN organization o ON o.id = m.organization_id
+                JOIN org_app a ON a.organization_id = o.id
+                LEFT JOIN org_subscription s ON s.organization_id = o.id
+                WHERE ui.email = :email
+                  AND a.deployment_id = :dep
+                  AND a.app = :app
+                  AND a.enabled
+                  AND m.status NOT IN ('removed', 'suspended')
+                ORDER BY o.slug
+                """
+            ),
+            {"email": email, "dep": deployment_id, "app": app},
+        )
+    ]
+
+
+def app_seat_holders(conn: Connection, *, org_id: str, app: str) -> list[dict[str, Any]]:
+    """Who holds a LIVE seat of *app* in this organization, oldest first."""
+    return [
+        {
+            "email": r[0],
+            "display_name": r[1],
+            "assigned_at": r[2],
+            "membership_status": r[3],
+        }
+        for r in conn.execute(
+            text(
+                """
+                SELECT ui.email, ui.display_name, sa.assigned_at, m.status
+                FROM seat_assignment sa
+                JOIN user_identity ui ON ui.id = sa.user_identity_id
+                LEFT JOIN org_membership m
+                       ON m.organization_id = sa.organization_id
+                      AND m.user_identity_id = sa.user_identity_id
+                WHERE sa.organization_id = :org AND sa.plan_slug = :app
+                  AND sa.released_at IS NULL
+                ORDER BY sa.assigned_at, ui.email
+                """
+            ),
+            {"org": org_id, "app": app},
+        )
+    ]
+
+
+def app_usage(
+    conn: Connection,
+    *,
+    org_id: str,
+    app: str,
+    days: int = SPEND_WINDOW_DAYS,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> dict[str, Any]:
+    """What one organization spent through *app*, in total and per member.
+
+    **Operator only: it holds OUR cost.** A call belongs to the app when
+    ``usage_event.agent`` is the app's name. The app box sends
+    ``X-CC-Agent: aroh``, and the Router fills it in when the box leaves it
+    out (:func:`customer_console.apps.app_attribution`).
+
+    A refusal is not a call (migration 020), the rule every spend read keeps.
+    Members are grouped by the CITEXT column, as :func:`usage_by_member` does,
+    and cut at :data:`SPEND_PAGE_SIZE`. The totals come from their own query,
+    so a cut list never makes a wrong total.
+    """
+    params: dict[str, Any] = {
+        "org": org_id,
+        "app": app,
+        "days": days,
+        "start": start,
+        "end": end,
+        "unattributed": UNATTRIBUTED_ACTIVITY,
+        "lim": SPEND_PAGE_SIZE,
+    }
+    window = """
+        organization_id = :org
+        AND agent = :app
+        AND created_at >= COALESCE(CAST(:start AS timestamptz), now() - make_interval(days => :days))
+        AND created_at < COALESCE(CAST(:end AS timestamptz), 'infinity'::timestamptz)
+        AND refusal_reason IS NULL
+    """
+    total = conn.execute(
+        text(
+            f"""
+            SELECT COUNT(*), COALESCE(SUM(billed_credits), 0),
+                   COALESCE(SUM(provider_cost_usd), 0)
+            FROM usage_event WHERE {window}
+            """  # `window` is a literal above, never input
+        ),
+        params,
+    ).one()
+    members = conn.execute(
+        text(
+            f"""
+            SELECT COALESCE(MIN(user_email::text), :unattributed) AS member,
+                   COUNT(*)                                       AS calls,
+                   COALESCE(SUM(billed_credits), 0)               AS credits,
+                   COALESCE(SUM(provider_cost_usd), 0)            AS cost
+            FROM usage_event WHERE {window}
+            GROUP BY user_email
+            ORDER BY credits DESC, calls DESC, member ASC
+            LIMIT :lim
+            """  # `window` is a literal above, never input
+        ),
+        params,
+    )
+    return {
+        "calls": int(total[0]),
+        "credits": Decimal(total[1]),
+        "cost_usd": Decimal(total[2]),
+        "members": [
+            {
+                "member": r.member,
+                "calls": int(r.calls),
+                "credits": Decimal(r.credits),
+                "cost_usd": Decimal(r.cost),
+            }
+            for r in members
+        ],
+    }
+
+
 def add_invited_member(conn: Connection, *, org_id: str, identity_id: str) -> tuple[bool, str]:
-    """Create an ``invited`` membership if the org has none for this identity.
+    """Create an ``invited`` membership, or put a ``removed`` one back to ``invited``.
 
     CP-2f / D50.2 — the ONLY member-add writer besides ``provision``'s founder
     INSERT, and the reason an invited colleague can be seen by ``GET /me/members``
@@ -2202,13 +2931,26 @@ def add_invited_member(conn: Connection, *, org_id: str, identity_id: str) -> tu
 
     Returns ``(created, status_now)``.
 
-    **Create-only, by construction.** ``ON CONFLICT DO NOTHING`` means an existing
-    row is left exactly as it is: an ``active`` member is never demoted back to
-    ``invited`` by a re-invite, and a ``removed`` one is never silently
-    resurrected — reinstating somebody is an ``admin:members:manage`` decision on
-    the tenant plane and must not ride in on the weaker invite door. The caller is
-    told which happened (``created``) and what the row says now (``status_now``),
-    so a re-invite is legible rather than a silent 200.
+    **Create, or reinstate a ``removed`` row — the tenant plane's rule.** The
+    conflict arm rewrites exactly ONE status: ``removed`` goes back to
+    ``invited``. An ``active`` member is never demoted, a ``suspended`` one is
+    never un-suspended, and an ``invited`` one stays as it is. The arm names the
+    status it rewrites in its own ``WHERE`` and never negates, the
+    ``_PROVISION_MEMBER_SQL`` idiom (``gateway/routes/admin/_common.py``).
+
+    ⚠️ **Why a removed row is reinstated (review round 1, P1-a, 2026-10-15).**
+    This door was create-only until then. But the tenant upsert already moves
+    ``removed`` to ``invited`` on a re-invite. So after a remove and a
+    re-invite, the tenant plane said ``invited`` and the registry said
+    ``removed`` for good. The person signed in, the resolve wrote no seat for a
+    ``removed`` membership, and they worked with no seat and no bill. Repeated,
+    that is a seat-cap bypass. Now the re-invited row is ``invited``, the first
+    sign-in activates it through :func:`activate_invited_member`, and the seat
+    is allocated as for anybody else. The row keeps its ``role``.
+
+    The caller is told which happened (``created``) and what the row says now
+    (``status_now``), so a re-invite is legible rather than a silent 200. A
+    reinstatement answers ``(False, 'invited')``.
 
     **``role`` is not a parameter and never will be one.** It takes the column
     default ``member`` (``001_customer_console.sql:121-124``). ``org_membership.
@@ -2226,18 +2968,23 @@ def add_invited_member(conn: Connection, *, org_id: str, identity_id: str) -> tu
             INSERT INTO org_membership
                 (organization_id, user_identity_id, status)
             VALUES (:org, :i, 'invited')
-            ON CONFLICT (organization_id, user_identity_id) DO NOTHING
-            RETURNING status
+            ON CONFLICT (organization_id, user_identity_id) DO UPDATE
+                SET status = 'invited'
+                WHERE org_membership.status = 'removed'
+            RETURNING status, (xmax = 0) AS inserted
             """
         ),
         {"org": org_id, "i": identity_id},
     ).first()
     if row is not None:
-        return True, str(row[0])
+        # `xmax = 0` is true for a row this statement INSERTED and false for
+        # one its conflict arm UPDATED, which is the reinstatement.
+        return bool(row[1]), str(row[0])
 
-    # The conflict path. Re-read rather than assume: what the row says now is
-    # exactly the thing the caller could not know, and inventing 'invited' here
-    # would report a demotion that did not happen.
+    # The conflict path that rewrote nothing (`active`, `suspended` or
+    # `invited`). Re-read rather than assume: what the row says now is exactly
+    # the thing the caller could not know, and inventing 'invited' here would
+    # report a demotion that did not happen.
     existing = conn.execute(
         text(
             "SELECT status FROM org_membership "
@@ -2282,6 +3029,159 @@ def activate_invited_member(conn: Connection, *, org_id: str, identity_id: str) 
         {"org": org_id, "i": identity_id},
     ).first()
     return row is not None
+
+
+def membership_status(conn: Connection, *, org_id: str, identity_id: str) -> str | None:
+    """The ``org_membership.status`` of one person in one organization, or None.
+
+    None means that the organization holds no membership row for this identity.
+    It does not mean a status. The caller decides what each value permits.
+    """
+    row = conn.execute(
+        text(
+            "SELECT status FROM org_membership "
+            "WHERE organization_id = :org AND user_identity_id = :i"
+        ),
+        {"org": org_id, "i": identity_id},
+    ).first()
+    return None if row is None else str(row[0])
+
+
+def identity_id_for_email(conn: Connection, *, email: str) -> str | None:
+    """The global identity for this address, or None. It never mints one.
+
+    The read half of :func:`ensure_identity`. A door that must not create a
+    person calls this one. ``user_identity.email`` is CITEXT (001:110), so the
+    match ignores case without a ``lower()``.
+    """
+    row = conn.execute(
+        text("SELECT id FROM user_identity WHERE email = :email"),
+        {"email": email},
+    ).first()
+    return None if row is None else str(row[0])
+
+
+def remove_member(
+    conn: Connection, *, org_id: str, identity_id: str
+) -> tuple[str, list[str]]:
+    """Set one membership to ``removed`` and release every live seat it holds.
+
+    Returns ``(previous_status, released_plans)``. ``released_plans`` lists
+    the plan slugs, sorted, whose seat this call released. The caller must
+    first make sure that the membership exists.
+
+    Both writes run on the caller's connection, so they share one transaction.
+    A removed member who still holds a seat would keep the seat counted
+    against the cap. A released seat with a member still ``active`` would let
+    the next sign-in burn a new one. So the two writes go together, or neither
+    goes.
+
+    The seat UPDATE sets ``released_at`` and deletes nothing, as
+    :func:`release_seat` does. Who held which seat, and when, is the audit
+    trail behind an invoice. It releases the seats of EVERY plan, the Core seat
+    included, because a removed person holds no seat of any kind.
+
+    ``FOR UPDATE`` on the membership read serialises two removals of one
+    person, so ``previous_status`` is the status that this call replaced.
+    """
+    previous = conn.execute(
+        text(
+            """
+            SELECT status FROM org_membership
+             WHERE organization_id = :org AND user_identity_id = :i
+             FOR UPDATE
+            """
+        ),
+        {"org": org_id, "i": identity_id},
+    ).scalar_one()
+    conn.execute(
+        text(
+            """
+            UPDATE org_membership SET status = 'removed'
+             WHERE organization_id = :org AND user_identity_id = :i
+            """
+        ),
+        {"org": org_id, "i": identity_id},
+    )
+    released = conn.execute(
+        text(
+            """
+            UPDATE seat_assignment SET released_at = now()
+             WHERE organization_id = :org AND user_identity_id = :i
+               AND released_at IS NULL
+            RETURNING plan_slug
+            """
+        ),
+        {"org": org_id, "i": identity_id},
+    ).scalars().all()
+    return str(previous), sorted(str(p) for p in released)
+
+
+def lock_org_owners(conn: Connection, *, org_id: str) -> None:
+    """Serialise the member-remove door for one organization (review P2).
+
+    The door reads two owner counts, then may promote an heir and remove the
+    target. At READ COMMITTED two removals at once both read the counts
+    before either writes. A removes the founder while B removes A, or two
+    co-owners are removed together. Both pass, and the org ends with no
+    active registry owner.
+
+    The :func:`lock_org_activation` idiom, one door along. It is an ADVISORY
+    lock and not ``FOR UPDATE`` on the owner rows, for two reasons. A
+    ``FOR UPDATE`` locks only the rows that are ``owner`` when it reads, and
+    the hand-on promotes a row that is not one yet. And an org with no owner
+    row locks nothing at all. One per-org key covers every case.
+
+    The caller takes it as the first statement after the org is known, BEFORE
+    the counts. Transaction-scoped, so COMMIT or ROLLBACK releases it. The key
+    ``owners:<org_id>`` is namespaced away from the seat, discount and
+    activation keys in ``hashtext``'s one keyspace.
+    """
+    conn.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+        {"key": f"owners:{org_id}"},
+    )
+
+
+def make_owner(conn: Connection, *, org_id: str, identity_id: str) -> None:
+    """Set one membership's registry ``role`` to ``owner``.
+
+    The ONE role writer besides ``provision``'s founder INSERT. Its only caller
+    is the member-remove door, which hands ownership on when it removes the
+    last active owner (P1-b, the owner's decision of 2026-10-15). The caller
+    decides who inherits and checks that they are an active member. This
+    function only writes.
+    """
+    conn.execute(
+        text(
+            """
+            UPDATE org_membership SET role = 'owner'
+             WHERE organization_id = :org AND user_identity_id = :i
+            """
+        ),
+        {"org": org_id, "i": identity_id},
+    )
+
+
+def active_owner_count(
+    conn: Connection, *, org_id: str, excluding_identity_id: str | None = None
+) -> int:
+    """How many ACTIVE registry owners the organization holds.
+
+    The registry names an owner by ``org_membership.role = 'owner'``, the same
+    predicate :func:`deployment_placed_orgs` and :func:`org_owned_by_other`
+    use. ``excluding_identity_id`` leaves one person out, so the caller can ask
+    whether an owner would remain after that person goes.
+    """
+    sql = (
+        "SELECT count(*) FROM org_membership "
+        "WHERE organization_id = :org AND role = 'owner' AND status = 'active'"
+    )
+    params: dict[str, Any] = {"org": org_id}
+    if excluding_identity_id is not None:
+        sql += " AND user_identity_id <> :i"
+        params["i"] = excluding_identity_id
+    return int(conn.execute(text(sql), params).scalar_one())
 
 
 def org_members(conn: Connection, *, org_id: str) -> list[dict[str, Any]]:
@@ -3771,7 +4671,100 @@ def provider_credential_revoke(
     return int(result.rowcount or 0)
 
 
-def spend_by_provider(conn: Connection, *, days: int = SPEND_WINDOW_DAYS) -> list[dict[str, Any]]:
+# ── MS-1: the reads that catalog health judges (§6A.18) ─────────────────────
+
+
+def platform_credential_labels(conn: Connection) -> dict[str, str | None]:
+    """The provider string and label of each live PLATFORM credential.
+
+    🔴 **Platform rows only** (``organization_id IS NULL``). A BYOK key is a
+    customer's, and the tier chains, the tries and the fix rule read platform
+    keys only (§6A.18). The provider string comes back exactly as stored, so
+    a key under ``sarvam.ai`` does not count as a key under ``sarvam``.
+
+    ⚠️ ``secret_enc`` is not selected, as in :func:`provider_credential_list`.
+    """
+    rows = conn.execute(
+        text(
+            """
+            SELECT provider, label
+              FROM provider_credential
+             WHERE organization_id IS NULL AND revoked_at IS NULL
+             ORDER BY provider
+            """
+        )
+    ).all()
+    return {str(r[0]): r[1] for r in rows}
+
+
+def in_force_chains(conn: Connection) -> dict[tuple[str, str], list[str]]:
+    """Every ``(tier, task)`` chain in force, its models in rank order.
+
+    The newest set whose ``effective_from`` has passed, as
+    ``router.resolve_chain`` reads one chain. A tombstone set (H-178) gives
+    no chain. A staged set (a future date) is not in force yet.
+    """
+    rows = conn.execute(
+        text(
+            """
+            SELECT b.tier, b.task, b.model
+              FROM tier_binding b
+             WHERE b.model IS NOT NULL
+               AND b.effective_from = (
+                   SELECT max(x.effective_from) FROM tier_binding x
+                    WHERE x.tier = b.tier AND x.task = b.task
+                      AND x.effective_from <= statement_timestamp())
+             ORDER BY b.tier, b.task, b.rank
+            """
+        )
+    ).all()
+    chains: dict[tuple[str, str], list[str]] = {}
+    for tier, task, model in rows:
+        chains.setdefault((str(tier), str(task)), []).append(str(model))
+    return chains
+
+
+def in_force_chain(conn: Connection, *, tier: str, task: str) -> list[str]:
+    """One chain in force, its models in rank order. Empty when none.
+
+    ⚠️ **``statement_timestamp()``, not ``now()``.** A fix reads the chain
+    after it waits on the chain lock. ``now()`` is the start of the
+    transaction, which is BEFORE the wait. A chain that another writer
+    committed during the wait would then not be "in force" yet, and the fix
+    would rewrite the old chain over it.
+    """
+    rows = conn.execute(
+        text(
+            """
+            SELECT model FROM tier_binding
+             WHERE tier = :tier AND task = :task AND model IS NOT NULL
+               AND effective_from = (
+                   SELECT max(effective_from) FROM tier_binding
+                    WHERE tier = :tier AND task = :task
+                      AND effective_from <= statement_timestamp())
+             ORDER BY rank
+            """
+        ),
+        {"tier": tier, "task": task},
+    ).all()
+    return [str(r[0]) for r in rows]
+
+
+def capability_rows(conn: Connection) -> dict[tuple[str, str], tuple[str, bool]]:
+    """Every ``model_capability`` row: ``(model, task) -> (invocation, streams)``."""
+    rows = conn.execute(
+        text("SELECT model, task, invocation, streams FROM model_capability")
+    ).all()
+    return {(str(r[0]), str(r[1])): (str(r[2]), bool(r[3])) for r in rows}
+
+
+def spend_by_provider(
+    conn: Connection,
+    *,
+    days: int = SPEND_WINDOW_DAYS,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> list[dict[str, Any]]:
     """What each VENDOR cost us over the window. **Operator-only.**
 
     🔴 **The other half of the money, and nothing showed it before.** Every
@@ -3819,7 +4812,8 @@ def spend_by_provider(conn: Connection, *, days: int = SPEND_WINDOW_DAYS) -> lis
                            WHERE u.cost_source = 'vendor'
                        ), 0) AS measured_usd
                 FROM usage_event u
-                WHERE u.created_at >= now() - make_interval(days => :days)
+                WHERE u.created_at >= COALESCE(CAST(:start AS timestamptz), now() - make_interval(days => :days))
+              AND u.created_at < COALESCE(CAST(:end AS timestamptz), 'infinity'::timestamptz)
                   AND u.refusal_reason IS NULL
                   AND u.metering_fault IS NULL
                   AND u.byok_served = false
@@ -3830,7 +4824,7 @@ def spend_by_provider(conn: Connection, *, days: int = SPEND_WINDOW_DAYS) -> lis
                          split_part(u.model, '/', 1)
                 """
             ),
-            {"days": days},
+            {"days": days, "start": start, "end": end},
         )
     ]
 

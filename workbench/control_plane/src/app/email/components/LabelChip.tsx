@@ -74,10 +74,13 @@ export function ColorSwatch({
   name,
   onClick,
   title = "Set colour",
+  menuStop = false,
 }: {
   name: string;
   onClick?: (e: React.MouseEvent) => void;
   title?: string;
+  /** A stop of the keys of a `role="menu"` panel (`MessageActions`). */
+  menuStop?: boolean;
 }) {
   const labelColors = useEmailStore((s) => s.labelColors);
   const hex = presetHex(presetForLabel(name, labelColors));
@@ -85,9 +88,12 @@ export function ColorSwatch({
     <button
       type="button"
       title={title}
+      aria-label={`${title}: ${name}`}
       onClick={onClick}
+      data-menu-stop={menuStop ? "" : undefined}
+      tabIndex={menuStop ? -1 : undefined}
       style={{ backgroundColor: hex }}
-      className="w-3.5 h-3.5 rounded-full border border-black/20 ring-1 ring-inset ring-white/20 flex-shrink-0 hover:scale-110 transition-transform"
+      className="w-3.5 h-3.5 rounded-full border border-black/20 ring-1 ring-inset ring-white/20 flex-shrink-0 hover:scale-110 transition-transform outline-none focus-visible:ring-2 focus-visible:ring-ring"
     />
   );
 }

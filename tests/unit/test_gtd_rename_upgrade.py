@@ -116,8 +116,13 @@ SEED: dict[str, tuple[str, str]] = {
         "INSERT INTO {t} (name, email) VALUES ('Existing Person', 'keep@rename.example')",
         "SELECT name FROM {t} WHERE email = 'keep@rename.example'",
     ),
+    # Since migration 239 the row needs its organization (NOT NULL, no
+    # default). The CTE makes one, and the test rolls both back.
     "user_settings": (
-        "INSERT INTO {t} (user_id) VALUES ('keep@rename.example')",
+        "WITH o AS (INSERT INTO organization (id, slug, display_name) "
+        "VALUES (gen_random_uuid(), 'rename-keep', 'rename-keep') RETURNING id) "
+        "INSERT INTO {t} (user_id, organization_id) "
+        "SELECT 'keep@rename.example', id FROM o",
         "SELECT user_id FROM {t} WHERE user_id = 'keep@rename.example'",
     ),
     "calendar_day_state": (

@@ -62,7 +62,7 @@ describe("the six steps, on an empty console", () => {
     // The flags live in a box's environment. A green this page cannot
     // measure is the health-dot lie again.
     expect(step(CAT(), "flags").state).toBe("info");
-    expect(step(CAT(), "flags").detail).toContain("Owner acts");
+    expect(step(CAT(), "flags").detail).toContain("this page cannot see the box");
   });
 
   it("leaves the customer step at info when no org list is supplied", () => {
@@ -207,7 +207,7 @@ describe("step 4 — prices", () => {
     // must not read green.
     const s = step(DECIDED, "prices");
     expect(s.state).toBe("partial");
-    expect(s.detail).toContain("H-42");
+    expect(s.detail).toContain("Pricing page");
     expect(s.detail).toContain("no rupee price");
   });
 
@@ -338,7 +338,7 @@ describe("step 5 — arm a customer", () => {
     expect(st.state).toBe("todo");
     expect(st.detail).toContain("bare");
     expect(st.detail).toContain("can be served until one is issued");
-    expect(st.detail).toContain("holds NO cc_live_ key");
+    expect(st.detail).toContain("holds NO API key");
   });
 
   it("stays INFO when the Console did not send the count", () => {

@@ -1,0 +1,242 @@
+/**
+ * Which chat a rail opens, and how it gets out of a chat it may not use.
+ *
+ * Production bug, 2026-10-05. A rail restored the "last" session of its agent
+ * from a list that the whole browser shared. A second member who signed in on
+ * that browser got the first member's chat, from another org, and every send
+ * failed with "You are not a participant of this conversation." The list is
+ * now keyed per member and org (`lib/sessions.ts`). This module is the second
+ * line: when the server refuses a RESTORED id, the rail drops it and starts a
+ * new chat, with no error card.
+ *
+ * ⚠️ Only a restored id recovers. A member who opens a chat on purpose, from
+ * the history list or with the New chat button, sees a refusal as an error,
+ * because that answer is about the chat they chose.
+ *
+ * Pure, apart from the session store, so the decisions test without a DOM.
+ * Fence: `railSessions.test.ts`.
+ */
+import type { SessionRefusedHandler } from "@/lib/chatTurnFailure";
+import {
+  createSession,
+  fetchAndMergeSessionsFromDb,
+  forgetSession,
+  getQueue,
+  getSessions,
+  upsertSession,
+  type ChatSession,
+} from "@/lib/sessions";
+
+/** The open chat, and the id it was restored as (null: opened on purpose). */
+export interface RailPick {
+  activeId: string;
+  restoredId: string | null;
+}
+
+export const NO_PICK: RailPick = { activeId: "", restoredId: null };
+
+/**
+ * The note a surface shows after a refused chat gave way to a new one, on
+ * load or on send (PR #652 fix round 1: a chat that disappears is explained).
+ * A status, not an error: nothing failed that the member can fix.
+ */
+export const RECOVERED_NOTICE =
+  "The chat this browser remembered is not open to you, so a new chat is open.";
+/** The second sentence, when the member's words went into the composer. */
+export const RECOVERED_TEXT_NOTICE = " Your message is in the box. Press Send to send it.";
+
+export function recoveredNotice(carried: string | undefined): string {
+  return carried ? RECOVERED_NOTICE + RECOVERED_TEXT_NOTICE : RECOVERED_NOTICE;
+}
+
+/**
+ * The words to put in the composer of the new chat: the refused message, then
+ * every queued message of the refused chat. Unsent work is never dropped.
+ * Undefined when there is nothing.
+ */
+export function carriedText(refusedId: string, pendingText?: string): string | undefined {
+  // The queue of the CURRENT namespace only: another account's queue lives
+  // under another key, so it can never come back here.
+  const parts = [pendingText ?? "", ...getQueue(refusedId)]
+    .map((t) => t.trim())
+    .filter(Boolean);
+  return parts.length > 0 ? parts.join("\n\n") : undefined;
+}
+
+/** How long a first visit waits for the server's list before it chooses. */
+export const MERGE_WAIT_MS = 3_000;
+
+/**
+ * Like `restoreOrStart`, but when this browser holds no session of `agent`
+ * it first waits (at most `waitMs`) for the server's list. A member's first
+ * visit after the list moved to its per-member key would otherwise start an
+ * empty chat row in every rail, while the server holds their chats.
+ */
+export async function restoreOrStartAfterMerge(
+  agent: string,
+  merge: () => Promise<ChatSession[]> = fetchAndMergeSessionsFromDb,
+  waitMs: number = MERGE_WAIT_MS,
+): Promise<RailPick> {
+  if (!getSessions().some((s) => s.agentName === agent)) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      merge().catch(() => []),
+      new Promise((resolve) => { timer = setTimeout(resolve, waitMs); }),
+    ]);
+    if (timer) clearTimeout(timer);
+  }
+  return restoreOrStart(agent);
+}
+
+/** Open the newest session of `agent` for the bound member, or start one. */
+export function restoreOrStart(agent: string): RailPick {
+  const existing = getSessions().find((s) => s.agentName === agent);
+  if (existing) return { activeId: existing.id, restoredId: existing.id };
+  return startFresh(agent);
+}
+
+/** A new chat, and the pick that opens it. */
+export interface FreshPick extends RailPick {
+  /**
+   * The chat as this call made it. A full storage can refuse the write of
+   * the list (production bug, 2026-11-06), so a caller must never wait for
+   * the chat to appear there. It keeps this object and shows it.
+   */
+  session: ChatSession;
+}
+
+/** A new session, opened on purpose. */
+export function startFresh(agent: string): FreshPick {
+  const s = createSession(agent);
+  upsertSession(s);
+  return { activeId: s.id, restoredId: null, session: s };
+}
+
+/**
+ * The chat to show for `activeId`: the stored row, or else the chat that this
+ * page made (`startFresh`), when the stored list does not hold it. Null when
+ * neither names it. Fence: `sessionsQuota.test.ts`.
+ */
+export function chatToShow(
+  sessions: readonly ChatSession[],
+  activeId: string,
+  made: ChatSession | null | undefined,
+): ChatSession | null {
+  if (!activeId) return null;
+  return sessions.find((s) => s.id === activeId) ?? (made?.id === activeId ? made : null);
+}
+
+/** Open `id` on purpose. A refusal of it is then an error the member sees. */
+export function openDeliberately(id: string): RailPick {
+  return { activeId: id, restoredId: null };
+}
+
+/**
+ * The server refused `refusedId`. Returns the pick to move to, or null when
+ * this is not a refusal to recover from, and the error must show.
+ */
+export function recoverRefused(
+  pick: RailPick,
+  refusedId: string,
+  agent: string,
+): RailPick | null {
+  if (!refusedId) return null;
+  if (refusedId !== pick.activeId || refusedId !== pick.restoredId) return null;
+  forgetSession(refusedId);
+  return startFresh(agent);
+}
+
+/** True when the open chat came from storage, so a refusal may recover. */
+export function isRestored(pick: RailPick): boolean {
+  return Boolean(pick.activeId) && pick.activeId === pick.restoredId;
+}
+
+/**
+ * The handler a surface gives `AgentChat` as `onSessionRefused`: one for a
+ * restored chat, and none for a chat opened on purpose, so its refusal shows.
+ */
+export function refusalHandler(
+  pick: RailPick,
+  recover: (refusedId: string, pendingText?: string) => boolean,
+): SessionRefusedHandler | undefined {
+  if (!isRestored(pick)) return undefined;
+  const id = pick.activeId;
+  return (text: string) => recover(id, text);
+}
+
+// ── A link asks a rail to open one chat (WS-51 S3) ──────────────────────────
+//
+// The activity panel links a row to its app with the shell job `open-chat`
+// (`lib/runActivity.ts`, `chatLink`). The app's job opener opens its
+// assistant and calls `askRailSession`. The rail's `useAgentSessions` reads
+// the ask once it has restored, and opens that chat on purpose.
+//
+// ⚠️ An ask is READ, never taken. The Projects chat moves from the dock to the
+// full slot as it opens, so the rail that sees the ask first can unmount a
+// moment later. Each mounted rail opens an ask once, and an ask goes stale
+// after `RAIL_ASK_MS`, so a rail that mounts tomorrow ignores it.
+//
+// Memory only, and the ask names only a thread id. `findSession` looks the id
+// up in the bound member's own list, so an ask cannot open another member's
+// chat.
+
+/** How long an ask stays fresh: the merge wait, and a margin. */
+export const RAIL_ASK_MS = 15_000;
+
+export interface RailAsk {
+  agent: string;
+  id: string;
+  /** Unique per ask, so a rail opens each ask once. */
+  seq: number;
+  at: number;
+}
+
+const _asks = new Map<string, RailAsk>();
+const _askListeners = new Set<() => void>();
+let _askSeq = 0;
+
+/** Ask the rail of `agent` to open the chat `id`. */
+export function askRailSession(agent: string, id: string, now: number = Date.now()): void {
+  if (!agent || !id) return;
+  _askSeq += 1;
+  _asks.set(agent, { agent, id, seq: _askSeq, at: now });
+  _askListeners.forEach((l) => l());
+}
+
+/** The fresh ask for `agent` that this rail has not opened yet, or null. */
+export function railAsk(agent: string, seenSeq: number, now: number = Date.now()): RailAsk | null {
+  const ask = _asks.get(agent);
+  if (!ask || ask.seq <= seenSeq || now - ask.at > RAIL_ASK_MS) return null;
+  return ask;
+}
+
+export function subscribeRailAsks(listener: () => void): () => void {
+  _askListeners.add(listener);
+  return () => {
+    _askListeners.delete(listener);
+  };
+}
+
+/** Tests only. */
+export function _resetRailAsksForTests(): void {
+  _asks.clear();
+  _askListeners.clear();
+}
+
+/**
+ * The bound member's session `id`: from this browser's list, or else from
+ * the server's list. Null when the member has no such chat.
+ */
+export async function findSession(
+  id: string,
+  merge: () => Promise<ChatSession[]> = fetchAndMergeSessionsFromDb,
+): Promise<ChatSession | null> {
+  if (!id) return null;
+  const local = getSessions().find((s) => s.id === id);
+  if (local) return local;
+  try {
+    return (await merge()).find((s) => s.id === id) ?? null;
+  } catch {
+    return null;
+  }
+}

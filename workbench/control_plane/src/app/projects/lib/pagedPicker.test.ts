@@ -249,8 +249,15 @@ describe("isSearchable — the minimum query length", () => {
   it("counts trimmed characters, not keystrokes", () => {
     // "  a  " is one character of query and a table scan returning half the
     // workspace; whitespace must not buy its way past the gate.
-    expect(isSearchable("  a  ")).toBe(false);
-    expect(isSearchable("  ab  ")).toBe(true);
+    expect(isSearchable("  ab  ")).toBe(false);
+    expect(isSearchable("  abc  ")).toBe(true);
+  });
+
+  it("passes a task number at any length (D-PM-31's exception)", () => {
+    expect(isSearchable("#7")).toBe(true);
+    expect(isSearchable(" 7 ")).toBe(true);
+    expect(isSearchable("#")).toBe(false);
+    expect(isSearchable("7a")).toBe(false);
   });
 });
 
@@ -270,12 +277,12 @@ const code = (rel: string) =>
 describe("the search seam is imported, not re-derived", () => {
   const MODULE = "app/projects/lib/pagedPicker.ts";
 
-  it("imports MIN_QUERY and isCurrent from ./search", () => {
+  it("imports isSearchableQuery and isCurrent from ./search", () => {
     const text = code(MODULE);
     const imported = /import\s*\{([^}]*)\}\s*from\s*["']\.\/search["']/.exec(text);
     expect(imported, `${MODULE} no longer imports from ./search.`).not.toBeNull();
     const names = (imported?.[1] ?? "").split(",").map((n) => n.trim());
-    expect(names).toContain("MIN_QUERY");
+    expect(names).toContain("isSearchableQuery");
     expect(names).toContain("isCurrent");
   });
 
@@ -286,6 +293,8 @@ describe("the search seam is imported, not re-derived", () => {
     // behavioural test above on the day they were written.
     const text = code(MODULE);
     expect(/\b(const|let|var|enum)\s+MIN_QUERY\b/.test(text)).toBe(false);
+    expect(/\bfunction\s+isSearchableQuery\b/.test(text)).toBe(false);
+    expect(/\.length\s*(<|>=)\s*MIN_QUERY/.test(text)).toBe(false);
     expect(/\bfunction\s+isCurrent\b/.test(text)).toBe(false);
     expect(/\b(const|let|var)\s+isCurrent\b/.test(text)).toBe(false);
   });
@@ -298,7 +307,7 @@ describe("the search seam is imported, not re-derived", () => {
       "",
     );
     expect(/\bisCurrent\s*\(/.test(body)).toBe(true);
-    expect(/\bMIN_QUERY\b/.test(body)).toBe(true);
+    expect(/\bisSearchableQuery\s*\(/.test(body)).toBe(true);
   });
 
   it("holds the same minimum the gateway does, through one constant", () => {

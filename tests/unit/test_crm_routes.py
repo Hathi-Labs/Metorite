@@ -49,6 +49,7 @@ def _params(**over) -> crm_records.ListParams:
         "q": None, "sort": None, "direction": "desc", "page": 1,
         "page_size": 50, "status_id": None, "owner": None, "source": None,
         "include_converted": False,
+        "company_id": None, "contact_id": None,
     }
     return crm_records.ListParams(**{**base, **over})
 
@@ -107,7 +108,10 @@ async def test_an_allowlisted_sort_key_reaches_the_order_by(db: FakeCrmDB) -> No
     db.seed(DEALS.table, name="Printer order")
     await crm_records._list(DEALS, _params(sort="amount", direction="asc"))
 
-    [listing] = [s for s in db.statements if "ORDER BY" in s]
+    # The deal read, not the next-activity read that follows it (CRM-X3).
+    [listing] = [
+        s for s in db.statements if "ORDER BY" in s and "FROM crm_deals" in s
+    ]
     assert "ORDER BY amount ASC" in listing
     assert "LIMIT :limit OFFSET :offset" in listing
 
@@ -327,14 +331,14 @@ async def test_creating_into_a_chosen_gated_stage_without_the_fields_is_422(
     demanding three fields, two of them absent, must not also name the one the
     body supplied, or the modal asks for something already filled in."""
     _seed_pipeline(db)
-    stage = _late_stage(db, "amount", "expected_close_date", "organization_id")
+    stage = _late_stage(db, "amount", "expected_close_date", "company_id")
 
     with pytest.raises(HTTPException) as exc:
         await crm_records.create_record(
             DEALS,
             crm_core.DealIn(
                 name="Printer order", status_id=str(stage.id),
-                organization_id=str(uuid4()),
+                company_id=str(uuid4()),
             ),
             USER,
         )
@@ -344,7 +348,7 @@ async def test_creating_into_a_chosen_gated_stage_without_the_fields_is_422(
     assert "Proposal" in detail
     assert "amount" in detail
     assert "expected_close_date" in detail
-    assert "organization_id" not in detail
+    assert "company_id" not in detail
 
 
 async def test_a_refused_create_writes_no_deal_at_all(db: FakeCrmDB) -> None:
@@ -607,9 +611,9 @@ async def test_a_jsonb_column_is_cast_and_serialized(db: FakeCrmDB) -> None:
         ),
         USER,
     )
-    [insert] = db.statements_touching("INSERT INTO crm_organizations")
+    [insert] = db.statements_touching("INSERT INTO crm_companies")
     assert "CAST(:address AS jsonb)" in insert
-    [(_, params)] = [c for c in db.calls if "INSERT INTO crm_organizations" in c[0]]
+    [(_, params)] = [c for c in db.calls if "INSERT INTO crm_companies" in c[0]]
     assert isinstance(params["address"], str)
 
 
@@ -709,7 +713,7 @@ async def test_a_patch_touches_updated_at(db: FakeCrmDB) -> None:
     await crm_records.patch_record(
         ORGANIZATIONS, str(seeded.id), crm_core.OrganizationIn(industry="Auto"), USER,
     )
-    [update] = db.statements_touching("UPDATE crm_organizations SET")
+    [update] = db.statements_touching("UPDATE crm_companies SET")
     assert "updated_at = now()" in update
 
 
@@ -789,7 +793,7 @@ async def test_every_entity_logs_to_its_own_target_column(
         entity, str(seeded.id), crm_activities.ActivityIn(body="note"), USER,
     )
     assert logged[entity.activity_column] == str(seeded.id)
-    targets = {"lead_id", "deal_id", "contact_id", "organization_id"}
+    targets = {"lead_id", "deal_id", "contact_id", "company_id"}
     assert [c for c in targets if logged[c] is not None] == [entity.activity_column]
 
 
@@ -803,7 +807,7 @@ async def test_an_activity_bumps_its_targets_last_activity_at(
         ORGANIZATIONS, str(org.id), crm_activities.ActivityIn(body="met"), USER,
     )
     assert db.statements_touching(
-        "UPDATE crm_organizations SET last_activity_at = now()"
+        "UPDATE crm_companies SET last_activity_at = now()"
     )
 
 
@@ -932,11 +936,15 @@ async def test_a_new_lane_is_appended_not_prepended(db: FakeCrmDB) -> None:
     assert created.position > 10
 
 
-async def test_a_lead_status_cannot_carry_a_probability(db: FakeCrmDB) -> None:
-    """That column is deal-only; accepting it would silently drop the value."""
+async def test_a_lead_status_carries_a_win_chance(db: FakeCrmDB) -> None:
+    """CRM-U6, migration 288: the lead statuses have a probability column now."""
+    created = await crm_admin.create_status(
+        "lead", crm_admin.StatusIn(name="Pilot", probability=50), USER,
+    )
+    assert created.probability == 50
     with pytest.raises(HTTPException) as exc:
         await crm_admin.create_status(
-            "lead", crm_admin.StatusIn(name="Pilot", probability=50), USER,
+            "lead", crm_admin.StatusIn(name="Wild", probability=150), USER,
         )
     assert exc.value.status_code == 422
 
@@ -1188,13 +1196,19 @@ async def test_reordering_a_terminal_lane_does_not_trip_the_clamp(
 async def test_a_lead_status_never_reaches_the_probability_clamp(
     db: FakeCrmDB,
 ) -> None:
-    """``crm_lead_statuses`` has no probability column, so a won lead status is
-    not a contradiction — it is a lane with no forecast at all."""
+    """CRM-U6: a lead status meets the same won=100 and lost=0 clamp as a deal
+    stage (D-CRM-10). Migration 288 gave it the column."""
     created = await crm_admin.create_status(
-        "lead", crm_admin.StatusIn(name="Qualified", type="won"), USER,
+        "lead", crm_admin.StatusIn(name="Qualified", type="won", probability=100), USER,
     )
     assert created.type == "won"
-    assert created.probability is None
+    assert created.probability == 100
+    with pytest.raises(HTTPException) as raised:
+        await crm_admin.create_status(
+            "lead", crm_admin.StatusIn(name="Closed", type="lost", probability=30), USER,
+        )
+    assert raised.value.status_code == 422
+    assert "D-CRM-10" in str(raised.value.detail)
 
 
 # ── Wiring ──────────────────────────────────────────────────────────────────
@@ -1365,9 +1379,8 @@ async def test_a_nullable_column_can_still_be_cleared(db: FakeCrmDB) -> None:
 async def test_a_lead_status_rejects_a_null_probability_too(
     db: FakeCrmDB,
 ) -> None:
-    """``crm_lead_statuses`` has no probability column at all, so an explicit
-    null would reach an INSERT naming a column that does not exist. The rule
-    is keyed on the field being PRESENT, not on it being non-null."""
+    """``probability`` is NOT NULL DEFAULT 0 on the lead statuses (migration
+    285), so an explicit null is a 422 and never a driver error."""
     with pytest.raises(HTTPException) as raised:
         await crm_admin.create_status(
             "lead",
@@ -1377,7 +1390,6 @@ async def test_a_lead_status_rejects_a_null_probability_too(
             USER,
         )
     assert raised.value.status_code == 422
-    assert "deal-only" in str(raised.value.detail)
 
 
 def test_the_null_guard_sits_on_the_shared_write_path() -> None:
@@ -1456,7 +1468,7 @@ async def test_a_listed_deal_carries_its_organization_name(
     org = db.seed(ORGANIZATIONS.table, name="Bosch India")
     db.seed(
         DEALS.table, name="Bosch printer", status_id=deal_status.id,
-        organization_id=org.id,
+        company_id=org.id,
     )
     result = await crm_records._list(DEALS, _params())
 
@@ -1478,14 +1490,14 @@ async def test_the_join_wraps_the_page_rather_than_the_table(
     db: FakeCrmDB,
 ) -> None:
     """Structural: filter, order and limit stay INSIDE the derived table the
-    join wraps. Inlining the join would put crm_organizations' own
+    join wraps. Inlining the join would put crm_companies' own
     ``owner_email``, ``source`` and ``name`` in scope for every unqualified
     predicate list_contract renders — in all four entities, to serve one."""
     _, deal_status = _seed_pipeline(db)
     db.seed(DEALS.table, name="Bosch printer", status_id=deal_status.id)
     await crm_records._list(DEALS, _params(owner="VJ@Fracktal.in"))
 
-    joined = db.statements_touching("LEFT JOIN crm_organizations")
+    joined = db.statements_touching("LEFT JOIN crm_companies")
     assert joined, "the deal list lost its organization-name projection"
     inner = joined[0].split(") base")[0]
     assert "lower(owner_email) = :owner" in inner
@@ -1494,12 +1506,17 @@ async def test_the_join_wraps_the_page_rather_than_the_table(
     assert joined[0].rstrip().endswith("base.id DESC")
 
 
-def test_only_deals_declare_a_projection() -> None:
-    """The other three statements stay byte-identical to the un-joined form —
-    a projection nobody asked for is a join on every list in the app."""
-    for slug in ("leads", "contacts", "organizations"):
+def test_only_deals_and_leads_declare_a_projection() -> None:
+    """Contacts and companies stay byte-identical to the un-joined form — a
+    projection nobody asked for is a join on every list in the app. Deals and
+    leads project exactly what a list draws: the company name and the stage
+    or status name (WS-53 CRM-X1, ``crm_platform.md`` §19.5)."""
+    for slug in ("contacts", "organizations"):
         assert not ENTITIES[slug].joined_columns, f"{slug} grew a join"
-    assert DEALS.joined_columns == (("organization_name", "org.name"),)
+    assert DEALS.joined_columns == (
+        ("organization_name", "org.name"), ("status_name", "st.name"),
+    )
+    assert ENTITIES["leads"].joined_columns == (("status_name", "st.name"),)
 
 
 # ── WS-26c · deal contacts (done-when 2) ────────────────────────────────────
@@ -1755,3 +1772,90 @@ def test_the_one_excepted_writer_still_cannot_demote_a_primary() -> None:
         statement = source.split("INSERT INTO crm_deal_contacts", 1)[1][:600]
         assert "NOT EXISTS" in statement, name
         assert "ON CONFLICT DO NOTHING" in statement, name
+
+
+# ── CRM-Q3 · the related lists of a record page ─────────────────────────────
+#
+# `?company_id=` filters contacts and deals, and `?contact_id=` filters deals
+# through `crm_deal_contacts`. The fake cannot read a sub-select, so the SQL of
+# the contact filter is read from the rendered query here, and the rows it
+# returns are proved against a real Postgres in `test_crm_related_r8.py`.
+
+_COMPANY = "11111111-1111-4111-8111-111111111111"
+_CONTACT = "22222222-2222-4222-8222-222222222222"
+
+
+async def test_company_id_keeps_only_that_companys_deals(db: FakeCrmDB) -> None:
+    _, deal_status = _seed_pipeline(db)
+    db.seed(DEALS.table, name="Ours", status_id=deal_status.id, company_id=_COMPANY)
+    db.seed(DEALS.table, name="Theirs", status_id=deal_status.id, company_id=_CONTACT)
+
+    result = await crm_records._list(DEALS, _params(company_id=_COMPANY))
+
+    assert [row["name"] for row in result.rows] == ["Ours"]
+    assert result.total == 1
+
+
+async def test_company_id_keeps_only_that_companys_contacts(db: FakeCrmDB) -> None:
+    db.seed(CONTACTS.table, first_name="Anitha", company_id=_COMPANY)
+    db.seed(CONTACTS.table, first_name="Priya", company_id=_CONTACT)
+
+    result = await crm_records._list(CONTACTS, _params(company_id=_COMPANY))
+
+    assert [row["first_name"] for row in result.rows] == ["Anitha"]
+
+
+@pytest.mark.parametrize("slug", ["leads", "organizations"])
+async def test_company_id_is_refused_where_there_is_no_company_link(
+    db: FakeCrmDB, slug: str,
+) -> None:
+    with pytest.raises(HTTPException) as refused:
+        await crm_records._list(ENTITIES[slug], _params(company_id=_COMPANY))
+    assert refused.value.status_code == 422
+    assert not db.statements
+
+
+@pytest.mark.parametrize("slug", ["leads", "contacts", "organizations"])
+async def test_contact_id_is_refused_off_the_deals_list(
+    db: FakeCrmDB, slug: str,
+) -> None:
+    with pytest.raises(HTTPException) as refused:
+        await crm_records._list(ENTITIES[slug], _params(contact_id=_CONTACT))
+    assert refused.value.status_code == 422
+    assert not db.statements
+
+
+@pytest.mark.parametrize("name", ["company_id", "contact_id"])
+async def test_a_related_id_that_is_not_a_uuid_is_a_422_not_a_cast_error(
+    db: FakeCrmDB, name: str,
+) -> None:
+    with pytest.raises(HTTPException) as refused:
+        await crm_records._list(DEALS, _params(**{name: "not-a-uuid"}))
+    assert refused.value.status_code == 422
+    assert not db.statements
+
+
+def test_contact_id_reads_the_deal_contact_link_with_a_bound_id() -> None:
+    where, bound = crm_core.related_filters(
+        DEALS, company_id=None, contact_id=_CONTACT,
+    )
+    assert any("crm_deal_contacts" in clause for clause in where)
+    assert bound == {"contact_id": _CONTACT}
+    # The id is a bound parameter. The statement carries no caller text.
+    assert all(_CONTACT not in clause for clause in where)
+
+
+async def test_get_activity_reads_one_entry_and_404s_for_a_missing_one(db) -> None:
+    """CRM-M2b: ``GET /crm/activities/{id}`` reads through the same tenant
+    session as the PATCH, so another organization's row is a 404 under RLS."""
+    deal = db.seed("crm_deals", name="Acme AMC")
+    row = db.seed(
+        "crm_activities", type="task", subject="Send quote", deal_id=deal.id,
+        created_by="a@b.in",
+    )
+    got = await crm_activities.get_activity(str(row.id), USER)
+    assert got["subject"] == "Send quote" and got["deal_id"] == str(deal.id)
+    assert "completed_at" in got and "due_at" in got
+    with pytest.raises(HTTPException) as err:
+        await crm_activities.get_activity(str(uuid4()), USER)
+    assert err.value.status_code == 404

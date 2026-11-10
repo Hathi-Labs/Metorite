@@ -21,6 +21,20 @@
  *   (owner decision (d), #576), so the imported mail needs one run of
  *   "Process past emails". The action opens that dialog on the import range.
  *   The dialog counts the mail before it spends a model call.
+ * - Before that action, the step reads the run status and then
+ *   `process-past/estimate` for the import range, and shows the count of AI
+ *   calls (EM-S10, D-EM-59). A sort never starts without a count shown: the
+ *   action is enabled only with a count, and a failed count offers "Count
+ *   again" (fix round 1). While a run goes on, the step shows "Sorting…" and
+ *   reads the status every `SORT_POLL_MS`. When the run ends, it reads the
+ *   estimate again, so a capped run offers the next run. A range wider than
+ *   the cap of one run says so before the dialog opens. `readSortState` and
+ *   `sortEstimateView` decide.
+ * - "Run my rules on new mail" is the member's Auto-run choice (WS-17
+ *   EM-G11c2, G2). It shows the STORED value, and moving it saves `auto_run`
+ *   and nothing else, so the settings row holds the member's choice. With no
+ *   stored choice it starts ON (task 2267), and loading the step saves
+ *   nothing. "Done" saves that ON. A move before "Done" saves at once.
  * - "Draft replies for me" shows only with an enabled reply rule, because a
  *   draft is an action on that rule. It shows the STORED value, read when the
  *   step is ready, and stays disabled until the read returns or when it fails
@@ -29,32 +43,61 @@
  *   `onboarding_done: true`. The page writes the returned account into the
  *   store, so the setup never shows again.
  * - It names no model and offers no model choice (EM-T5b).
+ * - With two or more mailboxes it names its own mailbox, and it offers
+ *   "Copy the rules of <label>" for each other mailbox, beside the presets
+ *   (EM-T8f-2, D-EM-24). `ruleCopier` guards the copy: one copy at a time,
+ *   and one copy of each mailbox. A second copy would add each rule again as
+ *   "(copy)". The answer shows the copied, renamed and left-out rules, and
+ *   last each folder or label that the mailbox makes on first use (EM-S10).
  */
 
 import { useEffect, useState } from "react";
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import {
+  copyRules,
   getAssistantSettings,
   installPresetRules,
   listRules,
+  getProcessPastStatus,
+  processPastEstimate,
   saveAssistantSettings,
   updateEmailAccount,
 } from "../lib/api";
+import {
+  COPY_STEP,
+  ruleCopier,
+  rulesStepCopyChoices,
+  rulesStepMailbox,
+  runRuleCopy,
+  type CopyChoice,
+  type CopyReport,
+} from "../lib/mailboxSettings";
 import {
   RULES_STEP_COPY as COPY,
   hasEnabledReplyRule,
   installRecommendedRules,
   installedLine,
   processPastFrom,
+  readAutoRunSwitch,
   readDraftSwitch,
+  saveAutoRunDefault,
+  readSortState,
   rulesStepPhase,
+  setAutoRun,
   setDraftReplies,
+  settingsSaver,
+  sortEstimateView,
+  sortPollDelay,
+  type AutoRunSwitch,
   type DraftSwitch,
   type RulesStepApi,
   type RulesStepPhase,
+  type SortEstimate,
 } from "../lib/onboarding";
+import { mailboxLabel } from "../lib/mailbox";
 import type { AutomationFeature, AutomationRule, EmailAccount } from "../lib/types";
+import { MailboxChip } from "./MailboxChip";
 import { Toggle } from "./automation/ui";
 
 /** The live calls. `finishOnboarding` is the PATCH of item 11. */
@@ -64,7 +107,13 @@ const RULES_API: RulesStepApi = {
   getAssistantSettings,
   saveAssistantSettings,
   finishOnboarding: (accountId) => updateEmailAccount(accountId, { onboardingDone: true }),
+  copyRules,
+  // The same read, with the same defaults, as the Process past emails dialog.
+  estimateSort: (accountId, startDate) => processPastEstimate({ accountId, startDate }),
+  sortStatus: getProcessPastStatus,
 };
+
+type StepMailbox = Pick<EmailAccount, "id" | "emailAddress" | "displayLabel" | "colorSlot">;
 
 export interface RulesStepViewProps {
   phase: RulesStepPhase;
@@ -72,14 +121,22 @@ export interface RulesStepViewProps {
   installed: number;
   /** True after "Use the recommended rules" added none. */
   installedNone: boolean;
-  busy: "install" | "finish" | null;
+  busy: "install" | "finish" | "copy" | null;
   error: string | null;
   /** True when an enabled reply rule exists, so drafting can act. */
   replyRule: boolean;
   draft: DraftSwitch;
-  draftBusy: boolean;
+  /** A save of either switch runs. Both switches wait (EM-G11c2 fix round 1). */
+  settingsBusy: boolean;
+  /** The stored Auto-run choice (WS-17 EM-G11c2, G2). Absent: no switch. */
+  autoRun?: AutoRunSwitch;
+  onAutoRunChange?: (on: boolean) => void;
   /** The start of the import range, or null when nothing was imported. */
   pastFrom: string | null;
+  /** The count before the sort (EM-S10). Read only with `pastFrom`. */
+  sort: SortEstimate;
+  /** "Count again" after a failed count (EM-S10 fix round 1). */
+  onRetrySort?: () => void;
   onRecommended: () => void;
   onChooseOwn: () => void;
   onSkip: () => void;
@@ -87,15 +144,35 @@ export interface RulesStepViewProps {
   onDraftChange: (on: boolean) => void;
   onInsights: () => void;
   onDone: () => void;
+  /** The own mailbox of the step, when the member has two or more. The step
+   *  names it (EM-T8f-2). Null or absent: one mailbox, no change. */
+  mailbox?: StepMailbox | null;
+  /** "Copy the rules of <label>", one for each other mailbox (D-EM-24). */
+  copyFrom?: ReadonlyArray<CopyChoice>;
+  /** The mailbox whose rules the copy in flight reads. */
+  copyingFrom?: string | null;
+  /** The answer of the last copy, in plain words. */
+  copyReport?: CopyReport | null;
+  onCopy?: (fromAccountId: string) => void;
 }
 
 export function RulesStepView(p: RulesStepViewProps) {
   const ready = p.phase === "ready";
   const locked = p.busy !== null;
-  const readyBody = [installedLine(p.installed), p.pastFrom ? COPY.readyBody : COPY.readyBodyNoImport]
+  // G2: with Auto-run OFF the rules sort no new mail, so the body says so.
+  const autoRunOff = p.autoRun?.state === "ready" && !p.autoRun.on;
+  // The title says "on" only while the switch reads ON. With no switch (an
+  // older caller) it says "on", as before.
+  const autoRunOn = p.autoRun === undefined || (p.autoRun.state === "ready" && p.autoRun.on);
+  const readyTitle = autoRunOn ? COPY.readyTitle : COPY.readyTitleAutoRunOff;
+  const readyBody = [
+    installedLine(p.installed),
+    autoRunOff ? COPY.autoRunOffBody : p.pastFrom ? COPY.readyBody : COPY.readyBodyNoImport,
+  ]
     .filter(Boolean)
     .join(" ");
   const draftOn = p.draft.state === "ready" && p.draft.on;
+  const sort = sortEstimateView(p.sort);
   return (
     <section
       aria-label="Mailbox setup"
@@ -106,7 +183,16 @@ export function RulesStepView(p: RulesStepViewProps) {
         <Icon name={ready ? "CheckCircle2" : "Sparkles"} size={14} aria-hidden />
       </span>
       <div className="min-w-0 flex-1">
-        <p className="text-xs font-medium text-foreground">{ready ? COPY.readyTitle : COPY.title}</p>
+        <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs font-medium text-foreground">
+          <span>{ready ? readyTitle : COPY.title}</span>
+          {p.mailbox ? (
+            <>
+              <span className="font-normal text-muted-foreground">for</span>
+              <MailboxChip account={p.mailbox} />
+              <span className="truncate text-[11px] font-normal text-muted-foreground">{p.mailbox.emailAddress}</span>
+            </>
+          ) : null}
+        </p>
         <p className="mt-0.5 text-[11px] text-muted-foreground">{ready ? readyBody : COPY.body}</p>
 
         {p.phase === "choose" && (
@@ -122,6 +208,19 @@ export function RulesStepView(p: RulesStepViewProps) {
               >
                 {COPY.recommended}
               </Button>
+              {(p.copyFrom ?? []).map((c) => (
+                <Button
+                  key={c.id}
+                  variant="secondary"
+                  size="sm"
+                  icon="Copy"
+                  loading={p.busy === "copy" && p.copyingFrom === c.id}
+                  disabled={locked}
+                  onClick={() => p.onCopy?.(c.id)}
+                >
+                  {COPY_STEP.copyFrom(c.label)}
+                </Button>
+              ))}
               <Button variant="secondary" size="sm" disabled={locked} onClick={p.onChooseOwn}>
                 {COPY.chooseOwn}
               </Button>
@@ -136,16 +235,33 @@ export function RulesStepView(p: RulesStepViewProps) {
         {ready && (
           <>
             <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2">
-              {p.pastFrom && (
-                <Button variant="primary" size="sm" icon="History" disabled={locked} onClick={p.onProcessPast}>
-                  {COPY.processPast}
+              {p.pastFrom && sort.action && (
+                <Button
+                  variant="primary"
+                  size="sm"
+                  icon="History"
+                  loading={p.sort.state === "loading"}
+                  disabled={locked || !sort.enabled}
+                  onClick={p.onProcessPast}
+                >
+                  {sort.action}
                 </Button>
+              )}
+              {p.autoRun && (
+                <label className="flex items-center gap-2 text-xs text-foreground">
+                  <Toggle
+                    enabled={p.autoRun.state === "ready" && p.autoRun.on}
+                    disabled={p.autoRun.state !== "ready" || p.settingsBusy || locked}
+                    onChange={(on) => p.onAutoRunChange?.(on)}
+                  />
+                  {COPY.autoRunLabel}
+                </label>
               )}
               {p.replyRule && (
                 <label className="flex items-center gap-2 text-xs text-foreground">
                   <Toggle
                     enabled={draftOn}
-                    disabled={p.draft.state !== "ready" || p.draftBusy || locked}
+                    disabled={p.draft.state !== "ready" || p.settingsBusy || locked}
                     onChange={p.onDraftChange}
                   />
                   {COPY.draftLabel}
@@ -164,6 +280,20 @@ export function RulesStepView(p: RulesStepViewProps) {
                 {COPY.done}
               </Button>
             </div>
+            {p.pastFrom && (
+              <div role="status" aria-label={COPY.sortStatusLabel} className="mt-1 text-[11px] text-muted-foreground">
+                <p>{sort.line}</p>
+                {sort.capLine && <p>{sort.capLine}</p>}
+                {sort.retry && (
+                  <Button variant="secondary" size="sm" icon="RefreshCw" className="mt-1" disabled={locked} onClick={p.onRetrySort}>
+                    {COPY.sortRetry}
+                  </Button>
+                )}
+              </div>
+            )}
+            {p.autoRun?.state === "failed" && (
+              <p className="mt-1 text-[11px] text-muted-foreground">{COPY.autoRunReadFailed}</p>
+            )}
             <p className="mt-1 text-[11px] text-muted-foreground">
               {!p.replyRule
                 ? COPY.draftNeedsReplyRule
@@ -172,6 +302,19 @@ export function RulesStepView(p: RulesStepViewProps) {
                   : COPY.draftNote}
             </p>
           </>
+        )}
+
+        {p.copyReport && (
+          <div role="status" className="mt-1.5 text-[11px] text-muted-foreground">
+            <p className="text-foreground">{p.copyReport.summary}</p>
+            {p.copyReport.lines.length > 0 && (
+              <ul className="mt-0.5 list-disc space-y-0.5 pl-4">
+                {p.copyReport.lines.map((line, i) => (
+                  <li key={i}>{line}</li>
+                ))}
+              </ul>
+            )}
+          </div>
         )}
 
         {p.error && (
@@ -197,12 +340,16 @@ export function OnboardingRulesStep({
   account,
   onOpenAutomation,
   onFinished,
+  mailboxes = [],
 }: {
   account: Pick<EmailAccount, "id" | "importSince" | "importPhase" | "importCount">;
   /** Opens an automation view. `pastFrom` opens Process past emails on that date. */
   onOpenAutomation: (feature: AutomationFeature, pastFrom?: string | null) => void;
   /** Called with the account the PATCH returned. The page writes it to the store. */
   onFinished: (updated: EmailAccount) => void;
+  /** Each mailbox of the member, this one too. The step names its own
+   *  mailbox and offers a copy of the rules of each other one (EM-T8f-2). */
+  mailboxes?: ReadonlyArray<EmailAccount>;
 }) {
   // null: the read of the rules is in flight.
   const [rules, setRules] = useState<ReadonlyArray<Pick<AutomationRule, "enabled" | "name" | "system_type">> | null>(
@@ -210,13 +357,51 @@ export function OnboardingRulesStep({
   );
   const [installed, setInstalled] = useState(0);
   const [installTried, setInstallTried] = useState(false);
-  const [busy, setBusy] = useState<"install" | "finish" | null>(null);
+  const [busy, setBusy] = useState<"install" | "finish" | "copy" | null>(null);
+  // The guard of the copy: one copy at a time, and one copy of each mailbox.
+  // The check is synchronous, so a double click starts one copy (EM-T8f-2).
+  const [copier] = useState(() => ruleCopier(RULES_API.copyRules));
+  const [copyingFrom, setCopyingFrom] = useState<string | null>(null);
+  const [copyReport, setCopyReport] = useState<CopyReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   // The stored value, read once the step is ready. Disabled until then.
   const [draft, setDraft] = useState<DraftSwitch>({ state: "loading" });
-  const [draftBusy, setDraftBusy] = useState(false);
+  // G2 (EM-G11c2): the stored Auto-run choice, read once the step is ready.
+  const [autoRun, setAutoRunState] = useState<AutoRunSwitch>({ state: "loading" });
+  // One save at a time for both switches (fix round 1). Each save is a GET
+  // and a PUT of the whole body, so two at once could undo each other.
+  const [saver] = useState(() => settingsSaver());
+  const [settingsBusy, setSettingsBusy] = useState(false);
   const [finished, setFinished] = useState(false);
+  const [sort, setSort] = useState<SortEstimate>({ state: "loading" });
+  // A new value reads the count again ("Count again").
+  const [sortTry, setSortTry] = useState(0);
   const phase = rulesStepPhase(rules);
+  const pastFrom = processPastFrom(account, new Date());
+
+  // The count of AI calls, read before the member can start a sort (EM-S10).
+  // A run that is still going reads again every SORT_POLL_MS, and the estimate
+  // is read again when it ends. The step also mounts again when the member
+  // comes back from AI Settings.
+  useEffect(() => {
+    if (phase !== "ready" || !pastFrom) return;
+    let live = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const read = () => {
+      void readSortState(RULES_API, account.id, pastFrom, new Date()).then((s) => {
+        if (!live) return;
+        setSort(s);
+        const wait = sortPollDelay(s);
+        if (wait !== null) timer = setTimeout(read, wait);
+      });
+    };
+    setSort({ state: "loading" });
+    read();
+    return () => {
+      live = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [phase, account.id, pastFrom, sortTry]);
 
   // A rule may exist already: the member can make one during the import, or
   // come back from "Choose my own". A failed read shows the choices.
@@ -236,6 +421,17 @@ export function OnboardingRulesStep({
     if (phase !== "ready") return;
     let live = true;
     void readDraftSwitch(RULES_API, account.id).then((d) => live && setDraft(d));
+    return () => {
+      live = false;
+    };
+  }, [phase, account.id]);
+
+  // The Auto-run switch shows what is stored, on every mount, as the
+  // drafting switch does. With no stored choice it starts ON, unsaved.
+  useEffect(() => {
+    if (phase !== "ready") return;
+    let live = true;
+    void readAutoRunSwitch(RULES_API, account.id).then((a) => live && setAutoRunState(a));
     return () => {
       live = false;
     };
@@ -262,10 +458,20 @@ export function OnboardingRulesStep({
     }
   };
 
-  const finish = async () => {
+  // `saveDefault` is true for "Done" only: it saves the ON default of the
+  // Auto-run switch first. A failed save keeps the step open (task 2267).
+  const finish = async (saveDefault = false) => {
     setBusy("finish");
     setError(null);
     try {
+      if (saveDefault) {
+        // One save at a time: a switch save in flight refuses this one, and
+        // the step stays open so the member presses Done again.
+        const ran = await saver.run(async () => {
+          await saveAutoRunDefault(RULES_API, account.id, autoRun);
+        });
+        if (!ran) throw new Error("a save is running");
+      }
       const updated = await RULES_API.finishOnboarding(account.id);
       setFinished(true);
       onFinished(updated);
@@ -275,22 +481,59 @@ export function OnboardingRulesStep({
     }
   };
 
-  const changeDraft = async (on: boolean) => {
-    setDraftBusy(true);
+  // "Copy the rules of <label>" (EM-T8f-2, D-EM-24). `copier.start` refuses
+  // while a copy runs and after a copy of that mailbox, so a second copy can
+  // never add each rule again as "(copy)".
+  const copyFrom = async (fromId: string) => {
+    const source = mailboxes.find((m) => m.id === fromId);
+    const pending = source ? copier.start(fromId, account.id) : null;
+    if (!source || !pending) return;
+    setBusy("copy");
+    setCopyingFrom(fromId);
+    setError(null);
+    // The answer, then a re-read that moves the step on, with the copied
+    // names when the re-read fails. `runRuleCopy` decides (review F4).
+    await runRuleCopy(pending, mailboxLabel(source), () => RULES_API.listRules(account.id), {
+      report: setCopyReport,
+      failed: () => setError(COPY_STEP.failed),
+      rules: setRules,
+    });
+    setCopyingFrom(null);
+    setBusy(null);
+  };
+
+  // Both switches save through `saver`, which refuses a second save while
+  // one runs. `settingsBusy` disables both switches meanwhile.
+  const saveSetting = async (save: () => Promise<void>) => {
+    if (saver.busy()) return;
+    setSettingsBusy(true);
     setError(null);
     try {
-      await setDraftReplies(RULES_API, account.id, on);
-      setDraft({ state: "ready", on });
+      await saver.run(save);
     } catch {
       setError(COPY.failed);
     } finally {
-      setDraftBusy(false);
+      setSettingsBusy(false);
     }
+  };
+
+  const changeDraft = async (on: boolean) => {
+    await saveSetting(async () => {
+      await setDraftReplies(RULES_API, account.id, on);
+      setDraft({ state: "ready", on });
+    });
+  };
+
+  // The one write of Auto-run in this step: the member's own move (G2).
+  const changeAutoRun = async (on: boolean) => {
+    await saveSetting(async () => {
+      await setAutoRun(RULES_API, account.id, on);
+      setAutoRunState({ state: "ready", on });
+    });
   };
 
   if (finished) return null;
 
-  const pastFrom = processPastFrom(account, new Date());
   return (
     <RulesStepView
       phase={phase}
@@ -300,15 +543,24 @@ export function OnboardingRulesStep({
       error={error}
       replyRule={hasEnabledReplyRule(rules)}
       draft={draft}
-      draftBusy={draftBusy}
+      settingsBusy={settingsBusy}
+      autoRun={autoRun}
+      onAutoRunChange={(on) => void changeAutoRun(on)}
       pastFrom={pastFrom}
+      sort={sort}
+      onRetrySort={() => setSortTry((n) => n + 1)}
       onRecommended={() => void recommended()}
       onChooseOwn={() => onOpenAutomation("ai-settings")}
       onSkip={() => void finish()}
       onProcessPast={() => onOpenAutomation("ai-settings", pastFrom)}
       onDraftChange={(on) => void changeDraft(on)}
       onInsights={() => onOpenAutomation("analytics")}
-      onDone={() => void finish()}
+      onDone={() => void finish(true)}
+      mailbox={rulesStepMailbox(mailboxes, account.id)}
+      copyFrom={rulesStepCopyChoices(mailboxes, account.id).filter((c) => !copier.copied(c.id, account.id))}
+      copyingFrom={copyingFrom}
+      copyReport={copyReport}
+      onCopy={(fromId) => void copyFrom(fromId)}
     />
   );
 }

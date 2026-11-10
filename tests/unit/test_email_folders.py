@@ -34,6 +34,9 @@ def test_gmail_folder_from_labels_priority():
     assert _gmail_folder_from_labels(["DRAFT"]) == "drafts"
     assert _gmail_folder_from_labels(["TRASH", "INBOX"]) == "trash"
     assert _gmail_folder_from_labels(["SPAM"]) == "junk"
-    # No recognizable label → default inbox rather than an opaque label id.
-    assert _gmail_folder_from_labels(["CATEGORY_PERSONAL"]) == "inbox"
-    assert _gmail_folder_from_labels([]) == "inbox"
+    # No system label → ``archive``, never an opaque label id. ⚠️ This read
+    # ``inbox`` until WS-17 EM-G2 (D-EM-33, GM-5). The value changed ON
+    # PURPOSE: a Gmail message with no system label is archived mail, and
+    # ``inbox`` showed it in the Inbox. Do not change it back.
+    assert _gmail_folder_from_labels(["CATEGORY_PERSONAL"]) == "archive"
+    assert _gmail_folder_from_labels([]) == "archive"

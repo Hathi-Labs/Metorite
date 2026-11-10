@@ -60,13 +60,13 @@ describe("paneReport", () => {
   });
 
   it("marks a granted pane as reachable", () => {
-    expect(find(signedIn(), "/tasks").status).toBe("granted");
+    expect(find(signedIn(), "/calendar").status).toBe("granted");
   });
 
   it("treats an ungated pane as open to everyone", () => {
-    // `/access` itself — it must never report as denied, or the diagnosis page
-    // would be telling you that you cannot read the diagnosis page.
-    expect(find(signedIn({ features: [] }), "/access").status).toBe("granted");
+    // My Profile, an ungated pane. (My Access is a People tab since
+    // 2026-10-05 and not a pane, so the report no longer lists it.)
+    expect(find(signedIn({ features: [] }), "/people/me").status).toBe("granted");
   });
 
   it("says signed-out rather than denied when nothing is resolved", () => {
@@ -109,6 +109,13 @@ describe("unmappedFeatures", () => {
     ]);
   });
 
+  it("does not call an install-only slug unmapped (PKG-6b)", () => {
+    const access = signedIn({ features: ["chat", "zz_crm", "ghostpane"] });
+    expect(unmappedFeatures(access, ["zz_crm"])).toEqual(["ghostpane"]);
+    // Without the install slugs, the report is what it was.
+    expect(unmappedFeatures(access)).toEqual(["ghostpane", "zz_crm"]);
+  });
+
   it("is empty when every grant has a home", () => {
     expect(unmappedFeatures(signedIn({ features: ["chat", "tasks"] }))).toEqual([]);
   });
@@ -117,15 +124,16 @@ describe("unmappedFeatures", () => {
 describe("launch status is reported apart from access (LS-3 · D49)", () => {
   it("says NOT AVAILABLE YET for a preview pane the member actually holds", () => {
     // The case that makes this status worth having: the member has
-    // `feature:whatsapp`, so the old report said "granted" for a pane that is
+    // `feature:notes`, so the old report said "granted" for a pane that is
     // not in the menu — or, if we had hidden it by revoking the grant, "you
-    // need feature:whatsapp", which is advice that would not have worked
-    // either. (The example was Email until it went live on 2026-10-02.)
-    const rows = paneReport(signedIn({ features: ["whatsapp", "chat"], features_denied: [] }));
-    const whatsapp = rows.find((r) => r.href === "/whatsapp");
-    expect(whatsapp?.status).toBe("not-launched");
-    expect(whatsapp?.reason).toMatch(/not available yet/i);
-    expect(whatsapp?.reason).toMatch(/grant will not reveal it/i);
+    // need feature:notes", which is advice that would not have worked
+    // either. (The example was Email until it went live on 2026-10-02, and
+    // WhatsApp until it went live on 2026-10-08.)
+    const rows = paneReport(signedIn({ features: ["notes", "chat"], features_denied: [] }));
+    const notes = rows.find((r) => r.href === "/notes");
+    expect(notes?.status).toBe("not-launched");
+    expect(notes?.reason).toMatch(/not available yet/i);
+    expect(notes?.reason).toMatch(/grant will not reveal it/i);
 
     // ...while a live pane with the same grant is plainly granted.
     expect(rows.find((r) => r.href === "/chat")?.status).toBe("granted");

@@ -1,0 +1,290 @@
+"use client";
+
+/**
+ * The small cards of the CRM settings page (WS-53 CRM-Q3, spec section 18.4).
+ *
+ * The page is one column of cards in a fixed order: Setup (with the Zoho
+ * connection, CRM-X0), Access, Deal stages, Lead statuses, Lost reasons, Fields,
+ * Suggestions (CRM-Q20-2), Sync health.
+ * `PipelineSettings` composes them. The editable grids stay in that file, and
+ * these are the cards that only read or only wait.
+ */
+
+import Button from "@/components/ui/Button";
+import { Skeleton } from "@/components/ui/Skeleton";
+import { stagesOf } from "../lib/pipelines";
+import type { DealPipeline, EntitySlug, Status } from "../lib/types";
+import { zohoLink } from "../lib/connect";
+import {
+  DISMISS_LABEL,
+  NO_SUGGESTIONS,
+  SLOT_SLUG,
+  SUGGESTIONS_NOTE,
+  SUGGESTIONS_TITLE,
+  UNDO_LABEL,
+  emptyLine,
+  inUseLine,
+  previewLabel,
+  type OverlayInUse,
+  type Suggestion,
+  type SuggestionList,
+} from "../lib/suggestions";
+
+/** The frame every card shares, so the page has one look. */
+export function Card({
+  title,
+  note,
+  action,
+  children,
+}: {
+  title: string;
+  note?: React.ReactNode;
+  /** One control at the right end of the header, such as "New pipeline" (CRM-M3a). */
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="rounded-xl border border-border bg-card/40" aria-label={title}>
+      <header className="flex items-start gap-3 border-b border-border px-4 py-3">
+        <div className="min-w-0 flex-1">
+          <h2 className="text-sm font-semibold text-foreground">{title}</h2>
+          {note && <p className="mt-0.5 text-xs text-muted-foreground">{note}</p>}
+        </div>
+        {action && <div className="shrink-0">{action}</div>}
+      </header>
+      {children}
+    </section>
+  );
+}
+
+/**
+ * The one row of a list with nothing to list: loading, failed or empty
+ * (CRM-U17a). The three share it, so the card keeps one height (M1).
+ */
+export const STATE_ROW =
+  "flex min-h-20 items-center justify-center gap-2 px-4 py-6 text-center text-xs text-muted-foreground";
+
+/**
+ * A vocabulary card that has no rows to draw yet: a loading row, or the
+ * reason of a failed read with Retry (CRM-U17a). It wears the title of the
+ * card it stands in for.
+ */
+export function VocabularyNotice({
+  title,
+  state,
+  error,
+  onRetry,
+}: {
+  title: string;
+  state: "loading" | "failed";
+  error?: string | null;
+  onRetry?: () => void;
+}) {
+  return (
+    <Card title={title}>
+      {state === "loading" ? (
+        <p className={STATE_ROW} role="status">
+          Loading…
+        </p>
+      ) : (
+        <div className={STATE_ROW} role="alert">
+          <span className="text-destructive">{error || "The list did not load."}</span>
+          {onRetry && (
+            <Button size="sm" variant="secondary" onClick={onRetry}>
+              Retry
+            </Button>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+/** A list of names to read: no input, no handle and no delete. */
+export function NameList({ names, empty = "None yet." }: { names: string[]; empty?: string }) {
+  if (names.length === 0) {
+    return <p className={STATE_ROW}>{empty}</p>;
+  }
+  return (
+    <ul className="space-y-0.5 px-4 py-3">
+      {names.map((name, i) => (
+        <li key={`${name}-${i}`} className="text-xs text-foreground">
+          {name}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * The stages of each pipeline, to read.
+ *
+ * Used when the org has two pipelines or more, and in Mirror mode. There is
+ * one section for each pipeline. The stage routes of CRM-Q2 exist, and this
+ * list does not call them yet, so no stage here is editable and the note says why.
+ */
+export function PipelineSections({
+  pipelines,
+  fallback,
+  note,
+  title = "Deal stages",
+  action,
+  lineOf,
+  emptyLine = "No stages yet.",
+}: {
+  pipelines: DealPipeline[] | null;
+  /** The one implicit pipeline: the deal statuses, when there is no pipeline list. */
+  fallback: Status[];
+  note: string;
+  /** The card heading. It is the label of the rail row (CRM-C1). */
+  title?: string;
+  /** A control at the right end of the header ("New pipeline", CRM-M3a). */
+  action?: React.ReactNode;
+  /** One line under the name of a section, or null (CRM-M4a: what a lead pipeline feeds). */
+  lineOf?: (pipeline: DealPipeline) => string | null;
+  /** The words of a section with no stage yet (CRM-M4a: "Loading statuses…" while they load). */
+  emptyLine?: string;
+}) {
+  const sections =
+    pipelines && pipelines.length > 0
+      ? [...pipelines].sort((a, b) => a.position - b.position)
+      : null;
+  return (
+    <Card title={title} note={note} action={action}>
+      {sections ? (
+        <div className="divide-y divide-border/60">
+          {sections.map((pipeline) => {
+            const link = zohoLink({ ext_url: pipeline.ext_url });
+            return (
+              <div key={pipeline.id} aria-label={pipeline.name}>
+                <div className="flex items-center gap-2 px-4 pt-3">
+                  <h3 className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                    {pipeline.name}
+                  </h3>
+                  {pipeline.is_default && (
+                    <span className="rounded-full bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">
+                      default
+                    </span>
+                  )}
+                  {link && (
+                    <a
+                      href={link}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="ml-auto text-[10px] text-primary underline underline-offset-2"
+                    >
+                      Open in Zoho
+                    </a>
+                  )}
+                </div>
+                {lineOf?.(pipeline) && (
+                  <p className="px-4 pt-0.5 text-[11px] text-muted-foreground">{lineOf(pipeline)}</p>
+                )}
+                <NameList
+                  names={stagesOf(pipeline).map((stage) => stage.name)}
+                  empty={emptyLine}
+                />
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <NameList names={fallback.map((s) => s.name)} />
+      )}
+    </Card>
+  );
+}
+
+/** What the Suggestions card can do (CRM-Q20-2). The caller owns the requests. */
+export type SuggestionsHandlers = {
+  /** The label of a core list, as the rail draws it ("Deals"). */
+  listLabel: (slug: EntitySlug) => string;
+  onPreview: (s: Suggestion) => void;
+  onDismiss: (s: Suggestion) => void;
+  onUndo: (o: OverlayInUse) => void;
+  /** The slot whose request runs, or `null`. */
+  busy: string | null;
+};
+
+/**
+ * Settings → Suggestions (WS-53 CRM-Q20-2): each open suggestion, with
+ * Preview and "Dismiss", and each list that a Zoho module shows now, with
+ * Undo. It holds no state and no hook, so a test reads its element tree.
+ */
+export function SuggestionsCardView({
+  list,
+  failed = false,
+  handlers,
+  tools,
+}: {
+  /** `GET /crm/mapping/suggestions`, or `null` while it loads. */
+  list: SuggestionList | null;
+  failed?: boolean;
+  handlers: SuggestionsHandlers;
+  /** CRM-Q32-10: the "Re-run AI analysis" button, at the top of the card. */
+  tools?: React.ReactNode;
+}) {
+  const label = (slot: Suggestion["slot"]) => handlers.listLabel(SLOT_SLUG[slot]);
+  return (
+    <Card title={SUGGESTIONS_TITLE} note={SUGGESTIONS_NOTE}>
+      {tools ? <div className="border-b border-border/60 px-4 py-3">{tools}</div> : null}
+      {list === null ? (
+        <div className="px-4 py-3">
+          {failed ? (
+            <p className="text-xs text-muted-foreground">The suggestions did not load.</p>
+          ) : (
+            <Skeleton className="h-4 w-56" />
+          )}
+        </div>
+      ) : (
+        <ul className="divide-y divide-border/60">
+          {list.overlays.map((o) => (
+            <li key={`use:${o.slot}`} className="flex flex-wrap items-center gap-2 px-4 py-3">
+              <span className="w-full min-w-0 text-xs text-foreground sm:w-auto sm:flex-1">
+                {inUseLine(o, label(o.slot))}
+              </span>
+              <Button
+                size="sm"
+                variant="ghost"
+                icon="Undo2"
+                loading={handlers.busy === o.slot}
+                disabled={handlers.busy !== null}
+                onClick={() => handlers.onUndo(o)}
+              >
+                {UNDO_LABEL}
+              </Button>
+            </li>
+          ))}
+          {list.suggestions.map((s) => (
+            <li key={`suggest:${s.slot}`} className="flex flex-wrap items-center gap-2 px-4 py-3">
+              <span className="w-full min-w-0 text-xs text-foreground sm:w-auto sm:flex-1">
+                {emptyLine(s, label(s.slot))}
+              </span>
+              <Button
+                size="sm"
+                variant="ghost"
+                loading={handlers.busy === s.slot}
+                disabled={handlers.busy !== null}
+                onClick={() => handlers.onDismiss(s)}
+              >
+                {DISMISS_LABEL}
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                icon="Eye"
+                disabled={handlers.busy !== null}
+                onClick={() => handlers.onPreview(s)}
+              >
+                {previewLabel(s, label(s.slot))}
+              </Button>
+            </li>
+          ))}
+          {list.overlays.length === 0 && list.suggestions.length === 0 && (
+            <li className="px-4 py-3 text-xs text-muted-foreground">{NO_SUGGESTIONS}</li>
+          )}
+        </ul>
+      )}
+    </Card>
+  );
+}

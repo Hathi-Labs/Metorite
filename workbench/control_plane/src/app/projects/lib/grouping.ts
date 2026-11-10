@@ -11,8 +11,11 @@
  * nothing in it) and each of those is one assertion here.
  */
 
-import { STATUS_CATEGORIES, categoryLabel } from "@/lib/statusCategory";
+import { STATUS_CATEGORIES, categoryLabel, orderedLanes } from "@/lib/statusCategory";
+import { statusLaneOf } from "./statusOrder";
+import { personDisplayName } from "@/lib/personName";
 
+import { AGENT_LANES, agentLaneKey } from "./agentRuns";
 import type { StatusRow, TaskRow } from "./api";
 import { MATRIX_LEVELS, cellLabel, taskCell } from "./matrix";
 import {
@@ -28,6 +31,9 @@ export type GroupBy =
   | "project"
   | "importance"
   | "tag"
+  // WS-55 EA-13e (EA3-43): the agent state of a row, in the lanes of
+  // `agentRuns.AGENT_LANES`. A drop between two of them writes nothing.
+  | "agent"
   | "none";
 
 /** Mirrors the gateway's `filters.GROUP_BY`. */
@@ -38,6 +44,7 @@ export const GROUP_OPTIONS: GroupBy[] = [
   "project",
   "importance",
   "tag",
+  "agent",
   "none",
 ];
 
@@ -491,8 +498,9 @@ export type PersonNames = ReadonlyMap<string, string>;
  */
 export function personLabel(who: string, names?: PersonNames): string {
   if (who.startsWith("agent:")) return who.slice("agent:".length) || who;
-  const named = names?.get(who.toLowerCase());
-  return named && named.trim() ? named.trim() : localPart(who);
+  // `personDisplayName`, the one rule: a directory "name" that is an address
+  // reads as no name, so it falls back too (owner, 2026-10-10).
+  return personDisplayName(names?.get(who.toLowerCase()), who);
 }
 
 /**
@@ -653,11 +661,12 @@ export function groupTasks(
   }
 
   if (by === "status") {
-    const ordered = [...ctx.statuses].sort((a, b) => a.position - b.position);
+    const ordered = orderedLanes(ctx.statuses);
+    const lane = statusLaneOf(ordered);
     return ordered.map((status) => ({
       key: status.id,
       label: status.name,
-      tasks: tasks.filter((t) => t.status_id === status.id),
+      tasks: tasks.filter((t) => lane(t) === status.id),
     }));
   }
 
@@ -691,10 +700,28 @@ export function groupTasks(
     return [...known, ...strays].map((category) => ({
       key: category,
       label: categoryLabel(category),
+      // A subproject's own lane is not in `byId`: its row carries the stage
+      // (#834), so it lands in its stage and never vanishes.
       tasks: tasks.filter(
-        (t) => byId.get(t.status_id)?.category === category
+        (t) => (byId.get(t.status_id)?.category ?? t.status_category) === category
       ),
     }));
+  }
+
+  // ── Agent state (WS-55 EA-13e, EA3-43) ──────────────────────────────────
+  //
+  // The lanes are the pill's states, in the order of a person's attention:
+  // what needs me, what I answered, what works, what waits, what is idle, what
+  // stops, what failed, and the tasks with no agent. Only the lanes that hold
+  // a task are drawn, as every axis but `status` does. ONE lane for each
+  // task: a task has one pill. Not a field a person writes, so the board
+  // refuses a drop onto it (`board.dropRefusal`).
+  if (by === "agent") {
+    return AGENT_LANES.map((lane) => ({
+      key: lane.key,
+      label: lane.label,
+      tasks: tasks.filter((t) => agentLaneKey(t.agent_state) === lane.key),
+    })).filter((group) => group.tasks.length > 0);
   }
 
   const buckets = new Map<string, TaskGroup>();

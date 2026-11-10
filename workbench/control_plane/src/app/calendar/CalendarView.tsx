@@ -10,9 +10,15 @@
 // AppShell). Specs: calendar_timeboxing.md, calendar_focus_os.md,
 // calendar_ai_review.md.
 
+import { usePhoneBar } from "@/lib/shell/phoneBarEvent";
+import { AppTopBar } from "@/components/AppTopBar";
 import Button from "@/components/ui/Button";
+import { useViewMode } from "@/components/ViewModeProvider";
+import Modal from "@/components/ui/Modal";
+import { useToast } from "@/components/ui/Toast";
+import { useRouter } from "next/navigation";
 import Icon from "@/components/Icon";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   apiGetDayState,
   apiSetDayState,
@@ -57,8 +63,32 @@ import { CalendarSettings } from "./components/CalendarSettings";
 import { TimeGrid } from "./components/TimeGrid";
 import { MonthGrid } from "./components/MonthGrid";
 import { UnscheduledRail } from "./components/UnscheduledRail";
+import { CalendarDeepLink } from "./components/CalendarDeepLink";
+import { scrollTopFor, type CalendarLink, type ClockTime } from "./lib/calendarLink";
+import { ReminderFormModal, type ReminderFormValue } from "./components/ReminderFormModal";
+import { RemindersPanel, RemindersSheetBody } from "./components/RemindersPanel";
+import {
+  createReminder,
+  createdWords,
+  moveBack,
+  moveRefusal,
+  moveReminder,
+  gridZone,
+  reminderChatPath,
+  useReminders,
+  wallInputs,
+  whenText,
+  type MoveBack,
+  type ZonedTime,
+} from "./lib/reminders";
+import { runReminderAct } from "@/lib/shell/reminderOpen";
+import { ShellJob } from "@/lib/shell/doJob";
+import { browserTimeZone } from "@/app/tasks/lib/utils";
+import { dueDays } from "@/lib/taskCard";
+import { zoneToSave } from "@/lib/shell/saveZone";
 
 export function CalendarView() {
+  const { isMobile } = useViewMode();
   const items = useTaskStore((s) => s.items);
   const projects = useTaskStore((s) => s.projects);
   const updateItem = useTaskStore((s) => s.updateItem);
@@ -69,6 +99,7 @@ export function CalendarView() {
   const quickDispose = useTaskStore((s) => s.quickDispose);
   const loadDone = useTaskStore((s) => s.loadDone);
   const settings = useTaskStore((s) => s.settings);
+  const settingsLoaded = useTaskStore((s) => s.settingsLoaded);
   // ONE grid, like Google Calendar: it always renders the full 24 hours, so you
   // can view and schedule at any hour (no working-vs-24h toggle). The user's
   // WORKING HOURS aren't a wall — they're a soft zone: shaded on the grid, and
@@ -90,6 +121,116 @@ export function CalendarView() {
   // exact time); absent ⇒ opened from the FAB (auto-place into the first free
   // slot of `day`). The rail is desktop-only, so this is the phone path.
   const [sheet, setSheet] = useState<{ day: Date; at?: Date } | null>(null);
+
+  // Reminders (WS-66 RM-5). A reminder is a point in time: it takes no
+  // capacity and never enters the task store. `absent` (a 404 or a 403) draws
+  // nothing at all: no pin, chip, panel, button or error (§9).
+  const router = useRouter();
+  const toast = useToast();
+  const { list: remList, run: runReminder } = useReminders();
+  const remShown = remList.status === "ready";
+  // The grid draws on the browser's wall clock, so every reminder computation
+  // uses the browser's zone. `settings.timezone` is "UTC" until settings load.
+  const remZone = gridZone(browserTimeZone());
+  const [remForm, setRemForm] = useState<{ mode: "new"; title?: string } | { mode: "move"; id: string } | null>(null);
+  // `/calendar?reminder=<id>` (RX-2): the Reminders panel marks this row.
+  const [markReminder, setMarkReminder] = useState<string | null>(null);
+  const [remSheet, setRemSheet] = useState(false);
+  // The flag turned off (list "absent"): close the forms and the sheet.
+  if (!remShown && remList.status === "absent" && (remForm || remSheet)) {
+    setRemForm(null);
+    setRemSheet(false);
+  }
+  const openReminder = (id: string) => router.push(reminderChatPath(id));
+  const showWords = (variant: "success" | "error", title: string, action?: { label: string; onClick: () => void }) =>
+    toast.show({ key: "calendar-reminder", variant, title, action });
+  // A drag, an Alt+Arrow and "Move to…" all land here. A time at or before
+  // now is refused, the rule of the form. A move of a scheduled reminder
+  // offers Undo, which moves it back through `/reschedule` (`moveBack`).
+  const moveReminderTo = async (id: string, to: ZonedTime): Promise<string | null> => {
+    const refused = moveRefusal(to.ms, Date.now());
+    if (refused) {
+      showWords("error", refused);
+      return refused;
+    }
+    const was = remList.rows.find((r) => r.id === id);
+    const back = was ? moveBack(was, Date.now(), remZone) : null;
+    const out = await runReminder(() => moveReminder(id, { fireAt: to.iso, tz: remZone }));
+    if (!out.ok) {
+      showWords("error", out.words);
+      return out.words;
+    }
+    showWords(
+      "success",
+      `Moved to ${whenText(to.ms, remZone)}`,
+      back ? { label: "Undo", onClick: () => void moveReminderBack(id, back) } : undefined,
+    );
+    return null;
+  };
+  // The Undo of a move. The old time may have passed while the toast showed.
+  const moveReminderBack = async (id: string, back: MoveBack) => {
+    const refused = moveRefusal(back.ms, Date.now());
+    if (refused) return showWords("error", refused);
+    const out = await runReminder(() => moveReminder(id, { fireAt: back.fireAt, tz: back.tz }));
+    if (out.ok) showWords("success", `Moved back to ${whenText(back.ms, remZone)}`);
+    else showWords("error", out.words);
+  };
+  // Done and Drop, and their Undo, go through the one client of `/resolve`
+  // and `/reopen` (`runReminderAct`, shared with the chat chips). The toast
+  // closes before its Undo runs, so the Undo shows its own result.
+  const resolveReminderAs = async (id: string, action: "done" | "drop") => {
+    const out = await runReminder(() => runReminderAct(id, action));
+    if (!out.ok) return showWords("error", out.words);
+    showWords("success", action === "done" ? "Reminder done" : "Reminder dropped", {
+      label: "Undo",
+      onClick: () => void reopenReminderAgain(id),
+    });
+  };
+  const reopenReminderAgain = async (id: string) => {
+    const out = await runReminder(() => runReminderAct(id, "undo"));
+    if (out.ok) showWords("success", "The reminder is open again");
+    else showWords("error", out.words);
+  };
+  const submitReminderForm = async (v: ReminderFormValue): Promise<string | null> => {
+    if (!remForm) return null;
+    if (remForm.mode === "move") {
+      const words = await moveReminderTo(remForm.id, v.when);
+      if (!words) setRemForm(null);
+      return words;
+    }
+    const out = await runReminder(() =>
+      createReminder({ title: v.title, kind: v.kind, fireAt: v.when.iso, tz: remZone }),
+    );
+    if (!out.ok) {
+      showWords("error", out.words);
+      return out.words;
+    }
+    showWords("success", createdWords(out, v.when, remZone));
+    setRemForm(null);
+    return null;
+  };
+  const moving = remForm?.mode === "move" ? remList.rows.find((r) => r.id === remForm.id) : undefined;
+  // A link to one reminder: once the list is read, open the panel on it. A
+  // phone opens the sheet. A reminder that is not in the open list (closed,
+  // or not the member's) gets a plain toast, and nothing is marked. The mark
+  // fades after a few seconds, so it never reads as a lasting selection.
+  const linkedRow = markReminder ? remList.rows.find((r) => r.id === markReminder) : undefined;
+  const linkedAnswered = !!markReminder && (remList.status === "ready" || remList.status === "absent");
+  useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect -- the link is read once the list has answered */
+    if (!markReminder || !linkedAnswered) return;
+    if (!linkedRow) {
+      if (remList.status === "ready") showWords("error", "That reminder is closed, or it is not yours.");
+      setMarkReminder(null);
+      return;
+    }
+    setAnchor(startOfDay(new Date(linkedRow.fireMs)));
+    if (isMobile) setRemSheet(true);
+    const fade = setTimeout(() => setMarkReminder(null), 6000);
+    return () => clearTimeout(fade);
+    /* eslint-enable react-hooks/set-state-in-effect */
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `showWords` is rebuilt each render and reads only the toast
+  }, [markReminder, linkedAnswered, linkedRow?.id, isMobile]);
   // One live clock drives the now-line, the current-block ring and the Now/Next
   // countdowns so the whole surface ages in real time (30s tick).
   const now = useNow();
@@ -115,16 +256,39 @@ export function CalendarView() {
     setDayClosed(prefs.dayClosedOn === dayKey());
     /* eslint-enable react-hooks/set-state-in-effect */
   }, [now]);
+  // A link to a day and a time (WS-58 MD-3a, `/calendar?date=&at=`): the
+  // reader below hands it here. It opens the day view on that day, and the
+  // grid scrolls to the link's time. A bad part of the link is already gone
+  // (`lib/calendarLink.ts`), so a bad date opens today.
+  const [jumpAt, setJumpAt] = useState<ClockTime | null>(null);
+  const openLink = useCallback((link: CalendarLink) => {
+    setAnchor(link.date ?? startOfDay(new Date()));
+    setMode("day");
+    setJumpAt(link.at);
+    setMarkReminder(link.reminder);
+  }, []);
+  // A change by hand ends the link's time, so day → week → day lands on the
+  // current hour again, as it does with no link (MD-3a review). With no link
+  // `jumpAt` is already null, and the set changes nothing.
+  const pickMode = (m: Mode) => {
+    setJumpAt(null);
+    setMode(m);
+  };
+  const pickAnchor = (d: Date) => {
+    setJumpAt(null);
+    setAnchor(d);
+  };
   // The 24h grid is tall, so on open (and when switching to day/week) scroll to
   // ~1h before the current time — you land where the action is, not at midnight.
+  // A link's time wins over the current time.
   const gridScrollRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (mode === "month") return;
     const el = gridScrollRef.current;
     if (!el) return;
     const h = new Date().getHours();
-    el.scrollTop = Math.max(0, (h - 1) * HOUR_PX);
-  }, [mode]);
+    el.scrollTop = jumpAt ? scrollTopFor(jumpAt) : Math.max(0, (h - 1) * HOUR_PX);
+  }, [mode, jumpAt]);
   const handleToggleOneThing = (id: string) => {
     const prev = oneThingIdFor(new Date());
     toggleOneThing(new Date(), id);
@@ -168,10 +332,15 @@ export function CalendarView() {
 
   // Persist the user's real IANA timezone so the server-side nightly roll-over
   // computes their local-day boundary correctly (defaults to UTC otherwise).
+  // RX-7: only when the saved zone is unset or the "UTC" default (`zoneToSave`,
+  // the shell's one rule), and only once the saved settings were read. A zone
+  // the member chose in the settings below stays.
   useEffect(() => {
-    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    if (tz && tz !== settings.timezone) void updateSettings({ timezone: tz });
-  }, [settings.timezone, updateSettings]);
+    if (!settingsLoaded) return;
+    const tz = browserTimeZone();
+    const zone = zoneToSave(settings.timezone, tz);
+    if (zone) void updateSettings({ timezone: zone });
+  }, [settingsLoaded, settings.timezone, updateSettings]);
 
   // Pull DONE tasks into the store so COMPLETED time-blocks stay on the grid
   // (they're excluded from the normal hydrate). Keeps the sense of progress.
@@ -184,18 +353,39 @@ export function CalendarView() {
   // schedule). The gateway planner reads the same rule (`plannerCandidates`).
   const unscheduled = useMemo(() => plannerCandidates(items), [items]);
 
+  // The phone bar (MOB-12): Today, Schedule and Reminders. The bar holds what
+  // the floating button and the top bell held. Month has no time to place a
+  // task in, and a closed reminders flag draws no list. Reminders hides only
+  // when the flag is off ("absent"). While the list loads the tab stays, so
+  // the bar does not reflow, and its sheet shows a loading row.
+  usePhoneBar({
+    hide: [...(mode === "month" ? ["calendar-schedule"] : []), ...(remList.status === "absent" ? ["calendar-reminders"] : [])],
+    counts: { "calendar-schedule": unscheduled.length, "calendar-reminders": remList.total },
+  });
+  useEffect(() => {
+    const h = (e: Event) => {
+      const tab = (e as CustomEvent<string>).detail;
+      if (tab === "calendar-today") pickAnchor(startOfDay(new Date()));
+      else if (tab === "calendar-schedule") setSheet({ day: mode === "week" ? startOfWeek(anchor) : anchor });
+      else if (tab === "calendar-reminders" && remList.status !== "absent") setRemSheet(true);
+    };
+    window.addEventListener("cc-mobile-nav", h);
+    return () => window.removeEventListener("cc-mobile-nav", h);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `pickAnchor` only sets state
+  }, [mode, anchor, remList.status]);
+
   // Deadline radar: unscheduled next actions with a due date approaching (≤14d)
   // — the ones most likely to slip because they were never timeboxed.
   const dueSoon = useMemo(() => {
     // eslint-disable-next-line react-hooks/purity
     const nowMs = Date.now();
     const horizon = nowMs + 14 * 86400000;
+    // Whole local days by RX-5's rule (`dueDays`): 0 is today, a negative
+    // count is overdue. A rounded-up count of hours called a task due tonight
+    // "due tomorrow", and a task three weeks late "due today".
     return unscheduled
       .filter((i) => i.dueAt && new Date(i.dueAt).getTime() <= horizon)
-      .map((i) => ({
-        item: i,
-        days: Math.ceil((new Date(i.dueAt as string).getTime() - nowMs) / 86400000),
-      }))
+      .map((i) => ({ item: i, days: dueDays(i.dueAt, nowMs) ?? 0 }))
       .sort((a, b) => a.days - b.days);
   }, [unscheduled]);
 
@@ -370,10 +560,10 @@ export function CalendarView() {
   };
 
   const step = (dir: 1 | -1) =>
-    setAnchor((a) =>
+    pickAnchor(
       mode === "month"
-        ? addMonths(a, dir)
-        : addDays(a, dir * (mode === "week" ? 7 : 1)),
+        ? addMonths(anchor, dir)
+        : addDays(anchor, dir * (mode === "week" ? 7 : 1)),
     );
 
   const title =
@@ -392,120 +582,181 @@ export function CalendarView() {
       ? Array.from({ length: 7 }, (_, i) => addDays(startOfWeek(anchor), i))
       : [anchor];
 
-  return (
-    <div className="relative flex h-full min-h-0 flex-col bg-background">
-      {/* Header: title, nav, mode toggle */}
-      <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
-        <Icon name="CalendarDays" className="h-5 w-5 shrink-0 text-primary" />
-        <h1 className="text-base font-semibold text-foreground">{title}</h1>
-        <div className="ml-2 flex items-center gap-0.5">
-          <Button variant="ghost" size="icon-xs" radius="keep" layout="" type="button" aria-label="Previous" onClick={() => step(-1)} className="rounded-md">
-            <Icon name="ChevronLeft" className="h-4 w-4" />
-          </Button>
-          <Button variant="ghost" size="none" radius="keep" layout="" type="button" onClick={() => setAnchor(startOfDay(new Date()))} className="rounded-md px-2 py-1 text-xs">
-            Today
-          </Button>
-          <Button variant="ghost" size="icon-xs" radius="keep" layout="" type="button" aria-label="Next" onClick={() => step(1)} className="rounded-md">
-            <Icon name="ChevronRight" className="h-4 w-4" />
-          </Button>
-        </div>
-        {/* Actions: share the row with the title on desktop (ml-auto), but on
-            mobile take a FULL second row so the pills never get squeezed into
-            wrapping against the date. */}
-        <div className="relative flex w-full items-center gap-2 sm:ml-auto sm:w-auto">
-          {dueSoon.length > 0 && (
-            <span
-              title={`${dueSoon.length} unscheduled task(s) due within 2 weeks`}
-              className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-warning/15 px-2 py-0.5 text-[11px] font-medium text-warning"
-            >
-              <Icon name="AlertTriangle" className="h-3 w-3" />
-              {dueSoon.length} due soon
-            </span>
-          )}
-          {/* (Re)start the day — the ritual is never locked out: skipped the
-              morning banner, or want to re-pick the One Thing? Run it again. */}
-          {!dayClosed && (
-            <button
-              type="button"
-              onClick={() => setStartupOpen(true)}
-              title="Start (or restart) your day — breathe · review · commit the One Thing"
-              className="tech-transition inline-flex items-center gap-1.5 rounded-md bg-secondary px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
-            >
-              <Icon name="Sun" className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Start day</span>
-            </button>
-          )}
-          {hasTodayActivity && (
-            <button
-              type="button"
-              onClick={() => setReviewOpen(true)}
-              title="End-of-day review — what got done, what carries forward, estimate accuracy"
-              className="tech-transition inline-flex items-center gap-1.5 rounded-md bg-secondary px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
-            >
-              <Icon name="ClipboardCheck" className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Review</span>
-            </button>
-          )}
-          {canReplan && (
-            <button
-              type="button"
-              onClick={() => setPlanMode("replan")}
-              title="Fit what's left: reshuffle today's not-done tasks into the time you have left, and move anything that no longer fits back to your list. Adds no new tasks."
-              className="tech-transition inline-flex items-center gap-1.5 rounded-md bg-secondary px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
-            >
-              <Icon name="CalendarClock" className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Fit what&apos;s left</span>
-            </button>
-          )}
+  // Back, Today and on. One group. On a phone the bottom bar holds Today, so
+  // the arrows stay and Today leaves.
+  const dayNav = (
+    <div className="flex items-center gap-0.5">
+      <Button variant="ghost" size="icon-xs" radius="keep" layout="" type="button" aria-label="Previous" onClick={() => step(-1)} className="rounded-md">
+        <Icon name="ChevronLeft" className="h-4 w-4" />
+      </Button>
+      {/* On a phone the bar's Today tab holds it (MOB-12). */}
+      {!isMobile && (
+        <Button variant="ghost" size="none" radius="keep" layout="" type="button" onClick={() => pickAnchor(startOfDay(new Date()))} className="rounded-md px-2 py-1 text-xs">
+          Today
+        </Button>
+      )}
+      <Button variant="ghost" size="icon-xs" radius="keep" layout="" type="button" aria-label="Next" onClick={() => step(1)} className="rounded-md">
+        <Icon name="ChevronRight" className="h-4 w-4" />
+      </Button>
+    </div>
+  );
+
+  // The day's tools: due soon, the rituals, the planner, the settings and
+  // the mode switch. The settings popover anchors to the box that holds them.
+  // Due soon, Start day, Review and "Fit what's left" show their words from
+  // 2xl only, so the common 1280 to 1440 case stays one clean row with every
+  // tool up. Each keeps its icon, its aria-label and its title. Narrower than
+  // that, the app bar wraps its tools to a second line (`AppTopBar`).
+  const dayTools = (
+    <>
+      {dueSoon.length > 0 && (
+        <span
+          title={`${dueSoon.length} unscheduled task(s) due within 2 weeks`}
+          className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-warning/15 px-2 py-0.5 text-[11px] font-medium text-warning"
+        >
+          <Icon name="AlertTriangle" className="h-3 w-3" />
+          {dueSoon.length}
+          <span className="sr-only 2xl:not-sr-only">due soon</span>
+        </span>
+      )}
+      {/* (Re)start the day — the ritual is never locked out: skipped the
+          morning banner, or want to re-pick the One Thing? Run it again. */}
+      {!dayClosed && (
+        <button
+          type="button"
+          onClick={() => setStartupOpen(true)}
+          title="Start (or restart) your day — breathe · review · commit the One Thing"
+          aria-label="Start day"
+          className="tech-transition inline-flex items-center gap-1.5 rounded-md bg-secondary px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
+        >
+          <Icon name="Sun" className="h-3.5 w-3.5" />
+          <span className="hidden 2xl:inline">Start day</span>
+        </button>
+      )}
+      {hasTodayActivity && (
+        <button
+          type="button"
+          onClick={() => setReviewOpen(true)}
+          title="End-of-day review — what got done, what carries forward, estimate accuracy"
+          aria-label="Review"
+          className="tech-transition inline-flex items-center gap-1.5 rounded-md bg-secondary px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
+        >
+          <Icon name="ClipboardCheck" className="h-3.5 w-3.5" />
+          <span className="hidden 2xl:inline">Review</span>
+        </button>
+      )}
+      {canReplan && (
+        <button
+          type="button"
+          onClick={() => setPlanMode("replan")}
+          title="Fit what's left: reshuffle today's not-done tasks into the time you have left, and move anything that no longer fits back to your list. Adds no new tasks."
+          aria-label="Fit what's left"
+          className="tech-transition inline-flex items-center gap-1.5 rounded-md bg-secondary px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
+        >
+          <Icon name="CalendarClock" className="h-3.5 w-3.5" />
+          <span className="hidden 2xl:inline">Fit what&apos;s left</span>
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={() => setPlanMode("plan")}
+        title="Rebuild my day: reshuffle what's on your calendar into the time left, trim the overflow back to your list, and fill any remaining room from My tasks."
+        className="tech-transition inline-flex items-center gap-1.5 rounded-md bg-primary/10 px-2.5 py-1.5 text-xs font-medium text-primary hover:bg-primary/20"
+      >
+        <Icon name="Wand2" className="h-3.5 w-3.5" />
+        <span className="hidden sm:inline">Rebuild my day</span>
+      </button>
+      {remShown && !isMobile && (
+        <button
+          type="button"
+          onClick={() => setRemForm({ mode: "new" })}
+          title="New reminder: set a time and a title"
+          aria-label="New reminder"
+          className="tech-transition inline-flex items-center gap-1.5 rounded-md bg-secondary px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
+        >
+          <Icon name="BellPlus" className="h-3.5 w-3.5" />
+          <span className="hidden 2xl:inline">New reminder</span>
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={() => setSettingsOpen((v) => !v)}
+        aria-label="Calendar settings"
+        title="Day window, capacity, energy windows"
+        className={[
+          "tech-transition rounded-md p-1.5",
+          settingsOpen
+            ? "bg-secondary text-foreground"
+            : "text-muted-foreground hover:bg-secondary hover:text-foreground",
+        ].join(" ")}
+      >
+        <Icon name="Settings2" className="h-4 w-4" />
+      </button>
+      <div className="ml-auto flex rounded-lg bg-secondary p-0.5 text-xs sm:ml-0">
+        {(["day", "week", "month"] as Mode[]).map((m) => (
           <button
+            key={m}
             type="button"
-            onClick={() => setPlanMode("plan")}
-            title="Rebuild my day: reshuffle what's on your calendar into the time left, trim the overflow back to your list, and fill any remaining room from your Next Actions."
-            className="tech-transition inline-flex items-center gap-1.5 rounded-md bg-primary/10 px-2.5 py-1.5 text-xs font-medium text-primary hover:bg-primary/20"
-          >
-            <Icon name="Wand2" className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">Rebuild my day</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setSettingsOpen((v) => !v)}
-            aria-label="Calendar settings"
-            title="Day window, capacity, energy windows"
+            onClick={() => pickMode(m)}
             className={[
-              "tech-transition rounded-md p-1.5",
-              settingsOpen
-                ? "bg-secondary text-foreground"
-                : "text-muted-foreground hover:bg-secondary hover:text-foreground",
+              "tech-transition rounded-md px-2.5 py-1 font-medium capitalize",
+              mode === m
+                ? "bg-card text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground",
             ].join(" ")}
           >
-            <Icon name="Settings2" className="h-4 w-4" />
+            {m}
           </button>
-          <div className="ml-auto flex rounded-lg bg-secondary p-0.5 text-xs sm:ml-0">
-            {(["day", "week", "month"] as Mode[]).map((m) => (
-              <button
-                key={m}
-                type="button"
-                onClick={() => setMode(m)}
-                className={[
-                  "tech-transition rounded-md px-2.5 py-1 font-medium capitalize",
-                  mode === m
-                    ? "bg-card text-foreground shadow-sm"
-                    : "text-muted-foreground hover:text-foreground",
-                ].join(" ")}
-              >
-                {m}
-              </button>
-            ))}
-          </div>
-          {settingsOpen && (
-            <CalendarSettings
-              settings={settings}
-              onChange={(patch) => void updateSettings(patch)}
-              onClose={() => setSettingsOpen(false)}
-            />
-          )}
-        </div>
+        ))}
       </div>
+      {settingsOpen && (
+        <CalendarSettings
+          settings={settings}
+          onChange={(patch) => void updateSettings(patch)}
+          onClose={() => setSettingsOpen(false)}
+        />
+      )}
+    </>
+  );
+
+  return (
+    <div className="relative isolate flex h-full min-h-0 flex-col bg-background">
+      {/* The reader of `?date=&at=` (MD-3a). `useSearchParams` needs a
+          Suspense boundary, and this one holds only the reader. */}
+      <Suspense fallback={null}>
+        <CalendarDeepLink onLink={openLink} />
+      </Suspense>
+      {/* The command bar's "New reminder" job (RX-6, `?do=new-reminder`): it
+          opens the form and saves nothing. A filled title is a suggestion. */}
+      <ShellJob
+        id="new-reminder"
+        ready={remShown}
+        onOpen={(fields) => setRemForm({ mode: "new", title: fields.title?.trim().slice(0, 200) || undefined })}
+      />
+      {/* The app's title bar (owner, 2026-10-10): the name, then the day
+          you are on with its arrows, then the day's tools at the right end.
+          The arrows sit BEFORE the date, so a press never moves them. The
+          phone draws the compact bar with the date as its title, and the
+          tools on a row of their own. */}
+      {isMobile ? (
+        <>
+          <AppTopBar compact title={title} actions={dayNav} />
+          <div className="relative flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-3 py-2">
+            {dayTools}
+          </div>
+        </>
+      ) : (
+        <AppTopBar
+          title="Calendar"
+          actions={
+            <>
+              {dayNav}
+              <span className="whitespace-nowrap text-xs font-medium text-foreground">{title}</span>
+            </>
+          }
+          tools={<div className="relative flex flex-wrap items-center justify-end gap-2">{dayTools}</div>}
+        />
+      )}
 
       {/* Now / Next — always reflects the *real* current time (today), even when
           you're browsing another day/week. The antidote to time-blindness, and
@@ -529,7 +780,7 @@ export function CalendarView() {
       {/* Startup ritual offer — once per local day, dismissible. Habits form
           around rituals; the banner invites, it never ambushes. */}
       {startupOffered && !startupOpen && !dayClosed && (
-        <div className="flex items-center gap-2 border-b border-border bg-warning/5 px-4 py-2 text-xs">
+        <div className="flex items-center gap-2 border-b border-border bg-warning/5 px-4 py-2 text-xs glass:mx-3 glass:mt-2 glass:rounded-xl glass:border-0">
           <Icon name="Sun" className="h-4 w-4 shrink-0 text-warning" />
           <span className="min-w-0 flex-1 text-foreground">
             Start your day — breathe · review · commit the One Thing.
@@ -551,7 +802,7 @@ export function CalendarView() {
       )}
 
       {overdueCount > 0 && (
-        <div className="flex items-center gap-2 border-b border-warning/40 bg-warning/10 px-4 py-2 text-xs">
+        <div className="flex items-center gap-2 border-b border-warning/40 bg-warning/10 px-4 py-2 text-xs glass:mx-3 glass:mt-2 glass:rounded-xl glass:border-0">
           <Icon name="AlertTriangle" className="h-4 w-4 shrink-0 text-warning" />
           <span className="min-w-0 flex-1 text-foreground">
             {overdueCount} unfinished task{overdueCount === 1 ? "" : "s"} from
@@ -576,10 +827,13 @@ export function CalendarView() {
               anchor={anchor}
               items={items}
               onPickDay={(d) => {
-                setAnchor(d);
+                pickAnchor(d);
                 setMode("day");
               }}
               onOpen={openFocus}
+              reminders={remShown ? remList.rows : []}
+              reminderZone={remZone}
+              onOpenReminder={openReminder}
             />
           ) : (
             <TimeGrid
@@ -612,52 +866,106 @@ export function CalendarView() {
               onReschedulePopup={openSchedule}
               onMoveToFree={moveToNextFree}
               onDelete={(id) => requestDelete([id])}
+              reminders={remShown ? remList.rows : []}
+              reminderZone={remZone}
+              onOpenReminder={openReminder}
+              onMoveReminder={(id, to) => void moveReminderTo(id, to)}
+              onPickReminderMove={(id) => setRemForm({ mode: "move", id })}
+              onResolveReminder={(id, action) => void resolveReminderAs(id, action)}
             />
           )}
         </div>
 
         {/* Unscheduled rail — click a task to timebox it into the focused day.
             Hidden in month mode. */}
-        {mode !== "month" && (
-          <UnscheduledRail
-            tasks={unscheduled}
-            capacityMins={leverageStats.totalMins}
-            capacityTarget={capacityTarget}
-            leveragedMins={leverageStats.leveragedMins}
-            oneThingId={oneThingId}
-            onToggleOneThing={handleToggleOneThing}
-            dueSoon={dueSoon}
-            urgentWindowHours={settings.urgentWindowHours}
-            doneStats={doneStats}
-            onPlan={() => setPlanMode("plan")}
-            onOpen={openFocus}
-            onTimebox={(t) =>
-              schedule(t, mode === "week" ? startOfWeek(anchor) : anchor)
-            }
-            onReschedulePopup={openSchedule}
-            onDelete={(id) => requestDelete([id])}
-          />
+        {(mode !== "month" || remShown) && (
+          <div className="hidden min-h-0 shrink-0 flex-col md:flex">
+            {/* Reminders panel — in every mode, so month mode keeps it. On a
+                phone the title bar's Reminders button opens it as a sheet. */}
+            {remShown && (
+              <RemindersPanel
+                rows={remList.rows}
+                total={remList.total}
+                zone={remZone}
+                fill={mode === "month"}
+                marked={markReminder}
+                onNew={() => setRemForm({ mode: "new" })}
+                onOpen={openReminder}
+                onMove={(id) => setRemForm({ mode: "move", id })}
+                onResolve={(id, action) => void resolveReminderAs(id, action)}
+              />
+            )}
+            {mode !== "month" && (
+              <div className="flex min-h-0 flex-1">
+                <UnscheduledRail
+                  tasks={unscheduled}
+                  capacityMins={leverageStats.totalMins}
+                  capacityTarget={capacityTarget}
+                  leveragedMins={leverageStats.leveragedMins}
+                  oneThingId={oneThingId}
+                  onToggleOneThing={handleToggleOneThing}
+                  dueSoon={dueSoon}
+                  urgentWindowHours={settings.urgentWindowHours}
+                  doneStats={doneStats}
+                  onPlan={() => setPlanMode("plan")}
+                  onOpen={openFocus}
+                  onTimebox={(t) =>
+                    schedule(t, mode === "week" ? startOfWeek(anchor) : anchor)
+                  }
+                  onReschedulePopup={openSchedule}
+                  onDelete={(id) => requestDelete([id])}
+                />
+              </div>
+            )}
+          </div>
         )}
       </div>
 
-      {/* Mobile scheduling entry point — the rail is desktop-only and touch has
-          no drag-and-drop, so on a phone this is how you timebox: pick a task
-          (auto-placed) or Plan the whole day. Anchored to the calendar area so
-          it sits above the app's bottom bar. */}
-      {mode !== "month" && (
-        <button
-          type="button"
-          onClick={() =>
-            setSheet({ day: mode === "week" ? startOfWeek(anchor) : anchor })
-          }
-          aria-label="Schedule a task"
-          className="tech-transition absolute bottom-4 right-4 z-30 inline-flex items-center gap-1.5 rounded-full bg-primary px-4 py-3 font-semibold text-primary-foreground shadow-lg hover:opacity-90 md:hidden"
-        >
-          <Icon name="CalendarPlus" className="h-5 w-5" />
-          {unscheduled.length > 0 && (
-            <span className="text-sm tabular-nums">{unscheduled.length}</span>
+      {remShown && remForm?.mode === "new" && (
+        <ReminderFormModal
+          mode="new"
+          initialTitle={remForm.title}
+          zone={remZone}
+          onSubmit={submitReminderForm}
+          onClose={() => setRemForm(null)}
+        />
+      )}
+      {remShown && remForm?.mode === "move" && moving && (
+        <ReminderFormModal
+          mode="move"
+          zone={remZone}
+          heading={moving.title}
+          initial={wallInputs(moving.fireMs, remZone)}
+          onSubmit={submitReminderForm}
+          onClose={() => setRemForm(null)}
+        />
+      )}
+      {remSheet && remList.status !== "absent" && (
+        <Modal open onClose={() => setRemSheet(false)} title="Reminders" icon="Bell" placement="sheet" size="md" className="max-h-[80dvh]">
+          {!remShown ? (
+            <p className="px-3 py-4 text-xs text-muted-foreground">Loading your reminders…</p>
+          ) : (
+          <RemindersSheetBody
+            rows={remList.rows}
+            total={remList.total}
+            zone={remZone}
+            marked={markReminder}
+            onNew={() => {
+              setRemSheet(false);
+              setRemForm({ mode: "new" });
+            }}
+            onOpen={(id) => {
+              setRemSheet(false);
+              openReminder(id);
+            }}
+            onMove={(id) => {
+              setRemSheet(false);
+              setRemForm({ mode: "move", id });
+            }}
+            onResolve={(id, action) => void resolveReminderAs(id, action)}
+          />
           )}
-        </button>
+        </Modal>
       )}
 
       {sheet && (

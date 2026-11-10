@@ -18,6 +18,7 @@
  */
 import { PILL_HUE, hours } from "@/app/people/lib/dashboard";
 import type { AccentHue } from "@/lib/statusAccent";
+import { personDisplayName } from "@/lib/personName";
 
 import type { CapacityReport, CapacityRow } from "./api";
 import { asList } from "./analyticsRead";
@@ -35,7 +36,8 @@ export function rowLabel(row: CapacityRow): string {
   // An agent keeps its address, `agent:<name>`, as the Load panel beside
   // this one prints it. A bare name would read as a colleague.
   if (row.kind === "agent") return row.assignee;
-  return row.name || row.assignee;
+  // Never the address: a directory "name" can BE the address (`personName.ts`).
+  return personDisplayName(row.name, row.assignee);
 }
 
 /** Whether the server sent this row's HR half at all. */

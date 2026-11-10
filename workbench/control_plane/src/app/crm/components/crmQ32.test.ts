@@ -1,0 +1,1270 @@
+// The open questions on screen (WS-53 CRM-Q32-3, and the frontend half of
+// CRM-Q32-4), spec crm_platform.md §18.14.5, §18.14.6 and §18.14.9. The runner
+// has no DOM, so each view is rendered to a string, and a wire that only the
+// page holds is read from its source.
+import { readFileSync } from "node:fs";
+
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { afterEach, describe, expect, it } from "vitest";
+
+import { RECOMMENDED_LABEL } from "@/components/RecommendedBadge";
+import { clearAll, peek, put } from "@/lib/dataCache";
+
+import * as api from "../lib/api";
+import { CrmError } from "../lib/api";
+import * as questionsLib from "../lib/questions";
+import {
+  AUTO,
+  NOT_RELEVANT_TIP,
+  PURPOSE_WORDS,
+  REVENUE_DEFAULT_BADGE,
+  LET_METORITE,
+  NOT_DISMISSED_LINE,
+  NONE_PICK,
+  NO_QUESTIONS,
+  PLAN_MOVED,
+  QUESTIONS_NOTE,
+  QUESTIONS_UNREAD,
+  QUESTION_MOVED,
+  REVENUE_DEFAULT_LINE,
+  SHOWN,
+  answerGroups,
+  answerPicks,
+  applyLabel,
+  batchIds,
+  batchLabel,
+  batchLine,
+  batchShown,
+  batchUndoCalls,
+  byLine,
+  correctionTarget,
+  correctionUndo,
+  currentLabel,
+  examplesLine,
+  fillLabel,
+  notDismissed,
+  openCount,
+  pickToValue,
+  pickValue,
+  questionError,
+  questionTitle,
+  questionsGate,
+  railCount,
+  readQuestions,
+  reasonBadge,
+  sampleText,
+  savedLine,
+  undoOf,
+  visibleQuestions,
+  type AnswerDone,
+  type Question,
+  type QuestionsBody,
+  type QuestionsRead,
+} from "../lib/questions";
+import {
+  SUM_CHECKING,
+  SUM_CHECK_DELAY,
+  SUM_CHECK_FAILED,
+  SUM_CHOICE_LABEL,
+  SUM_CHOICE_LINE,
+  SUM_PICK,
+  sumBlocked,
+  sumCheckKey,
+  sumCheckView,
+  sumHint,
+  sumOffered,
+  sumReady,
+  sumStart,
+  toggleSum,
+  type SumCheck,
+  type SumCheckView,
+} from "../lib/questions";
+import { defaultSection, shownSection, visibleSections } from "../lib/settingsSections";
+import CrmRail, { SettingsSectionRows } from "./CrmRail";
+import {
+  BatchBody,
+  OpenQuestionsView,
+  QuestionCard,
+  YourAnswersView,
+  type AnswersHandlers,
+  type QuestionHandlers,
+} from "./OpenQuestions";
+import { SumPickerBody } from "./SumPicker";
+
+const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
+const noop = () => undefined;
+
+// ── Fixtures, in the shape of `crm_sync/questions.wire` ─────────────────────
+
+const base = (over: Partial<Question>): Question => ({
+  id: "key:Payment_Received:amount",
+  kind: "key_field",
+  module: "Payment_Received",
+  label: "Collection",
+  part: "amount",
+  reason: "unsure",
+  records: 8681,
+  money: true,
+  why: "Totals of Collection use this field.",
+  choices: [],
+  none: true,
+  other: true,
+  current: null,
+  by: null,
+  dismissible: true,
+  options: [],
+  ...over,
+});
+
+const KEY = base({
+  choices: [
+    { value: "IP_Amount", label: "IP Amount", fill: 0.52, samples: ["12400", "8000", "3250"], best: true },
+    { value: "Amount_Due", label: "Amount Due", fill: 0.31, samples: ["900"], best: false },
+  ],
+  options: [
+    { value: "IP_Amount", label: "IP Amount", fill: 0.52 },
+    { value: "Amount_Due", label: "Amount Due", fill: 0.31 },
+    { value: "Grand_Total", label: "Grand Total", fill: 0.05 },
+  ],
+});
+
+const DATE = base({
+  id: "key:Payment_Received:date",
+  part: "date",
+  reason: "stale",
+  why: "Totals of Collection by month or quarter use this date.",
+  choices: [{ value: "Paid_On", label: "Paid On", fill: 0.9, samples: ["2026-01-02"], best: true }],
+  options: [{ value: "Paid_On", label: "Paid On", fill: 0.9 }],
+});
+
+const PURPOSE = base({
+  id: "purpose:Visits",
+  kind: "purpose",
+  module: "Visits",
+  label: "Visits",
+  part: "purpose",
+  reason: "open",
+  records: 412,
+  money: false,
+  why: "Totals and chat answers about Visits wait for this answer.",
+  choices: [{ value: "activity", label: "Activity", best: true }],
+  options: [
+    { value: "activity", label: "Activity" },
+    { value: "other", label: "Other" },
+  ],
+});
+
+const SLOT = base({
+  id: "slot:deal",
+  kind: "slot",
+  module: null,
+  label: "Deals",
+  part: null,
+  reason: "unsure",
+  records: 0,
+  why: "Deals holds no records. Commercials could stand in for it.",
+  choices: [
+    { value: "Commercials", label: "Commercials", records: 24, samples: ["A•••", "B•••"], best: true },
+  ],
+  other: false,
+  options: null,
+  slot: "deal",
+});
+
+const STAGE = base({
+  id: "stage:deal:3f9a",
+  kind: "stage_value",
+  module: "Potentials",
+  label: "Deals",
+  part: null,
+  reason: "open",
+  records: 12,
+  why: "12 records with this value show as Unsorted.",
+  choices: [
+    { value: "open", label: "Open", best: false },
+    { value: "won", label: "Won", best: false },
+    { value: "lost", label: "Lost", best: false },
+  ],
+  none: false,
+  other: false,
+  options: null,
+  slot: "deal",
+  count: 12,
+  value: "Negotiation",
+  field: "Stage",
+});
+
+const REVENUE = base({
+  id: "revenue",
+  kind: "revenue",
+  module: null,
+  label: "Revenue",
+  part: null,
+  reason: "open",
+  records: 8681,
+  why: "Each answer about revenue uses this. Until you answer, Metorite uses Billed.",
+  choices: [
+    { value: "invoice", label: "Billed", modules: ["Invoices"], best: false },
+    { value: "payment_in", label: "Collected", modules: ["Collection"], best: false },
+  ],
+  none: false,
+  other: false,
+  dismissible: false,
+  options: null,
+});
+
+const body = (shown: Question[], over: Partial<QuestionsBody> = {}): QuestionsBody => ({
+  open: shown.length,
+  shown,
+  more: 0,
+  answered: [],
+  plan: 41,
+  ...over,
+});
+
+const ON = (b: QuestionsBody): QuestionsRead => ({ off: false, body: b });
+
+const handlers = (over: Partial<QuestionHandlers> = {}): QuestionHandlers => ({
+  busy: null,
+  onAnswer: noop,
+  onDismiss: noop,
+  onSlot: noop,
+  onSum: noop,
+  ...over,
+});
+
+const answersHandlers: AnswersHandlers = { busy: null, onChange: noop, onRetry: noop, onSum: noop };
+
+const card = (q: Question, over: Partial<QuestionHandlers> = {}) =>
+  renderToStaticMarkup(createElement(QuestionCard, { q, handlers: handlers(over) }));
+
+const view = (props: Partial<Parameters<typeof OpenQuestionsView>[0]> = {}) =>
+  renderToStaticMarkup(
+    createElement(OpenQuestionsView, {
+      read: ON(body([KEY])),
+      failed: false,
+      onRetry: noop,
+      tab: "open",
+      onTab: noop,
+      expanded: false,
+      onExpand: noop,
+      handlers: handlers(),
+      onBatch: noop,
+      answers: { body: null, failed: false, handlers: answersHandlers },
+      ...props,
+    }),
+  );
+
+/** The text a person reads, and the names a reader of the screen hears. */
+const textOf = (html: string) =>
+  [
+    html.replace(/<[^>]+>/g, " "),
+    ...[...html.matchAll(/(?:aria-label|title)="([^"]*)"/g)].map((m) => m[1]),
+  ].join(" ");
+
+/** No engine word and no confidence number (§18.14.9, CRM-Q31-4 item 2). */
+const ENGINE_WORDS = /\bdraft\b|\bversion\b|\brole\b|\bslot\b|overlay|\bplan\b|confiden|\branked\b|0\.\d/i;
+
+// ── Item 1: the section, gated by the read ─────────────────────────────────
+
+describe("the section and its gate (item 1)", () => {
+  it("shows to an admin in Mirror mode, before Suggestions, only while the read is on", () => {
+    const on = visibleSections({ isAdmin: true, mode: "mirror", questions: "on" }).map((s) => s.id);
+    expect(on.indexOf("questions")).toBe(on.indexOf("suggestions") - 1);
+    for (const questions of ["off", "unknown", undefined] as const) {
+      expect(visibleSections({ isAdmin: true, mode: "mirror", questions }).map((s) => s.id)).not.toContain(
+        "questions",
+      );
+    }
+    // A member and a Native CRM never see it, also with the gate on.
+    expect(visibleSections({ isAdmin: false, mode: "mirror", questions: "on" }).map((s) => s.id)).not.toContain(
+      "questions",
+    );
+    expect(visibleSections({ isAdmin: true, mode: "native", questions: "on" }).map((s) => s.id)).not.toContain(
+      "questions",
+    );
+  });
+
+  it("reads a 404 questions_off, a 403 and a 409 as off, and throws any other failure", async () => {
+    const fail = (status: number, code?: string) => () =>
+      Promise.reject(new CrmError("no", status, code));
+    expect(await readQuestions(fail(404, "questions_off"))).toEqual({ off: true });
+    expect(await readQuestions(fail(403))).toEqual({ off: true });
+    expect(await readQuestions(fail(409, "not_mirror"))).toEqual({ off: true });
+    await expect(readQuestions(fail(500))).rejects.toThrow("no");
+    const b = body([KEY]);
+    expect(await readQuestions(() => Promise.resolve(b))).toEqual({ off: false, body: b });
+  });
+
+  it("holds the gate unknown while the first read runs, and on after a failure the section can show", () => {
+    expect(questionsGate(undefined, false)).toBe("unknown");
+    expect(questionsGate(undefined, true)).toBe("on");
+    expect(questionsGate({ off: true }, false)).toBe("off");
+    expect(questionsGate(ON(body([])), false)).toBe("on");
+    expect(openCount({ off: true })).toBe(0);
+    expect(openCount(undefined)).toBe(0);
+    expect(openCount(ON(body([KEY], { open: 9 })))).toBe(9);
+  });
+
+  it("opens the section first for an admin with open questions, and Setup with none", () => {
+    const ctx = { isAdmin: true, mode: "mirror" as const, questions: "on" as const };
+    expect(defaultSection({ ...ctx, openQuestions: 3 })).toBe("questions");
+    expect(defaultSection({ ...ctx, openQuestions: 0 })).toBe("setup");
+    expect(defaultSection({ ...ctx, questions: "off", openQuestions: 3 })).toBe("setup");
+    expect(defaultSection({ isAdmin: false, mode: "mirror", questions: "on", openQuestions: 3 })).toBe("stages");
+    // A link to the section of an org outside the list draws the default.
+    expect(shownSection("questions", { ...ctx, questions: "off" })).toBe("setup");
+  });
+
+  it("wires one read to the gate, the rail count, the default and the card in the page", () => {
+    const page = read("../page.tsx");
+    expect(page).toContain('const questions = useQuestions(ctx.isAdmin && ctx.mode === "mirror");');
+    expect(page).toContain("questions: questions.gate,");
+    expect(page).toContain("openQuestions: questionsOpen,");
+    expect(page).toContain('questions: questions.gate === "on" ? railCount(questionsOpen) : null,');
+    expect(page).toContain('questions={questions.gate === "on" ? <OpenQuestionsCard /> : undefined}');
+    // The page and the section share ONE read of GET /crm/questions.
+    const comp = read("./OpenQuestions.tsx");
+    expect(comp.match(/useCachedResource<QuestionsRead>\(enabled \? QUESTIONS_KEY/g)?.length).toBe(1);
+    expect(page).not.toContain("listQuestions");
+    expect(comp.match(/api\.listQuestions\(\{ limit: READ_LIMIT \}\)/g)?.length).toBe(1);
+    expect(read("./PipelineSettings.tsx")).toContain('{readOnly && show("questions") && questions}');
+  });
+
+  it("draws nothing when the read says off", () => {
+    expect(view({ read: { off: true } })).toBe("");
+  });
+});
+
+// ── Items 2 and 7: the cards of each kind ──────────────────────────────────
+
+describe("a key field card", () => {
+  const html = card(KEY);
+
+  it("asks a full question, with a badge, why we ask and what the answer changes", () => {
+    expect(questionTitle(KEY)).toBe("Which field holds the amount of each record in Collection?");
+    expect(html).toContain("Which field holds the amount of each record in Collection?");
+    expect(html).toContain("Needs your answer");
+    expect(html).toContain("Why we ask");
+    expect(html).toContain("Collection has several money fields, and the AI could not tell which one is the full amount.");
+    expect(html).toContain("What your answer changes");
+    expect(html).toContain(
+      "Metorite adds up this field for totals of Collection, for example &quot;How much did we collect this quarter?&quot;",
+    );
+    expect(html).toContain("8,681 records in Collection");
+  });
+
+  it("draws each choice with its share of values and its examples, and marks the AI's suggestion", () => {
+    expect(html).toContain("IP Amount");
+    expect(html).toContain("52% of records have a value");
+    expect(html).toContain("Examples: 12,400 · 8,000 · 3,250");
+    expect(html.match(new RegExp(RECOMMENDED_LABEL, "g"))?.length).toBe(1);
+    // The examples sit in muted text, under the label.
+    expect(html).toMatch(/text-muted-foreground[^>]*>Examples: 12,400/);
+  });
+
+  it("offers None of these fields, Choose a different field and Does not apply, with its tooltip", () => {
+    expect(html).toContain("None of these fields");
+    expect(html).toContain("Choose a different field");
+    expect(html).toContain("Does not apply");
+    expect(html).toContain(`title="${NOT_RELEVANT_TIP}"`);
+  });
+
+  it("stacks the choices on a phone, and sets three across from sm", () => {
+    expect(html).toMatch(/<ul class="grid gap-1\.5 sm:grid-cols-3"/);
+  });
+
+  it("disables each control while an answer runs", () => {
+    const busy = card(KEY, { busy: KEY.id });
+    expect(busy.match(/disabled=""/g)?.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("carries no engine word and no confidence number", () => {
+    expect(textOf(html)).not.toMatch(ENGINE_WORDS);
+  });
+});
+
+describe("the other kinds", () => {
+  it("names a gone field, a question that needs an answer, and the revenue default", () => {
+    expect(reasonBadge("stale")).toEqual({ tone: "warning", label: "Field gone" });
+    expect(reasonBadge("unsure")).toEqual({ tone: "warning", label: "Needs your answer" });
+    expect(reasonBadge("open")).toEqual({ tone: "neutral", label: "Needs your answer" });
+    expect(reasonBadge("open", "revenue")).toEqual({ tone: "neutral", label: REVENUE_DEFAULT_BADGE });
+    expect(reasonBadge("answered")).toBeNull();
+    expect(card(DATE)).toContain("Field gone");
+    expect(card(DATE)).toContain("The field that Metorite used is gone from Collection in your Zoho.");
+    expect(card(PURPOSE)).toContain("Needs your answer");
+    expect(card(REVENUE)).toContain("Using Billed for now");
+  });
+
+  it("asks a date question with an example of what it answers", () => {
+    const html = card({ ...DATE, reason: "unsure" });
+    expect(html).toContain("Which date tells when each record in Collection happened?");
+    expect(html).toContain("The AI could not tell which date of Collection to use.");
+    expect(html).toContain("Collections by month this year");
+  });
+
+  it("asks what a module holds, in plain words for each purpose", () => {
+    const html = card(PURPOSE);
+    expect(html).toContain("What kind of records does Visits hold?");
+    expect(html).toContain("The name &#x27;Visits&#x27; does not tell the AI what its records are.");
+    expect(html).toContain("The AI then knows which questions Visits can answer.");
+    expect(html).toContain(">Activities<");
+    expect(html).toContain(PURPOSE_WORDS.activity.example);
+    expect(html).toContain("Choose a different kind");
+    expect(html).not.toContain("Choose a different field");
+    expect(html).toContain(">None of these<");
+  });
+
+  it("has one plain line for each purpose word of the catalogue", () => {
+    const src = read("../../../../../../apps/services/gateway/gateway/crm_sync/catalogue.py");
+    const block = /^PURPOSES: tuple\[str, \.\.\.\] = \(([\s\S]*?)\)/m.exec(src)?.[1] ?? "";
+    const words = [...block.matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
+    expect(words.length).toBeGreaterThan(10);
+    expect(Object.keys(PURPOSE_WORDS).sort()).toEqual([...words].sort());
+  });
+
+  it("asks which module holds a core list, and previews it first", () => {
+    const html = card(SLOT);
+    expect(html).toContain("Which module holds your deals?");
+    expect(html).toContain("Deals holds no records in your Zoho");
+    expect(html).toContain("That module then shows as Deals in the CRM and in reports. Nothing changes in Zoho.");
+    expect(html).toContain(">Commercials<");
+    expect(html).toContain("24 records");
+    expect(html).toContain("You see a preview first");
+    expect(html).toContain("Examples: A••• · B•••");
+    expect(html).toContain(">None of these<");
+    expect(textOf(html)).not.toMatch(ENGINE_WORDS);
+  });
+
+  it("asks what a status means, with its count and Still open, Won and Lost", () => {
+    const html = card(STAGE);
+    expect(html).toContain("What does the status &#x27;Negotiation&#x27; mean in Deals?");
+    expect(html).toContain("12 records with this status move to that group in reports.");
+    for (const word of ["Still open", "Won", "Lost"]) expect(html).toContain(`>${word}<`);
+    expect(html).not.toContain("None of these");
+  });
+
+  it("asks what revenue counts, with its modules, and takes no dismissal", () => {
+    const html = card(REVENUE);
+    expect(html).toContain("When you ask about revenue, what should Metorite count?");
+    expect(html).toContain(">Billed<");
+    expect(html).toContain(">Collected<");
+    expect(html).toContain("The amounts on your Invoices");
+    expect(html).toContain("The money received, in Collection");
+    expect(html).toContain(REVENUE_DEFAULT_LINE);
+    // The count of one module would read as the size of revenue.
+    expect(html).not.toContain("records");
+    expect(html).not.toContain("Does not apply");
+    expect(html).not.toContain("None of these");
+  });
+
+  it("shows only Choose a different field when no candidate is left", () => {
+    const html = card(base({ choices: [], options: [{ value: "Total", label: "Total" }] }));
+    expect(html).not.toContain('aria-label="Choices"');
+    expect(html).toContain("Choose a different field");
+  });
+
+  it("reads a fill as the share of records with a value", () => {
+    expect(fillLabel(0.52)).toBe("52% of records have a value");
+    expect(fillLabel(1.4)).toBe("100% of records have a value");
+    expect(fillLabel(null)).toBeNull();
+  });
+
+  it("writes a number sample with thousands separators, and keeps a date and a mask", () => {
+    expect(sampleText("21600")).toBe("21,600");
+    expect(sampleText("53713.8")).toBe("53,713.8");
+    expect(sampleText("-1250.50")).toBe("-1,250.50");
+    expect(sampleText("2026-01-02")).toBe("2026-01-02");
+    expect(sampleText("A•••")).toBe("A•••");
+    expect(sampleText("00123")).toBe("00123");
+    expect(examplesLine(["21600", "", "53713.8"])).toBe("Examples: 21,600 · 53,713.8");
+    expect(examplesLine([])).toBeNull();
+  });
+});
+
+// ── Owner feedback, 2026-10-18: the end user does not know the engine ──────
+
+describe("the name of the engine", () => {
+  it("is in no string that lib/questions.ts exports", () => {
+    const strings = Object.entries(questionsLib).filter(([, v]) => typeof v === "string");
+    expect(strings.length).toBeGreaterThan(20);
+    for (const [name, value] of strings) expect(`${name}: ${value}`).not.toMatch(/\bJev\b/);
+    for (const words of Object.values(PURPOSE_WORDS)) {
+      expect(`${words.label} ${words.example}`).not.toMatch(/\bJev\b/);
+    }
+  });
+
+  it("is on no card, in the section and in the batch", () => {
+    for (const q of [KEY, DATE, PURPOSE, SLOT, STAGE, REVENUE]) expect(textOf(card(q))).not.toMatch(/\bJev\b/);
+    expect(textOf(view({ read: ON(body([KEY, PURPOSE])) }))).not.toMatch(/\bJev\b/);
+    expect(textOf(view({ read: ON(body([])) }))).not.toMatch(/\bJev\b/);
+    expect(batchLabel(3)).not.toMatch(/\bJev\b/);
+  });
+});
+
+// ── Item 2 and 7: the section, its states and the cap of 5 ─────────────────
+
+describe("the section", () => {
+  it("opens with the title, the note and the two tabs", () => {
+    const html = view({ read: ON(body([KEY, PURPOSE], { open: 2 })) });
+    expect(html).toContain("Open questions");
+    expect(html).toContain(QUESTIONS_NOTE);
+    expect(html).toContain("Open (2)");
+    expect(html).toContain("Your answers");
+    expect(html).toContain('role="tablist"');
+  });
+
+  it("draws the empty state with no open question", () => {
+    const html = view({ read: ON(body([])) });
+    expect(html).toContain(NO_QUESTIONS);
+    expect(html).not.toContain('aria-label="Choices"');
+  });
+
+  it("draws the error state with Try again, and a skeleton while it loads", () => {
+    const failed = view({ read: undefined, failed: true });
+    expect(failed).toContain(QUESTIONS_UNREAD);
+    expect(failed).toContain("Try again");
+    const loading = view({ read: undefined, failed: false });
+    expect(loading).not.toContain(QUESTIONS_UNREAD);
+    expect(loading).toContain("animate-pulse");
+  });
+
+  it("shows 5 cards, then Show <m> more, and all of them after a click", () => {
+    const many = Array.from({ length: 7 }, (_, i) => base({ id: `key:M${i}:amount`, label: `M${i}` }));
+    const b = body(many, { open: 7 });
+    expect(visibleQuestions(b, false).cards).toHaveLength(SHOWN);
+    expect(visibleQuestions(b, false).more).toBe(2);
+    const html = view({ read: ON(b) });
+    expect(html.match(/data-question="key_field"/g)).toHaveLength(5);
+    expect(html).toContain("Show 2 more");
+    const all = view({ read: ON(b), expanded: true });
+    expect(all.match(/data-question="key_field"/g)).toHaveLength(7);
+    expect(all).not.toContain("more</button>");
+  });
+
+  it("counts more than the read holds from the open count", () => {
+    const b = body([KEY, PURPOSE], { open: 9 });
+    expect(visibleQuestions(b, false)).toEqual({ cards: [KEY, PURPOSE], more: 7 });
+  });
+});
+
+// ── Item 6: the batch ──────────────────────────────────────────────────────
+
+describe("the batch of the AI's suggestions", () => {
+  it("takes a purpose and a key field with a best guess, and never a slot, a stage or revenue", () => {
+    const ids = batchIds([KEY, DATE, PURPOSE, SLOT, STAGE, REVENUE, base({ id: "key:X:date", choices: [] })]);
+    expect(ids).toEqual([KEY.id, DATE.id, PURPOSE.id]);
+    expect(batchShown(ids)).toBe(true);
+    expect(batchShown([KEY.id])).toBe(false);
+  });
+
+  it("shows the button above the cards with 2 or more, and opens with the ids", () => {
+    let opened: string[] | null = null;
+    const html = view({ read: ON(body([KEY, PURPOSE])), onBatch: (ids) => (opened = ids) });
+    expect(batchLabel(2)).toBe("Accept the AI's suggestions (2)");
+    expect(html).toContain("Accept the AI&#x27;s suggestions (2)");
+    expect(html.indexOf("suggestions (2)")).toBeLessThan(html.indexOf('data-question="key_field"'));
+    expect(view({ read: ON(body([KEY, SLOT])) })).not.toContain("suggestions (");
+    expect(opened).toBeNull();
+  });
+
+  it("lists the dry run, one line for each question", () => {
+    const items = [
+      { id: KEY.id, label: "Collection", part: "amount", value: "IP_Amount", value_label: "IP Amount", line: "Totals of Collection now use IP Amount." },
+      { id: PURPOSE.id, label: "Visits", part: "purpose", value: "activity", value_label: "Activity", line: "Visits is now an activity module." },
+    ];
+    expect(batchLine(items[0])).toBe("Collection: amount, IP Amount");
+    const html = renderToStaticMarkup(createElement(BatchBody, { items, failed: false }));
+    expect(html).toContain("Collection: amount, IP Amount");
+    expect(html).toContain("Visits: purpose, Activity");
+    expect(html).toContain("Totals of Collection now use IP Amount.");
+    expect(applyLabel(2)).toBe("Apply 2 answers");
+    expect(renderToStaticMarkup(createElement(BatchBody, { items: null, failed: true }))).toContain("Try again");
+  });
+
+  it("dry runs through the read cache, applies the same ids, and undoes each module once", () => {
+    const comp = read("./OpenQuestions.tsx");
+    expect(comp).toContain("api.acceptBest(ids, true)");
+    expect(comp).toContain("api.acceptBest(ids, false, plan)");
+    expect(comp).toMatch(/<Modal open onClose=\{onClose\} title=\{BATCH_TITLE\}/);
+    expect(
+      batchUndoCalls([
+        { module: "Payment_Received", part: "amount", value: AUTO },
+        { module: "Payment_Received", part: "date", value: AUTO },
+        { module: "Visits", part: "purpose", value: AUTO },
+      ]),
+    ).toEqual([
+      { module: "Payment_Received", parts: { amount: AUTO, date: AUTO } },
+      { module: "Visits", parts: { purpose: AUTO } },
+    ]);
+  });
+});
+
+// ── Item 4: the toast and Undo ─────────────────────────────────────────────
+
+describe("an answer, its toast and its Undo", () => {
+  const done = (over: Partial<AnswerDone>): AnswerDone => ({
+    id: KEY.id,
+    kind: "key_field",
+    version: 42,
+    line: null,
+    undo: null,
+    moved: null,
+    slot: null,
+    module: null,
+    ...over,
+  });
+
+  it("says what changed", () => {
+    expect(savedLine(KEY, done({ line: "Totals of Collection now use IP Amount." }), "IP_Amount")).toBe(
+      "Saved. Totals of Collection now use IP Amount.",
+    );
+    expect(savedLine(STAGE, done({ kind: "stage_value", moved: 12 }), "won")).toBe(
+      "Saved. 12 records leave Unsorted.",
+    );
+    expect(savedLine(REVENUE, done({ kind: "revenue" }), "payment_in")).toBe("Saved. Revenue is now Collected.");
+    expect(savedLine(KEY, done({}), null)).toBe("Saved. No field holds the amount of Collection.");
+  });
+
+  it("puts back the choice of Metorite for an open question", () => {
+    const u = undoOf(KEY, done({ undo: { module: "Payment_Received", part: "amount", value: AUTO } }));
+    expect(u).toEqual({ kind: "put", module: "Payment_Received", parts: { amount: AUTO } });
+    const r = undoOf(REVENUE, done({ undo: { module: "@org", part: "revenue", value: AUTO } }));
+    expect(r).toEqual({ kind: "put", module: "@org", parts: { revenue: AUTO } });
+  });
+
+  it("puts back the earlier choice of the admin", () => {
+    const corrected = { ...KEY, reason: "answered" as const, by: "admin", current: "Amount_Due" };
+    expect(undoOf(corrected, done({ undo: { module: "Payment_Received", part: "amount", value: AUTO } }))).toEqual({
+      kind: "put",
+      module: "Payment_Received",
+      parts: { amount: "Amount_Due" },
+    });
+  });
+
+  it("sends @auto to the same id for a stage, and has none for a slot", () => {
+    expect(undoOf(STAGE, done({ undo: { question: STAGE.id, value: AUTO, module: "Potentials" } }))).toEqual({
+      kind: "answer",
+      id: STAGE.id,
+      value: AUTO,
+    });
+    // A slot module goes through the panel of the suggestion, and its own Undo.
+    expect(undoOf(SLOT, done({ kind: "slot" }), "Commercials")).toBeNull();
+  });
+
+  it("undoes Not relevant and None of these on a slot through the DELETE of the dismissal", () => {
+    expect(undoOf(SLOT, done({ kind: "slot" }), null)).toEqual({ kind: "undismiss", id: SLOT.id });
+    const comp = read("./OpenQuestions.tsx");
+    // The toast of "Not relevant" carries Undo, and Undo removes the dismissal.
+    expect(comp).toMatch(
+      /await api\.dismissQuestion\(q\.id\);\s*const undo: UndoCall = \{ kind: "undismiss", id: q\.id \};[\s\S]{0,160}action: \{ label: UNDO_LABEL, onClick: \(\) => void runUndo\(key, undo\) \}/,
+    );
+    expect(comp).toContain('else if (call.kind === "undismiss") await api.undismissQuestion(call.id);');
+    // The answer toast passes the value, so a slot "None of these" gets its Undo.
+    expect(comp).toContain("const undo = undoOf(q, done, value);");
+  });
+
+  it("reads a 404 not_dismissed as nothing to undo, with a quiet line and no error", () => {
+    expect(notDismissed(new CrmError("x", 404, "not_dismissed"))).toBe(true);
+    expect(notDismissed(new CrmError("x", 404, "questions_off"))).toBe(false);
+    expect(notDismissed(new CrmError("x", 409, "not_dismissed"))).toBe(false);
+    const comp = read("./OpenQuestions.tsx");
+    expect(comp).toContain(
+      'if (notDismissed(err)) toast.show({ key, variant: "success", title: NOT_DISMISSED_LINE });',
+    );
+    expect(NOT_DISMISSED_LINE).not.toMatch(/fail|error|not save/i);
+  });
+
+  it("toasts each answer with Undo, and sends the version only for a stage", () => {
+    const comp = read("./OpenQuestions.tsx");
+    expect(comp).toContain('api.answerQuestion(q.id, value, q.kind === "stage_value" ? plan : null)');
+    expect(comp).toMatch(/action: undo \? \{ label: UNDO_LABEL, onClick: \(\) => void runUndo\(key, undo\) \}/);
+    expect(comp).toContain("useToast");
+  });
+
+  it("says what moved after a 409", () => {
+    expect(questionError(new CrmError("x", 409, "question_moved"), "f")).toBe(QUESTION_MOVED);
+    expect(questionError(new CrmError("x", 409, "plan_moved"), "f")).toBe(PLAN_MOVED);
+    expect(questionError(new CrmError("That is not an answer.", 422, "bad_answer"), "f")).toBe(
+      "That is not an answer.",
+    );
+    expect(questionError(new Error("boom"), "f")).toBe("f");
+  });
+});
+
+// ── Item 3: the client, and invalidate("crm:") on each write ───────────────
+
+describe("the client of the questions (item 3)", () => {
+  type Sent = { url: string; method: string; body: unknown };
+  const original = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = original;
+    clearAll();
+  });
+
+  function stub(status = 200, answer: unknown = {}): Sent[] {
+    const sent: Sent[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      sent.push({
+        url: String(input),
+        method: init?.method ?? "GET",
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+      return new Response(JSON.stringify(status >= 400 ? { detail: { code: "question_moved", message: "x" } } : answer), {
+        status,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+    return sent;
+  }
+
+  it("reads the questions, with all and the limit", async () => {
+    const sent = stub(200, body([]));
+    await api.listQuestions({ limit: 200 });
+    await api.listQuestions({ all: true, limit: 200 });
+    expect(sent.map((s) => s.url)).toEqual([
+      "/api/crm/questions?limit=200",
+      "/api/crm/questions?all=1&limit=200",
+    ]);
+  });
+
+  it("sends each write, and wakes every CRM read after it, also after a refusal", async () => {
+    const sent = stub();
+    const writes: Array<() => Promise<unknown>> = [
+      () => api.answerQuestion("stage:deal:3f9a", "won", 41),
+      () => api.answerQuestion(KEY.id, null),
+      () => api.dismissQuestion(PURPOSE.id),
+      () => api.acceptBest([KEY.id, PURPOSE.id], false, 41),
+      () => api.putCatalogue("@org", { revenue: AUTO }),
+      () => api.undismissQuestion("slot:deal"),
+    ];
+    for (const write of writes) {
+      put("crm:mode", { mode: "mirror" });
+      await write();
+      expect(peek("crm:mode")).toBeUndefined();
+    }
+    expect(sent.map((s) => `${s.method} ${s.url}`)).toEqual([
+      "POST /api/crm/questions/stage%3Adeal%3A3f9a/answer",
+      "POST /api/crm/questions/key%3APayment_Received%3Aamount/answer",
+      "POST /api/crm/questions/purpose%3AVisits/dismiss",
+      "POST /api/crm/questions/accept-best",
+      "PUT /api/crm/catalogue/%40org",
+      "DELETE /api/crm/questions/slot%3Adeal/dismiss",
+    ]);
+    expect(sent[5].body).toBeNull();
+    expect(sent[0].body).toEqual({ value: "won", version: 41 });
+    expect(sent[1].body).toEqual({ value: null });
+    expect(sent[3].body).toEqual({ ids: [KEY.id, PURPOSE.id], dry_run: false, version: 41 });
+    expect(sent[4].body).toEqual({ revenue: AUTO });
+
+    stub(409);
+    put("crm:mode", { mode: "mirror" });
+    await expect(api.answerQuestion(KEY.id, "IP_Amount")).rejects.toMatchObject({ code: "question_moved" });
+    expect(peek("crm:mode")).toBeUndefined();
+  });
+
+  it("wakes nothing on a dry run, which writes nothing", async () => {
+    const sent = stub(200, { dry_run: true, items: [], version: null, undo: [] });
+    put("crm:mode", { mode: "mirror" });
+    await api.acceptBest([KEY.id], true);
+    expect(peek("crm:mode")).toBeDefined();
+    expect(sent[0].body).toEqual({ ids: [KEY.id], dry_run: true });
+  });
+});
+
+// ── Your answers (the corrections of CRM-Q31-4) ────────────────────────────
+
+describe("Your answers", () => {
+  const PURPOSE_AI = { ...PURPOSE, id: "purpose:Visits", reason: "answered" as const, by: "ai", current: "activity" };
+  const AMOUNT_ADMIN = { ...KEY, reason: "answered" as const, by: "admin", current: "IP_Amount" };
+  const DATE_NONE = { ...DATE, reason: "answered" as const, by: "admin", current: null };
+  const REVENUE_ADMIN = { ...REVENUE, reason: "answered" as const, by: "admin", current: "payment_in" };
+
+  it("groups the parts in use by module, purpose first, and revenue apart", () => {
+    const groups = answerGroups([DATE_NONE, AMOUNT_ADMIN, PURPOSE_AI, REVENUE_ADMIN]);
+    expect(groups.map((g) => g.label)).toEqual(["Collection", "Visits", "Revenue"]);
+    expect(groups[0].parts.map((q) => q.part)).toEqual(["amount", "date"]);
+  });
+
+  it("says who chose each part, and names the answer in use", () => {
+    expect(byLine(AMOUNT_ADMIN)).toBe("You chose");
+    expect(byLine(PURPOSE_AI)).toBe("Metorite chose");
+    expect(byLine({ ...KEY, by: "code", current: null })).toBe("Not set");
+    expect(currentLabel(AMOUNT_ADMIN)).toBe("IP Amount");
+    expect(currentLabel(DATE_NONE)).toBe("None");
+    expect(currentLabel(REVENUE_ADMIN)).toBe("Collected");
+  });
+
+  it("offers Let Metorite choose, each option, and None for a key part", () => {
+    const picks = answerPicks(AMOUNT_ADMIN);
+    expect(picks[0]).toEqual({ value: AUTO, label: LET_METORITE });
+    expect(picks.map((p) => p.label)).toContain("Grand Total");
+    expect(picks.at(-1)).toEqual({ value: NONE_PICK, label: "None" });
+    expect(answerPicks(PURPOSE_AI).some((p) => p.value === NONE_PICK)).toBe(false);
+    expect(answerPicks(REVENUE_ADMIN).map((p) => p.label)).toEqual([LET_METORITE, "Billed", "Collected"]);
+    expect(pickValue(AMOUNT_ADMIN)).toBe("IP_Amount");
+    expect(pickValue(PURPOSE_AI)).toBe(AUTO);
+    expect(pickValue(DATE_NONE)).toBe(NONE_PICK);
+    expect(pickToValue(NONE_PICK)).toBeNull();
+  });
+
+  it("writes through PUT /crm/catalogue, and its Undo puts back the part before", () => {
+    expect(correctionTarget(AMOUNT_ADMIN)).toEqual({ module: "Payment_Received", part: "amount" });
+    expect(correctionTarget(REVENUE_ADMIN)).toEqual({ module: "@org", part: "revenue" });
+    expect(correctionUndo(AMOUNT_ADMIN)).toBe("IP_Amount");
+    expect(correctionUndo(PURPOSE_AI)).toBe(AUTO);
+    const comp = read("./OpenQuestions.tsx");
+    expect(comp).toContain("await correctTo(q, pickToValue(pick));");
+    expect(comp).toContain("await api.putCatalogue(target.module, { [target.part]: value });");
+  });
+
+  it("draws one row for each module, under the Zoho labels, with no number of the AI", () => {
+    const html = renderToStaticMarkup(
+      createElement(YourAnswersView, {
+        body: body([], { answered: [AMOUNT_ADMIN, PURPOSE_AI, REVENUE_ADMIN] }),
+        failed: false,
+        handlers: answersHandlers,
+      }),
+    );
+    expect(html).toContain(">Collection<");
+    expect(html).toContain(">Visits<");
+    expect(html).toContain("You chose");
+    expect(html).toContain("Metorite chose");
+    expect(html).toContain('aria-label="Change the amount of Collection');
+    expect(textOf(html)).not.toMatch(ENGINE_WORDS);
+  });
+
+  it("draws the answers tab in the section, and its error state", () => {
+    const html = view({
+      tab: "answers",
+      answers: { body: null, failed: true, handlers: answersHandlers },
+    });
+    expect(html).toContain("Could not load your answers. Try again.");
+    expect(html).not.toContain('data-question="key_field"');
+  });
+});
+
+// ── Item 5: the count on the rail ──────────────────────────────────────────
+
+describe("the count on the rail (item 5)", () => {
+  const sections = visibleSections({ isAdmin: true, mode: "mirror", questions: "on" });
+
+  it("shows the open count on the CRM settings row, in the attention tone", () => {
+    const html = renderToStaticMarkup(
+      createElement(CrmRail, {
+        tab: "deals",
+        onSelect: noop,
+        settings: { sections, active: null, onSelect: noop, questions: 3 },
+      }),
+    );
+    expect(html).toMatch(/CRM settings<\/span><span class="rail-row-count[^"]*" data-meta-tone="attention">3</);
+  });
+
+  it("shows it on the Open questions row while settings is open, and on no other row", () => {
+    const html = renderToStaticMarkup(
+      createElement(SettingsSectionRows, { sections, active: "setup", onSelect: noop, questions: 3 }),
+    );
+    expect(html).toMatch(/Open questions<\/span><span class="rail-row-count[^"]*" data-meta-tone="attention">3</);
+    expect(html.match(/data-meta-tone=/g)).toHaveLength(1);
+  });
+
+  it("hides the count at 0 and for a member", () => {
+    expect(railCount(0)).toBeNull();
+    expect(railCount(4)).toBe(4);
+    const html = renderToStaticMarkup(
+      createElement(CrmRail, {
+        tab: "settings",
+        onSelect: noop,
+        settings: { sections, active: "setup", onSelect: noop, questions: null },
+      }),
+    );
+    expect(html).not.toContain("data-meta-tone");
+  });
+});
+
+// ── CRM-Q32-8: the proposals of the members (owner direction, 2026-10-18) ──
+
+describe("the proposals of the members (CRM-Q32-8)", () => {
+  const NOW = new Date("2026-10-18T12:00:00Z");
+  const ASHA = { name: "Asha Rao", value: "Amount_Due", label: "Amount Due", at: "2026-10-18T09:00:00Z" };
+  const NONAME = { name: "A member", value: null, label: "None of these", at: "2026-10-18T11:58:00Z" };
+  const PROPOSED = base({ ...KEY, id: "key:Payment_Received:amount", proposals: [ASHA, NONAME] });
+  const LATER = base({ ...DATE, proposals: [{ ...ASHA, value: "Paid_On", label: "Paid On", at: "2026-10-18T11:00:00Z" }] });
+
+  it("says who proposed it and when, and never an email", () => {
+    expect(questionsLib.proposalLine(ASHA, NOW)).toBe("Proposed by Asha Rao · 3 hours ago");
+    expect(questionsLib.proposalLine(NONAME, NOW)).toBe("Proposed by A member · 2 minutes ago");
+    expect(questionsLib.whenLabel("2026-10-18T11:59:40Z", NOW)).toBe("just now");
+    expect(questionsLib.whenLabel("2026-10-16T12:00:00Z", NOW)).toBe("2 days ago");
+    expect(questionsLib.whenLabel("not a time", NOW)).toBe("");
+    expect(questionsLib.proposalValueLabel(PROPOSED, NONAME)).toBe("None of these fields");
+    expect(questionsLib.confirmLabel(PROPOSED, ASHA)).toBe(
+      "Confirm Amount Due, proposed by Asha Rao, for Collection",
+    );
+  });
+
+  it("draws each proposal on the card with a one-click Confirm that answers its value", () => {
+    const answered: Array<[string, unknown]> = [];
+    const html = card(PROPOSED, { onAnswer: (q, value) => answered.push([q.id, value]) });
+    expect(html).toContain("data-proposals");
+    expect(textOf(html)).toContain("Proposed by your team");
+    expect(textOf(html)).toContain("Proposed by Asha Rao ·");
+    expect(textOf(html)).toContain("Proposed by A member ·");
+    expect(html.match(/>Confirm</g)).toHaveLength(2);
+    expect(html).toContain('aria-label="Confirm Amount Due, proposed by Asha Rao, for Collection"');
+    expect(textOf(html)).not.toMatch(/@|\bJev\b/);
+    // Confirm calls the answer route with the value of the proposal.
+    const list = questionsLib.proposalsOf(PROPOSED);
+    for (const p of list) handlers({ onAnswer: (q, value) => answered.push([q.id, value]) }).onAnswer(PROPOSED, p.value);
+    expect(answered).toEqual([
+      ["key:Payment_Received:amount", "Amount_Due"],
+      ["key:Payment_Received:amount", null],
+    ]);
+  });
+
+  it("draws no block for a question with no proposal", () => {
+    expect(card(KEY)).not.toContain("data-proposals");
+    expect(questionsLib.proposalsOf(base({ proposals: null }))).toEqual([]);
+  });
+
+  it("sorts the proposed questions first, the newest first, and keeps impact inside", () => {
+    const shown = [REVENUE, PROPOSED, PURPOSE, LATER];
+    expect(questionsLib.sortQuestions(shown, "impact").map((q) => q.id)).toEqual(shown.map((q) => q.id));
+    expect(questionsLib.sortQuestions(shown, "proposed").map((q) => q.id)).toEqual([
+      PROPOSED.id,
+      LATER.id,
+      REVENUE.id,
+      PURPOSE.id,
+    ]);
+    const { cards } = visibleQuestions(body(shown), true, "proposed");
+    expect(cards[0].id).toBe(PROPOSED.id);
+    expect(questionsLib.SORT_OPTIONS.map((o) => o.label)).toEqual(["By impact", "Proposed first"]);
+  });
+
+  it("shows the sort of the open tab only when a question holds a proposal", () => {
+    const sortName = 'aria-label="Sort the questions"';
+    expect(view({ read: ON(body([KEY, PURPOSE])), onSort: noop })).not.toContain(sortName);
+    const html = view({ read: ON(body([KEY, PROPOSED])), onSort: noop, sort: "proposed" });
+    expect(html).toContain(sortName);
+    expect(textOf(html)).toContain("Proposed first");
+  });
+
+  it("confirms a proposed change of a part in use through the correction", () => {
+    const changes: Array<[string, string]> = [];
+    const used = base({
+      ...KEY,
+      reason: "answered",
+      current: "IP_Amount",
+      by: "admin",
+      proposals: [ASHA, NONAME],
+    });
+    const html = renderToStaticMarkup(
+      createElement(YourAnswersView, {
+        body: body([], { answered: [used] }),
+        failed: false,
+        handlers: { ...answersHandlers, onChange: (q, pick) => changes.push([q.id, pick]) },
+      }),
+    );
+    expect(textOf(html)).toContain("Proposed by Asha Rao ·");
+    expect(html.match(/>Confirm</g)).toHaveLength(2);
+    // The value of "None of these" goes as the None pick of a correction.
+    const pick = (p: { value: string | null }) => p.value ?? NONE_PICK;
+    expect([ASHA, NONAME].map(pick)).toEqual(["Amount_Due", NONE_PICK]);
+    expect(pickToValue(pick(NONAME))).toBeNull();
+    expect(changes).toEqual([]);
+  });
+
+  it("names no engine and no email in its words", () => {
+    for (const value of [
+      questionsLib.CONFIRM_LABEL,
+      questionsLib.PROPOSALS_HEADING,
+      questionsLib.SORT_LABEL,
+      questionsLib.SORT_IMPACT,
+      questionsLib.SORT_PROPOSED,
+    ]) {
+      expect(value).not.toMatch(/\bJev\b|@/);
+      expect(value).not.toMatch(ENGINE_WORDS);
+    }
+  });
+});
+
+// ── CRM-Q32-9b: an amount can be the sum of several fields (§18.14.10) ─────
+//
+// DEWiN's Collection keeps one payment in parts. The fixture is in the shape
+// of the wire of CRM-Q32-9a: `sums` lists the currency fields that each fill
+// 20% or more, the most filled first.
+
+describe("the picker of a sum (CRM-Q32-9b)", () => {
+  const SUMS = [
+    { value: "Billing_Amount", label: "Rent Net Amount", fill: 0.52 },
+    { value: "IP", label: "IP Basic Amount", fill: 0.52 },
+    { value: "EB_Net_Amount", label: "EB Net Amount", fill: 0.46 },
+    { value: "TDS_Amount", label: "TDS Amount", fill: 0.21 },
+  ];
+  const SUM_Q = base({
+    choices: [
+      { value: "Billing_Amount", label: "Rent Net Amount", fill: 0.52, samples: ["21600", "53713.8"], best: true },
+      { value: "IP", label: "IP Basic Amount", fill: 0.52, samples: ["3240"], best: false },
+    ],
+    options: SUMS.map(({ value, label, fill }) => ({ value, label, fill })),
+    sums: SUMS,
+  });
+  const SIX = { ...SUM_Q, sums: [...SUMS, { value: "Rent_Total", label: "Rent Total", fill: 0.3 }, { value: "Extra", label: "Extra", fill: 0.25 }] };
+  const THREE = ["Billing_Amount", "IP", "EB_Net_Amount"];
+  const SUM_ADMIN = { ...SUM_Q, reason: "answered" as const, by: "admin", current: THREE };
+  const CHECK: SumCheck = {
+    id: SUM_Q.id,
+    module: "Payment_Received",
+    fields: THREE,
+    records: 8681,
+    covered: 8458,
+    overlap: 4472,
+    capped: false,
+    line: "These 3 fields cover 8,458 of 8,681 records (97%).",
+    pairs: [],
+    warnings: ["Rent Net Amount and Rent Total hold the same value on 90% of records. A sum counts it twice."],
+  };
+  const picker = (picked: string[], check: SumCheckView, q: Question = SIX) =>
+    renderToStaticMarkup(createElement(SumPickerBody, { q, picked, check, disabled: false, onToggle: noop }));
+
+  it("is offered on the amount of a module with 2 or more fields in sums, and nowhere else", () => {
+    expect(sumOffered(SUM_Q)).toBe(true);
+    expect(sumOffered(KEY)).toBe(false);
+    expect(sumOffered({ ...SUM_Q, part: "date" })).toBe(false);
+    expect(sumOffered({ ...SUM_Q, sums: SUMS.slice(0, 1) })).toBe(false);
+    expect(sumOffered({ ...PURPOSE, sums: SUMS })).toBe(false);
+  });
+
+  it("puts the choice on the amount card as a full row, also with no candidate", () => {
+    const html = card(SUM_Q);
+    expect(html).toContain(SUM_CHOICE_LABEL);
+    expect(html).toContain(SUM_CHOICE_LINE);
+    expect(html).toMatch(/border-dashed[^"]*sm:col-span-3/);
+    expect(card(KEY)).not.toContain(SUM_CHOICE_LABEL);
+    expect(card({ ...SUM_Q, choices: [] })).toContain(SUM_CHOICE_LABEL);
+    // The tile opens the picker. It never answers on its own.
+    expect(read("./OpenQuestions.tsx")).toMatch(
+      /onClick=\{\(\) => handlers\.onSum\(q\)\}\s*>\s*<span[^>]*>\{SUM_CHOICE_LABEL\}/,
+    );
+  });
+
+  it("ticks 2 to 5 fields, in the order of sums, and refuses a sixth", () => {
+    expect(toggleSum(SIX, [], "IP")).toEqual(["IP"]);
+    expect(toggleSum(SIX, ["IP"], "Billing_Amount")).toEqual(["Billing_Amount", "IP"]);
+    expect(toggleSum(SIX, ["Billing_Amount", "IP"], "IP")).toEqual(["Billing_Amount"]);
+    const five = ["Billing_Amount", "IP", "EB_Net_Amount", "TDS_Amount", "Rent_Total"];
+    expect(toggleSum(SIX, five, "Extra")).toEqual(five);
+    expect(sumBlocked(five, "Extra")).toBe(true);
+    expect(sumBlocked(five, "IP")).toBe(false);
+    expect(sumBlocked(["IP"], "Extra")).toBe(false);
+    expect(sumReady([])).toBe(false);
+    expect(sumReady(["IP"])).toBe(false);
+    expect(sumReady(["IP", "Billing_Amount"])).toBe(true);
+    expect(sumReady(five)).toBe(true);
+    expect(sumReady([...five, "Extra"])).toBe(false);
+    expect(sumReady(["IP", "IP"])).toBe(false);
+    expect(sumHint(0)).toBe("Tick 2 to 5 fields.");
+    expect(sumHint(1)).toBe("Tick one more field.");
+    expect(sumHint(5)).toBe("5 fields are ticked. That is the most a sum takes.");
+  });
+
+  it("asks a full question, with why we ask and what the answer changes", () => {
+    const html = picker([], { state: "idle" }, SUM_Q);
+    expect(html).toContain("Which fields add up to the amount of each record in Collection?");
+    expect(html).toContain("Why we ask");
+    expect(html).toContain("What your answer changes");
+    expect(html).toContain("Totals of Collection add up these fields for each record");
+    expect(html).toContain("8,681 records in Collection");
+    expect(textOf(html)).not.toMatch(/\bJev\b/);
+    expect(textOf(html)).not.toMatch(ENGINE_WORDS);
+  });
+
+  it("draws a shared Checkbox for each field, with its share of values and its examples", () => {
+    const html = picker([], { state: "idle" });
+    expect(html.match(/type="checkbox"/g)).toHaveLength(6);
+    expect(html).toContain("cc-checkbox");
+    expect(html).toContain(">Rent Net Amount<");
+    expect(html).toContain("52% of records have a value");
+    expect(html).toContain("Examples: 21,600 · 53,713.8");
+    expect(html).not.toMatch(/checked=""/);
+    expect(read("./SumPicker.tsx")).toContain('import { Checkbox } from "@/components/ui/Checkbox";');
+  });
+
+  it("disables each unticked box when 5 are ticked", () => {
+    const five = ["Billing_Amount", "IP", "EB_Net_Amount", "TDS_Amount", "Rent_Total"];
+    const html = picker(five, { state: "loading" });
+    expect(html.match(/checked=""/g)).toHaveLength(5);
+    expect(html.match(/disabled=""/g)).toHaveLength(1);
+    expect(picker(["IP"], { state: "idle" }).match(/disabled=""/g)).toBeNull();
+  });
+
+  it("shows the coverage line and each warning of the check, and the warning does not block Save", () => {
+    const html = picker(THREE, { state: "done", line: CHECK.line, warnings: CHECK.warnings });
+    expect(html).toContain("These 3 fields cover 8,458 of 8,681 records (97%).");
+    expect(html).toContain("hold the same value on 90% of records. A sum counts it twice.");
+    expect(html.match(/role="alert"/g)).toHaveLength(1);
+    expect(html).toMatch(/text-warning/);
+    expect(picker(THREE, { state: "done", line: CHECK.line, warnings: [] })).not.toContain('role="alert"');
+    expect(picker(THREE, { state: "loading" })).toContain(SUM_CHECKING);
+    // Save waits for 2 to 5 fields only, never for the check.
+    expect(read("./SumPicker.tsx")).toContain("disabled={busy || !sumReady(picked)}");
+  });
+
+  it("reads the check into idle, loading, done and failed", () => {
+    expect(sumCheckView(false, CHECK, null)).toEqual({ state: "idle" });
+    expect(sumCheckView(true, undefined, null)).toEqual({ state: "loading" });
+    expect(sumCheckView(true, CHECK, null)).toEqual({ state: "done", line: CHECK.line, warnings: CHECK.warnings });
+    expect(sumCheckView(true, undefined, new CrmError("A sum takes 2 to 5 different fields.", 422, "bad_answer"))).toEqual({
+      state: "failed",
+      message: "A sum takes 2 to 5 different fields.",
+    });
+    expect(sumCheckView(true, undefined, new Error("boom"))).toEqual({ state: "failed", message: SUM_CHECK_FAILED });
+  });
+
+  it("runs the check after a short wait, through the read cache, keyed by the ticked set", () => {
+    const src = read("./SumPicker.tsx");
+    expect(src).toMatch(/setTimeout\(\(\) => setChecked\(picked\), SUM_CHECK_DELAY\)/);
+    expect(src).toMatch(/useCachedResource<SumCheck>\(sumReady\(checked\) \? sumCheckKey\(q\.id, checked\) : null/);
+    expect(src).toContain("api.sumCheck(q.id, checked)");
+    expect(SUM_CHECK_DELAY).toBeGreaterThanOrEqual(200);
+    expect(sumCheckKey(SUM_Q.id, THREE)).toBe("crm:questions:sum:key:Payment_Received:amount:Billing_Amount,IP,EB_Net_Amount");
+  });
+
+  it("saves the list: an answer from the card, a correction from Your answers", () => {
+    const comp = read("./OpenQuestions.tsx");
+    expect(comp).toContain('if (sum.from === "card") await answer(sum.q, keys, sumModal);');
+    expect(comp).toContain("else await correctTo(sum.q, keys, sumModal);");
+    expect(comp).toContain("onSave={(keys) => void saveSum(keys)}");
+    expect(read("./SumPicker.tsx")).toContain("onClick={() => onSave(picked)}");
+  });
+
+  it("names a sum in Your answers, with Change and Let Metorite choose", () => {
+    expect(currentLabel(SUM_ADMIN)).toBe("Sum of Rent Net Amount, IP Basic Amount and EB Net Amount");
+    expect(pickValue(SUM_ADMIN)).toBe(SUM_PICK);
+    expect(sumStart(SUM_ADMIN)).toEqual(THREE);
+    expect(sumStart(SUM_Q)).toEqual([]);
+    const html = renderToStaticMarkup(
+      createElement(YourAnswersView, {
+        body: body([], { answered: [SUM_ADMIN] }),
+        failed: false,
+        handlers: answersHandlers,
+      }),
+    );
+    expect(html).toContain("Sum of Rent Net Amount, IP Basic Amount and EB Net Amount");
+    expect(html).toContain(">Change<");
+    expect(html).toContain(">Let Metorite choose<");
+    expect(html).toContain("You chose");
+    // An amount that is one field offers the picker from its SelectButton.
+    expect(answerPicks({ ...SUM_Q, reason: "answered", by: "admin", current: "IP" }).at(-1)?.value).toBe(SUM_PICK);
+    expect(answerPicks(KEY).some((p) => p.value === SUM_PICK)).toBe(false);
+    expect(read("./OpenQuestions.tsx")).toContain(
+      "onChange={(pick) => (pick === SUM_PICK ? handlers.onSum(q) : handlers.onChange(q, pick))}",
+    );
+  });
+
+  it("undoes a sum: back to the earlier list, or to the choice of Metorite", () => {
+    const done: AnswerDone = {
+      id: SUM_Q.id,
+      kind: "key_field",
+      version: 43,
+      line: "Totals of Collection now use the sum of Rent Net Amount, IP Basic Amount and EB Net Amount.",
+      undo: { module: "Payment_Received", part: "amount", value: AUTO },
+      moved: null,
+      slot: null,
+      module: "Payment_Received",
+    };
+    expect(undoOf(SUM_Q, done, THREE)).toEqual({ kind: "put", module: "Payment_Received", parts: { amount: AUTO } });
+    expect(undoOf({ ...SUM_ADMIN }, done, ["IP", "TDS_Amount"])).toEqual({
+      kind: "put",
+      module: "Payment_Received",
+      parts: { amount: THREE },
+    });
+    expect(correctionUndo(SUM_ADMIN)).toEqual(THREE);
+    expect(batchUndoCalls([{ module: "Payment_Received", part: "amount", value: THREE }])).toEqual([
+      { module: "Payment_Received", parts: { amount: THREE } },
+    ]);
+    expect(savedLine(SUM_Q, done, THREE)).toBe(
+      "Saved. Totals of Collection now use the sum of Rent Net Amount, IP Basic Amount and EB Net Amount.",
+    );
+  });
+
+  describe("the client", () => {
+    type Sent = { url: string; method: string; body: unknown };
+    const original = globalThis.fetch;
+    afterEach(() => {
+      globalThis.fetch = original;
+      clearAll();
+    });
+    function stub(answer: unknown): Sent[] {
+      const sent: Sent[] = [];
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        sent.push({
+          url: String(input),
+          method: init?.method ?? "GET",
+          body: init?.body ? JSON.parse(String(init.body)) : null,
+        });
+        return new Response(JSON.stringify(answer), { status: 200, headers: { "content-type": "application/json" } });
+      }) as typeof fetch;
+      return sent;
+    }
+
+    it("reads the sum check with the ticked keys, and wakes nothing", async () => {
+      const sent = stub(CHECK);
+      put("crm:mode", { mode: "mirror" });
+      expect(await api.sumCheck(SUM_Q.id, THREE)).toEqual(CHECK);
+      expect(sent[0]).toEqual({
+        url: "/api/crm/questions/key%3APayment_Received%3Aamount/sum-check?fields=Billing_Amount%2CIP%2CEB_Net_Amount",
+        method: "GET",
+        body: null,
+      });
+      expect(peek("crm:mode")).toBeDefined();
+    });
+
+    it("sends a list through the answer route and the PUT of the catalogue", async () => {
+      const sent = stub({});
+      await api.answerQuestion(SUM_Q.id, THREE);
+      await api.putCatalogue("Payment_Received", { amount: THREE });
+      expect(sent[0].body).toEqual({ value: THREE });
+      expect(sent[1]).toMatchObject({ method: "PUT", body: { amount: THREE } });
+    });
+  });
+});
+
+describe("the proposals in the picker of a sum (CRM-Q32-8 and CRM-Q32-9b)", () => {
+  const ASHA = { name: "Asha Rao", value: "IP", label: "IP Basic Amount", at: "2026-10-18T09:00:00Z" };
+  const SUMS = [
+    { value: "Billing_Amount", label: "Rent Net Amount", fill: 0.52 },
+    { value: "IP", label: "IP Basic Amount", fill: 0.52 },
+  ];
+  const Q = base({ ...KEY, sums: SUMS, proposals: [ASHA] });
+
+  it("shows each proposal with Confirm, which answers its one field", () => {
+    const confirmed: Array<string | null> = [];
+    const html = renderToStaticMarkup(
+      createElement(SumPickerBody, {
+        q: Q,
+        picked: [],
+        check: { state: "idle" },
+        disabled: false,
+        onToggle: noop,
+        onConfirm: (p) => confirmed.push(p.value),
+      }),
+    );
+    expect(html).toContain("data-proposals");
+    expect(textOf(html)).toContain("Proposed by Asha Rao ·");
+    expect(html).toContain('aria-label="Confirm IP Basic Amount, proposed by Asha Rao, for Collection"');
+    expect(read("./OpenQuestions.tsx")).toContain("onConfirm={(p) => void confirmInSum(p.value)}");
+    expect(confirmed).toEqual([]);
+  });
+
+  it("draws no list with no Confirm handler, and one shared component", () => {
+    const html = renderToStaticMarkup(
+      createElement(SumPickerBody, { q: Q, picked: [], check: { state: "idle" }, disabled: false, onToggle: noop }),
+    );
+    expect(html).not.toContain("data-proposals");
+    expect(read("./SumPicker.tsx")).toContain('import { ProposalList } from "./ProposalList";');
+    expect(read("./OpenQuestions.tsx")).toContain('import { ProposalList } from "./ProposalList";');
+  });
+});

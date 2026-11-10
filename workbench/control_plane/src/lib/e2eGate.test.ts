@@ -32,7 +32,20 @@ const WORKFLOW = readFileSync(
   HERE("../../../../.github/workflows/pr-check.yml"),
   "utf8"
 );
+/** The workflow with LF endings, so a Windows checkout reads it as CI does. */
+const LF = WORKFLOW.replace(/\r\n/g, "\n");
 const SPECS = readdirSync(HERE("../../e2e")).filter((f) => f.endsWith(".spec.ts"));
+
+/** Each job of `pr-check.yml`, keyed by its id, as the raw text of its block. */
+function jobs(): Record<string, string> {
+  const body = LF.slice(LF.indexOf("\njobs:\n"));
+  const out: Record<string, string> = {};
+  const heads = [...body.matchAll(/^ {2}([a-z0-9-]+):$/gm)];
+  heads.forEach((m, i) => {
+    out[m[1]] = body.slice(m.index, heads[i + 1]?.index ?? body.length);
+  });
+  return out;
+}
 
 /** The `testIgnore` entries declared on the `ci` project, as bare filenames. */
 function quarantined(): string[] {
@@ -59,12 +72,90 @@ describe("the browser gate CI runs", () => {
     expect(step).not.toMatch(/continue-on-error:\s*true/);
   });
 
+  it("skips its push copy, and a PR that does not touch the control plane", () => {
+    // The push copy duplicates the PR run and adds no fence at the merge
+    // button, because a conflicted PR cannot merge. `!= 'push'` and not
+    // `== 'pull_request'`, so a trigger added later still runs the suite.
+    // Since 2026-10-19 it also skips a PR that touches nothing under
+    // workbench/control_plane: the suite stubs `/api/**` and reads nothing
+    // outside the app. The `changes` job fails open: a failed `changes` job
+    // RUNS the suite, and a cancelled run does not start it.
+    expect(jobs().e2e).toMatch(
+      /^ {4}if: "!cancelled\(\) && github\.event_name != 'push' && \(needs\.changes\.result != 'success' \|\| needs\.changes\.outputs\.frontend == 'true'\)"$/m,
+    );
+  });
+
+  it("runs on a PR that changes the control plane, and a CI-only change does not force it (CIV-24, D203)", () => {
+    // The `frontend` output comes from the control-plane path alone. The `all`
+    // switch (a change under .github/) must not set it.
+    const diff = LF.slice(LF.indexOf("- id: diff"), LF.indexOf("- id: diff") + 2500);
+    expect(diff).toMatch(/echo "frontend=\$\(echo "\$files" \| grep -qE '\^workbench\/control_plane\/'/);
+    expect(diff).not.toMatch(/frontend=\$\(hit /);
+  });
+
+  it("is covered in full every night on main (CIV-24, D203)", () => {
+    const nightly = readFileSync(HERE("../../../../.github/workflows/e2e-nightly.yml"), "utf8").replace(/\r\n/g, "\n");
+    expect(nightly).toMatch(/playwright test --project=ci --shard=\$\{\{ matrix\.shard \}\}\/3/);
+    expect(nightly).toMatch(/shard: \[1, 2, 3\]/);
+    // Same project as the PR gate, so the quarantine register is the same.
+    // No --grep and no --ignore flag: every spec of the project runs.
+    expect(nightly).not.toMatch(/--grep|--list|testIgnore/);
+    expect(nightly).not.toMatch(/continue-on-error:\s*true/);
+    expect(nightly).toMatch(/^ {2}schedule:$/m);
+    expect(SPECS.length).toBeGreaterThan(0);
+  });
+
+  it("has no push trigger, so no push run can twin a required check", () => {
+    // 🔴 A push run created a SKIPPED "Unit tests" on the PR's head SHA, and
+    // GitHub counts a skipped check as passed (measured on #1077). The push
+    // copy of the R1 guard lives in push-check.yml.
+    // Python fence: tests/unit/test_pr_check_triggers.py.
+    expect(LF).not.toMatch(/^ {2}push:$/m);
+  });
+
+  it("has a cap above the measured run", () => {
+    // 🔴 The cap of 20 was the fault: the job takes about 20 minutes, so the
+    // cap cancelled green runs (measured 2026-10-15). Lower it again only with
+    // a new measured duration.
+    const cap = Number(/^ {4}timeout-minutes: (\d+)$/m.exec(jobs().e2e)?.[1]);
+    expect(cap).toBeGreaterThanOrEqual(30);
+  });
+
   it("keeps the report when it goes red", () => {
     // An undiagnosable gate is one somebody deletes instead of fixing.
     const job = WORKFLOW.slice(WORKFLOW.indexOf("\n  e2e:"));
     expect(job.slice(0, job.indexOf("secret-scan:"))).toMatch(
       /if:\s*failure\(\)[\s\S]*upload-artifact/
     );
+  });
+});
+
+describe("the dev server of the browser suite", () => {
+  const read = (rel: string) => readFileSync(HERE(rel), "utf8");
+
+  it("writes no Turbopack disk cache, and says so in both files", () => {
+    // 🔴 Three runs of shard 1 stalled in 2026-10-18 and 2026-10-19: the dev
+    // server stopped answering at test 53. The cache cost 5.7 GB of disk and
+    // ran a compaction beside the tests. A cold CI run gains nothing from it.
+    expect(read("../../playwright.config.ts")).toMatch(/E2E_NO_TURBOPACK_CACHE:\s*"1"/);
+    expect(read("../../next.config.ts")).toMatch(
+      /turbopackFileSystemCacheForDev:\s*process\.env\.E2E_NO_TURBOPACK_CACHE\s*!==\s*"1"/,
+    );
+  });
+
+  it("has a watchdog that ends a run whose server stops answering", () => {
+    expect(WORKFLOW).toMatch(/scripts\/e2e_watchdog\.sh http:\/\/127\.0\.0\.1:3101\/chat/);
+    expect(WORKFLOW).toMatch(/wait "\$pw"/);
+  });
+
+  it("arms the watchdog only after the server first answers", () => {
+    // Playwright starts the server, and a cold compile of /chat can take up to
+    // 180 s. A watchdog that counts misses from its first probe ends a healthy
+    // run after one minute (review of #1187).
+    const dog = read("../../../../scripts/e2e_watchdog.sh");
+    expect(dog).toMatch(/armed=0/);
+    expect(dog).toMatch(/armed=1/);
+    expect(dog).toMatch(/elif \[ "\$armed" -eq 1 \]/);
   });
 });
 
@@ -101,7 +192,7 @@ describe("the quarantine register", () => {
     expect(gated.length).toBeGreaterThanOrEqual(8);
     for (const must of [
       "projects-card-strip.spec.ts",
-      "projects-select-portal.spec.ts",
+      "projects-move-picker.spec.ts",
       "projects-stale-after-write.spec.ts",
       "projects-timeline-autoscroll.spec.ts",
       "toast.spec.ts",

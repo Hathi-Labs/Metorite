@@ -26,7 +26,7 @@ from fastapi import BackgroundTasks, HTTPException
 from gateway.routes.email.automation import runner as m
 from tests.unit._email_fakes import bind_db
 
-_ACC = "acc-cost"
+_ACC = "a0000000-0000-4000-8000-00000000c057"
 _USER = SimpleNamespace(email="u@example.com")
 
 

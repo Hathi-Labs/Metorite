@@ -8,9 +8,9 @@ database answers, and this ticket has three:
   ``CAST(:value AS JSONB)`` over a json STRING, read back as a string asyncpg
   hands over undecoded (bare ``text()`` declares no column type — the WS-27l
   shape). A fake stores the dict it was given and agrees with itself.
-* the ``ON CONFLICT (key) DO UPDATE`` upsert actually replaces rather than
-  duplicating — `org_settings.key` is the primary key, and a fake has no
-  constraints.
+* the ``ON CONFLICT (organization_id, key) DO UPDATE`` upsert actually
+  replaces rather than duplicating — that pair is the primary key since
+  migration 234, and a fake has no constraints.
 * the calendar seed reaches a real ``user_settings`` read through
   ``routes/tasks/settings._load``, joined to a real ``people`` row on
   ``lower(email)``.
@@ -196,8 +196,10 @@ async def main() -> None:
 
         # A person with a row keeps THEIR value — seeded once, never mirrored.
         await db.execute(text(
-            "INSERT INTO user_settings (user_id, day_start_hour) "
-            "VALUES (:uid, 5)"), {"uid": SUBJECT_EMAIL})
+            # Names its organization: since migration 239 (H-256) the column
+            # is NOT NULL and part of the key, with no DEFAULT on a fresh ladder.
+            "INSERT INTO user_settings (organization_id, user_id, day_start_hour) "
+            "VALUES (CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid), :uid, 5)"), {"uid": SUBJECT_EMAIL})
         await db.commit()
         check("an existing preference is never overwritten",
               (await tasks_settings._load(db, SUBJECT_EMAIL)).day_start_hour, 5)
@@ -215,8 +217,9 @@ async def main() -> None:
             "DELETE FROM org_settings WHERE key = 'work_schedule'"))
         if saved_policy is not None:
             await db.execute(
-                text("INSERT INTO org_settings (key, value) "
-                     "VALUES ('work_schedule', CAST(:v AS JSONB))"),
+                text("INSERT INTO org_settings (organization_id, key, value) "
+                     "VALUES (CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid), "
+                     "        'work_schedule', CAST(:v AS JSONB))"),
                 {"v": saved_policy.value if isinstance(saved_policy.value, str)
                  else __import__("json").dumps(saved_policy.value)})
         await db.commit()

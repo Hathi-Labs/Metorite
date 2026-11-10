@@ -12,6 +12,7 @@ trusting the model, so provenance is part of the API, not a debugging aid.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
 from acb_auth import (
@@ -35,9 +36,13 @@ from acb_auth.access import (
 from acb_auth.console_resolve import (
     ConsoleMemberWriteUnavailable,
     invite_member_on_console,
+    remove_member_on_console,
 )
 from acb_auth.permissions import matched_by
+from acb_common.assistant_profile import CLEAR_FOR_MEMBER_SQL_TEMPLATE, mark_changed
 from fastapi import Depends, HTTPException
+from gateway.assistant_summaries import clear_for_member
+from gateway.package_host.sharing import OTHERS_SEE_THE_INSTALL
 from gateway.routes.admin._common import (
     PURGE_OUTCOME,
     _iso,
@@ -58,6 +63,19 @@ from gateway.routes.admin._common import (
     set_roles,
 )
 
+# EM-G11f1b (email_app_master_plan.md §12.3.13.9.2). A purge deletes each
+# mailbox of the member, so it tears each one down: the plans and the purge
+# rows inside the transaction, and the teardown after the commit.
+from gateway.routes.email.memory_purge import RECORD_MEMBER_PURGES_SQL
+from gateway.routes.email.teardown import (
+    MEMBER_MAILBOXES_WHERE,
+    MemberScope,
+    TeardownCounts,
+    TeardownPlan,
+    finish_teardowns,
+    read_teardown_plans,
+)
+
 # D63 (H-49). The Projects package owns what a personal tree IS, so the seal
 # lives there and this module calls it. Putting the SQL here would be a second
 # definition of "somebody's personal tree", and the two would drift the first
@@ -67,10 +85,39 @@ from gateway.routes.projects.seal import (
     seal_personal_tree,
     unseal_personal_tree,
 )
+
+# WS-63 PZ-9. The bound tenant of the session, as `/tasks/settings` names it.
+# A member has one `user_settings` row for each organization (migration 239),
+# so each statement on that table names the org beside RLS, not instead of it.
+from gateway.routes.tasks.settings import _BOUND_ORG
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 VALID_STATUSES = ("invited", "active", "suspended", "removed")
+
+
+async def forget_member_profile(db: Any, email: str) -> None:
+    """Forget the member's assistant profile in the bound org (WS-63 PZ-9).
+
+    ONE helper for every door that sets the status to ``removed``: the
+    removal body and the lifecycle PATCH. It runs in the caller's session,
+    so the clear commits with the status write, or neither does. The
+    settings row and its other columns stay, because a removal can be
+    reversed. A suspension keeps the profile (``personalization.md`` §7
+    point 6). The privacy fence of PZ-9 fails on a status write of
+    ``removed`` in a function that does not call this.
+
+    It then moves the member's change count, so the executor reads the
+    block again. A read before the commit can cache the old block until
+    its TTL. The member has no access by then, so no turn of theirs runs.
+    """
+    await db.execute(
+        text(CLEAR_FOR_MEMBER_SQL_TEMPLATE.replace("{org}", _BOUND_ORG)),
+        {"email": email},
+    )
+    # PZ-35: the chat summaries of the member go with the profile.
+    await clear_for_member(db, email)
+    mark_changed(email)
 
 
 # ── Models ──────────────────────────────────────────────────────────────────
@@ -262,6 +309,18 @@ async def invite_member(
                 "member_invite_console_refused",
                 email=email, status=cc_status, body=str(cc_body)[:200],
             )
+        elif (cc_body.get("created") is False
+              and cc_body.get("status") not in ("invited", "active")):
+            # The Console kept an existing row in a status that does not
+            # match the invite (`suspended`, or a status this gateway does
+            # not know). The planes now disagree: the tenant says `invited`
+            # and the registry does not, so the person's next sign-in takes
+            # no seat. Review round 1, P1-a: a silent 200 here is how that
+            # state went unseen.
+            _log.warning(
+                "member_invite_console_status_mismatch",
+                email=email, console_status=cc_body.get("status"),
+            )
     except ConsoleMemberWriteUnavailable as exc:
         # The box is unwired, or the Console gave no answer. Logged, never
         # raised: the tenant-plane invite stands.
@@ -336,6 +395,10 @@ async def update_member(
                 ),
                 {"status": patch.status, "uid": member["id"]},
             )
+            # WS-63 PZ-9: a removal by PATCH forgets the profile, as the
+            # DELETE door does. A suspension keeps it (§7 point 6).
+            if patch.status == "removed":
+                await forget_member_profile(db, member["email"])
             # D63 (H-49) — the personal tree follows the member's standing.
             #
             # IN THE SAME TRANSACTION as the status write, deliberately. A
@@ -430,27 +493,10 @@ async def remove_member(
         # used to hold its own copy of the comparison, which is precisely why
         # the other door never grew one.
         assert_not_self_lockout(admin, member, status="removed")
-        await assert_owner_survives(db, org_id, excluding_user_id=member["id"])
-
-        await db.execute(
-            text("DELETE FROM user_role WHERE user_id = CAST(:uid AS uuid)"),
-            {"uid": member["id"]},
-        )
-        await db.execute(
-            text(
-                "UPDATE app_user SET status = 'removed', updated_at = now() "
-                " WHERE id = CAST(:uid AS uuid)"
-            ),
-            {"uid": member["id"]},
-        )
-        # D63 (H-49) — the SECOND door, and it reaches the same seal.
-        #
-        # ⚠️ This route's own docstring records why: it "used to hold its own
-        # copy of the comparison, which is precisely why the other door never
-        # grew one". The seal is written into both doors in the same change for
-        # that exact reason. A removal that left the tree open would be the
-        # whole defect, and it is the door an admin is most likely to use.
-        tree_projects = await seal_personal_tree(db, member["email"], org_id)
+        # Invariant 1, the writes and the seal all live in the shared body.
+        # The operator door (`routes/operator.py`) calls the same body, so the
+        # two doors cannot come to disagree about what a removal IS.
+        tree_projects = await remove_member_rows(db, org_id, member)
 
     # H6 slice 3a (WS-29, DARK, D48): propagate the off-boarding into the
     # RLS-EXEMPT shadow so `org_membership.status` is 'removed' too, or the H6
@@ -468,7 +514,113 @@ async def remove_member(
     record_admin_change(admin.email, "org.member_removed",
                         f"user:{member['email']}",
                         tree="sealed", tree_projects=tree_projects)
+    await _mirror_removal_to_console(
+        actor_email=admin.email or "", member_email=member["email"],
+    )
     return {"status": "removed", "email": member["email"]}
+
+
+async def remove_member_rows(
+    db: Any, org_id: str, member: dict[str, Any]
+) -> int:
+    """The in-transaction body of a removal. Returns the sealed project count.
+
+    ONE copy, two callers: ``DELETE /admin/members/{email}`` above and the
+    operator door ``DELETE /internal/operator/organizations/{slug}/members/
+    {email}`` (``routes/operator.py``). Each caller opens its own tenant
+    session and passes it in, so this function opens nothing and commits
+    nothing.
+
+    It holds invariant 1 (:func:`assert_owner_survives`), because both doors
+    need it. It does NOT hold invariant 4 (``assert_not_self_lockout``). Only
+    the admin door has a caller who is also a member, so that guard stays in
+    the admin route, where the door-enumeration test looks for it.
+
+    The row is kept and only its status changes, for the reason the admin
+    route's docstring gives. The role grants go, so nothing re-grants access
+    if somebody later sets the status back by hand.
+    """
+    await assert_owner_survives(db, org_id, excluding_user_id=member["id"])
+
+    await db.execute(
+        text("DELETE FROM user_role WHERE user_id = CAST(:uid AS uuid)"),
+        {"uid": member["id"]},
+    )
+    await db.execute(
+        text(
+            "UPDATE app_user SET status = 'removed', updated_at = now() "
+            " WHERE id = CAST(:uid AS uuid)"
+        ),
+        {"uid": member["id"]},
+    )
+    # H-375: a send that they scheduled would go out in their name after they
+    # left. The job also refuses a member who is not active, so this is the
+    # second of two locks (review of #1209, P1).
+    await db.execute(
+        text(
+            "UPDATE email_scheduled_sends SET status = 'cancelled', updated_at = now() "
+            " WHERE lower(owner_email) = lower(:email) AND status = 'queued'"
+        ),
+        {"email": member["email"]},
+    )
+    # WS-63 PZ-9 (personalization.md §7 point 6): access ended, so the
+    # assistant forgets the member at once. The settings row stays.
+    await forget_member_profile(db, member["email"])
+    # D63 (H-49) — the SECOND door, and it reaches the same seal.
+    #
+    # ⚠️ The remove route's own docstring records why: it "used to hold its
+    # own copy of the comparison, which is precisely why the other door never
+    # grew one". The seal is written into both doors in the same change for
+    # that exact reason. A removal that left the tree open would be the whole
+    # defect, and it is the door an admin is most likely to use.
+    return await seal_personal_tree(db, member["email"], org_id)
+
+
+async def _mirror_removal_to_console(*, actor_email: str, member_email: str) -> None:
+    """Tell the Customer Console about a committed removal. Never raises.
+
+    POST-COMMIT, best-effort, in its own HTTP hop: the invite mirror's posture
+    (``invite_member`` above), for the invite mirror's reason. The tenant-plane
+    write has already committed, so a Console outage or refusal must never
+    change the route's answer. Every outcome is a log line.
+
+    The Console sets the membership to ``removed`` and releases the person's
+    seats, so the seat cap stops counting them. Without it a removed person
+    holds a paid seat, and the org's admin cannot free it.
+
+    ⚠️ ``actor_email`` is the AUTHENTICATED ADMIN (R11). The Console derives
+    the org from placement and membership, so this names no organization.
+    """
+    try:
+        cc_status, cc_body = await remove_member_on_console(
+            actor_email=actor_email, member_email=member_email,
+        )
+        if cc_status >= 400:
+            # A verdict, not an outage: capability missing, the actor not an
+            # active registry member, or a self-removal. The planes now
+            # disagree, and this line is how anyone finds out.
+            _log.warning(
+                "member_remove_console_refused",
+                email=member_email, status=cc_status, body=str(cc_body)[:200],
+            )
+        elif cc_body.get("owner_transferred_to"):
+            # The removed person was the org's last active registry owner, so
+            # the Console made the acting admin the owner in the same
+            # transaction (P1-b, the owner's decision of 2026-10-15). A change
+            # of who owns the account is never a silent 200.
+            _log.warning(
+                "member_remove_console_owner_transferred",
+                email=member_email,
+                new_owner=cc_body.get("owner_transferred_to"),
+            )
+    except ConsoleMemberWriteUnavailable as exc:
+        _log.warning("member_remove_console_unavailable",
+                     email=member_email, error=str(exc)[:200])
+    except Exception as exc:
+        # Belt and braces, as at the invite mirror: an unforeseen exception
+        # type must not turn a committed removal into a 500.
+        _log.warning("member_remove_console_failed",
+                     email=member_email, error=str(exc)[:200])
 
 
 # ── Permanent deletion ──────────────────────────────────────────────────────
@@ -533,17 +685,25 @@ class _PersonRows:
 #: error, which is exactly how the first version of this comment named 15 of
 #: 20 email tables and put `wa_media` one hop too high.
 _CREDENTIAL_CASCADES: dict[str, tuple[str, ...]] = {
-    # The whole mirrored mailbox — 18 direct children, 21 with transitives
+    # The whole mirrored mailbox — 19 direct children, 22 with transitives
     # (`crm_auto_lead_cursors` joined in migration 163: the auto-lead epoch
-    # cursor is per-mailbox state and goes with the mailbox).
+    # cursor is per-mailbox state and goes with the mailbox. `email_insights`
+    # joined in migration 231: the Insights facts of the mailbox, EM-T14a).
+    # WS-65 SM-1 adds the four tables of a shared mailbox. A member purge
+    # reaches a shared row only while its user_id is the leaver, until SM-8
+    # leaves a shared row out of the member scope (shared_mailbox.md §4.2).
+    # WS-17 SG-2 adds `email_signature_settings`, the signature mode of the
+    # mailbox.
     "email_accounts": (
         "crm_auto_lead_cursors",
         "email_actions", "email_ai_drafts", "email_assistant_settings",
         "email_attachments", "email_cold_senders", "email_contacts",
         "email_embeddings", "email_executed_rules", "email_folders",
-        "email_knowledge", "email_learned_patterns", "email_messages",
+        "email_insights", "email_knowledge", "email_learned_patterns",
+        "email_mailbox_grants", "email_mailbox_member_prefs", "email_messages",
         "email_newsletters", "email_rule_guidance", "email_rule_patterns",
-        "email_rules", "email_senders", "email_sync_log",
+        "email_rules", "email_scheduled_sends", "email_send_log", "email_senders",
+        "email_signature_settings", "email_sync_log", "email_thread_assignments",
         "email_thread_status", "email_voice_profiles",
     ),
     # The whole WhatsApp mirror — 14 direct, 16 with transitives
@@ -559,6 +719,17 @@ _CREDENTIAL_CASCADES: dict[str, tuple[str, ...]] = {
     # is dropped, and no table left in the schema hangs off this one.
     "task_accounts": (),
 }
+
+#: WS-PKG PKG-4 and PKG-5b (package_host.md §5.1 decisions 3 and 5): the
+#: member shared this private install with another person. It is the ONE
+#: rule of `gateway/package_host/sharing.py`, which the resolve reads too. A
+#: grant counts only when its subject is an address, is not the member, and
+#: the member made it. So a consent row of a colleague, a grant to an agent
+#: and a share by another owner of the app do not keep the install. The rule
+#: names no parameter, and the member's own grants never count. So the count,
+#: which runs before every delete, and the delete of the installs, which runs
+#: after `_PURGE_DELETES` deletes her grants, read the same answer.
+_OTHERS_SEE_THE_APP = OTHERS_SEE_THE_INSTALL
 
 #: **Deleted.** Enumerated from `infra/postgres/` by grepping for every column
 #: that names a person — FKs to `app_user(id)` and the email-string columns
@@ -593,8 +764,21 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # standing authorization to act as them, so it goes with the credentials.
     _PersonRows("app_tool_grants", "app_tool_grants",
                 "lower(user_email) = :email"),
+    # A send that they scheduled (H-375). It would go out in their name after
+    # they left, so it goes before the mailbox, and the count is real.
+    _PersonRows("scheduled_sends", "email_scheduled_sends",
+                "lower(owner_email) = :email"),
+    # The leaver's own grants on a shared mailbox (WS-65, D-SM-8). Only the
+    # rows whose subject is the address: an `org` or a `group:` grant needs
+    # no change, and the shared mailbox itself stays (MEMBER_MAILBOXES_WHERE).
+    _PersonRows("mailbox_grants", "email_mailbox_grants", "lower(subject) = :email"),
+    # Their own choices for each shared mailbox (sign-off line and the
+    # like). The rows are the leaver's alone, and the mailbox stays.
+    _PersonRows("mailbox_member_prefs", "email_mailbox_member_prefs", "lower(member_email) = :email"),
     # Credentials.
-    _PersonRows("email_accounts", "email_accounts", "lower(user_id) = :email"),
+    # The clause is the teardown's own (EM-G11f1b), so the plans, the purge
+    # rows and this delete name one set of mailboxes.
+    _PersonRows("email_accounts", "email_accounts", MEMBER_MAILBOXES_WHERE),
     _PersonRows("whatsapp_accounts", "wa_accounts", "lower(user_id) = :email"),
     _PersonRows("task_accounts", "task_accounts", "lower(user_id) = :email"),
     # Their own private conversations. ⚠️ `visibility = 'private'` is
@@ -611,6 +795,110 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # sign-in bumps a row the Requests tab never renders (it shows `pending`
     # only) — the invisible lockout §6 exists to end.
     _PersonRows("sign_in_requests", "access_request", "lower(email) = :email"),
+    # WS-53 CRM-Q33: the member's own business rules of the CRM. An org rule
+    # stays, and `purge_crm_member` takes the address off it.
+    _PersonRows("crm_member_rules", "crm_business_rules",
+                "scope = 'member' AND lower(member_email) = :email"),
+    # WS-CRM CRM-M1: the Change history rows that only the member reads, the
+    # changes of a private saved view or of an own business rule. They hold
+    # the text of a private view or an own rule, which only the member
+    # reads, so they go with the member. This purge deletes the own rules
+    # (`crm_member_rules` above). It does not delete the saved views
+    # (`crm_views`). An Undo row has the same readers as the row it undoes
+    # (`change_log.log_change`), so the `ON DELETE CASCADE` key of
+    # `undoes_id` takes only rows that this clause counts too, and no org
+    # row goes with them. The clause names
+    # the bound org beside RLS, as `reminders` does. The org's rows that the
+    # member made stay with the address, as `app_audit` does, because a row
+    # never changes (migration 341). They are not counted as kept: the table
+    # cascades into itself, so `test_no_keep_clause_survives_a_cascade_on_
+    # the_delete_side` takes a keep clause only as the exact complement of
+    # this one, and the org's rows are keyed by `actor_email`, not by
+    # `private_to`.
+    _PersonRows("crm_private_changes", "crm_change_log",
+                f"lower(private_to) = :email AND organization_id = {_BOUND_ORG}"),
+    # WS-61 KB-2f: the member's starred Knowledge pages. A star is the
+    # member's own shortcut, so it goes with the member. The page stays.
+    _PersonRows("knowledge_favorites", "kb_favorites", "lower(member_email) = :email"),
+    # WS-66 RM-1 (D114): the member's private reminders of THIS organization.
+    # Only the owner reads a reminder, so nobody else could ever close one,
+    # and a purged member leaves none behind. The clause names the bound org
+    # beside RLS, as `member_settings` does, so the same address in another
+    # org keeps its reminders. The ledger, `reminder_events`, goes by its
+    # `ON DELETE CASCADE` key to `reminders`. A task that a promote made
+    # stays: it is a `pm_tasks` row, and a purge deletes none (D63).
+    _PersonRows("reminders", "reminders",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # WS-BRIEF BR-4: the member's briefs and close-outs of THIS organization.
+    # A brief is the member's own text, and only the member reads it, so a
+    # purged member leaves none behind. The clause names the bound org beside
+    # RLS, as `reminders` does, so the same address in another org keeps its
+    # briefs. The claims, `brief_claims`, go by their `ON DELETE CASCADE`
+    # key to `brief_runs`.
+    _PersonRows("brief_runs", "brief_runs",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # WS-STU F1: the member's AI Studio skills of THIS organization. In F1 a
+    # skill is private, and only its owner reads it, so a purged member
+    # leaves none behind. The clause names the bound org beside RLS, as
+    # `brief_runs` does, so the same address in another org keeps its
+    # skills. The versions, `studio_skill_versions`, go by their
+    # `ON DELETE CASCADE` key to `studio_skills`. J2 adds a shared skill, and
+    # J2 decides if a shared one stays.
+    _PersonRows("studio_skills", "studio_skills",
+                f"lower(owner_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # WS-PKG PKG-4 (package_host.md §5.1 decision 5): the member's private
+    # installs of THIS organization that nobody else sees. `scope_subject` is
+    # the owner's address on a private install, and the CHECK
+    # `package_install_private_installer` (324) makes the owner its
+    # installer. A share with named people stays private (decision 3), and
+    # the resolve shows the install to each grantee. So an install of an app
+    # that the member shared stays: see `shared_private_app_installs` below.
+    # The contributions, `package_contribution`, go by their
+    # `ON DELETE CASCADE` key to `package_install`. A group or an org install
+    # that the member made stays: see `shared_app_installs` below.
+    _PersonRows("private_app_installs", "package_install",
+                "scope_kind = 'private' AND lower(scope_subject) = :email"
+                f" AND organization_id = {_BOUND_ORG}"
+                f" AND NOT {_OTHERS_SEE_THE_APP}"),
+    # WS-WEB WEB-10: the member's goal records of THIS organization. A goal
+    # is private to its member, and only the member reads it, so a purged
+    # member leaves none behind. The clause names the bound org beside RLS,
+    # as `studio_skills` does, so the same address in another org keeps its
+    # goals. No table hangs off `goal_records`.
+    _PersonRows("goal_records", "goal_records",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # WS-63 PZ-9 (personalization.md §7 point 6): the member's settings row
+    # of THIS organization, and with it the assistant profile. The row is the
+    # member's own preferences, so the whole row goes. A member has one row
+    # for each organization, so the clause names the bound org, and the row
+    # of another organization stays.
+    _PersonRows("member_settings", "user_settings",
+                f"lower(user_id) = :email AND organization_id = {_BOUND_ORG}"),
+    # WS-66 PN-1: the member's web push devices of THIS organization. A row
+    # left behind would keep a push going to the leaver's browser. The
+    # clause names the bound org, as the settings row does, so the devices of
+    # the same address in another organization stay.
+    _PersonRows("push_devices", "push_subscriptions",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # WS-CAL CE-4 (D138): the member's calendar entries of THIS organization,
+    # the events they made and the copies of their own provider calendar.
+    # Only the owner changes an entry, so nobody else could ever delete one.
+    # The clause names the bound org, as `reminders` does. The attendee rows
+    # of these entries go by their `ON DELETE CASCADE` key. ⚠️ This row runs
+    # before any connection delete of the purge (`purge_knowledge_member`
+    # runs after the list), because `calendar_entries.connection_id` has NO
+    # cascade (migration 331).
+    _PersonRows("calendar_entries", "calendar_entries",
+                f"lower(owner_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # The member's own rows on the entries of colleagues: their seat, RSVP
+    # and lead time. The entry stays with its owner. The clause leaves out
+    # the rows on the member's own entries, which the cascade above deletes,
+    # so the two counts never count one row twice.
+    _PersonRows("calendar_attendances", "calendar_entry_attendees",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG} "
+                "AND NOT EXISTS (SELECT 1 FROM calendar_entries AS e "
+                "WHERE e.id = calendar_entry_attendees.entry_id "
+                "AND lower(e.owner_email) = :email)"),
     # The identity itself. LAST.
     _PersonRows("member_record", "app_user", "id = CAST(:uid AS uuid)"),
 )
@@ -642,6 +930,47 @@ _PURGE_KEEPS: tuple[_PersonRows, ...] = (
     _PersonRows("apps", "apps", "lower(owner_email) = :email"),
     _PersonRows("workflows", "workflows", "lower(owner_email) = :email"),
     _PersonRows("meetings", "meeting", "lower(owner_email) = :email"),
+    # WS-61 KB-5a: the edits that the assistant proposed for the member. A
+    # proposal is authored work about a company page, as the member's pages
+    # are, and a decided one is the record of who proposed and who accepted.
+    # A pending one stays for a writer of the space to decide. KB-5c expires
+    # it after 14 days. Kept whole, so the table is on one side only.
+    _PersonRows("knowledge_proposals", "kb_page_proposals",
+                "lower(proposer_email) = :email"),
+    # WS-55 SW-10a (external_agent_access.md §12.6): the strands of the
+    # member's agent runs, the nudges and the recovery records of the sweep.
+    # Kept and counted, not deleted: a strand is part of the record of its
+    # run, the run stays, and a purge deletes no `pm_` row (D63,
+    # `test_the_purge_names_no_task_table_and_deletes_no_pm_row`). Kept
+    # whole, so the table is on one side only.
+    _PersonRows("agent_run_strands", "pm_agent_run_strands",
+                "lower(member_email) = :email"),
+    # WS-39 SP-1 (project_management_app.md §13.2a): the member's review
+    # minutes in the capacity snapshot of a started cycle. Kept and counted,
+    # not deleted: a cycle's capacity snapshot is part of the record of the
+    # cycle, no UPDATE may change it, and a purge deletes no `pm_` row (D63).
+    # Kept whole, so the table is on one side only.
+    _PersonRows("cycle_capacity", "pm_cycle_capacity",
+                "lower(member_email) = :email"),
+    # WS-PKG PKG-4 (package_host.md §5.1 decision 5): the group and org
+    # installs that the member made. Other people use them, so they stay, as
+    # a shared room does. `scope_kind <> 'private'` is load-bearing: it is the
+    # complement of the private rows' `scope_kind = 'private'`, so no install
+    # is counted on both sides. The clauses name different person columns,
+    # because a private install belongs to its `scope_subject` and a shared
+    # one to its `installed_by`.
+    _PersonRows("shared_app_installs", "package_install",
+                "scope_kind <> 'private' AND lower(installed_by) = :email"
+                f" AND organization_id = {_BOUND_ORG}"),
+    # WS-PKG PKG-4 (decisions 3 and 5): the member's private installs of an
+    # app that the member shared with named people. Each grantee sees the
+    # install, so it stays and is counted. The clause is the delete side's
+    # `private_app_installs` with `EXISTS` for `NOT EXISTS`, so the two split
+    # the member's private installs with no overlap and no gap.
+    _PersonRows("shared_private_app_installs", "package_install",
+                "scope_kind = 'private' AND lower(scope_subject) = :email"
+                f" AND organization_id = {_BOUND_ORG}"
+                f" AND {_OTHERS_SEE_THE_APP}"),
 )
 
 
@@ -674,6 +1003,9 @@ class PurgeResult(BaseModel):
     email: str
     deleted: dict[str, int]
     kept: dict[str, int]
+    #: EM-G11f1b, additive. The mailboxes that the teardown planned, the ones
+    #: that finished before the answer, and the ones that continue after it.
+    mailboxes: TeardownCounts = Field(default_factory=TeardownCounts)
 
 
 @router.delete("/members/{email}/purge",
@@ -735,36 +1067,15 @@ async def purge_member(
         # DELETES the row be covered by the sentence written for ones that
         # UPDATE it.
         assert_not_self_lockout(admin, member, status=PURGE_OUTCOME)
-        # Invariant 1. Unlike a removal this cannot be undone by re-inviting:
-        # the org would have no owner and no row to promote back.
-        await assert_owner_survives(db, org_id, excluding_user_id=member["id"])
+        # Invariant 1, the counts, the deletes and the pre-commit audit entry
+        # all live in the shared body. The operator door calls the same body.
+        knowledge_revokes: list[Any] = []
+        deleted, kept, plans = await purge_member_rows(
+            db, org_id, member, actor_email=admin.email,
+            knowledge_revokes=knowledge_revokes,
+        )
 
-        addr = (member["email"] or "").strip().lower()
-        uid = member["id"]
-
-        # Count everything BEFORE anything is deleted — including the kept
-        # side, which is the half that makes the report legible.
-        deleted: dict[str, int] = {}
-        for rows in _PURGE_DELETES:
-            result = await db.execute(
-                text(rows.count_sql), _purge_params(rows, uid=uid, email=addr)
-            )
-            deleted[rows.key] = int(result.scalar() or 0)
-        kept: dict[str, int] = {}
-        for rows in _PURGE_KEEPS:
-            result = await db.execute(
-                text(rows.count_sql), _purge_params(rows, uid=uid, email=addr)
-            )
-            kept[rows.key] = int(result.scalar() or 0)
-
-        for rows in _PURGE_DELETES:
-            await db.execute(
-                text(rows.delete_sql), _purge_params(rows, uid=uid, email=addr)
-            )
-
-        # Before the commit, on its own connection — see the docstring.
-        record_admin_change(admin.email, "org.member_purged", f"user:{addr}",
-                            deleted=deleted, kept=kept)
+    addr = (member["email"] or "").strip().lower()
 
     # H6 (WS-29, DARK, D48) orphan-closure: the authoritative purge above deletes
     # `app_user` but NOT the RLS-EXEMPT shadow, so without this a purged ACTIVE
@@ -781,7 +1092,162 @@ async def purge_member(
     invalidate_for(member["email"])
     _log.info("member_purged", email=member["email"], by=admin.email,
               deleted=deleted, kept=kept)
-    return PurgeResult(email=member["email"], deleted=deleted, kept=kept)
+    # The registry has no hard delete. A purged person is a `removed`
+    # membership there, with every seat released, which is what the seat cap
+    # needs. Post-commit and best-effort, as at Remove.
+    await _mirror_removal_to_console(
+        actor_email=admin.email or "", member_email=member["email"],
+    )
+    # EM-G11f1b: the mailboxes went with the commit, so tear each one down
+    # now, with the session block closed. Stop each sync loop, remove the
+    # filters, revoke the grant, drop the Graph subscription and the Redis
+    # keys. It goes LAST (fix round 1): its wait can last 60 s, and a stop of
+    # the process in that wait must not lose the log line or the mirror.
+    mailboxes = await finish_teardowns(
+        org_id, plans, open_session=partial(_tenant_session, org_id),
+        stop_loops=True, bump_owners=False)
+
+    # WS-61 KC-1a (review P1): the Google revokes of the leaver's Drive, after
+    # the email teardown. Its check ran with the Drive rows already gone, so
+    # an address that a Gmail plan covers is left to it: one grant, one revoke.
+    from gateway.routes.knowledge import sources as kb_sources
+
+    await kb_sources.finish_purge_revokes(
+        org_id, knowledge_revokes,
+        gmail_addresses={p.email_address or "" for p in plans if p.provider == "gmail"})
+    return PurgeResult(email=member["email"], deleted=deleted, kept=kept,
+                       mailboxes=mailboxes)
+
+
+async def purge_crm_member(db: Any, org_id: str, email: str) -> None:
+    """The CRM half of a purge (WS-53 CRM-Q33 fix round 1). The address
+    leaves each org rule (``rules.scrub_member``), and the cursor row of the
+    questions (``questions.purge_member_state``): the member's proposals go,
+    and the record of who set an answer keeps no address. Then the member's
+    CRM keys leave tenant Redis (``questions.forget_member_keys``), best
+    effort. The SQL runs in the caller's transaction."""
+    from gateway.routes.crm import questions as crm_questions
+    from gateway.routes.crm import rules as crm_rules
+
+    await crm_rules.scrub_member(db, str(org_id), email)
+    await crm_questions.purge_member_state(db, str(org_id), email)
+    await crm_questions.forget_member_keys(str(org_id), email)
+
+
+async def purge_knowledge_member(db: Any, org_id: str, email: str) -> list[Any]:
+    """The Knowledge half of a purge (WS-61 KB-9a, KC-1a). The address leaves the
+    ``askers`` and the ``dismissed_by`` of each gap (``gaps.scrub_member``).
+    The gap and its count stay. Each member-scope Knowledge source of the
+    member goes with its token, its tree and its connection row
+    (``sources.purge_member_sources``, ``knowledge_curation.md`` §19). The SQL
+    runs in the caller's transaction. Returns the Google revokes owed after
+    the commit (``sources.finish_purge_revokes``)."""
+    from gateway.routes.knowledge import gaps as kb_gaps
+    from gateway.routes.knowledge import sources as kb_sources
+
+    await kb_gaps.scrub_member(db, str(org_id), email)
+    return await kb_sources.purge_member_sources(db, str(org_id), email)
+
+
+async def purge_member_rows(
+    db: Any,
+    org_id: str,
+    member: dict[str, Any],
+    *,
+    actor_email: str | None,
+    knowledge_revokes: list[Any] | None = None,
+) -> tuple[dict[str, int], dict[str, int], list[TeardownPlan]]:
+    """The in-transaction body of a purge. Returns ``(deleted, kept, plans)``.
+
+    WS-61 KC-1a (review P1): the member's Knowledge sources go in this
+    transaction too. Their pending Google revokes are added to
+    *knowledge_revokes* when the caller passes a list. Each door passes one
+    and hands it to ``sources.finish_purge_revokes`` AFTER
+    ``finish_teardowns``.
+
+    ONE copy, two callers: ``DELETE /admin/members/{email}/purge`` above and
+    the operator door with ``mode=purge`` (``routes/operator.py``). Each caller
+    opens its own tenant session and passes it in. This function opens
+    nothing and commits nothing, so the whole purge stays one transaction,
+    the caller's.
+
+    It holds invariant 1 (:func:`assert_owner_survives`). Unlike a removal,
+    a purge cannot be undone by re-inviting: the org would have no owner and
+    no row to promote back. Invariant 4 stays in the admin route, for the
+    reason :func:`remove_member_rows` gives.
+
+    ``actor_email`` names who did it on the audit entry, which this function
+    writes BEFORE the caller's commit (the admin route's docstring says why).
+
+    EM-G11f1b (``email_app_master_plan.md`` §12.3.13.9.2): before the first
+    statement of ``_PURGE_DELETES``, it reads the teardown plan of each
+    mailbox of the member and writes one ``email_mailbox_purges`` row for
+    each, in one set-based statement. Both commit with the deletes, or
+    neither does. The caller passes ``plans`` to ``finish_teardowns`` after
+    its session block exits. A refusal of invariant 1 raises before the
+    read, so it reaches no provider and stops no loop. More than
+    ``TEARDOWN_MAX_MAILBOXES`` mailboxes raise a 409 before any delete.
+    """
+    await assert_owner_survives(db, org_id, excluding_user_id=member["id"])
+
+    addr = (member["email"] or "").strip().lower()
+    uid = member["id"]
+
+    # EM-G11f1b: the plans, then the purge rows, before any delete. The
+    # cascade of `email_accounts` deletes the filter ids, and the purge row
+    # must commit with the delete that owes it.
+    plans = await read_teardown_plans(db, MemberScope(addr))
+    await db.execute(text(RECORD_MEMBER_PURGES_SQL), {"email": addr})
+
+    # Count everything BEFORE anything is deleted — including the kept
+    # side, which is the half that makes the report legible.
+    deleted: dict[str, int] = {}
+    for rows in _PURGE_DELETES:
+        result = await db.execute(
+            text(rows.count_sql), _purge_params(rows, uid=uid, email=addr)
+        )
+        deleted[rows.key] = int(result.scalar() or 0)
+    kept: dict[str, int] = {}
+    for rows in _PURGE_KEEPS:
+        result = await db.execute(
+            text(rows.count_sql), _purge_params(rows, uid=uid, email=addr)
+        )
+        kept[rows.key] = int(result.scalar() or 0)
+
+    # EM-G11f1b, fix round 1. A mailbox that the member connected after the
+    # plan read goes with the delete, and it has no plan, so nothing revokes
+    # its grant. The line says so. It names counts and no address.
+    if deleted.get("email_accounts", 0) > len(plans):
+        _log.warning("email.teardown.unplanned_mailbox",
+                     planned=len(plans), deleted=deleted["email_accounts"])
+
+    for rows in _PURGE_DELETES:
+        await db.execute(
+            text(rows.delete_sql), _purge_params(rows, uid=uid, email=addr)
+        )
+    # WS-63 PZ-33a: the private chats went above, with their summaries. A
+    # shared room of the member stays, so its summary is cleared here, in
+    # this transaction, through the one module of the column.
+    await clear_for_member(db, addr)
+
+    # WS-53 CRM-Q33: the member's address in the CRM state that no delete
+    # above reaches, in this transaction, and the member's CRM keys.
+    await purge_crm_member(db, org_id, addr)
+    # WS-61 KB-9a: the member's address in the Knowledge gaps. KC-1a: the
+    # member's Drive sources, with their token and their tree.
+    revokes = await purge_knowledge_member(db, org_id, addr)
+    if knowledge_revokes is not None:
+        knowledge_revokes.extend(revokes)
+    # WS-63 PZ-9: the settings row went above, so the executor must read the
+    # member's block again (`forget_member_profile` says why this is early).
+    mark_changed(addr)
+
+    # Before the commit, on its own connection — see the admin route's
+    # docstring.
+    # Task 2221: the org of this purge. The operator door binds no tenant.
+    record_admin_change(actor_email, "org.member_purged", f"user:{addr}",
+                        organization_id=org_id, deleted=deleted, kept=kept)
+    return deleted, kept, plans
 
 
 # ── Role assignment ─────────────────────────────────────────────────────────

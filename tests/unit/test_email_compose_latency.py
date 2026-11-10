@@ -34,12 +34,14 @@ def test_mem0_write_is_fire_and_forget() -> None:
         "after the draft is already written")
 
 
-def test_interactive_drafting_uses_the_compose_model() -> None:
-    # Manual "Draft with AI" (both entry points) → models["compose"], so the
-    # advanced-section "Manual draft model" setting governs what the user
-    # waits on. Background paths (rule actions, follow-ups) keep models["draft"].
-    assert 'models["compose"]' in inspect.getsource(drafting._compose_assist_run)
-    assert 'models["compose"]' in inspect.getsource(drafting.draft_reply_smart)
+def test_interactive_drafting_uses_the_compose_tier() -> None:
+    # Manual "Draft with AI" (both entry points) → the COMPOSE tier, which our
+    # code chooses (D-EM-61). Background paths (rule actions, follow-ups) use
+    # the DRAFT tier. test_email_no_tier_choice.py proves the values.
+    assert 'EMAIL_TASK_TIERS["compose"]' in inspect.getsource(
+        drafting._compose_assist_run)
+    assert 'EMAIL_TASK_TIERS["compose"]' in inspect.getsource(
+        drafting.draft_reply_smart)
 
 
 def test_stream_endpoint_shares_the_compose_pipeline() -> None:

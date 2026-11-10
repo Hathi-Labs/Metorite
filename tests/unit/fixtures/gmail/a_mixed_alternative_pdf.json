@@ -1,0 +1,138 @@
+{
+  "id": "1923f0a1b2c3d4e5",
+  "threadId": "1923f0a1b2c3d4e5",
+  "labelIds": [
+    "IMPORTANT",
+    "CATEGORY_PERSONAL",
+    "INBOX"
+  ],
+  "snippet": "Hi Asha, The signed quote is attached. Regards, Ravi",
+  "payload": {
+    "partId": "",
+    "mimeType": "multipart/mixed",
+    "filename": "",
+    "headers": [
+      {
+        "name": "Delivered-To",
+        "value": "asha@example.com"
+      },
+      {
+        "name": "Received",
+        "value": "by 2002:a05:7300:5b1a:b0:12a:3c4d:5e6f with SMTP id x9csp1234567; Mon, 30 Sep 2024 13:32:01 +0530"
+      },
+      {
+        "name": "MIME-Version",
+        "value": "1.0"
+      },
+      {
+        "name": "From",
+        "value": "Ravi Kumar <ravi@example.org>"
+      },
+      {
+        "name": "Date",
+        "value": "Mon, 30 Sep 2024 13:32:01 +0530"
+      },
+      {
+        "name": "Message-ID",
+        "value": "<CAKx7Qm1+A9zBq=Ef4@mail.example.org>"
+      },
+      {
+        "name": "Subject",
+        "value": "Signed quote"
+      },
+      {
+        "name": "To",
+        "value": "Asha Rao <asha@example.com>"
+      },
+      {
+        "name": "Content-Type",
+        "value": "multipart/mixed; boundary=\"000000000000a1b2c3d4e5f6a7b8\""
+      }
+    ],
+    "body": {
+      "size": 0
+    },
+    "parts": [
+      {
+        "partId": "0",
+        "mimeType": "multipart/alternative",
+        "filename": "",
+        "headers": [
+          {
+            "name": "Content-Type",
+            "value": "multipart/alternative; boundary=\"000000000000c9d0e1f2a3b4c5d6\""
+          }
+        ],
+        "body": {
+          "size": 0
+        },
+        "parts": [
+          {
+            "partId": "0.0",
+            "mimeType": "text/plain",
+            "filename": "",
+            "headers": [
+              {
+                "name": "Content-Type",
+                "value": "text/plain; charset=\"UTF-8\""
+              }
+            ],
+            "body": {
+              "size": 61,
+              "data": "SGkgQXNoYSwNCg0KVGhlIHNpZ25lZCBxdW90ZSBpcyBhdHRhY2hlZC4NCg0KUmVnYXJkcywNClJhdmkNCg=="
+            }
+          },
+          {
+            "partId": "0.1",
+            "mimeType": "text/html",
+            "filename": "",
+            "headers": [
+              {
+                "name": "Content-Type",
+                "value": "text/html; charset=\"UTF-8\""
+              }
+            ],
+            "body": {
+              "size": 128,
+              "data": "PGRpdiBkaXI9Imx0ciI-SGkgQXNoYSw8ZGl2Pjxicj48L2Rpdj48ZGl2PlRoZSBzaWduZWQgcXVvdGUgaXMgYXR0YWNoZWQuPC9kaXY-PGRpdj48YnI-PC9kaXY-PGRpdj5SZWdhcmRzLDxicj5SYXZpPC9kaXY-PC9kaXY-DQo="
+            }
+          }
+        ]
+      },
+      {
+        "partId": "1",
+        "mimeType": "application/pdf",
+        "filename": "quote-signed.pdf",
+        "headers": [
+          {
+            "name": "Content-Type",
+            "value": "application/pdf; name=\"quote-signed.pdf\""
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment; filename=\"quote-signed.pdf\""
+          },
+          {
+            "name": "Content-Transfer-Encoding",
+            "value": "base64"
+          },
+          {
+            "name": "Content-ID",
+            "value": "<f_m1q2w3e40>"
+          },
+          {
+            "name": "X-Attachment-Id",
+            "value": "f_m1q2w3e40"
+          }
+        ],
+        "body": {
+          "attachmentId": "ANGjdJ_fixture_attachment_quote_pdf",
+          "size": 48213
+        }
+      }
+    ]
+  },
+  "sizeEstimate": 4096,
+  "historyId": "2817364",
+  "internalDate": "1727683321000"
+}

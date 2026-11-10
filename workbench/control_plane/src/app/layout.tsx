@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Geist, Geist_Mono, Inter } from "next/font/google";
 import "./globals.css";
+import { GLASS_LOOK, LOOK_ATTRIBUTE } from "@/lib/theme/look";
 
 // The app's two faces, reached through `--font-app` / `--font-app-mono`.
 // next/font self-hosts and subsets them, so no request ever leaves for
@@ -17,15 +18,38 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+// The glass look's face off Apple devices (D143): Inter, the closest open
+// relative of SF Pro. `preload: false`, so a page in the classic look never
+// fetches it. A browser downloads a face only when text uses it.
+const inter = Inter({
+  variable: "--font-inter",
+  subsets: ["latin"],
+  preload: false,
+  display: "swap",
+});
+
 import AppShell from "@/components/AppShell";
+import StagingBand from "@/components/StagingBand";
+import { deployTitle } from "@/lib/deploy/deployEnv";
 import Providers from "@/components/Providers";
 import { UndoProvider } from "@/components/UndoProvider";
 import { ToastProvider } from "@/components/ui/Toast";
+import InstallNudge from "@/lib/shell/InstallNudge";
+import UpdateNotice from "@/lib/shell/UpdateNotice";
 import { themeBootScript } from "@/lib/theme/boot";
 
 export const metadata: Metadata = {
-  title: "Metorite Control Plane",
-  description: "Skill Studio, Chat, Agents and Integrations for the Fracktal AI Company Brain.",
+  // WS-38 S-7: "[Staging] Metorite" on the staging box, unchanged elsewhere.
+  title: deployTitle("Metorite"),
+  applicationName: "Metorite",
+  description: "Metorite, the AI company operating system.",
+  // iPhone reads these, not the manifest, to open from the home screen as an
+  // app. `apple-icon.png` (a file beside this one) is its icon.
+  appleWebApp: { capable: true, title: "Metorite", statusBarStyle: "black-translucent" },
+  formatDetection: { telephone: false },
+  // The tab and home-screen icons are files beside this one (`favicon.ico`,
+  // `icon.svg`, `apple-icon.png`) and `manifest.ts`. `brand/make_icons.py`
+  // makes the rasters from the transparent master.
 };
 
 // Default mobile-friendly viewport. ViewModeProvider widens this to a desktop
@@ -38,7 +62,13 @@ export const viewport: Viewport = {
   viewportFit: "cover",
 };
 
-const fontVariables = [geistSans.variable, geistMono.variable].join(" ");
+const fontVariables = [geistSans.variable, geistMono.variable, inter.variable]
+  .filter(Boolean)
+  .join(" ");
+
+// Glass is the only look (D149), so the server renders the attribute on
+// every page and nothing takes it off.
+const lookAttributes = { [LOOK_ATTRIBUTE]: GLASS_LOOK };
 
 export default function RootLayout({
   children,
@@ -50,6 +80,7 @@ export default function RootLayout({
       lang="en"
       suppressHydrationWarning
       className={`${fontVariables} h-full antialiased`}
+      {...lookAttributes}
     >
       <body className="h-full bg-background text-foreground antialiased">
         {/* Applies the stored density and accent before anything paints, so
@@ -66,7 +97,17 @@ export default function RootLayout({
             cannot live inside a page. Fenced by `conformance.test.ts` rule 8:
             without the provider every `useToast()` call site degrades to a
             silent no-op and no other test in the tree would go red. */}
+        {/* WS-38 S-7: renders nothing on production. */}
+        <StagingBand />
         <ToastProvider>
+          {/* "Metorite is updating", instead of a 502 (navigation_shell.md
+              §7.3, owner directive 2026-10-05). Inside the toast provider,
+              because it speaks through the toast. OUTSIDE `Providers` for the
+              toast's own reason: it must speak while session and access are
+              failing to resolve, which is exactly what an update looks like. */}
+          <UpdateNotice />
+          {/* The home-screen invitation on a phone. Renders nothing. */}
+          <InstallNudge />
           {/* Undo/redo, mounted once for the whole product (owner directive,
               2026-08-31). Inside the toast provider because a failed undo
               reports through it, and OUTSIDE `Providers` for the same reason

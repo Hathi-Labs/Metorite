@@ -25,6 +25,8 @@ import os
 import subprocess
 import tempfile
 
+from acb_common.child_env import child_env
+
 from acb_stt.types import TranscriptResult, TranscriptSegmentData
 
 _SAMPLE_RATE = 16_000
@@ -87,6 +89,7 @@ def _decode_pcm(data: bytes, mime: str):
                 ],
                 capture_output=True,
                 timeout=600,
+                env=child_env(),
             )
         except (FileNotFoundError, subprocess.SubprocessError):
             return None

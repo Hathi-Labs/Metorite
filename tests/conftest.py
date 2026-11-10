@@ -42,6 +42,13 @@ os.environ.setdefault("CUSTOMER_CONSOLE_STARTER_CREDITS", "0")
 # No daily cap under test either: suites provision many orgs in a run, and a
 # cap would make grant assertions depend on test order. The cap test sets it.
 os.environ.setdefault("CUSTOMER_CONSOLE_STARTER_DAILY_CAP", "0")
+# The email model budget is OFF under test (WS-17 EM-T4b). The shipped
+# default is `log`, which counts each model call of a mailbox job in tenant
+# Redis. Under test that wrote real keys into whatever Redis a dev machine
+# runs, and each count then carried over to the next run. The budget suite
+# (`tests/unit/test_email_llm_cap.py`) sets each mode it tests, over a fake
+# Redis client.
+os.environ.setdefault("EMAIL_LLM_BUDGET_MODE", "off")
 
 
 @pytest.fixture(autouse=True)
@@ -70,6 +77,58 @@ def _isolate_write_artifact_context():
         yield
     finally:
         reset_artifact_context(token)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_the_egress_mark(monkeypatch):
+    """Keep the upward-egress mark (WS-17 EM-G11d) in memory under test.
+
+    The mark lives in tenant Redis, and its read FAILS CLOSED. The shared
+    pool of ``acb_common.tenant_redis`` belongs to the event loop of the first
+    test that used it. The read in a later test then failed, and the gate
+    asked a card for an MCP call of a session that read nothing. So each test
+    starts with an empty process set and its own in-memory client. A test
+    that inspects the store, or makes it fail, patches over this one. The
+    store is the one helper ``tests/unit/_egress_mark_store.py``, which the
+    routing eval of skill-eval calls too.
+    """
+    from tests.unit._egress_mark_store import clear_marks, install_memory_mark_store
+
+    install_memory_mark_store(monkeypatch)
+    yield
+    clear_marks()
+
+
+@pytest.fixture(autouse=True)
+def _no_docker_daemon_outside_the_sandbox_docker_marker(request, monkeypatch):
+    """A unit test never reaches the Docker daemon through the sandbox broker.
+
+    WS-43c, PR #591 review round 3. Every test that runs the real gateway
+    lifespan (``TestClient(app)`` in ``test_smoke.py`` and others) starts the
+    broker's startup sweep. On a dev box that sweep removed EVERY container
+    labelled ``metorite.sandbox=1`` on the daemon, other sessions' included.
+    So outside the ``sandbox_docker`` marker, ``DockerCLI._binary`` raises
+    ``SandboxUnavailable``. The sweep then logs one line and removes nothing.
+    A test that patches ``_binary`` on an instance (to run python) still works.
+    Fence: ``tests/unit/test_sandbox_broker_seam.py``
+    (``test_the_unit_suite_never_reaches_the_docker_daemon``).
+    """
+    if request.node.get_closest_marker("sandbox_docker") is not None:
+        yield
+        return
+    try:
+        from orchestrator import sandbox_broker
+    except ImportError:  # the orchestrator is not on the path
+        yield
+        return
+
+    def _refuse(_self):
+        raise sandbox_broker.SandboxUnavailable(
+            "Unit tests never reach the Docker daemon. Mark the test sandbox_docker."
+        )
+
+    monkeypatch.setattr(sandbox_broker.DockerCLI, "_binary", _refuse)
+    yield
 
 
 # ── R8: say out loud when the database-gated suites did not run ─────────────
@@ -249,3 +308,73 @@ def _sweep_scratch_organizations():
         print(f"\nH-91 sweep could not run: {exc!r}")
     finally:
         eng.dispose()
+
+
+@pytest.fixture(autouse=True)
+def _reset_the_access_tables_latch():
+    """Start and end every test with the access-tables latch OFF.
+
+    ``acb_auth.access._tables_missing`` is a process-wide latch. The first
+    ``resolve_access`` that fails with "does not exist" sets it, and from
+    then on every member in the process resolves to ``is_active=False``
+    without a query.
+
+    Measured 2026-11-01 (task 1332, pr-check run 41305223510, shard 4, and
+    a replay of that shard in the metorite-ci distro).
+    ``test_delegated_artifact_card.py`` ran an agent run whose access read
+    met a dropped database ("database acb_tenant_h3rls does not exist"), and
+    it left the latch set. Four admit tests in
+    ``test_h3_rls_promotion_rehearsal.py`` and ``test_h6_identity_shadow.py``
+    failed later in the shard, and passed alone. Nineteen suites guarded the
+    latch one by one. This guard covers every test.
+
+    ``sys.modules`` and not an import, so a test that never loads
+    ``acb_auth`` pays nothing. Fence:
+    ``tests/unit/test_cross_test_state_guards.py``.
+    """
+    import sys
+
+    access = sys.modules.get("acb_auth.access")
+    if access is not None:
+        access._tables_missing = False
+    yield
+    access = sys.modules.get("acb_auth.access")
+    if access is not None:
+        access._tables_missing = False
+
+
+@pytest.fixture(autouse=True)
+def _restore_the_database_url():
+    """End every test with the DATABASE_URL it started with.
+
+    ``tests/unit/_tenant_ladder.py::tenant_engine_scope`` points the shared
+    engine at a DSN through DATABASE_URL, and writes the old value back on
+    exit. Two scopes open in two concurrent tasks write back in the order
+    they finish. In the same replay (task 1332),
+    ``test_crm_z10d_modules_r8.py`` left DATABASE_URL naming its dedicated
+    database, and the module then dropped that database. Each later scope
+    saved and restored the stale value, so every later engine in the process
+    pointed at a database that did not exist.
+
+    The value at the start of a test already holds what a module or session
+    fixture set, so a fixture of a wider scope keeps its DSN. Fence:
+    ``tests/unit/test_cross_test_state_guards.py``.
+    """
+    before = os.environ.get("DATABASE_URL")
+    yield
+    if before is None:
+        os.environ.pop("DATABASE_URL", None)
+    else:
+        os.environ["DATABASE_URL"] = before
+
+
+@pytest.fixture(autouse=True)
+def _reset_agent_repo_refresh_clock():
+    """The loader pulls a repo at most once per TTL. That clock is module
+    state, so one test's pull would make the next test skip its own."""
+    import sys
+
+    loader = sys.modules.get("acb_skills.loader")
+    if loader is not None:
+        loader._REFRESHED_AT.clear()
+    yield

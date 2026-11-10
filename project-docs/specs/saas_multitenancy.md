@@ -1,5 +1,7 @@
 # SaaS multi-tenancy — selling Metorite to other companies
 
+> **Dated 2026-11-11, price (D204.9).** Seat tiers are final. The flat ₹500 seat ends when PLN-0 merges. Until then the code sells the flat seat. Read each line that says the flat seat as the seat of D152 after PLN-0. Lines: 51 and 1187.
+
 **Status:** Architecture of record (owner-requested 2026-08-08) · **Board row: `work_plan.md` §2 → WS-29 · Decision: D15** · **§11 is the dispatchable ticket list — start there; [`saas_multitenancy_implementation.md`](saas_multitenancy_implementation.md) is its child and holds the build shapes** · **Owner:** vjvarada ·
 **Supersedes:** `tenancy_and_visibility.md` §1 and §6 · **Verified against code:** 2026-08-08,
 working tree at `b09093a`; **§11's MT-1 anchors re-verified 2026-08-19** ·
@@ -1963,6 +1965,11 @@ ratchet exists to stop a contract changing by accident, and it caught this corre
 
 **MT-0c-2 · The container/microVM tier (WS-3 T2) · 🔴 STAYS OWNER-GATE, STAYS PARKED**
 
+> ⚠️ **Amended 2026-10-03 by D83 (owner decision).** The owner un-parked T2 for
+> the WS-43 sandbox terminal only: the container that runs the shell commands
+> of the coding engine (`maf_coding_engine.md` §3). The rest of MT-0c-2 stays
+> parked, and T2 stays a precondition of the §5.1 pooled cutover.
+
 **Why parked is still right, and this is the substance of the decision.** D10 parked T2
 because *"the ladder must hold against trusted colleagues, not hostile users."* That
 reasoning **still holds for the silo phase** (§5.1): with one tenant per box, an escaped
@@ -2156,9 +2163,13 @@ constructed without one **refuses to run** rather than defaulting.
 > and each sweeps exactly its own. Proven two-org against a real Postgres by
 > `tests/live/live_ws27aa.py`.
 >
-> **`_pm_task_updater` beside it is still open** — it patches ONE task by id on
-> the unbound seam, so it wants the task's own organization threaded from the
-> node config, not a loop. It belongs to WS-29's H4 slice, not to Projects.
+> **H-328 part (a) closed `_pm_task_updater` beside it for a run with an org
+> (2026-11-02).** It patches ONE task by id through `_run_session(org)`, with the
+> org of the run. A run with no org keeps the unbound seam until parts (b) and
+> (c). No live door reaches this write yet: `run_published_workflow` refuses a
+> task node, because a run does not check which tasks a member can see. It
+> belongs to WS-29's H4 slice, not to Projects. Fence:
+> `tests/unit/test_workflows_lifecycle_rls_r8.py`.
 
 #### MT-1e · Redis: prefixes enforced by the client · ◐ **WRAPPER BUILT, ONE CALL SITE CONVERTED (EM-T2b, BUILT, not merged)**
 
@@ -2169,6 +2180,17 @@ constructed without one **refuses to run** rather than defaulting.
 > `cc:<org>:email-att:<id>` through `get_tenant_redis(binary=True)`. That is the same wrapper
 > over a second, small pool that does not decode replies. `routes/email/core.py` left the
 > import allow-list. Fence: `tests/unit/test_email_attachment_cache_tenancy.py`.
+> **Converted (H-201c, task 1718, 2026-11-05, BUILT, not merged):** the live activity feed.
+> The stream is `cc:<org>:activity` and the presence keys are `cc:<org>:activity:live:<run>`,
+> through the wrapper. A writer with no org writes nothing. The SSE `XREAD BLOCK` runs on a
+> third pool (`get_tenant_redis(blocking=True)`). Fence: `tests/unit/test_activity_feed_tenant.py`.
+> **Converted (H-201e, task 1748, 2026-11-05, BUILT, not merged):** the daily cost rollup.
+> It is `cc:<org>:cost:<day>`, through the wrapper, and `/observability/cost` reads the viewer's
+> org only. A priced call with no tenant folds into ONE deployment-level hash,
+> `cc:_unattributed:cost:<day>`. No tenant route reads it, and `_` cannot lead an org id.
+> There is no dual read of the old `cc:cost:{day}`. `activity.py` stays on the import
+> allow-list for its one-shot no-loop clients, and on the literal allow-list for the
+> unattributed key only. Fence: `tests/unit/test_cost_rollup_tenant.py`.
 > **NOT converted:** the other key sites, across 9 clients. Deliberately separate — the docstring
 > carries the migration path, including *not* writing a dual-read shim (every key is cache,
 > presence or a bounded stream, so conversion is a cache-cold event, not a data migration).
@@ -2183,8 +2205,8 @@ constructed without one **refuses to run** rather than defaulting.
 >    `orchestrator/agents.py:436`, which hands `redis_url` to `agent_framework`'s
 >    `RedisHistoryProvider`, keying chat history **outside this wrapper entirely**. That one
 >    needs its own decision, not a conversion.
-**Owner:** §0.9.4, §1.9 · **Anchor:** today's untenanted `cc:activity`, `cc:room`,
-`cc:cost`, `cc:presence`, `cc:runactor`, …
+**Owner:** §0.9.4, §1.9 · **Anchor:** today's untenanted `cc:room`,
+`cc:presence`, `cc:runactor`, … (`cc:activity` converted by H-201c, and `cc:cost` by H-201e, 2026-11-05)
 
 **Done when:** a wrapper client is the only way the codebase reaches Redis and it **cannot
 construct an unprefixed key**; consumer groups are per-tenant; a grep-assertion test fails
@@ -2391,7 +2413,7 @@ Keeping the slug in the address bar (rewrite instead of redirect) · establishin
 session on a workspace host · per-tenant branding on any surface · the multi-org
 chooser (B6) · anything under `deploy/`.
 
-#### MT-1k · The workspace choice — one email, several organizations, chosen in UI · ◐ **MINTED 2026-08-24 (D51.3) — slice A BUILT (WS-35); B/C are the owner-noted later development**
+#### MT-1k · The workspace choice — one email, several organizations, chosen in UI · ◐ **MINTED 2026-08-24 (D51.3) — slice A BUILT (WS-35), A2 BUILT 2026-10-07, org-aware links BUILT 2026-10-10. B/C are the owner-noted later development**
 
 **The ask, verbatim (owner, 2026-08-24):** *"Since a user's email may belong to
 multiple organizations, provide a way to select and switch organizations during
@@ -2427,8 +2449,132 @@ claim as a filter.
   employees are single-org), and building it early would put churn on the live
   auth path for a case that does not yet exist.
 
-**Anti-scope:** hostnames never participate (D51); no second grant vocabulary —
-the chooser lists organizations, never roles (D12).
+**Anti-scope:** hostnames never participate (D51). There is no second grant
+vocabulary: the chooser lists organizations, never roles (D12).
+
+- **Slice A2 — several ACCOUNTS in one browser, the Gmail model (BUILT
+  2026-10-07, ships dark).** Owner ask, 2026-10-07: *"build a switcher to
+  quickly toggle between multiple organizations signed into Metorite, similar
+  to how Google Mail handles it."* The owner's own case is two EMAILS in two
+  organizations, and one email is one organization today (slice C). So this
+  slice switches between signed-in accounts, and slice B stays unbuilt.
+
+  **How it works.** Auth.js holds one session cookie, and a new sign-in
+  overwrites it (`@auth/core` `callback/index.js:71-77` builds a fresh token).
+  So the browser keeps each other account's OWN session token, unchanged, in a
+  slot cookie (`__Host-mt-acct-0` to `__Host-mt-acct-3`, `httpOnly`, `Secure`,
+  `SameSite=Lax`). `__Host-`, so a sibling subdomain cannot plant one.
+  A switch SWAPS the active token and a slot token. The server never mints a
+  token: each one came out of a completed sign-in, through the `signIn` gate.
+
+  **What the gateway sees does not change.** One email per request, from the
+  active session. The tenant binding (R11) is untouched. A switch changes which
+  verified identity is active. It never chooses an organization.
+
+  ⚠️ One read is the exception. To name each other account's organization in
+  the menu, `GET /api/accounts?orgs=1` calls `/auth/me` AS that account. The
+  slot token is the proof, because it is a valid session for that email, held
+  by this browser. Only the organization's name leaves that read.
+
+  **The rules, each with its fence:**
+
+  1. A slot is used only if it decodes with the session secret and has not
+     expired. A rotated `AUTH_SECRET` drops every slot.
+     Fence: `accountSlots.test.ts`.
+  2. Every write is a same-origin `POST`, from a request with a valid active
+     session. Fence: `app/api/accounts/route.test.ts`.
+  3. A switch reloads the page at `/`, and first clears the browser state that
+     belongs to one organization: the logo cache, the org density, and the
+     Email mailbox choice. Fence: `accountSwitch.test.ts`, which also fails if
+     a listed key is renamed.
+  4. The slots end with the session. `proxy.ts` deletes every slot on a request
+     that has no live session, however the session ended: the switcher, a
+     plain `signOut()`, Auth.js's own sign-out page, or an expiry. Fence:
+     `proxy.test.ts`. "Sign out of all accounts" also clears every account's
+     chat namespace (`projects_ai_chat.md` "Replace the pointer when the
+     switcher lands"). Fence: `accountSwitch.test.ts`.
+  5. At most four other accounts. A fifth replaces the slot whose token expires
+     first, which is the account used least recently.
+  6. Every open tab follows the cookie. A tab that loads announces its account
+     on a `BroadcastChannel`, and a tab that shows another account reloads at
+     `/`. Without this, an old tab writes as an account it does not show.
+     Fence: `accountSwitch.test.ts` and the two-tab case in
+     `e2e/account-switcher.spec.ts`.
+
+  **Known, not fixed.** A `/api/auth/session` refresh that is in flight with
+  the old cookie can set it again after a switch. The member then loses the
+  other account from the browser, and must add it again. It loses access and
+  leaks nothing. The session cookie itself is still `__Secure-`, so a sibling
+  subdomain could plant one. That gap is older than this slice. A rename to
+  `__Host-` changes the salt and signs every member out one time.
+
+  **Where it shows.** Desktop: the sidebar footer is an account button, and the
+  folded rail has an avatar at its foot. Both open one menu: the active account
+  and its organization, the other accounts, "Add another account", and "Sign
+  out of all accounts". Phone: the same list unfolds in the drawer footer.
+  ⚠️ Since 2026-10-14, with the shell bar on, the desktop menu is the sidebar
+  foot again (owner direction, `navigation_shell.md` §3.3). One menu holds the
+  accounts, Add, the member's pages, the settings and sign-out. From 2026-10-12
+  to 2026-10-14 it was the shell bar's top-right widget. The classic frame
+  keeps the footer.
+
+  **Flag.** `ACCOUNT_SWITCHER_ENABLED=true` on the workbench, read at request
+  time. Off, `/api/accounts` answers `enabled: false`, and the footer is
+  unchanged.
+
+  **Org-aware links (BUILT 2026-10-10, owner).** Owner ask, 2026-10-10: a
+  link must open in the account it belongs to. The browser switches to that
+  account when it holds a session for it. When it holds none, the page says so.
+
+  **The rule.** A copied link carries `?org=<organization id>`. `?account=`
+  is not free, because Email reads it as a mailbox id. `OrgLinkGate`, at the
+  top of `AccessGate`, reads `org` before the page mounts. Then it does one
+  of these:
+
+  | The link names | The page does |
+  |---|---|
+  | No `org` | Nothing |
+  | A value that is not a UUID | It removes `org` and shows the page |
+  | The active account's org | It removes `org` and shows the page |
+  | The org of another signed-in account | It switches, then reloads the same path and query without `org` |
+  | An org of no signed-in account | It shows a notice: "Sign in to that account" or "Stay here" |
+  | Any org, with the switcher off | The same notice, with no stash |
+  | Any org, signed out | The proxy sends the WHOLE link, query too, to `/signin` |
+
+  "Sign in to that account" keeps the active account in a slot. Then it opens
+  `/signin` with `callbackUrl` set to the original link. The copy-link actions
+  of Projects and Tasks stamp `org` (`taskDeepLink`). An in-app href does not.
+
+  **Why it is safe.**
+
+  1. A link only CHOOSES among accounts that this browser already holds. It
+     never mints a session and never names an identity. The gateway binds the
+     tenant from the active session alone, so R11 is untouched.
+  2. The switch is the same-origin `POST /api/accounts/switch` of rule 2. The
+     proxy and a GET never switch, so an image or a form on another site
+     cannot call it. A LINK can cause a switch, on purpose: that is the
+     owner's ask. A link from any site, an email or WhatsApp that names an
+     org this browser holds opens that account with no extra click. Like any
+     switch, it reloads the member's other open tabs at `/`. The harm ends
+     there: no data leaks, and no tenant is read across. *(Review,
+     2026-10-10.)*
+  3. A switch and a sign-in land only on a same-origin relative path. One
+     `/` starts it, and `//`, a backslash or a control byte refuse it. Auth.js
+     keeps the `callbackUrl` on the origin as well.
+  4. With `?orgs=1`, `GET /api/accounts` also returns `organization_id` and
+     `organization_slug` for each account, read as that account. The id is
+     not a secret, because it only matches against accounts already held.
+
+  **Fences.** `orgLink.test.ts` (`org-link-decision`, the table above and the
+  safe paths). `accountSwitch.test.ts` (`switch-target-is-local`).
+  `app/api/accounts/route.test.ts` (`accounts-orgs-shape`). `proxy.test.ts`
+  (`proxy-callback-keeps-query`). `app/projects/lib/card.test.ts`
+  (`copied-link-names-org`).
+
+  **The gate itself.** `components/OrgLinkGate.test.ts`
+  (`org-link-gate-arms`) renders the gate in node, and fails when the cover
+  or the notice draws the page. `e2e/org-link.spec.ts` opens a link to a held
+  org, to a stranger org and to the active org in a browser.
 
 #### MT-1g · Blobs out of Postgres · 🟢 AGENT-SAFE
 **Owner:** §1.6 · **Anchor:** `71_agent_blob_store.sql:30` (`content BYTEA`)
@@ -2437,6 +2583,81 @@ the chooser lists organizations, never roles (D12).
 keeps metadata and a pointer; meeting media (already filesystem-backed at
 `95_note_taker.sql:56`) moves to the same store. *Worth doing in any tenancy model — a
 BYTEA column is the wrong home for file content in any topology.*
+
+**Inventory of 2026-10-20 — where file bytes live today.** Owner ask of
+2026-10-20: "if we are improperly using Postgres and should be instead using
+object storage, just note that in our documentation so that we can pick that
+up later." This inventory widens the scope of MT-1g. It is read from `main` at
+`945a782e6`. Nothing here is built.
+
+**The rule this ticket applies.** Postgres keeps rows that a query reads: ids,
+metadata, text that search or an agent reads, and a pointer. Object storage
+keeps file bytes that no SQL predicate reads: uploads, generated files, media
+and bundles. The local disk of the box is a cache, never the only copy.
+
+| Class | Store | What it holds | Bound | Where |
+|---|---|---|---|---|
+| **A. File bytes in Postgres** | `agent_blob.content` (BYTEA, the only app BYTEA column) | Agent `inputs/`, `outputs/` and `agent-data/` files, every artifact of WS-60 | Upload 25 MB. `write_artifact` has no cap | `71_agent_blob_store.sql:30`. Read at each run start by `rehydrate_workspace` (`executor.py`), and by `workspace._faultin_from_store` |
+| **B. Disk is the only copy** | `attachments.path` | Task and project files, and résumés | 15 MB a file, 10 MB a task | `data/gtd_attachments` (`52_gtd_attachments.sql:53`) |
+| | `meeting_recording.artifact_path` | Meeting audio | 300 MB a recording | `data/notes_media` (`95_note_taker.sql:56`) |
+| | Project imports | Uploaded import files | 50 MB | `data/project_imports` (`projects/imports.py`). **Not in the off-box backup list** |
+| | Custom App binaries | Binary files of an app workspace (`app_files` keeps text only) | — | `apps_root()`. **Not in the off-box backup list** |
+| | Package zips | Derived zips of a chat's files | 50 MB | Disk only by owner decision, 2026-10-11. A zip can be rebuilt, so it stays out of scope |
+| **C. Large text, stays in Postgres for now** | `email_messages.body_html`, `body_text` | Whole mail bodies | 2 MB and 500 KB | The largest store measured: 124 MB of HTML in 314 MB on 2026-10-07. Search reads the text, so the text stays. The HTML is a candidate. `email_ingestion/html_tier.py` already fetches it from the provider behind `EMAIL_HTML_FROM_PROVIDER` |
+| | `kb_page_versions.body_md` | A full copy of a page for each version | A page is at most 1,000,000 characters. The version count has no bound | Text that history reads. A version cap or a move of old bodies is a later choice |
+| | `app_versions.bundle_html`, `app_files.content` | Published bundles and draft text files of Custom Apps | 5 MB and 2 MB | Candidates once the store exists |
+| **D. Columns that nothing writes** | `wa_media.storage_path`, `email_attachments.storage_path` | Placeholders for "a local or object path once downloaded" | — | WhatsApp media is fetched from Meta and dropped. Mail attachments are fetched from the provider and cached in Redis. These columns are where the store's key goes when a copy is kept |
+
+**What exists to build on.** No app code holds an S3 client today (`boto3`
+comes only through `litellm`). The off-box backup already writes to the
+private Supabase Storage bucket `metorite-backups` through its S3 endpoint
+with `rclone` (HANDOFF H-123, `backup_and_restore.md`). So the natural store is
+Supabase Storage through the S3 protocol, with one bucket for each
+environment. That choice is a recommendation, not a decision.
+
+**Decided, 2026-10-20 (D108).** The owner accepted the recommendation. The
+store is Supabase Storage through its S3 endpoint, with one private bucket
+for each environment: `metorite-files` and `metorite-files-staging`. The app
+signs in as its own Supabase Auth user and sends the JWT as the S3 session
+token (the BH-4 pattern), because a project-wide S3 key also opens the backup
+bucket. The seam itself checks the tenant prefix of every key. One app
+credential reads every tenant's objects, so that check is the isolation.
+
+**The slices.**
+
+| Slice | What | Done when | Gate |
+|---|---|---|---|
+| **MT-1g-1** ✅ BUILT 2026-10-20, dark | The seam `acb_common.object_store`, dark behind `OBJECT_STORE_ENABLED`. Put, get, stream, head and delete. Keys from the bound tenant. Session-token sign-in, or a plain key pair for a local MinIO | A put, a get and a delete round-trip against MinIO. A key of another organization is refused. Nothing outside the seam imports an S3 client | AGENT-SAFE |
+| **MT-1g-2** | The Supabase objects: the two buckets, with a `file_size_limit` of 512 MB or more (the project default is 50 MB), the files user of each environment, the storage policies, and the secrets entry in `deploy/secrets/manifest.json` with `OBJECT_STORE_REGION` set to the project region (`ap-south-1`). Also a nightly copy of each files bucket into the off-box backup, through the insert-only backup writer of BH-4 | The files user of staging can write, read and delete in `metorite-files-staging`, and gets 403 in `metorite-backups`. A 300 MB object uploads. The nightly copy runs once and lists the object | OWNER-GATE for the Auth provider setting (OD-9), as in BH-4. The rest is AGENT-SAFE through the Supabase MCP |
+| **MT-1g-3** | Task and project attachments (`attachments.path`) | A new attachment lands in the store, an old one still opens from disk, and a backfill copies the old ones | AGENT-SAFE |
+| **MT-1g-4** | Meeting audio (`meeting_recording.artifact_path`), streamed in chunks | A 300 MB recording uploads in parts and plays back with a range request | AGENT-SAFE |
+| **MT-1g-5** | Project imports and Custom App binaries | Both survive a wipe of the box's data folder | AGENT-SAFE |
+| **MT-1g-6** | `agent_blob.content` to the store, the row keeps the metadata and the key. Waits for the nightly copy of MT-1g-2 | A run start rehydrates a workspace from the store, and the BYTEA column holds no new bytes | AGENT-SAFE, HIGH tier |
+
+Class C stays out of these slices. A slice for a table of class C is
+written when one of them grows past its measure of 2026-10-07.
+
+**The shape to build.** One seam, `acb_common.object_store`, with `put`, `get`,
+`delete` and a short-lived signed URL. Keys are `<organization_id>/<app>/<id>`,
+taken from the bound tenant and never from request input (R5). Each table keeps
+its metadata row and gains a key column, added nullable (R6). A reader tries the
+store, then the old place, until a backfill has moved every row. No second
+store is allowed beside it.
+
+**Order, by risk.**
+
+1. **Class B first.** A file there has one copy, on one box. A disk loss loses
+   it, and two of the five places are not in the off-box backup.
+2. **Class A next.** `agent_blob` holds 2.4 MB today (2026-10-15), but every
+   artifact of WS-60 lands there, and a run start reads every byte of its
+   workspace. Move it before the WS-60 quota (`artifact_management.md` §7.5)
+   lets a member hold gigabytes.
+3. **Class C last, row by row,** once the seam has run for a while.
+
+**New work writes to the store from day one.** The files of Knowledge
+(`knowledge_base.md` KB-2c) and any new upload path must not add a BYTEA
+column or a disk-only path. Until the seam exists, such a slice waits for it,
+or it builds the seam as its first step.
 
 #### MT-1h · Partitioning + per-tenant logical backup · 🟢 AGENT-SAFE
 **Owner:** §1.6

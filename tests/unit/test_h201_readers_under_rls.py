@@ -24,6 +24,24 @@ Mutations this suite catches (R7):
   commit and the audit event of the org read as absent;
 * the room check removed from ``POST /agent/respond-input``: Bob and Carol
   reach the relay.
+* ``observability.runs`` back to ``get_session()``: org A's run is not in
+  its own history;
+* ``observability._load_avatars`` back to ``get_session()``: org A's avatar
+  reads as absent;
+* ``observability._save_avatar`` back to ``get_session()``: the PUT is 500;
+* ``observability._delete_avatar`` back to ``get_session()``: org A's own
+  delete leaves the row;
+* ``observability._load_app_details`` back to ``get_session()``: the roster
+  shows the bare slug to org A;
+* ``debug.list_runs`` back to ``get_session()``: org A lists no run;
+* ``debug.get_run`` back to ``get_session()``: org A's own run is 404;
+* ``debug.flag_run`` back to ``get_session()``: org A's own flag is 404;
+* ``integrations_skills._disabled_families_by_agent`` back to
+  ``get_session()``: org A's disabled family does not show;
+* ``integrations.list_plugins`` back to ``get_session()``: org A lists no
+  plugin;
+* ``integrations.remove_plugin`` back to ``get_session()``: org A's own
+  delete is 404.
 
 The source fence at the end reads the code, so it runs with no database.
 
@@ -161,10 +179,13 @@ def test_the_workspace_patch_writes_in_the_members_tenant(graph_as_app, roots): 
     a = graph_as_app.org_a
     sid = _seed_session(graph_as_app, a, _ALICE, None)
 
-    # No tenant: the room lookup fails closed first, so the answer is 403.
+    # No tenant: the room lookup fails closed first. A failed lookup is an
+    # outage, not a refusal, so the answer is 503 with the retry wording
+    # (PR #652 fix round 1, RoomAccess.refusal_status). Nothing is written.
     with pytest.raises(HTTPException) as err:
         _patch(sid, _user(_ALICE, None), str(roots.app_a))
-    assert err.value.status_code == 403
+    assert err.value.status_code == 503
+    assert "try again" in str(err.value.detail).lower()
     assert _stored(graph_as_app, sid) is None
     # The path check itself refuses with no tenant too.
     from gateway.routes.workspace import _allowed_workspace
@@ -312,19 +333,25 @@ def test_every_workspace_route_checks_the_room(graph_as_app, roots, workspace_cl
 
     for who in (_user(_BOB, a), _user(_CAROL, b), _user(_ALICE, None)):
         c = workspace_client(who)
+        # With no tenant the room lookup fails closed. That is an outage, not
+        # a refusal, so it answers 503 (PR #652 fix round 1,
+        # RoomAccess.refusal_status). Bob and Carol are refused: 404 and 403.
+        outage = who.organization_id is None
+        read_no = 503 if outage else 404
+        write_no = 503 if outage else 403
         tree = c.get(base)
         assert tree.status_code == 200 and tree.json()["files"] == [], who.email
-        assert c.get(f"{base}/file", params={"path": "outputs/note.md"}).status_code == 404
+        assert c.get(f"{base}/file", params={"path": "outputs/note.md"}).status_code == read_no
         assert c.get(f"{base}/history", params={"path": "outputs/note.md"}).json() == {"history": []}
-        assert c.get(f"{base}/events").status_code == 404
+        assert c.get(f"{base}/events").status_code == read_no
         assert c.put(f"{base}/file", params={"path": "outputs/x.md"},
-                     json={"content": "forged"}).status_code == 403
-        assert c.delete(f"{base}/file", params={"path": "outputs/note.md"}).status_code == 403
-        assert c.post(f"{base}/upload", files={"files": ("f.txt", b"x")}).status_code == 403
-        assert c.post(f"{base}/promote", json={"path": "inputs/spec.txt"}).status_code == 403
-        assert c.patch(base, json={"workspace_path": str(roots.app_a)}).status_code == 403
+                     json={"content": "forged"}).status_code == write_no
+        assert c.delete(f"{base}/file", params={"path": "outputs/note.md"}).status_code == write_no
+        assert c.post(f"{base}/upload", files={"files": ("f.txt", b"x")}).status_code == write_no
+        assert c.post(f"{base}/promote", json={"path": "inputs/spec.txt"}).status_code == write_no
+        assert c.patch(base, json={"workspace_path": str(roots.app_a)}).status_code == write_no
         assert c.post(f"{base}/events", json={"name": "artifact_created",
-                                              "path": "outputs/x.md"}).status_code == 403
+                                              "path": "outputs/x.md"}).status_code == write_no
     assert (roots.app_a / "outputs" / "note.md").is_file()
     assert not (roots.app_a / "outputs" / "x.md").exists()
 
@@ -389,7 +416,7 @@ def test_the_one_agent_name_rule() -> None:
         is_valid_agent_name,
     )
 
-    for good in ("orchestrator", "email-assistant", "agent-sales-assistant",
+    for good in ("orchestrator", "email-assistant", "agent-email-assistant",
                  "Metorite-Dev", "app_builder", "a.b", "a" * 64):
         assert is_valid_agent_name(good), good
     for bad in _BAD_AGENT_NAMES:
@@ -501,9 +528,14 @@ def test_a_bad_agent_name_in_a_row_never_becomes_a_root(graph_as_app, clone_root
     assert _get_workspace_path(sid, _ALICE, a) == tenant
     got = client.get(f"/workspace/{sid}/file", params={"path": "outputs/ok.md"})
     assert got.status_code == 404 and "# ok" not in got.text
-    (tenant / "outputs").mkdir()
-    (tenant / "outputs" / "ok.md").write_text("# tenant ok", encoding="utf-8")
-    got = client.get(f"/workspace/{sid}/file", params={"path": "outputs/ok.md"})
+    # H-227: a file of the session's own thread folder. A loose file in the
+    # flat outputs/ opens only for the session that the history names.
+    from acb_skills.agent_paths import thread_outputs_rel
+
+    own = thread_outputs_rel(sid)
+    (tenant / own).mkdir(parents=True)
+    (tenant / own / "ok.md").write_text("# tenant ok", encoding="utf-8")
+    got = client.get(f"/workspace/{sid}/file", params={"path": f"{own}/ok.md"})
     assert got.status_code == 200 and "# tenant ok" in got.text
 
 
@@ -638,6 +670,35 @@ def test_query_history_reads_only_rooms_the_member_may_read(graph_as_app, monkey
     assert _history(a, _ALICE, verified=False, search=term) == "[]"
     # A thread criterion cannot reach past the rule.
     assert _seen(_ALICE, thread_id=bobs) == set()
+
+
+@_DB_GATE
+def test_query_history_pages_a_tie_with_no_repeat_and_no_gap(graph_as_app, monkeypatch):  # noqa: F811
+    """2026-10-15, agent reads page part 2. The messages of one room are
+    written in one transaction, so they share ``created_at``. A message id is
+    unique in its session only. Three pages of 10 hold all 25 once, in the
+    order of the session and then the id, and the hint names the next page."""
+    monkeypatch.setenv("ACB_GRAPH_TENANT_BIND", "true")
+    a = graph_as_app.org_a
+    term = f"page-{uuid.uuid4().hex[:8]}"
+    own = _seed_room(graph_as_app, a, _ALICE, [(f"{term} {k}", 100 + k) for k in range(25)])
+    other = _seed_room(graph_as_app, a, _ALICE, [(f"{term} b", 900)])
+    seen: list[tuple[str, str]] = []
+    lines: list[str] = []
+    for offset in (0, 10, 20):
+        out = _history(a, _ALICE, search=term, limit=10, offset=offset)
+        rows, end = json.JSONDecoder().raw_decode(out)
+        seen += [(r["thread_id"], r["content"]) for r in rows]
+        lines.append(out[end:].strip())
+    assert len(seen) == 26 and len(set(seen)) == 26, "a page repeated or skipped a message"
+    # The later room is newer, so it leads.
+    assert seen[0] == (other, f"{term} b")
+    assert {sid for sid, _ in seen[1:]} == {own}
+    assert lines == [
+        "Showing 1-10. More messages exist. Call again with offset=10 for the rest.",
+        "Showing 11-20. More messages exist. Call again with offset=20 for the rest.",
+        "Showing 21-26. This is the last page.",
+    ]
 
 
 # ── routes/agent.py — pending_commit and audit_event ────────────────────────
@@ -842,7 +903,8 @@ def test_respond_input_answers_only_for_the_thread_that_asked(graph_as_app, monk
     assert codes[:3] == [422, 403, 409]
     # Alice, in the room that asked, answers it.
     assert codes[3] == 200
-    assert answer == {"answer": "yes", "wasFreeform": True}
+    # WS-53 CRM-Q33 fix round 2: the answer names its responder, the session's member.
+    assert answer == {"answer": "yes", "wasFreeform": True, "responder": "alice@s15-a.test"}
 
 
 def test_the_relay_applier_answers_only_for_its_own_channel() -> None:
@@ -872,13 +934,332 @@ def test_the_relay_applier_answers_only_for_its_own_channel() -> None:
     assert answer == {"answer": "from Y", "wasFreeform": True}
 
 
+# ── H-201 part 2: observability, debug, skills and plugins ──────────────────
+#
+# Each case seeds one row per org as the superuser, then reads as the app role.
+# Org A gets its own row, org B gets nothing of A's, and no tenant gets nothing.
+
+def _tag() -> str:
+    return uuid.uuid4().hex[:8]
+
+
+def _exec(email: str, org: str | None):
+    """A member who passes the /debug role gate (EXECUTIVE)."""
+    from acb_auth import UserContext
+    from acb_auth.roles import UserRole
+
+    return UserContext(email=email, role=UserRole.EXECUTIVE, organization_id=org)
+
+
+def _seed_run(promoted, org: str, agent: str) -> str:  # noqa: F811
+    run_id = f"run-h201-{_tag()}"
+    with promoted.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO agent_run (run_id, thread_id, agent_name, user_id, status, "
+            "organization_id) VALUES (:r, :t, :a, 'h201@test', 'error', "
+            "CAST(:o AS uuid))"), {"r": run_id, "t": f"t-{run_id}", "a": agent, "o": org})
+    return run_id
+
+
+def _flagged(promoted, run_id: str) -> bool:  # noqa: F811
+    return _admin_one(promoted, "SELECT flagged AS f FROM agent_run "
+                      "WHERE run_id = :r", r=run_id).f
+
+
+@_DB_GATE
+def test_observability_runs_read_in_the_viewers_tenant(graph_as_app):  # noqa: F811
+    from gateway.routes.observability import runs
+
+    a, b = graph_as_app.org_a, graph_as_app.org_b
+    agent = f"h201-obs-{_tag()}"
+    ra, rb = _seed_run(graph_as_app, a, agent), _seed_run(graph_as_app, b, agent)
+
+    def _ids(user) -> set[str]:
+        out = asyncio.run(runs(agent=agent, status=None, since_hours=None,
+                               limit=200, viewer=user))
+        return {r["run_id"] for r in out["runs"]}
+
+    assert _ids(_user(_ALICE, a)) == {ra}
+    assert _ids(_user(_CAROL, b)) == {rb}
+    assert _ids(_user(_ALICE, None)) == set()
+
+
+@_DB_GATE
+def test_debug_runs_stay_in_the_callers_tenant(graph_as_app):  # noqa: F811
+    from fastapi import HTTPException
+    from gateway.routes.debug import flag_run, get_run, list_runs
+
+    a, b = graph_as_app.org_a, graph_as_app.org_b
+    agent = f"h201-dbg-{_tag()}"
+    ra, rb = _seed_run(graph_as_app, a, agent), _seed_run(graph_as_app, b, agent)
+    alice, nobody = _exec(_ALICE, a), _exec(_ALICE, None)
+
+    def _ids(user) -> set[str]:
+        out = asyncio.run(list_runs(agent=agent, status=None, user=None,
+                                    thread_id=None, since_hours=None,
+                                    limit=500, admin=user))
+        return {r["run_id"] for r in out["runs"]}
+
+    assert _ids(alice) == {ra}
+    assert _ids(_exec(_CAROL, b)) == {rb}
+    assert _ids(nobody) == set()
+
+    assert asyncio.run(get_run(ra, admin=alice))["run_id"] == ra
+    for run_id, who in ((rb, alice), (ra, nobody)):
+        with pytest.raises(HTTPException) as err:
+            asyncio.run(get_run(run_id, admin=who))
+        assert err.value.status_code == 404
+
+    # The flag of another org's run, and with no tenant, is 404 and changes no row.
+    for run_id, who in ((rb, alice), (ra, nobody)):
+        with pytest.raises(HTTPException) as err:
+            asyncio.run(flag_run(run_id, admin=who))
+        assert err.value.status_code == 404
+    assert _flagged(graph_as_app, rb) is False
+    assert _flagged(graph_as_app, ra) is False
+    # The own-org flag lands, so tenant_session commits on exit.
+    assert asyncio.run(flag_run(ra, admin=alice))["flagged"] is True
+    assert _flagged(graph_as_app, ra) is True
+
+
+def _seed_avatar(promoted, org: str, name: str, colour: str) -> None:  # noqa: F811
+    with promoted.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO agent_avatars (agent_name, config, organization_id) "
+            "VALUES (:n, CAST(:c AS jsonb), CAST(:o AS uuid))"),
+            {"n": name, "c": json.dumps({"colour": colour}), "o": org})
+
+
+def _avatar_row(promoted, name: str):  # noqa: F811
+    return _admin_one(promoted, "SELECT config, organization_id::text AS org "
+                      "FROM agent_avatars WHERE agent_name = :n", n=name)
+
+
+@_DB_GATE
+def test_avatars_read_and_write_in_the_members_tenant(graph_as_app):  # noqa: F811
+    from fastapi import HTTPException
+    from gateway.routes.observability import (
+        AvatarPut,
+        avatars,
+        delete_avatar,
+        put_avatar,
+    )
+
+    a, b = graph_as_app.org_a, graph_as_app.org_b
+    alice, carol, nobody = _user(_ALICE, a), _user(_CAROL, b), _user(_ALICE, None)
+    mine = f"h201-av-{_tag()}"
+    _seed_avatar(graph_as_app, a, mine, "red")
+
+    assert mine in asyncio.run(avatars(viewer=alice))["avatars"]
+    assert mine not in asyncio.run(avatars(viewer=carol))["avatars"]
+    assert asyncio.run(avatars(viewer=nobody))["avatars"] == {}
+
+    # A PUT lands stamped with the writer's org, and only that org reads it.
+    theirs = f"h201-av-{_tag()}"
+    asyncio.run(put_avatar(theirs, AvatarPut(config={"colour": "blue"}), writer=carol))
+    assert _avatar_row(graph_as_app, theirs).org == b
+    assert theirs in asyncio.run(avatars(viewer=carol))["avatars"]
+    assert theirs not in asyncio.run(avatars(viewer=alice))["avatars"]
+
+    # No tenant: 403, and nothing is written or deleted.
+    ghost = f"h201-av-{_tag()}"
+    for call in (lambda: put_avatar(ghost, AvatarPut(), writer=nobody),
+                 lambda: delete_avatar(mine, writer=nobody)):
+        with pytest.raises(HTTPException) as err:
+            asyncio.run(call())
+        assert err.value.status_code == 403
+    assert _avatar_row(graph_as_app, ghost) is None
+    assert _avatar_row(graph_as_app, mine) is not None
+
+    # Org B deletes nothing of org A's. Org A deletes its own.
+    asyncio.run(delete_avatar(mine, writer=carol))
+    assert _avatar_row(graph_as_app, mine) is not None
+    asyncio.run(delete_avatar(mine, writer=alice))
+    assert _avatar_row(graph_as_app, mine) is None
+
+
+@_DB_GATE
+def test_an_avatar_name_that_another_org_holds_cannot_be_saved(graph_as_app):  # noqa: F811
+    """Pins the current behaviour. In the expand phase of H-201d (migration
+    354), ``agent_avatars`` keeps its old key, ``agent_name`` alone. Org B's
+    upsert of a name that org A holds does not match A's row on the new
+    index, so it inserts, and the old key refuses it. The PUT is 500 and A's
+    row does not change. The contract release drops the old key, and this
+    test changes with it. ``test_agent_avatars_key_per_tenant_r8.py`` pins
+    both states."""
+    from fastapi import HTTPException
+    from gateway.routes.observability import AvatarPut, put_avatar
+
+    a, b = graph_as_app.org_a, graph_as_app.org_b
+    shared = f"h201-av-{_tag()}"
+    _seed_avatar(graph_as_app, a, shared, "red")
+
+    with pytest.raises(HTTPException) as err:
+        asyncio.run(put_avatar(shared, AvatarPut(config={"colour": "blue"}),
+                               writer=_user(_CAROL, b)))
+    assert err.value.status_code == 500, "H-201d: the old key is still agent_name"
+    row = _avatar_row(graph_as_app, shared)
+    assert row.org == a and row.config == {"colour": "red"}
+
+
+@pytest.fixture
+def live_app(monkeypatch):
+    """The roster with one live Custom App and no agents. The presence feed is
+    Redis, so it is the one stub. ``apps`` is read for real."""
+    from gateway.routes import agent as agent_routes
+    from gateway.routes import observability
+
+    slug = f"h201-app-{_tag()}"
+
+    async def _live(*, organization_id):
+        # H-201c keys the presence set for each tenant. This stub ignores the
+        # org on purpose: the test is about the app details, which the
+        # database reads for real. test_activity_feed_tenant.py owns the
+        # presence set itself.
+        return [{"agent": f"app:{slug}", "ts": "2026-11-05T00:00:00Z", "source": "apps"}]
+
+    monkeypatch.setattr(agent_routes, "_AGENT_REGISTRY", [])
+    monkeypatch.setattr(agent_routes, "_load_dynamic_agents", lambda: [])
+    monkeypatch.setattr(agent_routes, "_load_agent_aliases", lambda: {})
+    monkeypatch.setattr(observability, "active_runs", _live)
+    return slug
+
+
+@_DB_GATE
+def test_the_roster_names_an_app_only_in_its_own_tenant(graph_as_app, live_app):  # noqa: F811
+    from gateway.routes.observability import _load_app_details, roster
+
+    a, b = graph_as_app.org_a, graph_as_app.org_b
+    with graph_as_app.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO apps (slug, name, icon, owner_email, workspace_path, "
+            "organization_id) VALUES (:s, 'H201 App A', 'A', :o, '/tmp/h201', "
+            "CAST(:g AS uuid))"), {"s": live_app, "o": _ALICE, "g": a})
+
+    def _app(user) -> dict:
+        out = asyncio.run(roster(viewer=user))
+        [entry] = [e for e in out["agents"] if e["kind"] == "app"]
+        return entry
+
+    assert _app(_user(_ALICE, a))["display_name"] == "H201 App A"
+    assert _app(_user(_CAROL, b))["display_name"] == live_app
+    assert _app(_user(_ALICE, None))["display_name"] == live_app
+    assert _load_app_details([live_app], a) == {live_app: {"name": "H201 App A", "icon": "A"}}
+    assert _load_app_details([live_app], b) == {}
+    assert _load_app_details([live_app], None) == {}
+
+
+@pytest.fixture
+def skills_route(monkeypatch):
+    """The skills catalog with one agent and fake tools. Only the stored
+    settings come from the database."""
+    import gateway.routes.integrations_skills as sk
+    from acb_skills import skill_families as sf
+
+    agent = f"h201-sk-{_tag()}"
+    sf.clear_cost_cache()
+    monkeypatch.setattr(sk, "_platform_tools_by_name", lambda: {})
+    monkeypatch.setattr(sk, "_pack_tools_by_name", lambda: {})
+    monkeypatch.setattr(sk, "_addendum_for_scope", lambda scope: "")
+    monkeypatch.setattr(sk, "_count_tokens", len)
+    monkeypatch.setattr(sk, "_core_tool_names",
+                        lambda: frozenset(sf.SKILL_FAMILIES["core"]["tools"]))
+    monkeypatch.setattr(sk, "_list_agents", lambda: [{"name": agent}])
+    monkeypatch.setattr(sk, "_declared_tool_scope", lambda *_a, **_k: None)
+    yield agent
+    sf.clear_cost_cache()
+
+
+@_DB_GATE
+def test_the_skills_catalog_reads_settings_in_the_members_tenant(graph_as_app, skills_route):  # noqa: F811
+    import gateway.routes.integrations_skills as sk
+
+    a, b = graph_as_app.org_a, graph_as_app.org_b
+    agent = skills_route
+    with graph_as_app.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO agent_skill_setting (agent_name, instance, family, enabled, "
+            "set_by, organization_id) VALUES (:a, '', 'memory', false, :e, "
+            "CAST(:o AS uuid))"), {"a": agent, "e": _ALICE, "o": a})
+
+    def _disabled(user) -> list[str]:
+        out = asyncio.run(sk.skills_catalog(user=user))
+        [row] = [r for r in out["agents"] if r["name"] == agent]
+        return row["disabled_families"]
+
+    assert _disabled(_user(_ALICE, a)) == ["memory"]
+    assert _disabled(_user(_CAROL, b)) == []
+    assert _disabled(_user(_ALICE, None)) == []
+    assert sk._disabled_families_by_agent(a) == {agent: frozenset({"memory"})}
+    assert agent not in sk._disabled_families_by_agent(b)
+    assert sk._disabled_families_by_agent(None) == {}
+
+
+def _seed_plugin(promoted, org: str) -> str:  # noqa: F811
+    pid = str(uuid.uuid4())
+    with promoted.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO plugins (id, name, label, manifest_url, organization_id) "
+            "VALUES (CAST(:i AS uuid), :n, :n, 'https://h201.test/ai-plugin.json', "
+            "CAST(:o AS uuid))"), {"i": pid, "n": f"h201-plugin-{_tag()}", "o": org})
+    return pid
+
+
+def _as_tenant(org: str | None, coro_fn):
+    """Run a route with the request tenant bound, as the auth dependency does."""
+    from gateway.db import bind_tenant, clear_tenant, release_tenant
+
+    token = bind_tenant(org) if org else clear_tenant()
+    try:
+        return asyncio.run(coro_fn())
+    finally:
+        release_tenant(token)
+
+
+@_DB_GATE
+def test_plugins_list_and_delete_in_the_bound_tenant(graph_as_app):  # noqa: F811
+    from fastapi import HTTPException
+    from gateway.routes.integrations import list_plugins, remove_plugin
+
+    a, b = graph_as_app.org_a, graph_as_app.org_b
+    alice, carol = _user(_ALICE, a), _user(_CAROL, b)
+    pa, pb = _seed_plugin(graph_as_app, a), _seed_plugin(graph_as_app, b)
+
+    def _ids(org, user) -> set[str]:
+        return {p["id"] for p in _as_tenant(org, lambda: list_plugins(user=user))}
+
+    assert pa in _ids(a, alice) and pb not in _ids(a, alice)
+    assert pb in _ids(b, carol) and pa not in _ids(b, carol)
+    assert _ids(None, alice) == set()
+
+    def _there(pid: str) -> bool:
+        return _admin_one(graph_as_app, "SELECT 1 AS x FROM plugins "
+                          "WHERE id = CAST(:i AS uuid)", i=pid) is not None
+
+    # Another org's plugin, and no tenant, is 404 and deletes nothing.
+    for org, user in ((b, carol), (None, alice)):
+        with pytest.raises(HTTPException) as err:
+            _as_tenant(org, lambda user=user: remove_plugin(pa, user=user))
+        assert err.value.status_code == 404
+    assert _there(pa)
+    assert _as_tenant(a, lambda: remove_plugin(pa, user=alice))["deleted"] == pa
+    assert not _there(pa) and _there(pb)
+
+
 # ── The source fence. It reads the code, so it cannot skip. ─────────────────
 
 def test_the_h201_readers_open_no_unbound_session() -> None:
     import inspect
 
     from acb_skills import history_tools
-    from gateway.routes import agent, workspace
+    from gateway.routes import (
+        agent,
+        debug,
+        integrations,
+        integrations_skills,
+        observability,
+        workspace,
+    )
 
     for fn in (workspace._get_workspace_path, workspace.set_workspace_path,
                history_tools.query_history,
@@ -886,9 +1267,32 @@ def test_the_h201_readers_open_no_unbound_session() -> None:
                agent.list_pending_commits, agent.get_pending_commit_diff,
                agent.approve_pending_commit, agent.reject_pending_commit,
                agent.remutate_pending_commit, agent.delete_pending_commit,
-               agent.dismiss_mutation_event, agent._member_graph_session):
+               agent.dismiss_mutation_event, agent._member_graph_session,
+               # H-201 part 2.
+               observability._load_app_details, observability.runs,
+               observability._load_avatars, observability._save_avatar,
+               observability._delete_avatar, observability.roster,
+               observability.avatars, observability.put_avatar,
+               observability.delete_avatar,
+               debug.list_runs, debug.get_run, debug.flag_run,
+               integrations_skills._disabled_families_by_agent,
+               integrations_skills.skills_catalog,
+               integrations.list_plugins, integrations.remove_plugin,
+               integrations.install_plugin):
         src = inspect.getsource(fn)
         assert "get_session" not in src, fn.__name__
+    # Each part-2 helper takes the tenant with no default to fall back on.
+    for fn, name in ((observability._load_app_details, "organization_id"),
+                     (observability._load_avatars, "organization_id"),
+                     (observability._save_avatar, "organization_id"),
+                     (observability._delete_avatar, "organization_id"),
+                     (integrations_skills._disabled_families_by_agent,
+                      "organization_id")):
+        param = inspect.signature(fn).parameters[name]
+        assert param.default is inspect.Parameter.empty, fn.__name__
+    # The plugin routes take the tenant from the request binding.
+    for fn in (integrations.list_plugins, integrations.remove_plugin):
+        assert "current_tenant()" in inspect.getsource(fn), fn.__name__
     # The workspace read takes the tenant with no default to fall back on.
     param = inspect.signature(workspace._get_workspace_path).parameters["organization_id"]
     assert param.default is inspect.Parameter.empty

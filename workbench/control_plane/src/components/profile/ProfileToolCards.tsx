@@ -1,0 +1,392 @@
+"use client";
+
+/**
+ * ProfileToolCards — the receipt of each assistant profile write, with Undo
+ * (WS-63 PZ-6a, `project-docs/specs/personalization.md` §5.5).
+ *
+ * The orchestrator's write tools (`acb_skills/profile_tools.py`) act at once
+ * on the member's own profile, by D109 point 5. Each result STARTS with ONE
+ * machine line, so the stream's cap of 2,000 characters never cuts it:
+ * `undo: {json}` for a change, or `profile: {json}` with a status (`refused`
+ * with its reason, or `undone`). This file reads ONLY the first line, never
+ * shows it, and draws one of four states: saved (with Undo), already saved
+ * (neutral), not saved (a refusal), and undone. Undo makes the inverse call
+ * through the existing relays, `/api/auth/me/assistant-profile/...`. The
+ * line carries the prior value.
+ *
+ * The relay sends no `X-Profile-Via`, so an Undo is a Settings write. It
+ * works with the member's switch off, because the member makes it.
+ *
+ * WhatsApp has no cards. There the member says "undo that", and the model
+ * calls `profile_undo`, which the gateway answers from its last chat change.
+ *
+ * PZ-6b: a fact that replaces a saved fact asks the member first, on the
+ * existing confirm card. Its receipt reads "Replaced in your profile", and
+ * its Undo PATCHes the old text back. A card that the member declined reads
+ * "Not saved" in the neutral tone: the member chose it, and nothing failed.
+ *
+ * A refusal can carry a line for the model, after the member's line. It
+ * starts "For the assistant:", and the card never shows it (incident
+ * 2026-10-27). A `profile_interview` mark that the gateway refused with
+ * `no_answer` draws nothing: the refused save above it already reads
+ * "Not saved", and a second alarm adds nothing for the member.
+ *
+ * The pattern is `TaskToolCards.tsx`: one meta map, one parser of the result
+ * text, and a `RollupCard` receipt. Fence: `ProfileToolCards.test.ts`.
+ */
+
+import { useState } from "react";
+import Link from "next/link";
+import Button from "@/components/ui/Button";
+import type { ToolEvent } from "@/components/MarkdownMessage";
+import { DismissableCard } from "@/components/ToolCardShell";
+import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
+import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
+import { curlyQuotes } from "@/lib/receiptText";
+import { LANGUAGES } from "@/app/settings/assistant/lib/profile";
+import { G_SETTLED, G_TINTED } from "@/components/glassCard";
+
+/** Each profile write, by the label of its receipt. */
+const ACTION_META: Record<string, { icon: string; label: string }> = {
+  profile_remember: { icon: "Bookmark", label: "Noted" },
+  profile_forget: { icon: "Trash2", label: "Removed from your profile" },
+  profile_set: { icon: "SlidersHorizontal", label: "Changed how I answer" },
+  profile_alias: { icon: "Users", label: "Changed a name for a person" },
+  profile_undo: { icon: "Undo2", label: "Undid your last profile change" },
+  // PZ-27, PZ-30. The tool is routed so a FAILED call still draws "Not saved".
+  // A mark (`profile: saved`) and a read draw no card: the interview is a
+  // conversation, and a receipt for each mark made it read as a form.
+  profile_interview: { icon: "ClipboardList", label: "Get to know me" },
+};
+
+/** Every tool name this file routes. The placement fence reads it. */
+export const PROFILE_CARD_TOOLS: readonly string[] = Object.keys(ACTION_META);
+
+/**
+ * True when the call is the assistant's offer to remember (PZ-32): an
+ * `offer` argument that is true. The rule of `profile_tools._asks_sensitive`:
+ * any value but false, "false", "0", "no" or empty.
+ */
+function isOffer(args: Record<string, unknown> | undefined): boolean {
+  const o = args?.offer;
+  if (typeof o === "string") return !["", "false", "0", "no"].includes(o.trim().toLowerCase());
+  return Boolean(o);
+}
+
+/**
+ * True when this event draws a receipt. A `profile_interview` read, a saved
+ * mark and a refused mark draw nothing (PZ-30). A failed interview call and
+ * every other profile write, refused or not, still draw.
+ *
+ * PZ-32: a `no_offer` refusal draws nothing. The offer did not show, so the
+ * member saw no question and needs no answer. An offer of a fact that the
+ * profile holds ("Already saved") draws nothing too: the member did not ask
+ * to save it.
+ */
+export function drawsReceipt(e: ToolEvent): boolean {
+  if (!isProfileCardTool(e.name)) return false;
+  if (e.name === "profile_remember" && e.status !== "error") {
+    const { status, reason } = readProfileResult(e.result || "");
+    if (status === "refused" && reason === "no_offer") return false;
+    if (status === "duplicate" && isOffer(e.args)) return false;
+  }
+  if (e.name !== "profile_interview") return true;
+  // A mark is bookkeeping, not a write the member asked for. A refusal of it
+  // (after a search in the turn, or with no due line) draws nothing. Only a
+  // failed call draws, so a broken write is not silent.
+  return e.status === "error";
+}
+
+/**
+ * The start of a line that only the model reads. `profile_tools.FOR_ASSISTANT`.
+ * That line and every line after it are for the model, so the card drops them.
+ */
+const FOR_MODEL = "For the assistant:";
+
+/** True when a tool of this name draws a profile receipt. */
+export function isProfileCardTool(name: string): boolean {
+  return Object.hasOwn(ACTION_META, name);
+}
+
+/** The start of a change's machine line. `profile_tools.UNDO_PREFIX`. */
+const UNDO_PREFIX = "undo: ";
+/** The start of a status's machine line. `profile_tools.STATUS_PREFIX`. */
+const STATUS_PREFIX = "profile: ";
+
+/** What one result says, from its first line. */
+export type ProfileStatus = "saved" | "duplicate" | "refused" | "undone" | "unknown";
+
+/** The inverse call that one line names. */
+export type ProfileUndo =
+  | { v: 1; op: "delete"; path: string }
+  | { v: 1; op: "post"; path: string; body: Record<string, string> }
+  | { v: 1; op: "patch"; path: string; body: Record<string, string> }
+  | { v: 1; op: "put"; key: "address" | "style"; value: Record<string, unknown> };
+
+/** A path the relays serve: `facts`, `aliases`, or one of them with an id. */
+const PATH = /^(facts|aliases)(\/[A-Za-z0-9_-]{1,64})?$/;
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function stringBody(v: unknown): Record<string, string> | null {
+  if (!isRecord(v)) return null;
+  return Object.values(v).every((x) => typeof x === "string") ? (v as Record<string, string>) : null;
+}
+
+/** One line as a {@link ProfileUndo}, or null for anything else. */
+export function parseUndo(line: string): ProfileUndo | null {
+  if (!line.startsWith(UNDO_PREFIX)) return null;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(line.slice(UNDO_PREFIX.length));
+  } catch {
+    return null;
+  }
+  if (!isRecord(raw) || raw.v !== 1) return null;
+  if (raw.op === "put") {
+    const key = raw.key;
+    if ((key !== "address" && key !== "style") || !isRecord(raw.value)) return null;
+    return { v: 1, op: "put", key, value: raw.value };
+  }
+  const path = typeof raw.path === "string" ? raw.path : "";
+  const id = PATH.exec(path)?.[2];
+  if (raw.op === "delete") return id ? { v: 1, op: "delete", path } : null;
+  const body = stringBody(raw.body);
+  if (raw.op === "post" && !id && body) return { v: 1, op: "post", path, body };
+  if (raw.op === "patch" && id && body) return { v: 1, op: "patch", path, body };
+  return null;
+}
+
+/** The status of a `profile: {json}` line, or null for anything else. */
+export function parseStatus(line: string): { status: ProfileStatus; reason: string } | null {
+  if (!line.startsWith(STATUS_PREFIX)) return null;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(line.slice(STATUS_PREFIX.length));
+  } catch {
+    return null;
+  }
+  if (!isRecord(raw) || raw.v !== 1) return null;
+  const reason = typeof raw.reason === "string" ? raw.reason : "";
+  if (raw.status === "undone") return { status: "undone", reason: "" };
+  if (raw.status === "saved") return { status: "saved", reason: "" };
+  if (raw.status !== "refused") return null;
+  return { status: reason === "duplicate" ? "duplicate" : "refused", reason };
+}
+
+/**
+ * The result as the member reads it, its status and its Undo. Only the FIRST
+ * line is the machine line, so a line that a member's own text holds can never
+ * make one. The machine line, any later `undo:` line, and the "To undo:"
+ * clause for the model drop from the text.
+ */
+export function readProfileResult(result: string): {
+  text: string;
+  undo: ProfileUndo | null;
+  status: ProfileStatus;
+  reason: string;
+} {
+  const lines = (result || "").split(/\r?\n/);
+  const first = lines.length > 0 ? lines[0].trim() : "";
+  const undo = parseUndo(first);
+  const said = undo ? null : parseStatus(first);
+  const machine = undo !== null || said !== null;
+  const body = machine ? lines.slice(1) : lines;
+  // The first model-only line ends the member's text. The same-kind facts and
+  // their ids come after it (task 1002).
+  const forModel = body.findIndex((l) => l.trim().startsWith(FOR_MODEL));
+  return {
+    // The "To undo: profile_undo()." clause is for the model on WhatsApp.
+    // The card has its button, and never names a tool to the member.
+    // `clean()` strips the guillemets from the member's own text, so every
+    // guillemet in a reply is a fence. The member reads curly quotes instead.
+    text: curlyQuotes((forModel < 0 ? body : body.slice(0, forModel))
+      .filter((l) => !l.trim().startsWith(UNDO_PREFIX.trim()))
+      .map((l) => l.replace(/\s*To undo: .*$/, ""))
+      .join("\n")
+      .trim()
+    ),
+    undo,
+    status: undo ? "saved" : (said?.status ?? "unknown"),
+    reason: said?.reason ?? "",
+  };
+}
+
+const LENGTH_WORDS: Record<string, string> = {
+  short: "Shorter answers",
+  default: "Usual length",
+  detailed: "Longer answers",
+};
+const FORMALITY_WORDS: Record<string, string> = {
+  casual: "Less formal",
+  neutral: "Neutral tone",
+  formal: "More formal",
+};
+const GREETING_WORDS: Record<string, string> = {
+  none: "No greeting",
+  brief: "Short greeting",
+  warm: "Warm greeting",
+};
+
+const str = (v: unknown): string => (typeof v === "string" ? v.trim() : "");
+
+/**
+ * The body of a `profile_set` or `profile_alias` receipt, in plain words, built
+ * from the call's ARGUMENTS. The result text is for the model (it holds braces,
+ * keys and "alias"), so the card never shows it for these two tools. An unknown
+ * argument draws nothing: never a brace, a key or a language code.
+ */
+export function profileReceiptBody(name: string, args: Record<string, unknown> | undefined): string {
+  const a = args ?? {};
+  if (name === "profile_alias") {
+    const alias = str(a.alias);
+    const email = str(a.email);
+    if (!alias) return "";
+    return email ? `“${alias}” now means ${email}` : `Removed “${alias}”`;
+  }
+  if (name !== "profile_set") return "";
+  const value = isRecord(a.value) ? a.value : {};
+  const lines: string[] = [];
+  if (a.key === "style") {
+    if (typeof value.length === "string" && LENGTH_WORDS[value.length]) lines.push(LENGTH_WORDS[value.length]);
+    if (typeof value.language === "string" && LANGUAGES[value.language.toLowerCase()]) {
+      lines.push(`Answers in ${LANGUAGES[value.language.toLowerCase()]}`);
+    }
+    if (Array.isArray(value.notes)) {
+      for (const n of value.notes) if (str(n)) lines.push(`Note: ${str(n)}`);
+    }
+  } else if (a.key === "address") {
+    if (str(value.name)) lines.push(`Call you ${str(value.name)}`);
+    if (typeof value.formality === "string" && FORMALITY_WORDS[value.formality]) lines.push(FORMALITY_WORDS[value.formality]);
+    if (typeof value.greeting === "string" && GREETING_WORDS[value.greeting]) lines.push(GREETING_WORDS[value.greeting]);
+  }
+  return lines.join("\n");
+}
+
+/** The relay call of an Undo: its URL, verb and body. */
+export function undoRequest(undo: ProfileUndo): { url: string; method: string; body?: string } {
+  const base = "/api/auth/me/assistant-profile";
+  if (undo.op === "put") {
+    return { url: base, method: "PUT", body: JSON.stringify({ key: undo.key, value: undo.value }) };
+  }
+  const url = `${base}/${undo.path}`;
+  if (undo.op === "delete") return { url, method: "DELETE" };
+  return { url, method: undo.op === "post" ? "POST" : "PATCH", body: JSON.stringify(undo.body) };
+}
+
+/** Make the inverse call. True when the relay answered 2xx. */
+export async function performUndo(undo: ProfileUndo, fetchImpl: typeof fetch = fetch): Promise<boolean> {
+  const req = undoRequest(undo);
+  try {
+    const res = await fetchImpl(req.url, {
+      method: req.method,
+      headers: req.body ? { "Content-Type": "application/json" } : undefined,
+      body: req.body,
+      cache: "no-store",
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+type UndoState = "idle" | "busy" | "done" | "failed";
+
+/** The receipt of one profile write, with its Undo. */
+export function ProfileResultCard({ event: e }: { event: ToolEvent }) {
+  const meta = ACTION_META[e.name] ?? { icon: "Wrench", label: e.name.replace(/_/g, " ") };
+  const parsed = readProfileResult(e.result || "");
+  const { undo, status, reason } = parsed;
+  // A saved set or alias reads from the call's arguments, never the model text.
+  const fromArgs = e.name === "profile_set" || e.name === "profile_alias";
+  const text = fromArgs && status === "saved" ? profileReceiptBody(e.name, e.args) : parsed.text;
+  // The member said no on the confirm card (PZ-6b): not saved, and no error.
+  const declined = e.status !== "error" && status === "refused" && reason === "declined";
+  // A refusal is never "Saved to your profile" (fix round 1, P1).
+  const failed = e.status === "error" || (status === "refused" && !declined);
+  const neutral = !failed && (declined || status === "duplicate" || status === "unknown");
+  const [state, setState] = useState<UndoState>("idle");
+  const tone = failed ? "text-destructive" : neutral ? "text-muted-foreground" : "text-success";
+  // A replace (PZ-6b) is a PATCH of a fact: its Undo PATCHes the old text back.
+  const replaced = e.name === "profile_remember" && undo?.op === "patch";
+  const label = replaced ? "Replaced in your profile" : meta.label;
+  const title = failed || declined ? "Not saved" : status === "duplicate" ? "Already saved" : label;
+  const icon = failed || declined ? "X" : status === "duplicate" ? "Check" : replaced ? "Replace" : meta.icon;
+
+  // The first line of the text, unless it only repeats the title ("Not saved"
+  // over "Not saved."). The body still shows the lines after it.
+  const first = text.split("\n")[0];
+  const plain = (x: string) => x.toLowerCase().replace(/[^a-z0-9 ]/g, "").trim();
+  const repeats = plain(first) === plain(title);
+  const summary = repeats ? undefined : first;
+  const bodyText = repeats ? text.split("\n").slice(1).join("\n").trim() : text;
+
+  const onUndo = async () => {
+    if (!undo || state === "busy" || state === "done") return;
+    setState("busy");
+    setState((await performUndo(undo)) ? "done" : "failed");
+  };
+
+  return (
+    <RollupCard id={`tool:${e.id}`} title={title} icon={icon} summary={summary} receipt={!failed} header="own">
+      <div
+        className={`rounded-lg border px-2.5 py-2 ${
+          failed ? "border-destructive/40 bg-destructive/5 "+G_TINTED : "border-sidebar-border bg-secondary/40 "+G_SETTLED
+        }`}
+      >
+        <RollupHeader className={`text-[11px] ${tone}`} />
+        <RollupBody>
+          {bodyText && (
+            <div className="mt-0.5 text-xs text-muted-foreground whitespace-pre-wrap break-words">{bodyText}</div>
+          )}
+          {status === "saved" && !failed && undo && (
+            <div className="mt-1 flex items-center gap-2">
+              <Button
+                variant="text"
+                size="none"
+                icon="Undo2"
+                onClick={onUndo}
+                disabled={state === "busy" || state === "done"}
+                className="gap-1 text-xs text-primary"
+              >
+                {state === "done" ? "Undone" : "Undo"}
+              </Button>
+              {state === "failed" && (
+                <span className="text-xs text-destructive">
+                  Undo failed.{" "}
+                  <Link href="/settings/assistant" className="underline underline-offset-2">
+                    Change it in Assistant settings
+                  </Link>
+                  .
+                </span>
+              )}
+            </div>
+          )}
+        </RollupBody>
+      </div>
+    </RollupCard>
+  );
+}
+
+/**
+ * The receipts of the profile writes in one message. Null when there are
+ * none, so it is inert for every other tool.
+ */
+export default function ProfileToolCards({ toolEvents }: { toolEvents?: ToolEvent[] }) {
+  const dismissed = useDismissedToolCards();
+  const all = (toolEvents ?? []).filter(
+    (e) => !dismissed.has(e.id) && drawsReceipt(e) && (e.status === "done" || e.status === "error"),
+  );
+  if (all.length === 0) return null;
+  return (
+    <div className="mt-3 space-y-2 min-w-0 overflow-hidden">
+      {all.map((e) => (
+        <DismissableCard key={e.id} onDismiss={() => dismissToolCard(e.id)}>
+          <ProfileResultCard event={e} />
+        </DismissableCard>
+      ))}
+    </div>
+  );
+}

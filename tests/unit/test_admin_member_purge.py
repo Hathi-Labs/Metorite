@@ -34,6 +34,7 @@ from __future__ import annotations
 import inspect
 import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 from acb_auth import UserContext, UserRole, build_access
@@ -67,6 +68,11 @@ OWNER = _caller("owner@fracktal.in")
 ADMIN = _caller("admin@fracktal.in", roles=["admin"])
 
 PRIYA = "priya@fracktal.in"
+#: A colleague who stays. Priya shared one app with him (WS-PKG PKG-4).
+RAVI = "ravi@fracktal.in"
+#: Ravi's grant on the app that Priya shared with him. It is his, so it stays.
+#: Priya made it, so it is a share (``package_host/sharing.py``, PKG-5b).
+RAVI_GRANT = {"app_id": "app-shared", "subject": RAVI, "granted_by": PRIYA}
 
 #: Her connected task workspace. Seeded with a real id because the GTD store
 #: is DUAL-SOURCE: `account_id IS NULL` is a LOCAL row she authored, a set
@@ -100,7 +106,11 @@ def db(monkeypatch: pytest.MonkeyPatch) -> _FakeDB:
     fake.seed_rows("user_permission_override", {"user_id": "u-priya"})
     fake.seed_rows("org_group_member", {"user_id": "u-priya"},
                    {"user_id": "u-priya"})
-    fake.seed_rows("app_grants", {"subject": PRIYA})
+    # Her own grant on the app of her unshared private install. It is not a
+    # share, so the install still goes (WS-PKG PKG-4).
+    fake.seed_rows("app_grants",
+                   {"app_id": "app-mine", "subject": PRIYA, "granted_by": PRIYA},
+                   dict(RAVI_GRANT))
     fake.seed_rows("app_tool_grants", {"user_email": PRIYA})
     # ── credentials ──
     fake.seed_rows("email_accounts", {"user_id": PRIYA})
@@ -127,6 +137,35 @@ def db(monkeypatch: pytest.MonkeyPatch) -> _FakeDB:
     #    retired task store, so the purge names no task table at all (D63).
     fake.seed_rows("pm_tasks", {"id": "t-1", "created_by": PRIYA})
     fake.seed_rows("meeting", {"owner_email": PRIYA})
+    # ── her settings row, and with it her assistant profile (WS-63 PZ-9) ──
+    fake.seed_rows("user_settings", {"user_id": PRIYA})
+    # ── her two private reminders (WS-66 RM-1) ──
+    fake.seed_rows("reminders", {"member_email": PRIYA}, {"member_email": PRIYA})
+    # ── her two calendar entries, and her seat on a colleague's event (CE-4) ──
+    fake.seed_rows("calendar_entries", {"id": "entry-p1", "owner_email": PRIYA},
+                   {"id": "entry-p2", "owner_email": PRIYA})
+    # Her seat on a colleague's entry. The ids matter: the purge clause leaves
+    # out a seat on her own entry, which the cascade of her entries deletes.
+    fake.seed_rows("calendar_entry_attendees",
+                   {"member_email": PRIYA, "entry_id": "entry-colleague"})
+    # ── her one private AI Studio skill (WS-STU F1) ──
+    fake.seed_rows("studio_skills", {"owner_email": PRIYA})
+    # ── her app installs (WS-PKG PKG-4): a private one that nobody else
+    #    sees, a private one of the app she shared with Ravi, and two that
+    #    she made for the org and for a group. Only the first one goes. ──
+    fake.seed_rows(
+        "package_install",
+        {"app_id": "app-mine", "scope_kind": "private", "scope_subject": PRIYA,
+         "installed_by": PRIYA},
+        {"app_id": "app-shared", "scope_kind": "private", "scope_subject": PRIYA,
+         "installed_by": PRIYA},
+        {"app_id": "app-mine", "scope_kind": "org", "scope_subject": "org",
+         "installed_by": PRIYA},
+        {"app_id": "app-mine", "scope_kind": "group", "scope_subject": "group:ops",
+         "installed_by": PRIYA},
+    )
+    # ── her one private goal record (WS-WEB WEB-10) ──
+    fake.seed_rows("goal_records", {"member_email": PRIYA})
     return fake
 
 
@@ -311,7 +350,8 @@ async def test_the_identity_and_every_grant_and_credential_are_gone(
     assert "u-priya" not in db.user_roles
     assert db.rows["user_permission_override"] == []
     assert db.rows["org_group_member"] == []
-    assert db.rows["app_grants"] == []
+    # Her grants are gone. Ravi's grant on the app she shared is his own.
+    assert db.rows["app_grants"] == [RAVI_GRANT]
     assert db.rows["chat_session_participant"] == []
     # a standing "always allow this app to act for me"
     assert db.rows["app_tool_grants"] == []
@@ -459,11 +499,40 @@ async def test_the_response_says_what_happened_table_by_table(
         "room_participations": 1,
         "app_grants": 1,
         "app_tool_grants": 1,
+        # H-375: the fake holds no scheduled send of the member.
+        "scheduled_sends": 0,
+        "mailbox_grants": 0,
+        "mailbox_member_prefs": 0,
         "email_accounts": 1,
         "whatsapp_accounts": 1,
         "task_accounts": 1,
         "private_chat_sessions": 2,
         "sign_in_requests": 1,
+        # WS-53 CRM-Q33: the fake holds no CRM rule of the member.
+        "crm_member_rules": 0,
+        # WS-CRM CRM-M1: the fake holds no private Change history row.
+        "crm_private_changes": 0,
+        # WS-61 KB-2f: the fake holds no star of the member.
+        "knowledge_favorites": 0,
+        # WS-66 RM-1: her two private reminders. The ledger goes by cascade.
+        "reminders": 2,
+        # WS-BRIEF BR-4: the fake holds no brief of the member.
+        "brief_runs": 0,
+        # WS-STU F1: her one private skill. The versions go by cascade.
+        "studio_skills": 1,
+        # WS-PKG PKG-4: her one private install that nobody else sees. The
+        # claims go by cascade.
+        "private_app_installs": 1,
+        # WS-WEB WEB-10: her one private goal record.
+        "goal_records": 1,
+        # WS-63 PZ-9: her settings row of this org, with the profile.
+        "member_settings": 1,
+        # WS-66 PN-1: the fake holds no push device of the member.
+        "push_devices": 0,
+        # WS-CAL CE-4: her two entries (their attendee rows go by cascade),
+        # and her seat on the event of a colleague.
+        "calendar_entries": 2,
+        "calendar_attendances": 1,
         "member_record": 1,
     }
     assert out.kept == {
@@ -474,6 +543,16 @@ async def test_the_response_says_what_happened_table_by_table(
         "apps": 1,
         "workflows": 1,
         "meetings": 1,
+        # WS-61 KB-5a: the fake holds no proposal of the member. It stays.
+        "knowledge_proposals": 0,
+        # WS-55 SW-10a: the fake holds no strand of her agent runs. They stay.
+        "agent_run_strands": 0,
+        # WS-39 SP-1: the fake holds no cycle capacity row of hers. It stays.
+        "cycle_capacity": 0,
+        # WS-PKG PKG-4: the org install and the group install she made.
+        "shared_app_installs": 2,
+        # WS-PKG PKG-4: her private install of the app she shared with Ravi.
+        "shared_private_app_installs": 1,
     }
 
 
@@ -530,13 +609,14 @@ def test_no_audit_table_appears_on_the_delete_side_at_all() -> None:
         "the two audit tables are not even reported as kept, so an admin "
         "cannot tell they survived"
     )
-    # And no table is on both sides except the one that is legitimately
-    # split, by a column the schema forces on us, asserted to be an exact
-    # complement below. (The retired task store was split too, until
-    # migration 217 dropped it.)
-    assert not (deleted_tables & kept_tables) - {"chat_session"}, (
+    # And no table is on both sides except the two that are legitimately
+    # split, by a column the schema forces on us, each asserted below.
+    # `chat_session` splits on `visibility`, and `package_install` (WS-PKG
+    # PKG-4) on `scope_kind` and on a grant to another person. (The retired
+    # task store was split too, until migration 217 dropped it.)
+    assert not (deleted_tables & kept_tables) - {"chat_session", "package_install"}, (
         "a table is both deleted and kept; only chat_session (by visibility) "
-        "is legitimately split"
+        "and package_install (by scope_kind and grants) are legitimately split"
     )
 
 
@@ -595,6 +675,251 @@ def test_the_member_record_is_deleted_last() -> None:
     assert [r.table for r in _PURGE_DELETES].count("app_user") == 1
 
 
+def test_the_settings_row_of_this_org_goes_and_no_other() -> None:
+    """WS-63 PZ-9 (``personalization.md`` §7 point 6): the purge deletes the
+    member's ``user_settings`` row, and so the assistant profile.
+
+    A member has one row for each organization (migration 239), so the
+    clause must name the bound org. Without it, the purge of a member in
+    one org deletes the rows of the same address in every org that RLS
+    lets the session see, and an owner role sees all of them.
+
+    ⚠️ Mutation-checked: dropping the org predicate fails here, and
+    ``test_assistant_profile_offboarding_r8.py`` P1 fails on the real
+    database. Dropping the entry fails the count dict above.
+    """
+    from gateway.routes.admin.members import _PURGE_DELETES
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    [rows] = [r for r in _PURGE_DELETES if r.table == "user_settings"]
+    assert rows.key == "member_settings"
+    assert rows.where == f"lower(user_id) = :email AND organization_id = {_BOUND_ORG}"
+    # Before the member record, as every other row of the member.
+    keys = [r.key for r in _PURGE_DELETES]
+    assert keys.index("member_settings") < keys.index("member_record")
+
+
+def test_the_push_devices_of_this_org_go_and_no_other() -> None:
+    """WS-66 PN-1: a purged member leaves no web push device behind. A device
+    row would keep a push going to the leaver's browser.
+
+    One browser endpoint can sit in two orgs (one account each), so the
+    clause names the bound org, as the settings row does.
+    ``test_push_subscriptions.py`` runs this clause on a real Postgres (R8).
+    """
+    from gateway.routes.admin.members import _PURGE_DELETES
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    [rows] = [r for r in _PURGE_DELETES if r.table == "push_subscriptions"]
+    assert rows.key == "push_devices"
+    assert rows.where == f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"
+    keys = [r.key for r in _PURGE_DELETES]
+    assert keys.index("push_devices") < keys.index("member_record")
+
+
+def test_the_reminders_of_this_org_go_and_their_ledger_by_cascade() -> None:
+    """WS-66 RM-1 (D114): the purge deletes the member's private reminders.
+
+    Only the owner reads a reminder, so a reminder that a purge left behind
+    could never be closed. The clause names the member and the bound org,
+    because the same address may hold reminders in another org.
+    ``reminder_events`` is not a row of the list: its foreign key cascades
+    from ``reminders``, and the schema must keep it so.
+
+    ⚠️ Mutation-checked: dropping the org predicate fails here, and
+    ``test_reminders_r8.py`` fails on the real database. Dropping the entry
+    fails the count dict above.
+    """
+    from gateway.routes.admin.members import _PURGE_DELETES
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    from tests.unit._schema_cascade import cascade_closure
+
+    [rows] = [r for r in _PURGE_DELETES if r.table == "reminders"]
+    assert rows.key == "reminders"
+    assert rows.where == f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"
+    keys = [r.key for r in _PURGE_DELETES]
+    assert keys.index("reminders") < keys.index("member_record")
+    assert "reminder_events" in cascade_closure("reminders")
+    assert "reminder_events" not in {r.table for r in _PURGE_DELETES}
+
+
+def test_the_briefs_of_this_org_go_and_their_claims_by_cascade() -> None:
+    """WS-BRIEF BR-4: the purge deletes the member's briefs and close-outs.
+
+    A brief is the member's own text, and only the member reads it, so a
+    purge leaves none behind. The clause names the member and the bound org,
+    because the same address may hold briefs in another org.
+    ``brief_claims`` is not a row of the list: its foreign key cascades from
+    ``brief_runs``, and the schema must keep it so.
+
+    ⚠️ Mutation-checked: dropping the org predicate fails here, and
+    ``test_brief_store_r8.py`` fails on the real database. Dropping the entry
+    fails the count dict above.
+    """
+    from gateway.routes.admin.members import _PURGE_DELETES
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    from tests.unit._schema_cascade import cascade_closure
+
+    [rows] = [r for r in _PURGE_DELETES if r.table == "brief_runs"]
+    assert rows.key == "brief_runs"
+    assert rows.where == f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"
+    keys = [r.key for r in _PURGE_DELETES]
+    assert keys.index("brief_runs") < keys.index("member_record")
+    assert "brief_claims" in cascade_closure("brief_runs")
+    assert "brief_claims" not in {r.table for r in _PURGE_DELETES}
+
+
+def test_the_calendar_entries_of_this_org_go_before_any_connection() -> None:
+    """WS-CAL CE-4 (D138): the purge deletes the member's calendar entries
+    and their seats on the events of colleagues.
+
+    Only the owner changes an entry, so an entry that a purge left behind
+    could never be deleted. Both clauses name the bound org, because the same
+    address may hold entries in another org. The attendee rows of the
+    member's own entries go by the cascade of migration 331, so the seat
+    clause leaves them out, and no row is counted twice.
+
+    ⚠️ ``calendar_entries.connection_id`` has NO cascade (migration 331). A
+    connection delete fails while an entry names it. So the delete loop of
+    ``_PURGE_DELETES`` must run before ``purge_knowledge_member``, the one
+    connection delete of the purge, and the registry must not cascade to the
+    entries.
+
+    ⚠️ Mutation-checked: dropping the org predicate fails here, and
+    ``test_calendar_entries_r8.py`` fails on the real database. Dropping an
+    entry fails the count dict above.
+    """
+    import inspect
+
+    from gateway.routes.admin import members
+    from gateway.routes.admin.members import _PURGE_DELETES
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    from tests.unit._schema_cascade import cascade_closure
+
+    [entries] = [r for r in _PURGE_DELETES if r.table == "calendar_entries"]
+    assert entries.key == "calendar_entries"
+    assert entries.where == (
+        f"lower(owner_email) = :email AND organization_id = {_BOUND_ORG}")
+    [seats] = [r for r in _PURGE_DELETES if r.table == "calendar_entry_attendees"]
+    assert seats.key == "calendar_attendances"
+    assert seats.where.startswith(
+        f"lower(member_email) = :email AND organization_id = {_BOUND_ORG} ")
+    assert "NOT EXISTS" in seats.where and "lower(e.owner_email) = :email" in seats.where
+    keys = [r.key for r in _PURGE_DELETES]
+    assert keys.index("calendar_entries") < keys.index("member_record")
+    assert keys.index("calendar_attendances") < keys.index("member_record")
+    assert "calendar_entry_attendees" in cascade_closure("calendar_entries")
+    assert "calendar_entries" not in cascade_closure("integration_" + "connections")
+    body = inspect.getsource(members.purge_member_rows)
+    deletes = body.index("text(rows.delete_sql)")
+    assert deletes < body.index("purge_knowledge_member(")
+
+
+def test_the_skills_of_this_org_go_and_their_versions_by_cascade() -> None:
+    """WS-STU F1: the purge deletes the member's AI Studio skills.
+
+    In F1 a skill is private, and only its owner reads it, so a purge leaves
+    none behind. The clause names the owner and the bound org, because the
+    same address may hold skills in another org. ``studio_skill_versions``
+    is not a row of the list: its foreign key cascades from
+    ``studio_skills``, and the schema must keep it so.
+
+    ⚠️ Mutation-checked: dropping the entry fails here and in the count dict
+    above, and ``test_studio_skills_r8.py`` fails on the real database.
+    """
+    from gateway.routes.admin.members import _PURGE_DELETES
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    from tests.unit._schema_cascade import cascade_closure
+
+    [rows] = [r for r in _PURGE_DELETES if r.table == "studio_skills"]
+    assert rows.key == "studio_skills"
+    assert rows.where == f"lower(owner_email) = :email AND organization_id = {_BOUND_ORG}"
+    keys = [r.key for r in _PURGE_DELETES]
+    assert keys.index("studio_skills") < keys.index("member_record")
+    assert "studio_skill_versions" in cascade_closure("studio_skills")
+    assert "studio_skill_versions" not in {r.table for r in _PURGE_DELETES}
+
+
+_STUDIO_OBJECT_TABLES = frozenset({
+    "studio_objects", "studio_object_fields", "studio_records", "studio_record_hot"})
+
+
+def test_the_records_of_studio_objects_stay() -> None:
+    """WS-STU C1: a Studio record is company data, as a `pm_tasks` row is (D63).
+
+    The purge deletes no row of the four object tables, by a clause or by a
+    cascade. An email in a person field of a record stays too. The package,
+    an `apps` row, stays on the KEEP side, because its foreign key cascades
+    to the objects and their records. A change to this rule is a decision,
+    so it must change this test on purpose.
+
+    ⚠️ Mutation-checked: a `_PersonRows` entry for `studio_records` fails here.
+    """
+    from gateway.routes.admin.members import _PURGE_DELETES, _PURGE_KEEPS
+
+    from tests.unit._schema_cascade import cascade_closure
+
+    named = {r.table for r in (*_PURGE_DELETES, *_PURGE_KEEPS)}
+    assert not named & _STUDIO_OBJECT_TABLES, sorted(named & _STUDIO_OBJECT_TABLES)
+    assert not _blast_radius() & _STUDIO_OBJECT_TABLES
+    assert "apps" in {r.table for r in _PURGE_KEEPS}
+    assert "apps" not in {r.table for r in _PURGE_DELETES}
+    assert cascade_closure("apps") >= _STUDIO_OBJECT_TABLES
+
+
+def test_the_goals_of_this_org_go_and_no_other() -> None:
+    """WS-WEB WEB-10: the purge deletes the member's goal records.
+
+    A goal is private to its member, and only the member reads it, so a
+    purge leaves none behind. The clause names the member and the bound org,
+    because the same address may hold goals in another org. No table hangs
+    off ``goal_records``, so its cascade is empty.
+
+    ⚠️ Mutation-checked: dropping the entry fails here and in the count dict
+    above, and ``test_goal_record_r8.py`` fails on the real database.
+    """
+    from gateway.routes.admin.members import _PURGE_DELETES
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    from tests.unit._schema_cascade import cascade_closure
+
+    [rows] = [r for r in _PURGE_DELETES if r.table == "goal_records"]
+    assert rows.key == "goal_records"
+    assert rows.where == f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"
+    keys = [r.key for r in _PURGE_DELETES]
+    assert keys.index("goal_records") < keys.index("member_record")
+    assert cascade_closure("goal_records") == set()
+
+
+def test_the_member_s_private_change_history_goes() -> None:
+    """WS-CRM CRM-M1: the Change history rows private to the member go.
+
+    A row private to the member holds the text of a private view or an own
+    rule, which only the member reads, so the row goes too. The purge
+    deletes the own rules, and not the saved views. The clause keys on
+    ``private_to``, not on the actor, because an admin may change a
+    member's rule and that row is still the member's. The org's rows stay
+    with the address, as ``app_audit`` does, and are not on the keep side.
+
+    ⚠️ Mutation-checked: dropping the entry fails here and in the count dict
+    above.
+    """
+    from gateway.routes.admin.members import _PURGE_DELETES, _PURGE_KEEPS
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    [gone] = [r for r in _PURGE_DELETES if r.table == "crm_change_log"]
+    assert gone.key == "crm_private_changes"
+    assert gone.where == (
+        f"lower(private_to) = :email AND organization_id = {_BOUND_ORG}")
+    assert "crm_change_log" not in {r.table for r in _PURGE_KEEPS}
+    keys = [r.key for r in _PURGE_DELETES]
+    assert keys.index("crm_private_changes") < keys.index("member_record")
+
+
 def test_the_two_halves_of_chat_session_partition_it() -> None:
     """The one table split by `visibility`. The two clauses must be
     complements — a gap would leave sessions belonging to nobody, an overlap
@@ -606,6 +931,190 @@ def test_the_two_halves_of_chat_session_partition_it() -> None:
 
     assert deleted.where == "lower(user_id) = :email AND visibility = 'private'"
     assert kept.where == "lower(user_id) = :email AND visibility <> 'private'"
+
+
+def test_the_two_halves_of_package_install_do_not_overlap() -> None:
+    """WS-PKG PKG-4 (``package_host.md`` §5.1 decisions 3 and 5). The purge
+    deletes the member's private installs of this org that nobody else sees.
+    It keeps and counts the private installs of an app that the member
+    shared with named people, and the group and org installs that the
+    member made.
+
+    Three rows split the table, so no install is on two sides:
+
+    * ``scope_kind`` splits the two private rows from ``shared_app_installs``.
+    * ``NOT EXISTS`` and ``EXISTS`` of one subquery split the two private
+      rows. The subquery is the share rule of ``package_host/sharing.py``
+      (PKG-5b). It names no parameter and never counts the member's own
+      grants, which the delete side deletes first. So the count before the
+      deletes and the delete agree.
+
+    The rows name different person columns on purpose: a private install
+    belongs to its ``scope_subject`` (the owner), and a shared one to its
+    ``installed_by``. The CHECK ``package_install_private_installer`` makes
+    the two the same on a private install, so the three rows find each row
+    with the member's address. That is safe only because no table on the
+    delete side cascades into ``package_install``: the kept rows are still
+    there at the commit. The last assertion holds that, and
+    ``test_no_keep_clause_survives_a_cascade_on_the_delete_side`` would fail
+    if a migration changed it.
+
+    ⚠️ Mutation-checked: dropping ``scope_kind <> 'private'`` from the KEEP
+    clause fails here, and the count dict above then reads 3 kept installs.
+    Dropping the ``NOT EXISTS`` term fails here, and
+    ``test_package_registry_r8.py`` then deletes the shared install.
+    That file runs the three clauses on a real database.
+    """
+    from gateway.routes.admin.members import (
+        _OTHERS_SEE_THE_APP,
+        _PURGE_DELETES,
+        _PURGE_KEEPS,
+    )
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    from tests.unit._schema_cascade import cascade_closure
+
+    [deleted] = [r for r in _PURGE_DELETES if r.table == "package_install"]
+    kept = {r.key: r for r in _PURGE_KEEPS if r.table == "package_install"}
+    assert deleted.key == "private_app_installs"
+    assert set(kept) == {"shared_app_installs", "shared_private_app_installs"}
+    private = ("scope_kind = 'private' AND lower(scope_subject) = :email"
+               f" AND organization_id = {_BOUND_ORG}")
+    assert deleted.where == f"{private} AND NOT {_OTHERS_SEE_THE_APP}"
+    assert kept["shared_private_app_installs"].where == (
+        f"{private} AND {_OTHERS_SEE_THE_APP}")
+    assert kept["shared_app_installs"].where == (
+        "scope_kind <> 'private' AND lower(installed_by) = :email"
+        f" AND organization_id = {_BOUND_ORG}")
+    # The grant test names the install's app, an address, a person other
+    # than the owner, and the owner as the one who made the grant (PKG-5b).
+    # A test that counted her own grant would keep each install that she
+    # granted to herself, and the delete would then disagree with the count,
+    # because her grants go first. A test that counted a grant that she did
+    # not make would keep an install for a colleague's consent row.
+    from gateway.package_host.sharing import OTHERS_SEE_THE_INSTALL, SHARE_ROW
+
+    assert _OTHERS_SEE_THE_APP is OTHERS_SEE_THE_INSTALL
+    # The purge and the resolve of PKG-5b part 2 read one share rule.
+    assert f"WHERE {SHARE_ROW})" in _OTHERS_SEE_THE_APP
+    assert _OTHERS_SEE_THE_APP == (
+        "EXISTS (SELECT 1 FROM app_grants AS g"
+        " WHERE g.app_id = package_install.app_id"
+        " AND strpos(g.subject, '@') > 0"
+        " AND lower(g.subject) <> package_install.installed_by"
+        " AND lower(g.granted_by) = package_install.installed_by)")
+    assert (_conjuncts(deleted.where)[0], _conjuncts(kept["shared_app_installs"].where)[0]) == (
+        "scope_kind = 'private'", "scope_kind <> 'private'")
+    keys = [r.key for r in _PURGE_DELETES]
+    assert keys.index("app_grants") < keys.index("private_app_installs")
+    assert keys.index("private_app_installs") < keys.index("member_record")
+    # The claims go by cascade, so no list names them.
+    assert "package_contribution" in cascade_closure("package_install")
+    assert "package_contribution" not in {
+        r.table for r in (*_PURGE_DELETES, *_PURGE_KEEPS)}
+    assert "package_install" not in _blast_radius()
+    assert "app_grants" not in _blast_radius()
+
+
+async def test_her_private_install_goes_and_her_shared_installs_stay(
+    db: _FakeDB,
+) -> None:
+    """The behavioural half of the rule above. After the purge, her private
+    install of the app she shared with Ravi is still there, and so are the
+    org install and the group install that she made. Her private install of
+    the app that only she holds a grant on goes.
+
+    ⚠️ Mutation-checked: dropping the ``NOT EXISTS`` term deletes the shared
+    install here too, and the fake reads the term from the statement."""
+    from gateway.routes.admin.members import purge_member
+
+    out = await purge_member(PRIYA, admin=OWNER)
+
+    left = db.rows["package_install"]
+    assert sorted((r["scope_kind"], r["app_id"]) for r in left) == [
+        ("group", "app-mine"), ("org", "app-mine"), ("private", "app-shared")]
+    assert out.deleted["private_app_installs"] == 1
+    assert out.kept["shared_app_installs"] == 2
+    assert out.kept["shared_private_app_installs"] == 1
+    assert db.rows["app_grants"] == [RAVI_GRANT]
+
+
+@pytest.mark.parametrize("spacing", ["EXISTS (", "EXISTS(", "EXISTS  ("],
+                         ids=["one-space", "no-space", "two-spaces"])
+def test_the_fake_reads_an_exists_clause_at_any_spacing(spacing: str) -> None:
+    """``EXISTS(`` with no space is the same SQL as ``EXISTS (``. The fake
+    reads each form, so a body with no space can never get past it. A form
+    that the fake cannot read, here a subquery with no ``AS``, is an error,
+    never a pass. Before this test, the guard counted ``"EXISTS ("`` only,
+    so ``NOT EXISTS(`` got past the guard and the regex, and the clause was
+    ignored (PKG-5b repair round 1)."""
+    from gateway.package_host.sharing import OTHERS_SEE_THE_INSTALL
+
+    fake = _FakeDB()
+    fake.rows["package_install"] = [
+        {"app_id": "app-shared", "scope_kind": "private", "scope_subject": PRIYA,
+         "installed_by": PRIYA},
+        {"app_id": "app-mine", "scope_kind": "private", "scope_subject": PRIYA,
+         "installed_by": PRIYA}]
+    fake.rows["app_grants"] = [RAVI_GRANT]
+    private = "scope_kind = 'private' AND lower(scope_subject) = :email"
+    term = OTHERS_SEE_THE_INSTALL.replace("EXISTS (", spacing)
+    assert term.count(spacing) == 1
+
+    kept = fake._person_rows(f"{private} AND {term}", "package_install", {"email": PRIYA})
+    gone = fake._person_rows(f"{private} AND NOT {term}", "package_install", {"email": PRIYA})
+    assert [r["app_id"] for r in kept] == ["app-shared"]
+    assert [r["app_id"] for r in gone] == ["app-mine"]
+
+    unreadable = term.replace("app_grants AS g", "app_grants g")
+    with pytest.raises(AssertionError, match="unreadable EXISTS clause"):
+        fake._person_rows(f"{private} AND NOT {unreadable}", "package_install",
+                          {"email": PRIYA})
+
+
+#: (app, grant subject, granted by, the install stays). ``routes/apps/grants.py``
+#: (``is_valid_subject``) takes an address, ``agent:<name>`` and
+#: ``agents:*``, and the consent route writes the address of the member who
+#: consents as both the subject and ``granted_by``. Only a share that Priya
+#: made to another address keeps her private install (PKG-5b).
+_SHARE_CASES = (
+    ("app-share", RAVI, "Priya@Fracktal.IN", True),
+    ("app-agent", "agent:helper", PRIYA, False),
+    ("app-agents", "agents:*", PRIYA, False),
+    ("app-consent", RAVI, RAVI, False),
+    ("app-other-owner", RAVI, "owner@fracktal.in", False),
+    ("app-self", "Priya@Fracktal.IN", PRIYA, False),
+)
+
+
+@pytest.mark.parametrize(("app", "subject", "granted_by", "stays"), _SHARE_CASES,
+                         ids=[c[0] for c in _SHARE_CASES])
+async def test_only_a_share_that_she_made_keeps_her_private_install(
+    db: _FakeDB, app: str, subject: str, granted_by: str, stays: bool,
+) -> None:
+    """A grant keeps her private install only when its subject is an address,
+    is not her own in any case, and she made it. A grant to an agent or to
+    every agent names no person. A colleague's consent row names the
+    colleague as ``granted_by``, and so does a share that another owner of
+    the app made. Neither one is her share, so the install goes.
+
+    ⚠️ Mutation-checked: dropping the ``@`` test keeps the two agent cases,
+    and dropping the ``granted_by`` test keeps the consent and the
+    other-owner cases. The fake reads each test from the statement."""
+    from gateway.routes.admin.members import purge_member
+
+    db.rows["package_install"] = [
+        {"app_id": app, "scope_kind": "private", "scope_subject": PRIYA,
+         "installed_by": PRIYA}]
+    db.rows["app_grants"] = [
+        {"app_id": app, "subject": subject, "granted_by": granted_by}]
+
+    out = await purge_member(PRIYA, admin=OWNER)
+
+    left = [r["app_id"] for r in db.rows["package_install"]]
+    assert left == ([app] if stays else [])
+    assert out.deleted["private_app_installs"] == (0 if stays else 1)
+    assert out.kept["shared_private_app_installs"] == (1 if stays else 0)
 
 
 # ── The cross-table half: what the delete side cascades away ────────────────
@@ -731,6 +1240,50 @@ def test_every_person_keyed_cascade_child_is_reported_on_one_side_or_other(
         f"own person column, so they hold rows the person authored — and they "
         f"appear on neither list: {unreported}"
     )
+
+
+#: WS-61 KC-1a (review P1). The person-keyed tables under the connection
+#: registry, and the one function of the purge that deletes each. The registry
+#: may be named in ``connections/store.py`` only, so the purge reaches it
+#: through ``store.delete`` and never through ``_PURGE_DELETES``.
+_PURGED_THROUGH_THE_REGISTRY = {
+    "integration_connections": "sources.purge_member_sources (store.delete)",
+    "kb_sources": "the cascade of that delete (migration 300)",
+}
+
+
+def test_a_member_keyed_table_under_the_registry_cannot_be_forgotten() -> None:
+    """The sibling of the rule above, for the tables ``_PURGE_DELETES`` cannot name.
+
+    ``_blast_radius`` starts from ``_PURGE_DELETES``, and the connection
+    registry is never on it (``test_crm_connection.py`` keeps its name in the
+    store). So a member-keyed table that hangs off the registry is invisible
+    to the rule above. KC-1a shipped that shape: ``kb_sources`` carries
+    ``owner_email`` under ``integration_connections``, and the first purge
+    left the leaver's Drive token and tree behind.
+
+    This test reads the schema. Each person-keyed table in the cascade of the
+    registry must be named in ``_PURGED_THROUGH_THE_REGISTRY``, and the purge
+    body must reach ``sources.purge_member_sources``. A migration that adds a
+    new one fails here until its author decides how the purge takes it.
+    """
+    import inspect
+
+    from gateway.routes.admin import members
+    from gateway.routes.knowledge import sources
+
+    from tests.unit._schema_cascade import cascade_closure, columns_of
+
+    registry = "integration_" + "connections"
+    person_columns = {"user_id", "owner_email", "user_email", "member_email"}
+    keyed = {t for t in {registry, *cascade_closure(registry)}
+             if columns_of(t) & person_columns}
+    assert keyed == set(_PURGED_THROUGH_THE_REGISTRY), (
+        f"person-keyed tables under the registry: {sorted(keyed)}. Each needs a "
+        "purge path, named in _PURGED_THROUGH_THE_REGISTRY.")
+    assert "purge_member_sources(" in inspect.getsource(members.purge_knowledge_member)
+    assert "purge_knowledge_member(" in inspect.getsource(members.purge_member_rows)
+    assert "store.delete(" in inspect.getsource(sources.purge_member_sources)
 
 
 def test_the_cascade_map_is_the_one_the_schema_declares() -> None:
@@ -868,7 +1421,7 @@ def test_the_route_holds_exactly_one_commit() -> None:
     early and drop the tenant GUC for everything after it), and keeps every
     destructive statement INSIDE the block, before that commit.
     """
-    from gateway.routes.admin.members import purge_member
+    from gateway.routes.admin.members import purge_member, purge_member_rows
 
     src = inspect.getsource(purge_member)
     assert src.count("async with _tenant_session() as db:") == 1
@@ -876,13 +1429,27 @@ def test_the_route_holds_exactly_one_commit() -> None:
         "a mid-block commit would end the transaction (and the tenant "
         "binding) before the wrapper's own commit"
     )
+    # Since 2026-10-15 the deletes live in `purge_member_rows`, the body the
+    # operator door shares. So the route must call that body INSIDE its one
+    # block, and the body must open no session and commit nothing.
     block_indent = " " * 8
     after_block = src[src.index("async with _tenant_session() as db:"):]
-    for line in after_block.splitlines()[1:]:
-        if "rows.delete_sql" in line:
-            assert line.startswith(block_indent), (
-                "something is deleted outside the one transaction"
-            )
+    calls = [ln for ln in after_block.splitlines()[1:]
+             if "purge_member_rows(" in ln]
+    assert calls, "the route no longer calls the shared purge body"
+    for line in calls:
+        assert line.startswith(block_indent), (
+            "the shared purge body runs outside the one transaction"
+        )
+    body = inspect.getsource(purge_member_rows)
+    assert "rows.delete_sql" in body, "the shared body no longer deletes"
+    assert "commit(" not in body, (
+        "the shared body commits — the caller's transaction would end early"
+    )
+    assert "_tenant_session" not in body and "tenant_session" not in body, (
+        "the shared body opens its own session — the deletes would leave the "
+        "caller's one transaction"
+    )
 
 
 async def test_the_purge_is_audited_before_it_is_committed(
@@ -933,6 +1500,97 @@ async def test_the_cached_access_is_dropped(db: _FakeDB) -> None:
     assert PRIYA in db.invalidated
 
 
+async def test_the_purge_tears_down_each_mailbox_after_the_commit(
+    db: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """EM-G11f1b (``email_app_master_plan.md`` §12.3.13.9.2). The purge rows
+    go in the transaction, and the sync loop of each mailbox stops after the
+    commit. The answer counts the mailboxes. The other half of the fence is
+    ``test_email_mailbox_teardown.py``."""
+    import email_ingestion.scheduler as sched
+    from gateway.routes.admin.members import purge_member
+
+    stops: list[tuple[str, int]] = []
+
+    async def _stop(account_id: str) -> None:
+        stops.append((account_id, db.committed))
+
+    monkeypatch.setattr(sched, "remove_account_sync", _stop)
+    monkeypatch.setattr(sched, "get_scheduler_status", lambda: {"accounts": []})
+
+    out = await purge_member(PRIYA, admin=OWNER)
+
+    assert db.purge_rows == [PRIYA], "the purge wrote no purge row for the mailbox"
+    assert stops == [("acc-0", 1)], "the loop did not stop after the one commit"
+    assert out.mailboxes.model_dump() == {
+        "planned": 1, "finished": 1, "failed": 0, "continuing": 0}
+
+
+async def test_the_purge_is_recorded_and_mirrored_before_the_teardown_wait(
+    db: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """EM-G11f1b fix round 1. The teardown wait can last 60 s, and a deploy
+    stop ends the process after 5 s of grace. So the `member_purged` line and
+    the Console mirror go first, and the teardown goes last."""
+    import email_ingestion.scheduler as sched
+    from gateway.routes.admin import members
+
+    order: list[str] = []
+
+    async def _stop(account_id: str) -> None:
+        order.append("teardown")
+
+    async def _mirror(**_kw: Any) -> tuple[int, dict]:
+        order.append("mirror")
+        return 200, {"found": True, "released": ["core"]}
+
+    class _Log:
+        def info(self, event: str, **_kw: Any) -> None:
+            order.append(event)
+
+        warning = error = info
+
+    monkeypatch.setattr(sched, "remove_account_sync", _stop)
+    monkeypatch.setattr(sched, "get_scheduler_status", lambda: {"accounts": []})
+    monkeypatch.setattr(members, "remove_member_on_console", _mirror)
+    monkeypatch.setattr(members, "_log", _Log())
+
+    await members.purge_member(PRIYA, admin=OWNER)
+
+    assert order.index("member_purged") < order.index("teardown")
+    assert order.index("mirror") < order.index("teardown")
+
+
+async def test_a_mailbox_with_no_plan_is_named_in_a_warning(
+    db: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """EM-G11f1b fix round 1. A mailbox that the member connects after the
+    plan read goes with the delete and has no teardown. The purge says so."""
+    from gateway.routes.admin import members
+
+    warnings: list[tuple[str, dict]] = []
+
+    class _Log:
+        def info(self, event: str, **kw: Any) -> None:
+            pass
+
+        def warning(self, event: str, **kw: Any) -> None:
+            warnings.append((event, kw))
+
+        error = warning
+
+    async def _no_plans(_db: Any, _scope: Any) -> list:
+        return []
+
+    monkeypatch.setattr(members, "read_teardown_plans", _no_plans)
+    monkeypatch.setattr(members, "_log", _Log())
+
+    await members.purge_member(PRIYA, admin=OWNER)
+
+    assert ("email.teardown.unplanned_mailbox",
+            {"planned": 0, "deleted": 1}) in warnings
+
+
 def test_purge_is_a_separate_route_and_remove_is_unchanged() -> None:
     """N8 adds a door; it does not widen the existing one.
 
@@ -941,7 +1599,7 @@ def test_purge_is_a_separate_route_and_remove_is_unchanged() -> None:
     flag on it would have made the soft path one typo from the hard one.
     """
     from gateway.routes.admin._common import router
-    from gateway.routes.admin.members import remove_member
+    from gateway.routes.admin.members import remove_member, remove_member_rows
 
     paths = {
         (route.path, tuple(sorted(route.methods)))
@@ -951,7 +1609,14 @@ def test_purge_is_a_separate_route_and_remove_is_unchanged() -> None:
     assert ("/admin/members/{email}", ("DELETE",)) in paths
     assert ("/admin/members/{email}/purge", ("DELETE",)) in paths
 
-    src = inspect.getsource(remove_member)
+    # Since 2026-10-15 the writes live in `remove_member_rows`, the body the
+    # operator door shares. The route must call THAT body and no purge body,
+    # and the body must stay the soft removal.
+    route_src = inspect.getsource(remove_member)
+    assert "remove_member_rows(" in route_src
+    assert "purge_member_rows" not in route_src
+    assert "_PURGE_DELETES" not in route_src
+    src = inspect.getsource(remove_member_rows)
     assert "UPDATE app_user SET status = 'removed'" in src
     assert "DELETE FROM app_user" not in src
     assert "_PURGE_DELETES" not in src
@@ -1104,3 +1769,121 @@ def test_the_browsers_copy_of_the_purge_rule_is_still_only_a_courtesy() -> None:
 
     assert "canPurge" in guard
     assert "not a boundary" in guard or "courtesy" in guard
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 7. The Customer Console mirror (owner request, 2026-10-15)
+#
+# The registry has no hard delete. A purged person becomes a `removed`
+# membership there, with every seat released. The hop is post-commit and
+# best-effort, the invite mirror's posture.
+# ════════════════════════════════════════════════════════════════════════════
+
+async def test_purge_mirrors_onto_the_console_after_the_commit(
+    db: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠️ Mutation-checked: deleting the `_mirror_removal_to_console` call
+    from `purge_member` makes this fail with no call recorded."""
+    from gateway.routes.admin import members
+
+    seen: list[dict] = []
+
+    async def _fake(**kw):
+        seen.append({**kw, "committed_at_call": db.committed})
+        return 200, {"found": True, "released": ["core"]}
+
+    monkeypatch.setattr(members, "remove_member_on_console", _fake)
+    out = await members.purge_member(PRIYA, admin=OWNER)
+
+    assert out.email == PRIYA
+    assert seen == [{
+        "actor_email": "owner@fracktal.in",
+        "member_email": PRIYA,
+        "committed_at_call": 1,
+    }]
+
+
+@pytest.mark.parametrize("boom", ["outage", "refusal", "crash"])
+async def test_a_console_failure_never_changes_the_purge_answer(
+    db: _FakeDB, monkeypatch: pytest.MonkeyPatch, boom: str,
+) -> None:
+    from acb_auth.console_resolve import ConsoleMemberWriteUnavailable
+    from gateway.routes.admin import members
+
+    async def _fake(**_kw):
+        if boom == "outage":
+            raise ConsoleMemberWriteUnavailable("HTTP 503")
+        if boom == "crash":
+            raise TypeError("a changed signature")
+        return 409, {"detail": "no owner would remain"}
+
+    monkeypatch.setattr(members, "remove_member_on_console", _fake)
+    out = await members.purge_member(PRIYA, admin=OWNER)
+
+    assert out.deleted["member_record"] == 1
+    assert "u-priya" not in db.users
+    assert db.committed == 1
+
+
+def _route_node(name: str):
+    import ast
+
+    src = (REPO_ROOT / "apps/services/gateway/gateway/routes/admin/"
+           "members.py").read_text(encoding="utf-8-sig")
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == name:
+            return node
+    raise AssertionError(f"members.py has no `{name}` — this fence is vacuous")
+
+
+def _called(node) -> set[str]:
+    import ast
+
+    return {
+        sub.func.id for sub in ast.walk(node)
+        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+    }
+
+
+@pytest.mark.parametrize("route", ["remove_member", "purge_member"])
+def test_the_console_mirror_runs_outside_the_tenant_transaction(
+    route: str,
+) -> None:
+    """POST-COMMIT, by the shape of each route, as the invite fence pins it.
+
+    Inside the ``_tenant_session`` block the hop would run before the commit,
+    so a rollback would leave the registry saying `removed` for a member the
+    tenant plane kept. A slow Console would also hold the transaction open.
+    """
+    import ast
+
+    node = _route_node(route)
+    assert "_mirror_removal_to_console" in _called(node), (
+        f"`{route}` no longer mirrors the removal onto the Console"
+    )
+    inside: set[str] = set()
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.AsyncWith):
+            for item in sub.items:
+                call = item.context_expr
+                if (isinstance(call, ast.Call)
+                        and isinstance(call.func, ast.Name)
+                        and call.func.id == "_tenant_session"):
+                    for stmt in sub.body:
+                        inside |= _called(stmt)
+    assert "_mirror_removal_to_console" not in inside
+
+
+def test_the_console_mirror_swallows_both_failure_kinds() -> None:
+    """A verdict, an outage and an unforeseen exception all end as a log
+    line. Both handlers are required, as at the invite mirror."""
+    import ast
+
+    node = _route_node("_mirror_removal_to_console")
+    handlers = [
+        h for sub in ast.walk(node) if isinstance(sub, ast.Try)
+        and "remove_member_on_console" in _called(sub)
+        for h in sub.handlers
+    ]
+    caught = {h.type.id for h in handlers if isinstance(h.type, ast.Name)}
+    assert {"ConsoleMemberWriteUnavailable", "Exception"} <= caught, caught

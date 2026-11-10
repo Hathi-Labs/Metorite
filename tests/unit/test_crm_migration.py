@@ -27,16 +27,16 @@ MIGRATIONS = Path(__file__).resolve().parents[2] / "infra" / "postgres"
 
 
 def _crm_migration() -> Path:
-    """The migration that creates ``crm_organizations``, whatever it is numbered."""
+    """The migration that creates ``crm_companies``, whatever it is numbered."""
     found = [
         path for path in sorted(MIGRATIONS.glob("*.sql"))
         if path.name != "schema.generated.sql"
-        and "CREATE TABLE IF NOT EXISTS crm_organizations" in path.read_text(
+        and "CREATE TABLE IF NOT EXISTS crm_companies" in path.read_text(
             encoding="utf-8",
         )
     ]
     assert len(found) == 1, (
-        f"expected exactly one migration creating crm_organizations, found "
+        f"expected exactly one migration creating crm_companies, found "
         f"{[p.name for p in found]}"
     )
     return found[0]
@@ -155,7 +155,7 @@ def test_no_statement_drops_or_truncates_data(bare: str) -> None:
 # ── §3's tables and their shape ─────────────────────────────────────────────
 
 EXPECTED_TABLES = (
-    "crm_organizations", "crm_contacts", "crm_leads", "crm_deals",
+    "crm_companies", "crm_contacts", "crm_leads", "crm_deals",
     "crm_deal_contacts", "crm_lead_statuses", "crm_deal_statuses",
     "crm_activities", "crm_status_changes", "crm_lost_reasons",
 )
@@ -190,8 +190,8 @@ def test_the_tables_are_created_before_they_are_referenced(bare: str) -> None:
         ("crm_deals", "status_id", "RESTRICT"),
         # SET NULL everywhere a parent is optional context, so deleting an
         # organization does not take its deals' history with it.
-        ("crm_contacts", "organization_id", "SET NULL"),
-        ("crm_deals", "organization_id", "SET NULL"),
+        ("crm_contacts", "company_id", "SET NULL"),
+        ("crm_deals", "company_id", "SET NULL"),
         ("crm_deals", "lead_id", "SET NULL"),
         ("crm_deals", "lost_reason_id", "SET NULL"),
         ("crm_leads", "lost_reason_id", "SET NULL"),
@@ -218,7 +218,7 @@ def test_activities_cascade_from_all_four_targets(bare: str) -> None:
     """An activity outlives nothing: its whole meaning is its target."""
     body = bare.split("CREATE TABLE IF NOT EXISTS crm_activities", 1)[1]
     body = body.split("CONSTRAINT crm_activities_target_required", 1)[0]
-    for column in ("lead_id", "deal_id", "contact_id", "organization_id"):
+    for column in ("lead_id", "deal_id", "contact_id", "company_id"):
         window = body[body.index(f"{column} "):][:200]
         assert "ON DELETE CASCADE" in window, f"{column} must CASCADE"
 
@@ -235,7 +235,7 @@ def test_an_activity_must_name_at_least_one_target(bare: str) -> None:
     timeline and accumulates silently."""
     body = bare.split("CONSTRAINT crm_activities_target_required CHECK", 1)[1]
     body = body.split(")\n", 1)[0]
-    for column in ("lead_id", "deal_id", "contact_id", "organization_id"):
+    for column in ("lead_id", "deal_id", "contact_id", "company_id"):
         assert f"{column} IS NOT NULL" in body
     assert body.count("OR") == 3
 
@@ -301,8 +301,10 @@ def test_the_email_indexes_are_case_folding_and_not_unique(bare: str) -> None:
 def test_every_table_carries_zoho_provenance_where_it_is_imported(
     bare: str,
 ) -> None:
-    """§7.1 upserts ``ON CONFLICT (zoho_id)``, which needs the UNIQUE."""
-    for table in ("crm_organizations", "crm_contacts", "crm_leads", "crm_deals",
+    """§7.1 upserts on the Zoho id. Migration 241 (WS-53 CRM-T1) replaces this
+    global UNIQUE with the per-tenant key ``(organization_id, zoho_id)``. The
+    fence for that is ``test_crm_rename_upgrade.py``."""
+    for table in ("crm_companies", "crm_contacts", "crm_leads", "crm_deals",
                   "crm_activities"):
         body = bare.split(f"CREATE TABLE IF NOT EXISTS {table}", 1)[1]
         body = body.split(");", 1)[0]
@@ -364,6 +366,54 @@ def test_each_pipeline_seeds_a_lost_type_status(bare: str) -> None:
     for table in ("crm_lead_statuses", "crm_deal_statuses"):
         seed = bare.split(f"INSERT INTO {table}", 1)[1].split(";", 1)[0]
         assert "'lost'" in seed and "'won'" in seed
+
+
+def _seeded_values(bare: str, table: str) -> list[tuple[object, ...]]:
+    """The ``VALUES`` rows of the seed INSERT into *table*, as Python values.
+
+    Each row is one ``( ... )`` group between ``VALUES`` and ``ON CONFLICT``.
+    A quoted value is a string, ``true``/``false`` a bool, and a bare number
+    an int. No seed value holds a comma or a bracket, so a plain split reads
+    them all.
+    """
+    statement = bare.split(f"INSERT INTO {table}", 1)[1].split(";", 1)[0]
+    values = statement.split("VALUES", 1)[1].split("ON CONFLICT", 1)[0]
+    rows: list[tuple[object, ...]] = []
+    for group in re.findall(r"\(([^()]*)\)", values):
+        row: list[object] = []
+        for part in (p.strip() for p in group.split(",")):
+            if part.startswith("'") and part.endswith("'"):
+                row.append(part[1:-1])
+            elif part in ("true", "false"):
+                row.append(part == "true")
+            else:
+                row.append(int(part))
+        rows.append(tuple(row))
+    return rows
+
+
+def test_the_native_seed_equals_the_migration_seed(bare: str) -> None:
+    """WS-53 CRM-T5 done-when 7. ``routes/crm/seed.py`` gives an organization
+    that picks Native mode the same 6 deal stages, 5 lead stages and 6 lost
+    reasons that this migration gives a fresh install. Two lists that must
+    agree are one list that drifts, so this reads both and compares them."""
+    from gateway.routes.crm import seed
+
+    assert _seeded_values(bare, "crm_lead_statuses") == list(seed.LEAD_STATUSES)
+    assert _seeded_values(bare, "crm_deal_statuses") == list(seed.DEAL_STATUSES)
+    assert _seeded_values(bare, "crm_lost_reasons") == list(seed.LOST_REASONS)
+    assert (len(seed.DEAL_STATUSES), len(seed.LEAD_STATUSES),
+            len(seed.LOST_REASONS)) == (6, 5, 6)
+
+
+def test_the_seed_parity_reader_sees_a_changed_value(bare: str) -> None:
+    """The reader above must notice one changed value, or the parity test
+    passes for any list."""
+    changed = bare.replace("('Proposal',       'violet', 30", "('Proposal', 'violet', 35")
+    assert changed != bare
+    from gateway.routes.crm import seed
+
+    assert _seeded_values(changed, "crm_deal_statuses") != list(seed.DEAL_STATUSES)
 
 
 # ── Feature registration (WS-26a done-when 2) ───────────────────────────────
@@ -537,7 +587,7 @@ def test_the_sync_migration_drops_or_truncates_nothing(sync_bare: str) -> None:
 
 @pytest.mark.parametrize(
     "table",
-    ["crm_organizations", "crm_contacts", "crm_leads", "crm_deals"],
+    ["crm_companies", "crm_contacts", "crm_leads", "crm_deals"],
 )
 def test_the_four_record_tables_gain_the_dirty_pair(
     sync_bare: str, table: str,
@@ -564,7 +614,7 @@ def test_the_statuses_and_the_activity_spine_are_not_dirty_tracked(
     """
     altered = set(re.findall(r"ALTER TABLE\s+(\w+)", sync_bare, re.I))
     assert altered == {
-        "crm_organizations", "crm_contacts", "crm_leads", "crm_deals",
+        "crm_companies", "crm_contacts", "crm_leads", "crm_deals",
         "crm_activities",
     }, altered
 
@@ -581,7 +631,7 @@ def test_the_statuses_and_the_activity_spine_are_not_dirty_tracked(
 
 @pytest.mark.parametrize(
     "table",
-    ["crm_organizations", "crm_contacts", "crm_leads", "crm_deals",
+    ["crm_companies", "crm_contacts", "crm_leads", "crm_deals",
      "crm_activities"],
 )
 def test_every_push_queue_can_back_off_and_give_up(
@@ -660,7 +710,7 @@ def test_the_unpushed_backlog_index_is_partial(sync_bare: str) -> None:
 def test_the_dirty_indexes_are_partial(sync_bare: str) -> None:
     """The push phase asks one question — "what is dirty" — against a table
     that is almost entirely clean."""
-    for table in ("crm_organizations", "crm_contacts", "crm_leads", "crm_deals"):
+    for table in ("crm_companies", "crm_contacts", "crm_leads", "crm_deals"):
         assert f"ON {table} (zoho_dirty) WHERE zoho_dirty" in sync_bare
 
 
@@ -737,7 +787,7 @@ def _altered_not_null_defaults(bare: str, table: str) -> set[str]:
 
 
 def test_the_defaulted_not_null_map_matches_the_migration(
-    bare: str, discipline_bare: str,
+    bare: str, discipline_bare: str, overlay_bare: str,
 ) -> None:
     from gateway.routes.crm.core import NOT_NULL_DEFAULTED
 
@@ -745,6 +795,9 @@ def test_the_defaulted_not_null_map_matches_the_migration(
         declared = (
             _declared_not_null_defaults(bare, table)
             | _altered_not_null_defaults(discipline_bare, table)
+            | _overlay_added(overlay_bare, table, not_null_default=True)
+            # Migration 288 (CRM-U6): `probability` on the lead statuses.
+            | _overlay_added(_lead_probability_bare(), table, not_null_default=True)
         ) - _PLATFORM_STAMPED
         assert declared == set(declared_map), (
             f"{table}: the migration declares NOT NULL DEFAULT on "
@@ -784,7 +837,7 @@ def _discipline_migration() -> Path:
     found = [
         path for path in sorted(MIGRATIONS.glob("*.sql"))
         if path.name != "schema.generated.sql"
-        and "required_fields" in path.read_text(encoding="utf-8")
+        and "ADD COLUMN IF NOT EXISTS required_fields" in path.read_text(encoding="utf-8")
     ]
     assert len(found) == 1, (
         f"expected exactly one migration adding required_fields, found "
@@ -799,6 +852,74 @@ def discipline_bare() -> str:
         re.sub(r"--.*$", "", line)
         for line in _discipline_migration().read_text(encoding="utf-8").splitlines()
     )
+
+
+def _overlay_migration() -> Path:
+    """The CRM-C3 overlay migration (``crm_platform.md`` §20.6), by CONTENT."""
+    found = [
+        path for path in sorted(MIGRATIONS.glob("*.sql"))
+        if path.name != "schema.generated.sql"
+        and "ADD COLUMN IF NOT EXISTS ui_probability" in path.read_text(encoding="utf-8")
+        # Migration 288 adds the same column to the lead table. It is not the overlay.
+        and "ADD COLUMN IF NOT EXISTS ext_id" in path.read_text(encoding="utf-8")
+    ]
+    assert len(found) == 1, (
+        f"expected exactly one migration adding ui_probability, found "
+        f"{[p.name for p in found]}"
+    )
+    return found[0]
+
+
+@pytest.fixture(scope="module")
+def overlay_bare() -> str:
+    return "\n".join(
+        re.sub(r"--.*$", "", line)
+        for line in _overlay_migration().read_text(encoding="utf-8").splitlines()
+    )
+
+
+#: One ``ADD COLUMN IF NOT EXISTS <name> <rest>`` clause of an ALTER that adds
+#: more than one column. The rest stops at the comma or the semicolon.
+_ADD_CLAUSE_RE = re.compile(r"ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+(\w+)([^,;]*)", re.I)
+
+
+def _overlay_added(bare: str, table: str, *, not_null_default: bool = False) -> set[str]:
+    """The columns that the overlay migration adds to *table*.
+
+    Its ALTERs add several columns each, so the one-clause readers above see
+    only the first. ``not_null_default`` keeps the ``NOT NULL DEFAULT`` ones.
+    """
+    found: set[str] = set()
+    for statement in bare.split(";"):
+        head = re.match(r"\s*ALTER\s+TABLE\s+(\w+)", statement, re.I)
+        if head is None or head.group(1) != table:
+            continue
+        for column, rest in _ADD_CLAUSE_RE.findall(statement):
+            if not not_null_default or re.search(r"\bNOT\s+NULL\b.*\bDEFAULT\b", rest, re.I):
+                found.add(column)
+    return found
+
+
+def test_the_overlay_migration_adds_what_the_spec_names(overlay_bare: str) -> None:
+    """CRM-C3: the overlay and the Zoho id, expand only (§20.6 table)."""
+    assert _overlay_added(overlay_bare, "crm_deal_statuses") == {
+        "hidden", "ui_position", "ui_probability", "ui_color", "ext_id",
+        "source_gone_at",
+    }
+    assert _overlay_added(overlay_bare, "crm_lead_statuses") == {
+        "hidden", "ui_position", "ui_color", "ext_id", "source_gone_at",
+    }
+    assert _overlay_added(overlay_bare, "crm_lost_reasons") == {"hidden"}
+    # R6: the one NOT NULL column has a default, and nothing is renamed or dropped.
+    for table in ("crm_deal_statuses", "crm_lead_statuses", "crm_lost_reasons"):
+        assert _overlay_added(overlay_bare, table, not_null_default=True) == {"hidden"}
+    assert not re.search(r"\b(DROP\s+COLUMN|RENAME|UPDATE\s+\w+\s+SET)\b", overlay_bare, re.I)
+    for table in ("crm_deal_statuses", "crm_lead_statuses"):
+        assert re.search(
+            rf"CREATE\s+UNIQUE\s+INDEX\s+IF\s+NOT\s+EXISTS\s+\w+\s+ON\s+{table}\s*"
+            r"\(\s*organization_id\s*,\s*ext_id\s*\)\s*WHERE\s+ext_id\s+IS\s+NOT\s+NULL",
+            overlay_bare, re.I,
+        ), table
 
 
 def test_the_discipline_migration_sorts_after_the_spine_it_alters() -> None:
@@ -916,8 +1037,33 @@ def _declared_columns(bare: str, table: str) -> set[str]:
     return set(_COLUMN_RE.findall(body))
 
 
+def _lead_probability_bare() -> str:
+    path = MIGRATIONS / "288_crm_lead_status_probability.sql"
+    return "\n".join(
+        re.sub(r"--.*$", "", line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+    )
+
+
+def _lead_probability_added() -> set[str]:
+    """The columns migration 288 (CRM-U6) adds to ``crm_lead_statuses``."""
+    return _overlay_added(_lead_probability_bare(), "crm_lead_statuses")
+
+
+def test_the_lead_probability_migration_is_expand_only() -> None:
+    """R6, CRM-U6 - two columns, one NOT NULL with a default, nothing dropped."""
+    bare = _lead_probability_bare()
+    assert _lead_probability_added() == {"probability", "ui_probability"}
+    assert _overlay_added(bare, "crm_lead_statuses", not_null_default=True) == {"probability"}
+    assert not re.search(r"\b(DROP\s+COLUMN|RENAME)\b", bare, re.I)
+    # The one data statement sets a won status to 100 (D-CRM-10).
+    updates = re.findall(r"UPDATE\s+\w+\s+SET[^;]*", bare, re.I)
+    assert len(updates) == 1 and "type = 'won'" in updates[0]
+    assert "BETWEEN 0 AND 100" in bare
+
+
 def test_the_deal_only_field_set_matches_the_schema(
-    bare: str, discipline_bare: str,
+    bare: str, discipline_bare: str, overlay_bare: str,
 ) -> None:
     """R7 — `admin.DEAL_ONLY_FIELDS` is hand-kept, so it is derived here.
 
@@ -936,8 +1082,10 @@ def test_the_deal_only_field_set_matches_the_schema(
             re.I,
         )
         if altered == "crm_deal_statuses"
-    }
-    lead = _declared_columns(bare, "crm_lead_statuses")
+    } | _overlay_added(overlay_bare, "crm_deal_statuses")
+    lead = _declared_columns(bare, "crm_lead_statuses") | _overlay_added(
+        overlay_bare, "crm_lead_statuses",
+    ) | _lead_probability_added()
     # Intersected with the payload model: a deal-only column no request body
     # can name needs no refusal, because no request can offer it.
     expected = (deal - lead) & set(StatusIn.model_fields)
@@ -947,3 +1095,99 @@ def test_the_deal_only_field_set_matches_the_schema(
         f"{sorted(expected)}, but admin.DEAL_ONLY_FIELDS says "
         f"{sorted(DEAL_ONLY_FIELDS)}"
     )
+
+
+# ── CRM-Q23a: an activity on a module record (crm_platform.md §18.10) ────────
+
+
+def _module_activity_migration() -> Path:
+    """The migration that adds ``crm_activities.module_record_id``, found by
+    CONTENT and never by number (R1)."""
+    found = [
+        path for path in sorted(MIGRATIONS.glob("*.sql"))
+        if path.name != "schema.generated.sql"
+        and re.search(
+            r"ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+module_record_id",
+            path.read_text(encoding="utf-8"),
+        )
+    ]
+    assert len(found) == 1, [p.name for p in found]
+    return found[0]
+
+
+@pytest.fixture(scope="module")
+def module_activity_bare() -> str:
+    text = _module_activity_migration().read_text(encoding="utf-8")
+    return "\n".join(re.sub(r"--.*$", "", line) for line in text.splitlines())
+
+
+def test_the_module_activity_migration_takes_a_free_number_and_says_why() -> None:
+    path = _module_activity_migration()
+    numbers = [
+        int(p.name.split("_", 1)[0]) for p in MIGRATIONS.glob("*.sql")
+        if p.name.split("_", 1)[0].isdigit()
+    ]
+    mine = int(path.name.split("_", 1)[0])
+    assert numbers.count(mine) == 1, f"two migrations share number {mine}"
+    header = path.read_text(encoding="utf-8").split("\nSET ", 1)[0]
+    for required in ("What:", "Why:", "Depends on:"):
+        assert required in header, required
+
+
+def test_the_module_record_column_is_nullable_and_cascades(module_activity_bare: str) -> None:
+    """Done when 1: the column, nullable, with a foreign key that cascades."""
+    statement = re.search(
+        r"ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+module_record_id[^;]*;", module_activity_bare,
+    )
+    assert statement is not None
+    added = " ".join(statement.group(0).split())
+    assert "UUID NULL" in added
+    assert "REFERENCES crm_module_records (id) ON DELETE CASCADE" in added
+    assert "DEFAULT" not in added.upper() and "NOT NULL" not in added.upper()
+
+
+def test_the_module_record_index_is_partial_and_guarded(module_activity_bare: str) -> None:
+    index = re.search(r"CREATE\s+INDEX\s+(IF\s+NOT\s+EXISTS)?[^;]*;", module_activity_bare)
+    assert index is not None and index.group(1), "CREATE INDEX needs IF NOT EXISTS"
+    assert re.search(r"WHERE\s+module_record_id\s+IS\s+NOT\s+NULL", index.group(0))
+
+
+def test_the_check_widens_in_one_guarded_block(module_activity_bare: str) -> None:
+    """Done when 2: one DO block drops the CHECK, adds it NOT VALID and
+    validates it, and it runs only while the definition lacks the column."""
+    blocks = re.findall(r"DO\s+\$(\w*)\$(.*?)\$\1\$", module_activity_bare, re.S)
+    touching = [body for _tag, body in blocks if "crm_activities_target_required" in body]
+    assert len(touching) == 1, "exactly one DO block changes the CHECK"
+    block = touching[0]
+    guard = block.index("IF ")
+    assert "pg_get_constraintdef" in block[:guard]
+    assert re.search(r"position\('module_record_id'\s+IN\s+current_def\)\s*=\s*0",
+                     block[guard:])
+    steps = [
+        block.index("DROP CONSTRAINT IF EXISTS crm_activities_target_required"),
+        block.index("ADD CONSTRAINT crm_activities_target_required"),
+        block.index("NOT VALID"),
+        block.index("VALIDATE CONSTRAINT crm_activities_target_required"),
+    ]
+    assert steps == sorted(steps), "drop, then add NOT VALID, then validate"
+    check = block.split("ADD CONSTRAINT crm_activities_target_required", 1)[1]
+    check = check.split("NOT VALID", 1)[0]
+    for column in ("lead_id", "deal_id", "contact_id", "company_id", "module_record_id"):
+        assert f"{column} IS NOT NULL" in check, column
+    assert check.count(" OR ") == 4
+    # Outside the block the file touches no constraint, so there is no
+    # moment without the CHECK.
+    outside = re.sub(r"DO\s+\$(\w*)\$.*?\$\1\$", "", module_activity_bare, flags=re.S)
+    assert "crm_activities_target_required" not in outside
+
+
+def test_the_module_activity_migration_is_one_transaction_and_expand_only(
+    module_activity_bare: str,
+) -> None:
+    """R6, and no window without a CHECK: the file opens its own
+    transaction, because ``apply_migrations.sh`` has no wrapper."""
+    upper = module_activity_bare.upper()
+    assert upper.count("BEGIN;") == 1 and upper.count("COMMIT;") == 1
+    for forbidden in ("DROP TABLE", "DROP COLUMN", "TRUNCATE", "DELETE FROM",
+                      "SET NOT NULL", "RENAME", "UPDATE CRM_ACTIVITIES"):
+        assert forbidden not in upper, forbidden

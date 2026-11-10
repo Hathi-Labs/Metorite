@@ -1,0 +1,174 @@
+// ── The shapes of the /knowledge gateway (WS-61 KB-1) ──────────────────────
+//
+// Read from `apps/services/gateway/gateway/routes/knowledge/core.py`
+// (`space_dict`, `page_dict`, `read_versions`) and from `spaces.py` and
+// `pages.py`. The client mirrors them and adds nothing.
+
+/** A member's level on a space (`core.level_on`). */
+export type SpaceLevel = "read" | "write" | "manage";
+
+/** The kind of a space (§4.1). `agent` is reserved by the gateway's order. */
+export type SpaceKind = "company" | "team" | "me" | "agent";
+
+/** One row of `GET /knowledge/spaces`. */
+export interface Space {
+  id: string;
+  slug: string;
+  name: string;
+  purpose: string;
+  icon: string;
+  kind: SpaceKind;
+  owner_email: string | null;
+  archived_at: string | null;
+  created_at: string | null;
+  level: SpaceLevel;
+  page_count: number;
+}
+
+/** The state of a page (§4.2). */
+export type PageState = "draft" | "published" | "archived";
+
+/** One row of `GET /knowledge/pages`: a page with no body. */
+export interface PageSummary {
+  id: string;
+  space_id: string;
+  parent_id: string | null;
+  position: number;
+  title: string;
+  /** One emoji, or `null` (KB-2f). Not the icon name of a space. Absent
+   *  only in a test fixture written before KB-2f. */
+  icon?: string | null;
+  state: PageState;
+  author_email: string;
+  reviewers: string[];
+  review_at: string | null;
+  source_ref: string | null;
+  published_at: string | null;
+  archived_at: string | null;
+  history_from: number | null;
+  archived_from_state: string | null;
+  updated_at: string | null;
+  created_at: string | null;
+}
+
+/** Why a version was written (§4.2). */
+export type VersionReason =
+  | "create"
+  | "edit"
+  | "publish"
+  | "move"
+  | "archive"
+  | "restore"
+  | "revert"
+  | "agent_proposal"
+  | "accept"
+  | "import";
+
+/** One version in `GET /knowledge/pages/{id}`. The body is not in it. */
+export interface PageVersion {
+  version: number;
+  title: string;
+  author_email: string;
+  reason: VersionReason | string;
+  via: string;
+  created_at: string | null;
+}
+
+/** One link in `GET /knowledge/pages/{id}`. KB-2b draws them. */
+export interface PageLink {
+  id: string;
+  target_kind: string;
+  target_id: string;
+  label: string | null;
+  created_by: string;
+  created_at: string | null;
+}
+
+/** `GET /knowledge/pages/{id}`: one page with its body and its history. */
+export interface PageDetail extends PageSummary {
+  body_md: string;
+  origin: string | null;
+  /** Who vouches for the page (KB-AI-4). Not the space owner of `Space.owner_email`. */
+  owner_email?: string | null;
+  /** The days from a publish or a verify to the next review. Null: the default. */
+  review_every_days?: number | null;
+  level: SpaceLevel | null;
+  can_write: boolean;
+  versions: PageVersion[];
+  links: PageLink[];
+}
+
+/** The answer of each page write: the page and the number of its new version. */
+export interface PageWritten extends PageSummary {
+  body_md: string;
+  origin: string | null;
+  version: number;
+}
+
+/** The answer of a move. A move of the place only has no new version. */
+export type PageMoved = Omit<PageWritten, "version"> & { version?: number };
+
+/** `POST /knowledge/pages`. With no `space_id`, the page lands in `me`. */
+export interface PageCreateBody {
+  space_id?: string;
+  parent_id?: string;
+  title: string;
+  body_md?: string;
+}
+
+/** `PATCH /knowledge/pages/{id}`. Only the fields that changed. */
+export interface PagePatchBody {
+  title?: string;
+  body_md?: string;
+  /** An org member's address, or null to clear (KB-AI-4). */
+  owner_email?: string | null;
+  /** 1 to 3650, or null to use the default (KB-AI-4). */
+  review_every_days?: number | null;
+}
+
+/**
+ * `POST /knowledge/pages/{id}/move` (WS-61 KB-2e). `position` is the 0-based
+ * place among the new siblings that the member sees. A move with only
+ * `position` writes no version. `parent_id: null` is the root of the space.
+ */
+export interface PageMoveBody {
+  space_id?: string;
+  parent_id?: string | null;
+  position?: number;
+}
+
+/** `POST /knowledge/pages/{id}/revert`. */
+export interface PageRevertBody {
+  version: number;
+}
+
+/**
+ * One hit of `GET /knowledge/search` (WS-61 KB-3, `kb_index/query.py`
+ * `_hit`): one chunk of a published page the member can see. `heading_path`
+ * joins the headings with " > ", and `text` holds at most 400 characters.
+ */
+export interface SearchHit {
+  page_id: string;
+  space_id: string;
+  space_name: string;
+  title: string;
+  heading_path: string;
+  text: string;
+  score: number;
+  updated_at: string | null;
+  href: string;
+  /** The page icon (KB-2f), or `null`. */
+  icon?: string | null;
+  /** The page author (KB-3d), for the Creator chip. */
+  author_email?: string | null;
+}
+
+/** `GET /knowledge/search`. `query` is the words the gateway searched. */
+export interface SearchAnswer {
+  query: string;
+  hits: SearchHit[];
+  /** The plain words of the query, to mark in a snippet (KB-3d). */
+  terms?: string[];
+  /** True when only the lexical half ran. The view shows nothing for it. */
+  degraded: boolean;
+}

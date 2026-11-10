@@ -18,11 +18,11 @@ const src = readFileSync(
   "utf8",
 ).replace(/\r\n/g, "\n");
 
-/** The desktop capture header, from its wrapper to the shortcuts button (the
- *  inline legend became the `?` sheet in continuity P3). */
+/** The desktop capture header, from its wrapper to the Mind sweep button,
+ *  its last control since the shortcuts button went (2026-10-13). */
 const header = (() => {
   const start = src.indexOf('<div className="hidden shrink-0 border-b border-border bg-card sm:block">');
-  const stop = src.indexOf("onClick={openShortcutsSheet}", start);
+  const stop = src.indexOf('onClick={() => openQuickCapture("sweep")}', start);
   expect(start).toBeGreaterThan(-1);
   expect(stop).toBeGreaterThan(start);
   return src.slice(start, stop);

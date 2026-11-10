@@ -8,6 +8,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
+import { refuseUnsafePath } from "@/lib/gatewayPath";
 
 export const dynamic = "force-dynamic";
 
@@ -26,6 +27,8 @@ async function forward(
   params: Promise<{ path?: string[] }>
 ): Promise<NextResponse> {
   const { path = [] } = await params;
+  const refused = refuseUnsafePath(path);
+  if (refused) return refused;
   const upstream = buildUpstreamUrl(path, req);
   try {
     const reqType = req.headers.get("content-type") ?? "";

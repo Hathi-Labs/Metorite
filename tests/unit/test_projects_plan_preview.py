@@ -656,3 +656,54 @@ async def test_an_owner_outside_the_directory_and_an_agent(seeded) -> None:
     assert rows["t1"]["fit"]["text"] == "not in the directory"
     assert rows["t1"]["marks"] == ["not_in_directory"]
     assert rows["t2"]["fit"]["text"] == "an agent" and rows["t2"]["marks"] == []
+
+
+# ── §26: a row with no owner is an unassigned task (owner, 2026-10-17) ──────
+
+
+def test_a_row_with_no_owner_is_not_a_refusal() -> None:
+    """Mutation: refuse an empty owner in ``checked_rows`` again -> 422."""
+    bare = {k: v for k, v in _row("t2").items() if k != "owner"}
+    rows = route.checked_rows(_body(_row("t1", owner=""), bare))
+    assert [r["owner"] for r in rows] == ["", ""]
+
+
+def test_a_row_with_no_title_is_still_422() -> None:
+    with pytest.raises(HTTPException) as err:
+        route.checked_rows(_body(_row("t1", title="  ", owner="")))
+    assert err.value.status_code == 422 and "needs a title" in err.value.detail
+
+
+def test_an_unassigned_row_carries_no_fit_no_hours_and_no_mark() -> None:
+    """Mutation: drop the empty-owner branch of ``_row_answer`` -> the row
+    reads "not in the directory" with its mark."""
+    [row] = route.checked_rows(_body(_row("t1", owner="")))
+    answer = route._row_answer(row, None, {}, TODAY, TODAY + timedelta(days=30))
+    assert answer == {"key": "t1", "owner": "", "unassigned": True, "marks": []}
+
+
+@_needs_db
+async def test_an_unassigned_row_adds_no_hours_to_anybody(seeded) -> None:
+    """R8. A huge unassigned row beside an owned row changes nothing for the
+    owner, and no HR key rides on the unassigned row."""
+    owned = _row("t1", owner=seeded["busy"], effort_mins=120, due=_day(5))
+    alone = _by_key(await _preview(seeded, [owned]))
+    both = _by_key(await _preview(seeded, [
+        owned, _row("t2", owner="", effort_mins=400 * 60, due=_day(4)),
+    ]))
+    assert both["t1"]["hours"] == alone["t1"]["hours"]
+    assert both["t1"]["marks"] == alone["t1"]["marks"]
+    assert both["t2"] == {"key": "t2", "owner": "", "unassigned": True, "marks": []}
+
+
+@_needs_db
+async def test_a_plan_with_no_owner_at_all_runs_no_hr_read(seeded) -> None:
+    """R8. Zero owners: every row is unassigned and the body still has its
+    window and its dependency warnings."""
+    body = await _preview(seeded, [
+        _row("t1", owner="", due=_day(5)),
+        _row("t2", owner="", start=_day(2), due=_day(6), after=["t1"]),
+    ])
+    assert [r.get("unassigned") for r in body["rows"]] == [True, True]
+    assert body["window"]["days"] >= 1
+    assert [(w["blocker"], w["blocked"]) for w in body["dependency_warnings"]] == [("t1", "t2")]

@@ -1,0 +1,64 @@
+{
+  "id": "1924a7c8d9e0f1a2",
+  "threadId": "1924a7c8d9e0f1a2",
+  "labelIds": [
+    "UNREAD",
+    "CATEGORY_UPDATES",
+    "INBOX"
+  ],
+  "snippet": "Your invoice INV-1042 is ready. View it",
+  "payload": {
+    "partId": "",
+    "mimeType": "text/html",
+    "filename": "",
+    "headers": [
+      {
+        "name": "Delivered-To",
+        "value": "asha@example.com"
+      },
+      {
+        "name": "Received",
+        "value": "by 2002:a05:7300:5b1a:b0:12a:3c4d:5e6f with SMTP id x9csp1234567; Tue, 01 Oct 2024 09:15:44 +0000"
+      },
+      {
+        "name": "MIME-Version",
+        "value": "1.0"
+      },
+      {
+        "name": "From",
+        "value": "Billing <billing@example.net>"
+      },
+      {
+        "name": "Date",
+        "value": "Tue, 01 Oct 2024 09:15:44 +0000"
+      },
+      {
+        "name": "Message-ID",
+        "value": "<0102019245f3b2a1-inv1042@email.example.net>"
+      },
+      {
+        "name": "Subject",
+        "value": "Invoice INV-1042"
+      },
+      {
+        "name": "To",
+        "value": "asha@example.com"
+      },
+      {
+        "name": "Content-Type",
+        "value": "text/html; charset=UTF-8"
+      },
+      {
+        "name": "Content-Transfer-Encoding",
+        "value": "quoted-printable"
+      }
+    ],
+    "body": {
+      "size": 134,
+      "data": "PGh0bWw-PGJvZHk-PHA-WW91ciBpbnZvaWNlIDxiPklOVi0xMDQyPC9iPiBpcyByZWFkeS48L3A-PHA-PGEgaHJlZj0iaHR0cHM6Ly9iaWxsaW5nLmV4YW1wbGUubmV0L2kvMTA0MiI-VmlldyBpdDwvYT48L3A-PC9ib2R5PjwvaHRtbD4="
+    }
+  },
+  "sizeEstimate": 4096,
+  "historyId": "2817402",
+  "internalDate": "1727774144000"
+}

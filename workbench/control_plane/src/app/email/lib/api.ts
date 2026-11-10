@@ -2,13 +2,33 @@ import {
   Email, EmailAccount,
   AnalyticsOverview, SenderStat, NewsletterStatus, UnsubscribeResult,
   AutomationRule, RuleTestResult, ExecutedRule, AssistantSettings,
+  AssistantSettingsSave,
   RecentTestResult, ColdSender, KnowledgeEntry,
   LearnedPattern, RunMessageResult, LearnedRulePattern, LabelInfo,
   RuleGuidance, MessageTimeline,
   VoiceProfile, VoiceProfilePreview, VoiceProfileBuildStatus,
-  ContactCard, SenderStatus,
+  ContactCard, SenderStatus, RuleCopyResult,
+  OlderMailPreview, RemoveOlderResult,
 } from "./types";
-import { mapMailAppInfo, type MailAppInfo } from "./connect";
+import {
+  mapMailAppInfo,
+  mapProviderAvailability,
+  type ConnectProviderId,
+  type MailAppInfo,
+  type ProviderAvailability,
+} from "./connect";
+import type { ForwardBody } from "./forward";
+import { announceDraftLeft } from "@/lib/draftLeftEvent";
+import { announceRulesChanged } from "./rulesChanged";
+
+/** The answer of `POST /email/forward`. */
+export interface ForwardResult {
+  id: string;
+  ok: boolean;
+  subject: string;
+  attachments: string[];
+  bytes: number;
+}
 
 // No NEXT_PUBLIC_GATEWAY_URL here on purpose: every call from this module goes
 // through the Next BFF at /api/**, which is the only path that carries the
@@ -35,8 +55,17 @@ async function gatewayFetch<T>(
     const body = await res.json().catch(() => ({}));
     const err = new Error(body.detail || `Gateway error ${res.status}`) as Error & {
       status?: number;
+      retryAfter?: number;
+      detail?: unknown;
     };
     err.status = res.status;
+    // The raw detail. An object detail, such as the 409 of a Gmail send
+    // (EM-G3a-f7, `isHtmlUnavailable`), reads "[object Object]" as a message.
+    err.detail = body.detail;
+    // The seconds of `Retry-After`, when the answer sends a number. The
+    // prefetch of the pane waits that long after a 503 (WS-17 EM-S2).
+    const wait = Number(res.headers?.get?.("Retry-After"));
+    if (Number.isFinite(wait) && wait > 0) err.retryAfter = wait;
     throw err;
   }
 
@@ -63,8 +92,14 @@ function mapAccount(raw: Record<string, unknown>): EmailAccount {
     provider: asProvider(raw.provider),
     emailAddress: String(raw.email_address ?? ""),
     label: String(raw.label ?? ""),
-    avatar: (String(raw.email_address ?? "?").charAt(0) || "?").toUpperCase(),
-    color: String(raw.avatar_color ?? "#6366f1"),
+    // EM-T8b. The chip draws these, never `avatar_color` (a hex value).
+    displayLabel: typeof raw.display_label === "string" && raw.display_label
+      ? raw.display_label : undefined,
+    defaultLabel: typeof raw.default_label === "string" && raw.default_label
+      ? raw.default_label : undefined,
+    colorSlot: optionalSlot(raw.color_slot),
+    workDomain: optionalString(raw.work_domain),
+    needsReconnect: raw.needs_reconnect === true,
     unreadCount: Number(raw.unread_count ?? 0),
     syncEnabled: Boolean(raw.sync_enabled ?? true),
     lastSyncedAt: raw.last_synced_at ? String(raw.last_synced_at) : undefined,
@@ -81,7 +116,23 @@ function mapAccount(raw: Record<string, unknown>): EmailAccount {
     importPhase: optionalString(raw.import_phase),
     importCount: optionalCount(raw.import_count),
     importEstimate: optionalCount(raw.import_estimate),
+    // EM-T6c. Null before the first meter run. A limit the gateway does not
+    // send stays absent, and then Email draws no storage UI (EM-T6e).
+    storedBytes: optionalCount(raw.stored_bytes),
+    storageLimitBytes: optionalCount(raw.storage_limit_bytes) ?? undefined,
+    // EM-T8f-1. ISO text with microseconds. The disconnect dialog names the
+    // next default from it (EM-T8f-2).
+    createdAt: optionalString(raw.created_at),
+    // EM-T8g-1. Only an explicit false keeps the mailbox separate. A gateway
+    // before EM-T8g-1 sends no field, and each mailbox stays in All inboxes.
+    inAllInboxes: raw.in_all_inboxes !== false,
   };
+}
+
+/** A slot of 1 to 12, or null when the gateway sent null, or absent. */
+function optionalSlot(v: unknown): number | null | undefined {
+  if (v === null) return null;
+  return typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 12 ? v : undefined;
 }
 
 /** A non-empty string, or null when the gateway sent null, or absent. */
@@ -97,7 +148,7 @@ function optionalCount(v: unknown): number | null | undefined {
 }
 
 /** Map a backend Email message (snake_case) to frontend Email (camelCase). */
-function mapEmail(raw: Record<string, unknown>): Email {
+export function mapEmail(raw: Record<string, unknown>): Email {
   const fromRaw = (raw.from_address ?? raw.from ?? {}) as Record<string, unknown>;
   return {
     id: String(raw.id ?? ""),
@@ -121,6 +172,9 @@ function mapEmail(raw: Record<string, unknown>): Email {
     subject: String(raw.subject ?? ""),
     bodyText: String(raw.body_text ?? raw.bodyText ?? ""),
     bodyHtml: (raw.body_html as string) ?? (raw.bodyHtml as string) ?? undefined,
+    // WS-17 EM-S2. Only an explicit true. A gateway with the flag off, or
+    // before EM-S1, sends false or nothing, and the pane behaves as before.
+    htmlRemote: raw.html_remote === true,
     bodyTruncated: Boolean(raw.body_truncated ?? raw.bodyTruncated ?? false),
     snippet: String(raw.snippet ?? ""),
     hasAttachments: Boolean(raw.has_attachments ?? raw.hasAttachments ?? false),
@@ -133,6 +187,7 @@ function mapEmail(raw: Record<string, unknown>): Email {
         downloadUrl: (a.download_url as string) ?? (a.downloadUrl as string) ?? undefined,
       })
     ),
+    attachmentsStatus: raw.attachments_status === "failed" ? "failed" : "ok",
     isRead: Boolean(raw.is_read ?? raw.isRead ?? false),
     isStarred: Boolean(raw.is_starred ?? raw.isStarred ?? false),
     isFlagged: Boolean(raw.is_flagged ?? raw.isFlagged ?? false),
@@ -154,7 +209,15 @@ function mapEmail(raw: Record<string, unknown>): Email {
     // Present only on /email/search results.
     rank: raw.rank != null ? Number(raw.rank) : undefined,
     highlight: raw.highlight != null ? String(raw.highlight) : undefined,
+    // EM-T8g-3. A gateway before EM-T8g-3 sends no field, and the row then
+    // names no other mailbox.
+    alsoIn: idList(raw.also_in),
   };
+}
+
+/** The non-empty strings of a list, or an empty list for any other value. */
+function idList(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && x !== "") : [];
 }
 
 // ── Email Accounts ───────────────────────────────────────────────────────
@@ -462,7 +525,9 @@ export async function listEmailAccounts(): Promise<EmailAccount[]> {
 }
 
 export interface CreateEmailAccountParams {
-  provider: "imap" | "gmail" | "microsoft";
+  // IMAP only: the gateway refuses gmail and microsoft here with a 403, and
+  // an OAuth mailbox connects through /email/oauth (EM-G7 review round 1).
+  provider: "imap";
   emailAddress: string;
   label?: string;
   credentials: Record<string, unknown>;
@@ -485,13 +550,34 @@ export async function createEmailAccount(
 }
 
 /**
- * The public facts of the Microsoft mail app, for the admin-consent link
- * (EM-T3b). `null` when the deployment has no app or the read fails.
+ * The public facts of a mail app (EM-T3b, EM-G8 item 6). Microsoft builds the
+ * admin-consent link from them, and Google shows the client ID to a
+ * Workspace admin. `null` when the deployment has no app or the read fails.
+ * While `EMAIL_GMAIL_CONNECT` is off, Gmail answers 503, so `null` (D-EM-36).
  */
-export async function getMailAppInfo(): Promise<MailAppInfo | null> {
+export async function getMailAppInfo(
+  provider: ConnectProviderId = "microsoft",
+): Promise<MailAppInfo | null> {
   try {
-    const raw = await gatewayFetch<Record<string, unknown>>("/email/oauth/microsoft/app");
+    const raw = await gatewayFetch<Record<string, unknown>>(`/email/oauth/${provider}/app`);
     return mapMailAppInfo(raw);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The capability read of the connect flow (WS-17 EM-G8, D-EM-35, D-EM-36).
+ *
+ * `GET /email/oauth/providers` answers `{"microsoft": bool, "gmail": bool}`
+ * (EM-G7 item 8). The email catch-all of the BFF proxies it. A failed read
+ * is `null`: a network error, a 404 from a gateway without EM-G7, a 403, or
+ * an answer of another shape. `liveProviders(null)` keeps Microsoft live and
+ * Gmail "Coming soon", so the read fails closed for Gmail.
+ */
+export async function getConnectProviders(): Promise<ProviderAvailability | null> {
+  try {
+    return mapProviderAvailability(await gatewayFetch<unknown>("/email/oauth/providers"));
   } catch {
     return null;
   }
@@ -510,22 +596,114 @@ export async function setDefaultEmailAccount(id: string): Promise<EmailAccount> 
   return mapAccount(raw);
 }
 
+/**
+ * For each address, the mailbox of the member that last wrote to it (EM-T8c).
+ * The From row warns "You usually write to this person from <label>". A
+ * failure answers {}, because a warning never stops the composer.
+ */
+export async function getSentFrom(emails: string[]): Promise<Record<string, string>> {
+  const wanted = Array.from(
+    new Set(emails.map((e) => e.trim().toLowerCase()).filter((e) => e.includes("@"))),
+  ).slice(0, 20);
+  if (wanted.length === 0) return {};
+  try {
+    const raw = await gatewayFetch<Record<string, unknown>>(
+      `/email/contacts/sent-from?${new URLSearchParams({ emails: wanted.join(",") }).toString()}`,
+    );
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(raw || {})) if (typeof v === "string") out[k] = v;
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 export async function updateEmailAccount(
   id: string,
-  updates: Partial<Pick<EmailAccount, "label" | "syncEnabled" | "onboardingDone">>
+  updates: Partial<Pick<EmailAccount, "label" | "syncEnabled" | "onboardingDone" | "colorSlot" | "inAllInboxes">>
 ): Promise<EmailAccount> {
   // Map camelCase → snake_case for the backend PATCH
   const body: Record<string, unknown> = {};
   if (updates.label !== undefined) body.label = updates.label;
+  // EM-T8b: the slot of the mailbox chip, 1 to 12. A blank label above goes
+  // back to the default label of the gateway.
+  if (updates.colorSlot !== undefined && updates.colorSlot !== null) body.color_slot = updates.colorSlot;
   if (updates.syncEnabled !== undefined) body.sync_enabled = updates.syncEnabled;
   // EM-T6d item 11: true closes the guided setup for good (EM-T6a stores
   // `onboarding_done_at`). The handler keeps its owner predicate.
   if (updates.onboardingDone !== undefined) body.onboarding_done = updates.onboardingDone;
+  // EM-T8g-2: false keeps the mailbox separate, and true puts it back in All
+  // inboxes (D-EM-28). The gateway takes a strict boolean.
+  if (updates.inAllInboxes !== undefined) body.in_all_inboxes = updates.inAllInboxes;
   const raw = await gatewayFetch<Record<string, unknown>>(
     `/email/accounts/${id}`,
     { method: "PATCH", body: JSON.stringify(body) }
   );
   return mapAccount(raw);
+}
+
+/**
+ * "Keep separate" (false) or "Show in All inboxes" (true), through
+ * `PATCH /email/accounts/{id}` (EM-T8g-2, D-EM-28). The store calls this, so
+ * no file outside `api.ts`, `mailbox.ts` and `types.ts` names the flag.
+ */
+export function setMailboxPooled(id: string, pooled: boolean): Promise<EmailAccount> {
+  return updateEmailAccount(id, { inAllInboxes: pooled });
+}
+
+// ── Remove older mail from Metorite (EM-T6e, spec §10.4.7) ───────────────
+
+/**
+ * A count that the answer must carry: a finite number of 0 or more. Any
+ * other value throws (EM-T6e review round 1). The proxy sends `{}` for a 200
+ * body that it cannot read, and a missing count must never read as 0.
+ * A thrown preview is a failed count. A thrown removal has no `status`, so
+ * the dialog starts the D1 follow-up, and that finds the true count.
+ */
+function requiredCount(raw: Record<string, unknown> | undefined, field: string): number {
+  const v = raw?.[field];
+  if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
+    throw new Error(`The answer has no count in "${field}".`);
+  }
+  return v;
+}
+
+/**
+ * The count and the bytes of the mail of one mailbox received before
+ * `before` (EM-T6c). It writes nothing. `before` is an ISO instant.
+ *
+ * ⚠️ The value is encoded. The gateway answers `before` as Python ISO text,
+ * `2026-09-04T18:30:00+00:00`, and the D1 follow-up sends that text back.
+ * A bare `+` in a query is a space, so the gateway would answer 400.
+ */
+export async function previewOlderMail(accountId: string, before: string): Promise<OlderMailPreview> {
+  const raw = await gatewayFetch<Record<string, unknown>>(
+    `/email/accounts/${encodeURIComponent(accountId)}/storage/older?before=${encodeURIComponent(before)}`,
+  );
+  return {
+    before: String(raw?.before ?? before),
+    messages: requiredCount(raw, "messages"),
+    bytes: requiredCount(raw, "bytes"),
+  };
+}
+
+/**
+ * Remove the mail of one mailbox received before `before`, from Metorite
+ * only (EM-T6c, D-EM-14). The mailbox at the provider does not change. A
+ * thrown error keeps the `status` of `gatewayFetch`, so the dialog can tell a
+ * 409 from a proxy timeout (D1).
+ */
+export async function removeOlderMail(accountId: string, before: string): Promise<RemoveOlderResult> {
+  const raw = await gatewayFetch<Record<string, unknown>>(
+    `/email/accounts/${encodeURIComponent(accountId)}/storage/remove-older`,
+    { method: "POST", body: JSON.stringify({ before }) },
+  );
+  return {
+    before: String(raw?.before ?? before),
+    removed: requiredCount(raw, "removed"),
+    storedBytes: optionalCount(raw?.stored_bytes) ?? null,
+    storageLimitBytes: requiredCount(raw, "storage_limit_bytes"),
+  };
 }
 
 // ── Folders ──────────────────────────────────────────────────────────────
@@ -803,6 +981,54 @@ export async function fetchFullBody(id: string): Promise<FullBodyResponse> {
   return gatewayFetch<FullBodyResponse>(`/email/messages/${id}/full-body`);
 }
 
+// ── The HTML that the provider holds (WS-17 EM-S2, §14.4.2) ───────────────
+
+/** Where the HTML came from, as the gateway says it. */
+export type MessageHtmlSource = "stored" | "cache" | "provider" | "none";
+
+export interface MessageHtml {
+  messageId: string;
+  /** The raw HTML. Null for a plain-text message (`source: "none"`). */
+  bodyHtml: string | null;
+  source: MessageHtmlSource;
+}
+
+/**
+ * The cache key of the HTML of one message in `dataCache`. The open of the
+ * pane and the prefetch of the list both use it, so a row that the prefetch
+ * holds paints its HTML at once. The key has no `prefetch` part on purpose:
+ * one message has one HTML.
+ */
+export function messageHtmlKey(id: string): string {
+  return `/email/messages/${encodeURIComponent(id)}/html`;
+}
+
+/**
+ * The HTML of one message, from `GET /email/messages/{id}/html` (EM-S1). The
+ * ONE fetch of that route in the app. The pane calls it with no option, and
+ * the prefetch of the list calls it with `prefetch: true`, which the gateway
+ * may refuse with a 503 and `Retry-After` under load. An error carries
+ * `status`, and `retryAfter` in seconds when the gateway sent one. The caller
+ * renders the HTML through `MessageContent`, never by itself.
+ */
+export async function fetchMessageHtml(
+  id: string,
+  opts: { prefetch?: boolean } = {}
+): Promise<MessageHtml> {
+  const path = messageHtmlKey(id) + (opts.prefetch ? "?prefetch=1" : "");
+  const raw = await gatewayFetch<Record<string, unknown>>(path);
+  const html = typeof raw?.body_html === "string" && raw.body_html ? raw.body_html : null;
+  const source = raw?.source;
+  return {
+    messageId: String(raw?.message_id ?? id),
+    bodyHtml: html,
+    source:
+      source === "stored" || source === "cache" || source === "provider"
+        ? source
+        : "none",
+  };
+}
+
 export async function updateEmail(
   id: string,
   updates: Partial<Pick<Email, "isRead" | "isStarred" | "isFlagged" | "folder" | "labels">>
@@ -860,6 +1086,9 @@ export async function updateEmailLabels(
 
 export async function deleteEmail(id: string): Promise<void> {
   await gatewayFetch(`/email/messages/${id}`, { method: "DELETE" });
+  // The message can be the draft of a chat reply card. The card reads its
+  // state again at once (owner report, 2026-11-03).
+  announceDraftLeft(id);
 }
 
 // ── Attachments ────────────────────────────────────────────────────────────
@@ -1007,6 +1236,24 @@ export interface SaveDraftParams {
    *  so the provider adds each attachment exactly once. */
   attachments?: SendAttachment[];
   artifacts?: ArtifactAttachmentRef[];
+  /** WS-17 EM-G3a-f7 (D-G3a-f7-2): the text is as the Gmail draft opened, so
+   *  the gateway keeps the HTML of the draft. Only `draftSavePayload` in
+   *  `./draftSave` sets it, and only for a Gmail draft. */
+  keepHtml?: boolean;
+}
+
+/** The `html` answer of a Gmail save (EM-G3a-f7). `kept`: the save sent the
+ *  HTML of the draft. `none`: the draft holds no HTML, or the save did not
+ *  ask to keep it. `lost`: the read of the HTML failed, so the save sent the
+ *  text only. An Outlook save answers no `html`. */
+export type DraftHtmlState = "kept" | "lost" | "none";
+
+/** The saved draft, and the `html` answer of a Gmail save. Not the
+ *  `SavedDraft` of `./draftAutosave`, which records one save of a composer. */
+export type DraftSaveResult = Email & { html?: DraftHtmlState };
+
+function asHtmlState(v: unknown): DraftHtmlState | undefined {
+  return v === "kept" || v === "lost" || v === "none" ? v : undefined;
 }
 
 /**
@@ -1014,7 +1261,7 @@ export interface SaveDraftParams {
  * sync write path behind auto-save). Returns the persisted message so the caller
  * can show it in Drafts / in-thread and keep editing the same draft.
  */
-export async function saveDraft(params: SaveDraftParams): Promise<Email> {
+export async function saveDraft(params: SaveDraftParams): Promise<DraftSaveResult> {
   const raw = await gatewayFetch<Record<string, unknown>>("/email/drafts", {
     method: "PUT",
     body: JSON.stringify({
@@ -1028,27 +1275,58 @@ export async function saveDraft(params: SaveDraftParams): Promise<Email> {
       body: params.body ?? "",
       attachments: params.attachments ?? [],
       artifacts: params.artifacts ?? [],
+      // Only a Gmail save that keeps the HTML sends the key, so each other
+      // save sends the body of main (D-G3a-f7-5).
+      ...(params.keepHtml ? { keep_html: true } : {}),
     }),
   });
-  return mapEmail(raw);
+  // `mapEmail` drops a field that it does not know, so `html` is read here.
+  const html = asHtmlState(raw?.html);
+  return html ? { ...mapEmail(raw), html } : mapEmail(raw);
 }
 
-/** Send an existing draft natively (Drafts → Sent, no duplicate). */
+/**
+ * Send an existing draft natively (Drafts → Sent, no duplicate).
+ *
+ * `allowTextOnly` (EM-G3a-f7, D-G3a-f7-11a): `false` asks the gateway to stop
+ * a signed Gmail send whose HTML it cannot read, with a 409. `true` sends the
+ * text only. With no value the body is as on main.
+ */
 export async function sendDraft(
   accountId: string,
   draftId: string,
+  allowTextOnly?: boolean,
 ): Promise<{ sent: boolean }> {
-  return gatewayFetch("/email/drafts/send", {
+  const out = await gatewayFetch<{ sent: boolean }>("/email/drafts/send", {
     method: "POST",
-    body: JSON.stringify({ account_id: accountId, draft_id: draftId }),
+    body: JSON.stringify({
+      account_id: accountId,
+      draft_id: draftId,
+      ...(allowTextOnly === undefined ? {} : { allow_text_only: allowTextOnly }),
+    }),
+  });
+  // A chat reply card that wrote this draft must stop its Send now, or the
+  // reply goes out twice (owner report, 2026-11-03).
+  announceDraftLeft(draftId);
+  return out;
+}
+
+/**
+ * Forward one email with its original files (`POST /email/forward`). The
+ * body comes from `forwardRequest` in `./forward`. A refusal throws the
+ * gateway's status and detail, and `forwardFailure` reads them.
+ */
+export async function forwardEmail(body: ForwardBody): Promise<ForwardResult> {
+  return gatewayFetch<ForwardResult>("/email/forward", {
+    method: "POST",
+    body: JSON.stringify(body),
   });
 }
 
-// NOTE: The email AI chat now runs through the shared chat pipeline
-// (@/components/AgentChat → /api/agent/chat → the `email-assistant` agent), so
-// the old bespoke streamAIChat / triggerQuickAction clients (which hit
-// /api/email/ai/chat and /email/ai/quick-action) were removed. The backend
-// endpoints still exist for any external callers.
+// NOTE: The email AI chat runs through the shared chat pipeline
+// (@/components/AgentChat → /api/agent/chat → the `email-assistant` agent).
+// The old bespoke chat and quick-action clients were removed, and WS-17
+// EM-G11f3 deleted their two gateway routes.
 
 // ── OAuth ────────────────────────────────────────────────────────────────
 
@@ -1265,24 +1543,29 @@ export async function listRules(accountId: string): Promise<AutomationRule[]> {
 }
 
 export async function createRule(rule: AutomationRule): Promise<AutomationRule> {
-  return gatewayFetch<AutomationRule>("/email/rules", {
+  const created = await gatewayFetch<AutomationRule>("/email/rules", {
     method: "POST",
     body: JSON.stringify(rule),
   });
+  announceRulesChanged();
+  return created;
 }
 
 export async function updateRule(
   id: string,
   rule: AutomationRule
 ): Promise<AutomationRule> {
-  return gatewayFetch<AutomationRule>(`/email/rules/${id}`, {
+  const updated = await gatewayFetch<AutomationRule>(`/email/rules/${id}`, {
     method: "PATCH",
     body: JSON.stringify(rule),
   });
+  announceRulesChanged();
+  return updated;
 }
 
 export async function deleteRule(id: string): Promise<void> {
   await gatewayFetch(`/email/rules/${id}`, { method: "DELETE" });
+  announceRulesChanged();
 }
 
 /** Everything ELSE that acts on the mailbox, for the Rules screen's
@@ -1356,19 +1639,70 @@ export async function generateRules(
   accountId: string,
   prompt: string,
 ): Promise<{ created: AutomationRule[]; error?: string }> {
-  return gatewayFetch("/email/rules/generate", {
+  const res = await gatewayFetch<{ created: AutomationRule[]; error?: string }>("/email/rules/generate", {
     method: "POST",
     body: JSON.stringify({ account_id: accountId, prompt }),
   });
+  // The route saves the rules it makes (task 2451).
+  announceRulesChanged();
+  return res;
 }
 
 export async function installPresetRules(
   accountId: string
 ): Promise<{ installed: string[]; total_presets: number }> {
-  return gatewayFetch(
+  const res = await gatewayFetch<{ installed: string[]; total_presets: number }>(
     `/email/rules/install-presets?account_id=${encodeURIComponent(accountId)}`,
     { method: "POST" }
   );
+  announceRulesChanged();
+  return res;
+}
+
+/**
+ * Copy the enabled rules of one mailbox of the member to another (EM-T8f-1,
+ * D-EM-24). The copy is one transaction on the gateway. A second call copies
+ * each rule again as "(copy)", so the caller guards it (`ruleCopier` in
+ * `lib/mailboxSettings.ts`).
+ */
+export async function copyRules(
+  fromAccountId: string,
+  toAccountId: string,
+  skipNames: ReadonlyArray<string> = [],
+): Promise<RuleCopyResult> {
+  const raw = await gatewayFetch<Record<string, unknown>>("/email/rules/copy", {
+    method: "POST",
+    body: JSON.stringify({
+      from_account_id: fromAccountId,
+      to_account_id: toAccountId,
+      // Rules the target holds already. The route leaves them out.
+      ...(skipNames.length > 0 ? { skip_names: skipNames.slice(0, 200) } : {}),
+    }),
+  });
+  announceRulesChanged();
+  return mapRuleCopyResult(raw ?? {});
+}
+
+/** The answer of the copy, snake case to camel case. A field that is not a
+ *  list gives an empty list, and an entry with no name is dropped. */
+function mapRuleCopyResult(raw: Record<string, unknown>): RuleCopyResult {
+  const list = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+  const text = (v: unknown): string => (typeof v === "string" ? v : "");
+  const entries = (v: unknown) =>
+    list(v).filter((e): e is Record<string, unknown> => !!e && typeof e === "object");
+  return {
+    copied: list(raw.copied).map(text).filter(Boolean),
+    renamed: entries(raw.renamed)
+      .map((e) => ({ name: text(e.name), copiedAs: text(e.copied_as) }))
+      .filter((e) => e.name && e.copiedAs),
+    leftOut: entries(raw.left_out)
+      .map((e) => ({ name: text(e.name), reason: text(e.reason) }))
+      .filter((e) => e.name),
+    // EM-S10 (D-EM-60): each name that the provider makes on first use.
+    willCreate: entries(raw.will_create)
+      .map((e) => ({ rule: text(e.rule), action: text(e.action), name: text(e.name) }))
+      .filter((e) => e.name),
+  };
 }
 
 /**
@@ -1379,10 +1713,12 @@ export async function installPresetRules(
 export async function resetRules(
   accountId: string
 ): Promise<{ installed: string[]; total_presets: number; reset: boolean }> {
-  return gatewayFetch(
+  const res = await gatewayFetch<{ installed: string[]; total_presets: number; reset: boolean }>(
     `/email/rules/reset?account_id=${encodeURIComponent(accountId)}`,
     { method: "POST" }
   );
+  announceRulesChanged();
+  return res;
 }
 
 export async function undoExecution(
@@ -1800,13 +2136,97 @@ export async function getAssistantSettings(
   );
 }
 
+/** The settings PUT. Only the member's own Auto-run act sends the marker
+ *  `auto_run_choice` (task 2305, `autoRunChoiceBody`). */
 export async function saveAssistantSettings(
-  settings: AssistantSettings
+  settings: AssistantSettingsSave
 ): Promise<AssistantSettings> {
   return gatewayFetch<AssistantSettings>("/email/assistant/settings", {
     method: "PUT",
     body: JSON.stringify(settings),
   });
+}
+
+/** The answer of `POST /email/signature/images` (WS-17 SG-1). `url` is the
+ *  public https address of the hosted image, and it never changes. */
+export interface SignatureImage {
+  id: string;
+  url: string;
+  kind: "logo" | "photo";
+  content_type: string;
+  width: number;
+  height: number;
+  dark_share: number;
+  clear_share: number;
+}
+
+/** Upload one signature image for a mailbox. The server re-encodes it and
+ *  hosts it, so the signature carries an https address and never a `data:`
+ *  URI (D-EM-67). A refusal throws the server's sentence. The body is
+ *  multipart, so this sets no Content-Type: `fetch` adds the boundary. */
+export async function uploadSignatureImage(
+  accountId: string,
+  file: File,
+  kind: "logo" | "photo" = "logo",
+): Promise<SignatureImage> {
+  const form = new FormData();
+  form.append("account_id", accountId);
+  form.append("kind", kind);
+  form.append("file", file);
+  const res = await fetch("/api/email/signature/images", {
+    method: "POST",
+    body: form,
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const detail = typeof body.detail === "string" ? body.detail : "";
+    throw new Error(detail || body.error || `The upload failed (${res.status}).`);
+  }
+  return body as SignatureImage;
+}
+
+/** One "always copy" rule of a mailbox (§21.16): a domain or an address,
+ *  and the colleagues that go, ticked, on each matching reply or new mail. */
+export interface AlwaysCopyRule {
+  match: string;
+  cc: string[];
+}
+
+/** The rules of a mailbox and their version. The PUT sends the version
+ *  back, and the server refuses it when the list changed in between. */
+export interface AlwaysCopyList {
+  rules: AlwaysCopyRule[];
+  version: string;
+}
+
+function alwaysCopyList(res: { rules?: unknown; version?: unknown } | undefined): AlwaysCopyList {
+  if (!res || !Array.isArray(res.rules) || typeof res.version !== "string") {
+    throw new Error("The always-copy rules could not be read.");
+  }
+  return { rules: res.rules as AlwaysCopyRule[], version: res.version };
+}
+
+export async function getAlwaysCopy(accountId: string): Promise<AlwaysCopyList> {
+  return alwaysCopyList(
+    await gatewayFetch<{ rules?: unknown; version?: unknown }>(
+      `/email/assistant/always-copy?account_id=${encodeURIComponent(accountId)}`
+    )
+  );
+}
+
+/** Save the WHOLE list. The server takes only a colleague or a person you
+ *  wrote to before, and its refusal names the person. */
+export async function saveAlwaysCopy(
+  accountId: string,
+  rules: AlwaysCopyRule[],
+  expected: string
+): Promise<AlwaysCopyList> {
+  return alwaysCopyList(
+    await gatewayFetch<{ rules?: unknown; version?: unknown }>("/email/assistant/always-copy", {
+      method: "PUT",
+      body: JSON.stringify({ account_id: accountId, rules, expected }),
+    })
+  );
 }
 
 export async function generateWritingStyle(
@@ -2162,23 +2582,37 @@ export interface ComposeAssistArgs {
   mode?: "new" | "reply" | "forward";
   messageId?: string;
   to?: string[];
+  /** A forward: the people who are copied. A reply and a new mail send none. */
+  cc?: string[];
   subject?: string;
 }
 
+/**
+ * The JSON of one compose-assist request, for the stream and the plain route.
+ * `cc` rides only when the caller gives it (a forward), so a reply and a new
+ * mail send the same body as before (task 1817).
+ */
+export function composeAssistBody(args: ComposeAssistArgs): string {
+  return JSON.stringify({
+    account_id: args.accountId,
+    body: args.body ?? "",
+    instruction: args.instruction ?? "",
+    mode: args.mode ?? "new",
+    message_id: args.messageId,
+    to: args.to,
+    cc: args.cc,
+    subject: args.subject ?? "",
+  });
+}
+
 export async function composeAssist(
-  args: ComposeAssistArgs
+  args: ComposeAssistArgs,
+  signal?: AbortSignal
 ): Promise<{ draft: string; skipped?: string }> {
   return gatewayFetch("/email/compose-assist", {
     method: "POST",
-    body: JSON.stringify({
-      account_id: args.accountId,
-      body: args.body ?? "",
-      instruction: args.instruction ?? "",
-      mode: args.mode ?? "new",
-      message_id: args.messageId,
-      to: args.to,
-      subject: args.subject ?? "",
-    }),
+    signal,
+    body: composeAssistBody(args),
   });
 }
 
@@ -2205,6 +2639,45 @@ export interface ComposeAssistStreamHandlers {
   /** Live model output. kind "content" is draft text (append to the body);
    *  "reasoning" is the model thinking out loud (show, don't insert). */
   onDelta?: (kind: "reasoning" | "content", text: string) => void;
+  /** The server stage now running (`{"type":"status","stage":...}`). The
+   *  route sends it before it opens a session (EM-T17 §17.3.7). */
+  onStatus?: (stage: string, detail?: string) => void;
+  /** Stop and the client bound abort through this signal. An abort never
+   *  falls back to the JSON route (EM-T17 A5). */
+  signal?: AbortSignal;
+}
+
+/** The typed reasons of a server `error` event (EM-T17 §17.3.7). Each one
+ *  means the model or the server ran out of time. */
+export const DRAFT_ERROR_REASONS = [
+  "model_slow",
+  "model_stalled",
+  "model_timeout",
+  "server_timeout",
+] as const;
+export type DraftErrorReason = (typeof DRAFT_ERROR_REASONS)[number];
+
+/** A stream that ended with an `error` event. `reason` is set when the
+ *  server sent one of {@link DRAFT_ERROR_REASONS}. */
+export class DraftStreamError extends Error {
+  readonly reason: DraftErrorReason | null;
+  constructor(message: string, reason: DraftErrorReason | null) {
+    super(message);
+    this.name = "DraftStreamError";
+    this.reason = reason;
+  }
+}
+
+function draftErrorReason(value: unknown): DraftErrorReason | null {
+  return (DRAFT_ERROR_REASONS as readonly unknown[]).includes(value)
+    ? (value as DraftErrorReason)
+    : null;
+}
+
+/** True when the request stopped because its signal aborted. A browser fetch
+ *  rejects with `signal.reason`, so the name alone does not tell. */
+function wasAborted(err: unknown, signal?: AbortSignal): boolean {
+  return Boolean(signal?.aborted) || (err as Error | null)?.name === "AbortError";
 }
 
 /**
@@ -2212,52 +2685,54 @@ export interface ComposeAssistStreamHandlers {
  * draft tokens arrive live over SSE so the composer can narrate what the
  * backend is doing instead of holding a bare spinner. Resolves with the FINAL
  * cleaned draft (always prefer it over concatenated deltas). Falls back to the
- * non-streaming endpoint transparently if the stream can't be opened.
+ * non-streaming endpoint if the stream can't be opened — but never after an
+ * abort, which would start a second draft that nobody waits for (EM-T17 A5).
+ *
+ * An SSE comment line (`: keepalive`, sent while the server is quiet) changes
+ * nothing. An `error` event rejects with a {@link DraftStreamError}.
  */
 export async function composeAssistStream(
   args: ComposeAssistArgs,
   handlers: ComposeAssistStreamHandlers = {}
 ): Promise<{ draft: string; skipped?: string }> {
+  const { signal } = handlers;
   let res: Response;
   try {
     res = await fetch("/api/email/compose-assist/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        account_id: args.accountId,
-        body: args.body ?? "",
-        instruction: args.instruction ?? "",
-        mode: args.mode ?? "new",
-        message_id: args.messageId,
-        to: args.to,
-        subject: args.subject ?? "",
-      }),
+      signal,
+      body: composeAssistBody(args),
     });
     if (!res.ok || !res.body) throw new Error(`stream ${res.status}`);
-  } catch {
+  } catch (err) {
+    if (wasAborted(err, signal)) throw err;
     // Older gateway / proxy without the stream route — degrade silently.
-    return composeAssist(args);
+    return composeAssist(args, signal);
   }
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  let done: { draft: string; skipped?: string } | null = null;
-  let streamError: string | null = null;
+  let streamError: DraftStreamError | null = null;
   for (;;) {
     const { value, done: eof } = await reader.read();
     if (eof) break;
     buffer += decoder.decode(value, { stream: true });
     const lines = buffer.split("\n");
     buffer = lines.pop() ?? ""; // keep the trailing partial line
-    for (const line of lines) {
-      if (!line.startsWith("data: ")) continue;
+    for (const raw of lines) {
+      const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+      // A line that starts with ":" is an SSE comment: the keepalive.
+      if (line.startsWith(":") || !line.startsWith("data: ")) continue;
       let evt: ComposeActivityEvent & {
         type?: string;
         text?: string;
         draft?: string;
         skipped?: string;
         error?: string;
+        reason?: string;
+        stage?: string;
       };
       try {
         evt = JSON.parse(line.slice(6));
@@ -2267,20 +2742,27 @@ export async function composeAssistStream(
       if (evt.type === "activity") {
         const { type: _t, text: _x, draft: _d, ...event } = evt;
         handlers.onActivity?.(event);
+      } else if (evt.type === "status" && evt.stage) {
+        handlers.onStatus?.(evt.stage, evt.detail);
       } else if (evt.type === "delta" && evt.text) {
         handlers.onDelta?.(
           evt.kind === "reasoning" ? "reasoning" : "content",
           evt.text
         );
       } else if (evt.type === "done") {
-        done = { draft: evt.draft ?? "", skipped: evt.skipped };
+        // Return at once. A Stop or a bound that lands before EOF must not
+        // throw away a draft that already arrived.
+        reader.cancel().catch(() => undefined);
+        return { draft: evt.draft ?? "", skipped: evt.skipped };
       } else if (evt.type === "error") {
-        streamError = evt.error || "draft failed";
+        streamError = new DraftStreamError(
+          evt.error || "draft failed",
+          draftErrorReason(evt.reason) ?? draftErrorReason(evt.error)
+        );
       }
     }
   }
-  if (done) return done;
-  throw new Error(streamError ?? "draft stream ended without a result");
+  throw streamError ?? new DraftStreamError("draft stream ended without a result", null);
 }
 
 // ── Digest ──────────────────────────────────────────────────────────────────

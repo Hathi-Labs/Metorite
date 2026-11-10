@@ -1,13 +1,17 @@
 "use client";
 
+import { useCloseOnBarTap } from "@/lib/phoneBarTap";
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
 import { useState, useEffect, useRef } from "react";
 import { useEmailStore } from "../lib/emailStore";
 import {
-  fileToSendAttachment,
+  fileToSendAttachment, getSentFrom,
   type SendAttachment, type ArtifactAttachmentRef,
 } from "../lib/api";
+import { fromWarning, sendBlocked, swapSignature } from "../lib/mailbox";
+import { FromRow } from "./FromRow";
+import { mailboxLabel } from "./MailboxChip";
 import { useDraftSession } from "../lib/useDraftSession";
 import { DraftAssistant } from "./DraftAssistant";
 import { splitQuotedText } from "../lib/quoting";
@@ -15,12 +19,25 @@ import { appendSignature, getSignatureText, stripSignature } from "../lib/signat
 import { ArtifactAttachPicker } from "./ArtifactAttachPicker";
 import { RecipientInput } from "./RecipientInput";
 import { ComposerQuote, AiButton } from "./ComposerAI";
+import {
+  FILES_TOO_LARGE, autosaveWait, createAutosave, draftsToDiscard, failedSaveStatus,
+  draftToUpdate, holdPick, pickProblem, recordSave, saveFailureText, sendFailureText,
+  supersededDraft,
+  type DraftHandOver, type DraftStatus, type SavedDraft,
+} from "../lib/draftAutosave";
 
 interface ComposePanelProps {
   open: boolean;
   onClose: () => void;
+  /** The mailbox the composer opens on: the mailbox of the mail a reply
+   *  answers, else the selected one. The From row can change it (EM-T8c). */
   accountId: string;
+  /** The From that the inline reply chose before a pop-out. Absent, the
+   *  composer sends from `accountId`. */
+  defaultFromId?: string;
   onSend: (params: {
+    /** The mailbox that sends: the choice of the From row. */
+    accountId: string;
     to: string[];
     cc?: string[];
     bcc?: string[];
@@ -36,6 +53,16 @@ interface ComposePanelProps {
   defaultCc?: string;
   /** Seeds the editable body (e.g. text carried over from a popped-out reply). */
   replyToBody?: string;
+  /** A pop-out hands over an edit that the inline reply did not save. The
+   *  composer opens dirty, so its own save keeps it (EM-G3c-2 review round 1). */
+  unsavedEdit?: boolean;
+  /** Fields the command bar's AI filled. Compose names them (§6.4 rule 2). */
+  aiFilled?: string[];
+  /** The draft that the inline reply saved, in the mailbox of `defaultFromId`
+   *  or `accountId`, when the drain of the reply settles. The composer updates
+   *  it, and makes no second draft (EM-G3c-2 review round 2). The pop-out
+   *  opens the composer at once, before the drain (EM-G3c-3 item 6). */
+  handOver?: Promise<DraftHandOver>;
   /** The quoted trailing chain — shown collapsed below the box, reattached on
    *  send, and kept OUT of the editable body so AI/edits never touch it. */
   quote?: string;
@@ -47,22 +74,30 @@ interface ComposePanelProps {
    *  user doesn't silently lose what they'd attached before undoing. */
   initialAttachments?: SendAttachment[];
   initialArtifacts?: ArtifactAttachmentRef[];
+  /** Why the last send of this message failed. It shows next to Send when
+   *  the composer opens again (UXD-2). */
+  initialSendError?: string;
 }
 
 export function ComposePanel({
   open,
   onClose,
   accountId,
+  defaultFromId,
   onSend,
   defaultTo = "",
   defaultSubject = "",
   defaultCc = "",
   replyToBody,
+  unsavedEdit,
+  aiFilled,
+  handOver,
   quote,
   replyToMessageId,
   messageId,
   initialAttachments,
   initialArtifacts,
+  initialSendError,
 }: ComposePanelProps) {
   const [to, setTo] = useState(defaultTo);
   const [cc, setCc] = useState(defaultCc);
@@ -74,12 +109,52 @@ export function ComposePanel({
   // the live backend steps and the per-round revision history.
   const [aiOpen, setAiOpen] = useState(false);
   const [aiInstruction, setAiInstruction] = useState("");
-  const { saveDraft, sendDraft, deleteEmail } = useEmailStore();
+  const { saveDraft, sendDraft, deleteEmail, accounts, authErrors, setComposeDraftId } = useEmailStore();
+  // ── The sending mailbox (EM-T8c, D-EM-20) ──
+  // The pick of the From row holds only while the composer opens on the same
+  // mailbox, so a new compose session starts on its own mailbox.
+  const [fromPick, setFromPick] = useState<{ base: string; id: string } | null>(null);
+  const fromId = fromPick && fromPick.base === accountId ? fromPick.id : accountId;
+  // A reply answers a mail of `accountId`. From any other mailbox it goes as
+  // new mail: the provider cannot answer a mail of another mailbox, and the
+  // gateway refuses it (MB-6).
+  const conversationId = replyToMessageId ? accountId : null;
+  const sameConversation = fromId === accountId;
+  const replyTarget = sameConversation ? replyToMessageId : undefined;
+  const replyContextId = sameConversation ? messageId : undefined;
+  // Drafts of an old mailbox, deleted once the new mailbox has its own copy.
+  const staleDraftsRef = useRef<string[]>([]);
+  // The From of NOW, for a save that started before a change of From.
+  const liveFromRef = useRef(fromId);
+  useEffect(() => {
+    liveFromRef.current = fromId;
+  }, [fromId]);
+  /** Delete each draft of an old mailbox. Call it only once the new mailbox
+   *  holds the message, or the member could lose it. The list empties in
+   *  place, so a save that holds the same list cannot delete a draft twice. */
+  const dropDrafts = (list: string[]) => {
+    for (const id of list.splice(0)) void deleteEmail(id);
+  };
+  const dropStaleDrafts = () => dropDrafts(staleDraftsRef.current);
+  // For each recipient, the mailbox that wrote to them last.
+  const [usualSender, setUsualSender] = useState<Record<string, string>>({});
   // Gmail-style auto-save: the composed message persists as a Drafts row as you
   // type (draftIdRef holds the local id so repeated saves update it in place).
   const draftIdRef = useRef<string | null>(null);
   const dirty = useRef(false);
-  const [draftStatus, setDraftStatus] = useState<"idle" | "saving" | "saved">("idle");
+  const [draftStatus, setDraftStatus] = useState<DraftStatus>("idle");
+  // The pending autosave. A close and an unmount run it at once (EM-G3c-2
+  // item 11). Each open of the window is a new session, so a save that ends
+  // after the window opened again leaves the new session alone.
+  const [autosave] = useState(() => createAutosave());
+  const sessionRef = useRef(0);
+  // The draft that the last autosave saved. A save of a session that ended
+  // reads its draft here, never in `draftIdRef` (EM-G3c-2 review round 1).
+  const lastSaveRef = useRef<SavedDraft | null>(null);
+  // `hasAttachments` of the row that the last save returned (EM-G3c-2 item 12).
+  const draftHasFileRef = useRef(false);
+  // The bytes of the picks that are being read (EM-G3c-3 item 5).
+  const readingRef = useRef(0);
   // Uploaded files (base64) + picked AI artifacts (resolved server-side).
   const [attachments, setAttachments] = useState<SendAttachment[]>([]);
   const [artifacts, setArtifacts] = useState<ArtifactAttachmentRef[]>([]);
@@ -96,34 +171,82 @@ export function ComposePanel({
   const [sigText, setSigText] = useState("");
   useEffect(() => {
     let alive = true;
-    void getSignatureText(accountId).then((s) => {
+    void getSignatureText(fromId).then((s) => {
       if (alive) setSigText(s);
     });
     return () => {
       alive = false;
     };
-  }, [accountId]);
+  }, [fromId]);
 
   // A fresh compose session each time the window opens: re-sync fields from the
   // (possibly new) props and forget any prior draft so we don't update it.
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      // The panel stays mounted when it closes, so its AI round ends here.
+      // Else a late draft writes into a closed composer (EM-T17).
+      ai.reset();
+      return;
+    }
     setTo(defaultTo);
     setCc(defaultCc);
     setSubject(defaultSubject);
     setBody(replyToBody || "");
     // Seed the signature into the body (idempotent — a popped-out reply or an
     // undo-send reopen may already carry it). Async: never clobber typing.
-    void getSignatureText(accountId).then((sig) => {
+    void getSignatureText(defaultFromId || accountId).then((sig) => {
       if (sig) setBody((prev) => appendSignature(prev, sig));
     });
+    sessionRef.current += 1;
     draftIdRef.current = null;
-    dirty.current = false;
+    draftHasFileRef.current = false;
+    // A pop-out opens the composer at once, and it hands over the draft of
+    // the inline reply when the drain of the reply settles (EM-G3c-3 item 6).
+    // The hand-over goes at the head of the chain, so each save, send and
+    // discard waits for it, and then updates that draft.
+    if (handOver) {
+      const opened = sessionRef.current;
+      const from = defaultFromId || accountId;
+      // The From of this open. The effect that follows `fromId` runs only
+      // after the next render, and the hand-over can settle before it.
+      liveFromRef.current = from;
+      // The chain applies the hand-over in its order, so each save before it
+      // settled first, and no older save writes over the record of this one.
+      autosave.after(handOver, ({ draftId, draftHasFile }) => {
+        if (!draftId) return;
+        // It counts as the last save of the session that opened, so a save
+        // or a discard after that session ended finds it too (EM-G3c-2
+        // review round 2). It comes before the guard on purpose.
+        lastSaveRef.current = recordSave(lastSaveRef.current, { session: opened, from, id: draftId });
+        // A compose that opened since then keeps its own draft.
+        if (sessionRef.current !== opened) return;
+        if (liveFromRef.current !== from) {
+          // The member changed the From before the hand-over settled. The
+          // draft stays in the old mailbox, so it is stale (§11.6 case 7).
+          staleDraftsRef.current.push(draftId);
+          return;
+        }
+        draftIdRef.current = draftId;
+        draftHasFileRef.current = Boolean(draftHasFile);
+        // The reading pane hides this draft while the composer edits it.
+        setComposeDraftId(draftId);
+      });
+    }
+    staleDraftsRef.current = [];
+    // A pop-out keeps the From that the inline reply chose (EM-T8c review).
+    setFromPick(defaultFromId && defaultFromId !== accountId
+      ? { base: accountId, id: defaultFromId } : null);
+    // The pop-out drops the pending save of the inline reply, so the edit
+    // that it held is saved here. A close flushes that save.
+    dirty.current = Boolean(unsavedEdit);
     setDraftStatus("idle");
     // Restore any carried attachments/artifacts (undo-send reopen); a fresh
     // compose passes none, so this stays empty as before.
     setAttachments(initialAttachments ?? []);
     setArtifacts(initialArtifacts ?? []);
+    // A failed send opens again with its reason, and Send tries again.
+    setSendError(initialSendError ?? null);
+    setSending(false);
     setAiOpen(false);
     setAiInstruction("");
     ai.reset(); // a new compose window starts a fresh drafting session
@@ -139,20 +262,20 @@ export function ComposePanel({
    *  the AI never rewrites the trailing email. Each run refines the CURRENT
    *  text, so the panel stays open for as many rounds as the user wants. */
   const runAi = async () => {
-    if (!accountId || ai.busy) return;
+    if (!fromId || ai.busy) return;
     setSendError(null);
     const { main, quoted } = splitQuotedText(body);
     const toArr = to.split(",").map((s) => s.trim()).filter(Boolean);
     const instruction = aiInstruction.trim();
     const draft = await ai.run(
       {
-        accountId,
+        accountId: fromId,
         body: main,
         instruction,
-        mode: replyToMessageId ? "reply" : "new",
+        mode: replyTarget ? "reply" : "new",
         // The local message id lets the drafter load the replied-to thread +
         // direction context (parity with the inline reply's "Draft with AI").
-        messageId,
+        messageId: replyContextId,
         to: toArr,
         subject,
       },
@@ -162,50 +285,214 @@ export function ComposePanel({
     if (draft) setAiInstruction("");
   };
 
-  /** Read picked files into base64 and append them to the attachments. */
+  /** Read picked files into base64 and append them to the attachments. A
+   *  pick that makes the files pass 7.5 MB is refused whole (EM-G3c-2 item 10).
+   *  The limit counts the picks that are being read too (EM-G3c-3 item 5). */
   const addFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
+    const picked = Array.from(files);
+    const problem = pickProblem(attachments, picked, readingRef.current);
+    if (problem) {
+      setSendError(problem);
+      return;
+    }
+    const release = holdPick(readingRef, picked);
     try {
-      const added = await Promise.all(Array.from(files).map(fileToSendAttachment));
+      const added = await Promise.all(picked.map(fileToSendAttachment));
       setAttachments((prev) => [...prev, ...added]);
+      setSendError((prev) => (prev === FILES_TOO_LARGE ? null : prev));
     } catch {
       setSendError("Couldn't read one of the attachments");
+    } finally {
+      release();
     }
   };
 
   // Debounced auto-save once the user edits the draft.
   useEffect(() => {
-    if (!open || !accountId || !dirty.current) return;
+    if (!open || !fromId || !dirty.current) {
+      autosave.cancel();
+      return;
+    }
     const toArr = to.split(",").map((s) => s.trim()).filter(Boolean);
-    if (!body.trim() && toArr.length === 0 && !subject.trim()) return;
-    const handle = setTimeout(async () => {
+    if (!body.trim() && toArr.length === 0 && !subject.trim()) {
+      autosave.cancel();
+      return;
+    }
+    const savingFrom = fromId;
+    const session = sessionRef.current;
+    // The drafts that this session left in another mailbox (EM-G3c-2 review
+    // round 1). A save that ends after the session ended still deletes them.
+    const stale = staleDraftsRef.current;
+    autosave.schedule(async () => {
+      // The save runs after the save before it settled, so it reads the
+      // draft id now. A first save that made the draft gave it the id.
+      const draftId = draftToUpdate(
+        { session, from: savingFrom },
+        { session: sessionRef.current, draftId: draftIdRef.current },
+        lastSaveRef.current,
+      );
       try {
-        setDraftStatus("saving");
+        if (sessionRef.current === session) setDraftStatus("saving");
         const saved = await saveDraft({
-          accountId,
-          draftId: draftIdRef.current ?? undefined,
-          replyToMessageId: draftIdRef.current ? undefined : (replyToMessageId || undefined),
+          accountId: savingFrom,
+          draftId: draftId ?? undefined,
+          replyToMessageId: draftId ? undefined : (replyTarget || undefined),
           to: toArr,
           cc: cc ? cc.split(",").map((s) => s.trim()).filter(Boolean) : [],
           subject,
           body: combinedBody(),
         });
+        // The window closed and opened again while this save ran. The save
+        // holds the message, so the drafts that its session left can go,
+        // unless the save wrote one of them. It sets nothing of the new session.
+        if (sessionRef.current !== session) {
+          // A change of From left the draft that this session saved last in
+          // the old mailbox, and no list holds it (EM-G3c-3 item 4).
+          const superseded = supersededDraft({ session, from: savingFrom }, lastSaveRef.current, saved.id);
+          if (superseded && !stale.includes(superseded)) void deleteEmail(superseded);
+          lastSaveRef.current = recordSave(lastSaveRef.current, { session, from: savingFrom, id: saved.id });
+          if (!stale.includes(saved.id)) dropDrafts(stale);
+          return;
+        }
+        if (liveFromRef.current !== savingFrom) {
+          // The From changed while this save ran. Its draft belongs to the
+          // old mailbox, so it is stale, and the next save starts a new one
+          // in the new mailbox (EM-T8c review). Two saves in the wait of
+          // changeFrom can give one id, and it goes on the list once.
+          if (!staleDraftsRef.current.includes(saved.id)) staleDraftsRef.current.push(saved.id);
+          setDraftStatus("idle");
+          return;
+        }
         draftIdRef.current = saved.id;
+        draftHasFileRef.current = saved.hasAttachments;
+        lastSaveRef.current = recordSave(lastSaveRef.current, { session, from: savingFrom, id: saved.id });
+        // The reading pane hides this draft while the composer edits it. A
+        // pop-out with no hand-over draft makes its first draft here.
+        setComposeDraftId(saved.id);
+        // A provider draft cannot move between mailboxes: the new mailbox
+        // saved its own, so the drafts of the old one go (§11.6 case 7).
+        dropStaleDrafts();
         setDraftStatus("saved");
-      } catch {
-        setDraftStatus("idle");
+      } catch (err) {
+        // The next edit tries again (EM-G3c-2 item 13).
+        if (sessionRef.current === session) setDraftStatus(failedSaveStatus(err));
       }
-    }, 1200);
-    return () => clearTimeout(handle);
+    }, autosaveWait(
+      accounts.find((a) => a.id === savingFrom)?.provider,
+      draftHasFileRef.current,
+    ), session);
+    // Stop the timer and keep the save, so a close can still flush it.
+    return () => autosave.hold();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [to, cc, subject, body, open, accountId]);
+  }, [to, cc, subject, body, open, fromId]);
+
+  // An unmount runs the pending save at once (EM-G3c-2 item 11).
+  useEffect(() => () => autosave.flush(), [autosave]);
+
+  // Which mailbox last wrote to each recipient, for the From warning. It
+  // runs only for a member with two or more mailboxes, after a short pause.
+  useEffect(() => {
+    if (!open || accounts.length < 2) return;
+    const list = [...to.split(","), ...cc.split(",")].map((s) => s.trim()).filter(Boolean);
+    let alive = true;
+    const handle = setTimeout(() => {
+      void getSentFrom(list).then((map) => {
+        if (alive) setUsualSender(map);
+      });
+    }, 600);
+    return () => {
+      alive = false;
+      clearTimeout(handle);
+    };
+  }, [to, cc, open, accounts.length]);
+
+  // A bar tap closes the window as the X does: the pending save runs first,
+  // so the draft is kept (MOB-9). ⚠️ Above the early return, as every hook
+  // must be: after it, opening the window adds a hook and React throws.
+  useCloseOnBarTap(() => {
+    autosave.flush();
+    onClose();
+  }, open);
 
   if (!open) return null;
 
+  const fromAccount = accounts.find((a) => a.id === fromId) ?? null;
+  const fromBlocked = sendBlocked(fromAccount, authErrors);
+  const warning = fromWarning({
+    fromId,
+    accounts,
+    conversationAccountId: conversationId,
+    recipients: [...to.split(","), ...cc.split(",")],
+    usualSender,
+    authErrors,
+  });
+
+  /** Change the sending mailbox. The signature follows it, and a saved
+   *  draft moves to the new mailbox on the next save. */
+  const changeFrom = async (next: string) => {
+    if (!next || next === fromId) return;
+    // The From of now changes at once, before the wait for the signatures. A
+    // save or a hand-over that settles in that wait then counts its draft as
+    // stale (EM-G3c-3 review round 1).
+    liveFromRef.current = next;
+    const [oldSig, newSig] = await Promise.all([
+      getSignatureText(fromId), getSignatureText(next),
+    ]);
+    if (draftIdRef.current) {
+      // A save that settled in the wait can have put this draft on the list.
+      if (!staleDraftsRef.current.includes(draftIdRef.current)) staleDraftsRef.current.push(draftIdRef.current);
+      draftIdRef.current = null;
+    }
+    // The next save makes a new draft in the new mailbox, with no file.
+    draftHasFileRef.current = false;
+    dirty.current = true;
+    setBody((prev) => swapSignature(prev, oldSig, newSig));
+    setFromPick({ base: accountId, id: next });
+  };
+
+  /** Close the window. The X and the backdrop keep the draft, so the
+   *  pending save runs at once first (EM-G3c-2 item 11). */
+  const closeComposer = () => {
+    autosave.flush();
+    onClose();
+  };
+
+  /** Discard the auto-saved draft. The X keeps it instead. The window closes
+   *  at once. The chain drains first, so no save that waited writes the draft
+   *  again, and a first save that runs gives its id to the delete (EM-G3c-2
+   *  review round 2). The delete takes each draft of the session, in each
+   *  mailbox (EM-G3c-3 item 3). */
+  const discardDraft = async () => {
+    // A close does not end the session, so a create that runs settles in
+    // the live branch, and a change of From puts its draft on this list.
+    const session = sessionRef.current;
+    const stale = staleDraftsRef.current;
+    const drained = autosave.drain(session);
+    onClose();
+    await drained;
+    const ids = draftsToDiscard(
+      session,
+      { session: sessionRef.current, draftId: draftIdRef.current },
+      lastSaveRef.current,
+      stale.splice(0),
+    );
+    for (const id of ids) void deleteEmail(id);
+  };
+
   const handleSend = async () => {
     if (!to.trim() || sending) return;
+    if (fromBlocked) {
+      setSendError(`Reconnect ${fromAccount ? mailboxLabel(fromAccount) : "this mailbox"} to send from it.`);
+      return;
+    }
     setSending(true);
     setSendError(null);
+    // The send carries the last edit, so each queued autosave goes. A save
+    // that runs settles first: a first save gives its draft id, and no older
+    // text lands after this save (EM-G3c-2 review round 2). A save of an
+    // ended session still runs (EM-G3c-3 item 1).
+    await autosave.drain(sessionRef.current);
     const toArr = to.split(",").map((s) => s.trim()).filter(Boolean);
     const ccArr = cc ? cc.split(",").map((s) => s.trim()).filter(Boolean) : [];
     const hasAttachments = attachments.length > 0 || artifacts.length > 0;
@@ -213,13 +500,16 @@ export function ComposePanel({
       // Native draft-send whenever there's a draft OR attachments: Cc/Bcc AND
       // attachment content now ride ON the provider draft, so the draft write-
       // path (create/update with attachments) → native send handles everything.
-      // A fresh message with no attachments still sends directly.
-      if (draftIdRef.current || hasAttachments) {
+      // A fresh message with no attachments still sends directly. A change of
+      // From with an old draft also takes the draft path: that path awaits the
+      // real send, so the old draft goes only after the new mailbox sent it
+      // (§11.6 case 8). The direct path returns before the send runs.
+      if (draftIdRef.current || hasAttachments || staleDraftsRef.current.length > 0) {
         const saved = await saveDraft({
-          accountId,
+          accountId: fromId,
           draftId: draftIdRef.current ?? undefined,
           replyToMessageId: draftIdRef.current
-            ? undefined : (replyToMessageId || undefined),
+            ? undefined : (replyTarget || undefined),
           to: toArr,
           cc: ccArr,
           subject,
@@ -227,53 +517,79 @@ export function ComposePanel({
           attachments: attachments.length ? attachments : undefined,
           artifacts: artifacts.length ? artifacts : undefined,
         });
-        await sendDraft(accountId, saved.id);
+        // When the send fails, the next autosave updates this draft, and it
+        // holds the files now (EM-G3c-2 item 12).
+        if (saved.id === draftIdRef.current) draftHasFileRef.current = saved.hasAttachments;
+        await sendDraft(fromId, saved.id);
+        dropStaleDrafts();
         onClose();
       } else {
         await onSend({
+          accountId: fromId,
           to: toArr,
           cc: ccArr.length ? ccArr : undefined,
           subject,
           bodyText: combinedBody(),
-          replyToMessageId: replyToMessageId,
+          replyToMessageId: replyTarget,
           attachments: attachments.length ? attachments : undefined,
           artifacts: artifacts.length ? artifacts : undefined,
         });
         if (draftIdRef.current) void deleteEmail(draftIdRef.current);
         // onClose is called by the store after successful send
       }
-    } catch (err: any) {
-      setSendError(err.message || "Failed to send");
+    } catch (err) {
+      // A 413 shows "This mail is too large to send." (EM-G3c-2 item 14).
+      setSendError(sendFailureText(err));
       setSending(false);
     }
   };
 
+  const saveFailure = saveFailureText(draftStatus);
+
   return (
     <div className="fixed inset-0 z-[60] flex items-start justify-center pt-12 sm:pt-20 px-4">
       {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/40" onClick={closeComposer} />
 
-      {/* Compose window — height-capped (viewport minus the pt-12 offset and
-          the safe-area inset) with the fields scrolling inside, so the footer
+      {/* Compose window — height-capped (the layer, which ends at the phone bar's
+          top edge, minus its pt-12 offset) with the fields scrolling inside, so the footer
           with Send/Discard is always on screen, even on short phone viewports. */}
-      <div className="relative w-full max-w-2xl bg-card border border-border rounded-xl shadow-2xl overflow-hidden flex flex-col max-h-[calc(100dvh-5rem-env(safe-area-inset-bottom,0px))] sm:max-h-[85vh]">
+      <div data-ask-clear="" className="relative w-full max-w-2xl bg-card border border-border rounded-xl shadow-2xl overflow-hidden flex flex-col max-h-full sm:max-h-[85vh]">
         {/* Header */}
         <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-border bg-secondary/50">
           <span className="text-sm font-medium text-foreground">New Message</span>
-          <Button variant="ghost" size="icon-xs" radius="keep" layout="" onClick={onClose} className="rounded">
+          <Button variant="ghost" size="icon-xs" radius="keep" layout="" onClick={closeComposer} aria-label="Close the draft" className="rounded">
             <Icon name="X" size={16} />
           </Button>
         </div>
 
+        {/* §6.4 rule 2: a field the AI filled says so, until the member sends. */}
+        {aiFilled && aiFilled.length ? (
+          <p className="shrink-0 flex items-center gap-1.5 border-b border-border px-4 py-2 text-xs text-muted-foreground">
+            <Icon name="Sparkles" size={13} className="shrink-0 text-primary" />
+            Filled by AI: {aiFilled.map((k) => (k === "to" ? "To" : k === "subject" ? "Subject" : k)).join(", ")}. Check them before you send.
+          </p>
+        ) : null}
+
         {/* Fields — the scrolling region when the window hits its max height */}
         <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-3">
+          {/* From — two or more mailboxes (EM-T8c, D-EM-20) */}
+          <FromRow
+            accounts={accounts}
+            value={fromId}
+            defaultValue={accountId}
+            onChange={(id) => void changeFrom(id)}
+            warning={warning}
+            authErrors={authErrors}
+          />
+
           {/* To */}
           <div className="flex items-center gap-2">
             <span className="text-xs text-muted-foreground w-8 flex-shrink-0">To:</span>
             <RecipientInput
               value={to}
               onChange={(v) => { dirty.current = true; setTo(v); }}
-              accountId={accountId}
+              accountId={fromId}
               ariaLabel="To recipients"
               placeholder="Email address..."
               className="w-full bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none"
@@ -286,7 +602,7 @@ export function ComposePanel({
             <RecipientInput
               value={cc}
               onChange={(v) => { dirty.current = true; setCc(v); }}
-              accountId={accountId}
+              accountId={fromId}
               ariaLabel="Cc recipients"
               placeholder="Cc..."
               className="w-full bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none"
@@ -373,6 +689,8 @@ export function ComposePanel({
             revisions={ai.revisions}
             activeRevision={ai.activeRevision}
             elapsedMs={ai.elapsedMs}
+            notice={ai.notice}
+            onStop={ai.stop}
             onRun={runAi}
             onRestore={(id) => ai.restore(id, splitQuotedText(body).quoted)}
             onClose={() => setAiOpen(false)}
@@ -383,14 +701,18 @@ export function ComposePanel({
         <div className="shrink-0 px-4 py-3 border-t border-border flex items-center justify-between">
           <div className="flex-1">
             {sendError ? (
-              <span className="text-[10px] text-red-500">{sendError}</span>
+              <span className="text-[10px] text-destructive">{sendError}</span>
             ) : draftStatus === "saving" ? (
               <span className="text-[10px] text-muted-foreground">Saving draft…</span>
             ) : draftStatus === "saved" ? (
               <span className="text-[10px] text-muted-foreground">Draft saved to Drafts</span>
+            ) : saveFailure ? (
+              <span className="text-[10px] text-destructive">{saveFailure}</span>
             ) : (
               <span className="text-[10px] text-muted-foreground">
-                Sent from your connected email account
+                {fromAccount
+                  ? `From ${mailboxLabel(fromAccount)} · ${fromAccount.emailAddress}`
+                  : "Sent from your connected email account"}
               </span>
             )}
           </div>
@@ -413,11 +735,7 @@ export function ComposePanel({
               onPick={(ref) => setArtifacts((prev) =>
                 prev.some((a) => a.path === ref.path) ? prev : [...prev, ref])}
             />
-            <Button variant="ghost" size="none" radius="keep" layout="" onClick={() => {
-                // Discard removes the auto-saved draft (closing via X keeps it).
-                if (draftIdRef.current) void deleteEmail(draftIdRef.current);
-                onClose();
-              }} disabled={sending} className="px-3 py-1.5 text-xs rounded-md">
+            <Button variant="ghost" size="none" radius="keep" layout="" onClick={() => void discardDraft()} disabled={sending} className="px-3 py-1.5 text-xs rounded-md">
               Discard
             </Button>
             <Button size="none" radius="keep" layout="flex items-center" onClick={handleSend} disabled={sending || !to.trim()} className="px-4 py-1.5 text-xs rounded-md gap-1.5">

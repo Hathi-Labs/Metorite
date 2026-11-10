@@ -43,9 +43,24 @@ from typing import Any
 
 from acb_common import get_logger
 
-__all__ = ["RoutedRefusal", "completion_on_router", "routing_is_on", "run_attribution"]
+__all__ = [
+    "OUT_OF_CREDITS",
+    "RoutedRefusal",
+    "completion_on_router",
+    "router_wired",
+    "routing_is_on",
+    "run_attribution",
+]
 
 _log = get_logger("acb_llm.routed")
+
+#: The ONE sentence for a member when the Router answers 402 (no credits).
+#: The WhatsApp bot (``bot_run.REPLY_CREDITS``) and ``analyze_image``
+#: (WS-VOX VOX-3) send it as it is. Fence: ``tests/unit/test_wac_bot_run.py``.
+OUT_OF_CREDITS = (
+    "Your organization is out of AI credits. An admin can add credits in "
+    "Settings, Billing."
+)
 
 #: The OPTIONAL fields `customer_console.main.CompletionRequest` accepts.
 #:
@@ -111,8 +126,30 @@ def routing_is_on() -> bool:
     return bool(getattr(settings, "router_serving_enabled", False)) and router_is_wired()
 
 
-def run_attribution() -> dict[str, Any]:
+def router_wired() -> bool:
+    """Whether this box can reach the Console Router at all. Never raises.
+
+    The ``router_is_wired`` half of :func:`routing_is_on`, without the owner's
+    serving flag. It makes no call, and a wiring it cannot read is not wired.
+    The email startup check reads it (EM-T5b-2 item 9), because ``decide``
+    rides the same Router and needs no serving flag. That check imports this
+    module, so the gateway adds no importer of the Console client
+    (``tests/unit/test_console_dependency_boundary.py``).
+    """
+    try:
+        from acb_auth.console_resolve import router_is_wired
+
+        return bool(router_is_wired())
+    except Exception:
+        return False
+
+
+def run_attribution(*, module_slug: str | None = None) -> dict[str, Any]:
     """Who to bill and what to blame, from the ambient run context.
+
+    ``module_slug`` is an explicit app that beats the run context, as
+    :func:`completion_on_router` passes its ``source``. The agent backstop
+    then names that app too.
 
     Public since WS-17 EM-T5 (CP-13e). The email shadow helper in
     ``gateway/decide_features.py`` passes these fields to ``acb_llm.decide``.
@@ -133,6 +170,12 @@ def run_attribution() -> dict[str, Any]:
     ⚠️ **A member without an ``@`` is dropped**, exactly as
     :mod:`acb_llm.attribution` drops it, so the two routed paths cannot
     disagree about who a person is.
+
+    🔴 **The agent has a backstop** (AI-call attribution, 2026-10-10).
+    ``acb_common.attributed_agent`` is the one rule. An explicit agent wins,
+    then the bound agent, then ``<module>.automation``. Before it, every
+    background call with no agent bound reached the Router with ``agent``
+    NULL, and the dashboard showed it as "not attributed".
     """
     try:
         from acb_common._log import get_run_context
@@ -142,14 +185,21 @@ def run_attribution() -> dict[str, Any]:
         ctx = {}
     member = str(ctx.get("user") or "").strip()
     member = member if "@" in member else ""
+    module = module_slug or ctx.get("app") or ctx.get("source") or None
+    try:
+        from acb_common._log import attributed_agent
+
+        agent = attributed_agent(ctx, module)
+    except Exception:
+        agent = ctx.get("agent") or None
     return {
         "member": member or None,
         # H-73: only the SESSION's member may decide a cap. This call runs in
         # the gateway's own process, so there is no header to sign: the run
         # context itself is the server-side fact.
         "member_proven": bool(member) and ctx.get("member_verified") == "1",
-        "agent": ctx.get("agent") or None,
-        "module_slug": ctx.get("app") or ctx.get("source") or None,
+        "agent": agent,
+        "module_slug": module,
         "run_id": ctx.get("run_id") or None,
     }
 
@@ -201,8 +251,15 @@ async def completion_on_router(
     temperature: float,
     source: str | None = None,
     extra: dict[str, Any] | None = None,
+    job: str | None = None,
 ) -> tuple[Any, str]:
     """One completion, served and BILLED by the Console. Returns ``(resp, model)``.
+
+    ``job`` names the kind of work (:mod:`acb_llm.jobs`, task 1128). It sets
+    thinking and the cap floor. ``thinking`` goes to the Console, which drops
+    it for a chain step whose model does not take it. JSON mode gets the word
+    "json" (:func:`acb_llm.jobs.ensure_json_word`). An answer with no text
+    and no tool call logs ``acb_llm.empty_answer`` and is still returned.
 
     Raises:
         RoutedRefusal: the Router answered and refused. A verdict, not an
@@ -212,11 +269,18 @@ async def completion_on_router(
     """
     from acb_auth.console_resolve import chat_completion_on_console
 
-    attribution = run_attribution()
+    from acb_llm.jobs import apply_job, ensure_json_word, note_empty_answer
+
+    # Idempotent, so a seam that applied the job already changes nothing here.
+    max_tokens, extra = apply_job(job, max_tokens=max_tokens, extra=dict(extra or {}))
+    # JSON mode needs the word "json" in a message, or the vendor answers 400.
+    # A direct caller of this seam (`shell/intent._fill`) gets the guard too.
+    messages = ensure_json_word(messages, extra.get("response_format"))
+
     # An explicit `source` beats the inferred one: Custom Apps all run through
-    # one module, so only the caller knows which app it is.
-    if source:
-        attribution["module_slug"] = source
+    # one module, so only the caller knows which app it is. It goes IN, so the
+    # agent backstop names the same app as `module_slug`.
+    attribution = run_attribution(module_slug=source or None)
 
     # 🔴 **Built against `CompletionRequest`, which is `extra="forbid"`.**
     # A first version sent `{"tier": ...}` and spread the caller's `**extra`.
@@ -263,4 +327,5 @@ async def completion_on_router(
 
     resp = ModelResponse(**body) if isinstance(body, dict) else body
     used = str(getattr(resp, "model", "") or body.get("model", tier))
+    note_empty_answer(resp, model=used, job=job, max_tokens=max_tokens)
     return resp, used

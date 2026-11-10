@@ -23,22 +23,28 @@ import {
   useState,
 } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useMonacoTheme } from "@/lib/theme/surfaces";
-import Editor from "@monaco-editor/react";
+import CodeEditor from "@/components/CodeEditor";
+import UnsavedMark from "@/components/UnsavedMark";
 import AgentChat from "@/components/AgentChat";
 import SandboxedHtml from "@/components/SandboxedHtml";
 import Tabs from "@/components/Tabs";
 import { useMobileDrawer } from "@/components/AppShell";
 import { useViewMode } from "@/components/ViewModeProvider";
 import {
+  builderSessionKey,
   createSession,
+  fetchAndMergeSessionsFromDb,
+  getBuilderSessionId,
   getSessions,
+  setBuilderSessionId,
   upsertSession,
   type ChatSession,
 } from "@/lib/sessions";
+import { useChatScope } from "@/hooks/useChatSessions";
 import {
   buildAppSrcDoc,
   extractCcIconNames,
+  newBridgeNonce,
   useCcBridge,
   type CcConsoleEvent,
   type CcToolConfirmDecision,
@@ -53,7 +59,6 @@ type PendingToolConfirm = CcToolConfirmRequest & {
 };
 
 const BUILDER_AGENT = "app-builder";
-const SESSION_KEY_PREFIX = "cc-app-builder-session-";
 /** Fallback poll — run-end sync (onActivity) is the primary refresh path. */
 const PREVIEW_POLL_MS = 30_000;
 /** Settle time after an assistant turn lands before refetch + sync. */
@@ -387,37 +392,40 @@ function describeFailure(result: TestResult): string {
   return result.error ?? "unknown failure";
 }
 
-/** Find-or-create the ONE builder chat session for this app. */
-function ensureBuilderSession(slug: string): ChatSession {
+/**
+ * Find-or-create the ONE builder chat session for this app, for the signed-in
+ * member in this org. Null while no member is bound.
+ *
+ * The per-app id lives in the member's chat namespace (PR #652). An app slug
+ * is unique inside one org only, so the old browser-wide key could hand one
+ * org's builder chat to another org's app. That old key is deleted on bind
+ * and never read.
+ */
+async function ensureBuilderSession(slug: string): Promise<ChatSession | null> {
+  if (!builderSessionKey(slug)) return null;
   const name = `app:${slug}`;
-  const sessions = getSessions();
-  // 1. Stable id remembered per app.
-  const storedId =
-    typeof window !== "undefined"
-      ? localStorage.getItem(SESSION_KEY_PREFIX + slug)
-      : null;
-  if (storedId) {
-    const existing = sessions.find((s) => s.id === storedId);
+  const find = (sessions: ChatSession[]): ChatSession | undefined => {
+    // 1. The stable id remembered for this app, if the member's list holds it.
+    const storedId = getBuilderSessionId(slug);
+    const existing = storedId ? sessions.find((s) => s.id === storedId) : undefined;
     if (existing) return existing;
-  }
-  // 2. A session already named for this app (e.g. from another device merge).
-  const named = sessions.find(
-    (s) => s.agentName === BUILDER_AGENT && s.name === name
-  );
-  if (named) {
-    try {
-      localStorage.setItem(SESSION_KEY_PREFIX + slug, named.id);
-    } catch {}
-    return named;
+    // 2. A session already named for this app (e.g. from another device merge).
+    return sessions.find((s) => s.agentName === BUILDER_AGENT && s.name === name);
+  };
+  // The member's list in this browser can be empty (a new device, or the first
+  // visit after the list moved into its namespace). Ask the server before
+  // starting a second builder chat for the same app.
+  const found = find(getSessions()) ?? find(await fetchAndMergeSessionsFromDb());
+  if (found) {
+    setBuilderSessionId(slug, found.id);
+    return found;
   }
   // 3. Fresh session, named for the app.
   const s = createSession(BUILDER_AGENT);
   s.name = name;
   s.title = name;
   upsertSession(s);
-  try {
-    localStorage.setItem(SESSION_KEY_PREFIX + slug, s.id);
-  } catch {}
+  setBuilderSessionId(slug, s.id);
   return s;
 }
 
@@ -809,7 +817,6 @@ function PublishModal({
 function Workshop({ slug }: { slug: string }) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const monacoTheme = useMonacoTheme();
 
   const [app, setApp] = useState<AppMeta | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -995,7 +1002,18 @@ function Workshop({ slug }: { slug: string }) {
   const onConsoleEvent = useCallback((e: CcConsoleEvent) => {
     setConsoleEvents((prev) => [e, ...prev].slice(0, CONSOLE_EVENT_CAP));
   }, []);
-  useCcBridge(slug, { mode: "draft", onConsoleEvent, onToolConfirm });
+  // Only THIS page's preview frame, holding this nonce, reaches the broker
+  // (task 2433). The test runner's hidden frame has a broker of its own.
+  const previewFrameRef = useRef<HTMLIFrameElement | null>(null);
+  const getPreviewFrame = useCallback(() => previewFrameRef.current, []);
+  const [bridgeNonce] = useState(newBridgeNonce);
+  useCcBridge(slug, {
+    mode: "draft",
+    nonce: bridgeNonce,
+    getFrame: getPreviewFrame,
+    onConsoleEvent,
+    onToolConfirm,
+  });
 
   // ── App meta + files ────────────────────────────────────────────────
   // Fetch-on-mount wiring: same pattern (and lint carve-out) as
@@ -1089,20 +1107,27 @@ function Workshop({ slug }: { slug: string }) {
   // ── Builder session wiring (critical) ───────────────────────────────
   // Only editors receive workspace_path from the API; without it the chat is
   // replaced by a read-only notice.
+  const chatScopeId = useChatScope();
   useEffect(() => {
     if (!app) return;
     if (!app.workspace_path) return;
-    const s = ensureBuilderSession(slug);
-    setChatSession(s);
-    // Bind the builder's working directory to the app workspace (idempotent).
-    fetch(`/api/agent/workspace/${s.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ workspace_path: app.workspace_path }),
-    })
-      .then((res) => setWorkspaceBound(res.ok))
-      .catch(() => setWorkspaceBound(false));
-  }, [app, slug]);
+    if (!chatScopeId) return;
+    const workspacePath = app.workspace_path;
+    let cancelled = false;
+    void ensureBuilderSession(slug).then((s) => {
+      if (cancelled || !s) return;
+      setChatSession(s);
+      // Bind the builder's working directory to the app workspace (idempotent).
+      fetch(`/api/agent/workspace/${s.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspace_path: workspacePath }),
+      })
+        .then((res) => { if (!cancelled) setWorkspaceBound(res.ok); })
+        .catch(() => { if (!cancelled) setWorkspaceBound(false); });
+    });
+    return () => { cancelled = true; };
+  }, [app, slug, chatScopeId]);
 
   // ── Draft preview fetch + poll ──────────────────────────────────────
   const refreshPreview = useCallback(async () => {
@@ -1589,8 +1614,10 @@ function Workshop({ slug }: { slug: string }) {
 
   const srcDoc = useMemo(
     () =>
-      draftBundle ? buildAppSrcDoc(draftBundle, { slug, mode: "draft" }) : null,
-    [draftBundle, slug]
+      draftBundle
+        ? buildAppSrcDoc(draftBundle, { slug, mode: "draft", nonce: bridgeNonce })
+        : null,
+    [draftBundle, slug, bridgeNonce]
   );
   // The sandboxed frame can't fetch its own icons (no network) — pre-resolve
   // whatever `ccIcon(...)`/`data-cc-icon` names the app's own HTML asks for
@@ -1846,10 +1873,20 @@ function Workshop({ slug }: { slug: string }) {
                 {srcDoc ? (
                   previewDevice === "mobile" ? (
                     <div className="w-[390px] max-w-full shrink-0 h-[780px] max-h-full rounded-[2rem] border-4 border-border overflow-hidden shadow-lg bg-background">
-                      <SandboxedHtml chromeless html={srcDoc} iconNames={previewIcons} />
+                      <SandboxedHtml
+                        chromeless
+                        html={srcDoc}
+                        iconNames={previewIcons}
+                        iframeRef={previewFrameRef}
+                      />
                     </div>
                   ) : (
-                    <SandboxedHtml chromeless html={srcDoc} iconNames={previewIcons} />
+                    <SandboxedHtml
+                      chromeless
+                      html={srcDoc}
+                      iconNames={previewIcons}
+                      iframeRef={previewFrameRef}
+                    />
                   )
                 ) : (
                   <div className="flex flex-col items-center justify-center flex-1 gap-3 text-center px-6">
@@ -2013,12 +2050,7 @@ function Workshop({ slug }: { slug: string }) {
                       <span className="font-mono text-[11.5px] text-foreground truncate">
                         {selectedPath}
                       </span>
-                      {fileDirty && (
-                        <span
-                          title="Unsaved changes"
-                          className="w-1.5 h-1.5 rounded-full bg-warning shrink-0"
-                        />
-                      )}
+                      {fileDirty && <UnsavedMark />}
                     </>
                   ) : (
                     <span className="text-xs text-muted-foreground">
@@ -2058,19 +2090,10 @@ function Workshop({ slug }: { slug: string }) {
                       <Icon name="Loader2" className="w-4 h-4 animate-spin text-muted-foreground" />
                     </div>
                   ) : (
-                    <Editor
-                      height="100%"
+                    <CodeEditor
                       language={monacoLanguage(selectedPath)}
-                      theme={monacoTheme}
                       value={editedContent}
-                      onChange={(v) => setEditedContent(v ?? "")}
-                      options={{
-                        minimap: { enabled: false },
-                        fontSize: 12.5,
-                        wordWrap: "on",
-                        scrollBeyondLastLine: false,
-                        automaticLayout: true,
-                      }}
+                      onChange={setEditedContent}
                     />
                   )}
                 </div>

@@ -74,6 +74,18 @@
 //    rule 5 is what ends the retry.
 // 10. A string body with no content type goes out as JSON. See
 //    withJsonContentType. An explicit content type always wins.
+// 11. A redirect is NOT followed (H-280). A 3xx of the gateway is its answer,
+//    and it goes back to the caller with its status and its `Location`, as
+//    any other status does. Why: `fetch` follows with the same headers, so
+//    the internal bearer and the member identity go to the new path. The
+//    path guard checks only the first URL. No caller relies on a followed
+//    redirect: the gateway's one trailing-slash route (`GET /people/`) is
+//    called with its slash, and each OAuth route already asks for
+//    `redirect: "manual"`. See withManualRedirect. A caller that names its
+//    own `redirect` keeps it. The rule also covers the LiteLLM calls to
+//    `/chat/completions` (agent/chat and chat/sessions/[sessionId]/compact).
+//    A LiteLLM base URL that redirects now gives those callers a 3xx, which
+//    they treat as a failure. That is intended: it fails closed.
 //
 // THE LOG
 // -------
@@ -89,6 +101,8 @@
 // Fence: `src/lib/gatewayFetch.test.ts` proves the rules against a real local
 // HTTP server. `src/lib/gateway.test.ts` fails if a module that reaches the
 // gateway calls the bare `fetch` again.
+
+import { gatewayUrlEscape } from "./gatewayPath";
 
 /** The retry window. `deadlineMs` must stay below Caddy's 30 s hold. */
 export const GATEWAY_RETRY = Object.freeze({
@@ -283,6 +297,15 @@ export function withJsonContentType(init: RequestInit): RequestInit {
 }
 
 /**
+ * The init with `redirect: "manual"` when the caller named no redirect mode
+ * (rule 11). A followed redirect would carry the internal bearer to a path
+ * that the path guard never saw.
+ */
+export function withManualRedirect(init: RequestInit): RequestInit {
+  return init.redirect === undefined ? { ...init, redirect: "manual" } : init;
+}
+
+/**
  * `fetch` to the gateway, with a bounded retry while the gateway restarts.
  *
  * Use it wherever this app calls the gateway, with the same arguments you
@@ -293,7 +316,17 @@ export async function gatewayFetch(
   callerInit: RequestInit = {},
   opts: GatewayRetryOptions = {}
 ): Promise<Response> {
-  const init = withJsonContentType(callerInit);
+  // The path guard, layer 2 (gatewayPath.ts). A path that the URL parser
+  // would rewrite never leaves this app, whatever route built it. Only a
+  // string can still carry an escape: a URL object resolved it already.
+  if (typeof input === "string") {
+    const escape = gatewayUrlEscape(input);
+    if (escape !== null) {
+      (opts.log ?? ((line: string) => console.warn(line)))(`[gateway] refused: ${escape}`);
+      return Response.json({ detail: `Invalid path: ${escape}.` }, { status: 400 });
+    }
+  }
+  const init = withManualRedirect(withJsonContentType(callerInit));
   const { origin, route } = parse(input);
   // Rule 9: while the breaker is open, one try and no window.
   const failFast = opts.retry === false || breakerOpen(origin);

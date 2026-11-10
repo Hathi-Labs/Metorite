@@ -15,7 +15,7 @@ export const dynamic = "force-dynamic";
 
 // Shown when the gateway is down so the picker still renders.
 const STATIC_FALLBACK: AgentEntry[] = [
-  { name: "task-manager",  description: "My Tasks — capture, clarify, organise, plan your day",           tags: ["tasks"],    status: "live", agent_runtime: "maf" },
+  { name: "task-manager",  description: "My work — capture, clarify, organise, plan your day",           tags: ["tasks"],    status: "live", agent_runtime: "maf" },
   { name: "sales",         description: "Zoho CRM sales pipeline",              tags: ["sales"],    status: "live", agent_runtime: "maf" },
   { name: "triage",        description: "Email / WhatsApp triage + routing",    tags: ["triage"],   status: "live", agent_runtime: "maf" },
   { name: "delivery",      description: "Project delivery monitoring",          tags: ["delivery"], status: "live", agent_runtime: "maf" },
@@ -52,6 +52,10 @@ export interface AgentEntry {
   repo_url?: string;
   local_path?: string;
   dynamic?: boolean;
+  /** WS-45 S3: the backend flag `AI_TIER_ROUTING` covers this agent, so the
+   *  platform picks its tier and the chat shows no model picker. The gateway
+   *  stamps it. Absent reads as not covered (`lib/tierRouting.ts`). */
+  tier_routed?: boolean;
   /** Number of commits the local clone is behind origin (0 = up-to-date) */
   behind_by?: number;
   /** Dependency-install health for this agent's clone. */

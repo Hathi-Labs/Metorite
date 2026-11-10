@@ -14,16 +14,24 @@ _upsert = m.automation.rules._upsert_rule_pattern
 
 
 class _Result:
-    def __init__(self, row: object | None) -> None:
+    def __init__(self, row: object | None, rows: list | None = None) -> None:
         self._row = row
+        self._rows = rows or []
 
     def fetchone(self) -> object | None:
         return self._row
 
+    def fetchall(self) -> list:
+        return self._rows
+
 
 class _FakeDB:
     """Minimal async DB stub that answers the two metadata SELECTs and records
-    whether an INSERT (i.e. an actual pattern write) happened."""
+    whether an INSERT (i.e. an actual pattern write) happened.
+
+    Since EM-T8e-1 the own-address guard reads EACH mailbox of the member
+    (``identity.resolve_self_addresses``). ``acct_row`` is the one mailbox of
+    that member here, so the guard sees the same address it saw before."""
 
     def __init__(self, rule_row: object | None, acct_row: object | None) -> None:
         self.rule_row = rule_row
@@ -35,7 +43,10 @@ class _FakeDB:
         if "FROM email_rules" in sql:
             return _Result(self.rule_row)
         if "FROM email_accounts" in sql:
-            return _Result(self.acct_row)
+            box = SimpleNamespace(
+                id="acc-1", address=getattr(self.acct_row, "email_address", ""),
+                label=None)
+            return _Result(self.acct_row, [box] if self.acct_row else [])
         if sql.lstrip().upper().startswith("INSERT"):
             self.inserted = True
         return _Result(None)

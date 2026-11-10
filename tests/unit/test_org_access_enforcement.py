@@ -131,6 +131,10 @@ GATED_ROUTERS: dict[str, set[str]] = {
         # The OAuth callback left this set in EM-T1a: it runs behind the
         # session now (email_app_master_plan.md §10.4.1, risk R-4).
         "/email/webhook/microsoft",
+        # WS-17 SG-1 (D-EM-68): a mail reader fetches a signature logo with
+        # no session. The 256-bit token is the capability, read under
+        # tenant_session(org) and RLS. It is in main.PUBLIC_ROUTES too.
+        "/email/signature-image/{org}/{token}.{ext}",
     },
     "gateway.routes.notes": {
         "/notes/meetings/{meeting_id}/live/segment",
@@ -163,8 +167,46 @@ GATED_ROUTERS: dict[str, set[str]] = {
     # capacity and open work.
     "gateway.routes.people": set(),
     "gateway.routes.chat": set(),
+    # WS-47 WAC-1 — Chat on WhatsApp (`/me/whatsapp-link`). Gated on
+    # `feature:chat`, because the run of WAC-3 is a Chat run. No exemptions:
+    # both routes serve the signed-in member, and the webhook stays on the
+    # `/whatsapp` router.
+    "gateway.routes.whatsapp_channel": set(),
+    # WS-59 RE-1a — Reach (`/reach/preview`, `/reach/brief`), and RE-5
+    # `/reach/tell-me`. Gated on `feature:chat`, because Reach speaks through
+    # the WhatsApp channel. No exemptions: each route serves the signed-in
+    # member only.
+    "gateway.reach.routes": set(),
+    # WS-66 PN-1 — web push (`/push/public-key`, `/push/subscriptions`,
+    # `/push/test`). Gated on `feature:chat`, as `/reach` is. No exemptions:
+    # each route serves the signed-in member's own devices only.
+    "gateway.push.routes": set(),
+    # WS-BRIEF BR-2c-1 — `GET /brief/today`, the member's stored brief.
+    # Gated on `feature:chat`, as the chat's first turn is. No exemptions:
+    # the route serves the signed-in member's own run only.
+    "gateway.routes.brief_today": set(),
     "gateway.routes.actions": set(),
     "gateway.routes.integrations": set(),
+    # WS-54 — the three routers of the Integrations console. Each one is
+    # gated on `feature:integrations` at the router, and none was named here
+    # until WS-55 EA-4b. That left them unchecked. The client-metadata
+    # document of IN-8a is exempt from the feature gate only: it names
+    # nobody, and an auth server fetches it with no session.
+    "gateway.routes.integrations_connections": set(),
+    "gateway.routes.integrations_skills": set(),
+    "gateway.routes.integrations_mcp_oauth": {
+        "/integrations/mcp/oauth/client-metadata",
+    },
+    # WS-55 EA-4b — every agent connection of the org. Gated on
+    # `feature:integrations` AND `integrations:manage`, so the AI agents view
+    # of a member who holds neither cannot reach it. The member's own pair is
+    # `/agent-access/connections`, which needs no feature (D-EA-9).
+    "gateway.routes.integrations_agents": set(),
+    # WS-54 GH-3 — the connect flow of the Metorite GitHub App. Gated on
+    # `feature:integrations`, and each route also needs `integrations:manage`.
+    # No exemption: the callback runs behind the member session through the
+    # BFF. The webhook is a separate router in PUBLIC_ROUTES.
+    "gateway.routes.github.connect": set(),
     "gateway.routes.workflows": {
         "/workflows/hooks/{hook_token}",
     },
@@ -259,10 +301,156 @@ def test_an_ungated_router_still_resolves_an_identity(module: str) -> None:
         )
 
 
+#: Routers whose routes check a feature PER ITEM, not once at the router.
+#:
+#: The command bar's routes (`navigation_shell.md` §6.3) serve every app at
+#: once. A member who holds Email and not Projects must get Email's answer, so
+#: a router-level gate on one feature would be wrong. Each provider checks its
+#: own app's feature instead, before it calls that app.
+#:
+#: ⚠️ ROUTE BY ROUTE, with the argument beside each. A route added to such a
+#: router fails `test_every_delegated_route_is_named` until somebody names it
+#: here and says where its gate is (security review of NS-4a, 2026-10-08: a
+#: router in neither registry is unchecked, and NS-4b adds routes to this one).
+DELEGATED_ROUTERS: dict[str, dict[str, str]] = {
+    "gateway.routes.shell": {
+        "/shell/manifest": (
+            "PKG-5b part 2. The resolve keeps a claim that names a feature only "
+            "when `user.can_use_feature(payload.feature)` holds, so a member "
+            "without the app's feature gets no claim of it. A claim with no "
+            "feature is open to every member (spec §5.2 step 3) "
+            "(`test_package_host_resolve.py::test_a_feature_the_viewer_lacks_hides_the_entry`, "
+            "`test_package_host_resolve_r8.py` case 5). The tenant is the bound "
+            "session under FORCE RLS and the viewer is `user.email`. The route "
+            "reads no input but `If-None-Match`, and the flag "
+            "`PACKAGE_HOST_ORGS` answers 404 first."
+        ),
+        "/shell/layout": (
+            "PKG-17a. The org default of the shell layout is a UI default and "
+            "grants nothing. `GET` is open to every signed-in member, who reads "
+            "only their own org's document (the tenant is the bound session "
+            "under FORCE RLS, never a request value). `PUT` needs "
+            "`admin:settings:manage`. Both answer 404 first for an org outside "
+            "`PACKAGE_HOST_ORGS` "
+            "(`test_shell_layout.py::test_flag_off_is_404_before_403`, "
+            "`test_a_non_admin_put_is_403`, `test_shell_layout_r8.py`)."
+        ),
+        "/shell/search": (
+            "NS-4a. Each provider in `PROVIDERS` checks "
+            "`user.has_permission('feature:<app>')` before it calls the app's own "
+            "search, and a member without the app gets no group "
+            "(`test_shell_search.py::TestTheFeatureGate`)."
+        ),
+        "/shell/intent": (
+            "NS-4b. The coordinator offers the model only `held_jobs(user)`, each "
+            "job gated on its app's feature, and never returns a job outside that "
+            "list (`test_shell_intent.py::TestTheModelSeesOnlyWhatTheMemberCanOpen`). "
+            "It reads no app data: a job is a link to a form the member then fills."
+        ),
+        "/shell/needs": (
+            "NS-3 slice A. Each provider in `needs.PROVIDERS` checks "
+            "`user.has_permission('feature:<app>')` before it calls the app's own "
+            "read, and a member without the app gets no row and the source "
+            "`absent` (`test_shell_needs.py::TestTheFeatureGate`)."
+        ),
+        "/shell/feed": (
+            "WS-58 MD-1a. The same run of `needs.REGISTRY`: each provider checks "
+            "every feature in its `features` (and the admin test where it names "
+            "one) before it calls the app's own read. The Calendar provider "
+            "needs both `feature:tasks` and `feature:projects`, and a member "
+            "without either gets no card and the source `absent` "
+            "(`test_shell_feed.py::TestTheCalendarGates`)."
+        ),
+        "/shell/feed/prefs": (
+            "WS-58 MD-2d. It needs no feature, as `/auth/me/shell` needs none: "
+            "it reads and writes the caller's own `user_settings.my_day_prefs` "
+            "row, keyed on the session's address in the bound tenant, and the "
+            "body cannot name a member or an organization "
+            "(`test_my_day_prefs.py::TestTheMember`). It reads no app data."
+        ),
+        "/shell/feed/state": (
+            "WS-58 MD-2a. It reads no app data and calls no app. It writes only "
+            "the caller's own rows of `my_day_card_state`, keyed on the session's "
+            "member in the bound tenant, so it needs no feature, as "
+            "`/auth/me/shell` needs none. A body that names a member or an org "
+            "gets 422 (`test_my_day_state.py::TestTheBodyContract`, "
+            "`test_my_day_state_r8.py::TestTheTenancyBoundary`)."
+        ),
+        "/shell/feed/decide-measure": (
+            "WS-58 MD-6a-3. It needs `ADMIN_PERMISSION` through "
+            "`require_permission`, and a member without it gets 403 "
+            "(`test_feed_measure.py::TestTheAdminGate`). It reads no app data, "
+            "only counts from `my_day_judgments`, `my_day_card_state` and the "
+            "zone column of `user_settings`, of the bound org, and it takes no org "
+            "and no member from the request "
+            "(`test_feed_measure_r8.py::TestTheTenancyBoundary`)."
+        ),
+        "/shell/waiting": (
+            "WS-AP AP-1a. `WAITING_ORGS` answers 404 first, and a signed agent "
+            "gets 404. Each provider in `waiting.PROVIDERS` checks the features "
+            "of its app's own route through `Provider.held_by` before it calls "
+            "that route's read. `held_write` also needs `ADMIN_PERMISSION`. "
+            "`app_request` has no feature, as its own routes have none: the "
+            "flag and agent access gate it, and it lists the member's own rows. "
+            "The route takes no member and no org from the request "
+            "(`test_waiting_seam_r8.py`)."
+        ),
+        "/shell/waiting/count": (
+            "WS-AP AP-1a. The same run of `waiting.PROVIDERS` and the same "
+            "gates as `/shell/waiting` (`test_waiting_seam_r8.py`)."
+        ),
+    },
+    "gateway.retrieval.company": {
+        "/search/company": (
+            "WS-61 KR-1. The route asks each source of "
+            "`gateway.retrieval.sources.REGISTRY`, and `Source.find` checks "
+            "`user.has_permission('feature:<app>')` before it calls the app's own "
+            "search. A member without the app gets no hit and no call "
+            "(`test_company_search_sources.py::TestTheFeatureGate`). The CRM "
+            "source also applies the kill switch and the access rule. The route "
+            "takes no member and no org from the request "
+            "(`test_company_search_sources.py::TestTheRouteTakesNoTenant`)."
+        ),
+    },
+}
+
+
+@pytest.mark.parametrize("module", sorted(DELEGATED_ROUTERS))
+def test_every_delegated_route_is_named(module: str) -> None:
+    served = {route.path for route in _routes(module)}
+    named = set(DELEGATED_ROUTERS[module])
+    assert served == named, (
+        f"{module}: routes {sorted(served - named)} have no named gate, "
+        f"and {sorted(named - served)} are named but gone"
+    )
+    for path, why in DELEGATED_ROUTERS[module].items():
+        assert why.strip(), f"{module} {path} delegates its gate with no reason"
+
+
+def test_the_shell_providers_each_name_a_feature() -> None:
+    from gateway.routes.shell.search import PROVIDERS
+
+    for app, (feature, _label, _fn) in PROVIDERS.items():
+        assert feature and feature.isidentifier(), f"provider {app} has no feature"
+
+    from gateway.routes.shell.needs import PROVIDERS as NEEDS
+
+    for source, (feature, _fn) in NEEDS.items():
+        assert feature and feature.isidentifier(), f"needs provider {source} has no feature"
+
+    from gateway.routes.shell.needs import REGISTRY
+
+    for source, provider in REGISTRY.items():
+        assert provider.features, f"feed provider {source} has no feature"
+        for feature in provider.features:
+            assert feature.isidentifier(), f"feed provider {source} names {feature!r}"
+
+
 def test_the_two_registries_do_not_overlap() -> None:
     """A module cannot be both. If one grows routes of the other kind, it needs
     splitting, not two entries."""
     assert not set(GATED_ROUTERS) & set(UNGATED_ROUTERS)
+    assert not set(DELEGATED_ROUTERS) & (set(GATED_ROUTERS) | set(UNGATED_ROUTERS))
 
 
 def _routes(module: str):

@@ -21,13 +21,39 @@
  * `timelineBranch` rather than a ternary, because a ternary makes "not a
  * status change" mean "an activity" and `ActivityEntry` reads `entry.activity!`
  * — a `!` tsc cannot see past.
+ *
+ * WS-53 CRM-X4 (`crm_platform.md` section 19.8) adds a filter over the stream
+ * (`filterTimeline`), the due date of a task with its "Overdue" chip
+ * (`taskDueChips`, drawn by `TaskMeta`), and the shared field primitives in
+ * the composer. `TimelineItem` is one row, and the Overview tab draws the next
+ * open activities with it.
+ *
+ * WS-53 CRM-Q23c (`crm_platform.md` section 18.10) adds `readOnly`, for the
+ * record page of a generic Zoho module. It draws no composer, and a task
+ * shows its state with no control, because no route writes an activity on a
+ * module record.
  */
 
+import FilterPills from "@/components/FilterPills";
 import Icon from "@/components/Icon";
+import { TaskMeta } from "@/components/TaskMeta";
 import Button from "@/components/ui/Button";
-import { useState } from "react";
+import { Input, Textarea } from "@/components/ui/Input";
+import { useEffect, useRef, useState } from "react";
+import Badge from "@/components/ui/Badge";
+import { ONLY_IN_METORITE, onlyInMetorite } from "../lib/connect";
 import { dateTime, dwellLabel } from "../lib/format";
-import { threadStatusLabel, timelineBranch, timelineKey } from "../lib/timeline";
+import { afterDialogsClose, browserHost } from "../lib/shellJobs";
+import {
+  entryKind,
+  filterTimeline,
+  TIMELINE_FILTERS,
+  taskDueChips,
+  threadStatusLabel,
+  timelineBranch,
+  timelineKey,
+  type TimelineFilter,
+} from "../lib/timeline";
 import type { TimelineEntry } from "../lib/types";
 
 type Composable = "note" | "call" | "meeting" | "task";
@@ -39,25 +65,68 @@ const COMPOSERS: { id: Composable; label: string; icon: string }[] = [
   { id: "meeting", label: "Meeting", icon: "Users" },
 ];
 
+/** The empty line of a read-only stream (CRM-Q23c). */
+export const READ_ONLY_EMPTY = "No notes, tasks, calls or meetings on this record yet.";
+
 export default function Timeline({
   entries,
-  onLog,
+  onLog = () => undefined,
   onToggleTask,
-  saving,
+  saving = false,
+  parentMirrored = false,
+  now,
+  callRequest = 0,
+  readOnly = false,
 }: {
+  /**
+   * The `log-call` job of the command bar (CRM-X2). A number other than 0
+   * sets the composer to Call and focuses it. Each new number asks again.
+   */
+  callRequest?: number;
+  /** The record is owned by Zoho, so Metorite-only entries get a badge. */
+  parentMirrored?: boolean;
+  /** Today, for the due dates. A test passes a fixed one. */
+  now?: Date;
   entries: TimelineEntry[];
-  onLog: (body: {
+  /** Not called in `readOnly` mode, which draws no composer. */
+  onLog?: (body: {
     type: Composable;
     subject?: string;
     body?: string;
     due_at?: string;
   }) => void;
-  onToggleTask: (activityId: string, completed: boolean) => void;
-  saving: boolean;
+  /** Without it, a task shows its state with no control (`readOnly`). */
+  onToggleTask?: (activityId: string, completed: boolean) => void;
+  saving?: boolean;
+  /**
+   * CRM-Q23c: the stream of a module record. No composer, and no task
+   * control. The filter of the stream stays, because it changes no data.
+   */
+  readOnly?: boolean;
 }) {
-  const [kind, setKind] = useState<Composable>("note");
+  const [kind, setKind] = useState<Composable>(callRequest ? "call" : "note");
+  // A new ask while the Timeline is already open. React's rule for state that
+  // follows a prop: compare during the render, not in an effect.
+  const [askSeen, setAskSeen] = useState(callRequest);
+  if (callRequest !== askSeen) {
+    setAskSeen(callRequest);
+    if (callRequest) setKind("call");
+  }
+  const composer = useRef<HTMLTextAreaElement>(null);
+  // The command bar gives focus back when it has closed, so the composer
+  // waits for it. Its own record sheet is a dialog too, and does not count.
+  useEffect(() => {
+    if (!callRequest) return;
+    return afterDialogsClose(
+      () => composer.current?.focus(),
+      browserHost(composer.current),
+    );
+  }, [callRequest]);
   const [draft, setDraft] = useState("");
   const [due, setDue] = useState("");
+  const [filter, setFilter] = useState<TimelineFilter>("all");
+  const shown = filterTimeline(entries, filter);
+  const filterLabel = TIMELINE_FILTERS.find((f) => f.id === filter)?.label ?? "";
 
   function submit() {
     const value = draft.trim();
@@ -76,64 +145,91 @@ export default function Timeline({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="shrink-0 border-b border-border p-3">
-        <div className="mb-2 flex items-center gap-1">
-          {COMPOSERS.map(({ id, label, icon }) => (
-            <button
-              key={id}
-              onClick={() => setKind(id)}
-              className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs tech-transition ${
-                kind === id
-                  ? "bg-primary text-primary-foreground font-medium"
-                  : "text-muted-foreground hover:bg-secondary hover:text-foreground"
-              }`}
+      {readOnly ? null : (
+        <div className="shrink-0 border-b border-border p-3">
+          <div className="mb-2 flex items-center gap-1">
+            {COMPOSERS.map(({ id, label, icon }) => (
+              <button
+                key={id}
+                onClick={() => setKind(id)}
+                className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs tech-transition ${
+                  kind === id
+                    ? "bg-primary text-primary-foreground font-medium"
+                    : "text-muted-foreground hover:bg-secondary hover:text-foreground"
+                }`}
+              >
+                <Icon name={icon} className="w-3 h-3" />
+                {label}
+              </button>
+            ))}
+          </div>
+          {/* The shared primitives, never raw fields (design rule 3, CRM-X4). */}
+          <Textarea
+            ref={composer}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            rows={2}
+            data-guide="crm.add-note"
+            aria-label={kind === "task" ? "The task" : "What happened"}
+            placeholder={
+              kind === "task" ? "What needs doing?" : "What happened?"
+            }
+          />
+          <div className="mt-2 flex items-center gap-2">
+            {kind === "task" && (
+              <Input
+                type="date"
+                inputSize="sm"
+                aria-label="Due date"
+                value={due}
+                onChange={(e) => setDue(e.target.value)}
+                className="w-40"
+              />
+            )}
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={submit}
+              loading={saving}
+              disabled={!draft.trim()}
+              className="ml-auto"
             >
-              <Icon name={icon} className="w-3 h-3" />
-              {label}
-            </button>
-          ))}
+              Log
+            </Button>
+          </div>
         </div>
-        <textarea
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          rows={2}
-          placeholder={
-            kind === "task" ? "What needs doing?" : "What happened?"
-          }
-          className="w-full resize-none rounded-lg border border-border bg-background px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground focus:border-primary/40 focus:outline-none"
-        />
-        <div className="mt-2 flex items-center gap-2">
-          {kind === "task" && (
-            <input
-              type="date"
-              value={due}
-              onChange={(e) => setDue(e.target.value)}
-              className="rounded-lg border border-border bg-background px-2 py-1 text-xs text-foreground"
-            />
-          )}
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={submit}
-            loading={saving}
-            disabled={!draft.trim()}
-            className="ml-auto"
-          >
-            Log
-          </Button>
-        </div>
-      </div>
+      )}
+
+      {/* The filter of the stream (CRM-X4 item 3). Each kind shows its count. */}
+      <FilterPills
+        items={TIMELINE_FILTERS.map((f) => ({
+          id: f.id,
+          label: f.label,
+          count: f.id === "all" ? entries.length : entries.filter((e) => entryKind(e) === f.id).length,
+        }))}
+        activeId={filter}
+        onChange={(id) => setFilter(id as TimelineFilter)}
+      />
 
       <div className="flex-1 overflow-y-auto p-3">
-        {entries.length === 0 && (
+        {shown.length === 0 && (
           <p className="py-8 text-center text-xs text-muted-foreground">
-            Nothing logged yet.
+            {entries.length === 0
+              ? readOnly
+                ? READ_ONLY_EMPTY
+                : "Nothing logged yet."
+              : `No ${filterLabel.toLowerCase()} on this record.`}
           </p>
         )}
         <ol className="space-y-3">
-          {entries.map((entry, index) => (
+          {shown.map((entry, index) => (
             <li key={timelineKey(entry, index)}>
-              <Entry entry={entry} onToggleTask={onToggleTask} />
+              <TimelineItem
+                entry={entry}
+                onToggleTask={readOnly ? undefined : onToggleTask}
+                parentMirrored={parentMirrored}
+                now={now}
+              />
             </li>
           ))}
         </ol>
@@ -151,12 +247,17 @@ export default function Timeline({
  * loss on a record somebody is trying to trust, and falling through to
  * `ActivityEntry` throws on `entry.activity!`.
  */
-function Entry({
+export function TimelineItem({
   entry,
   onToggleTask,
+  parentMirrored,
+  now,
 }: {
+  parentMirrored: boolean;
   entry: TimelineEntry;
-  onToggleTask: (activityId: string, completed: boolean) => void;
+  /** Without it, a task shows its state with no control (CRM-Q23c). */
+  onToggleTask?: (activityId: string, completed: boolean) => void;
+  now?: Date;
 }) {
   switch (timelineBranch(entry)) {
     case "status_change":
@@ -164,7 +265,14 @@ function Entry({
     case "email_thread":
       return <EmailEntry entry={entry} />;
     case "activity":
-      return <ActivityEntry entry={entry} onToggleTask={onToggleTask} />;
+      return (
+        <ActivityEntry
+          entry={entry}
+          onToggleTask={onToggleTask}
+          parentMirrored={parentMirrored}
+          now={now}
+        />
+      );
     default:
       return null;
   }
@@ -275,9 +383,13 @@ const ACTIVITY_ICONS: Record<string, string> = {
 function ActivityEntry({
   entry,
   onToggleTask,
+  parentMirrored,
+  now,
 }: {
+  parentMirrored: boolean;
   entry: TimelineEntry;
-  onToggleTask: (activityId: string, completed: boolean) => void;
+  onToggleTask?: (activityId: string, completed: boolean) => void;
+  now?: Date;
 }) {
   const activity = entry.activity!;
   const iconName = ACTIVITY_ICONS[activity.type] ?? "Circle";
@@ -286,7 +398,15 @@ function ActivityEntry({
 
   return (
     <div className="flex items-start gap-2">
-      {isTask ? (
+      {isTask && !onToggleTask ? (
+        // Read only (CRM-Q23c): the state, with no control.
+        <Icon
+          name={done ? "CheckCircle2" : "Circle"}
+          role="img"
+          aria-label={done ? "The task is done" : "The task is open"}
+          className={`mt-0.5 w-3.5 h-3.5 shrink-0 ${done ? "text-success" : "text-muted-foreground"}`}
+        />
+      ) : isTask && onToggleTask ? (
         <button
           onClick={() => onToggleTask(activity.id, !done)}
           className="mt-0.5 shrink-0 text-muted-foreground hover:text-foreground tech-transition"
@@ -316,6 +436,8 @@ function ActivityEntry({
             {activity.body}
           </p>
         )}
+        {/* The due date of a task, and "Overdue" when it is late (CRM-X4 item 4). */}
+        <TaskMeta chips={taskDueChips(activity, now)} className="mt-0.5" />
         <p className="mt-0.5 flex items-center gap-1.5 text-[10px] text-muted-foreground">
           <span className="uppercase">{activity.type}</span>
           <span>·</span>
@@ -327,6 +449,9 @@ function ActivityEntry({
             </>
           )}
           <Origin origin={entry.origin} />
+          {onlyInMetorite(activity, parentMirrored) && (
+            <Badge size="xs">{ONLY_IN_METORITE}</Badge>
+          )}
         </p>
       </div>
     </div>

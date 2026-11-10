@@ -9,8 +9,9 @@ raw dict. A second decide client in an app is a defect (CLAUDE.md §4).
 
 🔴 **There is NO local path, on purpose.** litellm cannot call TypeSafe's Jev
 from the SDK, so a box that cannot reach the Console Router gets
-:class:`DecideUnavailable`, and the caller keeps its current LLM path
-(§6A.14 adoption rule 3).
+:class:`DecideUnavailable`. A caller in general keeps its current LLM path
+(§6A.14 adoption rule 3). **Email does not** (D-EM-8, EM-T5b-2): in ``on``,
+an email with no decision stays undecided, and a later cycle asks again.
 
 🔴 **``DECIDE_ENABLED`` is the master switch, default OFF, and OWNER-ONLY.**
 Off, :func:`decide` raises before it imports the Console client, so it makes
@@ -83,7 +84,9 @@ class DecideError(Exception):
 
 
 class DecideUnavailable(DecideError):
-    """No decision is available. The caller takes its current LLM path.
+    """No decision is available. A caller in general takes its current LLM
+    path. For email (D-EM-8), the caller leaves the email undecided and
+    makes no LLM call.
 
     ``reason`` names why: ``"disabled"`` for the switch, the Console client's
     own words for an unwired box or a missing member, ``"HTTP 503"`` for an

@@ -188,6 +188,20 @@ def _may(permission: str) -> bool:
         return False
 
 
+def _close_profile_writes() -> None:
+    """WS-63 PZ-6a fix round 2: a memory read hands the model text that
+    another person, a mail or an import may have shaped, so it closes the
+    run's profile writes for the rest of the run
+    (``acb_common.assistant_profile.close_writes``). Never raises. Fence:
+    ``tests/unit/test_profile_write_tools.py``."""
+    try:
+        from acb_common.assistant_profile import close_writes
+
+        close_writes()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 async def remember(query: str) -> str:
     """Search episodic memory for facts about the current user related to *query*.
 
@@ -207,6 +221,7 @@ async def remember(query: str) -> str:
         facts = await remember("Vijay's preferred communication channel")
         facts = await remember("ABC Corp deal status and contacts")
     """
+    _close_profile_writes()
     try:
         from acb_memory import get_memory_context  # noqa: PLC0415
 
@@ -238,7 +253,7 @@ async def recall_timeline(entity_name: str, query: str) -> str:
 
     Returns:
         Timestamped facts like:
-        "2026-05-12: Deal Fracktal-ABC moved to Awaiting PO [source: agent-sales]"
+        "2026-05-12: Deal Acme-ABC moved to Awaiting PO [source: agent-sales]"
         "2026-05-28: Follow-up sent by Vijay after 16 days stale"
         Returns "(no timeline facts found)" if Graphiti is disabled or nothing matches.
 
@@ -246,6 +261,7 @@ async def recall_timeline(entity_name: str, query: str) -> str:
         history = await recall_timeline("ABC Corp", "all deal stage changes")
         history = await recall_timeline("Rahul Kumar", "meetings and follow-ups")
     """
+    _close_profile_writes()
     try:
         from acb_memory import search_entity_timeline  # noqa: PLC0415
 
@@ -256,6 +272,18 @@ async def recall_timeline(entity_name: str, query: str) -> str:
     except Exception as exc:  # noqa: BLE001
         _log.warning("memory_tools.recall_timeline_failed", error=str(exc)[:200])
         return f"(timeline search failed: {exc})"
+
+
+#: What ``save_memory`` answers when Mem0 is off (personalization.md §2.1).
+MEMORY_OFF = "(memory is off — nothing was saved)"
+
+
+def _mem0_on() -> bool:
+    """True when Mem0 is on. The same switch that ``MemoryClient._get_client``
+    reads, so the tool and the client cannot disagree."""
+    from acb_common import get_settings
+
+    return bool(getattr(get_settings(), "mem0_enabled", False))
 
 
 async def save_memory(fact: str) -> str:
@@ -274,7 +302,10 @@ async def save_memory(fact: str) -> str:
               E.g. "Primary contact at ABC Corp is Rahul Kumar (rahul@abc.com)"
 
     Returns:
-        "Memory saved." on success, or an error description on failure.
+        "Memory saved." on success. MEMORY_OFF when Mem0 is off, because then
+        nothing is kept (personalization.md §2.1, WS-63 PZ-1). Otherwise an
+        error description. The tool never says "Memory saved." when Mem0 is
+        off. Fence: ``tests/unit/test_memory_tools_dark.py``.
 
     Examples:
         await save_memory("Vijay wants all financial figures in INR lakhs, not crores")
@@ -282,6 +313,12 @@ async def save_memory(fact: str) -> str:
     """
     try:
         from acb_memory import add_memories_background  # noqa: PLC0415
+
+        # Mem0 off: `MemoryClient.add` returns in silence and keeps nothing.
+        # So say that memory is off, and never "Memory saved." (§2.1).
+        if not _mem0_on():
+            _log.info("memory_tools.save_memory_skipped_mem0_off")
+            return MEMORY_OFF
 
         user_id = _get_memory_user_id()
         if not user_id:
@@ -333,7 +370,7 @@ async def save_episode(
     Examples:
         await save_episode(
             "Deal closed",
-            "ABC Corp signed the PO worth ₹50L for 10 Fracktal Works printers. Contact: Rahul Kumar.",
+            "ABC Corp signed the PO worth ₹50L for 10 printers. Contact: Rahul Kumar.",
             source="agent-sales",
         )
         await save_episode(
@@ -345,13 +382,11 @@ async def save_episode(
     try:
         from acb_memory import add_episode  # noqa: PLC0415
 
-        user_id = _get_memory_user_id() or "default"
-
+        # KG-9: the bound tenant names the episode's group (``org_<id>``).
         await add_episode(
             name=name,
             content=content,
             source_description=source,
-            group_id=user_id,
         )
         _log.info(
             "memory_tools.save_episode_ok",
@@ -390,6 +425,7 @@ async def recall_agent(query: str) -> str:
         ctx = await recall_agent("our standard quote-approval workflow")
         ctx = await recall_agent("which suppliers we've had quality issues with")
     """
+    _close_profile_writes()
     try:
         from acb_memory import get_scoped_context, scope_key  # noqa: PLC0415
 
@@ -418,7 +454,8 @@ async def save_agent_memory(fact: str) -> str:
         fact: A single, self-contained fact.
 
     Returns:
-        "Agent memory saved." or an error description.
+        "Agent memory saved." on success, MEMORY_OFF when Mem0 is off, or an
+        error description.
 
     Examples:
         await save_agent_memory("PO approvals over 5L require the founder's sign-off")
@@ -430,6 +467,10 @@ async def save_agent_memory(fact: str) -> str:
         agent = _get_memory_agent_name()
         if not agent:
             return "(cannot save — no agent context)"
+        # The same rule as save_memory (personalization.md §2.1).
+        if not _mem0_on():
+            _log.info("memory_tools.save_agent_memory_skipped_mem0_off")
+            return MEMORY_OFF
         messages = [
             {"role": "user", "content": f"Remember this for your work: {fact}"},
             {"role": "assistant", "content": f"Saved to agent memory: {fact}"},
@@ -464,11 +505,14 @@ async def recall_org(query: str) -> str:
         ctx = await recall_org("our fiscal year and reporting cadence")
         ctx = await recall_org("company-wide priorities this quarter")
     """
+    _close_profile_writes()
     try:
-        from acb_memory import get_scoped_context, scope_key  # noqa: PLC0415
+        from acb_memory import get_scoped_context, org_scope  # noqa: PLC0415
 
+        # KG-9: ``org:<bound tenant>``. With no tenant the scope is "" and
+        # the read answers nothing.
         result = await get_scoped_context(
-            scope_key(org=True), query, header="Organisation memory"
+            org_scope(), query, header="Organisation memory"
         )
         return result if result else "(no organisation memories found)"
     except ImportError:
@@ -491,10 +535,11 @@ async def save_org_memory(fact: str) -> str:
         fact: A single, self-contained organisation-level fact.
 
     Returns:
-        "Organisation memory saved." or an error description.
+        "Organisation memory saved." on success, MEMORY_OFF when Mem0 is off,
+        or an error description.
 
     Examples:
-        await save_org_memory("Fracktal's fiscal year runs April-March")
+        await save_org_memory("Our fiscal year runs April-March")
         await save_org_memory("All customer refunds above 1L need finance approval")
     """
     if not _may("memory:write_org"):
@@ -508,14 +553,23 @@ async def save_org_memory(fact: str) -> str:
             "Saving this as a personal memory instead may be what you want."
         )
     try:
-        from acb_memory import add_scoped_memories, scope_key  # noqa: PLC0415
+        from acb_memory import add_scoped_memories, org_scope  # noqa: PLC0415
 
         agent = _get_memory_agent_name() or "org"
+        # The same rule as save_memory (personalization.md §2.1).
+        if not _mem0_on():
+            _log.info("memory_tools.save_org_memory_skipped_mem0_off")
+            return MEMORY_OFF
         messages = [
             {"role": "user", "content": f"Remember this company-wide fact: {fact}"},
             {"role": "assistant", "content": f"Saved to organisation memory: {fact}"},
         ]
-        await add_scoped_memories(scope_key(org=True), messages, agent_id=agent)
+        # KG-9: ``org:<bound tenant>``. No tenant, no write, and the tool says so.
+        scope = org_scope()
+        if not scope:
+            _log.info("memory_tools.save_org_memory_skipped_no_tenant")
+            return "(organisation memory needs a bound organization. The fact is not kept.)"
+        await add_scoped_memories(scope, messages, agent_id=agent)
         _log.info("memory_tools.save_org_memory_ok", fact=fact[:80])
         return "Organisation memory saved."
     except ImportError:

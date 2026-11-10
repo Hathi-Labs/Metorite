@@ -1,0 +1,6 @@
+part,supplier,qty,unit_cost_inr,notes
+Hot-end assembly,Northwind Components,12,1850.00,"spare, for the field kit"
+Stepper driver TMC2209,Contoso Motion,40,420.50,
+Borosilicate bed 300 mm,Fabrikam Glass,8,2600.00,"tempered, 4 mm"
+PTFE tube 1 m,Northwind Components,25,95.00,food grade
+Thermistor 100k,Contoso Motion,60,35.75,"pack of 5, NTC"

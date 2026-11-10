@@ -18,7 +18,7 @@ def test_settings_defaults_include_drafting_fields() -> None:
     # OFF: LIVE drafting (DRAFT_EMAIL on the Needs Reply rule) is OFF for a new
     # mailbox until a member turns it on (D-EM-6, 2026-10-02). See
     # test_email_auto_draft_defaults.py.
-    s = m.AssistantSettingsModel(account_id="acc-1")
+    s = m.AssistantSettingsModel(account_id="a0000000-0000-4000-8000-000000000001")
     assert s.draft_replies is False
     assert s.personal_instructions is None
     assert s.writing_style is None
@@ -26,7 +26,7 @@ def test_settings_defaults_include_drafting_fields() -> None:
 
 def test_settings_roundtrip_drafting_fields() -> None:
     s = m.AssistantSettingsModel(
-        account_id="acc-1",
+        account_id="a0000000-0000-4000-8000-000000000001",
         personal_instructions="Never quote prices over email.",
         writing_style="Short and casual.",
         draft_replies=False,
@@ -50,6 +50,9 @@ async def test_load_assistant_about_builds_tagged_blocks() -> None:
     lp_rows = [SimpleNamespace(pattern="Keep sign-offs to just my first name.")]
     settings_res = MagicMock()
     settings_res.fetchone.return_value = settings_row
+    # WS-17 SG-2: the signature comes from the resolver, in a query of its own.
+    sig_res = MagicMock()
+    sig_res.fetchone.return_value = SimpleNamespace(signature="— Vijay")
     kb_res = MagicMock()
     kb_res.fetchall.return_value = kb_rows
     vp_res = MagicMock()  # voice profile: none built
@@ -58,9 +61,9 @@ async def test_load_assistant_about_builds_tagged_blocks() -> None:
     lp_res.fetchall.return_value = lp_rows
 
     db = AsyncMock()
-    db.execute.side_effect = [settings_res, kb_res, vp_res, lp_res]
+    db.execute.side_effect = [settings_res, sig_res, kb_res, vp_res, lp_res]
 
-    about, sig = await m._load_assistant_about(db, "acc-1")
+    about, sig = await m._load_assistant_about(db, "a0000000-0000-4000-8000-000000000001")
     assert sig == "— Vijay"
     assert "<about>" in about and "Constellation" in about
     assert "<personal_instructions>" in about and "Never quote prices." in about
@@ -72,6 +75,8 @@ async def test_load_assistant_about_builds_tagged_blocks() -> None:
 async def test_load_assistant_about_empty_when_unset() -> None:
     settings_res = MagicMock()
     settings_res.fetchone.return_value = None
+    sig_res = MagicMock()  # WS-17 SG-2: the resolver's read finds no row too
+    sig_res.fetchone.return_value = None
     kb_res = MagicMock()
     kb_res.fetchall.return_value = []
     vp_res = MagicMock()
@@ -79,9 +84,9 @@ async def test_load_assistant_about_empty_when_unset() -> None:
     lp_res = MagicMock()
     lp_res.fetchall.return_value = []
     db = AsyncMock()
-    db.execute.side_effect = [settings_res, kb_res, vp_res, lp_res]
+    db.execute.side_effect = [settings_res, sig_res, kb_res, vp_res, lp_res]
 
-    about, sig = await m._load_assistant_about(db, "acc-1")
+    about, sig = await m._load_assistant_about(db, "a0000000-0000-4000-8000-000000000001")
     assert about == ""
     assert sig == ""
 
@@ -91,12 +96,12 @@ async def test_load_assistant_about_empty_when_unset() -> None:
 async def test_create_knowledge_inserts_and_returns() -> None:
     db = AsyncMock()
     user = SimpleNamespace(email="u@example.com")
-    req = m.KnowledgeModel(account_id="acc-1", title="FAQ", content="Answers.")
+    req = m.KnowledgeModel(account_id="a0000000-0000-4000-8000-000000000001", title="FAQ", content="Answers.")
     with patch.object(m.automation.assistant, "_tenant_session", bind_db(db)), \
             patch.object(m.automation.assistant, "_assert_account_owner", AsyncMock()):
         res = await m.create_knowledge(req, user=user)
     assert res["title"] == "FAQ"
-    assert res["account_id"] == "acc-1"
+    assert res["account_id"] == "a0000000-0000-4000-8000-000000000001"
     db.commit.assert_awaited()
 
 
@@ -112,5 +117,5 @@ async def test_list_knowledge_returns_entries() -> None:
     user = SimpleNamespace(email="u@example.com")
     with patch.object(m.automation.assistant, "_tenant_session", bind_db(db)), \
             patch.object(m.automation.assistant, "_assert_account_owner", AsyncMock()):
-        res = await m.list_knowledge(account_id="acc-1", user=user)
+        res = await m.list_knowledge(account_id="a0000000-0000-4000-8000-000000000001", user=user)
     assert [e["title"] for e in res["entries"]] == ["Pricing", "Policy"]

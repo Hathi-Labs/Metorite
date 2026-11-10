@@ -17,7 +17,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { activeTabFor } from "./layout";
+import { activeTabFor, visibleTabs } from "./layout";
 
 describe("which tab a People route lights", () => {
   it("lights the directory only on the directory itself", () => {
@@ -80,5 +80,41 @@ describe("which tab a People route lights", () => {
     expect(activeTabFor("/projects")).toBe("");
     // A route that merely starts with the same letters is not this app.
     expect(activeTabFor("/people-analytics")).toBe("");
+  });
+});
+
+// Owner directive, 2026-10-05: "remove my access from the sidebar and fold it
+// into the People's app". My access left the sidebar and became a tab here.
+// Its whole job is to explain a missing pane, so a member who holds NOTHING
+// must still have a door to it. That door is this bar.
+describe("My access is a tab of the People app", () => {
+  const ids = (directory: boolean, hr: boolean) =>
+    visibleTabs(directory, hr).map((t) => t.id);
+
+  it("lights its own tab, and never the directory", () => {
+    expect(activeTabFor("/people/access")).toBe("access");
+  });
+
+  it("shows the two personal tabs to a member without feature:people", () => {
+    // Before the move this member saw no bar at all. With no bar, My access
+    // would have no door for exactly the person who needs it.
+    expect(ids(false, false)).toEqual(["me", "access"]);
+    // HR alone does not open the directory tabs: they need feature:people.
+    expect(ids(false, true)).toEqual(["me", "access"]);
+  });
+
+  it("puts the personal tabs last for a member who sees the whole bar", () => {
+    const plain = ids(true, false);
+    expect(plain.slice(-2)).toEqual(["me", "access"]);
+    expect(plain).not.toContain("search");
+    expect(ids(true, true)).toContain("search");
+  });
+
+  it("passes only Tabs' own keys across the boundary", () => {
+    for (const tab of visibleTabs(true, true)) {
+      expect(Object.keys(tab).sort()).toEqual(
+        ["href", "icon", "id", "label", "note"],
+      );
+    }
   });
 });

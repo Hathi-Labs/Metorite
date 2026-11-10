@@ -11,14 +11,68 @@ import json
 import logging
 import re
 from abc import ABC, abstractmethod
-from collections.abc import AsyncGenerator, Generator
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Generator
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Protocol
+from urllib.parse import unquote
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+
+class ProviderRateLimited(Exception):
+    """A provider refused a request for a rate limit, and its tries are spent.
+
+    A typed error of a provider adds this class, as ``GmailRateLimited``
+    does. A cycle that gets it stops, and the next cycle comes soon. It is a
+    failure only after ``RATE_LIMIT_SOFT_SECS`` with no progress, and the loop
+    then backs off (WS-17 EM-G4a item 9, EM-G4b-f3). The scheduler reads it
+    where it degrades other failures, so a rate limit is never degraded
+    (EM-G4b review round 1, F2)."""
+
+
+class FolderCheckIncomplete(ValueError):
+    """The provider could not read the whole folder tree, so it made no
+    folder. The cause may pass, so a later try can succeed (H-267)."""
+
+
+class ProviderAttachmentFailed(Exception):
+    """A file did not reach a draft at the provider (WS-17 EM-T9).
+
+    It holds the name of the file and nothing else. The upload URL of an
+    Outlook session carries a token in its query, so this class never takes
+    a URL, a response or a status, and it never subclasses
+    ``httpx.HTTPStatusError``, whose text holds the URL. The draft route
+    answers 502 with the name (``email_app_master_plan.md`` §10.4.10)."""
+
+    def __init__(self, filename: str) -> None:
+        self.filename = filename
+        super().__init__(f"The file {filename} could not be attached.")
+
+
+class ProviderMailTooLarge(Exception):
+    """A mail is too large for the provider (WS-17 EM-G3c-1).
+
+    It holds the size of the built mail and the limit, in bytes, and nothing
+    else. It never takes a URL, a request or a response, and it never
+    subclasses ``httpx.HTTPStatusError``, whose text holds the URL. A typed
+    error of a provider adds this class, as ``GmailMailTooLarge`` does. The
+    send and the draft routes answer 413 (``email_app_master_plan.md``
+    §12.3.3b items 6 and 7). Outlook raises ``OutlookMailTooLarge`` on a
+    413 of Graph (``email_app_master_plan.md`` §15). IMAP never raises it.
+
+    ``limit`` is ``None`` when the provider refused the mail (a 413) under
+    the local limit, so the text never names a limit that did not apply."""
+
+    def __init__(self, size: int, limit: int | None) -> None:
+        self.size = size
+        self.limit = limit
+        super().__init__(
+            f"The mail has {size} bytes, and the limit is {limit} bytes."
+            if limit is not None else
+            f"The provider refused a mail of {size} bytes as too large.")
 
 
 class _RefreshableProvider(Protocol):
@@ -178,6 +232,40 @@ _CANONICAL_FOLDERS: dict[str, str] = {
 }
 
 
+#: The folder keys that no move may reach (§21 fix round 1, P1-a). A
+#: provider files mail in Sent and Drafts itself, on a send and on a save.
+MOVE_REFUSED_FOLDERS: frozenset[str] = frozenset({"sent", "drafts"})
+
+
+#: What a member reads when a rule asks for a move into Sent or Drafts (H-395).
+MOVE_REFUSED_SENTENCE = (
+    "A rule cannot move mail into Sent or Drafts. Your mailbox files mail "
+    "there itself. Choose another folder.")
+
+
+_SENT_DRAFT_ALIASES = {"sent messages": "sent"}
+
+
+def move_refusal(name: str | None) -> str | None:
+    """The plain sentence when a move to ``name`` is refused, else ``None``.
+
+    The one check for the rule save (create, update, batch, generate) and the
+    rule run, so a new rule cannot hold the move and an old one fails with
+    the same words (H-395, ``email_app_master_plan.md`` §21.10).
+    """
+    if not name:
+        return None
+    key = canonical_folder(name)
+    if key not in MOVE_REFUSED_FOLDERS:
+        # IMAP and Gmail spell the folder with a path: "[Gmail]/Sent Mail",
+        # "INBOX.Sent", "Sent Messages". Compare the last segment too.
+        last = re.split(r"[/.\\]", name.strip())[-1]
+        key = canonical_folder(_SENT_DRAFT_ALIASES.get(last.strip().lower(), last))
+    if key in MOVE_REFUSED_FOLDERS:
+        return MOVE_REFUSED_SENTENCE
+    return None
+
+
 def canonical_folder(name: str | None) -> str:
     """Normalize a provider folder name/ID to a canonical lowercase key.
 
@@ -274,6 +362,45 @@ class Attachment:
     provider_attachment_id: str
 
 
+@dataclass(frozen=True)
+class InlineImage:
+    """One inline part of a mail, which its HTML names with ``cid:``.
+
+    ``content_id`` is in the form of :func:`normalize_content_id`. The
+    ``mime_type`` is the type that the provider declares. The gateway does not
+    trust it and reads the type from the bytes (WS-17, the inline images fix).
+    """
+
+    content_id: str
+    content: bytes
+    mime_type: str = ""
+
+
+@dataclass(frozen=True)
+class InlineRead:
+    """The answer of :meth:`BaseEmailProvider.get_inline_images`.
+
+    ``complete`` is false when the read of one or more parts failed for a
+    reason other than a rate limit. The gateway then keeps the list of names
+    for a short time only, so a part that failed once is read again soon
+    (security review of 2026-10-13, P2-4). A part that a cap leaves out does
+    not make the read incomplete, because no later read can give it.
+    """
+
+    images: list[InlineImage] = field(default_factory=list)
+    complete: bool = True
+
+
+def normalize_content_id(value: str | None) -> str:
+    """The one form of a Content-ID that a ``cid:`` URL and a part share.
+
+    A part header holds ``<id>``, and RFC 2392 encodes a ``cid:`` URL with
+    ``%`` escapes. So the form drops the angle brackets, decodes the escapes
+    and uses lower case, as ``gmail._named_cids`` does.
+    """
+    return unquote(str(value or "")).strip().strip("<>").strip().lower()
+
+
 @dataclass
 class EmailMessage:
     """Normalized email message across all providers."""
@@ -316,6 +443,11 @@ class EmailMessage:
     unsubscribe_link: str | None = None
     received_at: datetime | None = None
     raw: dict[str, Any] = field(default_factory=dict)
+    # True only on a ``[DELETED]`` marker that a change feed made (WS-17
+    # EM-G4b E-B2, review round 1 F3). Only the Gmail history sets it. A
+    # marker with it deletes a row in ``drafts``. A real message whose
+    # subject is "[DELETED]" never has it, so the rule cannot meet its row.
+    deletion_marker: bool = False
 
 
 @dataclass
@@ -332,6 +464,27 @@ class EmailFolder:
 
 
 @dataclass
+class DeltaShadowReport:
+    """The record of one poll of the Graph delta in shadow (WS-17 EM-T4d).
+
+    It holds counts and statuses only: no subject, no address and no link.
+    ``both``, ``sweep_only`` and ``delta_only`` count the ids of NEW mail: a
+    message received after the end of the last round of its folder. A
+    folder in its first round adds to ``seeding`` and to no other count. An
+    ``@removed`` item adds to ``removed`` only. ``failed`` counts the folders
+    whose delta failed, and ``statuses`` names each failure: the HTTP status,
+    or the class of the error."""
+    folders: int = 0
+    both: int = 0
+    sweep_only: int = 0
+    delta_only: int = 0
+    seeding: int = 0
+    removed: int = 0
+    failed: int = 0
+    statuses: list[str] = field(default_factory=list)
+
+
+@dataclass
 class SyncResult:
     """Result of a sync operation."""
     messages_synced: int = 0
@@ -345,10 +498,83 @@ class SyncResult:
     # incremental syncs (Gmail history, IMAP UIDNEXT) where absence means
     # "unchanged", not "deleted".
     full_snapshot: bool = False
+    # True when a sweep folder failed before it read back to the catch-up
+    # watermark (EM-T6b fix rounds 2 and 3). The messages above hold what the
+    # sweep read. Phase (d) writes them and keeps ``last_synced_at``.
+    # ``catch_up_folders`` names those folders.
+    catch_up_incomplete: bool = False
+    catch_up_folders: list[str] = field(default_factory=list)
+    # The record of the Graph delta in shadow (WS-17 EM-T4d), or None when no
+    # delta ran. The scheduler logs it. It never changes the fields above.
+    delta_report: DeltaShadowReport | None = None
+    # A fresh cursor that the provider read because its stored cursor was
+    # stale (WS-17 EM-G4b items 5 and 6). Only Gmail sets it. When the sweep
+    # back to the watermark read to the end, ``new_history_id`` holds the
+    # same value. When the sweep stopped short, ``new_history_id`` is None,
+    # so the stale cursor stays and the next cycle sweeps again (E-B1). The
+    # scheduler writes this value only when it abandons that catch-up.
+    reseed_history_id: str | None = None
+    # True when the provider found its cursor stale and swept again (WS-17
+    # EM-G4b review round 1 F6). The scheduler then logs the reset with the
+    # mailbox id. When ``reseed_history_id`` is None too, the seed failed.
+    cursor_reset: bool = False
+    # True when a rate limit stopped the read after one or more finished
+    # pages (WS-17 EM-G4b-f1, D-G4b-f1-2). Only Gmail sets it. The messages
+    # above are those of the finished pages, and ``new_history_id`` is the
+    # end of the last finished page. The scheduler writes both, keeps the
+    # watermark and backs the loop off. Outlook and IMAP never set it.
+    rate_limited: bool = False
+
+
+#: The callback that an import calls once, before its first batch, with the
+#: count of the messages that it expects to read. ``None`` means "unknown"
+#: (WS-17 EM-T6b item 3).
+EstimateCallback = Callable[[int | None], Awaitable[None]]
+
+#: The sort key of a message with no ``received_at``: older than any date.
+_NO_DATE = datetime.min.replace(tzinfo=UTC)
+
+
+def _aware(value: datetime) -> datetime:
+    """``value`` with a time zone. A naive value is read as UTC."""
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def received_key(msg: EmailMessage) -> datetime:
+    """The time of *msg* for a newest-first order, always with a time zone.
+
+    A message with no date sorts as the oldest."""
+    return _NO_DATE if msg.received_at is None else _aware(msg.received_at)
 
 
 class BaseEmailProvider(ABC):
     """Abstract email provider interface."""
+
+    #: True when ``import_batches`` reads every folder of the sweep, so its
+    #: messages are a full snapshot of each folder back to the floor. The
+    #: deep sync of a member act then reconciles deletions from it (EM-T6b).
+    import_full_snapshot: bool = False
+
+    #: True when that reconcile leaves out each row in drafts (WS-17 EM-G5b
+    #: item 9). Gmail gives a draft a new message id at each update, so a
+    #: missing draft id proves no delete. The scheduler reads it with
+    #: ``getattr``, so a fake that does not subclass this class gets False.
+    import_reconcile_skips_drafts: bool = False
+
+    #: True when the provider gives a message a new id when it moves, so the
+    #: ingest upsert may move the one row of a Message-ID to the new id
+    #: (``persist.upsert_message(reclaim=...)``). Only Outlook does that.
+    #: Gmail never changes an id, and two Gmail messages can hold one
+    #: Message-ID, so a reclaim would fold them into one row (D-EM-34, GM-2).
+    #: A caller reads it with ``getattr(provider, "REKEYS_MESSAGE_IDS",
+    #: False)``, because some test fakes do not subclass this class.
+    REKEYS_MESSAGE_IDS: bool = False
+
+    #: True when :meth:`forward_message` forwards a message at the provider,
+    #: so its files never pass through Metorite (``email_app_master_plan.md``
+    #: §15). Only Outlook does. The forward route reads it with ``getattr``,
+    #: because some test fakes do not subclass this class.
+    forwards_natively: bool = False
 
     def __init__(self, credentials: dict[str, Any]):
         self.credentials = credentials
@@ -398,6 +624,34 @@ class BaseEmailProvider(ABC):
         """Get full email message including body."""
         ...
 
+    async def get_reply_to(
+        self, provider_message_id: str, *,
+        folder: str | None = None, message_id: str | None = None,
+    ) -> list[str]:
+        """The Reply-To addresses of one message, or ``[]`` when it names none.
+
+        The reply card of the chat (EM-CR, ``email_app_master_plan.md`` §18)
+        sends a reply to the Reply-To when the mail has one, as a mail app
+        does. The sync stores no Reply-To, so the card asks the provider for
+        the one message it answers. The default names none, and the reply
+        goes to the sender. Gmail, Outlook and IMAP read the one header.
+
+        *folder* is the stored canonical folder, and *message_id* the stored
+        Message-ID. A provider whose message id is unique in one folder only
+        (IMAP) reads that folder, and names no Reply-To unless the message it
+        read has that Message-ID (security review of #1191).
+        """
+        return []
+
+    async def get_message_body(self, provider_message_id: str) -> EmailMessage:
+        """The message, for a caller that reads its body only.
+
+        The HTML route of the reading pane calls it (WS-17 EM-S1). The
+        default reads :meth:`get_message`. A provider whose full read costs
+        more, as Outlook's does, reads the body alone.
+        """
+        return await self.get_message(provider_message_id)
+
     @abstractmethod
     async def send_message(
         self,
@@ -422,6 +676,23 @@ class BaseEmailProvider(ABC):
         whichever is given) — callers should pass both when replying and let the
         provider use what it needs."""
         ...
+
+    async def forward_message(
+        self,
+        provider_message_id: str,
+        to: list[str],
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
+        comment: str = "",
+        subject: str | None = None,
+    ) -> str | None:
+        """Forward a message at the provider, with ALL of its files.
+
+        Only a provider with :attr:`forwards_natively` implements it. The
+        provider keeps the files, so a forward of any size sends no byte
+        through Metorite. Returns the provider id of the sent mail, or None.
+        """
+        raise NotImplementedError(f"{type(self).__name__} has no native forward")
 
     @abstractmethod
     async def modify_message(
@@ -460,16 +731,35 @@ class BaseEmailProvider(ABC):
     async def move_to_folder(
         self, provider_message_id: str, folder: str
     ) -> str | None:
-        """Move a message to the given canonical folder on the provider.
+        """Move a message to the given folder on the provider.
 
-        ``folder`` is a canonical key (inbox/archive/trash/junk/...).  Default
-        implementation is a no-op; providers override with their semantics
-        (Gmail = label changes, Outlook = /move, IMAP = COPY+EXPUNGE).
+        ``folder`` is a canonical key (inbox/archive/trash/junk/...) or the
+        name of a user folder, in its own case. The default is a no-op, and
+        IMAP keeps it. Gmail changes labels, and Outlook calls ``/move``
+        (WS-17 EM-G3b item 11).
 
         Returns the message's new provider id if the move re-keys it (Outlook
         /move returns a fresh id), otherwise ``None`` (id unchanged).
         """
         return None
+
+    def folder_after_move(self, name: str) -> str | None:
+        """The folder key that a move to ``name`` leaves the message in.
+
+        WS-17 EM-G3b item 4 (``email_app_master_plan.md`` §12.3.4). A caller
+        stores this key in the local row, so the row matches the next parse.
+        It makes no network call. ``None`` means that the provider refuses
+        the move. The base returns ``canonical_folder(name)``. Gmail files a
+        user label as ``archive`` (O-GM-1). Call it through
+        :func:`local_folder_after_move`, because some test fakes do not
+        subclass this class.
+
+        §21 fix round 1 (P1-a): a move INTO Sent or Drafts is refused for
+        every provider. Mail cannot be moved into Sent, and a row that a move
+        files there would read as mail the member sent.
+        """
+        key = canonical_folder(name)
+        return None if key in MOVE_REFUSED_FOLDERS else key
 
     # Canonical bulk actions, shared by every provider so callers name them once.
     BULK_ACTIONS = ("archive", "trash", "read", "unread", "star", "unstar")
@@ -638,6 +928,8 @@ class BaseEmailProvider(ABC):
         attachments: list[dict[str, Any]] | None = None,
         cc: list[str] | None = None,
         bcc: list[str] | None = None,
+        *,
+        exact_to: bool = False,
     ) -> str:
         """Create a DRAFT message (not sent) on the provider; return its id.
 
@@ -647,6 +939,13 @@ class BaseEmailProvider(ABC):
 
         ``attachments`` (optional): a list of ``{"filename": str, "content":
         bytes, "mime_type": str}`` to attach to the draft.
+
+        ``exact_to`` (keyword only, WS-17 EM-T10 item 6): the To of a reply
+        draft is ``to`` exactly. Only the composers pass it, through
+        ``PUT /email/drafts``, because the member typed that To. Outlook then
+        writes ``toRecipients`` over the To that ``createReply`` set. With the
+        default, a reply keeps the To of the provider, so a Reply-To address
+        stays. Gmail and IMAP build ``to`` into the mail, so they ignore it.
 
         Used by Assistant reply/forward/draft rule actions. Raises
         NotImplementedError if the provider doesn't support drafts so the caller
@@ -696,6 +995,34 @@ class BaseEmailProvider(ABC):
             f"{self.__class__.__name__} does not support sending drafts"
         )
 
+    async def get_draft_recipients(self, draft_id: str) -> dict[str, list[str]]:
+        """The To, Cc and Bcc that the PROVIDER draft holds now.
+
+        Keys ``to``, ``cc`` and ``bcc``, each a list of addresses. WS-17
+        EM-T13b-1 review round 2: an unsigned draft send of the email
+        assistant compares them with the card before ``send_draft``. The
+        provider draft can differ from the local row: ``createReply`` sets a
+        Reply-To, and a member can add a Bcc in the mail app. A read that
+        fails raises, and the caller sends nothing.
+
+        Default raises NotImplementedError. A provider without it (IMAP) has
+        no native ``send_draft`` either, so its caller sends from the row.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not read draft recipients"
+        )
+
+    async def seed_cursor(self) -> str | None:
+        """The cursor of the mailbox at this moment, or None.
+
+        WS-17 EM-G4b (E-B3). ``_sync_cycle`` calls it BEFORE an import when
+        the mailbox has no cursor, and the sweep after the import then reads
+        each change from it. A change made during the import is not lost.
+        A provider with no cursor to seed keeps this default, so Outlook and
+        IMAP see no change. Gmail reads ``users.getProfile``.
+        """
+        return None
+
     @abstractmethod
     async def sync_messages(
         self,
@@ -703,6 +1030,9 @@ class BaseEmailProvider(ABC):
         max_results: int = 100,
         deep: bool = False,
         since: datetime | None = None,
+        catch_up: datetime | None = None,
+        *,
+        delta_shadow: bool = False,
     ) -> SyncResult:
         """Incremental sync — fetch new/updated messages since history_id.
 
@@ -711,8 +1041,48 @@ class BaseEmailProvider(ABC):
         False the sync stays shallow/incremental.  ``since`` is the import floor.
         The scheduler passes it on every sync, deep or shallow (EM-T6a).
         Providers that support a server-side date filter use it.
+
+        ``catch_up`` is the watermark of the recurring sweep after a pause
+        (WS-17 EM-T6b item 9, D-EM-13). A provider that pages newest first
+        reads more pages while its last page holds only mail newer than it.
+        A provider with an incremental cursor ignores it.
+
+        ``delta_shadow`` runs the Graph delta of Outlook in shadow after the
+        sweep (WS-17 EM-T4d). The sweep stays the one writer. Gmail and IMAP
+        ignore it.
         """
         ...
+
+    async def import_batches(
+        self,
+        since: datetime | None,
+        until: datetime | None = None,
+        size: int = 100,
+        *,
+        on_estimate: EstimateCallback | None = None,
+    ) -> AsyncIterator[list[EmailMessage]]:
+        """The import of a mailbox, in lists of up to ``size`` messages.
+
+        WS-17 EM-T6b item 1. Each list is newest first, and the lists in
+        sequence are newest first across every swept folder. The import reads
+        no message older than ``since``, and none newer than ``until`` when
+        ``until`` is set. A resume passes the point that it reached as
+        ``until``.
+
+        ``on_estimate`` is awaited at most once, before the first list. This
+        default never calls it. It calls ``sync_messages(deep=True,
+        since=since)``, drops each message newer than ``until``, sorts and
+        cuts. IMAP uses it. Outlook merges its folders page by page, and
+        Gmail pages one list of all mail (WS-17 EM-G5a).
+        """
+        size = max(size, 1)
+        result = await self.sync_messages(deep=True, since=since)
+        top = None if until is None else _aware(until)
+        kept = [m for m in result.messages
+                if top is None or m.received_at is None or received_key(m) <= top]
+        kept.sort(key=received_key, reverse=True)
+        for start in range(0, len(kept), size):
+            yield kept[start:start + size]
 
     @abstractmethod
     async def get_attachment(
@@ -720,3 +1090,41 @@ class BaseEmailProvider(ABC):
     ) -> bytes:
         """Download an attachment's raw bytes."""
         ...
+
+    async def get_inline_images(
+        self, provider_message_id: str, *, max_count: int, max_bytes: int,
+        max_total: int,
+    ) -> InlineRead:
+        """The inline parts of one message that can be pictures.
+
+        The reading pane shows ``<img src="cid:...">`` through the gateway
+        route ``GET /email/messages/{id}/inline`` (WS-17, the inline images
+        fix, ``email_app_master_plan.md`` §16.6). The route calls this once
+        for each message and caches each part. It reads at most *max_count*
+        parts, and it skips a part over *max_bytes*. It stops choosing parts
+        when their sizes reach *max_total*, before it reads any bytes. A part
+        with no Content-ID is not in the list.
+
+        The default gives no part, so a provider with no override (IMAP)
+        shows the alt text, as before.
+        """
+        return InlineRead()
+
+
+def local_folder_after_move(provider: Any, name: str) -> str | None:
+    """The folder key that the local row stores after a move to ``name``.
+
+    WS-17 EM-G3b item 6 (``email_app_master_plan.md`` §12.3.4). The one
+    reader of :meth:`BaseEmailProvider.folder_after_move`. A provider that is
+    no ``BaseEmailProvider`` gets ``canonical_folder(name)``: an ``AsyncMock``
+    fake would return a coroutine, and a plain fake has no such method.
+    ``None`` means that the provider refuses the move, so the caller writes
+    nothing.
+    """
+    key = canonical_folder(name)
+    if key in MOVE_REFUSED_FOLDERS:
+        # §21 fix round 1 (P1-a): for every provider, before any override.
+        return None
+    if isinstance(provider, BaseEmailProvider):
+        return provider.folder_after_move(name)
+    return key

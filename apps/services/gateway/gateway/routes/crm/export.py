@@ -12,7 +12,8 @@ records whose only export route today is the Zoho UI we are retiring.
 Five rules, each because the obvious implementation is wrong:
 
 1. **The filters are the caller's, built by the SAME contract the list endpoint
-   uses** (:func:`core.list_contract`). A second filter parser would drift, and
+   uses** (:func:`records.list_query`, over :func:`core.list_contract`). A second
+   filter parser would drift, and
    then the file and the screen would disagree about what "Priya's open leads"
    means. The refusals come with it: ``?status_id`` on contacts or
    organizations is a 422 rather than a silent whole-table answer, and an
@@ -51,6 +52,18 @@ Five rules, each because the obvious implementation is wrong:
    ``app/crm/lib/columns.ts`` by ``test_crm_export.py``, the mechanism
    ``test_crm_stage_discipline_parity.py`` already uses for ``board.ts``: a
    mirror with no fence goes stale and then lies.
+   **The custom fields follow them** (WS-53 CRM-C4a, ``crm_platform.md`` §20.7
+   items 11 and 12): each custom field of the entity in the order of the
+   layout, under its label. A row with ``is_system`` is not a custom field,
+   and a retired or hidden field is left out. A picklist value exports as its
+   option label. The Zoho custom fields of a Mirror org export the same way.
+   **An empty standard column is left out** (WS-53 CRM-Q17a-1,
+   ``crm_platform.md`` §18.9.3): for an org on ``CRM_FILL_RANK_ORGS``, each
+   key of ``fill_rank.empty_columns`` leaves the file, but only when each
+   exported row renders an empty cell for it (``csv_cell``). Numbers that
+   went stale between two runs must never drop a value from a file. The
+   layout serves the same set through the same function. :data:`COLUMNS`
+   itself never changes.
 
 5. **This endpoint writes NOTHING.** Not a nicety — the Zoho sync loop is
    RUNNING (spec header, corrected 2026-08-11) and ``core.mark_dirty_on_*``
@@ -75,28 +88,53 @@ here either — the same decision ``core``'s docstring records for the list.
 
 **CSV injection is neutralised, not documented away** — by the shared
 ``gateway.csv_export`` seam, not a second copy of it.
+
+**The whole CRM as one ZIP (WS-53 CRM-X0, ``crm_platform.md`` §19.11 item 4).**
+``GET /crm/export/all.zip`` is the copy an admin takes before a start over.
+It holds one CSV for each entity in :data:`ZIP_ENTITIES`, with every column
+of the table except ``organization_id``, and every row: there is no cap,
+because a partial copy before a delete is the one file that must be whole.
+It streams. Each table is read in pages of :data:`ZIP_PAGE_ROWS` by ``id``,
+each CSV line comes from ``csv_export.csv_lines`` (the same writer and the
+same guard), and the ZIP goes out as it is written. It needs
+``admin:access:manage``, and the router's CRM access rule runs first. The
+organization is the session's, never the request's (R11), and each read also
+names it. Like the rest of this module, it writes nothing.
 """
 
 from __future__ import annotations
 
+import io
+import json
+import zipfile
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
+from datetime import date, datetime
 from typing import Any
 
-from acb_auth import UserContext, get_current_user
-from fastapi import Depends, HTTPException, Query, Response
-from gateway.csv_export import csv_document
+from acb_auth import UserContext, get_current_user, require_permission
+from fastapi import Depends, HTTPException, Query, Request, Response
+from fastapi.responses import StreamingResponse
+from gateway.csv_export import csv_cell, csv_document, csv_lines
+from gateway.routes.crm.access import ADMIN_PERMISSION
 from gateway.routes.crm.core import (
     CONTACTS,
     DEALS,
+    FIELD_ENTITY_BY_SLUG,
     LEADS,
+    MAX_PAGE_SIZE,
     ORGANIZATIONS,
     Entity,
     _tenant_session,
-    list_contract,
+    custom_pairs,
+    from_jsonb,
     project_joined,
     qualify,
     router,
     row_to_dict,
 )
+from gateway.routes.crm.fill_rank import empty_columns
+from gateway.routes.crm.records import list_query, refuse_nul
 from sqlalchemy import text
 
 #: The most rows one export may contain.
@@ -124,16 +162,20 @@ MAX_EXPORT_ROWS = 10_000
 COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
     "deals": (
         ("name", "Deal"),
-        ("organization_name", "Organization"),
+        ("status_name", "Stage"),
+        ("organization_name", "Company"),
         ("amount", "Amount"),
         ("expected_close_date", "Closing"),
         ("owner_email", "Owner"),
+        ("last_activity_at", "Last touched"),
     ),
     "leads": (
         ("lead_name", "Lead"),
+        ("status_name", "Status"),
         ("organization_name", "Company"),
         ("email", "Email"),
         ("owner_email", "Owner"),
+        ("last_activity_at", "Last touched"),
         ("converted_deal_id", "Converted"),
     ),
     "contacts": (
@@ -142,12 +184,14 @@ COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
         ("email", "Email"),
         ("phone", "Phone"),
         ("owner_email", "Owner"),
+        ("last_activity_at", "Last touched"),
     ),
     "organizations": (
-        ("name", "Organization"),
+        ("name", "Company"),
         ("industry", "Industry"),
         ("phone", "Phone"),
         ("owner_email", "Owner"),
+        ("last_activity_at", "Last touched"),
     ),
 }
 
@@ -180,7 +224,20 @@ class ExportParams:
         owner: str | None = None,
         source: str | None = None,
         include_converted: bool = False,
+        pipeline_id: str | None = None,
+        company_id: str | None = None,
+        contact_id: str | None = None,
+        created_from: str | None = None,
+        created_to: str | None = None,
+        updated_from: str | None = None,
+        updated_to: str | None = None,
+        close_from: str | None = None,
+        close_to: str | None = None,
+        request: Request = None,  # type: ignore[assignment]
     ) -> None:
+        # CRM-Q25c: the one NUL guard of the list, before any SQL.
+        if request is not None:
+            refuse_nul(request.query_params.multi_items())
         self.q = q
         self.sort = sort
         self.direction = direction
@@ -188,6 +245,21 @@ class ExportParams:
         self.owner = owner
         self.source = source
         self.include_converted = include_converted
+        self.pipeline_id = pipeline_id
+        self.company_id = company_id
+        self.contact_id = contact_id
+        # CRM-Q8: the same extra filters as the list, so the file is the list.
+        self.created_from = created_from
+        self.created_to = created_to
+        self.updated_from = updated_from
+        self.updated_to = updated_to
+        self.close_from = close_from
+        self.close_to = close_to
+        self.custom = tuple(custom_pairs(request.query_params if request else None))
+        #: Read by ``records.list_query`` only. The export reads no page: its
+        #: cap is a refusal (rule 2 above), and the clamp is never read here.
+        self.page = 1
+        self.page_size = MAX_PAGE_SIZE
 
 
 def _cell(entity: Entity, key: str, row: dict[str, Any]) -> Any:
@@ -213,6 +285,67 @@ def _cell(entity: Entity, key: str, row: dict[str, Any]) -> Any:
     return row.get(key)
 
 
+def _blank_in_each(entity: Entity, key: str, rows: list[dict[str, Any]]) -> bool:
+    """True when each row renders an empty cell for *key*, through the same
+    ``_cell`` and ``csv_cell`` as the file (CRM-Q17a-1)."""
+    return all(csv_cell(_cell(entity, key, row)).strip() == "" for row in rows)
+
+
+#: The custom fields of one entity, in the order of the layout. The filters
+#: are the rule of §20.7 item 11 for the export, and review round 1 adds the
+#: hidden fields to what it leaves out.
+_CUSTOM_COLUMNS_SQL = (
+    "SELECT key, label, options FROM crm_field_defs WHERE entity = :entity "
+    "AND NOT is_system AND retired_at IS NULL AND visible "
+    "ORDER BY position, key"
+)
+
+
+@dataclass(frozen=True)
+class CustomColumn:
+    """One custom column of a file: the key, the header, and the label of
+    each option value."""
+
+    key: str
+    label: str
+    options: dict[str, str]
+
+
+async def custom_columns(db: Any, entity: Entity) -> list[CustomColumn]:
+    """Each custom column of *entity*'s file, in the order of the layout."""
+    rows = (await db.execute(
+        text(_CUSTOM_COLUMNS_SQL), {"entity": FIELD_ENTITY_BY_SLUG[entity.slug]},
+    )).fetchall()
+    out: list[CustomColumn] = []
+    for r in rows:
+        options = from_jsonb(r.options)
+        labels = {
+            str(o["value"]): str(o.get("label") or o["value"])
+            for o in (options if isinstance(options, list) else [])
+            if isinstance(o, dict) and o.get("value") is not None
+        }
+        out.append(CustomColumn(key=r.key, label=r.label or r.key, options=labels))
+    return out
+
+
+def custom_cell(value: Any, options: dict[str, str] | None = None) -> Any:
+    """One custom value as one cell. A picklist value gives its option label,
+    a lookup gives its name, and a list joins with ``; ``."""
+    labels = options or {}
+    if isinstance(value, dict):
+        named = value.get("name")
+        return named if isinstance(named, str) else json.dumps(value, sort_keys=True)
+    if isinstance(value, list):
+        return "; ".join(
+            str(item.get("name")) if isinstance(item, dict)
+            else labels.get(str(item), str(item))
+            for item in value
+        )
+    if isinstance(value, str):
+        return labels.get(value, value)
+    return value
+
+
 def _too_many(entity: Entity, total: int, *, at_least: bool = False) -> HTTPException:
     """The refusal, and the reason it is a refusal — see rule 3.
 
@@ -234,26 +367,18 @@ def _too_many(entity: Entity, total: int, *, at_least: bool = False) -> HTTPExce
     )
 
 
-async def _export(entity: Entity, params: ExportParams) -> Response:
+async def _export(
+    entity: Entity, params: ExportParams, user: Any = None,
+) -> Response:
     """The caller's current filter, as a CSV file. One implementation, four
     entities — the shape ``records._list`` uses for the same reason."""
-    extra: tuple[str, ...] = ()
-    if entity.hides_converted and not params.include_converted:
-        # §3.3/B6, `records._list`'s clause verbatim: a lead is "converted"
-        # while the deal it became still exists.
-        extra = ("converted_deal_id IS NULL",)
-    # Reused for the WHERE clause and the ORDER BY — and for the 422s it raises
-    # on an unknown sort key, an unknown direction and a status filter on an
-    # entity with no pipeline. Its `limit` is the PAGE clamp and is never read
-    # here; see rule 2 in the module docstring.
-    query = list_contract(
-        entity,
-        q=params.q, sort=params.sort, direction=params.direction,
-        status_id=params.status_id, owner=params.owner, source=params.source,
-        extra_where=extra,
-    )
-
     async with _tenant_session() as db:
+        # WS-53 CRM-C7: the ONE list builder (``records.list_query``) — the
+        # converted-lead rule, the related lists, ``me``, the CRM-Q8 filters,
+        # the WHERE clause and the ORDER BY, with each of their 422s. So the
+        # file is the list on screen. Its `limit` is the PAGE clamp and is
+        # never read here; see rule 2 in the module docstring.
+        query = await list_query(db, entity, params, user)
         total = int((await db.execute(
             text(f"SELECT count(*) FROM {entity.table}{query.where}"),
             query.params,
@@ -271,7 +396,7 @@ async def _export(entity: Entity, params: ExportParams) -> Response:
         rows = (await db.execute(
             # The same `project_joined` wrapper `core.run_list` uses, so a deal
             # carries its organization's name here exactly as it does on the
-            # board. Without it the Organization column would be empty on every
+            # board. Without it the Company column would be empty on every
             # row, which reads as missing data rather than a missing join.
             text(project_joined(entity, inner, qualify(query.order_by, "base"))),
             # ⚠️ **cap + 1, and the check below is what makes it a refusal.**
@@ -291,13 +416,25 @@ async def _export(entity: Entity, params: ExportParams) -> Response:
         if len(rows) > MAX_EXPORT_ROWS:
             raise _too_many(entity, len(rows), at_least=True)
         exported = [row_to_dict(r, entity.model) for r in rows]
+        extra = await custom_columns(db, entity)
+        # CRM-Q17a-1: None outside CRM_FILL_RANK_ORGS, so the file keeps each column.
+        empty = set(await empty_columns(
+            db, getattr(user, "organization_id", None), entity.slug,
+        ) or ())
 
-    columns = COLUMNS[entity.slug]
+    columns = tuple(
+        c for c in COLUMNS[entity.slug]
+        if c[0] not in empty or not _blank_in_each(entity, c[0], exported)
+    )
     return Response(
         content=csv_document(
-            [header for _, header in columns],
+            [header for _, header in columns] + [c.label for c in extra],
             (
                 [_cell(entity, key, row) for key, _ in columns]
+                + [
+                    custom_cell((row.get("custom") or {}).get(c.key), c.options)
+                    for c in extra
+                ]
                 for row in exported
             ),
         ),
@@ -331,7 +468,7 @@ async def export_leads_csv(
     params: ExportParams = Depends(),
     user: UserContext = Depends(get_current_user),
 ) -> Response:
-    return await _export(LEADS, params)
+    return await _export(LEADS, params, user)
 
 
 @router.get("/export/deals.csv")
@@ -339,7 +476,7 @@ async def export_deals_csv(
     params: ExportParams = Depends(),
     user: UserContext = Depends(get_current_user),
 ) -> Response:
-    return await _export(DEALS, params)
+    return await _export(DEALS, params, user)
 
 
 @router.get("/export/contacts.csv")
@@ -347,7 +484,7 @@ async def export_contacts_csv(
     params: ExportParams = Depends(),
     user: UserContext = Depends(get_current_user),
 ) -> Response:
-    return await _export(CONTACTS, params)
+    return await _export(CONTACTS, params, user)
 
 
 @router.get("/export/organizations.csv")
@@ -355,7 +492,127 @@ async def export_organizations_csv(
     params: ExportParams = Depends(),
     user: UserContext = Depends(get_current_user),
 ) -> Response:
-    return await _export(ORGANIZATIONS, params)
+    return await _export(ORGANIZATIONS, params, user)
+
+
+# ── The whole CRM as one ZIP (CRM-X0) ───────────────────────────────────────
+
+#: ``(file in the ZIP, table)``, in the order the files are written.
+ZIP_ENTITIES: tuple[tuple[str, str], ...] = (
+    ("leads.csv", "crm_leads"),
+    ("contacts.csv", "crm_contacts"),
+    ("companies.csv", "crm_companies"),
+    ("deals.csv", "crm_deals"),
+    ("activities.csv", "crm_activities"),
+    ("module_records.csv", "crm_module_records"),
+)
+
+#: Rows read at a time. The memory of one request holds one page of one table.
+ZIP_PAGE_ROWS = 1000
+
+#: The tenant column never leaves the server (R5).
+_HIDDEN_COLUMNS = frozenset({"organization_id"})
+
+
+def _zip_cell(value: Any) -> Any:
+    """A stored value as one CSV cell. JSON stays JSON, a time is ISO 8601."""
+    if isinstance(value, dict | list):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    if isinstance(value, datetime | date):
+        return value.isoformat()
+    return value
+
+
+class _Sink(io.RawIOBase):
+    """The bytes that ``zipfile`` writes, kept until the stream takes them.
+
+    It cannot seek, so ``zipfile`` writes a data descriptor after each file
+    and never goes back. That is what lets the ZIP stream.
+    """
+
+    def __init__(self) -> None:
+        self._parts: list[bytes] = []
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, data: Any) -> int:
+        self._parts.append(bytes(data))
+        return len(data)
+
+    def take(self) -> bytes:
+        out = b"".join(self._parts)
+        self._parts.clear()
+        return out
+
+
+async def _columns(db: Any, table: str) -> list[str]:
+    result = await db.execute(text(f"SELECT * FROM {table} WHERE false"))
+    return [c for c in result.keys() if c not in _HIDDEN_COLUMNS]  # noqa: SIM118 - a Result, not a dict
+
+
+async def _pages(db: Any, table: str, org: str) -> AsyncIterator[list[Any]]:
+    """Every row of *table* for *org*, a page at a time, in ``id`` order."""
+    after: str | None = None
+    while True:
+        where = "organization_id = CAST(:o AS uuid)"
+        params: dict[str, Any] = {"o": org, "n": ZIP_PAGE_ROWS}
+        if after is not None:
+            where += " AND id > CAST(:after AS uuid)"
+            params["after"] = after
+        rows = (await db.execute(
+            text(f"SELECT * FROM {table} WHERE {where} ORDER BY id LIMIT :n"),
+            params,
+        )).mappings().all()
+        if not rows:
+            return
+        yield list(rows)
+        if len(rows) < ZIP_PAGE_ROWS:
+            return
+        after = str(rows[-1]["id"])
+
+
+async def zip_stream(org: str) -> AsyncIterator[bytes]:
+    """The ZIP of the whole CRM of *org*, as it is written."""
+    sink = _Sink()
+    async with _tenant_session(org) as db:
+        with zipfile.ZipFile(sink, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for filename, table in ZIP_ENTITIES:
+                columns = await _columns(db, table)
+                with archive.open(filename, "w", force_zip64=True) as member:
+                    for line in csv_lines(columns, ()):
+                        member.write(line.encode("utf-8"))
+                    async for page in _pages(db, table, org):
+                        body = csv_lines(
+                            None, ([_zip_cell(row[c]) for c in columns] for row in page),
+                        )
+                        member.write("".join(body).encode("utf-8"))
+                        chunk = sink.take()
+                        if chunk:
+                            yield chunk
+                chunk = sink.take()
+                if chunk:
+                    yield chunk
+    chunk = sink.take()
+    if chunk:
+        yield chunk
+
+
+@router.get(
+    "/export/all.zip",
+    dependencies=[require_permission(ADMIN_PERMISSION)],
+)
+async def export_all_zip(
+    user: UserContext = Depends(get_current_user),
+) -> StreamingResponse:
+    """Every record of the CRM, one CSV for each entity, as one ZIP."""
+    if not user.organization_id:
+        raise HTTPException(status_code=403, detail="Forbidden: you are in no organization.")
+    return StreamingResponse(
+        zip_stream(str(user.organization_id)),
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="crm-export.zip"'},
+    )
 
 
 #: Slug → handler, for the tests that exercise all four without a TestClient.
@@ -371,4 +628,12 @@ HANDLERS = {
 }
 
 
-__all__ = ["COLUMNS", "HANDLERS", "MAX_EXPORT_ROWS", "ExportParams"]
+__all__ = [
+    "COLUMNS",
+    "HANDLERS",
+    "MAX_EXPORT_ROWS",
+    "ZIP_ENTITIES",
+    "ZIP_PAGE_ROWS",
+    "ExportParams",
+    "zip_stream",
+]

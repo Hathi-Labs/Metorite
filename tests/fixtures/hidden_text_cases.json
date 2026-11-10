@@ -1,0 +1,792 @@
+{
+  "about": "The shared cases of the hidden-character rule of WS-STU F1b (packages/acb_skills/acb_skills/hidden_text.py). Readers: tests/unit/test_hidden_text.py now, and the editor check of F1b-2 (workbench/control_plane/src/lib/studio/hiddenText.ts) when it lands.",
+  "positions": "A hit is [position, code]. The position is 1-based and counts code points, not UTF-16 units. A reader in TypeScript iterates by code point.",
+  "kept": [
+    {
+      "id": "persian_zwnj",
+      "text": "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645",
+      "why": "Persian: mi-khaham, a ZWNJ between two letters"
+    },
+    {
+      "id": "hindi_zwj",
+      "text": "\u0915\u094d\u200d\u0937",
+      "why": "Hindi: the half form of ka before ssa"
+    },
+    {
+      "id": "bengali_zwj",
+      "text": "\u09b0\u200d\u09cd\u09af",
+      "why": "Bengali: ra, ZWJ, virama, ya"
+    },
+    {
+      "id": "family_emoji",
+      "text": "\ud83d\udc68\u200d\ud83d\udc69\u200d\ud83d\udc67",
+      "why": "man, ZWJ, woman, ZWJ, girl"
+    },
+    {
+      "id": "heart_vs16",
+      "text": "\u2764\ufe0f",
+      "why": "a red heart: a symbol with VS16"
+    },
+    {
+      "id": "keycap_one",
+      "text": "1\ufe0f\u20e3",
+      "why": "the keycap 1: a digit, VS16, U+20E3"
+    },
+    {
+      "id": "keycap_hash",
+      "text": "#\ufe0f\u20e3",
+      "why": "the keycap #"
+    },
+    {
+      "id": "rainbow_flag",
+      "text": "\ud83c\udff3\ufe0f\u200d\ud83c\udf08",
+      "why": "a legal VS16 is visible on the left of a ZWJ"
+    },
+    {
+      "id": "bangbang_vs16",
+      "text": "\u203c\ufe0f",
+      "why": "U+203C is Po, so it takes one selector"
+    },
+    {
+      "id": "copyright_vs15",
+      "text": "\u00a9\ufe0e",
+      "why": "U+00A9 is So, with the text selector"
+    },
+    {
+      "id": "skin_tone_zwj",
+      "text": "\ud83d\udc69\ud83c\udffd\u200d\ud83d\udcbb",
+      "why": "a woman with a skin tone, ZWJ, a laptop"
+    },
+    {
+      "id": "crlf_tab",
+      "text": "Step one.\r\nStep two.\tDone.",
+      "why": "a carriage return, a new line and a tab are legal"
+    },
+    {
+      "id": "arabic",
+      "text": "\u0645\u0631\u062d\u0628\u0627",
+      "why": "plain Arabic"
+    },
+    {
+      "id": "hebrew",
+      "text": "\u05e9\u05dc\u05d5\u05dd",
+      "why": "plain Hebrew"
+    },
+    {
+      "id": "japanese",
+      "text": "\u65e5\u672c\u8a9e",
+      "why": "plain Japanese"
+    },
+    {
+      "id": "nbsp",
+      "text": "a\u00a0b",
+      "why": "NBSP is not refused, by choice"
+    },
+    {
+      "id": "line_separator",
+      "text": "a\u2028b",
+      "why": "U+2028 is not refused, by choice"
+    },
+    {
+      "id": "zwnj_before_mark",
+      "text": "\u0645\u200c\u064e",
+      "why": "a ZWNJ before a combining mark: both sides are visible"
+    },
+    {
+      "id": "malayalam_chillu_zwj_word_end",
+      "text": "\u0d05\u0d35\u0d28\u0d4d\u200d \u0d35\u0d28\u0d4d\u0d28\u0d41",
+      "why": "Malayalam: the chillu n of a legacy input, a virama and a ZWJ at a word end"
+    },
+    {
+      "id": "malayalam_locative_zwj_word_end",
+      "text": "\u0d35\u0d40\u0d1f\u0d4d\u0d1f\u0d3f\u0d32\u0d4d\u200d \u0d07\u0d30\u0d41",
+      "why": "Malayalam: the locative ending, a chillu l at a word end"
+    },
+    {
+      "id": "malayalam_chillu_zwj_text_end",
+      "text": "\u0d05\u0d35\u0d28\u0d4d\u200d",
+      "why": "Malayalam: a chillu at the end of the text"
+    },
+    {
+      "id": "malayalam_chillu_zwj_line_end",
+      "text": "\u0d05\u0d35\u0d28\u0d4d\u200d\n\u0d35\u0d28\u0d4d\u0d28\u0d41",
+      "why": "Malayalam: a chillu at the end of a line"
+    },
+    {
+      "id": "bengali_khanda_ta_word_end",
+      "text": "\u09b9\u09a0\u09be\u09a4\u09cd\u200d \u098f\u09b2",
+      "why": "Bengali: the khanda ta of a legacy input, a virama and a ZWJ at a word end"
+    },
+    {
+      "id": "devanagari_halant_zwnj_word_end",
+      "text": "\u0915\u094d\u200c \u0916",
+      "why": "Devanagari: an explicit halant, a virama and a ZWNJ at a word end"
+    },
+    {
+      "id": "info_vs16",
+      "text": "\u2139\ufe0f Note",
+      "why": "U+2139 is Ll, and it is an emoji base"
+    },
+    {
+      "id": "wavy_dash_vs16",
+      "text": "\u3030\ufe0f",
+      "why": "U+3030 is Pd, and it is an emoji base"
+    },
+    {
+      "id": "interrobang_vs16",
+      "text": "\u2049\ufe0f",
+      "why": "U+2049 is Po, and it is an emoji base"
+    },
+    {
+      "id": "part_alternation_mark_vs16",
+      "text": "\u303d\ufe0f",
+      "why": "U+303D is Po, and it is an emoji base"
+    }
+  ],
+  "refused": [
+    {
+      "id": "tag_letter",
+      "text": "a\udb40\udc41b",
+      "hits": [
+        [
+          2,
+          "U+E0041"
+        ]
+      ],
+      "stripped": "ab",
+      "why": "a TAG character"
+    },
+    {
+      "id": "tag_run",
+      "text": "Hi\udb40\udc68\udb40\udc69",
+      "hits": [
+        [
+          3,
+          "U+E0068"
+        ],
+        [
+          4,
+          "U+E0069"
+        ]
+      ],
+      "stripped": "Hi",
+      "why": "a TAG run"
+    },
+    {
+      "id": "vs17",
+      "text": "\u845b\udb40\udd00",
+      "hits": [
+        [
+          2,
+          "U+E0100"
+        ]
+      ],
+      "stripped": "\u845b",
+      "why": "U+E0100, a selector of the supplement (cost: a Japanese IVS)"
+    },
+    {
+      "id": "vs1",
+      "text": "\u2229\ufe00",
+      "hits": [
+        [
+          2,
+          "U+FE00"
+        ]
+      ],
+      "stripped": "\u2229",
+      "why": "U+FE00, variation selector 1"
+    },
+    {
+      "id": "zwsp",
+      "text": "a\u200bb",
+      "hits": [
+        [
+          2,
+          "U+200B"
+        ]
+      ],
+      "stripped": "ab",
+      "why": "U+200B ZERO WIDTH SPACE"
+    },
+    {
+      "id": "rlo",
+      "text": "\u202eabc",
+      "hits": [
+        [
+          1,
+          "U+202E"
+        ]
+      ],
+      "stripped": "abc",
+      "why": "U+202E RIGHT-TO-LEFT OVERRIDE"
+    },
+    {
+      "id": "isolate",
+      "text": "a\u2066b\u2069",
+      "hits": [
+        [
+          2,
+          "U+2066"
+        ],
+        [
+          4,
+          "U+2069"
+        ]
+      ],
+      "stripped": "ab",
+      "why": "the bidi isolates"
+    },
+    {
+      "id": "bom",
+      "text": "\ufeffabc",
+      "hits": [
+        [
+          1,
+          "U+FEFF"
+        ]
+      ],
+      "stripped": "abc",
+      "why": "U+FEFF ZERO WIDTH NO-BREAK SPACE"
+    },
+    {
+      "id": "soft_hyphen",
+      "text": "co\u00adop",
+      "hits": [
+        [
+          3,
+          "U+00AD"
+        ]
+      ],
+      "stripped": "coop",
+      "why": "U+00AD SOFT HYPHEN"
+    },
+    {
+      "id": "hangul_filler",
+      "text": "a\u3164b",
+      "hits": [
+        [
+          2,
+          "U+3164"
+        ]
+      ],
+      "stripped": "ab",
+      "why": "U+3164 HANGUL FILLER"
+    },
+    {
+      "id": "hangul_jamo_fillers",
+      "text": "\u115f\u1160\uffa0",
+      "hits": [
+        [
+          1,
+          "U+115F"
+        ],
+        [
+          2,
+          "U+1160"
+        ],
+        [
+          3,
+          "U+FFA0"
+        ]
+      ],
+      "stripped": "",
+      "why": "the other Hangul fillers"
+    },
+    {
+      "id": "braille_blank",
+      "text": "a\u2800b",
+      "hits": [
+        [
+          2,
+          "U+2800"
+        ]
+      ],
+      "stripped": "ab",
+      "why": "U+2800 BRAILLE PATTERN BLANK"
+    },
+    {
+      "id": "null_notehead",
+      "text": "a\ud834\udd59",
+      "hits": [
+        [
+          2,
+          "U+1D159"
+        ]
+      ],
+      "stripped": "a",
+      "why": "U+1D159 MUSICAL SYMBOL NULL NOTEHEAD"
+    },
+    {
+      "id": "c1_next_line",
+      "text": "a\u0085b",
+      "hits": [
+        [
+          2,
+          "U+0085"
+        ]
+      ],
+      "stripped": "ab",
+      "why": "U+0085, a C1 control"
+    },
+    {
+      "id": "c1_first",
+      "text": "\u0080a",
+      "hits": [
+        [
+          1,
+          "U+0080"
+        ]
+      ],
+      "stripped": "a",
+      "why": "U+0080, a C1 control"
+    },
+    {
+      "id": "nul",
+      "text": "a\u0000b",
+      "hits": [
+        [
+          2,
+          "U+0000"
+        ]
+      ],
+      "stripped": "ab",
+      "why": "U+0000"
+    },
+    {
+      "id": "escape",
+      "text": "a\u001b[31m",
+      "hits": [
+        [
+          2,
+          "U+001B"
+        ]
+      ],
+      "stripped": "a[31m",
+      "why": "U+001B, a C0 control"
+    },
+    {
+      "id": "delete",
+      "text": "a\u007f",
+      "hits": [
+        [
+          2,
+          "U+007F"
+        ]
+      ],
+      "stripped": "a",
+      "why": "U+007F"
+    },
+    {
+      "id": "word_joiner",
+      "text": "a\u2060b",
+      "hits": [
+        [
+          2,
+          "U+2060"
+        ]
+      ],
+      "stripped": "ab",
+      "why": "U+2060 WORD JOINER"
+    },
+    {
+      "id": "mongolian_fvs",
+      "text": "a\u180b",
+      "hits": [
+        [
+          2,
+          "U+180B"
+        ]
+      ],
+      "stripped": "a",
+      "why": "U+180B, a Mongolian selector"
+    },
+    {
+      "id": "lrm",
+      "text": "a\u200eb",
+      "hits": [
+        [
+          2,
+          "U+200E"
+        ]
+      ],
+      "stripped": "ab",
+      "why": "U+200E LRM (cost, accepted)"
+    },
+    {
+      "id": "arabic_number_sign",
+      "text": "\u0600\u0661",
+      "hits": [
+        [
+          1,
+          "U+0600"
+        ]
+      ],
+      "stripped": "\u0661",
+      "why": "U+0600 (cost, accepted)"
+    },
+    {
+      "id": "private_use",
+      "text": "a\ue000",
+      "hits": [
+        [
+          2,
+          "U+E000"
+        ]
+      ],
+      "stripped": "a",
+      "why": "U+E000, category Co"
+    },
+    {
+      "id": "unassigned",
+      "text": "a\u0378",
+      "hits": [
+        [
+          2,
+          "U+0378"
+        ]
+      ],
+      "stripped": "a",
+      "why": "U+0378, category Cn"
+    },
+    {
+      "id": "zwj_at_start",
+      "text": "\u200dab",
+      "hits": [
+        [
+          1,
+          "U+200D"
+        ]
+      ],
+      "stripped": "ab",
+      "why": "a joiner at the start"
+    },
+    {
+      "id": "zwj_at_end",
+      "text": "ab\u200d",
+      "hits": [
+        [
+          3,
+          "U+200D"
+        ]
+      ],
+      "stripped": "ab",
+      "why": "a joiner at the end"
+    },
+    {
+      "id": "zwnj_at_line_end",
+      "text": "ab\u200c\ncd",
+      "hits": [
+        [
+          3,
+          "U+200C"
+        ]
+      ],
+      "stripped": "ab\ncd",
+      "why": "a joiner before a new line"
+    },
+    {
+      "id": "zwj_double",
+      "text": "a\u200d\u200db",
+      "hits": [
+        [
+          2,
+          "U+200D"
+        ],
+        [
+          3,
+          "U+200D"
+        ]
+      ],
+      "stripped": "ab",
+      "why": "two joiners in a row"
+    },
+    {
+      "id": "zwnj_zwj",
+      "text": "a\u200c\u200db",
+      "hits": [
+        [
+          2,
+          "U+200C"
+        ],
+        [
+          3,
+          "U+200D"
+        ]
+      ],
+      "stripped": "ab",
+      "why": "a ZWNJ and a ZWJ in a row"
+    },
+    {
+      "id": "zwj_after_space",
+      "text": "a \u200db",
+      "hits": [
+        [
+          3,
+          "U+200D"
+        ]
+      ],
+      "stripped": "a b",
+      "why": "a joiner after white space"
+    },
+    {
+      "id": "zwj_before_nbsp",
+      "text": "a\u200d\u00a0b",
+      "hits": [
+        [
+          2,
+          "U+200D"
+        ]
+      ],
+      "stripped": "a\u00a0b",
+      "why": "a joiner before NBSP"
+    },
+    {
+      "id": "letter_vs16",
+      "text": "a\ufe0f",
+      "hits": [
+        [
+          2,
+          "U+FE0F"
+        ]
+      ],
+      "stripped": "a",
+      "why": "a letter with U+FE0F after it"
+    },
+    {
+      "id": "digit_vs16",
+      "text": "1\ufe0f",
+      "hits": [
+        [
+          2,
+          "U+FE0F"
+        ]
+      ],
+      "stripped": "1",
+      "why": "a digit with VS16 and no keycap"
+    },
+    {
+      "id": "two_vs16",
+      "text": "\u2764\ufe0f\ufe0f",
+      "hits": [
+        [
+          3,
+          "U+FE0F"
+        ]
+      ],
+      "stripped": "\u2764\ufe0f",
+      "why": "two selectors in a row"
+    },
+    {
+      "id": "vs16_first",
+      "text": "\ufe0fa",
+      "hits": [
+        [
+          1,
+          "U+FE0F"
+        ]
+      ],
+      "stripped": "a",
+      "why": "a selector at the start"
+    },
+    {
+      "id": "zwj_then_vs16",
+      "text": "\u2764\u200d\ufe0f",
+      "hits": [
+        [
+          2,
+          "U+200D"
+        ],
+        [
+          3,
+          "U+FE0F"
+        ]
+      ],
+      "stripped": "\u2764",
+      "why": "a selector after a joiner is never legal"
+    },
+    {
+      "id": "bad_vs16_left_of_zwj",
+      "text": " \ufe0f\u200db",
+      "hits": [
+        [
+          2,
+          "U+FE0F"
+        ],
+        [
+          3,
+          "U+200D"
+        ]
+      ],
+      "stripped": " b",
+      "why": "a hidden selector does not make a joiner legal"
+    },
+    {
+      "id": "persian_zwnj_before_space",
+      "text": "\u0647\u0627\u200c \u0645\u0646",
+      "hits": [
+        [
+          3,
+          "U+200C"
+        ]
+      ],
+      "stripped": "\u0647\u0627 \u0645\u0646",
+      "why": "a ZWNJ before a space changes no shape, because the space breaks the join"
+    },
+    {
+      "id": "virama_two_joiners_word_end",
+      "text": "\u0d28\u0d4d\u200d\u200d ",
+      "hits": [
+        [
+          3,
+          "U+200D"
+        ],
+        [
+          4,
+          "U+200D"
+        ]
+      ],
+      "stripped": "\u0d28\u0d4d ",
+      "why": "never two joiners after a virama"
+    },
+    {
+      "id": "virama_zwnj_zwj_text_end",
+      "text": "\u0915\u094d\u200c\u200d",
+      "hits": [
+        [
+          3,
+          "U+200C"
+        ],
+        [
+          4,
+          "U+200D"
+        ]
+      ],
+      "stripped": "\u0915\u094d",
+      "why": "never two joiners after a virama, also of two kinds"
+    },
+    {
+      "id": "letter_zwj_word_end",
+      "text": "ab\u200d c",
+      "hits": [
+        [
+          3,
+          "U+200D"
+        ]
+      ],
+      "stripped": "ab c",
+      "why": "a joiner at a word end is legal only after a virama"
+    },
+    {
+      "id": "virama_joiner_before_nel",
+      "text": "\u0d28\u0d4d\u200d\u0085\u0d35",
+      "hits": [
+        [
+          3,
+          "U+200D"
+        ],
+        [
+          4,
+          "U+0085"
+        ]
+      ],
+      "stripped": "\u0d28\u0d4d\u0d35",
+      "why": "a hidden control is no word end"
+    },
+    {
+      "id": "zwj_at_start_before_space",
+      "text": "\u200d a",
+      "hits": [
+        [
+          1,
+          "U+200D"
+        ]
+      ],
+      "stripped": " a",
+      "why": "a joiner at the start is never legal"
+    },
+    {
+      "id": "period_vs16",
+      "text": "Hello.\ufe0f world",
+      "hits": [
+        [
+          7,
+          "U+FE0F"
+        ]
+      ],
+      "stripped": "Hello. world",
+      "why": "a period is no emoji base"
+    },
+    {
+      "id": "comma_vs15",
+      "text": "a,\ufe0e b",
+      "hits": [
+        [
+          3,
+          "U+FE0E"
+        ]
+      ],
+      "stripped": "a, b",
+      "why": "a comma is no emoji base"
+    },
+    {
+      "id": "period_vs16_zwj",
+      "text": "a.\ufe0f\u200db",
+      "hits": [
+        [
+          3,
+          "U+FE0F"
+        ],
+        [
+          4,
+          "U+200D"
+        ]
+      ],
+      "stripped": "a.b",
+      "why": "a refused selector does not make a joiner legal"
+    },
+    {
+      "id": "hash_vs16_no_keycap",
+      "text": "#\ufe0f",
+      "hits": [
+        [
+          2,
+          "U+FE0F"
+        ]
+      ],
+      "stripped": "#",
+      "why": "a keycap base takes a selector only in a keycap"
+    },
+    {
+      "id": "england_flag",
+      "text": "\ud83c\udff4\udb40\udc67\udb40\udc62\udb40\udc65\udb40\udc6e\udb40\udc67\udb40\udc7f",
+      "hits": [
+        [
+          2,
+          "U+E0067"
+        ],
+        [
+          3,
+          "U+E0062"
+        ],
+        [
+          4,
+          "U+E0065"
+        ],
+        [
+          5,
+          "U+E006E"
+        ],
+        [
+          6,
+          "U+E0067"
+        ],
+        [
+          7,
+          "U+E007F"
+        ]
+      ],
+      "stripped": "\ud83c\udff4",
+      "why": "an accepted cost: a tag flag uses the TAG block"
+    }
+  ]
+}

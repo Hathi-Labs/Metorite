@@ -7,11 +7,28 @@ filter normalises the user's selections to canonical cleanup categories.
 """
 from __future__ import annotations
 
+import contextlib
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 from gateway.routes import email as m
+from gateway.routes.email.automation.identity import SELF_ADDRESSES_SQL
+from gateway.routes.projects.due_day import day_start
+
+
+def _is_owner_read(sql: str) -> bool:
+    """The digest's read of the mailbox owner. Since EM-T8e-1 each windowed
+    aggregate ALSO names ``email_accounts``, in its self subquery, so a fake
+    that dispatched on ``"FROM email_accounts" in sql`` answered the
+    aggregates with the owner row. Match the owner read by its start."""
+    return sql.lstrip().startswith("SELECT user_id FROM email_accounts")
+
+
+def _is_member_read(sql: str) -> bool:
+    """``identity.resolve_self``: the rows of each mailbox of the member."""
+    return sql.lstrip().startswith("SELECT o.id::text")
 
 
 def _fake_db(captured: list[tuple[str, dict]]):
@@ -19,8 +36,11 @@ def _fake_db(captured: list[tuple[str, dict]]):
         sql = str(stmt)
         captured.append((sql, params or {}))
         r = MagicMock()
-        if "FROM email_accounts" in sql:
-            r.fetchone.return_value = SimpleNamespace(self="me@fracktal.in")
+        if _is_owner_read(sql):
+            r.fetchone.return_value = SimpleNamespace(user_id="me@fracktal.in")
+        elif _is_member_read(sql):
+            r.fetchall.return_value = [SimpleNamespace(
+                id="acc-1", address="me@fracktal.in", label=None)]
         elif "COUNT(*) AS total" in sql:
             r.fetchone.return_value = SimpleNamespace(
                 total=10, unread=3, inbox=8, attachments=2)
@@ -87,8 +107,11 @@ def _fake_db_with_totals(captured: list[tuple[str, dict]]):
         sql = str(stmt)
         captured.append((sql, params or {}))
         r = MagicMock()
-        if "FROM email_accounts" in sql:
-            r.fetchone.return_value = SimpleNamespace(self="me@fracktal.in")
+        if _is_owner_read(sql):
+            r.fetchone.return_value = SimpleNamespace(user_id="me@fracktal.in")
+        elif _is_member_read(sql):
+            r.fetchall.return_value = [SimpleNamespace(
+                id="acc-1", address="me@fracktal.in", label=None)]
         elif "COUNT(*) AS inbox" in sql:
             r.fetchone.return_value = SimpleNamespace(
                 inbox=8, unread=3, attachments=2)
@@ -109,7 +132,9 @@ def _fake_db_with_totals(captured: list[tuple[str, dict]]):
 async def test_every_aggregate_excludes_the_accounts_own_mail() -> None:
     # The digest email itself lands in the inbox from the account; counting it
     # (or self-notes / BCC-to-self) would inflate the next digest. Every windowed
-    # aggregate excludes self and binds :self.
+    # aggregate excludes self. Since EM-T8e-1 "self" is EACH mailbox of the
+    # member (D-EM-27), through the one subquery over :aid, so mail from a
+    # second mailbox of the member is not new inbound mail either.
     captured: list[tuple[str, dict]] = []
     await m.digest._generate_digest(_fake_db_with_totals(captured), "acc-1", 7)
     # The WINDOWED inbox aggregates bind :days (the digest window). The backlog-
@@ -119,8 +144,10 @@ async def test_every_aggregate_excludes_the_accounts_own_mail() -> None:
                 if "email_messages em" in s and "days" in p]
     assert windowed, "expected the windowed inbox aggregates"
     for sql, params in windowed:
-        assert "from_address->>'email') <> :self" in sql, sql[:120]
-        assert params.get("self") == "me@fracktal.in"
+        assert f"from_address->>'email') NOT IN ({SELF_ADDRESSES_SQL})" in sql, \
+            sql[:200]
+        assert params.get("aid") == "acc-1"
+        assert ":self" not in sql, "the one-address bind is gone"
 
 
 async def test_generate_digest_returns_totals_and_both_bodies() -> None:
@@ -179,12 +206,17 @@ def _thread_row(**over):
 
 
 def _thread_list_db(rows: list):
-    """First execute returns the thread rows; the account-self lookup that
-    follows gets a fetchone."""
+    """First execute returns the thread rows; the read of each mailbox of the
+    member that follows (``identity.resolve_self``, EM-T8e-1) gets the one
+    mailbox ``me@x.com``."""
+    async def fake_execute(stmt, params=None):
+        if _is_member_read(str(stmt)):
+            return MagicMock(fetchall=MagicMock(return_value=[SimpleNamespace(
+                id="acc-1", address="me@x.com", label=None)]))
+        return MagicMock(fetchall=MagicMock(return_value=rows))
+
     db = AsyncMock()
-    db.execute.return_value = MagicMock(
-        fetchall=MagicMock(return_value=rows),
-        fetchone=MagicMock(return_value=SimpleNamespace(self="me@x.com")))
+    db.execute.side_effect = fake_execute
     return db
 
 
@@ -380,6 +412,86 @@ async def test_commitments_read_the_one_seam_for_the_accounts_owner(
     assert not any("gtd_" in c[0] for c in db.calls)
 
 
+def _zoned_db(zone: str):
+    """``_commitments_db`` that also answers the read of the owner's zone."""
+    db = _commitments_db()
+    plain = db.execute.side_effect
+
+    async def execute(stmt, params=None):
+        got = await plain(stmt, params)
+        if "SELECT timezone FROM user_settings" in str(stmt):
+            got.fetchone.return_value = SimpleNamespace(timezone=zone)
+        return got
+
+    db.execute.side_effect = execute
+    return db
+
+
+class TestTheOneRuleOfLateWork:
+    """RX-5. A commitment is a ``pm_tasks`` row, so the digest reads it as My
+    Day reads it. Mutation: put back ``due < at`` and these fail."""
+
+    #: 08:00 in Kolkata on 6 November.
+    NOW = datetime(2026, 11, 6, 2, 30, tzinfo=UTC)
+    #: A task of 6 November that a chat stored at midnight UTC.
+    STORED = datetime(2026, 11, 6, 0, 0, tzinfo=UTC)
+
+    def test_the_task_of_the_reviewer_reads_due_today(self) -> None:
+        assert m.digest._overdue(self.STORED, "Asia/Kolkata", self.NOW) is False
+        assert m.digest._due_day(self.STORED, "Asia/Kolkata").isoformat() == "2026-11-06"
+
+    def test_a_row_with_no_date_is_never_late(self) -> None:
+        assert m.digest._overdue(None, "Asia/Kolkata", self.NOW) is False
+
+    @staticmethod
+    def _start_of_today(zone: str) -> datetime:
+        return day_start(zone, datetime.now(UTC)).astimezone(UTC)
+
+    async def test_the_first_second_of_today_is_not_overdue(self, monkeypatch) -> None:
+        """The old rule called this late for all of today."""
+        due = self._start_of_today("Asia/Kolkata")
+        _seam(monkeypatch, [_task("task-1", "Send quote", due=due)])
+        out = await m.digest._digest_commitments(_zoned_db("Asia/Kolkata"), "acc-1")
+        assert out[0]["overdue"] is False
+
+    async def test_the_last_second_of_yesterday_is_overdue(self, monkeypatch) -> None:
+        due = self._start_of_today("Asia/Kolkata") - timedelta(seconds=1)
+        _seam(monkeypatch, [_task("task-1", "Send quote", due=due)])
+        out = await m.digest._digest_commitments(_zoned_db("Asia/Kolkata"), "acc-1")
+        assert out[0]["overdue"] is True
+
+    async def test_the_date_is_the_date_of_the_owner(self, monkeypatch) -> None:
+        """Midnight in Auckland is the day before in UTC."""
+        due = self._start_of_today("Pacific/Auckland")
+        _seam(monkeypatch, [_task("task-1", "Send quote", due=due)])
+        out = await m.digest._digest_commitments(_zoned_db("Pacific/Auckland"), "acc-1")
+        local = due.astimezone(ZoneInfo("Pacific/Auckland"))
+        assert out[0]["due"] == local.strftime("%b %d") != due.strftime("%b %d")
+
+    async def test_a_promise_uses_the_same_rule(self, monkeypatch) -> None:
+        _seam(monkeypatch, [_task("task-1", "Send quote", due=self.STORED)])
+
+        async def owner(*_a, **_k):
+            return None
+
+        @contextlib.asynccontextmanager
+        async def session():
+            yield _zoned_db("Asia/Kolkata")
+
+        monkeypatch.setattr(m.digest, "_assert_account_owner", owner)
+        monkeypatch.setattr(m.digest, "_tenant_session", session)
+        got = await m.digest.promise_tasks(
+            SimpleNamespace(email="me@fracktal.in"), "acc-1", horizon_days=3, limit=8,
+            now=self.NOW)
+        assert got[0]["overdue"] is False
+
+    async def test_a_commitment_with_no_date_reads_no_zone(self, monkeypatch) -> None:
+        _seam(monkeypatch, [_task("task-1", "Call back")])
+        db = _commitments_db()
+        await m.digest._digest_commitments(db, "acc-1", include_undated=True)
+        assert not [c for c in db.calls if "user_settings" in c[0]]
+
+
 async def test_dashboard_mode_includes_undated_commitments(monkeypatch) -> None:
     """3 of the 4 live commitments had no due date and were invisible to the
     horizon filter. The dashboard (full) projection includes them; the emailed
@@ -447,3 +559,112 @@ def test_brief_sections_render_in_both_bodies() -> None:
         [], [], backlog, commitments)
     assert "Commitments due" in html and "overdue" in html
     assert "Contract review" in html
+
+
+# ── WS-58 MD-3d: the digest did not change (my_day_feed.md §5.9 item 12) ─────
+#
+# MD-3d gave `_digest_thread_list` its optional bounds and moved the body of
+# `_digest_commitments` into a core that raises. The live digest must send
+# the same statements and give the same output. The base code is kept word
+# for word in `_digest_before_md3d.py`. The R8 half is
+# `test_feed_mail_kinds_r8.py::TestTheDigestOnARealDatabase`.
+
+
+def _recording_db(captured: list[tuple[str, dict]]):
+    """One fake for every read of `_generate_digest`, recording each
+    statement and its parameters as the database would get them."""
+    now = datetime.now(UTC)
+
+    async def execute(stmt, params=None):
+        sql = str(stmt)
+        captured.append((sql, dict(params or {})))
+        r = MagicMock()
+        if _is_owner_read(sql):
+            r.fetchone.return_value = SimpleNamespace(user_id="me@fracktal.in")
+        elif _is_member_read(sql):
+            r.fetchall.return_value = [SimpleNamespace(
+                id="acc-1", address="me@fracktal.in", label=None)]
+        elif "COUNT(*) AS inbox" in sql:
+            r.fetchone.return_value = SimpleNamespace(inbox=8, unread=3, attachments=2)
+        elif "SELECT COUNT(*) FROM email_thread_status" in sql:
+            r.scalar.return_value = 2
+        elif "FROM email_thread_status ts" in sql:
+            r.fetchall.return_value = [
+                _thread_row(thread_id="t1", last_message_id="m1", last_at=now,
+                            from_email="me@fracktal.in", to_email="dana@x.com"),
+                _thread_row(thread_id="t2", last_message_id=None, last_at=None)]
+        elif "DISTINCT ON (em.thread_id)" in sql:
+            r.fetchall.return_value = [SimpleNamespace(thread_id="t9", message_id="m9")]
+        else:
+            r.fetchall.return_value = []
+            r.fetchone.return_value = None
+            r.scalar.return_value = 0
+        return r
+
+    db = AsyncMock()
+    db.execute.side_effect = execute
+    return db
+
+
+class TestTheDigestDidNotChange:
+    """Done-when 8 of MD-3d: with no bound, the digest does not change."""
+
+    @staticmethod
+    async def _run(monkeypatch, *, old: bool) -> tuple[list, list]:
+        from tests.unit import _digest_before_md3d as before
+
+        now = datetime.now(UTC)
+        _seam(monkeypatch, [
+            _task("task-1", "Send quote", due=now - timedelta(days=2), thread="t9"),
+            _task("task-2", "Far away", due=now + timedelta(days=30)),
+            _task("task-3", "Call back"),
+            _task("task-4", "Ship it", due=now + timedelta(days=1)),
+        ])
+        if old:
+            monkeypatch.setattr(m.digest, "_digest_thread_list",
+                                before.old_digest_thread_list)
+            monkeypatch.setattr(m.digest, "_digest_commitments",
+                                before.old_digest_commitments)
+        captured: list[tuple[str, dict]] = []
+        outputs = []
+        for days, full in ((1, False), (7, False), (1, True)):
+            outputs.append(await m.digest._generate_digest(
+                _recording_db(captured), "acc-1", days, ["Cold Emails"], full=full))
+        monkeypatch.undo()
+        return captured, outputs
+
+    async def test_each_statement_and_parameter_is_the_old_one(self, monkeypatch) -> None:
+        old_sql, _ = await self._run(monkeypatch, old=True)
+        new_sql, _ = await self._run(monkeypatch, old=False)
+        # RX-5 adds one read on purpose: the owner's zone, for the one rule of
+        # late work. Each digest with a dated row reads it once.
+        zone = [c for c in new_sql if "SELECT timezone FROM user_settings" in c[0]]
+        assert len(zone) == 3
+        new_sql = [c for c in new_sql if "SELECT timezone FROM user_settings" not in c[0]]
+        assert len(new_sql) == len(old_sql) > 20
+        for (sql_new, p_new), (sql_old, p_old) in zip(new_sql, old_sql, strict=True):
+            assert sql_new == sql_old
+            assert p_new == p_old
+
+    async def test_the_output_is_the_old_one(self, monkeypatch) -> None:
+        _, old_out = await self._run(monkeypatch, old=True)
+        _, new_out = await self._run(monkeypatch, old=False)
+        assert new_out == old_out
+        # Non-vacuity: each list the change touched holds rows.
+        assert all(out["backlog"] and out["awaiting"] for out in new_out)
+        assert [c["task_id"] for c in new_out[0]["commitments"]] == ["task-1", "task-4"]
+        assert new_out[2]["commitments"][-1]["task_id"] == "task-3"  # undated, full
+
+    async def test_a_failed_read_still_gives_an_empty_list(self) -> None:
+        """The wrapper keeps the digest best-effort, and its session usable."""
+        db = AsyncMock()
+        db.execute.side_effect = RuntimeError("relation pm_tasks does not exist")
+        assert await m.digest._digest_commitments(db, "acc-1") == []
+        db.rollback.assert_awaited_once()
+
+    async def test_the_digest_still_reads_every_captured_task(self, monkeypatch) -> None:
+        """The digest passes no `commitment` flag (§5.9 rule 10.1 is the
+        feed's rule, never the digest's)."""
+        src = _seam(monkeypatch, [])
+        await m.digest._digest_commitments(_commitments_db(), "acc-1")
+        assert src.calls == [("me@fracktal.in", "account_id", "acc-1", {})]

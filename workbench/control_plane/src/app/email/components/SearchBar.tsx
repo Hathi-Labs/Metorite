@@ -3,7 +3,7 @@
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useEmailStore, FOLDER_ALL } from "../lib/emailStore";
+import { useEmailStore, FOLDER_ALL, foldersInScope } from "../lib/emailStore";
 import {
   SearchFilter,
   addFilter,
@@ -14,6 +14,7 @@ import {
 import { chipColors } from "../lib/labelColors";
 import { folderLabel } from "../lib/utils";
 import { EMAIL_CATEGORIES } from "../lib/types";
+import { FILL_PAGE_FILTER, shellBarOn } from "@/lib/shell/registry";
 
 /**
  * SearchBar — the email app's search surface, centred in the top bar.
@@ -32,7 +33,10 @@ export function SearchBar() {
   const searchScope = useEmailStore((s) => s.searchScope);
   const searchIsSemantic = useEmailStore((s) => s.searchIsSemantic);
   const selectedFolder = useEmailStore((s) => s.selectedFolder);
-  const folders = useEmailStore((s) => s.folders);
+  // A custom folder belongs to one mailbox, so All inboxes offers none.
+  const allFolders = useEmailStore((s) => s.folders);
+  const viewAll = useEmailStore((s) => s.viewAll);
+  const folders = useMemo(() => foldersInScope(allFolders, viewAll), [allFolders, viewAll]);
   const availableLabels = useEmailStore((s) => s.availableLabels);
   const labelColors = useEmailStore((s) => s.labelColors);
   const setSearchQuery = useEmailStore((s) => s.setSearchQuery);
@@ -79,6 +83,23 @@ export function SearchBar() {
       apply(filters);
     }
   };
+
+  // §6.7 rule 3: "Show all in Inbox" in the command bar puts its words here,
+  // and lifts any `from:` or `tag:` in them into pills, as Enter does.
+  useEffect(() => {
+    const onFill = (e: Event) => {
+      const words = (e as CustomEvent<{ query?: string }>).detail?.query?.trim();
+      if (!words) return;
+      // Handled here, so the shell's generic fill leaves the box alone.
+      e.preventDefault();
+      const { filters, text } = parseQuery(words, searchFilters);
+      setSearchQuery(text);
+      apply(filters);
+      inputRef.current?.focus();
+    };
+    window.addEventListener(FILL_PAGE_FILTER, onFill);
+    return () => window.removeEventListener(FILL_PAGE_FILTER, onFill);
+  });
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
@@ -188,7 +209,11 @@ export function SearchBar() {
             ref={inputRef}
             type="text"
             value={searchQuery}
-            placeholder={searchFilters.length ? "" : `Search ${scopeName}`}
+            // §6.7 rule 2: with the shell bar on, this box is the page's
+            // FILTER. "Search" is the command bar's word, and `/` lands here.
+            placeholder={searchFilters.length ? "" : `${shellBarOn() ? "Filter" : "Search"} ${scopeName}`}
+            data-page-filter={shellBarOn() ? scopeName : undefined}
+            aria-label={shellBarOn() ? `Filter ${scopeName}` : undefined}
             onChange={(e) => setSearchQuery(e.target.value)}
             onKeyDown={onKeyDown}
             onFocus={() => setFocused(true)}

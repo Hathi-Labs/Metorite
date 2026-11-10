@@ -439,8 +439,10 @@ async def update_chain(org: str, bundle: object, raw: bytes) -> None:
     check("4.5 the earlier run's tasks survive", await run_tasks(org, first) == 2423)
     residue = await one(
         org,
+        # I-10: case-blind, because a lane may take a proposed spelling.
         "SELECT (SELECT count(*) FROM pm_task_statuses s JOIN pm_projects p ON p.id = s.project_id "
-        "         WHERE p.organization_id = CAST(:org AS uuid) AND s.name = 'waiting on vendor') "
+        "         WHERE p.organization_id = CAST(:org AS uuid) "
+        "           AND lower(s.name) = 'waiting on vendor') "
         "     + (SELECT count(*) FROM pm_tags WHERE organization_id = CAST(:org AS uuid) "
         "         AND lower(name) = 'vendor hold')",
     )

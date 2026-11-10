@@ -225,6 +225,29 @@ _IN_SUBQUERY = re.compile(
 _TENANT_PROJECTS = re.compile(
     r"SELECT id FROM pm_projects WHERE organization_id\s*=\s*CAST\(:vis_org", re.I
 )
+#: WS-64 OP-9 (D-OP-15): the tenant set leaves out every other member's
+#: personal node. Read off the text, so a route that drops the line stops
+#: being mirrored here.
+_TENANT_PERSONAL = "personal_owner IS NULL OR lower(personal_owner) = :vis_email"
+#: H-304: the unrestricted TASK clause ORs the assignee arm onto that set, so
+#: the D63 hand-over reaches an admin who is the assignee. Read off the text,
+#: so a route that drops the arm stops being mirrored here.
+_TENANT_OR_ASSIGNEE = re.compile(
+    r"SELECT id FROM pm_projects\s+WHERE organization_id\s*=\s*CAST\(:vis_org"
+    r"[^()]*\)[^()]*"
+    # WS-64 OP-9: the personal line may sit before the set closes.
+    r"(?:\(personal_owner IS NULL OR lower\(personal_owner\)\s*=\s*:vis_email\)\s*)?"
+    r"\)\s*OR EXISTS \(SELECT 1 FROM pm_task_assignees a\s+WHERE"
+    r"\s+a\.task_id\s*=\s*\w+\.id\s+AND\s+lower\(a\.assignee\)\s*=\s*:vis_email",
+    re.I,
+)
+def _personal_me(statement: str, args: dict) -> str | None:
+    """The caller, when *statement* carries the OP-9 personal line, else None."""
+    if _TENANT_PERSONAL not in statement:
+        return None
+    return str(args.get("vis_email") or "").lower()
+
+
 #: The column that subquery restricts: ``t.root_project_id IN ( SELECT id FROM…``
 _IN_TENANT_SUBQUERY = re.compile(
     r"(?:\w+\.)?(\w+)\s+IN\s*\(\s*SELECT id FROM pm_projects WHERE organization_id",
@@ -492,6 +515,17 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+#: ``RETURNING … (xmax = 0) AS inserted`` — true for a row the statement made,
+#: false for a row the conflict arm found. Only a statement that asks gets it.
+_INSERTED_FLAG = re.compile(r"\(\s*xmax\s*=\s*0\s*\)\s+AS\s+inserted", re.I)
+
+
+def _returned(row: dict[str, Any], statement: str, *, inserted: bool) -> SimpleNamespace:
+    """One row of an INSERT, with the ``inserted`` flag when the SQL asks."""
+    flag = {"inserted": inserted} if _INSERTED_FLAG.search(statement) else {}
+    return SimpleNamespace(**row, **flag)
+
+
 #: Column defaults migration 145 declares. Kept here so a row read back after an
 #: INSERT looks like Postgres would have returned it.
 _DEFAULTS: dict[str, dict[str, Any]] = {
@@ -712,6 +746,25 @@ class FakeProjectsDB:
             )
         return project
 
+    def seed_in_space(
+        self, *, name: str = "Root", subject: str | None = "org",
+        space: str = "Company", **columns: Any,
+    ) -> SimpleNamespace:
+        """A project that sits in a fresh SPACE and keeps its own lanes.
+
+        A space holds projects, not tasks (``core.assert_holds_tasks``,
+        2026-10-26), so a test that creates, moves or captures a task needs a
+        project under a root, not the root itself. The project owns its status
+        set (migration 196), so lanes seeded on it are the lanes it uses. The
+        ROOT is the space, so root-scoped rows (types, fields, the task
+        counter) belong on ``project.parent_project_id``.
+        """
+        root = self.seed_project(name=space, subject=subject)
+        columns.setdefault("owns_statuses", True)
+        return self.seed_project(
+            name=name, parent=root.id, subject=subject, **columns,
+        )
+
     def seed_status(
         self, project_id: str, *, name: str = "To do", category: str = "todo",
         is_default: bool = True, position: int = 10,
@@ -764,6 +817,15 @@ class FakeProjectsDB:
         args = dict(params or {})
         self.statements.append(statement)
         self.calls.append((statement, args))
+        # A lock returns nothing that a route reads, and one process holds it.
+        if "pg_advisory_xact_lock" in statement:
+            return _Result([])
+        # WS-39 SP-1: the cycle rows that a move can break
+        # (`cycles.detach_moved_tasks`). A JOIN over three tables, and the
+        # node form adds two walks. The fake holds no cycle, so no row. The
+        # real queries run in `test_sprint_store_r8.py` (R8).
+        if "AS cycle_node" in statement:
+            return _Result([])
         # WS-27aa's tenant source for the scheduled lifecycle sweep:
         # `workflows.owner_email` → `app_user.organization_id`
         # (`routes/workflows/service._workflow_organization`). Taught
@@ -806,12 +868,31 @@ class FakeProjectsDB:
                 SimpleNamespace(task_id=task_id, people=sorted(people))
                 for task_id, people in grouped.items()
             ])
+        # WS-55 EA-13d and EA-13e: the PR chip and the agent-worked flag that
+        # `filters.attach_agent_state` now fills on every task row it hands
+        # back. Both are page aggregates that the generic WHERE reader cannot
+        # parse. The fake holds no pull request reference and no agent act, so
+        # both answer with no row. The real queries run against Postgres in
+        # `test_projects_pr_chip_r8.py` and `test_projects_agent_summary_r8.py`.
+        if "PARTITION BY r.task_id" in statement or (
+            "FROM unnest(CAST(:ids AS uuid[])) AS t(id)" in statement
+        ):
+            return _Result([])
         # WS-27ae's attachment roll-up: one aggregate over the exported ids,
         # the same page-aggregate shape as the assignee one above and taught
         # for the same reason. Fingerprinted on its own ALIAS rather than on
         # `pm_task_attachments`, which several statements name.
         if "count(*) AS files" in statement:
             return _Result(self._attachment_counts(args))
+        # `tree._OWN_LIVE_TASKS_SQL` (2026-10-26): the live tasks on ONE node,
+        # never its subtree. Fingerprinted on its own alias.
+        if "AS own_live_tasks" in statement:
+            pid = str(args.get("pid"))
+            held = sum(
+                1 for row in self.rows("pm_tasks")
+                if str(row.get("project_id")) == pid and row.get("archived_at") is None
+            )
+            return _Result([SimpleNamespace(own_live_tasks=held)])
         # The tree's subtree roll-up (2026-09-23): per project, how many tasks
         # and how many are finished, for the sidebar's completion wheel.
         # `GROUP BY` is not a shape the generic WHERE reader can parse, so it
@@ -1088,6 +1169,17 @@ class FakeProjectsDB:
         term = like_to_regex(str(args.get("term") or ""))
         prefix = like_to_regex(str(args.get("prefix") or ""))
         number = args.get("number")
+        where = statement.split("END AS rank", 1)[-1].split("ORDER BY", 1)[0]
+        # The text arm, word by word (2026-10-13): for each bound `q_w<i>`,
+        # the COLUMNS the WHERE tests it against, read off the statement. A
+        # route that drops the description from the arm drops it here too.
+        word_columns: dict[str, list[str]] = {}
+        for column, param in _ILIKE.findall(where):
+            if param.startswith("q_w"):
+                word_columns.setdefault(param, []).append(column)
+        words = {p: like_to_regex(str(args.get(p) or "")) for p in word_columns}
+        texted = bool(word_columns)
+        exact = "t.task_number = CAST(:number AS bigint)" in where
         scoped = "pm_project_grants" in statement
         visible = self.visible_project_ids(
             str(args.get("vis_email") or ""), list(args.get("vis_groups") or []),
@@ -1132,7 +1224,8 @@ class FakeProjectsDB:
                 continue
             if parked is not None and str(task.get("status_id")) in parked:
                 continue
-            if tenant_only and str(task.get("project_id")) not in self.tenant_project_ids(org):
+            if tenant_only and str(task.get("project_id")) not in self.tenant_project_ids(
+                    org, _personal_me(statement, args)):
                 continue
             if scoped and str(task.get("project_id")) not in visible:
                 continue
@@ -1141,14 +1234,40 @@ class FakeProjectsDB:
             title = str(task.get("title") or "")
             body = str(task.get("description") or "")
             numbered = number is not None and task.get("task_number") == number
-            if not (term.match(title) or term.match(body) or numbered):
+            # D-PM-31: the text arm and the exact arm are alternatives, and
+            # each is honoured only when the WHERE carries it. A route that
+            # sent a number query through the text arm goes red here.
+            text_of = {"title": title, "description": body}
+            worded = texted and all(
+                any(words[p].match(text_of.get(c, "")) for c in columns)
+                for p, columns in word_columns.items()
+            )
+            if not (worded or (exact and numbered)):
                 continue
             rank = (
                 0 if numbered
                 else 1 if prefix.match(title)
                 else 2 if term.match(title)
-                else 3
+                else 3 if words and all(w.match(title) for w in words.values())
+                else 4 if term.match(body)
+                else 5
             )
+            # The snippet window, the SQL's way: the first needle the
+            # description holds, `lead` characters back, `window` long.
+            snippet: dict[str, Any] = {}
+            if "snippet_raw" in statement and rank >= int(args.get("description_rank") or 99):
+                lowered = body.lower()
+                for needle in args.get("needles") or []:
+                    at = lowered.find(str(needle).lower()) + 1
+                    if at > 0:
+                        start = max(at - int(args.get("snippet_lead") or 0), 1)
+                        window = int(args.get("snippet_window") or 0)
+                        snippet = {
+                            "snippet_from": start,
+                            "snippet_raw": body[start - 1:start - 1 + window],
+                            "description_length": len(body),
+                        }
+                        break
             project = projects.get(str(task.get("project_id")), {})
             status = statuses.get(str(task.get("status_id")), {})
             found.append(SimpleNamespace(
@@ -1157,6 +1276,7 @@ class FakeProjectsDB:
                 status_name=status.get("name"),
                 category=status.get("category"),
                 rank=rank,
+                **snippet,
             ))
 
         # The tie-break is read off the statement, not assumed: `rank` alone
@@ -1248,7 +1368,8 @@ class FakeProjectsDB:
             if tenanted and str(task.get("organization_id")) != org:
                 continue
             if tenant_only and (
-                str(task.get("project_id")) not in self.tenant_project_ids(org)
+                str(task.get("project_id")) not in self.tenant_project_ids(
+                    org, _personal_me(statement, args))
             ):
                 continue
             if scoped and str(task.get("project_id")) not in visible and not (
@@ -1386,7 +1507,8 @@ class FakeProjectsDB:
                     # DO NOTHING affects nothing, so `rowcount` is 0 — the number
                     # `tags.register` reports as "created".
                     return _Result(
-                        [SimpleNamespace(**row)], rowcount=1 if updated else 0,
+                        [_returned(row, statement, inserted=False)],
+                        rowcount=1 if updated else 0,
                     )
 
         row = {"id": str(uuid4()), **_DEFAULTS.get(table, {}), **values}
@@ -1406,7 +1528,7 @@ class FakeProjectsDB:
             self._seq += 1
             row.setdefault("seq", self._seq)
         self.tables.setdefault(table, []).append(row)
-        return _Result([SimpleNamespace(**row)])
+        return _Result([_returned(row, statement, inserted=True)])
 
     def _update(self, statement: str, table: str, args: dict) -> _Result:
         assignments = _SET_RE.search(statement)
@@ -1596,6 +1718,17 @@ class FakeProjectsDB:
         # size, asked by the project delete before it destroys anything. It does
         # not start with SELECT, so the generic count path never sees it and the
         # route would have reported zero.
+        # `remove_my_area` asks for the child nodes and the tasks of a whole
+        # subtree in one row (`AS nodes … AS tasks`). Answered explicitly.
+        if re.match(r"^\s*WITH\s+RECURSIVE\s+sub\b", statement, re.I) and "AS nodes" in statement:
+            subtree = self._subtree_ids(str(args.get("aid")))
+            return _Result([SimpleNamespace(
+                nodes=len(subtree) - 1,
+                tasks=sum(
+                    1 for t in self.rows("pm_tasks")
+                    if str(t.get("project_id")) in subtree
+                ),
+            )])
         if re.match(r"^\s*WITH\s+RECURSIVE\s+sub\b", statement, re.I):
             subtree = self._subtree_ids(str(args.get("pid")))
             if re.search(r"SELECT\s+count\(\*\)\s+FROM\s+sub", statement, re.I):
@@ -1708,6 +1841,15 @@ class FakeProjectsDB:
             str(p["id"]) for p in self.rows("pm_projects")
             if p.get("sealed_at") is not None
         }
+        # WS-64 OP-9 fix round 1 (D-OP-15): a personal node of somebody else
+        # leaves the closure on BOTH arms, as the SQL does. A stray grant on
+        # it seeds nothing, and the descent does not enter it.
+        me = (email or "").lower()
+        sealed |= {
+            str(p["id"]) for p in self.rows("pm_projects")
+            if p.get("personal_owner")
+            and str(p.get("personal_owner")).lower() != me
+        }
         seeds = {
             str(g.get("project_id")) for g in self.rows("pm_project_grants")
             if (
@@ -1739,7 +1881,9 @@ class FakeProjectsDB:
                     changed = True
         return out
 
-    def tenant_project_ids(self, organization_id: str | None) -> set[str]:
+    def tenant_project_ids(
+        self, organization_id: str | None, me: str | None = None,
+    ) -> set[str]:
         """Every project in one organization — the `data:org:read` answer.
 
         ⚠️ Sealed projects are excluded HERE TOO, and that is D63's point
@@ -1749,11 +1893,17 @@ class FakeProjectsDB:
         invisible act", and allows one door for it: owner-only and logged. An
         unrestricted answer that included sealed rows would BE that invisible
         act, handed to every HR admin by default.
+
+        With *me* (the statement carries :data:`_TENANT_PERSONAL`), the set
+        also leaves out every personal node whose owner is not *me* (WS-64
+        OP-9, D-OP-15).
         """
         return {
             str(p["id"]) for p in self.rows("pm_projects")
             if str(p.get("organization_id")) == str(organization_id)
             and p.get("sealed_at") is None
+            and (me is None or not p.get("personal_owner")
+                 or str(p.get("personal_owner")).lower() == me)
         }
 
     def _subtree_ids(self, root_id: str) -> set[str]:
@@ -2126,8 +2276,20 @@ class FakeProjectsDB:
             seen = True
             column_match = _IN_TENANT_SUBQUERY.search(where)
             column = column_match.group(1) if column_match else "id"
-            tenant = self.tenant_project_ids(args.get("vis_org"))
-            rows = [r for r in rows if str(r.get(column)) in tenant]
+            tenant = self.tenant_project_ids(
+                args.get("vis_org"), _personal_me(where, args))
+            # H-304: the assignee arm, ORed onto the set. A second copy of the
+            # set is the agent's narrowing (`core._narrow_for_agent`), an AND
+            # over both arms, so it still binds the assignee arm.
+            escape = bool(_TENANT_OR_ASSIGNEE.search(where))
+            narrowed = len(_TENANT_PROJECTS.findall(where)) > 1
+            me = str(args.get("vis_email") or "").lower()
+            rows = [
+                r for r in rows
+                if str(r.get(column)) in tenant
+                or (escape and not narrowed
+                    and me in self._assignees_of(r.get("id")))
+            ]
 
         # The grant closure — applied ONLY when the statement actually carries
         # the subquery. A route that loses its visibility clause therefore stops
@@ -2280,11 +2442,18 @@ class FakeProjectsDB:
         ilike = _ILIKE.findall(top)
         if ilike:
             seen = True
-            needle = str(args.get(ilike[0][1]) or "").strip("%").lower()
-            rows = [
-                r for r in rows
-                if any(needle in str(r.get(c) or "").lower() for c, _ in ilike)
-            ]
+            # One group per bound parameter: a row must match EVERY parameter
+            # in at least one of the columns that parameter is tested against
+            # (`filters.text_match_clause` binds one per word, 2026-10-13).
+            groups: dict[str, list[str]] = {}
+            for column, param in ilike:
+                groups.setdefault(param, []).append(column)
+            for param, columns in groups.items():
+                needle = str(args.get(param) or "").strip("%").lower()
+                rows = [
+                    r for r in rows
+                    if any(needle in str(r.get(c) or "").lower() for c in columns)
+                ]
         if re.search(r"\bAND\s+is_default\b", top, re.I):
             seen = True
             rows = [r for r in rows if r.get("is_default")]
@@ -2388,6 +2557,32 @@ class FakeProjectsDB:
                 )
 
             return sorted(rows, key=status_key, reverse=reverse)
+        # Task 1792 — the ONE status lane order (`core.status_order_sql`):
+        # `CASE [<alias>.]category WHEN '<stage>' THEN <n> … ELSE <n> END`, then
+        # position, then name. The rank is read off the statement's own WHEN
+        # pairs, as the branch above reads its ARRAY, so a route that reordered
+        # the stages changes this mirror's answer too. Without this branch
+        # `_ORDER_RE` read `CASE` as a column and kept the insert order.
+        stage = re.search(
+            r"ORDER\s+BY\s+CASE\s+(?:\w+\.)?category\s+"
+            r"((?:WHEN\s+'\w+'\s+THEN\s+\d+\s+)+)ELSE\s+(\d+)\s+END",
+            statement, re.I,
+        )
+        if stage:
+            rank = {
+                name: int(n)
+                for name, n in re.findall(r"WHEN\s+'(\w+)'\s+THEN\s+(\d+)", stage.group(1), re.I)
+            }
+            other = int(stage.group(2))
+            return sorted(
+                rows,
+                key=lambda r: (
+                    rank.get(str(r.get("category") or ""), other),
+                    r.get("position") is None,  # Postgres sorts NULL last
+                    _sortable(r.get("position")),
+                    str(r.get("name") or ""),
+                ),
+            )
         # WS-27ae — the delta feed's total order, `(<stamp>, <id>)` ascending.
         # It is the SAME pair the cursor encodes, so a mirror that ordered on
         # the stamp alone would break ties differently from Postgres and the

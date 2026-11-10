@@ -9,6 +9,11 @@ client ID and the redirect URI. Both come from
 R7 fence ``email-app-info-no-secret``: the answer holds the client ID and the
 redirect URI of settings, never the client secret. The route stays behind the
 session.
+
+EM-G7 item 9 (§12.3.9) inverted one pin here: Gmail is no longer a 404. A
+Google Workspace admin needs the client ID too, and
+``test_email_gmail_connect.py::test_gmail_app_info_returns_the_client_id``
+fences the Gmail answer.
 """
 from __future__ import annotations
 
@@ -62,7 +67,8 @@ async def test_the_answer_never_holds_the_secret() -> None:
 
 
 async def test_another_provider_is_a_404() -> None:
-    for provider in ("gmail", "imap", "zoho"):
+    # Gmail left this list with EM-G7 item 9.
+    for provider in ("imap", "zoho", "outlook"):
         with pytest.raises(HTTPException) as exc:
             await oauth.oauth_app_info(provider, user=_member())
         assert exc.value.status_code == 404

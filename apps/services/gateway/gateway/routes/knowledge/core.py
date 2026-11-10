@@ -1,0 +1,1114 @@
+"""Knowledge — the leaf of the ``/knowledge`` API (WS-61 KB-1).
+
+Spec: ``project-docs/specs/knowledge_base.md`` §4.1 (spaces), §4.2 (pages),
+§5.1 (visibility), §5.2 (permissions), §5.4 (``via``) and §12 (columns).
+
+This module holds the router, the ONE visibility rule and the data helpers
+that ``spaces.py`` and ``pages.py`` call. It imports nothing from its
+siblings except ``flags``, so each feature module can import it.
+
+**The one visibility rule (§5.1).** :func:`visible_pages_clause` is the only
+predicate that decides which pages a member sees. Every read of ``kb_pages``
+puts it in, and ``tests/unit/test_kb_visibility_one_seam.py`` fails on a read
+that does not. A member sees a page when one of these holds:
+
+* the page is ``published`` and its space is not a ``me`` space, and the
+  member holds a grant on the space whose subject is ``org``, their email, or
+  one of their groups. The space owner and a holder of ``knowledge:manage``
+  see each published page of each space that is not a ``me`` space;
+* the page is ``archived`` in a space that is not a ``me`` space, and the
+  member manages the space: ``knowledge:manage``, the space owner, or a
+  ``manage`` grant. That is the archive view of §4.2;
+* the page is a ``draft`` that the member wrote. Authorship gives no read of
+  a published or archived page: an author whose grant is gone reads the
+  space no more, like any other member;
+* the page is a ``draft`` and names the member in ``reviewers``;
+* the page is in the member's own ``me`` space, in any state.
+
+An outside agent whose connection has ``include_personal`` false (D-EA-4)
+sees no ``me`` space and no page of one, a draft included. Both clauses add
+this narrowing only when ``user.agent`` is set, so every other caller keeps
+its clause byte for byte (MCP-P1a, ``external_agent_access.md`` §19.8).
+
+``knowledge:manage`` never shows a draft that is not the holder's own, and
+never a ``me`` space. ``data:org:read`` gives nothing here, so this module
+does not call ``resolve_visibility`` (which drops the groups for a holder of
+that permission) and does not copy ``_VISIBLE_PROJECTS_SQL``. The groups come
+from ``routes/projects/core._MY_GROUPS_SQL``, imported and not copied, as
+``routes/crm/access.py`` does.
+
+**The tenant and the member come from the session (R5, R11).** Each helper
+takes the resolved ``UserContext``. Each statement also names
+``user.organization_id``, so a session with row level security off still
+reads one organization only.
+"""
+
+from __future__ import annotations
+
+import re
+import uuid
+from typing import Any
+
+from acb_auth import UserContext, require_feature_router
+from acb_common import get_logger
+from fastapi import APIRouter, Depends, HTTPException
+
+# The shared seam, aliased so a test can patch `_tenant_session` by name.
+from gateway.db import tenant_session as _tenant_session  # noqa: F401
+
+# OQ7: the one age bound of a provider reader, shared with the Python twin.
+from gateway.kb_access.resolve import ACCESS_MAX_AGE_SECONDS
+from gateway.routes.knowledge.flags import require_knowledge_enabled
+from gateway.routes.projects.core import (
+    _MY_GROUPS_SQL,
+    ACTOR_VIA,
+    capture_actor_via,
+    validate_grant_subject,
+)
+from sqlalchemy import text
+
+_log = get_logger("gateway.knowledge")
+
+router = APIRouter(
+    prefix="/knowledge",
+    tags=["knowledge"],
+    dependencies=[
+        Depends(require_knowledge_enabled),
+        require_feature_router("knowledge"),
+        Depends(capture_actor_via),
+    ],
+)
+
+#: The admin verb of §5.2: manage on every space except a ``me`` space.
+MANAGE_PERMISSION = "knowledge:manage"
+
+#: Mirrors of the CHECKs in the KB-1 migration (``kb_spaces``), so a bad value
+#: is a 422 at the boundary and not a 500.
+SPACE_KINDS: tuple[str, ...] = ("company", "team", "me", "agent")
+PAGE_STATES: tuple[str, ...] = ("draft", "published", "archived")
+GRANT_LEVELS: tuple[str, ...] = ("read", "write", "manage")
+VIAS: tuple[str, ...] = ("web", "chat", "mcp", "sync", "artifact")
+
+#: The rank of a grant level. A higher level holds each lower one.
+LEVEL_RANK: dict[str, int] = {"read": 1, "write": 2, "manage": 3}
+
+#: The company space (§4.1), made on the first ``GET /knowledge/spaces``.
+COMPANY_SLUG = "company"
+COMPANY_NAME = "Company"
+COMPANY_PURPOSE = "Products, services, policies, and how we do things."
+
+#: The member's own space (§4.1), made on the member's first write.
+ME_SLUG = "me"
+ME_NAME = "My notes"
+ME_PURPOSE = "Your private drafts. Only you can see them."
+
+#: The days from a publish to the review date (§4.2).
+REVIEW_DAYS = 180
+
+#: The days without an edit after which a published page reads as stale
+#: (KB-AI-4). The maintenance list uses it.
+STALE_DAYS = 365
+
+
+def VERIFIED_SQL(alias: str) -> str:
+    """The one test of a verified page (KB-AI-4), on the page alias *alias*.
+
+    A page is verified when it has an owner AND a review date in the future.
+    A page with no review date is not verified. Search and the list share
+    this text, so the two cannot drift. *alias* is code, never input.
+    """
+    return f"{alias}.owner_email IS NOT NULL AND {alias}.review_at > now()"
+
+#: The highest version number. ``kb_page_versions.version`` is int4, so a
+#: route refuses a bigger number with 422 before it reaches the driver.
+MAX_VERSION = 2_147_483_647
+
+#: The page columns that each page read returns. ``p.icon`` is one emoji, or
+#: NULL (KB-2f). It is not the icon NAME of a space.
+PAGE_COLUMNS = (
+    "p.id, p.space_id, p.parent_id, p.position, p.title, p.body_md, p.state, "
+    "p.author_email, p.reviewers, p.review_at, p.source_ref, p.origin, "
+    "p.published_at, p.archived_at, p.updated_at, p.created_at, p.history_from, "
+    "p.archived_from_state, p.icon, p.owner_email, p.review_every_days"
+)
+
+#: The space columns that each space read returns.
+SPACE_COLUMNS = (
+    "s.id, s.slug, s.name, s.purpose, s.icon, s.kind, s.owner_email, "
+    "s.archived_at, s.created_at"
+)
+
+# The member's groups, from the Projects read model. The query names its one
+# parameter `:email`. It is renamed here so it cannot meet a caller's own
+# `:email`, and the rename is checked when the module loads.
+_GROUPS_OF_VIEWER = _MY_GROUPS_SQL.replace(":email", ":kb_viewer")
+if _GROUPS_OF_VIEWER.count(":kb_viewer") != 1:  # pragma: no cover — a guard
+    raise RuntimeError(
+        "routes/projects/core._MY_GROUPS_SQL changed shape. It must bind the "
+        "member's email once as :email."
+    )
+
+
+# ── Who is asking ───────────────────────────────────────────────────────────
+
+def viewer_email(user: UserContext) -> str:
+    """The caller's email, folded (R10). Empty for a principal with none."""
+    return (user.email or "").strip().lower()
+
+
+def is_manager(user: UserContext) -> bool:
+    """True when the caller holds ``knowledge:manage``."""
+    return bool(user.has_permission(MANAGE_PERMISSION))
+
+
+def org_of(user: UserContext) -> str:
+    """The caller's organization. The kill switch refuses a caller with none."""
+    org = str(user.organization_id or "").strip()
+    if not org:
+        raise not_found()
+    return org
+
+
+def current_via() -> str:
+    """Through what the caller acted (§5.4), from the bound ``X-Actor-Via``.
+
+    ``chat:<agent>`` is ``chat``, ``mcp:<client>`` is ``mcp``, and every other
+    value or no header is ``web``. ``sync`` and ``artifact`` are written by
+    the code paths that own them (KB-6, KB-7), never by a header.
+    """
+    value = ACTOR_VIA.get("")
+    if value.startswith("mcp:"):
+        return "mcp"
+    if value.startswith("chat"):
+        return "chat"
+    return "web"
+
+
+def not_found() -> HTTPException:
+    """The one answer for a page or space the caller cannot see."""
+    return HTTPException(status_code=404, detail="Not found")
+
+
+def forbidden(detail: str) -> HTTPException:
+    return HTTPException(status_code=403, detail=detail)
+
+
+def parse_id(value: str | None) -> str | None:
+    """A UUID in canonical form, or None for a value that is not one."""
+    if value is None:
+        return None
+    try:
+        return str(uuid.UUID(str(value)))
+    except (ValueError, TypeError):
+        return None
+
+
+# ── The one visibility rule ─────────────────────────────────────────────────
+
+def _subject_match(grant_alias: str) -> str:
+    """A grant whose subject is ``org``, the caller's email, or a group."""
+    g = grant_alias
+    return (
+        f"({g}.subject = 'org' OR {g}.subject = :kb_viewer "
+        f"OR {g}.subject IN (SELECT kb_mg.subject FROM ({_GROUPS_OF_VIEWER}) AS kb_mg))"
+    )
+
+
+def _viewer_params(user: UserContext) -> dict[str, Any]:
+    return {
+        "kb_org": org_of(user),
+        "kb_viewer": viewer_email(user),
+        "kb_manage": is_manager(user),
+    }
+
+
+def _hides_personal(user: UserContext) -> bool:
+    """True for an outside agent whose connection has ``include_personal``
+    false (D-EA-4, ``external_agent_access.md`` §19.8). Such a caller sees no
+    ``me`` space and no page in one, in any state.
+
+    The same read of the flag as ``routes/projects/core._narrow_for_agent``.
+    Strict ``user.agent`` on purpose: a stand-in without the field raises,
+    and never reads as "no narrowing". ``agent`` is ``None`` for each request
+    that is not a signed agent request, so the member's own requests and the
+    in-product assistant keep each clause byte for byte.
+    """
+    agent = user.agent
+    return agent is not None and not agent.include_personal
+
+
+def visible_pages_clause(
+    user: UserContext, alias: str = "p",
+) -> tuple[str, dict[str, Any]]:
+    """The ONE predicate of who sees a page (§5.1), and its parameters.
+
+    Put the text in a statement that reads ``kb_pages AS <alias>``, and merge
+    the parameters into the statement's own. The names start with ``kb_`` so
+    they do not meet a caller's names. There is no recursion and no copy of
+    the project grant SQL.
+    """
+    a = alias
+    sql = (
+        f"({a}.organization_id = CAST(:kb_org AS uuid) AND ("
+        f"({a}.state = 'published' AND EXISTS ("
+        f"SELECT 1 FROM kb_spaces kb_s"
+        f" WHERE kb_s.id = {a}.space_id"
+        f" AND kb_s.organization_id = CAST(:kb_org AS uuid)"
+        f" AND kb_s.kind <> 'me'"
+        f" AND (CAST(:kb_manage AS boolean)"
+        f" OR kb_s.owner_email = :kb_viewer"
+        f" OR EXISTS (SELECT 1 FROM kb_space_grants kb_g"
+        f" WHERE kb_g.space_id = kb_s.id AND {_subject_match('kb_g')}))))"
+        f" OR ({a}.state = 'archived'"
+        f" AND ({a}.archived_from_state IS DISTINCT FROM 'draft'"
+        f" OR {a}.author_email = :kb_viewer)"
+        f" AND EXISTS ("
+        f"SELECT 1 FROM kb_spaces kb_s"
+        f" WHERE kb_s.id = {a}.space_id"
+        f" AND kb_s.organization_id = CAST(:kb_org AS uuid)"
+        f" AND kb_s.kind <> 'me'"
+        f" AND (CAST(:kb_manage AS boolean)"
+        f" OR kb_s.owner_email = :kb_viewer"
+        f" OR EXISTS (SELECT 1 FROM kb_space_grants kb_g"
+        f" WHERE kb_g.space_id = kb_s.id AND kb_g.level = 'manage'"
+        f" AND {_subject_match('kb_g')}))))"
+        f" OR ({a}.author_email = :kb_viewer AND ({a}.state = 'draft'"
+        f" OR ({a}.state = 'archived' AND {a}.archived_from_state = 'draft')))"
+        f" OR ({a}.state = 'draft' AND :kb_viewer = ANY({a}.reviewers))"
+        f" OR EXISTS (SELECT 1 FROM kb_spaces kb_s"
+        f" WHERE kb_s.id = {a}.space_id"
+        f" AND kb_s.organization_id = CAST(:kb_org AS uuid)"
+        f" AND kb_s.kind = 'me' AND kb_s.owner_email = :kb_viewer)"
+        f"))"
+    )
+    if _hides_personal(user):
+        # D-EA-4: no page of a `me` space, a draft included. A positive
+        # EXISTS, so a page whose space row is gone matches nothing.
+        sql = (
+            f"({sql} AND EXISTS (SELECT 1 FROM kb_spaces kb_np"
+            f" WHERE kb_np.id = {a}.space_id"
+            f" AND kb_np.organization_id = CAST(:kb_org AS uuid)"
+            f" AND kb_np.kind <> 'me'))"
+        )
+    return sql, _viewer_params(user)
+
+
+def readable_spaces_clause(
+    user: UserContext, alias: str = "s",
+) -> tuple[str, dict[str, Any]]:
+    """The spaces the caller can open: the read side of a space.
+
+    The caller's own ``me`` space, and each other space where the caller is
+    the owner, holds ``knowledge:manage``, or holds a grant. Another member's
+    ``me`` space never matches. An outside agent whose connection has
+    ``include_personal`` false (D-EA-4) gets no ``me`` space.
+    """
+    a = alias
+    sql = (
+        f"({a}.organization_id = CAST(:kb_org AS uuid) AND ("
+        f"({a}.kind = 'me' AND {a}.owner_email = :kb_viewer)"
+        f" OR ({a}.kind <> 'me' AND (CAST(:kb_manage AS boolean)"
+        f" OR {a}.owner_email = :kb_viewer"
+        f" OR EXISTS (SELECT 1 FROM kb_space_grants kb_g"
+        f" WHERE kb_g.space_id = {a}.id AND {_subject_match('kb_g')})))"
+        f"))"
+    )
+    if _hides_personal(user):
+        sql = f"({sql} AND {a}.kind <> 'me')"
+    return sql, _viewer_params(user)
+
+
+# ── The documents of a connected source (KC-4a) ─────────────────────────────
+
+def document_reader_clause(
+    user: UserContext, node_alias: str = "n",
+) -> tuple[str, dict[str, Any]]:
+    """The viewer is a proven reader of the node (``knowledge_curation.md``
+    §8.2 and §8.4), and its parameters.
+
+    Put the text in a statement that reads ``kb_source_nodes AS <alias>``.
+    The node is ``live`` and of the viewer's org, the viewer is an active
+    member of that org, and the node's source is ``ready`` (OQ7). Then one
+    of these holds:
+
+    * the viewer is the ``owner_email`` of the node's member source (OQ3);
+    * a ``user`` row of the node names the viewer's email;
+    * a ``domain`` row of the node names the org's own domain, and the
+      viewer's email is in that domain (OQ1).
+
+    A row proves its reader only while its ``synced_at`` is newer than
+    ``resolve.ACCESS_MAX_AGE_SECONDS`` (OQ7). So a source that stops
+    syncing stops proving its old readers. A ``group`` row and an ``anyone``
+    row prove nobody (OQ2), and ``knowledge:manage`` proves nothing (OQ4).
+    The Python twin is ``kb_access/resolve.py``, and the two read the same
+    constant. ⚠️ This clause alone does not show a document. A read of a
+    document uses :func:`visible_documents_clause`, which adds the read of
+    the space. *node_alias* is code, never input.
+    """
+    a = node_alias
+    age = int(ACCESS_MAX_AGE_SECONDS)
+    sql = (
+        f"({a}.organization_id = CAST(:kb_org AS uuid) AND {a}.state = 'live'"
+        f" AND EXISTS (SELECT 1 FROM app_user kb_au"
+        f" WHERE kb_au.organization_id = CAST(:kb_org AS uuid)"
+        f" AND kb_au.status = 'active' AND lower(kb_au.email) = :kb_viewer)"
+        f" AND EXISTS (SELECT 1 FROM kb_sources kb_src"
+        f" WHERE kb_src.id = {a}.source_id"
+        f" AND kb_src.organization_id = CAST(:kb_org AS uuid)"
+        f" AND kb_src.state = 'ready'"
+        f" AND ((kb_src.kind = 'member' AND kb_src.owner_email = :kb_viewer)"
+        f" OR EXISTS (SELECT 1 FROM kb_node_access kb_na"
+        f" WHERE kb_na.node_id = {a}.id"
+        f" AND kb_na.organization_id = CAST(:kb_org AS uuid)"
+        f" AND kb_na.synced_at > now() - make_interval(secs => {age})"
+        f" AND ((kb_na.principal_kind = 'user' AND kb_na.principal = :kb_viewer)"
+        f" OR (kb_na.principal_kind = 'domain'"
+        f" AND split_part(:kb_viewer, '@', 2) = kb_na.principal"
+        f" AND split_part(:kb_viewer, '@', 3) = ''"
+        f" AND EXISTS (SELECT 1 FROM organization kb_o"
+        f" WHERE kb_o.id = CAST(:kb_org AS uuid)"
+        f" AND lower(btrim(kb_o.domain)) = kb_na.principal)))))))"
+    )
+    return sql, _viewer_params(user)
+
+
+def visible_documents_clause(
+    user: UserContext, node_alias: str = "n", space_expr: str = "d.space_id",
+) -> tuple[str, dict[str, Any]]:
+    """The ONE predicate of who sees a connected document (§8.4).
+
+    Two tests, both: the viewer reads the space of the document
+    (:func:`readable_spaces_clause` on the space that *space_expr* names),
+    AND the viewer is a proven reader of the node
+    (:func:`document_reader_clause`). The second test is the fence that a
+    stale filing cannot pass. A holder of ``knowledge:manage`` opens every
+    space that is not a ``me`` space, and still sees a document only when
+    the provider proves them (OQ4).
+
+    *node_alias* names ``kb_source_nodes`` in the caller's statement, and
+    *space_expr* is the SQL of the space id. Both are code, never input.
+    """
+    readable, params = readable_spaces_clause(user, "kb_ds")
+    reader, _same = document_reader_clause(user, node_alias)
+    sql = (
+        f"(EXISTS (SELECT 1 FROM kb_spaces kb_ds WHERE kb_ds.id = {space_expr}"
+        f" AND {readable}) AND {reader})"
+    )
+    return sql, params
+
+
+# ── Audit ───────────────────────────────────────────────────────────────────
+
+def audit(user: UserContext, action: str, space_id: str, payload: dict[str, Any]) -> None:
+    """One audit line for an admin act on a space (make, change, grants).
+
+    A page write needs no line here: ``kb_page_versions`` is its append-only
+    record. A down audit backend never undoes the act.
+    """
+    try:
+        from acb_audit import AuditEvent, record
+
+        org = org_of(user)
+        record(AuditEvent(
+            actor=f"user:{viewer_email(user)}",
+            action=action,
+            target=f"kb_space:{space_id}",
+            payload={"organization_id": org, **payload},
+            organization_id=org,
+        ))
+    except Exception as exc:  # pragma: no cover — defensive, per the docstring
+        _log.warning("knowledge.audit_failed", action=action, error=type(exc).__name__)
+
+
+# ── Spaces ──────────────────────────────────────────────────────────────────
+
+def space_dict(row: Any, level: str | None = None) -> dict[str, Any]:
+    out = {
+        "id": str(row.id),
+        "slug": row.slug,
+        "name": row.name,
+        "purpose": row.purpose,
+        "icon": row.icon,
+        "kind": row.kind,
+        "owner_email": row.owner_email,
+        "archived_at": _iso(row.archived_at),
+        "created_at": _iso(row.created_at),
+    }
+    if level is not None:
+        out["level"] = level
+    return out
+
+
+def _iso(value: Any) -> str | None:
+    return value.isoformat() if value is not None else None
+
+
+async def load_space(db: Any, user: UserContext, space_id: str | None) -> Any:
+    """The space if the caller can open it, else None (the caller says 404)."""
+    sid = parse_id(space_id)
+    if sid is None:
+        return None
+    clause, params = readable_spaces_clause(user, "s")
+    return (await db.execute(
+        text(f"SELECT {SPACE_COLUMNS} FROM kb_spaces s "
+             f"WHERE s.id = CAST(:sid AS uuid) AND {clause}"),
+        {**params, "sid": sid},
+    )).first()
+
+
+async def levels_by_grant(
+    db: Any, user: UserContext, space_ids: list[str],
+) -> dict[str, str]:
+    """The best grant level the caller holds on each space, by its grants."""
+    if not space_ids:
+        return {}
+    params = _viewer_params(user)
+    rows = (await db.execute(
+        text("SELECT kb_g.space_id, kb_g.level FROM kb_space_grants kb_g "
+             "WHERE kb_g.organization_id = CAST(:kb_org AS uuid) "
+             "AND kb_g.space_id = ANY(CAST(:ids AS uuid[])) "
+             f"AND {_subject_match('kb_g')}"),
+        {**params, "ids": space_ids},
+    )).fetchall()
+    best: dict[str, str] = {}
+    for row in rows:
+        sid = str(row.space_id)
+        if LEVEL_RANK.get(row.level, 0) > LEVEL_RANK.get(best.get(sid, ""), 0):
+            best[sid] = row.level
+    return best
+
+
+def level_on(user: UserContext, space: Any, by_grant: str | None) -> str | None:
+    """The caller's level on *space*: manage, write, read, or None.
+
+    A ``me`` space is its owner's alone, with no grant and no capability. On
+    each other space the owner and a holder of ``knowledge:manage`` manage.
+    """
+    me = viewer_email(user)
+    if space.kind == "me":
+        return "manage" if me and space.owner_email == me else None
+    if me and space.owner_email == me:
+        return "manage"
+    if is_manager(user):
+        return "manage"
+    return by_grant
+
+
+async def space_level(db: Any, user: UserContext, space: Any) -> str | None:
+    by_grant = (await levels_by_grant(db, user, [str(space.id)])).get(str(space.id))
+    return level_on(user, space, by_grant)
+
+
+async def ensure_company_space(db: Any, user: UserContext) -> None:
+    """Make the organization's ``company`` space with an ``org`` read grant.
+
+    Race-free: the partial unique index on ``(organization_id, slug)`` keeps
+    one row, and only the insert that made it adds the grant. An admin who
+    later changes the grants is never undone, because the space exists.
+    """
+    org = org_of(user)
+    made = (await db.execute(
+        text("INSERT INTO kb_spaces (organization_id, slug, name, purpose, kind) "
+             "VALUES (CAST(:org AS uuid), :slug, :name, :purpose, 'company') "
+             "ON CONFLICT (organization_id, slug) WHERE kind <> 'me' DO NOTHING "
+             "RETURNING id"),
+        {"org": org, "slug": COMPANY_SLUG, "name": COMPANY_NAME,
+         "purpose": COMPANY_PURPOSE},
+    )).first()
+    if made is None:
+        return
+    await db.execute(
+        text("INSERT INTO kb_space_grants "
+             "(organization_id, space_id, subject, level, created_by) "
+             "VALUES (CAST(:org AS uuid), :sid, 'org', 'read', 'system') "
+             "ON CONFLICT DO NOTHING"),
+        {"org": org, "sid": made.id},
+    )
+
+
+#: Make the caller's ``me`` space, or do nothing when it exists. The conflict
+#: target names the partial unique index of the KB-1 migration.
+INSERT_ME_SPACE_SQL = (
+    "INSERT INTO kb_spaces "
+    "(organization_id, slug, name, purpose, kind, owner_email) "
+    "VALUES (CAST(:org AS uuid), :slug, :name, :purpose, 'me', :me) "
+    "ON CONFLICT (organization_id, owner_email) WHERE kind = 'me' DO NOTHING"
+)
+
+#: Read the caller's ``me`` space after :data:`INSERT_ME_SPACE_SQL`.
+SELECT_ME_SPACE_SQL = (
+    f"SELECT {SPACE_COLUMNS} FROM kb_spaces s "
+    "WHERE s.organization_id = CAST(:org AS uuid) "
+    "AND s.kind = 'me' AND s.owner_email = :me"
+)
+
+
+def me_space_params(user: UserContext) -> dict[str, Any]:
+    me = viewer_email(user)
+    if not me:
+        raise forbidden("Knowledge needs a member with an email address.")
+    return {"org": org_of(user), "slug": ME_SLUG, "name": ME_NAME,
+            "purpose": ME_PURPOSE, "me": me}
+
+
+async def ensure_me_space(db: Any, user: UserContext) -> Any:
+    """The caller's ``me`` space, made on the first write.
+
+    Insert with ``ON CONFLICT DO NOTHING`` on the partial unique index, then
+    read again. Two first writes at the same time make one row: the second
+    insert waits for the first to commit, does nothing, and reads its row.
+    """
+    params = me_space_params(user)
+    await db.execute(text(INSERT_ME_SPACE_SQL), params)
+    return (await db.execute(text(SELECT_ME_SPACE_SQL), params)).first()
+
+
+async def read_grants(db: Any, user: UserContext, space_id: str) -> list[dict[str, Any]]:
+    rows = (await db.execute(
+        text("SELECT subject, level, created_by, created_at FROM kb_space_grants "
+             "WHERE organization_id = CAST(:org AS uuid) "
+             "AND space_id = CAST(:sid AS uuid) ORDER BY subject"),
+        {"org": org_of(user), "sid": space_id},
+    )).fetchall()
+    return [
+        {"subject": r.subject, "level": r.level, "created_by": r.created_by,
+         "created_at": _iso(r.created_at)}
+        for r in rows
+    ]
+
+
+def clean_grants(grants: list[Any]) -> list[tuple[str, str]]:
+    """Validated ``(subject, level)`` pairs. 422 on a bad or repeated subject."""
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for grant in grants:
+        subject = validate_grant_subject(grant.subject)
+        level = (grant.level or "").strip().lower()
+        if level not in GRANT_LEVELS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown grant level '{grant.level}'. One of: {list(GRANT_LEVELS)}.",
+            )
+        if subject in seen:
+            raise HTTPException(
+                status_code=422, detail=f"The subject '{subject}' is named twice.",
+            )
+        seen.add(subject)
+        out.append((subject, level))
+    return out
+
+
+async def write_grants(
+    db: Any, user: UserContext, space_id: str, grants: list[tuple[str, str]],
+) -> None:
+    for subject, level in grants:
+        await db.execute(
+            text("INSERT INTO kb_space_grants "
+                 "(organization_id, space_id, subject, level, created_by) "
+                 "VALUES (CAST(:org AS uuid), CAST(:sid AS uuid), :subject, "
+                 ":level, :by)"),
+            {"org": org_of(user), "sid": space_id, "subject": subject,
+             "level": level, "by": viewer_email(user) or "system"},
+        )
+
+
+# ── Pages ───────────────────────────────────────────────────────────────────
+
+def page_dict(
+    row: Any, *, body: bool = True, position: int | None = None,
+) -> dict[str, Any]:
+    """The answer for one page.
+
+    ``position`` is the rank among the siblings the CALLER sees (KB-2e), and
+    the caller passes it. The stored ``kb_pages.position`` counts hidden
+    siblings too, so it never goes out: a gap in it would tell a member that
+    a hidden page sits there.
+    """
+    out = {
+        "id": str(row.id),
+        "space_id": str(row.space_id),
+        "parent_id": str(row.parent_id) if row.parent_id else None,
+        "position": position,
+        "title": row.title,
+        "icon": row.icon,
+        "state": row.state,
+        "author_email": row.author_email,
+        "reviewers": list(row.reviewers or []),
+        "review_at": _iso(row.review_at),
+        "owner_email": getattr(row, "owner_email", None),
+        "review_every_days": getattr(row, "review_every_days", None),
+        "source_ref": row.source_ref,
+        "published_at": _iso(row.published_at),
+        "archived_at": _iso(row.archived_at),
+        "history_from": row.history_from,
+        "archived_from_state": row.archived_from_state,
+        "updated_at": _iso(row.updated_at),
+        "created_at": _iso(row.created_at),
+    }
+    if body:
+        out["body_md"] = row.body_md
+        out["origin"] = row.origin
+    return out
+
+
+async def load_page(
+    db: Any, user: UserContext, page_id: str | None, *, lock: bool = False,
+) -> Any:
+    """The page if the caller can see it, else None (the caller says 404).
+
+    With *lock*, the row is locked for the rest of the transaction, so two
+    writes to one page take their version numbers one after the other.
+    """
+    pid = parse_id(page_id)
+    if pid is None:
+        return None
+    vis, params = visible_pages_clause(user, "p")
+    suffix = " FOR UPDATE OF p" if lock else ""
+    return (await db.execute(
+        text(f"SELECT {PAGE_COLUMNS} FROM kb_pages p "
+             f"WHERE p.id = CAST(:pid AS uuid) AND {vis}{suffix}"),
+        {**params, "pid": pid},
+    )).first()
+
+
+async def has_children(db: Any, user: UserContext, page_id: str) -> bool:
+    """True when any page names *page_id* as its parent.
+
+    An integrity read (listed in the visibility fence): a child the caller
+    cannot see still counts, and the answer is a bool, never a row.
+    """
+    return (await db.execute(
+        text("SELECT EXISTS (SELECT 1 FROM kb_pages "
+             "WHERE organization_id = CAST(:org AS uuid) "
+             "AND parent_id = CAST(:pid AS uuid))"),
+        {"org": org_of(user), "pid": page_id},
+    )).scalar() is True
+
+
+#: A viewer that no email equals and no grant names, so a read as this viewer
+#: matches only an ``org`` grant (ALN-4). No email starts with ``!``, and
+#: ``kb_spaces.owner_email`` of a company space is NULL or an email.
+_ORG_WIDE_VIEWER = "!org-wide"
+
+
+async def latest_version(db: Any, user: UserContext, page_id: str) -> int:
+    """The highest ``kb_page_versions.version`` of a page, or 0 for none.
+
+    Reads ``kb_page_versions``, not ``kb_pages``, and returns a number. The
+    caller loaded the page through :func:`load_page` first (ALN-4).
+    """
+    return int((await db.execute(
+        text("SELECT COALESCE(MAX(v.version), 0) FROM kb_page_versions v "
+             "WHERE v.organization_id = CAST(:org AS uuid) "
+             "AND v.page_id = CAST(:pid AS uuid)"),
+        {"org": org_of(user), "pid": page_id},
+    )).scalar() or 0)
+
+
+async def page_version_text(
+    db: Any, user: UserContext, page: Any, version: int, *, space: Any = None,
+) -> str | None:
+    """The text of one version of a page that the caller sees, or None.
+
+    THE one read of the text of a page version for a quote check (ALN-5a,
+    ``project_alignment.md`` §4.2 rule 3). The caller loaded *page* through
+    :func:`load_page` first, so the one visibility rule ran. *space* is the
+    space of the page, for :func:`history_floor`. None for a version under
+    the history floor, as ``history.get_version`` answers 404, so a quote
+    check cannot read a private draft from before a move. None for a version
+    that does not exist too.
+    """
+    ver = int(version)
+    if ver < 1 or ver > MAX_VERSION or ver < history_floor(user, page, space):
+        return None
+    row = (await db.execute(
+        text("SELECT v.body_md FROM kb_page_versions v "
+             "WHERE v.organization_id = CAST(:org AS uuid) "
+             "AND v.page_id = CAST(:pid AS uuid) AND v.version = :ver"),
+        {"org": org_of(user), "pid": str(page.id), "ver": ver},
+    )).first()
+    return None if row is None else str(row.body_md or "")
+
+
+def same_line_ends(value: str) -> str:
+    """*value* with each CRLF and each lone CR made LF. No other change."""
+    return value.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def quote_occurs(quote: str, body: str) -> bool:
+    """True when *quote* is an exact substring of *body* (ALN-5a).
+
+    Both get one form of line end first (:func:`same_line_ends`). There is no
+    other change: no case fold, no space fold, no fuzzy match and no model.
+    An empty quote never occurs.
+    """
+    wanted = same_line_ends(quote)
+    return bool(wanted) and wanted in same_line_ends(body)
+
+
+async def pin_currency(
+    db: Any, user: UserContext, page_id: str, page_version: int,
+) -> dict[str, Any]:
+    """Where a pinned page stands now: ``{"exists", "state", "changed"}``.
+
+    An integrity read (listed in the visibility fence): a pin shows ``stale``
+    to a member who cannot open the page, so the state of the page and
+    whether its words moved since the pin must be read with no member's
+    clause. The answer is a bool, a state word and a bool. It carries no
+    title, no text and no space. ``changed`` is true when the title or the
+    text of the newest version differs from the pinned version, so an archive
+    and a restore that change no word leave a pin alone (ALN-4).
+    """
+    row = (await db.execute(
+        text("SELECT p.state AS state, "
+             "(pin.body_md IS NULL OR cur.body_md IS NULL "
+             " OR pin.body_md IS DISTINCT FROM cur.body_md "
+             " OR pin.title IS DISTINCT FROM cur.title) AS changed "
+             "FROM kb_pages p "
+             "LEFT JOIN LATERAL (SELECT v.body_md, v.title "
+             " FROM kb_page_versions v WHERE v.page_id = p.id "
+             " AND v.organization_id = p.organization_id "
+             " ORDER BY v.version DESC LIMIT 1) cur ON true "
+             "LEFT JOIN LATERAL (SELECT v.body_md, v.title "
+             " FROM kb_page_versions v WHERE v.page_id = p.id "
+             " AND v.organization_id = p.organization_id "
+             " AND v.version = :ver) pin ON true "
+             "WHERE p.organization_id = CAST(:org AS uuid) "
+             "AND p.id = CAST(:pid AS uuid)"),
+        {"org": org_of(user), "pid": page_id, "ver": int(page_version)},
+    )).first()
+    if row is None:
+        return {"exists": False, "state": None, "changed": True}
+    return {"exists": True, "state": str(row.state), "changed": bool(row.changed)}
+
+
+async def audience_can_read_page(
+    db: Any, org: str, emails: list[str] | frozenset[str], page_id: str,
+) -> bool:
+    """True only when EVERY person in *emails* can read the page (ALN-4).
+
+    The project pin refuses a page that is narrower than its project, because
+    a finding quotes the page (``project_alignment.md`` §4.1, §7.2). The
+    answer is built on :func:`visible_pages_clause` and no copy of it. First
+    it asks for a viewer that only an ``org`` grant admits. A yes there means
+    each member of the org reads the page. Else it asks for each person in
+    turn, as a member with no permission, so ``knowledge:manage`` never widens
+    the answer. A person who cannot read the page, an empty audience, an
+    unpublished page, and any error give False: the check refuses whenever it
+    cannot prove the page is at least as wide. A ``me`` space matches no
+    viewer here, so it gives False too.
+    """
+    from acb_auth import UserRole
+
+    def stand_in(email: str) -> UserContext:
+        return UserContext(
+            email=email, role=UserRole.EMPLOYEE, organization_id=org,
+        )
+
+    async def reads(email: str) -> bool:
+        vis, params = visible_pages_clause(stand_in(email), "p")
+        return (await db.execute(
+            text("SELECT 1 FROM kb_pages p "
+                 "WHERE p.id = CAST(:pid AS uuid) AND p.state = 'published' "
+                 f"AND {vis}"),
+            {**params, "pid": page_id},
+        )).first() is not None
+
+    try:
+        # A savepoint, so an error here cannot abort the caller's transaction.
+        async with db.begin_nested():
+            if await reads(_ORG_WIDE_VIEWER):
+                return True
+            people = sorted({str(e).strip().lower() for e in emails if str(e).strip()})
+            if not people:
+                return False
+            for who in people:
+                if not await reads(who):
+                    return False
+            return True
+    except Exception:  # any doubt is a refusal
+        _log.warning("audience_can_read_page failed; refusing", exc_info=True)
+        return False
+
+
+async def visible_page_heads(
+    db: Any, user: UserContext, page_ids: list[str],
+) -> dict[str, dict[str, str]]:
+    """The title and space of each page that the CALLER can read, by id.
+
+    A page that the caller cannot read is left out, so the pin list shows
+    ``page_hidden`` and no title for it (``project_alignment.md`` §7.2).
+    """
+    ids = [p for p in (parse_id(x) for x in page_ids) if p]
+    if not ids:
+        return {}
+    vis, params = visible_pages_clause(user, "p")
+    rows = (await db.execute(
+        text("SELECT p.id, p.title, p.space_id FROM kb_pages p "
+             f"WHERE p.id = ANY(CAST(:pids AS uuid[])) AND {vis}"),
+        {**params, "pids": ids},
+    )).fetchall()
+    return {
+        str(r.id): {"title": r.title, "space_id": str(r.space_id)} for r in rows
+    }
+
+
+async def readable_page_versions(
+    db: Any, user: UserContext, pairs: list[tuple[str, int]],
+) -> set[tuple[str, int]]:
+    """The ``(page id, version)`` pairs of *pairs* that the CALLER can read.
+
+    ALN-5a (``project_alignment.md`` §4.2, §7.2 point 2): a rule shows its
+    quote only to a reader of the page AND of that version. Two steps, the
+    rule of ``history.get_version``: :func:`visible_pages_clause` for the
+    page, then :func:`history_floor` for the version. So a version from
+    before a move to a wider space stays hidden from the readers of the new
+    space, as its history route answers 404 for it. A pair that fails either
+    step is left out.
+    """
+    wanted: dict[str, set[int]] = {}
+    for page_id, version in pairs:
+        pid = parse_id(page_id)
+        if pid is not None and version is not None:
+            wanted.setdefault(pid, set()).add(int(version))
+    if not wanted:
+        return set()
+    vis, params = visible_pages_clause(user, "p")
+    rows = (await db.execute(
+        text("SELECT p.id, p.history_from, s.kind, s.owner_email FROM kb_pages p "
+             "JOIN kb_spaces s ON s.id = p.space_id "
+             "AND s.organization_id = p.organization_id "
+             f"WHERE p.id = ANY(CAST(:pids AS uuid[])) AND {vis}"),
+        {**params, "pids": sorted(wanted)},
+    )).fetchall()
+    out: set[tuple[str, int]] = set()
+    for row in rows:
+        # The row holds the page column and the two space columns that
+        # history_floor reads, so it serves as both.
+        floor = history_floor(user, row, row)
+        out.update((str(row.id), v) for v in wanted.get(str(row.id), ()) if v >= floor)
+    return out
+
+
+async def sibling_rows(
+    db: Any, user: UserContext, space_id: str, parent_id: str | None,
+) -> list[Any]:
+    """Every page under *parent_id* in *space_id*, in each state (KB-2e).
+
+    An integrity read (listed in the visibility fence): the renumber of
+    ``pages._place`` writes 0 to n over ALL the siblings, so a sibling the
+    caller cannot see keeps its own place. Each row holds the id, the
+    position and the sort keys. Only ``pages._place`` reads them, to write
+    the positions. No row, no count and no stored position goes back to a
+    caller. The order is :func:`sibling_key`, the order the tree draws.
+    """
+    params: dict[str, Any] = {"org": org_of(user), "sid": space_id}
+    if parent_id is None:
+        under = "parent_id IS NULL"
+    else:
+        under = "parent_id = CAST(:parent AS uuid)"
+        params["parent"] = parent_id
+    rows = (await db.execute(
+        text("SELECT id, position, title, created_at FROM kb_pages "
+             "WHERE organization_id = CAST(:org AS uuid) "
+             f"AND space_id = CAST(:sid AS uuid) AND {under}"),
+        params,
+    )).fetchall()
+    return sorted(rows, key=sibling_key)
+
+
+async def next_position(
+    db: Any, user: UserContext, space_id: str, parent_id: str | None,
+) -> int:
+    """The place after the last sibling, for a new page (KB-2e).
+
+    An integrity read (listed in the visibility fence): a hidden sibling
+    counts, so the new page goes after it. The number is stored with the
+    page and never returned. Each answer gives the visible rank instead.
+    """
+    params: dict[str, Any] = {"org": org_of(user), "sid": space_id}
+    if parent_id is None:
+        under = "parent_id IS NULL"
+    else:
+        under = "parent_id = CAST(:parent AS uuid)"
+        params["parent"] = parent_id
+    return int((await db.execute(
+        text("SELECT COALESCE(MAX(position), -1) + 1 FROM kb_pages "
+             "WHERE organization_id = CAST(:org AS uuid) "
+             f"AND space_id = CAST(:sid AS uuid) AND {under}"),
+        params,
+    )).scalar())
+
+
+def sibling_key(row: Any) -> tuple[int, str, str, str]:
+    """The order of siblings, the same as ``compareSiblings`` in the client.
+
+    The client draws the tree in this order (``lib/tree.ts``), and the
+    position of a move counts in it. Python sorts here, not SQL, because a
+    collation can put two titles in another order than the browser does.
+    """
+    return (int(row.position), str(row.title).lower(), _iso(row.created_at) or "", str(row.id))
+
+
+#: The deepest tree :func:`ancestor_ids` walks. A deeper chain is refused.
+MAX_DEPTH = 64
+
+
+async def ancestor_ids(db: Any, user: UserContext, page_id: str) -> list[str]:
+    """The ids from *page_id* up to the root, *page_id* first.
+
+    An integrity read (listed in the visibility fence): the walk passes
+    through pages the caller may not see, and it returns ids for a membership
+    test, never a row. A loop in Python, one row each step, with no
+    recursive SQL. A chain deeper than :data:`MAX_DEPTH` is a 422.
+    """
+    org = org_of(user)
+    chain: list[str] = []
+    current: str | None = page_id
+    while current is not None:
+        if current in chain or len(chain) >= MAX_DEPTH:
+            raise HTTPException(status_code=422, detail="The page tree is too deep.")
+        chain.append(current)
+        row = (await db.execute(
+            text("SELECT parent_id FROM kb_pages "
+                 "WHERE organization_id = CAST(:org AS uuid) "
+                 "AND id = CAST(:pid AS uuid)"),
+            {"org": org, "pid": current},
+        )).first()
+        current = str(row.parent_id) if row is not None and row.parent_id else None
+    return chain
+
+
+async def append_version(
+    db: Any, user: UserContext, page: Any, *, title: str, body_md: str,
+    reason: str,
+) -> int:
+    """Append one ``kb_page_versions`` row for a write, and return its number.
+
+    The caller holds the page row locked (:func:`load_page` with ``lock``) or
+    has just made it, so the next number cannot race.
+    """
+    return int((await db.execute(
+        text("INSERT INTO kb_page_versions "
+             "(organization_id, page_id, version, body_md, title, author_email, "
+             "reason, via) "
+             "SELECT CAST(:org AS uuid), CAST(:pid AS uuid), "
+             "COALESCE(MAX(v.version), 0) + 1, :body, :title, :author, :reason, :via "
+             "FROM kb_page_versions v "
+             "WHERE v.organization_id = CAST(:org AS uuid) "
+             "AND v.page_id = CAST(:pid AS uuid) "
+             "RETURNING version"),
+        {"org": org_of(user), "pid": str(page.id), "body": body_md,
+         "title": title, "author": viewer_email(user), "reason": reason,
+         "via": current_via()},
+    )).scalar())
+
+
+def history_floor(user: UserContext, page: Any, space: Any) -> int:
+    """The first version the caller may read or revert to.
+
+    A move to another space sets ``kb_pages.history_from`` to the number of
+    its own ``move`` version. The versions before it were written in the old
+    space, so a reader of the new space never sees them: a page written in a
+    ``me`` space and then shared does not share its private drafts. The one
+    exception is the author in their own ``me`` space, who keeps the whole
+    history there.
+    """
+    me = viewer_email(user)
+    if space is not None and space.kind == "me" and me and space.owner_email == me:
+        return 1
+    return int(page.history_from or 1)
+
+
+async def read_versions(
+    db: Any, user: UserContext, page_id: str, floor: int,
+) -> list[dict[str, Any]]:
+    """The versions at or after *floor* (:func:`history_floor`), newest first."""
+    rows = (await db.execute(
+        text("SELECT version, title, author_email, reason, via, created_at "
+             "FROM kb_page_versions WHERE organization_id = CAST(:org AS uuid) "
+             "AND page_id = CAST(:pid AS uuid) AND version >= :floor "
+             "ORDER BY version DESC"),
+        {"org": org_of(user), "pid": page_id, "floor": floor},
+    )).fetchall()
+    return [
+        {"version": r.version, "title": r.title, "author_email": r.author_email,
+         "reason": r.reason, "via": r.via, "created_at": _iso(r.created_at)}
+        for r in rows
+    ]
+
+
+async def read_links(db: Any, user: UserContext, page_id: str) -> list[dict[str, Any]]:
+    rows = (await db.execute(
+        text("SELECT id, target_kind, target_id, label, created_by, created_at "
+             "FROM kb_links WHERE organization_id = CAST(:org AS uuid) "
+             "AND page_id = CAST(:pid AS uuid) ORDER BY created_at"),
+        {"org": org_of(user), "pid": page_id},
+    )).fetchall()
+    # A page link lists only when the CALLER can see its target (§5.5): a
+    # link is a reference and never a grant, and it must not tell a reader
+    # that a hidden page exists. The other kinds are listed as they are.
+    wanted = [str(r.target_id) for r in rows if r.target_kind == "page"]
+    seen: set[str] = set()
+    if wanted:
+        vis, vparams = visible_pages_clause(user, "p")
+        seen = {str(r[0]) for r in (await db.execute(
+            text(f"SELECT p.id::text FROM kb_pages p WHERE {vis} "
+                 "AND p.id::text = ANY(CAST(:rl_ids AS text[]))"),
+            {**vparams, "rl_ids": wanted},
+        )).fetchall()}
+    return [
+        {"id": str(r.id), "target_kind": r.target_kind, "target_id": r.target_id,
+         "label": r.label, "created_by": r.created_by,
+         "created_at": _iso(r.created_at)}
+        for r in rows
+        if r.target_kind != "page" or str(r.target_id) in seen
+    ]
+
+
+_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+$")
+
+#: The most reviewers one draft names.
+MAX_REVIEWERS = 20
+
+
+def clean_reviewers(values: list[str] | None) -> list[str]:
+    """Reviewer emails, folded and once each. 422 on a value that is not one."""
+    out: list[str] = []
+    for raw in values or []:
+        value = (raw or "").strip().lower()
+        if not _EMAIL.match(value):
+            raise HTTPException(
+                status_code=422, detail=f"A reviewer must be an email address, not '{raw}'.",
+            )
+        if value not in out:
+            out.append(value)
+    if len(out) > MAX_REVIEWERS:
+        raise HTTPException(
+            status_code=422, detail=f"A draft names at most {MAX_REVIEWERS} reviewers.",
+        )
+    return out
+
+
+def clean_owner(raw: str) -> str:
+    """The owner address of a page, folded. ValueError on a value that is no address."""
+    value = (raw or "").strip().lower()
+    if not _EMAIL.match(value):
+        raise ValueError("An owner must be an email address.")
+    return value
+
+
+def can_write_page(level: str | None) -> bool:
+    """True when the caller holds ``write`` or ``manage`` on the page's space.
+
+    The level is read at the time of the call. Authorship is no bypass: an
+    author who lost ``write`` keeps reading the draft, and can move it to
+    their own ``me`` space, but cannot edit or publish it where it is. In the
+    author's own ``me`` space the author holds ``manage`` (:func:`level_on`).
+    """
+    return LEVEL_RANK.get(level or "", 0) >= LEVEL_RANK["write"]
+
+
+def org_grant(grants: list[tuple[str, str]]) -> str | None:
+    """The level of the ``org`` subject in *grants*, or None."""
+    return next((level for subject, level in grants if subject == "org"), None)

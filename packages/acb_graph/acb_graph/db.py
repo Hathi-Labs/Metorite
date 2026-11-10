@@ -36,7 +36,7 @@ def tenant_bind_enabled() -> bool:
     This is the ONE reader of ``ACB_GRAPH_TENANT_BIND`` — later slices convert
     more ``acb_graph`` paths behind the same flag; do not add a second reader.
     The env idiom matches ``acb_auth.access.identity_cutover_enabled`` /
-    ``acb_auth.deps._refuse_llm_key_identity``. FLIPPING it on a live box is
+    ``acb_auth.deps._trust_unverified_sso_headers``. FLIPPING it on a live box is
     OWNER-GATE (it presumes H3 phase-4 promotion); building the branch DARK is
     agent-safe.
     """
@@ -53,10 +53,20 @@ def _engine_kwargs(settings) -> dict:
     fails fast and the caller's error handling takes over. ``connect_timeout``
     is a libpq/psycopg param, so it is only applied to Postgres URLs; sqlite or
     other dialects used in tests are left untouched.
+
+    The pool is bounded too, on Postgres URLs only. With no settings this
+    engine took SQLAlchemy's 5 + 10, on top of the async pool, and the gateway
+    asked the Supabase session pooler (15 clients) for more than it allows.
+    The size, the overflow and the wait come from settings, inside ONE budget
+    with the async pool (``acb_common.settings``, ``db_sync_pool_size``).
     """
     kwargs: dict = {"pool_pre_ping": True, "future": True}
     if settings.database_url.startswith("postgresql"):
         kwargs["connect_args"] = {"connect_timeout": settings.db_connect_timeout}
+        kwargs["pool_size"] = settings.db_sync_pool_size
+        kwargs["max_overflow"] = settings.db_sync_max_overflow
+        kwargs["pool_timeout"] = settings.db_pool_timeout
+        kwargs["pool_recycle"] = 1800
     return kwargs
 
 

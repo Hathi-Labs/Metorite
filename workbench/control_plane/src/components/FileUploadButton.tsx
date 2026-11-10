@@ -9,17 +9,27 @@
  *     onUploadComplete={(files) => { /* send context message to agent * / }}
  *   />
  *
- * The button shows a paperclip icon.  Clicking it opens the native file
- * picker.  Selected files are uploaded to the session's .tmp/ directory
- * via POST /api/agent/workspace/[sessionId]/upload.
+ * The button shows a paperclip icon. Clicking it opens the native file
+ * picker, which offers only `CHAT_UPLOAD_ACCEPT` (`lib/chatUpload.ts`).
+ * Selected files are uploaded to the session's attachment folder via
+ * POST /api/agent/workspace/[sessionId]/upload.
  *
- * While uploading, the button shows a spinner.  On success it pulses green
- * briefly.  On error it flashes red.
+ * A file over 25 MB, or of a kind the picker does not offer, is refused here
+ * before it is sent. When the gateway refuses an upload, an error toast shows
+ * its `detail`, so the member reads what to change, not a red icon alone
+ * (the incident of 2026-10-09). The rules are in `lib/chatUpload.ts`.
  */
 
 import Icon from "@/components/Icon";
 import { useRef, useState, useCallback } from "react";
 import type { FileEntry } from "@/components/ArtifactSidebar";
+import { useToast } from "@/components/ui/Toast";
+import {
+  CHAT_UPLOAD_ACCEPT_ATTR,
+  postUpload,
+  refuseUpload,
+  uploadErrorMessage,
+} from "@/lib/chatUpload";
 
 type UploadState =
   | { phase: "idle" }
@@ -30,6 +40,12 @@ type UploadState =
 interface Props {
   sessionId: string;
   onUploadComplete?: (files: FileEntry[]) => void;
+  /**
+   * The chat composer's way (projects_ai_chat §30.4, IMG-1). The picked files
+   * go to the caller, which draws a chip and starts the upload. The button
+   * uploads nothing itself.
+   */
+  onPick?: (files: File[]) => void;
   className?: string;
   /** If true, renders as a full drop-zone instead of just an icon button. */
   dropZone?: boolean;
@@ -37,9 +53,13 @@ interface Props {
   children?: React.ReactNode;
 }
 
+/** Thrown with the sentence the member reads. */
+class UploadRefused extends Error {}
+
 export default function FileUploadButton({
   sessionId,
   onUploadComplete,
+  onPick,
   className = "",
   dropZone = false,
   children,
@@ -47,6 +67,7 @@ export default function FileUploadButton({
   const inputRef = useRef<HTMLInputElement>(null);
   const [state, setState] = useState<UploadState>({ phase: "idle" });
   const [dragOver, setDragOver] = useState(false);
+  const toast = useToast();
 
   const handleFiles = useCallback(
     async (fileList: FileList | File[]) => {
@@ -56,19 +77,20 @@ export default function FileUploadButton({
       setState({ phase: "uploading", count: files.length });
 
       try {
+        const refused = refuseUpload(files);
+        if (refused) throw new UploadRefused(refused);
+
         const formData = new FormData();
         for (const f of files) {
           formData.append("files", f);
         }
 
-        const res = await fetch(
-          `/api/agent/workspace/${sessionId}/upload`,
-          { method: "POST", body: formData }
-        );
+        // One 404 is retried: the chat's session row may still be on its way.
+        const res = await postUpload(sessionId, formData);
 
         if (!res.ok) {
-          const err = await res.json().catch(() => ({ error: "Upload failed" }));
-          throw new Error(err.error ?? `HTTP ${res.status}`);
+          const body = await res.json().catch(() => null);
+          throw new UploadRefused(uploadErrorMessage(res.status, body));
         }
 
         const uploaded: FileEntry[] = await res.json();
@@ -78,44 +100,63 @@ export default function FileUploadButton({
         // Reset to idle after a brief success glow
         setTimeout(() => setState({ phase: "idle" }), 2000);
       } catch (err) {
-        setState({
-          phase: "error",
-          message: err instanceof Error ? err.message : "Upload failed",
+        const message =
+          err instanceof UploadRefused
+            ? err.message
+            : "The upload failed. Check your connection and try again.";
+        setState({ phase: "error", message });
+        toast.show({
+          key: `chat-upload:${sessionId}`,
+          variant: "error",
+          title: "The file was not attached",
+          description: message,
         });
         setTimeout(() => setState({ phase: "idle" }), 3000);
       }
     },
-    [sessionId, onUploadComplete]
+    [sessionId, onUploadComplete, toast]
   );
 
   const handleClick = () => inputRef.current?.click();
+
+  const fileInput = (
+    <input
+      ref={inputRef}
+      type="file"
+      multiple
+      accept={CHAT_UPLOAD_ACCEPT_ATTR}
+      className="hidden"
+      onChange={(e) => {
+        if (e.target.files) {
+          if (onPick) onPick(Array.from(e.target.files));
+          else handleFiles(e.target.files);
+        }
+        e.target.value = "";
+      }}
+    />
+  );
 
   // ── Icon-only button ────────────────────────────────────────────────────
   if (!dropZone) {
     return (
       <>
-        <input
-          ref={inputRef}
-          type="file"
-          multiple
-          className="hidden"
-          onChange={(e) => {
-            if (e.target.files) handleFiles(e.target.files);
-            e.target.value = "";
-          }}
-        />
+        {fileInput}
         <button
+          type="button"
           onClick={handleClick}
           disabled={state.phase === "uploading"}
-          title="Upload files to agent"
-          className={`rounded-lg p-2 transition-colors ${className} ${
+          title={state.phase === "error" ? state.message : "Attach files"}
+          aria-label="Attach files"
+          // GL-6: in glass, Attach is a round icon button on the secondary fill.
+          // It matches the round Send beside it. The size comes from `className`.
+          className={`rounded-lg p-2 transition-colors glass:rounded-full glass:p-0 glass:bg-secondary glass:glass-press ${className} ${
             state.phase === "uploading"
               ? "text-warning cursor-wait"
               : state.phase === "success"
-                ? "text-emerald-400"
+                ? "text-success"
                 : state.phase === "error"
-                  ? "text-red-400"
-                  : "text-muted-foreground hover:text-foreground hover:bg-secondary"
+                  ? "text-destructive"
+                  : "text-muted-foreground hover:text-foreground hover:bg-secondary glass:text-foreground glass:hover:bg-muted"
           }`}
         >
           {state.phase === "uploading" ? (
@@ -136,11 +177,11 @@ export default function FileUploadButton({
 
   return (
     <div
-      className={`relative rounded-lg border-2 border-dashed transition-colors ${
+      className={`relative rounded-lg border-2 border-dashed transition-colors glass:rounded-[16px] ${
         dragOver
-          ? "border-blue-500 bg-blue-500/10"
+          ? "border-primary bg-primary/10"
           : state.phase === "error"
-            ? "border-red-700/50 bg-red-950/20"
+            ? "border-destructive/50 bg-destructive/10"
             : "border-border/60 hover:border-border"
       } ${className}`}
       onDragOver={(e) => {
@@ -155,16 +196,7 @@ export default function FileUploadButton({
       }}
       onClick={handleClick}
     >
-      <input
-        ref={inputRef}
-        type="file"
-        multiple
-        className="hidden"
-        onChange={(e) => {
-          if (e.target.files) handleFiles(e.target.files);
-          e.target.value = "";
-        }}
-      />
+      {fileInput}
 
       {state.phase === "uploading" ? (
         <div className="flex items-center justify-center gap-2 py-3 px-4 text-sm text-warning">
@@ -172,12 +204,12 @@ export default function FileUploadButton({
           Uploading {state.count} file{state.count > 1 ? "s" : ""}…
         </div>
       ) : state.phase === "success" ? (
-        <div className="flex items-center justify-center gap-2 py-3 px-4 text-sm text-emerald-400">
+        <div className="flex items-center justify-center gap-2 py-3 px-4 text-sm text-success">
           <Icon name="CheckCircle" size={16} />
           Uploaded {state.files.length} file{state.files.length > 1 ? "s" : ""}
         </div>
       ) : state.phase === "error" ? (
-        <div className="flex items-center justify-center gap-2 py-3 px-4 text-sm text-red-400">
+        <div role="alert" className="flex items-center justify-center gap-2 py-3 px-4 text-sm text-destructive">
           <Icon name="AlertCircle" size={16} />
           {state.message}
         </div>

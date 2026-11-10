@@ -306,7 +306,8 @@ async def list_people(
                 text(
                     "SELECT * FROM people WHERE "
                     + " AND ".join(clauses)
-                    + " ORDER BY department, name"
+                    # The id breaks a tie of the name: the chat pages this list.
+                    + " ORDER BY department, name, id"
                 ),
                 params,
             )

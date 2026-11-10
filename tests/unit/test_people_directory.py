@@ -368,7 +368,7 @@ def test_the_work_panel_is_scoped_by_the_VIEWERS_grants(db, monkeypatch):
     )
     run(people_directory.get_person_work("pid", user=hr_reader()))
     work_sql = [s for s in db.statements if "FROM pm_tasks" in s]
-    assert "root_project_id IN" in work_sql[-1]
+    assert "t.project_id IN" in work_sql[-1]
     assert db.params[-1]["vis_email"] == "me@x.in"
 
 
@@ -404,7 +404,7 @@ def test_an_unrestricted_viewer_STILL_GETS_THE_TENANT_PREDICATE(db, monkeypatch)
     )
     run(people_directory.get_person_work("pid", user=hr_reader()))
     work_sql = [s for s in db.statements if "FROM pm_tasks" in s][-1]
-    assert "root_project_id IN" in work_sql
+    assert "t.project_id IN" in work_sql
 
 
 def test_the_work_panel_scopes_with_the_DASHBOARDS_helper(db, monkeypatch):

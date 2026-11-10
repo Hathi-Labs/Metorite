@@ -28,6 +28,7 @@
     "recall_timeline",
     "save_memory",
     "emit_generative_ui",
+    "make_report",
     "call_agent"
   ],
   "own_tool_scope": [
@@ -43,6 +44,7 @@
     "list_whatsapp_group_summaries",
     "transcribe_whatsapp_voice_note",
     "draft_whatsapp_reply",
-    "draft_waiting_on_nudge"
+    "draft_waiting_on_nudge",
+    "narrow_and_read"
   ]
 }

@@ -32,8 +32,9 @@ export interface ShortcutSheetSection {
 
 /**
  * The `?` sheet. Projects passes nothing and gets its registry. My Tasks
- * passes its own sections (`app/tasks/lib/shortcuts.ts`), generated from
- * its key map, so both apps draw ONE sheet (continuity P3).
+ * passed its own sections until 2026-10-13, when the owner removed its
+ * letter shortcuts and this sheet with them. `sections` stays for a caller
+ * that prints a key map of its own.
  */
 export function ShortcutsSheet({
   onClose,

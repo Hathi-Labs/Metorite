@@ -107,12 +107,28 @@ export const CATEGORY_HINT: Record<string, string> = {
     "until somebody sorts them.",
   backlog: "Captured, not committed to. Kept out of anyone's next actions.",
   todo: "Committed and not started.",
-  in_progress: "Being worked on now.",
+  // I-10b (owner, 2026-10-09): a task on hold has started, so this stage
+  // holds work that waits or is blocked, and work in review.
+  in_progress:
+    "Started and not finished. This includes work that waits, is blocked " +
+    "or is in review.",
   done: "Finished. Reaching a lane here completes the task everywhere.",
   cancelled:
     "Dropped, not finished. Counts as closed, so it leaves the outstanding " +
     "work — but it is not a win.",
 };
+
+/**
+ * What the two words mean, for every help text that names them (WS-41
+ * I-10b, `project_import.md` §7.7). The owner found that a new member could
+ * not tell a status from a stage. Map and Settings both read this, and
+ * `stageHelp.test.ts` fails if a file under `src/app/projects/` keeps a copy.
+ */
+export const STATUS_AND_STAGE =
+  "A status is the name of a lane on the board, such as Review or On hold. " +
+  "You choose the names. A stage is one of five fixed groups: Backlog, To do, " +
+  "In progress, Done and Cancelled. Every status sits in one stage. Progress, " +
+  "reports and closing a task follow the stage, never the name.";
 
 /**
  * Categories that close a task.
@@ -146,6 +162,42 @@ export interface LaneLike {
   name: string;
   category: string;
   position: number;
+}
+
+/**
+ * Lifecycle rank of a stage, the first key of the ONE lane order (task 1792).
+ * An unknown stage ranks last: a value this client has not heard of is more
+ * likely a later addition than a new front door.
+ */
+export function categoryRank(category: string): number {
+  const index = (STATUS_CATEGORIES as readonly string[]).indexOf(category);
+  return index === -1 ? STATUS_CATEGORIES.length : index;
+}
+
+/**
+ * The ONE order for status lanes: stage, then position, then name.
+ *
+ * Position orders lanes INSIDE a stage and never moves a lane into another
+ * stage, so a Done row at position 1 still draws after In progress. The
+ * gateway reads the same rule (`core.status_order_sql`). Board columns, list
+ * sections, the status picker and every first-of-stage rule use this.
+ */
+export function compareLanes(
+  a: Pick<LaneLike, "category" | "position" | "name">,
+  b: Pick<LaneLike, "category" | "position" | "name">
+): number {
+  return (
+    categoryRank(a.category) - categoryRank(b.category) ||
+    a.position - b.position ||
+    a.name.localeCompare(b.name)
+  );
+}
+
+/** Every lane of a set in the one order. Returns a new array. */
+export function orderedLanes<T extends Pick<LaneLike, "category" | "position" | "name">>(
+  rows: readonly T[]
+): T[] {
+  return [...rows].sort(compareLanes);
 }
 
 /** The statuses of one stage, in board order: position, then name. */
@@ -201,10 +253,7 @@ export function reopenLane<T extends LaneLike>(rows: readonly T[]): T | null {
   const todo = landingLane(rows, "todo");
   if (todo) return todo;
   const first =
-    [...rows]
-      .filter((row) => row.category !== "triage")
-      .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name))[0] ??
-    null;
+    orderedLanes(rows).filter((row) => row.category !== "triage")[0] ?? null;
   return first && !closesTask(first.category) ? first : null;
 }
 
@@ -278,7 +327,7 @@ export function groupByCategory<T extends { category: string; position: number; 
     groups.push({
       category: row.category,
       label: row.category,
-      hint: "This project uses a status category this screen does not know.",
+      hint: "This project uses a stage this screen does not know.",
       editable: false,
       rows: sorted.filter((r) => r.category === row.category),
     });

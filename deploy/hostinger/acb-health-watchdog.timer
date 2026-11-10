@@ -1,6 +1,6 @@
 [Unit]
 Description=Run the Metorite health watchdog
-Documentation=file:///opt/acb/app/deploy/hostinger/health-watchdog.sh
+Documentation=file:///usr/local/lib/acb/health-watchdog.sh
 
 [Timer]
 # Daily run, as requested — this is the guaranteed floor.

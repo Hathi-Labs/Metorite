@@ -104,8 +104,8 @@ def test_an_admin_still_cannot_read_a_colleagues_private_memory() -> None:
 def test_agent_memory_needs_the_right_to_run_that_agent() -> None:
     from gateway.routes.memory import _authorize_scope
 
-    me = _user("alice@fracktal.in", agents=("agent-sales-assistant",))
-    _authorize_scope("agent:agent-sales-assistant", me, write=False)
+    me = _user("alice@fracktal.in", agents=("crm-assistant",))
+    _authorize_scope("agent:crm-assistant", me, write=False)
 
     with pytest.raises(HTTPException) as exc:
         _authorize_scope("agent:agent-finance", me, write=False)
@@ -170,7 +170,7 @@ def test_the_platform_acting_as_itself_reaches_shared_scopes() -> None:
 
     svc = _service()
     _authorize_scope("org:global", svc, write=True)
-    _authorize_scope("agent:agent-sales-assistant", svc, write=True)
+    _authorize_scope("agent:crm-assistant", svc, write=True)
 
 
 def test_the_platform_must_name_the_person_to_reach_a_personal_scope() -> None:
@@ -208,6 +208,10 @@ async def test_deleting_a_memory_outside_your_scope_is_a_404(monkeypatch) -> Non
     class _Client:
         async def get_all(self, scope):
             return [{"id": "alice-1"}, {"id": "alice-2"}]
+
+        async def scope_ids(self, scope):
+            # KG-9 review: the delete reads its owner ids here, ungated.
+            return {"alice-1", "alice-2"}
 
         async def delete(self, memory_id):
             deleted.append(memory_id)

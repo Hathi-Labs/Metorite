@@ -5,13 +5,16 @@ import {
   DEFAULT_VIEW,
   openRecord,
   parseView,
+  recordTabsFor,
+  selectRecordTab,
   selectTab,
+  shownRecordTab,
   serializeView,
   viewHref,
 } from "./urlState";
 
 describe("parseView", () => {
-  it("lands on the board with nothing in the URL", () => {
+  it("lands on the Deals board with nothing in the URL", () => {
     expect(parseView("")).toEqual(DEFAULT_VIEW);
   });
 
@@ -39,12 +42,12 @@ describe("parseView", () => {
     expect(parseView("?contact=c1&deal=d1").record?.param).toBe("deal");
   });
 
-  it("falls back to the board for a tab that does not exist", () => {
-    expect(parseView("?tab=invoices").tab).toBe("board");
+  it("falls back to Deals for a tab that does not exist", () => {
+    expect(parseView("?tab=invoices").tab).toBe("deals");
     expect(parseView("?tab=leads").tab).toBe("leads");
   });
 
-  it("admits the settings tab, which is neither board nor a collection", () => {
+  it("admits the settings tab, which is not a collection", () => {
     // WS-26f f2. The old `isEntity(tab) ? tab : "board"` SWALLOWED it: a
     // `?tab=settings` link landed on the kanban, which is indistinguishable
     // from the page ignoring the click.
@@ -106,7 +109,7 @@ describe("serializeView", () => {
 
   it("trims the search box", () => {
     expect(serializeView({ ...DEFAULT_VIEW, q: "   " })).toBe("");
-    expect(serializeView({ ...DEFAULT_VIEW, q: " bosch " })).toBe("q=bosch");
+    expect(serializeView({ ...DEFAULT_VIEW, q: " bosch " })).toBe("layout=board&q=bosch");
   });
 });
 
@@ -115,7 +118,7 @@ describe("the record sheet is state, not a route", () => {
     // The whole reason it is `?deal=` and not `/crm/deals/<id>`: the reader
     // comes back to the list they were looking at, and Back closes the sheet
     // instead of leaving the app.
-    const list = { ...DEFAULT_VIEW, tab: "leads" as const, q: "bosch" };
+    const list = { ...DEFAULT_VIEW, tab: "leads" as const, layout: "list" as const, q: "bosch" };
     const opened = openRecord(list, "lead", "l1");
     expect(opened.tab).toBe("leads");
     expect(opened.q).toBe("bosch");
@@ -123,7 +126,7 @@ describe("the record sheet is state, not a route", () => {
   });
 
   it("closing leaves the list exactly as it was", () => {
-    const list = { ...DEFAULT_VIEW, tab: "leads" as const, q: "bosch" };
+    const list = { ...DEFAULT_VIEW, tab: "leads" as const, layout: "list" as const, q: "bosch" };
     expect(closeRecord(openRecord(list, "lead", "l1"))).toEqual(list);
   });
 });
@@ -172,7 +175,7 @@ describe("selectTab", () => {
     // …and it is a shareable URL like every other view here.
     expect(viewHref(settings)).toBe("/crm?tab=settings");
     expect(parseView(serializeView(settings))).toEqual(settings);
-    expect(selectTab(settings, "board").tab).toBe("board");
+    expect(selectTab(settings, "deals").tab).toBe("deals");
 
     // WS-26g's tab round-trips the same way — it is one more thing this page
     // can be showing, not a second app.
@@ -222,16 +225,57 @@ describe("applySort", () => {
 
   it("puts the sort in the URL, so a sorted list is shareable", () => {
     const view = applySort({ ...DEFAULT_VIEW, tab: "deals" }, "amount");
-    expect(viewHref(view)).toBe("/crm?tab=deals&sort=amount");
+    expect(viewHref(view)).toBe("/crm?layout=board&sort=amount");
     expect(parseView(serializeView(view))).toEqual(view);
 
     const ascending = applySort(view, "amount");
-    expect(viewHref(ascending)).toBe("/crm?tab=deals&sort=amount&dir=asc");
+    expect(viewHref(ascending)).toBe("/crm?layout=board&sort=amount&dir=asc");
     expect(parseView(serializeView(ascending))).toEqual(ascending);
   });
 
   it("writes no dir without a sort, and reads a nonsense one as desc", () => {
     expect(serializeView({ ...DEFAULT_VIEW, dir: "asc" })).toBe("");
     expect(parseView("?sort=name&dir=sideways").dir).toBe("desc");
+  });
+});
+
+// CRM-X4 item 2 (spec section 19.8): the tab of the record page is URL state.
+describe("the record tab, ?rtab=", () => {
+  it("opens the tab the URL names", () => {
+    expect(parseView("?deal=d1&rtab=timeline").recordTab).toBe("timeline");
+    expect(parseView("?deal=d1&rtab=fields").recordTab).toBe("fields");
+  });
+
+  it("opens Overview for an unknown value, and with no value", () => {
+    expect(parseView("?deal=d1&rtab=history").recordTab).toBe("overview");
+    expect(parseView("?deal=d1").recordTab).toBe("overview");
+  });
+
+  it("means nothing without an open record", () => {
+    expect(parseView("?rtab=timeline").recordTab).toBe("overview");
+  });
+
+  it("travels in the URL beside the record, and Overview writes nothing", () => {
+    const open = openRecord(DEFAULT_VIEW, "deal", "d1");
+    expect(viewHref(selectRecordTab(open, "timeline"))).toBe("/crm?deal=d1&rtab=timeline");
+    expect(viewHref(selectRecordTab(open, "overview"))).toBe("/crm?deal=d1");
+    const view = selectRecordTab(open, "related");
+    expect(parseView(serializeView(view))).toEqual(view);
+  });
+
+  it("keeps the tab when the page steps to another record, and drops it when the sheet closes", () => {
+    const open = selectRecordTab(openRecord(DEFAULT_VIEW, "deal", "d1"), "timeline");
+    expect(openRecord(open, "deal", "d2").recordTab).toBe("timeline");
+    expect(closeRecord(open).recordTab).toBe("overview");
+    expect(viewHref(closeRecord(open))).toBe("/crm");
+  });
+
+  it("gives a lead no Related tab, and shows a lead's Related link as Overview", () => {
+    expect(recordTabsFor("leads")).toEqual(["overview", "timeline", "fields"]);
+    for (const entity of ["deals", "contacts", "organizations"] as const) {
+      expect(recordTabsFor(entity)).toEqual(["overview", "timeline", "related", "fields"]);
+    }
+    expect(shownRecordTab("leads", "related")).toBe("overview");
+    expect(shownRecordTab("deals", "related")).toBe("related");
   });
 });

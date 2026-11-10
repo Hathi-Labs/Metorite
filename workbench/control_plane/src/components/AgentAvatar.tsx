@@ -105,7 +105,7 @@ export function AgentAvatar({
   if (!portrait) return <>{fallback}</>;
   return (
     <div
-      className={`shrink-0 overflow-hidden rounded-full border border-border bg-secondary ${className}`}
+      className={`shrink-0 overflow-hidden rounded-full border border-border bg-secondary glass:border-transparent glass:glass-surface ${className}`}
       style={{ width: size, height: size }}
       title={title}
       aria-label={title}

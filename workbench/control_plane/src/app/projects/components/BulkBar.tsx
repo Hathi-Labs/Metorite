@@ -89,6 +89,13 @@ interface Props {
    * this bar.
    */
   onMerge?: () => void;
+  /**
+   * WS-55 EA-13e (EA3-43) — open "Ask an agent" for the whole selection. Like
+   * the move and the merge it OPENS a card: the member picks the agent and
+   * writes the instruction. Absent = not offered. The dialog refuses a
+   * selection past `MAX_BULK_ASK` and says why, so the button stays on.
+   */
+  onAskAgent?: () => void;
   /** See TaskBoard's prop of the same name. */
   personLabels?: ReadonlyMap<string, string>;
   /** The last outcome sentence, or null. */
@@ -110,6 +117,7 @@ export function BulkBar({
   onApply,
   onAction,
   onMerge,
+  onAskAgent,
   personLabels,
   onMove,
   notice,
@@ -140,6 +148,19 @@ export function BulkBar({
             onClick={onMove}
           >
             Move to project…
+          </Button>
+        ) : null}
+
+        {onAskAgent ? (
+          <Button
+            variant="secondary"
+            size="sm"
+            icon="Bot"
+            disabled={busy}
+            data-bulk-ask-agent=""
+            onClick={onAskAgent}
+          >
+            Ask an agent…
           </Button>
         ) : null}
 

@@ -16,8 +16,9 @@
 //      says so before the request, because "422" in a toast is not an answer
 //      to "why can I not save this row".
 
-import { REQUIREABLE_FIELDS } from "./board";
-import type { StageMetadataReport, StatusType } from "./types";
+import { orderLanes, REQUIREABLE_FIELDS } from "./board";
+import { humanizeKey } from "./connect";
+import type { StageMetadataReport, Status, StatusKind, StatusType } from "./types";
 
 /** Lanes are numbered in tens so a lane can be inserted between two by hand. */
 export const POSITION_STEP = 10;
@@ -47,6 +48,18 @@ export function moveItem<T>(items: T[], from: number, to: number): T[] {
   next.splice(to, 0, moved);
   return next;
 }
+
+/**
+ * The plain words of a stage type (CRM-U6). A settings row and the board-order
+ * strip show these. The raw value (`on_hold`) is for the wire only.
+ */
+export const STATUS_TYPE_LABELS: Record<StatusType, string> = {
+  open: "Open",
+  ongoing: "In progress",
+  on_hold: "On hold",
+  won: "Won",
+  lost: "Lost",
+};
 
 /** Positions for a whole list, in tens, from its current order. */
 export function renumber<T extends Reorderable>(items: T[]): T[] {
@@ -129,7 +142,7 @@ export async function applyPatches(
  * What a partly-applied reorder says.
  *
  * It names the arithmetic (how many of how many) and then the one thing the
- * reader needs to act on: the order below is the server's, not theirs. A bare
+ * reader needs to act on: the list shows the saved order, not theirs. A bare
  * "request failed" next to a grid that re-read into a third order is how
  * somebody drags again and makes it worse.
  */
@@ -138,8 +151,8 @@ export function reorderFailureMessage(
   total: number
 ): string {
   return (
-    `${failures.length} of ${total} lanes could not be reordered — the order ` +
-    `shown is the server's, not the one you dropped. ${failures[0]}`
+    `${failures.length} of ${total} lanes could not be reordered. The list shows ` +
+    `the saved order, not the one you dropped. ${failures[0]}`
   );
 }
 
@@ -155,7 +168,7 @@ export type StatusDraft = {
   name: string;
   type: StatusType;
   color?: string;
-  /** Deal statuses only — a lead status has no win probability. */
+  /** The win chance in percent. Both kinds carry it since migration 288. */
   probability?: number | null;
   /** Deal statuses only (WS-26h) — entry requirements. */
   required_fields?: string[];
@@ -178,25 +191,26 @@ export function validateStatusDraft(
   kind: "deal" | "lead"
 ): string | null {
   if (!draft.name.trim()) return "A status needs a name.";
-  if (kind !== "deal") return null;
 
-  // An emptied probability box means "take the column default", which is 0 —
+  // An emptied win chance box means "take the column default", which is 0 —
   // the same value the server would land on, so it is judged as 0 here too.
   const probability = draft.probability ?? 0;
   if (!Number.isFinite(probability) || probability < 0 || probability > 100) {
-    // Word-for-word the gateway's own refusal (admin.py::_validate_status), so
-    // hitting the server anyway never produces a second, differently-worded
-    // version of the same rule.
-    return `A stage probability is a percentage: ${probability} is outside 0-100.`;
+    // The rule of the gateway (admin.py::_validate_status), in the words of
+    // the screen: the box is "Win chance" (CRM-U17a).
+    return `A win chance is a percentage: ${probability} is outside 0-100.`;
   }
   const pinned = CLAMPED_PROBABILITY[draft.type];
   if (pinned !== undefined && probability !== pinned) {
     return (
-      `A '${draft.type}' stage always forecasts ${pinned}% — this one would be ` +
-      `left at ${probability}%. Set probability to ${pinned}, or give the ` +
-      `stage a different type.`
+      `A ${STATUS_TYPE_LABELS[draft.type]} stage always forecasts ${pinned}%. ` +
+      `This one would be left at ${probability}%. Set the win chance to ${pinned}%, ` +
+      `or give the stage a different type.`
     );
   }
+
+  // The two checks below are for deal stages. A lead status has neither.
+  if (kind !== "deal") return null;
 
   // WS-26h. Same division of labour as the clamp above: the gateway is the
   // boundary and re-checks every PATCH, and this is the sentence that explains
@@ -205,18 +219,18 @@ export function validateStatusDraft(
     (field) => !(REQUIREABLE_FIELDS as readonly string[]).includes(field)
   );
   if (unknown.length > 0) {
-    return `${JSON.stringify(unknown)} cannot be required on a stage.`;
+    const names = unknown.map((field) => humanizeKey(field)).join(", ");
+    return `${names} cannot be required on a stage.`;
   }
 
   const dwell = draft.max_dwell_days;
   if (dwell !== null && dwell !== undefined) {
     if (!Number.isInteger(dwell) || dwell < 1 || dwell > 32767) {
-      // Word-for-word the gateway's refusal (admin.py::_validate_max_dwell_days),
-      // so hitting the server anyway never produces a second, differently
-      // worded version of the same rule.
+      // The rule of the gateway (admin.py::_validate_max_dwell_days), in the
+      // words of the screen (CRM-U17a).
       return (
-        "'max_dwell_days' is a whole number of days from 1 to 32767, or null " +
-        `for a stage that never rots: ${dwell} is neither.`
+        "The days a deal may stay is a whole number from 1 to 32767, or empty " +
+        `for a stage that never warns: ${dwell} is neither.`
       );
     }
   }
@@ -262,4 +276,166 @@ function sameValue(before: unknown, after: unknown): boolean {
     );
   }
   return before === after;
+}
+
+// ── The Mirror editor (WS-53 CRM-C3, crm_platform.md §20.6 item 14) ────────
+//
+// In Mirror mode Zoho owns the source values of a stage, and Metorite keeps an
+// overlay beside them that the sync never writes (D95). The gateway takes only
+// the overlay fields there and answers 409 for any other field, so the editor
+// sends only these.
+
+/** The overlay fields a Mirror admin edits on one row, by kind. */
+export const OVERLAY_FIELDS: Record<StatusKind, readonly string[]> = {
+  deal: ["hidden", "ui_probability", "ui_color", "max_dwell_days"],
+  lead: ["hidden", "ui_probability", "ui_color"],
+};
+
+/** What changed in the overlay of one row. Only these fields. */
+export function overlayPatch(
+  kind: StatusKind,
+  before: Record<string, unknown>,
+  after: Record<string, unknown>
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of OVERLAY_FIELDS[kind]) {
+    const was = before[key] ?? null;
+    const now = after[key] ?? null;
+    if (!sameValue(was, now)) out[key] = now;
+  }
+  return out;
+}
+
+/**
+ * "Reset to Zoho" on a row: the Metorite probability and colour go, so the
+ * Zoho values apply again. `hidden` and `max_dwell_days` stay. Both kinds
+ * carry a probability since migration 288.
+ */
+export function resetToSource(kind: StatusKind): Record<string, null> {
+  void kind;
+  return { ui_probability: null, ui_color: null };
+}
+
+/** True when the row carries a Metorite value that "Reset to Zoho" clears. */
+export function hasOverlay(kind: StatusKind, status: Record<string, unknown>): boolean {
+  return Object.keys(resetToSource(kind)).some((key) => status[key] != null);
+}
+
+/** A Metorite win chance: empty (the Zoho value applies) or a whole 0 to 100. */
+export function validateOverlayProbability(value: number | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  if (!Number.isInteger(value) || value < 0 || value > 100) {
+    return "A win chance is a whole number from 0 to 100, or empty for the Zoho value.";
+  }
+  return null;
+}
+
+/** The ids the order route takes after one drag: every row, in the new order. */
+export function orderAfterDrop<T extends { id: string }>(
+  rows: T[],
+  from: number,
+  to: number
+): string[] | null {
+  const moved = moveItem(rows, from, to);
+  return moved === rows ? null : moved.map((row) => row.id);
+}
+
+// ── CRM-U11: the stage list is the board (D137, crm_platform.md §20.15) ───
+
+/**
+ * A part order, merged into the full order (CRM-U11 item 5).
+ *
+ * The order route takes every id of the kind. With two pipelines the stage
+ * list shows a part of them. The ids of the part take their own slots of the
+ * full order, in their new order, and each other id keeps its slot. An id of
+ * the part that the full order does not hold is dropped, and a repeated id
+ * counts once, so each id of `fullIds` comes back once.
+ */
+export function mergePartOrder(
+  fullIds: readonly string[],
+  partIds: readonly string[]
+): string[] {
+  const known = new Set(fullIds);
+  const queue = [...new Set(partIds)].filter((id) => known.has(id));
+  const inPart = new Set(queue);
+  let next = 0;
+  return fullIds.map((id) => (inPart.has(id) ? queue[next++] : id));
+}
+
+/**
+ * The full order after one move in the list on screen, or null when nothing
+ * moved. `shownIds` is the list in its order, and `fullIds` is every id of
+ * the kind in the current order.
+ */
+export function orderAfterMove(
+  fullIds: readonly string[],
+  shownIds: readonly string[],
+  from: number,
+  to: number
+): string[] | null {
+  const shown = [...shownIds];
+  const moved = moveItem(shown, from, to);
+  return moved === shown ? null : mergePartOrder(fullIds, moved);
+}
+
+/**
+ * Every id of a Native kind with a new stage before the first won or lost
+ * stage (D137 rule 4). The create route puts a new stage at the end, so the
+ * order route then moves it. Null when no won or lost stage exists, because
+ * the end is already the right place.
+ */
+export function orderWithNewStage(
+  statuses: readonly Status[],
+  addedId: string
+): string[] | null {
+  const ordered = orderLanes(
+    statuses
+      .filter((status) => status.id !== addedId)
+      .map((status) => ({ status, pipeline_position: null })),
+    "native"
+  ).map(({ status }) => status);
+  const at = ordered.findIndex((status) => status.type === "won" || status.type === "lost");
+  if (at < 0) return null;
+  const ids = ordered.map((status) => status.id);
+  ids.splice(at, 0, addedId);
+  return ids;
+}
+
+// ── CRM-C1: the drafts of the settings rows ───────────────────────────────
+
+/** The state of the first read of the vocabulary (CRM-U17a): stages, statuses, lost reasons. */
+export type VocabularyState = "loading" | "loaded" | "failed";
+
+/**
+ * What a vocabulary card draws. Rows win: a list that holds rows shows them,
+ * even when a later re-read failed. An empty list is "loading" until the first
+ * read lands, "failed" after a failed read, and "empty" only after a read that
+ * returned no rows. So "No stages yet" never shows on a slow network.
+ */
+export function vocabularyShows(
+  state: VocabularyState,
+  count: number
+): "rows" | "loading" | "failed" | "empty" {
+  if (count > 0) return "rows";
+  if (state === "loading") return "loading";
+  if (state === "failed") return "failed";
+  return "empty";
+}
+
+/**
+ * An unsaved edit of one settings row, kept in the CRM store (CRM-C1
+ * review). A section change unmounts the rows, and the store keeps the edit,
+ * so the member can come back and save it.
+ */
+export type SettingsDraft = { base: unknown; value: unknown };
+
+/**
+ * What a row shows: its draft, or the served value.
+ *
+ * A draft holds the served value it was typed over. A re-read brings a new
+ * value, and then the draft no longer applies. The rows worked this way
+ * before CRM-C1: the server's answer is the truth.
+ */
+export function draftOf<T>(draft: SettingsDraft | undefined, served: T): T {
+  return draft && draft.base === served ? (draft.value as T) : served;
 }

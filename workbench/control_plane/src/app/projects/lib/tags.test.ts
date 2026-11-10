@@ -22,6 +22,7 @@ import {
   suggest,
   wouldCreate,
   AUTO_TAG_HUES,
+  COLOR_SELECT_OPTIONS,
   TAG_COLORS,
   autoTagHue,
 } from "./tags";
@@ -253,5 +254,12 @@ describe("the hue a new tag gets by default", () => {
     for (const name of ["\u00ff\u00ff\u00ff", "\u4f60\u597d", "z".repeat(400), "\u{1F600}"]) {
       expect(autoTagHue(name), JSON.stringify(name)).toBeTruthy();
     }
+  });
+});
+
+describe("the colour picker's options (task #417)", () => {
+  it("offers every tag colour, each with its own swatch", () => {
+    expect(COLOR_SELECT_OPTIONS.map((o) => o.value)).toEqual([...TAG_COLORS]);
+    for (const o of COLOR_SELECT_OPTIONS) expect(o.swatch).toBe(o.value);
   });
 });

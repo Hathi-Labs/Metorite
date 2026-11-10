@@ -281,6 +281,16 @@ no tenant segment (`routes/apps/files.py:87-96`).
 
 ### S2-7 — The Action Broker queue is global, and approving executes
 
+> **Status 2026-10-09: H-201 CLOSES the queue half.** The table has an
+> `organization_id` and FORCE RLS. The broker now opens
+> `acb_graph.tenant_session(org)` in `enqueue`, `list_pending`,
+> `_load_proposal` and `_mark`, with the tenant of the bound context. So a
+> tenant lists, approves and rejects only its own rows. The fence is
+> `tests/unit/test_action_broker_tenancy_r8.py`.
+>
+> **Still open:** the flat handler registry, and the rule for which member
+> inside a tenant may approve.
+
 `apps/services/gateway/gateway/routes/actions.py:47-55` → `action_broker/broker.py:246-263`
 
 ```sql
@@ -482,6 +492,10 @@ Checked against the live database:
 
 `crm_*.organization_id` points at **`crm_organizations`** — the *customer company* on a deal —
 not at the tenant root (`infra/postgres/144_crm.sql:74,197,289`). The CRM is **not** tenant-scoped.
+
+**2026-10-11 (WS-53 CRM-T1):** CRM-T1 closes consequence 4. The company column is now
+`company_id` (D95.2), and migration 241 (`infra/postgres/241_crm_tenancy.sql`) gives
+all 13 `crm_*` tables the tenant `organization_id` with FORCE RLS.
 
 Consequences:
 

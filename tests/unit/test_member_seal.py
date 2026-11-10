@@ -327,6 +327,34 @@ def test_the_fake_unrestricted_answer_hides_sealed_projects_too():
     assert str(gone.id) not in everything
 
 
+async def test_the_fake_mirrors_both_arms_of_the_unrestricted_task_clause():
+    """H-304. The ``data:org:read`` task read hides a sealed task, and keeps
+    the one handed over to the admin. The fake reads both arms off the SQL, so
+    a route that drops either arm goes red here without a database."""
+    from fastapi import HTTPException
+    from gateway.routes.projects.core import Visibility, load_visible_task
+
+    db = _fake()
+    live = db.seed_project(name="Live", subject="org")
+    gone = db.seed_project(name="Sealed", subject=None)
+    org = _row(db, live.id)["organization_id"]
+    status = db.seed_status(str(gone.id))
+    private = db.seed_task(str(gone.id), str(status.id), title="private",
+                           organization_id=org)
+    handed = db.seed_task(str(gone.id), str(status.id), title="handed over",
+                          organization_id=org)
+    db.seed("pm_task_assignees", task_id=handed.id, assignee="admin@seal.invalid",
+            assigned_by="owner@fracktal.in")
+    _seal(db, gone.id)
+    vis = Visibility(unrestricted=True, email="admin@seal.invalid", groups=(),
+                     organization_id=org)
+
+    assert (await load_visible_task(db, vis, str(handed.id))).title == "handed over"
+    with pytest.raises(HTTPException) as caught:
+        await load_visible_task(db, vis, str(private.id))
+    assert caught.value.status_code == 404
+
+
 def test_a_seeded_project_is_live_by_default():
     """Every seeded row must carry `sealed_at = None`, the value Postgres
     returns for a project nobody has sealed."""

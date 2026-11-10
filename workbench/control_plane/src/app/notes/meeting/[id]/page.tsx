@@ -15,6 +15,7 @@ import MarkdownMessage from "@/components/MarkdownMessage";
 import AskPanel from "../../components/AskPanel";
 import FollowupEmailModal from "../../components/FollowupEmailModal";
 import JoinCallModal from "../../components/JoinCallModal";
+import { tasksLink } from "@/app/projects/lib/tasksRedirect";
 import MeetingOutcomes from "../../components/MeetingOutcomes";
 import MeetingPrep from "../../components/MeetingPrep";
 import { speakerAvatar, speakerText } from "../../lib/speakers";
@@ -317,7 +318,7 @@ export default function MeetingPage({
       } else if (res.kind === "document") {
         flashToast("Document drafted — view in Artifacts");
       } else {
-        flashToast("Task created — view in My Tasks");
+        flashToast("Task created — view in My work");
       }
     } catch (e) {
       setError(String(e instanceof Error ? e.message : e));
@@ -1187,12 +1188,12 @@ export default function MeetingPage({
                                 <Link
                                   href={
                                     a.resulting_task_id
-                                      ? `/tasks?item=${a.resulting_task_id}`
-                                      : "/tasks"
+                                      ? tasksLink(`/tasks?item=${a.resulting_task_id}`)
+                                      : tasksLink("/tasks")
                                   }
                                   className="flex items-center gap-1 text-xs text-success hover:underline"
                                 >
-                                  <Icon name="Check" className="w-3.5 h-3.5" /> In My Tasks
+                                  <Icon name="Check" className="w-3.5 h-3.5" /> In My work
                                   <Icon name="ExternalLink" className="w-3 h-3" />
                                 </Link>
                               ))}

@@ -28,15 +28,31 @@ export interface IntegrationStatus {
   docs_url: string;
   instructions: string;
   env_vars: IntegrationEnvVar[];
+  /**
+   * Keys of the guide that a tenant may NOT set: a URL, host, domain, port or
+   * path, or a platform key. The operator sets them on the server, so the
+   * page shows them read-only and no form sends them (security fix,
+   * 2026-10-05). Absent from an older gateway.
+   */
+  operator_env_vars?: { key: string; label: string }[];
   missing_keys: string[];
   /** Which credential keys are stored in the encrypted Postgres DB (e.g. ["client_id", "client_secret"]). */
   db_keys?: string[];
-  /** Storage source: "encrypted-db" | "env-file" | "none". */
+  /**
+   * Storage source: "encrypted-db" | "env-file" | "app" | "none". "app" is a
+   * tile whose connection an app owns, such as Zoho CRM (`APP_OWNED_TILES`).
+   */
   storage?: string;
   /** Category for tile grid filtering (e.g. "crm", "email", "core"). */
   category?: string;
   /** True when this API was added by the user via AI discovery, not built-in. */
   is_custom?: boolean;
+  /**
+   * GitHub only (WS-54 fix round 1, item 3): what the connection reaches, for
+   * each use. The App reads pull requests, but not a private agent repository.
+   * `auth` and `agent_repo` come with an agent's status only.
+   */
+  github_coverage?: { pull_requests: boolean; auth?: "app" | "token" | null; agent_repo?: boolean };
 }
 
 export async function GET(req: NextRequest): Promise<NextResponse> {

@@ -1,67 +1,246 @@
 "use client";
 
 import React from "react";
-import type { ParsedAgentError } from "@/lib/parseAgentError";
+import Icon from "@/components/Icon";
+import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
+import Button from "@/components/ui/Button";
+import { dismissToolCard, useDismissedToolCards } from "@/lib/dismissedTools";
+import {
+  RUN_ERROR_WORDS,
+  isInfoOnlyNotice,
+  noticeBody,
+  type RunErrorView,
+  type RunErrorWords,
+} from "@/lib/runErrors";
+import { openActivity } from "@/lib/shell/ActivityControl";
+import { accentForHue } from "@/lib/statusAccent";
 
-// ── Error card — shown inline in the message thread ──────────────────────────
-export default function ErrorCard({ parsed, compact = false }: { parsed: ParsedAgentError; compact?: boolean }) {
+/** The quiet tones of an info-only notice: muted words, an info icon. */
+const MUTED = accentForHue("gray");
+const INFO = accentForHue("blue");
+
+/**
+ * An info-only notice, as the transcript draws it (owner report,
+ * 2026-10-17): "shouldn't this card be closable? At the moment, it is
+ * persistent." It is one slim line, not a warning card, because nothing
+ * failed and nothing remains to do. The title leads, the body follows, and
+ * the row wraps on a narrow screen.
+ *
+ * Pure, with no hook, so a test can call it and press its Dismiss.
+ */
+export function InfoNoticeView({
+  title,
+  body,
+  onDismiss,
+}: {
+  title: string;
+  body: string;
+  onDismiss: () => void;
+}) {
+  return (
+    <div
+      data-chat-notice-marker
+      data-tone="info"
+      role="status"
+      className={`flex w-full min-w-0 max-w-full items-start gap-1.5 rounded-md px-2 py-1 text-[11px] glass:rounded-[10px] glass:px-3 glass:py-2 glass:text-footnote ${MUTED.soft} ${MUTED.text}`}
+    >
+      <Icon name="Info" size={12} className={`mt-0.5 shrink-0 ${INFO.text}`} />
+      <p className="min-w-0 flex-1 leading-relaxed wrap-anywhere">
+        <span className="font-medium text-foreground">{title}</span>
+        <span aria-hidden="true">{" · "}</span>
+        <span>{body}</span>
+      </p>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-xs"
+        icon="X"
+        aria-label="Dismiss"
+        title="Dismiss"
+        onClick={onDismiss}
+        className="shrink-0"
+      />
+    </div>
+  );
+}
+
+/**
+ * The marker with its state. A dismissal goes into the chat's one set of
+ * dismissed cards (`lib/dismissedTools.ts`), under `dismissKey`, so a
+ * remount or a reload keeps it gone. The local flag hides it at once, also
+ * when there is no key or the browser refuses storage.
+ */
+function InfoNotice({
+  error,
+  words,
+  dismissKey,
+}: {
+  error: RunErrorView;
+  words: RunErrorWords;
+  dismissKey?: string;
+}) {
+  const dismissed = useDismissedToolCards();
+  const [hidden, setHidden] = React.useState(false);
+  if (hidden || (dismissKey && dismissed.has(dismissKey))) return null;
+  return (
+    <InfoNoticeView
+      title={words.title}
+      body={noticeBody(words, error.raw)}
+      onDismiss={() => {
+        setHidden(true);
+        if (dismissKey) dismissToolCard(dismissKey);
+      }}
+    />
+  );
+}
+
+/**
+ * The error card a failed turn leaves in the thread.
+ *
+ * Owner report, 2026-10-08: the card printed a Python repr whose class name
+ * ran past the right edge, and an operator command for a customer. Now:
+ *
+ * - The words come from the server's code (`lib/runErrors.ts`).
+ * - The raw text sits inside "Show full error", wraps, and scrolls in its
+ *   own block. Every text node carries `wrap-anywhere` and `min-w-0`, so a
+ *   long token can never push the card wider than its column.
+ * - No member sees an operator instruction, a server name or a unit name,
+ *   admin or not. The fold shows the ref, and staff grep the logs for it.
+ * - Retry re-sends the member's last message through the chat's one retry
+ *   path (`AgentChat`'s `handleRetryMessage`).
+ * - A `notice` code (an app update, a run an update ended) draws as a status
+ *   in the warning tokens, with `role="status"`, and with no fold: nothing
+ *   failed for good, and there is no raw text to show (incident 2026-10-09).
+ *   Its button carries the code's own verb, such as "Continue".
+ * - An info-only notice (`isInfoOnlyNotice`: no retry, no action) draws as
+ *   {@link InfoNoticeView}, a slim line with a Dismiss control (owner
+ *   report, 2026-10-17). A notice with an action keeps its card.
+ *
+ * - One look with the other chat cards (owner report, 2026-10-13): the
+ *   shared frame size, and a title row that is `RollupHeader`, with an icon
+ *   from the app set (`CircleAlert` for an error, `Info` for a notice). It
+ *   draws through `RollupCard`, so a member may fold it like any card.
+ *
+ * Fences: `runErrors.test.ts`, which renders this card, and
+ * `chatCardConformance.test.ts`.
+ */
+export function ErrorCardView({
+  error,
+  onRetry,
+  defaultOpen = false,
+  id,
+  dismissKey,
+  words: override,
+}: {
+  error: RunErrorView;
+  onRetry?: () => void;
+  /** Tests render the fold open. A member opens it by hand. */
+  defaultOpen?: boolean;
+  /** The roll-up's id: stable for the card's life (its message id). */
+  id?: string;
+  /** Where an info-only notice keeps its dismissal (`noticeDismissKey`).
+   *  Without one, a dismissal lasts for the life of the line only. */
+  dismissKey?: string;
+  /** Words that replace the code's own, such as the other-account notice
+   *  with its Switch button (`otherAccountSwitchWords`). */
+  words?: RunErrorWords;
+}) {
   const [copied, setCopied] = React.useState(false);
-  const [expanded, setExpanded] = React.useState(false);
+  const [expanded, setExpanded] = React.useState(defaultOpen);
+  const words = override ?? RUN_ERROR_WORDS[error.code];
+  const notice = words.tone === "notice";
+  if (isInfoOnlyNotice(words)) return <InfoNotice error={error} words={words} dismissKey={dismissKey} />;
+  const label = words.action ?? "Retry";
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(parsed.raw).catch(() => {});
+    const text = error.ref ? `${error.raw}\n\nReference: ${error.ref}` : error.raw;
+    navigator.clipboard?.writeText(text).catch(() => {});
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const codeLabel = parsed.code === 429 ? "429 Rate limit"
-    : parsed.code === 401 ? "401 Unauthorized"
-    : parsed.code === 402 ? "402 Payment required"
-    : parsed.code === 400 ? "400 Bad request"
-    : parsed.code === 404 ? "404 Not found"
-    : null;
-
   return (
-    <div className={`rounded-xl border border-red-900/50 bg-red-950/30 ${compact ? "px-3 py-2" : "px-4 py-3"} text-sm`}>
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-red-300 font-semibold">{parsed.title}</span>
-            {codeLabel && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-red-800/60 text-red-400">{codeLabel}</span>
-            )}
-          </div>
-          {!compact && (
-            <p className="mt-1 text-xs text-muted-foreground leading-relaxed">{parsed.detail}</p>
-          )}
-          <div className="mt-2 flex items-start gap-1.5">
-            <span className="text-warning shrink-0 text-xs mt-0.5">→</span>
-            <p className="text-xs text-warning/90 leading-relaxed">{parsed.suggestion}</p>
-          </div>
-        </div>
-        <button
-          onClick={handleCopy}
-          title="Copy full error"
-          className="shrink-0 text-[10px] px-2 py-1 rounded border border-border text-muted-foreground hover:text-foreground hover:border-primary/40 tech-transition mt-0.5 whitespace-nowrap"
-        >
-          {copied ? "Copied!" : "Copy error"}
-        </button>
-      </div>
-      {!compact && (
-        <div className="mt-2">
-          <button
-            onClick={() => setExpanded((v) => !v)}
-            className="text-[10px] text-muted-foreground/50 hover:text-muted-foreground tech-transition"
+    <RollupCard id={id ?? `error:${error.code}`} title={words.title} icon={notice ? "Info" : "CircleAlert"} header="own">
+    <div
+      data-chat-error-card
+      data-tone={notice ? "notice" : "error"}
+      role={notice ? "status" : "alert"}
+      className={[
+        "w-full min-w-0 max-w-full overflow-hidden rounded-lg border px-2.5 py-2 glass:glass-card-tile glass:rounded-[16px] glass:p-3",
+        notice
+          ? "border-warning/40 bg-warning/10 glass:[--tile:var(--system-orange)]"
+          : "border-destructive/40 bg-destructive/10 glass:[--tile:var(--system-red)]",
+      ].join(" ")}
+    >
+      <RollupHeader
+        className={`text-xs ${notice ? "text-foreground" : "text-destructive"}`}
+        titleClassName={`font-semibold wrap-anywhere ${notice ? "text-foreground" : "text-destructive"}`}
+      />
+      <RollupBody>
+      <p className="mt-1 min-w-0 text-xs leading-relaxed text-foreground wrap-anywhere glass:text-label">{noticeBody(words, error.raw)}</p>
+      <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2">
+        {onRetry && words.retry && (
+          // The label may carry an address (the other-account Switch), so it
+          // truncates inside the card on a phone, and its title holds it all.
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            icon={words.action ? "ArrowRight" : "RefreshCw"}
+            onClick={onRetry}
+            title={label}
+            className="min-w-0 max-w-full"
           >
-            {expanded ? "▲ Hide full error" : "▼ Show full error"}
-          </button>
-          {expanded && (
-            <pre className="mt-1.5 text-[10px] text-muted-foreground bg-muted/60 rounded-lg p-2 overflow-x-auto whitespace-pre-wrap break-all max-h-40 overflow-y-auto">
-              {parsed.raw}
-            </pre>
+            <span className="min-w-0 truncate">{label}</span>
+          </Button>
+        )}
+        {!notice && (
+          <>
+            <Button type="button" size="sm" variant="text" onClick={() => setExpanded((v) => !v)} aria-expanded={expanded}>
+              {expanded ? "Hide full error" : "Show full error"}
+            </Button>
+            <Button type="button" size="sm" variant="text" onClick={handleCopy} title="Copy the full error">
+              {copied ? "Copied" : "Copy error"}
+            </Button>
+          </>
+        )}
+      </div>
+      {!notice && expanded && (
+        <div className="mt-2 min-w-0 space-y-2" data-chat-error-fold>
+          <pre className="max-h-40 min-w-0 max-w-full overflow-auto whitespace-pre-wrap rounded-lg bg-muted/60 p-2 font-mono text-[10px] text-muted-foreground wrap-anywhere glass:rounded-[10px] glass:bg-secondary glass:p-3 glass:text-caption">
+            {error.raw || "(no error details)"}
+          </pre>
+          {error.ref && (
+            <p className="min-w-0 text-[11px] text-muted-foreground wrap-anywhere">
+              Reference: <span className="font-mono">{error.ref}</span>
+            </p>
           )}
         </div>
       )}
+      </RollupBody>
     </div>
+    </RollupCard>
   );
+}
+
+/**
+ * The card as the thread mounts it.
+ *
+ * The run-cap notice (WS-51 D-3) is the one card whose button is not a
+ * retry: it opens the activity panel, so the member can stop a run. It never
+ * re-sends the turn.
+ */
+export default function ErrorCard({
+  error,
+  onRetry,
+  id,
+  dismissKey,
+}: {
+  error: RunErrorView;
+  onRetry?: () => void;
+  id?: string;
+  dismissKey?: string;
+}) {
+  const action = error.code === "too_many_runs" ? openActivity : onRetry;
+  return <ErrorCardView error={error} onRetry={action} id={id} dismissKey={dismissKey} />;
 }

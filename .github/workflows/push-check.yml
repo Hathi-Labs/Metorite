@@ -1,0 +1,56 @@
+# Metorite — the push copy of the R1 migration-prefix guard.
+#
+# Why this file exists apart from pr-check.yml:
+#
+# `pull_request` checks out `refs/pull/N/merge`, and GitHub does NOT compute
+# that ref while a PR is CONFLICTED. So a conflicted PR gets no pr-check run
+# (measured on #439). That is exactly when two branches take one migration
+# number (R1). This workflow runs on push, on the branch as it is, so the
+# guard still runs.
+#
+# ⚠️ IT MUST NOT SHARE A JOB NAME WITH A REQUIRED CHECK. Until 2026-10-16 the
+# push trigger lived in pr-check.yml. Its push run created a SKIPPED
+# "Unit tests" check on the same head SHA, and GitHub counts a skipped check
+# as passed. For about 7 minutes a PR with a failed shard read as mergeable
+# (measured on #1077). So pr-check.yml is pull_request only, and this file
+# carries only the guard that the push trigger was for.
+#
+# Fence: tests/unit/test_pr_check_triggers.py.
+
+name: push-check
+
+on:
+  push:
+    # main is covered by deploy.yml. release and staging are published refs,
+    # fast-forwarded to SHAs that were already checked.
+    branches-ignore:
+      - main
+      - release
+      - staging
+    paths-ignore:
+      - "**.md"
+      - "project-docs/**"
+
+permissions:
+  contents: read
+
+jobs:
+  migration-prefix:
+    name: "Migration prefix guard (push)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.3.0
+        with:
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install 3.12
+
+      - name: Sync deps
+        run: uv sync
+
+      - name: Migration prefix guard (R1, blocking)
+        run: uv run python -m pytest tests/unit/test_migration_prefixes.py -q

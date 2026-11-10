@@ -29,13 +29,23 @@ vi.mock("@/auth", () => ({
 
 import { proxy } from "@/proxy";
 
-function request(pathname: string) {
+function request(pathname: string, cookies: Record<string, string> = {}) {
   const url = `https://app.example.test${pathname}`;
   return {
     nextUrl: new URL(url),
     url,
     headers: new Headers({ host: "app.example.test" }),
+    cookies: { getAll: () => Object.entries(cookies).map(([name, value]) => ({ name, value })) },
   } as unknown as Parameters<typeof proxy>[0];
+}
+
+/** The cookies a response deletes (an empty value with Max-Age=0). */
+function deleted(res: Response): string[] {
+  return res.headers
+    .getSetCookie()
+    .filter((l) => /Max-Age=0/i.test(l))
+    .map((l) => l.slice(0, l.indexOf("=")))
+    .sort();
 }
 
 /** `NextResponse.next()` carries this header. A refusal does not. */
@@ -86,9 +96,114 @@ describe("proxy — the admin-consent return (EM-T3c)", () => {
     }
   });
 
+  it("passes a signed-out GET to the update probe, and nothing under it", async () => {
+    // navigation_shell.md §7.3: the sign-in page must be able to say
+    // "Metorite is updating" too. Exact path only.
+    const res = await proxy(request("/api/health"));
+    expect(passed(res)).toBe(true);
+    expect(posture.authCalls).toBe(0);
+    for (const path of ["/api/health/x", "/api/healthz", "/api/health-admin"]) {
+      expect((await proxy(request(path))).status, path).toBe(401);
+    }
+  });
+
+  it("passes the app icons and the manifest signed out, and nothing beside them", async () => {
+    // The sign-in page shows the icons to a person with no session, and a
+    // browser fetches the manifest with no cookie.
+    for (const path of [
+      "/favicon.ico",
+      "/icon.svg",
+      "/apple-icon.png",
+      "/manifest.webmanifest",
+      "/icon-192.png",
+      "/icon-512.png",
+      "/icon-maskable-512.png",
+      "/favicon-needs.png",
+      "/favicon-reply.png",
+      "/favicon-needs.svg",
+      "/favicon-reply.svg",
+    ]) {
+      const res = await proxy(request(path));
+      expect(passed(res), path).toBe(true);
+    }
+    for (const path of ["/icon.svg/x", "/icon-1024.png", "/public/icon-192.png"]) {
+      expect(passed(await proxy(request(path))), path).toBe(false);
+    }
+  });
+
+  it("passes a signed-out update fetch of the service worker, and no neighbour (WS-66 PN-1)", async () => {
+    // A browser checks /sw.js for an update with no cookie. A redirect to
+    // /signin would fail the update, so the script must pass signed out.
+    const res = await proxy(request("/sw.js"));
+    expect(passed(res)).toBe(true);
+    expect(res.headers.get("location")).toBeNull();
+    expect(posture.authCalls).toBe(0);
+    for (const path of ["/sw.js/x", "/sw.json", "/sw", "/public/sw.js", "/api/sw.js"]) {
+      expect(passed(await proxy(request(path))), path).toBe(false);
+    }
+  });
+
   it("does not open a subpath of the public page", async () => {
     const res = await proxy(request("/oauth/approved/x"));
     expect(res.status).toBe(307);
     expect(res.headers.get("location")).toContain("/signin");
+  });
+
+  it("passes a signed-out GET to the MCP CIMD document, and no neighbour (IN-8a)", async () => {
+    expect(passed(await proxy(request("/oauth/mcp-client.json")))).toBe(true);
+    for (const path of [
+      "/oauth/mcp-client.json/x",
+      "/oauth/mcp-client",
+      "/oauth/other.json",
+      "/api/integrations/mcp/oauth/callback",
+    ]) {
+      expect(passed(await proxy(request(path))), path).toBe(false);
+    }
+  });
+});
+
+describe("proxy — the account switcher's slots end with the session (MT-1k A2, rule 4)", () => {
+  const SLOTS = { "__Host-mt-acct-0": "a", "__Host-mt-acct-2": "b", "mt-acct-1": "c", other: "keep" };
+
+  it("deletes every slot when no session is live, on a public page too", async () => {
+    // The sign-in page is where a plain signOut() lands, so the sweep must run
+    // before the public-page early return.
+    for (const path of ["/signin", "/projects", "/api/tasks"]) {
+      const res = await proxy(request(path, SLOTS));
+      expect(deleted(res)).toEqual(["__Host-mt-acct-0", "__Host-mt-acct-2", "mt-acct-1"]);
+    }
+  });
+
+  it("keeps the slots while a session is live, on every step of Add another account", async () => {
+    // The stashed account A stays in the jar until the callback replaces it.
+    posture.session = { user: { email: "a@one.test" } };
+    for (const path of ["/projects", "/signin", "/api/auth/signin/google", "/api/auth/callback/google", "/signin/code"]) {
+      expect(deleted(await proxy(request(path, SLOTS)))).toEqual([]);
+    }
+  });
+
+  it("asks for no session when the browser holds no slot", async () => {
+    await proxy(request("/signin", { other: "x" }));
+    expect(posture.authCalls).toBe(0);
+  });
+});
+
+describe("proxy — a signed-out link keeps its query (MT-1k, org-aware links)", () => {
+  // R7 fence `proxy-callback-keeps-query`. An org-aware link carries `?org=`
+  // and a record id in its query. A callback of the path alone signed the
+  // member in and then opened the wrong page.
+  it("sends the path AND the query to /signin as the callbackUrl", async () => {
+    const link = "/projects?task=t1&org=3f2a6c1e-9b7d-4e2a-8c1f-0a1b2c3d4e5f";
+    const res = await proxy(request(link));
+    expect(res.status).toBe(307);
+    const location = new URL(res.headers.get("location") ?? "");
+    expect(location.pathname).toBe("/signin");
+    expect(location.searchParams.get("callbackUrl")).toBe(link);
+  });
+
+  it("sends the path alone when the link has no query", async () => {
+    const res = await proxy(request("/projects"));
+    const location = new URL(res.headers.get("location") ?? "");
+    expect(location.searchParams.get("callbackUrl")).toBe("/projects");
   });
 });

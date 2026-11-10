@@ -5,7 +5,11 @@ Spec: ``project-docs/specs/crm_app.md`` §3.6, §3.7, §3.9, §4.
     GET  /crm/pipeline               deals grouped by status: per-lane rows,
                                      count and ₹ total
     POST /crm/leads/{id}/convert     §3.7 — contact + organization + deal, with
-                                     the one dedup rule and 409 on re-convert
+                                     the one dedup rule and 409 on re-convert.
+                                     WS-53 CRM-C6a: the lead-conversion mapping
+                                     (``convert_mapping.py``) copies the custom
+                                     lead values, and ``skipped`` lists what it
+                                     could not copy
 
 :func:`apply_status_transition` lives here rather than in ``records.py`` because
 a status change is the pipeline's semantics, not a field write: it produces
@@ -17,38 +21,69 @@ empties the funnel report the whole model exists to make free.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any, Literal
 
 from acb_auth import UserContext, get_current_user
-from fastapi import Depends, HTTPException, Query
+from fastapi import Depends, HTTPException, Query, Request
+from gateway.routes.crm.convert_mapping import (
+    ConversionPlan,
+    conversion_plan,
+    fill_existing,
+)
 from gateway.routes.crm.core import (
     CLOSING_TYPES,
     CONTACTS,
     DEALS,
+    EFFECTIVE_STATUS_COLUMNS,
     LEADS,
     MAX_PAGE_SIZE,
+    NEXT_ACTIVITY_SQL,
+    NEXT_AT_SQL,
     ORGANIZATIONS,
     WEIGHTED_SQL,
     WEIGHTED_TYPES,
     DealModel,
     Entity,
+    ExtraFilterInput,
     StatusModel,
     _tenant_session,
     actor,
+    assert_writable,
+    attach_ext_urls,
+    attach_next_activity,
+    checked_uuid,
+    current_tenant,
+    custom_pairs,
+    default_pipeline_id,
+    extra_filters,
     has_column,
     insert_row,
     link_deal_contact,
-    load_default_status,
+    load_pipeline_start_status,
     load_row,
     now,
+    pipeline_scope_sql,
+    pipeline_takes_unset,
     project_joined,
+    read_statuses,
     record_activity,
+    require_deal_pipeline,
     require_row,
+    resolve_owner,
     router,
     row_to_dict,
+    search_where,
     status_wire,
     update_row,
 )
+from gateway.routes.crm.currency import (
+    CURRENCY_SQL,
+    DEFAULT_CURRENCY,
+    normalise_currency,
+    ordered_currencies,
+)
+from gateway.routes.crm.field_studio import custom_for_create
+from gateway.routes.crm.reports import MoneyTotals
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -244,7 +279,7 @@ def _require_entry_fields(
     3. ``import_zoho.apply_record`` → ``core.upsert_by_zoho_id``, reached by the
        backfill route **and by ``sync_zoho.pull_phase`` — the ENABLED 600s
        production loop** → **ungated, and it must stay that way.** It builds its
-       own ``INSERT … ON CONFLICT (zoho_id)`` and calls neither
+       own ``INSERT … ON CONFLICT (organization_id, zoho_id)`` and calls neither
        ``core.insert_row`` nor ``records.create_record``. A pulled deal carries
        whatever stage Zoho has it in and owes nothing to a requirement set here
        afterwards; a gate on that path would start refusing rows from the live
@@ -333,26 +368,145 @@ def _dwell_seconds(since: Any, changed_at: Any) -> int | None:
 # this namespace), so no existing caller had to move.
 
 
+#: The lane predicate of every deal read on the board. The held-stage read
+#: rebinds it to each stage row, so it keeps every other filter.
+_LANE_SQL = "status_id = CAST(:status_id AS uuid)"
+
+
 class PipelineLane(BaseModel):
     status: StatusModel
     rows: list[dict]
+    #: Deals of every currency. A count is not an amount.
     count: int
+    #: ``amount`` and ``weighted`` are in :attr:`currency` ONLY (the primary
+    #: one: INR first, then code order). The other currencies of the lane sit
+    #: in :attr:`others`, empty for a lane of one currency (task 887).
+    currency: str = DEFAULT_CURRENCY
     amount: float
     #: Sum of amount * probability/100 over this lane — 0 on a lane whose type is
     #: not in ``WEIGHTED_TYPES``, because won revenue is closed and a lost or
     #: on-hold deal forecasts nothing (D-CRM-10).
     weighted: float = 0.0
+    #: The stage's place in the chosen pipeline. ``None`` with no
+    #: ``?pipeline_id=``, and for a stage the pipeline does not list that still
+    #: holds its deals. The board orders its columns with it (``lib/board.ts``).
+    pipeline_position: int | None = None
+    others: list[MoneyTotals] = []
 
 
 class PipelineResponse(BaseModel):
     lanes: list[PipelineLane]
 
 
+#: ``?card_sort=`` → the order of the cards inside a lane (WS-53 CRM-X3). The
+#: ``Literal`` on the route is the allowlist, so any other value is a 422.
+#: Each value names the inner order and the outer one that
+#: :func:`core.project_joined` re-applies over ``base``.
+CardSort = Literal[
+    "stage_age", "recently_changed", "close_date", "amount", "next_activity",
+]
+_CARD_ORDERS: dict[str, tuple[str, str]] = {
+    "stage_age": (
+        "status_changed_at DESC NULLS LAST, id DESC",
+        "base.status_changed_at DESC NULLS LAST, base.id DESC",
+    ),
+    # CRM-U14: "Recently changed" is the provider's edit time, else our own.
+    "recently_changed": (
+        "COALESCE(ext_modified_at, updated_at) DESC NULLS LAST, id DESC",
+        "COALESCE(base.ext_modified_at, base.updated_at) DESC NULLS LAST, base.id DESC",
+    ),
+    "close_date": (
+        "expected_close_date ASC NULLS LAST, id DESC",
+        "base.expected_close_date ASC NULLS LAST, base.id DESC",
+    ),
+    "amount": (
+        "amount DESC NULLS LAST, id DESC",
+        "base.amount DESC NULLS LAST, base.id DESC",
+    ),
+    "next_activity": (
+        "next_at ASC NULLS LAST, crm_deals.id DESC",
+        "base.next_at ASC NULLS LAST, base.id DESC",
+    ),
+}
+
+#: The lane read's ``next_at``: the smallest instant of the next-activity
+#: rule for this deal (``core.NEXT_ACTIVITY_SQL``). One rule, so the order of
+#: a lane and the chip on each card cannot disagree.
+_NEXT_AT_COLUMN = (
+    f"(SELECT min({NEXT_AT_SQL}) FROM crm_activities a "
+    f"WHERE a.deal_id = crm_deals.id AND {NEXT_ACTIVITY_SQL}) AS next_at"
+)
+
+
+#: The lane rows carry the effective and the source values (CRM-C3, §20.6
+#: item 6). So ``stage_probability`` below binds the effective probability.
+_STAGE_COLUMNS = EFFECTIVE_STATUS_COLUMNS["crm_deal_statuses"]
+
+
+def _lane_select(card_sort: str) -> str:
+    """The SELECT list of a lane read. Only ``next_activity`` adds ``next_at``."""
+    if card_sort == "next_activity":
+        return f"crm_deals.*, {_NEXT_AT_COLUMN}"
+    return "*"
+
+
+async def _board_lanes(
+    db: Any, pipeline_id: str | None, where: str, params: dict[str, Any],
+) -> list[Any]:
+    """The stage rows of the board.
+
+    With a pipeline: its listed stages (each with ``pipeline_position``), then
+    each stage it does not list that holds a deal under ``where``. ``where``
+    must already hold EVERY filter, because the held read rebinds its lane
+    predicate to the stage row and keeps the rest with the same binds.
+    Without a pipeline: every stage.
+    """
+    if not pipeline_id:
+        return await read_statuses(db, "crm_deal_statuses")
+    listed = (await db.execute(
+        text(
+            f"SELECT {_STAGE_COLUMNS}, ps.position AS pipeline_position "
+            "FROM crm_deal_statuses s "
+            "JOIN crm_pipeline_stages ps ON ps.status_id = s.id "
+            "WHERE ps.pipeline_id = CAST(:pipeline_id AS uuid) "
+            "ORDER BY ps.position, s.name"
+        ),
+        {"pipeline_id": pipeline_id},
+    )).fetchall()
+    held = where.replace(_LANE_SQL, "status_id = s.id", 1)
+    extra = (await db.execute(
+        text(
+            f"SELECT {_STAGE_COLUMNS} FROM crm_deal_statuses s "
+            "WHERE NOT EXISTS (SELECT 1 FROM crm_pipeline_stages ps "
+            "WHERE ps.pipeline_id = CAST(:pipeline_id AS uuid) "
+            "AND ps.status_id = s.id) "
+            f"AND EXISTS (SELECT 1 FROM crm_deals WHERE {held}) "
+            "ORDER BY s.position, s.name"
+        ),
+        params,
+    )).fetchall()
+    return [*listed, *extra]
+
+
 @router.get("/pipeline", response_model=PipelineResponse)
 async def get_pipeline(
     owner: str | None = None,
     per_lane: int = Query(50, ge=1, le=MAX_PAGE_SIZE),
+    pipeline_id: str | None = None,
+    source: str | None = None,
+    created_from: str | None = None,
+    created_to: str | None = None,
+    updated_from: str | None = None,
+    updated_to: str | None = None,
+    close_from: str | None = None,
+    close_to: str | None = None,
+    card_sort: CardSort = "stage_age",
+    q: str | None = None,
+    lane_status_id: str | None = None,
+    # Annotated keeps the default a real 0 when a test calls the route directly.
+    lane_offset: Annotated[int, Query(ge=0)] = 0,
     user: UserContext = Depends(get_current_user),
+    request: Request = None,  # type: ignore[assignment]
 ) -> PipelineResponse:
     """Deals grouped by status — the kanban read.
 
@@ -361,18 +515,92 @@ async def get_pipeline(
     total and ₹ weighted are aggregated over the WHOLE lane, not over the page
     of rows returned, or the header would lie about a lane with more than
     ``per_lane`` deals in it.
+
+    **``?pipeline_id=``** (WS-53 CRM-Q2) shows one pipeline. The lanes are its
+    stages in its own order, and the deals are the ones that name it. With no
+    ``pipeline_id`` the board is the whole organization, as it always was.
+
+    **The filters of a list** (WS-53 CRM-Q8) narrow the board too: ``owner``
+    (``me`` is the caller), ``source``, the date ranges, and
+    ``custom.<key>=<value>``. They are the same code as the list route's
+    (``core.extra_filters``), so a view that filters a list filters the board.
+
+    **``?q=``** (CRM-X1) is the search of the lists. It is the same predicate
+    (``core.search_where``), so it narrows every lane, its count and its
+    totals, as the other filters do.
+
+    **``?lane_status_id=`` + ``?lane_offset=``** read the next page of ONE
+    lane ("Show more"). The answer holds that lane only, with the same
+    filters, order and totals as the full board. Totals never change with the
+    offset. The card sorts end in ``id DESC``, so pages have no gap and no
+    repeat.
+
+    **No deal disappears.** A deal of the pipeline can sit in a stage that the
+    pipeline does not list (a mirrored Zoho stage that left the pipeline). That
+    stage is a lane too while it holds a deal under ALL the filters above
+    (:func:`_board_lanes`). So the lane counts add up to the deals of the
+    pipeline. The board places each lane by its own order rule
+    (``lib/board.ts`` ``orderLanes``), so a held lane can sit between listed
+    ones. This payload order is not that order.
+
+    **The next activity** (WS-53 CRM-X3). Each card carries
+    ``next_activity``, read in ONE statement after the lane loop
+    (``core.attach_next_activity``), whatever the count of lanes and cards.
+    ``?card_sort=next_activity`` orders each lane soonest first, then the
+    cards with none. The sort changes the order of ``rows`` and nothing else:
+    the lane aggregates do not read it.
+
+    **A NUL is a 422** (CRM-Q25c fix round). ``owner``, ``source`` and
+    ``custom.<key>`` reach SQL as bound text, and Postgres text holds no NUL.
+    The one guard, ``records.refuse_nul``, runs before any SQL. It is
+    imported here, because ``records`` imports this module.
     """
+    from gateway.routes.crm.records import refuse_nul
+
+    if request is not None:
+        refuse_nul(request.query_params.multi_items())
     async with _tenant_session() as db:
-        lanes = (await db.execute(
-            text("SELECT * FROM crm_deal_statuses ORDER BY position, name"), {},
-        )).fetchall()
-        where = "status_id = CAST(:status_id AS uuid)"
         params: dict[str, Any] = {}
+        where = _LANE_SQL
+        wanted: str | None = None
+        if pipeline_id:
+            wanted = checked_uuid(pipeline_id, "pipeline_id")
+            # CRM-M4a: the board of a deal pipeline only.
+            await require_deal_pipeline(db, wanted)
+            where += " AND " + pipeline_scope_sql(
+                await pipeline_takes_unset(db, wanted),
+            )
+            params["pipeline_id"] = wanted
+        owner = resolve_owner(owner, user)
         if owner:
             where += " AND lower(owner_email) = :owner"
             params["owner"] = owner.strip().lower()
+        if source:
+            where += " AND source = :source"
+            params["source"] = source
+        search_clause, search_params = search_where(DEALS, q)
+        if search_clause:
+            where += f" AND {search_clause}"
+            params.update(search_params)
+        more_where, more_params = await extra_filters(
+            db, DEALS, ExtraFilterInput(
+                created_from=created_from, created_to=created_to,
+                updated_from=updated_from, updated_to=updated_to,
+                close_from=close_from, close_to=close_to,
+                custom=tuple(custom_pairs(request.query_params if request else None)),
+            ),
+        )
+        for clause in more_where:
+            where += f" AND {clause}"
+        params.update(more_params)
+        # ⚠️ After the LAST filter: the held-lane read reuses `where` whole.
+        lanes = await _board_lanes(db, wanted, where, params)
+        if lane_status_id:
+            only = checked_uuid(lane_status_id, "lane_status_id")
+            lanes = [lane for lane in lanes if str(lane.id) == only]
 
-        out: list[PipelineLane] = []
+        inner_order, outer_order = _CARD_ORDERS[card_sort]
+        read: list[tuple[Any, Any, list[dict[str, Any]]]] = []
         for lane in lanes:
             scope = {
                 **params,
@@ -381,41 +609,72 @@ async def get_pipeline(
                 # rather than interpolated like every other caller value here.
                 "stage_probability": int(getattr(lane, "probability", 0) or 0),
             }
-            agg = (await db.execute(
+            # ONE grouped read of the WHOLE lane: a row for each currency
+            # (HANDOFF H-333, task 887). The app holds no exchange rate, so no
+            # figure adds two currencies. The count adds the counts of every
+            # currency. Two statements for each lane at any number of codes.
+            found = (await db.execute(
                 text(
-                    "SELECT count(*) AS count, COALESCE(SUM(amount), 0) AS amount, "
-                    f"{WEIGHTED_SQL} FROM crm_deals WHERE {where}"
+                    f"SELECT {CURRENCY_SQL} AS currency, count(*) AS count, "
+                    f"COALESCE(SUM(amount), 0) AS amount, {WEIGHTED_SQL} "
+                    f"FROM crm_deals WHERE {where} GROUP BY {CURRENCY_SQL}"
                 ),
                 scope,
-            )).fetchone()
+            )).fetchall()
+            by_code = {normalise_currency(getattr(r, "currency", None)): r for r in found}
+            sums: list[tuple[str, Any]] = [
+                (code, by_code[code])
+                for code in ordered_currencies(by_code) or [DEFAULT_CURRENCY]
+                if code in by_code
+            ] or [(DEFAULT_CURRENCY, None)]
+            agg = (sum(int(getattr(row, "count", 0) or 0) for _, row in sums), sums)
             inner = (
-                f"SELECT * FROM crm_deals WHERE {where} "
-                "ORDER BY status_changed_at DESC NULLS LAST, id DESC "
-                "LIMIT :limit"
+                f"SELECT {_lane_select(card_sort)} FROM crm_deals WHERE {where} "
+                f"ORDER BY {inner_order} LIMIT :limit OFFSET :offset"
             )
             rows = (await db.execute(
                 # Cards print the account name; the board must not make the
                 # browser join a paged organization list to render them
                 # (WS-26c dw 2).
-                text(project_joined(
-                    DEALS, inner,
-                    "base.status_changed_at DESC NULLS LAST, base.id DESC",
-                )),
-                {**scope, "limit": per_lane},
+                text(project_joined(DEALS, inner, outer_order)),
+                {**scope, "limit": per_lane, "offset": lane_offset},
             )).fetchall()
+            wired = [row_to_dict(r, DealModel) for r in rows]
+            await attach_ext_urls(db, DEALS.table, wired)
+            read.append((lane, agg, wired))
+
+        # ONE read of the next activities for every card of every lane, after
+        # the loop (CRM-X3). Inside the loop it would be one for each lane.
+        await attach_next_activity(
+            db, DEALS, [row for _, _, wired in read for row in wired],
+        )
+        out: list[PipelineLane] = []
+        for lane, (total, sums), wired in read:
+            # The open/ongoing restriction is applied per LANE rather than
+            # inside the SUM: a lane IS one status, so the filter is a
+            # property of the lane and expressing it in the predicate would
+            # be a WHERE clause that is either always true or always false.
+            weighted_lane = getattr(lane, "type", "open") in WEIGHTED_TYPES
+            money = [
+                MoneyTotals(
+                    currency=code,
+                    amount=float(getattr(row, "amount", 0) or 0),
+                    weighted=(
+                        float(getattr(row, "weighted", 0) or 0)
+                        if weighted_lane else 0.0
+                    ),
+                )
+                for code, row in sums
+            ]
             out.append(PipelineLane(
                 status=status_wire(lane),
-                rows=[row_to_dict(r, DealModel) for r in rows],
-                count=int(getattr(agg, "count", 0) or 0),
-                amount=float(getattr(agg, "amount", 0) or 0),
-                # The open/ongoing restriction is applied per LANE rather than
-                # inside the SUM: a lane IS one status, so the filter is a
-                # property of the lane and expressing it in the predicate would
-                # be a WHERE clause that is either always true or always false.
-                weighted=(
-                    float(getattr(agg, "weighted", 0) or 0)
-                    if getattr(lane, "type", "open") in WEIGHTED_TYPES else 0.0
-                ),
+                rows=wired,
+                count=total,
+                currency=money[0].currency,
+                amount=money[0].amount,
+                weighted=money[0].weighted,
+                others=money[1:],
+                pipeline_position=getattr(lane, "pipeline_position", None),
             ))
         return PipelineResponse(lanes=out)
 
@@ -438,8 +697,24 @@ class ConvertRequest(BaseModel):
     #: Caller-chosen matches, resolved by the convert modal (§5 surface 4).
     #: Absent means "work it out": email for the contact, exact name for the org.
     contact_id: str | None = None
-    organization_id: str | None = None
+    company_id: str | None = None
     deal: ConvertDeal | None = None
+    #: The pipeline of the board the convert started from (CRM-M3). None: the
+    #: default pipeline.
+    pipeline_id: str | None = None
+
+
+class SkippedValue(BaseModel):
+    """A lead value that the conversion mapping did not copy (CRM-C6a)."""
+
+    #: ``contact``, ``company`` or ``deal``.
+    entity: str
+    source_key: str
+    target_key: str | None = None
+    #: ``option_inactive``, ``target_retired``, ``target_missing``,
+    #: ``type_mismatch``, ``invalid_value`` or ``record_has_value``.
+    reason: str
+    message: str
 
 
 class ConvertResponse(BaseModel):
@@ -447,6 +722,8 @@ class ConvertResponse(BaseModel):
     contact: dict | None = None
     organization: dict | None = None
     deal: dict
+    #: The lead values that the conversion mapping did not copy (CRM-C6a).
+    skipped: list[SkippedValue] = []
 
 
 @router.post("/leads/{lead_id}/convert", response_model=ConvertResponse)
@@ -467,15 +744,30 @@ async def convert_lead(
     who = actor(user)
     async with _tenant_session() as db:
         lead = await require_row(db, LEADS.table, lead_id, "Lead")
-        if getattr(lead, "converted_deal_id", None):
+        await assert_writable(db, current_tenant(), LEADS, None, row=lead)
+        if getattr(lead, "converted_deal_id", None) or (
+            getattr(lead, "ext_source", None) and getattr(lead, "converted_at", None)
+        ):
             raise HTTPException(
                 status_code=409,
                 detail="This lead has already been converted.",
             )
 
-        contact = await _resolve_contact(db, lead, body)
-        organization = await _resolve_organization(db, lead, body)
-        deal = await _create_deal(db, lead, body, contact, organization, who)
+        # CRM-C6a: the mapped custom values. An empty plan when the flag does
+        # not allow the org, so the conversion is the conversion of before.
+        plan = await conversion_plan(db, lead, user.organization_id)
+        skipped: list[dict[str, Any]] = []
+        contact = await _resolve_contact(db, lead, body, plan, skipped)
+        organization = await _resolve_organization(db, lead, body, plan, skipped)
+        deal = await _create_deal(db, lead, body, contact, organization, who, plan)
+        # A value is skipped only for a record that the conversion has. A
+        # lead with no company makes no company, and its company mapping does
+        # nothing.
+        for entity, record in (
+            ("contact", contact), ("company", organization), ("deal", deal),
+        ):
+            if record is not None:
+                skipped.extend(plan.skipped.get(entity, []))
         lead = await _stamp_converted(db, lead, contact, organization, deal, who)
 
         return ConvertResponse(
@@ -489,17 +781,33 @@ async def convert_lead(
                 if organization is not None else None
             ),
             deal=row_to_dict(deal, DealModel),
+            skipped=[SkippedValue(**s) for s in skipped],
         )
 
 
-async def _resolve_contact(db: Any, lead: Any, body: ConvertRequest) -> Any | None:
+async def _reuse(
+    db: Any, plan: ConversionPlan, entity: str, table: str, row: Any,
+    skipped: list[dict[str, Any]],
+) -> Any:
+    """A record that the conversion reuses: the map fills only its empty values
+    (CRM-C6a). It never replaces a value that the record holds."""
+    written, kept = await fill_existing(db, plan, entity, table, row)
+    skipped.extend(kept)
+    return written
+
+
+async def _resolve_contact(
+    db: Any, lead: Any, body: ConvertRequest, plan: ConversionPlan,
+    skipped: list[dict[str, Any]],
+) -> Any | None:
     """Caller's choice → email match → create. The one dedup rule is email.
 
     Matching is on ``lower(email)`` because an address is the same person in
     any casing, and the import will bring in both spellings of it.
     """
     if body.contact_id:
-        return await require_row(db, CONTACTS.table, body.contact_id, "Contact")
+        chosen = await require_row(db, CONTACTS.table, body.contact_id, "Contact")
+        return await _reuse(db, plan, "contact", CONTACTS.table, chosen, skipped)
 
     email = (getattr(lead, "email", None) or "").strip()
     if email:
@@ -511,10 +819,10 @@ async def _resolve_contact(db: Any, lead: Any, body: ConvertRequest) -> Any | No
             {"email": email.lower()},
         )).fetchone()
         if existing is not None:
-            return existing
+            return await _reuse(db, plan, "contact", CONTACTS.table, existing, skipped)
 
     first = (getattr(lead, "first_name", None) or "").strip()
-    return await insert_row(db, CONTACTS.table, {
+    return await insert_row(db, CONTACTS.table, await _with_defaults(db, CONTACTS, plan, {
         # `first_name` is NOT NULL; a lead with no person name still has a
         # display name, and using it beats inventing 'Unknown'.
         "first_name": first or lead.lead_name,
@@ -524,19 +832,21 @@ async def _resolve_contact(db: Any, lead: Any, body: ConvertRequest) -> Any | No
         "mobile": getattr(lead, "mobile", None),
         "owner_email": getattr(lead, "owner_email", None),
         "source": getattr(lead, "source", "manual"),
-    })
+    }))
 
 
 async def _resolve_organization(
-    db: Any, lead: Any, body: ConvertRequest,
+    db: Any, lead: Any, body: ConvertRequest, plan: ConversionPlan,
+    skipped: list[dict[str, Any]],
 ) -> Any | None:
     """Caller's choice → exact-name match → create. Skipped when the lead has
     no ``organization_name``: an individual buyer is not a company, and minting
     an organization row named after a person is how a CRM fills with noise."""
-    if body.organization_id:
-        return await require_row(
-            db, ORGANIZATIONS.table, body.organization_id, "Organization",
+    if body.company_id:
+        chosen = await require_row(
+            db, ORGANIZATIONS.table, body.company_id, "Organization",
         )
+        return await _reuse(db, plan, "company", ORGANIZATIONS.table, chosen, skipped)
 
     name = (getattr(lead, "organization_name", None) or "").strip()
     if not name:
@@ -544,15 +854,15 @@ async def _resolve_organization(
 
     existing = (await db.execute(
         text(
-            "SELECT * FROM crm_organizations WHERE name = :name "
+            "SELECT * FROM crm_companies WHERE name = :name "
             "ORDER BY created_at LIMIT 1"
         ),
         {"name": name},
     )).fetchone()
     if existing is not None:
-        return existing
+        return await _reuse(db, plan, "company", ORGANIZATIONS.table, existing, skipped)
 
-    return await insert_row(db, ORGANIZATIONS.table, {
+    return await insert_row(db, ORGANIZATIONS.table, await _with_defaults(db, ORGANIZATIONS, plan, {
         "name": name,
         "website": getattr(lead, "website", None),
         "industry": getattr(lead, "industry", None),
@@ -560,24 +870,53 @@ async def _resolve_organization(
         "annual_revenue": getattr(lead, "annual_revenue", None),
         "owner_email": getattr(lead, "owner_email", None),
         "source": getattr(lead, "source", "manual"),
-    })
+    }))
+
+
+#: The target entity of the conversion mapping for each record slug (CRM-C6a).
+_MAP_ENTITY = {"contacts": "contact", "organizations": "company", "deals": "deal"}
+
+
+async def _with_defaults(
+    db: Any, entity: Any, plan: ConversionPlan, values: dict[str, Any],
+) -> dict[str, Any]:
+    """*values* with the custom defaults and the mapped values of *entity*.
+
+    A conversion is a platform write: the defaults apply and "required" does
+    not stop it (WS-53 CRM-C4a, owner decision, review round 1). A mapped
+    value wins over a default (CRM-C6a). The plan holds no empty value, so the
+    default applies only where the lead had no value to map.
+    """
+    custom = await custom_for_create(db, entity.slug, None, system=True)
+    custom.update(plan.new_custom(_MAP_ENTITY[entity.slug]))
+    if custom:
+        values["custom"] = custom
+    return values
 
 
 async def _create_deal(
     db: Any, lead: Any, body: ConvertRequest, contact: Any, organization: Any,
-    who: str,
+    who: str, plan: ConversionPlan,
 ) -> Any:
     """The deal the lead became — carrying its provenance and its primary contact."""
     wanted = body.deal or ConvertDeal()
-    status = await load_default_status(db, DEALS.status_table or "crm_deal_statuses")
+    stated = (body.pipeline_id or "").strip()
+    if stated:
+        # CRM-M4a: the deal of a convert joins a deal pipeline only.
+        await require_deal_pipeline(db, checked_uuid(stated, "pipeline_id"))
+    pipeline_id = stated or await default_pipeline_id(db)
+    status = await load_pipeline_start_status(
+        db, DEALS.status_table or "crm_deal_statuses", pipeline_id,
+    )
     name = (
         (wanted.name or "").strip()
         or (getattr(lead, "organization_name", None) or "").strip()
         or lead.lead_name
     )
-    deal = await insert_row(db, DEALS.table, {
+    deal = await insert_row(db, DEALS.table, await _with_defaults(db, DEALS, plan, {
         "name": name,
-        "organization_id": str(organization.id) if organization is not None else None,
+        "company_id": str(organization.id) if organization is not None else None,
+        "pipeline_id": pipeline_id,
         "status_id": str(status.id),
         "amount": wanted.amount,
         "currency": wanted.currency or "INR",
@@ -592,7 +931,7 @@ async def _create_deal(
             wanted.owner_email or getattr(lead, "owner_email", None) or who
         ),
         "source": getattr(lead, "source", "manual"),
-    })
+    }))
     if contact is not None:
         # Through the shared seam, not a bare INSERT: "at most one primary per
         # deal" (§3.5) is enforced in code, and code with two writers is a

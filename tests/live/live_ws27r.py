@@ -20,6 +20,7 @@ os.environ["DATABASE_URL"] = (
 sys.path.insert(0, "/home/user/Metorite/apps/services/gateway")
 
 from acb_auth import UserContext, UserRole, build_access  # noqa: E402
+from fastapi import HTTPException  # noqa: E402
 from gateway.db import get_db  # noqa: E402
 from gateway.routes.projects import search as search_mod  # noqa: E402
 from gateway.routes.projects import tasks as tasks_mod  # noqa: E402
@@ -130,13 +131,16 @@ async def main():
           [r["title"] for r in percent["rows"]],
           ["Cut latency 50% by Friday"])
 
-    short = await search_mod.search_tasks(q="p", user=user())
-    check("a one-character query is empty", short["rows"], [])
+    # D-PM-31 (built 2026-10-06): short TEXT is a 422, not an empty answer.
+    for short_q in ("p", "pa"):
+        try:
+            await search_mod.search_tasks(q=short_q, user=user())
+            status = 200
+        except HTTPException as refused:
+            status = refused.status_code
+        check(f"a {len(short_q)}-character text query is a 422", status, 422)
 
-    capped = await search_mod.search_tasks(q="e", limit=2, user=user())
-    check("a one-char query is empty even with a limit", capped["rows"], [])
-
-    small = await search_mod.search_tasks(q="re", limit=1, user=user())
+    small = await search_mod.search_tasks(q="par", limit=1, user=user())
     check("a cap of one truncates and says so",
           (len(small["rows"]), small["truncated"]), (1, True))
 

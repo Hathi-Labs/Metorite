@@ -9,12 +9,13 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 import yaml
 from acb_auth import UserContext, get_current_user, require_permission
 from acb_common import get_logger, get_settings
+from acb_common.env_guard import EnvWriteRefused, check_env_write
 from acb_llm.model_limits import FALLBACK_CONTEXT_WINDOWS, MODEL_CAPABILITIES
 from fastapi import APIRouter, Depends, HTTPException
 from gateway.db import current_tenant
@@ -166,37 +167,66 @@ def _infra_dir() -> Path:
     raise FileNotFoundError("infra/ directory not found from %s" % here)
 
 
-def _write_env_key(var: str, value: str) -> None:
-    """Upsert VAR=value in the repo-root .env (same file Settings and integrations use)."""
+
+def _env_file_path() -> Path:
+    """The repo-root .env (same file Settings and integrations use)."""
     # Walk up to the workspace root (has [tool.uv.workspace] in pyproject.toml)
     here = Path(__file__).resolve()
-    env_file: Path | None = None
     for parent in here.parents:
         pyproject = parent / "pyproject.toml"
         if pyproject.exists():
             try:
                 if "[tool.uv.workspace]" in pyproject.read_text(encoding="utf-8"):
-                    env_file = parent / ".env"
-                    break
+                    return parent / ".env"
             except OSError:
                 pass
-    if env_file is None:
-        env_file = Path.cwd() / ".env"
-    lines = env_file.read_text(encoding="utf-8").splitlines(keepends=True) if env_file.exists() else []
+    return Path.cwd() / ".env"
+
+
+def _write_env_key(var: str, value: str) -> None:
+    """Upsert VAR=value in the repo-root .env (same file Settings and integrations use).
+
+    🔒 It refuses first (security fix, 2026-10-05), as
+    ``integrations._upsert_env_var`` does. ``check_env_write`` raises
+    ``EnvWriteRefused`` for a bad key, a value the file cannot hold, or a
+    platform name that the Models page does not own. A route checks before
+    this, to answer 400 or 403. It splits the file on ``\\n`` only, and it
+    reads and writes bytes, so a line that holds another line separator stays
+    one line.
+    """
+    check_env_write(var, value, owned=_MODELS_PAGE_ENV_KEYS)
+    env_file = _env_file_path()
+    text = env_file.read_bytes().decode("utf-8") if env_file.exists() else ""
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
     pattern = re.compile(rf"^{re.escape(var)}\s*=")
     found = False
     new_lines: list[str] = []
     for line in lines:
         if pattern.match(line):
-            new_lines.append(f"{var}={value}\n")
+            new_lines.append(f"{var}={value}")
             found = True
         else:
             new_lines.append(line)
     if not found:
-        if new_lines and not new_lines[-1].endswith("\n"):
-            new_lines.append("\n")
-        new_lines.append(f"{var}={value}\n")
-    env_file.write_text("".join(new_lines), encoding="utf-8")
+        new_lines.append(f"{var}={value}")
+    env_file.write_bytes(("\n".join(new_lines) + "\n").encode("utf-8"))
+
+
+def _refuse_unsafe_env_write(var: str, value: str, *, actor: str | None) -> None:
+    """Layers A (400) and B (403) for a Models route, before any write.
+
+    The detail names the key and a character code, never the value.
+    """
+    try:
+        check_env_write(var, value, owned=_MODELS_PAGE_ENV_KEYS)
+    except EnvWriteRefused as exc:
+        _log.warning(
+            "settings.env_write_refused", key=exc.key, reason=exc.reason,
+            platform=exc.platform, actor=actor,
+        )
+        raise HTTPException(status_code=403 if exc.platform else 400, detail=str(exc)) from None
 
 
 def _recreate_litellm_bg() -> None:
@@ -299,6 +329,21 @@ _PROVIDER_ENV_MAP: dict[str, str] = {
     "ollama":      "",        # local — always "configured" if URL reachable
     "vllm":        "VLLM_BASE_URL",
 }
+
+#: The platform keys that the Models routes own (``acb_common.env_guard``,
+#: layer B, ``owned``). They are the one legitimate writer of these names, and
+#: layer A still applies to every value.
+#:
+#: * ``COPILOT_CHAT_MODEL``, a model name.
+#: * The LLM and speech provider keys of ``_PROVIDER_ENV_MAP``. The deny list
+#:   holds them, so no Integrations route writes them (round 1, 2026-10-05).
+#:   ``POST /settings/llm/key`` writes them only while BYOK is on.
+#:
+#: ``VLLM_BASE_URL`` is NOT here. It is a URL, and a vLLM client sends its key
+#: to the host it names, so ``POST /settings/llm/key`` refuses it.
+_MODELS_PAGE_ENV_KEYS: frozenset[str] = frozenset({"COPILOT_CHAT_MODEL"}) | frozenset(
+    v for v in _PROVIDER_ENV_MAP.values() if v and v != "VLLM_BASE_URL"
+)
 
 _PROVIDER_LABELS: dict[str, str] = {
     "gemini":      "Google Gemini",
@@ -800,10 +845,14 @@ async def test_tier(
         text = await complete(
             tier=LLMTier(tier_id),
             messages=[{"role": "user", "content": "Reply with only: OK"}],
-            max_tokens=10,
+            max_tokens=64,
+            job="structured",
         )
         elapsed = int((time.monotonic() - t0) * 1000)
-        return TestResult(success=True, response=(text or "").strip() or "(empty response)", latency_ms=elapsed)
+        reply = (text or "").strip()
+        # An empty answer is a failed test, not a pass (task 1128).
+        return TestResult(success=bool(reply), response=reply or "(empty response)",
+                          latency_ms=elapsed)
     except Exception as exc:
         elapsed = int((time.monotonic() - t0) * 1000)
         return TestResult(success=False, response=str(exc), latency_ms=elapsed)
@@ -817,11 +866,11 @@ async def test_tier(
 # product. The `byok_enabled` setting (default False) is the server half.
 #
 # ⚠️ There are TWO doors to a provider key, not one, and closing either alone
-# closes nothing. `POST /settings/llm/key` is the front door. The workbench
-# route `api/settings/llm/key/route.ts` falls back to
-# `POST /integrations/configure` whenever the front door answers "No env var
-# for provider", and that endpoint writes an arbitrary env var. Both call
-# this guard.
+# closes nothing: `POST /settings/llm/key` and `POST /integrations/configure`.
+# Both call this guard. The workbench route that once sent the first door's
+# misses to the second (`api/settings/llm/key/route.ts`) was deleted in #145
+# (WS-31 CP-5). No BFF route reaches `/settings/llm/key` now (measured
+# 2026-10-05), but a direct gateway call still can, so the guard stays.
 
 _BYOK_REFUSAL = (
     "Provider API keys are managed by Metorite on this deployment. "
@@ -861,6 +910,9 @@ async def set_provider_key(
         raise HTTPException(status_code=400, detail=f"No env var for provider: {req.provider}")
     if not req.api_key.strip():
         raise HTTPException(status_code=400, detail="api_key cannot be empty")
+    # Layers A and B (acb_common.env_guard), before the file, os.environ and
+    # the store. VLLM_BASE_URL is a URL, so it is refused here with 403.
+    _refuse_unsafe_env_write(env_var, req.api_key.strip(), actor=_user.email)
     try:
         _write_env_key(env_var, req.api_key.strip())
         # Update the live process environment so _is_provider_configured()
@@ -897,6 +949,9 @@ async def set_copilot_model(
     """Update the model used by GitHub Copilot SDK agents (Tier 1.5 path)."""
     if not req.model.strip():
         raise HTTPException(status_code=400, detail="model cannot be empty")
+    # Layer A (acb_common.env_guard) before the write. The Models page owns
+    # COPILOT_CHAT_MODEL, so layer B lets it through (_MODELS_PAGE_ENV_KEYS).
+    _refuse_unsafe_env_write("COPILOT_CHAT_MODEL", req.model.strip(), actor=_user.email)
     try:
         _write_env_key("COPILOT_CHAT_MODEL", req.model.strip())
     except Exception as exc:
@@ -1535,40 +1590,7 @@ async def list_provider_models(
     Checks the on-disk cache first.  If the cache entry is stale or missing,
     falls back to the static list so the UI is never empty.  Use the refresh
     endpoint to populate / update the cache.
-
-    GitHub is special-cased to the LIVE Copilot SDK list (the same source the
-    chat model dropdown uses via ``/copilot/models``).  Without this the Models
-    page showed a stale static ``github/...`` list whose IDs never matched the
-    dropdown's live IDs (e.g. ``claude-sonnet-4.5``), so enabling a Copilot
-    model here had no effect on the picker.  Serving the same live IDs makes the
-    Models page the real source of truth for the picker's allow-list filter.
     """
-    if provider == "github":
-        try:
-            # Lazy import to avoid a circular import at module load (main.py
-            # imports this router).  Reuses main.py's 5-min cache + SDK fetch.
-            from gateway.main import copilot_models
-            data = await copilot_models()
-            raw_models = data.get("models", []) if isinstance(data, dict) else []
-            live = [
-                ModelInfo(
-                    id=str(m.get("id")),
-                    label=str(m.get("label") or m.get("id") or ""),
-                    provider="github",
-                    reasoning=bool(m.get("reasoning", False)),
-                    context_window=int(m.get("context_window") or 0),
-                    desc="Via your GitHub Copilot subscription",
-                )
-                # Drop the "auto" picker convenience — it's not a real
-                # toggleable model on the Models page.
-                for m in raw_models
-                if m.get("id") and str(m.get("id")) != "auto"
-            ]
-            if live:
-                return live
-        except Exception as exc:  # fall back to cache/static
-            _log.warning("settings.github_live_models_failed", error=str(exc)[:160])
-
     cache = _load_models_cache()
     entry = cache.get(provider, {})
     if entry and _cache_entry_fresh(entry):
@@ -1988,14 +2010,145 @@ async def put_appearance(
 
 
 # ---------------------------------------------------------------------------
+# GET /settings/number-system    — the org's value, mine, and the resolved one
+# PUT /settings/number-system    — set the org's value (admin only)
+# PUT /settings/number-system/me — set or clear my own override
+#
+# Owner, 2026-10-19: lakh and crore by default, million and billion by
+# choice. Spec: `whatsapp_assistant_channel.md` §13.10. The org's value is
+# the `org_settings` key `number_system`. The member's override is
+# `user_settings.number_system` (migration 284), NULL for "use the
+# organization's setting". `acb_common.number_system.resolve` is the one rule.
+#
+# The tenant is the bound session's (`current_tenant`) and the member is the
+# session's address. Neither comes from the body (R5).
+# Fences: `tests/unit/test_number_system.py` and
+# `tests/unit/test_number_system_r8.py`.
+# ---------------------------------------------------------------------------
+
+
+class NumberSystemResponse(BaseModel):
+    """The org's value, the member's override, and what the member gets."""
+
+    org: Literal["indian", "international"] | None = None
+    member: Literal["indian", "international"] | None = None
+    resolved: Literal["indian", "international"] = "indian"
+    default: Literal["indian", "international"] = "indian"
+
+
+class OrgNumberSystemPut(BaseModel):
+    value: Literal["indian", "international"]
+
+
+class MemberNumberSystemPut(BaseModel):
+    #: None clears the override: the member then gets the org's value.
+    value: Literal["indian", "international"] | None = None
+
+
+async def _number_system(db: Any, uid: str) -> NumberSystemResponse:
+    from acb_common import number_system as ns
+    from sqlalchemy import text
+
+    row = (await db.execute(text(ns.READ_SQL), {"org": current_tenant(), "uid": uid})).first()
+    org = ns.clean(row[0]) if row is not None else None
+    member = ns.clean(row[1]) if row is not None else None
+    return NumberSystemResponse(org=org, member=member, resolved=ns.resolve(org, member),
+                                default=ns.DEFAULT)
+
+
+@router.get("/number-system", response_model=NumberSystemResponse)
+async def get_number_system(
+    user: UserContext = Depends(get_current_user),
+) -> NumberSystemResponse:
+    """The member's number system. Any signed-in member reads it: every chart
+    and the member's own settings need it."""
+    from gateway.db import tenant_session
+
+    if not current_tenant():
+        raise HTTPException(status_code=503, detail="no organization is bound")
+    try:
+        async with tenant_session() as db:
+            return await _number_system(db, user.email or "")
+    except Exception as exc:
+        _log.warning("settings.number_system.read_failed", error=type(exc).__name__)
+        raise HTTPException(status_code=503, detail="unavailable") from exc
+
+
+@router.put(
+    "/number-system",
+    response_model=NumberSystemResponse,
+    dependencies=[require_permission("admin:settings:manage")],
+)
+async def put_org_number_system(
+    body: OrgNumberSystemPut,
+    user: UserContext = Depends(get_current_user),
+) -> NumberSystemResponse:
+    """Set the org's number system. Admin-gated: it changes every member who
+    has no override of their own."""
+    from datetime import UTC, datetime
+
+    from acb_common import number_system as ns
+    from acb_common import save_org_setting
+
+    org = current_tenant()
+    save_org_setting(
+        ns.ORG_KEY,
+        {"value": body.value, "updatedBy": user.email or "",
+         "updatedAt": datetime.now(UTC).isoformat()},
+        updated_by=user.email or "",
+    )
+    ns.forget(org)
+    _log.info("settings.number_system.org_updated", value=body.value, by=user.email)
+    return await get_number_system(user)
+
+
+@router.put("/number-system/me", response_model=NumberSystemResponse)
+async def put_member_number_system(
+    body: MemberNumberSystemPut,
+    user: UserContext = Depends(get_current_user),
+) -> NumberSystemResponse:
+    """Set or clear the member's own override. No permission: it is the
+    member's own preference, like `/settings/appearance`'s personal half."""
+    from acb_common import number_system as ns
+    from gateway.db import tenant_session
+    from gateway.routes.tasks.settings import (
+        _seed_from_work_schedule,
+        upsert_settings_sql,
+    )
+    from sqlalchemy import text
+
+    email = user.email or ""
+    org = current_tenant()
+    if not email or not org:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    async with tenant_session() as db:
+        # WS-47 follow-up of #1154: the member's row in any case. An existing
+        # row keeps its own address, so a save never adds a second row. A NEW
+        # row holds the address in lower case, as the run reads its member.
+        found = (await db.execute(text(ns.ROW_SQL), {"org": org, "uid": email})).first()
+        uid = str(found[0]) if found else ns.member_key(email)
+        # A new row carries the calendar seed, as every first settings save
+        # does (`routes/shell/prefs.py`), so the calendar keeps its hours.
+        seed = {} if found else await _seed_from_work_schedule(db, email)
+        await db.execute(
+            text(upsert_settings_sql(["number_system", *seed], update=["number_system"])),
+            {"uid": uid, "number_system": body.value, **seed},
+        )
+    ns.forget(org)
+    _log.info("settings.number_system.member_updated", value=body.value or "org")
+    return await get_number_system(user)
+
+
+# ---------------------------------------------------------------------------
 # GET    /settings/branding — the organisation's logo, for the app shell
 # PUT    /settings/branding — replace it (admin only)
 # DELETE /settings/branding — remove it (admin only)
 #
-# A customer's own logo sits top-left with "powered by Metorite" beneath
-# it. That is the one place in the product where the tenant's identity, rather
-# than ours, is the primary mark, so the rules around what may be stored there
-# are worth stating in one place.
+# A customer's own logo sits top-left, alone. Since 2026-10-11 our own mark
+# signs the right end of the shell bar instead (owner decision). That is the
+# one place in the product where the tenant's identity, rather than ours, is
+# the primary mark, so the rules around what may be stored there are worth
+# stating in one place.
 #
 # WHY THE BYTES LIVE IN `org_settings` AND NOT IN OBJECT STORAGE
 # --------------------------------------------------------------
@@ -2006,27 +2159,12 @@ async def put_appearance(
 # signing path, a lifecycle policy and a second place a tenant's data can be
 # left behind at deletion — for one row.
 #
-# ⚠️ **`org_settings` IS NOT TENANT-SCOPED TODAY, and this row will collide.**
-# An earlier version of this comment claimed tenancy came free here because the
-# table sat behind RLS like everything else. That was false and it was
-# load-bearing — it was the stated reason the bytes live here. The facts:
-# `151_org_settings.sql` keys the table on `key` ALONE and says so ("there is
-# no per-tenant key namespace because this deployment is one organisation");
-# `test_tenancy_boundary.py` lists org_settings in BASELINE_UNSCOPED; and
-# `acb_common/org_settings.py` writes through a raw `psycopg.connect()` that
-# binds no `app.tenant_id`, allow-listed in `test_psycopg_seam.py` as "a
-# binding site the RLS work must convert, not a permanent exemption".
-#
-# So on the day a second organisation shares this database, tenant B's upload
-# overwrites the one global 'branding' row and tenant A's members render
-# tenant B's logo. After MT-1b promotion it fails the other way: the unbound
-# connection reads zero rows under FORCE RLS and every org's logo silently
-# vanishes. This is inherited from the `appearance` neighbour rather than
-# introduced here — but branding is the first *content* placed in this table
-# rather than a preference, and it is the most visible cross-tenant artifact
-# the product has. **MT-1b must widen this PK and bind the tenant before a
-# second customer is onboarded.** Tracked as a board finding, not fixed here:
-# converting the org_settings seam is MT-1b's work, not this slice's.
+# Tenancy. `org_settings` is keyed `(organization_id, key)` since migration
+# 234, and `acb_common/org_settings.py` binds the request's tenant on its own
+# connection. So each organization holds its own 'branding' row. Until
+# 2026-10-09 it did not: the key was `key` alone and the connection bound no
+# tenant, so under FORCE RLS every save answered 500 and every read was empty.
+# Fence: `tests/unit/test_org_settings_tenancy_r8.py`.
 #
 # The cap below is what keeps that true. At 128 KiB a logo is a row, not a
 # file; without a cap it becomes a file in a column, which is the failure mode
@@ -2060,6 +2198,10 @@ _LOGO_MAX_EDGE = 2048
 _LOGO_MIN_ASPECT = 0.5
 _LOGO_MAX_ASPECT = 8.0
 
+#: The square mark's shape bounds (owner, 2026-11-01): near square.
+_MARK_MIN_ASPECT = 0.75
+_MARK_MAX_ASPECT = 1.34
+
 
 class OrgLogo(BaseModel):
     """A stored logo, as the shell needs it to render."""
@@ -2071,11 +2213,29 @@ class OrgLogo(BaseModel):
     byteSize: int
 
 
+#: How the logo looks in dark mode (owner request, 2026-10-09). `same` shows
+#: the logo as it is. `white` shows `logoDark`, a white version the uploader's
+#: browser drew. `plate` shows the logo on a small light card, for a dark,
+#: colourful logo that recolouring would spoil. `own` shows `logoDark`, a
+#: dark-background version the organisation already has and uploaded itself.
+#: The main logo, for a light background, is always required.
+DarkStyle = Literal["same", "white", "plate", "own"]
+#: The styles that show a second image, `logoDark`.
+_DARK_IMAGE_STYLES = ("white", "own")
+
+
 class BrandingResponse(BaseModel):
     #: `None` means "no logo uploaded" — the shell falls back to our own mark.
     #: It is a distinct state from "the gateway is unreachable", which the BFF
     #: reports separately, because the two want different UI.
     logo: OrgLogo | None = None
+    #: The dark-mode version, present only with `darkStyle` "white" or "own".
+    logoDark: OrgLogo | None = None
+    darkStyle: DarkStyle = "same"
+    #: The square mark for the folded sidebar (owner, 2026-11-01). The
+    #: admin's own, or the one the editor made. `None` on a logo saved before
+    #: it existed; the shell then draws one from the logo.
+    logoMark: OrgLogo | None = None
     updatedBy: str = ""
     updatedAt: str = ""
 
@@ -2086,9 +2246,18 @@ class BrandingUpload(BaseModel):
     Deliberately not a multipart form and deliberately not a data URI. A data
     URI carries a caller-declared MIME type, and every historical mistake in
     this area starts with trusting one.
+
+    `logoDarkBase64` is the optional dark-mode image. It passes every check
+    the main one does. It is required with `darkStyle` "white" or "own" and
+    refused with any other style, so the stored pair can never disagree.
     """
 
     logoBase64: str
+    logoDarkBase64: str | None = None
+    darkStyle: DarkStyle = "same"
+    #: The optional square mark. It passes every check the logo does, and it
+    #: must be near square (`_MARK_MIN_ASPECT`, `_MARK_MAX_ASPECT`).
+    logoMarkBase64: str | None = None
 
 
 def _coerce_branding(raw: Any) -> BrandingResponse:
@@ -2098,15 +2267,28 @@ def _coerce_branding(raw: Any) -> BrandingResponse:
     branding wholesale; a logo that fails to parse simply reads as "no logo".
     """
     blob = raw if isinstance(raw, dict) else {}
-    logo_raw = blob.get("logo")
-    logo: OrgLogo | None = None
-    if isinstance(logo_raw, dict):
+    def _logo(raw_logo: Any) -> OrgLogo | None:
+        if not isinstance(raw_logo, dict):
+            return None
         try:
-            logo = OrgLogo(**logo_raw)
+            return OrgLogo(**raw_logo)
         except (TypeError, ValueError):
-            logo = None
+            return None
+
+    logo = _logo(blob.get("logo"))
+    logo_dark = _logo(blob.get("logoDark"))
+    logo_mark = _logo(blob.get("logoMark"))
+    style = blob.get("darkStyle")
+    if style not in ("same", "white", "plate", "own"):
+        style = "same"
+    # A style whose image failed to parse degrades to the logo as is.
+    if style in _DARK_IMAGE_STYLES and logo_dark is None:
+        style = "same"
     return BrandingResponse(
         logo=logo,
+        logoDark=logo_dark if (logo and style in _DARK_IMAGE_STYLES) else None,
+        darkStyle=style if logo else "same",
+        logoMark=logo_mark if logo else None,
         updatedBy=str(blob.get("updatedBy") or ""),
         updatedAt=str(blob.get("updatedAt") or ""),
     )
@@ -2140,15 +2322,68 @@ def put_branding(
     user: UserContext = Depends(get_current_user),
 ) -> BrandingResponse:
     """Replace the org's logo. Admin-gated — this changes everyone's shell."""
-    import base64  # noqa: PLC0415
-    import binascii  # noqa: PLC0415
     from datetime import datetime, timezone  # noqa: PLC0415
 
     from acb_common import save_org_setting  # noqa: PLC0415
 
-    from gateway.image_probe import UnsupportedImage, probe_image  # noqa: PLC0415
+    needs_image = body.darkStyle in _DARK_IMAGE_STYLES
+    if needs_image and not body.logoDarkBase64:
+        raise HTTPException(status_code=400, detail="This dark-mode choice needs its image.")
+    if not needs_image and body.logoDarkBase64:
+        raise HTTPException(status_code=400, detail="A dark-mode image goes with the white or own style only.")
 
-    payload = body.logoBase64.strip()
+    logo = _accept_logo(body.logoBase64)
+    logo_dark = _accept_logo(body.logoDarkBase64) if body.logoDarkBase64 else None
+    logo_mark = _accept_logo(body.logoMarkBase64) if body.logoMarkBase64 else None
+    if logo_mark is not None and not (
+        _MARK_MIN_ASPECT <= logo_mark.width / logo_mark.height <= _MARK_MAX_ASPECT
+    ):
+        raise HTTPException(status_code=400, detail="The square mark should be about as wide as it is tall.")
+
+    updated_at = datetime.now(timezone.utc).isoformat()
+    save_org_setting(
+        _BRANDING_KEY,
+        {
+            "logo": logo.model_dump(),
+            "logoDark": logo_dark.model_dump() if logo_dark else None,
+            "darkStyle": body.darkStyle,
+            "logoMark": logo_mark.model_dump() if logo_mark else None,
+            "updatedBy": user.email or "",
+            "updatedAt": updated_at,
+        },
+        updated_by=user.email or "",
+    )
+    _log.info(
+        "settings.branding.updated",
+        mime=logo.mime,
+        width=logo.width,
+        height=logo.height,
+        bytes=logo.byteSize,
+        dark_style=body.darkStyle,
+        by=user.email,
+    )
+    return BrandingResponse(
+        logo=logo,
+        logoDark=logo_dark,
+        darkStyle=body.darkStyle,
+        logoMark=logo_mark,
+        updatedBy=user.email or "",
+        updatedAt=updated_at,
+    )
+
+
+def _accept_logo(raw: str) -> OrgLogo:
+    """Decode and check one uploaded image, and build what the shell stores.
+
+    Raises `HTTPException` with words for the person who picked the file.
+    The same checks for the logo and for its dark-mode version.
+    """
+    import base64  # noqa: PLC0415
+    import binascii  # noqa: PLC0415
+
+    from acb_common.image_probe import UnsupportedImage, probe_image  # noqa: PLC0415
+
+    payload = raw.strip()
     # Accept a data URI prefix so a caller that pasted one is not stuck, but
     # discard it: only the bytes after the comma are ever looked at, and the
     # MIME type it declared is not read at all.
@@ -2211,34 +2446,12 @@ def put_branding(
     # Rebuilt from the DERIVED type and the DECODED bytes. Nothing the caller
     # sent is echoed into what browsers will later be handed.
     data_uri = f"data:{info.mime};base64,{base64.b64encode(data).decode('ascii')}"
-
-    updated_at = datetime.now(timezone.utc).isoformat()
-    logo = OrgLogo(
+    return OrgLogo(
         dataUri=data_uri,
         mime=info.mime,
         width=info.width,
         height=info.height,
         byteSize=len(data),
-    )
-    save_org_setting(
-        _BRANDING_KEY,
-        {
-            "logo": logo.model_dump(),
-            "updatedBy": user.email or "",
-            "updatedAt": updated_at,
-        },
-        updated_by=user.email or "",
-    )
-    _log.info(
-        "settings.branding.updated",
-        mime=info.mime,
-        width=info.width,
-        height=info.height,
-        bytes=len(data),
-        by=user.email,
-    )
-    return BrandingResponse(
-        logo=logo, updatedBy=user.email or "", updatedAt=updated_at
     )
 
 
@@ -2261,7 +2474,7 @@ def delete_branding(
     # author for, and the one asked first when a company's shell changes.
     save_org_setting(
         _BRANDING_KEY,
-        {"logo": None, "updatedBy": user.email or "", "updatedAt": updated_at},
+        {"logo": None, "logoDark": None, "darkStyle": "same", "updatedBy": user.email or "", "updatedAt": updated_at},
         updated_by=user.email or "",
     )
     _log.info("settings.branding.cleared", by=user.email)

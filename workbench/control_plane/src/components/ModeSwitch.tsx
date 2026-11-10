@@ -29,6 +29,8 @@ export interface ModeOption<Id extends string> {
   icon: string;
   /** Shown text. Defaults to the id, with its first letter capitalised. */
   label?: string;
+  /** The tooltip. Defaults to none. An icon-only tab needs one. */
+  title?: string;
 }
 
 /**
@@ -46,13 +48,23 @@ export function ModeSwitch<Id extends string>({
   onPick,
   layout = "toolbar",
   label = "View mode",
+  iconOnly = false,
 }: {
   modes: readonly ModeOption<Id>[];
-  mode: Id;
+  /**
+   * The mode on screen. `null` selects none: a lens that takes the place of
+   * the canvas (Projects' Needs attention) is not one of these modes.
+   */
+  mode: Id | null;
   onPick: (next: Id) => void;
   layout?: "toolbar" | "sheet";
   /** The group's accessible name. */
   label?: string;
+  /**
+   * OP-12: draw the icon alone, in a toolbar. The button keeps the label as its
+   * accessible name and the option's `title` as its tooltip.
+   */
+  iconOnly?: boolean;
 }) {
   const sheet = layout === "sheet";
   return (
@@ -65,12 +77,18 @@ export function ModeSwitch<Id extends string>({
         <Button
           key={entry.id}
           variant="ghost"
-          size={sheet ? "lg" : "sm"}
+          size={sheet ? "lg" : iconOnly ? "icon-sm" : "sm"}
+          title={entry.title}
+          aria-label={iconOnly && !sheet ? (entry.label ?? sentenceCase(entry.id)) : undefined}
           selected={mode === entry.id}
           icon={entry.icon}
+          // The phone drawer's rows read from the left edge, like every other
+          // menu in the drawer (the Spaces tree, the Menu). Button centres its
+          // content by default, which suits a toolbar and not a list.
+          layout={sheet ? "flex w-full items-center justify-start gap-2.5" : undefined}
           onClick={() => onPick(entry.id)}
         >
-          {entry.label ?? sentenceCase(entry.id)}
+          {iconOnly && !sheet ? null : (entry.label ?? sentenceCase(entry.id))}
         </Button>
       ))}
     </div>

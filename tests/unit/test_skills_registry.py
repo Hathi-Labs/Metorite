@@ -67,9 +67,13 @@ def _injectable_names() -> set[str]:
 def test_every_injected_tool_registered_in_exactly_one_family():
     injected = _injectable_names()
     for name in sorted(injected):
+        # A pack (a family with an ``owner``) is not an injected family. It
+        # skips this check and has its own gate, ``test_an_owner_tool_is_in_
+        # one_pack_only``. WS-67 OA-8a: ``crm_search_notes`` is injected in
+        # ``crm`` and is also a tool of the ``crm-records`` pack.
         owners = [
             slug for slug, fam in sf.SKILL_FAMILIES.items()
-            if name in fam["tools"]
+            if name in fam["tools"] and not fam.get("owner")
         ]
         assert len(owners) == 1, (
             f"{name!r} is injected by _tool_injection but belongs to "
@@ -80,12 +84,81 @@ def test_every_injected_tool_registered_in_exactly_one_family():
 
 def test_no_stale_registry_entries():
     injected = _injectable_names()
-    stale = sf.all_registered_tool_names() - injected
+    stale = sf.injected_tool_names() - injected
     assert not stale, (
         f"registered but no longer injectable: {sorted(stale)} — remove "
         f"them from SKILL_FAMILIES (the registry mirrors the code, not "
         f"history)"
     )
+
+
+# ── WS-67 OA-7a: a pack's universe is its OWNER, not injection ─────────────
+#
+# A family with an ``owner`` is a tool pack (one_assistant_context.md §4.2.1).
+# Its tools are the owner's own tools, so injection never offers them and the
+# check above skips them. The owner universe is the second universe: the
+# names in the owner's ``own_tool_scope`` that its module builds
+# (``_agent_tools()``, plus ``narrow_and_read`` from ``_narrow_tool``).
+
+
+#: Packs whose tools are built by the owner but are NOT in its ``own_tool_scope``
+#: on purpose (CAL-1a, task 1675): the day planner tools are My Tasks functions,
+#: and the scope of the Projects specialist must not change. Such a pack is
+#: checked against what the owner builds only.
+SCOPE_FREE_PACKS = frozenset({"calendar-day"})
+
+
+def _owner_universe(owner: str, *, scoped: bool = True) -> set[str]:
+    """The tools that agent *owner* holds: declared AND built by its code.
+    ``scoped=False`` skips the declaration (see ``SCOPE_FREE_PACKS``)."""
+    import json
+    from pathlib import Path
+
+    from acb_skills.narrowing import TOOL_NAME as NARROW
+    from gateway.routes.agent import _AGENT_REGISTRY, _PACK_OWNER_AGENTS
+
+    from tests.unit._native_maf_harness import REPO_ROOT, load_agent_module
+
+    # The directory comes from the registry: ``crm-assistant`` lives in
+    # ``apps/agents/agent-crm`` (WS-67 OA-8a). STU-G1: a pack-only owner is in
+    # the owner list, which the pack loader reads first.
+    entry = next(a for a in (*_PACK_OWNER_AGENTS, *_AGENT_REGISTRY) if a.get("name") == owner)
+    rel = str(entry["local_path"])
+    cfg = json.loads((Path(REPO_ROOT) / rel / "config.json").read_text(encoding="utf-8"))
+    module = load_agent_module(rel)
+    # OA-8b: a MAF ``FunctionTool`` (the Projects tools) has no ``__name__``.
+    from acb_skills.tool_guard import tool_name
+
+    built = {tool_name(fn) for fn in module._agent_tools()}
+    if callable(getattr(module, "_narrow_tool", None)):
+        built.add(NARROW)
+    return (set(cfg.get("own_tool_scope") or ()) & built) if scoped else built
+
+
+def test_each_pack_tool_is_a_tool_its_owner_holds():
+    """A pack names only tools its owner declares and builds. Mutation: a
+    stray or misspelt name in a pack, or a tool the owner dropped."""
+    packs = sf.pack_slugs()
+    assert packs, "non-vacuity: the registry holds a pack"
+    for slug in packs:
+        owner = sf.SKILL_FAMILIES[slug]["owner"]
+        missing = set(sf.SKILL_FAMILIES[slug]["tools"]) - _owner_universe(
+            owner, scoped=slug not in SCOPE_FREE_PACKS)
+        assert not missing, (
+            f"pack {slug!r} names tools its owner {owner!r} does not hold: "
+            f"{sorted(missing)}"
+        )
+
+
+def test_an_owner_tool_is_in_one_pack_only():
+    """Mutation: one owner tool in two packs, so a turn that loads both
+    offers the model one name twice."""
+    seen: dict[str, str] = {}
+    for slug in sf.pack_slugs():
+        for name in sf.SKILL_FAMILIES[slug]["tools"]:
+            assert name not in seen, f"{name!r} is in both {seen[name]!r} and {slug!r}"
+            seen[name] = slug
+    assert seen, "non-vacuity: the packs hold tools"
 
 
 def test_core_family_is_exactly_the_floor():
@@ -112,8 +185,9 @@ def test_registry_hash_is_deterministic():
 # ── families_for_scope (the read-only matrix rule) ─────────────────────────
 
 def test_families_for_scope_unscoped_agent_gets_everything():
+    # Every INJECTED family. A tool pack is injected into no agent (OA-7a).
     fams = sf.families_for_scope(None, resolved_scope=None)
-    assert set(fams) == set(sf.SKILL_FAMILIES)
+    assert set(fams) == set(sf.injected_families())
 
 
 def test_families_for_scope_intersects_scope_governed_families():
@@ -151,7 +225,7 @@ def test_build_catalog_measures_marginal_addendum_plus_schemas():
         core = frozenset(sf.SKILL_FAMILIES["core"]["tools"])
         extra = 0 if scope is None else len(scope - core)
         if scope is None:
-            extra = len(sf.all_registered_tool_names() - core)
+            extra = len(sf.injected_tool_names() - core)
         return "x" * (100 + 40 * extra)
 
     import json as _json
@@ -183,9 +257,10 @@ def test_build_catalog_measures_marginal_addendum_plus_schemas():
     # dynamic apps: unmeasurable statically.
     assert by_slug["apps"]["token_cost"] == 0
     # total: unscoped addendum + every static schema (the WS-12 baseline).
-    n_non_core = len(sf.all_registered_tool_names()) - 20  # 20 with decide (CP-13d)
+    # A tool pack is not injected, so it is not in the total (OA-7a).
+    n_non_core = len(sf.injected_tool_names()) - 23  # 23: decide (CP-13d), read_attachment (2026-10-09), package_artifacts (2026-10-11), analyze_image (WS-VOX VOX-3)
     assert cat["total_injected_tokens"] == (
-        100 + 40 * n_non_core + schemas(sf.all_registered_tool_names())
+        100 + 40 * n_non_core + schemas(sf.injected_tool_names())
     )
 
 
@@ -207,3 +282,35 @@ def test_build_catalog_caches_per_registry_hash():
     second = sf.build_catalog(**kwargs)
     assert counter["n"] == calls_after_first, "second build must hit the cache"
     assert first == second
+
+
+# ── WS-53 CRM-C7: the crm family (crm_platform.md §20.10 item 5) ──────────
+
+
+def test_the_crm_family_is_the_crm_tools_module() -> None:
+    """One implementation: the family holds exactly ``crm_tools.CRM_TOOLS``,
+    and the injection chain offers each of them. WS-53 CRM-Q32-5 adds the
+    org-facts read, which loads with this family only, and CRM-Q32-8 the
+    reply of a question card, which goes with it."""
+    from acb_skills import crm_tools, org_facts_tools
+
+    fam = sf.SKILL_FAMILIES["crm"]
+    assert set(fam["tools"]) == set(crm_tools.CRM_TOOL_NAMES) | {
+        fn.__name__ for fn in org_facts_tools.FACTS_GATED_TOOLS}
+    assert fam["scope_governed"] is True and fam["core"] is False
+    assert set(fam["tools"]) <= _injectable_names()
+
+
+def test_the_default_profile_carries_the_crm_family() -> None:
+    """Owner decision D2 (2026-10-13): the CRM data is there for any agent."""
+    assert "crm" in sf.DEFAULT_PROFILE
+    assert set(sf.SKILL_FAMILIES["crm"]["tools"]) <= sf.default_profile_tools()
+
+
+def test_a_scope_that_names_the_crm_tools_gets_them() -> None:
+    """Scope-governed: a scoped agent gets the family only by naming it."""
+    names = list(sf.SKILL_FAMILIES["crm"]["tools"])
+    scoped = ti._resolve_injected_scope(["remember", *names])
+    assert scoped is not None and set(names) <= scoped
+    narrow = ti._resolve_injected_scope(["remember"])
+    assert narrow is not None and not set(names) & narrow

@@ -9,6 +9,8 @@ Spec: ``project-docs/specs/project_management_app.md`` §4 (``tasks.py`` row).
     DELETE /projects/tasks/{id}                  → what cascaded
     POST   /projects/tasks/{id}/move
     PUT    /projects/tasks/{id}/assignees        → replaces the set
+    POST   /projects/tasks/{id}/claim            → add the caller, and start it
+    POST   /projects/tasks/{id}/agent-delete     → an MCP agent deletes (EA-6h)
     POST   /projects/tasks/{id}/links
     DELETE /projects/tasks/{id}/links/{link_id}
 
@@ -19,10 +21,25 @@ no second table (§3.5). ``?parent_task_id=`` lists one task's children;
 
 from __future__ import annotations
 
-from typing import Any
+import re
+import uuid
+from dataclasses import dataclass
+from datetime import date
+from typing import Annotated, Any, Literal, NoReturn
 
 from acb_auth import UserContext, get_current_user
-from fastapi import Depends, Header, HTTPException
+from acb_auth.agent_oauth import ACTOR_VIA_PATTERN, PROJECTS_WRITE, client_label
+from acb_common import get_logger
+from acb_common.priority import importance_for
+from fastapi import Depends, Header, HTTPException, Query
+from gateway.align.trigger import enqueue_check
+from gateway.db import current_tenant
+from gateway.routes.projects.agent_dispatch import MEMBER_KEY, assigning_member
+from gateway.routes.projects.authority import (
+    assert_may_delete_task,
+    assert_may_move_task,
+    attach_can_delete,
+)
 from gateway.routes.projects.cascade import (
     archive_subtree,
     complete_subtree,
@@ -32,22 +49,30 @@ from gateway.routes.projects.cascade import (
     subtree_privacy_refusals,
 )
 from gateway.routes.projects.core import (
+    AGENT_TASK_SOURCE,
+    CLIENT_TASK_SOURCES,
+    CLOSING_CATEGORIES,
     COMPLETED_CATEGORY,
     DIRECTIONS,
+    MAX_PAGE_SIZE,
+    STARTED_CATEGORY,
     TASK_SORTS,
-    TASK_SOURCES,
+    TRIAGE_CATEGORY,
     ListResponse,
     Page,
     TaskIn,
     TaskModel,
+    TaskPatchIn,
     _tenant_session,
     actor,
     apply_status_transition,
     archive_note,
     assert_assignable_here,
     assert_epic_has_no_parent,
+    assert_holds_tasks,
     assert_move_keeps_privacy,
     assert_no_task_cycle,
+    assert_not_archived,
     clean_payload,
     count_where,
     diff_changes,
@@ -59,10 +84,13 @@ from gateway.routes.projects.core import (
     load_default_status,
     load_visible_project,
     load_visible_task,
+    lock_task,
     next_task_number,
-    node_kind,
     now,
     parent_lane_status,
+    parse_completed_at,
+    parse_precondition,
+    reader_day_start,
     record_activity,
     record_field_change,
     remap_one_status,
@@ -80,16 +108,24 @@ from gateway.routes.projects.core import (
     triage_exclusion_clause,
     update_row,
     validate_choice,
+    vocabulary_scope,
 )
 from gateway.routes.projects.custom_fields import (
     apply_values,
     load_definitions,
 )
+from gateway.routes.projects.cycles import detach_moved_tasks
 from gateway.routes.projects.filters import (
+    UPDATED_AGE_SQL,
+    agent_filter_clauses,
+    attach_agent_state,
     attach_assignees,
     attach_parent_context,
     attach_relation_counts,
     build_task_filters,
+    holder_sql,
+    task_closed_sql,
+    unheld_clause,
 )
 from gateway.routes.projects.landing import (
     completion_correction,
@@ -98,19 +134,27 @@ from gateway.routes.projects.landing import (
     record_drops,
     resolve_field_map,
 )
+from gateway.routes.projects.mine import attach_my_overlay, check_scope, mine_scope
 from gateway.routes.projects.notifications import (
     excerpt_of,
+    grant_holders,
     new_mentions,
     notify,
 )
 from gateway.routes.projects.relations import (
     DIRECTED_TYPES,
     assert_no_block_cycle,
+    canonical_task_id,
+    delete_task_link,
+    insert_task_link,
 )
 from gateway.routes.projects.tags import apply_task_tags
+from gateway.routes.projects.text_links import link_from_text, saved_texts
 from gateway.routes.projects.watchers import ensure_watchers
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 from sqlalchemy import text
+
+_log = get_logger("gateway.projects.tasks")
 
 #: Fields whose change earns a timeline entry. `status_id` is absent on purpose:
 #: a status move is a TRANSITION and gets its own richer activity, so listing it
@@ -121,6 +165,290 @@ _TRACKED_TASK_FIELDS: tuple[str, ...] = (
 )
 
 _LINK_TYPES: tuple[str, ...] = ("blocks", "relates_to", "duplicates")
+
+#: WS-55 EA-6d (spec `external_agent_access.md` §9.2). The body keys that a
+#: signed agent write may send, by route. The MCP edge sends no other key, and
+#: the route refuses any other key with 422 when `UserContext.agent` is set.
+#: So a holder of the signing key cannot skip the edge's rules with a body
+#: that the edge would never build. A human request is not narrowed.
+#: The create set is the input of `create_task`. MCP-G2 adds the four
+#: planning fields and `assignees`.
+AGENT_CREATE_FIELDS: frozenset[str] = frozenset({
+    "project_id", "title", "description", "parent_task_id", "type_id",
+    "status_id", "tags", "due_at",
+    "importance", "leveraged", "estimate_mins", "start_date", "assignees",
+})
+#: The PATCH set is the union of `set_task_status` (`status_id`) and
+#: `update_task` (the other fields). MCP-G2 adds the four planning fields.
+AGENT_PATCH_FIELDS: frozenset[str] = frozenset({
+    "status_id", "title", "description", "tags", "due_at", "custom_fields",
+    "importance", "leveraged", "estimate_mins", "start_date",
+    # SP-6: `update_task` sets the type, and null clears it.
+    "type_id",
+})
+#: WS-55 MCP-G2. The one body key of a signed agent MOVE. A move to another
+#: project stays a person's step in the app, so `project_id`,
+#: `custom_fields`, `assignees` and `include_subtasks` are refused.
+AGENT_MOVE_FIELDS: frozenset[str] = frozenset({"parent_task_id"})
+#: WS-55 MCP-G2 (D78). The `importance` values that an agent may write: the
+#: two that the app writes for Important and for not Important
+#: (`acb_common.priority.importance_for`). A stored 1 or 3 is from before
+#: D78, and no screen writes one now.
+AGENT_IMPORTANCE_VALUES: frozenset[int] = frozenset(
+    {importance_for(False), importance_for(True)})
+#: The largest `estimate_mins` of an agent write: the INT limit of the
+#: column, so a large number is a 422 and never the 500 of an overflow.
+AGENT_MAX_ESTIMATE_MINS = 2_147_483_647
+#: A `start_date` of an agent write: a calendar date, as the app's date
+#: input sends it.
+_START_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+#: The code of the 422 when an agent names a new assignee who cannot already
+#: open the task through a project grant or the admin read right (MCP-G2,
+#: fix round 1).
+#: The detail names the refused entries of the caller's own list, and says
+#: nothing more, so it does not tell a hidden member from a made-up address.
+AGENT_ASSIGNEE_REFUSED = "assignee_refused"
+#: The code of the 422 when an agent assigns another person to a task in a
+#: personal project (``core.assert_assignable_here``). A member's request
+#: keeps the plain text of that guard.
+AGENT_ASSIGNEE_PERSONAL = "assignee_personal_project"
+#: The most assignees in one agent write, the cap of the edge too
+#: (``agent_edge.tools.MAX_ASSIGNEES``).
+AGENT_MAX_ASSIGNEES = 50
+
+
+def _refuse_agent_values(user: UserContext, values: dict[str, Any]) -> None:
+    """The limits of the planning fields of a signed agent write (MCP-G2).
+
+    The edge refuses first. This is the gateway's own copy, for a request
+    that did not come through the edge's tools. A null passes: it clears
+    the field, as it does for a member. A human request is not checked.
+    """
+    if getattr(user, "agent", None) is None:
+        return
+    importance = values.get("importance")
+    if importance is not None and importance not in AGENT_IMPORTANCE_VALUES:
+        raise HTTPException(
+            status_code=422,
+            detail="An agent sets importance to 2 (Important) or 0.",
+        )
+    estimate = values.get("estimate_mins")
+    if estimate is not None and not 0 <= estimate <= AGENT_MAX_ESTIMATE_MINS:
+        raise HTTPException(
+            status_code=422,
+            detail="estimate_mins is a whole number of minutes, 0 or more.",
+        )
+    start = values.get("start_date")
+    if start is not None and not _is_calendar_date(start):
+        raise HTTPException(
+            status_code=422,
+            detail="start_date is a calendar date, such as 2026-10-31.",
+        )
+
+
+def _check_version(task: Any, if_match: str | None) -> None:
+    """``If-Match`` of the move and of the PUT of the assignees (MCP-G2).
+
+    The rule is ``core.require_precondition``, so ``precondition_holds``.
+    The 412 body (the row as ``TaskModel``) is built only when the caller
+    sent a header. An absent header passes (D-PM-20), so a call of the app,
+    which sends none, does exactly what it did before.
+    """
+    if isinstance(if_match, str):
+        require_precondition(task, if_match, row_to_dict(task, TaskModel))
+
+
+async def _require_exact_version(db: Any, task_id: str, if_match: str | None) -> None:
+    """Strict ``If-Match`` for an agent that replaces the assignee set.
+
+    WS-55 MCP-G2, fix round 1. An assignment moves ``updated_at`` and not
+    ``fields_at``, so ``precondition_holds`` passes a token from before
+    somebody else's assignment. A replaced set would then drop that person
+    in silence. So an agent's PUT keeps strict equality, as
+    ``agent_delete_task`` does: any change after the read, a comment too,
+    stales the token. The caller reads the assignees first, so the stamp
+    read here is at least as new as the set it replaces. A member's PUT
+    keeps :func:`_check_version`. An absent header passes (D-PM-20).
+    """
+    if not isinstance(if_match, str):
+        return
+    expected = parse_precondition(if_match)
+    stamp = (await db.execute(
+        text("SELECT updated_at FROM pm_tasks WHERE id = CAST(:tid AS uuid)"),
+        {"tid": task_id},
+    )).scalar()
+    if stamp != expected:
+        raise HTTPException(status_code=412, detail={
+            "error": "precondition_failed",
+            "message": "This row changed since you loaded it.",
+        })
+
+
+def _is_calendar_date(value: Any) -> bool:
+    """True for ``YYYY-MM-DD`` that names a real day."""
+    if not isinstance(value, str) or not _START_DATE_RE.fullmatch(value):
+        return False
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _agent_via_note(user: UserContext) -> str | None:
+    """The second line of an agent's assignment in the bell (MCP-G2).
+
+    ``via Claude Code``: the label of the connection's stamp, which
+    ``record_activity`` also writes as ``meta.via`` on the timeline row. The
+    stamp comes from the connection row (``AgentScope.actor_via``), never
+    from a body. ``None`` for a member, so a member's bell is unchanged.
+    """
+    agent = getattr(user, "agent", None)
+    via = str(getattr(agent, "actor_via", "") or "") if agent is not None else ""
+    return f"via {client_label(via)}" if via else None
+
+
+async def _refuse_agent_assignees(db: Any, user: UserContext, task_id: str,
+                                  added: set[str]) -> None:
+    """An agent never widens who can open a task (MCP-G2, fix round 1).
+
+    Each person that an agent ADDS must already open the task through the
+    GRANT arm (``notifications.grant_holders``: a project grant of any
+    subject, a grant on a parent project, or ``data:org:read``), and the
+    check runs BEFORE the insert. The assignee arm does not count: an
+    assignment opens the task to its assignee, so an agent that leaned on it
+    could show the title and the task to anybody whom text in a task named.
+    Assigning a person outside the task's audience stays a member's act in
+    the app, where the member can still delegate outward.
+
+    So the rule refuses a made-up address, a suspended member, a member of
+    another organization and a member with no grant and no admin read
+    right, all with one text. A
+    person who stays on the task is not checked again, and a removal is not
+    checked. ``agent:<name>`` is not checked, as in the app. A no-op for a
+    member.
+    """
+    if getattr(user, "agent", None) is None:
+        return
+    people = sorted(a for a in added if not a.startswith("agent:"))
+    if not people:
+        return
+    allowed = set(await grant_holders(db, people, task_id))
+    refused = [who for who in people if who not in allowed]
+    if refused:
+        raise HTTPException(status_code=422, detail={
+            "error": AGENT_ASSIGNEE_REFUSED,
+            "assignees": refused,
+            "message": "An agent can assign only a person who can already "
+                       "open the task. Assign anybody else in the app.",
+        })
+
+
+async def _assert_agent_may_assign_here(db: Any, user: UserContext,
+                                        project_id: str, added: set[str]) -> None:
+    """``core.assert_assignable_here``, with a coded refusal for an agent.
+
+    The guard and its rule are the app's. For a signed agent the 422 carries
+    :data:`AGENT_ASSIGNEE_PERSONAL`, so the edge can give its fixed text. A
+    member keeps the plain text of the guard.
+    """
+    try:
+        await assert_assignable_here(db, project_id, added)
+    except HTTPException as exc:
+        if getattr(user, "agent", None) is None or exc.status_code != 422:
+            raise
+        raise HTTPException(status_code=422, detail={
+            "error": AGENT_ASSIGNEE_PERSONAL,
+            "message": "A task in a personal project takes only its owner.",
+        }) from None
+
+
+def _narrow_agent_body(user: UserContext, values: dict[str, Any],
+                       allowed: frozenset[str], *,
+                       include_subtasks: bool = False) -> None:
+    """Refuse a key outside *allowed* in the body of a signed agent write,
+    and the PATCH cascade ``include_subtasks``.
+
+    A no-op for a human request (``user.agent`` is ``None``).
+    """
+    if getattr(user, "agent", None) is None:
+        return
+    extra = sorted(set(values) - allowed)
+    if include_subtasks:
+        extra.append("include_subtasks")
+    if extra:
+        raise HTTPException(
+            status_code=422,
+            detail=f"An agent write may not send {extra}.",
+        )
+
+
+def _refuse_agent_parent(user: UserContext, parent: Any, project_id: str) -> None:
+    """An agent's subtask lives in its parent's project (§9.2, EA-6d).
+
+    The route itself does not check it for a member. For an agent the edge
+    refuses first, and this is the gateway's own copy of the rule.
+    """
+    if getattr(user, "agent", None) is None or parent is None:
+        return
+    if str(getattr(parent, "project_id", "")).lower() != project_id.lower():
+        raise HTTPException(
+            status_code=422,
+            detail="The parent task is in another project.",
+        )
+
+
+async def _refuse_agent_type(db: Any, user: UserContext, type_id: Any,
+                             root: str) -> None:
+    """An agent's ``type_id`` is a type of the project's vocabulary (§9.2).
+
+    The vocabulary is the one ``GET /nodes/{id}/types`` reads: the root's own
+    types and the org-wide ones (``core.vocabulary_scope``). The route itself
+    does not check it for a member, and a made-up id there hits the foreign
+    key. For an agent the edge refuses first, and this is the gateway's own
+    copy of the rule.
+    """
+    if getattr(user, "agent", None) is None or not type_id:
+        return
+    found = (await db.execute(
+        text(
+            "SELECT 1 FROM pm_task_types "
+            f"WHERE id = CAST(:type_id AS uuid) AND {vocabulary_scope()}"
+        ),
+        {"type_id": str(type_id), "root": root},
+    )).first()
+    if found is None:
+        raise HTTPException(
+            status_code=422,
+            detail="That task type does not belong to this project.",
+        )
+
+
+#: WS-55 EA-6f (EA3-32, spec `external_agent_access.md` §9.2). An agent may
+#: move a task into ``done``. Cancel stays a human step, so a signed agent
+#: MOVE refuses only the abandoned half of the closing categories. The shape
+#: is `tree.ABANDONED_CATEGORIES`, and no new literal names a category.
+AGENT_MOVE_REFUSED: frozenset[str] = CLOSING_CATEGORIES - {COMPLETED_CATEGORY}
+#: A signed agent CREATE still refuses both closing categories: a new task
+#: that starts closed is not work that an agent did.
+AGENT_CREATE_REFUSED: frozenset[str] = CLOSING_CATEGORIES
+
+#: The two texts of the refusal, one for each door.
+AGENT_MOVE_REFUSAL = "Cancelling a task stays a human step."
+AGENT_CREATE_REFUSAL = "A new task cannot start in a done or cancelled status."
+
+
+def _refuse_agent_close(user: UserContext, category: str | None, *,
+                        refused: frozenset[str], detail: str) -> None:
+    """An agent never moves a task into a category of *refused* (§9.2).
+
+    The create passes :data:`AGENT_CREATE_REFUSED` and the PATCH passes
+    :data:`AGENT_MOVE_REFUSED` (EA-6f). The edge refuses first. This is the
+    gateway's own copy of the rule, for a request that did not come through
+    the edge's tools.
+    """
+    if getattr(user, "agent", None) is not None and category in refused:
+        raise HTTPException(status_code=422, detail=detail)
 
 
 class MoveTask(BaseModel):
@@ -137,14 +465,29 @@ class MoveTask(BaseModel):
     assignees: list[str] | None = None
     #: D-PM-38 decision 4 (S5). Carry every descendant to the new project too,
     #: each remapped into the destination's set by this same seam. FALSE by
-    #: default, so an old caller, the chat tools and the organize door move
-    #: one task. The move dialogs send true, because their box is ticked. It
+    #: default, so an old caller and the organize door move one task. The
+    #: move dialogs send true, because their box is ticked, and the Projects
+    #: chat's `move_task` sends it for a member's "yes" (WS-46 P6). It
     #: means something only when ``project_id`` changes.
     include_subtasks: bool = False
 
 
 class AssigneesIn(BaseModel):
     assignees: list[str]
+
+
+class TaskCreateIn(TaskIn):
+    """The body of ``POST /tasks``: :class:`TaskIn`, and the first assignees.
+
+    WS-55 MCP-G2. ``assignees`` lands in the create's own transaction,
+    through the one writer of ``set_assignees`` (:func:`_write_assignees`),
+    so a task never exists without the people the call named. It is a
+    create field only: ``TaskIn`` is the PATCH body too, and a PATCH that
+    took it would try to write a column that ``pm_tasks`` does not have.
+    ``None`` writes no assignee, as before.
+    """
+
+    assignees: list[str] | None = None
 
 
 class LinkIn(BaseModel):
@@ -155,6 +498,14 @@ class LinkIn(BaseModel):
 class DeleteResponse(BaseModel):
     deleted: str
     cascaded: dict[str, int]
+    #: The ids of the subtasks that :func:`delete_task_in` deleted, for the
+    #: caller's ``pm.task.deleted`` events (D-OP-10). Not in the response.
+    _subtask_ids: list[str] = PrivateAttr(default_factory=list)
+
+    @property
+    def subtask_ids(self) -> list[str]:
+        """The deleted subtasks, sorted. The task itself is not in the list."""
+        return list(self._subtask_ids)
 
 
 # ── List ────────────────────────────────────────────────────────────────────
@@ -176,6 +527,155 @@ VIEW_POSITION_JOIN = (
 )
 
 
+async def _with_agent_state(db: Any, row: dict) -> dict:
+    """*row* with its agent pill (WS-55 EA-12c, EA12-10). Every route that
+    hands a task row back to the client fills it, because the client merges
+    the row over its own copy."""
+    await attach_agent_state(db, [row])
+    return row
+
+
+#: MCP-G5. The deepest level `include_descendants` reaches. A deeper task is
+#: left out, and a corrupt cycle ends at this bound.
+DESCENDANTS_MAX_DEPTH = 10
+
+#: MCP-G5. The tasks under ``:parent``, each once, with its ``depth`` (1 = a
+#: direct child). ⚠️ The walk PASSES ONLY THROUGH A TASK THE CALLER CAN SEE:
+#: both arms carry the visibility clause, so a hidden child and everything
+#: under it are absent, and the answer never shows that a hidden node exists.
+#: (`cascade._SUBTREE_SQL` walks through hidden rows on purpose, for a move.)
+#: `min(depth)` gives each task one row.
+DESCENDANTS_CTE = """WITH RECURSIVE walk AS (
+    SELECT c.id, 1 AS depth
+      FROM pm_tasks c
+     WHERE c.parent_task_id = CAST(:parent AS uuid)
+       AND c.id <> CAST(:parent AS uuid)
+       AND {visible}
+    UNION ALL
+    SELECT c.id, w.depth + 1
+      FROM pm_tasks c JOIN walk w ON c.parent_task_id = w.id
+     WHERE w.depth < :max_depth
+       AND c.id <> CAST(:parent AS uuid)
+       AND {visible}
+), sub AS (SELECT id, min(depth) AS depth FROM walk GROUP BY id) """
+
+
+#: MCP-G19a. The page cap of a compact read. A plain read keeps
+#: ``MAX_PAGE_SIZE``.
+COMPACT_MAX_PAGE_SIZE = 500
+#: A compact read still selects ``t.*``: ``row_to_model`` builds a full
+#: ``TaskModel``, and a narrow SELECT leaves required fields (``source``) as
+#: None, which is a 500. The edge trims the row to the compact keys.
+#: A narrow read needs its own row model. hardening_backlog.md holds it.
+
+
+class CompactPage(Page):
+    """``Page`` with the larger ceiling that a compact read may use. The
+    handler refuses a page over ``MAX_PAGE_SIZE`` unless ``compact`` is on."""
+
+    def __init__(
+        self,
+        page: int = Query(1, ge=1),
+        page_size: int = Query(50, ge=1, le=COMPACT_MAX_PAGE_SIZE),
+    ) -> None:
+        super().__init__(page=page, page_size=page_size)
+
+
+class TaskListResponse(ListResponse):
+    """``ListResponse`` plus the opt-in lane sizes (#918).
+
+    A sibling for the task list only, because ``ListResponse`` is shared by
+    every collection endpoint. Both fields are ``None`` unless the caller sent
+    ``with_status_counts``.
+    """
+
+    #: status id -> tasks in the whole filtered set, not only this page.
+    status_counts: dict[str, int] | None = None
+    #: status id -> its stage, for the lanes in ``status_counts``.
+    status_categories: dict[str, str | None] | None = None
+
+
+async def _task_scope(
+    db: Any, user: UserContext, vis: Any, *, project_id: str | None,
+    include_subtree: bool, parent_task_id: str | None, include_descendants: bool,
+    mine: bool, include_triage: bool, unheld: bool,
+    agent_clauses: list[str], agent_params: dict[str, Any],
+    filters: dict[str, Any],
+) -> tuple[str, str, str, dict[str, Any]]:
+    """``(walk_cte, walk_join, where, params)`` of one task read.
+
+    MCP-G19a. The ONE place that joins the visibility clause (private, Center,
+    org, group grants, connection pins) to the project scope and the filters.
+    ``GET /projects/tasks`` and ``GET /projects/tasks/stats`` both call it, so
+    a count and a list read the same set. The fence is
+    ``tests/unit/test_board_stats_r8.py``.
+    """
+    clauses: list[str] = [task_visibility_clause(vis)]
+    params: dict[str, Any] = dict(vis.params)
+    if mine:
+        # ANDed beside the visibility clause, so "mine" narrows the
+        # board and never widens it (WS-64 OP-11).
+        mine_sql, mine_params = await mine_scope(db, vis)
+        clauses.append(mine_sql)
+        params.update(mine_params)
+    walk_cte = ""
+    walk_join = ""
+    if include_descendants:
+        # MCP-G5. The walk needs a visible root. Without this check the
+        # first arm would list the visible children of a hidden root. Direct
+        # mode (`parent_task_id` alone) keeps its old answer: an unseen
+        # parent gives an empty list, as a parent with no children does.
+        await load_visible_task(db, vis, parent_task_id)
+        walk_cte = DESCENDANTS_CTE.format(visible=task_visibility_clause(vis, "c"))
+        walk_join = " JOIN sub ON sub.id = t.id"
+        params["parent"] = parent_task_id
+        params["max_depth"] = DESCENDANTS_MAX_DEPTH
+        # The walk already holds the parent filter, so the builder gets none.
+        parent_task_id = None
+
+    if project_id:
+        # Seeing the project is required to filter by it, so an unreadable
+        # id answers 404 rather than an empty list — an empty list would
+        # tell the caller the project exists and is simply empty.
+        await load_visible_project(db, vis, project_id)
+        if include_subtree:
+            clauses.append(
+                "t.project_id IN ("
+                "  WITH RECURSIVE sub AS ("
+                "    SELECT id FROM pm_projects WHERE id = CAST(:pid AS uuid)"
+                "    UNION ALL"
+                "    SELECT p.id FROM pm_projects p JOIN sub s"
+                "      ON p.parent_project_id = s.id"
+                "  ) SELECT id FROM sub)"
+            )
+        else:
+            clauses.append("t.project_id = CAST(:pid AS uuid)")
+        params["pid"] = project_id
+    # Every filter but the project scoping above comes from ONE pure
+    # builder, shared with saved views — two implementations would let a
+    # saved view show a different set of tasks than the same filters typed
+    # by hand, which is the one thing a saved view may not do.
+    watching = bool(filters.get("watching"))
+    extra_clauses, extra_params = build_task_filters(
+        parent_task_id=parent_task_id,
+        day_start=(await reader_day_start(db, actor(user).lower())
+                   if filters.get("overdue") else None),
+        viewer=actor(user) if watching else None,
+        **filters,
+    )
+    clauses.extend(extra_clauses)
+    params.update(extra_params)
+    if not include_triage:
+        clauses.append(triage_exclusion_clause())
+    if unheld:
+        clauses.append(unheld_clause())
+    clauses.extend(agent_clauses)
+    params.update(agent_params)
+
+    where = " WHERE " + " AND ".join(clauses)
+    return walk_cte, walk_join, where, params
+
+
 @router.get("/tasks")
 async def list_tasks(
     user: UserContext = Depends(get_current_user),
@@ -187,7 +687,7 @@ async def list_tasks(
     q: str | None = None,
     sort: str | None = None,
     direction: str = "desc",
-    page: Page = Depends(),
+    page: CompactPage = Depends(),
     include_archived: bool = False,
     #: The archive AS A PLACE. `include_archived` shows everything; this shows
     #: only what somebody filed, which is the view you open to get one back.
@@ -225,7 +725,46 @@ async def list_tasks(
     # rows AND the total leave subtasks out. Applied in SQL for the reason
     # every filter is: paging happens there.
     top_level: bool = False,
-) -> ListResponse:
+    # WS-55 EA-14a. Only tasks that no open agent run holds. A run whose lease
+    # ended does not hold. It is NOT in `build_task_filters`, so a saved view
+    # cannot pin it: who holds a task changes by the hour.
+    unheld: bool = False,
+    # MCP-G5. With `parent_task_id`: the whole subtree, not only the children.
+    include_descendants: bool = False,
+    # WS-64 OP-11. `mine` narrows the read to the caller's own tasks
+    # (`core.mine_clause`). A WORD, never an address (R11): the member is the
+    # session's. With no `project_id` it is org-wide. With one, it is mine
+    # inside that node. Every other rule of this read still applies.
+    scope: str | None = None,
+    # WS-64 OP-11. The CALLER's overlay on each row: the effective
+    # `disposition`, `context`, `energy` and `defer_until`
+    # (`mine.attach_my_overlay`).
+    with_overlay: bool = False,
+    # #918. Opt in to the true size of each status lane across the WHOLE
+    # filtered set, so a board column counts what the server holds and not
+    # only the rows of one page.
+    with_status_counts: bool = False,
+    # Task #986. The agent strip's focus as a WHERE clause, so the rows, the
+    # total and the lane sizes all count the matches and not only page 1.
+    # `waiting` is the SESSION's member (`actor(user)`), never an address from
+    # the request (R11). Like `unheld`, NOT in `build_task_filters`: who works
+    # on a task changes by the hour, so a saved view cannot pin it.
+    agent_focus: str | None = None,
+    # Task #986. Only tasks that an agent has worked (`agent_worked.py`).
+    agent_worked: bool = False,
+    # MCP-G19a. The audit filters. All optional. `build_task_filters` holds
+    # them, and `board_stats` reads the same builder.
+    has_parent: bool | None = None,
+    is_epic: bool | None = None,
+    assigned: bool | None = None,
+    updated_before: str | None = None,
+    updated_after: str | None = None,
+    created_after: str | None = None,
+    title_prefix: str | None = None,
+    # MCP-G19a. Small rows and a page of up to COMPACT_MAX_PAGE_SIZE: the row
+    # query, the stage of each status, and nothing else. The agent door reads it.
+    compact: bool = False,
+) -> TaskListResponse:
     """The one task-list endpoint every surface reads through.
 
     Paca's lesson: list, board and any saved view are the same query with
@@ -249,51 +788,59 @@ async def list_tasks(
             detail=f"Unknown sort direction '{direction}'. One of: asc, desc.",
         )
 
+    if include_descendants and not parent_task_id:
+        raise HTTPException(
+            status_code=422,
+            detail="include_descendants needs parent_task_id.",
+        )
+    if parent_task_id:
+        # A malformed id is a 422, not a uuid cast error in SQL (a 500).
+        try:
+            parent_task_id = str(uuid.UUID(parent_task_id))
+        except ValueError:
+            raise HTTPException(
+                status_code=422, detail="parent_task_id is not a valid id.",
+            ) from None
+
+    # Task #986. Validated here too, so a bad value is a 422 before any read.
+    agent_clauses, agent_params = agent_filter_clauses(
+        agent_focus, agent_worked, actor(user),
+    )
+
+    mine = check_scope(scope)
+    if compact and page.page_size > COMPACT_MAX_PAGE_SIZE:
+        raise HTTPException(
+            status_code=422,
+            detail=f"page_size is at most {COMPACT_MAX_PAGE_SIZE} with compact.",
+        )
+    if not compact and page.page_size > MAX_PAGE_SIZE:
+        raise HTTPException(
+            status_code=422, detail=f"page_size is at most {MAX_PAGE_SIZE}.",
+        )
+
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        clauses: list[str] = [task_visibility_clause(vis)]
-        params: dict[str, Any] = dict(vis.params)
-
-        if project_id:
-            # Seeing the project is required to filter by it, so an unreadable
-            # id answers 404 rather than an empty list — an empty list would
-            # tell the caller the project exists and is simply empty.
-            await load_visible_project(db, vis, project_id)
-            if include_subtree:
-                clauses.append(
-                    "t.project_id IN ("
-                    "  WITH RECURSIVE sub AS ("
-                    "    SELECT id FROM pm_projects WHERE id = CAST(:pid AS uuid)"
-                    "    UNION ALL"
-                    "    SELECT p.id FROM pm_projects p JOIN sub s"
-                    "      ON p.parent_project_id = s.id"
-                    "  ) SELECT id FROM sub)"
-                )
-            else:
-                clauses.append("t.project_id = CAST(:pid AS uuid)")
-            params["pid"] = project_id
-        # Every filter but the project scoping above comes from ONE pure
-        # builder, shared with saved views — two implementations would let a
-        # saved view show a different set of tasks than the same filters typed
-        # by hand, which is the one thing a saved view may not do.
-        extra_clauses, extra_params = build_task_filters(
-            parent_task_id=parent_task_id, status_id=status_id,
-            status_category=status_category, assignee=assignee,
-            assignees=assignees, unassigned=unassigned, overdue=overdue,
-            due_before=due_before, importance_gte=importance_gte, q=q,
-            tags=tags, tags_all=tags_all, include_archived=include_archived,
-            archived_only=archived_only,
-            watching=watching, viewer=actor(user) if watching else None,
-            top_level=top_level,
+        walk_cte, walk_join, where, params = await _task_scope(
+            db, user, vis,
+            project_id=project_id, include_subtree=include_subtree,
+            parent_task_id=parent_task_id, include_descendants=include_descendants,
+            mine=mine, include_triage=include_triage, unheld=unheld,
+            agent_clauses=agent_clauses, agent_params=agent_params,
+            filters=dict(
+                status_id=status_id, status_category=status_category,
+                assignee=assignee, assignees=assignees, unassigned=unassigned,
+                overdue=overdue, due_before=due_before,
+                importance_gte=importance_gte, q=q, tags=tags, tags_all=tags_all,
+                include_archived=include_archived, archived_only=archived_only,
+                watching=watching, top_level=top_level, has_parent=has_parent,
+                is_epic=is_epic, assigned=assigned, updated_before=updated_before,
+                updated_after=updated_after, created_after=created_after,
+                title_prefix=title_prefix,
+            ),
         )
-        clauses.extend(extra_clauses)
-        params.update(extra_params)
-        if not include_triage:
-            clauses.append(triage_exclusion_clause())
-
-        where = " WHERE " + " AND ".join(clauses)
         total = (await db.execute(
-            text(f"SELECT count(*) FROM pm_tasks t{where}"), params,
+            text(f"{walk_cte}SELECT count(*) FROM pm_tasks t{walk_join}{where}"),
+            params,
         )).scalar() or 0
         # `column` is an allowlisted template with `{dir}` slots; the direction
         # is one of OUR two words, never caller text. Every entry ends with the
@@ -312,9 +859,11 @@ async def list_tasks(
             params["view_id"] = view_id
         rows = (await db.execute(
             text(
-                f"SELECT t.*{', vp.position AS view_position' if view_id else ''}"
-                f"  FROM pm_tasks t{join}{where} "
-                f"ORDER BY {column.format(dir=order)} "
+                f"{walk_cte}SELECT t.*"
+                f"{', vp.position AS view_position' if view_id else ''}"
+                f"{', sub.depth AS depth' if walk_join else ''}"
+                f"  FROM pm_tasks t{walk_join}{join}{where} "
+                f"ORDER BY {'sub.depth, ' if walk_join else ''}{column.format(dir=order)} "
                 f"LIMIT :limit OFFSET :offset"
             ),
             {**params, "limit": page.limit, "offset": page.offset},
@@ -324,11 +873,203 @@ async def list_tasks(
         # progress count or a blocked flag — and fetching any of the three per
         # card is N+1 across an imported workspace of hundreds.
         page_rows = [row_to_dict(r, TaskModel) for r in rows]
-        await attach_assignees(db, page_rows)
-        await attach_relation_counts(db, page_rows, vis)
-        # D-PM-38 — "↳ Parent" on every flat row, under the reader's grants.
-        await attach_parent_context(db, vis, page_rows)
-        return ListResponse(rows=page_rows, total=int(total))
+        if not compact:
+            await attach_assignees(db, page_rows)
+            # WS-55 EA-12a — the agent pill, in one query for the page.
+            await attach_agent_state(db, page_rows)
+            await attach_relation_counts(db, page_rows, vis)
+            # D-PM-38 — "↳ Parent" on every flat row, under the reader's grants.
+            await attach_parent_context(db, vis, page_rows)
+            # WS-64 OP-8 — the app hides Delete where this is false.
+            await attach_can_delete(db, user, page_rows, kind="task")
+        # #834 — the stage of each row's status. A subproject may keep its own
+        # lanes (migration 196), and the parent board knows only its own, so
+        # it files a task by this stage instead of losing it.
+        await attach_status_category(db, vis, page_rows)
+        if with_overlay:
+            # WS-64 OP-11 — the caller's own overlay, one query for the page.
+            await attach_my_overlay(db, vis, page_rows)
+        counts: dict[str, int] | None = None
+        categories: dict[str, str | None] | None = None
+        if with_status_counts:
+            # #918. The SAME `where` and params as the row query, so the
+            # visibility clause and the tenant binding are the same.
+            counts = {
+                str(r[0]): int(r[1])
+                for r in (await db.execute(
+                    text(
+                        f"{walk_cte}SELECT t.status_id, count(*)"
+                        f" FROM pm_tasks t{walk_join}{where}"
+                        f" GROUP BY t.status_id"
+                    ),
+                    params,
+                )).fetchall()
+                if r[0] is not None
+            }
+            categories = await status_categories_of(db, vis, list(counts))
+        return TaskListResponse(
+            rows=page_rows, total=int(total),
+            status_counts=counts, status_categories=categories,
+        )
+
+
+#: MCP-G19a. The group axes of ``GET /projects/tasks/stats``: the SQL
+#: expression of each, over the task alias ``t``, plus the join it needs.
+#: ``assignee`` is the one axis that repeats a task: a task with two
+#: assignees counts once under each, and a task with none counts under null.
+STATS_GROUP_BY: tuple[str, ...] = (
+    "project", "status_category", "is_epic", "assignee", "holder", "updated_age",
+)
+STATS_MAX_GROUPS = 2000
+
+_STATS_JOINS: dict[str, str] = {
+    "status_category": " LEFT JOIN pm_task_statuses gs ON gs.id = t.status_id",
+    "is_epic": " LEFT JOIN pm_task_types gty ON gty.id = t.type_id",
+    "assignee": " LEFT JOIN pm_task_assignees ga ON ga.task_id = t.id",
+}
+
+
+def _stats_expr(axis: str) -> str:
+    if axis == "project":
+        return "CAST(t.project_id AS text)"
+    if axis == "status_category":
+        return "gs.category"
+    if axis == "is_epic":
+        return ("(coalesce(gty.is_epic, false)"
+                " OR (coalesce(gty.is_system, false) AND gty.name = 'Epic'))")
+    if axis == "assignee":
+        return "lower(ga.assignee)"
+    if axis == "holder":
+        return holder_sql()
+    return UPDATED_AGE_SQL
+
+
+@router.get("/tasks/stats")
+async def task_stats(
+    user: UserContext = Depends(get_current_user),
+    group_by: str | None = None,
+    project_id: str | None = None,
+    include_subtree: bool = False,
+    parent_task_id: str | None = None,
+    status_id: str | None = None,
+    assignee: str | None = None,
+    q: str | None = None,
+    status_category: str | None = None,
+    tags: str | None = None,
+    include_archived: bool = False,
+    unheld: bool = False,
+    has_parent: bool | None = None,
+    is_epic: bool | None = None,
+    assigned: bool | None = None,
+    due_before: str | None = None,
+    updated_before: str | None = None,
+    updated_after: str | None = None,
+    created_after: str | None = None,
+    title_prefix: str | None = None,
+) -> dict:
+    """Counts of the tasks this caller can see (MCP-G19a).
+
+    ``total`` is the number of tasks that ``GET /projects/tasks`` returns for
+    the same caller and filters. Each group count is a count of tasks, except
+    under ``assignee``, where a task counts once for each assignee. The scope
+    comes from :func:`_task_scope`, the one path the list also reads.
+    """
+    axes = [a.strip() for a in (group_by or "").split(",") if a.strip()]
+    if len(axes) > 2 or len(set(axes)) != len(axes) or any(
+            a not in STATS_GROUP_BY for a in axes):
+        raise HTTPException(
+            status_code=422,
+            detail=f"group_by takes one or two of: {list(STATS_GROUP_BY)}.",
+        )
+    if parent_task_id:
+        try:
+            parent_task_id = str(uuid.UUID(parent_task_id))
+        except ValueError:
+            raise HTTPException(
+                status_code=422, detail="parent_task_id is not a valid id.",
+            ) from None
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        walk_cte, walk_join, where, params = await _task_scope(
+            db, user, vis,
+            project_id=project_id, include_subtree=include_subtree,
+            parent_task_id=parent_task_id, include_descendants=False,
+            mine=False, include_triage=False, unheld=unheld,
+            agent_clauses=[], agent_params={},
+            filters=dict(
+                status_id=status_id, status_category=status_category,
+                assignee=assignee, due_before=due_before, q=q, tags=tags,
+                include_archived=include_archived, has_parent=has_parent,
+                is_epic=is_epic, assigned=assigned, updated_before=updated_before,
+                updated_after=updated_after, created_after=created_after,
+                title_prefix=title_prefix,
+            ),
+        )
+        total = (await db.execute(
+            text(f"{walk_cte}SELECT count(*) FROM pm_tasks t{walk_join}{where}"),
+            params,
+        )).scalar() or 0
+        groups: list[dict[str, Any]] = []
+        truncated = False
+        if axes:
+            joins = "".join(_STATS_JOINS[a] for a in axes if a in _STATS_JOINS)
+            exprs = [_stats_expr(a) for a in axes]
+            select = ", ".join(f"{e} AS g{i}" for i, e in enumerate(exprs))
+            keys = ", ".join(f"g{i}" for i in range(len(exprs)))
+            found = (await db.execute(
+                text(
+                    f"{walk_cte}SELECT {select}, count(*) AS n"
+                    f" FROM pm_tasks t{walk_join}{joins}{where}"
+                    f" GROUP BY {keys} ORDER BY n DESC, {keys}"
+                    f" LIMIT {STATS_MAX_GROUPS + 1}"
+                ),
+                params,
+            )).fetchall()
+            truncated = len(found) > STATS_MAX_GROUPS
+            for row in found[:STATS_MAX_GROUPS]:
+                groups.append({
+                    "keys": {a: (row[i] if row[i] is None or isinstance(row[i], bool)
+                                 else str(row[i])) for i, a in enumerate(axes)},
+                    "count": int(row[len(axes)]),
+                })
+        return {"total": int(total), "group_by": axes, "groups": groups,
+                "truncated": truncated}
+
+
+#: The stage of each status on one page, in one read. The tenant is on the
+#: read beside RLS (R5).
+_STATUS_CATEGORY_SQL = (
+    "SELECT s.id, s.category FROM pm_task_statuses s"
+    " WHERE s.id = ANY(CAST(:ids AS uuid[]))"
+    "   AND s.organization_id = CAST(:vis_org AS uuid)"
+)
+
+
+async def attach_status_category(db: Any, vis: Any, rows: list[dict]) -> None:
+    """Stamp ``status_category`` on each row: the stage of its status.
+
+    A status the read cannot find leaves ``None``. The client then keeps the
+    row in a fallback column, never drops it.
+    """
+    ids = sorted({str(r["status_id"]) for r in rows if r.get("status_id")})
+    found = await status_categories_of(db, vis, ids)
+    for row in rows:
+        row["status_category"] = found.get(str(row.get("status_id") or ""))
+
+
+async def status_categories_of(
+    db: Any, vis: Any, ids: list[str],
+) -> dict[str, str | None]:
+    """The stage of each status id, in one read. Unknown ids are absent."""
+    if not ids:
+        return {}
+    return {
+        str(r.id): r.category
+        for r in (await db.execute(
+            text(_STATUS_CATEGORY_SQL),
+            {"ids": sorted(ids), "vis_org": vis.params.get("vis_org")},
+        )).fetchall()
+    }
 
 
 @router.get("/tasks/{task_id}")
@@ -348,6 +1089,18 @@ async def get_task(
         )).fetchall()
         result["assignees"] = [r.assignee for r in assignees]
         result["time_spent_mins"] = await time_spent_mins(db, task_id)
+        # WS-55 EA-12a — the agent pill on the task detail (EA12-10).
+        await attach_agent_state(db, [result])
+        # WS-64 OP-8 — the chat refuses before its card where this is false.
+        await attach_can_delete(db, user, [result], kind="task")
+        # SP-9 — an epic rolls up EVERY descendant the reader can see. The key
+        # is absent for any other task. `subtasks` (direct children) is not
+        # touched. The one home of the rule is `rollup.py`.
+        from gateway.routes.projects.rollup import epic_rollup
+
+        rollup = await epic_rollup(db, vis, row)
+        if rollup is not None:
+            result["rollup"] = rollup
         return result
 
 
@@ -378,90 +1131,220 @@ async def time_spent_mins(db: Any, task_id: str) -> int:
 
 # ── Writes ──────────────────────────────────────────────────────────────────
 
+async def _store_due(db: Any, user: UserContext, values: dict[str, Any]) -> None:
+    """A date-only ``due_at`` becomes local noon of the member who writes
+    (``personal.stored_due``, RX-5). ``personal`` imports this module."""
+    if values.get("due_at"):
+        from gateway.routes.projects.personal import stored_due
+
+        values["due_at"] = await stored_due(db, actor(user).lower(), values["due_at"])
+
+
 @router.post("/tasks", status_code=201)
 async def create_task(
-    payload: TaskIn, user: UserContext = Depends(get_current_user),
+    payload: TaskCreateIn, user: UserContext = Depends(get_current_user),
 ) -> dict:
     values = clean_payload(payload)
+    first_assignees = check_task_values(user, values)
+    project_id = values["project_id"]
+    title = values["title"]
+
+    async with _tenant_session() as db:
+        made = await create_task_in(db, user, values, first_assignees)
+        row, assigned = made.row, made.assigned
+        task_id = str(row.id)
+        result = row_to_dict(row, TaskModel)
+
+    await emit("pm.task.created", {
+        "task_id": task_id, "project_id": str(project_id), "title": title,
+    })
+    if assigned is not None and assigned.added:
+        await emit("pm.task.assigned", {
+            "task_id": task_id, "assignees": sorted(assigned.added),
+            "organization_id": str(getattr(row, "organization_id", "") or ""),
+            # H-240: the member a dispatched run acts for, from the session.
+            MEMBER_KEY: assigning_member(user),
+        })
+    # WS-57 TR-5 — `#N` and GitHub or document URLs in the new text, after
+    # the commit and in a transaction of its own (`text_links.py`).
+    await link_from_text(user, [(task_id, [(title, False, None), (values.get("description"), True, None)])])
+    return result
+
+
+@dataclass(frozen=True)
+class CreatedTask:
+    """What :func:`create_task_in` made: the row, and the first assignees."""
+
+    row: Any
+    assigned: Any
+
+
+def check_task_values(
+    user: UserContext, values: dict[str, Any], *, narrow: bool = True,
+) -> set[str]:
+    """The checks of a new task that need no database. Returns the first
+    assignees, which are not a column.
+
+    It sets ``title`` (trimmed), ``created_by`` and, for a signed agent,
+    ``source`` on *values*. ``POST /tasks`` and the apply of a template
+    (WS-39 TPL-1a) both call it before :func:`create_task_in`.
+
+    *narrow* False skips the two body rules of a signed agent (EA-6d,
+    MCP-G2). Only the apply of a template passes it: the server builds those
+    values from a stored template, and the agent sent none of them. The
+    agent's stamp on ``source`` and each check of :func:`create_task_in`
+    still apply.
+    """
+    if narrow:
+        # WS-55 EA-6d. A signed agent write sends only the keys of `create_task`.
+        _narrow_agent_body(user, values, AGENT_CREATE_FIELDS)
+        _refuse_agent_values(user, values)
+    # MCP-G2. Not a column: the assignees land after the insert, below.
+    first_assignees = _clean_assignees(values.pop("assignees", None) or ())
     title = str(values.get("title") or "").strip()
     if not title:
         raise HTTPException(status_code=422, detail="A task needs a title.")
     project_id = values.get("project_id")
     if not project_id:
         raise HTTPException(status_code=422, detail="A task needs a project_id.")
-    validate_choice(values.get("source"), TASK_SOURCES, "source")
+    validate_choice(values.get("source"), CLIENT_TASK_SOURCES, "source")
+    if getattr(user, "agent", None) is not None:
+        # The task source of an agent comes from branch 0's signed context,
+        # never from the body (the narrowing above refuses a body `source`).
+        values["source"] = AGENT_TASK_SOURCE
     values["title"] = title
     values["created_by"] = actor(user)
+    return first_assignees
 
-    async with _tenant_session() as db:
+
+async def create_task_in(
+    db: Any, user: UserContext, values: dict[str, Any],
+    first_assignees: set[str], *, vis: Any = None, align: bool = True,
+    task_number: int | None = None,
+) -> CreatedTask:
+    """THE one creator of a ``pm_tasks`` row on a member's request.
+
+    It runs in the caller's transaction. It emits nothing and links no text:
+    the caller does each after the commit, or stays quiet, as the apply of a
+    template does (WS-39 TPL-1a, like the importer of §6.10). *values* passed
+    :func:`check_task_values` first. *vis* saves the read of the caller's
+    visibility when one transaction creates many tasks. *align* False skips
+    the ALN-1 check job: the apply of a template is a bulk creator, and
+    ``project_alignment.md`` §5 leaves the bulk creators out, as it leaves
+    out the file import. *task_number* is a number that the caller reserved
+    with ``core.reserve_task_numbers`` in a short transaction of its own, as
+    the file import does. Then this transaction never takes the lock of the
+    counter row, so a long apply of a template does not hold up each task
+    create in the space (TPL-1a repair, P1-b).
+    """
+    project_id = values["project_id"]
+    await _store_due(db, user, values)
+    if vis is None:
         vis = await resolve_visibility(db, user)
-        target = await load_visible_project(db, vis, str(project_id))
-        # Migration 193 — a folder is a grouping node. Tasks live on
-        # projects; a task filed on a folder would sit outside every board.
-        if node_kind(getattr(target, "kind", None)) == "folder":
-            raise HTTPException(
-                status_code=422,
-                detail="A folder holds projects, not tasks. Create the "
-                       "task in a project inside it.",
+    # FOR SHARE: a concurrent move of this project to the top (a space)
+    # waits for this insert (`core.load_visible_project`).
+    target = await load_visible_project(
+        db, vis, str(project_id), lock_share=True,
+    )
+    # Migration 193 and the space rule — a folder groups and a space
+    # summarises. Tasks live on projects. A task filed on either would
+    # sit outside every board (`core.assert_holds_tasks`).
+    assert_holds_tasks(target, then="Create the task in")
+    assert_not_archived(target, then="Create the task in")
+    root = await root_project_id(db, str(project_id))
+    values["root_project_id"] = root
+    # The values pass the gate a PATCH puts them through
+    # (`custom_fields.apply_values`), against the definitions of the root
+    # the task is created in, in this transaction and before any write.
+    # Before this the create stored the body as it came: a wrong type, an
+    # option nobody defined, or a key from another project landed in the
+    # row and read back as a saved value. A stated null means "no value",
+    # so it leaves the column default rather than writing NULL into a
+    # NOT NULL column.
+    if "custom_fields" in values:
+        custom = values.pop("custom_fields")
+        if custom is not None:
+            shaped, _ = apply_values(
+                {}, custom, await load_definitions(db, root),
             )
-        root = await root_project_id(db, str(project_id))
-        values["root_project_id"] = root
-        # The ROOT scopes the counter, the types and the tenant. A STATUS scopes
-        # to the nearest node that owns a set, which is the root until a
-        # subproject overrides it (migration 196). Two names for two questions,
-        # because the bug where they diverge is silent — everything works until
-        # somebody uses the feature.
-        status_home = await status_owner_id(db, str(project_id))
+            if shaped:
+                values["custom_fields"] = shaped
+    # The ROOT scopes the counter, the types and the tenant. A STATUS scopes
+    # to the nearest node that owns a set, which is the root until a
+    # subproject overrides it (migration 196). Two names for two questions,
+    # because the bug where they diverge is silent — everything works until
+    # somebody uses the feature.
+    status_home = await status_owner_id(db, str(project_id))
 
-        parent_id = values.get("parent_task_id")
-        parent = (
-            await load_visible_task(db, vis, str(parent_id)) if parent_id else None
+    parent_id = values.get("parent_task_id")
+    parent = (
+        await load_visible_task(db, vis, str(parent_id)) if parent_id else None
+    )
+    _refuse_agent_parent(user, parent, str(project_id))
+    await _refuse_agent_type(db, user, values.get("type_id"), str(root))
+    await assert_epic_has_no_parent(db, values.get("type_id"), parent_id)
+
+    # A stated status always wins. A new step with no stated status takes
+    # its parent's lane through the ONE seam (D-PM-38, D79), so the
+    # Projects panel, the board, both chat tools and My Tasks agree.
+    # MCP-G20: a signed agent create is not one of those doors. Its tool
+    # `create_task` says "leave status_id out to use the default status",
+    # so an agent's subtask with no stated status starts in the default
+    # lane, and never inherits an In progress parent's lane.
+    if values.get("status_id"):
+        status = await require_status_in_project(
+            db, status_home, str(values["status_id"]),
         )
-        await assert_epic_has_no_parent(db, values.get("type_id"), parent_id)
-
-        # A stated status always wins. A new step with no stated status takes
-        # its parent's lane through the ONE seam (D-PM-38, D79), so the
-        # Projects panel, the board, both chat tools and My Tasks agree.
-        if values.get("status_id"):
-            status = await require_status_in_project(
-                db, status_home, str(values["status_id"]),
-            )
-        elif parent is not None:
-            status = await parent_lane_status(db, parent, status_home)
-        else:
-            status = await load_default_status(db, status_home)
-        values["status_id"] = str(status.id)
-        values["task_number"] = await next_task_number(db, root)
-        # WS-27m — through the registry, never straight into the array. Create
-        # and patch both go this way, so there is no route by which a tag enters
-        # the system unregistered; that is the only thing that keeps the
-        # registry's "one spelling per tag" true rather than aspirational.
-        if "tags" in values:
-            values["tags"] = await apply_task_tags(
-                db, root, values["tags"], by=actor(user),
-            )
-
-        row = await insert_row(db, "pm_tasks", values)
-        task_id = str(row.id)
-        await record_activity(
-            db, activity_type="system", created_by=actor(user),
-            task_id=task_id, body="Task created",
+        _refuse_agent_close(user, getattr(status, "category", None),
+                            refused=AGENT_CREATE_REFUSED,
+                            detail=AGENT_CREATE_REFUSAL)
+    elif parent is not None and getattr(user, "agent", None) is None:
+        status = await parent_lane_status(db, parent, status_home)
+    else:
+        status = await load_default_status(db, status_home)
+    values["status_id"] = str(status.id)
+    values["task_number"] = (
+        task_number if task_number is not None else await next_task_number(db, root)
+    )
+    # WS-27m — through the registry, never straight into the array. Create
+    # and patch both go this way, so there is no route by which a tag enters
+    # the system unregistered; that is the only thing that keeps the
+    # registry's "one spelling per tag" true rather than aspirational.
+    if "tags" in values:
+        values["tags"] = await apply_task_tags(
+            db, root, values["tags"], by=actor(user),
         )
-        # WS-27v — the creator watches their own task, which is what keeps the
-        # WS-27j author-hears-about-comments behaviour once the audience is
-        # watchers ∪ assignees (migration 165 seeds the same for older tasks).
-        await ensure_watchers(db, task_id, [actor(user)], by=actor(user))
-        result = row_to_dict(row, TaskModel)
 
-    await emit("pm.task.created", {
-        "task_id": task_id, "project_id": str(project_id), "title": title,
-    })
-    return result
+    row = await insert_row(db, "pm_tasks", values)
+    task_id = str(row.id)
+    await record_activity(
+        db, activity_type="system", created_by=actor(user),
+        task_id=task_id, body="Task created",
+    )
+    # WS-27v — the creator watches their own task, which is what keeps the
+    # WS-27j author-hears-about-comments behaviour once the audience is
+    # watchers ∪ assignees (migration 165 seeds the same for older tasks).
+    await ensure_watchers(db, task_id, [actor(user)], by=actor(user))
+    # WS-55 MCP-G2. The first assignees, in THIS transaction and through
+    # the writer of `set_assignees`, so a refused assignee leaves no task.
+    assigned = (
+        await _write_assignees(
+            db, user, task_id=task_id, project_id=str(project_id),
+            wanted=first_assignees, current=set(),
+        ) if first_assignees else None
+    )
+    # WS-ALN ALN-1 (`project_alignment.md` §5). In THIS transaction, so a
+    # crash can lose neither half alone. `target` is the row of the
+    # project, so a personal task (§1.2) costs no read and gets no job.
+    # Fence: `test_the_seam_*` in `test_align_trigger.py`.
+    if align and not getattr(target, "personal_owner", None):
+        await enqueue_check(db, task_id, current_tenant(), row=row, known_team=True)
+    return CreatedTask(row=row, assigned=assigned)
 
 
 @router.patch("/tasks/{task_id}")
 async def patch_task(
-    task_id: str, payload: TaskIn,
+    task_id: str, payload: TaskPatchIn,
     user: UserContext = Depends(get_current_user),
     if_match: str | None = Header(None, alias="If-Match"),
     include_subtasks: bool = False,
@@ -482,7 +1365,12 @@ async def patch_task(
     ``subtasks_completed`` and ``subtask_changes``, the Undo record.
     """
     values = clean_payload(payload)
-    validate_choice(values.get("source"), TASK_SOURCES, "source")
+    # WS-55 EA-6d. A signed agent PATCH sends only the keys of
+    # `set_task_status` and `update_task`, and never the cascade.
+    _narrow_agent_body(user, values, AGENT_PATCH_FIELDS,
+                       include_subtasks=include_subtasks)
+    _refuse_agent_values(user, values)
+    validate_choice(values.get("source"), CLIENT_TASK_SOURCES, "source")
     for guarded, endpoint in (
         ("project_id", "move"), ("parent_task_id", "move"),
     ):
@@ -494,8 +1382,12 @@ async def patch_task(
             )
     new_status = values.pop("status_id", None)
     custom = values.pop("custom_fields", None)
+    # UNDO-1 round 2. Never a column write of its own: only the transition
+    # below may stamp it, and only on the crossing into a closing category.
+    done_at = parse_completed_at(values.pop("completed_at", None))
 
     async with _tenant_session() as db:
+        await _store_due(db, user, values)
         vis = await resolve_visibility(db, user)
         before = await load_visible_task(db, vis, task_id)
 
@@ -524,6 +1416,9 @@ async def patch_task(
 
         after = before
         if values:
+            # SP-6: a signed agent sets only a type of this project.
+            await _refuse_agent_type(
+                db, user, values.get("type_id"), str(before.root_project_id))
             await assert_epic_has_no_parent(
                 db, values.get("type_id"), getattr(before, "parent_task_id", None),
             )
@@ -551,7 +1446,16 @@ async def patch_task(
         if new_status is not None and str(new_status) != str(before.status_id):
             moved = await apply_status_transition(
                 db, after, str(new_status), created_by=actor(user),
+                completed_at=done_at,
             )
+            # WS-55 EA-6d. Inside the transaction, so the refusal rolls the
+            # whole PATCH back, the field changes too. EA-6f: an agent may
+            # move a task into done, and only a cancel is refused. The
+            # narrowing above refuses `include_subtasks`, so an agent's done
+            # never closes a subtask.
+            _refuse_agent_close(user, getattr(moved["to"], "category", None),
+                                refused=AGENT_MOVE_REFUSED,
+                                detail=AGENT_MOVE_REFUSAL)
             after = moved["row"]
             # In the SAME transaction as the parent's own move, so a refused
             # cascade (a set with no Done status) leaves the parent open too.
@@ -582,7 +1486,17 @@ async def patch_task(
                 db, task_id, mentioned["notified"], by=actor(user),
             )
 
+        # WS-ALN ALN-1 (`project_alignment.md` §5 item 2). In THIS transaction.
+        # Given `before`, `enqueue_check` does nothing unless the checked text
+        # changed, so an edit of a due date costs nothing. It also reads the
+        # project, because no row here says whether the task is personal.
+        # Fence: `test_align_trigger.py`.
+        await enqueue_check(db, task_id, current_tenant(), row=after, before=before)
+
         result = row_to_dict(after, TaskModel)
+        # WS-55 EA-12c — the pill survives an edit. The client merges this
+        # row over its copy, so a null here would erase the pill (EA12-10).
+        await attach_agent_state(db, [result])
         if include_subtasks:
             result["subtasks_completed"] = len(cascade.ids) if cascade else 0
             result["subtask_changes"] = cascade.changes if cascade else []
@@ -596,6 +1510,10 @@ async def patch_task(
         })
     if cascade is not None:
         await emit_all(cascade.events)
+    # WS-57 TR-5 — the numbers and URLs this PATCH ADDS to the title or the
+    # description, against `before` (`text_links.py`, rule 4). A PATCH that
+    # writes neither reads nothing.
+    await link_from_text(user, [(task_id, saved_texts(values, before))])
     return result
 
 
@@ -649,7 +1567,7 @@ async def _cross_root_values(
 
 
 async def move_task_in(
-    db: Any, vis: Any, task: Any, payload: MoveTask, *, by: str,
+    db: Any, vis: Any, task: Any, payload: MoveTask, *, by: str, user: Any,
     field_map: dict[str, str] | None = None,
 ) -> dict:
     """The body of ``POST /tasks/{id}/move``, inside a caller's transaction.
@@ -666,6 +1584,11 @@ async def move_task_in(
     ``field_map`` is the map the bulk move's card showed for this task's root
     (D-PM-38, S5). Absent, the automatic map for the task's own root applies,
     as it always did.
+
+    ``user`` is the member whose authority a move to another project needs
+    (D-OP-14, :func:`authority.assert_may_move_task`). It has no default, so
+    each caller says it. ``None`` means "a subtask that a checked move
+    carries", and only this module and ``move.py`` pass it.
     """
     task_id = str(task.id)
     values: dict[str, Any] = {}
@@ -675,11 +1598,17 @@ async def move_task_in(
     #: D-PM-38 decision 4 — the descendants this move takes along, read and
     #: checked BEFORE any write. `None` when the caller did not ask.
     subtree: list[Any] | None = None
+    #: WS-ALN ALN-1. True when this move takes the task out of a personal
+    #: project into a team project.
+    promoted = False
 
     if payload.parent_task_id is not None or "parent_task_id" in payload.model_fields_set:
         new_parent = payload.parent_task_id
         if new_parent:
-            await load_visible_task(db, vis, str(new_parent))
+            parent_row = await load_visible_task(db, vis, str(new_parent))
+            # WS-55 MCP-G2. An agent moves a task inside its project only. A
+            # no-op for a member and for a carried subtask (`user` None).
+            _refuse_agent_parent(user, parent_row, str(task.project_id))
         await assert_no_task_cycle(db, task_id, new_parent)
         await assert_epic_has_no_parent(
             db, getattr(task, "type_id", None), new_parent,
@@ -687,20 +1616,25 @@ async def move_task_in(
         values["parent_task_id"] = new_parent
 
     if payload.project_id and str(payload.project_id) != str(task.project_id):
-        dest = await load_visible_project(db, vis, str(payload.project_id))
-        # Migration 193 — after the visibility load, same as the privacy
-        # guard below: a caller who cannot see the folder still gets 404.
-        if node_kind(getattr(dest, "kind", None)) == "folder":
-            raise HTTPException(
-                status_code=422,
-                detail="A folder holds projects, not tasks. Move the "
-                       "task into a project inside it.",
-            )
+        dest = await load_visible_project(
+            db, vis, str(payload.project_id), lock_share=True,
+        )
+        # Migration 193 and the space rule — after the visibility load, same
+        # as the privacy guard below: a caller who cannot see the folder or
+        # the space still gets 404.
+        assert_holds_tasks(dest, then="Move the task into")
+        assert_not_archived(dest, then="Move the task into")
         # Before anything is computed: a task may only move INTO a personal
         # project it already lives in. Checked after the visibility load so
         # a caller who cannot see the destination still gets 404 and never
         # learns from a 422 that it exists (R5: 404, never 403).
-        await assert_move_keeps_privacy(db, task, str(payload.project_id))
+        left_owner = await assert_move_keeps_privacy(db, task, str(payload.project_id))
+        promoted = bool(left_owner) and not getattr(dest, "personal_owner", None)
+        # WS-64 OP-8 (D-OP-14). A move to another project changes who sees
+        # the task, so it needs the delete authority on the task as it is.
+        # After the 404 and the shape refusals, before any write.
+        if user is not None:
+            await assert_may_move_task(db, user, task)
         if payload.include_subtasks:
             # A 409 when any descendant is hidden, before anything is written:
             # moving only the visible ones would split the tree unseen.
@@ -776,6 +1710,9 @@ async def move_task_in(
                   "from_number": getattr(task, "task_number", None)},
         )
         await record_drops(db, task_id=task_id, dropped=dropped, by=by)
+    if "project_id" in values:
+        # WS-39 SP-1. A task that left the node of its open cycle leaves it.
+        await detach_moved_tasks(db, [task_id], by=by)
 
     # ── Promote-and-assign, in the SAME transaction ─────────────────────
     #
@@ -855,8 +1792,19 @@ async def move_task_in(
                     custom_fields=payload.custom_fields,
                 ),
                 by=by,
+                # Carried by the checked move above (D-OP-14).
+                user=None,
             )
             moved_ids.append(str(child.id))
+
+    # WS-ALN ALN-1 (`project_alignment.md` §5 item 3). A move out of a personal
+    # project is the moment a personal note becomes project work. A move that
+    # stays personal, or between two team projects, enqueues nothing. Each
+    # descendant comes through this seam, so each one gets its own job. On the
+    # caller's session, so the move and the job commit together. Fence:
+    # `test_align_trigger.py`.
+    if promoted:
+        await enqueue_check(db, task_id, current_tenant(), row=row, known_team=True)
 
     result = row_to_dict(row, TaskModel)
     result["notified"] = notified["notified"]
@@ -871,6 +1819,7 @@ async def move_task_in(
 async def move_task(
     task_id: str, payload: MoveTask,
     user: UserContext = Depends(get_current_user),
+    if_match: str | None = Header(None, alias="If-Match"),
 ) -> dict:
     """Re-parent a task, move it to another project, or both.
 
@@ -878,13 +1827,29 @@ async def move_task(
     the status, because statuses are per-root: carrying the old status across
     would leave the task in a lane the destination board does not render.
 
-    The work is :func:`move_task_in`. This route only opens the session and
-    emits the event.
+    The work is :func:`move_task_in`. This route only opens the session,
+    checks ``If-Match`` and emits the event.
+
+    WS-55 MCP-G2. ``If-Match`` is the version rule of the PATCH
+    (``core.require_precondition``, so ``precondition_holds``). An absent
+    header passes (D-PM-20), so each app call, which sends none, is
+    unchanged. A signed agent move sends ``parent_task_id`` only
+    (:data:`AGENT_MOVE_FIELDS`), and its new parent is in the same project.
     """
+    # MCP-G2. The keys the caller SENT, so a stated `include_subtasks: false`
+    # is refused too. A no-op for a member.
+    _narrow_agent_body(user, dict.fromkeys(payload.model_fields_set),
+                       AGENT_MOVE_FIELDS)
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
-        result = await move_task_in(db, vis, task, payload, by=actor(user))
+        # After the visibility load, before any write: a caller who cannot
+        # see the task gets 404 and never learns from a 412 that it exists.
+        _check_version(task, if_match)
+        result = await move_task_in(
+            db, vis, task, payload, by=actor(user), user=user,
+        )
+        await attach_agent_state(db, [result])
 
     await emit("pm.task.moved", {"task_id": task_id})
     # D-PM-38 — one event per task the move took along, like the bulk move.
@@ -893,24 +1858,141 @@ async def move_task(
     return result
 
 
-async def delete_task_in(db: Any, doomed: Any) -> DeleteResponse:
+#: The most subtask ids that one delete names (D-OP-10). ``all`` has no such
+#: cap, because the server finds that set itself.
+MAX_DELETE_IDS = 1_000
+#: The most ids ``DELETE /tasks/{id}`` takes in its query string. A longer
+#: list overruns the header limit, so the caller sends ``delete_all_subtasks``.
+MAX_QUERY_DELETE_IDS = 200
+#: 422: an id of the set is not a descendant that the caller can see.
+#: Nothing changes. A hidden id gets the same code as a wrong id, so the code
+#: says nothing about a hidden task.
+SUBTASK_NOT_BELOW = "subtask_not_below"
+
+
+def clean_task_ids(ids: Any) -> frozenset[str]:
+    """The ids as canonical UUID strings, or 422 for a value that is not one."""
+    out: set[str] = set()
+    for raw in ids:
+        try:
+            out.add(str(uuid.UUID(str(raw))))
+        except ValueError:
+            raise HTTPException(
+                status_code=422, detail="A subtask id is not a task id.",
+            ) from None
+    if len(out) > MAX_DELETE_IDS:
+        raise HTTPException(
+            status_code=422, detail=f"At most {MAX_DELETE_IDS} subtask ids in one delete.",
+        )
+    return frozenset(out)
+
+
+def kept_parents(
+    tree: dict[str, str], task_id: str, grandparent: str | None, gone: frozenset[str],
+) -> dict[str, str | None]:
+    """The new parent of each KEPT descendant whose parent is deleted.
+
+    It is the nearest ancestor that survives. When no ancestor below the
+    task survives, it is the task's own parent, *grandparent* (D-PM-38,
+    generalised by D-OP-10). A kept descendant whose parent survives does
+    not move.
+    """
+    dead = gone | {task_id}
+    moves: dict[str, str | None] = {}
+    for kid, parent in tree.items():
+        if kid in dead or parent not in dead:
+            continue
+        up = parent
+        # Each step goes one level up inside the tree, so the walk ends after
+        # at most `len(tree)` steps. The cap holds even on a bad row.
+        for _ in range(len(tree) + 1):
+            if up not in dead or up == task_id:
+                break
+            up = tree.get(up, task_id)
+        moves[kid] = grandparent if up in dead else up
+    return moves
+
+
+async def delete_task_in(
+    db: Any, doomed: Any, *, vis: Any = None,
+    delete_ids: frozenset[str] = frozenset(), delete_all: bool = False,
+) -> DeleteResponse:
     """The body of ``DELETE /tasks/{id}``, inside a caller's transaction.
 
     Split out on 2026-09-24 (WS-39 S6g) so My Tasks' purge
     (``DELETE /projects/my/tasks/{id}``) can refuse a task outside the
     member's personal tree and delete in the SAME transaction as that check.
-    ``doomed`` is the row ``load_visible_task`` returned. The caller emits.
+    ``doomed`` is the row ``load_visible_task`` returned. The caller emits
+    one ``pm.task.deleted`` for the task and one for each id of
+    ``subtask_ids`` on the result.
+
+    *delete_ids* and *delete_all* (D-OP-10, owner 2026-10-23). The
+    descendants, at any depth, that go with the task. *delete_all* takes
+    every descendant that *vis* can see. Each id of *delete_ids* must be a
+    descendant that *vis* can see, or the call is 422 and nothing changes.
+    A hidden descendant is never deleted. It is kept, as each descendant
+    not in the set is. A kept one whose parent goes moves up to its nearest
+    surviving ancestor, or to the task's own parent when none below the task
+    survives (:func:`kept_parents`). ``subtasks_kept_hidden`` counts the
+    hidden ones, with no title. Each row goes through a plain ``DELETE``, so
+    the trigger of migration 168 writes one tombstone for each. With neither
+    argument the rule is D-PM-38, the rule before D-OP-10.
     """
     task_id = str(doomed.id)
-    # D-PM-38 (B10) — the subtasks move UP ONE LEVEL, to this task's own
-    # parent, before the row goes. The FK's SET NULL would make them
-    # top-level, which is two levels for a subtask of a subtask. In the same
-    # transaction as the delete, so a failure leaves both as they were.
-    #
-    # WS-27ae / P-27 — the moved ids come back from the UPDATE, because their
-    # `parent_task_id` changed and `updated_at` did not. Without the bump
-    # below, a promoted subtask is an edit no delta client can ever see.
-    children = await lift_subtasks_to_grandparent(db, task_id)
+    removed: list[str] = []
+    hidden = 0
+    if delete_ids or delete_all:
+        if vis is None:
+            # A caller that names subtasks must say who can see them. Fail
+            # closed, and never read "no visibility" as "sees everything".
+            raise ValueError("delete_task_in needs vis to delete subtasks")
+        # One seam (cascade.load_subtree): the whole subtree, each row with
+        # `visible`, through the caller's visibility and the agent's pins.
+        rows = await load_subtree(db, vis, task_id)
+        tree = {str(r.id): str(r.parent_task_id) for r in rows}
+        seen = frozenset(str(r.id) for r in rows if r.visible)
+        hidden = len(tree) - len(seen)
+        if delete_all:
+            ids = seen
+        else:
+            ids = clean_task_ids(delete_ids)
+            if ids - seen:
+                raise HTTPException(status_code=422, detail=SUBTASK_NOT_BELOW)
+        # The grandparent is read from the database, for the reason that
+        # `lift_subtasks_to_grandparent` gives.
+        row = (await db.execute(
+            text("SELECT parent_task_id FROM pm_tasks WHERE id = CAST(:tid AS uuid)"),
+            {"tid": task_id},
+        )).fetchone()
+        grand = getattr(row, "parent_task_id", None) if row is not None else None
+        moves = kept_parents(tree, task_id, str(grand) if grand else None, ids)
+        # The moves go BEFORE the deletes. The FK's SET NULL would otherwise
+        # make each kept row top-level first.
+        for kid, parent in moves.items():
+            # WS-55 MCP-G7: stamped here, so the trigger sees the parent
+            # change and moves `fields_at`. The touch below comes second.
+            await db.execute(
+                text("UPDATE pm_tasks SET parent_task_id = CAST(:p AS uuid),"
+                     " updated_at = now() WHERE id = CAST(:k AS uuid)"),
+                {"p": parent, "k": kid},
+            )
+        children = list(moves)
+        removed = sorted(ids)
+        if removed:
+            await db.execute(
+                text("DELETE FROM pm_tasks WHERE id = ANY(CAST(:ids AS uuid[]))"),
+                {"ids": removed},
+            )
+    else:
+        # D-PM-38 (B10) — the subtasks move UP ONE LEVEL, to this task's own
+        # parent, before the row goes. The FK's SET NULL would make them
+        # top-level, which is two levels for a subtask of a subtask. In the
+        # same transaction as the delete, so a failure leaves both as they were.
+        #
+        # WS-27ae / P-27 — the moved ids come back from the UPDATE, because
+        # their `parent_task_id` changed and `updated_at` did not. Without the
+        # bump below, a promoted subtask is an edit no delta client can see.
+        children = await lift_subtasks_to_grandparent(db, task_id)
     promoted = len(children)
     activities = await count_where(db, "pm_activities", "task_id", task_id)
     assignees = (await db.execute(
@@ -940,20 +2022,59 @@ async def delete_task_in(db: Any, doomed: Any) -> DeleteResponse:
     # of tasks at once. What this function still owes is the bump on the
     # rows the delete CHANGED but did not remove.
     await touch_task(db, getattr(doomed, "parent_task_id", None), *children)
-    return DeleteResponse(
+    out = DeleteResponse(
         deleted=task_id,
         cascaded={
             "activities": int(activities),
             "assignees": int(assignees),
             "links": int(links),
             "subtasks_promoted": int(promoted),
+            "subtasks_deleted": len(removed),
+            "subtasks_kept_hidden": int(hidden),
         },
     )
+    out._subtask_ids.extend(removed)
+    return out
+
+
+@router.get("/tasks/{task_id}/subtree")
+async def task_subtree(
+    task_id: str, user: UserContext = Depends(get_current_user),
+) -> dict:
+    """The subtasks that the delete dialog and the chat card offer (D-OP-10).
+
+    Every descendant the caller can see, at any depth, top down, archived
+    ones included. ``hidden`` counts the ones the caller cannot see, with no
+    title, because a delete keeps them (``delete_task_in``). One read through
+    ``cascade.load_subtree``, so it shows the set that ``delete_all`` takes.
+    """
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        await load_visible_task(db, vis, task_id)
+        rows = await load_subtree(db, vis, task_id)
+    shown = [r for r in rows if r.visible]
+    return {
+        "task_id": task_id,
+        "subtasks": [
+            {
+                "id": str(r.id),
+                "parent_task_id": str(r.parent_task_id) if r.parent_task_id else None,
+                "title": r.title,
+                "status_name": r.status_name,
+                "status_category": r.status_category,
+                "archived": getattr(r, "archived_at", None) is not None,
+            }
+            for r in shown
+        ],
+        "hidden": len(rows) - len(shown),
+    }
 
 
 @router.delete("/tasks/{task_id}")
 async def delete_task(
     task_id: str, user: UserContext = Depends(get_current_user),
+    delete_subtask_ids: list[str] = Query(default=[]),
+    delete_all_subtasks: bool = Query(default=False),
 ) -> DeleteResponse:
     """Delete a task, and say what went with it.
 
@@ -965,19 +2086,227 @@ async def delete_task(
     the exact class of lie the N8 purge shipped: a count that reassures in the
     wrong direction.
 
+    ``?delete_subtask_ids=<id>``, once for each id (D-OP-10), names the
+    descendants that go with the task. A query and not a body, because a
+    DELETE in this package takes no body. The default is none, so D-PM-38
+    holds. ``subtasks_deleted`` counts the ids that went. Each id must be a
+    descendant the member can see, or the call is 422 ``subtask_not_below``.
+    ``?delete_all_subtasks=true`` takes every subtask the member can see,
+    with no id list, because a long list overruns the URL. A list is at most
+    ``MAX_QUERY_DELETE_IDS`` ids. One ``pm.task.deleted`` goes out for the
+    task and one for each subtask.
+
     The work is :func:`delete_task_in`. This route opens the session, loads
     the task through the caller's visibility and emits the event.
     """
+    # A direct call, as most tests of this package make, gets the `Query`
+    # object itself, so only a list counts (the reason `require_precondition`
+    # gives for `If-Match`).
+    ids = clean_task_ids(delete_subtask_ids if isinstance(delete_subtask_ids, list) else [])
+    if len(ids) > MAX_QUERY_DELETE_IDS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Pick up to {MAX_QUERY_DELETE_IDS} subtasks, or choose Delete all.",
+        )
+    take_all = delete_all_subtasks is True
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         doomed = await load_visible_task(db, vis, task_id)
-        result = await delete_task_in(db, doomed)
+        # WS-64 OP-8 (D-OP-12). Checked on the task the member names. The
+        # subtasks that go with it follow that one check.
+        await assert_may_delete_task(db, user, doomed)
+        result = await delete_task_in(
+            db, doomed, vis=vis, delete_ids=frozenset() if take_all else ids,
+            delete_all=take_all,
+        )
 
-    await emit("pm.task.deleted", {"task_id": task_id})
+    for gone in (task_id, *result.subtask_ids):
+        await emit("pm.task.deleted", {"task_id": gone})
+    return result
+
+
+# ── The delete of an agent, with the member's yes (WS-55 EA-6h, EA3-51) ─────
+
+#: The coded refusals of ``agent-delete``. The MCP edge maps each one to a
+#: fixed text, and never shows the detail itself.
+#: 403: the member's switch "Let my AI agents delete tasks" is off.
+AGENT_DELETE_OFF = "agent_delete_off"
+#: 409: the task changed after the agent read it.
+AGENT_DELETE_STALE = "agent_delete_stale"
+#: 409: ``confirm_title`` is not the exact current title.
+AGENT_DELETE_TITLE = "agent_delete_title"
+
+#: The longest ``confirm_title``. The edge takes the same cap.
+AGENT_DELETE_TITLE_MAX = 2_000
+
+
+class AgentDeleteIn(BaseModel):
+    """``POST /projects/tasks/{id}/agent-delete`` (EA-6h). The agent sends
+    the version and the title that it read, so it must read the task and
+    name it (EA3-51 layer 3)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_version: str = Field(min_length=1, max_length=64)
+    confirm_title: str = Field(min_length=1, max_length=AGENT_DELETE_TITLE_MAX)
+    #: The member's answer (D-OP-10). Required, with no default: the agent
+    #: lists the subtasks to the person and passes what they chose. ``none``
+    #: keeps every one, ``all`` deletes the whole subtree, and a list names
+    #: the ids that go.
+    subtasks_to_delete: Literal["none", "all"] | Annotated[
+        list[str], Field(max_length=MAX_DELETE_IDS)]
+
+
+def _agent_delete_via(user: UserContext) -> str:
+    """The ``mcp:<slug>`` stamp of the signed agent caller, or 403.
+
+    A member deletes with ``DELETE /projects/tasks/{id}``. This route is the
+    agent's only, and it needs ``projects:write`` (branch 0 checks it too).
+    """
+    agent = getattr(user, "agent", None)
+    if agent is None:
+        raise HTTPException(
+            status_code=403,
+            detail="Only an agent uses this route. A member deletes a task in Metorite.",
+        )
+    via = str(getattr(agent, "actor_via", "") or "")
+    if not (via.startswith("mcp:") and ACTOR_VIA_PATTERN.fullmatch(via)):
+        raise HTTPException(status_code=403, detail="This agent connection has no client stamp.")
+    if PROJECTS_WRITE not in tuple(getattr(agent, "scopes", ()) or ()):
+        raise HTTPException(status_code=403, detail="This connection may not write.")
+    return via
+
+
+@router.post("/tasks/{task_id}/agent-delete")
+async def agent_delete_task(
+    task_id: str, payload: AgentDeleteIn,
+    user: UserContext = Depends(get_current_user),
+) -> DeleteResponse:
+    """An MCP agent deletes one task, after the member said yes (EA3-51).
+
+    The four layers of EA3-51. (1) The member's switch, read here in the
+    transaction of the delete: off answers 403 ``agent_delete_off``. (2) The
+    tool's ``destructiveHint`` and its text, at the edge. (3) The task row,
+    locked: a version other than ``updated_at`` or a title other than the
+    exact current title answers 409, and nothing changes. (4) The delete goes
+    through :func:`delete_task_in`, the one core, and the trigger of
+    migration 168 writes each tombstone. ``subtasks_to_delete`` is the
+    member's answer (D-OP-10). ``all`` takes each descendant that the member
+    can see through the connection's pins, and keeps each hidden one. An id
+    that is not such a descendant is 422 ``subtask_not_below``, and nothing
+    changes.
+
+    A task outside the member's visibility, or the connection's pins, is 404.
+    One ``pm.task.deleted`` goes out for the task and one for each deleted
+    subtask, after the commit. Each carries the client stamp as ``via``.
+    """
+    via = _agent_delete_via(user)
+    try:
+        task_id = str(uuid.UUID(task_id))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Task not found") from None
+    expected = parse_precondition(payload.expected_version)
+    from gateway.routes.admin.agent_access_switch import delete_enabled
+
+    async with _tenant_session() as db:
+        if not await delete_enabled(db, getattr(user, "email", None) or ""):
+            raise HTTPException(status_code=403, detail=AGENT_DELETE_OFF)
+        vis = await resolve_visibility(db, user)
+        await load_visible_task(db, vis, task_id)
+        # The lock holds the row until the delete commits, so a member's edit
+        # cannot land between the two checks and the delete.
+        doomed = await lock_task(db, task_id)
+        # WS-64 OP-8 (D-OP-12). The member's own authority, the rule of the
+        # app route. The edge maps this 403 to the same sentence.
+        await assert_may_delete_task(db, user, doomed)
+        # MCP-G7: the ONE place that keeps strict equality, on purpose. A
+        # delete is one-way, and `fields_at` does not see a subtask moved under
+        # this task (`/move` bumps only the parent), a My Tasks step or a
+        # merge into it. So with `subtasks_to_delete: all`, the fields rule
+        # could delete a subtree the member never saw. Any change after the
+        # read, a comment too, makes the member's yes stale.
+        # Fence: H2b and H2c of `test_mcp_edge_delete.py` (mutation D30).
+        if doomed.updated_at != expected:
+            raise HTTPException(status_code=409, detail=AGENT_DELETE_STALE)
+        if doomed.title != payload.confirm_title:
+            raise HTTPException(status_code=409, detail=AGENT_DELETE_TITLE)
+        # `vis` carries the agent's pins (`core._narrow_for_agent`), so a
+        # descendant outside them reads as hidden and stays.
+        choice = payload.subtasks_to_delete
+        result = await delete_task_in(
+            db, doomed, vis=vis, delete_all=choice == "all",
+            delete_ids=frozenset() if isinstance(choice, str) else clean_task_ids(choice),
+        )
+
+    _log.info("projects.task.agent_deleted", task_id=task_id, via=via,
+              subtasks_deleted=len(result.subtask_ids),
+              subtasks_kept_hidden=result.cascaded.get("subtasks_kept_hidden", 0),
+              connection_id=str(getattr(user.agent, "connection_id", "")))
+    for gone in (task_id, *result.subtask_ids):
+        await emit("pm.task.deleted", {"task_id": gone, "via": via})
     return result
 
 
 # ── Archive (WS-27w item 1) ─────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class ArchiveOutcome:
+    """What :func:`archive_task_in` did, for the reply and the events that
+    the caller emits after its commit."""
+
+    #: The task row, with its agent pill.
+    row: dict
+    #: True when the task was on the shelf before, so nothing was written.
+    was_archived: bool
+    #: The subtree that ``include_subtasks`` shelved, or ``None``.
+    cascade: Any | None
+
+
+async def archive_task_in(
+    db: Any, vis: Any, task: Any, user: UserContext, *, include_subtasks: bool,
+) -> ArchiveOutcome:
+    """The ONE core of an archive, inside the caller's transaction.
+
+    Two callers: :func:`archive_task`, and the archive approval of WS-55
+    EA-6g (``agent_runs.approve_task_archive``, EA3-40), which writes the
+    member's answer in the same transaction. *task* is a row that the caller
+    loaded through ``load_visible_task``. ``include_subtasks`` has no
+    default, so each caller says whether it shelves the subtree. The caller
+    emits ``pm.task.archived`` after its commit when ``was_archived`` is
+    false, and the events of ``cascade``.
+    """
+    task_id = str(task.id)
+    status = await require_row(
+        db, "pm_task_statuses", str(task.status_id), "Status",
+    )
+    was_archived = getattr(task, "archived_at", None) is not None
+    row = task
+    # Already archived — idempotent, the double-click answer. The
+    # subtasks are still asked about, so a second click with the box
+    # ticked shelves children the first click left out.
+    if not was_archived:
+        row = await update_row(
+            db, "pm_tasks", task_id, {"archived_at": now()},
+        )
+        await record_activity(
+            db, activity_type="system", created_by=actor(user),
+            task_id=task_id,
+            # Names the lane, because the status no longer implies the
+            # outcome. See `archive_note`.
+            body=archive_note(
+                getattr(status, "name", None),
+                str(getattr(status, "category", "") or ""),
+            ),
+        )
+    cascade = (
+        await archive_subtree(db, vis, task_id, by=actor(user))
+        if include_subtasks else None
+    )
+    result = row_to_dict(row, TaskModel)
+    await attach_agent_state(db, [result])
+    return ArchiveOutcome(result, was_archived, cascade)
+
 
 @router.post("/tasks/{task_id}/archive")
 async def archive_task(
@@ -1004,42 +2333,23 @@ async def archive_task(
     ``subtasks_archived`` and ``subtask_ids``. The default is false. Unarchive
     does NOT cascade: the client's Undo restores ``subtask_ids``, which are
     exactly the tasks this call shelved.
+
+    The work is :func:`archive_task_in`, the one core that the archive
+    approval of WS-55 EA-6g calls too.
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
-        status = await require_row(
-            db, "pm_task_statuses", str(task.status_id), "Status",
+        outcome = await archive_task_in(
+            db, vis, task, user, include_subtasks=include_subtasks,
         )
-        was_archived = getattr(task, "archived_at", None) is not None
-        row = task
-        # Already archived — idempotent, the double-click answer. The
-        # subtasks are still asked about, so a second click with the box
-        # ticked shelves children the first click left out.
-        if not was_archived:
-            row = await update_row(
-                db, "pm_tasks", task_id, {"archived_at": now()},
-            )
-            await record_activity(
-                db, activity_type="system", created_by=actor(user),
-                task_id=task_id,
-                # Names the lane, because the status no longer implies the
-                # outcome. See `archive_note`.
-                body=archive_note(
-                    getattr(status, "name", None),
-                    str(getattr(status, "category", "") or ""),
-                ),
-            )
-        cascade = (
-            await archive_subtree(db, vis, task_id, by=actor(user))
-            if include_subtasks else None
-        )
-        result = row_to_dict(row, TaskModel)
+        result = outcome.row
+        cascade = outcome.cascade
         if cascade is not None:
             result["subtasks_archived"] = len(cascade.ids)
             result["subtask_ids"] = cascade.ids
 
-    if not was_archived:
+    if not outcome.was_archived:
         await emit("pm.task.archived", {"task_id": task_id})
     if cascade is not None:
         await emit_all(cascade.events)
@@ -1067,7 +2377,7 @@ async def unarchive_task(
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
         if getattr(task, "archived_at", None) is None:
-            return row_to_dict(task, TaskModel)
+            return await _with_agent_state(db, row_to_dict(task, TaskModel))
         # ⚠️ A MERGED task loses its pointer here, and it must: migration
         # 210's `pm_tasks_merged_is_archived` refuses a row that claims to be
         # merged while off the shelf, so clearing one without the other is a
@@ -1092,7 +2402,7 @@ async def unarchive_task(
                 else "Task restored from the archive"
             ),
         )
-        result = row_to_dict(row, TaskModel)
+        result = await _with_agent_state(db, row_to_dict(row, TaskModel))
 
     await emit("pm.task.unarchived", {"task_id": task_id})
     return result
@@ -1100,10 +2410,110 @@ async def unarchive_task(
 
 # ── Assignees ───────────────────────────────────────────────────────────────
 
+def _clean_assignees(raw: Any) -> set[str]:
+    """The assignee set a body names: each non-blank entry, in lower case."""
+    return {a.strip().lower() for a in raw if (a or "").strip()}
+
+
+@dataclass(frozen=True)
+class _Assigned:
+    """What :func:`_write_assignees` changed, and whom it told."""
+
+    added: set[str]
+    removed: set[str]
+    notified: dict[str, list[str]]
+
+
+async def _write_assignees(
+    db: Any, user: UserContext, *, task_id: str, project_id: str,
+    wanted: set[str], current: set[str],
+) -> _Assigned:
+    """Make the assignee set *wanted*, inside the caller's transaction.
+
+    The ONE writer of a replaced set: ``set_assignees`` and, since WS-55
+    MCP-G2, the first assignees of ``create_task``. The order is the one the
+    claim mirrors: the assignee keys, then the timeline row (whose
+    ``touch_task`` bumps the task row), then the watcher keys.
+
+    * The personal-project guard runs before the first write, so a refusal
+      leaves the set as it was. Removals are not guarded.
+    * A signed agent call names at most :data:`AGENT_MAX_ASSIGNEES` people,
+      and it refuses a NEW person who cannot already open the task through
+      a project grant or the admin read right (:func:`_refuse_agent_assignees`).
+      Both checks come before the first write (fix round 1), so an agent
+      never widens who can open a task.
+    * Each NEW person gets one ``assigned`` notification. A signed agent
+      call writes ``via <client>`` as its excerpt (:func:`_agent_via_note`).
+    * *wanted* is lower case. A stored row may not be (a legacy row, or a
+      copy that ``recurrence.py`` made as it found it), so the two sides
+      compare in lower case. A person whose row differs only in case stays,
+      keeps the row as it is, and is neither checked nor notified again.
+
+    The caller emits ``pm.task.assigned`` after the commit.
+    """
+    stored: dict[str, list[str]] = {}
+    for raw in current:
+        stored.setdefault(str(raw).strip().lower(), []).append(raw)
+    added = wanted - set(stored)
+    removed = {raw for low, raws in stored.items() if low not in wanted for raw in raws}
+    if getattr(user, "agent", None) is not None and len(wanted) > AGENT_MAX_ASSIGNEES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"An agent names at most {AGENT_MAX_ASSIGNEES} assignees.",
+        )
+
+    # Requirement 5 (owner, 2026-08-26). Checked before the first write, so
+    # a refused assignment leaves the set exactly as it was rather than
+    # half-applied. REMOVALS are deliberately not guarded: taking somebody
+    # off a task can never be the thing that strands them.
+    await _assert_agent_may_assign_here(db, user, project_id, added)
+    # MCP-G2 fix round 1: BEFORE the insert, so the assignee arm cannot count.
+    await _refuse_agent_assignees(db, user, task_id, added)
+
+    for who in sorted(removed):
+        await db.execute(
+            text(
+                "DELETE FROM pm_task_assignees "
+                "WHERE task_id = CAST(:tid AS uuid) AND assignee = :who"
+            ),
+            {"tid": task_id, "who": who},
+        )
+    await insert_assignees(db, task_id, added, by=actor(user))
+    if added or removed:
+        await record_activity(
+            db, activity_type="assignment", created_by=actor(user),
+            task_id=task_id,
+            meta={"added": sorted(added), "removed": sorted(removed)},
+        )
+    # WS-27j — the notification is written INSIDE this transaction, not
+    # emitted on the bus afterwards. `emit` is best-effort by construction
+    # so a broken workflow can never fail a task edit; that is right for
+    # agent dispatch, where a missed run is recoverable, and wrong here.
+    # An assignment that committed while its notification did not is
+    # exactly the silent assignment §11.2 filed.
+    #
+    # Only `added`: a re-assert of somebody already on the task must not
+    # ping them again, the same reason the event carries added rather than
+    # the whole set.
+    notified = await notify(
+        db, recipients=sorted(added), kind="assigned",
+        task_id=task_id, actor_id=actor(user),
+        excerpt=_agent_via_note(user),
+    )
+    # WS-27v — a newly added assignee becomes a watcher. Idempotent, and
+    # only `added` for the same reason the event carries added: a re-assert
+    # is not a touch. Agents are dropped inside the helper (they are
+    # dispatched, never subscribed), and the rows survive a later
+    # unassignment — having held the work is a reason to keep hearing.
+    await ensure_watchers(db, task_id, sorted(added), by=actor(user))
+    return _Assigned(added=added, removed=removed, notified=notified)
+
+
 @router.put("/tasks/{task_id}/assignees")
 async def set_assignees(
     task_id: str, payload: AssigneesIn,
     user: UserContext = Depends(get_current_user),
+    if_match: str | None = Header(None, alias="If-Match"),
 ) -> dict:
     """Replace a task's assignee set.
 
@@ -1117,10 +2527,20 @@ async def set_assignees(
     carries the task's ``organization_id`` (WS-27aa): the sink runs with no
     request behind it, so this is the one place its tenant can come from a
     stored fact instead of an ambient binding.
+
+    WS-55 MCP-G2. For a member, ``If-Match`` is the version rule of the
+    PATCH (``precondition_holds``). For a signed agent it is strict equality
+    (:func:`_require_exact_version`, fix round 1), checked after the read of
+    the current set. An absent header passes (D-PM-20), so the app's calls
+    are unchanged. The writer is :func:`_write_assignees`.
     """
+    agent_call = getattr(user, "agent", None) is not None
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
+        # MCP-G2. After the visibility load, so a hidden task stays a 404.
+        if not agent_call:
+            _check_version(task, if_match)
         # WS-27aa / H4 — the tenant the dispatch sink will bind, read HERE:
         # inside the request's already-bound session, off the task's own
         # `organization_id` (NOT NULL since migration 161). It is a stored
@@ -1131,9 +2551,7 @@ async def set_assignees(
         # an unbound session — the exact thing H4 forbids.
         task_org = str(getattr(task, "organization_id", "") or "")
 
-        wanted = {
-            a.strip().lower() for a in payload.assignees if (a or "").strip()
-        }
+        wanted = _clean_assignees(payload.assignees)
         current = {
             r.assignee for r in (await db.execute(
                 text(
@@ -1143,49 +2561,16 @@ async def set_assignees(
                 {"tid": task_id},
             )).fetchall()
         }
-        added, removed = wanted - current, current - wanted
-
-        # Requirement 5 (owner, 2026-08-26). Checked before the first write, so
-        # a refused assignment leaves the set exactly as it was rather than
-        # half-applied. REMOVALS are deliberately not guarded: taking somebody
-        # off a task can never be the thing that strands them.
-        await assert_assignable_here(db, str(task.project_id), added)
-
-        for who in sorted(removed):
-            await db.execute(
-                text(
-                    "DELETE FROM pm_task_assignees "
-                    "WHERE task_id = CAST(:tid AS uuid) AND assignee = :who"
-                ),
-                {"tid": task_id, "who": who},
-            )
-        await insert_assignees(db, task_id, added, by=actor(user))
-        if added or removed:
-            await record_activity(
-                db, activity_type="assignment", created_by=actor(user),
-                task_id=task_id,
-                meta={"added": sorted(added), "removed": sorted(removed)},
-            )
-        # WS-27j — the notification is written INSIDE this transaction, not
-        # emitted on the bus afterwards. `emit` is best-effort by construction
-        # so a broken workflow can never fail a task edit; that is right for
-        # agent dispatch, where a missed run is recoverable, and wrong here.
-        # An assignment that committed while its notification did not is
-        # exactly the silent assignment §11.2 filed.
-        #
-        # Only `added`: a re-assert of somebody already on the task must not
-        # ping them again, the same reason the event carries added rather than
-        # the whole set.
-        notified = await notify(
-            db, recipients=sorted(added), kind="assigned",
-            task_id=task_id, actor_id=actor(user),
+        if agent_call:
+            # After the read of `current`: an assignment that this read saw
+            # moved `updated_at` in the same commit, so it stales the token.
+            await _require_exact_version(db, task_id, if_match)
+        assigned = await _write_assignees(
+            db, user, task_id=task_id, project_id=str(task.project_id),
+            wanted=wanted, current=current,
         )
-        # WS-27v — a newly added assignee becomes a watcher. Idempotent, and
-        # only `added` for the same reason the event carries added: a re-assert
-        # is not a touch. Agents are dropped inside the helper (they are
-        # dispatched, never subscribed), and the rows survive a later
-        # unassignment — having held the work is a reason to keep hearing.
-        await ensure_watchers(db, task_id, sorted(added), by=actor(user))
+        added, removed, notified = (
+            assigned.added, assigned.removed, assigned.notified)
 
     if added:
         await emit("pm.task.assigned", {
@@ -1193,7 +2578,19 @@ async def set_assignees(
             # The sink's ONLY tenant source. `agent_dispatch.on_event` refuses
             # a payload without it rather than running unbound.
             "organization_id": task_org,
+            # H-240: the member the dispatched run acts for. From the
+            # verified session (`user`), NEVER from `payload` (R11). An
+            # outside agent, a service caller or a suspended member is "".
+            MEMBER_KEY: assigning_member(user),
         })
+    elif removed:
+        # WS-58 MD-5a — a removal alone emits no event, and the task leaves
+        # the My Day of each member removed. So the org version moves, after
+        # the commit, with no new `pm.*` event: workflow triggers stay as
+        # they were (my_day_feed.md §8.4 item 5).
+        from gateway.routes.shell import cache as feed_cache
+
+        await feed_cache.bump_org(task_org)
     return {
         "task_id": task_id,
         "assignees": sorted(wanted),
@@ -1203,6 +2600,272 @@ async def set_assignees(
         # fix it.
         "not_notified": notified["skipped"],
     }
+
+
+# ── Claim (WS-55 EA-6b) ─────────────────────────────────────────────────────
+
+#: The codes of a refused claim (spec `external_agent_access.md` §9.2,
+#: EA3-34). Each refusal is a 422 whose detail is ``{"error": <code>,
+#: "message": <text>}``. The MCP edge maps each code to a fixed text of its
+#: own (``agent_edge.tools.CLAIM_TEXTS``) and never shows the message. A test
+#: pins the two sets equal.
+CLAIM_CLOSED = "claim_closed"
+CLAIM_TRIAGE = "claim_triage"
+CLAIM_ARCHIVED = "claim_archived"
+CLAIM_NO_STARTED_STATUS = "claim_no_started_status"
+CLAIM_REFUSALS: frozenset[str] = frozenset({
+    CLAIM_CLOSED, CLAIM_TRIAGE, CLAIM_ARCHIVED, CLAIM_NO_STARTED_STATUS,
+})
+
+
+#: The claim's own insert of its assignee key. It is ``core.insert_assignees``
+#: with ``RETURNING``, so the claim knows which rows it wrote. The PUT keeps
+#: the shared helper, which returns nothing.
+_CLAIM_INSERT_SQL = (
+    "INSERT INTO pm_task_assignees (task_id, assignee, assigned_by) "
+    "VALUES (CAST(:tid AS uuid), :who, :by) "
+    "ON CONFLICT (task_id, assignee) DO NOTHING RETURNING assignee"
+)
+
+
+async def _insert_claim_assignees(db: Any, task_id: str, wanted: list[str], *,
+                                  by: str) -> list[str]:
+    """Insert each assignee of *wanted* (lower case), and return the ones that
+    this insert wrote. A key that another transaction committed first is not
+    in the answer."""
+    written: list[str] = []
+    for who in sorted({str(w).strip().lower() for w in wanted if str(w or "").strip()}):
+        row = (await db.execute(
+            text(_CLAIM_INSERT_SQL), {"tid": task_id, "who": who, "by": by},
+        )).fetchone()
+        if row is not None:
+            written.append(str(row.assignee))
+    return written
+
+
+def _refuse_claim(code: str, message: str) -> NoReturn:
+    """Raise the 422 of a refused claim. Inside the transaction, so a
+    refusal after a write rolls that write back."""
+    raise HTTPException(status_code=422,
+                        detail={"error": code, "message": message})
+
+
+class ClaimIn(BaseModel):
+    """``POST /projects/tasks/{id}/claim``. The body is optional (CIV-14a).
+    An agent may send ``external_link``, an https link to its session. The
+    tenant and the member never come from this body (R5)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    external_link: str | None = Field(default=None, max_length=2_048)
+
+
+#: SW-63 (agent_coordination.md §5.10). The most subtask ids a claim lists.
+CLAIM_OPEN_SUBTASKS_MAX = 5
+
+
+async def _warn_open_subtasks(
+    db: Any, vis: Any, task_id: str, result: dict,
+) -> None:
+    """Add ``warning`` and ``open_subtasks`` to *result* of a claim (SW-63).
+
+    An open subtask is a child that ``task_closed_sql`` does not match. Only a
+    child the caller can see counts (R5, D12), so a hidden child leaks neither
+    in the number nor in the ids. The text is fixed: it holds no user text. A
+    leaf task gets neither key.
+    """
+    rows = (await db.execute(
+        text(
+            "SELECT s.task_id FROM ("
+            " SELECT t.id AS task_id, t.created_at FROM pm_tasks t"
+            " WHERE t.parent_task_id = CAST(:tid AS uuid)"
+            f" AND {task_visibility_clause(vis)}) s"
+            f" WHERE NOT {task_closed_sql('s')}"
+            " ORDER BY s.created_at, s.task_id"
+        ),
+        {"tid": task_id, **vis.params},
+    )).fetchall()
+    if not rows:
+        return
+    result["warning"] = (
+        f"This task has {len(rows)} open subtasks."
+        " Claim the slice, not the epic.")
+    result["open_subtasks"] = [
+        str(r[0]) for r in rows[:CLAIM_OPEN_SUBTASKS_MAX]]
+
+
+@router.post("/tasks/{task_id}/claim")
+async def claim_task(
+    task_id: str, payload: ClaimIn = ClaimIn(),
+    user: UserContext = Depends(get_current_user),
+    if_match: str | None = Header(None, alias="If-Match"),
+) -> dict:
+    """The caller takes the task: add them as an assignee, and start it.
+
+    WS-55 EA-6b (spec `external_agent_access.md` §9.2, EA3-34). ONE
+    transaction, with ``If-Match`` and no body. The name says that the call
+    can move the status, which ``assignees/self`` hid. A member may call it
+    too, and nothing here reads ``UserContext.agent``.
+
+    * ``backlog`` or ``todo``: add the caller, keep every other assignee, and
+      move the task to the first ``in_progress`` lane of its OWN status set
+      (``status_owner_id``, never the root: a subproject can own its set).
+    * ``in_progress``: add the caller. The status does not move.
+    * ``done``, ``cancelled``, ``triage``, or an archived task: 422, and
+      nothing is written. ``load_visible_task`` does not filter these, so
+      this route checks.
+    * No ``in_progress`` lane: 422, and the assignee write rolls back.
+    * Already assigned and already started: 200, and no activity row.
+
+    The assignee half reuses the path of ``set_assignees``: the personal
+    project guard, the key insert (``_insert_claim_assignees``, the SQL of
+    ``insert_assignees`` with ``RETURNING``), an ``assignment`` activity,
+    ``ensure_watchers``, ``notify(kind="assigned")`` and the
+    ``pm.task.assigned`` event. ``notify`` drops the actor, so a self claim
+    pings nobody. ``record_activity`` stamps ``meta.via`` on both rows.
+
+    **The lock order (fix round 3, option A).** The visibility load, then
+    the assignee key, then the task row lock (``core.lock_task``), then the
+    version check and the refusals, then the row writes, then the watcher
+    key. That is the order of ``set_assignees``: the key before the row,
+    and the watcher key after it. So the claim adds no lock order that a
+    member path does not already have, and it changes no member path.
+
+    **EA-13c (EA3-42).** Before the row lock, an agent's claim opens its
+    run through ``agent_runs.open_run_for_claim`` while the runs flag is on.
+    The one proven rule is the run BEFORE the task row: a run writer (a
+    member's start, the archive request) takes the run and then the row for
+    its comment, and O-M9 of ``test_mcp_edge_claim.py`` deadlocks when the
+    claim takes the row first. The run's place against the assignee key does
+    not matter, because no run writer takes an assignee key, so no cycle can
+    pass through the key. The answer carries ``agent_run_id``, which is None
+    for a member and with the flag off.
+    """
+    me = actor(user).strip().lower()
+    from gateway.routes.projects import agent_runs
+
+    link = agent_runs.check_run_link(payload.external_link)
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        # 1. The visibility load answers 404 for a task the caller cannot see.
+        seen = await load_visible_task(db, vis, task_id)
+        # The tenant of the dispatch sink, read as `set_assignees` reads it.
+        task_org = str(getattr(seen, "organization_id", "") or "")
+
+        # 2. The assignee key FIRST, through the helpers and in the order of
+        # `set_assignees` (fix round 3, option A): the key, then the row,
+        # then the watcher key. The PUT, the merge and the bulk add take the
+        # key before the row too, so the claim adds no lock order that a
+        # member path does not already have. A second claim of the same
+        # member waits here on the first claim's key.
+        current = {
+            r.assignee for r in (await db.execute(
+                text(
+                    "SELECT assignee FROM pm_task_assignees "
+                    "WHERE task_id = CAST(:tid AS uuid)"
+                ),
+                {"tid": task_id},
+            )).fetchall()
+        }
+        wanted = sorted({me} - current)
+        await assert_assignable_here(db, str(seen.project_id), set(wanted))
+        # Final fix (review P2): `added` is the set that THIS insert wrote,
+        # not the set that the read above missed. Two claims of one member
+        # with no If-Match both read an empty set, and the second insert
+        # writes nothing. Without RETURNING the second claim also wrote an
+        # `assignment` row, answered `assigned: true` and emitted
+        # `pm.task.assigned` for a row it did not write.
+        added = await _insert_claim_assignees(db, task_id, wanted, by=actor(user))
+
+        # 2b. EA-13c (EA3-42): an agent's claim opens its run while the runs
+        # flag is on, through the one run writer. BEFORE the row: a run writer
+        # takes the run, then the task row (its comment bumps the row), and
+        # the claim keeps that order (O-M9). Its place after the key does not
+        # matter: no run writer takes an assignee key. A refusal below rolls
+        # the run back with the claim. None for a member.
+        run_id = await agent_runs.open_run_for_claim(db, task_id, user, link)
+
+        # 3. The row lock, and the row as the lock read it (fix round 1).
+        # Two claims serialise here, and the second one sees the new
+        # `updated_at`. A PATCH to done that holds the row makes the claim
+        # wait, and the claim then reads the done.
+        task = await lock_task(db, task_id)
+        # 4. The version, on the locked row and before any row write.
+        require_precondition(task, if_match, row_to_dict(task, TaskModel))
+        # 5. The refusals. Each one raises inside the transaction, so the
+        # keys of step 2 roll back and a refused claim writes nothing.
+        if getattr(task, "archived_at", None) is not None:
+            _refuse_claim(CLAIM_ARCHIVED, "An archived task cannot be claimed.")
+        status = await require_row(
+            db, "pm_task_statuses", str(task.status_id), "Status",
+        )
+        category = str(getattr(status, "category", "") or "")
+        if category in CLOSING_CATEGORIES:
+            _refuse_claim(CLAIM_CLOSED,
+                          "A done or cancelled task cannot be claimed.")
+        if category == TRIAGE_CATEGORY:
+            _refuse_claim(CLAIM_TRIAGE,
+                          "A task in triage cannot be claimed. Accept it first.")
+        lane = None
+        if category != STARTED_CATEGORY:
+            home = await status_owner_id(db, str(task.project_id))
+            try:
+                lane = await load_default_status(db, home, STARTED_CATEGORY)
+            except HTTPException:
+                _refuse_claim(
+                    CLAIM_NO_STARTED_STATUS,
+                    "This project has no in progress status. Add one first.",
+                )
+
+        # 6. The writes of the row: the activity (its `touch_task` bumps the
+        # locked row), then the move from the locked row.
+        if added:
+            await record_activity(
+                db, activity_type="assignment", created_by=actor(user),
+                task_id=task_id, meta={"added": added, "removed": []},
+            )
+        moved = None
+        if lane is not None:
+            moved = await apply_status_transition(
+                db, task, str(lane.id), created_by=actor(user),
+            )
+
+        notified = await notify(
+            db, recipients=added, kind="assigned",
+            task_id=task_id, actor_id=actor(user),
+        )
+        # The watcher key after the row, as `set_assignees` writes it. Before
+        # the row it crossed a member's PATCH, which writes the row and then
+        # the editor's watcher key (fix round 3).
+        await ensure_watchers(db, task_id, added, by=actor(user))
+
+        row = await load_visible_task(db, vis, task_id)
+        result = row_to_dict(row, TaskModel)
+        result["assignees"] = sorted(current | set(wanted))
+        await attach_agent_state(db, [result])
+        result["moved"] = moved is not None
+        result["assigned"] = bool(added)
+        result["not_notified"] = notified["skipped"]
+        # EA-13c: the run that this claim opened or found, else None.
+        result["agent_run_id"] = run_id
+        # SW-63: a task with open subtasks still claims. The result warns.
+        await _warn_open_subtasks(db, vis, task_id, result)
+
+    if added:
+        await emit("pm.task.assigned", {
+            "task_id": task_id, "assignees": added,
+            "organization_id": task_org,
+            # H-240: the session's member, as `set_assignees` writes it.
+            MEMBER_KEY: assigning_member(user),
+        })
+    if moved is not None:
+        await emit("pm.task.updated", {"task_id": task_id})
+        await emit("pm.task.status_changed", {
+            "task_id": task_id,
+            "from": moved["from"].name, "to": moved["to"].name,
+            "to_category": moved["to"].category,
+        })
+    return result
 
 
 # ── Links ───────────────────────────────────────────────────────────────────
@@ -1218,7 +2881,7 @@ async def create_link(
             detail=f"Unknown link type '{payload.link_type}'. "
                    f"One of: {list(_LINK_TYPES)}.",
         )
-    if str(payload.target_task_id) == str(task_id):
+    if canonical_task_id(payload.target_task_id) == canonical_task_id(task_id):
         raise HTTPException(
             status_code=422, detail="A task cannot be linked to itself.",
         )
@@ -1234,30 +2897,14 @@ async def create_link(
         # finishing something, and every walk over it runs forever.
         if payload.link_type in DIRECTED_TYPES:
             await assert_no_block_cycle(db, task_id, str(payload.target_task_id))
-        row = (await db.execute(
-            text(
-                "INSERT INTO pm_task_links "
-                "(source_task_id, target_task_id, link_type, created_by) "
-                "VALUES (CAST(:src AS uuid), CAST(:tgt AS uuid), :kind, :who) "
-                "ON CONFLICT (source_task_id, target_task_id, link_type) "
-                "DO UPDATE SET link_type = EXCLUDED.link_type RETURNING id"
-            ),
-            {
-                "src": task_id, "tgt": str(payload.target_task_id),
-                "kind": payload.link_type, "who": actor(user),
-            },
-        )).fetchone()
-        await record_activity(
-            db, activity_type="link", created_by=actor(user), task_id=task_id,
-            meta={"target": str(payload.target_task_id), "type": payload.link_type},
+        # The ONE insert, shared with the links from text (TR-5): the row,
+        # the `link` activity on the source and the bump of the target.
+        link_id = await insert_task_link(
+            db, task_id, str(payload.target_task_id), payload.link_type,
+            by=actor(user),
         )
-        # WS-27ae / P-27 — the activity above bumps the SOURCE. A link is
-        # readable from both ends (`attach_relation_counts` draws "blocked" on
-        # the target), so the target changed too and a delta client watching
-        # only the blocked task would otherwise never learn it is blocked.
-        await touch_task(db, str(payload.target_task_id))
         return {
-            "id": str(row.id), "source_task_id": task_id,
+            "id": link_id, "source_task_id": task_id,
             "target_task_id": str(payload.target_task_id),
             "link_type": payload.link_type,
         }
@@ -1271,24 +2918,13 @@ async def delete_link(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         await load_visible_task(db, vis, task_id)
-        row = (await db.execute(
-            text(
-                "DELETE FROM pm_task_links WHERE id = CAST(:lid AS uuid) "
-                "AND (source_task_id = CAST(:tid AS uuid) "
-                "     OR target_task_id = CAST(:tid AS uuid)) "
-                "RETURNING id, source_task_id, target_task_id"
-            ),
-            {"lid": link_id, "tid": task_id},
-        )).fetchone()
-        if row is None:
-            raise HTTPException(status_code=404, detail="Link not found")
-        # WS-27ae / P-27 — unlinking records NO activity (deliberately: WS-27p
-        # kept the timeline for the link, not the unlink), so this is the one
-        # place the bump cannot ride the spine. BOTH ends, read off the deleted
-        # row rather than assumed from the path, because the caller may be
-        # either end of it.
-        await touch_task(
-            db, getattr(row, "source_task_id", None),
-            getattr(row, "target_task_id", None),
+        # SW-16a: a signed agent must see BOTH ends, as `create_link` requires.
+        # A link that leaves its pin reads as a link that does not exist. A
+        # person keeps the rule of this route: the end they see is enough.
+        removed = await delete_task_link(
+            db, task_id, link_id, by=actor(user),
+            far_end_vis=vis if getattr(user, "agent", None) is not None else None,
         )
+        if not removed:
+            raise HTTPException(status_code=404, detail="Link not found")
         return {"deleted": link_id}

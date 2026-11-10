@@ -1,0 +1,193 @@
+/**
+ * The one POST that answers a parked HITL tool: `/api/agent/respond-input`.
+ *
+ * Every blocking card (a confirmation, a question, an ask_user prompt, a
+ * blocking generative UI) answers through here, so the rule for a failure
+ * lives in one place:
+ *
+ * - `ok`: the server took the answer.
+ * - `retry`: a network fault or a 5xx. The tool may still be waiting, so
+ *   the caller restores the card and the member can try again.
+ * - `retry` also holds for a 400 or a 422 (#916): the server refused THIS
+ *   answer, and the member can change it (a row, a value). The card stays
+ *   open with the reason beside its buttons.
+ * - `drop`: any other 4xx. 409 says no question waits on that id, 403 says
+ *   this member cannot answer it, and 401 says the session ended. A restored
+ *   card fails the same way on every click. That loop is what the member saw
+ *   on 2026-10-06.
+ * - A 409 `run_restarted` is a `drop` that carries `resend`: the run that
+ *   asked died with an app update, and the gateway hands back the question
+ *   and the answer as one message. The caller sends THAT, not the bare
+ *   answer, so the next run knows what was asked (incident 2026-10-09).
+ *   A card whose run PARKED (WS-51 S2) comes back the same way.
+ * - A 409 `answer_in_other_account` (WS-51 S2) is a `retry` that carries
+ *   `otherAccount`: this tab drew the card for one account, and the browser
+ *   is now signed in to another. The route refused it before the gateway, so
+ *   nothing reached the other org. The caller keeps the card and says
+ *   "Switch to <account> to answer".
+ *
+ * Fences: `src/lib/confirmationQueue.test.ts` ("the answer POST") and
+ * `src/lib/respondInput.test.ts` (the other account).
+ */
+
+import { restartedCardDisplay, restartedCardMessage } from "@/lib/chatRecovery";
+import type { CardAnswer } from "@/lib/cardAnswer";
+
+export type RespondOutcome = "ok" | "drop" | "retry";
+
+/** The outcome, plus the message to send instead when the run restarted. */
+export interface RespondResult {
+  outcome: RespondOutcome;
+  resend: string | null;
+  /** What the member sees for `resend`: the answered card (owner report,
+   *  2026-10-13). Null for an old gateway, and the chat then parses the
+   *  envelope (`lib/cardAnswer.ts`). */
+  display?: CardAnswer | null;
+  /** The account that drew the card, when the browser is signed in to
+   *  another one now (WS-51 S2). The answer was not sent. */
+  otherAccount?: string | null;
+  /** Why the answer did not land, in plain words, for the card to show
+   *  beside its buttons (UXD-3). Absent on `ok` and on a resend. */
+  reason?: string;
+}
+
+export interface RespondInputBody {
+  request_id: string;
+  answer: string;
+  was_freeform: boolean;
+  /** Lets the gateway route the answer to the worker that owns the parked
+   *  run (P1-2 cross-worker control bus). */
+  thread_id: string;
+  /** The account this tab drew the card for (WS-51 S2). The route refuses
+   *  the answer when the browser is signed in to another account now. */
+  as?: string | null;
+  /** The member's "Not now" (`lib/declineAnswer.ts`). `answer` is then
+   *  empty, and the run goes on without one. */
+  declined?: boolean;
+}
+
+/**
+ * The route's refusal for a malformed decline, or null to go on. `declined`
+ * must be a boolean, and a decline carries no answer. The gateway checks the
+ * same (`UserInputResponseRequest`), so this only saves it the trip.
+ */
+export function malformedDecline(declined: unknown, answer: string): Response | null {
+  if (declined === undefined || declined === false) return null;
+  if (declined === true && !answer.trim()) return null;
+  return new Response(
+    JSON.stringify({ error: "A declined card carries no answer, and declined is true or false." }),
+    { status: 400, headers: { "Content-Type": "application/json" } },
+  );
+}
+
+/**
+ * The route's refusal for an answer from a tab whose account is no longer the
+ * signed-in one, or null to go on (WS-51 S2). `drawnFor` can only refuse,
+ * never grant: the gateway still checks the room under the session's tenant.
+ */
+export function otherAccountRefusal(
+  drawnFor: string | null | undefined,
+  signedInAs: string,
+): Response | null {
+  const want = (drawnFor ?? "").trim().toLowerCase();
+  if (!want || want === signedInAs.trim().toLowerCase()) return null;
+  return new Response(
+    JSON.stringify({ detail: { error: "answer_in_other_account", account: drawnFor } }),
+    { status: 409, headers: { "Content-Type": "application/json" } },
+  );
+}
+
+/** The account named by a 409 `answer_in_other_account`, or null. */
+export function otherAccountOf(body: string): string | null {
+  try {
+    const d = (JSON.parse(body) as { detail?: { error?: unknown; account?: unknown } })?.detail;
+    if (d && d.error === "answer_in_other_account" && typeof d.account === "string" && d.account) {
+      return d.account;
+    }
+  } catch {
+    /* not the route's JSON */
+  }
+  return null;
+}
+
+/** The detail text of a gateway refusal, if it holds a plain one. */
+function refusalDetail(body: string): string | null {
+  try {
+    const j = JSON.parse(body) as { detail?: unknown; error?: unknown };
+    for (const v of [j.detail, j.error]) {
+      if (typeof v === "string" && v.trim() && v.length <= 200) return v.trim();
+    }
+  } catch {
+    /* not JSON */
+  }
+  return null;
+}
+
+/**
+ * Why an answer did not land, in words the member can act on (UXD-3). A
+ * retry names the next step. A refusal says what to change. Nothing goes
+ * only to the console.
+ */
+export function respondFailureText(status: number | undefined, body = ""): string {
+  if (status === undefined) return "Metorite could not be reached. Check the connection, then try again.";
+  if (status >= 500) return "The server could not take the answer. Try again.";
+  if (status === 409) return "Nothing waits on this answer now. The run ended, or someone answered it.";
+  if (status === 403) return "You cannot answer this request. Ask its owner to answer it.";
+  if (status === 401) return "Your session ended. Sign in again, then answer.";
+  const detail = refusalDetail(body);
+  return detail ? `The server refused the answer: ${detail}` : "The server refused the answer.";
+}
+
+/**
+ * What a failed POST means. `status` is undefined for a network fault.
+ * A network fault, a 5xx, a 400 and a 422 keep the card (`retry`). Any other
+ * 4xx (401, 403, 404, 409) drops it, because a click cannot fix those.
+ */
+export function respondFailure(status: number | undefined): "retry" | "drop" {
+  if (status === undefined) return "retry";
+  if (status === 400 || status === 422) return "retry";
+  return status >= 500 ? "retry" : "drop";
+}
+
+export async function sendRespondInput(
+  body: RespondInputBody,
+  fetchFn: typeof fetch = fetch,
+): Promise<RespondOutcome> {
+  return (await sendRespondInputResult(body, fetchFn)).outcome;
+}
+
+export async function sendRespondInputResult(
+  body: RespondInputBody,
+  fetchFn: typeof fetch = fetch,
+): Promise<RespondResult> {
+  let res: Response;
+  try {
+    res = await fetchFn("/api/agent/respond-input", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      // A held REJECT can go out on `pagehide` (#916). keepalive lets the
+      // browser finish it after the page is gone.
+      keepalive: true,
+    });
+  } catch (err) {
+    console.error("respond-input failed — restoring HITL card", err);
+    return { outcome: "retry", resend: null, reason: respondFailureText(undefined) };
+  }
+  if (res.ok) return { outcome: "ok", resend: null };
+  const text = await res.text().catch(() => "");
+  const otherAccount = res.status === 409 ? otherAccountOf(text) : null;
+  if (otherAccount) {
+    // Not sent. The card stays, so the member can answer after the switch.
+    return { outcome: "retry", resend: null, otherAccount };
+  }
+  const outcome = respondFailure(res.status);
+  if (outcome === "drop") {
+    const resend = res.status === 409 ? restartedCardMessage(text) : null;
+    if (resend) return { outcome, resend, display: restartedCardDisplay(text) };
+    console.warn(`respond-input refused (${res.status}), card dropped`, text);
+  } else {
+    console.error(`respond-input failed (${res.status}) — restoring HITL card`, text);
+  }
+  return { outcome, resend: null, reason: respondFailureText(res.status, text) };
+}

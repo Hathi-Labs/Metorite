@@ -682,6 +682,36 @@ async def test_a_lead_status_refuses_both_deal_only_columns(
     assert "deal-only" in str(exc.value.detail)
 
 
+async def test_a_lead_status_takes_a_win_chance(db: FakeCrmDB) -> None:
+    """CRM-U6, migration 288: a lead status carries `probability` like a deal
+    stage does. It is no longer a deal-only field."""
+    stages = _lead_pipeline(db)
+
+    result = await crm_admin.patch_status(
+        "lead", str(stages["Contacted"].id), crm_admin.StatusIn(probability=25), USER,
+    )
+
+    assert result.probability == 25
+
+
+@pytest.mark.parametrize(
+    ("stage", "chance"), [("Qualified", 40), ("Lost", 10), ("New", 101)],
+)
+async def test_a_lead_win_chance_keeps_the_won_lost_clamp(
+    db: FakeCrmDB, stage: str, chance: int,
+) -> None:
+    """CRM-U6: won leads forecast 100, lost leads 0, and 0-100 bounds the rest.
+    It is the same rule as the deal stages (D-CRM-10)."""
+    stages = _lead_pipeline(db)
+
+    with pytest.raises(HTTPException) as exc:
+        await crm_admin.patch_status(
+            "lead", str(stages[stage].id), crm_admin.StatusIn(probability=chance), USER,
+        )
+
+    assert exc.value.status_code == 422
+
+
 async def test_a_position_only_patch_is_still_not_a_forecast_decision(
     db: FakeCrmDB,
 ) -> None:
@@ -1010,6 +1040,152 @@ async def test_the_weighted_aggregate_binds_the_stage_default(
     assert proposal_call["stage_probability"] == 50
 
 
+# ── Task 887 · a lane keeps each currency apart (H-333) ────────────────────
+#
+# The app holds no exchange rate. So a lane total is for ONE currency (the
+# primary: INR first), and the rest sit in ``others``.
+
+async def test_a_lane_of_one_currency_has_no_others(db: FakeCrmDB) -> None:
+    stages = _deal_pipeline(db)
+    _seed_deal(db, stages["Proposal"], amount=100_000.0, probability=20)
+    _seed_deal(db, stages["Proposal"], amount=200_000.0, probability=50)
+
+    board = await crm_pipeline.get_pipeline(owner=None, per_lane=50, user=USER)
+    proposal = next(x for x in board.lanes if x.status.name == "Proposal")
+
+    assert proposal.others == []
+    assert proposal.currency == "INR"
+    assert (proposal.count, proposal.amount) == (2, 300_000.0)
+    assert proposal.weighted == 20_000.0 + 100_000.0
+    empty = next(x for x in board.lanes if x.status.name == "Qualification")
+    assert (empty.currency, empty.amount, empty.others) == ("INR", 0.0, [])
+
+
+async def test_a_mixed_lane_sums_each_currency_apart(db: FakeCrmDB) -> None:
+    stages = _deal_pipeline(db)
+    _seed_deal(db, stages["Proposal"], amount=100_000.0, probability=20)
+    _seed_deal(db, stages["Proposal"], amount=4_000.0, currency="USD", probability=50)
+    _seed_deal(db, stages["Proposal"], amount=500.0, currency="EUR", probability=10)
+
+    board = await crm_pipeline.get_pipeline(owner=None, per_lane=50, user=USER)
+    proposal = next(x for x in board.lanes if x.status.name == "Proposal")
+
+    assert proposal.count == 3
+    assert (proposal.currency, proposal.amount, proposal.weighted) == (
+        "INR", 100_000.0, 20_000.0,
+    )
+    assert [(o.currency, o.amount, o.weighted) for o in proposal.others] == [
+        ("EUR", 500.0, 50.0), ("USD", 4_000.0, 2_000.0),
+    ]
+
+
+async def test_the_primary_currency_is_inr_even_at_zero(db: FakeCrmDB) -> None:
+    """INR leads when a deal of the lane carries it, even for an amount of 0."""
+    stages = _deal_pipeline(db)
+    _seed_deal(db, stages["Proposal"], amount=0.0, currency="INR")
+    _seed_deal(db, stages["Proposal"], amount=900.0, currency="USD")
+
+    board = await crm_pipeline.get_pipeline(owner=None, per_lane=50, user=USER)
+    proposal = next(x for x in board.lanes if x.status.name == "Proposal")
+
+    assert (proposal.currency, proposal.amount) == ("INR", 0.0)
+    assert [(o.currency, o.amount) for o in proposal.others] == [("USD", 900.0)]
+
+
+async def test_a_lane_with_only_usd_leads_with_usd(db: FakeCrmDB) -> None:
+    stages = _deal_pipeline(db)
+    _seed_deal(db, stages["Proposal"], amount=900.0, currency="USD")
+
+    board = await crm_pipeline.get_pipeline(owner=None, per_lane=50, user=USER)
+    proposal = next(x for x in board.lanes if x.status.name == "Proposal")
+
+    assert (proposal.currency, proposal.amount, proposal.others) == ("USD", 900.0, [])
+
+
+async def test_a_blank_or_padded_code_reads_by_the_one_rule(db: FakeCrmDB) -> None:
+    stages = _deal_pipeline(db)
+    _seed_deal(db, stages["Proposal"], amount=10.0, currency="")
+    _seed_deal(db, stages["Proposal"], amount=5.0, currency="inr")
+    _seed_deal(db, stages["Proposal"], amount=7.0, currency=" usd ")
+    _seed_deal(db, stages["Proposal"], amount=3.0, currency="USD")
+
+    board = await crm_pipeline.get_pipeline(owner=None, per_lane=50, user=USER)
+    proposal = next(x for x in board.lanes if x.status.name == "Proposal")
+
+    assert (proposal.currency, proposal.amount) == ("INR", 15.0)
+    assert [(o.currency, o.amount) for o in proposal.others] == [("USD", 10.0)]
+
+
+async def test_a_terminal_mixed_lane_forecasts_nothing_in_any_currency(
+    db: FakeCrmDB,
+) -> None:
+    stages = _deal_pipeline(db)
+    _seed_deal(db, stages["Closed Won"], amount=100.0, probability=100)
+    _seed_deal(db, stages["Closed Won"], amount=50.0, currency="USD", probability=100)
+
+    board = await crm_pipeline.get_pipeline(owner=None, per_lane=50, user=USER)
+    won = next(x for x in board.lanes if x.status.name == "Closed Won")
+
+    assert won.weighted == 0.0
+    assert [o.weighted for o in won.others] == [0.0]
+    assert (won.amount, won.others[0].amount) == (100.0, 50.0)
+
+
+async def test_show_more_does_not_change_the_currency_totals(
+    db: FakeCrmDB,
+) -> None:
+    stages = _deal_pipeline(db)
+    for _ in range(3):
+        _seed_deal(db, stages["Proposal"], amount=100.0)
+    for _ in range(3):
+        _seed_deal(db, stages["Proposal"], amount=10.0, currency="USD")
+    lane_id = str(stages["Proposal"].id)
+
+    first = await crm_pipeline.get_pipeline(
+        owner=None, per_lane=2, lane_status_id=lane_id, lane_offset=0, user=USER,
+    )
+    later = await crm_pipeline.get_pipeline(
+        owner=None, per_lane=2, lane_status_id=lane_id, lane_offset=4, user=USER,
+    )
+
+    for board in (first, later):
+        lane = board.lanes[0]
+        assert (lane.count, lane.currency, lane.amount) == (6, "INR", 300.0)
+        assert [(o.currency, o.amount) for o in lane.others] == [("USD", 30.0)]
+    assert len(later.lanes[0].rows) == 2
+
+
+async def test_the_lane_aggregate_is_grouped_by_the_currency_rule(
+    db: FakeCrmDB,
+) -> None:
+    """Structural: ONE grouped statement for each lane, whatever the count of
+    currencies, and no SUM without the GROUP BY of the one currency rule. So a
+    sum over two currencies cannot be written here. The weighted formula is
+    still the one from ``core`` (not a copy)."""
+    stages = _deal_pipeline(db)
+    _seed_deal(db, stages["Proposal"], amount=1.0)
+    _seed_deal(db, stages["Proposal"], amount=1.0, currency="USD")
+    _seed_deal(db, stages["Proposal"], amount=1.0, currency="EUR")
+
+    await crm_pipeline.get_pipeline(owner=None, per_lane=50, user=USER)
+    sums = db.statements_touching("AS weighted")
+
+    assert sums
+    rule = crm_pipeline.CURRENCY_SQL
+    assert all(f"GROUP BY {rule}" in s and f"{rule} AS currency" in s for s in sums)
+    assert all("SUM(amount)" in s for s in sums)
+    assert crm_core.WEIGHTED_SQL in sums[0]
+    # One aggregate for each lane (4 lanes), however many currencies it holds.
+    assert len(sums) == len(stages)
+    # The lane read is a grouped aggregate plus the page: 2 statements a lane.
+    lane_reads = [
+        stmt for stmt, params in db.calls
+        if "FROM crm_deals" in stmt and "status_id" in params
+        and "SELECT currency FROM" not in stmt
+    ]
+    assert len(lane_reads) == 2 * len(stages)
+
+
 # ── WS-26c · kanban cards carry the account name (done-when 2) ─────────────
 
 async def test_a_board_card_carries_its_organization_name(
@@ -1019,8 +1195,8 @@ async def test_a_board_card_carries_its_organization_name(
     name/org/amount/owner/stage-age, and the browser cannot client-side join
     the account list because that list is paged at 100."""
     stages = _deal_pipeline(db)
-    org = db.seed("crm_organizations", name="Bosch India")
-    _seed_deal(db, stages["Proposal"], amount=100_000.0, organization_id=org.id)
+    org = db.seed("crm_companies", name="Bosch India")
+    _seed_deal(db, stages["Proposal"], amount=100_000.0, company_id=org.id)
 
     board = await crm_pipeline.get_pipeline(owner=None, per_lane=50, user=USER)
     proposal = next(x for x in board.lanes if x.status.name == "Proposal")
@@ -1053,10 +1229,11 @@ async def test_the_lane_query_joins_after_its_own_limit(
     _seed_deal(db, stages["Proposal"], amount=1.0)
 
     await crm_pipeline.get_pipeline(owner=None, per_lane=2, user=USER)
-    joined = db.statements_touching("LEFT JOIN crm_organizations")
+    joined = db.statements_touching("LEFT JOIN crm_companies")
 
     assert joined, "the board lost its organization-name projection"
-    assert "LIMIT :limit) base LEFT JOIN" in joined[0]
+    # "Show more" pages a lane, so the offset sits inside the limit too.
+    assert "LIMIT :limit OFFSET :offset) base LEFT JOIN" in joined[0]
     assert joined[0].rstrip().endswith("base.id DESC")
 
 

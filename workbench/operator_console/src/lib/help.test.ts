@@ -90,7 +90,7 @@ describe("the tooltips that carry a consequence", () => {
   });
 
   it("an unpriced Add warns the model arrives costs blind", () => {
-    expect(HELP_AVAILABLE.addUnpriced.toLowerCase()).toContain("costs blind");
+    expect(HELP_AVAILABLE.addUnpriced.toLowerCase()).toContain("no vendor price");
   });
 
   it("a blank box is explained as UNKNOWN, never as zero", () => {

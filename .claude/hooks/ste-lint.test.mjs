@@ -12,10 +12,19 @@
  */
 import { lintText } from './ste-lint.mjs'
 import { spawnSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 
 const LINT = path.join(path.dirname(fileURLToPath(import.meta.url)), 'ste-lint.mjs')
+
+// Two folders for the path cases: one in no repo, and one shaped like a
+// `git worktree` (a `.git` FILE at its root). Neither is under this checkout.
+const OUTSIDE = mkdtempSync(path.join(tmpdir(), 'ste-outside-'))
+const WORKTREE = mkdtempSync(path.join(tmpdir(), 'ste-worktree-'))
+writeFileSync(path.join(WORKTREE, '.git'), 'gitdir: /nowhere\n')
+mkdirSync(path.join(WORKTREE, 'docs'), { recursive: true })
 
 const CASES = [
   // --- the word list -------------------------------------------------------
@@ -162,10 +171,24 @@ for (const [name, text, tier, expect] of CASES) {
 }
 
 // --- the PostToolUse contract -------------------------------------------------
-// A bad markdown Write must come back as exit 2, because that is the only exit
-// code Claude Code shows to the agent. Exit 1 would be logged and ignored.
-const hook = (payload) =>
-  spawnSync(process.execPath, [LINT, '--hook'], { input: JSON.stringify(payload), encoding: 'utf8' })
+// In the hardening pass (STE_LINT_BLOCK=1) a bad markdown Write must come back
+// as exit 2, because that is the only exit code Claude Code shows to the agent.
+// Exit 1 would be logged and ignored. The cases below run in that mode.
+const hook = (payload, block = '1') =>
+  spawnSync(process.execPath, [LINT, '--hook'], {
+    input: JSON.stringify(payload),
+    encoding: 'utf8',
+    env: { ...process.env, STE_LINT_BLOCK: block },
+  })
+
+// In build mode (the default) the same error is advisory: exit 0, and the
+// finding reaches the agent as additionalContext.
+{
+  const res = hook({ tool_name: 'Write', tool_input: { file_path: 'docs/x.md', content: 'Utilize it.' } }, '')
+  const ok = res.status === 0 && /advisory/.test(res.stdout) && /hardening pass/.test(res.stdout)
+  if (!ok) failed++
+  console.log(`${ok ? 'ok  ' : 'FAIL'}  ${'build mode reports, does not block'.padEnd(38)} exit=${res.status}`)
+}
 
 const HOOK_CASES = [
   ['write bad markdown blocks', { tool_name: 'Write', tool_input: { file_path: 'docs/x.md', content: 'Utilize it.' } }, 2],
@@ -187,6 +210,16 @@ const HOOK_CASES = [
   // the next commit that touches one fails on somebody else's prose.
   ['an adopted upstream skill is not ours', { tool_name: 'Write', tool_input: { file_path: '.claude/skills/frontend-design/SKILL.md', content: 'Utilize it.' } }, 0],
   ['a skill we wrote is still ours', { tool_name: 'Write', tool_input: { file_path: '.claude/skills/ste/SKILL.md', content: 'Utilize it.' } }, 2],
+  // A path is judged against ITS OWN checkout (2026-10-16). OUTSIDE has no
+  // `.git` above it, like agent memory. WORKTREE holds a `.git` FILE, as a
+  // `git worktree` does, and sits outside the session's checkout.
+  ['a file in no repo is not ours', { tool_name: 'Write', tool_input: { file_path: path.join(OUTSIDE, '.claude', 'memory', 'x.md'), content: 'Utilize it.' } }, 0],
+  ['a vendored skill in a worktree is not ours', { tool_name: 'Write', tool_input: { file_path: path.join(WORKTREE, 'skills', 'upstream', 'x', 'SKILL.md'), content: 'Utilize it.' } }, 0],
+  ['a doc in a worktree is still strict', { tool_name: 'Write', tool_input: { file_path: path.join(WORKTREE, 'docs', 'x.md'), content: 'However, it is open.' } }, 2],
+  // On Windows, a Git Bash path names a drive. Elsewhere `/c/...` is a real path.
+  ...(process.platform === 'win32'
+    ? [['a Git Bash path is still ours', { tool_name: 'Write', tool_input: { file_path: '/' + WORKTREE[0].toLowerCase() + WORKTREE.slice(2).replace(/\\/g, '/') + '/docs/x.md', content: 'However, it is open.' } }, 2]]
+    : []),
 ]
 
 for (const [name, payload, expected] of HOOK_CASES) {
@@ -197,6 +230,39 @@ for (const [name, payload, expected] of HOOK_CASES) {
   if (!ok && res.stderr) console.log(`        ${res.stderr.split('\n')[0]}`)
 }
 
-const total = CASES.length + HOOK_CASES.length
+// --- `--staged` reads the index of the checkout the caller stands in ----------
+// Metorite #460 (2026-10-25). CLAUDE_PROJECT_DIR names the session's MAIN
+// checkout, even when the session commits from a worktree. `--staged` read that
+// checkout's index, so in a worktree it reported nothing. REPO is a fresh repo
+// that stands in for the worktree, and CLAUDE_PROJECT_DIR points elsewhere.
+const REPO = mkdtempSync(path.join(tmpdir(), 'ste-staged-'))
+const git = (...args) => spawnSync('git', args, { cwd: REPO, encoding: 'utf8' })
+git('init', '-q')
+mkdirSync(path.join(REPO, 'docs'), { recursive: true })
+const staged = (text) => {
+  writeFileSync(path.join(REPO, 'docs', 'x.md'), text)
+  git('add', 'docs/x.md')
+  return spawnSync(process.execPath, [LINT, '--staged'], {
+    cwd: REPO,
+    encoding: 'utf8',
+    env: { ...process.env, CLAUDE_PROJECT_DIR: OUTSIDE },
+  })
+}
+const STAGED_CASES = [
+  ['staged error in another checkout fails', 'However, it is open.\n', 1],
+  ['staged clean text in it passes', 'It is open.\n', 0],
+]
+for (const [name, text, expected] of STAGED_CASES) {
+  const res = staged(text)
+  const ok = res.status === expected
+  if (!ok) failed++
+  console.log(`${ok ? 'ok  ' : 'FAIL'}  ${name.padEnd(38)} exit=${res.status} expected=${expected}`)
+  if (!ok) console.log(`        ${(res.stdout || res.stderr || '').split('\n')[0]}`)
+}
+rmSync(REPO, { recursive: true, force: true })
+
+const total = CASES.length + HOOK_CASES.length + STAGED_CASES.length
 console.log(failed === 0 ? `\nall ${total} cases passed` : `\n${failed} of ${total} FAILED`)
+rmSync(OUTSIDE, { recursive: true, force: true })
+rmSync(WORKTREE, { recursive: true, force: true })
 process.exit(failed === 0 ? 0 : 1)

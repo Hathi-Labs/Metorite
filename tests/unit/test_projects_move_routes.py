@@ -139,7 +139,10 @@ class TestThePrivacyGuardActuallyRuns:
         self, db: FakeProjectsDB,
     ) -> None:
         source, s_doing, _dest, _, _ = two_projects(db)
-        mine = db.seed_project(name="My list", personal_owner="someone@else.test")
+        # WS-64 OP-9: the caller's OWN personal project. Somebody else's is
+        # now a 404 before the guard runs (D-OP-15), so it no longer drives
+        # the guard. Team to personal is refused whoever owns the destination.
+        mine = db.seed_project(name="My list", personal_owner=USER.email)
         db.seed_status(mine.id, name="Next", category="active", is_default=True)
         task = db.seed_task(source.id, status_id=s_doing.id, title="Shared")
 
@@ -160,7 +163,10 @@ class TestThePrivacyGuardActuallyRuns:
         refuse. `_plan` runs the guard, and both endpoints start with `_plan`
         — this is what pins that ordering."""
         source, s_doing, _dest, _, _ = two_projects(db)
-        mine = db.seed_project(name="My list", personal_owner="someone@else.test")
+        # WS-64 OP-9: the caller's OWN personal project. Somebody else's is
+        # now a 404 before the guard runs (D-OP-15), so it no longer drives
+        # the guard. Team to personal is refused whoever owns the destination.
+        mine = db.seed_project(name="My list", personal_owner=USER.email)
         db.seed_status(mine.id, name="Next", category="active", is_default=True)
         task = db.seed_task(source.id, status_id=s_doing.id, title="Shared")
 

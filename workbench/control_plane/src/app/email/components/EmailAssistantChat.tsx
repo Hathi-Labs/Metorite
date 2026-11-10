@@ -10,11 +10,12 @@
  * chat app automatically flow into the email app.
  *
  * The wrapper's only jobs are:
- *   1. Manage the email-assistant session list (via the shared @/lib/sessions
- *      store, scoped to agentName="email-assistant" — so these conversations are
- *      the SAME objects the chat app sees).
- *   2. Feed the agent the user's current email context (selected account + open
- *      email) so it can act on "this email" without the user repeating ids.
+ *   1. Manage the email-assistant session list (`useAgentSessions`, scoped to
+ *      agentName="email-assistant" — so these conversations are the SAME
+ *      objects the chat app sees — and to the signed-in member and org).
+ *   2. Feed the agent the user's current email context (the chat scope, one
+ *      mailbox or All inboxes, + the open email) so it can act on "this email"
+ *      without the user repeating ids (EM-T8e-3, `lib/chatScope.ts`).
  *   3. Bridge the Assistant "Fix" flow (pendingChatPrompt → composer).
  */
 
@@ -22,23 +23,35 @@ import Icon from "@/components/Icon";
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useSession } from "next-auth/react";
 import AgentChat from "@/components/AgentChat";
-import {
-  getSessions, createSession, upsertSession, deleteSession,
-  enrichSession, fetchAndMergeSessionsFromDb, type ChatSession,
-} from "@/lib/sessions";
-import { useActiveSessions } from "@/hooks/useActiveSessions";
+import { useAgentSessions } from "@/hooks/useChatSessions";
+import { useActiveSessions, useUnreadIds } from "@/hooks/useActiveSessions";
+import SessionRunDot from "@/components/SessionRunDot";
 import { useChatMemories } from "@/hooks/useChatMemories";
 import { useEmailStore } from "../lib/emailStore";
 import {
   buildEmailAssistantPersona,
   type PersonaAccountSettings,
 } from "../lib/emailAssistantPersona";
+import {
+  chatMailboxOptions,
+  chatScope,
+  chatSettingsRead,
+  rememberChatScope,
+  type ChatScopeMemory,
+  type ChatScopePick,
+} from "../lib/chatScope";
 import { getAssistantSettings } from "../lib/api";
+import { EMAIL_CHAT_TIER } from "../lib/assistantSettings";
+import { useTierRouted } from "@/hooks/useTierRouted";
+import { governedModelProps } from "@/lib/tierRouting";
 
 const AGENT = "email-assistant";
 
 interface EmailAssistantChatProps {
-  selectedAccountId?: string | null;
+  /** The scope of the page: `ALL_INBOXES` or a mailbox id (EM-T8e-3). The
+   *  chat starts on it. In All inboxes the page passes `ALL_INBOXES`, never
+   *  its hidden `selectedAccountId`. */
+  pageScope?: string | null;
   selectedEmailId?: string | null;
   /** When set, renders a back button in the header — used when the chat is a
    *  full scene (like Assistant / Reply Zero) rather than a sidebar rail. */
@@ -46,7 +59,7 @@ interface EmailAssistantChatProps {
 }
 
 export function EmailAssistantChat({
-  selectedAccountId,
+  pageScope,
   selectedEmailId,
   onClose,
 }: EmailAssistantChatProps) {
@@ -59,65 +72,75 @@ export function EmailAssistantChat({
   const setPendingChatPrompt = useEmailStore((s) => s.setPendingChatPrompt);
 
   const activeRunIds = useActiveSessions();
+  // WS-51 S5: a chat whose run ended while the member looked away.
+  const unreadIds = useUnreadIds();
 
-  const [sessions, setSessions] = useState<ChatSession[]>([]);
-  const [activeId, setActiveId] = useState<string>("");
   const [showSessions, setShowSessions] = useState(false);
   const [pendingInput, setPendingInput] = useState<string | undefined>();
 
-  // Which mailbox the CONVERSATION is about. Defaults to whatever the inbox is
-  // showing, but the composer's mailbox picker can point the assistant at a
-  // different one without making the user leave the thread (or change what
-  // they're reading). Cleared when the inbox selection moves, so the two only
-  // diverge while the user deliberately holds them apart.
-  // Held as {against, id} rather than reset by an effect: the override is valid
-  // only while the inbox selection it was made against still stands, so moving
-  // the inbox drops it derivationally — no cascading render, no stale window
-  // where the two disagree.
-  const [chatAccountOverride, setChatAccountOverride] = useState<
-    { against: string | null; id: string } | null
-  >(null);
-  const chatAccountId =
-    (chatAccountOverride?.against === (selectedAccountId ?? null)
-      ? chatAccountOverride.id
-      : null) ??
-    selectedAccountId ??
-    null;
-  const pickChatAccount = useCallback(
-    (id: string) =>
-      setChatAccountOverride({ against: selectedAccountId ?? null, id }),
-    [selectedAccountId],
+  // The scope of the CONVERSATION: one mailbox, or All inboxes (EM-T8e-3,
+  // D-EM-23). It starts on the scope of the page, and the composer's picker
+  // can point the assistant elsewhere without moving the page: a pick calls
+  // neither selectAccount nor selectAll. Held as {against, scope} rather than
+  // reset by an effect: the pick is valid only while the page scope it was
+  // made against still stands, so moving the page drops it derivationally.
+  // A scope on a removed mailbox falls back by pickInitialView (chatScope).
+  const [scopePick, setScopePick] = useState<ChatScopePick | null>(null);
+  const {
+    allInboxes: chatAllInboxes,
+    accountId: chatAccountId,
+    pickerId,
+  } = chatScope(accounts, pageScope ?? null, scopePick);
+  const pickChatScope = useCallback(
+    (scope: string) => setScopePick({ against: pageScope ?? null, scope }),
+    [pageScope],
   );
-  const mailboxOptions = useMemo(
-    () =>
-      accounts.map((a) => ({
-        id: a.id,
-        label: a.emailAddress || a.id,
-      })),
-    [accounts],
-  );
+  const mailboxOptions = useMemo(() => chatMailboxOptions(accounts), [accounts]);
 
-  // The CHAT mailbox's assistant settings. Two things ride on this, both
-  // per-account: which chat model to run (the single source of truth is
-  // Assistant → Settings → Models, not AgentChat's generic per-agent picker),
-  // and the standing configuration (about / instructions / writing style) the
-  // persona hands the agent — so switching mailboxes switches how the assistant
-  // behaves, not just which account_id it passes to tools. Defaults to
-  // tier-powerful so a send during the fetch window uses a sensible model.
-  const [chatModel, setChatModel] = useState<string | undefined>("tier-powerful");
+  // The scope is a pure derivation, so a mailbox that leaves is gone from it.
+  // The chat holds the scope of the render before, and when the mailbox of
+  // that scope leaves, it shows one note that names it and the new scope
+  // (EM-T8f-3, §11.6 case 17). rememberChatScope gives back the same object
+  // for the same scope, so this update stops after one more render.
+  const [scopeMemory, setScopeMemory] = useState<ChatScopeMemory | null>(null);
+  const nextScopeMemory = rememberChatScope(scopeMemory, accounts, pickerId);
+  if (nextScopeMemory !== scopeMemory) setScopeMemory(nextScopeMemory);
+  const scopeNotice = nextScopeMemory.note
+    ? {
+        text: nextScopeMemory.note,
+        onDismiss: () => setScopeMemory((m) => (m ? { ...m, note: null } : m)),
+      }
+    : null;
+
+  // The CHAT mailbox's assistant settings carry the standing configuration
+  // (about / instructions / writing style) that the persona hands the agent,
+  // so switching mailboxes switches how the assistant behaves, not just which
+  // account_id it passes to tools. All inboxes reads no settings: each mailbox
+  // has its own (D-EM-24).
+  //
+  // No setting picks the chat's tier (D-EM-61). A covered email-assistant
+  // runs on the platform's tier, so the chat passes no model (WS-45 S4, D90).
+  // Every other case runs on EMAIL_CHAT_TIER, which our code chooses.
+  const tier = useTierRouted(AGENT);
   const [acctSettings, setAcctSettings] =
     useState<PersonaAccountSettings | null>(null);
   useEffect(() => {
-    if (!chatAccountId) {
-      setChatModel("tier-powerful");
+    const read = chatSettingsRead(
+      { allInboxes: chatAllInboxes, accountId: chatAccountId },
+      getAssistantSettings,
+    );
+    if (!read) {
       setAcctSettings(null);
       return;
     }
+    // Clear the settings of the mailbox before, so that its standing orders
+    // never stand under the name of the new one while the read is out, or
+    // after the read fails (D-EM-18, D-EM-24; EM-T8e-3 review F1).
+    setAcctSettings(null);
     let cancelled = false;
-    getAssistantSettings(chatAccountId)
+    read
       .then((s) => {
         if (cancelled) return;
-        setChatModel(s.chat_model || "tier-powerful");
         setAcctSettings({
           about: s.about,
           personal_instructions: s.personal_instructions,
@@ -126,13 +149,12 @@ export function EmailAssistantChat({
         });
       })
       .catch(() => {
-        // Keep the tier-powerful default if the lookup fails; the persona
-        // degrades to account-awareness without the standing orders.
+        // No standing orders. The persona still names the mailbox.
       });
     return () => {
       cancelled = true;
     };
-  }, [chatAccountId]);
+  }, [chatAllInboxes, chatAccountId]);
 
   // Inject Mem0 memories so the assistant has the SAME cross-conversation
   // continuity here as in the chat app (parity) — shared fetch + 30s poll via
@@ -143,36 +165,23 @@ export function EmailAssistantChat({
     [memoryObjs],
   );
 
-  const emailSessions = useMemo(
-    () => sessions.filter((s) => s.agentName === AGENT),
-    [sessions],
-  );
+  // The list is the signed-in member's in this org, and a restored chat the
+  // server refuses gives way to a new one (production bug, 2026-10-05).
+  const {
+    mine: emailSessions,
+    activeId,
+    activeSession,
+    newSession: openNewSession,
+    switchSession: openSession,
+    removeSession,
+    handleActivity,
+    onSessionRefused,
+    recoveredInput,
+    consumeRecoveredInput,
+    notice: recoveryNotice,
+  } = useAgentSessions(AGENT);
 
-  // Restore the most recent email-assistant session (or start one) on mount.
   /* eslint-disable react-hooks/set-state-in-effect */
-  useEffect(() => {
-    const existing = getSessions().filter((s) => s.agentName === AGENT);
-    if (existing.length > 0) {
-      setSessions(getSessions());
-      setActiveId(existing[0].id);
-    } else {
-      const s = createSession(AGENT);
-      upsertSession(s);
-      setSessions(getSessions());
-      setActiveId(s.id);
-    }
-  }, []);
-
-  // Merge email-assistant sessions that live only in Postgres (cache clear,
-  // other device, or created from the main chat app).
-  useEffect(() => {
-    let cancelled = false;
-    fetchAndMergeSessionsFromDb()
-      .then((merged) => { if (!cancelled) setSessions(merged); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, []);
-
   // The Assistant's "Fix" flow hands a correction prompt through the store —
   // drop it into the composer (the user reviews & sends it).
   useEffect(() => {
@@ -184,61 +193,32 @@ export function EmailAssistantChat({
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const newSession = useCallback(() => {
-    const s = createSession(AGENT);
-    upsertSession(s);
-    setSessions(getSessions());
-    setActiveId(s.id);
+    openNewSession();
     setShowSessions(false);
-  }, []);
+  }, [openNewSession]);
 
   const switchSession = useCallback((id: string) => {
-    setActiveId(id);
+    openSession(id);
     setShowSessions(false);
-  }, []);
-
-  const removeSession = useCallback(
-    (id: string) => {
-      deleteSession(id);
-      const remaining = getSessions().filter((s) => s.agentName === AGENT);
-      setSessions(getSessions());
-      if (id === activeId) {
-        if (remaining.length > 0) {
-          setActiveId(remaining[0].id);
-        } else {
-          const s = createSession(AGENT);
-          upsertSession(s);
-          setSessions(getSessions());
-          setActiveId(s.id);
-        }
-      }
-    },
-    [activeId],
-  );
-
-  const handleActivity = useCallback(
-    (info: { firstUserMessage?: string; lastPreview?: string; messageCount: number }) => {
-      enrichSession(activeId, info);
-      setSessions(getSessions());
-    },
-    [activeId],
-  );
+  }, [openSession]);
 
   // Compose the email context the agent operates with — the connected accounts,
-  // the selected account, and the currently-open email — via the SHARED builder
+  // the scope of the chat, and the currently-open email — via the SHARED builder
   // the chat app also uses, so running the assistant here vs in the chat app is
   // the same experience (the open email is the only email-app-specific extra).
+  // The open email names its mailbox in both scopes (EM-T8e-3).
   const emailContextStr = useMemo(
     () =>
       buildEmailAssistantPersona({
         accounts,
         selectedAccountId: chatAccountId,
+        allInboxes: chatAllInboxes,
         openEmail: emails.find((e) => e.id === selectedEmailId) ?? null,
-        settings: acctSettings,
+        settings: chatAllInboxes ? null : acctSettings,
       }),
-    [accounts, emails, chatAccountId, selectedEmailId, acctSettings],
+    [accounts, emails, chatAccountId, chatAllInboxes, selectedEmailId, acctSettings],
   );
 
-  const activeSession = emailSessions.find((s) => s.id === activeId);
 
   return (
     <div className="flex flex-col h-full bg-sidebar text-sidebar-foreground overflow-hidden">
@@ -311,14 +291,7 @@ export function EmailAssistantChat({
                 }`}
                 onClick={() => switchSession(s.id)}
               >
-                {activeRunIds.has(s.id) ? (
-                  <span
-                    className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse flex-shrink-0"
-                    title="Active — agent is working"
-                  />
-                ) : (
-                  <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/30 flex-shrink-0" />
-                )}
+                <SessionRunDot running={activeRunIds.has(s.id)} unread={unreadIds.has(s.id)} placeholder />
                 <div className="flex-1 min-w-0">
                   <div className="text-[11px] text-foreground truncate">
                     {s.title || "New conversation"}
@@ -353,19 +326,23 @@ export function EmailAssistantChat({
             agentName={AGENT}
             sessionId={activeSession.id}
             compact
-            model={chatModel}
-            lockModel
+            {...governedModelProps(tier.covered, EMAIL_CHAT_TIER)}
             persona={emailContextStr}
             emailContext={{ accountId: chatAccountId, emailId: selectedEmailId }}
             mailboxes={mailboxOptions}
-            activeMailboxId={chatAccountId}
-            onMailboxChange={pickChatAccount}
+            activeMailboxId={pickerId}
+            onMailboxChange={pickChatScope}
+            notice={recoveryNotice ?? scopeNotice}
             memories={memories}
             memoryUserId={userId}
             expectedMessageCount={activeSession.messageCount}
             onActivity={handleActivity}
-            pendingInput={pendingInput}
-            onPendingInputConsumed={() => setPendingInput(undefined)}
+            onSessionRefused={onSessionRefused}
+            pendingInput={pendingInput ?? recoveredInput}
+            onPendingInputConsumed={() => {
+              setPendingInput(undefined);
+              consumeRecoveredInput();
+            }}
           />
         )}
       </div>

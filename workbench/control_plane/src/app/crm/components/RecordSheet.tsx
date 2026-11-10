@@ -8,15 +8,39 @@
  * the app and a link to a record carries the list the sender was looking at.
  * That decision lives in ../lib/urlState.ts; this is its surface.
  *
- * Left: the timeline. Right: the fields. Both halves are their own component
- * because the sheet serves four entities and the difference between them is
- * entirely in the field list.
+ * Record page v2 (WS-53 CRM-X4, `crm_platform.md` section 19.8):
+ *
+ * - A summary header under the title: the stage or the status as the one
+ *   `StatusPill`, and the facts of `summaryFacts`.
+ * - Four tabs, kept in `?rtab=`: Overview, Timeline, Related and Fields. A
+ *   lead has no Related tab.
+ * - `j` and `k` step to the next and the previous record of the list the
+ *   member came from. `page.tsx` passes that order, or null when no list is
+ *   behind the record, and then the keys do nothing and the arrows hide.
+ *
+ * `RecordSheet` holds the hooks, the reads and the keys. `RecordPage` draws
+ * the body from props only, so a test renders it without a DOM.
  */
 
-import Icon from "@/components/Icon";
-import { useViewMode } from "@/components/ViewModeProvider";
+import Button from "@/components/ui/Button";
+import { useCachedResource } from "@/lib/useCachedResource";
+import { useEffect, useRef } from "react";
+import * as api from "../lib/api";
+import { importedLine, isLocked, zohoLink } from "../lib/connect";
+import { summaryFacts, type FieldDef } from "../lib/fields";
+import { NO_RELATED, type RelatedLists } from "../lib/related";
+import { navLabel, navStep, neighbour, RECORD_PAGE_ATTR } from "../lib/recordNav";
+import { nextOpenActivities } from "../lib/timeline";
+import type { FieldLayout } from "../lib/fieldLayout";
+import { useCrmStore, type CrmRefusal } from "../lib/store";
+import { recordTabsFor, shownRecordTab, type RecordTab } from "../lib/urlState";
+import { useCrmModeValue } from "../lib/modeContext";
+import { useFieldDefs, useFieldLayout } from "../lib/useCrmMode";
+import { ENTITY_NOUN, sourceSingular, type SourceLabels } from "../lib/views";
 import FieldsPanel from "./FieldsPanel";
-import Timeline from "./Timeline";
+import { RecordCard, RecordFacts, RecordLoadFailed, RecordTabBar } from "./RecordShell";
+import StatusPill from "./StatusPill";
+import Timeline, { TimelineItem } from "./Timeline";
 import type { DealContact, EntitySlug, Status, TimelineEntry } from "../lib/types";
 
 type Row = Record<string, unknown>;
@@ -28,14 +52,254 @@ const TITLE_KEY: Record<EntitySlug, string[]> = {
   organizations: ["name"],
 };
 
+type LogBody = {
+  type: "note" | "call" | "meeting" | "task";
+  subject?: string;
+  body?: string;
+  due_at?: string;
+};
+
+/** The verbs of the record page. The sheet and the body share them. */
+type RecordActions = {
+  /**
+   * Save an edit. `store.patchRecord` gives `false` for a refusal, and the
+   * Fields tab then keeps its edit open (CRM-C4b, the 422 rule).
+   */
+  onPatch: (body: Record<string, unknown>) => void | Promise<boolean>;
+  onMoveStatus: (statusId: string) => void;
+  onLog: (body: LogBody) => void;
+  onToggleTask: (activityId: string, completed: boolean) => void;
+  onConvert: () => void;
+  onSetPrimary: (contactId: string) => void;
+  onDetach: (contactId: string) => void;
+  onOpenContact: (contactId: string) => void;
+  /** The related lists of a company or a contact (CRM-Q3). */
+  related?: RelatedLists;
+  /** A related row opens that record. */
+  onOpenRelated?: (entity: EntitySlug, id: string) => void;
+  onRetryRelated?: () => void;
+  /** The `log-call` job (CRM-X2): not 0 sets the Timeline composer to Call. */
+  callRequest?: number;
+};
+
+/** The place of the record in the list behind it (CRM-X4 item 5). */
+type RecordOrder = {
+  /** The ids of the list the member came from, in its order. Null: no list. */
+  order: string[] | null;
+  /** Open the record with this id in place of this one. */
+  onStep: (id: string) => void;
+};
+
 export default function RecordSheet({
   entity,
+  id,
   record,
   statuses,
+  places,
   timeline,
   dealContacts,
   saving,
   onClose,
+  tab,
+  onTab,
+  order = null,
+  onStep,
+  related = NO_RELATED,
+  labels = null,
+  ...actions
+}: {
+  entity: EntitySlug;
+  /** The id in the URL. It is known while the record loads, so the steps stay. */
+  id: string;
+  record: Row | null;
+  statuses: Status[];
+  /** The places of the pipeline the record sits in, for the stage menu order. */
+  places?: ReadonlyMap<string, number>;
+  timeline: TimelineEntry[];
+  dealContacts: DealContact[];
+  saving: boolean;
+  onClose: () => void;
+  /** The tab of `?rtab=`. */
+  tab: RecordTab;
+  onTab: (tab: RecordTab) => void;
+  /**
+   * The source's names of the core entities (CRM-Q17a-2 item 7). In Mirror
+   * mode a contact can read "Existing Site". `null` keeps the CRM's noun.
+   */
+  labels?: SourceLabels | null;
+} & RecordActions &
+  RecordOrder) {
+  const { defs } = useFieldDefs(entity);
+  // CRM-C4b: the layout draws the Fields tab when it says `studio`.
+  const { layout } = useFieldLayout(entity);
+  const refusal = useCrmStore((s) => s.refusal);
+  const loadFailed = useCrmStore((s) => s.recordFailed);
+  const loadRecord = useCrmStore((s) => s.loadRecord);
+  const attachContact = useCrmStore((s) => s.attachContact);
+
+  // A contact row names its company by id only. The name is one read of the
+  // company record, through the one read cache.
+  // CRM-U16: a deal row carries `organization_name` only in a list, so the
+  // deal page reads its company the same way.
+  const companyId =
+    (entity === "contacts" || entity === "deals") && typeof record?.company_id === "string"
+      ? record.company_id
+      : null;
+  const company = useCachedResource<Row>(
+    companyId ? `crm:organizations:${companyId}` : null,
+    () => api.getRecord<Row>("organizations", companyId!),
+  );
+  const companyName =
+    typeof company.data?.name === "string" && company.data.id === companyId ? company.data.name : null;
+
+  // `j` and `k` (CRM-X4 item 5). `navStep` refuses a key with a modifier down,
+  // so Cmd-K stays the shell's, and a key typed into a field.
+  useEffect(() => {
+    if (!order) return;
+    const onKey = (event: KeyboardEvent) => {
+      const step = navStep(event);
+      if (step === null) return;
+      const next = neighbour(order, id, step);
+      if (!next) return;
+      event.preventDefault();
+      onStep(next);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [order, id, onStep]);
+
+  const title = record
+    ? TITLE_KEY[entity]
+        .map((key) => record[key])
+        .filter(Boolean)
+        .join(" ") || "Untitled"
+    : loadFailed
+      ? "Did not load"
+      : "Loading…";
+
+  const zoho = zohoLink(record);
+  const steps = order ? <RecordSteps order={order} id={id} onStep={onStep} /> : null;
+
+  return (
+    // The page mounts it from `?deal=` and the rest, and every way out runs
+    // `onClose`, which is `closeRecord`. Back closes it too, because Back
+    // drops the parameter. The card is the shared shell (`RecordShell`).
+    <RecordCard
+      title={title}
+      noun={sourceSingular(entity, labels) ?? ENTITY_NOUN[entity]}
+      zoho={zoho}
+      actions={steps}
+      onClose={onClose}
+    >
+      {record === null && loadFailed ? (
+        <RecordLoadFailed onRetry={() => void loadRecord(entity, id)} />
+      ) : record === null ? (
+        <p className="p-8 text-center text-xs text-muted-foreground">Loading…</p>
+      ) : (
+        <RecordPage
+          entity={entity}
+          record={record}
+          statuses={statuses}
+          places={places}
+          timeline={timeline}
+          dealContacts={dealContacts}
+          saving={saving}
+          fieldDefs={defs}
+          layout={layout}
+          refusal={refusal}
+          tab={tab}
+          onTab={onTab}
+          companyName={companyName}
+          labels={labels}
+          onAttach={
+            entity === "deals" && typeof record.id === "string"
+              ? (contactId) => void attachContact(record.id as string, contactId)
+              : undefined
+          }
+          related={related}
+          {...actions}
+        />
+      )}
+    </RecordCard>
+  );
+}
+
+/**
+ * The place in the list, and the two steps for a mouse or a touch. `j` and `k`
+ * do the same from the keyboard. It sits in the header row, in the slot of the
+ * app's own controls, as a task's do (ORC-1, D181).
+ */
+export function RecordSteps({
+  order,
+  id,
+  onStep,
+}: {
+  order: string[];
+  id: string;
+  onStep: (id: string) => void;
+}) {
+  const place = navLabel(order, id);
+  const previous = neighbour(order, id, -1);
+  const next = neighbour(order, id, 1);
+  // A step to the end of the list disables the button that took it, and a
+  // disabled button drops the focus. So the other button takes it after the
+  // step, when the new record has enabled it.
+  const box = useRef<HTMLDivElement>(null);
+  const handOver = useRef<string | null>(null);
+  useEffect(() => {
+    if (handOver.current) box.current?.querySelector<HTMLElement>(`[aria-label="${handOver.current}"]`)?.focus();
+    handOver.current = null;
+  }, [id]);
+  const step = (to: string, direction: 1 | -1, other: string) => {
+    handOver.current = neighbour(order, to, direction) === null ? other : null;
+    onStep(to);
+  };
+  return (
+    <div ref={box} className="flex shrink-0 items-center gap-0.5">
+      {place && <span className="px-1 text-[11px] tabular-nums text-muted-foreground">{place}</span>}
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        icon="ChevronUp"
+        aria-label="Previous record"
+        title="Previous record (k)"
+        disabled={!previous}
+        onClick={() => previous && step(previous, -1, "Next record")}
+      />
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        icon="ChevronDown"
+        aria-label="Next record"
+        title="Next record (j)"
+        disabled={!next}
+        onClick={() => next && step(next, 1, "Previous record")}
+      />
+    </div>
+  );
+}
+
+/**
+ * The body of the record page: the summary header, the tabs and the tab on
+ * screen. Props only, no read and no listener.
+ */
+export function RecordPage({
+  entity,
+  record,
+  statuses,
+  places,
+  timeline,
+  dealContacts,
+  saving,
+  fieldDefs,
+  layout = null,
+  refusal = null,
+  tab,
+  onTab,
+  companyName,
+  labels = null,
+  onAttach,
+  now,
   onPatch,
   onMoveStatus,
   onLog,
@@ -44,103 +308,133 @@ export default function RecordSheet({
   onSetPrimary,
   onDetach,
   onOpenContact,
+  related = NO_RELATED,
+  onOpenRelated,
+  onRetryRelated,
+  callRequest = 0,
 }: {
   entity: EntitySlug;
-  record: Row | null;
+  record: Row;
   statuses: Status[];
+  /** The places of the record's pipeline, for the stage menu order (task #838). */
+  places?: ReadonlyMap<string, number>;
   timeline: TimelineEntry[];
   dealContacts: DealContact[];
   saving: boolean;
-  onClose: () => void;
-  onPatch: (body: Record<string, unknown>) => void;
-  onMoveStatus: (statusId: string) => void;
-  onLog: (body: {
-    type: "note" | "call" | "meeting" | "task";
-    subject?: string;
-    body?: string;
-    due_at?: string;
-  }) => void;
-  onToggleTask: (activityId: string, completed: boolean) => void;
-  onConvert: () => void;
-  onSetPrimary: (contactId: string) => void;
-  onDetach: (contactId: string) => void;
-  onOpenContact: (contactId: string) => void;
-}) {
-  const { isMobile } = useViewMode();
+  fieldDefs: FieldDef[] | null;
+  /** The layout of the entity (CRM-C4b). `null` draws the Fields tab of today. */
+  layout?: FieldLayout | null;
+  /** The refusal of the last edit (the 422 rule). */
+  refusal?: CrmRefusal | null;
+  tab: RecordTab;
+  onTab: (tab: RecordTab) => void;
+  /** The name of a contact's company, which the contact row does not carry. */
+  companyName: string | null;
+  /** The CRM's names of the entities, for the picker labels (CRM-U16). */
+  labels?: SourceLabels | null;
+  /** "+ Add contact" on a deal (CRM-U16). Absent on any other record. */
+  onAttach?: (contactId: string) => void;
+  /** Today, for the due dates and the next activities. A test passes a fixed one. */
+  now?: Date;
+} & RecordActions) {
+  const mode = useCrmModeValue();
+  const mirrored = isLocked(record, mode);
+  const imported = importedLine(record, mode);
+  const shown = shownRecordTab(entity, tab);
+  const status = statuses.find((s) => s.id === record.status_id) ?? null;
+  const facts = summaryFacts(entity, record, companyName);
+  const upcoming = shown === "overview" ? nextOpenActivities(timeline, now) : [];
 
-  const title = record
-    ? TITLE_KEY[entity]
-        .map((key) => record[key])
-        .filter(Boolean)
-        .join(" ") || "Untitled"
-    : "Loading…";
+  const panel = {
+    entity,
+    record,
+    statuses,
+    dealContacts,
+    saving,
+    onPatch,
+    onConvert,
+    onSetPrimary,
+    onDetach,
+    onOpenContact,
+    related,
+    onOpenRelated,
+    onRetryRelated,
+    fieldDefs,
+    layout,
+    refusal,
+    companyName,
+    labels,
+    onAttach,
+  };
 
   return (
-    <div className="fixed inset-0 z-40 flex justify-end">
-      {/* The scrim closes the sheet, matching Back — two ways out of a
-          surface that sits on top of the list somebody was reading. */}
-      <button
-        aria-label="Close"
-        onClick={onClose}
-        className="absolute inset-0 bg-background/70 backdrop-blur-sm"
-      />
-      <aside
-        className={`relative flex h-full flex-col border-l border-border bg-card shadow-xl ${
-          isMobile ? "w-full" : "w-full max-w-4xl"
-        }`}
-      >
-        <header className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-3">
-          <div className="min-w-0 flex-1">
-            <h1 className="truncate text-base font-bold text-foreground">
-              {title}
-            </h1>
-            <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
-              {entity.slice(0, -1)}
-            </p>
-          </div>
-          <button
-            onClick={onClose}
-            className="rounded-lg border border-border p-2 text-muted-foreground hover:bg-secondary tech-transition"
-            aria-label="Close record"
-          >
-            <Icon name="X" className="w-4 h-4" />
-          </button>
-        </header>
-
-        {record === null ? (
-          <p className="p-8 text-center text-xs text-muted-foreground">Loading…</p>
-        ) : (
-          <div
-            className={`flex min-h-0 flex-1 ${isMobile ? "flex-col overflow-y-auto" : "flex-row"}`}
-          >
-            <div
-              className={`min-h-0 ${isMobile ? "" : "flex-1 border-r border-border"}`}
-            >
-              <Timeline
-                entries={timeline}
-                onLog={onLog}
-                onToggleTask={onToggleTask}
-                saving={saving}
-              />
-            </div>
-            <div className={isMobile ? "" : "w-[340px] shrink-0"}>
-              <FieldsPanel
-                entity={entity}
-                record={record}
-                statuses={statuses}
-                dealContacts={dealContacts}
-                saving={saving}
-                onPatch={onPatch}
-                onMoveStatus={onMoveStatus}
-                onConvert={onConvert}
-                onSetPrimary={onSetPrimary}
-                onDetach={onDetach}
-                onOpenContact={onOpenContact}
-              />
-            </div>
-          </div>
+    // The mark of the record page (`RECORD_PAGE_ATTR`): `navStep` reads it to
+    // tell the sheet's own dialog from a dialog over it.
+    <div className="flex min-h-0 flex-1 flex-col" {...{ [RECORD_PAGE_ATTR]: "" }}>
+      {/* The summary header (CRM-X4 item 1). It wraps in a narrow card. */}
+      <div className="@container flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-4 py-3">
+        {statuses.length > 0 && (
+          // The one stage control. In Mirror mode Zoho owns the stage, so the
+          // pill is a badge (spec section 3.3).
+          <StatusPill
+            status={status}
+            statuses={statuses}
+            entity={entity}
+            places={places}
+            onChange={onMoveStatus}
+            disabled={saving || mirrored}
+          />
         )}
-      </aside>
+        <RecordFacts facts={facts} />
+        {imported && <span className="text-[11px] text-muted-foreground">{imported}</span>}
+      </div>
+
+      <RecordTabBar tabs={recordTabsFor(entity)} active={shown} onTab={onTab} />
+
+      <div className="pb-askbar min-h-0 flex-1 overflow-y-auto">
+        {shown === "timeline" ? (
+          <Timeline
+            entries={timeline}
+            onLog={onLog}
+            onToggleTask={onToggleTask}
+            saving={saving}
+            parentMirrored={mirrored}
+            now={now}
+            callRequest={callRequest}
+          />
+        ) : shown === "related" ? (
+          <FieldsPanel part="related" {...panel} />
+        ) : shown === "fields" ? (
+          <FieldsPanel part="fields" {...panel} />
+        ) : (
+          <>
+            <FieldsPanel part="overview" {...panel} />
+            {/* The next three open activities (CRM-X4 item 2), by the rule
+                of section 19.7. The Timeline tab holds the rest. */}
+            <section className="border-t border-border px-4 py-3">
+              <h3 className="mb-2 text-[10px] uppercase tracking-wide text-muted-foreground">
+                Next up
+              </h3>
+              {upcoming.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No open activity with a date.</p>
+              ) : (
+                <ol className="space-y-3">
+                  {upcoming.map((entry) => (
+                    <li key={entry.activity!.id}>
+                      <TimelineItem
+                        entry={entry}
+                        onToggleTask={onToggleTask}
+                        parentMirrored={mirrored}
+                        now={now}
+                      />
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </section>
+          </>
+        )}
+      </div>
     </div>
   );
 }

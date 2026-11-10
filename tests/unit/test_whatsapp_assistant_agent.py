@@ -54,8 +54,14 @@ def test_no_send_tool_by_design() -> None:
 
 def test_config_scope_matches_tools() -> None:
     # own_tool_scope in config.json must not drift from the registered tools.
+    # WS-48 N4: a flag-gated tool (narrow_and_read) is in the scope and is not
+    # in _TOOLS. test_own_tool_scope_parity.py builds it with the flag on.
+    from tests.unit.test_own_tool_scope_parity import FLAG_GATED
+
     config = json.loads((_AGENT_DIR / "config.json").read_text(encoding="utf-8"))
-    assert set(config["own_tool_scope"]) == {fn.__name__ for fn in _M._TOOLS}
+    scope = set(config["own_tool_scope"])
+    assert scope - set(FLAG_GATED) == {fn.__name__ for fn in _M._TOOLS}
+    assert "narrow_and_read" in scope
     assert config["runtime"] == "maf"
 
 

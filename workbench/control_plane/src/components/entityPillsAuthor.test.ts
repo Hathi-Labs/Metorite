@@ -40,10 +40,11 @@ const inProjectsThread = (message: ChatMessage) =>
   renderToStaticMarkup(createElement(MessageBubble, { message, sessionId: "s1", entityPills: true }));
 
 describe("after a switch to the Projects assistant", () => {
-  it("an earlier answer from another agent keeps its mailto and «»", () => {
+  it("an earlier answer from another agent keeps its mailto, and its name draws no pill", () => {
     const html = inProjectsThread(turn(agentAuthor("email-assistant")));
     expect(html).toContain('href="mailto:alice.wong@acme.com"');
-    expect(html).toContain("«Notification engine for projects»");
+    expect(html).toMatch(/data-fenced-name[^>]*>.*Notification engine for projects<\/span>/);
+    expect(html).not.toContain("«");
     expect(html).not.toContain(`/projects?task=${TASK5_ID}`);
   });
 

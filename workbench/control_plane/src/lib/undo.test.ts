@@ -14,18 +14,21 @@
  * * **the stack is bounded.** Every entry closes over the values it restores.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   EMPTY_UNDO,
   UNDO_DEPTH,
   type UndoEntry,
+  type UndoStack,
   canRedo,
   canUndo,
+  createUndoRunner,
   inversePatch,
   record,
   redoLabel,
   stepBack,
+  stepBackTo,
   stepForward,
   undoLabel,
 } from "./undo";
@@ -199,5 +202,90 @@ describe("isTypingTarget", () => {
     expect(isTypingTarget({ tagName: "BUTTON" })).toBe(false);
     expect(isTypingTarget(null)).toBe(false);
     expect(isTypingTarget(undefined)).toBe(false);
+  });
+});
+
+describe("createUndoRunner — one step at a time, the toast included", () => {
+  /** An entry whose undo waits until the test lets it finish. */
+  const slowEntry = (label: string) => {
+    let release = () => {};
+    const undo = vi.fn(
+      () =>
+        new Promise<void>((done) => {
+          release = done;
+        }),
+    );
+    return {
+      entry: { label, undo, redo: vi.fn() } as UndoEntry,
+      undo,
+      finish: () => release(),
+    };
+  };
+  const host = (start: UndoStack) => {
+    let stack = start;
+    const busy: boolean[] = [];
+    return {
+      busy,
+      get stack() {
+        return stack;
+      },
+      host: { read: () => stack, write: (next: UndoStack) => (stack = next), busy: (on: boolean) => busy.push(on) },
+    };
+  };
+
+  it("a toast click and Ctrl+Z in one round trip run the step ONCE", async () => {
+    const step = slowEntry("moved A");
+    const h = host(record(EMPTY_UNDO, step.entry));
+    const runner = createUndoRunner(h.host);
+    const toastClick = runner.undoEntry(step.entry);
+    const ctrlZ = runner.undo();
+    step.finish();
+    await Promise.all([toastClick, ctrlZ]);
+    expect(step.undo).toHaveBeenCalledTimes(1);
+    expect(h.stack).toEqual({ past: [], future: [step.entry] });
+    expect(h.busy).toEqual([true, false]);
+  });
+
+  it("the toast of the newest entry moves the stack the way Ctrl+Z does", async () => {
+    const older = entry("older");
+    const newest = entry("newest");
+    const h = host(record(record(EMPTY_UNDO, older), newest));
+    await createUndoRunner(h.host).undoEntry(newest);
+    expect(h.stack).toEqual({ past: [older], future: [newest] });
+  });
+
+  it("the toast of an older entry runs it in place and leaves the stack", async () => {
+    const older = { ...entry("older"), undo: vi.fn() };
+    const newest = entry("newest");
+    const start = record(record(EMPTY_UNDO, older), newest);
+    const h = host(start);
+    await createUndoRunner(h.host).undoEntry(older);
+    expect(older.undo).toHaveBeenCalledTimes(1);
+    expect(h.stack).toBe(start);
+  });
+
+  it("the toast of an entry that Ctrl+Z undid already does nothing", async () => {
+    const done = { ...entry("done"), undo: vi.fn() };
+    const h = host({ past: [], future: [done] });
+    await createUndoRunner(h.host).undoEntry(done);
+    expect(done.undo).not.toHaveBeenCalled();
+  });
+
+  it("a step that throws puts the stack back and rejects to the caller", async () => {
+    const bad = { ...entry("bad"), undo: () => Promise.reject(new Error("offline")) };
+    const start = record(EMPTY_UNDO, bad);
+    const h = host(start);
+    await expect(createUndoRunner(h.host).undoEntry(bad)).rejects.toThrow("offline");
+    expect(h.stack).toBe(start);
+    expect(h.busy).toEqual([true, false]);
+  });
+
+  it("stepBackTo picks the step for each case", () => {
+    const a = entry("a");
+    const b = entry("b");
+    const stack = { past: [a, b], future: [] };
+    expect(stepBackTo(stack, b)).toEqual({ entry: b, stack: { past: [a], future: [b] } });
+    expect(stepBackTo(stack, a)).toEqual({ entry: a, stack });
+    expect(stepBackTo({ past: [a], future: [b] }, b)).toBeNull();
   });
 });

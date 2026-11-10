@@ -32,6 +32,7 @@
     "save_episode",
     "save_note",
     "recall_notes",
-    "emit_generative_ui"
+    "emit_generative_ui",
+    "make_report"
   ]
 }

@@ -128,8 +128,10 @@ def _authority_env(status="REPLY", our_side_last=True, confident=True):
                           last_message_at=None, our_side_last=our_side_last,
                           has_external=True, thread_text="thread…")
     return (
-        patch.object(_rz, "build_thread_context",
-                     AsyncMock(return_value=ctx)),
+        # The thread has a participant outside the member's own mailboxes, so
+        # the authority asks the status (D-EM-27, EM-T8e-1 review round 1).
+        patch.multiple(_rz, build_thread_context=AsyncMock(return_value=ctx),
+                       _thread_is_self_only=AsyncMock(return_value=False)),
         patch.object(_rz, "_status_corrections_block",
                      AsyncMock(return_value="")),
         patch.object(_rz, "_llm_determine_thread_status",

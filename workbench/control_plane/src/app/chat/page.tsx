@@ -1,9 +1,10 @@
 "use client";
 
 import Button from "@/components/ui/Button";
+import OverflowTip from "@/components/ui/OverflowTip";
 import Icon from "@/components/Icon";
 import { useState, useEffect, useCallback, useMemo, useRef, Suspense } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import BreathingCharacter, { characterForAgent } from "@/components/BreathingCharacter";
 import {
@@ -21,7 +22,12 @@ import {
   type PersonaAccountSettings,
 } from "@/app/email/lib/emailAssistantPersona";
 import { getAssistantSettings } from "@/app/email/lib/api";
+import { EMAIL_CHAT_TIER } from "@/app/email/lib/assistantSettings";
 import AgentChat from "@/components/AgentChat";
+import { AppTopBar } from "@/components/AppTopBar";
+import { useChatScope, useRestoredSessionGuard } from "@/hooks/useChatSessions";
+import { carriedText, findSession, recoverRefused, recoveredNotice, type RailPick } from "@/lib/railSessions";
+import { CHAT_GONE_NOTICE, OPEN_CHAT_JOB } from "@/lib/runActivity";
 import { AgentAvatar, useAgentAvatars } from "@/components/AgentAvatar";
 import type { ArtifactEntry } from "@/hooks/useAgentChat";
 import ArtifactSidebar, { type FileEntry } from "@/components/ArtifactSidebar";
@@ -29,13 +35,31 @@ import ArtifactViewerModal from "@/components/ArtifactViewerModal";
 import SidePanelEditor from "@/components/SidePanelEditor";
 import { openDoc } from "@/lib/sidePanelStore";
 import { autoOpenArtifact, syncPanelToSession } from "@/lib/autoOpenArtifact";
+import { mergeFileEntry } from "@/lib/shell/chatHistory";
 import FileUploadButton from "@/components/FileUploadButton";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useMobileDrawer } from "@/components/AppShell";
-import { useActiveSessions } from "@/hooks/useActiveSessions";
+import { usePhoneBar, useSheetTab } from "@/lib/shell/phoneBarEvent";
+import { useActiveSessions, useUnreadIds } from "@/hooks/useActiveSessions";
+import SessionRunDot from "@/components/SessionRunDot";
 import { useChatMemories } from "@/hooks/useChatMemories";
+import { useTierRouted } from "@/hooks/useTierRouted";
+import {
+  CHAT_AGENT,
+  agentPickerShows,
+  chatAgentChoice,
+  governedModelProps,
+  initialChatOpen,
+  newChatAction,
+  tierRoutingUiOn,
+} from "@/lib/tierRouting";
 import type { AgentEntry } from "@/app/api/agent/list/route";
 import type { IntegrationStatus } from "@/app/api/integrations/status/route";
+import { filterWord, shellBarOn } from "@/lib/shell/registry";
+import { ShellJob, jobFields } from "@/lib/shell/doJob";
+import { openAssistant, useAssistant } from "@/lib/shell/assistant";
+import { reminderParam } from "@/lib/shell/reminderOpen";
+import { shellChatOn } from "@/lib/shell/chatFlag";
 
 // Agent names that receive the Metorite persona (general-purpose brain).
 // All agents get persistent Mem0 memory — conversations are saved to Mem0
@@ -185,7 +209,7 @@ function AgentPickerModal({
       onClick={onClose}
     >
       <div
-        className="w-full max-w-lg rounded-xl border border-border bg-card p-5 shadow-2xl tech-glass-subtle flex flex-col max-h-[85vh]"
+        className="w-full max-w-lg rounded-xl glass:rounded-[16px] border border-border bg-card p-5 shadow-2xl tech-glass-subtle flex flex-col max-h-[85vh]"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between shrink-0">
@@ -201,7 +225,7 @@ function AgentPickerModal({
         <div className="overflow-y-auto flex-1 min-h-0 -mr-2 pr-2">
         {/* Default — Metorite */}
         <div className="mb-2">
-          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground/70 mb-1.5">
+          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground/70 mb-1.5 glass:normal-case glass:tracking-normal glass:text-footnote glass:text-muted-foreground">
             Default
           </div>
           <AgentPickerCard
@@ -215,7 +239,7 @@ function AgentPickerModal({
 
         {/* Copilot SDK Agents — talk directly to GitHub Copilot SDK */} 
         <div className="mt-4">
-          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground/70 mb-1.5">
+          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground/70 mb-1.5 glass:normal-case glass:tracking-normal glass:text-footnote glass:text-muted-foreground">
             Copilot SDK agents
           </div>
           {loading ? (
@@ -247,7 +271,7 @@ function AgentPickerModal({
 
         {/* MAF Agents — run through Microsoft Agent Framework */}
         <div className="mt-4">
-          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground/70 mb-1.5">
+          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground/70 mb-1.5 glass:normal-case glass:tracking-normal glass:text-footnote glass:text-muted-foreground">
             MAF agents
           </div>
           {loading ? (
@@ -300,6 +324,7 @@ function SessionList({
   sessions,
   activeId,
   activeRunIds,
+  unreadIds,
   onSelect,
   onNew,
   onDelete,
@@ -308,6 +333,8 @@ function SessionList({
   sessions: ChatSession[];
   activeId: string;
   activeRunIds: Set<string>;
+  /** Chats with a reply the member has not read (WS-51 S5). */
+  unreadIds: ReadonlySet<string>;
   onSelect: (id: string) => void;
   onNew: () => void;
   onDelete: (id: string) => void;
@@ -401,7 +428,9 @@ function SessionList({
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search conversations…"
+          placeholder={`${filterWord()} conversations…`}
+          aria-label={shellBarOn() ? "Filter conversations" : undefined}
+          data-page-filter={shellBarOn() ? "conversations" : undefined}
           className="w-full rounded-md border border-border bg-background/60 py-1.5 pl-8 pr-2 text-xs text-foreground placeholder:text-muted-foreground/60 focus:border-primary/50 focus:outline-none tech-transition"
         />
       </div>
@@ -429,7 +458,7 @@ function SessionList({
               <span className="text-[10px] transition-transform duration-150 shrink-0" style={{ transform: isExpanded ? "rotate(0deg)" : "rotate(-90deg)" }}>
                 ▼
               </span>
-              <span className={`shrink-0 rounded-full ${groupRunning ? "ring-2 ring-emerald-400/60" : ""}`}>
+              <span className={`shrink-0 rounded-full ${groupRunning ? "ring-2 ring-success/60" : ""}`}>
                 <AgentAvatar
                   libraryId={agentAvatars[agentName] ?? agentName}
                   size={18}
@@ -441,10 +470,14 @@ function SessionList({
               </span>
               {/* Active run count badge */}
               {groupRunning && (
-                <span className="flex items-center gap-1 text-[10px] text-emerald-400 shrink-0" title="Agent is running">
-                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                <span className="flex items-center gap-1 text-[10px] text-success shrink-0" title="Agent is running">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-success motion-safe:animate-pulse" />
                   {agentSessions.filter((s) => activeRunIds.has(s.id)).length}
                 </span>
+              )}
+              {/* WS-51 S5: a folded group still says that a reply waits. */}
+              {!groupRunning && agentSessions.some((s) => unreadIds.has(s.id)) && (
+                <SessionRunDot running={false} unread />
               )}
               <span className="text-[10px] text-muted-foreground tabular-nums shrink-0">
                 {count}
@@ -472,12 +505,13 @@ function SessionList({
                       )}
                       <div className="min-w-0 flex-1 space-y-0.5">
                         <div className="flex items-center gap-1.5 text-xs leading-snug">
-                          {activeRunIds.has(s.id) && (
-                            <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse shrink-0" title="Agent is generating a response" />
-                          )}
-                          <span className={`truncate flex-1 ${isActive ? "font-semibold text-foreground" : "font-medium"}`}>
-                            {s.title ?? s.name}
-                          </span>
+                          <SessionRunDot running={activeRunIds.has(s.id)} unread={unreadIds.has(s.id)} />
+                          {/* A cut title shows whole in a tip (owner, 2026-10-10). The
+                              row stays a two-line card, so only this line gets it. */}
+                          <OverflowTip
+                            text={s.title ?? s.name}
+                            className={`flex-1 ${isActive ? "font-semibold text-foreground" : "font-medium"}`}
+                          />
                           {/* Shared rooms look different at a glance. A count
                               rather than a generic icon, because "who else is
                               in here" is the question the badge answers. */}
@@ -546,9 +580,16 @@ function ChatPageInner() {
 
   const { isMobile } = useViewMode();
   const {
-    open: openDrawer, close: closeDrawer, isOpen: drawerIsOpen,
+    open: openDrawer, close: closeDrawer, isOpen: drawerIsOpen, shows: drawerShows,
   } = useMobileDrawer();
+  // The place tab whose sheet shows is selected in the bar (MOB-12).
+  const [sheetTab, markSheetTab] = useSheetTab(drawerIsOpen, drawerShows);
+  usePhoneBar({ active: sheetTab });
+  // The bar's "New chat" tab starts a chat as the page's own button does.
+  const newChatRef = useRef<() => void>(() => {});
   const activeRunIds = useActiveSessions();
+  // WS-51 S5: a chat whose run ended while the member looked away.
+  const unreadIds = useUnreadIds();
 
   // Refs to hold drawer content (defined later in render).
   const conversationsRef = useRef<React.ReactNode>(null);
@@ -564,18 +605,48 @@ function ChatPageInner() {
       const tab = (e as CustomEvent<string>).detail;
       if (tab === "chats" && conversationsRef.current) {
         drawerTabRef.current = "chats";
+        markSheetTab("chats");
         openDrawer(conversationsRef.current);
       } else if (tab === "files" && filesRef.current) {
         drawerTabRef.current = "files";
+        markSheetTab("files");
         openDrawer(filesRef.current);
+      } else if (tab === "chat-new") {
+        newChatRef.current();
       }
     };
     window.addEventListener("cc-mobile-nav", handler);
     return () => window.removeEventListener("cc-mobile-nav", handler);
-  }, [openDrawer]);
+  }, [openDrawer, markSheetTab]);
 
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string>("");
+  // The member and org the list belongs to (null until known), and the id the
+  // page restored from that list. Only a restored id recovers from a refusal
+  // (production bug, 2026-10-05, `lib/railSessions.ts`).
+  const chatScopeId = useChatScope();
+  const [restoredId, setRestoredId] = useState<string | null>(null);
+  const [recoveredInput, setRecoveredInput] = useState<string | undefined>();
+  // NS-1: the command bar's "Ask the assistant" arrives as `?q=`. The words
+  // land in the message box for the member to check and send. Nothing sends
+  // by itself (§6.4 rule 2). WS-63 D-PZ-37: a link carries no typed mark,
+  // because anybody can write one, so `askInput` waits in the box unmarked.
+  // `q` then leaves the address, so a reload does not type it again.
+  //
+  // ⚠️ Its own state, never `recoveredInput`. The session effect below clears
+  // `recoveredInput` on mount, in the same flush, and the question vanished
+  // (review, 2026-10-08). It reads `q` with the bar off too (BETA-1): the Studio
+  // fallback link `/chat?q=` is the only way in when the shell chat is off.
+  const askParam = searchParams?.get("q") ?? null;
+  const [askInput, setAskInput] = useState<string | undefined>();
+  useEffect(() => {
+    if (!askParam?.trim()) return;
+    setAskInput(askParam.trim().slice(0, 2000));
+    const url = new URL(window.location.href);
+    url.searchParams.delete("q");
+    window.history.replaceState(null, "", `${url.pathname}${url.search}`);
+  }, [askParam]);
+  const [recoveryNotice, setRecoveryNotice] = useState<string | null>(null);
   // Cross-conversation memory (load + 30s poll) — injected into AgentChat for
   // continuity; managed in the full memory manager at /memory, not here.
   const { memories } = useChatMemories(userId);
@@ -613,11 +684,11 @@ function ChatPageInner() {
       })),
     [emailAccounts],
   );
-  // Default to the documented email-chat default (tier-powerful) so a send during
-  // the brief settings-fetch window uses a sensible model instead of "auto"
-  // (which the backend would coerce to a different tier). Refined to the
-  // account's saved chat_model once the fetch resolves; kept on lookup failure.
-  const [emailChatModel, setEmailChatModel] = useState<string | undefined>("tier-powerful");
+  // No setting picks the email chat's tier (D-EM-61). A covered
+  // email-assistant runs on the platform's tier, so the chat passes no model
+  // (WS-45 S4, D90). Every other case runs on EMAIL_CHAT_TIER, which our code
+  // chooses, as in the email app.
+  const emailTier = useTierRouted("email-assistant");
   // The account's standing configuration, fed into the persona below — same
   // fetch, so the assistant behaves the same here as in the email app.
   const [emailAcctSettings, setEmailAcctSettings] =
@@ -628,7 +699,6 @@ function ChatPageInner() {
     getAssistantSettings(emailChatAccountId)
       .then((s) => {
         if (cancelled) return;
-        setEmailChatModel(s.chat_model || "tier-powerful");
         setEmailAcctSettings({
           about: s.about,
           personal_instructions: s.personal_instructions,
@@ -636,7 +706,7 @@ function ChatPageInner() {
           learned_writing_style: s.learned_writing_style,
         });
       })
-      .catch(() => { /* keep the tier-powerful default on lookup failure */ });
+      .catch(() => { /* no standing orders on lookup failure */ });
     return () => { cancelled = true; };
   }, [activeAgentName, emailChatAccountId]);
   // Declared after the settings it reads (the persona carries the active
@@ -685,12 +755,25 @@ function ChatPageInner() {
 
   // Fetch agents once at page level so AgentChat knows agent_runtime before first render.
   const [agentList, setAgentList] = useState<AgentEntry[]>([]);
+  // True once the list has answered. A fault counts, and reads as not covered.
+  const [agentListKnown, setAgentListKnown] = useState(false);
   useEffect(() => {
     fetch("/api/agent/list")
       .then((r) => r.json())
       .then((data: AgentEntry[]) => { if (Array.isArray(data)) setAgentList(data); })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setAgentListKnown(true));
   }, []);
+  // Who picks the agent of a NEW conversation (owner, 2026-10-07). With the
+  // UI flag on and the orchestrator covered, nobody: a new conversation talks
+  // to the orchestrator, which routes to the right agent. UI flag off: the
+  // member, with the picker, as today. An existing conversation always keeps
+  // its own agent (`initialChatOpen`).
+  const agentChoice = chatAgentChoice({
+    uiOn: tierRoutingUiOn(),
+    agentsKnown: agentListKnown,
+    entries: agentList,
+  });
   // canonical name → friendly display name, for the session-list group headers.
   const agentAliasMap = useMemo(
     () => Object.fromEntries(
@@ -701,35 +784,55 @@ function ChatPageInner() {
     [agentList],
   );
 
-  // Load sessions from localStorage on mount.
+  // The member and org whose sessions the effect below has loaded. The
+  // command bar's "New chat" waits for it, because that load picks the
+  // active conversation and would replace the new one.
+  const [loadedScope, setLoadedScope] = useState<string | null>(null);
+
+  // Load the member's sessions from localStorage once the member is known, and
+  // again when the member or the org changes.
   // If ?agent=<name> is in the URL, immediately open a new session for that agent.
   // If no sessions exist, show the agent picker — never default to any agent.
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
-    const agentParam = searchParams?.get("agent");
-    const existing = getSessions();
-    if (agentParam) {
-      const existing2 = getSessions();
-      const match = existing2.find((s) => s.agentName === agentParam);
-      if (match) {
-        setSessions(getSessions());
-        setActiveSessionId(match.id);
-      } else {
-        const fresh = createSession(agentParam);
-        upsertSession(fresh);
-        setSessions(getSessions());
-        setActiveSessionId(fresh.id);
-      }
-    } else if (existing.length === 0) {
-      // No sessions yet — show the agent picker so the user explicitly
-      // chooses which agent to talk to instead of defaulting blindly.
-      setShowPicker(true);
-    } else {
-      setSessions(existing);
-      setActiveSessionId(existing[0].id);
+    setRecoveryNotice(null);
+    setRecoveredInput(undefined);
+    if (!chatScopeId) {
+      setSessions([]);
+      setActiveSessionId("");
+      setRestoredId(null);
+      setLoadedScope(null);
+      return;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- one-time init
-  }, []);
+    const existing = getSessions();
+    // `?agent=` stays: the /agents page links here for one agent. The latest
+    // conversation opens with ITS agent, so no history moves (2026-10-07).
+    const open = initialChatOpen({
+      sessions: existing,
+      agentParam: searchParams?.get("agent"),
+    });
+    if (open.kind === "open") {
+      setSessions(existing);
+      setActiveSessionId(open.id);
+      setRestoredId(open.id);
+    } else if (open.kind === "create") {
+      const fresh = createSession(open.agent);
+      upsertSession(fresh);
+      setSessions(getSessions());
+      setActiveSessionId(fresh.id);
+      setRestoredId(null);
+    } else {
+      // No sessions yet — ask for the agent picker so the user explicitly
+      // chooses which agent to talk to instead of defaulting blindly. It
+      // draws only when the member chooses (`agentPickerShows`).
+      setSessions([]);
+      setActiveSessionId("");
+      setRestoredId(null);
+      setShowPicker(true);
+    }
+    setLoadedScope(chatScopeId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per member
+  }, [chatScopeId]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   // After initial localStorage render, fetch from Postgres and merge any sessions
@@ -737,6 +840,7 @@ function ChatPageInner() {
   // Also poll every 30s so sessions created on other devices appear in the sidebar
   // without requiring a page refresh.
   useEffect(() => {
+    if (!chatScopeId) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
 
@@ -753,11 +857,87 @@ function ChatPageInner() {
     sync();
 
     return () => { cancelled = true; clearTimeout(timer); };
+  }, [chatScopeId]);
+
+  // A restored id the server refuses gives way to a new chat with the same
+  // agent, and no error card. The latest pick is kept in a ref, because the
+  // refusal arrives after an await.
+  const pickRef = useRef<RailPick>({ activeId: "", restoredId: null });
+  useEffect(() => {
+    pickRef.current = { activeId: activeSessionId, restoredId };
+  }, [activeSessionId, restoredId]);
+  const recoverChat = useCallback((refusedId: string, pendingText?: string): boolean => {
+    const agent = getSessions().find((s) => s.id === refusedId)?.agentName;
+    if (!agent || isUnresolvedAgent(agent)) return false;
+    const next = recoverRefused(pickRef.current, refusedId, agent);
+    if (!next) return false;
+    pickRef.current = next;
+    // The refused message and the refused chat's queue go to the composer,
+    // and the note explains the new chat on load and on send alike.
+    const carried = carriedText(refusedId, pendingText);
+    setSessions(getSessions());
+    setActiveSessionId(next.activeId);
+    setRestoredId(null);
+    setRecoveredInput(carried);
+    setRecoveryNotice(recoveredNotice(carried));
+    return true;
+  }, []);
+  const onSessionRefused = useRestoredSessionGuard(activeSessionId, restoredId, recoverChat);
+
+  // A new conversation on the orchestrator, with no picker. It never repairs
+  // the active conversation, because the member named no agent for it.
+  const startOrchestratorChat = useCallback(() => {
+    setShowPicker(false);
+    const s = createSession(CHAT_AGENT);
+    upsertSession(s);
+    setSessions(getSessions());
+    setActiveSessionId(s.id);
+    setRestoredId(null);
+    setRecoveryNotice(null);
   }, []);
 
-  const handleNewSession = useCallback(() => {
-    setShowPicker(true);
+  // WS-51 S3: the activity panel's link opens one chat
+  // (`?do=open-chat&fill.session=<id>`). Only the member's own chat opens: the
+  // id is looked up in their list, from this browser or from the server. A
+  // chat that is not in the list (deleted, or not the member's) opens nothing,
+  // and the page's notice says so. A chat that opens, opens on purpose, so a
+  // later refusal of it shows as an error.
+  const openChatById = useCallback((id: string | undefined) => {
+    if (!id) return;
+    void findSession(id).then((found) => {
+      if (!found) {
+        setRecoveryNotice(CHAT_GONE_NOTICE);
+        return;
+      }
+      setShowPicker(false);
+      setSessions(getSessions());
+      setActiveSessionId(found.id);
+      setRestoredId(null);
+      setRecoveryNotice(null);
+    });
   }, []);
+
+  // A press of "+ New conversation" before the agent list answered.
+  const newChatWaitingRef = useRef(false);
+  const handleNewSession = useCallback(() => {
+    const action = newChatAction(agentChoice);
+    if (action === "create") {
+      startOrchestratorChat();
+      return;
+    }
+    newChatWaitingRef.current = action === "wait";
+    setShowPicker(true);
+  }, [agentChoice, startOrchestratorChat]);
+  newChatRef.current = handleNewSession;
+
+  // The list answered: a waiting press starts the orchestrator chat, or the
+  // picker that it asked for now draws (`agentPickerShows`).
+  useEffect(() => {
+    if (agentChoice === "pending" || !newChatWaitingRef.current) return;
+    newChatWaitingRef.current = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- one press, once
+    if (agentChoice === "orchestrator") startOrchestratorChat();
+  }, [agentChoice, startOrchestratorChat]);
 
   const handleSelectAgent = useCallback(
     (agentName: string) => {
@@ -771,18 +951,30 @@ function ChatPageInner() {
         upsertSession(repaired);
         setSessions(getSessions());
         setActiveSessionId(repaired.id);
+        setRestoredId(null);
         return;
       }
       const s = createSession(agentName);
       upsertSession(s);
       setSessions(getSessions());
       setActiveSessionId(s.id);
+      setRestoredId(null);
+      setRecoveryNotice(null);
     },
     [activeSessionId]
   );
 
   const handleSelectSession = useCallback((id: string) => {
+    // A press of "+ New conversation" that waits for the agent list ends
+    // here: the member chose a conversation instead (review P3). Only a
+    // waiting press closes the request, so the UI flag off is as today.
+    if (newChatWaitingRef.current) {
+      newChatWaitingRef.current = false;
+      setShowPicker(false);
+    }
     setActiveSessionId(id);
+    setRestoredId(null);
+    setRecoveryNotice(null);
   }, []);
 
   const handleDeleteSession = useCallback(
@@ -800,6 +992,7 @@ function ChatPageInner() {
       const remaining = getSessions();
       setSessions(remaining);
       if (id === activeSessionId) {
+        setRestoredId(null);
         if (remaining.length > 0) {
           // Prefer a sibling of the SAME agent so deleting a session doesn't
           // bounce the user into an unrelated agent's conversation (sessions are
@@ -832,6 +1025,14 @@ function ChatPageInner() {
   );
 
   const activeSession = sessions.find((s) => s.id === activeSessionId);
+  // The picker still names the agent of a conversation whose agent is not
+  // known, with any choice, so that conversation keeps the right history.
+  const repairingAgent = !!activeSession && isUnresolvedAgent(activeSession.agentName);
+  const pickerShows = agentPickerShows({
+    requested: showPicker,
+    choice: agentChoice,
+    repairing: repairingAgent,
+  });
 
   // Side panel shows the ACTIVE session's documents only — drop other sessions'
   // tabs when switching so we never render a file from the wrong workspace.
@@ -884,6 +1085,7 @@ function ChatPageInner() {
           sessions={sessions}
           activeId={activeSessionId}
           activeRunIds={activeRunIds}
+          unreadIds={unreadIds}
           onSelect={(id) => { handleSelectSession(id); closeDrawer(); }}
           onNew={() => { handleNewSession(); closeDrawer(); }}
           onDelete={handleDeleteSession}
@@ -959,63 +1161,73 @@ function ChatPageInner() {
 
   // ── Render ─────────────────────────────────────────────────────────────
   return (
-    <div className="relative flex h-full overflow-hidden">
+    <div className="relative flex h-full flex-col overflow-hidden">
+      {/* NS-2: the command bar's "New chat" is the "+ New conversation"
+          press. `handleNewSession` waits by itself while the agent list is
+          still out. The job waits for the session load, which sets the
+          active conversation and would replace the new one. */}
+      <ShellJob
+        id="new-chat"
+        ready={!!chatScopeId && loadedScope === chatScopeId}
+        onOpen={() => handleNewSession()}
+      />
+      {/* WS-51 S3: a row of the activity panel. It waits for the same load,
+          which would otherwise replace the chat it opens. */}
+      <ShellJob
+        id={OPEN_CHAT_JOB}
+        ungated
+        ready={!!chatScopeId && loadedScope === chatScopeId}
+        onOpen={(f) => openChatById(f.session)}
+      />
       {/* Agent picker modal */}
-      {showPicker && (
+      {pickerShows && (
         <AgentPickerModal
           onSelect={handleSelectAgent}
           onClose={() => setShowPicker(false)}
         />
       )}
 
-      {/* ── Desktop: conversations sidebar ────────────────────────────── */}
-      {/* Collapsed → the same rail treatment as the Files / Documents
-          columns: reopen icon, conversation count, vertical label. */}
-      {!isMobile && !sessionPanelOpen && (
-        <aside className="flex w-10 shrink-0 flex-col border-r border-border bg-sidebar">
-          {/* The whole rail is the click target — a thin strip is fiddly to
-              hit an icon inside. */}
-          <button
-            onClick={() => setSessionPanelOpen(true)}
-            className="flex w-full flex-1 cursor-pointer flex-col items-center py-2.5 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground transition-colors"
-            title="Open conversations"
-          >
-            <Icon name="MessagesSquare" size={15} />
-            {sessions.length > 0 && (
-              <span className="mt-1 rounded-full bg-secondary px-1 text-[10px]">
-                {sessions.length}
-              </span>
-            )}
-            {sessions.some((s) => activeRunIds.has(s.id)) && (
-              <span
-                className="mt-1.5 inline-block h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse"
-                title="An agent is running"
+      {/* ── Desktop: the app's title bar (owner, 2026-10-10) ───────────── */}
+      {/* The conversations toggle, the app's name and the open
+          conversation. It replaced the rail's own collapse button and its
+          folded strip: one toggle, in the bar, as in every app. */}
+      {!isMobile && (
+        <AppTopBar
+          rail={{
+            open: sessionPanelOpen,
+            onToggle: () => setSessionPanelOpen((o) => !o),
+            noun: "conversations",
+          }}
+          title="Chat"
+          // Folded, the rail no longer shows how many conversations there
+          // are, so the scope line says it.
+          subtitle={
+            sessionPanelOpen
+              ? activeSession?.name
+              : [
+                  activeSession?.name,
+                  `${sessions.length} conversation${sessions.length === 1 ? "" : "s"}`,
+                ].filter(Boolean).join(" · ")
+          }
+          // WS-51 S5: with the rail folded, the bar still says that a run
+          // goes on or that a reply waits. The folded strip used to say it.
+          actions={
+            sessionPanelOpen ? undefined : (
+              <SessionRunDot
+                running={sessions.some((s) => activeRunIds.has(s.id))}
+                unread={sessions.some((s) => unreadIds.has(s.id))}
               />
-            )}
-            <span className="mt-3 flex flex-1 items-center justify-center">
-              <span
-                className="text-[10px] font-semibold tracking-widest"
-                style={{ writingMode: "vertical-rl", transform: "rotate(180deg)" }}
-              >
-                CONVERSATIONS
-              </span>
-            </span>
-          </button>
-        </aside>
+            )
+          }
+        />
       )}
+
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+      {/* ── Desktop: conversations sidebar ────────────────────────────── */}
       {!isMobile && sessionPanelOpen && (
         <aside className="w-72 shrink-0 border-r border-border bg-sidebar flex flex-col overflow-hidden">
-          <div className="flex items-center justify-between border-b border-border px-4 py-3">
+          <div className="flex items-center gap-2 border-b border-border px-4 py-3">
             <div className="text-sm font-semibold text-sidebar-foreground">Conversations</div>
-            <button
-              onClick={() => setSessionPanelOpen(false)}
-              className="shrink-0 rounded-lg p-1.5 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition"
-              title="Collapse conversations"
-            >
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-                <path d="M10 3L5 8l5 5" />
-              </svg>
-            </button>
           </div>
 
           <div className="flex flex-col flex-1 p-4 overflow-y-auto">
@@ -1023,6 +1235,7 @@ function ChatPageInner() {
               sessions={sessions}
               activeId={activeSessionId}
               activeRunIds={activeRunIds}
+              unreadIds={unreadIds}
               onSelect={handleSelectSession}
               onNew={handleNewSession}
               onDelete={handleDeleteSession}
@@ -1088,36 +1301,36 @@ function ChatPageInner() {
                 }
                 activeMailboxId={emailChatAccountId}
                 onMailboxChange={setEmailMailboxId}
-                // Email-assistant locks to the account chat_model (parity with
-                // the email app); all other agents keep the generic picker.
-                model={
-                  activeSession.agentName === "email-assistant"
-                    ? emailChatModel
-                    : undefined
-                }
-                lockModel={activeSession.agentName === "email-assistant"}
+                // Email-assistant locks to EMAIL_CHAT_TIER (parity with the
+                // email app, D-EM-61); all other agents keep the generic
+                // picker. WS-45 S4: a covered email-assistant gets neither prop.
+                {...(activeSession.agentName === "email-assistant"
+                  ? governedModelProps(emailTier.covered, EMAIL_CHAT_TIER)
+                  : { model: undefined, lockModel: false })}
                 memories={memories.map((m) => m.memory)}
                 memoryUserId={userId}
                 availableAgents={agentList.length > 0 ? agentList : undefined}
                 expectedMessageCount={activeSession.messageCount}
                 onActivity={(info) => handleActivity(activeSession.id, info)}
+                onSessionRefused={onSessionRefused}
+                notice={
+                  recoveryNotice
+                    ? { text: recoveryNotice, onDismiss: () => setRecoveryNotice(null) }
+                    : null
+                }
+                pendingInput={recoveredInput ?? askInput}
+                onPendingInputConsumed={() => {
+                  setRecoveredInput(undefined);
+                  setAskInput(undefined);
+                }}
                 onArtifact={(entry: ArtifactEntry) => {
-                  const name = entry.path.split("/").pop() ?? entry.path;
-                  setArtifactUpdates((prev) => {
-                    // Merge by path (artifact_created -> artifact_updated for the
-                    // same file is one entry, not two) and keep a prior size /
-                    // mime when a later event omits them, so the file tree doesn't
-                    // regress to 0 B / a generic icon.
-                    const prior = prev.find((f) => f.path === entry.path);
-                    const fe: FileEntry = {
-                      path: entry.path,
-                      name,
-                      size: entry.size ?? prior?.size ?? 0,
-                      modified_at: new Date().toISOString(),
-                      mime_type: entry.mimeType ?? prior?.mime_type ?? "",
-                    };
-                    return [...prev.filter((f) => f.path !== entry.path), fe];
-                  });
+                  // Merge by path (artifact_created -> artifact_updated for the
+                  // same file is one entry, not two) and keep a prior size /
+                  // mime. The ONE merge rule (`mergeFileEntry`). A QUIET file
+                  // (a report's PDF and file, §14.10) is listed too.
+                  setArtifactUpdates((prev) =>
+                    mergeFileEntry(prev, entry, new Date().toISOString()),
+                  );
 
                   // Auto-open documents the agent writes so the user watches
                   // them build in real time. ONE rule, shared with the
@@ -1125,23 +1338,29 @@ function ChatPageInner() {
                   autoOpenArtifact(entry.path, {
                     sessionId: activeSession?.id,
                     isMobile,
+                    quiet: entry.quiet,
                   });
                 }}
               />
           ) : (
             <div className="flex flex-1 flex-col items-center justify-center gap-4 text-muted-foreground">
-              <div className="text-sm">Choose an agent to start chatting</div>
+              <div className="text-sm">
+                {agentChoice === "member" ? "Choose an agent to start chatting" : "Start a new conversation"}
+              </div>
               <Button size="none" layout="" onClick={handleNewSession} className="px-5 py-2.5 text-sm">
-                + New session
+                {agentChoice === "member" ? "+ New session" : "+ New conversation"}
               </Button>
             </div>
           )}
         </div>
       </div>
 
+      </div>
+
       {/* File viewer modal (shared) */}
       {viewerEntry && (
         <ArtifactViewerModal
+          origin="workspace"
           sessionId={activeSessionId}
           entry={viewerEntry}
           onClose={() => setViewerEntry(null)}
@@ -1155,10 +1374,51 @@ function ChatPageInner() {
   );
 }
 
+/**
+ * D99: with the chat bar on, `/chat` is the address of the one assistant's
+ * full view (`navigation_shell.md` §7.1). The page opens it and takes the
+ * job out of the address. It reads four doors: `?do=open-chat` (an activity
+ * row or a toast), `?do=new-chat` (the command bar's job), `?q=` (words
+ * for the member to check and send) and `?reminder=` (a tap on a reminder,
+ * WS-66 RM-4, `calendar_events_reminders.md` §5.7). A reminder always opens
+ * a fresh chat, with or without `do=new-chat`, and the dock asks the server
+ * for its first message. Closing the full view here goes home, because the
+ * page under it is empty.
+ */
+function ChatFullView() {
+  const params = useSearchParams();
+  const router = useRouter();
+  const { open } = useAssistant();
+  const seenOpen = useRef(false);
+  useEffect(() => {
+    const job = params.get("do");
+    const fields = jobFields(params);
+    const reminder = reminderParam(params);
+    openAssistant({
+      mode: "full",
+      sessionId: job === OPEN_CHAT_JOB && fields.session && !reminder ? fields.session : undefined,
+      // WS-63 D-PZ-37: `q` comes from a link, and anybody can write a link,
+      // a reply of Mira included. So its words wait in the box with no typed
+      // mark, and a send of them counts for nothing (`lib/typedMark.ts`).
+      draft: params.get("q") ?? undefined,
+      fresh: job === "new-chat" || Boolean(reminder),
+      reminder,
+    });
+    router.replace("/chat");
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once, on arrival
+  }, []);
+  useEffect(() => {
+    if (open) seenOpen.current = true;
+    else if (seenOpen.current) router.replace("/");
+  }, [open, router]);
+  return null;
+}
+
 export default function ChatPage() {
+  const [oneAssistant] = useState(() => shellChatOn());
   return (
     <Suspense fallback={null}>
-      <ChatPageInner />
+      {oneAssistant ? <ChatFullView /> : <ChatPageInner />}
     </Suspense>
   );
 }

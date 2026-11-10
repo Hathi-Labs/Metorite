@@ -6,6 +6,8 @@
 // currency rather than assuming it — the assumption belongs in the data, not
 // in the formatter.
 
+import { compactNumber } from "@/lib/numberFormat.mjs";
+
 /**
  * ₹1,20,000 — the Indian digit grouping, not the western one.
  *
@@ -17,33 +19,42 @@ export function money(
   currency = "INR"
 ): string {
   if (amount === null || amount === undefined || Number.isNaN(amount)) return "—";
-  return new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency: currency || "INR",
-    maximumFractionDigits: 0,
-  }).format(amount);
+  const code = (currency || "").trim().toUpperCase() || "INR";
+  try {
+    return new Intl.NumberFormat("en-IN", {
+      style: "currency",
+      currency: code,
+      maximumFractionDigits: 0,
+    }).format(amount);
+  } catch {
+    // The gateway keeps a free text code, and Intl throws a RangeError for
+    // one that is not three letters ("US", "RUPEES"). A bad code on any deal
+    // must not blank the board, so the code is printed as it is.
+    return `${code} ${new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(amount)}`;
+  }
 }
 
 /**
- * A lane header's total: ₹12.4L / ₹3.2Cr, because a kanban column is 220px
+ * A lane header's total: ₹12.4 L / ₹3.2 Cr, because a kanban column is 220px
  * wide and "₹1,24,00,000" wraps.
+ *
+ * The digits come from `compactNumber`, the product's ONE short-number
+ * formatter (`lib/numberFormat.mjs`), which the charts use too. `system`
+ * defaults to "indian", the default of every org. The CRM screens do not
+ * pass the member's preference yet.
  */
 export function compactMoney(
   amount: number | null | undefined,
-  currency = "INR"
+  currency = "INR",
+  system: "indian" | "international" = "indian",
 ): string {
   if (amount === null || amount === undefined || Number.isNaN(amount)) return "—";
-  const symbol = currency === "INR" || !currency ? "₹" : `${currency} `;
-  const abs = Math.abs(amount);
+  const code = (currency || "").trim().toUpperCase();
+  const symbol = code === "INR" || !code ? "₹" : `${code} `;
+  // Whole rupees below a thousand, as before: a lane total is never ₹600.45.
+  const abs = Math.abs(amount) < 1e3 ? Math.round(Math.abs(amount)) : Math.abs(amount);
   const sign = amount < 0 ? "-" : "";
-  if (abs >= 1e7) return `${sign}${symbol}${trim(abs / 1e7)}Cr`;
-  if (abs >= 1e5) return `${sign}${symbol}${trim(abs / 1e5)}L`;
-  if (abs >= 1e3) return `${sign}${symbol}${trim(abs / 1e3)}K`;
-  return `${sign}${symbol}${Math.round(abs)}`;
-}
-
-function trim(value: number): string {
-  return value.toFixed(1).replace(/\.0$/, "");
+  return `${sign}${symbol}${compactNumber(abs, system)}`;
 }
 
 /**
@@ -121,4 +132,30 @@ export function initials(...parts: (string | null | undefined)[]): string {
     .filter(Boolean)
     .map((p) => p[0]!.toUpperCase());
   return letters.slice(0, 2).join("") || "?";
+}
+
+/**
+ * The day an activity falls on, as days from the member's local today:
+ * -1 is yesterday, 0 is today, 1 is tomorrow. Null for no date.
+ *
+ * ONE day rule for the CRM (crm_platform.md §19.7). A task's `due_at` holds a
+ * date at 00:00 UTC, because the Zoho sync and the composer both write it so.
+ * So for `allDay` the rule reads the UTC date of `at`. For a call or a
+ * meeting it reads the local date. Either one is compared with the local
+ * date of `now`. A compare of instants calls a task due today "overdue" in
+ * India for the whole day, since 00:00 UTC is 05:30 there.
+ */
+export function dueDay(
+  at: string | null | undefined,
+  allDay: boolean,
+  now: Date = new Date()
+): number | null {
+  if (!at) return null;
+  const when = new Date(at);
+  if (Number.isNaN(when.getTime())) return null;
+  const day = allDay
+    ? Date.UTC(when.getUTCFullYear(), when.getUTCMonth(), when.getUTCDate())
+    : Date.UTC(when.getFullYear(), when.getMonth(), when.getDate());
+  const today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  return Math.round((day - today) / 86_400_000);
 }

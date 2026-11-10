@@ -1,0 +1,64 @@
+{
+  "id": "1925f9e8d7c6b5a4",
+  "threadId": "1925f9e8d7c6b5a4",
+  "labelIds": [
+    "UNREAD",
+    "CATEGORY_PERSONAL",
+    "INBOX"
+  ],
+  "snippet": "Agenda for Monday attached below.",
+  "payload": {
+    "partId": "",
+    "mimeType": "text/plain",
+    "filename": "",
+    "headers": [
+      {
+        "name": "Delivered-To",
+        "value": "asha@example.com"
+      },
+      {
+        "name": "Received",
+        "value": "by 2002:a05:7300:5b1a:b0:12a:3c4d:5e6f with SMTP id x9csp1234567; Fri, 04 Oct 2024 11:20:30 -0400"
+      },
+      {
+        "name": "MIME-Version",
+        "value": "1.0"
+      },
+      {
+        "name": "From",
+        "value": "\"Doe, John\" <john.doe@example.org>"
+      },
+      {
+        "name": "Date",
+        "value": "Fri, 04 Oct 2024 11:20:30 -0400"
+      },
+      {
+        "name": "Message-ID",
+        "value": "<CAP4x9Fq=agenda.77@mail.example.org>"
+      },
+      {
+        "name": "Subject",
+        "value": "Agenda"
+      },
+      {
+        "name": "To",
+        "value": "\"Rao, Asha\" <asha@example.com>, ops@example.com"
+      },
+      {
+        "name": "Cc",
+        "value": "\"Team, Ops\" <ops-team@example.org>"
+      },
+      {
+        "name": "Content-Type",
+        "value": "text/plain; charset=\"UTF-8\""
+      }
+    ],
+    "body": {
+      "size": 34,
+      "data": "QWdlbmRhIGZvciBNb25kYXkgYXR0YWNoZWQgYmVsb3cuCg=="
+    }
+  },
+  "sizeEstimate": 4096,
+  "historyId": "2817560",
+  "internalDate": "1728055230000"
+}

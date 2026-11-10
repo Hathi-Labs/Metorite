@@ -745,7 +745,9 @@ def test_the_deploy_installs_the_unit_and_enables_the_timer() -> None:
 def _unit_sync_block() -> str:
     text = _read(APPLY)
     start = text.index('echo "==> Syncing systemd units')
-    end = text.index('echo "==> Running infra health probe"')
+    # Stop before the BH-7 restart step: it calls a helper defined earlier in
+    # the script, and test_unit_hardening.py runs that step on its own.
+    end = text.index('echo "==> WS-49 BH-7: one restart for a unit')
     return text[start:end]
 
 

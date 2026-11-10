@@ -18,9 +18,42 @@
  * makes for its own shape.
  */
 
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { pressedFor } from "./Button";
+import Button, { pressedFor } from "./Button";
+
+describe("a Button with href is a link (MD-1b visual review)", () => {
+  // A link act must stay a real link (`<a href>`), and it must wear the
+  // primitive's classes, so it gets the variant and the house focus ring.
+  const html = (props: Record<string, unknown>, label = "Open the day") =>
+    renderToStaticMarkup(createElement(Button, props as never, label));
+
+  it("renders an <a href> with the same cc-control classes and the variant", () => {
+    const out = html({ href: "/calendar", variant: "secondary", size: "sm", type: "button" });
+    expect(out).toMatch(/^<a\b/);
+    expect(out).toContain('href="/calendar"');
+    expect(out).toContain("cc-control");
+    expect(out).toContain("border border-border");
+    // Button-only attributes and the toggle semantics never reach a link.
+    expect(out).not.toContain('type="button"');
+    expect(out).not.toContain("aria-pressed");
+    expect(out).not.toContain("<button");
+  });
+
+  it("draws the same classes as the button form, for each variant", () => {
+    const klass = (s: string) => /class="([^"]*)"/.exec(s)?.[1];
+    for (const variant of ["primary", "secondary", "ghost"]) {
+      expect(klass(html({ href: "/x", variant })), variant).toBe(klass(html({ variant })));
+    }
+  });
+
+  it("draws a disabled or loading link as the disabled button, because it has nowhere to go", () => {
+    expect(html({ href: "/x", disabled: true })).toMatch(/^<button\b[^>]*disabled=""/);
+    expect(html({ href: "/x", loading: true })).toMatch(/^<button\b/);
+  });
+});
 
 describe("when a Button says it is pressed", () => {
   it("says nothing at all when it is not a toggle", () => {

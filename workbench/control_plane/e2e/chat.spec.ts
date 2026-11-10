@@ -31,9 +31,9 @@ type ChatMockResponse = {
 
 const AGENTS: AgentEntry[] = [
   {
-    name: "sales-assistant",
-    description: "Follows up with deals and drafts sales actions",
-    tags: ["sales", "copilot"],
+    name: "crm-assistant",
+    description: "Works the CRM and reads the deal pipeline",
+    tags: ["crm", "copilot"],
     integrations: ["zoho"],
   },
   {
@@ -189,7 +189,7 @@ test.describe("Unified chat interface", () => {
     await expect(page.getByText("Prefers concise pipeline summaries.")).toBeVisible();
     await expect(page.getByText("Chat with").first()).toBeVisible();
     await expect(page.getByRole("button", { name: "Send", exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Choose send mode", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: /send mode/i })).toHaveCount(0);
     await expect(page.getByText("Copilot").first()).toBeVisible();
     expect(requests).toHaveLength(0);
   });
@@ -209,9 +209,9 @@ test.describe("Unified chat interface", () => {
 
     await gotoChat(page);
     await openAgentPicker(page);
-    await page.getByRole("button", { name: /sales-assistant/i }).click();
+    await page.getByRole("button", { name: /crm-assistant/i }).click();
 
-    await expect(page.getByPlaceholder(/Message sales-assistant/i)).toBeVisible();
+    await expect(page.getByPlaceholder(/Message crm-assistant/i)).toBeVisible();
     await expect(page.getByText(/1 integration not configured/i)).toBeVisible();
     await page.getByRole("button", { name: /Zoho CRM \+ set up/i }).click();
 
@@ -219,7 +219,7 @@ test.describe("Unified chat interface", () => {
     await expect(
       page.getByRole("paragraph").filter({ hasText: /Guidance for I need to configure the Zoho CRM integration/i }),
     ).toBeVisible();
-    expect(requests.at(-1)?.agentName).toBe("sales-assistant");
+    expect(requests.at(-1)?.agentName).toBe("crm-assistant");
   });
 
   test("switches model runtime and sends LiteLLM-routed requests", async ({ page }) => {
@@ -253,83 +253,8 @@ test.describe("Unified chat interface", () => {
     expect(requests[0]?.model).toBe("tier3-opus");
   });
 
-  test("supports queued follow-up messages while a response is in flight", async ({ page }) => {
-    const requests: ChatRequest[] = [];
-    await installChatMocks(
-      page,
-      (body, callIndex) => ({
-        delayMs: callIndex === 0 ? 800 : 0,
-        events: [
-          { type: "delta", content: `Answer ${callIndex + 1}: ${body.message}` },
-          { type: "done" },
-        ],
-      }),
-      requests,
-    );
-
-    await gotoChat(page);
-
-    await page.getByRole("button", { name: "Choose send mode", exact: true }).click();
-    await page.getByRole("button", { name: /⏱ Queue/i }).click();
-
-    const input = page.getByPlaceholder(/Message orchestrator/i);
-    await input.fill("First request");
-    await page.getByRole("button", { name: "Queue", exact: true }).click();
-    await expect(page.getByRole("button", { name: "Stop generation" })).toBeVisible();
-
-    await page.getByPlaceholder(/Queue a follow-up/i).fill("Second request");
-    await page.getByRole("button", { name: "Queue", exact: true }).click();
-
-    await expect(page.getByText(/1 message queued/i)).toBeVisible();
-    // Scope to message-body paragraphs (sidebar preview echoes the latest too).
-    await expect(
-      page.getByRole("paragraph").filter({ hasText: "Answer 1: First request" }),
-    ).toBeVisible({ timeout: 5_000 });
-    await expect(
-      page.getByRole("paragraph").filter({ hasText: "Answer 2: Second request" }),
-    ).toBeVisible({ timeout: 5_000 });
-
-    expect(requests).toHaveLength(2);
-    expect(requests[0]?.message).toBe("First request");
-    expect(requests[1]?.message).toBe("Second request");
-  });
-
-  test("supports steer mode by interrupting the current response and prioritizing the next prompt", async ({ page }) => {
-    const requests: ChatRequest[] = [];
-    await installChatMocks(
-      page,
-      (body, callIndex) => ({
-        delayMs: callIndex === 0 ? 1200 : 0,
-        events: [
-          { type: "delta", content: `Response ${callIndex + 1}: ${body.message}` },
-          { type: "done" },
-        ],
-      }),
-      requests,
-    );
-
-    await gotoChat(page);
-
-    await page.getByRole("button", { name: "Choose send mode" }).click();
-    await page.getByRole("button", { name: /Steer/i }).click();
-
-    await page.getByPlaceholder(/Message orchestrator/i).fill("Slow draft");
-    await page.getByRole("button", { name: "Steer" }).click();
-    await expect(page.getByRole("button", { name: "Stop generation" })).toBeVisible();
-
-    await page.getByPlaceholder(/Steer a follow-up/i).fill("Use tighter language");
-    await page.getByRole("button", { name: "Steer" }).click();
-
-    await expect(
-      page.getByRole("paragraph").filter({ hasText: "Response 2: Use tighter language" }),
-    ).toBeVisible({ timeout: 5_000 });
-    await expect(
-      page.getByRole("paragraph").filter({ hasText: "Response 1: Slow draft" }),
-    ).toHaveCount(0);
-
-    expect(requests).toHaveLength(2);
-    expect(requests[1]?.message).toBe("Use tighter language");
-  });
+  // The Queue and Steer send modes are gone (owner, 2026-10-12). A message
+  // sent during a run always steers it: e2e/chat-steer.spec.ts covers it.
 
   test("renders a multi-segment turn VS Code-style: ALL assistant text is body, tools stay in the thinking timeline (Phase 3c)", async ({ page }) => {
     // A real message-id-native run: the model emits substantive answer text in

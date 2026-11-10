@@ -41,6 +41,43 @@ def _coerce_role(raw: str | None) -> "UserRole":
 
 
 @dataclass(slots=True, frozen=True)
+class AgentScope:
+    """The narrowing of an outside agent's call (WS-55 EA-3a, spec §7.3).
+
+    Branch 0 of ``deps.get_current_user`` attaches it LAST, after the member's
+    access resolved, and only for a signed request of a live connection. The
+    Projects visibility seam reads it: the pins, the left-out list, the
+    personal opt-out and the seal narrow both arms of its clauses. ``None``
+    on ``UserContext.agent`` means a human request, and every clause is then
+    byte-identical to before.
+
+    Every field comes from the ``agent_connection`` row, never from a header,
+    with one exception: ``session_key`` (SW-7) comes from the SIGNED
+    ``X-Agent-Session`` header of the edge, which the HMAC covers.
+    """
+
+    connection_id: str
+    scopes: tuple[str, ...] = ()
+    #: Project ids. Empty means every project the member sees.
+    pinned_projects: tuple[str, ...] = ()
+    #: D-EA-4. False hides every personal project.
+    include_personal: bool = False
+    #: D-EA-12 (spec §10.8, EA-17a). Project ids that the reach stops at: the
+    #: project and every project beneath it stay out, unless a pin beneath
+    #: it starts a reach of its own. Empty leaves nothing out.
+    left_out_projects: tuple[str, ...] = ()
+    client_origin: str = ""
+    #: The stamp ``mcp:<host>:<slug>`` (EA-13a), the value of
+    #: ``agent_oauth.actor_via_for(client_origin, client_id=...)`` for the
+    #: connection's client id. Without a slug it is the host stamp.
+    actor_via: str = ""
+    #: SW-7 (spec §12.5). The MCP session key of the call, from the SIGNED
+    #: ``X-Agent-Session`` header and never from a body. ``None`` when the
+    #: edge served the call outside an MCP session.
+    session_key: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
 class UserContext:
     """Resolved identity for one request.
 
@@ -60,6 +97,10 @@ class UserContext:
     user_id: str | None = None
     organization_id: str | None = None
     access: EffectiveAccess = field(default=NO_ACCESS)
+    #: The outside-agent narrowing (WS-55 EA-3a). ``None`` for every request
+    #: that is not a signed agent request. Only branch 0 of
+    #: ``deps.get_current_user`` sets it, with ``dataclasses.replace``.
+    agent: AgentScope | None = None
 
     # ── Legacy coarse role ──────────────────────────────────────────────────
 

@@ -23,6 +23,21 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 _log = get_logger("v1")
 
+#: When this process last met ``ConsoleRouterUnavailable`` (epoch seconds), or
+#: 0. WS-47 WAC-13 reads it: a WhatsApp run that ran out of time while the
+#: Router was down is "Metorite is updating", and a slow run is not.
+ROUTER_FAILED_AT: float = 0.0
+
+
+def _router_failed() -> None:
+    global ROUTER_FAILED_AT
+    ROUTER_FAILED_AT = time.time()
+
+
+def router_failed_since(when: float) -> bool:
+    """True when the Router was unavailable at or after *when*."""
+    return ROUTER_FAILED_AT >= when > 0
+
 
 def _member_for(request: Request) -> tuple[str | None, bool]:
     """Who is calling, and whether they PROVED it. H-73.
@@ -126,6 +141,22 @@ def _clamp_max_tokens(requested: int, model: str) -> int:
     return limits.max_output
 
 
+def _requested_max_tokens(body: dict[str, Any]) -> int:
+    """The caller's output ceiling under EITHER OpenAI spelling, or the default.
+
+    🔴 The agent framework's ``OpenAIChatCompletionClient`` renames
+    ``max_tokens`` to ``max_completion_tokens`` before it sends. This path read
+    only the old spelling, so a native agent's own ceiling was silently
+    replaced by the platform default. The Router folds the two the same way
+    (``CompletionRequest._one_output_ceiling``).
+    """
+    return int(
+        body.get("max_tokens")
+        or body.get("max_completion_tokens")
+        or _DEFAULT_MAX_OUTPUT_TOKENS
+    )
+
+
 # ── Output-truncation visibility (audit CX4) ──────────────────────────────
 # When the provider cuts generation at max_tokens (finish_reason="length"),
 # the text just stops mid-sentence and the turn otherwise renders as a normal
@@ -200,6 +231,56 @@ def _mark_truncated_nonstream(choices: Any) -> bool:
 # worth keeping once the prompt is under pressure.
 _CONTEXT_FIT_SAFETY_TOKENS: int = 512
 _CONTEXT_FIT_MIN_OUTPUT: int = 1024
+# The output floor that old history pays for. A long chat drops its oldest
+# turns before the reply shrinks below this, because a reply cut at 1024
+# tokens ends mid-sentence or in the middle of a tool call's JSON. A small
+# window caps it at a quarter of the window, so the prompt keeps room.
+# Fence: tests/unit/test_v1_context_fit.py.
+_CONTEXT_FIT_PREFERRED_OUTPUT: int = 8192
+
+
+def _output_floor(window: int, requested: int) -> int:
+    """The output reservation that history eviction protects."""
+    preferred = max(
+        _CONTEXT_FIT_MIN_OUTPUT, min(_CONTEXT_FIT_PREFERRED_OUTPUT, window // 4),
+    )
+    return min(requested, preferred)
+
+
+def _eviction_units(messages: list[dict[str, Any]]) -> list[list[int]]:
+    """Group message indexes into the units that eviction removes whole.
+
+    An assistant message with ``tool_calls`` and the tool results after it
+    are one unit, so eviction never leaves an orphan tool result or an
+    orphan tool call. Each other non-system message is a unit of its own.
+    System and developer messages, and the LAST user message (the current
+    request), are in no unit, so eviction never removes them. Nor is the
+    NEWEST tool group of the current turn: the model would lose the result it
+    just got, call the tool again, and loop (review of #1220, P2). Character
+    trimming cuts that group instead.
+    """
+    last_user = max(
+        (i for i, m in enumerate(messages) if m.get("role") == "user"),
+        default=-1,
+    )
+    units: list[list[int]] = []
+    i = 0
+    while i < len(messages):
+        m = messages[i]
+        role = m.get("role")
+        if role in ("system", "developer") or i == last_user:
+            i += 1
+            continue
+        unit = [i]
+        i += 1
+        if role == "assistant" and m.get("tool_calls"):
+            while i < len(messages) and messages[i].get("role") == "tool":
+                unit.append(i)
+                i += 1
+        units.append(unit)
+    if units and units[-1][0] > last_user:
+        units.pop()
+    return units
 
 
 def _fit_context_window(
@@ -220,11 +301,15 @@ def _fit_context_window(
     No-op when the request already fits (the overwhelming majority). Otherwise
     recover in escalating steps — a trimmed request that works beats a faithful
     one the provider rejects:
-      1. shrink ``max_tokens`` so prompt + completion fits (never below
-         ``_CONTEXT_FIT_MIN_OUTPUT``);
-      2. still over → drop oldest non-system messages, dropping any tool
-         results orphaned by an evicted assistant turn;
-      3. still over → char-trim the longest remaining message
+      1. shrink ``max_tokens`` so prompt + completion fits, but never below
+         the output floor (``_output_floor``, up to
+         ``_CONTEXT_FIT_PREFERRED_OUTPUT``);
+      2. still over → evict the oldest whole turns until the floor fits. An
+         assistant tool-call message goes with ALL its tool results. System
+         messages and the last user message (the current request) stay;
+      3. still over → shrink ``max_tokens`` further, to
+         ``_CONTEXT_FIT_MIN_OUTPUT`` at the lowest;
+      4. still over → char-trim the longest remaining message
          (``fit_messages_to_context``).
     """
     try:
@@ -239,9 +324,11 @@ def _fit_context_window(
         if prompt_tokens + max_tokens + _CONTEXT_FIT_SAFETY_TOKENS <= window:
             return messages, max_tokens
 
-        # 1. Shrink the output reservation before touching the prompt.
+        floor = _output_floor(window, max_tokens)
+
+        # 1. Shrink the output reservation, but not below the floor.
         room = window - prompt_tokens - _CONTEXT_FIT_SAFETY_TOKENS
-        if room >= _CONTEXT_FIT_MIN_OUTPUT:
+        if room >= floor:
             _log.warning(
                 "v1.context_fit_output_shrunk", model=model, window=window,
                 prompt_tokens=prompt_tokens, requested=max_tokens,
@@ -249,27 +336,20 @@ def _fit_context_window(
             )
             return messages, min(max_tokens, room)
 
-        # 2. Evict oldest non-system turns until the floor reservation fits.
+        # 2. Evict the oldest whole turns until the floor reservation fits.
         out = [dict(m) for m in messages]
-        budget = window - _CONTEXT_FIT_MIN_OUTPUT - _CONTEXT_FIT_SAFETY_TOKENS
+        budget = window - floor - _CONTEXT_FIT_SAFETY_TOKENS
         dropped = 0
         while count_message_tokens(out, model) + tools_tokens > budget:
-            idx = next(
-                (i for i, m in enumerate(out[:-1])
-                 if m.get("role") not in ("system", "developer")),
-                None,
-            )
-            if idx is None:
-                break  # only system + the current turn left
-            del out[idx]
-            dropped += 1
-            # A tool result whose assistant tool_call was just evicted is an
-            # orphan some providers reject — evict it with its turn.
-            while idx < len(out) - 1 and out[idx].get("role") == "tool":
+            units = _eviction_units(out)
+            if not units:
+                break  # only system + the current request left
+            for idx in reversed(units[0]):
                 del out[idx]
                 dropped += 1
 
-        # 3. Last resort: char-trim the longest remaining message.
+        # 3 + 4. Shrink the output to the minimum, then char-trim what is
+        # still too long.
         out, _trimmed = fit_messages_to_context(
             out, model,
             max_output_tokens=_CONTEXT_FIT_MIN_OUTPUT,
@@ -334,13 +414,21 @@ def _sanitize_messages_for_provider(
     1. Assistant messages with *neither* valid content nor valid tool_calls
        → dropped.
     2. Assistant messages with tool_calls but null/empty content → content
-       set to "" (all providers — null content violates the OpenAI spec).
+       set to None for an Anthropic-shaped provider, where litellm turns ""
+       into a visible placeholder (task 1787). Any other provider, and the
+       Router hop with no provider, keeps "".
     3. Tool messages with null/empty content → content set to "[tool result]".
     4. Malformed tool-call items (missing ``function`` / ``name``) → stripped.
     """
     if not messages:
         return messages
 
+    # None only for a provider we KNOW is Anthropic-shaped. An unknown or empty
+    # provider (the Router hop) keeps "": DeepSeek, Groq and Together refuse
+    # null beside tool_calls, and the Router re-applies the rule per step.
+    from acb_llm.message_hygiene import is_anthropic_shaped
+
+    null_ok = is_anthropic_shaped(provider)
     cleaned: list[dict[str, Any]] = []
     for m in messages:
         role = m.get("role", "")
@@ -397,7 +485,10 @@ def _sanitize_messages_for_provider(
             ):
                 if not isinstance(m, dict):
                     m = dict(m)
-                m["content"] = ""
+                # litellm turns "" into the sentence "[System: Empty message
+                # content sanitised ...]" for Anthropic, so only an
+                # Anthropic-shaped provider gets None.
+                m["content"] = None if null_ok else ""
 
         elif role == "tool":
             # Tool messages must have non-empty string content.
@@ -407,7 +498,11 @@ def _sanitize_messages_for_provider(
 
         cleaned.append(m)
 
-    return cleaned
+    # ONE shared pass (task 1787): no "" content, no empty text block, and no
+    # litellm placeholder line in a stored turn. See acb_llm.message_hygiene.
+    from acb_llm.message_hygiene import clean_model_messages
+
+    return clean_model_messages(cleaned, null_content_ok=null_ok)
 
 
 # ── Secret-stripping patterns for upstream error surfacing ─────────────────
@@ -569,6 +664,7 @@ async def _serve_via_router_stream(
         )
         return JSONResponse(status_code=verdict.status, content=verdict.body)
     except ConsoleRouterUnavailable as exc:
+        _router_failed()
         _log.error(
             "v1.router_unavailable", error=str(exc), stream=True,
             elapsed_ms=round((time.monotonic() - started) * 1000),
@@ -641,6 +737,7 @@ async def _serve_via_router(
             run_id=request.headers.get("x-cc-run") or None,
         )
     except ConsoleRouterUnavailable as exc:
+        _router_failed()
         _log.error(
             "v1.router_unavailable", error=str(exc),
             elapsed_ms=round((time.monotonic() - started) * 1000),
@@ -717,8 +814,7 @@ async def _handle_chat_completions(request: Request) -> StreamingResponse | dict
     tools = body.get("tools")
     tool_choice = body.get("tool_choice", "auto")
     temperature = body.get("temperature", 0.2)
-    max_tokens = _clamp_max_tokens(
-        body.get("max_tokens") or _DEFAULT_MAX_OUTPUT_TOKENS, model)
+    max_tokens = _clamp_max_tokens(_requested_max_tokens(body), model)
     stream = body.get("stream", False)
     # Passthrough: custom api_base/api_key for Ollama / vLLM / self-hosted
     # endpoints — only when explicitly enabled (SSRF guard; see module top).
@@ -744,7 +840,11 @@ async def _handle_chat_completions(request: Request) -> StreamingResponse | dict
     provider = ensure_model_registered(model)
 
     # Sanitize messages for providers with strict validation (e.g. DeepSeek).
-    messages = _sanitize_messages_for_provider(messages, provider or model)
+    # litellm names the provider ("anthropic", "bedrock", "vertex_ai"), so pass
+    # the model too: a Claude model on Bedrock is Anthropic-shaped.
+    messages = _sanitize_messages_for_provider(
+        messages, f"{provider or ''} {model}",
+    )
 
     # Context-window guard (single-agent chat audit C1/CX1): fit prompt +
     # completion into the model's window BEFORE cache annotation, so an

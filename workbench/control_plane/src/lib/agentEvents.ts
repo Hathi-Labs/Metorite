@@ -39,6 +39,12 @@ export interface AgentEventPayload {
   error?: string;
   /** Run identifier */
   runId?: string;
+  /** The in-app path a `navigate` event opens (WS-62 CF-3). */
+  path?: string;
+  /** The one sentence the member reads for it. */
+  why?: string;
+  /** The guide a `guide` event names (WS-OB GD-4). The store checks it against its table. */
+  guideId?: string;
   /**
    * Session/thread this event belongs to.  The subscriber registry is global
    * (a single process-wide list), so when more than one session is streaming
@@ -54,6 +60,12 @@ export interface AgentSubscriber {
   onRunStarted?: (payload: AgentEventPayload) => void;
   /** Agent execution completed (RUN_FINISHED or stream ended). */
   onRunFinalized?: (payload: AgentEventPayload) => void;
+  /**
+   * The run rests, by any end: a `done` on either stream, a Stop, a failure,
+   * or a run the server stopped listing. A blocking card stays as it is on
+   * this event: only a slot of a redraft ends (§18.11 step 7).
+   */
+  onRunRested?: (payload: AgentEventPayload) => void;
   /** Agent state changed (STATE_SNAPSHOT / STATE_DELTA). */
   onStateChanged?: (payload: AgentEventPayload) => void;
   /** Messages were added or modified. */
@@ -68,6 +80,26 @@ export interface AgentSubscriber {
   onToolEnd?: (payload: AgentEventPayload) => void;
   /** An error occurred. */
   onError?: (payload: AgentEventPayload) => void;
+  /**
+   * The live run named a tool or a specialist: `name` is a tool name from a
+   * `tool_start`, or an agent name from a `sub_agent_*` event. The one
+   * assistant reads it to move the page to the specialist's app (D99). Never
+   * emitted on a reconnect replay.
+   */
+  onDelegate?: (payload: AgentEventPayload) => void;
+  /**
+   * The live run opened a page with `show_in_app` (WS-62 CF-3,
+   * `chat_first_surface.md` §4.4): `path` and `why`. The one assistant
+   * pushes the route and says so. Never emitted on a reconnect replay, so a
+   * refresh moves no page.
+   */
+  onNavigate?: (payload: AgentEventPayload) => void;
+  /**
+   * The live run named a guide (WS-OB GD-4, `assistant_guide.md` §3 G1): `guideId`.
+   * The one assistant starts it where it may move the page, and leaves a "Show
+   * me" chip elsewhere. Never emitted on a reconnect replay.
+   */
+  onGuide?: (payload: AgentEventPayload) => void;
 }
 
 // ── Global subscriber registry ─────────────────────────────────────────────

@@ -30,6 +30,7 @@ import type { AccentHue } from "@/lib/statusAccent";
 import type { PulseFocusTask, PulseReport, PulseRow } from "./api";
 import { asList } from "./analyticsRead";
 import { moreNote } from "./hygiene";
+import { personDisplayName } from "@/lib/personName";
 
 export { emptyPanelLine, hiddenPeopleLine };
 
@@ -52,7 +53,7 @@ export function pulseRows(data: PulseReport | null | undefined): PulseRow[] {
 
 /** Who a card is, as a person reads it. */
 export function pulseName(row: PulseRow): string {
-  return row.name || row.assignee;
+  return personDisplayName(row.name, row.assignee);
 }
 
 /** Whether the server sent this row's HR half. It reads the row, not the body. */

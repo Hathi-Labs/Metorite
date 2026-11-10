@@ -148,6 +148,13 @@ _CAPABILITY_GATED_ROUTES: dict[str, str] = {
     "/registry/seats/overview": "seat_admin",
     # WS-31 CP-2f, 2026-08-24 — the member-write door, on the FOURTH capability.
     "/registry/members": "member_admin",
+    # 2026-10-15 — the member-REMOVE door, the reverse of the add door and on
+    # the SAME capability. A key that may add a member to the registry may
+    # take one off it. A separate capability would let the two planes drift.
+    "/registry/members/remove": "member_admin",
+    # 2026-10-27, CP-8 — the org-rename door, on the SAME capability. The
+    # gateway's admin rename mirrors through it, and it adds no capability.
+    "/registry/orgs/rename": "member_admin",
     # 2026-09-15 — the inbound bootstrap's READ, on the SAME capability as
     # `/orgs/provision`. Deliberately not a fifth capability: this door exists
     # only to drive provisioning and answers exactly the set that door already
@@ -177,6 +184,9 @@ _CAPABILITY_GATED_ROUTES: dict[str, str] = {
     # 2026-09-23, CP-13a — the fifth serving door (§6A.14). It takes
     # `ServingCaller`, so a `{resolve}` key meets the same 403.
     "/v1/decide": "serve",
+    # 2026-10-17, CP-EMB — the sixth serving door (§6A.16). It takes
+    # `ServingCaller` too, so a `{resolve}` key meets the same 403.
+    "/v1/embeddings": "serve",
     # 2026-09-28, H-152's billing half — the customer billing READS under the
     # deployment key, on the SIXTH capability. A `{resolve}` key is a valid
     # credential that may not read a bill, so it meets 403 here and never 401.

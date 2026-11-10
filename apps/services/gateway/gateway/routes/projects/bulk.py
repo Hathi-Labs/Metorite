@@ -34,6 +34,7 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
+from gateway.routes.projects.authority import TASK_DELETE_REFUSED, led_projects, may_delete_task
 from gateway.routes.projects.automation import (
     PATCHABLE_FIELDS,
     TaskPatchError,
@@ -52,6 +53,7 @@ from gateway.routes.projects.core import (
     actor,
     archive_note,
     assert_assignable_here,
+    can_manage_settings,
     clean_payload,
     emit,
     lift_subtasks_to_grandparent,
@@ -73,6 +75,7 @@ from gateway.routes.projects.personal import (
     validate_overlay,
 )
 from gateway.routes.projects.tags import apply_task_tags, normalise_tag
+from gateway.routes.projects.text_links import link_from_text, saved_texts
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -118,7 +121,8 @@ class BulkIn(BaseModel):
     #: With a status patch that lands a task in a `done` lane, its open
     #: descendants complete too. With `action: "archive"`, its descendants go
     #: on the shelf too. Ignored by every other verb. FALSE by default, so an
-    #: old caller and the chat tools touch only the tasks they name.
+    #: old caller touches only the tasks it names. The Projects chat's
+    #: `bulk_update` sends it for a member's "yes" (WS-46 P6).
     include_subtasks: bool = False
 
 
@@ -544,6 +548,8 @@ async def bulk_edit(
     failed: list[dict[str, str]] = []
     #: address → the tasks they were newly put on, for one notification each.
     newly_assigned: dict[str, list[str]] = {}
+    #: WS-57 TR-5 — each task's row before the patch, for its old text.
+    before_rows: dict[str, Any] = {}
     changed_ids: list[str] = []
     #: D-PM-38 — what the subtree cascades did, across the whole selection.
     cascaded = Cascade()
@@ -551,12 +557,31 @@ async def bulk_edit(
     archived_by_cascade = 0
 
     async with _tenant_session() as db:
+        # RX-5. A date with no time is local noon of the member who writes,
+        # once for the selection (`personal.stored_due`). `apply_task_patch`
+        # also serves a workflow, which has no member, so the seam is here.
+        if patch.get("due_at"):
+            from gateway.routes.projects.personal import stored_due
+
+            patch["due_at"] = await stored_due(db, who.lower(), patch["due_at"])
         vis = await resolve_visibility(db, user)
+        # WS-64 OP-8 (D-OP-12). The lead set is read once for the selection,
+        # and not at all for an admin, who may delete each task.
+        led = (
+            await led_projects(db, user)
+            if action == "delete" and not can_manage_settings(user) else None
+        )
         for task_id in ids:
             try:
                 task = await load_visible_task(db, vis, task_id)
             except HTTPException:
                 skipped.append({"task_id": task_id, "reason": "not_found"})
+                continue
+
+            if action == "delete" and not await may_delete_task(db, user, task, led=led):
+                # A task the member sees and may not delete is a per-task
+                # failure with the 403's sentence, and the rest go on.
+                failed.append({"task_id": task_id, "reason": TASK_DELETE_REFUSED})
                 continue
 
             if action is not None:
@@ -582,6 +607,7 @@ async def bulk_edit(
                 continue
 
             try:
+                before_rows[task_id] = task
                 outcome, newly = await _apply_to_one(
                     db, task,
                     patch=patch, add_people=add_people, drop_people=drop_people,
@@ -631,6 +657,14 @@ async def bulk_edit(
     for task_id in changed_ids:
         await emit("pm.task.updated", {"task_id": task_id})
     await emit_all(cascaded.events)
+    # WS-57 TR-5 — a bulk patch that writes a title or a description names
+    # the same tasks and URLs for each task it changed. Each task reads them
+    # against its OWN root, and only what is new against the task's old text
+    # (`text_links.py`). An action carries no patch, so it reads nothing.
+    # Past `MAX_TASKS_PER_SAVE` tasks the module links nothing and logs.
+    await link_from_text(user, [
+        (task_id, saved_texts(patch, before_rows.get(task_id))) for task_id in changed_ids
+    ])
 
     answer: dict[str, Any] = {
         "requested": len(ids),

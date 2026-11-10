@@ -147,6 +147,28 @@ async def has_login(db: Any, email: str | None) -> bool:
     return row is not None
 
 
+#: The display names of a list of addresses, from the member directory. The
+#: one query of a name: ``/people/names`` of Projects and the proposals of
+#: the CRM questions (WS-53 CRM-Q32-8) both read through :func:`names_of`.
+_NAMES_SQL = (
+    "SELECT lower(email) AS email, name FROM people "
+    " WHERE lower(email) = ANY(:emails) AND name <> ''"
+)
+
+
+async def names_of(db: Any, emails: Any) -> dict[str, str]:
+    """Each address of *emails* that the directory names → its display
+    name, in the caller's tenant session (RLS binds the org). An address
+    with no row, or with an empty name, is ABSENT from the map, so the
+    caller picks its own fallback and never shows the address. The keys are
+    lower case."""
+    wanted = sorted({str(e).strip().lower() for e in emails or () if str(e).strip()})
+    if not wanted:
+        return {}
+    rows = (await db.execute(text(_NAMES_SQL), {"emails": wanted})).fetchall()
+    return {str(r.email): str(r.name) for r in rows if r.name}
+
+
 # ── The shared read seam ────────────────────────────────────────────────────
 #
 # `person_payload` and its two helpers live HERE, in the leaf module, and not
@@ -284,6 +306,14 @@ async def compute_load(db: Any, email: str | None) -> dict[str, Any]:
     overloaded. `pm_tasks.organization_id` is on the numbered ladder
     (migration 161), so the column is there whether or not the generated
     tenancy phase has been promoted (H-104). `NULLIF(…, '')` fails CLOSED.
+
+    ⚠️ **A SEALED tree does not count for its owner (D63, H-305).** The owner
+    answered on 2026-10-13: "Stop counting them." The workspace of a member
+    who left is closed, so nobody holds that work. A task in it that was
+    handed over to a colleague still counts for that colleague, because the
+    work is theirs now. So the test is on the PAIR: the tree is sealed AND
+    the row's assignee is the tree's owner. `IS DISTINCT FROM` keeps a row
+    whose project has no personal owner.
     """
     if not (email or "").strip():
         return {"open_tasks": 0, "estimated_hours": 0.0, "unestimated": 0}
@@ -296,11 +326,15 @@ async def compute_load(db: Any, email: str | None) -> dict[str, Any]:
                  FROM pm_tasks t
                  JOIN pm_task_statuses s ON s.id = t.status_id
                  JOIN pm_task_assignees a ON a.task_id = t.id
+                 JOIN pm_projects p ON p.id = t.project_id
                 WHERE lower(a.assignee) = :who
                   AND t.organization_id = CAST(NULLIF(
                         current_setting('app.tenant_id', true), '') AS uuid)
                   AND t.archived_at IS NULL
-                  AND s.category NOT IN ('done', 'cancelled')"""
+                  AND s.category NOT IN ('done', 'cancelled')
+                  AND (p.sealed_at IS NULL
+                       OR lower(a.assignee) IS DISTINCT FROM
+                          lower(p.personal_owner))"""
         ),
         {"who": email.strip().lower()},
     )).fetchone()

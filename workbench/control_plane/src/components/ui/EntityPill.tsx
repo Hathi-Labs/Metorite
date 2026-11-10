@@ -27,6 +27,7 @@
  */
 
 import { useRouter } from "next/navigation";
+import { createContext, useContext } from "react";
 
 import { ControlLink } from "@/components/ControlLink";
 import Icon from "@/components/Icon";
@@ -34,6 +35,7 @@ import { StatusChip } from "@/components/StatusChip";
 import { PersonAvatar } from "@/components/room/Identity";
 import { BADGE_BASE, BADGE_SHAPE, badgeTone } from "@/components/ui/Badge";
 import { categoricalAccent } from "@/lib/categorical";
+import { isInAppPath } from "@/lib/inAppLink";
 import type { StatusAccent } from "@/lib/statusAccent";
 
 export type EntityKind =
@@ -76,30 +78,11 @@ const KIND_WORD: Record<EntityKind, string> = {
   unknown: "",
 };
 
-/** A base no real page has, so the check below needs no `window`. */
-const IN_APP_BASE = "https://in-app.invalid";
-
 /**
- * True for a path inside this app: `/projects?task=…`. Never `//host`, which
- * a browser reads as another site, and never `/api/…`, which is a file or a
- * JSON answer and not a page. Exported for its test.
- *
- * The prefix test alone is not enough (S9 fix round 1). A URL parser strips a
- * tab or a newline and reads `\` as `/`, so `/\evil.com` and `/<tab>/evil.com`
- * both open another site. So the path must also resolve, against a fixed base,
- * to that same base: the check the browser itself will make, run here first.
+ * The one rule of an in-app path. It lives in `src/lib/inAppLink.ts`, the
+ * module of link rules, and the pill passes it on for its callers.
  */
-export function isInAppPath(href: string | undefined): boolean {
-  if (!href || !href.startsWith("/") || href.startsWith("//")) return false;
-  let url: URL;
-  try {
-    url = new URL(href, IN_APP_BASE);
-  } catch {
-    return false;
-  }
-  if (url.origin !== IN_APP_BASE) return false;
-  return !url.pathname.startsWith("/api/") && url.pathname !== "/api";
-}
+export { isInAppPath };
 
 /**
  * The accessible name of a pill that links. It carries the status too: the
@@ -111,9 +94,10 @@ export function pillLinkName(
   label: string,
   number?: string,
   statusName?: string,
+  app = "Projects",
 ): string {
   const what = [KIND_WORD[kind], number, label].filter(Boolean).join(" ");
-  return `Open ${what} in Projects${statusName ? `, status ${statusName}` : ""}`;
+  return `Open ${what} in ${app}${statusName ? `, status ${statusName}` : ""}`;
 }
 
 export interface EntityPillProps {
@@ -130,6 +114,12 @@ export interface EntityPillProps {
   accent?: StatusAccent;
   /** A person's address: the seed of their initials, and the tooltip. */
   email?: string;
+  /** Fill the column, not 16rem: a card's value column. */
+  fit?: boolean;
+  /** A `PANES` icon name that replaces the kind's icon (a citation chip). */
+  icon?: string;
+  /** The app the link opens, for the screen reader. Default "Projects". */
+  app?: string;
 }
 
 /**
@@ -143,7 +133,17 @@ export interface EntityPillProps {
  * (`0.82em`). In rem it followed the density scale while the chat body,
  * sized in px, did not, so at compact density the pills shrank alone.
  */
-const SHAPE = "max-w-64 px-1 py-px text-[0.9em] leading-snug align-middle font-normal";
+const SHAPE = "px-1 py-px text-[0.9em] leading-snug align-middle font-normal glass:rounded-full glass:px-2";
+
+/**
+ * The widest a pill grows. In running text it stops at 16rem. With `fit` (a
+ * confirmation card's value column) it fills its column and no more, so a
+ * long title truncates at 390px wide too, with the whole title as the
+ * tooltip (owner report, 2026-10-07: a cut landed inside the marks).
+ */
+function widthOf(fit: boolean | undefined): string {
+  return fit ? "min-w-0 max-w-full" : "max-w-64";
+}
 
 /**
  * A linked pill's ink (S9 visual review). The label is foreground ink, so a
@@ -164,8 +164,9 @@ function PillBody({
   statusName,
   email,
   linked = false,
+  icon: ownIcon,
 }: EntityPillProps & { linked?: boolean }) {
-  const icon = ENTITY_ICONS[kind];
+  const icon = ownIcon ?? ENTITY_ICONS[kind];
   return (
     <>
       {kind === "person" && (
@@ -199,16 +200,30 @@ function toneOf(props: EntityPillProps, linked: boolean): string {
   return linked ? LINKED_TONE : badgeTone("neutral");
 }
 
+/**
+ * What a surface does just before a pill inside it navigates (review of PR
+ * #1156). The phone's assistant is a full-screen sheet: a pill that pushes
+ * the route opens the task UNDER the sheet, and the tap looks dead. So the
+ * dock provides `closeAssistant` here on a phone, as its own file links do.
+ * One provider for every pill in the sheet, never a handler per call site.
+ * Absent: nothing runs first.
+ */
+export const PillNavigateContext = createContext<((href: string) => void) | null>(null);
+
 /** The linked pill. Its own component, so only a link asks for the router. */
 function LinkedPill(props: EntityPillProps & { href: string }) {
   const router = useRouter();
+  const before = useContext(PillNavigateContext);
   return (
     <ControlLink
       href={props.href}
-      onActivate={() => router.push(props.href)}
-      aria-label={pillLinkName(props.kind, props.label, props.number, props.statusName)}
+      onActivate={() => {
+        before?.(props.href);
+        router.push(props.href);
+      }}
+      aria-label={pillLinkName(props.kind, props.label, props.number, props.statusName, props.app)}
       title={tooltip(props)}
-      className={`${BADGE_BASE} ${toneOf(props, true)} ${SHAPE} no-underline`}
+      className={`${BADGE_BASE} ${toneOf(props, true)} ${SHAPE} ${widthOf(props.fit)} no-underline`}
     >
       <PillBody {...props} linked />
     </ControlLink>
@@ -223,7 +238,7 @@ export default function EntityPill(props: EntityPillProps) {
   return (
     // `BADGE_SHAPE`, not `BADGE_BASE`: a chip that does not click must not
     // wear the hover layer that says it does.
-    <span title={tooltip(props)} className={`${BADGE_SHAPE} ${toneOf(props, false)} ${SHAPE}`}>
+    <span title={tooltip(props)} className={`${BADGE_SHAPE} ${toneOf(props, false)} ${SHAPE} ${widthOf(props.fit)}`}>
       <PillBody {...props} />
     </span>
   );

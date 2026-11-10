@@ -197,7 +197,8 @@ describe("(b) the subject chip lists what the server answered", () => {
       "Hardware team",
       "Me",
       "Ana Shah",
-      "mia@example.test",
+      // A name, never the address. The address is the row's hint.
+      "mia",
     ]);
     expect(options.map((o) => o.group)).toEqual([
       undefined,
@@ -206,10 +207,11 @@ describe("(b) the subject chip lists what the server answered", () => {
       "People",
       "People",
     ]);
-    // The address shows on Me only. No name: the address is the label.
+    // The address shows on Me, and beside a person with no name on file,
+    // whose label is the left half of it (owner, 2026-10-10).
     expect(options[2].hint).toBe("lee@example.test");
     expect(options[3].hint).toBeUndefined();
-    expect(options[4].hint).toBeUndefined();
+    expect(options[4].hint).toBe("mia@example.test");
   });
 
   it("an admin sees every person and every team in the answer", () => {

@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from collections.abc import Mapping
 from types import MappingProxyType, SimpleNamespace
 from typing import Any
@@ -69,6 +68,32 @@ RULES = [
 
 ALL_SHADOW = ",".join(f"{f}=shadow" for f in df.FEATURES)
 
+#: A hang guard, never a budget (#947). No fence here reads the runner's clock.
+HANG_S = 30.0
+#: The module's own bound, read before ``_clean`` replaces it for each test.
+_DEFAULT_SHADOW_BOUND_S = df.SHADOW_BOUND_S
+
+
+class _Meet:
+    """The old call and ``decide``, each waiting until the other has started.
+
+    Calls that run at the same time both arrive, and both go on. Calls in
+    sequence never meet: the first one waits for a call that has not
+    started, and fails at the hang guard. The fence compared 0.4 s against
+    0.8 s before, and failed on main at 2.51 s against 0.7 (2026-10-12)."""
+
+    def __init__(self) -> None:
+        self.old = asyncio.Event()
+        self.decide = asyncio.Event()
+
+    async def arrive(self, mine: asyncio.Event, theirs: asyncio.Event, who: str) -> None:
+        mine.set()
+        try:
+            async with asyncio.timeout(HANG_S):
+                await theirs.wait()
+        except TimeoutError:
+            raise AssertionError(f"{who} waited alone: old and decide ran in sequence") from None
+
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -84,15 +109,29 @@ class FakeDecide:
         choice: str | None = None,
         raises: BaseException | None = None,
         delay: float = 0.0,
+        meet: _Meet | None = None,
+        hold: bool = False,
     ) -> None:
         self.calls: list[dict[str, Any]] = []
         self.probability = probability
         self.choice = choice
         self.raises = raises
         self.delay = delay
+        self.meet = meet
+        #: ``hold``: never answer. Only a cancel ends the call, and it says so.
+        self.hold = hold
+        self.cancelled = False
 
     async def __call__(self, state, questions, **kwargs):
         self.calls.append({"state": state, "questions": questions, **kwargs})
+        if self.meet is not None:
+            await self.meet.arrive(self.meet.decide, self.meet.old, "decide")
+        if self.hold:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
         if self.delay:
             await asyncio.sleep(self.delay)
         if self.raises is not None:
@@ -115,9 +154,14 @@ class FakeDecide:
 
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
-    """No mode, no tenant, no run context, and fresh caches."""
+    """No mode, no tenant, no run context, and fresh caches.
+
+    The shadow bound is the hang guard. The real 5 s bound is a budget on
+    the runner's clock, and a stalled runner turned an instant fake answer
+    into ``decide.fallback``. A test of the bound sets its own value."""
     monkeypatch.setenv("DECIDE_FEATURE_MODES", "")
     monkeypatch.setenv("DECIDE_FEATURE_ORGS", "")
+    monkeypatch.setattr(df, "SHADOW_BOUND_S", HANG_S)
     _clear_caches()
     with run_context_scope():
         clear_run_context()
@@ -162,11 +206,14 @@ def _records(caps, event: str) -> list[dict[str, Any]]:
 # cold True vs p=0.0, pin True vs p=0.0, DONE vs the last key, r0 vs none.
 
 
-def _llm(monkeypatch, module, data: Any, delay: float = 0.0) -> list[Any]:
+def _llm(monkeypatch, module, data: Any, delay: float = 0.0,
+         meet: _Meet | None = None) -> list[Any]:
     sent: list[Any] = []
 
     async def fake(model, messages, **kw):
         sent.append(messages)
+        if meet is not None:
+            await meet.arrive(meet.old, meet.decide, "the old call")
         if delay:
             await asyncio.sleep(delay)
         return data, "{}", model
@@ -175,9 +222,10 @@ def _llm(monkeypatch, module, data: Any, delay: float = 0.0) -> list[Any]:
     return sent
 
 
-async def _site_cold(monkeypatch, delay: float = 0.0):
-    _llm(monkeypatch, snd, {"cold": True, "reason": SECRET_REASON}, delay)
-    return await snd._llm_is_cold(EMAIL, account_id=ACC), (True, SECRET_REASON)
+async def _site_cold(monkeypatch, delay: float = 0.0, meet: _Meet | None = None):
+    _llm(monkeypatch, snd, {"cold": True, "reason": SECRET_REASON}, delay, meet)
+    return (await snd._llm_is_cold(EMAIL, blocker="LABEL", account_id=ACC),
+            (True, SECRET_REASON))
 
 
 def _pin_db() -> AsyncMock:
@@ -187,8 +235,8 @@ def _pin_db() -> AsyncMock:
     return db
 
 
-async def _site_pin(monkeypatch, delay: float = 0.0):
-    _llm(monkeypatch, lrn, {"always": True, "why": SECRET_REASON}, delay)
+async def _site_pin(monkeypatch, delay: float = 0.0, meet: _Meet | None = None):
+    _llm(monkeypatch, lrn, {"always": True, "why": SECRET_REASON}, delay, meet)
     out = await lrn._ai_confirms_sender_pattern(_pin_db(), ACC, SECRET_SENDER, RULES[0])
     return out, True
 
@@ -201,8 +249,8 @@ THREAD = [{
 }]
 
 
-async def _site_status(monkeypatch, delay: float = 0.0):
-    _llm(monkeypatch, rz, {"status": "DONE", "rationale": SECRET_REASON}, delay)
+async def _site_status(monkeypatch, delay: float = 0.0, meet: _Meet | None = None):
+    _llm(monkeypatch, rz, {"status": "DONE", "rationale": SECRET_REASON}, delay, meet)
     out = await rz._llm_determine_thread_status(
         f"From: {SECRET_SENDER}\n{SECRET_BODY}", "owner@acme.com", "",
         user_sent_last=False, account_id=ACC, thread_messages=THREAD,
@@ -210,8 +258,8 @@ async def _site_status(monkeypatch, delay: float = 0.0):
     return out, ("DONE", True)
 
 
-async def _site_rule(monkeypatch, delay: float = 0.0):
-    _llm(monkeypatch, eng, {"index": 0, "reason": SECRET_REASON}, delay)
+async def _site_rule(monkeypatch, delay: float = 0.0, meet: _Meet | None = None):
+    _llm(monkeypatch, eng, {"index": 0, "reason": SECRET_REASON}, delay, meet)
     out = await eng._llm_pick_rule(EMAIL, RULES, account_id=ACC)
     return out, {"index": 0, "reason": SECRET_REASON}
 
@@ -229,7 +277,9 @@ SITES = {
 
 async def test_every_mode_is_off_by_default() -> None:
     assert dict(df.DEFAULT_MODES) == {f: "off" for f in df.FEATURES}
-    assert set(df.FEATURES) == set(SITES)
+    # EM-T14b-0: the Insights screen is in the registry, and it is not a
+    # triage site. `test_email_insights_screen.py` fences it.
+    assert set(df.FEATURES) == set(SITES) | {"email.insights_screen"}
 
 
 @pytest.mark.parametrize("feature", list(SITES))
@@ -374,33 +424,39 @@ async def test_the_rule_state_holds_no_rule_text_and_no_correction(
 async def test_decide_runs_at_the_same_time_as_the_old_call(
     monkeypatch, tenant, feature
 ) -> None:
-    """Item 5. Both calls take 0.4 s. Concurrent is about 0.4 s and in
-    sequence is about 0.8 s, so the bound sits between them with margin."""
-    monkeypatch.setattr(df, "SHADOW_BOUND_S", 2.0)
+    """Item 5. The old call and decide each wait until the other has started
+    (``_Meet``). Calls in sequence never meet, so this reads no clock."""
+    monkeypatch.setattr(df, "SHADOW_BOUND_S", HANG_S)
     _modes(monkeypatch, f"{feature}=shadow", ORG)
-    fake = _fake(monkeypatch, delay=0.4)
-    started = time.monotonic()
+    meet = _Meet()
+    fake = _fake(monkeypatch, meet=meet)
     with structlog.testing.capture_logs() as caps:
-        got, old = await SITES[feature](monkeypatch, delay=0.4)
-    elapsed = time.monotonic() - started
+        got, old = await SITES[feature](monkeypatch, meet=meet)
     assert got == old
     assert len(fake.calls) == 1
+    assert meet.old.is_set() and meet.decide.is_set()
     assert _records(caps, "decide.shadow"), "decide must finish inside the bound"
-    assert elapsed < 0.7, f"old and decide ran in sequence ({elapsed:.2f}s)"
 
 
 async def test_the_old_exception_still_propagates(monkeypatch, tenant) -> None:
     _modes(monkeypatch, "email.rule_match=shadow", ORG)
-    _fake(monkeypatch, delay=10)
+    # decide never answers, and the bound is a hang guard. So only the cancel
+    # of the shadow ends it, and a shadow that waited for it would hang.
+    monkeypatch.setattr(df, "SHADOW_BOUND_S", HANG_S)
+    fake = _fake(monkeypatch, hold=True)
 
     async def boom(*a, **kw):
+        async with asyncio.timeout(HANG_S):  # fail once decide is in flight
+            while not fake.calls:
+                await asyncio.sleep(0)
         raise RuntimeError("gateway 502")
 
     monkeypatch.setattr(eng, "_llm_json", boom)
-    started = time.monotonic()
     with pytest.raises(eng.LLMUnavailable):
-        await eng._llm_pick_rule(EMAIL, RULES, account_id=ACC)
-    assert time.monotonic() - started < 1.0, "a failed old call must not wait for decide"
+        await asyncio.wait_for(eng._llm_pick_rule(EMAIL, RULES, account_id=ACC), HANG_S / 2)
+    async with asyncio.timeout(HANG_S):  # the cancel lands at the task's next step
+        while not fake.cancelled:
+            await asyncio.sleep(0)
 
 
 # ── Done when: DecideUnavailable → decide.fallback, old answer ──────────────
@@ -458,19 +514,24 @@ async def test_any_other_decide_error_never_stops_triage(monkeypatch, tenant) ->
 @pytest.mark.parametrize(
     ("raw", "reason"),
     [
-        ("email.cold_check=on", "on_refused"),
-        ("email.cold_check=ON", "on_refused"),
         ("email.cold_check=sometimes", "unknown"),
         ("email.nonsense=shadow", "unknown"),
+        ("email.nonsense=on", "unknown"),
         ("email.cold_check", "unknown"),
         # F3: a refused value AFTER a valid pair still turns the feature off.
         ("email.cold_check=shadow,email.cold_check=bogus", "unknown"),
+        # `on` for a feature outside ON_FEATURES. EM-T5b-2 in full put all
+        # four email features in the set, so these cases narrow it.
+        ("email.cold_check=on", "on_refused"),
+        ("email.cold_check=ON", "on_refused"),
         ("email.cold_check=shadow,email.cold_check=on", "on_refused"),
     ],
 )
 async def test_on_and_unknown_values_resolve_to_off_and_are_refused(
     monkeypatch, tenant, raw, reason
 ) -> None:
+    if reason == "on_refused":
+        monkeypatch.setattr(df, "ON_FEATURES", frozenset({"email.rule_match"}))
     with structlog.testing.capture_logs() as caps:
         _modes(monkeypatch, raw, ORG)
         assert df.mode_for("email.cold_check") == "off"
@@ -483,7 +544,7 @@ async def test_on_and_unknown_values_resolve_to_off_and_are_refused(
 
 
 async def test_a_refused_pair_does_not_disable_a_good_one(monkeypatch, tenant) -> None:
-    _modes(monkeypatch, "email.cold_check=on, email.rule_match=shadow", ORG)
+    _modes(monkeypatch, "email.cold_check=bogus, email.rule_match=shadow", ORG)
     assert df.mode_for("email.cold_check") == "off"
     assert df.mode_for("email.rule_match") == "shadow"
 
@@ -691,7 +752,7 @@ async def test_a_status_call_with_no_messages_is_skipped(monkeypatch, tenant) ->
 
 
 async def test_the_default_bound_is_five_seconds() -> None:
-    assert df.SHADOW_BOUND_S == 5.0
+    assert _DEFAULT_SHADOW_BOUND_S == 5.0
 
 
 @pytest.mark.parametrize("feature", list(SITES))
@@ -700,13 +761,13 @@ async def test_a_slow_decide_does_not_hold_the_old_answer_past_the_bound(
 ) -> None:
     monkeypatch.setattr(df, "SHADOW_BOUND_S", 0.2)
     _modes(monkeypatch, f"{feature}=shadow", ORG)
-    _fake(monkeypatch, delay=10.0)
-    started = time.monotonic()
+    # decide never answers. Only the bound ends it: a missing bound hangs at
+    # the guard, and a bound that fires late on a slow runner still passes.
+    fake = _fake(monkeypatch, hold=True)
     with structlog.testing.capture_logs() as caps:
-        got, old = await SITES[feature](monkeypatch)
-    elapsed = time.monotonic() - started
+        got, old = await asyncio.wait_for(SITES[feature](monkeypatch), HANG_S)
     assert got == old
-    assert elapsed < 0.2 + 0.8, f"the old answer waited {elapsed:.2f}s"
+    assert fake.cancelled, "the bound must end the decide call"
     rec = _records(caps, "decide.fallback")
     assert rec and rec[0]["decide_reason"] == "timeout"
 

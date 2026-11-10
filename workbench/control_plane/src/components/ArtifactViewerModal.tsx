@@ -5,6 +5,8 @@
  *
  * Rendering matrix:
  *   .md                 → react-markdown + remark-gfm
+ *   .report.json        → ReportView (the one report renderer); a file that
+ *                         does not parse as a report shows as JSON source
  *   .py .ts .js .sh … → shiki syntax highlighter
  *   .pdf                → react-pdf (pdfjs-dist)
  *   .docx               → mammoth.js (converted to HTML)
@@ -13,11 +15,15 @@
  *   other               → hex-dump excerpt + download button
  */
 
+import { useCloseOnBarTap } from "@/lib/phoneBarTap";
 import Button from "@/components/ui/Button";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
+import MarkdownImage from "@/components/MarkdownImage";
+import { markdownUrlTransform, rehypeGateRemoteMedia } from "@/lib/markdownMedia";
+import { sanitizeDocxHtml } from "@/lib/untrustedHtml";
 import SandboxedHtml from "@/components/SandboxedHtml";
 import SandboxedReact from "@/components/SandboxedReact";
 import { iconsUsedIn } from "@/lib/iconSvg";
@@ -26,11 +32,15 @@ import {
   canDownloadPdf,
   classifyArtifact,
   extOf,
+  type FileOrigin,
+  isArchive,
   isRenderable,
   pdfNameFor,
   workspaceFileUrl,
 } from "@/lib/artifactKind";
 import type { FileEntry } from "./ArtifactSidebar";
+import { ReportView } from "@/components/genUITemplates";
+import { type Report, parseReportFile, siblingFileUrl } from "@/lib/report";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -50,6 +60,13 @@ interface ArtifactViewerModalProps {
    *  aren't workspace-editable (e.g. inbound email attachments), which only
    *  have a download URL — there is nothing to PUT/DELETE. */
   readOnly?: boolean;
+  /**
+   * Where the file comes from, as the host says: "workspace" for a session
+   * workspace or the artifacts registry. Only then may a report draw as a
+   * report. Absent means "other", and `readOnly` forces it, so an email
+   * attachment never draws as a Metorite report (re-review of #1065).
+   */
+  origin?: FileOrigin;
 }
 
 type ViewerState =
@@ -57,12 +74,16 @@ type ViewerState =
   | { status: "error"; message: string }
   | { status: "text"; content: string; lang?: string }
   | { status: "markdown"; content: string }
+  /** A report file that parsed. `content` is its source, for "Code". */
+  | { status: "report"; report: Report; content: string }
   /** A runnable artifact: HTML for the sandbox, or React source to compile. */
   | { status: "rendered"; content: string; kind: "html" | "react" }
   | { status: "image"; url: string }
   | { status: "pdf"; url: string }
   | { status: "docx"; html: string }
-  | { status: "binary"; hex: string; filename: string };
+  | { status: "binary"; hex: string; filename: string }
+  /** A zip: no preview, and the bytes are never fetched for one. */
+  | { status: "archive" };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -143,42 +164,64 @@ function CodeBlock({ code, lang }: { code: string; lang: string }) {
   );
 }
 
-// ─── Markdown image path resolver ─────────────────────────────────────────────
+// ─── Markdown renderer ──────────────────────────────────────────────────────
 
 /**
- * Rewrite an image src found inside a markdown file so it routes through the
- * gateway file proxy.
+ * An agent-written `.md` file, rendered. The view and the live edit preview
+ * both draw through this, so the two cannot disagree about what loads.
  *
- * Rules (in priority order):
- *  1. Already a full URL (http/https/data:) → pass through unchanged
- *  2. Absolute path starting with /          → treat as workspace-relative and proxy
- *  3. Relative path                          → resolve against the markdown file's
- *                                             directory, then proxy
+ * Raw HTML is allowed (`rehype-raw`), so an attacker who steers the file can
+ * write any tag. `rehypeGateRemoteMedia` runs after it and strips the remote
+ * fetches raw HTML can make on render. `MarkdownImage` draws a remote image
+ * as a click-to-load placeholder. `lib/markdownMedia.ts` holds the threat.
+ * Fence: `src/components/markdownImage.test.ts`.
  */
-function resolveMediaSrc(src: string, sessionId: string, mdFilePath: string): string {
-  // Full URLs and data URIs pass through unchanged
-  if (/^(https?:|data:)/i.test(src)) return src;
-
-  let workspacePath: string;
-  if (src.startsWith("/")) {
-    // Treat absolute paths as workspace-root-relative
-    workspacePath = src.replace(/^\/+/, "");
-  } else {
-    // Relative: resolve against the directory containing the .md file
-    const mdDir = mdFilePath.includes("/")
-      ? mdFilePath.substring(0, mdFilePath.lastIndexOf("/"))
-      : "";
-    // Resolve ".." segments manually (URL has no filesystem resolve in browser)
-    const parts = (mdDir ? `${mdDir}/${src}` : src).split("/");
-    const resolved: string[] = [];
-    for (const part of parts) {
-      if (part === "..") resolved.pop();
-      else if (part !== ".") resolved.push(part);
-    }
-    workspacePath = resolved.join("/");
-  }
-
-  return `/api/agent/workspace/${sessionId}/file?path=${encodeURIComponent(workspacePath)}`;
+export function ArtifactMarkdown({
+  content,
+  sessionId,
+  mdFilePath,
+}: {
+  content: string;
+  sessionId: string;
+  mdFilePath: string;
+}) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      rehypePlugins={[rehypeRaw, rehypeGateRemoteMedia]}
+      urlTransform={markdownUrlTransform}
+      components={{
+        // A workspace path routes through the file proxy. A remote URL is a
+        // click-to-load placeholder.
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        img: ({ node: _node, ...props }) => (
+          <MarkdownImage
+            {...props}
+            sessionId={sessionId}
+            mdFilePath={mdFilePath}
+            className="max-w-full rounded"
+          />
+        ),
+        // Open links in a new tab and guard external URLs
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        a({ node: _node, href, children, ...rest }) {
+          const isExternal = href?.startsWith("http");
+          return (
+            <a
+              href={href}
+              target={isExternal ? "_blank" : undefined}
+              rel={isExternal ? "noreferrer noopener" : undefined}
+              {...rest}
+            >
+              {children}
+            </a>
+          );
+        },
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  );
 }
 
 // ─── PDF renderer (react-pdf) ─────────────────────────────────────────────────
@@ -270,7 +313,8 @@ function PdfViewer({ url }: { url: string }) {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelete, downloadUrl: externalDownloadUrl, saveUrl: externalSaveUrl, deleteUrl: externalDeleteUrl, readOnly = false }: ArtifactViewerModalProps) {
+export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelete, downloadUrl: externalDownloadUrl, saveUrl: externalSaveUrl, deleteUrl: externalDeleteUrl, readOnly = false, origin = "other" }: ArtifactViewerModalProps) {
+  const fileOrigin: FileOrigin = origin === "workspace" && !readOnly ? "workspace" : "other";
   const [state, setState] = useState<ViewerState>({ status: "loading" });
   const [editing, setEditing] = useState(false);
   const [editContent, setEditContent] = useState("");
@@ -279,11 +323,11 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
   const blobUrlRef = useRef<string | null>(null);
 
   // Determine if this file type supports inline editing.
-  const kind = classifyArtifact(entry.name, entry.path, entry.mime_type);
+  const kind = classifyArtifact(entry.name, entry.path, entry.mime_type, fileOrigin);
   const editable =
     !readOnly &&
     (kind === "markdown" || kind === "html" || kind === "react" ||
-     kind === "code" || kind === "text");
+     kind === "code" || kind === "text" || kind === "report");
   const isMarkdown = kind === "markdown";
   /** Kinds that have a RENDERED view distinct from their source. */
   const renderable = isRenderable(kind);
@@ -302,12 +346,17 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
     let cancelled = false;
     const fileUrl = externalDownloadUrl
       ?? `/api/agent/workspace/${sessionId}/file?path=${encodeURIComponent(entry.path)}`;
-    const kind = classifyArtifact(entry.name, entry.path, entry.mime_type);
+    const kind = classifyArtifact(entry.name, entry.path, entry.mime_type, fileOrigin);
 
     // Revoke any previous blob URL
     if (blobUrlRef.current) {
       URL.revokeObjectURL(blobUrlRef.current);
       blobUrlRef.current = null;
+    }
+
+    if (isArchive(entry.name, entry.mime_type)) {
+      setState({ status: "archive" });
+      return;
     }
 
     setState({ status: "loading" });
@@ -344,7 +393,10 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
           try {
             const mammoth = await import("mammoth");
             const result = await mammoth.convertToHtml({ arrayBuffer: buf });
-            if (!cancelled) setState({ status: "docx", html: result.value });
+            // The docx can come from an email or an agent, and the HTML draws
+            // inline through dangerouslySetInnerHTML, which skips React's URL
+            // check. `sanitizeDocxHtml` is the gate (`lib/untrustedHtml.ts`).
+            if (!cancelled) setState({ status: "docx", html: sanitizeDocxHtml(result.value).html });
           } catch (convErr) {
             if (!cancelled) setState({ status: "error", message: `DOCX conversion failed: ${String(convErr)}` });
           }
@@ -355,6 +407,11 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
         if (!cancelled) {
           if (kind === "markdown") {
             setState({ status: "markdown", content: text });
+          } else if (kind === "report") {
+            // A report that does not parse opens as its JSON source: the
+            // raw file, never a blank sheet.
+            const report = parseReportFile(text, entry.path);
+            setState(report ? { status: "report", report, content: text } : { status: "text", content: text, lang: "json" });
           } else if (kind === "html" || kind === "react") {
             setState({ status: "rendered", content: text, kind });
           } else if (kind === "code") {
@@ -383,6 +440,9 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
     };
   }, []);
 
+  // A bar tap closes the viewer, as Escape does (MOB-9).
+  useCloseOnBarTap(onClose);
+
   // Close on Escape
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
@@ -390,8 +450,10 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
     return () => window.removeEventListener("keydown", handler);
   }, [onClose]);
 
+  // A Download button names `download`, so the proxy sends the raw bytes and
+  // never the rendered page (`rendersAsPage`, 2026-10-16).
   const downloadUrl = externalDownloadUrl
-    ?? workspaceFileUrl(sessionId, entry.path);
+    ?? workspaceFileUrl(sessionId, entry.path, { download: true });
   // WS-27bm S8: a session's Markdown or HTML file also downloads as a PDF.
   // A file from the global artifacts browser (`externalDownloadUrl`) has no
   // session route to convert it, so it keeps the raw download only.
@@ -399,6 +461,14 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
     !externalDownloadUrl && canDownloadPdf(kind)
       ? workspaceFileUrl(sessionId, entry.path, { pdf: true })
       : null;
+  // A report's PDF sits beside it. The /artifacts browser reads files through
+  // a route of its own, so the PDF goes through that route too.
+  const reportPdfUrl = (report: Report): string | null => {
+    if (!report.pdf) return null;
+    return externalDownloadUrl
+      ? siblingFileUrl(externalDownloadUrl, report.pdf)
+      : workspaceFileUrl(sessionId, report.pdf, { download: true });
+  };
   const deletable =
     !readOnly && !externalDownloadUrl && (
       entry.path.startsWith("inputs/") ||
@@ -422,7 +492,7 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
 
   const handleStartEdit = () => {
     // Grab raw content from current state.
-    if (state.status === "markdown" || state.status === "text") {
+    if (state.status === "markdown" || state.status === "text" || state.status === "report") {
       setEditContent(state.content);
     }
     setEditing(true);
@@ -453,9 +523,13 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
         throw new Error(`HTTP ${res.status}: ${err}`);
       }
       // Refresh state with new content.
-      const kind = classifyArtifact(entry.name, entry.path, entry.mime_type);
+      const kind = classifyArtifact(entry.name, entry.path, entry.mime_type, fileOrigin);
       if (kind === "markdown") {
         setState({ status: "markdown", content: editContent });
+      } else if (kind === "report") {
+        // A saved report draws again. If the edit broke it, the JSON shows.
+        const report = parseReportFile(editContent, entry.path);
+        setState(report ? { status: "report", report, content: editContent } : { status: "text", content: editContent, lang: "json" });
       } else if (kind === "html" || kind === "react") {
         setState({ status: "rendered", content: editContent, kind });
       } else if (kind === "code") {
@@ -478,16 +552,19 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       {/* Modal — full-width on mobile, constrained on desktop. pb-safe protects against iOS rounded corners. */}
-      <div className="relative flex flex-col w-full max-w-4xl max-h-[90vh] sm:rounded-lg border-0 sm:border border-border bg-background shadow-2xl overflow-hidden sm:mx-4">
+      <div className="relative flex flex-col w-full max-w-4xl max-h-[90vh] sm:rounded-lg border-0 sm:border border-border bg-background shadow-2xl overflow-hidden sm:mx-4 glass:sm:rounded-[22px] glass:sm:border-transparent glass:glass-surface">
         {/* Header */}
         {/* On a phone the name and the close button take the first row and the
             actions wrap to a second one. At 390 wide the one-row header cut
             the name to two letters (S8 visual review). */}
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-4 py-3 shrink-0">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-4 py-3 shrink-0 glass:border-transparent">
           <div className="order-1 flex min-w-0 flex-1 basis-40 items-center gap-2">
             <span className="min-w-0 truncate text-sm font-semibold text-foreground" title={entry.name}>{entry.name}</span>
             <span className="text-xs text-muted-foreground truncate hidden sm:block">{entry.path}</span>
-            <span className="shrink-0 whitespace-nowrap text-xs text-muted-foreground">· {formatBytes(entry.size)}</span>
+            {/* A file that a link opened has no known size (`ArtifactLink.tsx`). */}
+            {entry.size > 0 && (
+              <span className="shrink-0 whitespace-nowrap text-xs text-muted-foreground">· {formatBytes(entry.size)}</span>
+            )}
           </div>
           <div className="order-3 flex w-full flex-wrap items-center gap-2 sm:order-2 sm:w-auto sm:shrink-0">
             {editing ? (
@@ -495,7 +572,7 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
                 {(isMarkdown || renderable) && (
                   <button
                     onClick={handleTogglePreview}
-                    className={`rounded px-2 py-1 text-xs transition-colors ${
+                    className={`rounded px-2 py-1 text-xs glass:rounded-full glass:px-3 glass:text-caption transition-colors ${
                       showPreview
                         ? "bg-primary/10 text-primary"
                         : "bg-secondary text-muted-foreground hover:text-foreground"
@@ -508,24 +585,24 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
                 <button
                   onClick={handleSave}
                   disabled={saving}
-                  className="rounded px-2 py-1 text-xs text-success bg-secondary hover:bg-success/10 transition-colors disabled:opacity-50"
+                  className="rounded px-2 py-1 text-xs glass:rounded-full glass:px-3 glass:text-caption text-success bg-secondary hover:bg-success/10 transition-colors disabled:opacity-50"
                 >
                   {saving ? "Saving…" : "Save"}
                 </button>
                 <button
                   onClick={handleCancelEdit}
                   disabled={saving}
-                  className="rounded px-2 py-1 text-xs text-muted-foreground bg-secondary hover:bg-secondary hover:text-foreground transition-colors"
+                  className="rounded px-2 py-1 text-xs glass:rounded-full glass:px-3 glass:text-caption text-muted-foreground bg-secondary hover:bg-secondary hover:text-foreground transition-colors"
                 >
                   Cancel
                 </button>
               </>
             ) : (
               <>
-                {renderable && (
+                {(renderable || state.status === "report") && (
                   <button
                     onClick={() => setShowSource((v) => !v)}
-                    className="rounded px-2 py-1 text-xs text-muted-foreground bg-secondary hover:bg-secondary hover:text-foreground transition-colors"
+                    className="rounded px-2 py-1 text-xs glass:rounded-full glass:px-3 glass:text-caption text-muted-foreground bg-secondary hover:bg-secondary hover:text-foreground transition-colors"
                     title={showSource ? "Show the rendered artifact" : "Show the source"}
                   >
                     {showSource ? "Preview" : "Code"}
@@ -534,7 +611,7 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
                 <a
                   href={downloadUrl}
                   download={entry.name}
-                  className="rounded px-2 py-1 text-xs text-muted-foreground bg-secondary hover:bg-secondary hover:text-foreground transition-colors"
+                  className="rounded px-2 py-1 text-xs glass:rounded-full glass:px-3 glass:text-caption text-muted-foreground bg-secondary hover:bg-secondary hover:text-foreground transition-colors"
                 >
                   Download
                 </a>
@@ -542,7 +619,7 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
                   <a
                     href={pdfUrl}
                     download={pdfNameFor(entry.name)}
-                    className="rounded px-2 py-1 text-xs text-muted-foreground bg-secondary hover:bg-secondary hover:text-foreground transition-colors"
+                    className="rounded px-2 py-1 text-xs glass:rounded-full glass:px-3 glass:text-caption text-muted-foreground bg-secondary hover:bg-secondary hover:text-foreground transition-colors"
                   >
                     Download PDF
                   </a>
@@ -550,7 +627,7 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
                 {editable && (
                   <button
                     onClick={handleStartEdit}
-                    className="rounded px-2 py-1 text-xs text-primary bg-secondary hover:bg-primary/10 transition-colors"
+                    className="rounded px-2 py-1 text-xs glass:rounded-full glass:px-3 glass:text-caption text-primary bg-secondary hover:bg-primary/10 transition-colors"
                     title="Edit file"
                   >
                     Edit
@@ -559,7 +636,7 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
                 {deletable && (
                   <button
                     onClick={handleDelete}
-                    className="rounded px-2 py-1 text-xs text-destructive bg-secondary hover:bg-destructive/10 transition-colors"
+                    className="rounded px-2 py-1 text-xs glass:rounded-full glass:px-3 glass:text-caption text-destructive bg-secondary hover:bg-destructive/10 transition-colors"
                     title="Delete file"
                   >
                     Delete
@@ -568,9 +645,7 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
               </>
             )}
           </div>
-          <Button variant="ghost" size="none" radius="keep" layout="" onClick={onClose} title="Close" aria-label="Close" className="order-2 shrink-0 rounded p-1 text-lg leading-none sm:order-3">
-            ×
-          </Button>
+          <Button variant="ghost" size="icon-xs" icon="X" layout="" onClick={onClose} title="Close" aria-label={`Close ${entry.name}`} className="order-2 shrink-0 text-muted-foreground hover:text-foreground sm:order-3" />
         </div>
 
         {/* Body — pb-safe keeps content above iOS home indicator */}
@@ -625,33 +700,11 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
                         </p>
                       )
                     ) : editContent.trim() ? (
-                      <ReactMarkdown
-                        remarkPlugins={[remarkGfm]}
-                        rehypePlugins={[rehypeRaw]}
-                        components={{
-                          img({ src, alt, ...rest }) {
-                            const rawSrc = typeof src === "string" ? src : "";
-                            const resolvedSrc = resolveMediaSrc(rawSrc, sessionId, entry.path);
-                            // eslint-disable-next-line @next/next/no-img-element
-                            return <img src={resolvedSrc} alt={alt ?? ""} {...rest} className="max-w-full rounded" />;
-                          },
-                          a({ href, children, ...rest }) {
-                            const isExternal = href?.startsWith("http");
-                            return (
-                              <a
-                                href={href}
-                                target={isExternal ? "_blank" : undefined}
-                                rel={isExternal ? "noreferrer noopener" : undefined}
-                                {...rest}
-                              >
-                                {children}
-                              </a>
-                            );
-                          },
-                        }}
-                      >
-                        {editContent}
-                      </ReactMarkdown>
+                      <ArtifactMarkdown
+                        content={editContent}
+                        sessionId={sessionId}
+                        mdFilePath={entry.path}
+                      />
                     ) : (
                       <p className="text-muted-foreground text-sm italic">
                         Start typing to see a live preview…
@@ -703,6 +756,14 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
             />
           )}
 
+          {state.status === "report" && !showSource && (
+            <ReportView report={state.report} pdfUrl={reportPdfUrl(state.report)} />
+          )}
+
+          {state.status === "report" && showSource && (
+            <CodeBlock code={state.content} lang="json" />
+          )}
+
           {state.status === "markdown" && (
             <div className="cc-prose prose max-w-none
               prose-headings:font-semibold prose-headings:text-foreground
@@ -719,35 +780,11 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
               prose-th:text-foreground prose-td:text-muted-foreground
               prose-img:rounded prose-img:mx-auto"
             >
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                rehypePlugins={[rehypeRaw]}
-                components={{
-                  // Rewrite image src: relative paths → gateway file proxy
-                  img({ src, alt, ...rest }) {
-                    const rawSrc = typeof src === "string" ? src : "";
-                    const resolvedSrc = resolveMediaSrc(rawSrc, sessionId, entry.path);
-                    // eslint-disable-next-line @next/next/no-img-element
-                    return <img src={resolvedSrc} alt={alt ?? ""} {...rest} className="max-w-full rounded" />;
-                  },
-                  // Open links in a new tab and guard external URLs
-                  a({ href, children, ...rest }) {
-                    const isExternal = href?.startsWith("http");
-                    return (
-                      <a
-                        href={href}
-                        target={isExternal ? "_blank" : undefined}
-                        rel={isExternal ? "noreferrer noopener" : undefined}
-                        {...rest}
-                      >
-                        {children}
-                      </a>
-                    );
-                  },
-                }}
-              >
-                {state.content}
-              </ReactMarkdown>
+              <ArtifactMarkdown
+                content={state.content}
+                sessionId={sessionId}
+                mdFilePath={entry.path}
+              />
             </div>
           )}
 
@@ -781,6 +818,21 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
               className="cc-prose prose prose-sm max-w-none overflow-x-auto"
               dangerouslySetInnerHTML={{ __html: state.html }}
             />
+          )}
+
+          {state.status === "archive" && (
+            <div className="flex flex-col gap-3">
+              <p className="text-xs text-muted-foreground">
+                A zip file has no preview. Download it to open it.
+              </p>
+              <a
+                href={downloadUrl}
+                download={entry.name}
+                className="self-start rounded px-3 py-1.5 text-sm bg-secondary hover:bg-secondary text-foreground transition-colors"
+              >
+                Download file
+              </a>
+            </div>
           )}
 
           {state.status === "binary" && (

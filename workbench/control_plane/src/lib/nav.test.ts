@@ -12,8 +12,13 @@
  * assertions fails and names what changed.
  */
 
+import { existsSync, readdirSync, statSync } from "node:fs";
+import path from "node:path";
+
 import { describe, expect, it } from "vitest";
 
+import { JOBS } from "@/lib/shell/registry";
+import { featureForPath } from "./access";
 import {
   CHROMELESS_ROUTES,
   isChromeless,
@@ -33,7 +38,9 @@ import {
  * red test green.
  */
 const LIVE_SET: ReadonlyArray<[string, string]> = [
-  ["personal", "/tasks"],
+  // `["personal", "/tasks"]` was here until 2026-10-25. WS-64 OP-4 (the
+  // owner's flip): My Tasks became the My work section of Projects, and
+  // `/tasks` redirects there. Fifteen live panes became FOURTEEN.
   // Added 2026-08-24 by D54 (board WS-39 S2), taking the live set from eight to
   // NINE. Calendar was lifted out of `/tasks`, where it was a view mode; it is
   // `live` rather than `preview` because it ships today inside a live app, so
@@ -42,22 +49,46 @@ const LIVE_SET: ReadonlyArray<[string, string]> = [
   // somebody deliberately changing this line AND `launch_surface.md` §2.
   ["personal", "/calendar"],
   ["personal", "/people/me"],
-  ["personal", "/access"],
+  // `["personal", "/access"]` was here until 2026-10-05. The owner moved My
+  // Access out of the sidebar and into the People app as a tab, which took
+  // the live set from ELEVEN back to TEN.
   // Added 2026-10-02 by owner decision of 2026-10-01 (H-21, WS-17 EM-T3b),
-  // taking the live set from TEN to ELEVEN. Email sits after `/access`
+  // taking the live set from TEN to ELEVEN. Email sits after `/people/me`
   // because `/dashboard` between them is still `preview`.
   ["personal", "/email"],
+  // Added 2026-10-08 by owner decision (WS-20 WA-C6), taking the live set from
+  // TEN to ELEVEN. "My WhatsApp" sits after "My Email", in nav order.
+  ["personal", "/whatsapp"],
+  // Added 2026-10-13 by owner direction (D99, NS-6 slice 6c: "do whatever it
+  // takes to go live"), taking the live set from THIRTEEN to FOURTEEN. The
+  // files of each chat. It sits after My WhatsApp, in nav order.
+  ["personal", "/artifacts"],
   ["apps", "/projects"],
+  // Added 2026-10-11 by owner decision in chat (WS-53 CRM-L2), taking the live
+  // set from ELEVEN to TWELVE. CRM sits after Projects, in nav order.
+  ["apps", "/crm"],
   // Added 2026-09-20 by owner decision, taking the live set from NINE to TEN.
   // The directory was held back while it could not load at all (PR #306) and
   // while it had no rows to show (H-124's roster sync). Same fence, same
   // rule: this line and `launch_surface.md` §2 move together or the suite
   // goes red.
   ["apps", "/people"],
+  // Added 2026-10-18 by owner decision in chat (WS-61 KB-12, H-21), taking
+  // the live set from FOURTEEN to FIFTEEN. Knowledge sits after People, in
+  // nav order.
+  ["apps", "/knowledge"],
   ["ai-studio", "/chat"],
+  // Added 2026-11-05 by owner decision in chat (D179, task 1795), taking
+  // the live set from FOURTEEN to FIFTEEN. Studio sits after Chat, in nav
+  // order. The routes still need STUDIO_ORGS, so an org not listed sees the
+  // "not open yet" state.
+  ["ai-studio", "/studio"],
   ["admin", "/approvals"],
   ["admin", "/settings/organization"],
   ["admin", "/settings/appearance"],
+  // Added 2026-10-13 by owner decision in chat (WS-54), taking the live set
+  // from TWELVE to THIRTEEN. Integrations sits after Appearance, in nav order.
+  ["admin", "/integrations"],
 ];
 
 /** Every pane, paired with the id of the section it sits in. */
@@ -72,7 +103,7 @@ const ALL_FEATURES = PANES.map((p) => p.feature).filter(
 
 describe("chromeless onboarding routes (CP-2c onboarding UX)", () => {
   it("covers exactly the doorway — sign-in and sign-up, with their subpaths", () => {
-    expect(CHROMELESS_ROUTES).toEqual(["/signin", "/signup", "/oauth/approved"]);
+    expect(CHROMELESS_ROUTES).toEqual(["/signin", "/signup", "/oauth/approved", "/connect"]);
     expect(isChromeless("/signup")).toBe(true);
     expect(isChromeless("/signin")).toBe(true);
     expect(isChromeless("/signin/code")).toBe(true);
@@ -83,6 +114,11 @@ describe("chromeless onboarding routes (CP-2c onboarding UX)", () => {
     // "you are inside a workspace", and that admin is not.
     expect(isChromeless("/oauth/approved")).toBe(true);
     expect(isChromeless("/oauth")).toBe(false);
+  });
+
+  it("the consent page of an outside agent has no chrome (WS-55 EA-4a)", () => {
+    expect(isChromeless("/connect/authorize")).toBe(true);
+    expect(isChromeless("/connector")).toBe(false);
   });
 
   it("matches path SEGMENTS, never prefixes of other routes", () => {
@@ -102,7 +138,7 @@ describe("chromeless onboarding routes (CP-2c onboarding UX)", () => {
 });
 
 describe("the launch allowlist (LS-1)", () => {
-  it("ships exactly the eleven panes launch_surface.md §2 names", () => {
+  it("ships exactly the fifteen panes launch_surface.md §2 names", () => {
     const live = panesWithSection()
       .filter(([, p]) => p.launch === "live")
       .map(([section, p]): [string, string] => [section, p.href]);
@@ -174,13 +210,14 @@ describe("preview panes are hidden, and the flag restores them (LS-1)", () => {
     // The §3.4 rule, as a test: holding the feature is NOT enough to reveal a
     // preview pane, and lacking it still hides a live one. If these two ever
     // agree, somebody has started hiding apps by revoking grants.
-    // The example is WhatsApp since 2026-10-02: Email went live (EM-T3b).
-    const withWhatsAppGrant = visibleSections(["whatsapp", "chat"], false, false);
-    expect(withWhatsAppGrant.flatMap((s) => s.items.map((p) => p.href))).not.toContain(
-      "/whatsapp",
+    // The example is Notes since 2026-10-08: WhatsApp went live (WA-C6), as
+    // Email did before it (EM-T3b).
+    const withNotesGrant = visibleSections(["notes", "chat"], false, false);
+    expect(withNotesGrant.flatMap((s) => s.items.map((p) => p.href))).not.toContain(
+      "/notes",
     );
 
-    const withoutChat = visibleSections(["whatsapp"], false, false);
+    const withoutChat = visibleSections(["notes"], false, false);
     expect(withoutChat.flatMap((s) => s.items.map((p) => p.href))).not.toContain(
       "/chat",
     );
@@ -208,11 +245,13 @@ describe("an unresolved viewer sees nothing, never everything (LS-4 · §8.1)", 
   });
 
   it("returns no sections for a resolved member who holds nothing", () => {
-    // The ungated live panes are the floor: My Profile, My Access, Appearance.
+    // The ungated live panes are the floor: My Profile, Appearance and,
+    // since D-EA-9 (2026-10-14), Integrations for its AI agents view. My
+    // Access is a People tab since 2026-10-05, and not a pane.
     const shown = visibleSections([], false).flatMap((s) =>
       s.items.map((p) => p.href),
     );
-    expect(shown).toEqual(["/people/me", "/access", "/settings/appearance"]);
+    expect(shown).toEqual(["/people/me", "/settings/appearance", "/integrations"]);
   });
 
   it("hides the admin-only Organisation pane from a non-admin", () => {
@@ -232,5 +271,137 @@ describe("an unresolved viewer sees nothing, never everything (LS-4 · §8.1)", 
     // heading.
     const sections = visibleSections(["tasks"], false);
     expect(sections.map((s) => s.id)).not.toContain("ai-studio");
+  });
+});
+
+// ── The shell manifest (D89, `navigation_shell.md` §5.1, NS-2) ─────────────
+
+describe("every live pane carries its manifest (D89)", () => {
+  it.each(LIVE_PANES.map((p) => [p.href, p] as const))("%s has a team", (_href, p) => {
+    expect(["personal", "across", "studio", "admin"]).toContain(p.team);
+  });
+
+  it.each(LIVE_PANES.map((p) => [p.href, p] as const))(
+    "%s says what it is for, in one line of 60 characters or fewer",
+    (_href, p) => {
+      expect(p.blurb, "the launcher and the command bar print this").toBeTruthy();
+      expect(p.blurb!.length).toBeLessThanOrEqual(60);
+      // One sentence, in words a member uses: no dot-separated jargon list,
+      // no trailing full stop, and not the operator line again.
+      expect(p.blurb).not.toMatch(/·|\.$/);
+      expect(p.blurb).not.toBe(p.note);
+    },
+  );
+
+  it("gives every pane a team, live or not, so a promoted app needs no second edit", () => {
+    expect(PANES.filter((p) => !p.team).map((p) => p.href)).toEqual([]);
+  });
+
+  it("puts only pages about the member in the account menu", () => {
+    const account = PANES.filter((p) => p.door === "account").map((p) => p.href);
+    expect(account).toEqual(["/people/me"]);
+  });
+
+  it("gives Appearance a sidebar door in Admin, starred like any app (owner, 2026-11-01)", () => {
+    const look = PANES.find((p) => p.href === "/settings/appearance")!;
+    expect(look.team).toBe("admin");
+    expect(look.door ?? "sidebar").toBe("sidebar");
+    expect(look.setting).toBeUndefined();
+  });
+
+  it("gives Organisation a sidebar door in Admin, as an app (owner, 2026-10-09)", () => {
+    const org = PANES.find((p) => p.href === "/settings/organization")!;
+    expect(org.team).toBe("admin");
+    expect(org.door ?? "sidebar").toBe("sidebar");
+    expect(org.adminOnly).toBe(true);
+    expect(org.setting).toBeUndefined();
+  });
+
+  it("marks only preferences as settings, so All apps lists apps", () => {
+    expect(PANES.filter((p) => p.setting).map((p) => p.href)).toEqual(["/people/me"]);
+    // A setting is never a sidebar door: it has no place to show then.
+    expect(PANES.filter((p) => p.setting && p.door !== "account")).toEqual([]);
+  });
+});
+
+// ── Done-when 2 of NS-2: a job opens a real page (`navigation_shell.md`) ───
+
+const APP_DIR = path.join(__dirname, "..", "app");
+
+/**
+ * Whether `src/app` holds a `page.tsx` for this path. A route group, such as
+ * `(auth)`, adds no segment. A dynamic folder, such as `[id]`, takes any one
+ * segment, and a catch-all folder takes the rest.
+ */
+function routeHasPage(pathname: string): boolean {
+  const walk = (dir: string, segs: readonly string[]): boolean => {
+    if (segs.length === 0 && existsSync(path.join(dir, "page.tsx"))) return true;
+    for (const name of readdirSync(dir)) {
+      const child = path.join(dir, name);
+      if (!statSync(child).isDirectory() || name === "api") continue;
+      if (/^\(.+\)$/.test(name) && walk(child, segs)) return true;
+      if (segs.length === 0) continue;
+      if (/^\[\[?\.\.\..+\]\]?$/.test(name) && existsSync(path.join(child, "page.tsx"))) return true;
+      if ((name === segs[0] || /^\[[^.[\]]+\]$/.test(name)) && walk(child, segs.slice(1))) return true;
+    }
+    return false;
+  };
+  return walk(APP_DIR, pathname.split("/").filter(Boolean));
+}
+
+describe("every job opens a page that exists (NS-2 done-when 2)", () => {
+  it("the check refuses a path with no page, so the fence below is not empty", () => {
+    expect(routeHasPage("/nope")).toBe(false);
+    expect(routeHasPage("/settings/nope")).toBe(false);
+    expect(routeHasPage("/tasks")).toBe(true);
+    // A dynamic segment: `settings/members/[email]`.
+    expect(routeHasPage("/settings/members/someone@x.test")).toBe(true);
+  });
+
+  it.each(JOBS.map((j) => [j.id, j.href] as const))("%s opens %s", (_id, href) => {
+    const pathname = new URL(href, "http://metorite.test").pathname;
+    expect(routeHasPage(pathname), `${href} has no src/app page`).toBe(true);
+  });
+});
+
+describe("every live app has a job (NS-2 done-when 1)", () => {
+  // A live app with no job is invisible in the command bar's Do group, so a
+  // member who types what they want to do there finds only "Open …".
+  // Studio went live on 2026-11-05 (D179) with no job. A job adds a row to
+  // the shell manifest, to the pinned job tables of `test_shell_manifests.py`
+  // and to the coordinator's `intent.JOBS`, and slice J1-1 is moving the
+  // Studio gate at the same time. A later slice adds the job and drops this
+  // line. No other app belongs here.
+  const NO_JOB_YET = ["/studio"];
+
+  it.each(LIVE_PANES.filter((p) => !NO_JOB_YET.includes(p.href)).map((p) => [p.label, p.href] as const))(
+    "%s (%s) has one job or more",
+    (_label, href) => {
+      expect(JOBS.some((j) => j.app === href), `${href} has no job in lib/shell/registry.ts`).toBe(true);
+    },
+  );
+
+  it("the no-job list holds only Studio, and an app with a job leaves it", () => {
+    expect(NO_JOB_YET).toEqual(["/studio"]);
+    for (const href of NO_JOB_YET) {
+      expect(JOBS.some((j) => j.app === href), `${href} has a job now: drop it from NO_JOB_YET`).toBe(false);
+    }
+  });
+});
+
+describe("the Studio library pane (ai_studio.md §14 A1)", () => {
+  it("PANES holds /studio as a live pane, and none of the three old hrefs", () => {
+    const studio = PANES.find((p) => p.href === "/studio");
+    expect(studio?.launch).toBe("live");
+    for (const old of ["/workflows", "/build/apps", "/build/agents"]) {
+      expect(PANES.some((p) => p.href === old), `${old} is a redirect now`).toBe(false);
+    }
+  });
+
+  it("the /studio item needs feature:studio, the gate of every /studio route (§14 J1)", () => {
+    const studio = PANES.find((p) => p.href === "/studio");
+    expect(studio?.feature).toBe("studio");
+    expect(featureForPath("/studio")).toBe("studio");
+    expect(featureForPath("/studio/skills/new")).toBe("studio");
   });
 });

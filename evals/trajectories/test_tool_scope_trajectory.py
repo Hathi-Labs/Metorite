@@ -8,8 +8,9 @@ Leaderboard), so this eval guards two things:
   1. STATIC — the three previously-unscoped agents (email-assistant, apis-config,
      orchestrator) now declare a lean, VALID ``tool_scope`` (every name is a real
      injectable platform tool; a typo would silently fail open to all tools).
-     email-assistant additionally declares ``own_tool_scope`` naming only real
-     baked tools.
+     email-assistant additionally declares ``own_tool_scope`` naming only tools
+     that its ``build_agents()`` gives (WS-8o: membership in the BUILT tools,
+     not an ``async def`` in the source, which a stale name also passes).
 
   2. BEHAVIORAL — ``_apply_own_tool_scope`` filters an agent's baked ``.tools``
      to the allowlist, and fails OPEN (keeps everything + warns) when no name
@@ -22,11 +23,13 @@ See specs/runtime_agent_effectiveness_2026-07.md (Item ①).
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import orchestrator.executor as ex
+import pytest
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -41,13 +44,55 @@ INJECTABLE_PLATFORM_TOOLS = {
     "get_errors", "run_diagnostics", "install_dependency",
     "save_note", "recall_notes", "query_history",
     "github_search", "github_repo_search",
+    # WS-53 CRM-C7: the `crm` read family (acb_skills/crm_tools.py).
+    "crm_list_records", "crm_get_record", "crm_list_fields", "crm_list_pipelines",
+    "crm_deal_contacts", "crm_list_owners", "crm_report", "crm_aggregate",
+    "crm_stage_dwell", "crm_list_modules", "crm_list_module_records",
+    "crm_get_module_record",
+    # WS-CRM CRM-M1 (2026-11-02): the read of the CRM Change history. It is
+    # in the `crm` family, so a scope may name it. Today only the CRM
+    # assistant's own scope and the `crm-records` pack hold it.
+    "crm_change_history",
+    # H-315 (2026-10-15): the `documents` family, a deck or a report as a PDF.
+    "make_document",
+    # projects_ai_chat.md §14.10 (2026-10-16): a report as a chat card and a PDF.
+    "make_report",
+    # WS-53 CRM-Q32-5 (2026-10-18): the org facts of a listed org. The run
+    # drops it when the org is not on CRM_QUESTIONS_ORGS (_add_crm_facts_block).
+    "org_facts",
+    # WS-53 CRM-Q32-8 (2026-10-18): the reply of a CRM question card. It goes
+    # with org_facts: withheld where org_facts is (_facts_withheld, the drop
+    # of _add_crm_facts_block and addendum._dark_tools).
+    "crm_answer_question",
+    # WS-53 CRM-Q33 (2026-10-18): a business rule from the chat, held for the
+    # member's confirm. Withheld where org_facts is, and off
+    # CRM_ANSWER_FIRST_ORGS (_facts_withheld, addendum._dark_tools).
+    "crm_propose_rule",
 }
 
 # The agents this item scopes, with a per-agent leanness ceiling.
 SCOPED_AGENTS = {
     "agent-email-assistant": 10,
     "agent-apis-config": 10,
-    "agent-orchestrator": 10,
+    # 20 since CRM-C7 (2026-10-13): the chat reads the CRM directly, by the
+    # owner's report that the chat could not reach the Zoho data. The 12 CRM
+    # read tools sit beside the 8 core tools.
+    # 21 since H-315 (2026-10-15): the owner asked for PDF decks and reports
+    # in the AI chat, so the chat holds make_document beside the CRM reads.
+    # 22 since §14.10 of projects_ai_chat.md (2026-10-16): a report is a card
+    # in the chat with its PDF, so the chat holds make_report too.
+    # 23 since CRM-Q32-5 (2026-10-18): the chat reads the org facts of a
+    # listed org, so it holds org_facts. An unlisted org's run drops it.
+    # 24 since CRM-Q32-8 (2026-10-18): the chat asks before it answers, so it
+    # holds crm_answer_question. An unlisted org's run drops it too.
+    # 25 since CRM-Q33 (2026-10-18): the chat answers first and keeps a
+    # business rule that the member says, so it holds crm_propose_rule. A run
+    # of an org off CRM_ANSWER_FIRST_ORGS drops it.
+    # Still 25 after CRM-M1 (2026-11-03): the chat reaches the read of the
+    # CRM Change history, crm_change_history, through the `crm-records` pack.
+    # The orchestrator's tool_scope does not hold it, because the base was at
+    # the 110-tool cap (tests/unit/test_projects_packs.py).
+    "agent-orchestrator": 25,
 }
 
 
@@ -71,22 +116,45 @@ def test_previously_unscoped_agents_now_declare_valid_tool_scope():
         assert "ask_questions" in scope, f"{agent_dir} must keep ask_questions (HITL)"
 
 
-def test_email_assistant_own_tool_scope_names_are_all_real_baked_tools():
-    """own_tool_scope entries must exist in the agent's _TOOLS, or they silently drop."""
-    import re
+def test_email_assistant_own_tool_scope_names_are_all_built_tools(monkeypatch, request):
+    """Each own_tool_scope name is a tool that build_agents() gives (WS-8o).
+
+    An ``async def`` in ``agents.py`` is not enough: a function that the agent
+    never registers passes that check and still drops from the scope.
+    """
+    pytest.importorskip("agent_framework")
+    from acb_common.settings import get_settings
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-ws8o-dummy")
+    # WS-48 N2: narrow_and_read is in the scope and is built only when
+    # NARROWING_AGENTS names the agent. Turn the flag on, so this check stays
+    # strict: every scoped name must be built. The flag-off case is held by
+    # tests/unit/test_own_tool_scope_parity.py (FLAG_GATED).
+    monkeypatch.setenv("NARROWING_AGENTS", "*")
+    get_settings.cache_clear()
+    # Clear again after the test, so the cached flag does not reach the next one.
+    request.addfinalizer(get_settings.cache_clear)
     cfg = _cfg("agent-email-assistant")
     scope = cfg.get("own_tool_scope")
-    assert scope, "email-assistant must declare own_tool_scope to trim its ~63 baked tools"
-    src = (REPO / "apps/agents/agent-email-assistant/agents.py").read_text(encoding="utf-8")
-    defined = set(re.findall(r"async def ([a-z_][a-z0-9_]+)\s*\(", src))
-    missing = [t for t in scope if t not in defined]
-    assert not missing, f"own_tool_scope names not defined in agents.py: {missing}"
-    # Must actually shrink the surface (63 baked → far fewer).
-    assert len(scope) < 40, f"own_tool_scope not lean enough ({len(scope)} kept)"
-    # Core send/read actions survive. (send_email absorbed send_reply in the tool
-    # consolidation — it now sends both new mail and replies via reply_to_email_id.)
-    for essential in ("read_email", "draft_reply", "send_email", "search_emails"):
-        assert essential in scope, f"email-assistant own_tool_scope dropped essential {essential}"
+    assert scope, "email-assistant must declare own_tool_scope"
+    path = REPO / "apps/agents/agent-email-assistant/agents.py"
+    spec = importlib.util.spec_from_file_location("ws8o_traj_email", path)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    built = {
+        ex._tool_name(t)
+        for agent in mod.build_agents()
+        for t in (getattr(agent, "default_options", None) or {}).get("tools") or []
+    }
+    assert built, "email-assistant built no tool"
+    missing = [t for t in scope if t not in built]
+    assert not missing, f"own_tool_scope names tools build_agents() does not give: {missing}"
+    # The core read and send actions are built and in scope. (send_email sends
+    # both new mail and replies, through reply_to_email_id.)
+    for essential in ("read_email", "draft_reply", "send_email"):
+        assert essential in built, f"email-assistant no longer builds {essential}"
+        assert essential in scope, f"email-assistant own_tool_scope dropped {essential}"
 
 
 # ── 2. BEHAVIORAL: _apply_own_tool_scope filters, and fails open ─────────────

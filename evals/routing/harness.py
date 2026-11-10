@@ -1,0 +1,825 @@
+"""Drive the REAL ``orchestrator`` run, and record where it delegated.
+
+The harness runs ``orchestrator.executor.run_agent_stream`` for the agent
+``orchestrator``, as the chat route runs it for the one assistant (D99). The
+orchestrator and each specialist it calls load from their REAL factories,
+named by the REAL registry (``gateway.routes.agent._AGENT_REGISTRY``). The
+delegation is the real one: ``call_agent`` or the specialist tool of
+``orchestrator/agents.py``, then ``executor._run_sub_agent_streaming``.
+
+What the harness replaces, and nothing more:
+
+* The loader. ``executor.load_agent`` imports ``agents.py`` by file path from
+  a copy of the agent dir, as the Dynamic Agent Loader does.
+* The dynamic registry and the skill toggles, which read the database. Both
+  answer empty, so the static registry is the catalog.
+* The state root (``agents_clone_dir``), and the scope (``maf_coding_scope``
+  is empty, so no run is covered).
+* The CRM mode read of run assembly (``acb_skills.crm_tools.crm_mode``). It
+  answers ``native``, so the CRM writes stay, as in an organization whose CRM
+  is its own. It reads the gateway, which a hermetic run does not have.
+* The Custom Apps granted to an agent (``app_tools._granted_live_apps``).
+  It answers none. It reads the database.
+* The Redis relay. ``executor._push_sse_to_stream`` records each line with
+  its thread, in :attr:`RoutingHarness.relayed`.
+* Scripted (``models`` given): the model of each agent. :class:`ReplyModel`
+  replays turns under the real client. Every other host HTTP send raises,
+  and :attr:`RoutingHarness.sent` records it.
+* Live (``live=True``): the specialists. The orchestrator asks the real model
+  through the Router, and ``_run_sub_agent_streaming`` records the agent and
+  the message and answers with a fixed line, so no specialist runs, writes or
+  spends.
+* Live with ``real_specialists=True`` (WS-67 OA-5): no stand-in. Each
+  specialist runs and asks the real model too. Each host HTTP send that does
+  not start with a prefix of :attr:`RoutingHarness.allow` fails, and
+  :attr:`RoutingHarness.sent` records it. The guard covers async and sync
+  httpx. It does not cover a database, Redis or graph driver. So a test fake must replace each
+  route that a specialist's tools reach, as ``evals/one_assistant_measure``
+  replaces the email gateway.
+
+What the harness adds, in each mode (WS-67 OA-5, the measure of tool packs):
+
+* :attr:`RoutingHarness.model_calls`: each request of each agent's model, with
+  its timing and the usage that the response gave (:class:`ModelCall`). A tap
+  wraps the transport of each agent's client, after the wire above.
+* :attr:`RoutingHarness.after_build`: a hook for each agent name, called on the
+  agents that the real factory built, before the wire. An eval changes the
+  built agents there, and never the factory.
+* :attr:`RunRecord.first_text_s` and :attr:`RunRecord.total_s`: the time from
+  the start of a turn to its first answer text, and to its end.
+
+Two best-effort reads still try the database: the member's access
+(``acb_auth.resolve_access``) and the tier overrides of ``acb_llm``. With no
+database, as in CI, each one fails closed and logs a warning. Neither one
+changes which tools the orchestrator holds here, because the harness gives
+the run no integration.
+
+A card on the stream is answered through ``executor.resolve_user_input``
+with the run's own thread, as ``POST /agent/respond-input`` answers it.
+"""
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import shutil
+import sys
+import tempfile
+import time
+import types
+import uuid
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import httpx
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+ORCHESTRATOR = "orchestrator"
+
+#: The tools that name a delegate in their ``agent_name`` argument.
+_BY_AGENT_NAME = frozenset({"call_agent", "call_agent_background", "delegate_to_agent"})
+
+#: What a specialist answers in a live run, where it does not run.
+LIVE_STAND_IN = (
+    "(The routing eval stops here: {agent} received the task and did not run. "
+    "Tell the member in one line that {agent} has it.)"
+)
+
+#: What the eval answers to a question card it cannot answer.
+NO_ANSWER = "No answer: this is an unattended eval. Go on without it."
+
+
+# ── the model ───────────────────────────────────────────────────────────────
+
+
+def text_turn(text: str) -> list[dict[str, Any]]:
+    return [{"role": "assistant", "content": text}, {"finish_reason": "stop"}]
+
+
+def tool_turn(name: str, args: dict[str, Any], call_id: str = "call_1") -> list[dict[str, Any]]:
+    return [
+        {"role": "assistant", "tool_calls": [{
+            "index": 0, "id": call_id, "type": "function",
+            "function": {"name": name, "arguments": json.dumps(args)},
+        }]},
+        {"finish_reason": "tool_calls"},
+    ]
+
+
+class ReplyModel:
+    """An ``httpx.MockTransport`` handler that plays turns in order.
+
+    It answers a streamed request (the top-level run) and a plain one (the
+    batch run of a MAF sub-agent). Each request body is kept in
+    :attr:`bodies`, so a check reads what the real client sent.
+    """
+
+    def __init__(self, turns: list[list[dict[str, Any]]]) -> None:
+        self.turns = turns
+        self.bodies: list[dict[str, Any]] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content or b"{}")
+        index = len(self.bodies)
+        self.bodies.append(body)
+        turn = self.turns[min(index, len(self.turns) - 1)]
+        if body.get("stream"):
+            return self._streamed(index, turn)
+        message: dict[str, Any] = {"role": "assistant", "content": None}
+        finish = "stop"
+        for part in turn:
+            finish = part.get("finish_reason") or finish
+            if part.get("content"):
+                message["content"] = part["content"]
+            if part.get("tool_calls"):
+                message["tool_calls"] = [
+                    {k: v for k, v in c.items() if k != "index"} for c in part["tool_calls"]
+                ]
+        return httpx.Response(200, json={
+            "id": f"chatcmpl-{index}", "object": "chat.completion", "created": 0,
+            "model": "scripted",
+            "choices": [{"index": 0, "message": message, "finish_reason": finish}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        })
+
+    @staticmethod
+    def _streamed(index: int, turn: list[dict[str, Any]]) -> httpx.Response:
+        chunks = []
+        for part in turn:
+            delta = {k: v for k, v in part.items() if k != "finish_reason"}
+            chunks.append({
+                "id": f"chatcmpl-{index}", "object": "chat.completion.chunk",
+                "created": 0, "model": "scripted",
+                "choices": [{"index": 0, "delta": delta,
+                             "finish_reason": part.get("finish_reason")}],
+            })
+        data = "".join(f"data: {json.dumps(c)}\n\n" for c in chunks) + "data: [DONE]\n\n"
+        return httpx.Response(200, content=data.encode(),
+                              headers={"content-type": "text/event-stream"})
+
+    def saw(self, text: str) -> bool:
+        """True when *text* is in a message of any request this model got."""
+        return any(text in json.dumps(b.get("messages") or [], ensure_ascii=False)
+                   for b in self.bodies)
+
+
+# ── the wire tap (WS-67 OA-5) ───────────────────────────────────────────────
+
+
+@dataclass
+class ModelCall:
+    """One request of an agent's model, as the wire saw it.
+
+    The times are ``time.monotonic()`` values. ``usage`` is the ``usage``
+    object of the response: the last stream frame that holds one, or the body
+    of a buffered response. A stream gets it when the Router asks the vendor
+    for it (``include_usage``), and the Router always does.
+    """
+
+    agent: str
+    model: str
+    stream: bool
+    messages: int
+    tools: int
+    request_chars: int
+    started: float
+    first_byte: float | None = None
+    #: The first frame with text or a tool call. A buffered call: its end.
+    first_token: float | None = None
+    ended: float | None = None
+    status: int | None = None
+    #: The model that the response names, for example the vendor's model id.
+    served: str = ""
+    usage: dict[str, Any] = field(default_factory=dict)
+    #: ``time.time()`` at the start. 0 is the epoch, which is off peak.
+    wall: float = 0.0
+    #: The model that the agent asked for, when the eval rewrote it (``model``
+    #: is then the model that went on the wire). Empty when nothing changed.
+    requested: str = ""
+
+
+class _TapStream(httpx.AsyncByteStream):
+    """The response body, read as it passes, for :class:`ModelCall`."""
+
+    def __init__(self, inner: Any, call: ModelCall) -> None:
+        self._inner = inner
+        self._call = call
+        self._buffer = b""
+
+    async def __aiter__(self) -> Any:
+        async for chunk in self._inner:
+            self._see(chunk)
+            yield chunk
+        self._done()
+
+    async def aclose(self) -> None:
+        self._done()
+        close = getattr(self._inner, "aclose", None)
+        if close is not None:
+            await close()
+
+    def _see(self, chunk: bytes) -> None:
+        if not self._call.stream:
+            self._buffer += chunk
+            return
+        self._buffer += chunk
+        *lines, self._buffer = self._buffer.split(b"\n")
+        for line in lines:
+            self._frame(line.strip())
+
+    def _frame(self, line: bytes) -> None:
+        if not line.startswith(b"data:"):
+            return
+        body = line[len(b"data:"):].strip()
+        if not body or body == b"[DONE]":
+            return
+        try:
+            frame = json.loads(body)
+        except ValueError:
+            return
+        if not isinstance(frame, dict):
+            return
+        self._call.served = str(frame.get("model") or self._call.served)
+        if isinstance(frame.get("usage"), dict) and frame["usage"]:
+            self._call.usage = dict(frame["usage"])
+        for choice in frame.get("choices") or []:
+            delta = (choice or {}).get("delta") or {}
+            if self._call.first_token is None and (delta.get("content") or delta.get("tool_calls")):
+                self._call.first_token = time.monotonic()
+
+    def _done(self) -> None:
+        if self._call.ended is not None:
+            return
+        self._call.ended = time.monotonic()
+        if self._call.stream:
+            if self._buffer.strip():
+                self._frame(self._buffer.strip())
+            return
+        self._call.first_token = self._call.ended
+        try:
+            body = json.loads(self._buffer or b"{}")
+        except ValueError:
+            return
+        if isinstance(body, dict):
+            self._call.served = str(body.get("model") or "")
+            if isinstance(body.get("usage"), dict):
+                self._call.usage = dict(body["usage"])
+
+
+#: EVAL ONLY. A map from the model a request names to the model the eval sends
+#: instead, for example ``{"tier-balanced": "tier-fast"}``. It is empty, so the
+#: tap changes nothing, until the live measure sets it for one run
+#: (``--tier-map``). No product code reads it.
+MODEL_REWRITE: dict[str, str] = {}
+
+
+def _rewritten(request: httpx.Request, body: dict[str, Any], raw: bytes) -> bytes:
+    """Put the mapped model in *request*, and change nothing else in the body."""
+    target = MODEL_REWRITE.get(str(body.get("model") or ""))
+    if not target:
+        return raw
+    raw = json.dumps({**body, "model": target}, ensure_ascii=False).encode("utf-8")
+    request._content = raw
+    request.stream = httpx.ByteStream(raw)
+    request.headers["content-length"] = str(len(raw))
+    return raw
+
+
+class _WireTap(httpx.AsyncBaseTransport):
+    """A transport that records each model request of one agent, and passes it on."""
+
+    def __init__(self, inner: Any, agent: str, sink: list[ModelCall]) -> None:
+        self._inner = inner
+        self._agent = agent
+        self._sink = sink
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        try:
+            raw = request.content or b""
+        except httpx.RequestNotRead:
+            raw = b""
+        try:
+            body = json.loads(raw or b"{}")
+        except ValueError:
+            body = {}
+        body = body if isinstance(body, dict) else {}
+        asked = str(body.get("model") or "")
+        if asked in MODEL_REWRITE:
+            raw = _rewritten(request, body, raw)
+            body = {**body, "model": MODEL_REWRITE[asked]}
+        call = ModelCall(
+            agent=self._agent, model=str(body.get("model") or ""),
+            requested=asked if asked != str(body.get("model") or "") else "",
+            stream=bool(body.get("stream")), messages=len(body.get("messages") or []),
+            tools=len(body.get("tools") or []), request_chars=len(raw),
+            started=time.monotonic(), wall=time.time(),
+        )
+        self._sink.append(call)
+        response = await self._inner.handle_async_request(request)
+        call.first_byte = time.monotonic()
+        call.status = response.status_code
+        response.stream = _TapStream(response.stream, call)
+        return response
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+
+def _tap(agents: list[Any], name: str, sink: list[ModelCall]) -> None:
+    """Wrap the transport of the first agent's OpenAI client in a :class:`_WireTap`."""
+    client = getattr(getattr(agents[0] if agents else None, "client", None), "client", None)
+    http = getattr(client, "_client", None)
+    inner = getattr(http, "_transport", None)
+    if inner is not None and not isinstance(inner, _WireTap):
+        http._transport = _WireTap(inner, name, sink)
+
+
+# ── the registry ────────────────────────────────────────────────────────────
+
+
+def registry() -> dict[str, dict[str, Any]]:
+    """The static registry, by agent name. The executor reads the same list."""
+    from gateway.routes.agent import _AGENT_REGISTRY
+
+    return {str(e["name"]): dict(e) for e in _AGENT_REGISTRY if e.get("name")}
+
+
+def orchestrator_tool_names() -> frozenset[str]:
+    """The tools of the REAL orchestrator agent, as its factory builds it.
+
+    The specialist tools come from ``orchestrator.agents._load_specialist_agents_as_tools``,
+    which reads the registry. The dynamic registry must answer empty first
+    (:class:`RoutingHarness` does it), or a database row joins the list.
+    """
+    from orchestrator.agents import build_orchestrator_agent
+
+    agent = build_orchestrator_agent(with_history=False)
+    pool: list[Any] = []
+    options = getattr(agent, "default_options", None)
+    if isinstance(options, dict):
+        pool += list(options.get("tools") or [])
+    pool += list(getattr(agent, "_tools", None) or [])
+    return frozenset(
+        str(getattr(t, "name", None) or getattr(t, "__name__", "")) for t in pool
+    )
+
+
+def specialist_tool(agent: str) -> str:
+    """The orchestrator's tool for *agent* (``orchestrator/agents.py``)."""
+    return agent.replace("-", "_")
+
+
+# ── one run ─────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class RunRecord:
+    """What one run of the orchestrator did."""
+
+    thread_id: str
+    events: list[dict[str, Any]] = field(default_factory=list)
+    #: The delegates the orchestrator named in its own tool calls, in order.
+    routed: list[str] = field(default_factory=list)
+    #: The agents whose sub-run reached the parent's stream.
+    reached: list[str] = field(default_factory=list)
+    #: The question cards (``elicitation_requested``) and their answers.
+    asked: list[dict[str, Any]] = field(default_factory=list)
+    #: The confirmation cards, each with its owner thread and the answer.
+    cards: list[dict[str, Any]] = field(default_factory=list)
+    #: The orchestrator's own tool calls: name and arguments.
+    tool_calls: list[tuple[str, str]] = field(default_factory=list)
+    answer: str = ""
+    error: str | None = None
+    #: Seconds from the start of the turn to its first answer text, or None.
+    first_text_s: float | None = None
+    #: Seconds from the start of the turn to its end.
+    total_s: float | None = None
+
+
+def delegates_of(name: str, args: str, agents: frozenset[str]) -> list[str]:
+    """The agents that one tool call of the orchestrator names."""
+    try:
+        parsed = json.loads(args or "{}")
+    except ValueError:
+        parsed = {}
+    if not isinstance(parsed, dict):
+        parsed = {}
+    if name in _BY_AGENT_NAME:
+        return [str(parsed.get("agent_name") or "")]
+    if name == "call_agents_parallel":
+        try:
+            tasks = json.loads(parsed.get("tasks") or "[]")
+        except (TypeError, ValueError):
+            tasks = []
+        return [str(t.get("agent") or "") for t in tasks if isinstance(t, dict)]
+    as_agent = name.replace("_", "-")
+    return [as_agent] if as_agent in agents else []
+
+
+#: Decides a confirmation card: ``(record, event value) -> "APPROVE" | "REJECT"``.
+CardAnswer = Callable[[RunRecord, dict[str, Any]], str]
+
+
+def _reject(_record: RunRecord, _value: dict[str, Any]) -> str:
+    return "REJECT"
+
+
+def _answer_card(record: RunRecord, value: dict[str, Any], answer: str) -> bool:
+    """Answer a parked card as the member does, through the run's own thread.
+
+    When the owner check refuses the answer, the card is closed with a REJECT
+    so the run ends, and ``answered`` stays False for the check to read.
+    """
+    from orchestrator import executor
+
+    rid = str(value.get("request_id") or "")
+    ok = executor.resolve_user_input(rid, answer, thread_id=record.thread_id)
+    if not ok:
+        fut = executor._pending_user_input.get(rid)
+        if fut is not None and not fut.done():
+            fut.set_result({"answer": "REJECT", "wasFreeform": False})
+    return ok
+
+
+def _take(record: RunRecord, event: dict[str, Any], calls: dict[str, dict[str, str]],
+          on_card: CardAnswer, question_answer: str) -> None:
+    from orchestrator import executor
+
+    kind = event.get("type")
+    if kind == "TOOL_CALL_START":
+        calls[str(event.get("toolCallId"))] = {
+            "name": str(event.get("toolCallName") or ""), "args": str(event.get("args") or ""),
+        }
+    elif kind == "TOOL_CALL_ARGS":
+        call = calls.setdefault(str(event.get("toolCallId")), {"name": "", "args": ""})
+        call["deltas"] = call.get("deltas", "") + str(event.get("delta") or "")
+    elif kind in ("SUB_AGENT_TEXT_DELTA", "SUB_AGENT_TOOL_CALL_START",
+                  "SUB_AGENT_TOOL_CALL_RESULT", "SUB_AGENT_ERROR"):
+        name = str(event.get("agentName") or "")
+        if name and name not in record.reached:
+            record.reached.append(name)
+    elif kind == "TEXT_MESSAGE_CONTENT":
+        record.answer += str(event.get("delta") or "")
+    elif kind == "RUN_ERROR":
+        record.error = str(event.get("message") or event)[:500]
+    elif kind == "CUSTOM" and isinstance(event.get("value"), dict):
+        value = event["value"]
+        rid = str(value.get("request_id") or "")
+        if event.get("name") == "elicitation_requested":
+            ok = _answer_card(record, value, question_answer)
+            record.asked.append({"request_id": rid, "questions": value.get("questions"),
+                                 "answered": ok})
+        elif event.get("name") == "confirmation_requested":
+            owner = executor._pending_user_input.owner_of(rid)
+            answer = on_card(record, value)
+            ok = _answer_card(record, value, answer)
+            record.cards.append({"request_id": rid, "title": value.get("title"),
+                                 "detail": value.get("detail"), "owner": owner,
+                                 "answer": answer, "answered": ok})
+
+
+def _finish(record: RunRecord, calls: dict[str, dict[str, str]], agents: frozenset[str]) -> None:
+    for call in calls.values():
+        args = call.get("args") or call.get("deltas") or ""
+        record.tool_calls.append((call["name"], args))
+        for name in delegates_of(call["name"], args, agents):
+            if name and name not in record.routed:
+                record.routed.append(name)
+
+
+# ── the harness ─────────────────────────────────────────────────────────────
+
+
+class RoutingHarness:
+    """One sweep: the patches, the state root, and the models of this run."""
+
+    def __init__(self, *, live: bool = False, real_specialists: bool = False,
+                 guide: bool = True) -> None:
+        self.live = live
+        #: WS-OB GD-7: the guide tools are on (``GUIDE_ORGS`` open). The runner
+        #: sends the guide line with them (``shell.system_context(guide=...)``).
+        self.guide = guide
+        #: Live: each specialist runs for real, and no stand-in answers.
+        self.real_specialists = real_specialists
+        #: Live with real specialists: the URL prefixes that a host HTTP send
+        #: may reach, for example the Router. Each other send fails.
+        self.allow: tuple[str, ...] = ()
+        #: Live with real specialists: each send that :attr:`allow` let pass.
+        #: It must equal the tapped calls, or a send skipped the tap.
+        self.passed: list[str] = []
+        #: Each model request of each agent, in order (WS-67 OA-5).
+        self.model_calls: list[ModelCall] = []
+        #: A hook for each agent name, called on the agents that its real
+        #: factory built, before the wire (WS-67 OA-5).
+        self.after_build: dict[str, Callable[[list[Any]], None]] = {}
+        #: The model of each agent, for the NEXT run. Scripted runs only.
+        self.models: dict[str, ReplyModel] = {}
+        #: Every agent the loader built, in order.
+        self.loaded: list[str] = []
+        #: Each line the run pushed to the relay: ``(thread id, line)``.
+        self.relayed: list[tuple[str, str]] = []
+        #: Each host HTTP send of a scripted run. It must stay empty.
+        self.sent: list[str] = []
+        #: Live: each delegation the stand-in took, ``(agent, message)``.
+        self.delegated: list[tuple[str, str]] = []
+        #: The member's mailboxes, as ``GET /email/accounts`` lists them.
+        self.mailboxes: list[dict[str, Any]] = []
+        self._mp: Any = None
+        self._root: Path | None = None
+        self._modules: dict[str, Any] = {}
+        self._registry: dict[str, dict[str, Any]] = {}
+
+    def __enter__(self) -> RoutingHarness:
+        import acb_memory
+        import gateway.routes.agent as routes_agent
+        import pytest
+        from acb_common import get_settings
+        from orchestrator import _tool_injection as ti
+        from orchestrator import executor
+
+        self._mp = mp = pytest.MonkeyPatch()
+        self._root = Path(tempfile.mkdtemp(prefix="route"))
+        settings = get_settings()
+        mp.setattr(settings, "agents_clone_dir", str(self._root))
+        mp.setattr(settings, "maf_coding_scope", "", raising=False)
+        # WS-62 CF-3: the eval runs with the page tool on, so S1 to S3 can
+        # drive it. Production ships it dark (settings.chat_first_tools).
+        mp.setattr(settings, "chat_first_tools", True, raising=False)
+        mp.setattr(routes_agent, "_load_dynamic_agents", lambda: [])
+        mp.setattr(ti, "_load_disabled_skill_families", lambda name: frozenset())
+        # WS-17 EM-G11d: the upward-egress mark in memory, as in the unit
+        # tests. CI has no Redis, and the read fails closed, so each member
+        # chat would read as marked and each delegation would ask a card.
+        from tests.unit._egress_mark_store import install_memory_mark_store
+
+        install_memory_mark_store(mp)
+        # WS-62 CF-3: the panes the member holds, for show_in_app. The real
+        # read is acb_auth.resolve_access, and CI has no database, so it
+        # would fail closed and refuse every page. The stand-in holds every
+        # live pane's feature. A test that wants less sets its own.
+        from orchestrator import in_app_path
+
+        held = frozenset(p.feature for p in in_app_path.PANES if p.feature)
+
+        async def _member_features() -> frozenset[str]:
+            return held
+
+        mp.setattr(in_app_path, "member_features", _member_features)
+        # WS-OB GD-7: the guide tools, with GUIDE_ORGS open for the run's org and
+        # the member no admin. Production ships them dark (settings.guide_orgs).
+        # With guide=False they stay off, as in a build with the flag off.
+        from orchestrator import guide_tools
+
+        from evals.routing.dataset import ORG as _ORG
+
+        mp.setattr(settings, "guide_orgs", "*" if self.guide else "", raising=False)
+        mp.setattr(guide_tools, "run_org", lambda: _ORG)
+
+        async def _no_admin() -> bool:
+            return False
+
+        mp.setattr(guide_tools, "member_is_admin", _no_admin)
+        ti._build_registry_block.cache_clear()
+        ti._build_injected_tools_addendum.cache_clear()
+        self._registry = registry()
+
+        async def nothing(*_a: Any, **_k: Any) -> Any:
+            return ""
+
+        async def relay(thread_id: str, line: str) -> None:
+            self.relayed.append((thread_id, line))
+
+        mp.setattr(executor, "load_agent", lambda name, **_k: _Loaded(self, name))
+        mp.setattr(executor, "build_integrations", lambda *a, **k: ({}, {}))
+        mp.setattr(executor, "_install_push_guard", nothing)
+        mp.setattr(executor, "_get_current_head", nothing)
+        mp.setattr(executor, "_detect_agent_commits", nothing)
+        mp.setattr(executor, "_push_sse_to_stream", relay)
+        mp.setattr(acb_memory, "rehydrate_workspace", nothing)
+
+        async def native_crm() -> str:
+            return "native"
+
+        import acb_skills.crm_tools as crm_tools
+
+        mp.setattr(crm_tools, "crm_mode", native_crm)
+        from orchestrator import app_tools
+
+        mp.setattr(app_tools, "_granted_live_apps", lambda _agent: [])
+        # §7.1.1: the member's mailboxes, which each orchestrator turn reads
+        # from the gateway. None here, so a scripted run sends nothing. A test
+        # that wants mailboxes sets :attr:`mailboxes`.
+        from acb_skills import email_chat_context
+
+        async def _mailboxes(_member: str) -> list[dict[str, Any]]:
+            return [dict(a) for a in self.mailboxes]
+
+        mp.setattr(email_chat_context, "fetch_accounts", _mailboxes)
+        email_chat_context.clear_cache()
+        mp.setitem(sys.modules, "ddgs", None)
+        mp.setitem(sys.modules, "duckduckgo_search", None)
+        if self.live and self.real_specialists:
+            send = httpx.AsyncHTTPTransport.handle_async_request
+
+            async def only_allowed(transport: Any, request: Any) -> Any:
+                url = str(request.url)
+                if any(url.startswith(prefix) for prefix in self.allow):
+                    self.passed.append(f"{request.method} {url}")
+                    return await send(transport, request)
+                self.sent.append(f"{request.method} {url}")
+                raise AssertionError(f"the live run may not send {request.method} {url}")
+
+            mp.setattr(httpx.AsyncHTTPTransport, "handle_async_request", only_allowed)
+            # Fix round 1 of OA-5: a sync client too (a tool can use one).
+            # The guard covers httpx only: a database, Redis or graph driver
+            # does not go through it.
+            send_sync = httpx.HTTPTransport.handle_request
+
+            def only_allowed_sync(transport: Any, request: Any) -> Any:
+                url = str(request.url)
+                if any(url.startswith(prefix) for prefix in self.allow):
+                    self.passed.append(f"{request.method} {url}")
+                    return send_sync(transport, request)
+                self.sent.append(f"{request.method} {url}")
+                raise AssertionError(f"the live run may not send {request.method} {url}")
+
+            mp.setattr(httpx.HTTPTransport, "handle_request", only_allowed_sync)
+        elif self.live:
+            mp.setattr(executor, "_run_sub_agent_streaming", self._stand_in)
+        else:
+            async def trap(_transport: Any, request: Any) -> Any:
+                self.sent.append(f"{request.method} {request.url}")
+                raise AssertionError(f"the scripted run sent {request.method} {request.url}")
+
+            mp.setattr(httpx.AsyncHTTPTransport, "handle_async_request", trap)
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        from orchestrator import _tool_injection as ti
+
+        if self._mp is not None:
+            self._mp.undo()
+        ti._build_registry_block.cache_clear()
+        ti._build_injected_tools_addendum.cache_clear()
+        if self._root is not None:
+            shutil.rmtree(self._root, ignore_errors=True)
+
+    # ── the loader ──────────────────────────────────────────────────────────
+
+    def agent_dir(self, name: str) -> Path:
+        """A copy of the agent's dir at ``<root>/repos/<name>``, as the loader clones it."""
+        entry = self._registry.get(name)
+        if entry is None or not entry.get("local_path"):
+            raise LookupError(f"{name!r} is not an in-repo agent of the registry")
+        assert self._root is not None
+        target = self._root / "repos" / name
+        if not target.is_dir():
+            shutil.copytree(REPO_ROOT / entry["local_path"], target,
+                            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        return target
+
+    def build(self, name: str) -> list[Any]:
+        """The real factory of *name*. A scripted run replaces only the wire."""
+        from tests.unit._native_maf_harness import load_agent_module
+
+        self.loaded.append(name)
+        module = self._modules.get(name)
+        if module is None:
+            module = load_agent_module(self._registry[name]["local_path"])
+            self._modules[name] = module
+        agents = module.build_agents()
+        hook = self.after_build.get(name)
+        if hook is not None:
+            hook(agents)
+        if not self.live:
+            model = self.models.get(name)
+            if model is None:
+                raise AssertionError(f"the scripted run has no model for {name!r}")
+            client = getattr(getattr(agents[0], "client", None), "client", None)
+            if client is None or not hasattr(client, "_client"):
+                raise AssertionError(
+                    f"{name!r} is not a MAF agent with an OpenAI client, so a script cannot drive it",
+                )
+            client._client = httpx.AsyncClient(
+                transport=httpx.MockTransport(model), event_hooks=client._client.event_hooks,
+            )
+        _tap(agents, name, self.model_calls)
+        return agents
+
+    # ── live: the stand-in for a specialist ─────────────────────────────────
+
+    async def _stand_in(self, agent_name: str, message: str, run_id: str,
+                        event_queue: Any = None, model: str | None = None) -> str:
+        del model
+        self.delegated.append((agent_name, message))
+        text = LIVE_STAND_IN.format(agent=agent_name)
+        if event_queue is not None:
+            await event_queue.put({"type": "SUB_AGENT_TEXT_DELTA", "agentName": agent_name,
+                                   "runId": run_id, "delta": text})
+        return text
+
+    # ── one run ─────────────────────────────────────────────────────────────
+
+    async def drive(
+        self,
+        words: str,
+        system_context: str,
+        *,
+        member: str,
+        org: str,
+        tier: str | None = None,
+        on_card: CardAnswer = _reject,
+        question_answer: str = NO_ANSWER,
+        timeout: float = 120.0,
+        shows_cards: bool = True,
+        agent: str = ORCHESTRATOR,
+        thread_id: str | None = None,
+        solo_room: bool = True,
+        history: list[dict[str, Any]] | None = None,
+        typed: str | None = None,
+    ) -> RunRecord:
+        """One chat turn of the one assistant, through ``run_agent_stream``.
+
+        *shows_cards* is what the caller declares. The web chat draws cards,
+        so it is True by default. *agent* is the run's own agent: the
+        orchestrator, or a specialist when a test needs a specialist that
+        calls the orchestrator (``test_show_in_app.py``). *thread_id*
+        continues a chat: a turn with the thread id of an earlier turn is the
+        next turn of the same chat (``test_one_assistant_email.py``).
+        *solo_room* is the bit that the chat route binds with
+        ``room_is_solo(room)``. A member alone in their own chat is solo, so
+        it is True by default (H-406). *history* is the chat's earlier turns
+        as the browser sends them (``messages``), for a test of what a
+        delegated task carries (WS-67 OA-1). *typed* binds the member's typed
+        words of the turn, as the chat route does; None binds nothing."""
+        from acb_common.db import bind_tenant, release_tenant
+        from acb_skills.write_artifact import bind_artifact_context
+        from orchestrator import executor
+
+        from tests.unit._native_maf_harness import parse_frames
+
+        record = RunRecord(thread_id=thread_id or str(uuid.uuid4()))
+        calls: dict[str, dict[str, str]] = {}
+        agents = frozenset(self._registry)
+        payload = {"mode": "chat", "message": words, "user_email": member,
+                   "system_context": system_context}
+        if history:
+            payload["messages"] = list(history)
+        started = time.monotonic()
+
+        async def consume() -> None:
+            async for line in executor.run_agent_stream(
+                agent, payload, run_id=str(uuid.uuid4()),
+                thread_id=record.thread_id, model=tier, organization_id=org,
+                session_user=member, shows_cards=shows_cards,
+                solo_room=solo_room,
+            ):
+                for event in parse_frames([line]):
+                    record.events.append(event)
+                    if (record.first_text_s is None and event.get("type") == "TEXT_MESSAGE_CONTENT"
+                            and event.get("delta")):
+                        record.first_text_s = time.monotonic() - started
+                    _take(record, event, calls, on_card, question_answer)
+
+        token = bind_tenant(org)
+        try:
+            if typed is None:
+                await asyncio.wait_for(consume(), timeout=timeout)
+            else:
+                # The route binds the member's typed words before the run
+                # (`member_typed`). A test that needs them opts in.
+                from acb_common.assistant_profile import member_typed
+
+                with member_typed(typed):
+                    await asyncio.wait_for(consume(), timeout=timeout)
+        except TimeoutError:
+            record.error = f"the run did not end within {timeout:.0f} s"
+        finally:
+            record.total_s = time.monotonic() - started
+            release_tenant(token)
+            bind_artifact_context()
+            _finish(record, calls, agents)
+            for rid in list(executor._pending_user_input):
+                with contextlib.suppress(Exception):
+                    executor._pending_user_input.pop(rid, None)
+        return record
+
+
+class _Loaded:
+    """What ``executor.load_agent`` returns: a context of the loaded agent."""
+
+    def __init__(self, harness: RoutingHarness, name: str) -> None:
+        self._harness = harness
+        self._name = name
+
+    def __enter__(self) -> Any:
+        h, name = self._harness, self._name
+        target = h.agent_dir(name)
+        config = json.loads((target / "config.json").read_text(encoding="utf-8"))
+        return types.SimpleNamespace(agent_dir=target, agent_name=name, config=config,
+                                     build_agents=lambda: h.build(name))
+
+    def __exit__(self, *_a: Any) -> bool:
+        return False

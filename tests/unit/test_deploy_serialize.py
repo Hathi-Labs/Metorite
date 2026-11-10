@@ -137,7 +137,7 @@ class TestTheSecondPathDoesNotRebuild:
         lines = _executable_lines(_APPLY)
         fetch = _first(lines, "git fetch origin main")
         skip = _first(lines, 'deploy_already_applied "$DEPLOY_TARGET_SHA"')
-        reset = _first(lines, "git reset --hard origin/main")
+        reset = _first(lines, 'git reset --hard "$DEPLOY_TARGET_SHA"')
         assert fetch < skip < reset
 
     def test_a_skip_still_prints_the_final_line(self) -> None:
@@ -301,7 +301,8 @@ class TestReapplyTheSameSha:
             " && '1' || '0' }}" in wf
         )
         assert (
-            '"DEPLOY_FORCE=${DEPLOY_FORCE:-0} DEPLOY_REINSTALL=${DEPLOY_REINSTALL:-0} bash -s"'
+            '"DEPLOY_REF=${GITHUB_SHA} DEPLOY_FORCE=${DEPLOY_FORCE:-0} '
+            'DEPLOY_REINSTALL=${DEPLOY_REINSTALL:-0} bash -s"'
             " < /tmp/deploy_remote.sh" in wf
         )
         assert "      force:\n" in wf, "the workflow_dispatch input is missing"
@@ -790,7 +791,9 @@ def _apply_function(name: str) -> str:
 
 
 class TestCaddyHoldsTheRequest:
-    @pytest.mark.parametrize("upstream", ["127.0.0.1:3001", "127.0.0.1:8080", "127.0.0.1:3002"])
+    @pytest.mark.parametrize(
+        "upstream", ["127.0.0.1:3001", "127.0.0.1:8080", "127.0.0.1:3002", "127.0.0.1:8091"]
+    )
     def test_every_upstream_is_retried_through_a_restart(self, upstream: str) -> None:
         block = _caddy_proxy_block(upstream)
         opts = {ln.split()[0]: ln.split()[1] for ln in block.splitlines() if ln.split()}
@@ -890,6 +893,63 @@ class TestCaddyHoldsTheRequest:
         up = _first(lines, 'echo "Caddy is active"', rollback)
         assert restart < probe < rollback < up
         assert "CADDY_RESTARTED" in lines[probe], "probe after a restart"
+
+
+class TestCaddyShowsTheUpdatingPage:
+    """navigation_shell.md §7.3 (owner directive, 2026-10-05).
+
+    When the workbench has not answered for the whole `lb_try_duration` hold,
+    a member sees "Metorite is updating", and not Caddy's bare 502. Measured
+    on the box on 2026-10-05 with a throwaway Caddy in front of a closed port:
+    `/`, `/projects` and an `/api/` path each answered 503 with this page,
+    `Cache-Control: no-store` and `Retry-After: 10`.
+    """
+
+    _PAGE = _ROOT / "deploy/hostinger/caddy/updating/index.html"
+
+    def _site(self, host: str) -> str:
+        lines = [ln.split("#", 1)[0] for ln in _CADDYFILE.read_text(encoding="utf-8").splitlines()]
+        start = next(i for i, ln in enumerate(lines) if ln.strip() == f"{host} {{")
+        depth, body = 0, []
+        for ln in lines[start:]:
+            depth += ln.count("{") - ln.count("}")
+            body.append(ln.strip())
+            if depth == 0:
+                return "\n".join(body)
+        raise AssertionError(f"{host} block is not closed")
+
+    def test_the_app_site_serves_the_page_on_a_proxy_error(self) -> None:
+        site = self._site("app.metorite.com")
+        assert "handle_errors 502 503 504 {" in site
+        assert "rewrite * /index.html" in site
+        assert "status 503" in site, "the page must say 'come back', never 200"
+        assert 'header Cache-Control "no-store"' in site
+
+    def test_the_root_is_the_page_in_the_checkout(self) -> None:
+        # The page is served from the checkout, so a deploy updates it and the
+        # apply installs nothing. The root must be APP_DIR's default plus the
+        # repo path, or Caddy serves a 404 at the one moment it matters.
+        site = self._site("app.metorite.com")
+        m = re.search(r"^root \* (\S+)$", site, re.M)
+        assert m, "handle_errors has no root"
+        app_dir = re.search(r'^APP_DIR="\$\{APP_DIR:-([^}]+)\}"', _APPLY.read_text(encoding="utf-8"), re.M)
+        assert app_dir, "vps_apply.sh no longer names APP_DIR's default"
+        assert m.group(1) == f"{app_dir.group(1)}/deploy/hostinger/caddy/updating"
+        assert self._PAGE.is_file()
+
+    def test_the_page_needs_nothing_else_to_be_up(self) -> None:
+        html = self._PAGE.read_text(encoding="utf-8")
+        assert "<title>Metorite is updating</title>" in html
+        # No file but this one: no script, style, font or image from anywhere.
+        assert not re.search(r"""<(script|link|img)[^>]+(src|href)=""", html, re.I), (
+            "the page must be self-contained: nothing else is up when it shows"
+        )
+        assert "/api/health" in html, "the page must check, and reload by itself"
+
+    def test_only_the_app_site_shows_it(self) -> None:
+        # api.metorite.com serves API clients, which want a status code and
+        # not an HTML page.
+        assert "handle_errors" not in self._site("api.metorite.com")
 
 
 class TestProbesOutwaitTheRetry:
@@ -1200,6 +1260,8 @@ class TestEveryCaddyHostIsProved:
         assert set(res.stdout.split()) == {
             "api.metorite.com", "app.metorite.com", "metorite.com",
             "www.metorite.com", "operator.metorite.com",
+            # WS-55 EA-10b: the MCP edge (external_agent_access.md §15.3).
+            "mcp.metorite.com",
         }, res.stdout
 
     def test_every_host_answering_passes(self, tmp_path: pathlib.Path) -> None:

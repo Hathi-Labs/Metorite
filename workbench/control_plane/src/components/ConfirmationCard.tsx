@@ -1,90 +1,650 @@
 "use client";
 
 /**
- * ConfirmationCard — Human-in-the-Loop confirmation prompt.
+ * ConfirmationCard — the card a gated tool parks on until the member answers.
  *
- * When the agent needs user approval before taking an action, it emits a
- * "confirmation_requested" custom event. This card renders inline in the
- * chat thread with Approve / Reject buttons.
+ * The agent emits `confirmation_requested` (`request_confirmation` in
+ * `acb_skills/ask_tools.py`) with a `title`, a one-line `detail` and a
+ * `context` body. This card draws them inline in the chat with Approve and
+ * Reject.
  *
- * Usage:
- *   <ConfirmationCard
- *     title="Confirm email send"
- *     detail="Send weekly sales report to team@fracktal.in?"
- *     onApprove={() => sendMessage("APPROVE: send_email")}
- *     onReject={() => sendMessage("REJECT: send_email")}
- *   />
+ * The look (owner, 2026-10-06: the amber and the warning sign "look a little
+ * odd"): a neutral card surface, Approve in the primary action colour, a
+ * quiet Reject, and no emoji. A summary line comes first. The `context`
+ * body draws as labelled rows in the UI font when it is the `key: value`
+ * lines the Projects and CRM tools write, and a field that only holds a
+ * UUID is hidden, because a member cannot read one.
+ *
+ * ⚠️ There is no destructive tone. The event names no tool and carries no
+ * risk annotation (`acb_skills.tool_annotations` holds one per tool, and it
+ * does not reach the card), so the card cannot tell a send from a create.
+ * Do not guess it from the title.
+ *
+ * The words (owner report, 2026-10-07). On a card the server fenced
+ * (`fenced`), no text shows a «mark»: the title, the detail, the notes and
+ * the rows draw through `FencedText`. A free-text body (an email) is always
+ * drawn exactly as it will be sent.
+ * A field's key reads in product words, and its value draws by its kind
+ * (`lib/cardFields.ts`, `CardFieldValue.tsx`): a tag pill, a status chip, a
+ * task pill, a person, a date. Numbered keys (`task 1`, `task 2`) are one
+ * list. A field that only repeats the detail is not drawn twice.
+ *
+ * One look with the other chat cards (owner report, 2026-10-13). The card
+ * draws through `RollupCard` with `header="own"`, like the question card
+ * beside it: a compact title row ("Approval", the shield icon, the pager),
+ * then the summary and the rows in the body, then Approve and Reject. It
+ * waits on the member, so it never folds.
+ *
+ * Fences: `src/lib/confirmationQueue.test.ts` (the parse, the hidden ids and
+ * the paint), `src/lib/cardFields.test.ts` (the words and the kinds) and
+ * `src/lib/chatCardConformance.test.ts` (the header and the icon).
  */
+
+import { useEffect, useState, type ReactNode } from "react";
+
+import CardFieldValue from "@/components/CardFieldValue";
+import { splitCardEmailText } from "@/lib/cardEmailText";
+import FencedText from "@/components/FencedText";
+import NewMailCardForm from "@/components/NewMailCardForm";
+import ReplyCardForm from "@/components/ReplyCardForm";
+import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
+import Badge from "@/components/ui/Badge";
+import Button from "@/components/ui/Button";
+import { CARD_FRAME_CLASS } from "@/components/ui/Collapsible";
+import { Checkbox } from "@/components/ui/Checkbox";
+import Icon from "@/components/Icon";
+import { cardKey, fieldSpec, parseFieldValue, repeatsLine, valueIsLong } from "@/lib/cardFields";
+import { canApprove, rowsSummary, type ConfirmationRow } from "@/lib/confirmationQueue";
+import { unfenced } from "@/lib/fencedText";
+import { slotLine, type CardDraft, type CardText } from "@/lib/redraftCard";
+import { isNewMail, type NewMailEdits, type ReplyApproval, type ReplyForm } from "@/lib/replyCard";
+import { noRecipientHint, rowMark } from "@/lib/sendCard";
+
+/**
+ * How long a new card ignores Approve and Reject.
+ *
+ * In a queue, the next card mounts in the place of the one just answered,
+ * and cards of one kind put Approve at the same pixel. So the second click
+ * of a double-click would sign a card the member never saw. The buttons do
+ * not grey out, so the card does not flash. They only ignore the click.
+ * Fence: `src/lib/confirmationQueue.test.ts` ("a new card is not armed").
+ */
+export const ARM_MS = 400;
+
+/** The title row of a confirmation card. The summary is in the body. */
+export const CONFIRM_TITLE = "Approval";
+/** The line beside Approve and Reject. */
+export const CONFIRM_HINT = "The assistant waits for your decision.";
+/** The title row of a reply card (EM-CR). Its summary names the sender. */
+export const REPLY_TITLE = "Reply";
+/** The title row of the card of a new mail (§18.10). */
+export const NEW_MAIL_TITLE = "New email";
+
+export interface CardField {
+  /** The key as the tool printed it (`due_at`, `task 1`). */
+  key: string;
+  label: string;
+  /** The value as the tool printed it, marks and all. The card draws it. */
+  value: string;
+  /** A numbered run (`task 1`, `task 2`, …) as one field: every value. */
+  values?: string[];
+}
+
+export interface CardBody {
+  /** Lines before the first field: the tool's fixed note. */
+  notes: string[];
+  fields: CardField[];
+  /** Lines after the fields: a truncation marker. */
+  trailing: string[];
+  /** The whole body as text, when it is not `key: value` lines (an email). */
+  text?: string;
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** `key: value`. The key holds no colon and no fence, so a fenced title
+ *  that holds a colon stays one value. */
+const FIELD = /^([^:«»]{1,48}):\s(.*)$/;
+/** The tools write the truncation marker last. */
+const TRUNCATED = /^…\s*\[truncated/;
+/** The mark of a list row at the start of a key: `- From` reads `From`. */
+const LIST_MARK = /^-\s+/;
+
+/** `«Fix the extruder»` → `Fix the extruder`. A value with more than one
+ *  fence (`«a» → «b»`) keeps them, because they mark where each part ends. */
+function unfence(value: string): string {
+  const m = /^«([^«»]*)»$/.exec(value.trim());
+  return m ? m[1] : value.trim();
+}
+
+/** A `*_id` field whose value is a UUID, or a change from one UUID to
+ *  another. The member reads names, and the payload sends the id anyway. */
+export function isHiddenField(key: string, value: string): boolean {
+  if (!/(^|_)id$/i.test(key.trim())) return false;
+  return value
+    .split("→")
+    .map((part) => unfence(part))
+    .every((part) => UUID.test(part));
+}
+
+/** The fields, less any field whose value only repeats a line the card shows. */
+export function withoutRepeats(fields: CardField[], shown: (string | undefined)[]): CardField[] {
+  return fields.filter((f) => f.values !== undefined || !repeatsLine(f.value, shown));
+}
+
+/**
+ * The run a numbered key belongs to: `task 3` → `task`. Only a word then a
+ * number makes a run, and a custom field never does: `field Q3 target`
+ * after `field Budget` are two fields, each with its own label (review
+ * round 1: they merged into one row and the Budget label was lost).
+ * Exported for its test.
+ */
+export function runKey(key: string): string {
+  const k = key.trim();
+  if (/^field\s/i.test(k)) return "";
+  const m = /^([a-z][a-z ]*?)\s+\d+$/i.exec(k);
+  return m ? m[1].toLowerCase() : "";
+}
+
+/** A note that leads into the rows below it: it ends with a colon. */
+export function isLeadIn(note: string): boolean {
+  return /:\s*$/.test(note);
+}
+
+/**
+ * The notes of a body, split by where they draw. A lead-in ("Each recipient
+ * of this draft:") draws above the rows. Every other note draws after them.
+ * With no rows, every note draws after the text.
+ */
+export function splitNotes(body: CardBody): { leadIn: string[]; after: string[] } {
+  if (body.fields.length === 0) return { leadIn: [], after: body.notes };
+  return { leadIn: body.notes.filter(isLeadIn), after: body.notes.filter((n) => !isLeadIn(n)) };
+}
+
+/** The plural of a numbered field's label: "Task" → "Tasks". */
+function plural(label: string): string {
+  return /s$/.test(label) ? label : `${label}s`;
+}
+
+/** The `context` body as rows, or as text when it is not rows. */
+export function parseCardBody(context: string | undefined): CardBody {
+  const lines = (context ?? "").split("\n").map((l) => l.trimEnd()).filter((l) => l.trim());
+  const first = lines.findIndex((l) => FIELD.test(l));
+  const rest = first < 0 ? [] : lines.slice(first);
+  // Rows only when the body IS rows: at most one fixed note, then every line
+  // a field (or the truncation marker). An email body that happens to hold
+  // a colon, or a field whose value spans lines, stays text, and loses no
+  // word.
+  const rows =
+    first >= 0 && first <= 1 && rest.every((l) => FIELD.test(l) || TRUNCATED.test(l.trim()));
+  if (!rows) {
+    return { notes: [], fields: [], trailing: [], text: lines.length ? (context ?? "").trim() : undefined };
+  }
+  const fields: CardField[] = [];
+  const trailing: string[] = [];
+  for (const line of rest) {
+    const m = FIELD.exec(line);
+    if (!m) {
+      trailing.push(line.trim());
+      continue;
+    }
+    // A list row (`- From: …`, the send and forward cards of the email
+    // assistant) reads by its key, not by the hyphen before it.
+    const key = m[1].trim().replace(LIST_MARK, "");
+    if (isHiddenField(key, m[2])) continue;
+    const value = m[2].trim();
+    const numbered = runKey(key);
+    const last = fields[fields.length - 1];
+    if (numbered && last && runKey(last.key) === numbered) {
+      last.values = [...(last.values ?? [last.value]), value];
+      last.label = fieldSpec(key).plural ?? plural(fieldSpec(key).label);
+      continue;
+    }
+    fields.push({ key, label: fieldSpec(key).label, value });
+  }
+  return { notes: lines.slice(0, first), fields, trailing };
+}
+
+/**
+ * The one-line summary, and the rest of the detail line.
+ *
+ * The tools write `title` as a question about "this" thing ("Create this
+ * task?") and put the thing's fenced name first in `detail`. Those join
+ * into one plain line: `Create task: «Fix the extruder»`. Any other card
+ * keeps its title, and its whole detail goes under it.
+ *
+ * ⚠️ The colon is load-bearing (owner, 2026-10-10). The card draws a fenced
+ * name as plain text, so without it the act and the name read as one
+ * sentence: "Create task Show each model call's tier…".
+ */
+export function cardSummary(title: string, detail?: string): { summary: string; rest?: string } {
+  const parts = (detail ?? "").split(" · ").map((p) => p.trim()).filter(Boolean);
+  const m = /^(.+?) this (.+?)\?$/.exec(title.trim());
+  if (m && parts.length > 0 && parts[0].includes("«")) {
+    const rest = parts.slice(1).join(" · ");
+    return { summary: `${m[1]} ${m[2]}: ${parts[0]}`, rest: rest || undefined };
+  }
+  return { summary: title, rest: detail?.trim() || undefined };
+}
+
+export interface CardPosition {
+  index: number;
+  total: number;
+  onPrev: () => void;
+  onNext: () => void;
+}
 
 interface ConfirmationCardProps {
   title: string;
   detail?: string;
-  /** Additional context to show (e.g. what will happen). */
+  /** The body: `key: value` rows, or free text. */
   context?: string;
+  /**
+   * WS-46 P13 one-card: one checkbox per row, ticked as the tool asks. The
+   * summary counts the ticked rows, Approve stays off with none ticked, and
+   * Approve hands the ticked ids, in the card's order, to `onApprove`. With
+   * no rows the card is as before, and `onApprove` gets no ids.
+   */
+  rows?: ConfirmationRow[];
+  /** A tick or an untick of one row. The queue keeps the ticks (`rowTicksReducer`). */
+  onToggle?: (id: string, on: boolean) => void;
+  /** Approve. For a card with rows, the queue sends the ticks it holds. */
   onApprove: () => void;
   onReject: () => void;
   /** Disable buttons after a choice is made. */
   disabled?: boolean;
+  /** Why the last answer did not land (UXD-3). It shows beside the buttons,
+   *  and Approve tries again. */
+  error?: string;
+  /** Where this card sits in the queue, when more than one is waiting. */
+  position?: CardPosition;
+  /**
+   * The server fenced member values in «marks» (`ask_tools` `fenced`). Only
+   * then does the card draw them as tokens. Any other card (an email to
+   * send) shows its text exactly as it will be sent, marks included
+   * (review round 1: a body's « oui » lost its quotes on the consent card).
+   */
+  fenced?: boolean;
+  /** The roll-up's id: stable for the card's life (its queue key). */
+  id?: string;
+  /**
+   * EM-CR (`email_app_master_plan.md` §18): the reply form of a reply card.
+   * The card then draws `ReplyCardForm` in place of its body and of Approve
+   * and Reject. `null` is a form the card could not read.
+   */
+  reply?: ReplyForm | null;
+  /** Send or Save to Drafts on a reply card: the whole answer. */
+  onReply?: (answer: ReplyApproval) => void;
+  /**
+   * Put words in the chat box and focus it, and send nothing (§18.10). The
+   * nudge chips of a new-mail card call it. `AgentChat` passes it.
+   */
+  onSuggest?: (text: string) => void;
+  /** The tab row of the queue (owner, 2026-11-03, D173), drawn inside the
+   *  card frame above its header, when two cards or more wait. */
+  tabs?: ReactNode;
+  /** The tab panel: the card is the panel the tabs control. */
+  tabPanel?: { id: string; labelledBy: string };
+  /**
+   * §18.11: the slot of a new-mail card that a chat message closed. The card
+   * draws one status line and no buttons: "Updating the draft…", or "The
+   * draft did not change." once the run ended with no new card.
+   */
+  slot?: "updating" | "unchanged";
+  /** §18.11: a new-mail card reports the member's version after each edit. */
+  onDraftChange?: (draft: CardDraft | null) => void;
+  /** §18.11: the member's last version of the card that this card revises. */
+  before?: CardText;
+  /** §18.11: a message in the chat carries the member's version now. */
+  carriesEdits?: boolean;
+  /** The member's edits of a new-mail card, from before a change of tab. */
+  savedEdits?: NewMailEdits;
+  /** A new-mail card reports the member's edits, for `savedEdits`. */
+  onEdits?: (edits: NewMailEdits) => void;
 }
 
-import Button from "@/components/ui/Button";
+/** A line of card text: fenced names as tokens, or the text as sent. */
+function CardText({ text, fenced }: { text: string; fenced: boolean }) {
+  return fenced ? <FencedText text={text} pills={false} /> : <>{text}</>;
+}
 
 export default function ConfirmationCard({
   title,
   detail,
   context,
+  rows,
+  onToggle,
   onApprove,
   onReject,
   disabled = false,
+  position,
+  fenced = false,
+  id,
+  reply,
+  onReply,
+  onSuggest,
+  error,
+  tabs,
+  tabPanel,
+  slot,
+  onDraftChange,
+  before,
+  carriesEdits,
+  savedEdits,
+  onEdits,
 }: ConfirmationCardProps) {
+  const [armed, setArmed] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setArmed(true), ARM_MS);
+    return () => clearTimeout(t);
+  }, []);
+  // The rows come ticked as the member left them (`rowsView` in the queue).
+  // The card holds no tick state and no tick logic (PR #691 review): a tick
+  // goes up through `onToggle`, and Approve sends what the queue computed.
+  const hasRows = rows !== undefined;
+  const base = cardSummary(title, detail);
+  const summary = rowsSummary(base.summary, rows);
+  const rest = base.rest;
+  const approvable = canApprove(rows);
+  const parsed = parseCardBody(context);
+  // A field that repeats the detail or the summary is drawn once (owner
+  // report, 2026-10-07: "Impact" restated the detail word for word).
+  const body = { ...parsed, fields: withoutRepeats(parsed.fields, [rest, summary]) };
+  // A note that ends with a colon leads into the rows ("Each recipient of
+  // this draft:"), so it draws above them. Any other note draws after them
+  // (the screenshots of follow-up 5 of #766).
+  const { leadIn, after: afterNotes } = splitNotes(body);
+  // The text shows whole, with no box that scrolls inside the card (owner
+  // report, 2026-10-23). The card sits in the thread, and the thread
+  // scrolls. A box inside it hid the end of an email on a phone.
+  const many = position && position.total > 1;
+  const hasBody =
+    hasRows || body.fields.length > 0 || !!body.text || body.notes.length + body.trailing.length > 0;
+  const approve = () => {
+    if (armed && approvable) onApprove();
+  };
+  const isReply = reply !== undefined;
+  const newMail = isNewMail(reply);
   return (
-    <div className="my-3 rounded-xl border border-warning/30 bg-warning/10 overflow-hidden">
-      {/* Header */}
-      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-warning/30 bg-warning/10">
-        <span className="text-base">⚠️</span>
-        <span className="text-[12px] sm:text-[13px] font-medium text-warning">
-          {title}
-        </span>
+    <RollupCard
+      id={id ?? "confirm"}
+      title={newMail ? NEW_MAIL_TITLE : isReply ? REPLY_TITLE : CONFIRM_TITLE}
+      icon={newMail ? "Mail" : isReply ? "Reply" : "ShieldCheck"}
+      header="own"
+      pending
+    >
+    <section
+      aria-label={fenced ? unfenced(summary) : summary}
+      {...(tabPanel ? { id: tabPanel.id, role: "tabpanel", "aria-labelledby": tabPanel.labelledBy } : {})}
+      data-confirmation-card=""
+      // Glass only (GL-4): it wants an answer, so it is the raised card with a
+      // hairline in the tint, and an orange tile.
+      className={`${CARD_FRAME_CLASS} glass:glass-card-tile glass:[--tile:var(--system-orange)] glass:rounded-[16px] glass:border-primary/35 glass:glass-raised glass:p-4`}
+    >
+      {tabs}
+      <div className="flex min-w-0 items-center gap-2">
+        <div className="min-w-0 flex-1">
+          <RollupHeader />
+        </div>
+        {many && (
+          <div className="flex shrink-0 items-center gap-0.5" data-confirmation-pager="">
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              icon="ChevronLeft"
+              aria-label="Previous card"
+              onClick={position.onPrev}
+              disabled={position.index === 0}
+            />
+            <span className="text-[11px] tabular-nums text-muted-foreground" aria-live="polite">
+              {position.index + 1} of {position.total}
+            </span>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              icon="ChevronRight"
+              aria-label="Next card"
+              onClick={position.onNext}
+              disabled={position.index >= position.total - 1}
+            />
+          </div>
+        )}
       </div>
 
-      {/* Body */}
-      {(detail || context) && (
-        <div className="px-4 py-3 space-y-2">
-          {detail && (
-            <p className="text-[12px] sm:text-[13px] text-foreground leading-relaxed">
-              {detail}
+      <RollupBody className="space-y-2 pt-1.5">
+        {/* §18.11: the slot of a redraft. One status line, and no form and
+            no button, so nothing on it can answer the closed card. */}
+        {slot && (
+          <p
+            role="status"
+            className="flex items-center gap-2 py-1 text-xs text-muted-foreground"
+            data-redraft-slot={slot}
+          >
+            <Icon
+              name={slot === "updating" ? "Loader2" : "Check"}
+              size={14}
+              className={`shrink-0 ${slot === "updating" ? "motion-safe:animate-spin" : ""}`}
+            />
+            {slotLine(slot)}
+          </p>
+        )}
+        {/* A reply card draws its own summary: who gets the reply NOW, as the
+            member toggles Reply and Reply all (review of #1191). */}
+        {!slot && !isReply && (
+        <div className="min-w-0">
+          <p className="break-words text-xs font-medium leading-relaxed text-foreground">
+            <CardText text={summary} fenced={fenced} />
+          </p>
+          {rest && (
+            <p className="mt-0.5 break-words text-[11px] text-muted-foreground">
+              <CardText text={rest} fenced={fenced} />
             </p>
           )}
-          {context && (
-            <pre className="text-[11px] text-muted-foreground bg-card/60 rounded-lg p-2.5 overflow-x-auto whitespace-pre-wrap max-h-32 overflow-y-auto">
-              {context}
-            </pre>
+        </div>
+        )}
+      {!slot && newMail && reply && (
+        <NewMailCardForm
+          form={reply}
+          detail={detail}
+          armed={armed}
+          disabled={disabled}
+          onAnswer={(answer) => onReply?.(answer)}
+          onDiscard={onReject}
+          onSuggest={onSuggest}
+          onDraftChange={onDraftChange}
+          before={before}
+          carriesEdits={carriesEdits}
+          savedEdits={savedEdits}
+          onEdits={onEdits}
+        />
+      )}
+      {!slot && isReply && !newMail && (
+        <ReplyCardForm
+          form={reply}
+          detail={detail}
+          armed={armed}
+          disabled={disabled}
+          onAnswer={(answer) => onReply?.(answer)}
+          onDiscard={onReject}
+        />
+      )}
+      {!slot && !isReply && hasBody && (
+        <div className="space-y-2">
+          {hasRows && (
+            <ul className="space-y-1.5" data-confirmation-rows="" aria-label="Rows this approval covers">
+              {rows.length === 0 && (
+                <li className="text-xs text-muted-foreground">
+                  The rows of this card could not be read, so it cannot be approved.
+                </li>
+              )}
+              {rows.map((r) => (
+                <li key={r.id}>
+                  <label className="flex min-w-0 cursor-pointer items-start gap-2">
+                    <Checkbox
+                      size="sm"
+                      className="mt-0.5"
+                      checked={r.checked}
+                      disabled={disabled}
+                      onChange={(e) => onToggle?.(r.id, e.target.checked)}
+                      data-confirmation-row={r.id}
+                    />
+                    <span className="flex min-w-0 flex-col gap-0.5">
+                      <span className="break-words text-xs text-foreground">
+                        <CardText text={r.label} fenced={fenced} />
+                      </span>
+                      {/* A held send card (§21): the server's class of the
+                          person, as a mark. A new address is the one that
+                          must look different, so it takes the warning tone. */}
+                      {rowMark(r.cls) && (
+                        <span data-send-row-mark={r.cls}>
+                          <Badge tone={r.cls === "new" ? "warning" : "neutral"} size="xs">
+                            {rowMark(r.cls)}
+                          </Badge>
+                        </span>
+                      )}
+                      {r.warning && (
+                        <span
+                          className="flex items-start gap-1 break-words text-[11px] text-warning"
+                          data-send-row-warning=""
+                        >
+                          <Icon name="AlertTriangle" size={12} className="mt-px shrink-0" />
+                          {r.warning}
+                        </span>
+                      )}
+                      {r.hint && r.hint !== rowMark(r.cls) && (
+                        <span className="whitespace-pre-wrap break-words text-[11px] text-muted-foreground">
+                          <CardText text={r.hint} fenced={fenced} />
+                        </span>
+                      )}
+                    </span>
+                  </label>
+                </li>
+              ))}
+            </ul>
           )}
+          {leadIn.map((note, i) => (
+            <p key={`lead-${i}`} className="text-[11px] text-muted-foreground">
+              <CardText text={note} fenced={fenced} />
+            </p>
+          ))}
+          {body.fields.length > 0 && (
+            <dl className="@container space-y-1">
+              {body.fields.map((f, i) => {
+                const spec = fieldSpec(f.key);
+                // A long value stacks at any width. A short one stacks only in
+                // a narrow card (container query, below 24rem).
+                const long = [f.value, ...(f.values ?? [])].some(
+                  (v) => typeof v === "string" && valueIsLong(parseFieldValue(v, spec.many)),
+                );
+                return (
+                  <div
+                    key={`${f.key}-${i}`}
+                    className={`flex flex-col gap-0.5 text-xs ${long ? "" : "@sm:flex-row @sm:gap-3"}`}
+                    data-card-field={cardKey(f.key)}
+                    data-stacked={long ? "" : undefined}
+                  >
+                    <dt className={`text-[11px] text-muted-foreground ${long ? "" : "@sm:w-24 @sm:shrink-0 @sm:pt-px @sm:text-xs"}`}>
+                      {f.label}
+                    </dt>
+                    <dd className="min-w-0 flex-1 whitespace-pre-wrap break-words text-foreground">
+                      {f.values ? (
+                        <ul className="space-y-1">
+                          {f.values.map((v, k) => (
+                            <li key={k} className="min-w-0">
+                              <CardFieldValue value={v} kind={spec.kind} many={spec.many} fenced={fenced} />
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <CardFieldValue value={f.value} kind={spec.kind} many={spec.many} fenced={fenced} />
+                      )}
+                    </dd>
+                  </div>
+                );
+              })}
+            </dl>
+          )}
+          {body.text && (() => {
+            // An email in the card: its rows apart, the mail in a frame of
+            // its own, so no label reads as part of the mail (owner,
+            // 2026-10-24, `lib/cardEmailText.ts`). Any other text draws
+            // whole, as before.
+            const mail = splitCardEmailText(body.text);
+            if (!mail) {
+              return (
+                <p className="whitespace-pre-wrap break-words text-xs text-foreground" data-card-text="">
+                  {body.text}
+                </p>
+              );
+            }
+            return (
+              <div className="space-y-2" data-card-email="">
+                {mail.head.length > 0 && (
+                  <dl className="space-y-1">
+                    {mail.head.map((row, i) => (
+                      <div key={`${row.key}-${i}`} className="flex items-baseline gap-2 text-xs" data-card-email-row={row.key}>
+                        <dt className="shrink-0">
+                          <Badge size="xs">{row.key}</Badge>
+                        </dt>
+                        <dd className="min-w-0 flex-1 break-words font-medium text-foreground">{row.value}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                )}
+                <div>
+                  <p className="mb-1 flex items-center gap-1 text-[11px] text-muted-foreground">
+                    <Icon name="Mail" size={12} />
+                    The email, as it is sent
+                  </p>
+                  <div
+                    className="whitespace-pre-wrap break-words rounded-md border border-border bg-background/60 px-2.5 py-2 text-xs text-foreground"
+                    data-card-text=""
+                  >
+                    {mail.body}
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+          {[...afterNotes, ...body.trailing].map((note, i) => (
+            <p key={i} className="text-[11px] text-muted-foreground">
+              <CardText text={note} fenced={fenced} />
+            </p>
+          ))}
         </div>
       )}
 
-      {/* Actions */}
-      <div className="flex items-center gap-2 px-4 py-2.5 border-t border-warning/30 bg-warning/5">
-        <button
-          onClick={onApprove}
-          disabled={disabled}
-          className="text-[12px] px-4 py-1.5 rounded-lg bg-success text-success-foreground font-medium hover:bg-emerald-500 disabled:opacity-40 transition-colors"
+      {!slot && !isReply && (
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          size="sm"
+          icon="Check"
+          onClick={approve}
+          disabled={disabled || !approvable}
+          aria-disabled={!armed || undefined}
+          data-confirmation-approve=""
         >
-          ✓ Approve
-        </button>
+          {error ? "Retry" : "Approve"}
+        </Button>
         <Button
           variant="secondary"
           size="sm"
-          icon="X"
-          onClick={onReject}
+          onClick={() => armed && onReject()}
           disabled={disabled}
+          aria-disabled={!armed || undefined}
         >
           Reject
         </Button>
-        <span className="text-[10px] text-muted-foreground ml-auto">
-          Agent is waiting for your decision
-        </span>
+        {error ? (
+          <span role="alert" className="text-[10px] text-destructive" data-confirmation-error="">
+            {error}
+          </span>
+        ) : (
+          <span className="text-[10px] text-muted-foreground">{noRecipientHint(rows) || CONFIRM_HINT}</span>
+        )}
       </div>
-    </div>
+      )}
+      </RollupBody>
+    </section>
+    </RollupCard>
   );
 }

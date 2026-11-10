@@ -48,8 +48,11 @@ export function describeFailure(status: number, body?: string): string {
   // ⚠️ A restart is the common case, not an exotic one: every deploy bounces
   // the gateway, so anyone using the app during a release sees this. It is
   // the one failure where "try again" is the whole correct answer.
+  // Since 2026-10-06 a 503 also means "the database is busy for a moment"
+  // (the gateway's `db_busy` answer). Both cases want the same advice, and
+  // neither may promise that nothing was saved.
   if (status === 502 || status === 503 || status === 504) {
-    return "The server is restarting. Wait a moment and try again.";
+    return "Metorite is busy or updating. Wait a moment and try again.";
   }
   if (status >= 500) {
     // "Nothing was saved" is the question a person asks after a failed write,

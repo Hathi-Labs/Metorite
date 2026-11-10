@@ -64,9 +64,9 @@ def test_sentinel_recovers_from_trace(sentinel):
 
 def test_sentinel_skips_sentinel_traces_and_takes_first_real():
     # Most-recent trace is itself a sentinel; the resolver walks to the first real one.
-    with patch("acb_graph.tenant_session", _fake_tenant_session(["unknown", "", "agent-sales-assistant"])), \
+    with patch("acb_graph.tenant_session", _fake_tenant_session(["unknown", "", "crm-assistant"])), \
          patch.object(ar, "_validate_agent_name", side_effect=lambda n: n):
-        assert ar._resolve_agent_for_run("unknown", "thread-42", organization_id=_ORG) == "agent-sales-assistant"
+        assert ar._resolve_agent_for_run("unknown", "thread-42", organization_id=_ORG) == "crm-assistant"
 
 
 # --------------------------------------------------------------------------

@@ -17,6 +17,7 @@ import {
   FIELDS,
   SECTIONS,
   changedFields,
+  chipsText,
   completeness,
   formatChips,
   isFilled,
@@ -192,6 +193,40 @@ describe("value helpers", () => {
     expect(parseChips("firmware, modbus ,, ")).toEqual(["firmware", "modbus"]);
     expect(formatChips(["a", "b"])).toBe("a, b");
     expect(formatChips(null)).toBe("");
+  });
+
+  /**
+   * Type a string one key at a time, the way `ChipsInput` sees it: each key
+   * lands on the text the input SHOWS, and the stored value is its parse.
+   */
+  function typeInto(text: string): { shown: string; value: string[] } {
+    let shown = "";
+    let value: string[] = [];
+    for (const key of text) {
+      const typed = shown + key;
+      value = parseChips(typed);
+      shown = chipsText(typed, value);
+    }
+    return { shown, value };
+  }
+
+  it("keeps a typed comma, so a second language can be typed (not only pasted)", () => {
+    expect(typeInto("English,")).toEqual({ shown: "English,", value: ["English"] });
+    expect(typeInto("English, Tamil")).toEqual({
+      shown: "English, Tamil",
+      value: ["English", "Tamil"],
+    });
+  });
+
+  it("keeps the space inside a two-word chip", () => {
+    expect(typeInto("Machine learning").value).toEqual(["Machine learning"]);
+  });
+
+  it("re-draws the stored value once a save or a discard changes it", () => {
+    expect(chipsText("English, Tamil", [])).toBe("");
+    expect(chipsText("English,", ["Hindi", "Kannada"])).toBe("Hindi, Kannada");
+    // The working-hours days ride the same input as strings.
+    expect(chipsText("1, 2,", ["1", "2"])).toBe("1, 2,");
   });
 });
 

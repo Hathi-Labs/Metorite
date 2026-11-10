@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+import pytest
 from email_ingestion.persist import (
     MAX_BODY_TEXT_BYTES,
     truncate_body,
@@ -148,7 +149,7 @@ async def test_body_is_truncated_for_every_ingest_path():
 async def test_insert_carries_internet_message_id_and_refreshes_it():
     db = _FakeDB()
     await upsert_message(db, "acct-1", _Msg(internet_message_id="<abc@x>"))
-    # The reclaim UPDATE runs first, then the INSERT.
+    # The INSERT is the last call, with a reclaim UPDATE before it or not.
     sql, params = db.calls[-1]
     assert "internet_message_id" in sql  # column is inserted
     assert params["internet_message_id"] == "<abc@x>"
@@ -160,11 +161,13 @@ async def test_insert_carries_internet_message_id_and_refreshes_it():
 
 async def test_a_rekeyed_message_reclaims_its_row_instead_of_ghosting():
     """Outlook re-keying a message (new provider id, same Message-ID) must update
-    its existing row, not insert a duplicate ghost."""
+    its existing row, not insert a duplicate ghost. The caller passes
+    ``reclaim=True``, the attribute of a provider that re-keys (D-EM-34)."""
     db = _FakeDB()
     await upsert_message(
         db, "acct-1", _Msg(provider_message_id="pm-NEW",
-                           internet_message_id="<abc@x>"))
+                           internet_message_id="<abc@x>"),
+        reclaim=True)
     reclaim_sql, reclaim_params = db.calls[0]
     assert reclaim_sql.startswith("UPDATE email_messages SET provider_message_id")
     assert reclaim_params == {
@@ -177,9 +180,27 @@ async def test_a_rekeyed_message_reclaims_its_row_instead_of_ghosting():
     assert "INSERT INTO email_messages" in db.calls[1][0]
 
 
+@pytest.mark.parametrize("kwargs", [{"reclaim": False}, {}],
+                         ids=["reclaim_false", "no_keyword"])
+async def test_a_rekeyed_message_without_reclaim_runs_no_update(kwargs):
+    """The twin (WS-17 EM-G1, D-EM-34). A provider that never re-keys, as
+    Gmail does, passes ``reclaim=False``, and the default is false too. The
+    upsert then runs no UPDATE, so two messages with one Message-ID keep two
+    rows."""
+    db = _FakeDB()
+    await upsert_message(
+        db, "acct-1", _Msg(provider_message_id="pm-NEW",
+                           internet_message_id="<abc@x>"),
+        **kwargs)
+    assert "INSERT INTO email_messages" in db.calls[0][0]
+    assert all(not sql.startswith("UPDATE email_messages")
+               for sql, _ in db.calls)
+
+
 async def test_no_reclaim_without_a_message_id():
     db = _FakeDB()
-    await upsert_message(db, "acct-1", _Msg(internet_message_id=None))
+    await upsert_message(db, "acct-1", _Msg(internet_message_id=None),
+                         reclaim=True)
     # First (and only pre-attachment) call is the INSERT — no reclaim UPDATE.
     assert "INSERT INTO email_messages" in db.calls[0][0]
     assert not db.calls[0][0].startswith("UPDATE email_messages")
@@ -187,11 +208,11 @@ async def test_no_reclaim_without_a_message_id():
 
 async def test_no_reclaim_on_the_insert_only_path():
     # Inbound (on_conflict='nothing') is authoritative-on-arrival — it must not
-    # reach back and reclaim/rename an existing row.
+    # reach back and reclaim/rename an existing row, even with reclaim=True.
     db = _FakeDB()
     await upsert_message(
         db, "acct-1", _Msg(internet_message_id="<abc@x>"),
-        on_conflict="nothing")
+        on_conflict="nothing", reclaim=True)
     assert "INSERT INTO email_messages" in db.calls[0][0]
     assert all(not sql.startswith("UPDATE email_messages")
                for sql, _ in db.calls)

@@ -95,9 +95,16 @@ def test_sub_agent_timeline_attaches_to_delegate_tool():
     [tool] = folded["tool_events"]
     assert tool["subAgentName"] == "task-manager"
     assert tool["subAgentText"] == "Checking tasks."
+    # A sub-run step keeps its args since §7.1.1 (one assistant, email cards
+    # draw from them). A step that sent none keeps an empty dict.
     assert tool["subAgentTools"] == [
-        {"id": "s1", "name": "sql", "status": "done", "result": "3 rows"},
+        {"id": "s1", "name": "sql", "status": "done", "result": "3 rows", "args": {}},
     ]
+
+
+# The four-hand-off turn and the parity check of the fold rule with
+# ``lib/chatStream.ts`` live in ``tests/unit/test_chat_fold_handoffs.py``.
+# pr-check runs ``tests/unit/``, and it does not run this folder.
 
 
 def test_todos_and_custom_events_persist():
@@ -112,7 +119,9 @@ def test_todos_and_custom_events_persist():
     assert folded is not None
     assert folded["agent_state"] == {"todos": todos}
     assert folded["custom_events"] == [
-        {"name": "artifact_created", "value": {"path": "outputs/r.pdf"}},
+        # segmentCutoff: the count of text segments before the event (0 here),
+        # so the bubble draws text and cards in stream order (WS-17 §24.9).
+        {"name": "artifact_created", "value": {"path": "outputs/r.pdf"}, "segmentCutoff": 0},
     ]
 
 

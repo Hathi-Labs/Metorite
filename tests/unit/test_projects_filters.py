@@ -129,13 +129,13 @@ def test_overdue_excludes_finished_work():
     """Past due AND still open. Without the second half a done task stays red
     forever, and a board with permanent red is a board nobody reads."""
     clause = sql(overdue=True)
-    assert "t.due_at < now()" in clause
+    assert "t.due_at < :day_start" in clause
     assert "NOT EXISTS" in clause
     assert bound(overdue=True)["closed"] == list(CLOSED_CATEGORIES)
 
 
 def test_overdue_is_absent_unless_asked_for():
-    assert "due_at < now()" not in sql()
+    assert "due_at <" not in sql()
 
 
 # ── assignees ──────────────────────────────────────────────────────────────
@@ -215,12 +215,12 @@ def test_a_whitespace_only_search_is_not_a_filter():
 # one surface with nothing capping it. These four pin the fix and both of the
 # plausible wrong fixes.
 
-@pytest.mark.parametrize("term", ["a", "#", " x "])
+@pytest.mark.parametrize("term", ["a", "#", " x ", "ab", " qa "])
 def test_a_query_below_the_minimum_runs_no_substring_scan(term):
     assert "ILIKE" not in sql(q=term)
 
 
-@pytest.mark.parametrize("term", ["a", "#", " x "])
+@pytest.mark.parametrize("term", ["a", "#", " x ", "ab", " qa "])
 def test_a_query_below_the_minimum_matches_nothing_rather_than_everything(term):
     """The wrong fix, and the reason this test exists.
 
@@ -264,12 +264,24 @@ def test_the_minimum_is_the_one_search_already_enforces():
     )
 
 
-@pytest.mark.parametrize("term", ["ab", "abc", "extruder"])
+@pytest.mark.parametrize("term", ["abc", "extruder"])
 def test_a_query_at_or_above_the_minimum_still_searches(term):
     clauses, params = build_task_filters(q=term)
-    assert "(t.title ILIKE :q OR t.description ILIKE :q)" in clauses
-    assert params["q"] == f"%{term}%"
-    assert len(term) >= MIN_QUERY
+    assert "((t.title ILIKE :q_w0 OR t.description ILIKE :q_w0))" in clauses
+    assert params["q_w0"] == f"%{term}%"
+    assert len(term) >= MIN_QUERY == 3
+
+
+@pytest.mark.parametrize(("term", "number"), [("#7", 7), ("7", 7), (" #42 ", 42)])
+def test_a_task_number_is_an_exact_match_at_any_length(term, number):
+    """D-PM-31's exception (owner, 2026-10-06), on the list endpoint too, so
+    the list and the search route answer ``#7`` the same way."""
+    clauses, params = build_task_filters(q=term)
+    assert "t.task_number = :q_number" in clauses
+    assert params["q_number"] == number
+    assert "FALSE" not in clauses
+    assert "ILIKE" not in " ".join(clauses)
+    assert "q" not in params
 
 
 # ── due_before ─────────────────────────────────────────────────────────────
@@ -673,3 +685,38 @@ class TestSubtasksSetting:
             "subtasks": "hidden", "not_a_key": 1,
         }
         assert set(normalise_view_config(full)) == set(VIEW_CONFIG_KEYS)
+
+
+# ── Words, not one phrase (owner request, 2026-10-13) ───────────────────────
+
+def test_each_word_is_its_own_arm_over_title_and_description():
+    from gateway.routes.projects.filters import text_match_clause
+
+    clause, params = text_match_clause("invoice approval")
+    assert clause == (
+        "((t.title ILIKE :q_w0 OR t.description ILIKE :q_w0)"
+        " AND (t.title ILIKE :q_w1 OR t.description ILIKE :q_w1))"
+    )
+    assert params == {"q_w0": "%invoice%", "q_w1": "%approval%"}
+
+
+def test_a_repeated_word_is_one_arm():
+    from gateway.routes.projects.filters import query_words
+
+    assert query_words("Parser parser PARSER fix") == ["Parser", "fix"]
+
+
+def test_short_words_alone_fall_back_to_the_phrase():
+    """No word reaches 3 letters, so no trigram serves any of them. The whole
+    term is then the one word, the rule before 2026-10-13."""
+    from gateway.routes.projects.filters import query_words
+
+    assert query_words("to do") == ["to do"]
+    assert query_words("v2 firmware") == ["v2", "firmware"]
+
+
+def test_the_word_count_is_capped():
+    from gateway.routes.projects.filters import MAX_QUERY_WORDS, query_words
+
+    many = " ".join(f"word{i}" for i in range(30))
+    assert len(query_words(many)) == MAX_QUERY_WORDS

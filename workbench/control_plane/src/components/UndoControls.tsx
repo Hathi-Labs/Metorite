@@ -16,8 +16,20 @@
 import Button from "@/components/ui/Button";
 import { useUndo } from "@/components/UndoProvider";
 
-export function UndoControls({ className = "" }: { className?: string }) {
+export function UndoControls({
+  className = "",
+  hideWhenIdle = false,
+}: {
+  className?: string;
+  /**
+   * Draw nothing while the scope holds no step. For a surface where few acts
+   * record a step (My tasks records only a completion), so two disabled
+   * buttons would only take room on a phone. Default false: see above.
+   */
+  hideWhenIdle?: boolean;
+}) {
   const { undo, redo, canUndo, canRedo, undoLabel, redoLabel, busy } = useUndo();
+  if (hideWhenIdle && !canUndo && !canRedo) return null;
 
   return (
     <div className={`flex items-center gap-0.5 ${className}`}>

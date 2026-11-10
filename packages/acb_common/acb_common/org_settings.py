@@ -14,6 +14,18 @@ same bug wearing different clothes.
 Uses a synchronous psycopg connection — no event loop and no extra dependency —
 so it can be called from both sync helpers and FastAPI async handlers, matching
 ``acb_llm.model_config``.
+
+⚠️ **Every read and write is per organization** (migration 234). The table is
+under FORCED row-level security on production, keyed by ``app.tenant_id``. This
+module used to bind no tenant, so every write failed with ``invalid input
+syntax for type uuid: ""`` (two logo uploads, 2026-10-08) and every read came
+back empty. Now each statement runs in a transaction that sets the tenant with
+``set_config(..., true)``, the same LOCAL binding ``acb_common.db`` uses, and
+names ``organization_id`` in the SQL as well. The tenant comes from the
+request's context (``acb_common.db.current_tenant``), never from input.
+
+Fence: ``tests/unit/test_org_settings_tenancy_r8.py`` runs both functions as a
+non-privileged role against a phase-4 database with two organizations.
 """
 from __future__ import annotations
 
@@ -39,13 +51,29 @@ def load_org_setting(key: str, default: Any = None) -> Any:
     Read failures are deliberately soft: an org-wide *preference* that cannot
     be loaded should leave the app on its built-in default, not break the page
     that asked for it.
+
+    With no tenant bound it returns ``default`` without a query. A read that
+    picked "some" organization would hand one company another's logo.
     """
     import psycopg  # noqa: PLC0415
 
+    # Inside, not at module scope: importing `acb_common` must not import the
+    # db module (`acb_common/db.py`, its header).
+    from acb_common.db import current_tenant  # noqa: PLC0415
+
+    tenant = current_tenant()
+    if not tenant:
+        _log.warning("org_settings.load_no_tenant", key=key)
+        return default
     try:
         with psycopg.connect(_conninfo(), connect_timeout=5) as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT value FROM org_settings WHERE key = %s", (key,))
+                # LOCAL: the binding ends with this transaction (`acb_common.db`).
+                cur.execute("SELECT set_config('app.tenant_id', %s, true)", (tenant,))
+                cur.execute(
+                    "SELECT value FROM org_settings WHERE organization_id = %s::uuid AND key = %s",
+                    (tenant, key),
+                )
                 row = cur.fetchone()
         if row is None or row[0] is None:
             return default
@@ -63,19 +91,28 @@ def save_org_setting(key: str, value: Any, updated_by: str = "") -> None:
     Raises on failure, unlike :func:`load_org_setting`. A write that silently
     did nothing would tell an admin their change to everyone's UI had been
     applied when it had not.
+
+    Raises:
+        TenantUnbound: no tenant in context. A write is never defaulted.
     """
     import psycopg  # noqa: PLC0415
 
+    from acb_common.db import TenantUnbound, current_tenant  # noqa: PLC0415
+
+    tenant = current_tenant()
+    if not tenant:
+        raise TenantUnbound(f"org_settings.save({key!r}) has no tenant bound")
     with psycopg.connect(_conninfo(), connect_timeout=5) as conn:
         with conn.cursor() as cur:
+            cur.execute("SELECT set_config('app.tenant_id', %s, true)", (tenant,))
             cur.execute(
-                "INSERT INTO org_settings (key, value, updated_by, updated_at) "
-                "VALUES (%s, %s::jsonb, %s, now()) "
-                "ON CONFLICT (key) DO UPDATE "
+                "INSERT INTO org_settings (organization_id, key, value, updated_by, updated_at) "
+                "VALUES (%s::uuid, %s, %s::jsonb, %s, now()) "
+                "ON CONFLICT (organization_id, key) DO UPDATE "
                 "SET value = EXCLUDED.value, "
                 "    updated_by = EXCLUDED.updated_by, "
                 "    updated_at = now()",
-                (key, json.dumps(value), updated_by),
+                (tenant, key, json.dumps(value), updated_by),
             )
         conn.commit()
     _log.info("org_settings.saved", key=key, updated_by=updated_by)

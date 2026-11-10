@@ -93,8 +93,40 @@ describe("one task panel composition (S6e)", () => {
     expect(BODY).toContain('label="Priority"');
     expect(BODY).toContain('label="Assignees"');
     expect(BODY).toContain('label="Due"');
-    expect(BODY).toContain('label="Discussion"');
-    expect(BODY).toContain('label="Files"');
+    // ORC-3 — Discussion and Files are tabs of the body, so the tab is the
+    // heading and no section draws the word again.
+    expect(BODY).toContain("aria-label={TASK_TAB_LABEL.discussion}");
+    expect(BODY).toContain("aria-label={TASK_TAB_LABEL.files}");
+  });
+
+  it("draws the facts a member sets most at the top of Details (owner, 2026-10-19)", () => {
+    // The owner could not find where to add a tag: Tags sat in a folded
+    // "Properties" section below the description. The five facts a member
+    // sets most are the first five Details rows, in this order.
+    const rows = [...BODY.matchAll(/<FieldCell[^>]*?\blabel="([^"]+)"/g)].map((m) => m[1]);
+    expect(rows.slice(0, 5)).toEqual(["Status", "Priority", "Assignees", "Due", "Tags"]);
+    expect(BODY).not.toMatch(/<CollapsibleSection[^>]*?\blabel="Properties"/);
+    // The Description section comes straight after Details.
+    const sections = [...BODY.matchAll(/<CollapsibleSection[^>]*?\blabel="([^"]+)"/g)].map((m) => m[1]);
+    expect(sections.slice(0, 2)).toEqual(["Details", "Description"]);
+  });
+
+  it("offers Subtask, Link and Attach above Details, each reaching its field", () => {
+    const bar = BODY.slice(BODY.indexOf('aria-label="Add to this task"'), BODY.indexOf('label="Details"'));
+    // ORC-3 — each button opens the tab of what it adds, then its section.
+    expect(bar).toMatch(/reach\("related", "links", subtaskBox\)/);
+    expect(bar).toMatch(/reach\("related", "refs", linkBox\)/);
+    expect(bar).toMatch(/showTab\("files"\);\s*filePicker\.current\?\.click\(\)/);
+    expect(BODY).toMatch(/ref=\{subtaskBox\}/);
+    expect(BODY).toMatch(/inputRef=\{linkBox\}/);
+    // A folded section unmounts its content. The file input must live
+    // outside Files, or Attach finds no input while Files is folded. Files
+    // is a tab now (ORC-3), and the rule holds for its panel.
+    const files = BODY.indexOf("aria-label={TASK_TAB_LABEL.files}");
+    const filesEnd = BODY.indexOf('role="tabpanel"', files);
+    const input = BODY.indexOf("ref={filePicker}");
+    expect(input, "the file input is in the tree").toBeGreaterThan(0);
+    expect(input > files && input < filesEnd, "the file input sits inside Files").toBe(false);
   });
 
   it("the move dialog draws the body's assignee chips, not a copy", () => {
@@ -206,7 +238,7 @@ describe("no two labels alike in the lens host (D53.8)", () => {
         ...strip.matchAll(/<SectionLabel[^>]*>\s*([A-Za-z][^<{]*?)\s*<\/SectionLabel>/g),
       ].map((m) => m[1].trim().toLowerCase()),
     );
-    for (const label of ["Priority", "Due", "Start", "Estimate", "Description", "Watch", "Time spent"]) {
+    for (const label of ["Priority", "Due", "Start", "Estimate", "Description", "Time spent"]) {
       expect(BODY, `the body draws ${label}`).toMatch(
         new RegExp(`(?:<FieldCell|<CollapsibleSection)[^>]*?\\blabel="${label}"`),
       );
@@ -215,8 +247,11 @@ describe("no two labels alike in the lens host (D53.8)", () => {
     // The strip's Notes editor was the description's only writer. Under the
     // lens it is gone; the body's Description is the one editor.
     expect(stripLabels.has("notes")).toBe(false);
-    // The Projects header lost its watch toggle to the body.
+    // The Projects header lost its watch toggle to the body. Since
+    // 2026-10-19 it sits in the body's ADD toolbar, not in a Details row.
     expect(HOSTS["projects/components/TaskPanel.tsx"]).not.toContain("watchersApi");
+    expect(BODY).toMatch(/aria-pressed=\{watching\}[\s\S]*?toggleWatch\(\)/);
+    expect(stripLabels.has("watch")).toBe(false);
   });
 
   it("never calls the member's matrix 'Priority'", () => {

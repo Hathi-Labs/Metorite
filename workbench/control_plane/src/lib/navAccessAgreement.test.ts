@@ -78,4 +78,22 @@ describe("nav.ts and access.ts agree about what gates each route", () => {
     expect(featureForPath("/calendar")).toBe("tasks");
     expect(isAlwaysAllowed("/calendar")).toBe(false);
   });
+
+  it("pins the Integrations pane: ungated, by an EXACT entry (D-EA-9, WS-55 EA-4b)", () => {
+    // Every member opens the app for the AI agents view, and the page gates
+    // each other view on `feature:integrations`. The ALWAYS_ALLOWED entry is
+    // exact, so a later sub-route keeps the gate of HREF_FEATURES.
+    // Mutation, seen red: drop "/integrations" from ALWAYS_ALLOWED, or give
+    // the pane its feature back.
+    const pane = PANES.find((p) => p.href === "/integrations");
+    expect(pane, "the Integrations pane is missing from nav.ts").toBeTruthy();
+    expect(pane!.feature).toBeUndefined();
+    expect(pane!.adminOnly).toBeFalsy();
+    expect(pane!.team).toBe("admin");
+    expect(pane!.launch).toBe("live");
+    expect(isAlwaysAllowed("/integrations")).toBe(true);
+    expect(featureForPath("/integrations")).toBeNull();
+    expect(featureForPath("/integrations/anything")).toBe("integrations");
+    expect(isAlwaysAllowed("/integrations/anything")).toBe(false);
+  });
 });

@@ -3,7 +3,7 @@
 > **Status:** 🟢 Phase 1 shipped. **Multi-tenant user management now hands off to the multiplayer agent collaboration workstream — see [§10](#10-handoff-multiplayer-agent-collaboration).** §10.4's requested spec exists: [`groups_sessions_authority.md`](groups_sessions_authority.md) decides the group primitive, `chat_session_participant`, and the authority rule (intersection). ⚠️ **Tenancy re-framed 2026-08-08 (D15, WS-29):** this spec's per-deployment framing ('the single-tenant deployment', 'the person who owns the deployment') predates row-tenancy. The intra-org model it documents is unchanged and correct; read `saas_multitenancy.md` for anything cross-tenant. MT-1a/H6 reopen the identity store (user_identity + org_membership); §10's 'complete, not being extended' claim is superseded for the tenancy axis only.
 > **Created:** 2026-07-29 · **Handed off:** 2026-07-29 · **Verified against code:** 2026-08-03 (WS-14 doc remediation — §8 Phase 2 row and §9 Q2 only; the rest keeps its earlier stamps). That pass found **`email_account_member` does not exist** (0 hits repo-wide in `*.sql` and `*.py`) and that §9 Q2 gates `department_centers.md` Phase C4 — both annotated in place. **Repair round the same day (off `264f881e`):** the Q2 annotation's claim that `pending_actions.actor` "is the proposing *agent* … not the human behind it, and no group is derivable from any existing column" was **false** and is corrected in §9 Q2 — two of `actor`'s six writers embed the requesting human's email. Q2 remains OWNER-DECISION on the corrected evidence.
 > **Scope:** Turning the single-tenant deployment *(wording predates D15 — one org per deployment is no longer the model)* into a real multi-user organization: named members, roles, per-user feature/agent access, and one enforcement path the whole platform shares.
-> **Parent research:** [`multi_user_organization_research.md`](multi_user_organization_research.md) — the *why* and the long-horizon (SaaS, memory scoping, entity-graph RLS) design. This document is the *what we are building now*, and it deliberately implements a subset.
+> **Parent research:** `multi_user_organization_research.md` — the *why* and the long-horizon (SaaS, memory scoping, entity-graph RLS) design. This document is the *what we are building now*, and it deliberately implements a subset.
 > **Companion:** [`permissions_sandbox_b6.md`](permissions_sandbox_b6.md) (tool-level risk gating — orthogonal: that answers "may this *tool call* proceed", this answers "may this *person* reach this feature at all").
 
 ---
@@ -355,6 +355,8 @@ Deploy order makes fail-closed safe: `apply_migrations.sh` runs before the gatew
 
 ## 8a. Integration credentials and org memory (seam 3, authorization half)
 
+> **Status, 2026-11-07 (task 1120, H-437):** 🟢 A web chat run gets the filter of its session member. MCP-C1 shipped this on 2026-11-04 with no flag. `_integration_authorizer` takes the member as the keyword `session_user`, and the stream route passes the session member. A run with no session keeps the body's claim. Fence: `tests/unit/test_org_access_credentials.py`.
+
 ### What is enforced
 
 An agent's `config.json` declares which integrations it *wants*. Which of those the platform actually resolves is now decided by the **acting member**, via `integrations:use:<service>`:
@@ -404,7 +406,7 @@ Now two secrets with different jobs:
 
 `/v1` accepts either, because the Next.js server and internal jobs route completions too. Everything else accepts identity only. Every `/v1` client now reads `settings.llm_api_key`; a test asserts none of them resolves `gateway_internal_token`, so the escalation cannot be reintroduced by a future edit.
 
-When `GATEWAY_INTERNAL_TOKEN` is unset the identity token still falls back to the LLM key, so an un-migrated deployment does not 401 every internal call on upgrade — but it warns on every resolution, because a silent fallback here is the vulnerability wearing a fix's clothes.
+**Updated 2026-11-06 (WS-24b).** The identity token has no fallback to the LLM key. When `GATEWAY_INTERNAL_TOKEN` is unset, the gateway fails closed outside `ACB_ENV=dev`. No Bearer is service identity, `require_internal_auth` answers 401, and a bare `X-User-Email` resolves anonymous. Every caller of an internal route sends `gateway_internal_token` only. Fence: `tests/unit/test_service_identity_and_webhook_auth.py`.
 
 **What this does not fix.** Agents run in-process (BO-7), so an agent that reads `get_settings()` directly can still obtain `gateway_internal_token`. What is closed is the *shared-secret* exposure: the value most likely to leak outside the process — an API key, by design present in BYOK configs, provider settings and logs — is no longer an identity credential. The in-process path needs the sandbox.
 

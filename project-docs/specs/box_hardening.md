@@ -1,0 +1,2369 @@
+# Box hardening — an app compromise must not become root
+
+**Status: ACTIVE, specified 2026-10-08, built in part. BH-2 full MERGED as
+#758 (`762ab5870`) on 2026-10-10.** BH-6a, the value guard, MERGED as #764
+(`373453b83`) on 2026-10-09. **BH-6 MERGED as #825
+(`6912a3431`) and live** on 2026-10-10. Next: the backup checks of BH-6, then
+BH-3 and BH-4.
+
+Board row **WS-49**. The owner ruled on 2026-10-08 to close this gap first,
+before the data of the beta customers arrives. This spec owns H-270 and H-271
+in `HANDOFF.md`.
+
+**What is on `main` (2026-10-10).**
+
+| Slice | PR | Commit | State |
+|---|---|---|---|
+| BH-8 | #741 | `5d04ca78d` | merged |
+| BH-2 part 1: the probe, the rollback script and conf, BH-F3 part 1 | #748 | `8b12ba75e` | merged |
+| BH-1 | #751 | `980c04a49` | merged. It is on the box since the BH-7 deploy |
+| BH-7, with the drop-ins of the four other units of BH-2 item 3 | #756 | `469f50813` | merged, deployed and live-checked on 2026-10-09 |
+| The deploy re-exec fix | #757 | `7e9844a48` | merged, and live on 2026-10-09 |
+| BH-6a, the value guard of the root backup and the root compose unit | #764 | `373453b83` | merged on 2026-10-09 |
+| BH-2 full: `50-hardening.conf`, the strict check, the watchdog WARN, the rollback lock | #758 | `762ab5870` | merged on 2026-10-10. `bh2_strict_check` enforces it on each deploy |
+| BH-6: the root copy, root.env, the three root units, fence BH-F4 | — | branch `sec-bh6-build` | built 2026-10-10, not merged, not on the box |
+
+**BH-2 full is MERGED and enforced.** The staged drop-in ran on the box for a
+24 h soak before the merge. The gateway journal held 0 EROFS and 0 EACCES
+lines across 60 restarts. Each deploy now runs `bh2_strict_check`. A deploy
+completes only when the gateway is sandboxed, or when a valid rollback is on.
+
+**Fix round 5, 2026-10-10 (BH-6).** The spec audit of BH-6 on 2026-10-09
+returned NO-GO, with nine blockers. Each one was a doc edit, and this round
+applies B1 to B9 in §5 BH-6. The anchors of BH-6 were read again at `main`
+`2143d01f4`. BH-6 is dispatchable from this text.
+
+**BH-7.** Agent installs go to `agent-site`, and the T2 vendor step runs no
+scripts. The slice adds the drop-in installer and `40-agent-site.conf`.
+
+**The deploy re-exec fix.** On 2026-10-08 an apply that started before the
+BH-7 merge recorded 469f5081 as applied, but it did not run the BH-7 step.
+Each step of `scripts/vps_apply.sh` after the pull now runs from the pulled
+commit's own copy. The script also refuses to record a sha whose own copy did
+not run the steps. The first deploy after the merge logged `(re-exec)`, and
+the marker recorded `7e9844a4`. The fence is `tests/unit/test_deploy_reexec.py`.
+
+**BH-2 full, MERGED as #758.** That is `50-hardening.conf`, the strict
+check, the watchdog WARN, the deploy lock of the rollback script and the
+Operator Console unit. Fix round 4 (below) made the slice dispatchable.
+
+**Fix round 4, 2026-10-09.** The spec audit of BH-2 full returned NO-GO until
+five edits. This round applies B1 to B5. B1 adds the drain flag to the
+`ExecStart` of `50-hardening.conf`. B2 is this status. B3 gives the watchdog
+WARN, the rollback lock and acceptance 4 a done-when and a fence. B4 widens
+the step-1 command. B5 widens the verification list.
+
+**Fix round 1, 2026-10-08.** The spec audit at `dc1e80bc5` returned
+GO-NARROWED. This round applies its fixes E1 to E7 and re-specifies BH-2.
+**Dispatchable now: BH-1 and BH-8.**
+
+**Fix round 2, 2026-10-08.** The second audit returned BH-7 NO-GO, BH-2
+GO-NARROWED and BH-6 NO-GO. This round applies W1 to W3, S1 to S4, Q3a to
+Q3e and C1 to C4. BH-7 and BH-6 dispatch after a third audit. Part of BH-2
+may start now (§5 BH-2, "The GO-NARROWED split").
+
+**Fix round 3, 2026-10-08.** The third audit verified each round-2 item and
+found new defects in three fixes. This round applies B7-1 to B7-3, B2-1 to
+B2-5 and B6-1 to B6-3. The coordinator dispatches the builds from this text
+with no fourth audit.
+
+**The box changed after the audit (coordinator, 2026-10-08 16:38 UTC).**
+
+- The coordinator ran `docker update --restart=no acb-neo4j` and
+  `docker stop acb-neo4j`. Port 7474 and port 7687 are closed from outside.
+- The coordinator removed `--profile memory` from
+  `/etc/systemd/system/acb.service` and ran `daemon-reload`. The backup of the
+  old unit is `acb.service.bak-20261008-neo4j`.
+- That unit now differs from the repo, because the repo holds no
+  `acb.service`. BH-8 brings it into the repo.
+
+Verified against code on 2026-10-08 at `main` `50ea81cbb`. Verified against
+the box `srv1914284` on 2026-10-08 between 16:15 and 16:55 UTC, with
+read-only commands. Every file path and line in this spec was read at that
+commit. Re-verify each anchor at dispatch, because the code is the fact.
+
+**WS43-G12 approved by the owner 2026-10-08 for WS-49.** The owner answered
+the flag of fix round 1: "Yes, for WS-49 and the #729 change." So the edits of
+`scripts/vps_apply.sh` in BH-2, BH-6, BH-7 and BH-8 need no further owner
+gate. #729 (the off-box rclone install in `vps_apply.sh`) merged before that
+answer. The owner approved it after the fact.
+
+**R1 and R6 do not apply.** No slice adds a migration to the ladder. BH-4
+writes policies on `storage.objects` and a cron job through the Supabase
+MCP, which are outside the ladder. R8 applies to that SQL, and the BH-4
+drill runs it against the real project.
+
+**Ids in this spec.** The decisions are BH-D1 to BH-D10. The slices are BH-1
+to BH-8, one PR each. The fences are BH-F1 to BH-F7. Outside this file,
+write `WS-49 BH-2`, so that no id collides with an id of another spec (R2).
+
+**Owner of what.** This spec owns five things. They are the env of every
+child process, the systemd hardening of the units, and the Docker access of
+the app user. They are also the off-box backup credential and the sudo
+rights of `acb`.
+`backup_and_restore.md` §4.2 keeps the backup run itself.
+`maf_coding_engine.md` keeps the sandbox broker design, and its gate WS43-G1
+("change the box's Docker access") is built by BH-3 here.
+
+---
+
+## 0. The answer in one screen
+
+The app user `acb` can become root in **five** ways, not three. H-271 named
+three. The audit found two more, and one of them takes 10 minutes:
+
+| # | Path from the gateway to root | Measured | Closed by |
+|---|---|---|---|
+| P1 | `sudo` with no password | `sudo -l -U acb` shows `(ALL) NOPASSWD: ALL` and `(ALL : ALL) ALL` | BH-2 (NoNewPrivileges), BH-5 |
+| P2 | The `docker` group | the gateway PID runs with supplementary groups `27,100,988,1000`. 988 is `docker` | BH-2 (socket hidden), BH-3 |
+| P3 | A root unit runs a file that `acb` can write | `acb-health-watchdog.service` (root, every 10 min) runs `/opt/acb/app/deploy/hostinger/health-watchdog.sh`. `acb-backup.service` and `acb.service` (both root) load `/opt/acb/app/.env`, which the gateway writes at run time | BH-2 (scripts read-only), BH-6 (.env) |
+| P4 | The user systemd manager | `/run/user/1000` exists while any `acb` SSH session is open. `systemd-run --user` starts a process that is not a child of the gateway, so NoNewPrivileges does not reach it | BH-2 (`InaccessiblePaths=/run/user`) |
+| P5 | Plant code that a sudo-capable `acb` process runs later | `acb-pull` runs as `acb` every 5 min, with sudo. Three variants, §2.1 | BH-2, BH-7, BH-5 |
+
+**The H-271 "cheap partial fix" is weaker than it says.** NoNewPrivileges on
+the gateway alone stops P1 only for a child that calls `sudo` directly. P3,
+P4 and P5 go around it. So BH-2 is a full sandbox, not one line.
+
+**The secrets path (H-270) is real and wider.** The Copilot CLI inherits the
+whole gateway env. So do 47 other spawn calls in the gateway, the
+orchestrator and `packages/` (§2.2). BH-1 gives all of them one allowlisted
+env, from one helper.
+
+**The off-box credential can be write-only.** This is BH-4. Supabase Storage
+takes a user JWT as an S3 session token, and RLS then applies. Give that
+user INSERT and SELECT, with no UPDATE and no DELETE. Then the box can add a
+night, and it cannot delete or overwrite one. The project has pg_cron and
+pg_net, so retention runs on the Supabase side.
+
+**One finding outside the brief (BH-8).** Neo4j was open on the public
+internet, with the compose default password. `http://187.127.172.200:7474/`
+returned HTTP 200 from outside the box, and TCP port 7687 accepted a
+connection. Docker published `0.0.0.0:7474` and `0.0.0.0:7687`, and Docker
+rules bypass `ufw`. The coordinator stopped the container at 16:38 UTC. §2.6
+records the exposure.
+
+**The order.** The first wave is BH-1, BH-8, BH-7, BH-2 and BH-6. They need
+no owner money, and together they close P1 to P5 for the gateway. Then BH-3
+and BH-4. BH-5 is recorded for later.
+
+---
+
+## 1. The problem
+
+The gateway reads email, documents and web pages for a member. A prompt
+injection in that content can steer an agent. The Copilot CLI agent has a
+shell tool, and that tool runs as a child of the gateway, as `acb`.
+
+From that shell, an attacker can do three things today:
+
+1. Read every secret in the gateway env. That holds the 162 keys of
+   `/opt/acb/app/.env` on the box. It also holds each provider key that the
+   credential store loads into `os.environ` at start.
+2. Become root, by any of P1 to P5.
+3. As root, read `/etc/acb/backup-offbox.env` and use its project-wide S3 key
+   to delete every off-box night. Then the attacker can damage the database,
+   and no backup remains.
+
+Item 3 is not live yet. `/etc/acb` does not exist on the box (measured), so
+the off-box copy of H-123 is not on. BH-4 retires the project-wide key of the
+H-123 plan. Never put that key on the box.
+
+---
+
+## 2. Measured facts — the audit
+
+### 2.1 What the gateway process needs
+
+**Identity.** `id acb` gives
+`uid=1000(acb) gid=1000(acb) groups=1000(acb),27(sudo),100(users),988(docker)`.
+`getent group docker` gives `docker:x:988:acb`. The socket is
+`srw-rw---- root docker /run/docker.sock`. The daemon runs with
+`-H fd://` only, and `DOCKER_HOST` is not set in `.env`.
+
+**The gateway processes.** `ps -o user,group,supgid` shows PID 2403959
+(`uv run uvicorn gateway.main:app`) and its child PID 2403965 (`python …
+uvicorn`), both `acb acb 27,100,988,1000`. A Copilot CLI child inherits the
+same groups. No CLI process ran at the time of the check.
+`systemctl show acb-gateway` gives `NoNewPrivileges=no`, `ProtectSystem=no`
+and an empty `SupplementaryGroups=`, so the groups come from `/etc/group`.
+
+**The exposure score.** `systemd-analyze security` gives **9.2 UNSAFE** for
+each of acb-gateway, acb-workbench, acb-customer-console,
+acb-operator-console, acb-smoke-chat and acb-pull. The box runs systemd 255.
+
+**Sudo.** No code under `apps/`, `packages/` or `workbench/*/src` calls
+`sudo`, `systemctl`, `pkexec` or `setuid`. The only hits are prose
+(`acb_llm/ride_through.py:45`, `mutation.py:892`, `runErrors.ts:6`,
+`agents/page.tsx:1857`). `deploy/smoke_chat.sh` calls no `sudo`. So every
+`User=acb` unit except `acb-pull` can take NoNewPrivileges.
+
+**Docker.** The gateway runs Docker in-process. There is no separate broker
+unit.
+
+- `gateway/main.py:153-178` starts the Copilot sandbox sweep and
+  `start_sandbox_broker()` at every start.
+- `orchestrator/sandbox_broker.py:880-900` (`DockerCLI`) runs the `docker`
+  binary as a child of the gateway, with no `env=`.
+- `copilot_sandbox.py:94` and `mutation.py:921,1004` run `docker` too.
+- On the box, `MAF_CODING_SCOPE` and `SANDBOX_IMAGE` are set (a count of 1
+  each, values not read). `COPILOT_SANDBOX_SCOPE` is not set.
+- **No sandbox image exists on the box.** `docker images` lists only
+  `pgvector:pg17`, `pgvector:pg16`, `acb-meeting-bot`, `neo4j:5-community`
+  and `redis:7-alpine`. So the broker cannot start a container today, and to
+  hide the socket from the gateway breaks no live feature.
+
+**Where the gateway writes.** Measured on the box and in code:
+
+| Path | Why | Source |
+|---|---|---|
+| `/opt/acb/app/.env` | Integrations, OAuth and Models routes rewrite it in place with `write_bytes` | `routes/integrations.py:533`, `routes/settings.py:186-214`, `acb_common/env_guard.py:1-20` |
+| `/opt/acb/app/.venv` | Agent installs go into the shared venv | `acb_skills/loader.py:1137-1226`, `acb_skills/dep_tools.py:79` |
+| `/opt/acb/app/data` | `gtd_attachments`, resumes | `ls -l /opt/acb/app/data` |
+| `/home/acb/.acb/agents` | Agent clones, Custom Apps, broker state (74 MB) | `settings.py:589-606,726` |
+| `/home/acb/.copilot`, `/home/acb/.cache/copilot`, `/home/acb/.cache/github-copilot-sdk` | The Copilot CLI state and binary 1.0.79 | `ls -ld` on the box |
+| `/home/acb/.cache/uv` | `uv pip install` from the loader | `loader.py:1209` |
+| `/opt/acb/app/infra/provider_models_cache.json` | `refresh_provider_models` saves the model list with `write_text` | `routes/settings.py:1232-1256` (`_models_cache_path`, `_save_models_cache`) |
+| `/opt/acb/app/apps/services/gateway/agents.json` | The fallback write when the database is down. The file changed at 16:52 on the box | `routes/agent.py:819-878` (`_get_agents_file`, the first parent with `pyproject.toml`) |
+| The value of `NOTES_MEDIA_DIR` | Notes media. The default is `data/notes_media` under the working dir | `routes/notes/core.py:215` |
+| The values of `GTD_ATTACHMENTS_DIR` and `PROJECT_IMPORT_DIR` | Attachments and Projects imports. The first defaults to `data/gtd_attachments` | `routes/tasks/attachments.py:36`, `routes/projects/imports.py:71` |
+
+`infra/enabled_models.json` is NOT a gateway write. The gateway reads it
+(`routes/settings.py:970-979`). Its legacy rename at line 976 needs a write to
+`infra/`, and it fails under BH-2. No legacy file is on the box.
+
+**Path names in `.env` (names only, read 2026-10-08).** `.env` on the box
+sets `GOOGLE_SERVICE_ACCOUNT_FILE`, `MEET_PROFILE_DIR`, `NOTES_MEDIA_DIR`,
+`SKILLS_ROOT` and `WHATSAPP_BRIDGE_CALL_RECORD_DIR`. This audit did not read
+their values. Of these five, only `NOTES_MEDIA_DIR` is a gateway write. The
+gateway reads `GOOGLE_SERVICE_ACCOUNT_FILE`. BH-2 step 1 derives its list from
+the code, not from this scan.
+
+**P5 in three variants.** Each one is a file that the gateway can write today
+and that a sudo-capable `acb` process runs later.
+
+1. **The venv.** The gateway writes `.venv` (agent installs). Then
+   `vps_apply.sh` runs code from it as `acb` on every deploy. It runs
+   `uv sync` (line 736) and the Copilot CLI fetch (line 753). It also runs
+   `scripts/check_infra.py` with `uv run` (line 1598).
+2. **The T2 vendor cache.** `vps_apply.sh:1116-1128` reads
+   `CUSTOM_APPS_T2_VENDOR_DIR` or `AGENTS_CLONE_DIR` from `.env`, which the
+   gateway writes. Its default is `~/.acb/agents/vendor/t2-react`, which the
+   gateway also writes. Then it runs `npm install` there, with no
+   `--ignore-scripts`. A planted `.npmrc` or a package in `node_modules` runs
+   code as `acb`.
+3. **The checkout.** Scripts, `.git/hooks` and `node_modules` under
+   `/opt/acb/app`. The gateway can write all of them today.
+
+### 2.2 What the Copilot CLI needs from the env
+
+**The launch.** `copilot_agent.py:208-216` reads `COPILOT_GITHUB_TOKEN`,
+then `GITHUB_COPILOT_TOKEN`, then `GITHUB_TOKEN`. Lines 219-226 build
+`client_options` with `github_token`, an optional `connection` and
+`log_level`, and pass no `env`.
+
+**The SDK** (`github-copilot-sdk` 1.0.11, `copilot/client.py`):
+
+- `__init__` takes `env: dict[str, str] | None` (line 1428).
+- Lines 1597-1601 pick the env by identity: the connection env, else
+  `options.env`, else `os.environ`.
+- `_start_cli_server` (lines 4125-4135) copies that env, and then sets
+  `COPILOT_SDK_AUTH_TOKEN` from `github_token`. Line 4095 passes
+  `--auth-token-env COPILOT_SDK_AUTH_TOKEN`. So the CLI needs no
+  `GITHUB_TOKEN`, `GH_TOKEN` or `COPILOT_GITHUB_TOKEN` in its env.
+- The SDK also sets `COPILOT_CONNECTION_TOKEN`, `COPILOT_HOME` (from
+  `base_directory`) and the `OTEL_*` names, when they apply.
+- The CLI binary lives at `~/.cache/github-copilot-sdk/cli/<version>/copilot`
+  (`_cli_download.py:57-87`). It uses `HOME` or `XDG_CACHE_HOME` to find it.
+
+**What the CLI reads.** We read the bundle of CLI 1.0.66 (`app.js`) on the
+dev box. These are the env names in it that matter here:
+
+- `PATH`, `HOME`, `USER`, `SHELL` and `TERM`.
+- `XDG_CACHE_HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `XDG_RUNTIME_DIR`.
+- `COPILOT_HOME`, `COPILOT_CACHE_HOME`, `HTTPS_PROXY` and `HTTP_PROXY`.
+- The token names above, and many `COPILOT_*` debug names.
+
+The box runs 1.0.79. Re-read the list at dispatch.
+
+**The minimal allowlist (BH-D2).** `PATH`, `HOME`, `USER`, `LOGNAME`,
+`LANG`, `LC_ALL`, `LC_CTYPE`, `TZ`, `TMPDIR`, `XDG_CACHE_HOME`,
+`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `HTTPS_PROXY`,
+`HTTP_PROXY`, `NO_PROXY` and their lower-case forms, `SSL_CERT_FILE`,
+`SSL_CERT_DIR` and `NODE_EXTRA_CA_CERTS`. On Windows dev boxes, also
+`SYSTEMROOT`, `WINDIR`, `TEMP`, `TMP`, `PATHEXT` and `COMSPEC`. Each name
+passes only when it is set. No proxy name is set in `.env` on the box
+(measured: a count of 0 for each).
+
+**Three Python names go in the BASE list, not in extras (fix E3).** They are
+`VIRTUAL_ENV`, `PYTHONPATH` and `UV_CACHE_DIR`. Each one is a path and holds
+no secret. `pdf_render.py:666-669` and `code_tools.py:62` already pass the
+first two. The `uv pip install` calls at `loader.py:1226` and
+`dep_tools.py:86` need `UV_CACHE_DIR` when BH-2 moves the cache. One base
+list is simpler to fence than four call-site extras.
+
+**The residual of BH-1.** The CLI still holds `COPILOT_SDK_AUTH_TOKEN`,
+because it needs it. A shell under the CLI can read that token. On the box,
+`GITHUB_TOKEN` is not in `.env`, so the token comes from the credential store
+at run time. Its scope is the blast radius. D92 removes the Copilot SDK, and
+that closes this residual.
+
+**Every other spawn.** An AST scan of `apps/` and `packages/` (tests out)
+found 62 spawn calls. 9 pass `env=`, and 53 do not. Of the 53, 45 run in the
+gateway, and 8 run in a container. The 53 that inherit the full env:
+
+| File | Lines | What it runs | Where it runs |
+|---|---|---|---|
+| `gateway/routes/agent.py` | 1465, 1491, 1507, 3163, 3180, 3194, 3332, 3435, 3529, 3679, 3691, 3710, 3740, 3762, 3840, 3861 | `git` | gateway |
+| `gateway/routes/apps/durability.py` | 294 | `git` | gateway |
+| `gateway/routes/apps/lifecycle.py` | 171 | `args` | gateway |
+| `gateway/routes/integrations.py` | 2304, 2346, 2370 | `gh auth` | gateway (`gh` is not installed on the box) |
+| `gateway/routes/monorepo_pr.py` | 120 | `*args` | gateway |
+| `orchestrator/executor.py` | 1951, 1972, 2137, 2158, 2189 | `git` | gateway |
+| `orchestrator/mutation.py` | 193, 739, 921, 1004, 1022 | `git`, `docker` | gateway |
+| `orchestrator/copilot_sandbox.py` | 94 | `docker` | gateway |
+| `orchestrator/sandbox_broker.py` | 894 | `docker` | gateway |
+| `acb_skills/code_tools.py` | 320 | `git` | gateway |
+| `acb_skills/dep_tools.py` | 86 | `uv pip install` | gateway |
+| `acb_skills/error_tools.py` | 96, 120 | `python -m`, `ruff` | gateway |
+| `acb_skills/loader.py` | 136, 140, 148, 154, 1226 | `git`, `uv pip install` | gateway |
+| `acb_stt/local_diarization.py` | 82 | `ffmpeg` | gateway |
+| `orchestrator/mutation_runner.py` | 171 | `git` | mutation container |
+| `orchestrator/sandbox/data_engine.py` | 2690, 2728 | `taskkill`, `argv` | sandbox container |
+| `meeting_bot/app/live.py`, `meet.py` | 115, 242, 548, 558, 477 | `ffmpeg`, `paplay`, shell | meeting-bot container |
+
+Two more sites pass a copy of the full env with one change, which is the
+same leak: `routes/apps/files.py:215-222` (`dict(os.environ)`) and
+`routes/agent.py:3794` (`{**os.environ, …}`). Three sites already allowlist,
+each in its own way: `pdf_render.py:666-696` (`CHILD_ENV_KEYS`),
+`code_tools.py:62-100` (`_ENV_ALLOW` and `_script_env`) and
+`loader.py:91` (`_GIT_ENV`). That is three rules for one job. BH-1 makes one.
+
+**Every `CopilotClient` construction (fix E1).** The table names each site
+and what BH-1 does with it.
+
+| Site | Import name | Spawns a CLI | BH-1 |
+|---|---|---|---|
+| `orchestrator/copilot_agent.py:226` | `CopilotClient` (line 15) | yes | `env=copilot_env()` |
+| `orchestrator/copilot_agent.py:201` | `CopilotClient` | no. It connects to a sandbox over `RuntimeConnection.for_uri` | exempt, with that reason |
+| `gateway/main.py:134` | `_CC` (alias, line 133) | yes, to list models | `env=copilot_env()` |
+| `gateway/main.py:1915` | `CopilotClient` (line 1914) | yes, to list models | `env=copilot_env()` |
+| `orchestrator/executor.py:5393` | `_CopilotClient` (alias, line 5351) | yes, for a repo agent with no client | `env=copilot_env()` |
+| `orchestrator/mutation_runner.py:114` and `:171` | `CopilotClient`, `subprocess.run` | yes, inside the mutation container | `env=child_env()`, the file's OWN literal allowlist (a BH-D1 exception). The image holds only `github-copilot-sdk`, so it cannot import `acb_common`. The list holds no `GATEWAY_API_KEY` and no `COPILOT_GITHUB_TOKEN`, and the SDK gets the token as `github_token` |
+| `agent_framework_github_copilot/_agent.py:772` | in the wrapper | yes, when no client is set | replaced: a guard on the CLASS builds the client with `copilot_env()` (BH-D3) |
+
+Two of the sites import the class under another name. So the fence must
+resolve import aliases, or it misses them.
+
+**The upstream start is on many paths (review of BH-1, P0).** A plain
+`GitHubCopilotAgent`, as `apps/agents/*/agents.py` builds it, reaches
+`_agent.py:772` from the batch run `_run_with_maf_agent` (`POST /agent/run`,
+workflows, the email consult, projects dispatch and the self-anneal
+retries) and from the sub-agent block of `_run_sub_agent_streaming`
+(`call_agent`). One guard on the class covers all of them, and any path
+that a later change adds (BH-D3).
+
+**The `gh` names.** `gh auth status` at `integrations.py:2305` gets
+`GH_TOKEN` and `GITHUB_TOKEN` by value, because `gh` reads both. The two
+`gh` calls of the connect route at `:2348` and `:2373` get the base list
+only. They import the token that `gh` holds in its own config.
+
+**Stdio MCP servers (fix E4).** `orchestrator/_tool_injection.py:1823-1836`
+hands a stdio MCP server to the CLI with its own `env` dict from the
+`mcp_servers` row. The CLI starts that server as its own child. With BH-1, a
+server that read a name from the inherited gateway env no longer gets it.
+
+On 2026-10-08 the production table held **0 rows**, read as `postgres`,
+which bypasses RLS. So no server breaks today. Re-run the query at dispatch:
+`select name, jsonb_object_keys(env_vars) from mcp_servers where enabled and
+transport = 'stdio'`.
+
+**Git authentication.** The `git push` sites pass no token in the env. The
+clone's `.git/config` holds it (`maf_coding_engine.md` WS43-S6). So `git`
+needs only the base allowlist.
+
+### 2.3 Which units load `/opt/acb/app/.env`
+
+`systemctl cat` on the box, comments removed:
+
+| Unit | User | EnvironmentFile | Writes | Runs | State |
+|---|---|---|---|---|---|
+| `acb-gateway` | acb | `/opt/acb/app/.env` | §2.1 table | `uv run uvicorn`, git, docker, the Copilot CLI | enabled, running |
+| `acb-whatsapp-bridge` | acb | `/opt/acb/app/.env` | its `StateDirectory` and `/opt/acb/data/whatsapp_bridge` (absent) | one Go binary | **disabled** |
+| `acb.service` | **root** | `/opt/acb/app/.env` | Docker state | `docker compose -f infra/docker-compose.yml` from the checkout. Since 16:38 UTC, `--profile core` only (the coordinator removed `--profile memory`) | enabled, **not in the repo** (BH-8) |
+| `acb-backup` | **root** | `/opt/acb/app/.env`, the Console `.env`, `/etc/acb/backup-offbox.env` | `/opt/acb/backups` | `/opt/acb/app/scripts/backup_db.sh` (acb, 0775) | timer 02:30 |
+| `acb-workbench` | acb | `workbench/control_plane/.env.local` | `.next/cache` | `npm start` | running |
+| `acb-operator-console` | acb | `workbench/operator_console/.env.local` | `.next/cache` | `npm start` | running, **not in the repo** |
+| `acb-customer-console` | acb | `customer_console/.env` | nothing measured | `uv run uvicorn` | running |
+| `acb-pull` | acb | none | the checkout, `/var/lib/acb` | `scripts/vps_pull.sh`, which runs `vps_apply.sh` with sudo | timer 5 min |
+| `acb-smoke-chat` | acb | none | nothing measured | `deploy/smoke_chat.sh` | timer 6 h |
+| `acb-health-watchdog` | **root** | none | logs | `/opt/acb/app/deploy/hostinger/health-watchdog.sh` (acb-owned) | timer 10 min |
+
+There is no orchestrator unit and no agents unit. The orchestrator and the
+agents run inside acb-gateway.
+
+`acb-operator-console.service` was written by hand on 2026-08-23 and is not
+in `deploy/hostinger/`. A unit that the repo does not hold is a unit that
+no fence reads. BH-2 brings it into the repo.
+
+**What each unit can take.**
+
+| Unit | NoNewPrivileges | PrivateTmp | ProtectSystem=strict | ProtectHome | RestrictSUIDSGID, CapabilityBoundingSet= |
+|---|---|---|---|---|---|
+| acb-gateway | yes | yes | yes, with the BH-2 write list (no `.venv`) | read-only, with the BH-2 home paths | yes |
+| acb-whatsapp-bridge | yes | yes | yes (`StateDirectory` only) | yes | yes |
+| acb-workbench, acb-operator-console | yes | yes | yes, with `.next/cache` writable | read-only | yes |
+| acb-customer-console | yes | yes | yes | read-only | yes |
+| acb-smoke-chat | yes | yes | not measured, so not in BH-2 | not in BH-2 | yes |
+| acb-pull | **no** — it needs sudo | no | no | no | no |
+| acb, acb-backup, acb-health-watchdog | root units, BH-6 | — | — | — | — |
+
+### 2.4 The deploy path's use of sudo and Docker
+
+`deploy.yml:321-322` connects as `acb` and runs `vps_apply.sh` with
+`bash -s`. `acb-pull.service` runs as `acb` (not root), and runs
+`vps_pull.sh`, which runs `vps_apply.sh` (`acb-pull.service` lines 37-38).
+`vps_apply.sh` holds 56 `sudo` lines:
+
+| Need | `vps_apply.sh` lines |
+|---|---|
+| Repair ownership: `find`, `chown -R` of `.venv`, `node_modules` and build trees | 434, 729, 1245, 1286, 1289 |
+| Run as the service user: `sudo -u acb -H uv run … copilot download-runtime` | 755 |
+| Packages: `apt-get update`, `apt-get install` of ffmpeg, rclone, gnupg, zstd | 782, 1533, 1539 |
+| Go toolchain: `rm -rf /usr/local/go`, `tar -C /usr/local` | 853 |
+| Unit files: `cp` and `install -m 0644` into `/etc/systemd/system` | 857, 1065, 1066, 1502, 1503, 1563, 1564 |
+| `systemctl daemon-reload` | 858, 1067, 1504, 1570 |
+| `systemctl enable`, `restart`, `disable --now` of acb-whatsapp-bridge, caddy, acb-gateway, acb-customer-console, acb-workbench, acb-operator-console and every `acb-*.timer` | 859, 860, 872, 1023, 1026, 1045, 1068, 1069, 1089, 1373, 1378, 1420, 1484, 1505, 1591 |
+| Logs: `journalctl -u`, `systemctl status` | 1041, 1096, 1424, 1431, 1488, 1511 |
+| Caddy: `caddy validate`, `cmp`, `test -e`, `cp -a`, `rm -f`, `install` into `/etc/caddy` | 993, 995, 1001, 1004, 1008, 1016, 1019, 1044 |
+| Remove a tree: `rm -rf` | 1195 |
+| `chmod 0755` of the watchdog script | 1501 |
+
+Docker calls as `acb`, through the group, not sudo:
+
+| Script | Lines | Calls |
+|---|---|---|
+| `scripts/vps_apply.sh` | 544, 549, 554 | `docker compose up` (core), `docker ps` |
+| `scripts/vps_apply.sh` | 936, 937, 942, 951, 961 | `docker images`, `docker compose build/up` (meetingbot), `docker logs` |
+| `scripts/apply_migrations.sh` | 73, 77 | `docker exec`, `docker ps` (only when `PG_MODE=docker`) |
+| `deploy/hostinger/deploy.sh` | 21, 66, 71, 76 | `docker compose pull/up`, `docker ps` (the old path) |
+
+Docker calls as root: `scripts/backup_db.sh` 144-145, 154, 463-617 (the
+verify container) and `scripts/backup_offbox.sh:197`.
+
+`deploy/hostinger/deploy.sh:65` runs `set -a && source /opt/acb/app/.env`.
+A line in `.env` is then shell code that runs as `acb` with sudo.
+
+### 2.5 Can the off-box credential be write-only
+
+**Yes.** Sources: the Supabase docs pages "S3 Authentication" and "Storage
+Access Control", read through the Supabase MCP `search_docs` on 2026-10-08.
+
+- **The session token.** The access key ID is the project ref, the secret is
+  the anon key, and the session token is a user JWT. The docs say that
+  Storage then acts as that user, and applies the RLS policies of the
+  storage schema. They also say that the
+  publishable key is "not yet supported" there. So the legacy anon key is
+  needed.
+- **The project-wide key.** The docs say that an S3 access key gives full
+  access to every bucket and bypasses RLS. That is the key that H-123 puts on
+  the box today.
+- **Overwrite.** The docs say that an overwrite with `upsert` needs `SELECT`
+  and `UPDATE`. So with no UPDATE policy, a PUT to a key that exists fails.
+- **Delete.** A delete needs a `delete` policy. With none, it fails.
+- **rclone.** The box has `rclone 1.60.1+dfsg-3ubuntu0.24.04.6`
+  (`dpkg-query`, Ubuntu 24.04.4). The rclone S3 backend has a
+  `session_token` option, so `RCLONE_CONFIG_OFFBOX_SESSION_TOKEN` works next
+  to the four names that `offbox_lib.sh:94-97` sets.
+- **A fresh JWT.** The box asks `POST /auth/v1/token?grant_type=password`
+  with the anon key as `apikey`, just before the upload. The project JWT
+  expiry (default 3600 s) is longer than the unit budget (1800 s,
+  `acb-backup.service` `TimeoutStartSec`). The password of the writer user
+  lives in `/etc/acb/backup-offbox.env`. That user can only add objects, so
+  the stored password costs little.
+- **Retention without the box.** `list_extensions` on project
+  `wbjpwtxigkileyjsgahk` shows `pg_cron` 1.6.4 and `pg_net` 0.20.4. Both are
+  available and not installed. `supabase_vault` 0.3.1 is installed. The docs
+  say to delete objects through the Storage API and never with SQL, because
+  SQL leaves the file behind. So an Edge Function with the service role does
+  the delete, and pg_cron with pg_net calls it. The Supabase MCP in this
+  session has `deploy_edge_function`.
+- **Two traps that the design must close.** (a) An attacker with the writer
+  credential can add fake nights. A rule that keeps "the newest N nights"
+  then deletes the real ones. So retention goes by server age only. (b) An
+  attacker can add an object at tomorrow's key. With no UPDATE, tomorrow's
+  real upload then fails. So each night's prefix holds a random part that
+  the attacker cannot guess.
+- **What the box does today that BH-4 removes.** `backup_offbox.sh:230` lists
+  the night (`lsf`, needs SELECT), and `offbox_lib.sh:217` deletes old nights
+  (`rclone delete`, needs DELETE). The delete moves to the server.
+
+### 2.6 The Neo4j exposure (recorded by the coordinator, 2026-10-08)
+
+**What was open.** `acb-neo4j` published `0.0.0.0:7474` and `0.0.0.0:7687`
+(`infra/docker-compose.yml:81-82`). `ufw` did not stop it, because Docker
+writes its own rules. `NEO4J_PASSWORD` is not set in `.env`, so the compose
+default `neo4j_dev_change_me` (`docker-compose.yml:78`) was the live password.
+
+**What the logs show.**
+
+- `debug.log` shows bolt connections from 193.176.29.17, 116.172.251.104 and
+  101.70.145.145.
+- Neo4j closed each one with "client failed to authenticate within 30s".
+- `security.log` is empty, so login auditing was probably off.
+- No log shows a successful login from outside. The empty audit log means
+  that this is not proof that none happened.
+
+**What it held.** The graph store is about 884 KB, close to empty, because
+Graphiti is off (`vps_apply.sh:489-490` forces `GRAPHITI_ENABLED=false`).
+
+**What the coordinator did.** At 16:38 UTC the coordinator stopped the
+container and set its restart policy to `no`. The coordinator also removed
+`--profile memory` from the live `acb.service`. From outside, both ports are
+closed.
+
+**The rule from now on.** Neo4j is never turned on again without two things:
+a new password made with `scripts/secrets.sh`, and the `127.0.0.1` binding
+of BH-8.
+
+---
+
+## 3. Scope and non-goals
+
+**In scope.**
+
+- The env of every child process that the gateway starts.
+- The systemd units in `deploy/hostinger/`, plus the operator console unit.
+- The Docker access of the gateway.
+- The root units that read files that `acb` can write.
+- The off-box backup credential and its retention.
+- The public ports of the compose stack.
+- The sudo rights of `acb` (recorded only, BH-5).
+
+**Non-goals.**
+
+- Removing the Copilot SDK. D92 and `maf_coding_engine.md` §15-§17 own it.
+  BH-1 closes the env leak until then.
+- gVisor or rootless Docker for the sandbox containers (WS43-G5).
+- Per-request provider credentials, in place of keys in `os.environ`
+  (`work_plan.md` §6 (f)).
+- A second backup provider with Object Lock. It is the fallback of BH-D7, and
+  it needs the owner's money and account.
+- Separate Unix users for the workbench, the consoles and the gateway. Today
+  they share `acb`, so each one can read the others' `/proc/<pid>/environ`.
+  systemd 255 has no `PrivatePIDs=`. BH-5 records the user split.
+- The existing grandfathered findings of R6, R7 and R8 elsewhere in the tree.
+
+---
+
+## 4. Decisions
+
+**BH-D1. One seam for the env of a child process.** A new module
+`packages/acb_common/acb_common/child_env.py` holds `child_env()` and
+`copilot_env()`. Every spawn in the gateway, the orchestrator and
+`packages/` passes `env=` from it. The three existing allowlists
+(`pdf_render.CHILD_ENV_KEYS`, `code_tools._ENV_ALLOW`, `loader._GIT_ENV`)
+become callers of it. A second allowlist is a defect.
+
+One exception exists. `orchestrator/mutation_runner.py` runs in the
+mutation container, and its image cannot import `acb_common`. It keeps a
+LITERAL allowlist of the base names, and it still passes `env=` at each
+spawn. The fence names the file and its one function (`LOCAL_ALLOWLISTS`).
+
+**BH-D2. The base allowlist is §2.2's list.** A caller adds a name only by
+value, with `extra={"NAME": value}`, at the call site, in code that a
+reviewer reads. `child_env()` never copies a name by pattern. Each base
+name is a literal, `LC_*`, `XDG_*` and `SSL_CERT_*` included. A name of a
+secret shape (`SECRET_SHAPED`: TOKEN, SECRET, KEY, PASS, PWD, PRIVATE,
+COOKIE, JWT, BEARER, CRED, DSN, AUTH) never sits on a list of the module,
+and the module refuses to import if one does. Such a name enters only
+through `extra`, at a call site, by value.
+
+**BH-D3. The Copilot CLI gets `copilot_env()`.** That is `child_env()` with
+no token name, and the SDK adds `COPILOT_SDK_AUTH_TOKEN` itself. Every
+`CopilotClient(` in our tree passes `env=copilot_env()`.
+
+The upstream `GitHubCopilotAgent.start` builds a client with no env. So
+`orchestrator/copilot_agent.py` replaces it on the CLASS with a guard, and
+the import of the `orchestrator` package installs that guard. The guard
+and `MetoriteCopilotAgent.start` both build the client with
+`child_env_client`, which passes `env=copilot_env()`. A client that a
+caller set first is kept. With no token, the client gets no
+`github_token`, so the CLI keeps its logged-in user. It does not refuse.
+`copilot_agent.GUARDED_WRAPPER_VERSIONS` lists the wrapper versions the
+tests cover. Any other version refuses every Copilot start, and the
+import logs it.
+
+**BH-D4. The gateway runs in a systemd sandbox.** NoNewPrivileges by itself
+is not enough (§0). The gateway gets the full set of §5 BH-2, and its write
+list is the measured list of §2.1 and nothing more.
+
+**BH-D5. The gateway cannot reach the Docker socket.** BH-2 hides the socket
+from the gateway with `InaccessiblePaths=`. This costs no live feature,
+because no sandbox image is on the box (§2.1). The WS-43 sandbox goes live
+only after BH-3 gives the broker its own unit. That makes BH-3 a gate on
+WS43-G1.
+
+**BH-D6. A root unit runs only root-owned files.** No root unit loads an
+`EnvironmentFile` that `acb` can write, and no root unit runs a script from
+the checkout. The deploy installs a root-owned copy. A root unit reads the
+keys it needs from a root-owned file that the deploy writes through a key
+allowlist. No script runs `source` on `.env`.
+
+**BH-D7. The off-box credential is write-only, and retention runs on the
+server.** The design is §2.5's. If the drill of BH-4 shows that Supabase
+cannot refuse the overwrite or the delete, BH-4 stops. The fallback is a
+second provider with Object Lock, which is an owner decision with money.
+
+**BH-D8. Every published port of the compose stack binds 127.0.0.1, and the
+compose file says so in plain text.** No `${…_BIND}` name can change it.
+`neo4j` and `langfuse` bind every address today, and `postgres` and `redis`
+take the bind from a name. The app reaches Neo4j at `bolt://localhost:7687`
+(`settings.py:839`), so the change breaks nothing in the app.
+
+**BH-D10. Agent installs leave the shared venv (OD-5, the coordinator,
+2026-10-08).** They go to a dir of the gateway's own. Until BH-7 lands, the
+gateway refuses an install, and BH-2 keeps `.venv` read-only.
+
+**BH-D9. The runtime user does not deploy.** This is the later shape of BH-5.
+A deploy user holds the SSH key and narrowed sudo, and owns the checkout.
+`acb` runs the services and has no sudo and no `docker` group.
+
+A deploy user that installs unit files is root by design. The goal is that
+the RUNTIME user is not.
+
+---
+
+## 5. Slices
+
+Each slice is one PR. "The gate" names the §3a grant of `CLAUDE.md` that
+covers the act until 2026-11-30, or OWNER-GATE.
+
+### BH-1 — One allowlisted env for every child process (H-270)
+
+**Scope.**
+
+- Add `acb_common/child_env.py` with `child_env(*, extra=None)` and
+  `copilot_env()` (BH-D1, BH-D2, BH-D3). The base list is §2.2's list, plus
+  `VIRTUAL_ENV`, `PYTHONPATH` and `UV_CACHE_DIR` (fix E3).
+- Pass `env=` at each of the 45 sites of §2.2 that run in the gateway, and at
+  `files.py:215` and `agent.py:3794`.
+- The container-side sites go on a named exempt list, each with a reason.
+  They are `orchestrator/sandbox/data_engine.py` and `meeting_bot/`.
+- `orchestrator/mutation_runner.py` runs in the mutation container, and the
+  fence covers it anyway (fix E1). Its `subprocess.run` at line 171 and its
+  `CopilotClient` at line 114 pass `env=` from the file's own literal
+  allowlist (the BH-D1 exception).
+- Pass `env=copilot_env()` at every spawning site of the §2.2 client table:
+  `copilot_agent.py:226`, `main.py:134`, `main.py:1915`, `executor.py:5393`
+  and `mutation_runner.py:114`. `copilot_agent.py:201` is exempt, because it
+  connects to a URI and spawns nothing.
+- Replace the upstream start on the class with a guard, so that
+  `_agent.py:772` never builds a client with no env (BH-D3).
+- Move `pdf_render`, `code_tools` and `loader` onto the helper.
+
+**Acceptance.**
+
+1. The stub CLI is a Python script that writes its env names to a file.
+   Put `DATABASE_URL`, `GATEWAY_INTERNAL_TOKEN` and a canary
+   `BH1_CANARY_SECRET` in `os.environ`. Start the stub through
+   `MetoriteCopilotAgent.start`. The child env holds none of the three. It
+   holds `PATH`, `HOME` and `COPILOT_SDK_AUTH_TOKEN`.
+2. The same stub gives the same result through `main.py`'s model listing
+   path and through `executor.py:5393`.
+3. Every spawn of §2.2's gateway rows passes `env=` from the helper (BH-F1).
+4. The tests of items 1 and 3 FAIL on `main` before the change (verified red
+   first).
+5. On the box, after the deploy, a Copilot child shows no secret name (live
+   check below).
+
+**Verification.**
+
+```bash
+uv run pytest tests/unit/test_child_env_seam.py tests/unit/test_copilot_child_env.py -q
+uv run pytest tests/unit/test_integrations_env_hardening.py tests/unit/test_sandbox_broker_seam.py -q
+uv run ruff check packages/acb_common apps/services/gateway apps/services/orchestrator
+```
+
+**The live check (fix E5).** A CLI child lives only while a Copilot session
+runs, so start the watch FIRST. It prints names only, never values.
+
+```bash
+ssh metorite 'for i in $(seq 1 600); do for p in $(pgrep -u acb -f "github-copilot-sdk/cli"); do tr "\0" "\n" < /proc/$p/environ | cut -d= -f1 | sort | tr "\n" " "; echo; done; sleep 0.2; done | sort -u'
+```
+
+Then start each of these three, from an owner session, with the watch
+running. Each one starts the CLI on a different code path.
+
+- **The batch path.** `POST /agent/run` (`routes/agent.py:2762`) with
+  `{"agent": "task-manager", "payload": {"message": "list my open tasks"}}`.
+  The run goes through `run_agent` and `_run_with_maf_agent`, which starts
+  the plain `GitHubCopilotAgent` of `apps/agents/agent-task-manager/agents.py`
+  through the class guard. Confirm at dispatch that the agent is
+  registered on the box.
+- **The stream path.** `POST /agent/run/stream` (`routes/agent.py:2037`)
+  with the same body. The run goes through `run_agent_stream`, Tier 1.5,
+  and `MetoriteCopilotAgent.start`. The Agent Registry chat in the app uses
+  this route too.
+- **The model list.** `GET /copilot/models` (`gateway/main.py`, the
+  `copilot_models` route). It spawns the CLI through
+  `_list_copilot_models` for about one second. It caches for 5 minutes,
+  so call it again after the cache expires.
+
+The name list must hold no name from `.env` except the allowlist.
+
+**Fences.** BH-F1 is `tests/unit/test_child_env_seam.py`. It is an AST scan of
+`apps/services/gateway`, `apps/services/orchestrator` and `packages/`. It
+resolves import aliases first (fix E2). So `import subprocess as sp`, `from
+subprocess import run` and `from copilot import CopilotClient as _CC` all
+count.
+
+It reads each call of these kinds:
+
+- `subprocess.run`, `Popen`, `call`, `check_call`, `check_output`,
+  `getoutput` and `getstatusoutput`.
+- `asyncio.create_subprocess_exec` and `create_subprocess_shell`, and
+  `loop.subprocess_exec` and `loop.subprocess_shell`.
+- `anyio.run_process` and `anyio.open_process`.
+- `os.system`, `os.popen`, every `os.exec*`, every `os.spawn*`,
+  `os.posix_spawn`, `os.posix_spawnp` and `pty.spawn`.
+
+Rules for each call:
+
+- A `subprocess`, `asyncio`, loop or `anyio` call passes `env=` from
+  `child_env` or `copilot_env`, or from a name bound to one in the same
+  function.
+- `os.system`, `os.popen`, `os.exec*` with no `e`, `os.spawn*` with no `e`,
+  `getoutput`, `getstatusoutput` and `pty.spawn` fail the test. They cannot
+  take an env.
+- An `extra=` that holds `os.environ`, or a value read from it as a whole,
+  fails.
+- A `.update(os.environ)` or a `{**os.environ}` on a name that a spawn
+  receives fails.
+- Every `CopilotClient(` passes `env=`, except a site on the exempt list.
+- The exempt list names each file and its reason.
+
+BH-F2 is `tests/unit/test_copilot_child_env.py`, the stub CLI test of
+acceptance 1 and 2.
+
+**Risks.**
+
+- A tool that needs a name we did not list fails. The likely ones are a
+  proxy name or a CA bundle on a customer silo. The allowlist holds them
+  when set.
+- `git` over HTTPS needs no env token (§2.2). If a clone uses a credential
+  helper that reads `GH_TOKEN`, a push fails. Watch `git push` in the journal
+  for one day.
+- **`gh auth status` reads `GH_TOKEN` (fix E4).** `integrations.py:2305`
+  passes `GH_TOKEN` and `GITHUB_TOKEN` by value with `extra=`. The two
+  calls of the connect route pass the base list only (§2.2). `gh` is not
+  installed on the box.
+- **The T2 build reads two path names (fix E4).** `build_t2.mjs:75-77` reads
+  `CUSTOM_APPS_T2_VENDOR_DIR` and `AGENTS_CLONE_DIR`. `files.py:215-222`
+  passes the first by value today. Pass both by value with `extra=` from the
+  settings, or the build looks in `~/.acb/agents` and misses a moved dir.
+- **Stdio MCP servers (fix E4).** A server that read an inherited name stops
+  working (§2.2). The table held 0 rows on 2026-10-08. Re-run the query at
+  dispatch, and add each needed name to that row's `env_vars`.
+
+**Rollback.** Revert the PR. The deploy restores the old code. No data
+changes.
+
+**The gate.** AGENT-SAFE. The deploy and the live check are under §3a
+`deploy`.
+
+### BH-8 — Neo4j leaves the public internet, and `acb.service` joins the repo
+
+**Box state.** The coordinator stopped `acb-neo4j` and set it to
+`--restart=no` at 16:38 UTC on 2026-10-08. The coordinator also removed
+`--profile memory` from the live `acb.service`. §2.6 records the exposure.
+
+**Status: MERGED as `5d04ca78d` (#741).** This section records the slice as
+built.
+
+**Scope.**
+
+- Hard-code each published port of `infra/docker-compose.yml` to
+  `127.0.0.1` (fix E6). The changes:
+  - `neo4j` (lines 81-82): `"127.0.0.1:7474:7474"` and `"127.0.0.1:7687:7687"`.
+  - `langfuse` (line 112): `"127.0.0.1:3000:3000"`.
+  - `postgres` (line 33) and `redis` (line 58): drop `${POSTGRES_BIND:-…}`
+    and `${REDIS_BIND:-…}`, and write `127.0.0.1` in their place. A name in
+    `.env` must never open a port.
+  - `meeting-bot` already binds `127.0.0.1`.
+- Bring `acb.service` into `deploy/hostinger/acb.service`, with
+  `--profile core` and no `--profile memory` (fix E7). It matches the unit
+  that the coordinator left on the box. BH-6 later changes its paths.
+- `vps_apply.sh` needed no change. Its unit loop (`vps_apply.sh:1560-1571`)
+  already installs every `deploy/hostinger/*.service`.
+- **The Neo4j password has no default.** The compose file sets
+  `NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-}`. An entrypoint guard exits 64 when
+  the password is empty, `neo4j` or `neo4j_dev_change_me`.
+  - The `${NEO4J_PASSWORD:?}` form was rejected. Compose interpolates the
+    whole file before it reads the profiles, so `--profile core` failed on a
+    box with no Neo4j password.
+- Neo4j stays stopped. It comes back only with a new password from
+  `scripts/secrets.sh` AND this binding. No slice here turns it on.
+- **Later, in the slice that turns Neo4j on.** The production
+  `NEO4J_PASSWORD` goes through `scripts/secrets.sh`. That needs
+  `NEO4J_PASSWORD` in the `allowed_keys` of the `app-env` entry of
+  `deploy/secrets/manifest.json`. BH-8 does not add it.
+
+**A finding, not fixed here.** `vps_apply.sh:544` runs `docker compose -f
+infra/docker-compose.yml --profile core up` with no `--env-file`. So the
+local `postgres` service falls back to the compose default
+`acb_dev_change_me` (`docker-compose.yml:25`). Production uses managed
+Postgres, so the local container holds no production data. BH-6 gives every
+compose call one `--env-file /etc/acb/root.env`, which closes this.
+
+**Acceptance.**
+
+1. From outside the box, port 7474, port 7687 and port 3000 refuse or time
+   out.
+2. `docker ps -a --filter name=acb-neo4j` shows `Exited`, and the restart
+   policy is `no`.
+3. After `sudo systemctl restart acb.service`, the box still has no public
+   listener.
+4. `ss -ltnp` shows no `docker-proxy` on `0.0.0.0` or `[::]`, on any port.
+5. `systemctl cat acb.service` on the box equals `deploy/hostinger/acb.service`.
+
+**Verification.**
+
+```bash
+uv run pytest tests/unit/test_compose_ports_local.py tests/unit/test_unit_hardening.py -q
+curl -s -m 6 -o /dev/null -w "%{http_code}\n" http://187.127.172.200:7474/   # expect 000
+timeout 6 bash -c 'echo > /dev/tcp/187.127.172.200/7687' && echo OPEN || echo CLOSED   # expect CLOSED
+ssh metorite 'docker ps -a --filter name=acb-neo4j --format "{{.Names}} {{.Status}}"; docker inspect -f "{{.HostConfig.RestartPolicy.Name}}" acb-neo4j'
+ssh metorite 'sudo systemctl restart acb.service; sudo ss -ltnp | grep docker-proxy | grep -E "0\.0\.0\.0:|\[::\]:" || echo "no public docker-proxy"'
+ssh metorite 'diff <(systemctl cat acb.service | grep -v "^#") <(grep -v "^#" /opt/acb/app/deploy/hostinger/acb.service) && echo SAME'
+```
+
+**Fences.** BH-F5 is `tests/unit/test_compose_ports_local.py`, as built.
+Every `ports:` entry of every service in `infra/docker-compose.yml` starts
+with the literal `127.0.0.1:`. An entry with `${` fails, so no name can set a
+bind.
+BH-F3 asserts that `deploy/hostinger/acb.service` exists and holds no
+`--profile memory`.
+
+**Risks.**
+
+- An operator who used the Neo4j browser from outside loses it. Use an SSH
+  tunnel.
+- Langfuse is in the `obs` profile, which the box does not run. The change
+  costs nothing today.
+- If the hand-edited unit on the box drifts from the repo copy before the
+  deploy, the deploy overwrites it. That is the intent.
+- `sudo systemctl restart acb.service` also restarts the gateway, because
+  `acb-gateway.service` has `Requires=acb.service`. That ends any agent run
+  in flight. Run the check of acceptance 3 when no run is live.
+
+**Rollback.** Revert the PR, then `sudo systemctl restart acb.service`. Do not
+start Neo4j.
+
+**The gate.** AGENT-SAFE. The deploy is §3a `deploy`. WS43-G12 approved by
+the owner 2026-10-08 for WS-49.
+
+### BH-7 — Agent installs leave the shared venv, and the T2 vendor install runs no scripts
+
+**Status: MERGED as `469f50813` (#756), deployed and live-checked on
+2026-10-09.** The four other-unit drop-ins of BH-2 item 3 landed in the same
+PR.
+
+**Fix round 2, 2026-10-08.** The second audit returned NO-GO. This version
+applies Q3a to Q3e.
+
+**The coordinator decided OD-5 on 2026-10-08.** Agent installs go to a
+separate dir. BH-7 is in the first wave, because BH-2 makes the venv
+read-only to the gateway.
+
+**Scope.**
+
+- **The install target.** `loader._install_agent_deps`
+  (`loader.py:1137-1226`) and `dep_tools.install_dependency`
+  (`dep_tools.py:49-86`) install with `uv pip install --target
+  /var/lib/acb-gateway/agent-site`.
+  - Each install passes `-c <constraints>`. The constraints file comes from
+    `uv pip freeze --exclude-editable --python sys.executable`, and the
+    installer writes it to `/var/cache/acb-gateway/constraints.txt`. So a
+    package in `agent-site` never takes a version or an ABI that differs
+    from the venv.
+  - `--exclude-editable` is required (B7-1). The auditor measured that a
+    plain freeze gives 20 `-e file:///` lines. uv then refuses the file with
+    "Unnamed requirements are not allowed as constraints", and every agent
+    install fails.
+- **How the gateway and its children find it (Q3a).**
+  - In the gateway process, the loader appends `agent-site` to `sys.path`,
+    after the venv. A venv package always wins.
+  - A child process gets `PYTHONPATH=/var/lib/acb-gateway/agent-site`, by
+    value:
+    - It goes through `extra=` in `code_tools._script_env`
+      (`code_tools.py:97-99`). The script run at `code_tools.py:245` uses
+      that env.
+    - It goes through `copilot_env()`, which BH-7 extends.
+  - The unit does NOT set `PYTHONPATH`. `PYTHONPATH` goes before the venv on
+    `sys.path`, so a unit-wide value would beat the venv in the gateway.
+  - No `.pth` file and no `sitecustomize`. Either one is a file that Python
+    runs at start, and the gateway can write `agent-site`, so either one
+    opens P5 again.
+- **Install again after the move (Q3b).** `loader.py:1195-1198` hashes only
+  the declared deps into `.git/acb-deps-hash`. BH-7 adds the target path to
+  the hash, so each agent installed before BH-7 installs again into
+  `agent-site`.
+- **The drop-in installer and `40-agent-site.conf` (Q3c).**
+  - `vps_apply.sh` gains a step that installs each
+    `deploy/hostinger/*.service.d/*.conf`. It writes only the names that the
+    repo holds. It never deletes a `90-*` file, because that is the rollback
+    of BH-2.
+  - The installer runs before the first service restart
+    (`vps_apply.sh:1069`), then runs `daemon-reload` (B7-2). The unit loop
+    at `vps_apply.sh:1561-1572` runs after that restart, on purpose, and it
+    stays where it is.
+  - `deploy/hostinger/acb-gateway.service.d/40-agent-site.conf` holds:
+
+```ini
+[Service]
+StateDirectory=acb-gateway
+CacheDirectory=acb-gateway
+Environment=UV_CACHE_DIR=/var/cache/acb-gateway/uv
+Environment=CUSTOM_APPS_T2_VENDOR_DIR=/opt/acb/t2-vendor
+```
+
+  - BH-2 then adds only `50-hardening.conf`.
+- **The T2 vendor cache (P5 variant 2).** `vps_apply.sh:1112-1130` changes:
+  - The vendor dir is a constant, `/opt/acb/t2-vendor`. The script reads no
+    path from `.env`.
+  - The gateway cannot write that dir, because BH-2 does not list it.
+  - Before `npm install`, the step runs `rm -f /opt/acb/t2-vendor/.npmrc`
+    (B7-3).
+  - `npm install` runs with `--ignore-scripts`, and with
+    `--userconfig /dev/null` so that no `.npmrc` applies.
+  - **`vps_apply.sh` STRIPS a `CUSTOM_APPS_T2_VENDOR_DIR` line from `.env`,
+    and prints a warning (Q3e).** An `EnvironmentFile` line overrides an
+    `Environment=` line, so the line must go. The strip runs before the
+    gateway restart at `vps_apply.sh:1069` (B7-3), so the gateway starts on
+    the new `.env`. A refusal would let the gateway
+    stop every deploy by writing that line.
+- **The in-chat T2 build (Q3d).** The app-builder agent runs `node
+  build_t2.mjs` in the Copilot shell (`agents.py:28-34`, the
+  `__T2_BUILD_SCRIPT__` substitution). That shell has `copilot_env()`, which
+  holds no `CUSTOM_APPS_T2_VENDOR_DIR`. BH-7 puts that value in
+  `copilot_env()`. It is a path, not a secret. The other build path,
+  `routes/apps/files.py:215-222`, passes it by value already.
+- **A guard, not a plan.** §6 ships BH-7 before `50-hardening.conf`. If
+  that order ever breaks, `install_dependency` answers with a refusal, and
+  the loader logs that it skipped the install. Neither one writes the venv.
+
+**Acceptance.**
+
+1. An agent with a `requirements.txt` loads, and its package imports in the
+   gateway AND in a `run_script` child.
+2. A package that the venv also holds stays at the venv's version, in the
+   gateway and in a child.
+3. An agent installed before BH-7 installs again into `agent-site` on its
+   next load.
+4. Both T2 build paths find `/opt/acb/t2-vendor`:
+   - The route build, `routes/apps/files.py:215-222`.
+   - The in-chat build of the app-builder agent, through `copilot_env()`.
+5. A planted `postinstall` script in a test vendor `package.json` does not
+   run.
+6. A `CUSTOM_APPS_T2_VENDOR_DIR` line in `.env` is gone after a deploy, and
+   the deploy log holds the warning.
+7. `test -w /opt/acb/app/.venv` fails in the gateway probe of BH-2, after
+   BH-2 ships.
+
+**Verification.**
+
+```bash
+uv run pytest tests/unit/test_agent_deps_target.py tests/unit/test_child_env_seam.py tests/unit/test_unit_hardening.py -q
+ssh metorite 'ls -ld /opt/acb/t2-vendor /var/lib/acb-gateway/agent-site'
+ssh metorite 'systemctl cat acb-gateway | grep -E "^(StateDirectory|CacheDirectory|Environment)="'
+```
+
+**Fences.** BH-F6 is `tests/unit/test_agent_deps_target.py`.
+
+- No install command in `acb_skills` holds `--python sys.executable` with no
+  `--target`. Each install holds `-c`.
+- The freeze that makes the constraints file holds `--exclude-editable`, and
+  it writes under `/var/cache/acb-gateway/`.
+- The deps hash includes the target path.
+- No `.pth` file and no `sitecustomize` is written into `agent-site`.
+- `_script_env` and `copilot_env()` pass `PYTHONPATH` and
+  `CUSTOM_APPS_T2_VENDOR_DIR` by value. No unit file sets `PYTHONPATH`.
+- The T2 step of `vps_apply.sh` holds `--ignore-scripts` and the
+  `rm -f /opt/acb/t2-vendor/.npmrc`, and it reads no `.env` name.
+- The strip of `CUSTOM_APPS_T2_VENDOR_DIR` and the drop-in installer come
+  before the gateway restart at `vps_apply.sh:1069`.
+
+BH-F3 checks `40-agent-site.conf`, and that the drop-in installer never
+deletes a `90-*` file.
+
+**Risks.**
+
+- An agent can ask for a version of a venv package that the venv does not
+  hold, for example `numpy>=2` against numpy 1.26. The loader does not
+  install that line, because a second copy would shadow the venv in a child.
+  The rest of the agent's deps install. The dep status is red, and it names
+  both versions. The marker holds the conflict, so a warm load runs no uv and
+  still reports red. `install_dependency` refuses the same line with the same
+  words.
+- A dependency that the venv holds at an allowed version, or whose marker is
+  false here, is not installed. An editable workspace member counts as held.
+  A line with an extra, such as `requests[socks]`, goes to uv, so the
+  packages of the extra install. The prune then removes the copy of the base.
+- A T2 package that needs an install script fails. esbuild fetches its
+  binary in `postinstall`. Use the platform package (`@esbuild/linux-x64`)
+  as a direct dependency, and check the build in acceptance 4.
+- Every agent installs again once (acceptance 3). The first load of each
+  agent is slower.
+
+**Rollback.** Revert the PR. The agent-site dir stays and does no harm.
+
+**The gate.** AGENT-SAFE. The deploy is §3a `deploy`. WS43-G12 approved by
+the owner 2026-10-08 for WS-49.
+
+### BH-2 — The systemd sandbox for the gateway, and NoNewPrivileges for the rest
+
+**Re-specified in fix rounds 1 and 2.** The second audit returned
+GO-NARROWED. This version applies W1 to W3 and S1 to S4.
+
+**Part 1 MERGED as `8b12ba75e` (#748):** the probe, the rollback script and
+conf, BH-F3 part 1. The other-unit drop-ins landed with BH-7 (#756).
+
+**The full slice is MERGED as #758 (`762ab5870`) on 2026-10-10.** The 24 h
+soak on the box came first, with 0 EROFS and 0 EACCES lines across 60
+restarts. `bh2_strict_check` enforces the sandbox on each deploy.
+
+**The GO-NARROWED split is over (2026-10-09).** Part 1 is merged. BH-1 and
+BH-7 are on the box. Fix round 4 applies B1 to B5. So the full slice is
+dispatchable: `50-hardening.conf`, the strict check, the watchdog WARN, the
+deploy lock of the rollback script and the Operator Console unit. The
+staging on the box comes before the merge.
+
+**Box facts for the full slice (measured 2026-10-09, read-only).**
+
+- **No sandbox image and no mutation image.** `docker images` lists the
+  pgvector pg16 and pg17 images, `acb-meeting-bot`, `neo4j` and `redis`.
+  `SANDBOX_IMAGE=` and `MAF_CODING_SCOPE=` are empty in `.env`. So OD-2 does
+  not block BH-2, and self-mutation and the Copilot sandbox are inert.
+- **The two startup sweeps are non-fatal without Docker.** The Copilot
+  sandbox sweep (`gateway/main.py:152-159`) runs in a background task in a
+  `try` that logs `gateway.copilot_sandbox_sweep_failed`. The broker start
+  (`main.py:161-171`) is in a `try`, and its sweep returns 0 when `docker ps`
+  fails (`sandbox_broker.py:2137-2154`).
+- **The meeting bot is a Docker container,** with restart policy
+  `unless-stopped`. The gateway reaches it over HTTP at `127.0.0.1:8095`, and
+  the notes routes make no Docker call. The deploy builds it with `docker
+  compose` as `acb`, outside the gateway. So a hidden socket does not break it.
+- **The home of `acb`.** `/home/acb/.config/uv/` holds only
+  `uv-receipt.json`, which the deploy writes. `/home/acb/.local/share/uv`
+  does not exist. `/home/acb/.acb/agents` exists.
+- **The gateway drop-ins on the box:** `40-agent-site.conf` only.
+- **`.env`.** It sets no `PATH` and no `VIRTUAL_ENV`. It does not set
+  `GITHUB_APP_PRIVATE_KEY_PATH`, `GMAIL_SA_JSON_PATH` or
+  `GOOGLE_SHEETS_SA_JSON_PATH`.
+- **`/etc/systemd/system/acb-operator-console.service`** is the unit that
+  item 3 commits, byte for byte.
+
+**Scope.**
+
+1. **Fix the write list first (W2, W3).** The input is the list from the
+   code: `NOTES_MEDIA_DIR`, `GTD_ATTACHMENTS_DIR`, `PROJECT_IMPORT_DIR`,
+   `AGENTS_CLONE_DIR`, `CUSTOM_APPS_ROOT`, `SANDBOX_STATE_DIR` and
+   `CUSTOM_APPS_T2_VENDOR_DIR`. Add the four names of a file that the
+   gateway reads (B4): `GOOGLE_SERVICE_ACCOUNT_FILE`,
+   `GITHUB_APP_PRIVATE_KEY_PATH` (`settings.py:581`), `GMAIL_SA_JSON_PATH`
+   (`settings.py:479`) and `GOOGLE_SHEETS_SA_JSON_PATH` (`settings.py:830`).
+   None may lie under `/etc/acb` or `/run/user`, because BH-2 hides both.
+   Run this command. It prints names and verdicts only, never a value:
+
+~~~bash
+ssh metorite 'cd /opt/acb/app; for n in NOTES_MEDIA_DIR GTD_ATTACHMENTS_DIR PROJECT_IMPORT_DIR AGENTS_CLONE_DIR CUSTOM_APPS_ROOT SANDBOX_STATE_DIR CUSTOM_APPS_T2_VENDOR_DIR GOOGLE_SERVICE_ACCOUNT_FILE GITHUB_APP_PRIVATE_KEY_PATH GMAIL_SA_JSON_PATH GOOGLE_SHEETS_SA_JSON_PATH; do v=$(grep -E "^$n=" .env | tail -1 | cut -d= -f2-); [ -z "$v" ] && { echo "$n unset"; continue; }; r=$(realpath -m "$v"); case "$r" in /opt/acb/app/data/*|/home/acb/.acb/*) echo "$n inside-rw";; /etc/acb*|/run/user*) echo "$n BLOCKED";; *) echo "$n OUTSIDE";; esac; done; for n in PATH VIRTUAL_ENV; do grep -qE "^(export[[:space:]]+)?$n=" .env && echo "$n SET-IN-ENV" || echo "$n not-in-env"; done'
+~~~
+
+   - `unset` and `inside-rw` need no change.
+   - `OUTSIDE` for a write name means: add that dir to `ReadWritePaths`, and
+     record it in this spec. `OUTSIDE` for a read name needs no change.
+     `OUTSIDE` for `CUSTOM_APPS_T2_VENDOR_DIR` is wrong, because BH-7 strips
+     that line.
+   - `BLOCKED` stops the slice. Move the file first.
+   - `SET-IN-ENV` for `PATH` or `VIRTUAL_ENV` stops the slice. An
+     `EnvironmentFile` line wins over an `Environment=` line, so that `.env`
+     line replaces the venv `PATH` of `50-hardening.conf`. Remove the line
+     first.
+2. **The hardening is one more drop-in**,
+   `deploy/hostinger/acb-gateway.service.d/50-hardening.conf`. BH-7 owns the
+   drop-in installer and `40-agent-site.conf`.
+
+```ini
+[Service]
+ExecStart=
+ExecStart=/opt/acb/app/.venv/bin/uvicorn gateway.main:app --host 0.0.0.0 --port 8080 --timeout-graceful-shutdown 5
+Environment=PATH=/opt/acb/app/.venv/bin:/home/acb/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=VIRTUAL_ENV=/opt/acb/app/.venv
+Environment=MEM0_DIR=/var/lib/acb-gateway/mem0
+Environment=npm_config_cache=/var/cache/acb-gateway/npm
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/acb/app/.env /opt/acb/app/data
+ReadWritePaths=/opt/acb/app/infra/provider_models_cache.json
+ReadWritePaths=/opt/acb/app/apps/services/gateway/agents.json
+ProtectHome=read-only
+ReadWritePaths=-/home/acb/.acb -/home/acb/.copilot -/home/acb/.cache/copilot -/home/acb/.cache/github-copilot-sdk
+InaccessiblePaths=-/run/user -/run/docker.sock -/var/run/docker.sock -/etc/acb -/etc/sudoers.d
+ProtectProc=invisible
+RestrictSUIDSGID=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+LockPersonality=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+```
+
+   - `infra/enabled_models.json` is NOT on the list (W1). The gateway only
+     reads it.
+   - `.venv` is NOT on the list (OD-5). BH-7 moves installs out of it.
+   - `PATH` starts with the venv, so `python -m` and `ruff` at
+     `error_tools.py:96,120` still find the venv tools.
+   - `ExecStart` uses the venv binary, not `uv run`. `uv run` syncs the venv
+     on start, and the gateway must not write the venv.
+   - **`ExecStart` keeps `--timeout-graceful-shutdown 5` (B1).** The base
+     unit has the flag, and the empty `ExecStart=` above drops the base
+     line. Without the flag, the drain after SIGTERM has no bound again, and
+     a restart shows "Metorite is updating". `tests/unit/test_gateway_drain.py`
+     reads the EFFECTIVE `ExecStart`: the last one across the base unit and
+     its drop-ins, in name order, after each empty reset.
+   - **`MEM0_DIR` (found at build, 2026-10-09).** `mem0/memory/setup.py:11-12`
+     runs `os.makedirs(~/.mem0)` at import, and `setup_config` writes
+     `~/.mem0/config.json`. `ProtectHome=read-only` refuses a new dir under
+     `/home/acb`. The import sits in the `try` of `mem0_client.py:103-195`,
+     so a refusal turns memory off with one `mem0.init_failed` line and no
+     error. `MEM0_DIR` moves that dir into the `StateDirectory`.
+   - **`npm_config_cache` (fix round 1, P2-2).** `install_t2_deps.mjs:106`
+     runs `npm install` in the Copilot shell of the app-builder agent, and
+     npm writes its cache to `~/.npm`. The conf sets
+     `npm_config_cache=/var/cache/acb-gateway/npm`, under the
+     `CacheDirectory`. An agent child gets the same value by value from
+     `acb_common.child_env.AGENT_PATH_VALUES`. No other npm, npx, yarn or
+     pnpm call is in the gateway tree, and
+     `test_agent_children_get_an_npm_cache_outside_the_home` fails on a new one.
+   - A file in `ReadWritePaths` must exist, or the unit fails to start.
+     `ensure_gateway_rw_paths` runs BEFORE the gateway restart (fix round 1,
+     P3-1 and P3-2). It makes `data/`, and it makes a missing JSON file with
+     the shape the gateway reads: `[]` for `agents.json` and `{}` for the
+     models cache. It makes `~/.acb/agents`, `~/.copilot` and
+     `~/.cache/copilot` as the service user, so their `-` entries bind on a
+     fresh box. Only a missing `.env` stops the deploy, and then the gateway
+     that runs keeps serving.
+
+   **The write locations, read from the code at build (2026-10-09).** Each
+   one is on `ReadWritePaths`, or in the state, cache or temp dirs:
+
+   | Where | What writes it | How BH-2 allows it |
+   |---|---|---|
+   | `/opt/acb/app/.env` | `routes/integrations.py:534`, `routes/settings.py:214` (`write_bytes`, same inode) | a file on `ReadWritePaths` |
+   | `infra/provider_models_cache.json` | `routes/settings.py:1250-1256` (`write_text`) | a file on `ReadWritePaths` |
+   | `apps/services/gateway/agents.json` | `routes/agent.py:875-876` (`write_text`) | a file on `ReadWritePaths` |
+   | `data/` | `notes/core.py:215` (`NOTES_MEDIA_DIR`), `notes/meeting_bot.py:486-488`, `notes/recordings.py:102,186`, `tasks/attachments.py:36`, `projects/imports.py:71,766` | a dir on `ReadWritePaths` |
+   | `~/.acb/agents` (`AGENTS_CLONE_DIR`) | `settings.py:589`, `agent_paths.py:667`, `loader.py:130,703,795,1325`, `routes/apps/*`, `workspace.py:1536,2158`, `email/transport/send.py:320`, `write_artifact.py:769`, `note_tools.py:148`, `skill_index.py:296`, `blob_store.py:561`, `sandbox_broker.py:1203,1237`, `copilot_sandbox.py:84-88` | `-/home/acb/.acb` |
+   | `~/.copilot`, `~/.cache/copilot` | the Copilot CLI state, logs and sessions | `ReadWritePaths` with `-` |
+   | `~/.cache/github-copilot-sdk` | the CLI binary. `vps_apply.sh` ("Fetching the Copilot CLI") writes it as `acb` with `copilot download-runtime`. The gateway execs it | `ReadWritePaths` with `-`, so the read and the exec work |
+   | `/var/lib/acb-gateway/agent-site` | `acb_skills/agent_site.py:197` (BH-7) | `StateDirectory` |
+   | `/var/cache/acb-gateway/uv` | `uv pip install` (`UV_CACHE_DIR`, `40-agent-site.conf`) | `CacheDirectory` |
+   | `/var/lib/acb-gateway/mem0` | mem0 at import (`MEM0_DIR`) | `StateDirectory` |
+   | `~/.npm` | the npm default cache. `npm install` of `install_t2_deps.mjs:106` wrote it before BH-2 | NOT allowed: `ProtectHome=read-only` refuses it with EROFS. So the cache moved to the next row |
+   | `/var/cache/acb-gateway/npm` | `npm install` of `install_t2_deps.mjs:106` (`npm_config_cache`) | `CacheDirectory` |
+   | `/tmp` | `local_diarization.py:80` (`NamedTemporaryFile` for ffmpeg), `monorepo_pr.py:236` (`mkdtemp`) | `PrivateTmp` |
+
+   Read only, with no write: `~/.local/bin/uv` (`agent_site.py:111`, an exec
+   through `ProtectHome=read-only`), the sherpa-onnx models under
+   `/opt/acb/app/models/sherpa` (`local_diarization.py:39-44`, which the
+   deploy writes at `vps_apply.sh` "Local diarization"), and ffmpeg, which
+   writes its output to a pipe. `~/.config/uv/` holds only the deploy's
+   `uv-receipt.json`. No code runs `git config --global`.
+
+   **Bytecode (fix round 1, P2-3).** Python cannot write `__pycache__` under
+   `/opt/acb/app` or `.venv` in the sandbox. It skips that write with no
+   error, so a module that changed would compile again at each start. So
+   `vps_apply.sh` runs `compile_bytecode` before the gateway restart. It runs
+   `python -m compileall -q -j 0 --invalidation-mode timestamp` over
+   `.venv/lib`, `apps/` and `packages/`, as the owner of the checkout, and
+   skips `node_modules`, `.next` and `.git`. It is best-effort: a file that
+   does not compile is logged, and the deploy goes on. The timestamp mode is
+   right, because `git reset` and `uv sync` give a changed file a new mtime.
+   The staging still reads the start time.
+3. **The other units.**
+   - acb-workbench, acb-customer-console, acb-smoke-chat and
+     acb-whatsapp-bridge get `NoNewPrivileges=yes`, `PrivateTmp=yes` and
+     `RestrictSUIDSGID=yes`, each in its own drop-in. BH-7 shipped these.
+   - Commit the box's `acb-operator-console.service` VERBATIM as
+     `deploy/hostinger/acb-operator-console.service`. Its drop-in
+     `acb-operator-console.service.d/50-hardening.conf` holds the same three
+     lines. The BH-7 installer installs that drop-in before any restart. The
+     Operator Console step of `vps_apply.sh` restarts the unit once.
+     `restart_stale_dropin_units` restarts it once if that step did not run.
+     The BO-23 unit loop then finds a byte-identical unit, and changes
+     nothing.
+   - `acb-pull` gets nothing. It needs sudo until BH-5.
+4. **The inode rule: a writer of `.env` must keep its inode (fix round 1,
+   P2-1).** A file in `ReadWritePaths` binds the file's inode at start. A
+   tool that REPLACES the file (a rename, so a new inode) leaves the running
+   gateway on the old, unlinked copy. The saves of the gateway then go to
+   that dead copy, its next restart drops them, and it never sees the new
+   values.
+   - **`.env` is written INTO, never replaced.** `vps_apply.sh` edits it
+     with `env_edit_in_place`: the new content goes to a temp file, then
+     `cat tmp > .env` writes it into the same inode, so the mode and the
+     owner stay. That covers `upsert_env`, the two secret generators
+     (`WHATSAPP_BRIDGE_SECRET`, `MEETING_BOT_TOKEN`) and the BH-7 strip.
+     `scripts/setup_secrets.sh` does the same. The apply holds the deploy
+     lock, so no other deploy writes `.env` at the same time.
+   - **A short write fails loudly (fix round 2, P2).** The write truncates
+     first, so ENOSPC or a kill can leave a short `.env`. Each in-place
+     writer runs `cmp` on the temp file and `.env` after the write. When
+     they differ, it returns 1 and keeps the temp file, which is the full
+     copy. Also, `ensure_gateway_rw_paths` refuses the gateway restart when
+     `.env` holds no `DATABASE_URL=` with a value. That catches a short file
+     from any writer, and the gateway that runs keeps serving.
+     `.gitignore` holds `.env-edit.*` and `.secrets-drop.*`, because a
+     leftover temp file holds every secret of `.env`.
+   - **`scripts/secrets.sh push app-env`** merges through `r_put`. It writes
+     into the file with `dd oflag=nofollow conv=fsync,nocreat` when the file has the meta that
+     the push needs, so a link that appears after the link check fails the
+     write. Else it renames, and the `restart` list then gives the units the
+     new inode. A rollback goes through `r_put` too. **`secrets.sh` takes NO
+     deploy lock.** A push during a deploy can interleave with an edit of the
+     deploy. The push restarts acb-gateway after its write, so the gateway
+     ends on the pushed file.
+   - **Two lines are KNOWN AND BLOCKED.** The Graphiti off-switch in
+     `vps_apply.sh` and in `deploy/hostinger/deploy.sh` still runs `sed -i`.
+     plan-guard's content arm refuses any written text that sets that flag
+     name to true, and no grant unlocks the arm. The `sed` expression holds
+     that text, so an agent cannot edit the line. The branch runs only when
+     someone sets the flag to true. The owner, or a `guard-write` repair of
+     the false positive, closes the two. The fence lists them by prefix,
+     and the list may only shrink.
+   - `infra/provider_models_cache.json` and
+     `apps/services/gateway/agents.json`. Git tracks both, so the
+     `git reset --hard` of a deploy replaces their inodes. The deploy
+     restarts the gateway after that reset.
+   - The gateway's own writes (`write_text`, `write_bytes`) keep the inode.
+   - The fence is `tests/unit/test_env_inode.py`. It scans every shell file
+     of `scripts/` and `deploy/` for a `sed -i` or a `mv` onto `.env`. It also
+     runs `env_edit_in_place` and compares the inode.
+     `test_env_merge_keeps_the_inode_of_the_app_env` in
+     `tests/unit/test_secrets_drop.py` does the same for a push.
+5. **The strict check (S2, S3, B2-1 to B2-3).** It runs at the END of
+   `vps_apply.sh`. The anchors are those of `7e9844a48`:
+   - It goes after the last restart, which is `restart_stale_dropin_units`
+     (line 1817). That call comes after the gateway restart (line 1273) and
+     the BO-23 unit loop (lines 1774-1786).
+   - It goes before `record_applied_sha` (line 1834). A failure exits
+     non-zero BEFORE the marker, so the next deploy applies the sha again.
+   - It passes ONLY when `ActiveState=active`, `NoNewPrivileges=yes` and
+     `ProtectSystem=strict`.
+   - An inactive gateway fails the check, also when a valid rollback is on.
+   - Any other value fails, unless the rollback of item 6 is valid. A valid
+     rollback passes, and prints `WARN BH-2 rolled back`.
+   - It reads the rollback through `scripts/bh2_rollback.sh status`. That
+     script reads `/etc/acb/bh2-rollback-ack` with `sudo`, because the file
+     is root:root. Exit 0 is the only valid rollback. An expired ack fails.
+   - It does not run `box_hardening_probe.sh`. The probe starts a transient
+     unit with `systemd-run`, and a deploy does not need that. The probe
+     stays the manual check of acceptance 2.
+   - `vps_pull.sh` tries one target sha at most 3 times (`MAX_FAILS`). So a
+     strict check that is broken costs 3 gateway restarts, and then the
+     timer stops. The comment at the check says so.
+   - It assumes that the BH-7 drop-in installer ran before the gateway
+     restart. Without that, the restart runs the old unit, and the check
+     reads stale properties.
+6. **The rollback, with an expiry (S1, S4).**
+   - `deploy/hostinger/rollback/acb-gateway-90-bh2-off.conf` holds at least
+     these lines. Each empty assignment resets the list of the drop-in
+     before it:
+
+```ini
+[Service]
+ReadWritePaths=
+InaccessiblePaths=
+ProtectSystem=no
+ProtectHome=no
+NoNewPrivileges=no
+PrivateTmp=no
+```
+
+   - `scripts/bh2_rollback.sh on` installs it as `90-bh2-off.conf`. It
+     writes the date "now + 72 h" into `/etc/acb/bh2-rollback-ack`, then
+     reloads and restarts the gateway.
+   - `vps_apply.sh` honours the file only until that date. On every run
+     while it is there, the script prints `WARN BH-2 rolled back`.
+   - **The watchdog WARN (B3).** `health-watchdog.sh` runs
+     `scripts/bh2_rollback.sh status` on each tick. Exit 0 (on and valid)
+     logs `WARN BH-2 rolled back`. Exit 1 (off) logs nothing. Any other exit
+     logs `WARN BH-2 rollback is not valid`, because an expired or partial
+     rollback can still keep the sandbox off. The WARN never fails the tick.
+   - **The deploy lock (B3).** `on` and `off` take
+     `/opt/acb/acb-deploy.lock` with `flock`. That is the lock that
+     `vps_apply.sh` and `vps_pull.sh` take. Each command waits at most
+     `BH2_LOCK_WAIT` seconds (600 by default). On a timeout it names the
+     holder, changes nothing and exits 4. `status` takes no lock, because
+     the strict check calls it while the deploy holds the lock.
+   - `scripts/bh2_rollback.sh off` removes the conf and the file.
+   - **Recovery after the expiry (B2-4).** A deploy after the date fails.
+     Fix the cause, then run `sudo bash /opt/acb/app/scripts/bh2_rollback.sh
+     off`. Then run `sudo MODE=force bash /opt/acb/app/scripts/vps_pull.sh`
+     to apply the release again.
+   - The drop-in installer of BH-7 writes only the repo names, and it never
+     deletes a `90-*` file. So a deploy keeps a rollback in place.
+7. **The probe.** Add `scripts/box_hardening_probe.sh <unit>`. It reads the
+   unit's properties with `systemctl show`. Then it runs the probes of
+   acceptance 2 in a transient unit with the same properties
+   (`systemd-run --wait --pipe --uid=acb -p …`). It prints PASS or FAIL and
+   no secret.
+
+**The staged rollout.** It starts only after BH-1 and BH-7 are deployed.
+
+0. **Count the baseline first (B3).** Before the staging, count the lines of
+   the last 24 hours of the gateway journal that match `Read-only file
+   system|Permission denied`. Record the count and the time. Acceptance 4
+   compares with this baseline, not with zero.
+1. **Stage on the box.** Copy `50-hardening.conf` from the branch into
+   `/etc/systemd/system/acb-gateway.service.d/`. Then run `daemon-reload`
+   and restart the gateway. Do this BEFORE the merge, under §3a `deploy`.
+2. **Run the named flows,** and watch the journal for EROFS and EACCES:
+
+   | Flow | How to start it | What it writes |
+   |---|---|---|
+   | Chat smoke | `sudo systemctl start acb-smoke-chat`, then its journal | chat rows (database) |
+   | Email sync | one scheduled pass in the gateway journal, or "Sync now" in Email | the database, attachments under `data/` |
+   | Agent run | `POST /agent/run` with `{"agent": "task-manager", …}` (BH-1) | `~/.acb/agents` |
+   | Copilot run | the same agent run | `~/.copilot`, `~/.cache/copilot` |
+   | Notes upload | upload an audio file in Notes | the value of `NOTES_MEDIA_DIR` |
+   | Projects import | import a CSV file in Projects (D80) | the value of `PROJECT_IMPORT_DIR`, the database |
+   | T2 build | build one T2 app in the App Workshop | `~/.acb/agents/custom_apps` |
+   | Models refresh | refresh the provider models in Settings, Models | `infra/provider_models_cache.json` |
+   | Health | `curl https://api.metorite.com/health` | nothing |
+
+3. **Commit.** Fix the drop-in from what the flows showed, and merge.
+4. **The deploy owns it.** From the merge on, the BH-7 installer installs the
+   drop-in. Delete the hand-copied file only if its name differs.
+
+**Acceptance.**
+
+1. `systemctl show acb-gateway -p NoNewPrivileges -p ProtectSystem -p ProtectHome`
+   gives `yes`, `strict` and `read-only`.
+2. The probe, with the gateway's properties, gives:
+   - `sudo -n true` fails.
+   - `touch /opt/acb/app/scripts/bh2` and `touch /opt/acb/app/deploy/hostinger/bh2`
+     fail with "Read-only file system".
+   - `touch /opt/acb/app/.git/hooks/bh2` and `touch /opt/acb/app/.venv/bh2`
+     fail.
+   - `touch /opt/acb/t2-vendor/bh2` fails.
+   - `test -w /opt/acb/app/.env` succeeds.
+   - `ls /run/user/1000` fails.
+   - `docker ps` fails, because the socket is hidden.
+   - `crontab -l` fails, because setgid is refused.
+3. `systemd-analyze security acb-gateway` falls from 9.2 to 5.0 or lower.
+   Record the number in this spec.
+4. Each flow of the staged rollout passes. The count of the 24 hours after
+   the staging is at most the baseline of step 0. Read each new
+   "Read-only file system" line, because the sandbox is its only source.
+5. **A hermetic test of the strict check** (there is no test box). A stub
+   `systemctl` on `PATH` answers each property. The check:
+   - It passes on `active`, `yes` and `strict`.
+   - It fails on any other value, with no rollback file.
+   - It fails on `inactive`, also with `yes` and `strict`, and also with a
+     valid rollback.
+   - A stub `sudo` answers the read of `/etc/acb/bh2-rollback-ack`.
+   - It passes on a rollback file with a date in the future, and prints
+     `WARN BH-2 rolled back`.
+   - It fails on a rollback file with a date in the past.
+   - In `vps_apply.sh`, a failure exits non-zero BEFORE the marker.
+6. **The watchdog WARN (B3).** A stub test runs `health-watchdog.sh` with a
+   stub `bh2_rollback.sh`. Status 0 logs `WARN BH-2 rolled back`. Status 1
+   logs no BH-2 line. Status 3 logs `WARN BH-2 rollback is not valid`. No
+   status changes the exit code of the tick.
+7. **The deploy lock (B3).** A hermetic test holds
+   the lock file with a real `flock`. Then `on` and `off` each wait
+   `BH2_LOCK_WAIT`, exit 4, name the holder and change no file. With the
+   lock free, `on` holds the lock while it restarts the gateway.
+
+**Verification.**
+
+```bash
+uv run pytest tests/unit/test_unit_hardening.py tests/unit/test_bh2_strict_check.py \
+  tests/unit/test_bh2_rollback.py tests/unit/test_gateway_drain.py \
+  tests/unit/test_deploy_reexec.py tests/unit/test_deploy_pipeline.py \
+  tests/unit/test_agent_deps_target.py tests/unit/test_deploy_serialize.py \
+  tests/unit/test_backup_deploy_wiring.py tests/unit/test_env_inode.py \
+  tests/unit/test_secrets_drop.py -q
+ssh metorite 'systemctl show acb-gateway -p NoNewPrivileges -p ProtectSystem -p ProtectHome -p ActiveState'
+ssh metorite 'systemd-analyze security acb-gateway --no-pager | tail -1'
+ssh metorite 'bash /opt/acb/app/scripts/box_hardening_probe.sh acb-gateway'
+ssh metorite 'journalctl -u acb-gateway --since "-24h" --no-pager | grep -cE "Read-only file system|Permission denied"'
+curl -s -o /dev/null -w "%{http_code}\n" https://api.metorite.com/health
+```
+
+The suites that skip on Windows (stub `bash`, real `flock`) run in Docker
+`python:3.12-slim` with `git procps shellcheck curl`. Copy in a `git
+ls-files` tar of the tracked tree.
+
+**Fences.** BH-F3 is `tests/unit/test_unit_hardening.py`. It lands in two
+parts (B2-5).
+
+**Part 1, in the narrowed PR:**
+
+- `acb-gateway-90-bh2-off.conf` holds the six reset lines:
+  `ReadWritePaths=`, `InaccessiblePaths=`, `ProtectSystem=no`,
+  `ProtectHome=no`, `NoNewPrivileges=no` and `PrivateTmp=no`.
+- `scripts/box_hardening_probe.sh` exists, and it runs each probe of
+  acceptance 2.
+- The drop-ins of the other units merge only after the BH-7 installer
+  merges, because nothing installs a drop-in before it. So they land with
+  BH-7, and so does one check of part 1. That check reads each `User=acb`
+  unit in `deploy/hostinger/`, except `acb-pull.service`. Each one has
+  `NoNewPrivileges=yes` in the unit or in its drop-in.
+
+**Part 2, in the full slice:**
+
+- `50-hardening.conf` holds each line of the block above.
+- Its `ReadWritePaths` entries equal one allowlist constant in the test. A
+  new write path needs a reviewed change. `.venv`, `/opt/acb/t2-vendor` and
+  `infra/enabled_models.json` are never on it.
+- `acb-gateway-90-bh2-off.conf` resets each line of `50-hardening.conf` that
+  can stop the start: `ReadWritePaths`, `InaccessiblePaths`,
+  `ProtectSystem`, `ProtectHome`, `NoNewPrivileges` and `PrivateTmp`.
+- `vps_apply.sh` holds the strict check after its last restart, and the
+  drop-in installer never deletes `90-*`.
+- No unit names `/etc/acb/backup-offbox.env` except `acb-backup.service`. The
+  existing `test_only_the_backup_unit_loads_the_offbox_key_file` stays.
+- `acb-gateway.service` leaves `NNP_EXEMPT`. Only `acb-pull.service` stays
+  on it.
+- The Operator Console unit is a repo file, and its drop-in holds the three
+  lines.
+
+`tests/unit/test_bh2_strict_check.py` is the hermetic test of acceptance 5
+and of the watchdog WARN (acceptance 6). `tests/unit/test_bh2_rollback.py`
+fences the deploy lock (acceptance 7). `tests/unit/test_gateway_drain.py`
+fences the drain flag on the effective `ExecStart` (B1).
+
+**Risks.**
+
+- A write path that the audit missed fails with EROFS. The staged rollout
+  catches it before the merge.
+- `PrivateTmp=yes` breaks a Docker bind mount of a path under `/tmp`. No
+  measured path does that. The fallback clone dir `/tmp/acb_agents`
+  (`copilot_sandbox.py:85`) applies only when `agents_clone_dir` is empty.
+- The legacy rename at `routes/settings.py:976` fails. No legacy file is on
+  the box. If one appears, the function returns the path of the old name.
+- `ProtectProc=invisible` hides the processes of other users only.
+  Same-user processes stay visible.
+- `ProtectClock=yes` also limits the devices that the unit can open. The
+  Copilot shell needs a pseudo-terminal. The Copilot run of the staging
+  shows if it still gets one.
+- A file in `ReadWritePaths` that the gateway replaces, not rewrites, needs
+  a write to its dir. The gateway rewrites all three in place (item 1
+  table). A future write by `os.replace` fails with EROFS.
+- **A writer of `.env` must keep its inode** (item 4). A writer outside the
+  gateway that renames a new `.env` into place leaves the gateway on a dead
+  copy, and the gateway's next restart drops what it saved there.
+  `tests/unit/test_env_inode.py` fails on a new `sed -i` or `mv` onto `.env`.
+- The startup sweeps of `main.py:152-171` log one line when Docker is absent,
+  and the gateway starts. That is the documented behaviour.
+- A rollback that nobody removes expires after 72 hours, and then the deploy
+  fails. That is the intent: a rollback must not become the state.
+
+**Rollback.** One command: `sudo bash /opt/acb/app/scripts/bh2_rollback.sh on`.
+It needs no edit on the box, and the next deploy passes for 72 hours. After
+the fix, run `sudo bash /opt/acb/app/scripts/bh2_rollback.sh off`.
+
+**Deferred from the narrowed part.** Each item goes with the full slice.
+
+- **The `acb-operator-console.service` unit (item 3).** Its unit was only
+  on the box. The BO-23 unit loop (`vps_apply.sh:1774-1786` at `7e9844a48`)
+  installs each `deploy/hostinger/*.service` file. So a copy in the repo
+  changes the live unit on the next deploy. The box's unit was read on
+  2026-10-09, and item 3 commits it byte for byte.
+- **The deploy lock in `bh2_rollback.sh`.** Item 6 specifies it. Without
+  it, an `on` or `off` during a deploy can race the gateway restart of that
+  deploy.
+- **A live check of `CapabilityBoundingSet=~`.** The rollback conf uses it to
+  give every capability back. The systemd source reads `~` with an empty
+  list as "all", and `systemd-analyze verify` (systemd 255) accepts it. No
+  `systemctl show` on the box has confirmed the value. Run
+  `systemctl show acb-gateway -p CapabilityBoundingSet` after the first `on`.
+
+**Two probe checks can pass on a box with no sandbox.** The overall verdict
+stays right, because the property checks of part 1 of the probe fail there.
+
+- `etc-acb-hidden` passes when `/etc/acb` is absent, or when its mode is
+  0700. Only `hidden-etc-acb`, a property check, proves the sandbox.
+- `p5-touch-t2-vendor-fails` reports SKIP when `/opt/acb/t2-vendor` is
+  absent, which is the case before BH-7. Until BH-7, the vendor dir is
+  `~/.acb/agents/vendor/t2-react`, and the probe does not check that path.
+
+**The gate.** AGENT-SAFE to build. The staging on the box, the deploy and the
+drop-ins are §3a `deploy` and `deploy-write`. WS43-G12 approved by the owner
+2026-10-08 for WS-49.
+
+### BH-6 — Root units run only root-owned files
+
+**Status: MERGED as #825 (`6912a3431`) and live on 2026-10-10.** The fence
+BH-F4 is `tests/unit/test_root_units_root_owned.py`. On the box, acceptance 1,
+3, 6, 7, 8 and 11 pass. One transaction restarted postgres, redis and the
+gateway at 08:44:03 UTC, and the four volumes did not change. Acceptance 5 and
+9 wait for the backup run at 02:33 UTC on 2026-10-11. Acceptance 10 waits for a
+deploy that applies a migration. Each
+anchor below was read at `main` `2143d01f4` on 2026-10-10.
+
+**BH-6a, the value guard, MERGED as #764 (`373453b83`) on 2026-10-09.** It
+closes the value part of P3 (§0) for `acb-backup.service` and
+`acb.service`. The fence is `tests/unit/test_backup_env_values.py`.
+
+- A root run of `backup_db.sh` starts again under `env -i`, with an allow
+  list (`backup_db.sh:183-194`). It pins its paths, and it validates each
+  value that it takes. Its header (`backup_db.sh:35-123`) puts each name in
+  one class.
+- It reads the off-box names and the server pins from
+  `/etc/acb/backup-offbox.env` only.
+- `acb-backup.service:61-85` removes `BASH_ENV`, `LD_PRELOAD` and the other
+  pre-script names with `UnsetEnvironment=`.
+- `acb.service` loads no env file. It starts docker under `env -i`, with
+  `HOME=/root` and `-p acb` (`acb.service:16-40`).
+
+**What BH-6 still closes.**
+
+- Two root units run a script from the checkout: `acb-backup.service:119`
+  and `acb-health-watchdog.service:15`. The watchdog also runs
+  `scripts/bh2_rollback.sh` from the checkout (`health-watchdog.sh:189`,
+  `:197`).
+- `acb-backup.service:38` and `:44` load the acb-writable `.env` files as
+  root.
+- `acb.service:16`, `:39` and `:40` use the checkout as the compose project
+  dir, and they read `/opt/acb/app/.env` with `--env-file`.
+- `backup_db.sh:587` runs `git` as root in the acb-owned checkout. #764 added
+  `-c safe.directory` to that line, and kept the root `git` call.
+
+**Scope.**
+
+**The layout of the copy (B2).**
+
+- `/usr/local/lib/acb/` holds the root copies. The dir is root:root 0755.
+  Each file in it is owned by root, with no group or other write bit.
+- One list, `deploy/hostinger/root_lib_files.txt`, names each copy. Each
+  line holds the repo path and the path under `/usr/local/lib/acb/`. The
+  sync, BH-F4 and `_UNIT_SCRIPTS` read it. No script holds a second copy.
+- The scripts sit FLAT at the top of the dir: `backup_db.sh`,
+  `backup_offbox.sh`, `offbox_lib.sh`, `health-watchdog.sh`,
+  `bh2_rollback.sh` and `root_env.sh`. The name list sits beside them as
+  `root_env_names.txt`.
+- **Builder note (N3).** The repo holds the builder at `scripts/root_env.sh`.
+  `root_lib_files.txt` lists it, so the sync copies it flat to
+  `/usr/local/lib/acb/root_env.sh`.
+- The compose tree keeps its relative layout: `infra/docker-compose.yml`,
+  `infra/postgres/00_create_databases.sql`,
+  `infra/postgres/01_schema.sql` and `apps/services/meeting_bot/`. The
+  compose file mounts the two SQL files (`docker-compose.yml:47-48`). It uses
+  the meeting-bot dir as a build context (`:219`) and as a bind mount
+  (`:270`).
+- The copy holds no other file. So it leaves out
+  `infra/provider_models_cache.json`, which the gateway writes
+  (`50-hardening.conf:56`), and `infra/enabled_models.json`.
+- The deploy writes `deployed_sha` into the copy. It holds the 40-hex sha of
+  the commit that the copy came from.
+- The `sandbox` profile builds from `../apps/services/orchestrator`
+  (`docker-compose.yml:173`, `:198`). The box never runs that profile. So
+  the copy leaves that context out, and the one-dir rule exempts ONE
+  command: `docker compose --profile sandbox build`. That build runs from
+  the checkout, and never from a root unit (B6-3).
+
+**Who writes the copy, and from what (B7).**
+
+- `vps_apply.sh` writes it, as `acb` with `sudo`. The source is
+  `git archive "$DEPLOY_TARGET_SHA"` of the paths of the list. The step
+  never reads the working tree.
+- Root unpacks the archive into a new stage, made with `sudo mktemp -d`
+  under `/usr/local/lib/`, so the stage is 0700. The scripts move to the top
+  of the stage, and `deployed_sha` goes in.
+- The step refuses a symlink. `find <stage> -type l` must print nothing, or
+  the deploy stops. Today no path of the list holds a symlink: `git ls-files
+  -s` shows no mode 120000 there.
+- Then the step runs `sudo rsync -a --delete --chown=root:root
+  --chmod=go-w <stage>/ /usr/local/lib/acb/`, and removes the stage. The
+  destination is that literal string in the script. It is never a variable,
+  so it can never be empty.
+- The step runs `command -v rsync` first. When rsync is missing, it installs
+  it with the apt pattern of `vps_apply.sh:1936-1948`: the dpkg lock wait,
+  and `< /dev/null`. When rsync is still missing, the deploy stops before the
+  first compose call.
+- ⚠️ This replaces the plan of fix round 2 (B6-2) to put rsync on the
+  off-box tool list at `vps_apply.sh:1928-1931`. That block starts at
+  `:1919`, after every compose call, so it is too late for the sync.
+
+**The BH-2 dependency (B8).**
+
+- The copy is safe from the gateway only while BH-2 is on. With the sandbox
+  on, the gateway cannot write the checkout or `.git`
+  (`50-hardening.conf:55-60`, and `NEVER_WRITABLE` at
+  `test_unit_hardening.py:851-852`). So `git archive` of the target sha
+  gives the bytes of the merged commit.
+- So the sync runs only when `bash "$APP_DIR/scripts/bh2_rollback.sh"
+  status` exits 1, which means that no rollback is on. Exit 0 is a valid
+  rollback, with the sandbox off. Exit 3 is an expired or partial rollback,
+  and its drop-in can keep the sandbox off too.
+- For each exit but 1, the step skips the sync. It prints `WARN BH-6: the
+  BH-2 rollback is not off, so the root copy stays at <sha>`, and it names
+  the forced deploy: `sudo MODE=force bash /opt/acb/app/scripts/vps_pull.sh`.
+- **Fix round 1 (build).** A skipped sync still records the sha as
+  applied, so no later pull syncs the copy. So `bh2_rollback.sh off` prints
+  `WARN BH-6: the root copy at /usr/local/lib/acb may be stale`, and it
+  names the same forced deploy. The fence is
+  `test_rollback_off_names_the_forced_deploy_that_syncs_the_copy`.
+- The step cannot call `bh2_strict_check`, because the bh2 helper block
+  (`vps_apply.sh:1074-1192`) comes later in the file. It runs the same
+  `status` command as `vps_apply.sh:1169`.
+- A skipped sync leaves the copy and `deployed_sha` at the last synced
+  commit, and the root units run that known copy. With no copy on the box
+  yet, a skip stops the deploy before the first compose call.
+- **Fix round 1 (build).** The `git reset` of the pull block puts the BH-6
+  `backup_db.sh` in the checkout, and it refuses a root run from there. So
+  the deploy installs `acb-backup.service` and `acb-health-watchdog.service`
+  directly after steps 1 to 3, before the first compose call. A deploy that
+  fails later does not leave the old units. For one release, a root run
+  from the checkout path also runs the root copy of the same layout. The
+  copy must be a plain file. It cannot loop, because the copy passes the
+  layout check. Remove it in the release after BH-6.
+- `backup_db.sh:587` runs `git rev-parse` as root in the checkout. A root
+  run reads `/usr/local/lib/acb/deployed_sha` in its place. It takes the
+  value only in the shape `^[0-9a-f]{40}$`, and prints its first 12
+  characters. Else it prints `unknown`. A run as another user keeps the
+  `git` call.
+
+**The env of the root units: root.env (B3).**
+
+- `/etc/acb/root.env` holds only the names of
+  `deploy/hostinger/root_env_names.txt`, one on each line (C3).
+- `root_env.sh` builds it. It reads `/opt/acb/app/.env` first, then
+  `/opt/acb/app/apps/services/customer_console/.env`. For a name in both
+  files, the Console value wins, as the two `EnvironmentFile=` lines at
+  `acb-backup.service:38` and `:44` do today. A missing Console file is not
+  an error (B6-1).
+- It copies each matching `NAME=` line byte for byte, so systemd and
+  compose parse the same bytes as before. For a name with two lines, the
+  last line wins. It refuses a source that is a symlink or not a regular
+  file.
+- **Fix round 1 (build).** An `export NAME=` line counts too, because
+  compose reads it. root.env holds it as `NAME=`, so systemd and compose
+  read the same line.
+- It writes under `umask 077`, into a temp file in `/etc/acb`. Then it runs
+  `install -m 0600 -o root -g root <tmp> /etc/acb/root.env`. It writes only
+  when the content changed.
+- The names for the backup are `PG_MODE`, `PGHOST`, `PGPORT`, `PGUSER`,
+  `PGPASSWORD`, `PGDATABASE`, `PGSSLMODE`, `PGCONNECT_TIMEOUT`,
+  `POSTGRES_USER`, `DATABASE_URL`, `CUSTOMER_CONSOLE_DATABASE_URL`,
+  `KEEP_DAILY`, `BACKUP_VERIFY_IMAGE`, `BACKUP_VERIFY_MEMORY`,
+  `BACKUP_FILE_DIRS` and `BACKUP_MEETING_BOT_VOLUME`. They are the allow
+  list at `backup_db.sh:191-194`, and the two names that the script reads
+  from the file (`:244-277`).
+- The names for compose are `POSTGRES_USER`, `POSTGRES_PASSWORD` and
+  `POSTGRES_DB` of the core profile (`docker-compose.yml:34-36`). Then come
+  the ten of the meetingbot profile (`:226-249`): `MEETING_BOT_TOKEN`,
+  `LIVE_ASR_URL`, `NOTES_LIVE_TOKEN_URL`, `MEETING_BOT_EMBED_CMD`,
+  `MEETING_BOT_TTS_CMD`, `MEET_MAX_DURATION`, `MEET_PROFILE_DIR`,
+  `MEET_GOOGLE_EMAIL`, `MEET_GOOGLE_PASSWORD` and `MEET_VNC`.
+- **Not on the list.** A root run pins `APP_DIR`, `BACKUP_DIR`,
+  `PG_CONTAINER`, `BACKUP_OFFBOX_ENV_FILE` and `VERIFY_RESTORE`
+  (`backup_db.sh:56-62`, `:123`). It reads each `BACKUP_S3_*`,
+  `BACKUP_GPG_*`, `BACKUP_REMOTE`, `BACKUP_PG_*` and `BACKUP_CC_PG_*` name
+  from the root key file only. So the list holds none of them.
+- The list of fix round 2 held `BACKUP_DIR` and `PG_CONTAINER`, and this
+  round removes both. The list also holds no `COMPOSE_*` name, so a line in
+  `.env` cannot rename the compose project.
+- No pattern such as `PG*` or `POSTGRES_*`. A pattern lets in a name that
+  nobody chose, such as a `_BIND` name.
+- Re-read the names that `backup_db.sh` and the compose file read at
+  dispatch, because they change.
+
+**What is left for the values (B3).** The values in root.env still come
+from the acb-writable `.env`. BH-6 filters names, not values. Two facts
+limit what a hostile value can do.
+
+- The backup chain validates or pins each value that it takes (#764).
+- Compose puts each value under `environment:` of a container only. The
+  interpolations of `docker-compose.yml` are at `:34-36`, `:101`,
+  `:151-154` and `:226-249`, and each one is under `environment:`. No value
+  picks a host path, a port, an image or a build context. So a hostile value
+  changes what a container sees, and never what root runs on the host.
+  BH-F4 holds this.
+- The residual: `MEETING_BOT_EMBED_CMD` and `MEETING_BOT_TTS_CMD` are
+  commands that the meeting bot runs in its container. The gateway can set
+  them today, and BH-6 does not change that. The container has no Docker
+  socket and no writable host path.
+
+**The units (B1, B2, B4).**
+
+- `acb-backup.service` runs `ExecStart=/bin/bash
+  /usr/local/lib/acb/backup_db.sh --verify-restore --offbox`. One
+  `EnvironmentFile=/etc/acb/root.env` replaces the two lines at `:38` and
+  `:44`. `EnvironmentFile=-/etc/acb/backup-offbox.env` at `:60` stays. Keep
+  the `UnsetEnvironment=` block at `:61-85` as a second layer.
+- `acb-health-watchdog.service` runs `ExecStart=/bin/bash
+  /usr/local/lib/acb/health-watchdog.sh`. It sets
+  `Environment=BH2_ROLLBACK_SCRIPT=/usr/local/lib/acb/bh2_rollback.sh`.
+- Without that line, the flat copy of the watchdog looks for
+  `/usr/scripts/bh2_rollback.sh` (`health-watchdog.sh:189`), and it WARNs on
+  each tick. The unit loads no env file, so only root sets that name.
+- The flat `bh2_rollback.sh` serves `status` only. `status` reads the
+  drop-in and the ack (`bh2_rollback.sh:46-50`, `:264-284`), and no path
+  under its own dir. `on` and `off` need `SRC_CONF` and the deploy lock,
+  which come from the checkout path (`:57-61`). So a person runs `on` and
+  `off` from the checkout, as today.
+- `acb.service` needs less than the plan of fix round 2 said. #764 already
+  removed its env file, and it starts docker under `env -i`. What remains
+  for BH-6 is the root-owned compose project dir, and the env file that
+  compose reads.
+- So `acb.service` gets `WorkingDirectory=/usr/local/lib/acb/infra`. Its
+  `ExecStart` and `ExecStop` keep `env -i`, `-p acb` and `--profile core`.
+  They add `--project-directory /usr/local/lib/acb/infra` and `-f
+  /usr/local/lib/acb/infra/docker-compose.yml`. They read `--env-file
+  /etc/acb/root.env`.
+
+**`backup_db.sh` and its second caller (B4).**
+
+- The root run of the copy takes its fixed paths from where the script is.
+  The layout root becomes `${script_dir%/usr/local/lib/acb}`, at what is now
+  `backup_db.sh:166-171`. `APP_DIR` stays `$layout_root/opt/acb/app`, for
+  the file-data dirs and the migration count.
+- `ENV_FILE` becomes `$layout_root/etc/acb/root.env` in the root run (now
+  `:244`). The unit names that file explicitly, in
+  `EnvironmentFile=/etc/acb/root.env`. The root run reads the same literal
+  path. It never takes the path from the env or from an argument.
+- A root run from the checkout path stops with exit 2, as a root run from
+  any other place does today.
+- The `.env` guard at `:1117` keeps its two literal acb-writable paths,
+  `$APP_DIR/.env` and the Console `.env`. It stops reading `$ENV_FILE`.
+- root.env does hold `BACKUP_` names: `BACKUP_VERIFY_IMAGE`,
+  `BACKUP_VERIFY_MEMORY`, `BACKUP_FILE_DIRS` and
+  `BACKUP_MEETING_BOT_VOLUME`. The guard matches only
+  `BACKUP_(S3_|GPG_|OFFBOX_ENV_FILE)`. No name of that shape is on the list,
+  so no such name can reach root.env.
+- **The second caller.** `apply_migrations.sh:201` and `:209` run
+  `$APP_DIR/scripts/backup_db.sh` as `acb`, before the migrations. That path
+  does not change. A run as `acb` is not a root run (`backup_db.sh:147`). So
+  it keeps `ENV_FILE=$APP_DIR/.env` and its own env (`:201-205`, `:244`).
+  It never reads `/etc/acb/root.env`, which `acb` cannot read.
+
+**The compose calls (B1).**
+
+- One helper in `vps_apply.sh`, `acb_compose`, runs `sudo env -i PATH=…
+  HOME=/root docker compose --project-directory /usr/local/lib/acb/infra
+  --env-file /etc/acb/root.env -p acb -f
+  /usr/local/lib/acb/infra/docker-compose.yml "$@"`.
+- It needs `sudo`, because root.env is 0600. `env -i` keeps the `HOME` of
+  `acb` away from root docker, which #764 found (F1).
+- Every compose call of the deploy uses it. That is the core `up` at
+  `vps_apply.sh:682`, the meeting-bot `up --build` at `:1319-1321`, and the
+  meeting-bot `rm` at `:1343-1344`.
+- The core call also closes the BH-8 finding at `:682`. That call passes no
+  `--env-file` today, so compose reads `infra/.env`.
+- `deploy/hostinger/deploy.sh:21` and `:66` use the same project dir.
+  `deploy.sh:65` runs `source /opt/acb/app/.env` today. BH-6 removes that
+  line. A script reads a named key with `grep`, as `vps_apply.sh:718-721`
+  does.
+- **Builder note (N4).** `deploy.sh` stops with a clear message when
+  `/usr/local/lib/acb/deployed_sha` is missing. The message says that no
+  root copy is on the box, and that the next run of `vps_apply.sh` makes it.
+- The hint at `vps_apply.sh:2034` names the new `logs` command.
+
+**The order in `vps_apply.sh` (B1, C2).** The current shape:
+
+- The pull block is `:452-564`. Its re-exec makes each later step run from
+  the target commit's own copy of the script.
+- The first compose call is `:681-682`. The pre-migration backup runs at
+  `:722`.
+- The meeting-bot env block is `:1266-1295`, and its compose call is
+  `:1319-1321`.
+- `ensure_gateway_rw_paths` runs at `:1454-1458`. The unit copies are
+  `:1459-1461`, and the gateway restart is `:1463`. `bh2_strict_check` runs
+  at `:2023`.
+- The BO-23 loop at `:1953-1999` installs each unit file, with no restart.
+
+The new steps:
+
+1. **Sync the copies** (B7, B8). Steps 1 to 3 run after the pull block, and
+   directly above `:681`. The `.env` steps at `:617-679` write no name of
+   the list. So the steps read `.env` as the first compose call sees it.
+2. **Write `/etc/acb/root.env`.** Run `sudo bash
+   /usr/local/lib/acb/root_env.sh`.
+3. **Check the compose file.** Run `acb_compose --profile core --profile
+   meetingbot config -q`. Stop the deploy if it fails.
+4. **Install and restart `acb.service`**, only when the unit file changed
+   or a core input of the copy changed. The core inputs are
+   `infra/docker-compose.yml` and the two SQL files. A change of the
+   meeting-bot dir alone does not restart it.
+
+⚠️ C2 put root.env before the sync, and B1 names the steps in that order.
+This round puts the sync first. The builder and the name list are files of
+the copy, so the step must sync them before it runs them. Each root step
+then runs a root-owned file of the target commit.
+
+**Step 2 runs again** after the meeting-bot env block (`:1266-1295`), and
+before its compose call at `:1319`. That block can write four names of the
+list: `MEETING_BOT_TOKEN`, `NOTES_LIVE_TOKEN_URL`, `MEET_PROFILE_DIR` and
+`MEET_VNC`. Without the second run, the first deploy on a new box starts the
+bot with no token.
+
+**Where step 4 goes, and why.**
+
+- Step 4 runs after `ensure_gateway_rw_paths` (`:1454-1458`), beside the
+  unit copies at `:1459-1461`. It runs at or before the gateway restart at
+  `:1463`, so it runs before `bh2_strict_check` too.
+- **The cascade.** `acb-gateway.service:5` holds `Requires=acb.service`. So
+  a restart of `acb.service` restarts `acb-gateway` too.
+- A restart before the `DATABASE_URL` guard of `ensure_gateway_rw_paths`
+  (`:1101`) skips that guard. That is why step 4 cannot run with steps 1 to
+  3.
+- When step 4 restarts the unit, `:1463` becomes `sudo systemctl restart
+  acb.service acb-gateway`. systemd puts both in one transaction, so the
+  gateway restarts one time. Else `:1463` stays as it is.
+- The BO-23 loop then finds `acb.service` unchanged, and installs nothing.
+
+**The other blocks.** The watchdog block at `:1899-1917` drops the `chmod`
+of the checkout script at `:1906`. The off-box tool block at `:1919-1951`
+stays as it is.
+
+**`secrets.sh` writes root.env too (B9).**
+
+- The rewrite runs on the dev box, in `scripts/secrets.sh`. It reaches the
+  box through `remote()` (`secrets.sh:384-390`), which runs the remote half
+  as root with `sudo -n`.
+- After a verified write of the `app-env` entry and a restart that passed,
+  the push calls a new remote verb, `rootenv`. The verb runs
+  `/usr/local/lib/acb/root_env.sh`, the copy. It never runs a file of the
+  checkout.
+- **Fix round 1 (build).** A failed restart puts the old `.env` back and
+  exits in `roll_back`, before `rootenv`. So root.env keeps the values of
+  the `.env` that stays live.
+- `secrets.sh` holds no name list. The `app-env` entry of
+  `deploy/secrets/manifest.json` gets a field `"rebuild_root_env": true`,
+  and the push reads it. So a new password reaches the backup at once, with
+  no deploy.
+- A failed `rootenv` is a WARN of the push, not a failure, because the next
+  deploy writes root.env again. The verb does not restart `acb.service`. The
+  next compose call of a deploy applies a changed compose value.
+- **The #764 manifest changes.** #764 added `BACKUP_REMOTE` and the four
+  `BACKUP_PG_*` and `BACKUP_CC_PG_*` pins to the `backup-offbox` entry.
+  root.env is not a manifest entry, because the box derives it. The name
+  list and the `allowed_keys` of `backup-offbox` share no name, and BH-F4
+  holds that.
+- The `allowed_keys` of `app-env` holds one key since #820:
+  `WHATSAPP_ASSISTANT_ACCESS_TOKEN`. It is not a name of root_env_names.txt.
+  So today a push of `app-env` changes no name of the list. The rebuild
+  then writes the same root.env, and the hook is ready for the day a
+  listed name joins `allowed_keys`.
+- The Console `.env` has no manifest entry. A change there reaches root.env
+  at the next deploy.
+
+**The tests that pin the old paths (B6, R7).** BH-6 rewrites each one in its
+own PR. Read each anchor again at dispatch.
+
+| Test | Line | Pins today | After BH-6 |
+|---|---|---|---|
+| `test_backup_deploy_wiring.py` | 110-114 | `EnvironmentFile=/opt/acb/app/.env` in `acb-backup.service` | `EnvironmentFile=/etc/acb/root.env`. The H-132 point stays: the unit loads `PG_MODE` |
+| `test_backup_deploy_wiring.py` | 1205-1207 | the `ExecStart` of `acb-backup.service` under `/opt/acb/app/scripts` | the copy path. `--offbox` stays on that one line |
+| `test_compose_ports_local.py` | 334 | `WorkingDirectory=/opt/acb/app` | `/usr/local/lib/acb/infra` |
+| `test_compose_ports_local.py` | 340, 343-347, 350-354 | the `_CLEAN` prefix, with `--env-file /opt/acb/app/.env` and `-f infra/docker-compose.yml` | the new prefix of `acb.service` |
+| `test_meeting_bot_deploy_wiring.py` | 119-123 | `docker compose --env-file "$ENV_FILE" -f infra/docker-compose.yml` | the `acb_compose` helper |
+| `test_integrations_env_hardening.py` | 1019, 1049 | `_UNIT_SCRIPTS` holds three scripts | each script of `root_lib_files.txt`. That adds `offbox_lib.sh`, `bh2_rollback.sh` and `root_env.sh` |
+| `test_backup_env_values.py` | 65-75, 260-266, 276-283, 957, 988, 1002 | the layout `$R/opt/acb/app/scripts`, and its refusal message | the layout `$R/usr/local/lib/acb`, with `ENV_FILE` at `$R/etc/acb/root.env` |
+| `test_backup_env_values.py` | 804-810 | the scan finds `acb-backup.service` as a root unit that loads the app env | the scan finds no unit. Assert an empty list, and pin the `UnsetEnvironment=` block by unit name |
+| `test_bh2_strict_check.py` | 548-558 | the watchdog finds `../../scripts/bh2_rollback.sh` | keep it for the checkout. Add a test that the unit sets `BH2_ROLLBACK_SCRIPT` under `/usr/local/lib/acb` |
+| `test_secrets_drop.py` | 405-416 | the `app-env` entry restarts the gateway and the bridge, which load `.env` | keep that check, because both are `acb` units. Add the BH-F4 test: an entry with `rebuild_root_env` calls the `rootenv` verb, and the verb runs only `/usr/local/lib/acb/root_env.sh` |
+
+These tests stay as they are, and BH-6 keeps them green:
+
+- `test_unit_hardening.py:851-852`. `NEVER_WRITABLE` holds `.git`, and B8
+  rests on that fact.
+- `test_backup_deploy_wiring.py:1759-1785`. The off-box tool list does not
+  get rsync.
+- `test_compose_ports_local.py:365-374` and `:386-419`. The BO-23 loop
+  still installs `acb.service`.
+
+**Acceptance.**
+
+1. `systemctl cat acb-backup acb-health-watchdog acb` names no path under
+   `/opt/acb` or `/home` in `ExecStart`, `ExecStop`, `EnvironmentFile`,
+   `WorkingDirectory` or `Environment`.
+2. Each script that a root unit runs, directly or through another script,
+   lives under `/usr/local/lib/acb`. That is `backup_db.sh` with
+   `offbox_lib.sh` and `backup_offbox.sh`. It is also `health-watchdog.sh`
+   with `bh2_rollback.sh`.
+3. `sudo stat -c '%U %a' /etc/acb/root.env` gives `root 600`.
+   `sudo find /usr/local/lib/acb ! -user root -o -perm /022` prints nothing.
+   `sudo find /usr/local/lib/acb -type l` prints nothing.
+4. A `.env` line `LD_PRELOAD=/tmp/x.so`, `POSTGRES_BIND=0.0.0.0`,
+   `COMPOSE_PROJECT_NAME=x`, `BACKUP_DIR=/` or `PG_CONTAINER=x` does not
+   reach `/etc/acb/root.env`. The fence test checks this.
+5. The next nightly backup logs its normal success lines. Its manifest line
+   `app_commit:` gives the start of `deployed_sha`, not `unknown`.
+6. The next watchdog tick runs, and logs no `rollback is not valid` line.
+   `systemctl list-timers acb-backup.timer --all` shows a NEXT date (the
+   H-123 lesson).
+7. **The first compose run under the new dir (C1).** Run it when no meeting
+   bot is live.
+   - The first run recreates `postgres` and `meeting-bot` one time, because
+     the sources of their bind mounts changed.
+   - `docker volume ls` is the same before and after.
+   - A second run recreates nothing.
+   - Expect a short outage of the local database, if anything uses it.
+8. `systemctl is-active acb.service acb-gateway` gives `active` two times
+   after the deploy. The deploy log shows one restart of the gateway.
+9. `sudo grep -c '^CUSTOMER_CONSOLE_DATABASE_URL=' /etc/acb/root.env` gives
+   1. The next backup journal holds no "Console database is NOT in" line
+   (B6-1).
+10. **The second caller (B4).** The next deploy with a pending migration
+    runs the pre-migration backup as `acb`, and that backup passes.
+11. `sudo cat /usr/local/lib/acb/deployed_sha` gives the sha that the
+    deploy recorded.
+12. **The secrets push (B9).** A push of `app-env` runs `rootenv` on the
+    box, and a failed `rootenv` is a WARN.
+
+**Verification.** pr-check runs `tests/unit/` on `ubuntu-latest`. Before the
+PR, run the BH-6 suites on Linux in Docker, as a user that is not root. On
+Windows the shell tests skip, and a skip reads green. A run as root changes
+the code path of `backup_db.sh`, because a root run is the guarded run
+(`backup_db.sh:147`). `-rs` lists each skip, and a skip of a shell test in
+the container is a failed run.
+
+```bash
+MSYS_NO_PATHCONV=1 docker run --rm -v "$PWD:/src" ghcr.io/astral-sh/uv:python3.12-bookworm bash -c '
+  apt-get update -qq && apt-get install -y -qq rsync >/dev/null && useradd -m t &&
+  su t -c "cd /src && UV_PROJECT_ENVIRONMENT=/home/t/venv uv run pytest -q -rs \
+    tests/unit/test_root_units_root_owned.py tests/unit/test_backup_deploy_wiring.py \
+    tests/unit/test_backup_env_values.py tests/unit/test_compose_ports_local.py \
+    tests/unit/test_meeting_bot_deploy_wiring.py tests/unit/test_integrations_env_hardening.py \
+    tests/unit/test_secrets_drop.py tests/unit/test_bh2_strict_check.py \
+    tests/unit/test_bh2_rollback.py tests/unit/test_unit_hardening.py \
+    tests/unit/test_env_inode.py tests/unit/test_deploy_reexec.py tests/unit/test_deploy_pipeline.py"'
+ssh metorite 'systemctl cat acb-backup acb-health-watchdog acb | grep -E "^(ExecStart|ExecStop|EnvironmentFile|WorkingDirectory|Environment)="'
+ssh metorite 'sudo stat -c "%U %a %n" /usr/local/lib/acb/*.sh /etc/acb/root.env'
+ssh metorite 'sudo find /usr/local/lib/acb ! -user root -o -perm /022'   # prints nothing
+ssh metorite 'sudo find /usr/local/lib/acb -type l'                      # prints nothing
+ssh metorite 'sudo cat /usr/local/lib/acb/deployed_sha'
+ssh metorite 'docker volume ls -q | sort | sha256sum'   # run before and after, and compare
+ssh metorite 'systemctl is-active acb.service acb-gateway'
+ssh metorite 'sudo systemctl start acb-backup.service; sudo journalctl -u acb-backup --since -40min --no-pager | tail -5'
+ssh metorite 'systemctl list-timers acb-backup.timer acb-health-watchdog.timer --all --no-pager'
+```
+
+**Fences.** BH-F4 is `tests/unit/test_root_units_root_owned.py`.
+
+- A unit in `deploy/hostinger/` with `User=root`, or with no `User=`, has no
+  `ExecStart`, `ExecStop`, `EnvironmentFile`, `WorkingDirectory` or
+  `Environment` value under `/opt/acb` or `/home`.
+- Each script that such a unit runs, directly or through another script, is
+  a line of `root_lib_files.txt`. The test follows `bash <path>`,
+  `. <path>` and `BH2_ROLLBACK_SCRIPT` from each `ExecStart`.
+- No tracked shell script runs `source` or `.` on a path that ends in
+  `.env`.
+- `root_env_names.txt` is the one name list. `vps_apply.sh` and `secrets.sh`
+  hold no name list of their own.
+- The name list holds no `*`. It holds no `LD_PRELOAD`, `BASH_ENV`, `ENV`,
+  `PATH`, `PYTHONPATH`, no `COMPOSE_*` name and no name that ends in
+  `_BIND`.
+- The name list holds no name that a root run of `backup_db.sh` pins, and
+  no name of the root key file. It shares no name with the `allowed_keys` of
+  the `backup-offbox` entry.
+- Each backup name of the list is in the allow list of `backup_db.sh`, or
+  the script reads it from the file.
+- Each `${…}` of `docker-compose.yml` sits under an `environment:` key. A
+  `$${` is not an interpolation, and the test skips it.
+- Each `docker compose` call in `vps_apply.sh`, `deploy.sh` and the units
+  names the one project dir and `/etc/acb/root.env`. The only exempt call is
+  `--profile sandbox build`.
+- The sync reads `git archive "$DEPLOY_TARGET_SHA"`, and it refuses a
+  symlink. Its `rsync` has `--delete`, `--chown=root:root`, `--chmod=go-w`
+  and the literal destination `/usr/local/lib/acb/`.
+- The sync runs only when `bh2_rollback.sh status` exits 1.
+- Steps 1 to 3 come after the pull block, and before the first compose
+  call. Step 2 runs again before the meeting-bot compose call. Step 4 comes
+  after `ensure_gateway_rw_paths`, and before the gateway restart.
+- `root_env.sh` reads both source files, app first. It writes root:root
+  0600, and it refuses a symlink source.
+- A root run of the copy reads `ENV_FILE` from `/etc/acb/root.env`, and
+  `app_commit` from `deployed_sha`.
+- A run as `acb` of the checkout copy reads `$APP_DIR/.env`, and it needs no
+  `/etc/acb/root.env` (B4).
+- In `tests/unit/test_secrets_drop.py`: an entry with `rebuild_root_env`
+  calls the `rootenv` verb, and the verb runs only
+  `/usr/local/lib/acb/root_env.sh`.
+- `status` of the flat `bh2_rollback.sh` gives the same exit codes as the
+  checkout copy.
+
+**Risks.**
+
+- The backup reads a name that the list misses, and the night fails. The
+  unit exits 1, and `vps-health.yml` shows it. The verification runs one backup
+  by hand.
+- A missing relative path in the copy breaks the next `up`. ⚠️ Step 3
+  (`config -q`) does NOT stop it. Measured on Compose v5.6.0 at the build:
+  `config -q` exits 0 with no bind source and no build context on disk.
+  It exits 0 with `--profile sandbox` too. So step 1 checks that each path
+  of the list is in the archive. A missing path stops the deploy before
+  the first compose call. `test_the_copy_holds_each_path_the_compose_file_needs`
+  holds the list against the compose file.
+- A failed `acb.service` takes the gateway down, through `Requires=`.
+  Acceptance 8 checks it.
+- A restart of `acb.service` runs its `ExecStop`, which is now `compose
+  --profile core down`. So the deploy that changes the unit recreates
+  `postgres` and `redis` one more time. Acceptance 7 counts the `up` runs,
+  not this restart.
+- **Measured on the box, 2026-10-10, Compose v5.5.0.** The project `acb`
+  runs `acb-postgres`, `acb-redis` and `acb-meeting-bot`. A dry run of
+  `--profile core down` stops and removes only `redis` and `postgres`. The
+  meeting bot keeps running. The removal of the `acb_default` network says
+  "Resource is still in use", and the exit code is 0. A `down` with no
+  profile does nothing. So a restart of `acb.service` does not stop the
+  meeting bot, and step 4 runs no second meeting-bot `up`. The `ExecStop`
+  stays scoped to `--profile core`.
+- The live edit of the meeting bot ends. The bind mount at
+  `docker-compose.yml:266-270` now reads the copy. So an edit of the
+  checkout on the box does not reach the bot, and an edit goes through a
+  deploy.
+- While a BH-2 rollback is on, the sync skips (B8). A fix of a root script
+  then waits for `bh2_rollback.sh off` and the next deploy. That cost is the
+  safe side of the skip.
+- The deploy runs as `acb` with sudo. Until BH-5, an `acb` process that is
+  not the gateway can still change the copy step. BH-6 closes P3 for the
+  gateway, which cannot write the checkout while BH-2 is on.
+- A person runs `restore_db.sh`, `restore_offbox.sh` and `bh2_rollback.sh
+  on` or `off` with `sudo` from the checkout. No root unit runs them, so
+  BH-6 leaves them. BH-5 owns that path.
+
+**Rollback.** Revert the PR and deploy again. The old units point at the
+checkout again. Leave `/usr/local/lib/acb` and `/etc/acb/root.env` in place.
+They do no harm. The containers recreate one more time.
+
+**The gate.** AGENT-SAFE to build. The deploy is §3a `deploy`. The new
+`/etc/acb/root.env` is §3a `env-write`. WS43-G12 approved by the owner
+2026-10-08 for WS-49.
+
+### BH-3 — The sandbox broker gets its own unit and user
+
+**Scope.** This builds the "later hardening" of `maf_coding_engine.md`
+WS43-S2, and it is the gate WS43-G1.
+
+- A new system user `acb-sandbox`, in the `docker` group. It is not in
+  `sudo`.
+- A new unit `acb-sandbox-broker.service`, `User=acb-sandbox`, with the BH-2
+  set except the socket line. It listens on a Unix socket under
+  `RuntimeDirectory=acb-sandbox` (`/run/acb-sandbox/broker.sock`, mode
+  `0660`, group `acb`).
+- The API is the broker's own verbs, not Docker's: acquire, exec, read
+  status, release and sweep. The request carries a binding id and a working
+  dir. The broker builds the `docker run` argv itself
+  (`sandbox_broker.py:723-737`), and it refuses a mount outside the sandbox
+  root. No caller sends a raw Docker argument.
+- `DockerCLI` in the gateway becomes a client of that socket. The startup
+  sweeps of `main.py:153-178` move into the broker unit.
+- `copilot_sandbox.py` and `mutation.py` stay OFF. They gain the broker path
+  only when someone turns them on, and that is out of scope.
+- `acb` stays in the `docker` group for the deploy until BH-5. BH-2 already
+  hides the socket from the gateway.
+
+**Why this shape (BH-D5).**
+
+| Option | Closes P2 | Cost | Verdict |
+|---|---|---|---|
+| Broker unit with its own user | yes. The gateway sends verbs, not a container spec | one unit, one user, one socket API | **chosen** |
+| Socket proxy with a path allowlist | no. `POST /containers/create` with `Binds: ["/:/host"]` passes a path filter | one container | rejected |
+| Rootless Docker | yes, for the host root | a second daemon, new images, WS43-G5 | later |
+| Leave the sandbox off | yes | the WS-43 terminal never ships | the state today |
+
+**Acceptance.**
+
+1. `ps -o user,supgid -p $(systemctl show -p MainPID --value acb-gateway)`
+   shows the gateway. `docker ps` from the gateway's probe fails.
+2. A covered agent's `run_script` runs in a sandbox, through the broker
+   socket (needs the sandbox image on the box).
+3. A request to the broker with a mount outside the sandbox root is refused,
+   and the journal names the refusal.
+
+**Verification.**
+
+```bash
+uv run pytest tests/unit/test_sandbox_broker_seam.py tests/unit/test_sandbox_broker_socket.py tests/unit/test_unit_hardening.py -q
+ssh metorite 'systemctl show acb-sandbox-broker -p User -p ActiveState; ls -l /run/acb-sandbox/broker.sock'
+ssh metorite 'bash /opt/acb/app/scripts/box_hardening_probe.sh acb-gateway'
+```
+
+**Fences.** WS43-F1 (`tests/unit/test_sandbox_broker_seam.py`) changes:
+the only module that runs `docker` is the broker's server module, and the
+gateway imports only the client. BH-F3 asserts the socket line on the
+gateway unit.
+
+**Risks.** A broker that is down stops every covered run. The broker unit
+has `Restart=always`, and the gateway reports `SandboxUnavailable` as it
+does today. The broker restart ends every run (§7.1 rule 13 of the WS-43
+spec), as a gateway restart does today.
+
+**Rollback.** Revert the PR. With the socket still hidden by BH-2, the
+sandbox is down again, which is the state of today.
+
+**The gate.** OWNER-GATE: WS43-G1 is the owner's gate on the box's Docker
+access, and the owner picks the option (§7, OD-2). The build is
+AGENT-SAFE after that. The deploy, the user and the unit are §3a `deploy`.
+
+### BH-4 — A write-only backup credential, with retention on the server
+
+**Who acts.** The owner chose Supabase Storage for the off-box copy on
+2026-10-08 (H-123). The coordinator makes the Supabase objects of this slice
+under that choice, through the Supabase MCP. They are the writer user, the
+policies, the Edge Function and the cron job. This is not a new owner gate.
+One setting is an owner gate: the Auth email and password provider (OD-9).
+
+**Scope, the box half (AGENT-SAFE).**
+
+- `offbox_lib.sh` reads `BACKUP_SUPABASE_URL`, `BACKUP_AUTH_EMAIL` and
+  `BACKUP_AUTH_PASSWORD`. It asks `/auth/v1/token?grant_type=password` for a
+  JWT just before the upload, and exports
+  `RCLONE_CONFIG_OFFBOX_SESSION_TOKEN`.
+- `BACKUP_S3_ACCESS_KEY_ID` holds the project ref, and
+  `BACKUP_S3_SECRET_ACCESS_KEY` holds the anon key. Neither one is a secret
+  that opens the bucket by itself.
+- The JWT and the password go through the same redaction as the key today
+  (`offbox_lib.sh:108`).
+- **The night prefix becomes `nightly/<UTC stamp>-<16 random hex>/`.** That
+  breaks the stamp rule in two places, and both change in this PR:
+  - `offbox_stamp_re` at `offbox_lib.sh:31`, which `offbox_lib.sh:141` (the
+    listing) and `offbox_lib.sh:213` use.
+  - `restore_offbox.sh:129`, which refuses a night that does not match.
+  The new rule is `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z-[0-9a-f]{16}$`.
+  The restore also accepts the old form, for a night from before the change.
+- The box no longer deletes. `offbox_lib.sh:217` goes. The box still lists
+  one night to check the upload.
+- **`scripts/secrets.sh gen backup-writer`** makes the writer's email and a
+  random password of 32 bytes, and writes them into the local
+  `backup-offbox.env`. It prints neither one.
+- **The manifest** (`deploy/secrets/manifest.json`, entry `backup-offbox`):
+  - Add `BACKUP_SUPABASE_URL`, `BACKUP_AUTH_EMAIL` and
+    `BACKUP_AUTH_PASSWORD` to `allowed_keys` and `required_keys`.
+  - Prefill `BACKUP_S3_ACCESS_KEY_ID` with the project ref
+    `wbjpwtxigkileyjsgahk`, and `BACKUP_SUPABASE_URL` with the project URL.
+  - Rewrite `key_notes`. `BACKUP_S3_ACCESS_KEY_ID` is the project ref.
+    `BACKUP_S3_SECRET_ACCESS_KEY` is the anon key, and it is NOT a
+    project-wide S3 key. Drop the note "The key is project-wide".
+  - Extend `tests/unit/test_secrets_drop.py` for the three new names and the
+    new notes.
+- **Retire the H-123 key plan in this PR.**
+  - H-123 step (b) "Make an S3 access key" and step (d) change, and
+    `backup_and_restore.md` §4.2 changes with them. Fix round 1 of this spec
+    already marked both as retired, with a pointer here.
+  - The rule: never make the project-wide S3 key. If one exists, the owner
+    revokes it in the dashboard (Storage, S3 Connection).
+
+**Scope, the Supabase half (the coordinator, under the owner's choice).**
+SQL goes in `deploy/supabase/backup_writer.sql`, and the function goes in
+`deploy/supabase/functions/backup-retention/`.
+
+- One Auth user, the backup writer, with the password from `gen
+  backup-writer`.
+- On `storage.objects`: one INSERT policy and one SELECT policy, `to
+  authenticated`. Each one checks `bucket_id = 'metorite-backups'` and
+  `name like 'nightly/%'`. Each one also checks that `auth.uid()` is the
+  writer's id. There is no UPDATE policy and no DELETE policy.
+- `backup-retention` deletes nights through the Storage API with the service
+  role. It deletes a night when its newest object is older than
+  `BACKUP_S3_KEEP_DAYS` (default 14), by server `created_at`. It never
+  deletes by count.
+- It deletes nothing when the newest night is older than 2 days. Then the
+  backups have stopped, and every old night matters.
+- `pg_cron` and `pg_net`, installed, call the function each day at 04:15
+  UTC. The call carries a shared secret from `vault`.
+
+**Acceptance.** Run with the writer's JWT against the real bucket:
+
+1. A new object uploads.
+2. A PUT to that object's key again fails, and the object's bytes do not
+   change.
+3. A DELETE of that object fails, and the object still exists.
+4. An upload of 300 MiB works. That is above rclone's multipart cutoff of
+   200 MiB.
+5. One nightly run logs `off-box copy ok`, with a night of the new form.
+6. `restore_offbox.sh` lists, downloads and checks that night.
+7. Run the retention function by hand with `BACKUP_S3_KEEP_DAYS=0` against a
+   test prefix. It deletes the test night and nothing else.
+8. `cron.job` holds the schedule, and `cron.job_run_details` shows a success
+   the next day.
+9. A sign-up through `/auth/v1/signup` fails (OD-9).
+
+**Verification.**
+
+```bash
+uv run pytest tests/unit/test_backup_offbox_session_token.py tests/unit/test_backup_deploy_wiring.py tests/unit/test_secrets_drop.py -q
+ssh metorite 'sudo journalctl -u acb-backup --since -26h --no-pager | grep -c "off-box copy ok"'
+# In SQL, through the Supabase MCP execute_sql:
+#   select jobname, schedule from cron.job where jobname = 'backup-retention';
+#   select status, start_time from cron.job_run_details order by start_time desc limit 3;
+#   select policyname, cmd from pg_policies where schemaname = 'storage' and tablename = 'objects';
+```
+
+**Fences.** BH-F7 is `tests/unit/test_backup_offbox_session_token.py`.
+
+- `offbox_lib.sh` holds no `rclone delete` and no `rclone purge`, and it
+  exports `RCLONE_CONFIG_OFFBOX_SESSION_TOKEN`.
+- `offbox_stamp_re` in `offbox_lib.sh` and the check in `restore_offbox.sh`
+  accept the new form and refuse a night with no random part.
+- `backup_writer.sql` holds no `for update` and no `for delete` policy.
+- The retention function holds no rule that sorts by name and keeps N.
+- The policy half on the live project is advisory until a test can read the
+  project. The acceptance drill is its check.
+
+**Risks.**
+
+- Supabase may treat an S3 PUT to an existing key in a way the docs do not
+  cover. Acceptance 2 decides. If it fails, BH-D7's fallback applies.
+- A multipart upload may need more than INSERT. Acceptance 4 decides.
+- If the project turns off the legacy anon key, the session token stops. The
+  docs say the publishable key is "not yet supported". Watch the Supabase
+  changelog.
+- The writer user is a row in `auth.users` of the production project. The
+  app does not use Supabase Auth for members, so the row has no app meaning.
+- An attacker with root on the box can still add junk and run up storage
+  cost. The attacker cannot delete, overwrite or read a night, because the
+  box encrypts each night to the owner's public key.
+
+**Rollback.** Revert the box half, and drop the two policies. Unschedule the
+job. Do NOT go back to a project-wide key. With no off-box credential, the
+box keeps local nights only, which is the state of today.
+
+**The gate.** The box half is AGENT-SAFE, and its deploy is §3a `deploy`. The
+Supabase half is the coordinator's act under the owner's choice of
+2026-10-08. OD-9, the Auth provider setting, is an owner gate. A revoke of an
+existing project-wide key is the owner's, in the dashboard.
+
+### BH-5 — Narrowed sudo and a deploy user (LATER, recorded only)
+
+**Not dispatchable now.** This records the shape (BH-D9) and its input.
+
+- A new user `acb-deploy` owns `/opt/acb/app` and holds the CI SSH key.
+  `deploy.yml` and `acb-pull.service` use it.
+- `acb` leaves the `sudo` and `docker` groups, and `/etc/sudoers.d/acb` goes.
+  The runtime units keep `User=acb` and read the checkout as a group member.
+- `/etc/sudoers.d/acb-deploy` lists the commands of §2.4, with full paths and
+  fixed arguments where the script allows. The deploy's Docker calls become
+  `sudo docker …` or move to a root helper.
+- `.env` becomes `acb-deploy:acb 0640`. Then the gateway cannot write it, and
+  the writes of the Integrations, OAuth and Models routes need a new home.
+  That is the owner gate §6 (f), per-request credentials.
+
+**Acceptance (for later).** `sudo -l -U acb` lists nothing. `id acb` shows no
+`sudo` and no `docker`. A full deploy from CI and from `acb-pull` succeeds.
+
+**The gate.** OWNER-GATE. The CI secret `SSH_USER` and the key change are the
+owner's, and a wrong sudoers file can lock everyone out of the box.
+
+---
+
+## 6. The order
+
+**State on 2026-10-10.** BH-1, BH-8, BH-7, BH-6a and BH-2 full are merged.
+`bh2_strict_check` enforces BH-2 on each deploy. **BH-6 is built on the
+branch `sec-bh6-build`**, and waits for its review and the merge.
+
+1. **BH-1** — closes H-270 for every child, and needs no box change.
+2. **BH-8** — Neo4j and the compose ports. The coordinator already stopped
+   Neo4j, so this makes the repo match the box.
+3. **BH-7** — closes P5 variants 1 and 2. It also owns the drop-in installer
+   and `40-agent-site.conf`. It comes before `50-hardening.conf`, so the
+   venv can be read-only to the gateway from the first day.
+4. **BH-2** — the narrowed part first. Then `50-hardening.conf`, after BH-1
+   and BH-7 are deployed. It closes P1, P2 (for now), P3 for scripts, P4 and
+   P5 variant 3, for the gateway. It follows the staged rollout.
+5. **BH-6** — closes P3 through `.env`, the one path that BH-2 leaves open.
+6. **BH-3** — before the WS-43 sandbox image goes on the box (OD-2).
+7. **BH-4** — before any off-box credential goes on the box. Never put a
+   project-wide S3 key on the box.
+8. **BH-5** — later (OD-8).
+
+**What steps 1 to 5 give, and when.** The claim below holds only when all
+five are deployed, with BH-7 in its fix-round-2 form. BH-7 might still let
+the gateway write a file that the deploy runs. Examples are a `.pth` file,
+`sitecustomize`, the T2 vendor dir and the venv. Then P5 stays open, and the
+claim is false.
+
+With all five deployed, a shell under the gateway can still read two things.
+It can read the gateway's own secrets, which the gateway needs to run. It can
+read the env of the other `acb` processes. It cannot become root through
+P1 to P5, and it cannot reach the off-box key.
+
+---
+
+## 7. Decisions owed
+
+**The coordinator took four on 2026-10-08.**
+
+| Id | Decision | Result |
+|---|---|---|
+| OD-1 | Keep `copilot_sandbox_scope` empty by default (H-270 item 3) | Yes. BH-1 and BH-2 close the leak, and D92 removes the SDK |
+| OD-4 | Make the Supabase half of BH-4: the writer user, the policies, the function and the cron job | No longer an owner gate. The coordinator acts under the owner's choice of Supabase Storage (2026-10-08) |
+| OD-5 | Agent installs go to a separate dir, or the `install_dependency` tool goes | A separate dir (BH-7, BH-D10) |
+| OD-7 | Check the Neo4j password, and stop the exposure | Done. The default password was live. The container is stopped (§2.6) |
+
+**These stay owner gates.**
+
+| Id | Decision | Recommendation | Blocks |
+|---|---|---|---|
+| OD-2 | The shape of the broker's Docker access (WS43-G1) | Its own unit and user (BH-3) | BH-3 |
+| OD-3 | The off-box credential: the Supabase session token, or a second provider with Object Lock | The session token. Only the fallback costs money | the BH-4 fallback |
+| OD-6 | The scope of the GitHub token that the Copilot CLI holds | A fine-grained token, limited to the repos that the agents need | the BH-1 residual |
+| OD-8 | The deploy user and the narrowed sudo (BH-5) | Later, after the first wave | BH-5 |
+| OD-9 | The Auth email and password provider of the production project. The BH-4 writer signs in with a password, and the setting may also open public sign-up | Keep sign-up DISABLED. Allow password sign-in only, for users that an admin made | BH-4 |
+
+---
+
+## 8. Fences (R7)
+
+| Id | Test | What breaks it |
+|---|---|---|
+| BH-F1 | `tests/unit/test_child_env_seam.py` | a spawn with no `env=` from the helper (through an alias too), `os.environ` in `extra=`, an `.update(os.environ)`, a new `os.system`, `os.exec*`, `os.spawn*` or `pty.spawn`, a `CopilotClient(` with no `env=` |
+| BH-F2 | `tests/unit/test_copilot_child_env.py` | a secret in the env of a stub CLI |
+| BH-F3 | `tests/unit/test_unit_hardening.py` | an `acb` unit with no NoNewPrivileges, a line of `50-hardening.conf` removed, a new write path, `.venv` on the write list, no strict check in `vps_apply.sh`, `acb.service` missing or with `--profile memory` |
+| BH-F3 (strict check) | `tests/unit/test_bh2_strict_check.py` | a strict check that passes a gateway that is inactive or not sandboxed, honours an expired rollback, or runs after the marker. A watchdog that does not log `WARN BH-2 rolled back` |
+| BH-F3 (`.env` inode) | `tests/unit/test_env_inode.py` | a `sed -i` or a `mv` onto `.env` in `scripts/` or `deploy/`, an edit that replaces the inode |
+| BH-F3 (lock, drain) | `tests/unit/test_bh2_rollback.py` · `tests/unit/test_gateway_drain.py` | an `on` or `off` that does not take the deploy lock. An effective `ExecStart` with no `--timeout-graceful-shutdown` |
+| BH-F4 | `tests/unit/test_root_units_root_owned.py` | a root unit that runs or loads a file under `/opt/acb` or `/home`. A script that a root unit runs, directly or through another script, that is not in `root_lib_files.txt`. A `source` of `.env`. A pattern, a `_BIND`, `COMPOSE_*`, pinned or root-key-file name in the `root.env` list. A second compose project dir. A `${…}` of the compose file outside `environment:`. A sync from the working tree, with a symlink, with no literal destination, or while a BH-2 rollback is on. A step out of the order of §5 BH-6 |
+| BH-F5 | `tests/unit/test_compose_ports_local.py` | a port that does not start with the literal `127.0.0.1:` |
+| BH-F6 | `tests/unit/test_agent_deps_target.py` | an install into the shared venv, a T2 vendor install with scripts or a path from `.env` |
+| BH-F7 | `tests/unit/test_backup_offbox_session_token.py` | a delete from the box, an UPDATE or DELETE policy, a keep-newest-N rule, a night stamp with no random part in `offbox_lib.sh` or `restore_offbox.sh` |
+
+Each fence is verified red first: run it on the tree before the slice, and it
+must fail.
+
+---
+
+## 9. Verification commands, all slices
+
+```bash
+uv run pytest tests/unit/test_child_env_seam.py tests/unit/test_copilot_child_env.py \
+  tests/unit/test_unit_hardening.py tests/unit/test_root_units_root_owned.py \
+  tests/unit/test_compose_ports_local.py tests/unit/test_agent_deps_target.py \
+  tests/unit/test_backup_offbox_session_token.py tests/unit/test_backup_deploy_wiring.py \
+  tests/unit/test_deploy_serialize.py tests/unit/test_sandbox_broker_seam.py tests/unit/test_secrets_drop.py \
+  tests/unit/test_bh2_rollback.py tests/unit/test_bh2_strict_check.py tests/unit/test_gateway_drain.py \
+  tests/unit/test_deploy_reexec.py tests/unit/test_deploy_pipeline.py \
+  tests/unit/test_backup_env_values.py tests/unit/test_meeting_bot_deploy_wiring.py \
+  tests/unit/test_integrations_env_hardening.py tests/unit/test_env_inode.py -q
+# test_root_units_root_owned.py (BH-6) and test_backup_offbox_session_token.py
+# (BH-4) do not exist until those slices land. Leave them out until then.
+# On Windows the shell tests skip. Run the BH-6 suites on Linux in Docker,
+# as a user that is not root (§5 BH-6, "Verification").
+# The H-271 Check, which must pass after BH-5 only:
+ssh metorite 'sudo -l -U acb; id acb; stat -c %U /usr/local/lib/acb/backup_offbox.sh'
+# The live probe, after each of BH-2, BH-3 and BH-7:
+ssh metorite 'bash /opt/acb/app/scripts/box_hardening_probe.sh acb-gateway'
+```

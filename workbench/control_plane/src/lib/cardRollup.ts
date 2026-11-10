@@ -1,0 +1,248 @@
+/**
+ * cardRollup — when a chat card folds to its header, and when it stays open.
+ *
+ * Owner request, 2026-10-10: "Automatically roll up long AGUI cards so they
+ * can be closed. The accordion should close when a new card appears, but
+ * remain open when needed."
+ *
+ * The rules, in the order they apply:
+ *
+ * 1. A card that WAITS on the member never folds: a pending approval, a
+ *    question form, an `ask_user` prompt, a plan to edit. It draws no toggle.
+ *    `lib/askPin.ts` decides what waits, and this file asks it.
+ * 1a. A card that waited and has its ANSWER folds to its header, which
+ *    then carries the outcome in one line (`lib/askOutcome.ts`, owner
+ *    report 2026-10-19). It folds at once, even while the focus is inside
+ *    it: the control the member pressed is gone, and the card says what
+ *    happened. `RollupCard` moves the focus to the header.
+ * 2. A manual open or close wins until the member toggles the card again.
+ *    The choice lives for the page's life, keyed by the card's id, so a
+ *    re-render or a reconnect replay keeps it. A reload forgets it.
+ * 3. A RECEIPT folds to its header. It reports a write that already
+ *    happened and needs nothing from the member, so it is FYI. It comes after
+ *    rules 1 to 2 (a waiting card, a manual choice, an answer and a held
+ *    focus all beat it), and before the newest rule. Owner directive,
+ *    2026-10-29: "show the notes closed by default, unless you actually want
+ *    the user to read a particular AGUI card or note."
+ * 4. The NEWEST card in the transcript stays open.
+ * 5. Every older LONG card folds by itself. A short card never folds by
+ *    itself, and the member may still fold it by hand: every card with a
+ *    body draws the toggle ({@link showRollupToggle}).
+ *
+ * "Long" is a measure, not a guess: the body is taller than
+ * {@link LONG_PX}, or it lists more than {@link LONG_ROWS} rows.
+ *
+ * The component is `components/RollupCard.tsx`. This file is pure, so the
+ * node-env vitest holds every rule. Fence: `src/lib/cardRollup.test.ts`.
+ */
+
+/** A body taller than this, in CSS pixels, is long. */
+export const LONG_PX = 320;
+
+/** A list with more rows than this is long. */
+export const LONG_ROWS = 4;
+
+/** Is the body long? A height of 0 is "not measured", never "short". */
+export function isLong(heightPx: number, rows?: number): boolean {
+  if (typeof rows === "number" && rows > LONG_ROWS) return true;
+  return heightPx > LONG_PX;
+}
+
+export type ManualState = "open" | "closed";
+
+export interface RollupInputs {
+  /** The card waits on the member (rule 1). */
+  pending: boolean;
+  /** The card waited, and it has its answer now (rule 1a). */
+  answered?: boolean;
+  /** What the member chose by hand, if anything (rule 2). */
+  manual?: ManualState;
+  /**
+   * The card reports a write that already happened and needs nothing from
+   * the member (rule 3). A failed write is not a receipt, so it never sets it.
+   */
+  receipt?: boolean;
+  /** The card is the newest in the transcript (rule 4). */
+  newest: boolean;
+  /** The body is long (rule 5). */
+  long: boolean;
+  /**
+   * The focus is inside the card, and this is whether the card was open when
+   * it came in. An automatic fold would hide the focused control, and a
+   * keyboard member would lose their place (review round 1). So the card
+   * keeps that state until the focus leaves, and only a toggle by hand
+   * changes it.
+   *
+   * ⚠️ It HOLDS the state. It does not open the card. Focus on a shut card's
+   * header used to open it (owner feedback round, 2026-10-10): a mouse press
+   * focuses the header before its click, the card opened under the pointer,
+   * and the click then landed on an open card and shut it, or landed nowhere.
+   */
+  held?: boolean;
+}
+
+/** Is the card open? The rules, in order. */
+export function rollupOpen({ pending, answered, manual, receipt, newest, long, held }: RollupInputs): boolean {
+  if (pending) return true;
+  if (manual) return manual === "open";
+  if (answered) return false;
+  if (held !== undefined) return held;
+  if (receipt) return false;
+  if (newest) return true;
+  return !long;
+}
+
+/**
+ * Does the card draw its toggle? Every card with a body that does not wait.
+ *
+ * ⚠️ Owner feedback, 2026-10-11: "why am I unable to roll up and close the
+ * accordion". Until then only a LONG card drew the toggle, and the one-line
+ * rows of #843 made a three-task receipt short, so its toggle vanished. A
+ * member may fold any card by hand. Length decides only the AUTOMATIC fold
+ * (rule 4, `rollupOpen`). A card with no body (a one-line receipt) has
+ * nothing to fold, so it draws no toggle.
+ */
+export function showRollupToggle({
+  pending,
+  hasBody,
+}: Pick<RollupInputs, "pending"> & { hasBody: boolean }): boolean {
+  return hasBody && !pending;
+}
+
+// ── A long result opens cut, with "Show all" ───────────────────────────────
+
+/**
+ * The height a long RESULT card opens at, in CSS pixels (spec
+ * `projects_ai_chat.md` §29, rule 2). Over it, the card draws cut, with a
+ * fade and a "Show all" under it. It sits above the 420 px that a table or
+ * a timeline already scrolls inside, so a plain table never cuts.
+ */
+export const CLAMP_PX = 480;
+
+/**
+ * A cut card uncuts by itself only when its content is this short: 48 px
+ * under {@link CLAMP_PX}, the height of the fade. The gap keeps a body near
+ * the cap from cutting and uncutting in turn.
+ */
+export const UNCUT_PX = CLAMP_PX - 48;
+
+/**
+ * Is the card cut? Only a result card (`clamp`) that waits on nobody.
+ * `naturalPx` is the unclipped height (`scrollHeight`), and 0 is "not
+ * measured".
+ *
+ * - The first measure over {@link CLAMP_PX} cuts.
+ * - A cut stays while the content is taller than {@link UNCUT_PX}. The
+ *   first rule uncut a body that measured at the cap, and it then grew,
+ *   cut and uncut at frame rate (review of #1160).
+ * - A cut ends when the content shrinks to {@link UNCUT_PX} or less, so a
+ *   fade and "Show all" never sit over a card with nothing hidden.
+ * - "Show all" ends it for good.
+ */
+export function clampShows({ clamp, pending, all, wasCut, naturalPx }: {
+  clamp: boolean;
+  pending: boolean;
+  all: boolean;
+  wasCut: boolean;
+  naturalPx: number;
+}): boolean {
+  if (!clamp || pending || all) return false;
+  if (wasCut) return naturalPx === 0 || naturalPx > UNCUT_PX;
+  return naturalPx > CLAMP_PX;
+}
+
+// ── The member's choices, for the page's life ──────────────────────────────
+
+const manual = new Map<string, ManualState>();
+
+/** What the member chose for this card, or undefined. */
+export function manualStateOf(id: string): ManualState | undefined {
+  return manual.get(id);
+}
+
+/** Record a toggle by hand. It beats the automatic rule until the next one. */
+export function setManualState(id: string, state: ManualState): void {
+  manual.set(id, state);
+}
+
+/** Tests only: forget every choice. */
+export function resetManualStates(): void {
+  manual.clear();
+}
+
+// ── Which card is the newest ───────────────────────────────────────────────
+
+/**
+ * The transcript's cards, so each one can ask whether it is the newest.
+ *
+ * `compare` decides the order, and the app passes {@link turnThenArrival}:
+ * turns in DOM order, and the cards of one turn in the order they arrived.
+ * DOM order alone was wrong inside a turn (review round 1): a turn draws its
+ * generative-UI cards ABOVE its receipts, so a table that came after a write
+ * lost "newest" to the receipt and folded before the member saw it. The
+ * test passes its own `compare`.
+ */
+export interface RollupEntry<N> {
+  node: N;
+  /** The order the card registered in. A reload registers in tree order. */
+  seq: number;
+}
+
+export class RollupRegistry<N = unknown> {
+  private readonly nodes = new Map<string, RollupEntry<N>>();
+  private readonly listeners = new Set<() => void>();
+  private newestId: string | null = null;
+  private seq = 0;
+
+  constructor(private readonly compare: (a: RollupEntry<N>, b: RollupEntry<N>) => number) {}
+
+  /** Add a card. Listeners hear only when the newest changes. */
+  register(id: string, node: N): void {
+    this.nodes.set(id, { node, seq: this.seq++ });
+    this.recompute();
+  }
+
+  unregister(id: string): void {
+    if (this.nodes.delete(id)) this.recompute();
+  }
+
+  /** The id of the newest card, or null when there is none. */
+  newest(): string | null {
+    return this.newestId;
+  }
+
+  subscribe = (fn: () => void): (() => void) => {
+    this.listeners.add(fn);
+    return () => {
+      this.listeners.delete(fn);
+    };
+  };
+
+  private recompute(): void {
+    let best: [string, RollupEntry<N>] | null = null;
+    for (const entry of this.nodes) {
+      if (!best || this.compare(entry[1], best[1]) > 0) best = entry;
+    }
+    const next = best ? best[0] : null;
+    if (next === this.newestId) return;
+    this.newestId = next;
+    for (const fn of this.listeners) fn();
+  }
+}
+
+/** The attribute on a turn's wrapper in the transcript (`AgentChat`). */
+export const TURN_ATTR = "data-rollup-turn";
+
+/** Turns in DOM order, and the cards of one turn by arrival. */
+export function turnThenArrival(a: RollupEntry<Element>, b: RollupEntry<Element>): number {
+  const ta = a.node.closest(`[${TURN_ATTR}]`);
+  if (ta && ta === b.node.closest(`[${TURN_ATTR}]`)) return a.seq - b.seq;
+  return domOrder(a.node, b.node);
+}
+
+/** DOM order: positive when `a` comes after `b`. */
+export function domOrder(a: Node, b: Node): number {
+  if (a === b) return 0;
+  // DOCUMENT_POSITION_PRECEDING (2): `b` precedes `a`, so `a` is later.
+  return a.compareDocumentPosition(b) & 2 ? 1 : -1;
+}

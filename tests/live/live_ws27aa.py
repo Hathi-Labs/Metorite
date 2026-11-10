@@ -36,6 +36,8 @@ import os
 import pathlib
 import sys
 
+# The dispatch checks are of the run, which ships dark (2026-10-04).
+os.environ["PROJECTS_AGENT_DISPATCH"] = "1"
 os.environ["DATABASE_URL"] = (
     "postgresql+asyncpg://postgres@/cc?host=/var/tmp&port=55432"
 )
@@ -221,7 +223,7 @@ async def sweep_checks(orgs):
     """Two orgs, identical policies, identically stale tasks."""
     # Alpha's scheduled workflow runs the REAL closure — resolution, binding
     # and sweep, exactly as the engine node reaches it.
-    result = await wf_service._pm_lifecycle_sweeper(A_WF)()
+    result = await wf_service._pm_lifecycle_sweeper(A_WF, None)()
     check("alpha sweep touched one project", result["projects"], 1)
     check("alpha sweep archived one task", result["archived"], 1)
     check("alpha's stale task is archived", await archived(A_TASK), True)
@@ -230,7 +232,7 @@ async def sweep_checks(orgs):
 
     # The mirror — without it, a sweep matching NOTHING would pass the
     # isolation assertion for the wrong reason.
-    result = await wf_service._pm_lifecycle_sweeper(B_WF)()
+    result = await wf_service._pm_lifecycle_sweeper(B_WF, None)()
     check("beta sweep archived one task", result["archived"], 1)
     check("beta's stale task is archived", await archived(B_TASK), True)
 
@@ -256,7 +258,7 @@ async def sweep_checks(orgs):
 
     # The orphan workflow cannot sweep at all.
     try:
-        await wf_service._pm_lifecycle_sweeper(ORPHAN_WF)()
+        await wf_service._pm_lifecycle_sweeper(ORPHAN_WF, None)()
         check("a workflow with no resolvable org cannot sweep",
               "no exception", "NodeExecutionError")
     except Exception as exc:
@@ -278,6 +280,8 @@ async def dispatch_checks(orgs):
         await agent_dispatch.on_event("projects", "pm.task.assigned", {
             "task_id": A_AGENT_TASK, "assignees": ["agent:researcher"],
         })
+        # The sink starts each run in the background (2026-10-04).
+        await agent_dispatch.wait_for_runs()
         check("an event with no tenant dispatches nothing", dispatched, [])
         check("an event with no tenant writes nothing",
               await activities(A_AGENT_TASK), [])
@@ -287,6 +291,7 @@ async def dispatch_checks(orgs):
             "task_id": A_AGENT_TASK, "assignees": ["agent:researcher"],
             "organization_id": orgs["alpha"],
         })
+        await agent_dispatch.wait_for_runs()
         check("a bound dispatch runs the agent",
               dispatched, [("researcher", A_AGENT_TASK, orgs["alpha"])])
         rows = await activities(A_AGENT_TASK)

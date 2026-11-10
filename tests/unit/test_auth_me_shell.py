@@ -1,0 +1,558 @@
+"""``GET`` and ``PUT /auth/me/shell`` — the hermetic half (WS-44 NS-7).
+
+The R8 half, against a real Postgres, is ``test_auth_me_shell_r8.py``. This
+file holds what a fake can prove honestly:
+
+- the validation of a layout (unknown names, unknown keys, the caps);
+- that a ``PUT`` of null resets and writes no row;
+- that the routes take the member from the session and never from the body;
+- that a guest with no feature reaches both routes (done-when 2);
+- that a failed read is a 503, never the "never asked" layout;
+- and that the gateway's names agree with the workbench's (``TestOneVocabulary``).
+"""
+from __future__ import annotations
+
+import json
+import re
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any
+
+import pytest
+from acb_auth import UserContext, UserRole, build_access, get_current_user
+from acb_common.app_manifests.shell_manifest import load_vocabulary
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from gateway.routes.admin import me
+from gateway.routes.shell.intent import JOBS
+
+ROOT = Path(__file__).resolve().parents[2]
+NAV = ROOT / "workbench" / "control_plane" / "src" / "lib" / "nav.ts"
+PRESETS = ROOT / "workbench" / "control_plane" / "src" / "lib" / "shell" / "presets.ts"
+REGISTRY = ROOT / "workbench" / "control_plane" / "src" / "lib" / "shell" / "jobs.generated.ts"
+
+
+class _Result:
+    def __init__(self, row: Any) -> None:
+        self._row = row
+
+    def first(self) -> Any:
+        return self._row
+
+
+class _FakeDB:
+    """Records each statement. ``stored`` is the member's row, if any."""
+
+    def __init__(self, stored: Any = None, fail: bool = False) -> None:
+        self.stored = stored
+        self.fail = fail
+        self.sql: list[tuple[str, dict[str, Any]]] = []
+
+    async def execute(self, stmt: Any, params: dict[str, Any] | None = None) -> _Result:
+        if self.fail:
+            raise RuntimeError("database away")
+        self.sql.append((str(stmt), dict(params or {})))
+        if str(stmt).startswith("SELECT shell_prefs"):
+            return _Result(None if self.stored is None else (self.stored,))
+        return _Result(None)
+
+
+@pytest.fixture
+def fake(monkeypatch: pytest.MonkeyPatch) -> _FakeDB:
+    db = _FakeDB()
+
+    @asynccontextmanager
+    async def _session(organization_id: Any = None):
+        yield db
+
+    monkeypatch.setattr(me, "_tenant_session", _session)
+
+    async def _seed(_db: Any, _uid: str) -> dict[str, int]:
+        return {"day_start_hour": 8, "day_end_hour": 19}
+
+    import gateway.routes.tasks.settings as settings
+
+    monkeypatch.setattr(settings, "_seed_from_work_schedule", _seed)
+    return db
+
+
+def _user(email: str = "ana@alpha.example", roles: list[str] | None = None,
+          perms: list[str] | None = None) -> UserContext:
+    return UserContext(email=email, role=UserRole.EMPLOYEE,
+                       access=build_access(perms or [], roles=roles or ["member"]))
+
+
+def _client(user: UserContext) -> TestClient:
+    app = FastAPI()
+    app.include_router(me.me_router)
+    app.dependency_overrides[get_current_user] = lambda: user
+    return TestClient(app)
+
+
+def _writes(db: _FakeDB) -> list[tuple[str, dict[str, Any]]]:
+    return [(s, p) for s, p in db.sql if not s.startswith("SELECT")]
+
+
+# ── Validation ──────────────────────────────────────────────────────────────
+
+
+class TestValidation:
+    @pytest.mark.parametrize("body", [
+        {"preset": "ceo"},
+        {"pins": ["/nowhere"]},
+        {"pins": ["/"]},
+        {"cardOrder": ["weather"]},
+        {"newOrder": ["launch-rocket"]},
+        {"answered": "maybe"},
+        {"answered": "answered"},
+        {"pins": ["/tasks"] * 30},
+        # `known` takes the same names and the same cap as `pins`.
+        {"known": ["/nowhere"]},
+        {"known": ["/"]},
+        {"known": ["/tasks"] * 30},
+        {"known": "/tasks"},
+        # The body never names the member or the tenant (R5, R11).
+        {"pins": [], "user_id": "someone@else.example"},
+        {"pins": [], "organization_id": "00000000-0000-0000-0000-000000000001"},
+        # The nudge mark is an ISO timestamp, or null (CF-2).
+        {"chat_first_message_at": "yesterday"},
+        {"chat_first_message_at": 1_700_000_000},
+        {"chat_first_message_at": "2026-10-21T09:00:00.000Z" + "0" * 20},
+        # The tour mark takes the same rule (WS-OB GD-5a).
+        {"tour_seen_at": "yesterday"},
+        {"tour_seen_at": 1_700_000_000},
+    ])
+    def test_a_bad_layout_is_refused_and_writes_nothing(self, fake: _FakeDB, body: dict) -> None:
+        res = _client(_user()).put("/auth/me/shell", json=body)
+        assert res.status_code == 422, res.text
+        assert fake.sql == []
+
+    def test_a_tab_on_the_old_bundle_saves_with_the_answer_s_guide(self, fake: _FakeDB) -> None:
+        """`guide` is the server's fact. An old tab spreads the whole answer
+        back into its save, so the PUT drops `guide` and saves the rest. It
+        is never stored. Without this every sidebar save of that tab was a
+        422 until a reload."""
+        for guide in (True, False):
+            fake.sql.clear()
+            body = {"preset": "engineer", "answered": "answered", "pins": ["/tasks"], "guide": guide}
+            res = _client(_user()).put("/auth/me/shell", json=body)
+            assert res.status_code == 200, res.text
+            [(_, params)] = _writes(fake)
+            stored = json.loads(params["shell_prefs"])
+            assert "guide" not in stored
+            assert stored["pins"] == ["/tasks"]
+
+    def test_a_good_layout_is_stored_with_its_names(self, fake: _FakeDB) -> None:
+        body = {"preset": "engineer", "answered": "answered",
+                "pins": ["/tasks", "/tasks", "/crm"], "cardOrder": ["next"],
+                "newOrder": ["capture"]}
+        res = _client(_user()).put("/auth/me/shell", json=body)
+        assert res.status_code == 200, res.text
+        # A repeated pin is kept once. A preview pane may be stored.
+        assert res.json()["pins"] == ["/tasks", "/crm"]
+        [(sql, params)] = _writes(fake)
+        assert "INSERT INTO user_settings" in sql
+        assert json.loads(params["shell_prefs"])["preset"] == "engineer"
+
+    def test_known_is_stored_beside_the_stars(self, fake: _FakeDB) -> None:
+        body = {"preset": "engineer", "answered": "answered", "pins": ["/projects"],
+                "known": ["/projects", "/chat", "/chat", "/tasks"]}
+        res = _client(_user()).put("/auth/me/shell", json=body)
+        assert res.status_code == 200, res.text
+        assert res.json()["known"] == ["/projects", "/chat", "/tasks"]
+        [(_, params)] = _writes(fake)
+        assert json.loads(params["shell_prefs"])["known"] == ["/projects", "/chat", "/tasks"]
+
+    def test_skip_is_a_stored_choice(self, fake: _FakeDB) -> None:
+        res = _client(_user()).put("/auth/me/shell", json={"answered": "skipped"})
+        assert res.status_code == 200
+        assert res.json()["answered"] == "skipped"
+        [(_, params)] = _writes(fake)
+        assert json.loads(params["shell_prefs"])["answered"] == "skipped"
+
+
+# ── The nudge mark (WS-62 CF-2, `chat_first_surface.md` §4.7, D-CF-7) ──────
+
+
+STAMP = "2026-10-21T09:00:00.000Z"
+
+
+class TestTheNudgeMark:
+    def test_the_first_message_time_is_stored_and_read_back(self, fake: _FakeDB) -> None:
+        fake.stored = json.dumps({"answered": "skipped"})
+        body = {"answered": "skipped", "chat_first_message_at": STAMP}
+        res = _client(_user()).put("/auth/me/shell", json=body)
+        assert res.status_code == 200, res.text
+        assert res.json()["chat_first_message_at"] == STAMP
+        [(_, params)] = _writes(fake)
+        assert json.loads(params["shell_prefs"])["chat_first_message_at"] == STAMP
+        fake.stored = params["shell_prefs"]
+        assert _client(_user()).get("/auth/me/shell").json()["chat_first_message_at"] == STAMP
+
+    def test_a_layout_save_that_omits_the_mark_keeps_it_in_sql(self, fake: _FakeDB) -> None:
+        """The welcome dialog's one write names the layout only. It must
+        not bring the nudge back on every device (§4.7). The keep is ONE
+        statement, so no read-then-write can race a stamp (review of #1206).
+        The R8 twin proves the value against Postgres."""
+        fake.stored = json.dumps({"answered": "skipped", "chat_first_message_at": STAMP})
+        body = {"preset": "engineer", "answered": "answered", "pins": ["/tasks"]}
+        res = _client(_user()).put("/auth/me/shell", json=body)
+        assert res.status_code == 200, res.text
+        [(sql, params)] = _writes(fake)
+        assert ("DO UPDATE SET shell_prefs = jsonb_set(jsonb_set(jsonb_set(EXCLUDED.shell_prefs, "
+                "ARRAY['chat_first_message_at'], "
+                "COALESCE(user_settings.shell_prefs->'chat_first_message_at', "
+                "CAST('null' AS jsonb)), true), ARRAY['tour_seen_at'], "
+                "COALESCE(user_settings.shell_prefs->'tour_seen_at', "
+                "CAST('null' AS jsonb)), true), ARRAY['buddy_hello_at'], "
+                "COALESCE(user_settings.shell_prefs->'buddy_hello_at', "
+                "CAST('null' AS jsonb)), true)") in sql
+        assert sql.endswith("RETURNING shell_prefs")
+        assert json.loads(params["shell_prefs"])["preset"] == "engineer"
+
+    def test_the_mark_alone_merges_into_the_stored_layout(self, fake: _FakeDB) -> None:
+        """`markChatFirstMessage` sends the key alone, so a star another
+        device saved is never written over (review of #1206)."""
+        fake.stored = json.dumps({"answered": "skipped", "pins": ["/tasks"]})
+        res = _client(_user()).put("/auth/me/shell", json={"chat_first_message_at": STAMP})
+        assert res.status_code == 200, res.text
+        [(sql, params)] = _writes(fake)
+        assert json.loads(params["shell_prefs"]) == {"chat_first_message_at": STAMP}
+        assert ("DO UPDATE SET shell_prefs = CASE WHEN "
+                "jsonb_typeof(user_settings.shell_prefs) = 'object' "
+                "THEN user_settings.shell_prefs ELSE CAST('{}' AS jsonb) END "
+                "|| EXCLUDED.shell_prefs") in sql
+        # A member with no row yet gets one, with the calendar seed.
+        assert "day_start_hour" not in params
+
+    def test_an_explicit_null_clears_the_mark(self, fake: _FakeDB) -> None:
+        fake.stored = json.dumps({"answered": "skipped", "chat_first_message_at": STAMP})
+        body = {"answered": "skipped", "chat_first_message_at": None}
+        res = _client(_user()).put("/auth/me/shell", json=body)
+        assert res.status_code == 200, res.text
+        assert res.json()["chat_first_message_at"] is None
+        [(sql, params)] = _writes(fake)
+        # The nudge mark is written as named. Only the omitted tour mark is
+        # kept (WS-OB GD-5a).
+        assert "ARRAY['chat_first_message_at']" not in sql
+        assert "DO UPDATE SET shell_prefs = jsonb_set(jsonb_set(EXCLUDED.shell_prefs, ARRAY['tour_seen_at']" in sql
+        assert json.loads(params["shell_prefs"])["chat_first_message_at"] is None
+
+    def test_a_member_with_no_row_reads_null(self, fake: _FakeDB) -> None:
+        assert _client(_user()).get("/auth/me/shell").json()["chat_first_message_at"] is None
+
+    def test_a_stored_value_that_is_not_a_time_reads_null(self, fake: _FakeDB) -> None:
+        fake.stored = json.dumps({"answered": "skipped", "chat_first_message_at": "soon"})
+        assert _client(_user()).get("/auth/me/shell").json()["chat_first_message_at"] is None
+
+
+# ── The tour mark (WS-OB GD-5a, `assistant_guide.md` §5.3) ─────────────────
+
+
+class TestTheTourMark:
+    def test_the_mark_alone_merges_and_stores_the_server_s_time(self, fake: _FakeDB) -> None:
+        """`markTourSeen` sends the key alone. The server merges it, as it
+        merges the nudge mark, and writes its OWN time, not the device's."""
+        fake.stored = json.dumps({"answered": "skipped", "pins": ["/tasks"]})
+        sent = "2001-01-01T00:00:00.000Z"
+        res = _client(_user()).put("/auth/me/shell", json={"tour_seen_at": sent})
+        assert res.status_code == 200, res.text
+        [(sql, params)] = _writes(fake)
+        written = json.loads(params["shell_prefs"])
+        assert list(written) == ["tour_seen_at"]
+        assert written["tour_seen_at"] != sent
+        assert me._stamp(written["tour_seen_at"]) == written["tour_seen_at"]
+        assert written["tour_seen_at"] > "2026-01-01"
+        assert "|| EXCLUDED.shell_prefs" in sql
+
+    def test_the_tour_mark_keeps_a_stored_time_in_sql(self, fake: _FakeDB) -> None:
+        """The first start stays on the server. The R8 twin proves the value."""
+        res = _client(_user()).put("/auth/me/shell", json={"tour_seen_at": STAMP})
+        assert res.status_code == 200, res.text
+        [(sql, _)] = _writes(fake)
+        assert ("ARRAY['tour_seen_at'], COALESCE(NULLIF(user_settings.shell_prefs->'tour_seen_at', "
+                "CAST('null' AS jsonb)), EXCLUDED.shell_prefs->'tour_seen_at', "
+                "CAST('null' AS jsonb)), true)") in sql
+
+    def test_the_nudge_mark_alone_still_takes_the_new_time(self, fake: _FakeDB) -> None:
+        res = _client(_user()).put("/auth/me/shell", json={"chat_first_message_at": STAMP})
+        assert res.status_code == 200, res.text
+        [(sql, _)] = _writes(fake)
+        assert "tour_seen_at" not in sql
+
+    def test_both_marks_alone_are_one_stamp(self, fake: _FakeDB) -> None:
+        body = {"chat_first_message_at": STAMP, "tour_seen_at": STAMP}
+        res = _client(_user()).put("/auth/me/shell", json=body)
+        assert res.status_code == 200, res.text
+        [(sql, params)] = _writes(fake)
+        stored = json.loads(params["shell_prefs"])
+        assert set(stored) == {"chat_first_message_at", "tour_seen_at"}
+        assert stored["chat_first_message_at"] == STAMP
+        assert "|| EXCLUDED.shell_prefs" in sql
+
+    def test_a_layout_save_that_names_the_tour_mark_still_keeps_the_stored_one(self, fake: _FakeDB) -> None:
+        """An old tab copies the whole answer back. A layout save never writes
+        ``tour_seen_at``, whether the body says null or a time."""
+        for sent in (None, STAMP):
+            fake.stored = json.dumps({"answered": "skipped", "tour_seen_at": STAMP})
+            body = {"answered": "skipped", "chat_first_message_at": None, "tour_seen_at": sent}
+            res = _client(_user()).put("/auth/me/shell", json=body)
+            assert res.status_code == 200, res.text
+            [(sql, params)] = _writes(fake)[-1:]
+            assert "ARRAY['tour_seen_at'], COALESCE(user_settings.shell_prefs->'tour_seen_at'" in sql
+            assert json.loads(params["shell_prefs"])["tour_seen_at"] is None
+
+    def test_a_layout_save_keeps_only_the_marks_it_omits(self, fake: _FakeDB) -> None:
+        """A body that names the nudge mark keeps the tour mark alone, so an
+        explicit null still clears the nudge mark (CF-2)."""
+        fake.stored = json.dumps({"answered": "skipped", "tour_seen_at": STAMP})
+        body = {"answered": "skipped", "chat_first_message_at": None}
+        res = _client(_user()).put("/auth/me/shell", json=body)
+        assert res.status_code == 200, res.text
+        [(sql, _)] = _writes(fake)
+        assert ("DO UPDATE SET shell_prefs = jsonb_set(jsonb_set(EXCLUDED.shell_prefs, "
+                "ARRAY['tour_seen_at'], ") in sql
+        assert "ARRAY['chat_first_message_at']" not in sql
+
+    def test_a_client_put_never_writes_the_hello_mark(self, fake: _FakeDB) -> None:
+        """BUD-1: the hello route is the ONLY writer of ``buddy_hello_at``.
+        A body of the mark alone writes nothing, so it cannot block the hello
+        and cannot wipe the layout."""
+        fake.stored = json.dumps({"answered": "skipped", "pins": ["/tasks"]})
+        res = _client(_user()).put("/auth/me/shell", json={"buddy_hello_at": STAMP})
+        assert res.status_code == 200, res.text
+        assert _writes(fake) == []
+        assert res.json()["buddy_hello_at"] is None
+        assert res.json()["pins"] == ["/tasks"]
+
+    def test_a_layout_save_never_writes_the_hello_mark(self, fake: _FakeDB) -> None:
+        for sent in (None, STAMP):
+            fake.stored = json.dumps({"answered": "skipped", "buddy_hello_at": STAMP})
+            body = {"answered": "skipped", "chat_first_message_at": None, "buddy_hello_at": sent}
+            res = _client(_user()).put("/auth/me/shell", json=body)
+            assert res.status_code == 200, res.text
+            [(sql, params)] = _writes(fake)[-1:]
+            assert "ARRAY['buddy_hello_at'], COALESCE(user_settings.shell_prefs->'buddy_hello_at'" in sql
+            assert json.loads(params["shell_prefs"])["buddy_hello_at"] is None
+
+    def test_a_mark_beside_another_mark_leaves_the_hello_alone(self, fake: _FakeDB) -> None:
+        res = _client(_user()).put(
+            "/auth/me/shell", json={"tour_seen_at": STAMP, "buddy_hello_at": STAMP})
+        assert res.status_code == 200, res.text
+        [(_, params)] = _writes(fake)
+        assert list(json.loads(params["shell_prefs"])) == ["tour_seen_at"]
+
+    def test_the_read_carries_the_mark_and_drops_a_bad_one(self, fake: _FakeDB) -> None:
+        fake.stored = json.dumps({"answered": "skipped", "tour_seen_at": STAMP})
+        assert _client(_user()).get("/auth/me/shell").json()["tour_seen_at"] == STAMP
+        fake.stored = json.dumps({"answered": "skipped", "tour_seen_at": "soon"})
+        assert _client(_user()).get("/auth/me/shell").json()["tour_seen_at"] is None
+
+    def test_the_keep_names_marks_only(self) -> None:
+        with pytest.raises(ValueError):
+            me._set_layout_keep(("preset",))
+
+
+# ── The guide flag (WS-OB GD-5a, `assistant_guide.md` §7) ──────────────────
+
+
+def _guide_orgs(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+    from types import SimpleNamespace
+
+    import acb_common.guide_flags as flags
+
+    monkeypatch.setattr(flags, "get_settings", lambda: SimpleNamespace(guide_orgs=raw))
+
+
+def _in_org(org: str | None) -> UserContext:
+    return UserContext(email="ana@alpha.example", role=UserRole.EMPLOYEE,
+                       organization_id=org, access=build_access([], roles=["member"]))
+
+
+class TestTheGuideFlag:
+    @pytest.mark.parametrize(("raw", "org", "on"), [
+        ("*", "org-a", True),
+        ("org-b, ORG-A", "org-a", True),
+        ("org-b", "org-a", False),
+        ("", "org-a", False),
+        ("*", None, False),
+    ])
+    def test_the_read_says_guide_for_the_session_s_org(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+        raw: str, org: str | None, on: bool,
+    ) -> None:
+        _guide_orgs(monkeypatch, raw)
+        assert _client(_in_org(org)).get("/auth/me/shell").json()["guide"] is on
+
+    def test_the_org_comes_from_the_session_never_the_request(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _guide_orgs(monkeypatch, "org-b")
+        client = _client(_in_org("org-a"))
+        res = client.get("/auth/me/shell?organization_id=org-b",
+                         headers={"X-Organization-Id": "org-b"})
+        assert res.json()["guide"] is False
+
+    def test_a_save_answers_with_the_flag_and_never_stores_it(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _guide_orgs(monkeypatch, "*")
+        res = _client(_in_org("org-a")).put("/auth/me/shell", json={"pins": ["/tasks"]})
+        assert res.status_code == 200, res.text
+        assert res.json()["guide"] is True
+        [(_, params)] = _writes(fake)
+        assert "guide" not in json.loads(params["shell_prefs"])
+
+
+# ── The write ──────────────────────────────────────────────────────────────
+
+
+class TestTheWrite:
+    def test_a_put_of_null_resets_and_inserts_nothing(self, fake: _FakeDB) -> None:
+        res = _client(_user()).put("/auth/me/shell", content="null",
+                                   headers={"Content-Type": "application/json"})
+        assert res.status_code == 200
+        assert res.json() == {**me.EMPTY_SHELL, "guide": False}
+        [(sql, params)] = _writes(fake)
+        assert sql.startswith("UPDATE user_settings SET shell_prefs = NULL")
+        assert params == {"uid": "ana@alpha.example"}
+
+    def test_the_member_is_the_session_s(self, fake: _FakeDB) -> None:
+        _client(_user("ben@beta.example")).put("/auth/me/shell", json={"pins": []})
+        assert {p["uid"] for _, p in fake.sql} == {"ben@beta.example"}
+
+    def test_every_statement_names_the_bound_tenant(self, fake: _FakeDB) -> None:
+        _client(_user()).put("/auth/me/shell", json={"pins": ["/tasks"]})
+        for sql, _ in fake.sql:
+            assert "current_setting('app.tenant_id', true)" in sql, sql
+
+    def test_a_new_row_carries_the_calendar_seed(self, fake: _FakeDB) -> None:
+        _client(_user()).put("/auth/me/shell", json={"pins": ["/tasks"]})
+        [(sql, params)] = _writes(fake)
+        assert params["day_start_hour"] == 8 and params["day_end_hour"] == 19
+        # An existing row takes the layout only, never the seed. The body
+        # omits the nudge mark, so the stored one is kept in SQL (CF-2).
+        assert "DO UPDATE SET shell_prefs = jsonb_set(jsonb_set(jsonb_set(EXCLUDED.shell_prefs" in sql
+        assert sql.endswith("updated_at = now() RETURNING shell_prefs")
+        assert "day_start_hour = EXCLUDED" not in sql
+
+    def test_an_existing_row_gets_no_seed(self, fake: _FakeDB) -> None:
+        fake.stored = {"pins": []}
+        _client(_user()).put("/auth/me/shell", json={"pins": ["/tasks"]})
+        [(_, params)] = _writes(fake)
+        assert "day_start_hour" not in params
+
+    def test_a_caller_with_no_address_cannot_save(self, fake: _FakeDB) -> None:
+        res = _client(_user(email="")).put("/auth/me/shell", json={"pins": []})
+        assert res.status_code == 403
+        assert fake.sql == []
+
+
+# ── The read ───────────────────────────────────────────────────────────────
+
+
+class TestTheRead:
+    def test_no_row_is_never_asked(self, fake: _FakeDB) -> None:
+        res = _client(_user()).get("/auth/me/shell")
+        assert res.status_code == 200
+        assert res.json() == {**me.EMPTY_SHELL, "guide": False}
+
+    def test_a_failed_read_is_503_never_the_empty_layout(self, fake: _FakeDB) -> None:
+        fake.fail = True
+        res = _client(_user()).get("/auth/me/shell")
+        assert res.status_code == 503
+
+    def test_a_stale_name_is_dropped_not_refused(self, fake: _FakeDB) -> None:
+        fake.stored = json.dumps({"preset": "retired-preset", "answered": "skipped",
+                                  "pins": ["/tasks", "/gone"], "newOrder": ["capture", "x"]})
+        body = _client(_user()).get("/auth/me/shell").json()
+        assert body == {"preset": None, "answered": "skipped", "pins": ["/tasks"],
+                        "known": None, "cardOrder": None, "newOrder": ["capture"],
+                        "chat_first_message_at": None, "tour_seen_at": None,
+                        "buddy_hello_at": None, "guide": False}
+
+    def test_a_stale_known_entry_is_dropped_not_refused(self, fake: _FakeDB) -> None:
+        fake.stored = json.dumps({"answered": "answered", "preset": "engineer",
+                                  "pins": ["/projects"], "known": ["/projects", "/gone", 7]})
+        body = _client(_user()).get("/auth/me/shell").json()
+        assert body["known"] == ["/projects"]
+
+    def test_an_ns7_row_reads_known_as_null(self, fake: _FakeDB) -> None:
+        """A row saved before `known` existed. The client reads null as
+        "every app not in pins is known" (`starredHrefs`)."""
+        fake.stored = json.dumps({"answered": "answered", "preset": "engineer",
+                                  "pins": ["/tasks", "/projects"]})
+        body = _client(_user()).get("/auth/me/shell").json()
+        assert body["pins"] == ["/tasks", "/projects"]
+        assert body["known"] is None
+
+
+# ── A guest (done-when 2) ──────────────────────────────────────────────────
+
+
+class TestAGuest:
+    def test_a_guest_with_no_feature_saves_and_reads_a_pin(self, fake: _FakeDB) -> None:
+        guest = _user("guest@alpha.example", roles=["guest"], perms=[])
+        assert not guest.access.has("feature:tasks")
+        client = _client(guest)
+        assert client.put("/auth/me/shell", json={"pins": ["/chat"]}).status_code == 200
+        assert client.get("/auth/me/shell").status_code == 200
+
+    def test_neither_route_carries_a_feature_gate(self) -> None:
+        routes = [r for r in me.me_router.routes if getattr(r, "path", "") == "/auth/me/shell"]
+        assert {m for r in routes for m in r.methods} == {"GET", "PUT"}
+        for r in routes:
+            assert not r.dependencies, f"{r.path} carries a router gate"
+
+
+# ── One vocabulary, in two languages ───────────────────────────────────────
+
+
+def _ts_list(source: str, name: str) -> set[str]:
+    match = re.search(rf"export const {name}[^=]*=\s*\[(.*?)\];", source, re.S)
+    assert match, f"{name} not found in presets.ts"
+    return set(re.findall(r'"([^"]+)"', match.group(1)))
+
+
+class TestOneVocabulary:
+    """The gateway checks names; the workbench owns what they mean. A name in
+    one list and not the other is a layout one side refuses."""
+
+    def test_the_panes_are_nav_ts_s(self) -> None:
+        source = NAV.read_text(encoding="utf-8")
+        panes = set(re.findall(r'href: "(/[^"]*)"', source))
+        assert panes == me.SHELL_PANES == set(load_vocabulary().panes)
+
+    def test_the_presets_are_presets_ts_s(self) -> None:
+        source = PRESETS.read_text(encoding="utf-8")
+        ids = set(re.findall(r'^\s+id: "([a-z-]+)",$', source, re.M))
+        assert ids == me.SHELL_PRESETS == set(load_vocabulary().presets)
+        assert len(ids) == 8
+
+    def test_the_cards_are_presets_ts_s(self) -> None:
+        source = PRESETS.read_text(encoding="utf-8")
+        cards = _ts_list(source, "CARD_KEYS")
+        assert cards == me.SHELL_CARDS == set(load_vocabulary().cards)
+
+    def test_the_gateway_sets_derive_from_the_manifest(self) -> None:
+        vocab = load_vocabulary()
+        for got, want in (
+            (me.SHELL_PANES, vocab.panes),
+            (me.SHELL_PRESETS, vocab.presets),
+            (me.SHELL_CARDS, vocab.cards),
+        ):
+            assert isinstance(got, frozenset)
+            assert got == frozenset(want)
+
+    def test_the_jobs_are_the_command_bar_s(self) -> None:
+        """The PUT checks job ids against the gateway's list (`intent.py`).
+        The presets name the jobs of the workbench's list (`registry.ts`).
+        So this reads the TypeScript, as `TestOneJobList` does, and it fails
+        when the two lists drift."""
+        source = REGISTRY.read_text(encoding="utf-8")
+        match = re.search(r"export const GENERATED_JOBS[^=]*=\s*\[(.*?)\n\];", source, re.S)
+        assert match, "GENERATED_JOBS not found in jobs.generated.ts"
+        ts_ids = set(re.findall(r'^\s+id: "([a-z-]+)",$', match.group(1), re.M))
+        assert len(ts_ids) >= 10
+        assert me._job_ids() == ts_ids
+        assert {j.id for j in JOBS} == ts_ids

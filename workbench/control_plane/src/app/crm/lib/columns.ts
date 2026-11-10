@@ -50,7 +50,9 @@ export const COLUMNS: Record<EntitySlug, CrmColumn[]> = {
       sort: "name",
       className: "font-medium text-foreground",
     },
-    { key: "organization_name", label: "Organization" },
+    // CRM-X1: the stage by name. The gateway projects it (`status_name`).
+    { key: "status_name", label: "Stage" },
+    { key: "organization_name", label: "Company" },
     { key: "amount", label: "Amount", sort: "amount" },
     {
       key: "expected_close_date",
@@ -58,6 +60,7 @@ export const COLUMNS: Record<EntitySlug, CrmColumn[]> = {
       sort: "expected_close_date",
     },
     { key: "owner_email", label: "Owner" },
+    { key: "last_activity_at", label: "Last touched", sort: "last_activity_at" },
   ],
   leads: [
     {
@@ -66,9 +69,11 @@ export const COLUMNS: Record<EntitySlug, CrmColumn[]> = {
       sort: "lead_name",
       className: "font-medium text-foreground",
     },
+    { key: "status_name", label: "Status" },
     { key: "organization_name", label: "Company" },
     { key: "email", label: "Email", sort: "email" },
     { key: "owner_email", label: "Owner", sort: "owner_email" },
+    { key: "last_activity_at", label: "Last touched", sort: "last_activity_at" },
     {
       // "Converted" is the FK, never the timestamp (B6): deleting the deal
       // SET-NULLs the link and the lead comes back to the working list. The
@@ -89,16 +94,33 @@ export const COLUMNS: Record<EntitySlug, CrmColumn[]> = {
     { key: "email", label: "Email", sort: "email" },
     { key: "phone", label: "Phone" },
     { key: "owner_email", label: "Owner", sort: "owner_email" },
+    { key: "last_activity_at", label: "Last touched", sort: "last_activity_at" },
   ],
   organizations: [
     {
       key: "name",
-      label: "Organization",
+      label: "Company",
       sort: "name",
       className: "font-medium text-foreground",
     },
     { key: "industry", label: "Industry" },
     { key: "phone", label: "Phone" },
     { key: "owner_email", label: "Owner", sort: "owner_email" },
+    { key: "last_activity_at", label: "Last touched", sort: "last_activity_at" },
   ],
 };
+
+/**
+ * The columns a list draws (WS-53 CRM-Q17a-2 item 1): each column of
+ * `columns` that is not in `emptyColumns`. The gateway serves that set on
+ * the layout (`empty_columns`). It holds the standard keys that no record
+ * fills, and `null` or `[]` hides nothing. The first column is the name of
+ * the record, and it always shows.
+ */
+export function shownColumns(
+  columns: readonly CrmColumn[],
+  emptyColumns: readonly string[] | null | undefined,
+): CrmColumn[] {
+  const empty = new Set(emptyColumns ?? []);
+  return columns.filter((column, index) => index === 0 || !empty.has(column.key));
+}

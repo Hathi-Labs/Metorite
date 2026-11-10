@@ -36,6 +36,7 @@ import {
   type FieldSpec,
   type RenderedField,
   changedFields,
+  chipsText,
   completeness,
   formatChips,
   isFilled,
@@ -51,6 +52,11 @@ interface Props {
   /** Show the "what the AI still cannot see about you" meter (`/people/me`). */
   showCompleteness?: boolean;
   onSaved?: (person: PersonDetail) => void;
+  /**
+   * True on `/people/me`: the page is the member's own, whatever the payload's
+   * `is_self` says. The copy then speaks to "you", never "them".
+   */
+  selfRoute?: boolean;
 }
 
 /** A read-only value, rendered so "restricted" never looks like "empty". */
@@ -87,6 +93,34 @@ function ReadValue({ field }: { field: RenderedField }) {
     );
   }
   return <span className="text-foreground">{String(value)}</span>;
+}
+
+/**
+ * A comma-separated list input. It keeps what the member typed, so a comma or
+ * a space between two words stays on screen until the next word arrives
+ * (`chipsText` says when the stored value wins instead).
+ */
+function ChipsInput({
+  value,
+  onChange,
+  placeholder,
+}: {
+  value: unknown;
+  onChange: (next: string[]) => void;
+  placeholder?: string;
+}) {
+  const [typed, setTyped] = useState(() => formatChips(value));
+  return (
+    <Input
+      inputSize="sm"
+      value={chipsText(typed, value)}
+      placeholder={placeholder}
+      onChange={(e) => {
+        setTyped(e.target.value);
+        onChange(parseChips(e.target.value));
+      }}
+    />
+  );
 }
 
 function EditControl({
@@ -147,11 +181,10 @@ function EditControl({
       );
     case "chips":
       return (
-        <Input
-          inputSize="sm"
-          value={formatChips(value)}
+        <ChipsInput
+          value={value}
           placeholder="comma, separated"
-          onChange={(e) => onChange(parseChips(e.target.value))}
+          onChange={onChange}
         />
       );
     case "hours":
@@ -174,25 +207,35 @@ function EditControl({
               <span className="w-16 shrink-0 text-[11px] text-muted-foreground">
                 {k}
               </span>
-              <Input
-                inputSize="sm"
-                value={
-                  Array.isArray(record[k])
-                    ? (record[k] as unknown[]).join(",")
-                    : record[k] === undefined || record[k] === null
+              {k === "days" ? (
+                <ChipsInput
+                  value={
+                    Array.isArray(record[k]) ? (record[k] as unknown[]).map(String) : []
+                  }
+                  onChange={(days) => {
+                    const next = { ...record };
+                    if (days.length === 0) delete next[k];
+                    else next[k] = days.map((n) => Number(n));
+                    onChange(Object.keys(next).length ? next : null);
+                  }}
+                />
+              ) : (
+                <Input
+                  inputSize="sm"
+                  value={
+                    record[k] === undefined || record[k] === null
                       ? ""
                       : String(record[k])
-                }
-                onChange={(e) => {
-                  const next = { ...record };
-                  const raw = e.target.value;
-                  if (raw === "") delete next[k];
-                  else if (k === "days")
-                    next[k] = parseChips(raw).map((n) => Number(n));
-                  else next[k] = raw;
-                  onChange(Object.keys(next).length ? next : null);
-                }}
-              />
+                  }
+                  onChange={(e) => {
+                    const next = { ...record };
+                    const raw = e.target.value;
+                    if (raw === "") delete next[k];
+                    else next[k] = raw;
+                    onChange(Object.keys(next).length ? next : null);
+                  }}
+                />
+              )}
             </label>
           ))}
         </div>
@@ -230,6 +273,7 @@ export function ProfilePanels({
   includePrivate = true,
   showCompleteness = false,
   onSaved,
+  selfRoute = false,
 }: Props) {
   const [draft, setDraft] = useState<Record<string, unknown>>({});
   const [saving, setSaving] = useState(false);
@@ -242,7 +286,7 @@ export function ProfilePanels({
   // every payload (D-PC-1) — and an ABSENT flag reads as "not me", so a
   // gateway that has not answered yet says "About them" rather than telling a
   // colleague their own name is theirs.
-  const self = person.is_self === true;
+  const self = selfRoute || person.is_self === true;
   const sections = useMemo(
     () => renderSections(person, { includePrivate }),
     [person, includePrivate]
@@ -261,7 +305,7 @@ export function ProfilePanels({
       // holding no grant can save their own profile only via the first
       // (D-PC-15), so this is not a cosmetic choice of URL.
       const saved = await peopleApi.update(
-        person.is_self ? "me" : person.id,
+        self ? "me" : person.id,
         pending,
       );
       setDraft({});
@@ -399,6 +443,18 @@ export function ProfilePanels({
                     <ReadValue field={field} />
                   )}
                 </dd>
+                {self && field.spec.name === "preferred_name" ? (
+                  <p className="text-[11px] text-muted-foreground">
+                    The assistant uses this unless you set a name in{" "}
+                    <Link
+                      href="/settings/assistant"
+                      className="text-foreground underline underline-offset-2"
+                    >
+                      Assistant settings
+                    </Link>
+                    .
+                  </p>
+                ) : null}
               </div>
             ))}
           </dl>

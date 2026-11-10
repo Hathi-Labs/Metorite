@@ -19,6 +19,7 @@ import re
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any, ClassVar
+
 from tests.unit._sql_match import hits
 
 ORG = "00000000-0000-0000-0000-00000000000a"
@@ -54,12 +55,28 @@ _PERSON_ADDR = re.compile(r"lower\((\w+)\) = :(email|actor)")
 _PERSON_ADDR_CS = re.compile(r"(?<!lower\()\b(\w+) = :(email|actor)")
 #: ``<col> = CAST(:uid AS uuid)``
 _PERSON_UID = re.compile(r"(\w+) = CAST\(:uid AS uuid\)")
-#: ``visibility = 'private'`` / ``visibility <> 'private'``
-_PERSON_VIS = re.compile(r"visibility (=|<>) 'private'")
+#: ``visibility = 'private'`` / ``visibility <> 'private'``, and the same split
+#: on ``scope_kind`` (``package_install``, WS-PKG PKG-4). The column comes from
+#: the statement, so a clause that drops the split changes the answer.
+_PERSON_VIS = re.compile(r"\b(visibility|scope_kind) (=|<>) 'private'")
 #: ``<col> IS NULL`` / ``<col> IS NOT NULL`` — how the GTD store's LOCAL half
 #: is told from its SYNCED half (`account_id`). Read from the statement like
 #: everything else here, so a clause that drops the filter changes the answer.
 _PERSON_NULL = re.compile(r"(\w+) IS (NOT )?NULL")
+#: ``[NOT] EXISTS (SELECT 1 FROM <t> AS <a> WHERE <tests>)``: does a row of
+#: ``<t>`` pass each test against this row? ``members._OTHERS_SEE_THE_APP``
+#: (WS-PKG PKG-4 and PKG-5b, ``package_host/sharing.py``) asks it of
+#: ``app_grants``. :meth:`_FakeDB._others_test` reads each test from the
+#: statement, so a clause that drops a test changes the answer. A test that
+#: the fake cannot read is an error. ``EXISTS(`` with no space or with more
+#: space is the same SQL, so the pattern and :data:`_ANY_EXISTS` take any
+#: spacing.
+_PERSON_OTHERS = re.compile(
+    r"(NOT\s+)?\bEXISTS\s*\(SELECT 1 FROM (\w+) AS (\w+) WHERE ((?:[^()]|\([^()]*\))*)\)")
+#: Each ``EXISTS (`` of a statement, at any spacing. When this count and the
+#: count of :data:`_PERSON_OTHERS` differ, the fake cannot read a subquery,
+#: and that is an error, never a pass.
+_ANY_EXISTS = re.compile(r"\bEXISTS\s*\(", re.I)
 
 
 class _Scalars:
@@ -70,6 +87,17 @@ class _Scalars:
 
     def all(self) -> list[Any]:
         return [next(iter(r.values())) for r in self._rows]
+
+
+class _PlanRows:
+    """``fetchall`` with attribute access, the way ``teardown.py`` reads the
+    teardown plans (EM-G11f1b)."""
+
+    def __init__(self, rows: list[dict[str, Any]]):
+        self._rows = rows
+
+    def fetchall(self) -> list[Any]:
+        return [SimpleNamespace(**r) for r in self._rows]
 
 
 class _Rows:
@@ -199,6 +227,9 @@ class _FakeDB:
         #: modelled above and the purge branch reads and writes those, so a
         #: test sees one world rather than two.
         self.rows: dict[str, list[dict[str, Any]]] = {}
+        #: EM-G11f1b. Each ``email_mailbox_purges`` row a purge wrote, as the
+        #: address it was keyed by, in the order of the statements.
+        self.purge_rows: list[str] = []
         #: ``organization`` — id → row. Seeded with the single tenant the
         #: pre-retrofit files assume; ``test_admin_tenancy.py`` adds a second.
         self.organizations: dict[str, dict[str, Any]] = {
@@ -232,6 +263,19 @@ class _FakeDB:
             "projects": 3, "tasks": 14, "handed_over": 3, "sealed": 11,
         }
         self.seal_previews: list[str] = []
+        #: WS-53 CRM-Q33: each statement of the CRM half of a purge, in order.
+        self.crm_purge: list[str] = []
+        self.kb_purge: list[str] = []
+        #: WS-61 KC-1a: the reads of the connection registry by the purge.
+        self.registry_reads: list[str] = []
+        #: The statements on email_scheduled_sends (H-375), in order.
+        self.send_later: list[str] = []
+        #: WS-63 PZ-9: the statements that forget a removed member's
+        #: assistant profile, in order, with the address each one names.
+        self.profile_clears: list[tuple[str, str]] = []
+        #: WS-63 PZ-33a: the clears of the chat summaries by a purge, with
+        #: the address each one names.
+        self.summary_clears: list[tuple[str, str]] = []
         #: Audit calls, in order, as ``(action, target)``. Ordered because the
         #: purge must record BEFORE it commits, and a set cannot show that.
         self.audit: list[tuple[str, str]] = []
@@ -304,14 +348,50 @@ class _FakeDB:
             raise AssertionError(f"unscoped person clause in fake: {s}")
         vis = _PERSON_VIS.search(s)
         if vis:
-            wants_private = vis.group(1) == "="
+            vis_col, wants_private = vis.group(1), vis.group(2) == "="
             found = [
-                r for r in found if (r.get("visibility", "private") == "private") is wants_private
+                r for r in found if (r.get(vis_col, "private") == "private") is wants_private
             ]
         for nul in _PERSON_NULL.finditer(s):
             col, negated = nul.group(1), bool(nul.group(2))
             found = [r for r in found if (r.get(col) is not None) is negated]
+        others = list(_PERSON_OTHERS.finditer(s))
+        if len(_ANY_EXISTS.findall(s)) != len(others):
+            raise AssertionError(f"unreadable EXISTS clause in fake: {s}")
+        for ex in others:
+            negated, inner = bool(ex.group(1)), self.rows.get(ex.group(2), [])
+            passes = self._others_test(ex.group(3), table, ex.group(4), p)
+            found = [r for r in found if any(passes(g, r) for g in inner) is not negated]
         return found
+
+    @staticmethod
+    def _others_test(alias: str, table: str, body: str,
+                     params: dict[str, Any] | None = None) -> Any:
+        """One test of a row ``g`` of the subquery against a row ``r`` of
+        *table*, read from the conjuncts of *body*. Postgres compares text
+        byte for byte, and so does this. A conjunct that this cannot read is
+        an error, never a pass."""
+        a, o = re.escape(alias), re.escape(table)
+        tests: list[Any] = []
+        for part in body.split(" AND "):
+            if m := re.fullmatch(rf"{a}\.(\w+) = {o}\.(\w+)", part):
+                tests.append(lambda g, r, k=m[1], c=m[2]: g.get(k) == r.get(c))
+            elif m := re.fullmatch(rf"strpos\({a}\.(\w+), '@'\) > 0", part):
+                tests.append(lambda g, r, k=m[1]: "@" in str(g.get(k, "")))
+            elif m := re.fullmatch(rf"lower\({a}\.(\w+)\) <> {o}\.(\w+)", part):
+                tests.append(
+                    lambda g, r, k=m[1], c=m[2]: str(g.get(k, "")).lower() != r.get(c))
+            elif m := re.fullmatch(rf"lower\({a}\.(\w+)\) = {o}\.(\w+)", part):
+                tests.append(
+                    lambda g, r, k=m[1], c=m[2]: str(g.get(k, "")).lower() == r.get(c))
+            elif (m := re.fullmatch(rf"lower\({a}\.(\w+)\) = :(\w+)", part)) and params:
+                # A bound value, such as the member's address (CE-4,
+                # ``calendar_attendances``). The route binds it lower-case.
+                tests.append(lambda g, r, k=m[1], v=str(params[m[2]]):
+                             str(g.get(k, "")).lower() == v)
+            else:
+                raise AssertionError(f"unreadable EXISTS test in fake: {part}")
+        return lambda g, r: all(t(g, r) for t in tests)
 
     def _person_delete(self, table: str, matched: list[dict[str, Any]]) -> None:
         if table == "app_user":
@@ -681,6 +761,33 @@ class _FakeDB:
         # user_role) and **before** the `FROM access_request` reader, which
         # matches on a substring and would answer a `SELECT count(*) FROM
         # access_request` with a request ROW.
+        # EM-G11f1b: the teardown plans of a member purge, read before the
+        # deletes. The clause is ``teardown.MEMBER_MAILBOXES_WHERE``, read
+        # from the statement like the purge branch below. A seeded row with
+        # no provider is IMAP, so it holds no filters and no grant, and with
+        # no organization it reaches no Redis.
+        if s.startswith("SELECT id, organization_id, provider, credentials_encrypted"):
+            assert "lower(user_id) = :email" in s, s
+            want = str(p["email"]).lower()
+            found = [r for r in self.rows.get("email_accounts", [])
+                     if str(r.get("user_id", "")).lower() == want]
+            return _PlanRows([{
+                "id": r.get("id", f"acc-{i}"),
+                "organization_id": r.get("organization_id"),
+                "provider": r.get("provider", "imap"),
+                "credentials_encrypted": r.get("credentials_encrypted", "blob"),
+                "user_id": r["user_id"],
+                "email_address": r.get("email_address"),
+                "webhook_subscription_id": None,
+            } for i, r in enumerate(found)][: int(p["limit"])])
+        if s.startswith("INSERT INTO email_mailbox_purges"):
+            assert "lower(user_id) = :email" in s, s
+            want = str(p["email"]).lower()
+            mine = [r for r in self.rows.get("email_accounts", [])
+                    if str(r.get("user_id", "")).lower() == want]
+            self.purge_rows.extend(str(r["user_id"]) for r in mine)
+            return _Rows([], rowcount=len(mine))
+
         stmt = _PERSON_STMT.match(s)
         if stmt:
             table = stmt.group(2)
@@ -772,6 +879,53 @@ class _FakeDB:
             self.seal_previews.append(str(p.get("who") or "").lower())
             return _Rows([dict(self.seal_preview)])
 
+        # ── WS-53 CRM-Q33: the CRM half of a purge ─────────────────────────
+        #
+        # This fake models the identity plane and has no CRM. It records each
+        # statement of the CRM half (the scrub of the org rules, and the lock
+        # and the rewrite of `zoho:questions`), so a test can assert that the
+        # purge reaches it. What each statement does to real rows is proven
+        # on a real Postgres in `test_crm_answer_first_r8.py` (R8).
+        if "crm_business_rules" in s or "crm_sync_cursors" in s:
+            self.crm_purge.append(s)
+            return _Rows([], rowcount=0)
+
+        # WS-61 KB-9a: the Knowledge half of a purge takes the address out
+        # of the gaps. What it does to real rows is proven on a real
+        # Postgres in `test_kb_gaps_r8.py` (R8).
+        if "kb_gaps" in s:
+            self.kb_purge.append(s)
+            return _Rows([], rowcount=0)
+
+        # WS-61 KC-1a: the purge lists the connections of the org through
+        # `connections/store.py`, to find the member's Knowledge sources. This
+        # fake holds none. The real delete is proven in `test_kc_sources_r8.py`.
+        if s.startswith("SELECT") and "FROM integration_connections" in s:
+            self.registry_reads.append(s)
+            return _Rows([], rowcount=0)
+
+        # H-375: a removal cancels the member's queued sends, and a purge
+        # deletes them. What the statements do to real rows is proven on a
+        # real Postgres in `test_email_send_later.py` (R8).
+        if "email_scheduled_sends" in s:
+            self.send_later.append(s)
+            return _Rows([], rowcount=0)
+
+        # WS-63 PZ-9: a removal forgets the member's assistant profile. The
+        # fake records the statement and the address. What it does to real
+        # rows is proven on a real Postgres in
+        # `test_assistant_profile_offboarding_r8.py` (R8).
+        if s.startswith("UPDATE user_settings SET assistant_profile = NULL"):
+            self.profile_clears.append((s, str(p.get("email") or "")))
+            return _Rows([], rowcount=0)
+
+        # WS-63 PZ-33a: a purge clears the chat summaries of the member. The
+        # fake records the statement and the address. What it does to real
+        # rows is proven on a real Postgres in `test_chat_summary_r8.py` (R8).
+        if s.startswith("UPDATE chat_session AS s SET member_summary"):
+            self.summary_clears.append((s, str(p.get("member") or "")))
+            return _Rows([], rowcount=0)
+
         raise AssertionError(f"unhandled SQL in fake: {s}")
 
 
@@ -824,11 +978,16 @@ def bind_admin_db(monkeypatch: Any, fake: _FakeDB, modules: tuple[Any, ...]) -> 
     # suite on the network. No-oped explicitly instead. Its real behaviour is
     # proven in `tests/unit/test_invite_console_mirror.py` and, Console-side, in
     # `tests/unit/test_customer_console_member_write.py`.
+    #
+    # `remove_member_on_console` (2026-10-15) is the same HTTP hop for the
+    # Remove and Purge doors, no-oped for the same reason. A test that wants to
+    # see the call patches it again after this function runs.
     _shadow_seams = (
         "mirror_identity_membership",
         "mirror_membership_status",
         "purge_identity_shadow",
         "invite_member_on_console",
+        "remove_member_on_console",
     )
     for module in (_common_mod, *modules):
         for seam in _shadow_seams:

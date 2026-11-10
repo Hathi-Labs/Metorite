@@ -21,6 +21,7 @@ import {
   TOMBSTONE_RE,
   partitionRoster,
   isSeated,
+  seatControl,
   memberTally,
   readMembers,
   readKeys,
@@ -185,7 +186,7 @@ describe("lifecycleHint", () => {
   it("nudges when a paid subscription sits under a trial lifecycle", () => {
     const hint = lifecycleHint("trial", "active");
     expect(hint).not.toBeNull();
-    expect(hint).toContain("Activate account");
+    expect(hint).toContain("End the trial");
   });
 
   it("stays silent when the two statuses agree, or when unpaid", () => {
@@ -252,9 +253,10 @@ describe("statusHelp", () => {
     // one people get wrong. Three surfaces said the opposite once.
     expect(statusHelp("suspended")).toContain("Sign-in still works");
     expect(statusHelp("suspended")).not.toContain("refused");
-    const page = readFileSync(
-      join(__dirname, "..", "app", "customers", "[slug]", "page.tsx"), "utf8");
-    expect(page).toContain("Sign-in still works so they can pay");
+    // WS-50 slice 3: the customer page says it through the life bar's next
+    // step, which `lib/lifecycle.ts` owns.
+    const life = readFileSync(join(__dirname, "lifecycle.ts"), "utf8");
+    expect(life).toContain("they can sign in to pay, but AI and seat changes are locked");
     const actions = readFileSync(
       join(__dirname, "..", "app", "customers", "[slug]", "Actions.tsx"), "utf8");
     expect(actions).toContain("Sign-in KEEPS working so they can pay");
@@ -342,6 +344,20 @@ describe("the customer's member roster (LS-9 · launch_surface.md §7)", () => {
     expect(isSeated(rows[0])).toBe(false);
   });
 
+  it("offers no Assign seat on a removed row, and keeps Release on a seated one", () => {
+    const row = (status: string, seats: string[]) => ({
+      email: "a@x.test",
+      role: "member",
+      status,
+      seats,
+    });
+    expect(seatControl(row("removed", []))).toBeNull();
+    expect(seatControl(row("removed", ["core"]))).toBe("release");
+    expect(seatControl(row("active", []))).toBe("assign");
+    expect(seatControl(row("invited", []))).toBe("assign");
+    expect(seatControl(row("active", ["core"]))).toBe("release");
+  });
+
   it("tallies PEOPLE, counting a multi-plan holder once", () => {
     // The trap: presenting this as the seat count. One person on two plans is
     // one seated row and two assigned seats — the seat counts are seatsTotals'.
@@ -357,6 +373,18 @@ describe("the customer's member roster (LS-9 · launch_surface.md §7)", () => {
 
   it("tallies an empty roster without dividing by anything", () => {
     expect(memberTally([])).toEqual({ total: 0, seated: 0, unassigned: 0 });
+  });
+
+  it("leaves removed people out of every count, seated or not", () => {
+    const rows = readMembers({
+      members: [
+        { email: "a@x.test", role: "owner", status: "active", seats: ["core"] },
+        { email: "b@x.test", role: "member", status: "invited", seats: [] },
+        { email: "c@x.test", role: "member", status: "removed", seats: [] },
+        { email: "d@x.test", role: "member", status: "removed", seats: ["core"] },
+      ],
+    });
+    expect(memberTally(rows)).toEqual({ total: 2, seated: 1, unassigned: 1 });
   });
 });
 
@@ -476,7 +504,7 @@ describe("the credit ledger read (manual payments)", () => {
     const page = readFileSync(
       join(__dirname, "..", "app", "customers", "[slug]", "page.tsx"), "utf8");
     expect(page).toContain("creditLedger");
-    expect(page).toContain("Credit ledger");
+    expect(page).toContain("Credit history");
     const actions = readFileSync(
       join(__dirname, "..", "app", "customers", "[slug]", "Actions.tsx"), "utf8");
     expect(actions).toContain('reason === "manual" && !ref.trim()');

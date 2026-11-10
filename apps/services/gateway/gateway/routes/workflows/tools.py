@@ -203,8 +203,23 @@ def _broker_write(
     return _run
 
 
-async def _notify(args: dict[str, Any], actor: str) -> dict[str, Any]:
-    """Post a message onto the activity feed (the v1 'send notification')."""
+NOTIFY_ACTIVITY = "notify.activity"
+
+
+async def notify_activity(
+    args: dict[str, Any], actor: str, *, organization_id: str | None,
+) -> dict[str, Any]:
+    """Post a message onto the tenant's activity feed (H-201c).
+
+    The run passes the org of its row (``service._tool_runner``), because a
+    scheduled run has no bound tenant. ``None`` falls back to the bound
+    tenant, and with neither the feed drops the message. The arguments are
+    checked here too, because the run calls this without ``execute_tool``.
+    """
+    problems = check_args(_TOOL_REGISTRY[NOTIFY_ACTIVITY].args_schema, args,
+                          action=NOTIFY_ACTIVITY)
+    if problems:
+        raise NodeExecutionError("; ".join(problems))
     message = str(args.get("message") or "").strip()
     if not message:
         raise NodeExecutionError("notify needs a message")
@@ -212,6 +227,7 @@ async def _notify(args: dict[str, Any], actor: str) -> dict[str, Any]:
         from acb_common import publish_activity
 
         publish_activity(
+            organization_id=organization_id,
             kind="workflow",
             agent=actor,
             source="workflows",
@@ -221,6 +237,14 @@ async def _notify(args: dict[str, Any], actor: str) -> dict[str, Any]:
     except Exception:
         pass
     return {"sent": True, "message": message[:500]}
+
+
+async def _notify(args: dict[str, Any], actor: str) -> dict[str, Any]:
+    """Post a message onto the activity feed (the v1 'send notification').
+
+    Outside a run, the org is the bound tenant.
+    """
+    return await notify_activity(args, actor, organization_id=None)
 
 
 register_tool(
@@ -248,7 +272,7 @@ register_tool(
 
 register_tool(
     WorkflowToolSpec(
-        action="notify.activity",
+        action=NOTIFY_ACTIVITY,
         label="Post notification",
         description="Post a message to the Metorite activity feed.",
         integration=None,
@@ -257,5 +281,75 @@ register_tool(
         open_world=False,
         args_schema={"message": "string|Text posted to the activity feed."},
         handler=_notify,
+    )
+)
+
+
+# ── notify.whatsapp — "Tell me on WhatsApp" for the workflow's owner ─────────
+#
+# WS-59 RE-5 (``proactive_reach.md`` §11.4 item 3). The step records one
+# Reach request for the OWNER of the workflow, and the Reach loop decides when
+# it goes. The member never comes from the step's arguments: the run binds
+# the owner in (``service._tool_runner``), as it binds the Projects writes.
+# Outside a run, the plain handler refuses.
+
+NOTIFY_WHATSAPP = "notify.whatsapp"
+
+
+async def _notify_whatsapp_unbound(args: dict[str, Any], actor: str) -> dict[str, Any]:
+    raise NodeExecutionError(
+        "notify.whatsapp runs only inside a workflow run, for the workflow's owner")
+
+
+async def notify_owner_whatsapp(org: str, owner: str, workflow_id: str,
+                                args: dict[str, Any]) -> dict[str, Any]:
+    """Record the request for *owner*, whom the run resolved. Answers what
+    the run console shows. The title and the body are the author's words."""
+    from gateway.reach import requests as reach_requests
+
+    spec = _TOOL_REGISTRY[NOTIFY_WHATSAPP]
+    problems = check_args(spec.args_schema, args, action=NOTIFY_WHATSAPP)
+    if problems:
+        raise NodeExecutionError("; ".join(problems))
+    urgency = str(args.get("urgency") or "normal").strip().lower()
+    # A member that Reach cannot reach gets no row, and the run goes on: the
+    # console says why (review of RE-5 fix round 1, P1).
+    available, linked = await reach_requests.reach_status(org, owner)
+    if not available:
+        return {"recorded": False, "reason": "reach_off"}
+    if not linked:
+        return {"recorded": False, "reason": "no_link"}
+    try:
+        rid = await reach_requests.tell_me(
+            org, owner, source="workflow",
+            title=reach_requests.clip(args.get("title"), reach_requests.TITLE_MAX),
+            body=args.get("body") or None, urgency=urgency, requested_by=owner,
+            entity={"type": "workflow", "id": workflow_id})
+    except reach_requests.RequestRefused as exc:
+        # A full backlog or a limit stops this request, never the run.
+        return {"recorded": False, "reason": exc.reason}
+    except reach_requests.RequestInvalid as exc:
+        raise NodeExecutionError(f"notify.whatsapp: {exc}") from exc
+    return {"recorded": rid is not None, "request_id": rid}
+
+
+register_tool(
+    WorkflowToolSpec(
+        action=NOTIFY_WHATSAPP,
+        label="Tell me on WhatsApp",
+        description=(
+            "Send the workflow's owner a WhatsApp message through Reach. "
+            "It reaches the owner only, inside the owner's daily limit."
+        ),
+        integration=None,
+        read_only=False,
+        destructive=False,
+        open_world=False,
+        args_schema={
+            "title": "string|One line the owner reads first, 300 characters at most.",
+            "body": "string?|More text, 1,000 characters at most.",
+            "urgency": "string?|normal or urgent. Urgent may pass quiet hours.",
+        },
+        handler=_notify_whatsapp_unbound,
     )
 )

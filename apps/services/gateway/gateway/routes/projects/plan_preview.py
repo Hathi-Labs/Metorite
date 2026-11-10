@@ -2,7 +2,7 @@
 
 Spec: ``project-docs/specs/projects_ai_chat.md`` §13.2, §13.6, §10.6.
 
-    POST /projects/plan/preview   {rows: [{key, title, owner, effort_mins,
+    POST /projects/plan/preview   {rows: [{key, title, owner?, effort_mins,
                                            start?, due, after?}]}
 
 The chat tool ``propose_plan`` calls this twice: once to fill the plan card,
@@ -24,6 +24,9 @@ number again (§13.2 rule 1):
   :func:`gateway.capacity.person_capacity` walks them with ``at_risk_tasks``.
   A plan row that the walk reports is marked ``short_of_hours``.
 * **The warnings** are the S7b predicates (``candidate_warnings``).
+* **An unassigned row** (owner, 2026-10-17, §26) carries an empty ``owner``.
+  It gets ``unassigned: true`` and no fit, no hours and no mark, because
+  nobody is there to measure. It adds no hours to the walk of any person.
 * **The dependency warnings** are ``gateway.conflicts.dependency_conflict``
   over the rows' ``start`` and ``due``. The skill carries no copy of the rule.
 
@@ -65,6 +68,7 @@ from gateway.routes.projects.candidates import candidate_warnings, match_text
 from gateway.routes.projects.core import (
     STARTED_CATEGORY,
     _tenant_session,
+    reader_day_start,
     resolve_visibility,
     router,
 )
@@ -105,7 +109,8 @@ class PlanRowIn(BaseModel):
 
     key: str
     title: str
-    owner: str
+    #: Empty for an unassigned row (§26). An empty owner is never a refusal.
+    owner: str = ""
     effort_mins: int = Field(ge=0, le=MAX_EFFORT_MINS)
     start: str | None = None
     due: str
@@ -174,10 +179,8 @@ def checked_rows(body: PlanPreviewIn) -> list[dict[str, Any]]:
                 raise HTTPException(
                     status_code=422, detail=f"Row {key}: after names no row called {blocker}.",
                 )
-        if not row.title.strip() or not row.owner.strip():
-            raise HTTPException(
-                status_code=422, detail=f"Row {key}: a row needs a title and an owner.",
-            )
+        if not row.title.strip():
+            raise HTTPException(status_code=422, detail=f"Row {key}: a row needs a title.")
         out.append({
             "key": key,
             "title": row.title.strip(),
@@ -343,9 +346,11 @@ async def plan_preview_body(
         # (§13.3, as S7a and S7c do). Work outside the grant is not read.
         where = load_open_where("TRUE", vis)
         params = {**load_params(vis, None), "holders": known, "started_cat": STARTED_CATEGORY}
+        day_from = await reader_day_start(db, vis.email)
         totals = {
             str(r.who): r
-            for r in (await db.execute(text(capacity_totals_sql(where)), params)).fetchall()
+            for r in (await db.execute(text(capacity_totals_sql(where)),
+                                       {**params, "day_start": day_from})).fetchall()
         }
         dated_params = {**params, "until": dated_until(today, days)}
         dated_params.pop("started_cat")
@@ -429,6 +434,9 @@ def _row_answer(
 ) -> dict[str, Any]:
     """One row's fit, hours and marks, for a caller who holds the grant."""
     who = r["owner"]
+    if not who:
+        # §26: nobody to measure, so no fit, no hours and no mark.
+        return {"key": r["key"], "owner": "", "unassigned": True, "marks": []}
     if who.startswith("agent:"):
         return {
             "key": r["key"], "owner": who,

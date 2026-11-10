@@ -13,11 +13,15 @@ from datetime import datetime, timedelta, timezone
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends
-from gateway.routes.email.automation.assistant import _load_assistant_about
+from gateway.routes.email.automation.assistant import (
+    EMAIL_TASK_TIERS,
+    _load_assistant_about,
+)
 from gateway.routes.email.automation.drafting import (
     _agent_draft_reply,
     _is_no_draft,
 )
+from gateway.routes.email.automation.identity import resolve_self
 from gateway.routes.email.automation.replyzero import (
     _FOLLOW_UP_LABEL,
     _business_days_cutoff,
@@ -159,10 +163,12 @@ async def _maybe_send_follow_up_reminders(account_id: str) -> dict[str, int | bo
             if not await provider.authenticate():
                 return result
             about, signature = await _load_assistant_about(db, account_id)
-            from gateway.routes.email.automation.assistant import (  # noqa: PLC0415
-                _account_models,
-            )
-            fu_model = (await _account_models(db, account_id))["draft"]
+            # A nudge is background draft writing. Our code chooses its tier,
+            # and no stored choice changes it (D-EM-61).
+            fu_model = EMAIL_TASK_TIERS["draft"]
+            # A nudge speaks as THIS mailbox, the same as a reply (MB-14,
+            # EM-T8e-1 review round 1). One read for the run.
+            me = await resolve_self(db, account_id)
 
             for r in rows:
                 mark = lambda: db.execute(text(  # noqa: E731
@@ -226,6 +232,8 @@ async def _maybe_send_follow_up_reminders(account_id: str) -> dict[str, int | bo
                                 "body": (hb or "").strip()
                                 or r.body_text or r.snippet or "",
                                 "thread_id": r.thread_id or "",
+                                "self": me.address,
+                                "self_label": me.label,
                             }
                             body = await _agent_draft_reply(
                                 email, about, signature, acc.user_id,

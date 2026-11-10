@@ -25,64 +25,130 @@ on:
     # wedges the merge. So filter inside the workflow if you must, never at the
     # trigger.
     #
-    # The cost is stated rather than hidden: a docs-only PR now runs the full
-    # ~5 minute suite. That is the price of the checks meaning something at the
-    # merge button, and it is cheaper than one un-mergeable PR.
-  # ── Why `push` as well, when `pull_request` already covers the PR ──────────
+    # The cost is stated rather than hidden: the workflow starts for every PR,
+    # and (CIV-3) the unit shards run only the tests that the diff can affect.
+    # A docs-only PR still reports every required check. That is the price of
+    # the checks meaning something at the merge button, and it is cheaper than
+    # one un-mergeable PR.
+  # ── NO `push` trigger, on purpose (2026-10-16) ──────────────────────────
   #
-  # `pull_request` checks out `refs/pull/N/merge`, and GitHub does NOT compute
-  # that ref while a PR is CONFLICTED. So a conflicted PR runs no jobs at all —
-  # measured on #439, which sat `dirty` and reported `check_runs: 0`. GitHub
-  # renders "no checks" identically to "nothing failing", which is the same
-  # misreading the `pull_request` comment above already records once.
-  #
-  # That matters most for the R1 migration-prefix guard: the window in which a
-  # cross-branch number collision is most likely is exactly the window in which
-  # nothing was watching, and the collision then surfaces only while somebody
-  # hand-resolves the conflict — i.e. while editing the very tree that hides it.
-  # `test_migration_prefixes.py` DOES catch two migrations at one number (proven
-  # by re-introducing a duplicate); it was simply never run.
-  #
-  # A `push` build has no merge ref to compute, so it runs whatever the branch
-  # actually contains, conflicted or not. ⚠️ The cost is stated rather than
-  # hidden: a branch with an open PR now builds twice per push. That is the
-  # price of the window being closed, and it is cheaper than one silent
-  # migration collision (three in two weeks — see work_plan.md §2 WS-27).
-  push:
-    # Ignore ONLY the refs that are already covered elsewhere or are machine-
-    # written. Everything else — every feature branch, named or not — runs, which
-    # is the point of an ignore-list over an allow-list.
-    #
-    #   main     — covered by deploy.yml; running here would be a third copy of
-    #              the same jobs on every merge.
-    #   release  — a PUBLISHED ref, not a development one: deploy.yml's
-    #              `publish-release` job fast-forwards it to a SHA that has
-    #              already been checked on `main` (`git push origin
-    #              ${GITHUB_SHA}:refs/heads/release`). Re-checking the same tree
-    #              under a second name buys nothing and doubles every deploy.
-    #   staging  — the same shape, one rung down; T-7 adds the ref and the
-    #              `staging-promote` fast-forward. Listed BEFORE it exists so the
-    #              ref cannot arrive and quietly start duplicating every promote.
-    #
-    # ⚠️ Adding a name here removes a fence from that ref. Only add one that is
-    # provably checked upstream of the push — that is the whole criterion.
-    branches-ignore:
-      - main
-      - release
-      - staging
-    paths-ignore:
-      - "**.md"
-      - "project-docs/**"
+  # A push run created a SKIPPED twin of the required check "Unit tests" on
+  # the same head SHA. GitHub counts a skipped check as passed, so a PR with
+  # a failed shard read as mergeable for about 7 minutes (measured on #1077).
+  # The push trigger existed for one gap: a CONFLICTED PR gets no
+  # pull_request run, and that is when two branches take one migration number
+  # (R1). `push-check.yml` closes that gap on push, under a job name that no
+  # required check uses. Fence: tests/unit/test_pr_check_triggers.py.
+
+# A new push to a PR cancels the run for its older commit. That run's result
+# no longer gates anything, and on the Free plan's 20-job cap its 17 jobs
+# held runners that the newer run then waited for (measured 2026-10-16).
+concurrency:
+  group: pr-check-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  lint:
-    name: "Lint"
-    runs-on: ubuntu-latest
+  # ── Which parts of the tree this PR touches (2026-10-19) ─────────────────
+  #
+  # A job that does not touch its area is SKIPPED by `if:`. GitHub counts a
+  # skipped job as satisfied, so a required check still passes (see the note
+  # at the top). A backend PR then frees 4 of the Free plan's 20 runners: the
+  # operator console and the three e2e shards. Measured 15-19 Oct: a shard
+  # waited up to 22 minutes for a runner.
+  #
+  # `frontend` gates ONLY the e2e shards: the browser suite stubs `/api/**`
+  # and reads nothing outside workbench/control_plane. The Frontend unit job
+  # reads the whole repo, so it always runs.
+  #
+  # ⚠️ Fail OPEN: when the diff cannot be read, every area reads `true`. And
+  # when this whole job fails, each job that needs it RUNS: its `if:` asks
+  # `needs.changes.result != 'success'`. Without that, a failed `changes`
+  # would skip every required check below, and a skip counts as a pass.
+  # `!cancelled()`, NOT `always()`: `always()` still starts these jobs after a
+  # newer push cancelled the run, and they then hold runners for nothing.
+  # Fence: tests/unit/test_fence_lists.py.
+  changes:
+    name: "Changed areas"
+    runs-on: ${{ (vars.USE_BOX_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'metorite-box' || 'ubuntu-24.04' }}
+    outputs:
+      frontend: ${{ steps.diff.outputs.frontend }}
+      operator: ${{ steps.diff.outputs.operator }}
+      database: ${{ steps.diff.outputs.database }}
+      caddy: ${{ steps.diff.outputs.caddy }}
+      # CIV-3. The unit tests that this diff can affect (affected_tests.py
+      # --gate). `full` is `false` ONLY when the selector ran and found no
+      # reason for a full run. The list is one line of space-separated paths
+      # in a job output, not an artifact. A typical list is 2-20 KB and the
+      # limit is 1 MB. The 6 shards and the guard need no download step, and
+      # `ci_unit_guard.py gate-output` turns a list over 200 KB into `full`.
+      full: ${{ steps.gate.outputs.full }}
+      files: ${{ steps.gate.outputs.files }}
+      # CIV-17. The unit shards this selection needs, a JSON list: `[]` for
+      # an empty selection, `[1]` for a small one, `[1,2,3,4,5,6]` for a full
+      # run. The `test` matrix reads it. Empty here means `changes` failed.
+      shards: ${{ steps.gate.outputs.shards }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # This step sits BEFORE `diff`, because the fence reads the LAST step
+      # for the area outputs. Plain python3, no uv: both scripts use the
+      # standard library only. A selector error, or no JSON at all, gives
+      # `full=true`.
+      - id: gate
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python3 scripts/affected_tests.py --gate --base "$BASE" > gate.json || rm -f gate.json
+          python3 scripts/ci_unit_guard.py gate-output --json gate.json \
+            "--ignored=$(python3 scripts/fences.py pytest-ignore)" | tee -a "$GITHUB_OUTPUT"
+
+      - id: diff
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -u
+          if files="$(git diff --name-only "$BASE"...HEAD 2>/dev/null)" && [ -n "$files" ]; then :; else
+            echo "cannot read the diff, so every area runs"
+            for a in frontend operator database caddy; do echo "$a=true" >> "$GITHUB_OUTPUT"; done
+            exit 0
+          fi
+          echo "$files"
+          # A change to CI itself runs everything.
+          all=false; echo "$files" | grep -qE '^\.github/' && all=true
+          hit() { $all && echo true || { echo "$files" | grep -qE "$1" && echo true || echo false; }; }
+          {
+            # CIV-24 (D203). `frontend` ignores the `all` switch: a change to CI alone
+            # does not run the browser suite. e2e-nightly.yml runs it on main.
+            echo "frontend=$(echo "$files" | grep -qE '^workbench/control_plane/' && echo true || echo false)"
+            echo "operator=$(hit '^workbench/operator_console/')"
+            echo "database=$(hit '^(infra/|scripts/|deploy/)')"
+            echo "caddy=$(hit '^deploy/hostinger/caddy/')"
+          } | tee -a "$GITHUB_OUTPUT"
+
+  lint:
+    name: "Lint"
+    runs-on: ${{ (vars.USE_BOX_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'metorite-box' || 'ubuntu-24.04' }}
+    # `pull-requests: read` lets ci_advisory.sh read the PR's labels.
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v5
+
+      # CIV-23 (D201). The box runners share one home, and a job's `uv cache
+      # prune` deleted an archive that another job was installing ("Failed to
+      # read directory ... uv/archive-v0"). Each runner keeps its own uv cache.
+      - name: Keep uv's cache private to this runner
+        if: runner.environment == 'self-hosted'
+        run: |
+          d="$(dirname "$RUNNER_WORKSPACE")/uv"
+          echo "UV_CACHE_DIR=$d/cache" >> "$GITHUB_ENV"
+          echo "UV_PYTHON_INSTALL_DIR=$d/python" >> "$GITHUB_ENV"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.3.0
@@ -128,6 +194,54 @@ jobs:
       - name: session-handoff queue injection (blocking)
         run: node .claude/hooks/session-handoff.test.mjs
 
+      # CLAUDE.md §0 names ste-lint.mjs as the STE fence on every markdown
+      # write. Until Metorite #465 no job ran its test, so PR #1362 changed the
+      # hook and showed 18 green checks with none of them testing it. A lint
+      # that nobody tests can go blind silently, as `--staged` did in a
+      # worktree (#460). R7 — the rule names its fence.
+      - name: ste-lint hook (blocking)
+        run: node .claude/hooks/ste-lint.test.mjs
+
+      # worktree-notice.mjs runs at the start of every session. On 2026-11-03
+      # the primary checkout was 258 commits behind main, so sessions loaded
+      # rules from before D135 and D145 and nothing said so. The hook now names
+      # that gap. A crash there costs a session, so the test also proves that
+      # it exits 0 outside a repo. R7 — the rule names its fence.
+      - name: worktree-notice stale-rules hook (blocking)
+        run: node .claude/hooks/worktree-notice.test.mjs
+
+      # stop-children.mjs runs at every Stop (CIV-16). It walks up to the
+      # claude process and leaves the MCP servers off its list. A wrong root
+      # lists nothing, or tells the agent to kill its own MCP servers. Both
+      # failures are silent. R7 — the rule names its fence.
+      - name: stop-children cleanup hook (blocking)
+        run: node .claude/hooks/stop-children.test.mjs
+
+      # ── The process fences (two-speed CI, 2026-10-19) ─────────────────────
+      #
+      # These tests read files as text and guard consistency: naming, docs,
+      # registries, wording, lockstep. They ran inside the 12-27 minute unit
+      # shards with `-x`, so an agent met them one at a time, about 30
+      # minutes a round. Of 70 red runs on 15-19 Oct, 29 were a fence and 9
+      # were a real bug.
+      #
+      # They are ADVISORY while a feature is in build: a warning, and the job
+      # goes on. Label the PR `harden` for the hardening pass, and they block.
+      # The shards skip them (`pytest-ignore`).
+      #
+      # The SAFETY fences are not here. They stay in the shards, blocking, as
+      # before: without a database half of them skip, so a second copy here
+      # would cost about 4 minutes and prove less.
+      # Lists: tests/fences.json. Contract: engineering_practice.md §7a.
+      #
+      # The label is read LIVE, not from the event: a rerun replays the event
+      # of the first run, so a label added later would not count.
+      - name: Process fences (advisory in build, blocking with the `harden` label)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: bash scripts/ci_advisory.sh "process fence" -- uv run python scripts/fences.py run process
+
       # Non-blocking report: the FULL ruff check (all configured rules incl. the
       # ~1.3k-finding style backlog + C901 complexity hotspots). This is the
       # ratchet dashboard — the number should trend down; rules graduate to the
@@ -165,10 +279,49 @@ jobs:
         continue-on-error: true
         run: uv run python scripts/codebase_health.py --diff --top 10
 
+  # ── The unit suite, in parallel shards ───────────────────────────────────
+  #
+  # One serial run took 52-56 minutes (measured 2026-10-16, 27,800 tests).
+  # pytest-split cuts it into contiguous chunks of equal measured time, from
+  # `.test_durations`. `duration_based_chunks` keeps collection order, so
+  # tests that share a module stay together. Each shard gets its own two
+  # Postgres containers, so R8 suites never share a database.
+  #
+  # The required check "Unit tests" is the `unit-tests` job below. It fails
+  # when any shard fails, and it reads every shard's report for the R8 guard.
+  #
+  # No `needs: lint`: lint takes a minute, and the shards are the long pole.
+  #
+  # Refresh the timings when the split drifts (one shard much longer than the
+  # rest): download the `test-durations` artifact of a green run and commit it
+  # as `.test_durations`.
+  #
+  # CIV-3: a PR runs only the tests its diff can affect. The `changes` job
+  # exports `needs.changes.outputs.full` and `.files`. The shard selects only
+  # when `changes` succeeded AND `full` is the text `false`. Any other state
+  # (`true`, empty, or a failed `changes` job) runs the whole tree as before. `!cancelled()` starts the shards even when
+  # `changes` failed. Without it a failed `changes` would skip them, and
+  # `unit-tests` would then read a skipped dependency. A selection NEVER
+  # reaches pytest as an empty list, because pytest then collects everything.
   test:
-    name: "Unit tests"
-    runs-on: ubuntu-latest
-    needs: lint
+    name: "Unit tests (shard ${{ matrix.shard }})"
+    # CIV-23 (D201). The unit shards stay on ubuntu-24.04: on the box they ran 40+ min against 14 on
+    # hosted, with a quiet box. Fence: tests/unit/test_box_runner_routing.py.
+    # The other jobs but e2e and backup-restore may reach the box.
+    runs-on: ubuntu-24.04
+    needs: changes
+    # CIV-17. No shard job starts for an empty selection (`shards` is `[]`), and
+    # GitHub fails a matrix with no values, so the `if:`
+    # skips the job before the matrix is read. A failed `changes` job leaves
+    # `shards` empty text, and the matrix then falls back to all six shards.
+    if: ${{ !cancelled() && needs.changes.outputs.shards != '[]' }}
+    # `fail-fast: false`: one run reports the failures of EVERY shard.
+    # Fail-fast cancelled the other five and hid their failures until the
+    # next round.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.changes.outputs.shards || '[1,2,3,4,5,6]') }}
     # WS-31 CP-3. The Customer Console's suites are R8-gated: they skip themselves
     # unless CUSTOMER_CONSOLE_DATABASE_URL points at a real Postgres, because
     # hermetic fakes agree with whatever SQL they are handed. Independent
@@ -184,8 +337,9 @@ jobs:
           POSTGRES_PASSWORD: cc
           POSTGRES_DB: cc_platform
         ports:
-          - 5433:5432
+          - 5432
         options: >-
+          --tmpfs /var/lib/postgresql/data:rw
           --health-cmd "pg_isready -U cc"
           --health-interval 5s
           --health-timeout 5s
@@ -207,16 +361,22 @@ jobs:
           POSTGRES_PASSWORD: acb
           POSTGRES_DB: acb_tenant
         ports:
-          - 5434:5432
+          - 5432
         options: >-
+          --tmpfs /var/lib/postgresql/data:rw
           --health-cmd "pg_isready -U acb"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
     env:
+      # CIV-23 (D201). The ports in these two DSNs are PLACEHOLDERS that match
+      # deploy.yml's `r8-suite` (fixed ports, the fence compares them). The
+      # first step overrides both DSNs through GITHUB_ENV with the host port
+      # that Docker picked, because the box runners share ONE Docker daemon.
       CUSTOMER_CONSOLE_DATABASE_URL: postgresql+psycopg://cc:cc@127.0.0.1:5433/cc_platform
       # ⚠️⚠️ THIS IS NOT `DATABASE_URL`, AND THE TWO MUST NOT BE MERGED.
-      # This step runs the WHOLE tests/unit/ directory. Setting DATABASE_URL
+      # A full run of this job covers the WHOLE tests/unit/ directory, and a
+      # selection run covers part of it. Setting DATABASE_URL
       # here would arm test_tenant_coverage.py's two DB-gated tests, which fail
       # BY CONSTRUCTION against a freshly-replayed ladder:
       #   * test_live_catalog_has_column_force_and_policy wants FORCE-RLS
@@ -231,6 +391,24 @@ jobs:
       TENANT_LADDER_DATABASE_URL: postgresql+psycopg://acb:acb@127.0.0.1:5434/acb_tenant
     steps:
       - uses: actions/checkout@v5
+
+      - name: Point the tests at the service containers
+        env:
+          CC_PORT: ${{ job.services.platform-postgres.ports['5432'] }}
+          TENANT_PORT: ${{ job.services.tenant-postgres.ports['5432'] }}
+        run: |
+          echo "CUSTOMER_CONSOLE_DATABASE_URL=postgresql+psycopg://cc:cc@127.0.0.1:${CC_PORT}/cc_platform" >> "$GITHUB_ENV"
+          echo "TENANT_LADDER_DATABASE_URL=postgresql+psycopg://acb:acb@127.0.0.1:${TENANT_PORT}/acb_tenant" >> "$GITHUB_ENV"
+
+      # CIV-23 (D201). The box runners share one home, and a job's `uv cache
+      # prune` deleted an archive that another job was installing ("Failed to
+      # read directory ... uv/archive-v0"). Each runner keeps its own uv cache.
+      - name: Keep uv's cache private to this runner
+        if: runner.environment == 'self-hosted'
+        run: |
+          d="$(dirname "$RUNNER_WORKSPACE")/uv"
+          echo "UV_CACHE_DIR=$d/cache" >> "$GITHUB_ENV"
+          echo "UV_PYTHON_INSTALL_DIR=$d/python" >> "$GITHUB_ENV"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.3.0
@@ -283,186 +461,275 @@ jobs:
               print("extensions available:", sorted(names))
           PY
 
-      - name: Run unit tests
-        run: uv run python -m pytest tests/unit/ -x -v
-
-      # A guard against the R8 gate quietly disarming again: if the platform
-      # suites report themselves as skipped, fail the job.
+      # `-o junit_family=xunit1` puts the FILE on each test case, which the
+      # guard in `unit-tests` reads. The report also carries the timings that
+      # refresh `.test_durations`.
       #
-      # ⚠️ This list is HAND-MAINTAINED and nothing discovers it. A new R8-gated
-      # Customer Console suite that is not named here still runs in the step
-      # above — and still SKIPS silently there when the database variable is
-      # missing, which is the exact failure this step exists to catch. Add the
-      # file in the same commit that creates it (CP-2b clause 10 did, and CP-9
-      # clause 11 did — `test_customer_console_payments.py`, the seventh
-      # Console suite, whose own
-      # `test_this_suite_is_named_in_the_ci_skip_guard` reads this file and
-      # fails if the entry is ever removed; that is the closest a hand-list
-      # gets to defending itself).
-      #
-      # ⚠️ WS-31 CP-2h slice 1 (2026-08-24) adds the TENTH Console suite,
-      # `test_customer_console_seat_overview.py` — the D-SEAT-4 deployment-key
-      # seat READ (`POST /registry/seats/overview`), added IN THE PR THAT
-      # CREATED IT and carrying the same self-defending pair of tests (it reads
-      # this file AND `customer_console.md` §7). It proves the read is byte-
-      # identical to `GET /me/seats` + `GET /me/members` (the ONE seat
-      # vocabulary), that org A's actor can never read org B, the `seat_admin`
-      # capability and role gates, and that a `deleted` org is refused while a
-      # `suspended` one can still see what it holds.
-      #
-      # ⚠️ H-152's billing half (2026-09-28) adds
-      # `test_customer_console_billing_reads.py` — the `billing_read` doors
-      # (`POST /registry/billing/*`, `/registry/usage/*`) that serve the
-      # customer billing pages under the per-box deployment key. It reads this
-      # file AND `customer_console.md` §7, like its siblings.
-      # `test_customer_console_billing_checkout.py` joins it for the checkout
-      # (`POST /registry/billing/orders*`, the `billing_purchase` doors).
-      #
-      # ⚠️ WS-31 CP-2f (2026-08-24) adds the NINTH Console suite,
-      # `test_customer_console_member_write.py` — the member-add door and
-      # D50.3's `invited -> active` promotion — added IN THE PR THAT CREATED IT
-      # and carrying the same self-defending pair of tests (it reads this file
-      # AND `customer_console.md` §7). `test_invite_console_mirror.py` joins
-      # beside it and takes NO database, like `test_seat_admin_proxy_route.py`:
-      # it is named here so a DB gate leaking into it later disarms loudly.
-      #
-      # ⚠️ WS-31 CP-10 slice 2 (2026-08-27) adds the ELEVENTH Console suite,
-      # `test_customer_console_tasks.py` — the task allowlist, two-step
-      # resolution and the per-unit rate card. Added IN THE PR THAT CREATED
-      # IT and carrying the same self-defending test (it reads this file).
-      # 🔴 It fences the pricing hole that was LIVE: `rate_call` was
-      # tokens-only, so `tier-stt` — in the production seed — could not be
-      # priced, and neither could `speak` or `image`.
-      #
-      # ⚠️ AND SO IS THE GREP LIST BELOW. Until CP-2b there was ONE grep, hard
-      # -coded to the Console suites' skip string — so a suite gated on a
-      # DIFFERENT variable could be added to the file list above, skip every
-      # test, and leave this step green. That is the CP-3 failure class
-      # reintroduced one layer up. Every gate variable named in the file list
-      # needs its own line here.
-      - name: Assert the R8-gated platform suites actually ran
+      # Two-speed CI (2026-10-19):
+      #   * No `-x`. One run reports EVERY failure, not one a round.
+      #   * `--reruns 1`. A timing flake costs a second try, not a 30-minute
+      #     round. 18 of 70 red runs on 15-19 Oct were flakes or infra.
+      #   * The process fences run in the Lint job. They are skipped here, or
+      #     they would still block.
+      # CIV-3. `mode` is `full`, `selection` or `empty`. Only the exact text
+      # `false` in `full` selects, and only after a successful `changes` job.
+      # The process fences leave the list.
+      - name: Pick this shard's tests
+        id: pick
+        env:
+          FULL: ${{ needs.changes.outputs.full }}
+          FILES: ${{ needs.changes.outputs.files }}
+          CHANGES: ${{ needs.changes.result }}
         run: |
-          uv run python -m pytest tests/unit/test_customer_console_sql.py \
-            tests/unit/test_customer_console_key_auth.py tests/unit/test_customer_console_api.py \
-            tests/unit/test_customer_console_router.py tests/unit/test_customer_console_lifecycle.py \
-            tests/unit/test_customer_console_resolve.py \
-            tests/unit/test_customer_console_payments.py \
-            tests/unit/test_customer_console_operator_list.py \
-            tests/unit/test_customer_console_member_write.py \
-            tests/unit/test_customer_console_seat_overview.py \
-            tests/unit/test_customer_console_billing_reads.py \
-            tests/unit/test_customer_console_billing_checkout.py \
-            tests/unit/test_customer_console_tasks.py \
-            tests/unit/test_customer_console_catalog.py \
-            tests/unit/test_customer_console_decide.py \
-            tests/unit/test_operator_identity.py \
-            tests/unit/test_operator_session.py \
-            tests/unit/test_operator_roles.py \
-            tests/unit/test_operator_admin.py \
-            tests/unit/test_operator_elevation.py \
-            tests/unit/test_operator_activity.py \
-            tests/unit/test_provider_keys.py \
-            tests/unit/test_operator_signin.py \
-            tests/unit/test_deployment_resolve_cache.py \
-            tests/unit/test_console_dependency_boundary.py \
-            tests/unit/test_signin_resolve_route.py \
-            tests/unit/test_seat_admin_proxy_route.py \
-            tests/unit/test_billing_proxy_route.py \
-            tests/unit/test_invite_console_mirror.py \
-            tests/unit/test_signup_provision_route.py \
-            tests/unit/test_signup_reconciler.py \
-            tests/unit/test_console_bootstrap.py \
-            tests/unit/test_billing_purchase_capability.py \
-            tests/unit/test_app_user_upserts.py \
-            tests/unit/test_org_provisioning.py \
-            tests/unit/test_org_provisioning_tenancy.py \
-            tests/unit/test_owner_bootstrap.py \
-            tests/unit/test_credential_tenant_threading.py \
-            tests/unit/test_h3_rls_promotion_rehearsal.py \
-            tests/unit/test_h6_identity_shadow.py \
-            tests/unit/test_h6_rbac_rekey.py \
-            tests/unit/test_email_otp_token.py \
-            tests/unit/test_invited_member_promotion.py \
-            tests/unit/test_org_purge_console.py \
-            tests/unit/test_org_purge_tenant.py \
-            tests/unit/test_operator_door.py \
-            -q -rs 2>&1 | tee /tmp/platform.txt
-          if grep -q "CUSTOMER_CONSOLE_DATABASE_URL unset" /tmp/platform.txt; then
-            echo "::error::Customer Console suites skipped — R8 gate is disarmed."
-            exit 1
+          python3 scripts/ci_unit_guard.py select --full "$FULL" --files "$FILES"             --changes-result "$CHANGES" \
+            "--ignored=$(python3 scripts/fences.py pytest-ignore)" | tee -a "$GITHUB_OUTPUT"
+
+      # An `empty` selection skips this step, because pytest with no paths
+      # collects the whole tree. With fewer tests than shards, a group can
+      # come up empty and pytest exits 5. That passes on a selection and
+      # fails on a full run.
+      - name: Run unit tests (this shard)
+        if: steps.pick.outputs.mode != 'empty'
+        env:
+          # SHARD_ names only. The tests start scripts with this env, and
+          # scripts/vps_pull.sh reads a variable named MODE.
+          # Fence: test_ci_unit_guard.py.
+          SHARD_MODE: ${{ steps.pick.outputs.mode }}
+          SHARD_TARGETS: ${{ steps.pick.outputs.paths }}
+        run: |
+          set -f
+          [ "$SHARD_MODE" = "selection" ] || SHARD_TARGETS="tests/unit/"
+          rc=0
+          # CIV-8k (task 2191). Shard 1 hung for 25 to 39 minutes in 6 red runs, always
+          # right after tests/unit/test_adaptive_tier.py::test_a_long_thread_drafts_on_powerful
+          # [...-False-tier-fast], and the log shows no cause. `faulthandler_timeout`
+          # prints the stack of every thread when one test runs over 900 s. It kills
+          # nothing, and no test takes more than 260 s.
+          uv run python -m pytest $SHARD_TARGETS -v -rs --reruns 1 \
+            $(python3 scripts/fences.py pytest-ignore) \
+            --splits ${{ steps.pick.outputs.splits }} --group ${{ matrix.shard }} \
+            --splitting-algorithm duration_based_chunks \
+            -o faulthandler_timeout=900 \
+            --basetemp="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/pytest" \
+            -o junit_family=xunit1 --junitxml=junit/shard-${{ matrix.shard }}.xml || rc=$?
+          if [ "$rc" -eq 5 ] && [ "$SHARD_MODE" = "selection" ]; then
+            echo "this shard drew no test from the selection"
+            rc=0
           fi
-          # CP-2b's tenant-side suite answers to its OWN variable and would
-          # skip with a wholly different message. WS-30 SC-4a's
-          # `billing:purchase` seed fence is the second suite on that variable
-          # and reuses this line by using the same skip string; WS-29 MT-1j
-          # slice 6's `test_app_user_upserts.py` is the third, for the same
-          # reason and with the same string — the two `app_user` upserts were
-          # shipped naming an index migration 162 had dropped, and only a real
-          # ladder can see that.
-          #
-          # MT-1j slices 1+2+3 add the fourth and fifth, same string again:
-          # `test_org_provisioning.py` (the per-org role seed, the explicit
-          # owner path and the organization+placement act) and
-          # `test_owner_bootstrap.py`, RE-GATED onto this variable by slice 2.
-          # ⚠️ That second one is the whole reason slice 6's defect reached
-          # main: it gated on `DATABASE_URL`, which no job here sets, so five
-          # tests of the ownership bootstrap skipped in every run ever made
-          # while the statement under them raised 42P10 on every call. A fence
-          # that never executes is not a fence.
-          #
-          # MT-1j slice 5 (ratchet round 1) adds the sixth, same string again:
-          # `test_credential_tenant_threading.py`. Its structural half (the
-          # untenanted-call ratchet) takes no database and always runs; its
-          # two-org half proves that org A's provider key and tier overrides
-          # resolve to A and B's to B against the schema the ladder produces,
-          # which no fake can answer for — a `count(*)` sub-select and a
-          # composite ON CONFLICT arbiter are exactly slice 6's class of bug.
-          #
-          # WS-29 H3 adds the seventh, same string again:
-          # `test_h3_rls_promotion_rehearsal.py`. It builds a DEDICATED database
-          # (never the shared ladder DB), applies the four `generated/` phases by
-          # hand and connects as a non-privileged role to prove two-org RLS
-          # isolation + WITH-CHECK write refusal + the sign-in brick — none of
-          # which a fake can answer for. A skip here would mean the H3 gate is
-          # disarmed, which is exactly the state this whole step exists to catch.
-          #
-          # WS-29 H6 slice 1 adds the eighth, same string again:
-          # `test_h6_identity_shadow.py`. It proves against the real ladder that
-          # the identity-shadow dual-write lets one email hold membership in TWO
-          # orgs (create-only, never a move) and that the catch-up backfill
-          # (migration 182) reconciles and is idempotent — a two-org membership
-          # and a composite ON CONFLICT arbiter are exactly slice 6's class of
-          # bug, invisible to a fake.
-          #
-          # WS-29 H6 slice 4 (D48) adds the ninth, same string again:
-          # `test_h6_rbac_rekey.py`. It proves against the real ladder that
-          # migration 184 backfills every RBAC row's `user_identity_id` through
-          # the lower(email) bridge (NULL only where no identity), is idempotent,
-          # and that the dual-write on `set_roles` / the owner bootstrap populates
-          # both columns to the same identity — a lower(email) join and an
-          # IS DISTINCT FROM guard are exactly the class a fake cannot answer for.
-          if grep -q "TENANT_LADDER_DATABASE_URL unset" /tmp/platform.txt; then
-            echo "::error::A tenant-ladder suite skipped — the tenant R8 gate is disarmed."
-            exit 1
+          exit "$rc"
+
+      # The guard in `unit-tests` fails when it finds no report. A skipped or
+      # empty shard writes a zero-test one.
+      - name: Write an empty report when no test ran
+        if: ${{ !cancelled() && steps.pick.outputs.mode != 'full' }}
+        run: python3 scripts/ci_unit_guard.py empty-report --out junit/shard-${{ matrix.shard }}.xml
+
+      - name: Keep this shard's report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-shard-${{ matrix.shard }}
+          path: junit/
+          retention-days: 7
+
+  # ── "Unit tests": the required check, and the R8 guard ───────────────────
+  #
+  # Branch protection requires a check named exactly "Unit tests", so the
+  # shards report under other names and this job carries the name.
+  #
+  # The R8 guard used to RUN about 40 files a second time, only to grep their
+  # skip reasons (2 minutes). The shard reports already hold every skip
+  # reason, so `scripts/ci_unit_guard.py` reads them. It fails when:
+  #   * ANY test, listed or not, skipped because CUSTOMER_CONSOLE_DATABASE_URL
+  #     or TENANT_LADDER_DATABASE_URL was unset (the R8 gate is disarmed),
+  #   * a `--must-run` file below has no test in any report, or
+  #   * a `--never-skip` file skipped a test (a database gate leaked into a
+  #     fence that needs none).
+  #
+  # ⚠️ The `--must-run` list is HAND-MAINTAINED. Add an R8 suite in the commit
+  # that creates it. Each suite's own `test_this_suite_is_named_in_the_ci_skip
+  # _guard` reads this file and fails if its entry goes.
+  #
+  # Fence: tests/unit/test_ci_unit_guard.py.
+  unit-tests:
+    name: "Unit tests"
+    runs-on: ${{ (vars.USE_BOX_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'metorite-box' || 'ubuntu-24.04' }}
+    needs: [test, changes]
+    # `always()`, so a failed shard turns THIS check red instead of skipping
+    # it. A skipped required check counts as satisfied (#1077).
+    if: always()
+    steps:
+      # CIV-17. `test` is `skipped` ONLY for an empty selection: `changes`
+      # succeeded and said `shards` is `[]`. Any other skip (a cancelled run, a
+      # failed `changes` job) stays red here. This is the #1077 trap.
+      - name: Every shard passed
+        env:
+          TEST: ${{ needs.test.result }}
+          CHANGES: ${{ needs.changes.result }}
+          SHARDS: ${{ needs.changes.outputs.shards }}
+        run: |
+          echo "shards: $TEST (selection list: $SHARDS)"
+          if [ "$TEST" = "skipped" ] && [ "$CHANGES" = "success" ] && [ "$SHARDS" = "[]" ]; then
+            echo "empty selection: no shard was needed"
+            exit 0
           fi
-          # The structural fences take NO database and must never report a
-          # skip at all. One that did would mean somebody folded a DB gate into
-          # them, which is how §6(i)(4)'s separation quietly dies.
-          #
-          # test_signin_resolve_route.py joins them for the same reason: it is
-          # the ONLY test of the route's own refusal (finding F5's fence), it
-          # opens no session on purpose, and a DB gate leaking into it would
-          # disarm a P0 fence silently. WS-30 SC-2a's
-          # test_seat_admin_proxy_route.py joins for the same reason again: it
-          # is the transport's R7 fence (the seat WRITE carries the deployment
-          # key + the session actor, no org on the wire) and drives a
-          # MockTransport Console — no database, and it must never skip.
-          # test_billing_proxy_route.py (H-152) joins for the same reason: it
-          # is the billing transport's R7 fence and takes no database.
-          if grep -qE "SKIPPED.*(test_console_dependency_boundary|test_signin_resolve_route|test_seat_admin_proxy_route|test_billing_proxy_route)" /tmp/platform.txt; then
-            echo "::error::A no-database fence skipped — the dependency-boundary, signin-route and seat-proxy fences must always run."
-            exit 1
-          fi
+          [ "$TEST" = "success" ] || exit 1
+
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        if: needs.changes.outputs.shards != '[]'
+        with:
+          pattern: junit-shard-*
+          path: junit
+          merge-multiple: true
+
+      # An empty selection ran no shard, so no report exists. Write a zero-test
+      # one, and the check below then has a report to read.
+      - name: Empty selection report
+        if: needs.changes.outputs.shards == '[]'
+        run: python3 scripts/ci_unit_guard.py empty-report --out junit/shard-0.xml
+
+      # CIV-3. On a selection run only the must-run files in the selection
+      # have to run. `--only-selected` takes the selected paths, and an empty
+      # list checks none. Anything but a successful `changes` job with
+      # `full` equal to `false` checks the whole list. Every must-run path has
+      # to exist in the tree on any run.
+      - name: The R8 suites ran, and no fence skipped
+        env:
+          FULL: ${{ needs.changes.outputs.full }}
+          FILES: ${{ needs.changes.outputs.files }}
+          CHANGES: ${{ needs.changes.result }}
+        run: |
+          set -f
+          ONLY=""
+          if [ "$FULL" = "false" ] && [ "$CHANGES" = "success" ]; then ONLY="--only-selected $FILES"; fi
+          python3 scripts/ci_unit_guard.py check --junit junit $ONLY \
+            --disarmed "CUSTOMER_CONSOLE_DATABASE_URL unset" \
+            --disarmed "TENANT_LADDER_DATABASE_URL unset" \
+            --never-skip \
+              tests/unit/test_console_dependency_boundary.py \
+              tests/unit/test_signin_resolve_route.py \
+              tests/unit/test_seat_admin_proxy_route.py \
+              tests/unit/test_billing_proxy_route.py \
+            --must-run \
+              tests/unit/test_customer_console_sql.py \
+              tests/unit/test_customer_console_key_auth.py \
+              tests/unit/test_customer_console_api.py \
+              tests/unit/test_customer_console_router.py \
+              tests/unit/test_customer_console_lifecycle.py \
+              tests/unit/test_customer_console_resolve.py \
+              tests/unit/test_customer_console_payments.py \
+              tests/unit/test_customer_console_operator_list.py \
+              tests/unit/test_customer_console_member_write.py \
+              tests/unit/test_customer_console_org_rename.py \
+              tests/unit/test_customer_console_seat_overview.py \
+              tests/unit/test_customer_console_billing_reads.py \
+              tests/unit/test_customer_console_billing_checkout.py \
+              tests/unit/test_customer_console_tasks.py \
+              tests/unit/test_customer_console_stt_assemblyai.py \
+              tests/unit/test_customer_console_catalog.py \
+              tests/unit/test_customer_console_decide.py \
+              tests/unit/test_customer_console_try_voice.py \
+              tests/unit/test_catalog_health_r8.py \
+              tests/unit/test_customer_console_embed.py \
+              tests/unit/test_customer_console_aroh_app.py \
+              tests/unit/test_operator_identity.py \
+              tests/unit/test_operator_session.py \
+              tests/unit/test_operator_roles.py \
+              tests/unit/test_operator_admin.py \
+              tests/unit/test_operator_elevation.py \
+              tests/unit/test_operator_activity.py \
+              tests/unit/test_provider_keys.py \
+              tests/unit/test_operator_signin.py \
+              tests/unit/test_deployment_resolve_cache.py \
+              tests/unit/test_console_dependency_boundary.py \
+              tests/unit/test_signin_resolve_route.py \
+              tests/unit/test_seat_admin_proxy_route.py \
+              tests/unit/test_billing_proxy_route.py \
+              tests/unit/test_invite_console_mirror.py \
+              tests/unit/test_signup_provision_route.py \
+              tests/unit/test_signup_reconciler.py \
+              tests/unit/test_console_bootstrap.py \
+              tests/unit/test_billing_purchase_capability.py \
+              tests/unit/test_app_user_upserts.py \
+              tests/unit/test_org_provisioning.py \
+              tests/unit/test_org_provisioning_tenancy.py \
+              tests/unit/test_owner_bootstrap.py \
+              tests/unit/test_credential_tenant_threading.py \
+              tests/unit/test_h3_rls_promotion_rehearsal.py \
+              tests/unit/test_action_broker_tenancy_r8.py \
+              tests/unit/test_org_settings_tenancy_r8.py \
+              tests/unit/test_user_settings_per_org_r8.py \
+              tests/unit/test_auth_me_shell_r8.py \
+              tests/unit/test_h6_identity_shadow.py \
+              tests/unit/test_member_of_org_read.py \
+              tests/unit/test_h6_rbac_rekey.py \
+              tests/unit/test_email_otp_token.py \
+              tests/unit/test_invited_member_promotion.py \
+              tests/unit/test_org_purge_console.py \
+              tests/unit/test_org_purge_tenant.py \
+              tests/unit/test_operator_door.py \
+              tests/unit/test_shell_needs_r8.py \
+              tests/unit/test_my_day_loop_r8.py \
+              tests/unit/test_chat_session_archive_r8.py \
+              tests/unit/test_projects_search_description_r8.py \
+              tests/unit/test_staging_minimise_r8.py \
+              tests/unit/test_studio_objects_r8.py \
+              tests/unit/test_studio_query_r8.py \
+              tests/unit/test_goal_record_r8.py \
+              tests/unit/test_studio_objects_batch_r8.py \
+              tests/unit/test_studio_state_machine_r8.py \
+              tests/unit/test_studio_expr.py \
+              tests/unit/test_studio_formula_r8.py \
+              tests/unit/test_studio_rollup_r8.py \
+              tests/unit/test_studio_lines_r8.py \
+              tests/unit/test_no_person_present_r8.py \
+              tests/unit/test_studio_packages_r8.py \
+              tests/unit/test_studio_publish_install_r8.py \
+              tests/unit/test_studio_package_install_r8.py \
+              tests/unit/test_studio_action_door_r8.py \
+              tests/unit/test_studio_catalog_r8.py \
+              tests/unit/test_studio_packages_versions_r8.py \
+              tests/unit/test_studio_package_routes_r8.py \
+              tests/unit/test_studio_package_delete_r8.py \
+              tests/unit/test_studio_chat_build_r8.py \
+              tests/unit/test_studio_route_gate_r8.py \
+              tests/unit/test_package_host_store_r8.py \
+              tests/unit/test_shell_layout_r8.py \
+              tests/unit/test_package_disposal_r8.py \
+              tests/unit/test_package_field_values_r8.py \
+              tests/unit/test_app_requests_r8.py \
+              tests/unit/test_workflows_lifecycle_rls_r8.py \
+              tests/unit/test_project_rules.py \
+              tests/unit/test_project_rules_propose.py \
+              tests/unit/test_crm_change_history.py \
+              tests/unit/test_crm_pipelines_native.py \
+              tests/unit/test_crm_lead_pipelines.py \
+              tests/unit/test_auto_park.py \
+              tests/unit/test_headless_turn_r8.py \
+              tests/unit/test_projects_status_set_read_r8.py \
+              tests/unit/test_email_signature_images_r8.py \
+              tests/unit/test_email_signature_settings_r8.py \
+              tests/unit/test_mcp_edge_attachment_r8.py \
+              tests/unit/test_mcp_edge_comment_edit_r8.py \
+              tests/unit/test_projects_status_slot_r8.py \
+              tests/unit/test_pm_project_updates_r8.py \
+              tests/unit/test_app_create_slug_r8.py \
+              tests/unit/test_staging_export.py
+
+      # CIV-3. A selection run holds part of the timings. Only a full run
+      # publishes them, or `.test_durations` would refresh from a fragment.
+      - name: Write the measured timings
+        if: ${{ needs.changes.result == 'success' && needs.changes.outputs.full == 'true' }}
+        run: python3 scripts/ci_unit_guard.py durations --junit junit --out test_durations.json
+
+      - if: ${{ needs.changes.result == 'success' && needs.changes.outputs.full == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-durations
+          path: test_durations.json
+          retention-days: 14
 
   # BO-23. The backup and restore scripts shipped on 2026-08-03 and had never
   # been executed anywhere — they reached Postgres only through
@@ -477,13 +744,20 @@ jobs:
   # against an empty database.
   backup-restore:
     name: "Backup/restore rehearsal"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    # CIV-23 (D201). Stays hosted. The verify container count and the EXIT trap
+    # of scripts/rehearse_verify_scratch.sh work on the WHOLE Docker daemon, so two
+    # runs on the box daemon would kill each other (CIV-6).
+    # Its scripts live under scripts/, and the schema under infra/. A PR
+    # that touches neither cannot change the result (2026-10-19).
+    needs: changes
+    if: "!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.database == 'true')"
     services:
       postgres:
         image: postgres:16
         env:
           POSTGRES_PASSWORD: rehearsal
-        ports: ["5432:5432"]
+        ports: ["5432"]
         options: >-
           --health-cmd pg_isready
           --health-interval 5s
@@ -492,10 +766,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # CIV-23. Box runners share ONE Docker daemon, so the service publishes to
+      # a host port that Docker picks. psql and the scripts read PGPORT.
+      - name: Point psql at the service container
+        run: echo "PGPORT=${{ job.services.postgres.ports['5432'] }}" >> "$GITHUB_ENV"
+
       # The runner's client must not be OLDER than the server: pg_dump refuses
       # to dump a newer server, which would fail the job for a reason that has
       # nothing to do with our scripts.
       - name: Install the postgresql-16 client
+        if: runner.environment == 'github-hosted'
         run: |
           sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
           curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/pgdg.gpg
@@ -506,10 +786,25 @@ jobs:
       - name: Rehearse
         env:
           PGHOST: localhost
-          PGPORT: "5432"
           PGUSER: postgres
           PGPASSWORD: rehearsal
         run: bash scripts/rehearse_restore.sh
+
+      # The fence for the scratch databases of the deep verify (incident
+      # 2026-10-06: 22 undropped copies filled the managed disk and the project
+      # went read-only). It sweeps, drops with FORCE on a read-only server,
+      # spares the decoys, and fails loudly when a drop fails. It needs this
+      # job's private server, because it uses ALTER SYSTEM and the sweep drops
+      # every stale `acb_verify_<digits>` database on the cluster.
+      # Since 2026-10-07 both steps also need the runner's Docker: the verify
+      # restores into a throwaway pgvector/pgvector:pg16 container, and scene
+      # B proves that it writes nothing to this job's server.
+      - name: Rehearse the scratch-database drop and sweep
+        env:
+          PGHOST: localhost
+          PGUSER: postgres
+          PGPASSWORD: rehearsal
+        run: bash scripts/rehearse_verify_scratch.sh
 
   # BO-6. The ladder is 152 hand-written, hand-idempotent SQL files replayed
   # against production on every deploy, and until now nothing exercised it
@@ -522,21 +817,25 @@ jobs:
   # about 152 files nobody had checked together; now it is a build step.
   migrations:
     name: "Migration ladder replay"
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.USE_BOX_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'metorite-box' || 'ubuntu-24.04' }}
+    # The ladder is infra/, and its appliers are under scripts/. The R1
+    # number guard runs in the shards and in push-check on every PR anyway.
+    needs: changes
+    if: "!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.database == 'true')"
     services:
       postgres:
         image: pgvector/pgvector:pg16
         env:
           POSTGRES_PASSWORD: ladder
-        ports: ["5432:5432"]
+        ports: ["5432"]
         options: >-
+          --tmpfs /var/lib/postgresql/data:rw
           --health-cmd pg_isready
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
     env:
       PGHOST: localhost
-      PGPORT: "5432"
       PGUSER: postgres
       PGPASSWORD: ladder
       PG_MODE: local
@@ -546,7 +845,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # CIV-23. Box runners share ONE Docker daemon, so the service publishes to
+      # a host port that Docker picks. psql and the scripts read PGPORT.
+      - name: Point psql at the service container
+        run: echo "PGPORT=${{ job.services.postgres.ports['5432'] }}" >> "$GITHUB_ENV"
+
       - name: Install the postgresql-16 client
+        if: runner.environment == 'github-hosted'
         run: |
           sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
           curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/pgdg.gpg
@@ -592,7 +897,7 @@ jobs:
         run: |
           set -euo pipefail
           createdb console
-          export CUSTOMER_CONSOLE_DATABASE_URL="postgresql://postgres:ladder@localhost:5432/console"
+          export CUSTOMER_CONSOLE_DATABASE_URL="postgresql://postgres:ladder@localhost:${PGPORT:-5432}/console"
           for i in 1 2 3; do
             echo "--- console ladder run $i ---"
             bash scripts/apply_customer_console_migrations.sh | tail -1
@@ -618,7 +923,13 @@ jobs:
   # build` — that stays a deploy-time step.
   frontend:
     name: "Frontend (typecheck + unit tests)"
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.USE_BOX_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'metorite-box' || 'ubuntu-24.04' }}
+    # ⚠️ NOT filtered by path. Its unit tests read files across the whole
+    # repo (apps/, tests/fixtures/, project-docs/), so no path is safe to skip.
+    # `pull-requests: read` lets ci_advisory.sh read the PR's labels.
+    permissions:
+      contents: read
+      pull-requests: read
     defaults:
       run:
         working-directory: workbench/control_plane
@@ -634,11 +945,78 @@ jobs:
       - name: Install deps
         run: npm ci --no-audit --no-fund
 
+      # tsc used 2,256 MB on main on 2026-11-02 (--extendedDiagnostics). That
+      # is over Node's default heap, so a small PR ran out of memory here.
       - name: Typecheck
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: npx tsc --noEmit -p tsconfig.json
 
+      # Two-speed CI (2026-10-19): the process fences (design-system regexes,
+      # nav parity, ratchets) are skipped here and run in the advisory step
+      # below. Lists: tests/fences.json.
       - name: Unit tests
-        run: npm test
+        run: npx vitest run $(python3 ../../scripts/fences.py vitest-exclude control_plane)
+
+      - name: Process fences (advisory in build, blocking with the `harden` label)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          files="$(python3 ../../scripts/fences.py vitest control_plane process)"
+          [ -n "$files" ] || { echo "no process fences listed"; exit 0; }
+          bash ../../scripts/ci_advisory.sh "frontend process fence" -- npx vitest run $files
+
+      # The UI gate (owner, 2026-10-27, DESIGN_SYSTEM.md §11). A PR that
+      # changes workbench/control_plane/src names its visual review in its
+      # body: a line that starts "Visual review:", then the four captures or
+      # "no UI change". It lives in THIS job because this job is a required
+      # check, and "Changed areas" is not.
+      # * Python reads the body and the base sha from the event FILE into
+      #   variables, so no text of the body becomes shell code.
+      # * The checkout is shallow, so the step fetches the one base commit.
+      #   When the base is absent or the diff cannot be read, the line is
+      #   required.
+      # * With no event file (the local CI on the PC) there is no body, so
+      #   the step passes.
+      # * `!cancelled()`: it reports even when a test above failed.
+      # * CIV-8 (2026-11-07). The step reads the LIVE body through the API, and
+      #   uses the event body only when the API call fails. A rerun replays the
+      #   first EVENT, so with the event body alone a missing line cost a new
+      #   push and a whole new run (about 17 jobs). 21 of the last 50 red
+      #   pr-check runs failed on this line alone. Now: edit the body, then
+      #   `gh run rerun <run id> --failed` reruns only the failed jobs.
+      # Fence: tests/unit/test_fence_lists.py.
+      - name: Visual review line (a frontend PR)
+        if: "!cancelled()"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -u
+          if [ ! -f "${GITHUB_EVENT_PATH:-}" ]; then echo "no pull request event, so no body to check"; exit 0; fi
+          ev() { python3 -c 'import json, os, sys; p = json.load(open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8")).get("pull_request") or {}; k = sys.argv[1]; print(((p.get("base") or {}).get("sha") if k == "base" else str(p.get("number") or "") if k == "number" else p.get("body")) or "")' "$1"; }
+          base="$(ev base)"
+          frontend=true
+          if [ -n "$base" ] \
+            && { git cat-file -e "$base^{commit}" 2>/dev/null || git fetch -q --no-tags --depth=1 origin "$base" 2>/dev/null; } \
+            && files="$(git diff --name-only "$base" HEAD 2>/dev/null)"; then
+            grep -q '^workbench/control_plane/src/' <<< "$files" || frontend=false
+          fi
+          $frontend || { echo "no change under workbench/control_plane/src"; exit 0; }
+          pr="$(ev number)"
+          if [ -n "${GH_TOKEN:-}" ] && [ -n "$pr" ] && live="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr}" --jq '.body // ""' 2>/dev/null)"; then
+            body="$live"
+            echo "read the live body of PR ${pr}"
+          else
+            body="$(ev body)"
+            echo "the live body is not available, so the body of the event is checked"
+          fi
+          if grep -qE '^Visual review:[[:space:]]*[^[:space:]<]' <<< "$body"; then
+            echo "the body names its visual review"
+            exit 0
+          fi
+          echo "::error::This PR changes workbench/control_plane/src, and no line of its body starts with 'Visual review:'. Name the four captures (light, compact, a changed accent, 390 px), or write 'Visual review: no UI change'. Then edit the PR body and rerun the failed jobs of this run: gh run rerun <run id> --failed (or the button Re-run failed jobs). Rule: workbench/control_plane/DESIGN_SYSTEM.md section 11."
+          exit 1
 
   # The operator console had tests but NO CI running them — a fence that never
   # runs is advisory by accident (R7). Same shape as the workbench job; its
@@ -646,7 +1024,12 @@ jobs:
   # authority check first), which is the only fence on that ordering.
   frontend-operator:
     name: "Operator console (typecheck + unit tests)"
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.USE_BOX_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'metorite-box' || 'ubuntu-24.04' }}
+    needs: changes
+    if: "!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.operator == 'true')"
+    permissions:
+      contents: read
+      pull-requests: read
     defaults:
       run:
         working-directory: workbench/operator_console
@@ -666,7 +1049,16 @@ jobs:
         run: npx tsc --noEmit -p tsconfig.json
 
       - name: Unit tests
-        run: npm test
+        run: npx vitest run $(python3 ../../scripts/fences.py vitest-exclude operator_console)
+
+      - name: Process fences (advisory in build, blocking with the `harden` label)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          files="$(python3 ../../scripts/fences.py vitest operator_console process)"
+          [ -n "$files" ] || { echo "no process fences listed"; exit 0; }
+          bash ../../scripts/ci_advisory.sh "operator console process fence" -- npx vitest run $files
 
   # ── H-27: the browser suite finally has a job ──────────────────────────────
   #
@@ -692,11 +1084,49 @@ jobs:
   # through `page.route` and the rest are pure UI. That is why this job is a
   # browser and a dev server, and nothing else.
   e2e:
-    name: "Browser suite (e2e)"
-    runs-on: ubuntu-latest
+    name: "Browser suite (e2e) ${{ matrix.shard }}/3"
+    # Pinned 2026-10-27. `ubuntu-latest` became Ubuntu 26.04, and Playwright
+    # cannot install Chromium there ("does not support chromium on
+    # ubuntu26.04-x64"), so every shard failed in 30 seconds. Unpin when
+    # Playwright supports the new image.
+    runs-on: ubuntu-24.04
+    # ── Three shards, each with its own dev server ──────────────────────────
+    #
+    # One worker took 17-19 minutes for 374 tests (measured 2026-10-16), and
+    # it was the long pole once the unit suite was split. `workers: 1` stays:
+    # each shard is one process on its own runner, as before.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    # ── A push copy of this job must never come back ─────────────────────────
+    #
+    # This workflow has no `push` trigger (see the note at the top). The `if:`
+    # stays as a second guard: a push trigger added later still skips this
+    # job. Measured 2026-10-15: the cap cancelled 8 of 36 push copies, and a
+    # cancelled copy shows as `fail` in `gh pr checks` beside a green PR run.
+    #
+    # ⚠️ `!= 'push'`, NOT `== 'pull_request'`. A trigger added later still
+    # runs the suite.
+    #
+    # Fence: `workbench/control_plane/src/lib/e2eGate.test.ts`.
+    #
+    # 2026-10-19: and only when the PR touches the control plane. A skipped
+    # e2e frees three runners for the other PRs.
+    needs: changes
+    if: "!cancelled() && github.event_name != 'push' && (needs.changes.result != 'success' || needs.changes.outputs.frontend == 'true')"
     # A hung dev server must cost minutes, not the runner's six-hour default.
-    # The measured run is ~3 min for 32 tests, plus install.
-    timeout-minutes: 20
+    #
+    # 🔴 THE CAP WAS THE FAULT, NOT THE CODE. It was 20 minutes, set when the
+    # suite was 32 tests in ~3 minutes. Measured 2026-10-15: 393 tests on one
+    # worker take 19.0 to 19.3 minutes, and the job takes 20. Of 57 green
+    # runs, 28 finished with less than one minute left. Of six cancelled logs
+    # we read, five were green when the cap stopped them. #1052's own PR run
+    # printed "370 passed (19.0m)", and then the cap cancelled it.
+    #
+    # 40 is about twice the measured job. A suite that keeps growing will
+    # reach it again. Then split the suite, or raise the cap with a new count.
+    timeout-minutes: 40
     defaults:
       run:
         working-directory: workbench/control_plane
@@ -726,7 +1156,13 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Browser suite
-        run: npx playwright test --project=ci
+        # The watchdog ends a run whose dev server stops answering. See the
+        # header of scripts/e2e_watchdog.sh. The run's exit code passes through.
+        run: |
+          npx playwright test --project=ci --shard=${{ matrix.shard }}/3 &
+          pw=$!
+          bash ../../scripts/e2e_watchdog.sh http://127.0.0.1:3101/chat "$pw" &
+          wait "$pw"
 
       # ⚠️ Without this a red run is a wall of text and no screenshot, and an
       # undiagnosable gate is one somebody deletes. The report carries the
@@ -735,7 +1171,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-report
+          name: playwright-report-${{ matrix.shard }}
           path: |
             workbench/control_plane/playwright-report/
             workbench/control_plane/test-results/
@@ -743,8 +1179,10 @@ jobs:
 
   caddy:
     name: "Caddy config (validate)"
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.USE_BOX_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'metorite-box' || 'ubuntu-24.04' }}
     timeout-minutes: 5
+    needs: changes
+    if: "!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.caddy == 'true')"
     # H-60: the deploy installs deploy/hostinger/caddy/Caddyfile on the box by
     # itself. The apply validates it there and refuses a bad file, but then the
     # deploy is red AFTER the merge. This job refuses it BEFORE the merge.
@@ -753,16 +1191,19 @@ jobs:
       - uses: actions/checkout@v5
       - name: caddy validate + caddy fmt (caddy:2.11.4)
         run: |
+          # WS-38 S-4: the staging box installs Caddyfile.staging. Check both.
           docker run --rm -v "$PWD/deploy/hostinger/caddy:/cfg:ro" caddy:2.11.4 sh -ec '
-            caddy validate --config /cfg/Caddyfile --adapter caddyfile
-            caddy fmt --diff /cfg/Caddyfile > /tmp/fmt.diff || true
-            if grep -qE "^[-+]" /tmp/fmt.diff; then
-              echo "Caddyfile is not formatted. Run: caddy fmt --overwrite"; cat /tmp/fmt.diff; exit 1
-            fi'
+            for f in Caddyfile Caddyfile.staging; do
+              caddy validate --config /cfg/$f --adapter caddyfile
+              caddy fmt --diff /cfg/$f > /tmp/fmt.diff || true
+              if grep -qE "^[-+]" /tmp/fmt.diff; then
+                echo "$f is not formatted. Run: caddy fmt --overwrite"; cat /tmp/fmt.diff; exit 1
+              fi
+            done'
 
   secret-scan:
     name: "Secret scan"
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.USE_BOX_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'metorite-box' || 'ubuntu-24.04' }}
     # Report-only initially (ratchet, like mypy/ruff-full above): surfaces any
     # credential in a PR's NEW commits without blocking on an install/config
     # hiccup. Graduate to blocking once proven on a few PRs. Scans only the PR's
@@ -775,6 +1216,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install gitleaks
+        if: runner.environment == 'github-hosted'
         # `go install github.com/gitleaks/gitleaks/v8` broke: that tag's go.mod
         # still declares the module path as github.com/zricethezav/gitleaks/v8,
         # so `go install` errors on the path mismatch and the scan never ran.
@@ -785,6 +1227,10 @@ jobs:
           tar -xzf gitleaks.tar.gz gitleaks
           sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
           gitleaks version
+
+      # A missing tool must be loud. `continue-on-error` hides exit 127 otherwise.
+      - name: Check that gitleaks is on the PATH
+        run: command -v gitleaks || { echo "::error::gitleaks is not installed on this runner"; exit 1; }
 
       - name: Scan PR commits for secrets
         run: |

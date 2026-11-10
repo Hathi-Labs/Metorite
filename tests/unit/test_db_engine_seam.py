@@ -337,19 +337,17 @@ _GET_DB_CALL = re.compile(r"await _?get_db\(\)")
 #: `tenant_session(that_org)`. The file needs no exemption because it has no
 #: unbound site left, which is what `test_converted_packages_stay_converted`
 #: now enforces for it.
+#:
+#: ⚠️ `routes/crm/auto_lead.py` and `routes/crm/broker_handlers.py` LEFT this
+#: list on 2026-10-11 (WS-53 CRM-T3, `crm_platform.md` §4.3). The auto-lead
+#: step opens `tenant_session(org)` with the tenant the email hook bound, and
+#: the broker handler with the tenant the `approve` call bound. With none
+#: bound, each opens no session. `test_crm_sync_tenancy.py` is the fence.
 H2_EXEMPT_FILES: dict[str, str] = {
-    "apps/services/gateway/gateway/routes/crm/auto_lead.py":
-        "background job fired from the email scheduler's new-mail hook — H4 "
-        "threads the mailbox owner's tenant explicitly; ambient inheritance "
-        "is forbidden",
     "apps/services/gateway/gateway/routes/crm/sync_zoho.py":
-        "scheduled sync engine running as `crm:zoho-sync` with per-phase "
-        "commits — H4 threads an explicit tenant through the sync "
-        "configuration; ambient inheritance is forbidden",
-    "apps/services/gateway/gateway/routes/crm/broker_handlers.py":
-        "approval-time broker handler running as `crm:zoho-sync` — H4/H6 "
-        "derives the tenant from the proposal payload's native row, never "
-        "from the approver's ambient binding",
+        "unreachable until CRM-Z5: the sync loop starts no task and "
+        "`POST /crm/sync/zoho` answers 409 (WS-53 CRM-T3). The old engine's "
+        "one unbound session stays for CRM-Z5 to rebuild per tenant",
 }
 
 #: The route packages H2 has converted to ZERO unbound sites (modulo the
@@ -371,12 +369,17 @@ H2_CONVERTED_PACKAGES: tuple[str, ...] = (
 #: batch) and background consumers (post-sync hooks, the enrichment loop, the
 #: Action Broker broadcast handler). H4/H6 owns threading an explicit tenant
 #: through each; every site carries the matching `# H4`/`# H4/H6` marker.
+#:
+#: WS-20 WA-C1 (2026-10-06) took the two post-sync hooks off the list:
+#: `intent.py` and `replyzero.py` open `_tenant_session()`, and the Meta
+#: webhook POST binds the account's tenant before it fires them.
+#: `webhook.py` keeps 2: the GET verify fallback (WA-C1b) and the POST's
+#: tenant-DISCOVERY read `_resolve_account`, which reads only through the
+#: SECURITY DEFINER resolver (H2_TENANT_DISCOVERY_SITES below).
 H2_WHATSAPP_EXEMPT_SITES: dict[str, int] = {
     "apps/services/gateway/gateway/routes/whatsapp/transport/webhook.py": 2,
     "apps/services/gateway/gateway/routes/whatsapp/transport/bridge.py": 5,
     "apps/services/gateway/gateway/routes/whatsapp/scheduler.py": 2,
-    "apps/services/gateway/gateway/routes/whatsapp/automation/intent.py": 1,
-    "apps/services/gateway/gateway/routes/whatsapp/automation/replyzero.py": 1,
     "apps/services/gateway/gateway/routes/whatsapp/automation/transcription.py": 1,
     "apps/services/gateway/gateway/routes/whatsapp/automation/groups.py": 1,
     "apps/services/gateway/gateway/routes/whatsapp/automation/outbound.py": 1,
@@ -441,7 +444,34 @@ H2_WHATSAPP_EXEMPT_SITES: dict[str, int] = {
 #: `_remove_block_filter` and `_process_past_emails_job` (-12). routes/email
 #: keeps only the discovery read of `mailbox_owner`, which
 #: `test_email_request_jobs_tenancy.py` pins.
-H2_BASELINE_ELSEWHERE = 80
+#: 80 → 77: WS-20 WA-C1 (2026-10-06). The two WhatsApp post-sync hooks
+#: `classify_chats` and `process_new_messages` moved to `_tenant_session()`
+#: (-2). The webhook's `_resolve_account` became a tenant-discovery entry
+#: (-1). `test_whatsapp_webhook_under_rls.py` fences the path under FORCE RLS.
+#: 77 → 75: WS-53 CRM-T3 (2026-10-11). `routes/crm/auto_lead.py` and
+#: `routes/crm/broker_handlers.py` moved their one site each to
+#: `tenant_session(org)` (-2). `sync_zoho.py` keeps its site until CRM-Z5.
+#: 75 → 70: F13 agent tools (2026-10-15). In routes/workflows/service.py,
+#: `list_published_workflows`, `run_published_workflow` and `run_summary`
+#: moved to `_tenant_session(org)` with the org of the agent run (-3).
+#: `start_run`, `_finish_run` and `_hold_at_gate` share one `_run_session`,
+#: which keeps ONE unbound site for a run with no org (-2).
+#: `test_workflows_tool_rls_r8.py` fences the path under FORCE RLS.
+#: 70 → 69: the same PR, review round 1. `resume_run` moved to
+#: `_run_session(org)`, and the approval handler passes the approver's org.
+#: 69 → 67: H-328 part (a) (2026-11-02). In routes/workflows/service.py, the
+#: module read and `_pm_task_updater` moved to `_run_session(org)` with the
+#: run's org (-2). `_resolve_workflow_organization` stays counted until no
+#: caller remains. `test_workflows_lifecycle_rls_r8.py` fences the path
+#: under FORCE RLS.
+#: 67 → 62: H-328 part (b) (2026-11-03). In routes/workflows, the two scans
+#: in `scheduler.py` (-2), `record_skipped_run` (-1) and
+#: `evaluate_automation_health` (-1) moved to `_tenant_session(org)` or
+#: `_run_session(org)`, and `reconcile_orphaned_runs` no longer opens a
+#: session of its own (-1). The one new unbound read is
+#: `service._organization_ids`, a tenant-discovery site that is not counted
+#: here (+1 in H2_TENANT_DISCOVERY_SITES). Measured drop: 5.
+H2_BASELINE_ELSEWHERE = 62
 
 #: routes/apps (H2 slice, 2026-08-10): the sites that STAY on the unbound
 #: seam, as file → exact remaining count. Counts rather than whole files
@@ -557,12 +587,11 @@ def test_h2_exempt_files_still_use_the_unbound_seam() -> None:
 #: `TenantUnbound` at runtime, and no file-scoped ratchet or hermetic fake can
 #: see it (the fakes yield unconditionally). Found by the H2 adversarial
 #: review — the exemption markers are file-scoped, but the call graph is not.
-H2_EXEMPT_CALL_EDGES: dict[tuple[str, str], str] = {
-    ("apps/services/gateway/gateway/routes/crm/auto_lead.py", "create_record"):
-        "_create_lead binds the mailbox owner's organization explicitly "
-        "(bind_tenant around the call — the H4 shape, done early because the "
-        "unbound call was a today-failure that stalled the watermark)",
-}
+#:
+#: The one entry, `auto_lead.py` → `create_record`, left on 2026-10-11 with
+#: its file (WS-53 CRM-T3). The auto-lead step is no longer an exempt file,
+#: so the edge is no longer an exempt edge.
+H2_EXEMPT_CALL_EDGES: dict[tuple[str, str], str] = {}
 
 
 def _h4_files() -> set[str]:
@@ -655,7 +684,7 @@ def test_exempt_call_edge_allowlist_has_no_stale_entries() -> None:
         assert name in _called_names(_REPO / rel), (
             f"{rel} no longer calls {name}() — remove the stale edge"
         )
-        assert f"bind_tenant(" in src, (
+        assert "bind_tenant(" in src, (
             f"{rel} holds a reviewed edge but no longer binds an explicit "
             f"tenant anywhere — the edge's justification is gone"
         )
@@ -669,8 +698,8 @@ def test_exempt_call_edge_allowlist_has_no_stale_entries() -> None:
 #: counted against H2_BASELINE_ELSEWHERE.
 #:
 #: ⚠️ **Each read returns ZERO rows once FORCE RLS covers its table**, the
-#: same limit every H4 resolver has (`_workflow_organization`, auto_lead's
-#: `_owner_organization`). Each function fails CLOSED on that: it returns
+#: same limit every H4 resolver has (`_workflow_organization`). Each
+#: function fails CLOSED on that: it returns
 #: `None`, the job runs memberless, and the deployment key's Router refuses
 #: it with a 400. It never bills a guessed member. H-152 records the move to
 #: an RLS-EXEMPT read before FORCE RLS lands on these tables.
@@ -687,6 +716,107 @@ H2_TENANT_DISCOVERY_SITES: dict[tuple[str, str], str] = {
         "bills, so this read decides the tenant. Since EM-T1b-1 the read runs "
         "in `tenant_session()` when a tenant is bound, and this one unbound "
         "site serves only the case with no tenant",
+    ("apps/services/gateway/gateway/routes/whatsapp/transport/webhook.py",
+     "_resolve_account"):
+        "WS-20 WA-C1: which tenant owns the Meta number of a webhook batch. "
+        "The org is the answer, so the read cannot run bound. Unlike the "
+        "entries above it does NOT go blind under FORCE RLS: it reads only "
+        "through the SECURITY DEFINER `wa_account_for_phone_number_id`, "
+        "granted to `acb_app` alone, and the route binds the org it returns",
+    ("apps/services/gateway/gateway/routes/whatsapp_channel/inbound.py",
+     "_active_links_for_phone"):
+        "WS-47 WAC-2: is the sender of a bot-number message linked, and in "
+        "which orgs. A message carries no org, so the read cannot run bound. "
+        "It reads only through the SECURITY DEFINER "
+        "`whatsapp_member_links_for_phone`, granted to `acb_app` alone, and "
+        "it writes nothing",
+    ("apps/services/gateway/gateway/routes/workflows/service.py",
+     "_organization_ids"):
+        "H-328 part (b): which organizations the workflow scans and sweeps "
+        "look at. It lists the RLS-EXEMPT `organization` table, so it does "
+        "not go blind. Each scan checks the `WORKFLOW_UNATTENDED_ORGS` list "
+        "for an id before it reads anything, and every read after it binds "
+        "one organization with `_tenant_session`",
+    ("apps/services/gateway/gateway/crm_sync/scheduler.py",
+     "_organization_ids"):
+        "WS-53 CRM-Z5: which organizations the CRM mirror loop looks at. It "
+        "lists the RLS-EXEMPT `organization` table, so it does not go blind. "
+        "Every read after it binds one organization with `tenant_session`",
+    ("apps/services/gateway/gateway/routes/whatsapp_channel/inbound.py",
+     "_code_rows"):
+        "WS-47 WAC-2: which org issued the link code that a phone sent. The "
+        "org is the answer, so the read cannot run bound. It reads only "
+        "through the SECURITY DEFINER `whatsapp_member_link_for_code`, "
+        "granted to `acb_app` alone, and the redemption then writes inside "
+        "`tenant_session` with the org it returns",
+    ("apps/services/gateway/gateway/my_day_loop.py",
+     "_organization_ids"):
+        "WS-58 MD-5b: which organizations the `my_day` loop looks at. It "
+        "lists the RLS-EXEMPT `organization` table, so it does not go blind. "
+        "The sweep after it binds one organization with `tenant_session`, and "
+        "the Redis work binds it with `organization_scope`",
+    ("apps/services/gateway/gateway/github_reconcile_loop.py",
+     "_organization_ids"):
+        "WS-54 GH-5: which organizations the GitHub reconcile poll looks at. "
+        "It lists the RLS-EXEMPT `organization` table, so it does not go "
+        "blind. Every read and write after it binds one organization with "
+        "`tenant_session`, and its tick guard binds it with "
+        "`organization_scope`",
+    ("apps/services/gateway/gateway/kb_index/sweep.py",
+     "_organization_ids"):
+        "WS-61 KB-3c: which organizations the Knowledge embed sweep looks "
+        "at. It lists the RLS-EXEMPT `organization` table, so it does not go "
+        "blind. It runs only when `KNOWLEDGE_EMBED` names an org, and every "
+        "chunk read and write after it binds one organization with "
+        "`tenant_session`",
+    ("apps/services/gateway/gateway/kb_sync/scheduler.py",
+     "_organization_ids"):
+        "WS-61 KC-3: which organizations the Knowledge sync loop looks at. It "
+        "lists the RLS-EXEMPT `organization` table, so it does not go blind. "
+        "It keeps the orgs that `KNOWLEDGE_SYNC` names, and every source "
+        "read and write after it binds one organization with `tenant_session`",
+    ("apps/services/gateway/gateway/routes/knowledge/proposal_expiry.py",
+     "_organization_ids"):
+        "WS-61 KB-5c: which organizations the Knowledge proposal expiry looks "
+        "at. It lists the RLS-EXEMPT `organization` table, so it does not go "
+        "blind. It keeps the orgs that Knowledge serves, and every update "
+        "after it binds one organization with `tenant_session`",
+    ("apps/services/gateway/gateway/agent_run_sweep.py",
+     "_organization_ids"):
+        "WS-55 SW-10a: which organizations the sweep of stranded agent runs "
+        "looks at. It lists the RLS-EXEMPT `organization` table, so it does "
+        "not go blind. Every read and write after it binds one organization "
+        "with `tenant_session`, and the sweep starts only while "
+        "`agent_run_sweep_enabled` is on",
+    ("apps/services/gateway/gateway/routes/github/webhook.py",
+     "_installation_org"):
+        "WS-54 GH-4: which org owns the GitHub installation of a webhook. "
+        "The org is the answer, so the read cannot run bound. It reads only "
+        "through the SECURITY DEFINER `github_installation_org` of migration "
+        "282, granted to `acb_app` alone, AFTER the HMAC check, and the route "
+        "binds the org it returns",
+    ("packages/acb_memory/acb_memory/tenant_guard.py",
+     "_probe_organizations"):
+        "WS-KG KG-9: the memory tenant guard asks which organizations exist, "
+        "two at most. It reads at most two rows of the RLS-EXEMPT `organization` "
+        "table and no other table, so it cannot run bound. A yes keeps Mem0 "
+        "and Graphiti down, and it runs only while one of their flags is on",
+    ("apps/services/gateway/gateway/routes/email/memory_purge.py",
+     "_organization_ids"):
+        "WS-17 EM-G11f2: which organizations the mailbox purge loop sweeps. "
+        "It lists the RLS-EXEMPT `organization` table, so it does not go "
+        "blind. Every purge-row read and write after it binds one "
+        "organization with `tenant_session`",
+    ("apps/services/gateway/gateway/routes/email/memory_purge.py",
+     "_detached_session"):
+        "WS-17 EM-G11f1c: the one session of the RLS-EXEMPT "
+        "`email_detached_purges` (migration 276). The org purge writes each "
+        "row in the transaction that deletes the tenant, so no session can "
+        "bind that tenant. The app role has no grant on the table. The "
+        "sweeper runs only the statements of `_DETACHED_STORE` here, and "
+        "each one calls a SECURITY DEFINER function of migration 276. "
+        "`test_email_mailbox_purge_durable.py` pins the one caller and "
+        "each statement",
 }
 
 
@@ -802,7 +932,9 @@ _FACTORY_OPEN_ALLOW: dict[str, tuple[int, str]] = {
         "CP-2g's tenant-discovery read: `purge_tenant_organization` resolves "
         "slug→org_id against the RLS-EXEMPT `organization` table — unbound by "
         "design, the `resolve_identity` argument (it resolves WHICH tenant). "
-        "The destructive DELETE itself is bound via `tenant_session()`.",
+        "The destructive DELETE itself is bound via `tenant_session()`. "
+        "Since 2026-10-15 the read is `organization_id_for_slug`, and the "
+        "operator member door calls it too. It stays ONE open.",
     ),
     "packages/acb_auth/acb_auth/console_resolve.py": (
         6,
@@ -832,6 +964,21 @@ _FACTORY_OPEN_ALLOW: dict[str, tuple[int, str]] = {
         "readable AND writable unbound, as the non-privileged role on a "
         "phase-4-promoted catalog, by `test_h3_rls_promotion_rehearsal.py::"
         "TestTheEmailOtpTokenIsReachableUnbound`.",
+    ),
+    "packages/acb_auth/acb_auth/agent_tokens.py": (
+        1,
+        "WS-55 EA-1 — the outside-agent token store. ONE helper (`_session`) "
+        "that only the token acts open, and it MUST start unbound: an outside "
+        "agent sends only an opaque token, so the edge finds the token BEFORE "
+        "it knows the tenant. The first read touches only `agent_token`, which "
+        "is RLS-EXEMPT (`gen_tenant_migration.EXEMPT`, external_agent_access.md "
+        "§10.3). Before it touches the tenant-scoped `agent_connection`, the "
+        "act binds the tenant FROM THE TOKEN ROW inside the same transaction, "
+        "with the seam's own `set_config(..., true)` statement (the "
+        "`org_settings` pattern). Not a known-open brick: "
+        "`test_agent_connection_tokens.py` proves the lookup, the code spend, "
+        "the issue and the refresh rotation as the non-privileged role on a "
+        "phase-4-promoted catalog.",
     ),
     "packages/acb_common/acb_common/provisioning.py": (
         3,
@@ -974,7 +1121,11 @@ class TestThePoolCeilingFitsThePoolerInFront:
         from acb_common.settings import Settings
 
         s = Settings()
-        ceiling = s.db_pool_size + s.db_max_overflow
+        # BOTH engines of the one process (2026-10-06). This sum used to count
+        # the async pool only, while the sync `acb_graph` engine took
+        # SQLAlchemy's 5 + 10 unseen: 12 + 15 = 27 against a cap of 15.
+        ceiling = (s.db_pool_size + s.db_max_overflow
+                   + s.db_sync_pool_size + s.db_sync_max_overflow)
         assert ceiling <= self.POOLER_SESSION_CAP - self.RESERVED_FOR_OPERATORS, (
             f"a single process may open {ceiling} connections, but the pooler "
             f"in front allows {self.POOLER_SESSION_CAP} for EVERY client and "
@@ -983,6 +1134,68 @@ class TestThePoolCeilingFitsThePoolerInFront:
             "`resolve_identity` cannot read, and the member is told they belong "
             "to no organization."
         )
+
+    #: The headroom of the WHOLE database once the MCP edge runs beside the
+    #: gateway (WS-55 EA-10, orchestrator decision 2026-10-13). It serves a
+    #: migration run and the backup job at the same time. An ad-hoc `psql`
+    #: waits while both run.
+    HEADROOM_WITH_EDGE = 2
+
+    #: The edge pins its pool in the env table of this spec section, and this
+    #: test reads it from there, so the spec and the fence hold one value.
+    EDGE_SPEC = (Path(__file__).resolve().parents[2]
+                 / "project-docs/specs/external_agent_access.md")
+
+    @classmethod
+    def _edge_pin(cls, name: str) -> int:
+        text = cls.EDGE_SPEC.read_text(encoding="utf-8")
+        section = text[text.index("### 15.3 EA-10 pins"):text.index("## 16.")]
+        found = re.findall(rf"^\| `{name}` \| `(\d+)`", section, re.MULTILINE)
+        assert len(found) == 1, f"§15.3 must pin {name} exactly once: {found}"
+        return int(found[0])
+
+    def test_the_gateway_and_the_mcp_edge_fit_the_pooler_together(self):
+        """WS-55 EA-10. The edge (`acb-agent-edge`) is a SECOND process on the
+        same session pooler. Its env file pins its async pool, and it never
+        builds the sync engine (tests/unit/test_agent_edge_deploy.py). So the
+        database sees the gateway's two engines plus the edge's one pool."""
+        from acb_common.settings import Settings
+
+        s = Settings()
+        gateway = (s.db_pool_size + s.db_max_overflow
+                   + s.db_sync_pool_size + s.db_sync_max_overflow)
+        edge = self._edge_pin("DB_POOL_SIZE") + self._edge_pin("DB_MAX_OVERFLOW")
+        assert edge >= 1, "the edge needs a connection for the token lookup"
+        assert gateway + edge <= self.POOLER_SESSION_CAP - self.HEADROOM_WITH_EDGE, (
+            f"the gateway may open {gateway} and the MCP edge {edge}, so "
+            f"{gateway + edge} of the pooler's {self.POOLER_SESSION_CAP}. "
+            f"{self.HEADROOM_WITH_EDGE} must stay free for a migration and the "
+            "backup job. Take the slot from somewhere else, or ask the owner."
+        )
+
+    def test_the_sync_engine_takes_its_bounded_pool(self):
+        """The sync ``acb_graph`` engine must read the budget, not the defaults.
+
+        A pool setting that nothing reads is a comment. This builds the real
+        engine for a Postgres URL (no connection is opened) and reads its pool.
+        """
+        from types import SimpleNamespace
+
+        from acb_graph.db import _engine_kwargs
+        from sqlalchemy import create_engine
+
+        s = SimpleNamespace(
+            database_url="postgresql+psycopg://u:p@db.invalid:5432/x",
+            db_connect_timeout=5, db_sync_pool_size=2, db_sync_max_overflow=1,
+            db_pool_timeout=10,
+        )
+        engine = create_engine(s.database_url, **_engine_kwargs(s))
+        try:
+            assert engine.pool.size() == 2
+            assert engine.pool._max_overflow == 1
+            assert engine.pool._timeout == 10
+        finally:
+            engine.dispose()
 
     def test_exhaustion_waits_rather_than_hanging_for_thirty_seconds(self):
         """The ceiling is deliberately near the cap, so queueing is ordinary.

@@ -86,18 +86,20 @@ async def test_orchestrate_draft_scopes_memory_per_account() -> None:
             patch.object(_drafting, "_draft_consult_plan", fake_plan):
         out = await _drafting._orchestrate_draft(
             {"from": "rep@3ds.com", "subject": "s", "body": "b"},
-            about="", signature="", user_email="Me@X.com", account_id="acc-1")
+            about="", signature="", user_email="Me@X.com", account_id="0b6c1f2e-3d4a-4b5c-8d6e-7f8091a2b3c4")
         await _drain_background_tasks()
 
     assert out.startswith("Hi,")
     # The drafter's remember() read is steered to the account scope …
-    assert captured["set_uid"] == ["me@x.com#acct:acc-1"]
+    assert captured["set_uid"] == ["me@x.com#acct:0b6c1f2e-3d4a-4b5c-8d6e-7f8091a2b3c4"]
     # … and the exchange it records writes back under the SAME scope.
-    assert captured["add_uid"] == ["me@x.com#acct:acc-1"]
+    assert captured["add_uid"] == ["me@x.com#acct:0b6c1f2e-3d4a-4b5c-8d6e-7f8091a2b3c4"]
 
 
-async def test_orchestrate_draft_without_account_uses_bare_email() -> None:
-    # Legacy call path (no account_id) keeps the old global scope — no regression.
+async def test_orchestrate_draft_without_account_writes_no_memory() -> None:
+    # Legacy call path (no account_id): the read keeps the bare scope, but the
+    # write is REFUSED (WS-17 EM-G11f2 item 2). A disconnect purges only a
+    # mailbox key, so a write under the bare key could never be deleted.
     captured: dict[str, list[str]] = {"set_uid": [], "add_uid": []}
 
     async def fake_remember(_q: str) -> str:
@@ -126,7 +128,7 @@ async def test_orchestrate_draft_without_account_uses_bare_email() -> None:
         await _drain_background_tasks()
 
     assert captured["set_uid"] == ["me@x.com"]
-    assert captured["add_uid"] == ["me@x.com"]
+    assert captured["add_uid"] == [], "a write landed under a key no purge finds"
 
 
 # ── is_default flag ──────────────────────────────────────────────────────────
@@ -140,3 +142,12 @@ def test_account_model_roundtrips_is_default() -> None:
     a = EmailAccountModel(
         id="a1", provider="gmail", email_address="me@x.com", is_default=True)
     assert a.model_dump()["is_default"] is True
+
+
+def test_account_model_is_in_all_inboxes_by_default() -> None:
+    """EM-T8g-1: migration 229 gives each row true, and so does the model."""
+    a = EmailAccountModel(id="a1", provider="gmail", email_address="me@x.com")
+    assert a.model_dump()["in_all_inboxes"] is True
+    kept = EmailAccountModel(
+        id="a2", provider="gmail", email_address="me@x.com", in_all_inboxes=False)
+    assert kept.model_dump()["in_all_inboxes"] is False

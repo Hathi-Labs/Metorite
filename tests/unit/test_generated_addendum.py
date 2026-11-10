@@ -39,6 +39,11 @@ from tests.unit._decide_flag import (
 
 MEMORY_TOOLS = set(sf.SKILL_FAMILIES["memory"]["tools"])
 
+#: D85: an agent with no config reads as SHARED and loses the shell tools.
+#: These tests pin the S3 rules over the WHOLE floor, so the fake agent is
+#: personal. The block itself is ``test_shared_agent_shell_tools.py``.
+_PERSONAL = {"sharing": {"instancing": "personal"}}
+
 
 # ── 1. The section registries source from SKILL_FAMILIES (drift gate) ──────
 
@@ -114,8 +119,14 @@ class _FakeCopilotAgent:
         self._default_options: dict[str, Any] = {}
 
 
+_REAL_IMAGE_WITHHELD = ti._image_withheld
+
+
 @pytest.fixture()
 def _injection_env(monkeypatch):
+    # WS-VOX VOX-3: analyze_image is per org. These runs pin the surface of a
+    # lit org (the dark case is in test_attachment_analyze_image.py).
+    monkeypatch.setattr(ti, "_image_withheld", lambda: frozenset())
     monkeypatch.setenv("AGENT_PERMISSION_MODE", "approve_all")
     monkeypatch.delenv("SKILLS_FAIL_CLOSED", raising=False)
     fake_apps = types.ModuleType("orchestrator.app_tools")
@@ -143,7 +154,8 @@ def test_disabled_family_section_absent_from_run_system_message(
         lambda name: frozenset({"memory"}),
     )
     agent = _FakeCopilotAgent()
-    ti._inject_agent_tools([agent], tool_scope=None, agent_name="fake-copilot")
+    ti._inject_agent_tools([agent], tool_scope=None, agent_name="fake-copilot",
+                           agent_config=_PERSONAL)
     text = _addendum_of(agent)
     assert "### Memory & knowledge graph" not in text
     assert "recall_org" not in text and "save_agent_memory" not in text
@@ -164,7 +176,8 @@ def test_enabled_families_keep_their_sections_end_to_end(
         ti, "_load_disabled_skill_families", lambda name: frozenset()
     )
     agent = _FakeCopilotAgent()
-    ti._inject_agent_tools([agent], tool_scope=None, agent_name="fake-copilot")
+    ti._inject_agent_tools([agent], tool_scope=None, agent_name="fake-copilot",
+                           agent_config=_PERSONAL)
     text = _addendum_of(agent)
     for section in ("### Memory & knowledge graph", "### Conversation history",
                     "### GitHub code search", "### Runtime dependencies"):
@@ -234,6 +247,200 @@ def test_fail_closed_still_intersects_admin_disables(monkeypatch) -> None:
     assert ti._CORE_STANDARD_TOOL_NAMES <= resolved
 
 
+# ── 4. WS-43u: the per-run sandbox section (maf_coding_engine.md §16.3) ────
+#
+# Mutations this block catches (R7), each run red once by hand on 2026-10-04:
+# the gate of the section emptied or widened to ``web_search``,
+# ``render_run_sections`` reading an empty set as "every tool", the section
+# moved into FULL_SECTIONS, the HR gate, ``/workspace/.run/`` or
+# ``/workspace/outputs/`` dropped from the text, and a "no data leaves the
+# platform" claim put in it.
+
+def test_the_sandbox_section_renders_only_with_run_command() -> None:
+    from acb_skills.tool_annotations import SANDBOX_TOOL_NAMES
+
+    text = ad.render_run_sections({"run_command", "file_access_write"})
+    assert text.startswith(ad.SANDBOX_CODE_HEADING)
+    assert text.count(ad.SANDBOX_CODE_HEADING) == 1
+    for held in (set(), {"file_access_write", "task_dataset"}, {"web_search"},
+                 set(ti._CORE_STANDARD_TOOL_NAMES)):
+        assert ad.render_run_sections(held) == "", held
+    # Every per-run gate is a sandbox tool, which the injection never adds.
+    for section in ad.RUN_SECTIONS:
+        assert section.gate and set(section.gate) <= SANDBOX_TOOL_NAMES
+
+
+def test_no_injected_addendum_names_the_sandbox_section() -> None:
+    """An unscoped agent (``None``) renders every injected section, so the
+    sandbox prose must live outside those registries. No full or compact
+    addendum, for any scope, names it, and no injected section is gated on a
+    sandbox tool."""
+    from acb_skills.tool_annotations import SANDBOX_TOOL_NAMES
+
+    for registry in (ad.FULL_SECTIONS, ad.COMPACT_SECTIONS, ad.MANDATORY_LINES):
+        for entry in registry:
+            assert not set(entry.gate) & SANDBOX_TOOL_NAMES, entry
+    for is_sub in (False, True):
+        for scope in (None, frozenset(ti._CORE_STANDARD_TOOL_NAMES),
+                      frozenset({"run_command"})):
+            text = ad.render_injected_tools_addendum(
+                is_sub_agent=is_sub, effective_scope=scope, registry_block="R",
+                risk_block="",
+            )
+            assert ad.SANDBOX_CODE_HEADING not in text, (is_sub, scope)
+
+
+def test_the_sandbox_section_names_the_rules_of_16_3() -> None:
+    """The six rules of the brief: code when needed, data through the
+    viewer-scoped tools into ``.run/``, the HR gate, the result in the
+    thread's own outputs, no network, and private skills. And no claim that
+    no data leaves the platform: the owner kept delegation on 2026-10-03, and
+    an agent that the run calls runs outside the sandbox."""
+    import re
+
+    text = ad.render_run_sections({"run_command"})
+    for phrase in (
+        "a custom chart, a calculation that the analytics tools do not give, "
+        "and a file conversion",
+        "already answers the question, use that tool and write no code",
+        "`task_dataset` and the other reads give only what this member can see",
+        "`/workspace/.run/rows.json`",
+        "Never write member data to `agent-data/`, `inputs/` or a `skills/` folder.",
+        "Never route around the HR gate.",
+        "not from `created_at` and `completed_at`",
+        "**Put the result in `/workspace/outputs/`.**",
+        "shows in the chat as an artifact card",
+        "Make only the result that the member asked for",
+        "**The sandbox has no network.** Do not install a package, and do not "
+        "fetch a URL from a script.",
+        "`agent-data/skills/<name>/`",
+        "A skill is private to the member who made it",
+    ):
+        assert phrase in text, phrase
+    assert not re.search(
+        r"leaves?\s+the\s+platform|off\s+the\s+platform|no\s+data", text, re.IGNORECASE,
+    )
+
+
+def test_the_sandbox_section_owns_the_document_files() -> None:
+    """Rule 8: a covered run may make a PDF, .docx, .pptx or .xlsx in the
+    sandbox, and claims a file only when it is in outputs. The section names
+    the rule "A PDF" of the Projects instructions as the rule it comes before.
+    WS43-F25 checks that each named library is in the image."""
+    text = ad.render_run_sections({"run_command"})
+    for phrase in (
+        'These rules come before the rules "No file and no code over the rows" and "A PDF"',
+        "**You may make a document file.**",
+        "a PDF, a `.docx`, a `.pptx` or a `.xlsx`",
+        "Save it in `/workspace/outputs/`, and a card shows it in the chat.",
+        "Say that you made the file only when the command succeeded",
+    ):
+        assert phrase in text, phrase
+    for library in ("reportlab", "python-docx", "python-pptx", "openpyxl"):
+        assert library in ad.SANDBOX_LIBRARIES, library
+
+
+@pytest.mark.parametrize(("flag", "held"), [
+    ("", False),
+    ("0f9e8d7c-aaaa-4aaa-8aaa-000000000000", False),
+    ("6b1f0c1e-3c55-4a07-9c3e-0a1b2c3d4e5f", True),
+    ("*", True),
+])
+def test_analyze_image_is_injected_only_for_an_org_on_the_flag(
+    monkeypatch, _injection_env, flag, held,
+) -> None:
+    """WS-VOX VOX-3 fix round: the real injection, per org, tool and addendum."""
+    from acb_common import get_settings
+    from acb_common.db import bind_tenant, release_tenant
+
+    org = "6b1f0c1e-3c55-4a07-9c3e-0a1b2c3d4e5f"
+    monkeypatch.setattr(ti, "_image_withheld", _REAL_IMAGE_WITHHELD)
+    monkeypatch.setattr(ti, "_run_org_or_none", lambda: org)
+    monkeypatch.setattr(get_settings(), "image_analysis_orgs", flag, raising=False)
+    monkeypatch.setattr(
+        ti, "_load_disabled_skill_families", lambda name: frozenset())
+    agent = _FakeCopilotAgent()
+    ti._build_injected_tools_addendum.cache_clear()
+    token = bind_tenant(org)
+    try:
+        ti._inject_agent_tools([agent], tool_scope=None, agent_name="fake-copilot",
+                               agent_config=_PERSONAL)
+        text = _addendum_of(agent)
+    finally:
+        release_tenant(token)
+        ti._build_injected_tools_addendum.cache_clear()
+    injected = {getattr(getattr(t, "func", t), "__name__", "") for t in agent._tools}
+    assert ("analyze_image" in injected) is held
+    assert ("### Images in the chat" in text) is held
+
+
+def _flag_orgs(monkeypatch, lit: str) -> None:
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "image_analysis_orgs", lit, raising=False)
+
+
+def test_the_addendum_cache_keys_on_the_org_flag_without_a_clear(monkeypatch, _injection_env) -> None:
+    """WS-VOX VOX-3 fix round 3: ONE clear, then lit, dark, lit again. Each run
+    gets the section state of its own org, whatever the cache holds."""
+    from acb_common.db import bind_tenant, release_tenant
+
+    lit_org = "6b1f0c1e-3c55-4a07-9c3e-0a1b2c3d4e5f"
+    dark_org = "0f9e8d7c-6b5a-4f3e-8d2c-1b0a9f8e7d6c"
+    _flag_orgs(monkeypatch, lit_org)
+    head = "### Images in the chat"
+
+    def _render(org: str) -> bool:
+        token = bind_tenant(org)
+        try:
+            monkeypatch.setattr(ti, "_run_org_or_none", lambda: org)
+            monkeypatch.setattr(ti, "_image_withheld", _REAL_IMAGE_WITHHELD)
+            monkeypatch.setattr(
+                ti, "_load_disabled_skill_families", lambda name: frozenset())
+            agent = _FakeCopilotAgent()
+            ti._inject_agent_tools([agent], tool_scope=None, agent_name="fake-copilot",
+                                   agent_config=_PERSONAL)
+            return head in _addendum_of(agent)
+        finally:
+            release_tenant(token)
+
+    ti._build_injected_tools_addendum.cache_clear()
+    try:
+        assert _render(lit_org) is True
+        assert _render(dark_org) is False
+        assert _render(lit_org) is True
+        assert _render(dark_org) is False
+    finally:
+        ti._build_injected_tools_addendum.cache_clear()
+
+
+def test_the_gateway_preview_caller_keys_on_its_tenant(monkeypatch) -> None:
+    """The catalog preview passes the flag of its own tenant, so a lit org's
+    text never sits under the dark key (and the reverse)."""
+    import gateway.routes.integrations_skills as gis
+    from acb_common.db import bind_tenant, release_tenant
+
+    lit_org = "6b1f0c1e-3c55-4a07-9c3e-0a1b2c3d4e5f"
+    dark_org = "0f9e8d7c-6b5a-4f3e-8d2c-1b0a9f8e7d6c"
+    _flag_orgs(monkeypatch, lit_org)
+    head = "### Images in the chat"
+
+    def _preview(org: str) -> bool:
+        token = bind_tenant(org)
+        try:
+            return head in gis._addendum_for_scope(None)
+        finally:
+            release_tenant(token)
+
+    ti._build_injected_tools_addendum.cache_clear()
+    try:
+        assert _preview(lit_org) is True
+        assert _preview(dark_org) is False
+        assert _preview(lit_org) is True
+    finally:
+        ti._build_injected_tools_addendum.cache_clear()
+
+
 def test_fail_closed_on_injection_narrows_unscoped_agent(
     monkeypatch, _injection_env
 ) -> None:
@@ -242,7 +449,8 @@ def test_fail_closed_on_injection_narrows_unscoped_agent(
         ti, "_load_disabled_skill_families", lambda name: frozenset()
     )
     agent = _FakeCopilotAgent()
-    ti._inject_agent_tools([agent], tool_scope=None, agent_name="fake-copilot")
+    ti._inject_agent_tools([agent], tool_scope=None, agent_name="fake-copilot",
+                           agent_config=_PERSONAL)
     injected = {
         getattr(getattr(t, "func", t), "__name__", "") for t in agent._tools
     }

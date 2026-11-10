@@ -1,0 +1,371 @@
+/**
+ * The needs feed, as the browser reads it (`navigation_shell.md` §7.2, NS-3).
+ *
+ * `GET /api/shell/needs` merges what each app says needs the member. My Day's
+ * "Needs you" card reads it, and the shell's one bell (NS-6) will read the
+ * same feed. So the contract, the cache key and the one-click acts live here,
+ * once, and no card holds a second copy.
+ *
+ * **The acts call the OWNING app's code.** A task is marked done through the
+ * My Tasks store's own gesture (`completeFromHome`), so the subtask question
+ * (D-PM-38) and the Undo (D79) are the ones My Tasks has. A notification is
+ * marked read through the Projects bell's client (`notificationsApi.markRead`).
+ * The shell adds no write route of its own (§7.2: "the bell reads both and
+ * owns neither").
+ *
+ * ⚠️ It never reads the notification LIST. That read is the bell's, and
+ * `seams.test.ts` fails on a second one. Notifications reach My Day through
+ * this feed only.
+ *
+ * Fence: `needs.test.ts`.
+ */
+import { PROJECTS_CACHE, notificationsApi } from "@/app/projects/lib/api";
+import { type CompletionStore, type DoneRow, markDoneFromHome } from "@/app/tasks/lib/completeFromHome";
+import { cacheKey } from "@/lib/dataCache";
+
+export type NeedsApp = "tasks" | "approvals" | "projects" | "email" | "calendar";
+export type NeedsKind =
+  | "overdue"
+  | "approval"
+  | "due_today"
+  | "notification"
+  | "needs_reply"
+  | "reminder_due"
+  | "reminder_check"
+  | "reminder_unconfirmed";
+export type NeedsAct = "done" | "read";
+export type SourceState = "ok" | "failed" | "absent";
+
+/**
+ * The app that owns each SOURCE of the needs feed. THE one map from a source
+ * id to its app. The server keys `sources`, `totals` and `capped` by the
+ * source id (`needs.py`), and the reminders source is `reminders`, not its
+ * app `calendar`. So every reader of those three goes through this map, and
+ * a new provider adds one line here.
+ */
+export const NEEDS_SOURCE_APP = {
+  tasks: "tasks",
+  approvals: "approvals",
+  projects: "projects",
+  email: "email",
+  reminders: "calendar",
+} as const satisfies Record<string, NeedsApp>;
+
+export type NeedsSource = keyof typeof NEEDS_SOURCE_APP;
+
+// Every source counts on its app's row. RM-2b held `reminders` out, because
+// the server keys the totals by source and the client read them by app. The
+// map above closed that gap, and the owner asked for the Calendar count on
+// 2026-11-03 (`calendar_events_reminders.md` §5.6, RM-2b decision 5).
+
+const NEEDS_SOURCES = Object.keys(NEEDS_SOURCE_APP) as NeedsSource[];
+
+/** One row of the feed, exactly as `GET /shell/needs` sends it. */
+export interface NeedsItem {
+  id: string;
+  app: NeedsApp;
+  kind: NeedsKind;
+  title: string;
+  detail: string | null;
+  href: string;
+  at: string | null;
+  act: NeedsAct | null;
+  act_ref: string | null;
+  /**
+   * A `read` from My Day's feed only: every unread notification id of one
+   * task (`my_day_feed.md` §14.1a). The needs view never sends it.
+   */
+  act_refs?: string[];
+}
+
+export interface NeedsFeed {
+  /** The rows in `items`. */
+  count: number;
+  /**
+   * Every row the sources gave before the feed's own cut to `limit`. Each
+   * source gives 15 at most, so it can be more than `count`, and it is a
+   * floor, not an exact sum of what waits. An older gateway leaves it out,
+   * and it then reads as `count`.
+   */
+  total: number;
+  items: NeedsItem[];
+  sources: Partial<Record<NeedsSource, SourceState>>;
+  /**
+   * How many need the member in each source that answered `ok`. It is the
+   * app's own count where its read has one (the Projects bell's unread
+   * count, a mailbox's Needs-reply count), else the rows the source found.
+   * The sidebar's row counts read it, because the cut can drop one app's
+   * rows from `items` entirely. An older gateway leaves it out, and a count
+   * then reads the rows in `items`.
+   */
+  totals: Partial<Record<NeedsSource, number>>;
+  /**
+   * The sources whose `totals` entry is a FLOOR: the read stopped at its
+   * cap of 15 and has no count, so the source holds that many OR MORE. The
+   * row prints "15+" (`navNeeds.ts`). An older gateway leaves it out.
+   */
+  capped: NeedsSource[];
+}
+
+/**
+ * The app that owns each source's rows: the sidebar row that counts them.
+ * THE one map. A new provider adds one line here, and its rows count on its
+ * app's row. The `tasks` rows are the member's due tasks. My Tasks left the
+ * nav at the OP-4 flip (2026-10-25) and its work is the My work section of
+ * Projects, so they count on the Projects row, beside the `projects` rows.
+ */
+export const NEEDS_APP_HREF: Readonly<Record<NeedsApp, string>> = {
+  tasks: "/projects",
+  approvals: "/approvals",
+  projects: "/projects",
+  email: "/email",
+  // WS-66: the reminders that need the member count on the Calendar row
+  // (fired, checked back, or unconfirmed). One still ahead today needs
+  // nothing yet, so it is not a needs row and has no count.
+  calendar: "/calendar",
+};
+
+/**
+ * How many rows need the member in each app, by `total` semantics: the
+ * source's rows before the feed's cut, less the rows an act took off.
+ *
+ * Only a source that answered `ok` has an entry. A source that `failed`
+ * has none, so its row shows no number, never a 0 and never a stale one.
+ * `shown` is the feed's rows that are still on screen (`useNeedsYou`'s
+ * `items`). `approvals` is false for a member who may not see that group.
+ */
+export function countsByApp(
+  feed: NeedsFeed,
+  shown: readonly NeedsItem[],
+  approvals: boolean,
+): Partial<Record<NeedsApp, number>> {
+  const out: Partial<Record<NeedsApp, number>> = {};
+  for (const source of NEEDS_SOURCES) {
+    const app = NEEDS_SOURCE_APP[source];
+    if (feed.sources?.[source] !== "ok") continue;
+    if (app === "approvals" && !approvals) continue;
+    const sent = feed.items.filter((i) => i.app === app).length;
+    const still = shown.filter((i) => i.app === app).length;
+    const total = feed.totals?.[source];
+    const before = typeof total === "number" && Number.isFinite(total) ? Math.max(total, sent) : sent;
+    out[app] = Math.max(0, before - (sent - still));
+  }
+  return out;
+}
+
+/**
+ * The apps whose count is a floor (`capped`), among the ones that have a
+ * count. A failed source has no count, so it is never a floor either.
+ */
+export function floorApps(feed: NeedsFeed, approvals: boolean): Set<NeedsApp> {
+  const out = new Set<NeedsApp>();
+  for (const source of Array.isArray(feed.capped) ? feed.capped : []) {
+    if (!Object.hasOwn(NEEDS_SOURCE_APP, source)) continue;
+    if (feed.sources?.[source] !== "ok") continue;
+    const app = NEEDS_SOURCE_APP[source];
+    if (app === "approvals" && !approvals) continue;
+    out.add(app);
+  }
+  return out;
+}
+
+/**
+ * The counts by the href of the row that shows them. A zero has no entry.
+ * With `held`, an app the member cannot open has no entry either: the
+ * sidebar has no row for it, and All apps does not list it.
+ */
+export function needsByHref(
+  counts: Partial<Record<NeedsApp, number>>,
+  held?: ReadonlySet<string>,
+): Record<string, number> {
+  return byHref(counts, held);
+}
+
+/** The hrefs whose count is a floor, by the same map and the same `held`. */
+export function floorHrefs(floors: ReadonlySet<NeedsApp>, held?: ReadonlySet<string>): Set<string> {
+  const out = new Set<string>();
+  for (const app of floors) {
+    const href = NEEDS_APP_HREF[app];
+    if (href && (!held || held.has(href))) out.add(href);
+  }
+  return out;
+}
+
+function byHref(
+  counts: Partial<Record<NeedsApp, number>>,
+  held?: ReadonlySet<string>,
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [app, n] of Object.entries(counts) as [NeedsApp, number][]) {
+    const href = NEEDS_APP_HREF[app];
+    if (!href || !(n > 0) || (held && !held.has(href))) continue;
+    out[href] = (out[href] ?? 0) + n;
+  }
+  return out;
+}
+
+/**
+ * The server's order of the kinds. The feed arrives in it. An approval comes
+ * right after an overdue task, because an agent's work waits on it. An
+ * approval row has no act: approving runs an outward write, so the member
+ * opens Approvals and reads the proposal first.
+ */
+export const KIND_ORDER: readonly NeedsKind[] = [
+  // RX-7: a reminder that fired and waits on the member comes first, so the
+  // server's cut to 30 rows cannot drop it (`needs.py` `KIND_ORDER`).
+  "reminder_due",
+  "reminder_check",
+  "overdue",
+  "approval",
+  "due_today",
+  "notification",
+  "needs_reply",
+  // WS-66 RM-2b: a reminder that Metorite stopped checking is the last kind.
+  "reminder_unconfirmed",
+];
+
+/** How many rows the feed asks for. The BFF and the gateway both cap it. */
+export const NEEDS_LIMIT = 30;
+
+/**
+ * The feed's cache key lives in the Projects family ON PURPOSE. Each Projects
+ * write drops that family (`projectsCall`), and nearly every such write can
+ * change what needs the member: a task done, a notification read, a due date
+ * moved. So the feed reads again after each one, from any app, with no
+ * second invalidation map to keep in step.
+ */
+export const NEEDS_CACHE = `${PROJECTS_CACHE}shell/needs`;
+
+export const needsKey = (limit = NEEDS_LIMIT): string => cacheKey(NEEDS_CACHE, { limit });
+
+/**
+ * Read a feed defensively. A field the server left out reads as empty, so a
+ * card never throws on an older gateway (the visual rig's trap 8).
+ */
+export function readFeed(raw: unknown): NeedsFeed {
+  const body = (raw ?? {}) as Partial<NeedsFeed>;
+  const items = Array.isArray(body.items) ? body.items.filter(isItem) : [];
+  const count = typeof body.count === "number" ? body.count : items.length;
+  return {
+    count,
+    total: typeof body.total === "number" ? Math.max(body.total, count) : count,
+    items,
+    sources: body.sources && typeof body.sources === "object" ? body.sources : {},
+    totals: body.totals && typeof body.totals === "object" ? body.totals : {},
+    capped: Array.isArray(body.capped) ? body.capped : [],
+  };
+}
+
+function isItem(v: unknown): v is NeedsItem {
+  const row = v as Partial<NeedsItem> | null;
+  return (
+    !!row &&
+    typeof row.id === "string" &&
+    typeof row.title === "string" &&
+    typeof row.href === "string" &&
+    KIND_ORDER.includes(row.kind as NeedsKind)
+  );
+}
+
+/**
+ * A source that already carries the needs view, or null (MD-1b visual
+ * review). While My Day's live feed is mounted, its answer holds exactly
+ * `GET /shell/needs?limit=30` (`my_day_feed.md` §14.1a). So a needs read on
+ * that page asks the feed, which is one provider run, and never runs the
+ * providers a second time. The bell, the sidebar and My Day itself all read
+ * through `fetchNeeds`, so one switch covers every reader, whichever of
+ * them mounts first.
+ */
+let carrier: (() => Promise<NeedsFeed | null>) | null = null;
+
+/** Make `source` the carrier of the needs view. Returns the release. */
+export function carryNeeds(source: () => Promise<NeedsFeed | null>): () => void {
+  carrier = source;
+  return () => {
+    if (carrier === source) carrier = null;
+  };
+}
+
+/**
+ * How long a needs read waits on the carrier, in ms (WS-58 MD-2b). The feed
+ * route may take 8 seconds, and the bell must not wait that long on My Day.
+ * After this time, the read goes to the needs route.
+ */
+export const CARRIER_WAIT_MS = 4_000;
+
+/**
+ * The carried view, or null when the carrier fails, carries no view, or takes
+ * longer than `CARRIER_WAIT_MS`. The carrier's request runs on, and its
+ * answer still goes into the needs key through `guardedPut`.
+ */
+async function carriedView(carried: () => Promise<NeedsFeed | null>): Promise<NeedsFeed | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const limit = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), CARRIER_WAIT_MS);
+  });
+  try {
+    // `then` also catches a carrier that throws before it returns a promise.
+    const view = Promise.resolve()
+      .then(carried)
+      .catch(() => null);
+    return await Promise.race([view, limit]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Fetch the feed. A refusal or an outage throws, so the card can say so.
+ *
+ * With a carrier (`carryNeeds`), the default read takes the carried view.
+ * A carrier that fails, carries no view, or takes longer than
+ * `CARRIER_WAIT_MS`, falls back to the needs route. So the bell's counts never
+ * wait long on a slow or broken feed.
+ */
+export async function fetchNeeds(limit = NEEDS_LIMIT): Promise<NeedsFeed> {
+  const carried = limit === NEEDS_LIMIT ? carrier : null;
+  if (carried) {
+    const view = await carriedView(carried);
+    if (view) return view;
+  }
+  const res = await fetch(`/api/shell/needs?limit=${limit}`, { cache: "no-store" });
+  if (!res.ok) throw new Error("What needs you could not load.");
+  return readFeed(await res.json());
+}
+
+/**
+ * The ids of a merged read, only when they are a non-empty list of non-empty
+ * strings. Anything else is `null`, and the read falls back to `[act_ref]`.
+ */
+function readRefs(refs: unknown): string[] | null {
+  if (!Array.isArray(refs) || refs.length === 0) return null;
+  return refs.every((r) => typeof r === "string" && r.length > 0) ? (refs as string[]) : null;
+}
+
+/**
+ * Run a row's one-click act through its owning app, and move the row.
+ *
+ * A done is the My Tasks store's gesture (`markDoneFromHome`). It may ASK
+ * first (a parent with open subtasks). The row then stays while the question
+ * is up, and leaves only if the answer completes the task. A read has no
+ * Undo: the Projects bell has no "mark unread" route, and the shell adds
+ * none.
+ */
+export async function runAct(
+  item: NeedsItem,
+  row: DoneRow,
+  /** The My Tasks store. A test hands in a fake. */
+  store?: CompletionStore,
+): Promise<"done" | "kept" | "failed" | null> {
+  if (!item.act || !item.act_ref) return null;
+  if (item.act === "done") return markDoneFromHome(item.act_ref, row, store);
+  row.hide();
+  try {
+    // A feed card's merged read names each unread note of its task.
+    await notificationsApi.markRead(readRefs(item.act_refs) ?? [item.act_ref]);
+    return "done";
+  } catch {
+    row.fail("Could not mark it read. Try again.");
+    return "failed";
+  }
+}

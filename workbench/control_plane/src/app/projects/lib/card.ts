@@ -28,6 +28,7 @@ import {
 
 import type { TagRow, TaskRow, TaskTypeRow } from "./api";
 import { taskCell } from "./matrix";
+import { withOrg } from "@/lib/orgLink";
 
 /**
  * `lower(tag name)` → the registry's stored colour.
@@ -83,6 +84,8 @@ export function taskFacts(
       (name): TagFact => ({ name, color: colours?.get(name.toLowerCase()) })
     ),
     estimateMins: task.estimate_mins,
+    // WS-55 EA-13d: the gateway picked it (EA3-48), so the card picks nothing.
+    pr: task.pr ?? null,
   };
 }
 
@@ -126,6 +129,18 @@ export function cardChips(
   types?: ReadonlyMap<string, TypeFact>
 ): MetaChip[] {
   const chips = taskMeta(taskFacts(task, colours, types), nowMs);
+  // D170 (INB-1): "New" leads the row. It is a state notice, not a field a
+  // view can hide (`visibleChips` lets it through). Opening the task and
+  // stating any disposition clears `is_new` on the server.
+  if (task.is_new) {
+    chips.unshift({
+      key: "new",
+      icon: "Sparkles",
+      label: "New",
+      tone: "accent",
+      title: "New: assigned to you, and you have not planned it yet",
+    });
+  }
   const priority = importanceChip(task, nowMs);
   if (priority) {
     const at = chips.findIndex((chip) => chip.key === "blocked") + 1;
@@ -158,6 +173,7 @@ export const CHIP_FIELD: Record<string, string> = {
   importance: "importance",
   due: "due_at",
   subtasks: "subtasks",
+  pr: "pr",
   tags: "tags",
   attachments: "attachments",
   estimate: "estimate",
@@ -180,6 +196,7 @@ export function visibleChips(
 ): MetaChip[] {
   return cardChips(task, nowMs, colours, types).filter((chip) => {
     const kind = chipKind(chip.key);
+    if (kind === "new") return true;
     return shownFields.includes(CHIP_FIELD[kind] ?? kind);
   });
 }
@@ -203,7 +220,15 @@ export function taskRef(task: Pick<TaskRow, "task_number">): string | null {
  * (WS-28b) and the notification bell already emits — a third spelling would
  * be a link that opens nothing. `origin` is passed in rather than read from
  * `window` here, so the formatting stays pure and testable.
+ *
+ * `org` is the active organization's id. A link that a member COPIES passes
+ * it, so the link opens in the right account (`lib/orgLink.ts`). An in-app
+ * href leaves it out, because the page is already in that account.
  */
-export function taskDeepLink(task: Pick<TaskRow, "id">, origin = ""): string {
-  return `${origin}/projects?task=${encodeURIComponent(task.id)}`;
+export function taskDeepLink(
+  task: Pick<TaskRow, "id">,
+  origin = "",
+  org?: string | null,
+): string {
+  return withOrg(`${origin}/projects?task=${encodeURIComponent(task.id)}`, org);
 }

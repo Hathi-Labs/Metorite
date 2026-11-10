@@ -36,6 +36,7 @@ export function RecipientInput({
   className,
   wrapperClassName = "relative flex-1 min-w-0",
   ariaLabel,
+  readOnly = false,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -46,6 +47,8 @@ export function RecipientInput({
   /** Classes for the positioning wrapper (defaults to a flex-1 cell). */
   wrapperClassName?: string;
   ariaLabel?: string;
+  /** No edit, and no suggestion list: a forward in flight freezes its fields. */
+  readOnly?: boolean;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [items, setItems] = useState<ContactSuggestion[]>([]);
@@ -150,6 +153,7 @@ export function RecipientInput({
         value={value}
         placeholder={placeholder}
         aria-label={ariaLabel}
+        readOnly={readOnly}
         aria-expanded={open}
         aria-controls={listId}
         aria-autocomplete="list"
@@ -158,6 +162,7 @@ export function RecipientInput({
         spellCheck={false}
         className={className}
         onChange={(e) => {
+          if (readOnly) return;
           onChange(e.target.value);
           lookup();
         }}

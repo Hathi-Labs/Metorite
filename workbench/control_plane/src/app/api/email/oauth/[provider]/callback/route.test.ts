@@ -349,3 +349,78 @@ describe("the admin-consent return (EM-T3c)", () => {
     expect(res.headers.get("location")).toBeNull();
   });
 });
+
+// ── EM-G7 E-C1: each bounce of this hop names its provider ────────────────
+//
+// The callback page reads `provider` to name the try. Only `gmail` and
+// `microsoft` ride on the bounce, and any other path segment is dropped. A
+// Location from the gateway passes as it came, and the gateway names the
+// provider on its own bounces (`transport/oauth.py`).
+
+function bounceQueryOf(res: Response): Record<string, string> {
+  const where = landing(res);
+  expect(where.path).toBe("/email/oauth/callback");
+  return Object.fromEntries(new URL(where.raw, "https://resolved.invalid").searchParams);
+}
+
+describe("the BFF callback names the provider on each bounce (EM-G7)", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+    identity.signedIn = true;
+    vi.stubEnv("WORKBENCH_PUBLIC_URL", PUBLIC);
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const failures: Array<[string, () => void, string]> = [
+    ["a gateway refusal", () => stubGateway(new Response("{}", { status: 403 })), "callback_failed_403"],
+    [
+      "an unreachable gateway",
+      () => vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("ECONNREFUSED"); })),
+      "gateway_unreachable",
+    ],
+    ["a 302 with no Location", () => stubGateway(new Response(null, { status: 302 })), "callback_no_location"],
+    ["a Location with another path", () => stubGateway(redirectTo("https://evil.test/x")), "callback_bad_location"],
+    [
+      "the callback path on another origin",
+      () => stubGateway(redirectTo("https://evil.test/email/oauth/callback?account_id=a1")),
+      "callback_bad_location",
+    ],
+  ];
+
+  for (const provider of ["gmail", "microsoft"]) {
+    for (const [label, arrange, reason] of failures) {
+      it(`${provider}: ${label}`, async () => {
+        arrange();
+        const res = await callback("code=c&state=s", provider);
+        expect(res.status).toBe(303);
+        expect(bounceQueryOf(res)).toEqual({ error: reason, provider });
+      });
+    }
+  }
+
+  it("drops a provider segment that fails the containment rule", async () => {
+    stubGateway(redirectTo(`${PUBLIC}/email/oauth/callback`));
+    const res = await callback("code=c&state=s", "..%2Fsettings");
+    expect(calls).toHaveLength(0);
+    expect(bounceQueryOf(res)).toEqual({ error: "unknown_provider" });
+  });
+
+  it("never echoes a well-formed segment that is not a provider", async () => {
+    stubGateway(new Response("{}", { status: 400 }));
+    const res = await callback("code=c&state=s", "zoho");
+    expect(calls).toHaveLength(1);
+    const query = bounceQueryOf(res);
+    expect(query).toEqual({ error: "callback_failed_400" });
+    expect("provider" in query).toBe(false);
+  });
+
+  it("passes on the provider of a gateway bounce as it came", async () => {
+    stubGateway(redirectTo(`${PUBLIC}/email/oauth/callback?error=scope_missing&provider=gmail`));
+    const res = await callback("code=c&state=s", "gmail");
+    expect(res.status).toBe(302);
+    expect(bounceQueryOf(res)).toEqual({ error: "scope_missing", provider: "gmail" });
+  });
+});

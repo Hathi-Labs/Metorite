@@ -27,9 +27,10 @@ So the tests that matter are the ones about what it must NOT do:
   ``sync_zoho``'s own push statement rather than from a comment about it.
 
 Hermetic, in ``test_crm_routes.py``'s convention: no Postgres, no network, no
-TestClient; the step is called directly with ``_get_db`` monkeypatched onto the
-SUT submodules against the shared ``_crm_fakes.FakeCrmDB``. The real settings
-object is never mutated — the ON state is the module's own
+TestClient; the step is called directly with ``_tenant_session`` monkeypatched
+onto the SUT submodules against the shared ``_crm_fakes.FakeCrmDB``, and with
+the mailbox's tenant bound, as the email hook binds it (WS-53 CRM-T3). The real
+settings object is never mutated — the ON state is the module's own
 ``auto_lead_enabled`` predicate, monkeypatched, exactly as
 ``test_crm_zoho_sync.py`` does for ``sync_enabled``.
 """
@@ -40,11 +41,13 @@ import ast
 import inspect
 import json
 import re
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
+from acb_common.db import bind_tenant, release_tenant
 from gateway.routes.crm import auto_lead
 from gateway.routes.crm import core as crm_core
 from gateway.routes.crm import pipeline as crm_pipeline
@@ -78,18 +81,29 @@ ACTIVATED = _at(1)
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
 
+#: The tenant the email hook binds before it runs the step. The fake does not
+#: model RLS. The R8 suite ``test_crm_sync_tenancy.py`` does.
+MAILBOX_ORG = "99999999-9999-9999-9999-999999999999"
+
+
 @pytest.fixture
-def db(monkeypatch: pytest.MonkeyPatch) -> FakeCrmDB:
+def db(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeCrmDB]:
     """The in-memory schema, bound to every module that opens a session.
 
-    ``auto_lead`` is in the tuple because it imports ``_get_db`` from ``core``
-    by name; ``records`` is in it because ``create_record`` opens its OWN
-    session and the lead has to land in the same fake.
+    ``auto_lead`` is in the tuple because it imports ``_tenant_session`` from
+    ``core`` by name; ``records`` is in it because ``create_record`` opens its
+    OWN session and the lead has to land in the same fake. The mailbox's
+    tenant is bound for the test, because with none bound the step opens no
+    session at all (WS-53 CRM-T3).
     """
     fake = FakeCrmDB()
     bind_db(monkeypatch, fake,
             (crm_core, crm_records, crm_pipeline, auto_lead))
-    return fake
+    token = bind_tenant(MAILBOX_ORG)
+    try:
+        yield fake
+    finally:
+        release_tenant(token)
 
 
 @pytest.fixture
@@ -192,12 +206,10 @@ def _seed_account(
     db: FakeCrmDB, *, owner: str = OWNER, address: str = OWNER,
     org_domains: list[str] | None = None,
 ) -> None:
+    # The mailbox belongs to the tenant the `db` fixture binds. `_load_account`
+    # filters on it (RLS on `email_accounts` is not on prod yet).
     db.seed("email_accounts", id=ACCOUNT_ID, user_id=owner,
-            email_address=address)
-    # H4 fix: _create_lead binds the owner's organization explicitly before
-    # calling the converted create_record — the lookup reads app_user.
-    db.seed("app_user", email=owner,
-            organization_id="99999999-9999-9999-9999-999999999999")
+            email_address=address, organization_id=MAILBOX_ORG)
     if org_domains is not None:
         db.seed("email_assistant_settings", account_id=ACCOUNT_ID,
                 org_domains=org_domains)
@@ -488,6 +500,26 @@ async def test_dw3_an_unknown_external_sender_becomes_exactly_one_lead(
     assert rows[0]["owner_email"] == OWNER
     assert rows[0]["lead_name"] == "Asha Menon"
     assert rows[0]["status_id"]  # `_resolve_status` ran — NOT NULL satisfied
+
+
+async def test_a_mailbox_of_another_org_makes_no_lead_without_rls(
+    db: FakeCrmDB, on: None,
+) -> None:
+    """The fake has no RLS, like prod's `email_accounts` today. A mailbox of
+    another org must still make no lead in the bound org: `_load_account`
+    filters on `organization_id` by itself (CRM-T3 review, P2)."""
+    db.seed("email_accounts", id=ACCOUNT_ID, user_id=OWNER,
+            email_address=OWNER,
+            organization_id="88888888-8888-8888-8888-888888888888")
+    _seed_status(db)
+    _seed_cursor(db)
+    _message(db, received_at=_at(5))
+
+    stats = await auto_lead.create_leads_from_new_mail(ACCOUNT_ID)
+
+    assert stats["candidates"] == 0
+    assert stats["created"] == 0
+    assert _leads(db) == []
 
 
 async def test_dw3_the_display_name_is_stripped_before_it_is_split(
@@ -1688,3 +1720,74 @@ def test_the_migration_adds_no_unique_index_on_a_lead_address(
     the shape migration 148 had to defuse."""
     assert not re.search(r"UNIQUE.*crm_leads", bare, re.I | re.S)
     assert "crm_leads" not in bare
+
+
+# ── Mirror mode (WS-53 CRM-Z6) ──────────────────────────────────────────────
+
+async def test_mirror_mode_makes_no_lead_and_advances_the_cursor(
+    db: FakeCrmDB, on: None,
+) -> None:
+    """Zoho owns new leads in Mirror mode. The step must not count an error, and
+    the watermark must move, or every cycle re-reads the same batch."""
+    _ready(db)
+    db.seed("crm_settings", organization_id=MAILBOX_ORG, mode="mirror")
+    _message(db, processed_at=_at(5))
+
+    first = await auto_lead.create_leads_from_new_mail(ACCOUNT_ID)
+    second = await auto_lead.create_leads_from_new_mail(ACCOUNT_ID)
+
+    assert _leads(db) == []
+    assert first["errors"] == 0 and first["created"] == 0
+    assert first["candidates"] == 1
+    assert second["candidates"] == 0
+    assert db.rows("crm_auto_lead_cursors")[0]["processed_watermark"] == _at(5)
+
+
+# ── The switch to Native (WS-53 CRM-Z10b) ───────────────────────────────────
+
+async def test_the_batch_reads_the_mode_for_share_before_its_stamp(
+    db: FakeCrmDB, on: None,
+) -> None:
+    """The switch takes ``crm_settings`` FOR UPDATE and rewinds the watermark.
+    The batch reads the mode FOR SHARE in the transaction of its stamp, so a
+    Mirror cycle stamps BEFORE the rewind. The R8 race is in
+    ``test_crm_cutover_switch_r8.py``."""
+    _ready(db)
+    db.seed("crm_settings", organization_id=MAILBOX_ORG, mode="mirror")
+    _message(db, processed_at=_at(5))
+    db.statements.clear()
+
+    await auto_lead.create_leads_from_new_mail(ACCOUNT_ID)
+
+    shared = [i for i, s in enumerate(db.statements)
+              if "FROM crm_settings" in s and s.endswith("FOR SHARE")]
+    stamps = [i for i, s in enumerate(db.statements)
+              if s.startswith("UPDATE crm_auto_lead_cursors SET processed_watermark")]
+    assert shared, "the batch did not read the mode FOR SHARE"
+    assert stamps and shared[0] < stamps[0]
+
+
+async def test_the_batch_reads_the_cursor_again_under_the_mode_lock(
+    db: FakeCrmDB, on: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The switch may rewind the watermark after the step read the cursor. The
+    batch reads the cursor again under the lock, so the rewound mail is a
+    candidate. With the stale cursor, the message below would be skipped."""
+    _ready(db)
+    _message(db, processed_at=_at(5))
+    cursor = db.rows("crm_auto_lead_cursors")[0]
+    real = auto_lead._run_batch
+
+    from types import SimpleNamespace
+
+    async def _rewound_after_the_read(db_, org, account, stale, stats):
+        # The caller read a watermark past the message. The switch rewound it.
+        stale_view = SimpleNamespace(**{**cursor, "processed_watermark": _at(6)})
+        cursor["processed_watermark"] = _at(4)
+        return await real(db_, org, account, stale_view, stats)
+
+    monkeypatch.setattr(auto_lead, "_run_batch", _rewound_after_the_read)
+    stats = await auto_lead.create_leads_from_new_mail(ACCOUNT_ID)
+
+    assert stats["candidates"] == 1 and stats["created"] == 1
+    assert [r["email"] for r in _leads(db)] == [STRANGER]

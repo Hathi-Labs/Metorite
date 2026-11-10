@@ -54,10 +54,11 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
+from acb_common.paging import page_line, paged
 from acb_common.priority import (
     CELL_FLAGS,
     IMPORTANT_AT,
@@ -142,13 +143,9 @@ def _internal_token() -> str:
     try:
         from acb_common import get_settings
         settings = get_settings()
-        return (
-            getattr(settings, "gateway_internal_token", "")
-            or getattr(settings, "litellm_master_key", "")
-            or "sk-local"
-        )
+        return (getattr(settings, "gateway_internal_token", "") or "").strip()
     except Exception:
-        return os.environ.get("LITELLM_MASTER_KEY", "sk-local")
+        return os.environ.get("GATEWAY_INTERNAL_TOKEN", "").strip()
 
 
 def _headers() -> dict[str, str]:
@@ -181,10 +178,22 @@ def _headers() -> dict[str, str]:
     }
 
 
+class _GatewayError(RuntimeError):
+    """A gateway answer of 400 or more. ``status`` is the code, so a tool can
+    tell a 412 (a stale ``If-Match``) from a fault."""
+
+    def __init__(self, message: str, status: int) -> None:
+        super().__init__(message)
+        self.status = status
+
+
 async def _request(method: str, path: str, **kwargs: Any) -> Any:
+    # CAL-3 (task 1677): a caller may add headers (``If-Match``). They go on top
+    # of the identity headers, which a caller cannot replace.
+    headers = {**(kwargs.pop("headers", None) or {}), **_headers()}
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.request(
-            method, f"{_gateway_url()}{path}", headers=_headers(), **kwargs
+            method, f"{_gateway_url()}{path}", headers=headers, **kwargs
         )
     if resp.status_code >= 400:
         detail = ""
@@ -194,9 +203,10 @@ async def _request(method: str, path: str, **kwargs: Any) -> Any:
                 detail = str(body.get("detail") or "")
         except Exception:
             detail = (resp.text or "")[:200]
-        raise RuntimeError(
+        raise _GatewayError(
             f"Tasks {method} {path} failed ({resp.status_code})"
-            + (f": {detail}" if detail else "")
+            + (f": {detail}" if detail else ""),
+            resp.status_code,
         )
     return resp.json() if resp.text else None
 
@@ -225,6 +235,12 @@ _MY_STEPS = "/projects/my/tasks/{id}/subtasks"
 
 #: `MAX_PAGE_SIZE` in `routes/projects/core.py`. A larger ask is a 422.
 _PAGE_SIZE = 100
+
+#: Comments a page in ``my_tasks_detail``, and blocks in the day digest. The
+#: rest stays in reach: the detail pages by ``comments_offset``, and the digest
+#: names ``my_tasks_list_schedule``.
+_COMMENTS_PAGE = 5
+_DIGEST_BLOCKS = 8
 
 #: `MAX_BATCH` in `routes/projects/personal.py`. A larger batch is a 422.
 _BATCH_SIZE = 100
@@ -337,8 +353,9 @@ async def _lanes(item_id: str) -> list[dict[str, Any]]:
          "position": int(r.get("position") or 0)}
         for r in _rows(res) if r.get("name")
     ]
-    # `lib/statusCategory.ts::stageLanes`: position, then name.
-    return sorted(lanes, key=lambda s: (s["position"], s["name"]))
+    # The route answers in the one lane order: stage, position, name
+    # (`personal.MY_TASK_LANES_SQL`, task 1792). The skill keeps that order.
+    return lanes
 
 
 def _norm(value: str) -> str:
@@ -571,7 +588,7 @@ def _ordered(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 # ── Capture ──────────────────────────────────────────────────────────────────
 
-@_annotate_risk(idempotent=False)
+@_annotate_risk(idempotent=False, open_world=False)
 async def my_tasks_capture(title: str, notes: str = "") -> str:
     """Capture one thought/task into the inbox (capture ≠ clarify).
 
@@ -600,7 +617,7 @@ async def my_tasks_capture(title: str, notes: str = "") -> str:
     return msg
 
 
-@_annotate_risk(idempotent=False)
+@_annotate_risk(idempotent=False, open_world=False)
 async def my_tasks_capture_many(lines: str) -> str:
     """Capture a brain-dump into the inbox. Freeform text is fine — a pasted
     paragraph is atomized into individual items by the AI (deterministic
@@ -664,15 +681,31 @@ _VIEW_QUERY: dict[str, dict[str, str]] = {
 }
 
 
-@_annotate_risk(read_only=True, idempotent=True)
+def _query_words(query: str) -> list[str]:
+    """The words a text query must each find, lowercased: the gateway's
+    ``filters.query_words`` rule, copied because a skill cannot import
+    gateway code. A word counts once, at most 8 count, and when no word has
+    3 characters the whole query is the one word.
+    ``test_skill_task_lens.py::test_the_word_rule_is_the_gateways`` holds
+    the two equal."""
+    seen = list(dict.fromkeys(query.lower().split()))[:8]
+    if not any(len(w) >= 3 for w in seen):
+        return [" ".join(query.lower().split())]
+    return seen
+
+
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
 async def my_tasks_list(view: str = "inbox", query: str = "",
-                   context: str = "") -> str:
-    """List tasks for a view.
+                   context: str = "", offset: int = 0, limit: int = 30) -> str:
+    """List tasks for a view, one page at a time.
 
     Args:
         view: inbox | next | waiting | someday | reference | calendar | done | all.
-        query: Optional text search within the view.
+        query: Optional search within the view. Each word must be in the
+            title or the description, in any order.
         context: Optional @context filter (e.g. "@calls") for the next view.
+        offset: Where the page starts. 0 is the first item.
+        limit: Items per page, 30 by default and 100 at most.
     """
     flags = _VIEW_QUERY.get(view)
     if flags is None:
@@ -688,49 +721,93 @@ async def my_tasks_list(view: str = "inbox", query: str = "",
     elif view == "archive":
         items = [i for i in items if i.get("archived_at")]
     if query.strip():
-        # `/my/inbox` has no text filter; the old route's ILIKE over title and
-        # notes, done here.
-        q = query.strip().lower()
+        # `/my/inbox` has no text filter, so the match runs here, by the
+        # Projects search's rule (`filters.text_match_clause`, 2026-10-13):
+        # every word, in the title or the description, in any order.
+        words = _query_words(query)
         items = [i for i in items
-                 if q in str(i.get("title") or "").lower()
-                 or q in str(i.get("description") or "").lower()]
+                 if all(w in str(i.get("title") or "").lower()
+                        or w in str(i.get("description") or "").lower()
+                        for w in words)]
     if not items:
         return f"No items in {view}."
-    shown = _ordered(items)[:30]
+    # Ranked BEFORE the page is cut, or "the first 30" is 30 arbitrary rows.
+    page = paged(_ordered(items), offset, limit, default=30)
+    if not page.items:
+        return page.line
     mine = await _my_project_ids()
-    return _guard(shown, mine) + f"{len(items)} item(s) in {view}:\n" + "\n".join(
-        _fmt_item(i, mine) for i in shown)
+    return (_guard(page.items, mine) + f"{len(items)} item(s) in {view}:\n"
+            + "\n".join(_fmt_item(i, mine) for i in page.items)
+            + (f"\n{page.line}" if page.line else ""))
 
 
-@_annotate_risk(read_only=True, idempotent=True)
-async def my_tasks_list_projects() -> str:
+def _is_team_space(row: dict) -> bool:
+    """A root of kind project that is not personal: the gateway's rule
+    (`core.is_team_space`), read from the node row's own parent id. A project
+    whose parent the member cannot see still carries that parent id."""
+    # A row without the key is not judged here. The gateway still refuses the write.
+    if "parent_project_id" not in row or row.get("parent_project_id"):
+        return False
+    if row.get("personal"):
+        return False
+    return str(row.get("kind") or "project") == "project"
+
+
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def my_tasks_list_projects(offset: int = 0, limit: int = 100) -> str:
     """List where a task can live: the member's own AREAS (private categories
     under their personal project) and the COMPANY's projects (shared with the
     team). Use an Area id to file private work, a project id to delegate or
-    promote work the team must see."""
+    promote work the team must see. A row marked SPACE holds projects, not
+    tasks: pick a project inside it.
+
+    Args:
+        offset: Where the page starts, over the areas and then the projects.
+        limit: Rows per page, 100 by default and at most.
+    """
     areas = _rows(await _request("GET", _MY_AREAS))
     nodes = [n for n in _rows(await _request("GET", _NODES))
              if not n.get("archived_at")]
     if not areas and not nodes:
         return "No areas or projects yet."
-    out = [f"{len(areas)} area(s) — mine, private:"]
-    out += [f"  [AREA] {_data(a.get('name'))} · {a.get('open_tasks', 0)} open"
-            f" · id={a.get('id')}" for a in areas[:50]]
-    out.append(f"{len(nodes)} company project(s) — shared with the team:")
-    for n in nodes[:50]:
-        kind = "FOLDER" if n.get("kind") == "folder" else "PROJECT"
-        out.append(f"  [{kind}] {_data(n.get('name'))} · id={n.get('id')}")
+    # Both routes answer with every row, so ONE page runs over the two lists
+    # in order: the areas first, then the company's projects.
+    page = paged([("area", a) for a in areas] + [("node", n) for n in nodes],
+                 offset, limit, default=100)
+    if not page.items:
+        return page.line
+    out: list[str] = []
+    headed: set[str] = set()
+    for kind, row in page.items:
+        if kind not in headed:
+            headed.add(kind)
+            out.append(f"{len(areas)} area(s) — mine, private:" if kind == "area"
+                       else f"{len(nodes)} company project(s) — shared with the team:")
+        if kind == "area":
+            out.append(f"  [AREA] {_data(row.get('name'))} · "
+                       f"{row.get('open_tasks', 0)} open · id={row.get('id')}")
+        else:
+            if _is_team_space(row):
+                # A team space holds projects, not tasks (the gateway's
+                # `core.is_team_space`). It is not a place a task can live.
+                out.append(f"  [SPACE – holds projects, not tasks] "
+                           f"{_data(row.get('name'))} · id={row.get('id')}")
+                continue
+            label = "FOLDER" if row.get("kind") == "folder" else "PROJECT"
+            out.append(f"  [{label}] {_data(row.get('name'))} · id={row.get('id')}")
+    if page.line:
+        out.append(page.line)
     return "\n".join(out)
 
 
-@_annotate_risk(read_only=True, idempotent=True)
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
 async def my_tasks_accounts() -> str:
     """Connected PM-tool workspaces. There are none, and there cannot be (D52):
     answers with a short note and calls nothing."""
     return _NO_CONNECTOR
 
 
-@_annotate_risk(read_only=True, idempotent=True)
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
 async def my_tasks_sync(account_id: str = "", full: bool = False) -> str:
     """Pull tasks from a connected PM tool. There is none (D52), so this is a
     no-op that says so and calls nothing. Kept as a tool so an agent that
@@ -739,7 +816,7 @@ async def my_tasks_sync(account_id: str = "", full: bool = False) -> str:
     return _NO_CONNECTOR
 
 
-@_annotate_risk(read_only=True, idempotent=True)
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
 async def my_tasks_inbox_insights() -> str:
     """Whole-inbox health: counts per bucket, oldest capture, stale
     waiting-fors, projects missing a next action. Use before processing."""
@@ -754,22 +831,28 @@ async def my_tasks_inbox_insights() -> str:
     )
 
 
-@_annotate_risk(read_only=True, idempotent=True)
-async def my_tasks_people(query: str = "") -> str:
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def my_tasks_people(query: str = "", offset: int = 0,
+                          limit: int = 25) -> str:
     """Search the company's people — roles, skills, capacity, availability
     (the org-knowledge layer). Use to pick WHO should own a delegated task.
 
     Args:
         query: Optional filter across name/role/department/skill
             (e.g. "firmware", "design", "sales").
+        offset: Where the page starts. 0 is the first person.
+        limit: People per page, 25 by default and 100 at most.
     """
     params = {"q": query} if query else None
     people = await _request("GET", "/tasks/people", params=params)
     if not people:
         return ("No org people found" + (f" for {query!r}" if query else "")
                 + ". (Import HR data via scripts/import_hr_people.py.)")
+    page = paged(people, offset, limit, default=25, noun="people")
+    if not page.items:
+        return page.line
     out = []
-    for p in people[:25]:
+    for p in page.items:
         skills = ", ".join((p.get("skills") or [])[:6])
         avail = p.get("available_hours_per_week")
         domain = (p.get("domain") or "").strip()
@@ -789,15 +872,18 @@ async def my_tasks_people(query: str = "") -> str:
             + (f"\n  {_data(depth)}" if depth else "")
             + (f"\n  skills: {_data(skills)}" if skills else "")
             + (f"\n  résumé: {_data(summary[:160])}" if summary else ""))
-    return f"{_DATA_LEGEND}\n{len(people)} people:\n" + "\n".join(out)
+    return (f"{_DATA_LEGEND}\n{len(people)} people:\n" + "\n".join(out)
+            + (f"\n{page.line}" if page.line else ""))
 
 
 # ── Clarify / organize ───────────────────────────────────────────────────────
 
-@_annotate_risk(read_only=True, idempotent=True)
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
 async def my_tasks_clarify(item_id: str) -> str:
     """Get the structured clarify proposal for one inbox item — disposition,
     next action, matched project, destination, default stage, confidence.
+    When the result has ``clarified_by`` "heuristic", tell the member it is a
+    rule-based guess, and say why from ``fallback_reason``.
 
     Args:
         item_id: The item's full UUID (from my_tasks_list).
@@ -806,7 +892,7 @@ async def my_tasks_clarify(item_id: str) -> str:
     return json.dumps(p, indent=1)
 
 
-@_annotate_risk(idempotent=True)
+@_annotate_risk(idempotent=True, open_world=False)
 async def my_tasks_organize(
     item_id: str,
     kind: str,
@@ -911,7 +997,7 @@ def _fmt_project_plan(plan: dict[str, Any]) -> str:
     return "\n".join(out)
 
 
-@_annotate_risk(idempotent=True)
+@_annotate_risk(idempotent=True, open_world=False)
 async def my_tasks_plan_project(
     name: str,
     description: str = "",
@@ -1000,7 +1086,7 @@ async def _importance_patch(item_id: str, important: bool | None) -> int | None:
     return _importance_for(important, current)
 
 
-@_annotate_risk(idempotent=True)
+@_annotate_risk(idempotent=True, open_world=False)
 async def my_tasks_update(item_id: str, title: str = "", notes: str = "",
                      defer_until: str = "", context: str = "",
                      energy: str = "", time_estimate_mins: int = 0,
@@ -1072,7 +1158,7 @@ async def my_tasks_update(item_id: str, title: str = "", notes: str = "",
 
 # ── Manage existing tasks (the app's action surface, over chat) ──────────────
 
-@_annotate_risk(idempotent=True)
+@_annotate_risk(idempotent=True, open_world=False)
 async def my_tasks_complete(item_id: str, undo: bool = False) -> str:
     """Mark a task DONE — or reopen it with undo=True. Done moves the task's
     SHARED status into its project's first Done status, so the team's board
@@ -1126,7 +1212,7 @@ def _status_key(item: dict[str, Any]) -> str:
     return str(item.get("status_id") or item.get("workflow_stage") or "")
 
 
-@_annotate_risk(idempotent=True)
+@_annotate_risk(idempotent=True, open_world=False)
 async def my_tasks_move(item_id: str, to: str) -> str:
     """Move a task between GTD buckets — reactivate a someday, park a next
     action, trash a dead item. (For DONE use my_tasks_complete; for delegating use
@@ -1157,8 +1243,8 @@ def _status_line(item: dict[str, Any], lanes: list[dict[str, Any]]) -> str:
         _lane_label(s) + (" ← current" if s is current else "") for s in lanes)
 
 
-@_annotate_risk(read_only=True, idempotent=True)
-async def my_tasks_detail(item_id: str) -> str:
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def my_tasks_detail(item_id: str, comments_offset: int = 0) -> str:
     """Full detail for one task: every field (context, energy, estimate,
     priority flags, deep-work, status, assignees, schedule), the latest
     comments, the attachment count, and every status the task can be in,
@@ -1207,13 +1293,24 @@ async def my_tasks_detail(item_id: str) -> str:
     # and the file registry, each its own route.
     comments: list[dict[str, Any]] = []
     try:
+        # The route pages, newest first, and counts the thread. Five a page:
+        # the page number is the offset's, so the next page starts at the
+        # offset the hint names.
+        start = max(0, int(comments_offset or 0)) // _COMMENTS_PAGE * _COMMENTS_PAGE
         timeline = await _request(
             "GET", f"{_TASKS}/{item_id}/timeline",
-            params={"kind": "comments", "page_size": _PAGE_SIZE})
-        comments = _rows(timeline)[:5]
+            params={"kind": "comments", "page_size": _COMMENTS_PAGE,
+                    "page": start // _COMMENTS_PAGE + 1})
+        comments = _rows(timeline)
         for c in comments:
             who = c.get("created_by") or "?"
             lines.append(f"  comment ({who}): {_data(str(c.get('body', ''))[:160])}")
+        total = int((timeline or {}).get("total") or len(comments)) \
+            if isinstance(timeline, dict) else len(comments)
+        more = page_line(total, start, len(comments), noun="comments",
+                         param="comments_offset")
+        if more:
+            lines.append(f"  comments: {more}")
         attachments = _rows(await _request("GET", f"{_TASKS}/{item_id}/attachments"))
         if attachments:
             lines.append(f"  attachments: {len(attachments)}")
@@ -1226,7 +1323,7 @@ async def my_tasks_detail(item_id: str) -> str:
     return "\n".join(lines)
 
 
-@_annotate_risk(idempotent=True)
+@_annotate_risk(idempotent=True, open_world=False)
 async def my_tasks_set_stage(item_id: str, stage: str) -> str:
     """Move a task to one exact STATUS of its own set (D79: stages group,
     statuses write). Pass a status name, e.g. "In review". A stage word
@@ -1325,29 +1422,35 @@ async def my_tasks_delegate(
             f"{_fmt_item(item, mine)}{tail}")
 
 
-@_annotate_risk(read_only=True, idempotent=True)
-async def my_tasks_subtasks(item_id: str) -> str:
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def my_tasks_subtasks(item_id: str, offset: int = 0,
+                            limit: int = 100) -> str:
     """List a task's subtasks (checklist steps), in order.
 
     Args:
         item_id: The parent item's full UUID.
+        offset: Where the page starts. 0 is the first step.
+        limit: Steps per page, 100 by default and at most.
     """
-    subs = _rows(await _request(
-        "GET", _TASKS,
-        params={"parent_task_id": item_id, "sort": "created_at",
-                "direction": "asc", "page_size": _PAGE_SIZE}))
+    subs = await _fetch_all(
+        _TASKS, {"parent_task_id": item_id, "sort": "created_at",
+                 "direction": "asc"})
     if not subs:
         return "No subtasks."
+    page = paged(subs, offset, limit, default=100, noun="subtasks")
+    if not page.items:
+        return page.line
     lines = []
-    for s in subs:
+    for s in page.items:
         # Project-shaped rows carry no overlay; DONE is read off `completed_at`,
         # the one fact the shared row does hold (`lens.ts::mapSubtask`).
         mark = "✓" if s.get("completed_at") else "•"
         lines.append(f"{mark} {_data(s.get('title', '?'))} (id: {s.get('id')})")
-    return f"{len(subs)} subtask(s):\n" + "\n".join(lines)
+    return (f"{len(subs)} subtask(s):\n" + "\n".join(lines)
+            + (f"\n{page.line}" if page.line else ""))
 
 
-@_annotate_risk(idempotent=False)
+@_annotate_risk(idempotent=False, open_world=False)
 async def my_tasks_add_subtasks(item_id: str, titles: str) -> str:
     """Break a task into steps — add subtasks under it. Each is an ordinary
     task in the parent's project, assigned to you, created in the order given.
@@ -1426,7 +1529,7 @@ def _steps_receipt(
     return "\n".join(lines)
 
 
-@_annotate_risk(idempotent=True)
+@_annotate_risk(idempotent=True, open_world=False)
 async def my_tasks_archive(item_id: str, restore: bool = False) -> str:
     """Archive a task (hide it from every active view, yours AND the team's
     board) or un-archive it with restore=True. An open task is refused: the
@@ -1443,7 +1546,7 @@ async def my_tasks_archive(item_id: str, restore: bool = False) -> str:
 
 # ── Calendar / timeboxing ─────────────────────────────────────────────────────
 
-@_annotate_risk(idempotent=True)
+@_annotate_risk(idempotent=True, open_world=False)
 async def my_tasks_schedule(item_id: str, start: str, end: str = "") -> str:
     """Timebox a task onto the calendar — set WHEN the user will do it. Your
     own block: two people assigned one task each block their own time.
@@ -1455,7 +1558,6 @@ async def my_tasks_schedule(item_id: str, start: str, end: str = "") -> str:
             the current local time + offset), e.g. 2026-07-18T14:00:00+05:30.
         end: ISO 8601 end datetime; empty = start + 30 minutes.
     """
-    from datetime import timedelta
     s = start.strip()
     if not s:
         return "A start time (ISO 8601) is required to schedule."
@@ -1470,7 +1572,7 @@ async def my_tasks_schedule(item_id: str, start: str, end: str = "") -> str:
     return f"Scheduled → {await _show(await _my_task(item_id))}"
 
 
-@_annotate_risk(idempotent=True)
+@_annotate_risk(idempotent=True, open_world=False)
 async def my_tasks_unschedule(item_id: str) -> str:
     """Remove a task's calendar time-block (it stays a next action).
 
@@ -1481,8 +1583,9 @@ async def my_tasks_unschedule(item_id: str) -> str:
     return f"Unscheduled → {await _show(await _my_task(item_id))}"
 
 
-@_annotate_risk(idempotent=True)
-async def my_tasks_list_schedule(from_iso: str, to_iso: str) -> str:
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def my_tasks_list_schedule(from_iso: str, to_iso: str, offset: int = 0,
+                                 limit: int = 50) -> str:
     """List what's timeboxed on the calendar in a datetime window — so you can
     plan around existing blocks and never double-book. The window is
     half-open, [from, to). Done blocks are listed too, marked ✓: they still
@@ -1491,14 +1594,21 @@ async def my_tasks_list_schedule(from_iso: str, to_iso: str) -> str:
     Args:
         from_iso: ISO 8601 start of the window (inclusive).
         to_iso: ISO 8601 end of the window (exclusive).
+        offset: Where the page starts. 0 is the first block.
+        limit: Blocks per page, 50 by default and 100 at most.
     """
     items = _rows(await _request(
         "GET", _MY_CALENDAR,
         params={"start": from_iso, "end": to_iso, "include_done": "true"}))
     if not items:
         return "Nothing is scheduled in that window."
+    # The route sends the whole window, in order of the start and then the
+    # id, so a page cut here is the same on every call.
+    page = paged(items, offset, limit, default=50, noun="blocks")
+    if not page.items:
+        return page.line
     lines = []
-    for i in items:
+    for i in page.items:
         s = (i.get("scheduled_start") or i.get("due_at") or "")[:16].replace(
             "T", " ")
         en = (i.get("scheduled_end") or "")[11:16]
@@ -1511,6 +1621,8 @@ async def my_tasks_list_schedule(from_iso: str, to_iso: str) -> str:
         lines.append(
             f"• {s}{('-' + en) if en else ''}  {_data(i.get('title', '?'))}{mark} "
             f"(id: {i.get('id', '')})")
+    if page.line:
+        lines.append(page.line)
     return ("Scheduled (🔒 = fixed, never move it):\n" + "\n".join(lines))
 
 
@@ -1556,7 +1668,7 @@ def _fmt_plan(plan: dict[str, Any], applied: bool) -> str:
     return "\n".join(lines)
 
 
-@_annotate_risk(idempotent=True)
+@_annotate_risk(idempotent=True, open_world=False)
 async def my_tasks_plan_day(apply: bool = False, energy_note: str = "") -> str:
     """Rebuild the user's day with AI. Reshuffles what's ALREADY on today's
     calendar (not-done, movable blocks) into the time that's left, SWEEPS IN any
@@ -1590,7 +1702,493 @@ async def my_tasks_plan_day(apply: bool = False, energy_note: str = "") -> str:
     return _fmt_plan(plan or {}, applied=bool((plan or {}).get("applied")))
 
 
-@_annotate_risk(idempotent=True)
+# ── Calendar settings (CAL-2, task 1676) ────────────────────────────────────
+#
+# The calendar fields of ``GET/PUT /tasks/settings`` and nothing else. Model
+# choices, capture_dedup, sync flags and day_templates stay out: the tool has
+# no parameter for them, and the strict tool of the pack answers an argument it
+# does not declare by name. The write is propose then apply, as the planner is:
+# without ``confirmed`` the tool shows the change and writes nothing.
+
+_CAL_SETTINGS_PATH = "/tasks/settings"
+
+
+def _hours(v: Any) -> str:
+    return f"{int(v):d}"
+
+
+def _capacity_text(mins: int) -> str:
+    """Whole hours as "6 h", any other value in minutes. A one-minute change
+    then shows (a rounded hour figure hid 100 -> 102 and said "Nothing changes")."""
+    return f"{mins // 60} h" if mins % 60 == 0 else f"{mins} min"
+
+
+def _cal_view(s: dict) -> dict[str, str]:
+    """The calendar fields of a settings body, each as the text the member sees."""
+    ls, le = s.get("lunch_start_hour"), s.get("lunch_end_hour")
+    lunch = ("off" if ls is None or le is None or int(le) <= int(ls)
+             else f"{_hours(ls)}-{_hours(le)}")
+    wins = s.get("energy_windows") or []
+    return {
+        "Standing instruction": (_data(s["planning_prompt"]) if s.get("planning_prompt")
+                                 else "the default"),
+        "Working hours": f"{_hours(s.get('day_start_hour', 7))}-{_hours(s.get('day_end_hour', 22))}",
+        "Daily capacity": _capacity_text(int(s.get("daily_capacity_mins", 360))),
+        "Buffer between blocks": f"{int(s.get('buffer_mins', 0))} min",
+        "Longest focus run": f"{int(s.get('max_focus_run_mins', 90))} min",
+        "Break": f"{int(s.get('break_mins', 10))} min",
+        "Lunch": lunch,
+        "Energy windows": (", ".join(
+            f"{_hours(w['start_hour'])}-{_hours(w['end_hour'])} {w['energy']}" for w in wins)
+            if wins else "none"),
+        "Auto rollover": "on" if s.get("auto_rollover", True) else "off",
+        "Time zone": str(s.get("timezone") or "UTC"),
+    }
+
+
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def my_tasks_get_calendar_settings() -> str:
+    """Read the member's calendar settings: the standing instruction for the
+    day planner, the working hours, the daily capacity, the buffer, the focus
+    run and break, the lunch window, the energy windows, auto rollover and the
+    time zone. Only these. It reads no model choice and no sync flag.
+    """
+    s = await _request("GET", _CAL_SETTINGS_PATH) or {}
+    return "Calendar settings:\n" + "\n".join(
+        f"• {k}: {v}" for k, v in _cal_view(s).items())
+
+
+def _cal_patch(
+    planning_prompt: str | None, day_start_hour: int | None, day_end_hour: int | None,
+    daily_capacity_mins: int | None, buffer_mins: int | None,
+    max_focus_run_mins: int | None, break_mins: int | None,
+    lunch_start_hour: int | None, lunch_end_hour: int | None,
+    energy_windows: list[dict] | None, auto_rollover: bool | None,
+    timezone: str | None,
+) -> dict[str, Any]:
+    """The given calendar keys only. ``None`` means "not given", and 0 is given."""
+    given = {
+        "planning_prompt": planning_prompt, "day_start_hour": day_start_hour,
+        "day_end_hour": day_end_hour, "daily_capacity_mins": daily_capacity_mins,
+        "buffer_mins": buffer_mins, "max_focus_run_mins": max_focus_run_mins,
+        "break_mins": break_mins, "lunch_start_hour": lunch_start_hour,
+        "lunch_end_hour": lunch_end_hour, "energy_windows": energy_windows,
+        "auto_rollover": auto_rollover, "timezone": timezone,
+    }
+    return {k: v for k, v in given.items() if v is not None}
+
+
+def _cal_refusal_lists(patch: dict[str, Any]) -> str | None:
+    """The refusal for the energy windows or the time zone, or None."""
+    if "energy_windows" in patch:
+        for w in patch["energy_windows"]:
+            ok = (isinstance(w, dict) and set(w) <= {"start_hour", "end_hour", "energy"}
+                  and isinstance(w.get("start_hour"), int) and isinstance(w.get("end_hour"), int)
+                  and 0 <= w["start_hour"] < w["end_hour"] <= 24
+                  and w.get("energy") in ("low", "medium", "high"))
+            if not ok:
+                return ("Each energy window needs start_hour (0-23), end_hour (1-24, after the "
+                        "start) and energy (low, medium or high). I changed nothing.")
+    if "timezone" in patch:
+        try:
+            from zoneinfo import ZoneInfo
+
+            ZoneInfo(str(patch["timezone"]))
+        except Exception:
+            return f"{_data(patch['timezone'])} is not a time zone name. I changed nothing."
+    return None
+
+
+def _cal_refusal(patch: dict[str, Any], current: dict) -> str | None:
+    """A text that names the first value out of range, or None. The ranges are
+    the ones of the Calendar settings sheet. Hour 0 is a valid start."""
+    def _int(k: str, lo: int, hi: int, what: str) -> str | None:
+        v = patch.get(k)
+        if v is None:
+            return None
+        if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
+            return f"{what} ({k}) must be a whole number from {lo} to {hi}. I changed nothing."
+        return None
+
+    for bad in (
+        _int("day_start_hour", 0, 23, "The first hour of the day"),
+        _int("day_end_hour", 1, 24, "The last hour of the day"),
+        _int("daily_capacity_mins", 0, 960, "The daily capacity in minutes"),
+        _int("buffer_mins", 0, 60, "The buffer in minutes"),
+        _int("max_focus_run_mins", 0, 240, "The longest focus run in minutes"),
+        _int("break_mins", 0, 60, "The break in minutes"),
+        _int("lunch_start_hour", 0, 23, "The first hour of lunch"),
+        _int("lunch_end_hour", 0, 24, "The last hour of lunch"),
+    ):
+        if bad:
+            return bad
+    start = patch.get("day_start_hour", current.get("day_start_hour", 7))
+    end = patch.get("day_end_hour", current.get("day_end_hour", 22))
+    if ("day_start_hour" in patch or "day_end_hour" in patch) and int(end) <= int(start):
+        return (f"The day must end after it starts, and {start}-{end} does not. "
+                "I changed nothing.")
+    if "lunch_start_hour" in patch or "lunch_end_hour" in patch:
+        ls = patch.get("lunch_start_hour", current.get("lunch_start_hour"))
+        le = patch.get("lunch_end_hour", current.get("lunch_end_hour"))
+        if (ls is None) != (le is None):
+            return "Give both the first and the last hour of lunch. I changed nothing."
+        if ls is not None and not (int(ls) == int(le) == 0 or int(ls) < int(le)):
+            return ("Lunch must end after it starts. Give 0 and 0 to turn lunch off. "
+                    "I changed nothing.")
+    bad = _cal_refusal_lists(patch)
+    if bad:
+        return bad
+    if "planning_prompt" in patch and len(str(patch["planning_prompt"])) > 2000:
+        return "The standing instruction is too long: 2000 characters at most. I changed nothing."
+    return None
+
+
+@_annotate_risk(idempotent=True, open_world=False)
+async def my_tasks_update_calendar_settings(
+    planning_prompt: str | None = None,
+    day_start_hour: int | None = None,
+    day_end_hour: int | None = None,
+    daily_capacity_mins: int | None = None,
+    buffer_mins: int | None = None,
+    max_focus_run_mins: int | None = None,
+    break_mins: int | None = None,
+    lunch_start_hour: int | None = None,
+    lunch_end_hour: int | None = None,
+    energy_windows: list[dict] | None = None,
+    auto_rollover: bool | None = None,
+    timezone: str | None = None,
+    confirmed: bool = False,
+) -> str:
+    """Change the member's calendar settings. Pass ONLY the fields to change: a
+    field left out stays as it is, and 0 is a value (day_start_hour 0 is
+    midnight). The fields: planning_prompt (the standing instruction of the day
+    planner), day_start_hour, day_end_hour, daily_capacity_mins, buffer_mins,
+    max_focus_run_mins, break_mins, lunch_start_hour and lunch_end_hour (both
+    0 turns lunch off), energy_windows ([{start_hour, end_hour, energy}], the
+    whole list replaces the old one), auto_rollover and timezone. No other
+    setting can change here.
+
+    Propose first. With confirmed=False the tool writes nothing and answers with
+    each change as "Working hours: 9-17 -> 8-18". Show that to the member. Call
+    again with confirmed=True and the same fields only after the member agrees.
+
+    Args:
+        confirmed: False = show the change only (default). True = save it.
+            Pass True only after the member agreed to the change shown.
+    """
+    patch = _cal_patch(
+        planning_prompt, day_start_hour, day_end_hour, daily_capacity_mins,
+        buffer_mins, max_focus_run_mins, break_mins, lunch_start_hour,
+        lunch_end_hour, energy_windows, auto_rollover, timezone)
+    if not patch:
+        return "No setting was given. Say which calendar setting to change."
+    current = await _request("GET", _CAL_SETTINGS_PATH) or {}
+    bad = _cal_refusal(patch, current)
+    if bad:
+        return bad
+    before = _cal_view(current)
+    after = _cal_view({**current, **patch})
+    changed = [f"• {k}: {before[k]} -> {after[k]}" for k in after if before[k] != after[k]]
+    if not changed:
+        return "Nothing changes: the calendar settings already have these values."
+    if not confirmed:
+        return ("Not saved yet. The change would be:\n" + "\n".join(changed)
+                + "\nAsk the member, then call again with confirmed=True.")
+    await _request("PUT", _CAL_SETTINGS_PATH, json=patch)
+    return "Saved. The calendar settings changed:\n" + "\n".join(changed)
+
+
+# ── Day rules (CAL-3, task 1677) ─────────────────────────────────────────────
+#
+# The day rules are ``day_templates`` of ``/tasks/settings``: recurring windows
+# [{days, start_hour, end_hour, kind, label, theme}]. The server saves the WHOLE
+# list, and it drops a malformed rule without a word. So each write here is a
+# read-modify-write of the list that checks every rule first and refuses in
+# text. The list carries a token (``day_rules_token``). The write sends the
+# token it read in ``If-Match``, and the server refuses it with 412 when the
+# list changed in between. Propose first, as the settings tool does.
+
+_DAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+_DAY_RULES_MAX = 40
+_DAY_RULE_TEXT_MAX = 40
+_RULE_KINDS = ("block", "focus")
+STALE_DAY_RULES = "The day rules changed since I read them. Read the list again."
+#: A confirmed call names the version of the proposal it applies. A number means
+#: "rule n of the list the member saw", so it is valid only for that list.
+STALE_PROPOSAL = ("The day rules changed since I proposed this. Read the list again. "
+                  "I changed nothing.")
+NO_VERSION = ("Propose the change first, then pass the version it showed. "
+              "I changed nothing.")
+
+
+def _version_line(token: str) -> str:
+    return f"Version: {token}"
+
+
+def _apply_gate(version: str, token: str) -> str | None:
+    """The refusal for a confirmed call, or None when it may write. The version
+    must be the token of the list that the proposal read, and it must still be
+    the token of the list now."""
+    if not version:
+        return NO_VERSION
+    if str(version).strip().strip('"') != token:
+        return STALE_PROPOSAL
+    return None
+
+
+def day_rules_token(rules: list[dict]) -> str:
+    """The ``If-Match`` token of a list of day rules as the server returned it:
+    sha256 hex of its canonical JSON (sorted keys, no spaces). The mirror of
+    ``gateway.routes.tasks.settings.day_templates_token`` for a list that the
+    server normalised already. ``test_day_rules_tools`` fences that the two agree."""
+    import hashlib
+
+    canon = json.dumps(rules, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()
+
+
+def _days_text(days: list[int]) -> str:
+    ds = sorted(set(days))
+    if not ds:
+        return "no days"
+    if len(ds) == 7:
+        return "every day"
+    if len(ds) > 1 and ds[-1] - ds[0] == len(ds) - 1:
+        return f"{_DAY_NAMES[ds[0]]}-{_DAY_NAMES[ds[-1]]}"
+    return ", ".join(_DAY_NAMES[d] for d in ds)
+
+
+def _rule_text(r: dict) -> str:
+    """One rule as "Mon-Fri 8-11 focus 'Deep work'" (the label and theme only
+    when set). The label is the member's own text, 40 characters at most, and a
+    quote inside it drops so the quotes stay the border."""
+    out = f"{_days_text(r.get('days') or [])} {_hours(r['start_hour'])}-{_hours(r['end_hour'])} {r['kind']}"
+    if r.get("label"):
+        out += " '" + str(r["label"]).replace("'", "") + "'"
+    if r.get("theme"):
+        out += f" (theme {r['theme']})"
+    return out
+
+
+async def _read_day_rules() -> tuple[list[dict], str]:
+    """The stored rules and their token."""
+    s = await _request("GET", _CAL_SETTINGS_PATH) or {}
+    rules = [r for r in (s.get("day_templates") or []) if isinstance(r, dict)]
+    return rules, day_rules_token(rules)
+
+
+def _rule_refusal(
+    days: Any, start_hour: Any, end_hour: Any, kind: Any, label: Any, theme: Any,
+) -> str | None:
+    """The refusal for a rule, as the server normaliser would silently drop it,
+    or None. Every argument is the final value of the rule."""
+    def _whole(v: Any) -> bool:
+        return isinstance(v, int) and not isinstance(v, bool)
+
+    if (not isinstance(days, list) or not days
+            or not all(_whole(d) and 0 <= d <= 6 for d in days)):
+        return ("A day rule needs days: a list of day numbers from 0 (Monday) to 6 (Sunday), "
+                "for example [0, 1, 2, 3, 4] for Monday to Friday. I changed nothing.")
+    if not (_whole(start_hour) and _whole(end_hour) and 0 <= start_hour < end_hour <= 24):
+        return ("A day rule needs start_hour and end_hour as whole hours, "
+                "0 <= start_hour < end_hour <= 24. I changed nothing.")
+    if kind not in _RULE_KINDS:
+        return "The kind of a day rule is block or focus. I changed nothing."
+    for what, v in (("label", label), ("theme", theme)):
+        if not isinstance(v, str) or len(v.strip()) > _DAY_RULE_TEXT_MAX:
+            return (f"The {what} of a day rule is text of {_DAY_RULE_TEXT_MAX} characters "
+                    "at most. I changed nothing.")
+    return None
+
+
+def _rule_of(days: list[int], start_hour: int, end_hour: int, kind: str,
+             label: str, theme: str) -> dict:
+    """The rule in the form the server stores (see ``_day_templates``)."""
+    return {"days": sorted(set(days)), "start_hour": start_hour, "end_hour": end_hour,
+            "kind": kind, "label": label.strip(), "theme": theme.strip().lower()}
+
+
+async def _save_day_rules(rules: list[dict], token: str) -> str | None:
+    """Write the whole list with the token that was read. None when saved, else
+    the answer for the model (the list changed, or the save failed)."""
+    try:
+        await _request("PUT", _CAL_SETTINGS_PATH, json={"day_templates": rules},
+                       headers={"If-Match": f'"{token}"'})
+    except _GatewayError as exc:
+        if exc.status == 412:
+            return STALE_DAY_RULES
+        raise
+    return None
+
+
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def my_tasks_list_day_rules() -> str:
+    """Read the member's day rules: the recurring windows that the day planner
+    keeps (a focus window, or a block that nothing else takes). Each rule shows
+    with its number, as "1. Mon-Fri 8-11 focus 'Deep work'". The number is what
+    my_tasks_edit_day_rule and my_tasks_delete_day_rule take. Read the list
+    again before a change if the member changed it.
+    """
+    rules, _ = await _read_day_rules()
+    if not rules:
+        return "No day rules are set."
+    return "Day rules:\n" + "\n".join(f"{i}. {_rule_text(r)}" for i, r in enumerate(rules, 1))
+
+
+@_annotate_risk(idempotent=False, open_world=False)
+async def my_tasks_add_day_rule(
+    days: list[int],
+    start_hour: int,
+    end_hour: int,
+    kind: str = "focus",
+    label: str = "",
+    theme: str = "",
+    confirmed: bool = False,
+    version: str = "",
+) -> str:
+    """Add one day rule: a recurring window that the day planner keeps. days
+    are numbers from 0 (Monday) to 6 (Sunday). start_hour and end_hour are whole
+    hours (0 to 24, the end after the start). kind is focus (default: the
+    planner puts focused work there) or block (nothing else is booked there).
+    label is a short name, 40 characters at most. theme is an optional word.
+    "Keep mornings for deep work" is days [0, 1, 2, 3, 4], start_hour 8,
+    end_hour 11, kind focus, label "Deep work". At most 40 rules fit.
+
+    Propose first. With confirmed=False the tool writes nothing and shows the
+    rule and a line "Version: ...". Show the rule to the member. Call again with
+    confirmed=True, the same arguments and that version only after the member
+    agrees. Without the version the tool saves nothing.
+
+    Args:
+        confirmed: False = show the rule only (default). True = save it.
+        version: the version that the last proposal showed. Needed with confirmed=True.
+    """
+    bad = _rule_refusal(days, start_hour, end_hour, kind, label, theme)
+    if bad:
+        return bad
+    rules, token = await _read_day_rules()
+    if len(rules) >= _DAY_RULES_MAX:
+        return (f"The list is full: {_DAY_RULES_MAX} day rules at most. Delete one first. "
+                "I changed nothing.")
+    rule = _rule_of(days, start_hour, end_hour, kind, label, theme)
+    if not confirmed:
+        return (f"Not saved yet. The new rule would be number {len(rules) + 1}: "
+                f"{_rule_text(rule)}\n{_version_line(token)}\n"
+                "Ask the member, then call again with confirmed=True and this version.")
+    gate = _apply_gate(version, token)
+    if gate:
+        return gate
+    stale = await _save_day_rules([*rules, rule], token)
+    return stale or f"Saved. Day rule {len(rules) + 1} added: {_rule_text(rule)}"
+
+
+def _number_refusal(number: Any, rules: list[dict]) -> str | None:
+    if isinstance(number, bool) or not isinstance(number, int) or not 1 <= number <= len(rules):
+        have = (f"The list has {len(rules)} rule(s), numbered 1 to {len(rules)}."
+                if rules else "No day rules are set.")
+        return f"There is no day rule number {_data(number)}. {have} I changed nothing."
+    return None
+
+
+@_annotate_risk(idempotent=True, open_world=False)
+async def my_tasks_edit_day_rule(
+    number: int,
+    days: list[int] | None = None,
+    start_hour: int | None = None,
+    end_hour: int | None = None,
+    kind: str | None = None,
+    label: str | None = None,
+    theme: str | None = None,
+    confirmed: bool = False,
+    version: str = "",
+) -> str:
+    """Change one day rule. number is the number that my_tasks_list_day_rules
+    shows (read the list first). Pass ONLY the fields to change: a field left
+    out stays as it is. The fields are days (0 Monday to 6 Sunday), start_hour,
+    end_hour, kind (focus or block), label and theme. An empty label or theme
+    clears it.
+
+    Propose first. With confirmed=False the tool writes nothing and shows the
+    rule before and after, and a line "Version: ...". Show the change to the
+    member. Call again with confirmed=True, the same arguments and that version
+    only after the member agrees. Without the version the tool saves nothing.
+    After any change, read the list again before you use another number.
+
+    Args:
+        confirmed: False = show the change only (default). True = save it.
+        version: the version that the last proposal showed. Needed with confirmed=True.
+    """
+    rules, token = await _read_day_rules()
+    if confirmed:
+        gate = _apply_gate(version, token)
+        if gate:
+            return gate
+    bad = _number_refusal(number, rules)
+    if bad:
+        return bad
+    old = rules[number - 1]
+    given = {"days": days, "start_hour": start_hour, "end_hour": end_hour,
+             "kind": kind, "label": label, "theme": theme}
+    patch = {k: v for k, v in given.items() if v is not None}
+    if not patch:
+        return "No field was given. Say what to change in the rule."
+    merged = {**old, **patch}
+    # A stored rule may have no days (the server keeps it). That is no fault of
+    # this edit, so the days are checked only when the member changed them.
+    bad = _rule_refusal(patch["days"] if "days" in patch else [0],
+                        merged.get("start_hour"), merged.get("end_hour"),
+                        merged.get("kind"), merged.get("label", ""), merged.get("theme", ""))
+    if bad:
+        return bad
+    new = _rule_of(merged["days"], merged["start_hour"], merged["end_hour"], merged["kind"],
+                   merged.get("label", ""), merged.get("theme", ""))
+    if new == old:
+        return f"Nothing changes: rule {number} already is {_rule_text(old)}"
+    shown = f"Rule {number}: {_rule_text(old)} -> {_rule_text(new)}"
+    if not confirmed:
+        return (f"Not saved yet. The change would be:\n{shown}\n{_version_line(token)}\n"
+                "Ask the member, then call again with confirmed=True and this version.")
+    edited = [new if i == number else r for i, r in enumerate(rules, 1)]
+    stale = await _save_day_rules(edited, token)
+    return stale or f"Saved. {shown}"
+
+
+# A day rule is a setting: the member proposes, agrees, and can add it again.
+@_annotate_risk(idempotent=False, open_world=False)
+async def my_tasks_delete_day_rule(
+    number: int, confirmed: bool = False, version: str = "",
+) -> str:
+    """Delete one day rule. number is the number that my_tasks_list_day_rules
+    shows (read the list first). The other rules move up by one place, so read
+    the list again before the next change.
+
+    Propose first. With confirmed=False the tool writes nothing and names the
+    rule that would go, as "Delete rule 2: Mon-Fri 8-11 focus". Show that to the
+    member. Call again with confirmed=True and the version that the proposal
+    showed ("Version: ...") only after the member agrees. Without the version,
+    or when the list changed since the proposal, the tool deletes nothing.
+
+    Args:
+        confirmed: False = show which rule goes (default). True = delete it.
+        version: the version that the last proposal showed. Needed with confirmed=True.
+    """
+    rules, token = await _read_day_rules()
+    if confirmed:
+        gate = _apply_gate(version, token)
+        if gate:
+            return gate
+    bad = _number_refusal(number, rules)
+    if bad:
+        return bad
+    shown = f"rule {number}: {_rule_text(rules[number - 1])}"
+    if not confirmed:
+        return (f"Not deleted yet. Delete {shown}\n{_version_line(token)}\n"
+                "Ask the member, then call again with confirmed=True and this version.")
+    stale = await _save_day_rules([r for i, r in enumerate(rules, 1) if i != number], token)
+    return stale or f"Deleted {shown}"
+
+
+@_annotate_risk(idempotent=True, open_world=False)
 async def my_tasks_replan_day(apply: bool = False) -> str:
     """Fit what's left — when the user fell behind, take today's not-done movable
     blocks (INCLUDING ones whose time already slipped past earlier today) and
@@ -1608,7 +2206,7 @@ async def my_tasks_replan_day(apply: bool = False) -> str:
     return _fmt_plan(plan or {}, applied=bool((plan or {}).get("applied")))
 
 
-@_annotate_risk(idempotent=True)
+@_annotate_risk(idempotent=True, open_world=False)
 async def my_tasks_rollover(apply: bool = False) -> str:
     """Return overdue-but-incomplete time-blocks to the user's UNSCHEDULED list
     (clears their schedule) so they can re-plan them, rather than auto-cramming
@@ -1625,7 +2223,7 @@ async def my_tasks_rollover(apply: bool = False) -> str:
     return _fmt_plan(plan or {}, applied=bool((plan or {}).get("applied")))
 
 
-@_annotate_risk(idempotent=True)
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
 async def my_tasks_day_digest() -> str:
     """A quick snapshot of the user's day — what's scheduled, how much is
     unscheduled, what's overdue, the ★ One Thing, and estimate accuracy. Use it
@@ -1633,6 +2231,11 @@ async def my_tasks_day_digest() -> str:
     d = await _request("GET", "/tasks/calendar/day-summary")
     if not d:
         return "Couldn't read the day summary."
+    return _fmt_digest(d)
+
+
+def _fmt_digest(d: dict[str, Any]) -> str:
+    """The text of ``my_tasks_day_digest``, from the answer of ``day-summary``."""
     lines = [f"Day summary for {d.get('day', 'today')}:"]
     one = d.get("one_thing")
     if one and one.get("title"):
@@ -1642,11 +2245,17 @@ async def my_tasks_day_digest() -> str:
     done = [b for b in sched if b.get("done")]
     if active:
         lines.append(f"{len(active)} block(s) still to do today:")
-        for b in active[:8]:
+        page = paged(active, 0, _DIGEST_BLOCKS, default=_DIGEST_BLOCKS,
+                     noun="blocks")
+        for b in page.items:
             s = (b.get("start") or "")[11:16]
             e = (b.get("end") or "")[11:16]
             mark = " 🔒" if b.get("fixed") else ""
             lines.append(f"• {s}-{e}{mark} {_data(b.get('title', '?'))}")
+        if page.line:
+            # A snapshot has no offset. The calendar read lists every block.
+            lines.append(f"{len(active) - len(page.items)} more block(s): "
+                         "my_tasks_list_schedule lists them all.")
     else:
         lines.append("Nothing left scheduled today.")
     if done:
@@ -1666,7 +2275,7 @@ async def my_tasks_day_digest() -> str:
     return "\n".join(lines)
 
 
-@_annotate_risk(idempotent=True)
+@_annotate_risk(idempotent=True, open_world=False)
 async def my_tasks_estimate_stats() -> str:
     """How accurate the user's time estimates are (planned vs actual over recent
     timed blocks) — answers "am I good at estimating?" (read-only)."""
@@ -1684,7 +2293,7 @@ async def my_tasks_estimate_stats() -> str:
             "The planner pads durations to match.")
 
 
-@_annotate_risk(idempotent=True)
+@_annotate_risk(idempotent=True, open_world=False)
 async def my_tasks_set_one_thing(item_id: str = "", date: str = "") -> str:
     """Set (or clear) the user's ★ One Thing — the single most important task for
     a day. The planner then protects it (first, in a peak-energy window, never
@@ -1701,3 +2310,195 @@ async def my_tasks_set_one_thing(item_id: str = "", date: str = "") -> str:
     if not item_id.strip():
         return f"Cleared the One Thing for {day}."
     return f"Set the One Thing for {day}. The planner will protect it."
+
+
+# ── The two day flows (CAL-4, task 1678) ─────────────────────────────────────
+#
+# "Start my day" and "close my day" in ONE reply, as the Calendar app does them
+# in ``StartupRitual.tsx`` and ``EndOfDayReview.tsx``. Each flow only reads or
+# proposes: it calls ``GET`` routes and the ``apply=False`` calls, so the member
+# agrees before any write. The day is the day of the server (``day-summary``
+# answers ``day``). A step that fails shows its own line and the rest stays.
+
+_NEXT_AFTER_AGREE = (
+    "The server keeps ONE pending proposal for the day: the last one. In the start "
+    "flow the rebuild was proposed last, so it is pending and the rollover proposal "
+    "was replaced. After the member agrees to a step, call that tool with "
+    "apply=False first and show it, then with apply=True. Say that it is done "
+    "only after the tool says so.")
+_CANDIDATES = 5
+
+
+def _page_lines(lines: list[str], noun: str) -> list[str]:
+    """The first ``_DIGEST_BLOCKS`` lines, and a line that says how many are left out."""
+    page = paged(lines, 0, _DIGEST_BLOCKS, default=_DIGEST_BLOCKS, noun=noun)
+    out = list(page.items)
+    if page.line:
+        out.append(f"{len(lines) - len(page.items)} more {noun}: my_tasks_list_schedule lists them all.")
+    return out
+
+
+def _why(exc: BaseException) -> str:
+    """A short reason for a failed step, one line."""
+    return " ".join(str(exc).split())[:120] or type(exc).__name__
+
+
+async def _flow_step(failed: list[str], what: str, run: Any) -> str | None:
+    """Run one step. A failure becomes a line and the flow goes on."""
+    try:
+        return await run()
+    except Exception as exc:  # a step must not break the reply
+        failed.append(f"{what} is not available now: {_why(exc)}")
+        return None
+
+
+async def _plan_proposal(path: str, body: dict[str, Any]) -> str:
+    plan = await _request("POST", path, json={**body, "apply": False})
+    # The call is a proposal. Whatever the server says, the text says "proposed".
+    return _fmt_plan(plan or {}, applied=False)
+
+
+async def _one_thing_candidates() -> str:
+    """The ritual's pool: next actions with no block yet, in the order of the list."""
+    rows = await _fetch_all(_MY_INBOX, {"include_deferred": "true", "disposition": "NEXT"})
+    pool = [r for r in _ordered(rows)
+            if not r.get("scheduled_start") and not r.get("archived_at")]
+    if not pool:
+        return "No unscheduled tasks to pick from. Plan or capture first."
+    page = paged(pool, 0, _CANDIDATES, default=_CANDIDATES, noun="tasks")
+    lines = [f"• {_data(r.get('title', '?'))}"
+             + (f" ({r['time_estimate_mins']} min)" if r.get("time_estimate_mins") else "")
+             + f" (id: {r.get('id', '')})"
+             for r in page.items]
+    if page.line:
+        lines.append(f"{len(pool) - len(page.items)} more: my_tasks_list (view next) lists them.")
+    return "\n".join(lines)
+
+
+def _flow_reply(title: str, sections: list[tuple[str, str | None]],
+                failed: list[str], notes: list[str], next_steps: list[str]) -> str:
+    out = [title]
+    for head, body in sections:
+        if body:
+            out.append(f"\n{head}\n{body}")
+    if failed:
+        out.append("\nNot available:\n" + "\n".join(f"• {f}" for f in failed))
+    for n in notes:
+        out.append(f"\n{n}")
+    out.append("\nNext steps, only after the member agrees (nothing is changed yet):\n"
+               + "\n".join(f"• {n}" for n in next_steps) + f"\n{_NEXT_AFTER_AGREE}")
+    return "\n".join(out)
+
+
+@_annotate_risk(idempotent=True, open_world=False)
+async def my_tasks_start_my_day(energy_note: str = "") -> str:
+    """Start the member's day in ONE reply, as the Start your day ritual does:
+    the digest of today, a PROPOSAL to roll over overdue work, the tasks to pick
+    the ★ One Thing from, and a PROPOSAL to rebuild the day. It changes nothing.
+    Show the member each part, ask what they agree to, and only then call the
+    tools named under "Next steps".
+
+    Args:
+        energy_note: optional words of the member about their state, e.g. "low
+            energy, lots of meetings". They steer the rebuild proposal. Pass
+            them unchanged.
+    """
+    failed: list[str] = []
+    digest = await _flow_step(failed, "The day digest", lambda: _digest_text())
+    rollover = await _flow_step(
+        failed, "The rollover proposal",
+        lambda: _plan_proposal("/tasks/calendar/rollover-today", {}))
+    candidates = await _flow_step(
+        failed, "The list of tasks for the One Thing", _one_thing_candidates)
+    rebuild = await _flow_step(
+        failed, "The rebuild proposal",
+        lambda: _plan_proposal("/tasks/calendar/plan-today",
+                               {"energy_note": energy_note or None}))
+    return _flow_reply(
+        "Start your day. This is a proposal: nothing is changed yet.",
+        [("Your day so far", digest),
+         ("Roll over overdue work (proposal)", rollover),
+         ("Pick the ★ One Thing (if only one thing gets done today, it should be...)",
+          candidates),
+         ("Rebuild my day (proposal)", rebuild)],
+        failed, [],
+        ["Rollover: my_tasks_rollover (apply=False, then apply=True) moves the overdue work back to the list.",
+         "One Thing: my_tasks_set_one_thing with the id the member picks.",
+         "Rebuild: my_tasks_plan_day (apply=False, then apply=True, same energy_note) places the day. "
+         "Propose it again after a rollover, because the rollover changes the list."])
+
+
+async def _digest_text() -> str:
+    d = await _request("GET", "/tasks/calendar/day-summary")
+    if not d:
+        raise RuntimeError("the server sent no day summary")
+    return _fmt_digest(d)
+
+
+def _tomorrow(day: str) -> str:
+    """The day after ``day`` (YYYY-MM-DD, from the server), or "" if unreadable."""
+    try:
+        return (datetime.strptime(day, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+    except (TypeError, ValueError):
+        return ""
+
+
+@_annotate_risk(idempotent=True, open_world=False)
+async def my_tasks_close_my_day() -> str:
+    """Close the member's day in ONE reply, as the Day review does: what got
+    done today, what is left (not done), a PROPOSAL to roll the leftover work
+    back to the list, and the tasks to seed tomorrow with. It changes nothing.
+    Show the member each part, ask what they agree to, and only then call the
+    tools named under "Next steps". The server plans TODAY only: it cannot
+    fit tomorrow, so the reply says so.
+    """
+    failed: list[str] = []
+    day = ""
+    done_lines: list[str] = []
+    left_lines: list[str] = []
+    summary_text: str | None = None
+    one_thing_line = ""
+
+    async def _summary() -> str:
+        nonlocal day, one_thing_line
+        d = await _request("GET", "/tasks/calendar/day-summary")
+        if not d:
+            raise RuntimeError("the server sent no day summary")
+        day = str(d.get("day") or "")
+        sched = d.get("scheduled") or []
+        for b in sched:
+            title = _data(b.get("title", "?"))
+            (done_lines if b.get("done") else left_lines).append(f"• {title}")
+        one = d.get("one_thing") or {}
+        if one.get("title"):
+            one_thing_line = f"★ One Thing: {_data(one['title'])}"
+        out = [f"Done today: {len(done_lines)}", *_page_lines(done_lines, "blocks")]
+        out.append(f"Not done today: {len(left_lines)}")
+        out.extend(_page_lines(left_lines, "blocks"))
+        if d.get("overdue_count"):
+            out.append(f"Overdue from earlier days: {d['overdue_count']}")
+        if one_thing_line:
+            out.append(one_thing_line)
+        return "\n".join(out)
+
+    summary_text = await _flow_step(failed, "The summary of today", _summary)
+    rollover = await _flow_step(
+        failed, "The rollover proposal",
+        lambda: _plan_proposal("/tasks/calendar/rollover-today", {}))
+    seeds = await _flow_step(
+        failed, "The list of tasks for tomorrow", _one_thing_candidates)
+    tomorrow = _tomorrow(day)
+    notes = [
+        "Fit tomorrow: not available here. The day planner tools plan TODAY only, "
+        "so no proposal for tomorrow's calendar exists. What the member can do now "
+        "is leave unfinished work on the list (the rollover above) and pick the "
+        "★ One Thing for tomorrow from the tasks above."]
+    return _flow_reply(
+        "Close your day. This is a proposal: nothing is changed yet.",
+        [("What got done, and what did not", summary_text),
+         ("Move what is not done back to the list (proposal)", rollover),
+         ("Candidates for tomorrow's ★ One Thing", seeds)],
+        failed, notes,
+        ["Rollover: my_tasks_rollover (apply=False, then apply=True) moves the work that is not done back to the list.",
+         "Tomorrow's One Thing: my_tasks_set_one_thing with the id the member picks"
+         + (f" and date {tomorrow}." if tomorrow else " and tomorrow's date.")])

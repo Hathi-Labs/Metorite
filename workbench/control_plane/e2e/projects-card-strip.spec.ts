@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { openAllRows } from "./railOpen";
 
 /**
  * The board card's hover strip, from the keyboard (owner direction 2026-09-20).
@@ -126,6 +127,8 @@ test("Enter on a strip button runs the action, and does not open the task", asyn
   await page.waitForTimeout(4000);
 
   // ⚠️ The CHILD. A space draws a dashboard; only a project draws the board.
+  // The rail starts closed (treeFold.ts): open it like a member does.
+  await openAllRows(page);
   await page.getByText("Bootloader", { exact: true }).first().click();
   await page.waitForTimeout(2500);
 
@@ -151,10 +154,12 @@ test("Enter on a strip button runs the action, and does not open the task", asyn
   ).toContain('"status_id":"s4"');
 
   // The other half of the same defect: the key must not ALSO reach the card.
-  // The panel mounts a Comment control and a task heading; neither should be
-  // here, because nothing asked to open anything.
+  // The panel mounts its tab bar on every tab; it should not be here,
+  // because nothing asked to open anything. The BAR, not the comment field:
+  // since ORC-3 the field hides on Overview, so a check on it would pass with
+  // the panel open.
   await expect(
-    page.getByRole("button", { name: "Comment", exact: true }),
+    page.locator("[data-record-tab-bar]"),
     "Enter on a strip button opened the task panel as well as (or instead " +
       "of) running the action.",
   ).toHaveCount(0);
@@ -194,6 +199,8 @@ test("a slow rename on one card does not close or disable another's", async ({
   await page.goto("/projects");
   await page.waitForLoadState("domcontentloaded");
   await page.waitForTimeout(4000);
+  // The rail starts closed (treeFold.ts): open it like a member does.
+  await openAllRows(page);
   await page.getByText("Bootloader", { exact: true }).first().click();
   await page.waitForTimeout(2500);
 
@@ -272,6 +279,8 @@ test.describe("on a touch-capable display", () => {
     await page.goto("/projects");
     await page.waitForLoadState("domcontentloaded");
     await page.waitForTimeout(4000);
+    // The rail starts closed (treeFold.ts): open it like a member does.
+    await openAllRows(page);
     await page.getByText("Bootloader", { exact: true }).first().click();
     await page.waitForTimeout(2500);
 
@@ -343,6 +352,8 @@ test.describe("on a touch-capable display", () => {
     await page.goto("/projects");
     await page.waitForLoadState("domcontentloaded");
     await page.waitForTimeout(4000);
+    // The rail starts closed (treeFold.ts): open it like a member does.
+    await openAllRows(page);
     await page.getByText("Bootloader", { exact: true }).first().click();
     await page.waitForTimeout(2500);
 
@@ -413,6 +424,8 @@ test.describe("on a touch-capable display", () => {
     await page.goto("/projects");
     await page.waitForLoadState("domcontentloaded");
     await page.waitForTimeout(4000);
+    // The rail starts closed (treeFold.ts): open it like a member does.
+    await openAllRows(page);
     await page.getByText("Bootloader", { exact: true }).first().click();
     await page.waitForTimeout(2500);
 

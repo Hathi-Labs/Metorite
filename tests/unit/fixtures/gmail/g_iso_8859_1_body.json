@@ -1,0 +1,98 @@
+{
+  "id": "1926f0e1d2c3b4a5",
+  "threadId": "1926f0e1d2c3b4a5",
+  "labelIds": [
+    "CATEGORY_PERSONAL",
+    "INBOX"
+  ],
+  "snippet": "Bonjour, Le café est prêt. À bientôt.",
+  "payload": {
+    "partId": "",
+    "mimeType": "multipart/alternative",
+    "filename": "",
+    "headers": [
+      {
+        "name": "Delivered-To",
+        "value": "asha@example.com"
+      },
+      {
+        "name": "Received",
+        "value": "by 2002:a05:7300:5b1a:b0:12a:3c4d:5e6f with SMTP id x9csp1234567; Sun, 06 Oct 2024 19:45:00 +0200"
+      },
+      {
+        "name": "MIME-Version",
+        "value": "1.0"
+      },
+      {
+        "name": "From",
+        "value": "Claire Martin <claire@example.net>"
+      },
+      {
+        "name": "Date",
+        "value": "Sun, 06 Oct 2024 19:45:00 +0200"
+      },
+      {
+        "name": "Message-ID",
+        "value": "<20241006174500.4F2A1@example.net>"
+      },
+      {
+        "name": "Subject",
+        "value": "Café"
+      },
+      {
+        "name": "To",
+        "value": "asha@example.com"
+      },
+      {
+        "name": "Content-Type",
+        "value": "multipart/alternative; boundary=\"b1_latin1\""
+      }
+    ],
+    "body": {
+      "size": 0
+    },
+    "parts": [
+      {
+        "partId": "0",
+        "mimeType": "text/plain",
+        "filename": "",
+        "headers": [
+          {
+            "name": "Content-Type",
+            "value": "text/plain; charset=\"ISO-8859-1\""
+          },
+          {
+            "name": "Content-Transfer-Encoding",
+            "value": "quoted-printable"
+          }
+        ],
+        "body": {
+          "size": 42,
+          "data": "Qm9uam91ciwNCg0KTGUgY2Fm6SBlc3QgcHLqdC4gwCBiaWVudPR0Lg0K"
+        }
+      },
+      {
+        "partId": "1",
+        "mimeType": "text/html",
+        "filename": "",
+        "headers": [
+          {
+            "name": "Content-Type",
+            "value": "text/html; charset=\"ISO-8859-1\""
+          },
+          {
+            "name": "Content-Transfer-Encoding",
+            "value": "quoted-printable"
+          }
+        ],
+        "body": {
+          "size": 50,
+          "data": "PHA-Qm9uam91ciw8L3A-PHA-TGUgY2Fm6SBlc3QgcHLqdC4gwCBiaWVudPR0LjwvcD4="
+        }
+      }
+    ]
+  },
+  "sizeEstimate": 4096,
+  "historyId": "2817650",
+  "internalDate": "1728236700000"
+}

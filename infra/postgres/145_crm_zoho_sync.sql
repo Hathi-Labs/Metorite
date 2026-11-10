@@ -56,7 +56,7 @@
 --                       diagnosable without reading a week of logs.
 --   `*_next_attempt_at` exponential backoff; NULL = eligible now.
 
-ALTER TABLE crm_organizations
+ALTER TABLE crm_companies
     ADD COLUMN IF NOT EXISTS zoho_dirty           BOOLEAN NOT NULL DEFAULT false,
     ADD COLUMN IF NOT EXISTS zoho_synced_at       TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS zoho_push_attempts   INT NOT NULL DEFAULT 0,
@@ -98,7 +98,7 @@ ALTER TABLE crm_activities
 -- the dirty set is a handful of rows against a table that is almost entirely
 -- clean. A full index on a boolean would be read by nothing.
 CREATE INDEX IF NOT EXISTS idx_crm_organizations_zoho_dirty
-    ON crm_organizations (zoho_dirty) WHERE zoho_dirty;
+    ON crm_companies (zoho_dirty) WHERE zoho_dirty;
 CREATE INDEX IF NOT EXISTS idx_crm_contacts_zoho_dirty
     ON crm_contacts (zoho_dirty) WHERE zoho_dirty;
 CREATE INDEX IF NOT EXISTS idx_crm_leads_zoho_dirty

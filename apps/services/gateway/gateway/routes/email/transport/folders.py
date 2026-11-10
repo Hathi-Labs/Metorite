@@ -6,15 +6,19 @@ import json
 
 from acb_auth import UserContext, get_current_user
 from email_ingestion import import_window
+from email_ingestion import storage as ingest_storage
+from email_ingestion.providers.base import FolderCheckIncomplete
 from fastapi import Depends, HTTPException
+from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
-    _tenant_session,
     _instantiate_provider,
     _log,
     _persist_rotated_creds,
+    _tenant_session,
     _upsert_message,
     router,
 )
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
@@ -60,12 +64,15 @@ async def list_folders(
     so the UI always shows the current folder structure.
     """
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         try:
             result = await db.execute(
                 text(
                     """SELECT provider, credentials_encrypted
                        FROM email_accounts
-                       WHERE id = :id AND user_id = :user_id"""
+                       WHERE id = :id AND """
+                    + mailbox_predicate(uid="user_id", level="read")
                 ),
                 {"id": account_id, "user_id": user.email or "anonymous"},
             )
@@ -141,12 +148,15 @@ async def create_folder(
     exists (Outlook get-or-create, Gmail label create).
     """
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         try:
             row = (await db.execute(
                 text(
                     """SELECT provider, credentials_encrypted
                        FROM email_accounts
-                       WHERE id = :id AND user_id = :user_id"""
+                       WHERE id = :id AND """
+                    + mailbox_predicate(uid="user_id", level="send")
                 ),
                 {"id": account_id, "user_id": user.email or "anonymous"},
             )).fetchone()
@@ -170,6 +180,14 @@ async def create_folder(
                     status_code=400,
                     detail="This account type doesn't support creating folders.",
                 )
+            except FolderCheckIncomplete as exc:
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        "Outlook did not answer when Metorite checked your "
+                        "folders, so no folder was made. Try again in a minute."
+                    ),
+                ) from exc
 
             # Mirror into email_folders so the folder is queryable immediately.
             await db.execute(
@@ -215,12 +233,15 @@ async def list_labels(
     categories, IMAP = none.
     """
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         try:
             result = await db.execute(
                 text(
                     """SELECT provider, credentials_encrypted
                        FROM email_accounts
-                       WHERE id = :id AND user_id = :user_id"""
+                       WHERE id = :id AND """
+                    + mailbox_predicate(uid="user_id", level="read")
                 ),
                 {"id": account_id, "user_id": user.email or "anonymous"},
             )
@@ -277,12 +298,15 @@ async def set_label_color(
     master category). The colour is a canonical preset token; it round-trips to
     the real mailbox. No-op for providers without label colours (IMAP)."""
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         try:
             result = await db.execute(
                 text(
                     """SELECT provider, credentials_encrypted
                        FROM email_accounts
-                       WHERE id = :id AND user_id = :user_id"""
+                       WHERE id = :id AND """
+                    + mailbox_predicate(uid="user_id", level="send")
                 ),
                 {"id": account_id, "user_id": user.email or "anonymous"},
             )
@@ -331,22 +355,37 @@ async def backfill_folder(
     no message older than the ceiling. The pages come newest first, so the
     first page that reaches below the ceiling is the last page, and the answer
     then reads ``exhausted``.
+
+    The storage limit binds this path too (WS-17 EM-T6c review round 1). At
+    or over the limit, it writes nothing and makes no provider call, and the
+    answer reads ``exhausted``. The list then stops its paging and shows no
+    error. Under the limit, it can load again mail that a removal took out,
+    down to the ceiling. That is an agent decision that the owner can
+    reverse (§10.4.7, EM-T6c).
     """
     from email_ingestion.providers.base import canonical_folder
 
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         try:
             result = await db.execute(
                 text(
-                    """SELECT provider, credentials_encrypted
+                    """SELECT provider, credentials_encrypted, stored_bytes
                        FROM email_accounts
-                       WHERE id = :id AND user_id = :user_id"""
+                       WHERE id = :id AND """
+                    # An import spends the storage of the mailbox: send.
+                    + mailbox_predicate(uid="user_id", level="send")
                 ),
                 {"id": account_id, "user_id": user.email or "anonymous"},
             )
             row = result.fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="Account not found")
+            if ingest_storage.at_limit(getattr(row, "stored_bytes", None)):
+                _log.info("backfill.storage_limit", account_id=account_id,
+                          stored_bytes=row.stored_bytes)
+                return {"synced": 0, "next_page_token": None, "exhausted": True}
 
             from acb_llm.key_store import get_key_store
             store = get_key_store()
@@ -389,7 +428,9 @@ async def backfill_folder(
                     if import_window.below_floor(msg.received_at, ceiling):
                         dropped += 1
                         continue
-                    await _upsert_message(db, account_id, msg)
+                    await _upsert_message(
+                        db, account_id, msg,
+                        reclaim=getattr(provider, "REKEYS_MESSAGE_IDS", False))
                     synced += 1
                 if dropped:
                     # Every later page is older still, so stop here.

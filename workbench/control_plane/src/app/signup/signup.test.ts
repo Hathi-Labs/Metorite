@@ -274,6 +274,37 @@ describe("a signed-in visitor can change the address", () => {
     expect(form).toContain("Use a different email");
     expect(form).toMatch(/signOut\(\{\s*callbackUrl:\s*"\/signup"\s*\}\)/);
   });
+
+  // 🔴 Owner, 2026-10-09: people still missed the control, a small ghost link
+  // above the card. The address and the way to change it sit inside the card,
+  // before the form, as a bordered button, never a ghost one.
+  it("shows the address and the change inside the card, before the form", () => {
+    const card = form.indexOf('className="rounded-lg border border-border bg-card p-8"');
+    const address = form.indexOf('data-testid="signup-address"');
+    const firstField = form.indexOf("<Input");
+    expect(card).toBeGreaterThan(-1);
+    expect(address).toBeGreaterThan(card);
+    expect(address).toBeLessThan(firstField);
+    expect(form).toContain("Owner of the new organization");
+  });
+
+  it("never offers the change as a ghost link", () => {
+    // Every label, then the <Button that opens it. A count first, so a change
+    // to the markup cannot turn this into a loop over nothing.
+    const labels = [...form.matchAll(/Use a different email<\/span>/g)];
+    expect(labels.length).toBeGreaterThanOrEqual(2);
+    for (const m of labels) {
+      const open = form.lastIndexOf("<Button", m.index);
+      const attrs = form.slice(open, form.indexOf(">", form.indexOf("onClick", open)));
+      expect(attrs).not.toContain('variant="ghost"');
+      expect(attrs).toContain('variant="secondary"');
+    }
+  });
+
+  it("puts the change inside the AlreadyMember refusal too", () => {
+    expect(form).toContain("setWrongAddress(true)");
+    expect(form.match(/Use a different email/g)?.length).toBeGreaterThanOrEqual(2);
+  });
 });
 
 describe("the AlreadyMember refusal names the address and the organization", () => {

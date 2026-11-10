@@ -43,12 +43,19 @@ import {
   ParentCrumb,
   TaskMeta,
 } from "@/components/TaskMeta";
+import { AgentPill } from "./AgentPill";
 import { useMemo, useState } from "react";
 
 import { accentForGroup, accentForStatus } from "../lib/accent";
 import type { StatusRow, TagRow,
   TaskTypeRow, TaskRow } from "../lib/api";
 import { projectsApi } from "../lib/api";
+import {
+  AGENT_WORK_EMPTY,
+  AGENT_WORK_HINT,
+  WAITING_ON_ME_EMPTY,
+  WAITING_ON_ME_HINT,
+} from "../lib/agentRuns";
 import { sortForView } from "../lib/board";
 import { tagColours, taskDeepLink, taskRef, typeFacts, visibleChips } from "../lib/card";
 import { clampCursor, stepCursor } from "../lib/cursor";
@@ -73,6 +80,7 @@ import {
   toggleFold as toggleParentFold,
 } from "../lib/subtaskView";
 import { listColumns } from "../lib/table";
+import { ProjectPathChip } from "./ProjectPathChip";
 import { QuickAdd } from "./QuickAdd";
 import { useFlash } from "./useFlash";
 
@@ -96,6 +104,15 @@ interface Props {
    */
   filters: Filters;
   onClearFilters: () => void;
+  /**
+   * WS-55 EA-12c — "Waiting on me" is on. An empty list then says that
+   * nothing waits on the member, not that the project has no tasks.
+   */
+  waitingOnMe?: boolean;
+  /** WS-55 EA-13e — "Agent work" is on. An empty list then says so. */
+  agentWork?: boolean;
+  /** WS-55 EA-13d (EA3-50) — the viewer, so "Needs you" reads to the right person. */
+  me?: string;
   statuses: StatusRow[];
   /** S6 — the project's tag registry, for the colour of a tag chip alone. */
   tags?: readonly TagRow[];
@@ -126,6 +143,19 @@ interface Props {
    * what every surface showed before 2026-09-21.
    */
   personLabels?: ReadonlyMap<string, string>;
+  /**
+   * WS-64 OP-11 — the path of the project a row sits in. My tasks passes it,
+   * because its rows come from many projects. Absent, no row draws a chip.
+   */
+  projectPath?: (task: TaskRow) => readonly string[] | null;
+  /** OP-12b — true when the task sits in the private space. The chip then wears a lock. */
+  projectPrivate?: (task: TaskRow) => boolean;
+  /**
+   * WS-64 OP-11 fix round. False hides the per-group quick add: My tasks spans
+   * many projects, so a group names no home for a new task. Its one add is
+   * the top Capture. Default true.
+   */
+  canQuickAdd?: boolean;
 }
 
 export function TaskList({
@@ -134,6 +164,9 @@ export function TaskList({
   subtasks,
   filters,
   onClearFilters,
+  waitingOnMe = false,
+  agentWork = false,
+  me,
   statuses,
   tags,
   taskTypes,
@@ -146,6 +179,9 @@ export function TaskList({
   onExtendSelection,
   onSelect,
   personLabels,
+  projectPath,
+  projectPrivate,
+  canQuickAdd = true,
 }: Props) {
   const [cursor, setCursor] = useState(-1);
   const [anchor, setAnchor] = useState<number | null>(null);
@@ -248,12 +284,30 @@ export function TaskList({
     onCreated(created);
   }
 
+  if (total === 0 && waitingOnMe) {
+    return (
+      <EmptyState
+        icon="Bot"
+        message={WAITING_ON_ME_EMPTY}
+        hint={WAITING_ON_ME_HINT}
+      />
+    );
+  }
+
+  if (total === 0 && agentWork) {
+    return <EmptyState icon="Bot" message={AGENT_WORK_EMPTY} hint={AGENT_WORK_HINT} />;
+  }
+
   if (total === 0) {
     // S4 — two states, never one. "No tasks here yet" told somebody who had
     // filtered the list that their project was empty; `isFiltered` is the same
     // predicate the toolbar's Clear button reads, so the state and the control
     // that caused it cannot disagree.
-    const copy = emptyStateCopy({ canvas: "list", filtered: isFiltered(filters) });
+    const copy = emptyStateCopy({
+      canvas: "list",
+      filtered: isFiltered(filters),
+      query: filters.q,
+    });
     return (
       <EmptyState
         icon={copy.icon}
@@ -448,6 +502,8 @@ export function TaskList({
                     </span>
                     {/* An orphan, or a Separate subtask, names its parent. */}
                     {row.crumb ? <ParentCrumb parent={task.parent} /> : null}
+                    {/* WS-64 OP-11 — My tasks names the project of each row. */}
+                    {projectPath ? <ProjectPathChip path={projectPath(task)} isPrivate={projectPrivate?.(task) ?? false} /> : null}
                     </span>
                   </td>
                   {showStatus ? (
@@ -476,9 +532,20 @@ export function TaskList({
                     </td>
                   ) : null}
                   <td className="px-3 py-2 text-muted-foreground">
-                    <TaskMeta
-                      chips={visibleChips(task, shownFields, undefined, tagHues, typeHues)}
-                    />
+                    <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                      {/* WS-55 EA-12c — the agent run's state, first. */}
+                      <AgentPill
+                        state={task.agent_state}
+                        clientVia={task.agent_client_via}
+                        memberEmail={task.agent_member_email}
+                        note={task.agent_note}
+                        viewerEmail={me}
+                        labels={personLabels}
+                      />
+                      <TaskMeta
+                        chips={visibleChips(task, shownFields, undefined, tagHues, typeHues)}
+                      />
+                    </span>
                   </td>
                 </tr>
               );
@@ -486,7 +553,7 @@ export function TaskList({
             {/* WS-27y — the group's own capture box: a task added here lands
                 in THIS group, pre-filled by `quickAddPrefill`. Folded away
                 with the rows, exactly as /tasks folds its sections. */}
-            {isFolded ? null : (
+            {isFolded || !canQuickAdd ? null : (
               <tr>
                 <td colSpan={columnCount} className="px-3 py-1">
                   <QuickAdd

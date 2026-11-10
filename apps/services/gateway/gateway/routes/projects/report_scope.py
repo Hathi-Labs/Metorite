@@ -46,7 +46,14 @@ from sqlalchemy import text
 SUBJECT_KINDS: tuple[str, ...] = ("person", "team")
 
 #: The sections that refuse a subject, and the words of the refusal.
-NO_SUBJECT_SECTIONS: tuple[str, ...] = ("outlook", "hygiene")
+#: WS-27bn RA-3 adds `waiting`: it reads the coordination of a whole scope,
+#: and a subject narrows a scope to the tasks that a person holds. RA-4 adds
+#: `agent_runs` for the same reason: it reads the runs of a whole scope.
+#: RA-5 adds `quality`: it reads the pull requests and the rework of a whole
+#: scope, and it never ranks a person.
+NO_SUBJECT_SECTIONS: tuple[str, ...] = (
+    "outlook", "waiting", "agent_runs", "quality", "hygiene",
+)
 NO_SUBJECT_REASON = "not available for a person or team scope"
 
 #: The conflict kinds that are about a PAIR of tasks, not about one person.
@@ -238,6 +245,32 @@ async def resolve_subject(
         db, getattr(vis, "organization_id", None), slug=subject["slug"],
     )
     return sorted({email for _, email, _ in rows})
+
+
+#: The one subject value a member-facing Analytics route takes (WS-64 OP-11).
+#: A WORD, never an address (R11): the subject is the member of the session.
+SUBJECT_ME = "me"
+
+
+async def subject_me(
+    db: Any, user: Any, vis: Any, subject: str | None,
+) -> list[str] | None:
+    """``subject=me`` gives the caller's people, ``[me]``. No subject gives ``None``.
+
+    Any other value is a 422, so a route cannot be asked about somebody else
+    by an address in the query string. A report names another person through
+    ``config.subject`` and :func:`resolve_subject`, under the rule of §7.1.
+    The caller still passes the directory check of :func:`resolve_subject`,
+    so a member the directory does not know gets the same 422 as a report.
+    """
+    if subject is None or subject == "":
+        return None
+    if subject != SUBJECT_ME:
+        raise _refuse(
+            f"subject must be '{SUBJECT_ME}'. A report on another person or a"
+            " team is a saved report with config.subject."
+        )
+    return await resolve_subject(db, user, vis, {"kind": "person", "email": _me(user)})
 
 
 def subject_clause(alias: str = "t") -> str:
