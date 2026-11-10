@@ -147,6 +147,20 @@ Fence: `tests/unit/test_kit_core.py` (new, KIT-1) counts the lines and checks ea
 
 ---
 
+## 6b. Delegating a sub-project, and hand-offs
+
+**Owner directive, 2026-11-10 (D204 points 10 and 11).** The owner gives each app project to one person. That person's agents work along the critical path of that project. This section is the contract between two people and their agents.
+
+**What each project carries.** The description of a project holds a delegation brief with these lines: the owner slot, the entry point (the first ready slice), the critical path (task numbers in order), the hand-ins (work this project needs from others), the hand-outs (work others need from this project), and the first command to run (`my_work`, then `claim_task`). The brief holds no secret. The program plan (task 2546) holds the order of the projects.
+
+**The hand-off form.** When task A in project P gives work that task B in project Q needs, both tasks hold one comment that starts with `Hand-off:`. The comment names the other task number, the other project, the direction (`gives` or `needs`) and the reason in one sentence. A `blocks` link joins A to B. The person who owns Q reads the comment in `my_work` or in the plan of project Q. An agent never starts B while A is open. It posts a question on B instead.
+
+**Who writes a hand-off.** The agent that finds the dependency writes both comments and the link. Another project owner needs no permission to read the comment. A change to the other project's own task goes through a comment, and the owner of that project makes the change.
+
+**Fence.** Advisory until KIT-5. The doctor of KIT-5 lists each `blocks` link that crosses a project and has no `Hand-off:` comment on both ends (test `tests/unit/test_handoff_comments.py`, new).
+
+---
+
 ## 7. The slices
 
 Each names its scope, its done-when, its fence (R7), its risk tier and its gate. All are AGENT-SAFE and ship dark behind `PLAYBOOK_ORGS`, unless they say more. A migration makes a slice HIGH.
