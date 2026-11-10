@@ -389,7 +389,9 @@ Rules that make it work:
   `ssh metorite-home-admin` reaches `acb`, who has sudo.
   `scripts/home_server/` sets it up. **To give the box a session, or to run
   CI there, read `docs/home_box.md`.** It holds the lane start and wake
-  commands, the keeper, the merge queue, the accounts and the traps.
+  commands, the keeper, the merge queue, the accounts and the traps. **To size
+  lanes, sub-agents, runners and CI to the machines you have, or to add a
+  machine such as a cloud VPS, read `docs/dev_capacity.md`.**
 - **Run the whole pr-check suite before you push:** `bash scripts/ci_local.sh`.
   **The home server runs it**, as user `ci`. This PC's `metorite-ci` WSL2
   distro takes the run only when the home server is busy or does not answer.
