@@ -568,6 +568,23 @@ async def _count_write(client: tenant_redis.TenantRedis, counter: tenant_redis.T
     return max(left, 1)
 
 
+async def _drop_unpaid_batch(client: tenant_redis.TenantRedis, organization_id: str,
+                             connection_id: str, batch_key: tenant_redis.TenantKey) -> None:
+    """MCP-G28a fix round 1. Best effort: delete a batch key that may hold a
+    row whose call was not charged, because the store failed between the
+    ``INCR`` of the key and the charge. Then the next row of the key pays
+    the call again. The organization of the ROW is bound again, because the
+    failure ended the scope of :func:`_claim_write`. A second failure leaves
+    the key, logs, and the caller still answers the 503.
+    """
+    try:
+        with tenant_redis.organization_scope(organization_id):
+            await client.delete(batch_key)
+    except Exception as exc:
+        _log.warning("auth.agent_write_batch_kept", error=type(exc).__name__,
+                     connection_id=connection_id)
+
+
 async def _claim_write(
     connection: agent_tokens.LiveConnection, nonce: str, scope: str,
     batch: str | None = None,
@@ -593,6 +610,11 @@ async def _claim_write(
       rows is 1 call, and a key used again never escapes the counter. When
       the call counter refuses, the batch key goes, so the next row of that
       key counts a call again and gets no free pass.
+    * Fix round 1: a failure of the store between the ``INCR`` of the batch
+      key and the charge of a call that the row was due also drops the key
+      (:func:`_drop_unpaid_batch`), before the 503. So the next row of that
+      key pays the call again, and a lost ``EXPIRE`` or a lost call ``INCR``
+      gives no free rows.
     * The ROW counter (``write_row_cap``) counts 1 for each write that the
       call counter let through, with or without a batch key.
 
@@ -606,6 +628,8 @@ async def _claim_write(
     connection_id = connection.connection_id
     over: int | None = None
     detail = WRITE_CAP_DETAIL
+    # The batch key while it holds a row whose call is not charged yet.
+    unpaid: tenant_redis.TenantKey | None = None
     try:
         # Inside the `try` (fix round 1): a client that cannot be built, such
         # as one with a malformed `redis_url`, is the 503, never a 500.
@@ -621,20 +645,25 @@ async def _claim_write(
             # (`AGENT_WRITE_CAP`, `AGENT_WRITE_ROW_CAP`, `AGENT_WRITE_WINDOW_S`).
             window = agent_oauth.write_window_s()
             charge_call = True
-            batch_key = None
             if batch is not None:
                 batch_key = tenant_redis.key(
                     agent_oauth.WRITE_BATCH_NAMESPACE, connection_id, batch)
+                # Fix round 1: from here until the charge, the key may hold a
+                # row that has not paid its call. The `except` drops it.
+                unpaid = batch_key
                 rows_of_call = int(await client.incr(batch_key))
                 if rows_of_call == 1:
                     await client.expire(batch_key, window)
                 charge_call = (rows_of_call - 1) % agent_oauth.WRITE_ROWS_PER_CALL == 0
+                if not charge_call:
+                    unpaid = None
             if charge_call:
                 over = await _count_write(
                     client, tenant_redis.key(agent_oauth.WRITE_CAP_NAMESPACE, connection_id),
                     agent_oauth.write_cap(), window)
-                if over is not None and batch_key is not None:
-                    await client.delete(batch_key)
+                if over is not None and unpaid is not None:
+                    await client.delete(unpaid)
+                unpaid = None
             if over is None:
                 over = await _count_write(
                     client, tenant_redis.key(agent_oauth.WRITE_ROW_CAP_NAMESPACE, connection_id),
@@ -644,6 +673,9 @@ async def _claim_write(
     except Exception as exc:
         # Every failure of the store fails closed as the 503: an outage
         # (`tenant_redis.OUTAGE_ERRORS`), and a client that cannot be built.
+        # Fix round 1: a batch row that did not pay its call drops its key.
+        if unpaid is not None:
+            await _drop_unpaid_batch(client, organization_id, connection_id, unpaid)
         _log.warning("auth.agent_write_redis_unavailable", error=type(exc).__name__,
                      connection_id=connection_id)
         raise HTTPException(

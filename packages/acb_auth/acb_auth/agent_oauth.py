@@ -1068,21 +1068,21 @@ def path_shapes(method: str, template: str) -> Mapping[str, str]:
         return dict(door.route.path_shapes)
     return MCP_PATH_SHAPES.get((method, template), {})
 
-#: The cap of EA3-30: a connection makes at most :func:`write_cap` writes in
-#: :func:`write_window_s` seconds, counted from its first write of the window.
-#: Branch 0 counts in the tenant Redis wrapper, under the namespace
-#: :data:`WRITE_CAP_NAMESPACE`, and the write after the cap gets 429.
-#: MCP-G20: these two are the DEFAULTS. The settings ``AGENT_WRITE_CAP`` and
-#: ``AGENT_WRITE_WINDOW_S`` set the live values, and the two readers below
-#: are the one source of them.
+#: The cap of EA3-30, MCP-G20 and MCP-G28a (D209). Branch 0 counts in the
+#: tenant Redis wrapper, and a write past a counter gets 429. The constants
+#: here are the DEFAULTS. The settings ``AGENT_WRITE_CAP``,
+#: ``AGENT_WRITE_ROW_CAP`` and ``AGENT_WRITE_WINDOW_S`` set the live values,
+#: and the readers below are the one source of them.
 #:
-#: MCP-G28a (D209): the cap has two counters, per connection, both with the
-#: window of :func:`write_window_s`. The CALL counter (:func:`write_cap`,
-#: under :data:`WRITE_CAP_NAMESPACE`) counts one for each signed write, and
-#: one for each batch key of a bulk call. The ROW counter
-#: (:func:`write_row_cap`, under :data:`WRITE_ROW_CAP_NAMESPACE`) counts one
-#: for each signed write. So a batch of 50 rows costs 1 call and 50 rows,
-#: and a single write costs 1 call and 1 row.
+#: The cap has two counters, per connection, both with the window of
+#: :func:`write_window_s`, counted from the first count of each counter.
+#: The CALL counter (:func:`write_cap`, under :data:`WRITE_CAP_NAMESPACE`)
+#: counts one for a signed write with no batch key. The writes that carry
+#: one batch key count one call for each :data:`WRITE_ROWS_PER_CALL` rows,
+#: and not one call each. The ROW counter (:func:`write_row_cap`, under
+#: :data:`WRITE_ROW_CAP_NAMESPACE`) counts one for each signed write. So a
+#: batch of 50 rows costs 1 call and 50 rows, and a single write costs 1
+#: call and 1 row.
 WRITE_CAP = 120
 WRITE_WINDOW_S = 600
 WRITE_CAP_NAMESPACE = "agent_writes"

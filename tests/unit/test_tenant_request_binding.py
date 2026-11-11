@@ -1178,13 +1178,22 @@ def test_the_runtime_identity_check_turns_red(monkeypatch):
 #: the tripwire allow the one new header. The pins before it were 3.12
 #: ``f5c27b8e…cdf515c`` and 3.13 ``bbc92971…3815e8cb``. This pin needs the
 #: diff-reviewer review and the independent verification.
+#:
+#: MCP-G28a fix round 1 (2026-11-11, Opus review): a failure of the store
+#: between the ``INCR`` of the batch key and the charge of the call that the
+#: row was due now drops the key before the 503. The new helper
+#: `_drop_unpaid_batch` binds the ROW's organization again and deletes the
+#: key, best effort, and the digest covers it. Nothing new is read from the
+#: request: the scan and the tripwire are as in MCP-G28a. The pins of the
+#: first build were 3.12 ``170d9537…0b68b039`` and 3.13 ``ee79fd33…b9518580``.
+#: This pin needs the diff-reviewer review and the independent verification.
 _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
-    # MCP-G28a (2026-11-11): both digests were computed from the files with
-    # the steps of this test's own function, under CPython 3.12.12 and
-    # 3.13.2. That reader gave the pins before it exactly. This pin needs
+    # MCP-G28a fix round 1 (2026-11-11): both digests were computed from the
+    # files with the steps of this test's own function, under CPython 3.12.12
+    # and 3.13.2. That reader gave the pins of main exactly. This pin needs
     # the diff-reviewer review and the independent verification.
-    (3, 12): "170d953701ba87c91535d37503a9de09cf0c462687dd755af0b7373e0b68b039",
-    (3, 13): "ee79fd33cc410d9f299376751a2aa970009b2b12ef5c9c5961d9cf3fb9518580",
+    (3, 12): "1d1039e8d54ad7d7ca059754f8ae02334dbe0fb02fbe3c2639b592ccceacfdac",
+    (3, 13): "6adc5684a0cb9efe701bcefdb31604836c95c668bf08bf9a759067724884e97d",
 }
 
 #: EA-6a: two helpers of ``deps.py`` that branch 0 calls and that never see
@@ -1194,9 +1203,12 @@ _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
 #: MCP-P1a adds the four helpers of the app door: the claim dispatch, the door
 #: gate (the door flag, AD-18, the app scope and the caps), the door read cap
 #: and the audit row. None of them sees the request. MCP-G28a adds
-#: ``_count_write``, the one count of a counter of the write cap.
+#: ``_count_write``, the one count of a counter of the write cap, and its fix
+#: round 1 adds ``_drop_unpaid_batch``, the best-effort delete of a batch key
+#: whose row did not pay its call.
 _BRANCH_ZERO_HELPERS = ("_read_connection", "_claim_write", "_claim_call", "_door_gate",
-                        "_claim_door_read", "_audit_door", "_count_write")
+                        "_claim_door_read", "_audit_door", "_count_write",
+                        "_drop_unpaid_batch")
 
 
 def _branch_zero_digest() -> str:

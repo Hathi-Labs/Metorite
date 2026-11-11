@@ -42,6 +42,7 @@ Run::
 * L8. ``A/deps.py``: the row refusal sends the detail of the call counter. ``test_the_refusal_names_the_counter_and_holds_retry_after``.
 * L9. ``E/tools.py``: ``_update_tasks`` sends no batch key. ``test_update_tasks_sends_one_batch_key_for_each_call``.
 * L10. ``E/tools.py``: ``_cap_text`` gives ``TEXT_CAP`` for each detail. ``test_the_refusal_names_the_counter_and_holds_retry_after``.
+* L11. ``A/deps.py``: the ``except`` of ``_claim_write`` keeps a batch key whose row did not pay its call (fix round 1, Opus review). ``test_a_store_failure_before_the_charge_gives_no_free_rows``.
 """
 from __future__ import annotations
 
@@ -249,6 +250,71 @@ class TestTheTwoCounters:
         exc = await _claim(_conn(), agent_signing.new_batch_key())
         assert exc is not None and exc.status_code == 503
         assert exc.headers["Retry-After"] == "2"
+
+    @pytest.mark.parametrize("lost", ["expire", "incr"])
+    async def test_a_store_failure_before_the_charge_gives_no_free_rows(
+            self, redis_fake, monkeypatch, lost):
+        """Fix round 1 (Opus review). The store fails after the ``INCR`` of the
+        batch key and before the call is charged: a lost ``EXPIRE`` of the
+        key, or a lost ``INCR`` of the call counter. The write gets the 503,
+        and the key goes. So the next row of the key pays the call again, and
+        the full call counter refuses it. Before the fix, that row landed free,
+        and so could 48 more."""
+        monkeypatch.setattr(get_settings(), "agent_write_cap", 1)
+        assert await _claim(_conn()) is None  # the one call of the window
+        batch = agent_signing.new_batch_key()
+        batch_key = f"cc:{ORG}:{agent_oauth.WRITE_BATCH_NAMESPACE}:{CONN_A}:{batch}"
+        calls_key = f"cc:{ORG}:{agent_oauth.WRITE_CAP_NAMESPACE}:{CONN_A}"
+        target = batch_key if lost == "expire" else calls_key
+        failed = _fail_once(monkeypatch, redis_fake, lost, target)
+        down = await _claim(_conn(), batch)
+        assert down is not None and down.status_code == 503
+        assert failed == [target]
+        assert batch_key not in redis_fake.store
+        _is_cap(await _claim(_conn(), batch), agent_oauth.WRITE_CAP_DETAIL)
+        assert (_calls(redis_fake), _rows(redis_fake)) == (2, 1)
+
+    async def test_a_failure_on_a_row_that_was_due_no_call_keeps_the_key(
+            self, redis_fake, monkeypatch):
+        """The call of the key is paid, so a lost row ``INCR`` of row 2 keeps
+        the key. Row 3 needs no new call."""
+        batch = agent_signing.new_batch_key()
+        assert await _claim(_conn(), batch) is None
+        rows_key = f"cc:{ORG}:{agent_oauth.WRITE_ROW_CAP_NAMESPACE}:{CONN_A}"
+        _fail_once(monkeypatch, redis_fake, "incr", rows_key)
+        down = await _claim(_conn(), batch)
+        assert down is not None and down.status_code == 503
+        batch_key = f"cc:{ORG}:{agent_oauth.WRITE_BATCH_NAMESPACE}:{CONN_A}:{batch}"
+        assert redis_fake.store[batch_key][0] == "2"
+        assert await _claim(_conn(), batch) is None
+        assert (_calls(redis_fake), _rows(redis_fake)) == (1, 2)
+
+    async def test_a_second_failure_at_the_delete_still_answers_the_503(
+            self, redis_fake, monkeypatch):
+        batch = agent_signing.new_batch_key()
+        batch_key = f"cc:{ORG}:{agent_oauth.WRITE_BATCH_NAMESPACE}:{CONN_A}:{batch}"
+        _fail_once(monkeypatch, redis_fake, "expire", batch_key)
+        deleted = _fail_once(monkeypatch, redis_fake, "delete", batch_key)
+        down = await _claim(_conn(), batch)
+        assert down is not None and down.status_code == 503
+        assert down.headers["Retry-After"] == "2"
+        assert deleted == [batch_key], "the delete was not tried"
+
+
+def _fail_once(monkeypatch, fake: Any, op: str, name: str) -> list[str]:
+    """Make the next *op* of the fake on the key *name* raise a Redis error,
+    once. The list that comes back records the failure."""
+    real = getattr(fake, op)
+    failed: list[str] = []
+
+    async def once(key: str, *args: Any, **kwargs: Any) -> Any:
+        if key == name and not failed:
+            failed.append(key)
+            raise RedisConnectionError("lost")
+        return await real(key, *args, **kwargs)
+
+    monkeypatch.setattr(fake, op, once)
+    return failed
 
 
 _REDIS_URL = w._REDIS_URL
