@@ -824,6 +824,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **Done when.** The panel, the card and `held_by.stale` agree for a dead connection. The moved-clock test passes on a real database.
 - **Fence.** `test_agent_run_exclusive.py`, `agentRunsPanel.test.ts`.
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE. **Depends on.** 1045a for item 2.
+- **Built (task 335).** Items 1 and 3. The runs wire carries `holder_free` (the rule of the gate and of `held_by.stale`), the panel reads it through `runHolderFree`, and R8 test `test_x5b` moves the clock to the lease minus and plus one minute. **Left:** item 2, because the 120-minute cap of 1045a (`waiting`, `until_minutes`) is not in code yet. The card draws no lease text, so it needs no change.
 
 #### SW-5 · Show the lease on the board and in the MCP tools
 
