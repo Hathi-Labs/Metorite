@@ -439,3 +439,14 @@ def test_r8_a_read_of_an_object_with_no_hierarchy_is_refused(world) -> None:
         return str(caught.value)
 
     assert "no hierarchy" in _go(world, go)
+
+
+def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
+    """An R8 suite that CI does not list still skips in silence when the
+    database gate is disarmed. Match the argument line, not a mention."""
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    workflow = (root / ".github" / "workflows" / "pr-check.yml").read_text(encoding="utf-8")
+    assert re.search(r"^\s+tests/unit/test_studio_hierarchy_r8\.py \\?$", workflow, re.M)
