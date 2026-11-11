@@ -6061,6 +6061,21 @@ Fence: `tests/unit/test_playbook_ladder.py` (LAD-1, task 2888) fences the playbo
 
 Re-check this number at merge. The first merge wins a D-number.
 
+### D212 — How I work: Metorite records the member's own acts, counts habits, and suggests the usual act (2026-11-11)
+
+The owner asked in chat on 2026-11-11 for one place that holds how the member writes and how the member acts. Drafts, suggestions and decisions read it. The owner accepted the six defaults of `personalization.md` §19.12 the same day, in chat: "go ahead with your recommendations for the open questions and close them." Epic: task 2876.
+
+1. **D-PZ-47. The act record.** Metorite records the member's own acts with no subject and no body (`member_action`, §19.4). It follows the learning switch, and it ships dark behind `MEMBER_ACTIONS_ORGS`.
+2. **D-PZ-48. No act by itself.** A habit makes a suggestion and never acts. An automatic act exists only as an email rule that the member approved on a card.
+3. **D-PZ-49. One page.** "How I work" in Settings shows the style, the voice and the habits. The writing-style section of the Email app becomes a view of the member voice. No second store of the voice exists.
+4. **D-PZ-50. The consent wording.** PZ-12 drafts the wording of D-PZ-10, and the owner reads it before PZ-12 merges (§12.8).
+5. **D-PZ-51. Retention.** An act row lives 180 days.
+6. **D-PZ-52. A habit.** It needs 3 acts or more, and a share of 70% or more, in 90 days.
+
+The voice half stays D110 (PZ-12, PZ-13). D-EM-18 stands: the learner reads one mailbox at a time (Q-MM-1). Fence: the tests of §19.10 land with MM-1 to MM-3. Until then the rules are advisory (R7).
+
+Re-check this number at merge. The first merge wins a D-number.
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 
