@@ -11100,6 +11100,12 @@ def _context_preamble_parts(
         from acb_common.number_system import prompt_line
 
         parts.append(prompt_line(run_number_system()))
+    # WS-63 PZ-51 (personalization.md §5.3): the one language rule, on every
+    # turn of every agent and both channels, beside or without a profile
+    # block. Answer in the member's language, save every record in English.
+    from acb_common.assistant_profile import LANGUAGE_RULE_LINE
+
+    parts.append(LANGUAGE_RULE_LINE)
     # WS-53 §18.16 part 1: today's date, weekday and zone, on both channels.
     # Two runs of 2026-10-19 read a month with no year as two different years
     # because no run knew the date. Last, so each block above keeps its place.

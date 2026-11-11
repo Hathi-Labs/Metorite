@@ -212,6 +212,18 @@ def answer_change_enabled() -> bool:
     return bool(get_settings().agent_answer_change_enabled)
 
 
+def task_checks_enabled() -> bool:
+    """True when ``agent_task_checks_enabled`` is on (SW-23).
+
+    The ONE reader of the flag, for both units. While it is false, the
+    gateway answers 404 on the report route of a Check, refuses a task write
+    that sends ``check_text``, and puts no ``check`` key on a task row. The
+    edge leaves ``report_check`` and the ``check`` input out of
+    ``tools/list``. So both units need the same value.
+    """
+    return bool(get_settings().agent_task_checks_enabled)
+
+
 @functools.lru_cache(maxsize=16)
 def _parse_door_apps(raw: str) -> frozenset[str]:
     """The door app ids that *raw* names. An entry that names no door app
@@ -405,6 +417,23 @@ def change_access_allowed(organization_id: object) -> bool:
     if org is None:
         return False
     orgs = _parse_orgs(str(get_settings().agent_change_access_orgs or ""))
+    return ALL_ORGS in orgs or org in orgs
+
+
+def playbook_allowed(organization_id: object) -> bool:
+    """True when ``playbook_orgs`` allows *organization_id*.
+
+    PB-2 (D186, ``orchestration_playbook.md`` §7). The ONE reader of the flag.
+    It keeps the playbook prompts dark: an organization that it refuses sees
+    only the prompts it saw before. The list has the shape of
+    ``agent_access_orgs`` and the same parser, and the default is empty. It
+    reads the settings at each call. The caller passes the organization of the
+    token row, never request input.
+    """
+    org = _canonical_org(organization_id)
+    if org is None:
+        return False
+    orgs = _parse_orgs(str(get_settings().playbook_orgs or ""))
     return ALL_ORGS in orgs or org in orgs
 
 
@@ -849,6 +878,13 @@ ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
 #: ``post_project_update``. The route needs the right of a task write on the
 #: project, so a pinned connection posts only inside its pin.
 #: Fence: ``tests/unit/test_mcp_edge_coverage.py`` (rules 1 and 2).
+#: WS-MCP SW-23 adds the report of a Check, the route of ``report_check``.
+#: It records one run. A pass moves the task to done only under the rule of
+#: a status move (the caller sees the task, the version holds, and no live
+#: run of another session holds it). ``open`` and ``cannot_run`` never move
+#: the task. It answers 404 while ``agent_task_checks_enabled`` is off. HIGH
+#: tier from the start (identity of who may close a task).
+#: Fence: ``tests/unit/test_task_check_r8.py`` and the coverage fence.
 MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/projects/nodes"),
     ("PATCH", "/projects/nodes/{project_id}"),
@@ -880,6 +916,9 @@ MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # write on the project, and it answers 404 while PROJECTS_UPDATES_ORGS
     # does not hold the org.
     ("POST", "/projects/nodes/{project_id}/updates"),
+    # WS-MCP SW-23: `report_check`. A pass closes the task only when the
+    # caller may move it. It answers 404 while the Check flag is off.
+    ("POST", "/projects/tasks/{task_id}/check-result"),
 })
 
 #: The ONE allowlist of the MCP edge (EA3-6). Each pair is a method and the
@@ -1332,6 +1371,7 @@ __all__ = [
     "parse_scope",
     "path_shapes",
     "pkce_matches",
+    "playbook_allowed",
     "protocol_allowed",
     "read_only",
     "redirect_display",
@@ -1344,6 +1384,7 @@ __all__ = [
     "s256",
     "scope_holds",
     "scope_string",
+    "task_checks_enabled",
     "token_endpoint",
     "write_cap",
     "write_window_s",

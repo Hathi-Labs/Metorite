@@ -1,9 +1,9 @@
-"""WS-STU C2a — the object query on a real database (R8).
+"""WS-STU C2a and C2b — the object query and the aggregate on a real database (R8).
 
-Spec: ``project-docs/specs/ai_studio.md`` §3.1 and the §14 C2a row. Code:
-``gateway/studio/objects_store.query_records`` and
-``acb_common/studio_query.py``. ``test_studio_query.py`` holds the hermetic
-half.
+Spec: ``project-docs/specs/ai_studio.md`` §3.1 and the §14 C2a and C2b rows.
+Code: ``gateway/studio/objects_store.query_records`` and
+``aggregate_records``, and ``acb_common/studio_query.py``.
+``test_studio_query.py`` holds the hermetic half.
 
 The store runs on a phase-4 promoted scratch database, as the app role with no
 BYPASSRLS, so FORCE RLS binds each statement and each plan. Two organizations.
@@ -45,6 +45,19 @@ k. A field that turns cold during a call gives the right page. The store reads
    the fields again, once, and then stops with a clear error (round 2).
 l. The guard reads the snapshot of the page, so a bulk insert during a call
    cannot pass it (round 2).
+
+**Acceptance (C2b).**
+
+m. Count, sum and average, with no group and by each group type. A select
+   is in the order of its options, and the group with no value comes last. A
+   text groups by its whole text. A checkbox has two states. A date and a
+   datetime group by day or by month in UTC, also on a session clock of India.
+   A group or a measure on a field that is not hot gives ``query_not_indexed``,
+   and the guard of a cold filter holds. A money sum of two currencies is
+   refused, also when each group holds one. The 50 groups with the most
+   records stay, and the rest fold into ``other``. Another package, object or
+   org reads nothing. On 50,000 records the plan reads the hot index and no
+   table. A timeout and a field that turns cold stop the aggregate.
 
 **The mutations (R7).** Commit before each, and restore with git after.
 
@@ -88,6 +101,20 @@ l. The guard reads the snapshot of the page, so a bulk insert during a call
 * R3. ``objects_store``: make ``_GUARD_GATE`` ``TRUE``, and run the count in a
   statement of its own before the page.
   ``test_r8_a_bulk_insert_during_a_query_cannot_pass_the_guard`` goes red.
+* A1. ``objects_store._TEXT_KEY``: make it ``"gk.v_text"``.
+  ``test_r8_a_long_text_groups_by_the_whole_text`` goes red.
+* A2. ``objects_store._BUCKET_KEY``: drop `` AT TIME ZONE 'UTC'``.
+  ``test_r8_a_date_groups_by_day_or_month_in_utc`` goes red.
+* A3. ``objects_store._GROUP_KEY``: make the checkbox key ``"gk.v_bool"``.
+  ``test_r8_a_checkbox_group_has_two_states`` goes red.
+* A4. ``objects_store._read_aggregate``: drop the check of ``v.n``.
+  ``test_r8_a_group_field_that_turns_cold_during_an_aggregate_is_refused``
+  goes red.
+* A5. ``objects_store._one_currency``: ``return low`` before the check.
+  ``test_r8_a_money_sum_of_two_currencies_is_refused`` goes red.
+* A6. ``objects_store.build_aggregate``: make ``r.rk <= :groups`` read
+  ``r.rk > 0``. ``test_r8_fifty_groups_stay_and_the_rest_fold_into_other``
+  goes red.
 """
 
 from __future__ import annotations
@@ -97,6 +124,8 @@ import json
 import uuid
 from collections.abc import Callable
 from dataclasses import replace
+from datetime import date, timedelta
+from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
 
@@ -680,9 +709,12 @@ def _nodes(plan: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
-def _explain(world: Any, sql: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+def _explain(world: Any, sql: str, params: dict[str, Any],
+             seqscan: bool = True) -> list[dict[str, Any]]:
     async def go() -> Any:
         async with tenant_session(world.b) as db:
+            if not seqscan:
+                await db.execute(text("SELECT set_config('enable_seqscan', 'off', true)"))
             return (await db.execute(text("EXPLAIN (ANALYZE, FORMAT JSON) " + sql), params)).scalar_one()
 
     raw = _run(world.p.app_url, go)
@@ -1140,3 +1172,364 @@ def test_r8_a_bulk_insert_during_a_query_cannot_pass_the_guard(world) -> None:
     page, fired, err = _run(world.p.app_url, go)
     assert page.total == 50
     assert fired and err.code == "query_not_indexed" and err.field == "cold"
+
+
+# ── m. The aggregate (C2b) ──────────────────────────────────────────────────
+
+_HOURS = [{"op": "count"}, {"op": "sum", "field": "hours"}, {"op": "average", "field": "hours"}]
+D = Decimal
+
+
+async def _agg(org: str, obj: store.StudioObject, **kw: Any) -> store.AggregateResult | None:
+    async with tenant_session(org) as db:
+        return await store.aggregate_records(db, package_id=obj.package_id, object_id=obj.id, **kw)
+
+
+def _groups(result: store.AggregateResult | None) -> list[tuple[Any, int, tuple[Any, ...]]]:
+    assert result is not None
+    return [(g.key, g.count, g.values) for g in result.groups]
+
+
+def _refused_agg(world: Any, org: str, obj: Any, **kw: Any) -> QueryError:
+    async def go() -> QueryError:
+        with pytest.raises(QueryError) as refused:
+            await _agg(org, obj, **kw)
+        return refused.value
+
+    return _run(world.p.app_url, go)
+
+
+def test_r8_count_sum_and_average_with_no_group(world) -> None:
+    """With no group, the total holds each measure over every record that the
+    filter keeps. A sum with no value is 0, and an average with no value is None."""
+    async def go() -> list[Any]:
+        return [
+            await _agg(world.a, world.visit, measures=_HOURS),
+            await _agg(world.a, world.visit, filter=[
+                {"field": "status", "op": "eq", "value": "done"}], measures=_HOURS),
+            await _agg(world.a, world.visit, filter=[
+                {"field": "name", "op": "eq", "value": "nobody"}], measures=_HOURS),
+            await _agg(world.a, world.visit),
+        ]
+
+    every, done, none, plain = _run(world.p.app_url, go)
+    assert (every.total.count, every.total.values) == (8, (8, D("21.5"), D("5.375")))
+    assert (every.groups, every.other, every.folded) == ((), None, 0)
+    assert (done.total.count, done.total.values) == (1, (1, D(5), D(5)))
+    assert (none.total.count, none.total.values) == (0, (0, D(0), None))
+    assert plain.total.values == (8,) and plain.currencies == (None,)
+
+
+def test_r8_each_aggregate_by_a_select_in_the_order_of_its_options(world) -> None:
+    """`status` holds planned (r1), done (r2) and on site (r3). The five other
+    records have no value, so they form the group None, and it comes last."""
+    result = _run(world.p.app_url, lambda: _agg(world.a, world.visit,
+                                                group_by={"field": "status"}, measures=_HOURS))
+    assert _groups(result) == [
+        ("planned", 1, (1, D(1), D(1))),
+        ("on site", 1, (1, D("5.5"), D("5.5"))),
+        ("done", 1, (1, D(5), D(5))),
+        (None, 5, (5, D(10), D(10))),
+    ]
+    assert (result.total.count, result.total.values) == (8, (8, D("21.5"), D("5.375")))
+    assert (result.other, result.folded) == (None, 0)
+
+
+def test_r8_a_checkbox_group_has_two_states(world) -> None:
+    """A record with no value of `paid` joins `false`, as `eq false` matches it."""
+    result = _run(world.p.app_url, lambda: _agg(world.a, world.visit, group_by={"field": "paid"}))
+    assert _groups(result) == [(False, 6, (6,)), (True, 2, (2,))]
+
+
+def test_r8_a_long_text_groups_by_the_whole_text(world) -> None:
+    """`v_text` holds 256 characters, and L1, L2 and the prefix share them.
+    Each is its own group, as `eq` tells them apart."""
+    result = _run(world.p.app_url, lambda: _agg(world.a, world.visit, group_by={"field": "name"}))
+    groups = _groups(result)
+    assert {k for k, _, _ in groups} == {"Alpha", "beta 50% off_now", "Gamma", "back\\slash",
+                                         L1, L2, _PREFIX, None}
+    assert all(n == 1 for _, n, _ in groups) and groups[-1][0] is None
+
+
+def test_r8_a_number_and_an_email_group(world) -> None:
+    hours = _run(world.p.app_url, lambda: _agg(world.a, world.visit, group_by={"field": "hours"}))
+    assert _groups(hours) == [(D(1), 1, (1,)), (D(5), 1, (1,)), (D("5.5"), 1, (1,)),
+                              (D(10), 1, (1,)), (None, 4, (4,))]
+    mail = _run(world.p.app_url, lambda: _agg(world.a, world.visit, group_by={"field": "mail"}))
+    assert _groups(mail) == [("a@x.test", 1, (1,)), ("b@y.test", 1, (1,)), (None, 6, (6,))]
+
+
+@pytest.mark.parametrize(("key", "bucket", "want"), [
+    ("day", "day", [("2026-01-01", 1), ("2026-01-05", 1), ("2026-01-10", 1), ("2026-02-01", 1),
+                    (None, 4)]),
+    ("day", None, [("2026-01-01", 1), ("2026-01-05", 1), ("2026-01-10", 1), ("2026-02-01", 1),
+                   (None, 4)]),
+    ("day", "month", [("2026-01", 3), ("2026-02", 1), (None, 4)]),
+    # r3 is at 23:59:59Z, and r4 at 2026-02-01T00:00+05:30, which is 18:30 UTC on 31 January.
+    ("at", "day", [("2026-01-01", 1), ("2026-01-05", 2), ("2026-01-31", 1), (None, 4)]),
+    ("at", "month", [("2026-01", 4), (None, 4)]),
+])
+def test_r8_a_date_groups_by_day_or_month_in_utc(world, key: str, bucket: str | None,
+                                                  want: list[tuple[Any, int]]) -> None:
+    """The session is on the clock of India, and the buckets stay in UTC."""
+    group = {"field": key} if bucket is None else {"field": key, "bucket": bucket}
+
+    async def go() -> Any:
+        async with tenant_session(world.a) as db:
+            await db.execute(text("SELECT set_config('TimeZone', 'Asia/Kolkata', true)"))
+            return await store.aggregate_records(db, package_id=world.pkg_a,
+                                                 object_id=world.visit.id, group_by=group)
+
+    assert [(k, n) for k, n, _ in _groups(_run(world.p.app_url, go))] == want
+
+
+def test_r8_a_money_sum_of_two_currencies_is_refused(world) -> None:
+    """r1 and r2 hold INR, and r3 holds USD. A sum that adds r3 to an INR
+    amount is refused, also when each group holds one currency. The sentence
+    names no currency, and the session stays usable."""
+    fee = [{"op": "count"}, {"op": "sum", "field": "fee"}]
+
+    async def go() -> tuple[QueryError, QueryError, Any]:
+        async with tenant_session(world.a) as db:
+            with pytest.raises(QueryError) as whole:
+                await store.aggregate_records(db, package_id=world.pkg_a,
+                                              object_id=world.visit.id, measures=fee)
+            with pytest.raises(QueryError) as grouped:
+                await store.aggregate_records(db, package_id=world.pkg_a, object_id=world.visit.id,
+                                              group_by={"field": "status"}, measures=fee)
+            rec = await store.get_record(db, world.visit.id, world.ids["r1"], package_id=world.pkg_a)
+        return whole.value, grouped.value, rec
+
+    whole, grouped, rec = _run(world.p.app_url, go)
+    for err in (whole, grouped):
+        assert err.code == "query_op_not_allowed" and err.field == "fee"
+        assert "`fee`" in err.message and "USD" not in err.message and "INR" not in err.message
+    assert rec is not None and rec.data["name"] == "Alpha"
+
+
+def test_r8_a_money_sum_of_one_currency_names_it(world) -> None:
+    fee = [{"op": "count"}, {"op": "sum", "field": "fee"}]
+    inr = [{"field": "status", "op": "in", "value": ["planned", "done"]}]
+
+    async def go() -> list[Any]:
+        return [
+            await _agg(world.a, world.visit, filter=inr, measures=fee),
+            await _agg(world.a, world.visit, filter=inr, group_by={"field": "status"}, measures=fee),
+            await _agg(world.a, world.visit, filter=[{"field": "fee", "op": "is_empty"}],
+                       measures=fee),
+        ]
+
+    both, grouped, empty = _run(world.p.app_url, go)
+    assert (both.total.values, both.currencies) == ((2, 600), (None, "INR"))
+    assert _groups(grouped) == [("planned", 1, (1, 100)), ("done", 1, (1, 500))]
+    assert grouped.currencies == (None, "INR")
+    assert (empty.total.values, empty.currencies) == ((5, 0), (None, None))
+
+
+@pytest.mark.parametrize(("group_by", "measures", "field"), [
+    ({"field": "c_status"}, None, "c_status"),
+    (None, [{"op": "sum", "field": "c_hours"}], "c_hours"),
+    (None, [{"op": "average", "field": "c_hours"}], "c_hours"),
+    (None, [{"op": "sum", "field": "c_fee"}], "c_fee"),
+])
+def test_r8_a_group_or_a_measure_on_a_field_that_is_not_hot_is_refused(
+        world, group_by: Any, measures: Any, field: str) -> None:
+    err = _refused_agg(world, world.a, world.visit, group_by=group_by, measures=measures)
+    assert err.code == "query_not_indexed" and err.field == field
+    assert f"`{field}`" in err.message and "Turn it hot" in err.message
+
+
+def test_r8_an_aggregate_keeps_the_guard_of_a_cold_filter(world) -> None:
+    """A cold filter on 50,000 records is refused. After a hot filter that
+    leaves 900 records, it runs: 10 records hold `cold` = c5, and each is odd."""
+    err = _refused_agg(world, world.b, world.big, filter=[
+        {"field": "cold", "op": "eq", "value": "c5"}], group_by={"field": "b"})
+    assert err.code == "query_not_indexed" and err.field == "cold"
+    result = _run(world.p.app_url, lambda: _agg(world.b, world.big, filter=[
+        {"field": "n", "op": "lte", "value": 1000},
+        {"field": "cold", "op": "eq", "value": "c5"}], group_by={"field": "b"}))
+    assert _groups(result) == [(False, 10, (10,))]
+
+
+def test_r8_an_aggregate_reads_its_own_package_object_and_org(world) -> None:
+    """A package that does not hold the object, and another org, read nothing.
+    `trip` is in the same package and holds hours too."""
+    async def go() -> list[Any]:
+        async with tenant_session(world.a) as db:
+            out = [await store.aggregate_records(db, package_id=world.pkg_a2, object_id=world.visit.id),
+                   await store.aggregate_records(db, package_id=world.pkg_a,
+                                                 object_id=world.other_pkg.id),
+                   await store.aggregate_records(db, package_id=world.pkg_a,
+                                                 object_id=world.visit.id, measures=_HOURS)]
+        async with tenant_session(world.b) as db:
+            out.append(await store.aggregate_records(db, package_id=world.pkg_a,
+                                                     object_id=world.visit.id))
+            out.append(await store.aggregate_records(db, package_id=world.pkg_b,
+                                                     object_id=world.visit_b.id, measures=_HOURS))
+        return out
+
+    wrong_pkg, wrong_obj, mine, theirs, org_b = _run(world.p.app_url, go)
+    assert (wrong_pkg, wrong_obj, theirs) == (None, None, None)
+    assert mine.total.values == (8, D("21.5"), D("5.375"))
+    assert org_b.total.values == (2, D(6), D(3))
+
+
+def test_r8_the_built_aggregate_of_another_package_reads_nothing(world) -> None:
+    """The statement itself checks the package, also with a true object id."""
+    fields = [sf.parse_field_spec(f) for f in _FIELDS]
+    agg = studio_query.parse_aggregate(fields, None, {"field": "status"}, _HOURS)
+
+    async def go() -> list[tuple[int, int]]:
+        out = []
+        async with tenant_session(world.a) as db:
+            for pid in (world.pkg_a, world.pkg_a2):
+                sql, params = store.build_aggregate(agg, object_id=world.visit.id, package_id=pid)
+                rows = (await db.execute(text(sql), params)).all()
+                out.append((int(rows[0][2]), int(rows[0][3])))
+        return out
+
+    assert _run(world.p.app_url, go) == [(4, 8), (0, 0)]
+
+
+def _big_n(g: int) -> int | None:
+    return g if g % 10 else None
+
+
+def _big_day(g: int) -> int:
+    return (3 * g) // 1440
+
+
+def test_r8_fifty_groups_stay_and_the_rest_fold_into_other(world) -> None:
+    """Record g is at 3g minutes, so the 105 days hold 479, then 480 each, and
+    81 on the last day. The 50 days with the most records stay: 2 January to
+    20 February, in time order. The other 55 days fold into `other`."""
+    measures = [{"op": "count"}, {"op": "sum", "field": "n"}, {"op": "average", "field": "n"}]
+    result = _run(world.p.app_url, lambda: _agg(world.b, world.big, group_by={"field": "d"},
+                                                measures=measures))
+    groups = _groups(result)
+    assert len(groups) == studio_query.MAX_GROUPS == 50
+    assert [k for k, _, _ in groups][:2] == ["2026-01-02", "2026-01-03"]
+    assert groups[-1][0] == "2026-02-20" and all(n == 480 for _, n, _ in groups)
+    assert result.folded == 55 and result.other is not None and result.other.count == 26_000
+    kept_days = set(range(1, 51))
+    every = [g for g in range(1, BIG + 1)]
+    n_all = [_big_n(g) for g in every if _big_n(g) is not None]
+    n_other = [_big_n(g) for g in every if _big_day(g) not in kept_days and _big_n(g) is not None]
+    assert result.total.values == (BIG, D(sum(n_all)), D(sum(n_all)) / D(len(n_all)))
+    assert result.other.values == (26_000, D(sum(n_other)), D(sum(n_other)) / D(len(n_other)))
+    assert sum(g.values[1] for g in result.groups) + result.other.values[1] == result.total.values[1]
+
+
+def test_r8_a_month_group_of_50000_records(world) -> None:
+    result = _run(world.p.app_url, lambda: _agg(world.b, world.big, group_by={
+        "field": "d", "bucket": "month"}, measures=[{"op": "count"}, {"op": "sum", "field": "n"}]))
+    months: dict[str, list[int]] = {}
+    for g in range(1, BIG + 1):
+        day = date(2026, 1, 1) + timedelta(days=_big_day(g))
+        months.setdefault(f"{day.year:04d}-{day.month:02d}", []).append(g)
+    want = [(m, len(gs), (len(gs), D(sum(g for g in gs if _big_n(g) is not None))))
+            for m, gs in sorted(months.items())]
+    assert _groups(result) == want
+    assert [n for _, n, _ in want] == [14_879, 13_440, 14_880, 6_801]
+
+
+def _agg_plan(world: Any, filter: Any, group_by: Any, measures: Any,
+              seqscan: bool = True) -> list[dict[str, Any]]:
+    fields = [sf.parse_field_spec(f) for f in _BIG_FIELDS]
+    agg = studio_query.parse_aggregate(fields, filter, group_by, measures)
+    sql, params = store.build_aggregate(agg, object_id=world.big.id, package_id=world.pkg_b)
+    return _explain(world, sql, params, seqscan=seqscan)
+
+
+def test_r8_an_aggregate_of_50000_records_reads_the_hot_index_and_no_table_scan(world) -> None:
+    """A hot filter keeps each of the 50,000 records. The candidates come from
+    the hot time index, and each reads its group and its value by the key of
+    the hot table. No scan reads a table, and no record is read."""
+    nodes = _agg_plan(world, [{"field": "d", "op": "gte", "value": "2026-01-01"}],
+                      {"field": "d", "bucket": "month"}, [{"op": "sum", "field": "n"}])
+    _no_seq_scan(nodes)
+    assert _uses(nodes, "studio_record_hot_ts_idx", "v_ts")
+    assert _uses(nodes, "studio_record_hot_pkey")
+    assert _rows_read(nodes) <= 3 * BIG
+    assert _records_read(nodes) == 0
+
+
+def test_r8_an_aggregate_with_no_filter_reads_each_record_of_its_object_once(world) -> None:
+    """With no filter, the candidates are the records of the object, in no
+    order. Each reads its two hot rows by the key of the hot table.
+
+    ⚠️ Here `studio_records` holds this object and almost nothing else. So the
+    planner may read it by a Seq Scan, which its estimate makes cheaper. The
+    read stays the object, and with `enable_seqscan` off the same statement
+    reads the records by an index, so no part of it defeats an index. In
+    production the object is a small share of a table of many tenants. With
+    the order of the id, the planner sorted the whole object too."""
+    group, measures = {"field": "d", "bucket": "month"}, [{"op": "sum", "field": "n"}]
+    nodes = _agg_plan(world, None, group, measures)
+    assert _uses(nodes, "studio_record_hot_pkey")
+    assert not [n for n in nodes if n["Node Type"] == "Seq Scan"
+                and n.get("Relation Name") == "studio_record_hot"]
+    assert all(rows <= BIG for rows in _sort_inputs(nodes))
+    assert _rows_read(nodes) <= 2 * BIG
+    assert _records_read(nodes) <= BIG + 100
+    forced = _agg_plan(world, None, group, measures, seqscan=False)
+    _no_seq_scan(forced)
+    assert _records_read(forced) <= BIG + 100
+
+
+def test_r8_a_filtered_aggregate_reads_the_hot_time_index(world) -> None:
+    """One day holds 480 of the 50,000 records. The candidates come from the
+    time index, each reads two hot rows by the key, and no record is read."""
+    nodes = _agg_plan(world, [{"field": "d", "op": "eq", "value": "2026-02-01"}],
+                      {"field": "b"}, [{"op": "average", "field": "n"}])
+    _no_seq_scan(nodes)
+    assert _uses(nodes, "studio_record_hot_ts_idx", "v_ts")
+    assert _rows_read(nodes) <= 3 * 480
+    assert _records_read(nodes) == 0
+
+
+def test_r8_an_aggregate_past_the_timeout_stops_with_query_timeout(world, monkeypatch) -> None:
+    monkeypatch.setattr(studio_query, "TIMEOUT_MS", 1)
+    monkeypatch.setattr(store, "_clock", lambda: 0.0)
+
+    async def go() -> tuple[str, Any, str]:
+        async with tenant_session(world.b) as db:
+            await db.execute(text("SELECT set_config('statement_timeout', '42s', true)"))
+            with pytest.raises(QueryError) as stopped:
+                await store.aggregate_records(db, package_id=world.pkg_b, object_id=world.big.id,
+                                              group_by={"field": "t"})
+            rec = await store.get_record(db, world.visit_b.id, world.b_ids["r1"],
+                                         package_id=world.pkg_b)
+            return stopped.value.code, rec, await _timeout(db)
+
+    code, rec, after = _run(world.p.app_url, go)
+    assert code == "query_timeout"
+    assert rec is not None and after == "42s"
+
+
+def test_r8_a_group_field_that_turns_cold_during_an_aggregate_is_refused(world) -> None:
+    """A second session turns `rank` cold and commits after the store read the
+    fields. Its hot rows go, so each record would join the group with no
+    value. The statement sees that, so the store reads the fields again and
+    refuses the group."""
+    async def go() -> tuple[bool, QueryError]:
+        obj = await _define(world.a, world.pkg_a, "cooling_group", [
+            {"key": "rank", "type": "number", "hot": True}])
+        await _create(world.a, obj, {"a": {"rank": 3}, "b": {"rank": 1}, "c": {"rank": 1}})
+
+        async def unhot() -> None:
+            async with tenant_session(world.a) as other:
+                assert await store.set_field_hot(other, obj.id, "rank", False)
+
+        async with tenant_session(world.a) as db:
+            spy = _Spy(db, unhot, marker="FROM studio_object_fields")
+            with pytest.raises(QueryError) as stopped:
+                await store.aggregate_records(spy, package_id=obj.package_id, object_id=obj.id,
+                                              group_by={"field": "rank"})
+        async with tenant_session(world.a) as db:
+            assert await store.drop_object(db, obj.id)
+        return spy.fired, stopped.value
+
+    fired, err = _run(world.p.app_url, go)
+    assert fired
+    assert err.code == "query_not_indexed" and err.field == "rank"
