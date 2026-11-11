@@ -1270,6 +1270,22 @@ class Settings(BaseSettings):
     # its usage row must be proven first (§31.5 VOX-1, Done when 4).
     # Fence: tests/unit/test_chat_transcribe.py.
     chat_voice_orgs: str = ""
+    # ── One Today rule (my_day_command_centre.md §9.2, WS-MDC CC-2) ─────────
+    #
+    # `today_rule_orgs` lists the organization ids where the Today chip of My
+    # work and its count read the one Today predicate, or `*` for each one.
+    # Empty means off, and the chip and its count keep the old rule. The read
+    # (`GET /projects/my/today?with_tasks=true`) answers with the flag off. A
+    # mark or a clear of today's focus answers 403 `today_focus_off`
+    # (`personal.check_focus_on`) until the flag holds the org. The one reader is
+    # `gateway.routes.projects.today_rule.today_rule_allowed`, and it fails
+    # closed. The name ends in `_orgs`, so a SIGHUP applies a change with no
+    # restart (`docs/flag_reload.md`).
+    #
+    # 🔴 OWNER-ONLY on a box: any value other than empty is gate
+    # `enforcement-flip` (`work_plan.md` §6 D4).
+    # Fence: tests/unit/test_today_rule_r8.py.
+    today_rule_orgs: str = ""
 
     # ── The one email card of a new mail (email_app_master_plan.md §18.10) ──
     #

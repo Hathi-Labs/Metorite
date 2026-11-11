@@ -178,6 +178,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # projects_ai_chat.md §31 VOX-1: the orgs whose chat shows the mic. Each
     # clip draws AI credits, so only the operator writes it.
     "CHAT_VOICE_ORGS",
+    # my_day_command_centre.md §9.2 (WS-MDC CC-2): the orgs where the Today
+    # chip reads the one Today predicate. It changes what each member sees, so
+    # only the owner writes it (gate enforcement-flip).
+    "TODAY_RULE_ORGS",
     # §18.10: the orgs whose chat shows a new mail on the card that the member
     # edits. It changes the card of a send, so only the operator writes it.
     "EMAIL_EDIT_CARD_ORGS",

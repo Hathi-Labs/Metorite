@@ -19,6 +19,10 @@ the value again on each call.
 it does not change who may flip it. The flip stays OWNER-GATE
 (`enforcement-flip`).
 
+`TODAY_RULE_ORGS` moves the Today chip of My work and its count to the one
+Today rule (`my_day_command_centre.md` §9.2). A reload applies it, and the flip
+stays OWNER-GATE (`enforcement-flip`).
+
 `WAITING_ORGS` opens `GET /shell/waiting` and `GET /shell/waiting/count`
 (`waiting_on_me.md` §7.3). Its one reader is
 `gateway.routes.shell.waiting.waiting_allowed`. A reload applies a change. The
