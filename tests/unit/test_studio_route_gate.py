@@ -346,9 +346,13 @@ def test_the_share_verb_is_read_by_the_install_only() -> None:
     The check reads the syntax tree, so the quote style does not matter. The
     string constant `studio:publish` occurs once in `routes/studio`: the
     definition of `packages.SHARE_RIGHT`. The name `SHARE_RIGHT` is read in
-    `install_package` only. The one `has_permission` call is
-    `user.has_permission(SHARE_RIGHT)` in `install_package`. No file reads
-    `.access.has(`, the other door to the same check."""
+    `install_package` only. The `has_permission` calls are
+    `user.has_permission(SHARE_RIGHT)` in `install_package` and, since
+    A5c-2, `user.has_permission(ADMIN_RIGHT)` in `_delete_mode`: the admin
+    path of a delete, which reads `admin:members:manage` (the seam of
+    `routes/admin/members.py`) and no other right. No route gains a
+    dependency, so the gate stays one gate. No file reads `.access.has(`,
+    the other door to the same check."""
     import ast
 
     from gateway.routes.studio import packages
@@ -378,8 +382,10 @@ def test_the_share_verb_is_read_by_the_install_only() -> None:
     assert verbs == [("packages.py", "<module>", "constant")], verbs
     assert sorted(names) == [("packages.py", "<module>", "Store"),
                              ("packages.py", "install_package", "Load")], names
-    assert calls == [("packages.py", "install_package",
-                      "user.has_permission(SHARE_RIGHT)")], calls
+    assert sorted(calls) == [("packages.py", "_delete_mode", "user.has_permission(ADMIN_RIGHT)"),
+                             ("packages.py", "install_package",
+                              "user.has_permission(SHARE_RIGHT)")], calls
+    assert packages.ADMIN_RIGHT == "admin:members:manage"
 
 
 # ── g. The chat gets the refusal ──────────────────────────────────────────

@@ -924,6 +924,12 @@ No Studio agent exists to hand a task to.
   is gone. Show a new plan card before you publish. When a save or a publish
   says that the draft changed, read the result of the other save, and save or
   plan again.
+- DELETE AN APP. studio_delete_package deletes an app for good: its tables,
+  records, versions and installs. Send the package id only. It always shows
+  one card with the counts, in every chat. Only approved deletes. For the
+  other decisions, nothing was deleted: say so. An admin can delete the app of
+  a member who left. When the result gives remaining, call it again. It shows
+  a new card.
 - SKILLS. studio_skill_list lists the skills of the member, or reads one by its
   id. studio_skill_save makes a skill, or adds a version to one. studio_skill_state
   publishes, resumes or pauses one. Each tool acts as the member of this chat.

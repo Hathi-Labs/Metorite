@@ -137,9 +137,23 @@ installs that reach another member, and the token ``confirm``. Then the
 owner sends ``DELETE /packages/{id}`` with the body ``{"confirm": token}``
 (at most :data:`MAX_DELETE_BODY_BYTES`). A missing or malformed token is
 422. A token that is not the token of now is 409 ``counts_changed`` with the
-new preview, and nothing is deleted. Only the owner reaches either route:
-another member, another org and an App Workshop app get 404. No route here
-has an admin path, and no body key changes the member.
+new preview, and nothing is deleted. The owner reaches either route, and so
+does the admin path below. Another member, another org and an App Workshop
+app get 404, and no body key changes the member.
+
+**The admin path (A5c-2).** A package whose owner left the org blocks the
+org cap of objects, and only a delete frees the room. So a holder of
+``admin:members:manage`` (:data:`ADMIN_RIGHT`, the seam of
+``routes/admin/members.py``) may preview and delete the package of an owner
+with no active ``app_user`` row in the bound org. ``_delete_mode`` decides
+the path in one session, before the body parse: the owner read first, then
+the right, then ``store.admin_may_delete``. The route sets ``as_admin``
+itself. No body key and no query sets it. A plain member gets 404, and an
+admin gets 403 ``owner_active`` for the package of an active owner. Each
+step checks the owner again under the row lock, and a later step that finds
+an active owner ends the call with 403 and the records that it removed. The
+store writes each audit row with the admin as ``user_email`` and ``by:
+"admin"``.
 
 Each step runs in its own ``tenant_session``: the ``apps`` row ``FOR
 UPDATE``, the org lock, then a chunk of records (``store.delete_package``).
@@ -192,9 +206,9 @@ from gateway.routes.studio.actions import NOT_FOUND, router
 from gateway.studio import objects_store
 from gateway.studio import packages_store as store
 
-__all__ = ["COUNTS_CHANGED", "DELETE_BUDGET_SECONDS", "DRAFT_CHANGED", "MAX_BODY_BYTES",
-           "MAX_DELETE_BODY_BYTES", "MAX_PACKAGES_PER_MEMBER", "MAX_PROBLEMS", "VERSIONS_PAGE",
-           "router"]
+__all__ = ["ADMIN_RIGHT", "COUNTS_CHANGED", "DELETE_BUDGET_SECONDS", "DRAFT_CHANGED",
+           "MAX_BODY_BYTES", "MAX_DELETE_BODY_BYTES", "MAX_PACKAGES_PER_MEMBER", "MAX_PROBLEMS",
+           "OWNER_ACTIVE", "VERSIONS_PAGE", "router"]
 
 _log = get_logger("gateway.studio.packages")
 
@@ -227,6 +241,11 @@ MAX_INSTALL_BODY_BYTES = 4 * 1024
 #: ``routes/studio``. Fence:
 #: ``test_studio_route_gate.py::test_the_share_verb_is_read_by_the_install_only``.
 SHARE_RIGHT = "studio:publish"
+#: The right of the admin path of a delete (A5c-2): the right that manages the
+#: members of the org (``routes/admin/members.py``). Only ``_delete_mode``
+#: reads it. Fence:
+#: ``test_studio_route_gate.py::test_the_share_verb_is_read_by_the_install_only``.
+ADMIN_RIGHT = "admin:members:manage"
 _DIGITS = re.compile(r"[0-9]{1,10}", re.ASCII)
 _HASH = re.compile(r"[0-9a-f]{64}", re.ASCII)
 
@@ -248,6 +267,8 @@ NOT_PUBLISHED = "not_published"
 VERSION_CHANGED = "version_changed"
 FORBIDDEN = "forbidden"
 UNKNOWN_GROUP = "unknown_group"
+#: The 403 of the admin path for the package of an active owner (A5c-2).
+OWNER_ACTIVE = "owner_active"
 
 CATALOG_DOWN = "The action catalog is not available now, so try the publish again later."
 BODY_OVER_CAP = "This body is too large, so send a smaller manifest."
@@ -725,19 +746,52 @@ def _busy(exc: Exception) -> HTTPException:
                          headers={"Retry-After": RETRY_AFTER})
 
 
+def _owner_active(records_removed: int = 0) -> HTTPException:
+    """The 403 of the admin path for the package of an active owner (A5c-2)."""
+    return HTTPException(status_code=403, detail={
+        "code": OWNER_ACTIVE, "message": store.OWNER_ACTIVE_TEXT,
+        "records_removed": records_removed})
+
+
+async def _delete_mode(db: Any, user: UserContext, pid: str) -> bool:
+    """The path of a delete or its preview (A5c-2): False for the owner, True
+    for the admin path. The route decides it, and no body key or query does.
+
+    The owner read comes first, so an admin deletes their own package as its
+    owner. Then a caller without :data:`ADMIN_RIGHT` gets 404, with no other
+    read. Then ``store.admin_may_delete``: 404 when the bound org holds no
+    package with the id, and 403 ``owner_active`` when its owner is an
+    active member."""
+    if await store.get_package(db, user.email, pid) is not None:
+        return False
+    if not user.has_permission(ADMIN_RIGHT):
+        raise _not_found()
+    try:
+        if await store.admin_may_delete(db, pid):
+            return True
+    except store.OwnerActive:
+        raise _owner_active() from None
+    raise _not_found()
+
+
 @router.get("/packages/{package_id}/delete-preview")
 async def delete_preview(
     package_id: str,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """What a delete of a package of the caller removes, and the token
-    ``confirm`` that the DELETE must send. A read: it changes nothing."""
+    ``confirm`` that the DELETE must send. A read: it changes nothing. An
+    admin previews the package of an owner who left (A5c-2)."""
     if not flags.studio_allowed(user.organization_id):
         raise HTTPException(status_code=404, detail=NOT_FOUND)
     pid = _package_id(package_id)
     async with _tenant_session() as db:
-        with _store_errors():
-            found = await store.delete_preview(db, user.email, pid)
+        as_admin = await _delete_mode(db, user, pid)
+        try:
+            with _store_errors():
+                found = await store.delete_preview(db, user.email, pid, as_admin=as_admin)
+        except store.OwnerActive:
+            raise _owner_active() from None
         if found is None:
             raise _not_found()
     return _preview_out(found)
@@ -754,12 +808,14 @@ async def delete_package(
 
     Each step is its own transaction, and no lock stays between two steps.
     The first step checks the token under the locks. 200 when the package is
-    gone, 202 with what is left and a new token past the budget."""
+    gone, 202 with what is left and a new token past the budget. An admin
+    deletes the package of an owner who left (A5c-2)."""
     if not flags.studio_allowed(user.organization_id):
         raise HTTPException(status_code=404, detail=NOT_FOUND)
     pid = _package_id(package_id)
     raw = await _raw_body(request, MAX_DELETE_BODY_BYTES)
-    await _require_owned(user.email, pid)
+    async with _tenant_session() as db:
+        as_admin = await _delete_mode(db, user, pid)
     token = _confirm(_parse_json(raw, empty_ok=True))
     end_at = objects_store._clock() + DELETE_BUDGET_SECONDS
     removed = 0
@@ -769,12 +825,15 @@ async def delete_package(
             async with _tenant_session() as db:
                 step = await store.delete_package(
                     db, user.email, pid, confirm=token if names is None else None,
-                    names=names, removed=removed, end_at=end_at)
+                    names=names, removed=removed, end_at=end_at, as_admin=as_admin)
         except store.CountsChanged as exc:
             # Only the first step raises it, so the call removed nothing.
             raise HTTPException(status_code=409, detail={
                 "code": COUNTS_CHANGED, "message": str(exc), "records_removed": 0,
                 "preview": _preview_out(exc.preview)}) from None
+        except store.OwnerActive:
+            # Only the first step raises it, so the call removed nothing.
+            raise _owner_active() from None
         except objects_store.StoreBusy as exc:
             if names is None:
                 # The first step: the call removed nothing yet.
@@ -783,25 +842,30 @@ async def delete_package(
             # ended its transaction. The earlier steps of the call hold, so a
             # new session writes their partial audit row.
             async with _tenant_session() as db:
-                await store.record_partial(db, user.email, pid, removed, "busy")
+                await store.record_partial(db, user.email, pid, removed, "busy",
+                                           as_admin=as_admin)
             _log.info("studio.packages.delete_partial", package_id=pid, records=removed,
-                      changed=False, busy=True)
+                      changed=False, busy=True, as_admin=as_admin)
             raise _busy(exc) from None
         if step is None:
             raise _not_found()
         removed += step.removed
         if step.deleted:
-            _log.info("studio.packages.deleted", package_id=pid, records=removed)
+            _log.info("studio.packages.deleted", package_id=pid, records=removed,
+                      as_admin=as_admin)
             return {"deleted": True, "package_id": pid, "records_removed": removed}
         names = step.names
-        if step.left is None and not step.busy and not step.gone:
+        if step.left is None and not step.busy and not step.gone and not step.owner_active:
             continue
         # The call ends with records left, or another call deleted the
         # package. The last step wrote the partial audit row.
         _log.info("studio.packages.delete_partial", package_id=pid, records=removed,
-                  changed=step.changed, busy=step.busy)
+                  changed=step.changed, busy=step.busy, as_admin=as_admin)
         if step.gone:
             raise _not_found()
+        if step.owner_active:
+            # A later step of the admin path: the owner is active again.
+            raise _owner_active(removed)
         if step.left is None:
             raise _busy(objects_store.StoreBusy(objects_store._BUSY_MESSAGE))
         if step.changed:
