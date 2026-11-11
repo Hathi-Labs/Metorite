@@ -12,8 +12,9 @@ list sees no change. The org comes from the session, never from request input
 
 **The regions.** ``in`` means the path runs in India and the source says so.
 ``outside`` means it runs elsewhere. ``unknown`` means the vendor states no
-region. With the flag on, only ``in`` passes. A path with no entry, or with no
-region, is a defect: :func:`validate_registry` refuses it.
+region. With the flag on, only ``in`` passes. A path with no entry fails closed in
+:func:`path_allowed`. A row with no region is a defect: :func:`validate_registry`
+refuses it.
 
 **What this module does not do.** It moves no store and changes no vendor.
 Where a store or a vendor runs is infrastructure, and a move of it is an
@@ -55,12 +56,12 @@ class ResidencyRefusal(Exception):
 #: here in the same pull request, and the fence refuses a row with no region.
 HEALTH_OUTBOUND_PATHS: tuple[OutboundPath, ...] = (
     OutboundPath("postgres", "store", REGION_IN, True,
-                 "customer_console_infrastructure.md section 2 R-f; docs/EXTERNAL_POSTGRES.md (Mumbai, ap-south-1)"),
+                 "HANDOFF.md (Mumbai is live, pm_tasks through the ap-south-1 pooler); work_plan.md section 2 R-f"),
     OutboundPath("object_store", "store", REGION_UNKNOWN, True,
                  "settings.object_store_region defaults to us-east-1 and the endpoint is free. "
                  "The Mumbai bucket is MT-1g-2, not built. Set to in when it lands"),
-    OutboundPath("redis", "store", REGION_UNKNOWN, False,
-                 "The box region is not recorded. Keys only, no record body"),
+    OutboundPath("redis", "store", REGION_UNKNOWN, True,
+                 "The box region is not recorded. It holds chat stream entries and attachment bytes"),
     OutboundPath("llm_router_decide", "vendor", REGION_UNKNOWN, True,
                  "work_plan.md D75, D19.6: TypeSafe states no region"),
     OutboundPath("llm_anthropic", "vendor", REGION_OUTSIDE, True,
@@ -74,10 +75,46 @@ HEALTH_OUTBOUND_PATHS: tuple[OutboundPath, ...] = (
     OutboundPath("email_smtp", "vendor", REGION_UNKNOWN, True, "settings.smtp_host: the host is free text"),
     OutboundPath("channel_whatsapp", "vendor", REGION_UNKNOWN, True,
                  "settings.whatsapp_assistant_access_token: the Cloud API states no region"),
-    OutboundPath("web_push", "vendor", REGION_UNKNOWN, False, "settings.vapid_*: the push service of the browser"),
+    OutboundPath("web_push", "vendor", REGION_UNKNOWN, True,
+                 "settings.vapid_*: the push service of the browser gets notification text"),
+    OutboundPath("llm_openai", "vendor", REGION_OUTSIDE, True, "settings.openai_api_key: the public OpenAI API"),
+    OutboundPath("llm_deepseek", "vendor", REGION_UNKNOWN, True, "settings.deepseek_api_key: no region stated"),
+    OutboundPath("llm_mistral", "vendor", REGION_UNKNOWN, True, "settings.mistral_api_key: no region stated"),
+    OutboundPath("llm_together", "vendor", REGION_UNKNOWN, True, "settings.together_api_key: no region stated"),
     OutboundPath("speech_to_text", "vendor", REGION_UNKNOWN, True,
-                 "stt_assemblyai.py: the vendor states no region (D19.6)"),
+                 "AssemblyAI: customer_console/stt_assemblyai.py gives no region"),
+    OutboundPath("speech_to_text_sarvam", "vendor", REGION_UNKNOWN, True,
+                 "customer_console/stt_sarvam.py: no region is recorded here. Set to in only with a source"),
+    OutboundPath("speech_deepgram_elevenlabs", "vendor", REGION_UNKNOWN, True,
+                 "customer_console/provider_registry.py ids deepgram and elevenlabs: no region recorded"),
+    OutboundPath("llm_decide_aimlapi", "vendor", REGION_UNKNOWN, True,
+                 "customer_console/provider_registry.py native_aimlapi: no region recorded"),
+    OutboundPath("meeting_recall", "vendor", REGION_OUTSIDE, True,
+                 "gateway/routes/notes/meeting_bot.py: RECALL_REGION defaults to us-east-1"),
+    OutboundPath("mail_zoho_gmail", "vendor", REGION_UNKNOWN, True,
+                 "settings.zoho_access_token and the Gmail path: the provider region is the account's"),
+    OutboundPath("web_search", "vendor", REGION_UNKNOWN, True,
+                 "settings.searxng_url and serpapi_api_key: a query can hold record text"),
 )
+
+#: Each vendor secret of ``Settings`` and the registry key that covers it.
+VENDOR_SETTING_KEYS: dict[str, str] = {
+    "anthropic_api_key": "llm_anthropic", "openrouter_api_key": "llm_openrouter",
+    "gemini_api_key": "llm_gemini", "groq_api_key": "llm_groq", "openai_api_key": "llm_openai",
+    "deepseek_api_key": "llm_deepseek", "mistral_api_key": "llm_mistral",
+    "together_api_key": "llm_together", "whatsapp_assistant_access_token": "channel_whatsapp",
+    "zoho_access_token": "mail_zoho_gmail", "zoho_refresh_token": "mail_zoho_gmail",
+    "gmail_pubsub_token": "mail_zoho_gmail", "serpapi_api_key": "web_search",
+}
+
+#: Secrets that open no path for a health record: internal tokens, code hosts,
+#: outbound sales tools and maps. A new secret that fits neither table fails
+#: ``test_each_vendor_secret_is_covered``.
+NOT_A_RECORD_PATH: frozenset[str] = frozenset({
+    "gateway_internal_token", "web_worker_token", "mutation_pr_token", "github_token",
+    "github_read_token", "anymailfinder_api_key", "apollo_api_key", "instantly_api_key",
+    "apify_api_token", "google_maps_api_key",
+})
 
 _BY_KEY: dict[str, OutboundPath] = {p.key: p for p in HEALTH_OUTBOUND_PATHS}
 

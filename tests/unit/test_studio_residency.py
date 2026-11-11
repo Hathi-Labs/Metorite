@@ -7,7 +7,6 @@ the flag sees no change.
 from __future__ import annotations
 
 import pytest
-
 from acb_common import studio_residency as r
 from acb_common.settings import Settings
 
@@ -81,13 +80,27 @@ def test_the_object_store_is_not_claimed_as_india():
     assert r._BY_KEY["object_store"].region != r.REGION_IN
 
 
-def test_each_vendor_setting_has_a_row():
+def test_each_vendor_secret_is_covered():
+    """Every api key and token of Settings has a registry row or is listed as no record path."""
+    import re
+
     from acb_common.settings import Settings
-    fields = set(Settings.model_fields)
-    for name, key in {
-        "anthropic_api_key": "llm_anthropic", "openrouter_api_key": "llm_openrouter",
-        "gemini_api_key": "llm_gemini", "groq_api_key": "llm_groq",
-        "smtp_host": "email_smtp", "whatsapp_assistant_access_token": "channel_whatsapp",
-    }.items():
-        assert name in fields, name
+
+    secrets = {n for n in Settings.model_fields
+               if re.search(r"(api_key|api_token|access_token|refresh_token|_token)$", n)}
+    unknown = sorted(secrets - set(r.VENDOR_SETTING_KEYS) - r.NOT_A_RECORD_PATH)
+    assert unknown == [], f"add a registry row or list as no record path: {unknown}"
+    for name, key in r.VENDOR_SETTING_KEYS.items():
+        assert name in Settings.model_fields, name
         assert key in r._BY_KEY, key
+
+
+def test_unknown_region_is_refused_with_the_flag_on(flag):
+    flag("org-a")
+    assert not r.path_allowed("org-a", "object_store")
+    assert not r.path_allowed("org-a", "redis")
+    assert r.path_allowed("org-a", "postgres")
+
+
+def test_a_store_that_holds_records_says_so():
+    assert r._BY_KEY["redis"].carries_records is True
