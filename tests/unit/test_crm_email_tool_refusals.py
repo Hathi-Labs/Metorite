@@ -483,12 +483,12 @@ def test_the_translator_marks_a_refusal_failed_and_keeps_its_text() -> None:
 
 
 def test_the_tier2_shim_asks_the_same_function_before_the_steer() -> None:
-    """The shim of ``executor.py`` marks a refusal failed, and it asks before
-    the steer text joins the result (that text could come first)."""
+    """The shim of ``executor.py`` marks a refusal failed. Since task 2494 no
+    steer text joins a tool result, so the shim asks on the tool's own text."""
     source = (REPO / "apps" / "services" / "orchestrator" / "orchestrator"
               / "executor.py").read_text(encoding="utf-8")
-    at = source.index("refused = is_refusal(result)")
-    assert at < source.index("result = decorate_tool_result(result, thread_id)", at)
+    assert "refused = is_refusal(result)" in source
+    assert "decorate_tool_result" not in source
     assert '"success": not refused,' in source
     assert '"success": not _is_refusal(result),' in source
 
