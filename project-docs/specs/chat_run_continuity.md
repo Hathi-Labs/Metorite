@@ -894,8 +894,12 @@ steer. So these rules hold:
   `_closed_by_chat`. A card with rows gives `ask_tools.REVISED_ROWS`, an
   empty set that `is_revised` tells from a card with no ticks (fix round 1).
 - The session history stores each steer turn after its tool result
-  (`native_session_store.SessionHistoryProvider.after_run`). With
-  `MAF_NATIVE_SESSIONS` on, the next turn reads the member's words.
+  (`native_session_store.SessionHistoryProvider.after_run`).
+- ⚠️ On the web chat, the next turn does not load that session yet. The
+  gateway saves the steer as a user row, and the save digest does not hold
+  it, so the next load gives `digest_drop`. The next turn then reads the
+  member's words from the text history, and the tool calls of the steered
+  run are lost. Task 2948 owns the fix.
 - A Copilot SDK agent gets no steer turn. Its steer waits for the run end,
   and the follow-up below answers it.
 - Fence: `tests/unit/test_steer_user_turn.py`.
