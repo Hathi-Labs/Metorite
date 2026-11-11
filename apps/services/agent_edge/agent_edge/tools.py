@@ -9410,7 +9410,8 @@ SET_RUN_PLAN = Tool(
         " inProgress, completed or canceled. A plan holds at most 30 steps. Mark"
         " one step inProgress while you work on it. The task card then shows it,"
         " with a count such as 3 of 7, and the run panel shows the list. Each"
-        " call also counts as a thought: it keeps the run active. Send [] to"
+        " call also counts as a thought: it keeps the run active. It also ends"
+        " a wait, so post the wait after the plan. Send [] to"
         " clear the plan. Use it only on your own open run." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,

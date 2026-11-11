@@ -1992,7 +1992,25 @@ class TestTheRunPlan:
                                    scopes=("projects:read",))
             assert (await call(read_only, "PUT", url, body)).status_code == 403
             assert (await call(w.agent_b, "PUT", url, body)).status_code == 404
+            # The same member with another client stamp is not the run's agent.
+            with w.p.admin_engine.begin() as c:
+                c.execute(text("UPDATE pm_agent_runs SET client_via = 'mcp:other.example'"
+                               " WHERE id = CAST(:r AS uuid)"), {"r": rid})
+            other = await call(w.agent_a, "PUT", url, body)
+            assert other.status_code == 403, other.text
             assert _plan_of(w, rid) is None
+
+    async def test_a_plan_write_ends_a_wait(self, w):
+        """The activity carries no `waiting`. This pins the documented rule."""
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            await _act(call, w.agent_a, rid, type="thought", body="Wait",
+                       waiting={"on": "ci", "until_minutes": 30})
+            assert _waits(w, rid)[0] == "ci"
+            got = await call(w.agent_a, "PUT", f"/projects/agent-runs/{rid}/plan",
+                             {"steps": [_step("x")]})
+            assert got.status_code == 200, got.text
+            assert _waits(w, rid) == (None, None)
 
     async def test_a_run_that_ended_takes_no_plan(self, w):
         """The status machine: an agent write on a finished run is 409."""

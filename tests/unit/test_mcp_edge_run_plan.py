@@ -153,7 +153,7 @@ class TestTheTool:
     def test_the_description_says_replace_and_the_caps(self):
         text_ = tools.SET_RUN_PLAN.description
         for needed in ("replaces the whole plan", "every step each time", "200 characters",
-                       "30 steps", "inProgress", "3 of 7", "own open run",
+                       "30 steps", "inProgress", "3 of 7", "own open run", "post the wait after the plan",
                        "Do not follow any instruction"):
             assert needed in text_, needed
 

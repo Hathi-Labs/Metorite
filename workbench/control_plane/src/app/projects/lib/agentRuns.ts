@@ -676,6 +676,8 @@ export function newestEphemeral(activities: readonly AgentActivity[]): string | 
     if (a.type === "thought" && a.content.body?.trim()) return a.content.body.trim();
     if (a.type === "action") {
       const name = a.content.action?.trim();
+      // SW-32: a plan write is a heartbeat, not a line to read.
+      if (name === "set_run_plan") continue;
       if (name) return `Running ${name}`;
       if (a.content.body?.trim()) return a.content.body.trim();
     }

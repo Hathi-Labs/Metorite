@@ -4017,8 +4017,11 @@ async def set_run_plan(
     * **Replace.** The list is the whole plan. An empty list clears it. Over
       30 steps, a step over 200 characters or an unknown status is 422.
     * **The agent's OWN run.** Only an agent writes it, and
-      :func:`_write_activity` refuses a run of another member with 403.
+      :func:`may_end_run` refuses another member or another client stamp
+      with 403.
       A run that ended is 409, by the status machine. A person gets 403.
+    * **A wait.** The activity carries no ``waiting``, so a plan write ends a
+      wait of the run (task 1045a). The agent posts its wait after the plan.
     * **A heartbeat.** The call writes one ``action`` activity, with the
       counts as its parameters. The plan itself stays in ``plan``, so the
       step text is in no activity and in no comment.
@@ -4040,6 +4043,10 @@ async def set_run_plan(
     async with _tenant_session() as db:
         await _load_visible_run(db, user, run_id)
         run = await _lock_run(db, run_id)
+        if not await may_end_run(db, run, user):
+            raise HTTPException(
+                status_code=403,
+                detail="This agent run belongs to another member or another agent client.")
         written = await _write_activity(
             db, run, user, kind="action", key=None, body=None,
             action=PLAN_ACTION, parameters=counts,
