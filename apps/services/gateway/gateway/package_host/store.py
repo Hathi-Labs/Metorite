@@ -293,6 +293,9 @@ _SET_STATE_SQL = (
 
 # ── The lifetime SQL (§6.2, PKG-10a) ────────────────────────────────────────
 
+#: The end date of an app made in chat, after its first publish (§6.2 step 1,
+#: PKG-Q2). The publish route of PKG-12 adds it to now.
+CHAT_ENDS = timedelta(days=30)
 #: The time that the owner has to restore an archived install (§6.2).
 RESTORE_DAYS = timedelta(days=30)
 #: The end date of a restored install, after the restore (PKG-Q7 default).
