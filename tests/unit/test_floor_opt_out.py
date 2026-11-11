@@ -46,7 +46,10 @@ PROJECTS_OPTED_OUT = frozenset({
 })
 #: EM-G11d (2026-10-15) added ``web_search`` and ``fetch_page``: a mail could
 #: tell the model to fetch a URL that carries mailbox data.
+#: WS-VOX VOX-3 added ``analyze_image``: mail images are not in the thread
+#: folder, and mail text is hostile (``projects_ai_chat.md`` §31.5 item 8).
 EMAIL_OPTED_OUT = frozenset({
+    "analyze_image",
     "call_agent_background", "call_agents_parallel", "code_task",
     "get_errors", "get_workflow_run", "list_integrations", "list_workflows",
     "load_artifact_kit", "load_design_system", "manage_todo_list",

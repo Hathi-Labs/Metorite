@@ -18,7 +18,7 @@ TypeScript source. It holds each one to exactly one decision:
 * :data:`DEBT` names the wave that will give the chat a tool. The count of
   each app may only go down (:data:`DEBT_CEILING`).
 
-Two apps keep their own tables, and this module does not copy them:
+Three apps keep their own tables, and this module does not copy them:
 
 * **Projects.** Fence F3 holds each method of the Projects client
   (``skill_projects.manifest.UI_ACTIONS``, ``UI_EXEMPT``, ``UI_PLANNED``). A
@@ -26,8 +26,11 @@ Two apps keep their own tables, and this module does not copy them:
   from the Projects manifest row of its route.
 * **Knowledge.** A request to ``/api/knowledge/...`` takes its decision
   from the Knowledge manifest row (``acb_skills.knowledge_manifest``).
+* **CRM.** A request to ``/api/crm/...`` takes its decision from the CRM
+  manifest row (``acb_common.app_manifests.crm``, WS-CRM CRM-M2a). The fence
+  of that table is ``tests/unit/test_crm_ui_actions.py``.
 
-A row here for a route of those two apps is allowed only where the manifest
+A row here for a route of those three apps is allowed only where the manifest
 gives no built tool, for example a route of the day planner that a Tasks
 tool reaches.
 
@@ -99,6 +102,8 @@ APP_OF: tuple[tuple[str, str], ...] = (
     ("/api/agent/chat", "chat"),
     ("/api/agent/cancel", "chat"),
     ("/api/agent/respond-input", "chat"),
+    # projects_ai_chat.md §31 VOX-1: the mic of the composer.
+    ("/api/agent/transcribe", "chat"),
     ("/api/agent/workspace", "chat"),
     ("/api/agent/artifacts", "chat"),
     ("/api/agent", "agents"),
@@ -204,6 +209,15 @@ COVERED: dict[str, str | tuple[str, str]] = {
     # tests/unit/test_calendar_day_pack.py.
     "POST /api/tasks/calendar/{}": "my_tasks_plan_day",
     "PUT /api/tasks/calendar/day-state": "my_tasks_set_one_thing",
+    # CAL-2 (task 1676): the CALENDAR fields of the settings (the standing instruction,
+    # the working hours, capacity, buffer, focus run, break, lunch, energy windows,
+    # auto rollover, time zone). The model choices, the sync flags and capture_dedup
+    # are not here: the tool has no parameter for them. The day rules
+    # (day_templates) are written by the four day rule tools of CAL-3 (task 1677),
+    # through the same route with an If-Match token. Fence:
+    # tests/unit/test_calendar_settings_tools.py and tests/unit/test_day_rules_tools.py.
+    "GET /api/tasks/settings": "my_tasks_get_calendar_settings",
+    "PUT /api/tasks/settings": "my_tasks_update_calendar_settings",
     # ── Email ──
     "DELETE /api/email/accounts/{}": "update_account",
     "DELETE /api/email/knowledge/{}": "delete_knowledge",
@@ -292,39 +306,6 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "PUT /api/email/assistant/settings": "update_assistant_settings",
     "PUT /api/email/drafts": "edit_draft",
     "PUT /api/email/voice-profile": "voice_profile",
-    # ── CRM ──
-    # WS-CRM CRM-M1: the chat reaches this tool through the `crm-records`
-    # pack, and the CRM assistant holds it. The orchestrator's base does not
-    # (tests/unit/test_crm_change_history.py holds the reach).
-    "GET /api/crm/change-history": "crm_change_history",
-    "GET /api/crm/deals/{}/contacts": "crm_deal_contacts",
-    "GET /api/crm/fields/{}": "crm_list_fields",
-    "GET /api/crm/lost-reasons": "update_deal_status",
-    "GET /api/crm/mode": "crm_list_records",
-    "GET /api/crm/modules": "crm_list_modules",
-    "GET /api/crm/modules/{}/records": "crm_list_module_records",
-    "GET /api/crm/modules/{}/records/{}": "crm_get_module_record",
-    "GET /api/crm/owners": "crm_list_owners",
-    "GET /api/crm/pipeline": "get_pipeline",
-    "GET /api/crm/pipelines": "crm_list_pipelines",
-    # WS-CRM CRM-M3a: the preview of the New pipeline dialog. The chat tool
-    # reads the same plan before its card.
-    "GET /api/crm/pipelines/preview": "crm_create_pipeline",
-    "GET /api/crm/reports/funnel": "crm_report",
-    "GET /api/crm/reports/owners": "crm_report",
-    "GET /api/crm/reports/pipeline": "crm_report",
-    "GET /api/crm/reports/win-loss": "crm_report",
-    "GET /api/crm/statuses/{}": "crm_aggregate",
-    "GET /api/crm/{}": "search_crm",
-    "GET /api/crm/{}/{}": "get_record",
-    "GET /api/crm/{}/{}/timeline": "get_timeline",
-    "PATCH /api/crm/activities/{}": "crm_update_task",
-    "PATCH /api/crm/{}/{}": "crm_update_record",
-    "POST /api/crm/leads/{}/convert": "convert_lead",
-    # WS-CRM CRM-M3a: the New pipeline dialog of CRM settings.
-    "POST /api/crm/pipelines": "crm_create_pipeline",
-    "POST /api/crm/{}": "create_lead",
-    "POST /api/crm/{}/{}/activities": "log_activity",
     # ── WhatsApp ──
     "GET /api/whatsapp/accounts": "list_whatsapp_accounts",
     "GET /api/whatsapp/chats": "list_whatsapp_chats",
@@ -378,6 +359,10 @@ COVERED: dict[str, str | tuple[str, str]] = {
     # (lib/studio/packageDraft.ts createDraftPackage). studio_save makes one with
     # the same POST when it gets no package_id.
     "POST /api/studio/packages": "studio_save",
+    # STU-G3c: the IDE saves a draft with the PUT that studio_save sends (based_on in the query).
+    "PUT /api/studio/packages/{}/draft": "studio_save",
+    # STU-G5: the IDE publishes with the POST that studio_publish sends (notes and based_on in the body).
+    "POST /api/studio/packages/{}/versions": "studio_publish",
     "POST /api/studio/apps/{}/actions/{}": "studio_record_list",
     "GET /api/studio/skills": "studio_skill_list",
     "GET /api/studio/skills/{}": "studio_skill_list",
@@ -445,15 +430,6 @@ EXEMPT: dict[str, tuple[str, str]] = {
     "POST /api/email/compose-assist/stream": (
         "stream",
         "The streamed form of compose assist in the composer. The chat writes a draft with edit_draft.",
-    ),
-    # ── CRM ──
-    "GET /api/crm/export/all.zip": (
-        "download",
-        "The ZIP file of every CRM record for a download. The chat reads the records.",
-    ),
-    "POST /api/crm/connection/zoho/start": (
-        "oauth",
-        "Starts the Zoho sign-in. The browser goes to Zoho, and the member signs in there.",
     ),
     # ── Notes ──
     "GET /api/notes/meetings/{}/audio": (
@@ -562,6 +538,14 @@ EXEMPT: dict[str, tuple[str, str]] = {
         "chat",
         "Sends a turn to the assistant. The member does it by typing in the chat.",
     ),
+    "GET /api/agent/transcribe": (
+        "chat",
+        "Reads whether the message box shows the mic (VOX-1). It is part of the chat's own composer.",
+    ),
+    "POST /api/agent/transcribe": (
+        "chat",
+        "Turns the member's spoken words into text in the message box (VOX-1). The member then sends it as a turn.",
+    ),
     "POST /api/agent/respond-input": (
         "chat",
         "Answers a card that the chat asked. It is the chat's own transport.",
@@ -627,6 +611,11 @@ EXEMPT: dict[str, tuple[str, str]] = {
         "Creates an account and an organization. A person who signs up has no chat yet.",
     ),
     # ── Integrations ──
+    "GET /api/agent-access/requests/{}": (
+        "chat",
+        "The approval card in the chat reads its own request to draw it, also after a reload "
+        "(STU-B2c-2c). It is the chat's own card. The tool result gives Mira the request.",
+    ),
     "POST /api/agent-access/authorize/approve": (
         "oauth",
         "The member's approval on the consent screen of an outside agent (MCP OAuth).",
@@ -662,8 +651,9 @@ DEBT: dict[str, str] = {
     # ── AI Studio (BETA-1): the app page deletes a package. A5c-2 builds the chat tool. ──
     "DELETE /api/studio/packages/{}": "P-9",
     "GET /api/studio/packages/{}/delete-preview": "P-9",
+    # STU-G5: the Publish dialog reads the live version with its manifest. G1d (chat reads versions) pays it.
+    "GET /api/studio/packages/{}/versions/{}": "P-9",
     # ── Tasks ──
-    "GET /api/tasks/settings": "P-1",
     "POST /api/tasks/ai/backfill-context": "P-1",
     "POST /api/tasks/capture/from-email": "P-1",
     "POST /api/tasks/capture/from-email/create": "P-1",
@@ -673,7 +663,6 @@ DEBT: dict[str, str] = {
     "POST /api/tasks/capture/from-reply/detect": "P-1",
     "POST /api/tasks/items/{}/enrich": "P-1",
     "POST /api/tasks/items/{}/suggest-title": "P-1",
-    "PUT /api/tasks/settings": "P-1",
     # ── Calendar ──
     "GET /api/tasks/calendar/day-state": "P-1",
     # ── Email ──
@@ -690,80 +679,9 @@ DEBT: dict[str, str] = {
     "POST /api/email/reply-card/discard": "P-2",
     "POST /api/email/rules/generate": "P-2",
     "POST /api/email/rules/patterns/review": "P-2",
-    # ── CRM ──
-    "DELETE /api/crm/deals/{}/contacts/{}": "P-3",
-    "DELETE /api/crm/field-sections": "P-3",
-    "DELETE /api/crm/fields": "P-3",
-    "DELETE /api/crm/lost-reasons/{}": "P-3",
-    "DELETE /api/crm/questions/{}/dismiss": "P-3",
-    "DELETE /api/crm/questions/{}/mine": "P-3",
-    "DELETE /api/crm/rules/{}": "P-3",
-    "DELETE /api/crm/statuses/{}/{}": "P-3",
-    "DELETE /api/crm/views/{}": "P-3",
-    "DELETE /api/crm/{}/{}": "P-3",
-    "GET /api/crm/analysis/status": "P-3",
-    "GET /api/crm/connection": "P-3",
-    "GET /api/crm/conversion-mapping": "P-3",
-    "GET /api/crm/cutover/preview": "P-3",
-    "GET /api/crm/cutover/status": "P-3",
-    "GET /api/crm/digests": "P-3",
-    "GET /api/crm/export/{}": "P-3",
-    "GET /api/crm/field-rules": "P-3",
-    "GET /api/crm/fields": "P-3",
-    "GET /api/crm/mapping/plans": "P-3",
-    "GET /api/crm/mapping/plans/{}": "P-3",
-    "GET /api/crm/mapping/suggestions": "P-3",
-    "GET /api/crm/modules/{}/records/{}/timeline": "P-3",
-    "GET /api/crm/questions": "P-3",
-    "GET /api/crm/questions/mine": "P-3",
-    "GET /api/crm/questions/{}/sum-check": "P-3",
-    "GET /api/crm/rules": "P-3",
-    "GET /api/crm/settings": "P-3",
-    "GET /api/crm/settings/counts": "P-3",
-    "GET /api/crm/sync/health": "P-3",
-    "GET /api/crm/sync/status": "P-3",
-    "GET /api/crm/views": "P-3",
-    "PATCH /api/crm/field-rules/{}": "P-3",
-    "PATCH /api/crm/field-sections": "P-3",
-    "PATCH /api/crm/fields": "P-3",
-    "PATCH /api/crm/lost-reasons/{}": "P-3",
-    "PATCH /api/crm/modules/{}/records/{}": "P-3",
-    "PATCH /api/crm/rules/{}": "P-3",
-    "PATCH /api/crm/settings": "P-3",
-    "PATCH /api/crm/statuses/{}/{}": "P-3",
-    "PATCH /api/crm/views/{}": "P-3",
-    "POST /api/crm/analysis/rerun": "P-3",
-    "POST /api/crm/connection/disconnect": "P-3",
-    "POST /api/crm/cutover": "P-3",
-    "POST /api/crm/cutover/start": "P-3",
-    "POST /api/crm/deals/{}/contacts": "P-3",
-    "POST /api/crm/field-rules": "P-3",
-    "POST /api/crm/field-sections": "P-3",
-    "POST /api/crm/fields": "P-3",
-    "POST /api/crm/import/zoho/stages": "P-3",
-    "POST /api/crm/lost-reasons": "P-3",
-    "POST /api/crm/mapping/plans": "P-3",
-    "POST /api/crm/mapping/plans/{}/approve": "P-3",
-    "POST /api/crm/mapping/plans/{}/restore": "P-3",
-    "POST /api/crm/mapping/preview": "P-3",
-    "POST /api/crm/mapping/suggestions/{}/approve": "P-3",
-    "POST /api/crm/mapping/suggestions/{}/dismiss": "P-3",
-    "POST /api/crm/mapping/suggestions/{}/undo": "P-3",
-    "POST /api/crm/questions/accept-best": "P-3",
-    "POST /api/crm/questions/{}/answer": "P-3",
-    "POST /api/crm/questions/{}/dismiss": "P-3",
-    "POST /api/crm/reset": "P-3",
-    "POST /api/crm/rules": "P-3",
-    "POST /api/crm/statuses/{}": "P-3",
-    "POST /api/crm/statuses/{}/order/reset": "P-3",
-    "POST /api/crm/sync/zoho": "P-3",
-    "POST /api/crm/views": "P-3",
-    "PUT /api/crm/catalogue/{}": "P-3",
-    "PUT /api/crm/conversion-mapping": "P-3",
-    "PUT /api/crm/field-layout": "P-3",
-    "PUT /api/crm/settings/labels": "P-3",
-    "PUT /api/crm/statuses/{}/order": "P-3",
-    "PUT /api/crm/sync/modules/{}": "P-3",
+    # Paid by SG-6 (task 2182): the chat sets a signature image from an image
+    # the member attaches.
+    "POST /api/email/signature/images": "P-2",
     # ── Notes ──
     "DELETE /api/notes/glossary/{}": "P-4",
     "DELETE /api/notes/meetings/{}": "P-4",
@@ -1058,7 +976,10 @@ DEBT: dict[str, str] = {
     "DELETE /api/integrations/plugins/{}": "P-8",
     "GET /api/agent-access/connections": "P-8",
     # MCP-P1b-1: the list "Waiting for you" and Approve or Decline on
-    # AppRequestCard. The chat tool and card are MCP-P1b-4 (task 1703).
+    # AppRequestCard. In a chat, the card of STU-B2c-2c (task 1866) is the
+    # chat surface of the decision: the member presses Approve or Decline on
+    # the card. No chat tool decides, because Mira calls as the member and
+    # would approve her own change. So the decision stays debt of P-8.
     "GET /api/agent-access/requests": "P-8",
     "POST /api/agent-access/requests/{}/decision": "P-8",
     "GET /api/integrations/agent-connections": "P-8",
@@ -1081,10 +1002,10 @@ DEBT: dict[str, str] = {
 #: Lower the number in the change that pays the debt.
 DEBT_CEILING: dict[str, int] = {
     "projects": 8,  # F3: UI_PLANNED, and UI_ACTIONS rows whose tool is PLANNED. SW-43a (2026-11-05) added agentRunsApi.withdrawAnswer, paid by the chat tool of SW-43c (task 1802).
-    "tasks": 11,
+    "tasks": 9,
     "calendar": 1,
-    "email": 13,
-    "crm": 73,
+    "email": 14,  # SG-1 (task 2177, 2026-11-07) added the signature image upload, paid by SG-6 (task 2182).
+    "crm": 72,  # CRM-M2a: the manifest decides. The count is UI actions with no built tool. Field Studio GET /fields reaches crm_list_fields, so it left the debt (73 to 72).
     "notes": 51,
     "whatsapp": 25,
     "people": 19,
@@ -1098,7 +1019,7 @@ DEBT_CEILING: dict[str, int] = {
     "settings": 26,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write.
     "admin": 36,
     "integrations": 21,  # MCP-P1b-1 added the app-request list and decision (task 1703).
-    "studio": 2,  # BETA-1: the delete of a package waits for the chat tool of A5c-2. B2c-2b adds no debt: its writes are ALSO rows of the door route.
+    "studio": 3,  # BETA-1: the delete of a package waits for the chat tool of A5c-2. G5 adds the version read. B2c-2b adds no debt: its writes are ALSO rows of the door route.
 }
 
 #: A UI file -> the most requests in it that the fence cannot read. A new

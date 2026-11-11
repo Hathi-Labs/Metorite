@@ -115,6 +115,7 @@ import {
   threadComments,
 } from "../lib/activityStream";
 import { typeRefusal, typeSelectOptions } from "../lib/taskEpic";
+import { type EpicRollup, rollupLine } from "../lib/epicRollup";
 import { parseAssignees, withAssignee, withoutAssignee } from "../lib/assignees";
 import { insertMention, notDeliveredNotice } from "../lib/notifications";
 
@@ -509,6 +510,9 @@ export function TaskBody({
   // D77 — every member's timed work on the task, summed by the gateway
   // (`GET /projects/tasks/{id}` → `time_spent_mins`). Null until read.
   const [spent, setSpent] = useState<number | null>(null);
+  // SP-9 — the roll-up of an epic, from the same single read. Absent for a
+  // task that is not an epic.
+  const [rollup, setRollup] = useState<EpicRollup | null>(null);
   // SP-6 — the types of THIS task's project, read here so the host (the
   // Projects panel or My Tasks' detail) need not pass them. A failed read
   // leaves the list empty: the control then offers "No type" only.
@@ -569,6 +573,7 @@ export function TaskBody({
       .catch(() => undefined);
     setWatching(null);
     setSpent(null);
+    setRollup(null);
     watchersApi
       .get(task.id)
       .then((res) => {
@@ -579,7 +584,9 @@ export function TaskBody({
     projectsApi
       .task(task.id)
       .then((row) => {
-        if (live) setSpent(row.time_spent_mins ?? 0);
+        if (!live) return;
+        setSpent(row.time_spent_mins ?? 0);
+        setRollup(row.rollup ?? null);
       })
       .catch(() => undefined);
     return () => {
@@ -1322,6 +1329,16 @@ export function TaskBody({
                     {spent === null ? "…" : spent > 0 ? durationLabel(spent) : "None yet"}
                   </span>
                 </FieldCell>
+
+                {/* SP-9 — an epic rolls up EVERY slice below it that the reader
+                    can see. The board card keeps its direct-child count. */}
+                {rollup ? (
+                  <FieldCell label="Slices" icon="GitBranch">
+                    <span className="text-sm text-foreground" data-testid="epic-rollup">
+                      {rollupLine(rollup)}
+                    </span>
+                  </FieldCell>
+                ) : null}
 
                 <FieldCell label="Repeats" icon="Repeat">
                   <RepeatEditor taskId={task.id} bare />
