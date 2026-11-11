@@ -388,7 +388,11 @@ describe("review round 2, P2: a sign-out leaves no address in a key name", () =>
     ls.setItem(`cc-accent:${SCOPE_A}`, "red");
     ls.setItem(`theme:${SCOPE_A}`, "light");
     ls.setItem(`cc-density-org:${SCOPE_B}`, "compact");
+    // The unsent mark of PKG-20 (review round 3, P1-a) goes with the keys.
+    ls.setItem(`cc-appearance-unsent:${SCOPE_A}`, "1762848000000");
+    ls.setItem(`cc-appearance-unsent:${SCOPE_B}`, "1762848000000");
     ls.setItem("cc-accent:c@three.test|org-3", "blue");
+    ls.setItem("cc-appearance-unsent:c@three.test|org-3", "1762848000000");
     ls.setItem("cc-appearance-last:c@three.test", "c@three.test|org-3");
   };
   const leftovers = () =>
@@ -400,6 +404,7 @@ describe("review round 2, P2: a sign-out leaves no address in a key name", () =>
     expect(leftovers()).toEqual([]);
     expect(ls.getItem(APPEARANCE_SCOPE_KEY)).toBeNull();
     expect(ls.getItem("cc-accent:c@three.test|org-3")).toBe("blue");
+    expect(ls.getItem("cc-appearance-unsent:c@three.test|org-3")).toBe("1762848000000");
     expect(ls.getItem("cc-appearance-last:c@three.test")).toBe("c@three.test|org-3");
     // This tab is signed out: it falls back to the bare keys.
     expect(tabAppearanceScope()).toBeNull();
@@ -417,6 +422,7 @@ describe("review round 2, P2: a sign-out leaves no address in a key name", () =>
     clearSignedOutAppearance();
     expect(leftovers().filter((k) => k.includes("a@one.test"))).toEqual([]);
     expect(ls.getItem(`cc-density-org:${SCOPE_B}`)).toBe("compact");
+    expect(ls.getItem(`cc-appearance-unsent:${SCOPE_B}`)).toBe("1762848000000");
   });
 });
 

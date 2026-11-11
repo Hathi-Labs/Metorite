@@ -2234,6 +2234,13 @@ try:
 except Exception:  # pragma: no cover
     pass
 
+# KIT-4a — the download of the agent kit (orchestration_playbook.md §6a).
+# Dark: 404 while `PLAYBOOK_ORGS` does not hold the caller's org. A plain
+# import, so a real import error stops the start and does not hide.
+from gateway.routes.agent_kit import router as _agent_kit_router  # noqa: E402
+
+app.include_router(_agent_kit_router)
+
 try:
     # WS-MCP SW-94 — one policy store for agent work (agent_coordination.md
     # §3.11.5 and SW-94): the save of a policy row. Ships dark: 404 while
