@@ -183,6 +183,23 @@ def test_every_reader_goes_through_the_one_helper() -> None:
         "the rule run reads auto_run with SQL of its own again")
 
 
+def test_the_choice_stamp_never_feeds_the_one_reader() -> None:
+    """Task 2305, acceptance 9: the stamp tells the UI that the member chose.
+    It never turns a background write on. ``auto_run_on`` reads ``auto_run``
+    only, and no SQL of the email routes writes a literal ON."""
+    src = inspect.getsource(rules.auto_run_on)
+    assert "auto_run_chosen" not in src
+    assert "s.auto_run," in src
+    email_routes = _ROOT / "apps/services/gateway/gateway/routes/email"
+    literal_on = re.compile(r"\bauto_run\s*=\s*(true|TRUE)\b")
+    for path in email_routes.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        sql = [n.value for n in ast.walk(tree)
+               if isinstance(n, ast.Constant) and isinstance(n.value, str)
+               and "email_assistant_settings" in n.value]
+        assert not any(literal_on.search(s) for s in sql), path
+
+
 async def test_a_new_gmail_mailbox_runs_no_rule_action(monkeypatch) -> None:
     """The sync-cycle rule run, hermetic: a Gmail mailbox with no settings
     row and an enabled rule runs nothing. Outlook runs as on main."""
@@ -1272,6 +1289,198 @@ class TestThePutKeepsAutoRun:
                 p.admin_engine, "SELECT auto_run FROM email_assistant_settings "
                 "WHERE account_id = CAST(:a AS uuid)", a=acc)
             assert stored is expected
+        finally:
+            _drop_owner(p.admin_engine, owner)
+
+
+def _chosen_at_migration() -> Path:
+    """Task 2305's file, found by CONTENT, never by number (R1)."""
+    found = [
+        p for p in (_ROOT / "infra/postgres").glob("[0-9]*_*.sql")
+        if "ADD COLUMN IF NOT EXISTS auto_run_chosen_at"
+        in p.read_text(encoding="utf-8")
+    ]
+    assert len(found) == 1, f"expected one auto_run_chosen_at migration, got {found}"
+    return found[0]
+
+
+def test_the_choice_stamp_migration_is_expand_only() -> None:
+    """Task 2305, R6: one nullable TIMESTAMPTZ with no default and no
+    backfill. Comments go first, so the header's words cannot trip a check."""
+    body = "\n".join(
+        ln for ln in _chosen_at_migration().read_text(encoding="utf-8").splitlines()
+        if not ln.lstrip().startswith("--"))
+    assert re.search(
+        r"ADD COLUMN IF NOT EXISTS auto_run_chosen_at TIMESTAMPTZ;", body)
+    assert "DEFAULT" not in body.upper()
+    assert "NOT NULL" not in body.upper()
+    assert "UPDATE" not in body.upper()
+    assert "lock_timeout" in body
+
+
+async def _put_body(p, owner: str, body: dict[str, Any]) -> dict[str, Any]:
+    user = UserContext(email=owner, role=UserRole.EMPLOYEE, organization_id=p.org_b)
+    async with _as_tenant(p):
+        return await assistant.put_assistant_settings(
+            assistant.AssistantSettingsModel(**body), user=user)
+
+
+async def _get_body(p, owner: str, acc: str) -> dict[str, Any]:
+    user = UserContext(email=owner, role=UserRole.EMPLOYEE, organization_id=p.org_b)
+    async with _as_tenant(p):
+        return await assistant.get_assistant_settings(account_id=acc, user=user)
+
+
+def _stored_choice(admin, acc: str) -> tuple[Any, Any]:
+    [(auto_run, stamp)] = _admin_read(
+        admin, "SELECT auto_run, auto_run_chosen_at FROM email_assistant_settings "
+        "WHERE account_id = CAST(:a AS uuid)", a=acc)
+    return auto_run, stamp
+
+
+@_DB_GATE
+class TestTheAutoRunChoiceUnderForceRLS:
+    """Task 2305 (§12.3.13.7): only the member's own Auto-run act records a
+    choice. Each test runs the real GET and PUT as ``acb_app_h3rls`` under
+    FORCE RLS on the promoted catalog."""
+
+    def test_the_column_is_a_nullable_timestamptz_with_no_default(
+        self, promoted, app_engine,  # noqa: F811
+    ):
+        _assert_non_priv(app_engine)
+        [(dtype, nullable, default)] = _admin_read(
+            promoted.admin_engine,
+            "SELECT data_type, is_nullable, column_default "
+            "FROM information_schema.columns WHERE table_name = "
+            "'email_assistant_settings' AND column_name = 'auto_run_chosen_at'")
+        assert (dtype, nullable, default) == ("timestamp with time zone", "YES", None)
+
+    async def test_a_signature_save_on_gmail_with_no_row_is_no_choice(
+        self, promoted, app_engine,  # noqa: F811
+    ):
+        """Acceptance 4: an old client and the web screen PUT the GET body
+        with a new signature. The row lands with OFF and no stamp, and the
+        notice still sees no choice."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        owner = f"member-{uuid.uuid4().hex[:8]}@em-g11c2.test"
+        acc = _seed_account(p.admin_engine, org=p.org_b, owner=owner, provider="gmail")
+        try:
+            got = await _get_body(p, owner, acc)
+            assert (got["auto_run"], got["auto_run_chosen"]) == (False, False)
+            res = await _put_body(p, owner, {**got, "signature": "— Ravi"})
+            assert (res["auto_run"], res["auto_run_chosen"]) == (False, False)
+            assert _stored_choice(p.admin_engine, acc) == (False, None)
+            again = await _get_body(p, owner, acc)
+            assert (again["auto_run"], again["auto_run_chosen"]) == (False, False)
+            assert again["signature"] == "— Ravi"
+        finally:
+            _drop_owner(p.admin_engine, owner)
+
+    async def test_turn_on_stamps_and_reads_chosen(
+        self, promoted, app_engine,  # noqa: F811
+    ):
+        """Acceptance 5: the notice's Turn on stamps, and both answers read
+        chosen. The engine reads ON."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        owner = f"member-{uuid.uuid4().hex[:8]}@em-g11c2.test"
+        acc = _seed_account(p.admin_engine, org=p.org_b, owner=owner, provider="gmail")
+        try:
+            got = await _get_body(p, owner, acc)
+            res = await _put_body(p, owner, {**got, "auto_run": True,
+                                             "auto_run_choice": True})
+            assert (res["auto_run"], res["auto_run_chosen"]) == (True, True)
+            stored, stamp = _stored_choice(p.admin_engine, acc)
+            assert stored is True and stamp is not None
+            assert (await _get_body(p, owner, acc))["auto_run_chosen"] is True
+            async with _as_tenant(p), _tenant_session() as db:
+                assert await rules.auto_run_on(db, acc) is True
+        finally:
+            _drop_owner(p.admin_engine, owner)
+
+    async def test_an_off_with_the_marker_stamps_and_stays_off(
+        self, promoted, app_engine,  # noqa: F811
+    ):
+        """Acceptance 5: an OFF on purpose is a choice. It stamps, reads
+        chosen, and keeps ``auto_run`` OFF, so the engine writes nothing."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        owner = f"member-{uuid.uuid4().hex[:8]}@em-g11c2.test"
+        acc = _seed_account(p.admin_engine, org=p.org_b, owner=owner, provider="gmail")
+        try:
+            got = await _get_body(p, owner, acc)
+            res = await _put_body(p, owner, {**got, "auto_run": False,
+                                             "auto_run_choice": True})
+            assert (res["auto_run"], res["auto_run_chosen"]) == (False, True)
+            stored, stamp = _stored_choice(p.admin_engine, acc)
+            assert stored is False and stamp is not None
+            again = await _get_body(p, owner, acc)
+            assert (again["auto_run"], again["auto_run_chosen"]) == (False, True)
+            async with _as_tenant(p), _tenant_session() as db:
+                assert await rules.auto_run_on(db, acc) is False
+        finally:
+            _drop_owner(p.admin_engine, owner)
+
+    async def test_an_old_client_body_never_stamps(
+        self, promoted, app_engine,  # noqa: F811
+    ):
+        """Acceptance 5: a body with no marker and ``auto_run: false`` never
+        stamps. The echo of the GET field ``auto_run_chosen`` is no marker,
+        and neither is a marker with no value of ``auto_run``."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        owner = f"member-{uuid.uuid4().hex[:8]}@em-g11c2.test"
+        acc = _seed_account(p.admin_engine, org=p.org_b, owner=owner, provider="gmail")
+        try:
+            got = await _get_body(p, owner, acc)
+            for body in ({**got, "auto_run": False},
+                         {**got, "auto_run": False, "auto_run_chosen": True},
+                         {"account_id": acc, "auto_run_choice": True}):
+                res = await _put_body(p, owner, body)
+                assert res["auto_run_chosen"] is False, body
+                assert _stored_choice(p.admin_engine, acc) == (False, None), body
+        finally:
+            _drop_owner(p.admin_engine, owner)
+
+    async def test_no_save_clears_the_stamp(
+        self, promoted, app_engine,  # noqa: F811
+    ):
+        """Acceptance 2: a later save with no marker, or with a second
+        marker, keeps the first stamp as it is."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        owner = f"member-{uuid.uuid4().hex[:8]}@em-g11c2.test"
+        acc = _seed_account(p.admin_engine, org=p.org_b, owner=owner, provider="gmail")
+        try:
+            got = await _get_body(p, owner, acc)
+            await _put_body(p, owner, {**got, "auto_run": True, "auto_run_choice": True})
+            _, first = _stored_choice(p.admin_engine, acc)
+            assert first is not None
+            for body in ({**got, "auto_run": False},
+                         {**got, "auto_run": False, "auto_run_choice": True},
+                         {**got, "signature": "x", "auto_run_choice": False}):
+                res = await _put_body(p, owner, body)
+                assert res["auto_run_chosen"] is True, body
+                assert _stored_choice(p.admin_engine, acc)[1] == first, body
+        finally:
+            _drop_owner(p.admin_engine, owner)
+
+    @pytest.mark.parametrize(("stored", "chosen"), [(False, False), (True, True)])
+    async def test_a_row_from_before_reads_by_its_value(
+        self, promoted, app_engine, stored, chosen,  # noqa: F811
+    ):
+        """Acceptance 6: a row from before the column, with no stamp, reads
+        chosen only when it stores ON."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        owner = f"member-{uuid.uuid4().hex[:8]}@em-g11c2.test"
+        acc = _seed_account(p.admin_engine, org=p.org_b, owner=owner, provider="gmail")
+        _seed_settings(p.admin_engine, org=p.org_b, account_id=acc, auto_run=stored)
+        try:
+            got = await _get_body(p, owner, acc)
+            assert (got["auto_run"], got["auto_run_chosen"]) == (stored, chosen)
+            assert _stored_choice(p.admin_engine, acc) == (stored, None)
         finally:
             _drop_owner(p.admin_engine, owner)
 

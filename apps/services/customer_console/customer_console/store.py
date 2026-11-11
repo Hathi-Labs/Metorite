@@ -4671,6 +4671,93 @@ def provider_credential_revoke(
     return int(result.rowcount or 0)
 
 
+# ── MS-1: the reads that catalog health judges (§6A.18) ─────────────────────
+
+
+def platform_credential_labels(conn: Connection) -> dict[str, str | None]:
+    """The provider string and label of each live PLATFORM credential.
+
+    🔴 **Platform rows only** (``organization_id IS NULL``). A BYOK key is a
+    customer's, and the tier chains, the tries and the fix rule read platform
+    keys only (§6A.18). The provider string comes back exactly as stored, so
+    a key under ``sarvam.ai`` does not count as a key under ``sarvam``.
+
+    ⚠️ ``secret_enc`` is not selected, as in :func:`provider_credential_list`.
+    """
+    rows = conn.execute(
+        text(
+            """
+            SELECT provider, label
+              FROM provider_credential
+             WHERE organization_id IS NULL AND revoked_at IS NULL
+             ORDER BY provider
+            """
+        )
+    ).all()
+    return {str(r[0]): r[1] for r in rows}
+
+
+def in_force_chains(conn: Connection) -> dict[tuple[str, str], list[str]]:
+    """Every ``(tier, task)`` chain in force, its models in rank order.
+
+    The newest set whose ``effective_from`` has passed, as
+    ``router.resolve_chain`` reads one chain. A tombstone set (H-178) gives
+    no chain. A staged set (a future date) is not in force yet.
+    """
+    rows = conn.execute(
+        text(
+            """
+            SELECT b.tier, b.task, b.model
+              FROM tier_binding b
+             WHERE b.model IS NOT NULL
+               AND b.effective_from = (
+                   SELECT max(x.effective_from) FROM tier_binding x
+                    WHERE x.tier = b.tier AND x.task = b.task
+                      AND x.effective_from <= statement_timestamp())
+             ORDER BY b.tier, b.task, b.rank
+            """
+        )
+    ).all()
+    chains: dict[tuple[str, str], list[str]] = {}
+    for tier, task, model in rows:
+        chains.setdefault((str(tier), str(task)), []).append(str(model))
+    return chains
+
+
+def in_force_chain(conn: Connection, *, tier: str, task: str) -> list[str]:
+    """One chain in force, its models in rank order. Empty when none.
+
+    ⚠️ **``statement_timestamp()``, not ``now()``.** A fix reads the chain
+    after it waits on the chain lock. ``now()`` is the start of the
+    transaction, which is BEFORE the wait. A chain that another writer
+    committed during the wait would then not be "in force" yet, and the fix
+    would rewrite the old chain over it.
+    """
+    rows = conn.execute(
+        text(
+            """
+            SELECT model FROM tier_binding
+             WHERE tier = :tier AND task = :task AND model IS NOT NULL
+               AND effective_from = (
+                   SELECT max(effective_from) FROM tier_binding
+                    WHERE tier = :tier AND task = :task
+                      AND effective_from <= statement_timestamp())
+             ORDER BY rank
+            """
+        ),
+        {"tier": tier, "task": task},
+    ).all()
+    return [str(r[0]) for r in rows]
+
+
+def capability_rows(conn: Connection) -> dict[tuple[str, str], tuple[str, bool]]:
+    """Every ``model_capability`` row: ``(model, task) -> (invocation, streams)``."""
+    rows = conn.execute(
+        text("SELECT model, task, invocation, streams FROM model_capability")
+    ).all()
+    return {(str(r[0]), str(r[1])): (str(r[2]), bool(r[3])) for r in rows}
+
+
 def spend_by_provider(
     conn: Connection,
     *,

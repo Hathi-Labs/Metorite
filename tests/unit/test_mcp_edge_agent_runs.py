@@ -189,8 +189,13 @@ class TestTheLongPoll:
     def test_the_call_limit_of_the_long_poll_is_the_wait_plus_12(self):
         assert tools.call_timeout(tools.GET_AGENT_RUN, {"wait_seconds": 20}) == 32.0
         assert tools.call_timeout(tools.GET_AGENT_RUN, {}) == 12.0
+        # MCP-G20: `update_tasks` is the one other tool with a limit of its
+        # own (`Tool.timeout_s`), because it runs up to 50 writes. Each of
+        # its items keeps the limit of TOOL_TIMEOUT_S.
+        assert tools.call_timeout(tools.UPDATE_TASKS, {"wait_seconds": 20}) == (
+            tools.BULK_TOOL_TIMEOUT_S)
         for name, tool in tools.TOOLS.items():
-            if name != "get_agent_run":
+            if name not in ("get_agent_run", "update_tasks"):
                 assert tools.call_timeout(tool, {"wait_seconds": 20}) == tools.TOOL_TIMEOUT_S
 
     def test_the_other_limits_stay(self):

@@ -40,6 +40,7 @@ not write a second copy of that seam. A bare test file name is under
    - WEB-7: `web_render_client.py` is the ONE client of the web worker (`POST /render`, bearer `WEB_WORKER_TOKEN`). The walk runs first, and the org comes from `_run_org` only. Fence: `test_web_render.py`.
 4a. child_confine.py -- the ONE confinement of a child process that parses hostile input (WS-WEB WEB-2b). Landlock, the seccomp filter, `close_inherited_fds` and `close_limits`. It is stdlib only.
    - A worker loads it BY PATH with `importlib`, never with `import acb_skills`, because the package `__init__` loads the whole tool set. It writes no bytecode on that load. Do not write a second copy of Landlock or of the filter. WEB-3 and each later parser use this module.
+   - A worker outside this dir gets the path from its parent. The gateway's signature image child (`gateway/signature_image_worker.py`, WS-17 SG-1) is the first: `gateway/signature_image.py` puts the file of `acb_skills.child_confine` in the spec. A move or a rename of this file breaks that child too.
    - `confine(min_abi)` fails closed on Linux with `Refused("unavailable")`. The OCR child asks ABI 4, and the web child asks ABI 1 (the file system), because seccomp already refuses `socket`.
    - `SECCOMP_DENIED` holds `truncate` and the `chmod`, `chown`, `utime` and `xattr` calls, so a file of the gateway user is safe at every ABI. Both workers call `close_inherited_fds()` first.
    - Fences: `test_attachment_ocr.py` (`TestTheConfinement`) and `test_web_reader_confine.py`.
@@ -87,13 +88,14 @@ not write a second copy of that seam. A bare test file name is under
 5c. permission_policy.py -- the B6 risk-aware handler and the D85 guard `guard_shared_agent_shell`.
    - The guard refuses a shell request unless the artifact context says `host_shell_refused=False`. Fence: `test_shared_agent_shell_tools.py`.
    - `decide()` refuses a read of a BINARY workspace file (`read_binary_file`). ⚠️ It never refuses a name in `_CLI_IMAGE_SUFFIXES`, and a CLI upgrade must check that list again. Fence: `test_chat_nul_persist.py`.
-5d. safe_open.py -- the ONE safe opener (spec `maf_coding_engine.md` §7.5 rule B). Every host reader and writer of a dir that a sandbox container mounts opens its paths here.
+5d. safe_open.py -- the ONE safe opener (spec `maf_coding_engine.md` §7.5 rule B). Every host reader and writer of a dir that a sandbox container mounts opens its paths here. The Custom Apps routes do too (WS-43h). `remove_links` and `remove_nested_git` remove each link and each nested `.git` that an `app_builder` command made.
    - A link at any depth fails the call. Do not open a mounted dir any other way. Fence: `test_sandbox_safe_open.py`.
 5e. sandbox_tools.py + tenant_file_store.py -- the sandbox tools (D86, spec §7.4 and §16.3).
    - Only `attach_for_run` hands them out, to ONE run, when `sandbox_broker.covers()` is true for the run's own tenant. They are never injected.
-   - A covered run does not hold `WITHHELD_HOST_TOOLS` or `HOST_NETWORK_TOOLS`. Do not write that no data leaves the platform, because a called agent runs outside the sandbox.
-   - The store takes only the heads `agent-data/`, `inputs/`, `outputs/` and `.run/`. Put prose for a sandbox-only tool in `addendum.RUN_SECTIONS`, never in `FULL_SECTIONS`.
-   - Fences: `test_run_command_tool.py`, `test_maf_code_session.py` (R8), `test_projects_sandbox_tools.py`, `test_generated_addendum.py`.
+   - Two harness agents take their own parts. The `code_task` session takes `code_task_session_parts`. The app-builder factory takes `app_builder_session_parts` under `app_builder:<org>` (WS-43h). Each of those tools reads the run binding and the scope on every call.
+   - A covered run does not hold `WITHHELD_HOST_TOOLS` or `HOST_NETWORK_TOOLS`, and app-builder's harness agent holds neither (`host_tool_guard`). Do not write that no data leaves the platform, because a called agent runs outside the sandbox.
+   - `TenantFileStore` takes only the heads `agent-data/`, `inputs/`, `outputs/` and `.run/`. `AppWorkspaceFileStore` maps each path of the app dir as it is, refuses each name that starts with a dot, and mirrors nothing to the blob store. The app-builder tools refuse a tenant dir `o:<org>`. Put prose for a sandbox-only tool in `addendum.RUN_SECTIONS`, never in `FULL_SECTIONS`.
+   - Fences: `test_run_command_tool.py`, `test_maf_code_session.py` (R8), `test_projects_sandbox_tools.py`, `test_generated_addendum.py`, `test_app_builder_engine.py`.
 5f. attachment_text.py + attachment_tools.py -- `read_attachment` (spec `projects_ai_chat.md` §22).
    - `attachment_text` parses bytes only, with no subprocess and no code. Every cap is a module constant there. No regex may run over a whole line of HTML.
    - `attachment_tools` takes the workspace and the thread from `artifact_context()`, and only a file name from the model. `agent_paths.upload_dir_rel` is the ONE rule for where an upload lands.

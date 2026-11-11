@@ -13,6 +13,7 @@
  * read makes no write. Fence: `autoRunNotice.test.ts`.
  */
 import { setAutoRun, type RulesStepApi } from "./onboarding";
+import { onRulesChanged } from "./rulesChanged";
 import type { EmailAccount } from "./types";
 
 /** The calls the notice makes. They are the rules step's own calls. */
@@ -96,6 +97,37 @@ export async function loadAutoRunNotice(
   } catch {
     return null;
   }
+}
+
+/**
+ * Read the count now, and again after each rule write in this app (task 2451).
+ * `onCount` gets each answer. Only the newest read may set it, so a slow read
+ * that started before a change cannot bring back an old count. Returns the
+ * function that stops the watch. The page calls it on unmount and on a change
+ * of mailbox. Vitest runs in node here, so the page effect is this function,
+ * and `autoRunNotice.test.ts` drives it with an `EventTarget`.
+ */
+export function watchAutoRunNotice(
+  api: AutoRunNoticeApi,
+  account: Pick<EmailAccount, "id" | "provider">,
+  onCount: (count: number | null) => void,
+  target?: EventTarget | null,
+  notNow: () => ReadonlyArray<string> = () => readAutoRunNotNow(),
+): () => void {
+  let live = true;
+  let newest = 0;
+  const read = () => {
+    const mine = ++newest;
+    void loadAutoRunNotice(api, account, notNow()).then((n) => {
+      if (live && mine === newest) onCount(n);
+    });
+  };
+  read();
+  const stop = onRulesChanged(read, target);
+  return () => {
+    live = false;
+    stop();
+  };
 }
 
 /** "Turn on": the existing settings save, with `auto_run` changed only. */

@@ -717,10 +717,14 @@ _AGENT_REGISTRY: list[dict] = [
         ),
         "tags": ["workshop", "legacy"],
         "status": "live",
-        # Copilot-SDK engine: the builder needs native file/shell tools to
-        # edit the app workspace. BYOK-routed through the gateway tiers (no
-        # GitHub quota dependency).
-        "agent_runtime": "github-copilot",
+        # WS-43h (D84, maf_coding_engine.md §7.8): "maf", so the OBJECT that
+        # the factory builds decides the path at every executor site. With
+        # `app_builder:<org>` in MAF_CODING_SCOPE the factory builds a MAF
+        # harness agent, and the run takes the native path. Every other org
+        # gets the GitHubCopilotAgent, whose `_default_options` still sends
+        # it down the Copilot path, as before. The label alone sent a MAF
+        # object down the Copilot path, where it fails.
+        "agent_runtime": "maf",
         "local_path": "apps/agents/agent-app-builder",
         "integrations": [],
         "optional_integrations": [],
@@ -1737,8 +1741,8 @@ async def list_agents(
     # A COPY of each entry. The loop below writes each declared runtime into
     # the entry, and the executor reads ``_AGENT_REGISTRY`` for its label. A
     # write into the shared dict changed the label of the process on the first
-    # GET /agent (WS-43n review): task-manager and app-builder declare "maf"
-    # in config.json and are labelled "github-copilot" here, on purpose.
+    # GET /agent (WS-43n review): task-manager declares "maf" in config.json
+    # and is labelled "github-copilot" here, on purpose.
     static = [dict(a) for a in _AGENT_REGISTRY if a["name"] not in dynamic_names]
     # Back-fill agent_runtime for legacy dynamic entries that predate the field
     # or have NULL in the DB column. WS-43n (§15.5): the default is "maf" for

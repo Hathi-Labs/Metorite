@@ -1,5 +1,7 @@
 # Development & delivery framework — how we ship to customers while still building
 
+> **Dated 2026-11-11, staging (D144).** The owner retired staging. Read each staging step in this spec as history. Production takes a release at 05:30, 13:30 and 21:30 UTC (D194).
+
 **Status:** ✅ **ADOPTED — 2026-08-26 by D55** *(proposed 2026-08-24; 🟠 PROPOSED
 until the owner recorded it)*. · **Owner:** vjvarada · **Classification:** CONTRACTS &
 DOCTRINE (`INDEX.md`) · **Board row: WS-38**, minted with D55 ·

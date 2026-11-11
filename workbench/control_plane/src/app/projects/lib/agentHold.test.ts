@@ -22,6 +22,7 @@ import {
   canReleaseRun,
   heldByLine,
   releaseBody,
+  runHolderFree,
 } from "./agentRuns";
 
 const run = {
@@ -101,12 +102,24 @@ describe("AgentRunPanel", () => {
   it("draws the held-by line, the stale word and a Release behind a confirm", () => {
     expect(source).toContain("data-agent-held-by");
     expect(source).toContain("heldByLine(run, personLabels)");
-    expect(source).toContain("run.lease_expired");
+    expect(source).toContain("runHolderFree(run)");
+    expect(source).not.toContain("run.lease_expired");
     expect(source).toContain("STALE_HOLD_TEXT");
     expect(source).toContain("data-agent-release");
     expect(source).toContain("agentRunsApi.release(");
     // The control opens the confirm. It never calls the route itself.
     expect(source).toMatch(/onClick=\{\(\) => setConfirmRelease\(true\)\}/);
     expect(source).toMatch(/onConfirm=\{\(\) => void release\(\)\}/);
+  });
+});
+
+describe("runHolderFree (SW-4)", () => {
+  it("reads the server holder-free answer, so a dead connection reads free", () => {
+    expect(runHolderFree({ holder_free: true, lease_expired: false })).toBe(true);
+    expect(runHolderFree({ holder_free: false, lease_expired: true })).toBe(false);
+  });
+  it("falls back to lease_expired for a gateway before SW-4", () => {
+    expect(runHolderFree({ lease_expired: true })).toBe(true);
+    expect(runHolderFree({})).toBe(false);
   });
 });
