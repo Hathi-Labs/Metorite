@@ -1,6 +1,6 @@
 # Orchestration playbook — the know-how that Metorite ships to every organization that connects
 
-**Status: ACTIVE (PB-0, 2026-11-06). KIT-1 (the kit core, task 2549) and KIT-2b (the Codex pack, task 2550) are built. The rest is not.** The decision is **D186** in `work_plan.md` §3, and task 1906 (SW-P10) planned this spec. Its slices are PB-1 to PB-10, and the kit slices KIT-0 to KIT-9 (§6a, epic 2547). Each has a task on the board.
+**Status: ACTIVE (PB-0, 2026-11-06). KIT-1 (the kit core, task 2549) and KIT-2b (the Codex pack, task 2550) are built. KIT-2c (the Copilot pack, task 2551) and KIT-2d (the Gemini CLI and Antigravity packs, task 2552) are built too. The rest is not.** The decision is **D186** in `work_plan.md` §3, and task 1906 (SW-P10) planned this spec. Its slices are PB-1 to PB-10, and the kit slices KIT-0 to KIT-9 (§6a, epic 2547). Each has a task on the board.
 
 **Board row:** **WS-MCP** in `work_plan.md` §2.1. **Owner direction (2026-11-06):** Metorite "not only becomes a place we use for orchestrating multiple agents". It "also contains the know-how and understanding in the system prompt to help set up multi-org orchestration systems for whoever connects the Metorite MCP." **Price:** part of the flat seat (`launch_surface.md` §4). No SKU and no add-on (D186.3).
 
@@ -79,7 +79,7 @@ Guidance comes in layers (D140.6, SW-31). P10 adds one at the bottom. The neares
 | # | Place | What it holds | Mechanism |
 |---|---|---|---|
 | 1 | **MCP prompts** (slash commands) | `set_up_agent_team`, `plan_slices`, `write_brief`, `review_my_fleet`, `run_retro`, and the session commands of SW-82 | `prompts/list` (EA3-39) |
-| 2 | **MCP resources** | `metorite://playbook/index`, `.../pattern/{slug}`, `.../brief-contract`, `.../gates`, `.../failures`, `.../cost-model`, `.../lane-templates`, `.../kit/{file}`. Each has a version | SW-34a |
+| 2 | **MCP resources** | One resource for each topic: `metorite://playbook/{slug}`, such as `metorite://playbook/brief-contract` and `metorite://playbook/patterns/one-agent-first`. The slug is the path of the topic in `acb_playbook`. Each has a version | SW-34a, PB-3b |
 | 3 | **Tips in results** | At most 2 short lines in the result of `claim_task`, `my_work` and `delegate_task`. Example on `claim_task`: "Write a brief before you delegate." Each line names a playbook topic and shows once for each run | SW-56 |
 | 4 | **Guidance layers** | The Metorite default, then the organization, the space and the project | SW-31 |
 | 5 | **Setup tools** | `propose_agent_setup` reads the organization and proposes lanes, leads, gates and budgets on a card. `get_starter_kit` returns the kit files | New tools (PB-6) |
@@ -211,7 +211,7 @@ Each names its scope, its done-when, its fence (R7), its risk tier and its gate.
 #### PB-3 · The resources and `read_playbook`
 
 - **Metorite task.** 1949.
-- **Scope.** The `metorite://playbook/...` resources of §5 beside the three resources of SW-34a. The tool `read_playbook(topic)` for a client with no resources. Content is the same for every organization. The organization layer adds its notes after the default text, marked as the organization's.
+- **Scope.** PB-3 is split (orchestrator, 2026-11-07). **PB-3a** is the tool `read_playbook`, built. **PB-3b** is the `metorite://playbook/{slug}` resources of §5, beside the project and task resources of SW-34a, and it needs both flags: `agent_resources_orgs` and `playbook_orgs`. Content is the same for every organization. The organization layer adds its notes after the default text, marked as the organization's.
 - **Done when.** A client lists and reads each resource. An unknown topic answers not found. The text leaves as `untrusted_text`.
 - **Fence.** The transport test of SW-34a, `test_mcp_edge_coverage.py`.
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE. **Depends on.** PB-1, SW-34a.

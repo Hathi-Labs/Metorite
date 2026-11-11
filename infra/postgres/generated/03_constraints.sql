@@ -2809,3 +2809,15 @@ ALTER TABLE email_signature_settings ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE email_signature_settings ADD CONSTRAINT email_signature_settings_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS email_signature_settings_org_idx ON email_signature_settings (organization_id);
+
+-- pm_epic_contracts
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pm_epic_contracts WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: pm_epic_contracts still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE pm_epic_contracts ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE pm_epic_contracts ADD CONSTRAINT pm_epic_contracts_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS pm_epic_contracts_org_idx ON pm_epic_contracts (organization_id);
