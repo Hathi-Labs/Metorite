@@ -1,4 +1,4 @@
-"""The action door of AI Studio, the hermetic half (STU-B2a, B2b-1, B2c-1 and B2c-2a).
+"""The action door of AI Studio, the hermetic half (STU-B2a, B2b-1, B2c-1, B2c-2a and D4b).
 
 Spec: ``project-docs/specs/ai_studio.md`` §3.2, and §14 B2a, B2b-1, B2c-1 and B2c-2a. Code:
 ``gateway/routes/studio/invoke.py``. The R8 half, on a real Postgres, is
@@ -34,7 +34,11 @@ This file proves:
   ``object_missing``;
 - one audit row for each call that reaches a package, with no record data
   and each text capped;
-- the object verb table holds the five verbs of the A2 grammar.
+- the object verb table holds the six verbs of the A2 grammar;
+- the aggregate (D4b) takes only the keys of the C2b schema, refuses a bad key,
+  a bad op and too many measures before any read of the object, passes its
+  input to the one reader with the package of the path, and answers the one
+  row of ``parseAggregate``.
 
 **The mutations (R7).** The R8 suite holds the full list and each result.
 These turn a test of this file red:
@@ -53,6 +57,7 @@ These turn a test of this file red:
 * L1 to L4, and L6 to L12 and L14, of B2b-1 turn a test of this file red. L5
   and L13 need the real store, so only the R8 suite sees them.
 * F1 to F11 of the fix round each turn a test of this file red.
+* A1 to A6 of D4b are in the docstring of ``TestTheAggregate``.
 """
 
 from __future__ import annotations
@@ -65,6 +70,7 @@ import re
 import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
 
@@ -75,10 +81,12 @@ from acb_common.app_manifests.base import CLASSES
 from acb_common.studio_manifest import (
     OBJECT_OP_CLASSES,
     OBJECT_OPS,
+    RECORD_OPS,
     parse_uses,
     validate_manifest,
 )
-from acb_common.studio_query import QueryError, list_input_schema
+from acb_common.studio_fields import FieldSpec
+from acb_common.studio_query import QueryError, aggregate_input_schema, list_input_schema
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from gateway.routes.studio import actions, invoke
@@ -105,6 +113,7 @@ MANIFEST: dict[str, Any] = {
     "actions": [
         {"id": "peek", "uses": "object:visit.get"},
         {"id": "find", "uses": "object:visit.list"},
+        {"id": "tally", "uses": "object:visit.aggregate"},
         {"id": "add", "uses": "object:visit.create"},
         {"id": "change", "uses": "object:visit.update"},
         {"id": "remove", "uses": "object:visit.delete"},
@@ -223,7 +232,7 @@ def world(monkeypatch):
     w = SimpleNamespace(org=None, packages={}, objects=[], records=[], statements=[],
                         log=[], session_args=[], audits=[], catalog=list(CATALOG),
                         catalog_fails=False, queries=[], query_raises=None,
-                        store_says_none=False)
+                        store_says_none=False, aggregates=[])
 
     @asynccontextmanager
     async def _session(*args: Any):
@@ -263,8 +272,35 @@ def world(monkeypatch):
         return objects_store.RecordPage(tuple(rows[start:start + size]), len(rows), None,
                                         start, size, "")
 
+    async def _aggregate(db: Any, *, package_id: str, object_id: str, filter: Any = None,
+                         group_by: Any = None, measures: Any = None) -> Any:
+        """The store's aggregate on the fake session (D4b), under the real
+        shape check. It filters on the bound org, as RLS does, and answers a
+        count and a sum of money of the records of the object."""
+        w.aggregates.append({"package_id": package_id, "object_id": object_id,
+                             "filter": filter, "group_by": group_by, "measures": measures})
+        studio_query.check_aggregate_shape(filter, group_by, measures)
+        if w.query_raises is not None:
+            raise w.query_raises
+        held = [o for o in w.objects
+                if (o["id"], o["package"], o["org"]) == (object_id, package_id, db.org)]
+        if w.store_says_none or not held:
+            return None
+        n = sum(1 for r in w.records if r["object"] == object_id)
+        site = FieldSpec(key="site", type="text")
+        fee = FieldSpec(key="fee", type="money")
+        ms = (studio_query.Measure("count"), studio_query.Measure("sum", fee),
+              studio_query.Measure("average", site))
+        return objects_store.AggregateResult(
+            ms, (None, "INR", None),
+            (objects_store.AggregateGroup("Plant 4", n, (n, 12550, Decimal("2.5"))),
+             objects_store.AggregateGroup(None, 0, (0, 0, None))),
+            objects_store.AggregateGroup(None, 3, (3, 7, Decimal("1E+2"))), 4,
+            objects_store.AggregateGroup(None, n + 3, (n + 3, 12557, Decimal("0.1"))))
+
     monkeypatch.setattr(invoke, "_tenant_session", _session)
     monkeypatch.setattr(objects_store, "query_records", _query)
+    monkeypatch.setattr(objects_store, "aggregate_records", _aggregate)
     monkeypatch.setattr(actions, "catalog_rows", _catalog_rows)
     monkeypatch.setattr(invoke, "record_app_audit_bound", _audit)
     _open(monkeypatch, "*")
@@ -813,6 +849,226 @@ class TestTheList:
         assert world.log == ["open", "close", "open", "close", "audit"]
 
 
+# ── The aggregate (STU-D4b) ────────────────────────────────────────────────
+
+
+#: One input with each key of the C2b schema.
+AGG_BODY: dict[str, Any] = {
+    "filter": [{"field": "site", "op": "contains", "value": "Plant"}],
+    "group_by": {"field": "site"},
+    "measures": [{"op": "count"}, {"op": "sum", "field": "fee"}],
+}
+
+#: The three keys, each None: what the store gets for an empty input.
+NO_AGG_INPUT: dict[str, Any] = {"filter": None, "group_by": None, "measures": None}
+
+_AGG_OUTCOME = {"action": "tally", "uses": "object:visit.aggregate", "class": "A"}
+
+
+def _agg_read_nothing(world: Any) -> None:
+    """The door read the package, and no object, no record and no aggregate."""
+    assert {sql for sql, _ in world.statements} == {packages_store._GET_SQL}
+    assert world.aggregates == [] and world.queries == []
+
+
+class TestTheAggregate:
+    """``object:<name>.aggregate`` (D4b), one more class A read of the door.
+
+    **The mutations (R7).** Each one turns the named test red.
+
+    * A1. ``_aggregate_input``: accept any key.
+      ``test_a_key_outside_the_schema_is_422_and_reads_nothing``.
+    * A2. ``_aggregate_input``: drop the shape check, so the store refuses
+      after the object read. ``test_a_bad_op_or_too_many_measures_is_422_and_reads_nothing``.
+    * A3. ``OPEN_EXECUTORS``: drop the aggregate.
+      ``test_an_aggregate_is_class_a_and_it_runs``.
+    * A4. ``_run_object_aggregate``: pass the package id of the body.
+      ``test_an_aggregate_passes_its_input_to_the_store_with_the_package_of_the_path``.
+    * A5. ``_wire``: send a ``Decimal`` as a float.
+      ``test_an_aggregate_answers_the_one_row_of_parse_aggregate``.
+    * A6. ``_check``: skip the package read for an aggregate (the R8 suite
+      holds the wall of the member). ``test_a_package_of_another_member_or_org_is_404_for_an_aggregate``.
+    """
+
+    def test_an_aggregate_is_class_a_and_it_runs(self, world):
+        pid, _, _ = _setup(world)
+        r = _call(_client(world), pid, "tally", {})
+        assert r.status_code == 200, r.text
+        assert world.audits[0]["detail"] == {**_AGG_OUTCOME, "outcome": "ran"}
+
+    def test_an_aggregate_answers_the_one_row_of_parse_aggregate(self, world):
+        """The shape of ``aggregateModel.parseAggregate``. A measure names its
+        field by the key, a money sum is an int of minor units with its
+        currency, and a Decimal is exact text with no exponent."""
+        pid, _, _ = _setup(world)
+        got = _call(_client(world), pid, "tally", AGG_BODY).json()
+        assert set(got) == {"measures", "currencies", "groups", "other", "folded", "total"}
+        assert got["measures"] == [{"op": "count", "field": None},
+                                   {"op": "sum", "field": "fee"},
+                                   {"op": "average", "field": "site"}]
+        assert got["currencies"] == [None, "INR", None]
+        assert got["groups"] == [{"key": "Plant 4", "count": 1, "values": [1, 12550, "2.5"]},
+                                 {"key": None, "count": 0, "values": [0, 0, None]}]
+        assert got["other"] == {"key": None, "count": 3, "values": [3, 7, "100"]}
+        assert got["folded"] == 4
+        assert got["total"] == {"key": None, "count": 4, "values": [4, 12557, "0.1"]}
+
+    @pytest.mark.parametrize("content", ["", "{}"], ids=["empty", "object"])
+    def test_an_empty_body_means_one_count(self, world, content):
+        pid, oid, _ = _setup(world)
+        r = _raw(_client(world), pid, "tally", content)
+        assert r.status_code == 200, r.text
+        assert world.aggregates == [{"package_id": pid, "object_id": oid, **NO_AGG_INPUT}]
+
+    def test_an_aggregate_passes_its_input_to_the_store_with_the_package_of_the_path(
+            self, world):
+        pid, oid, _ = _setup(world)
+        other = _package(world)
+        body = {**AGG_BODY}
+        r = _client(world).post(f"/studio/apps/{pid}/actions/tally", json=body,
+                                params={"package_id": other, "organization_id": OTHER})
+        assert r.status_code == 200, r.text
+        assert world.aggregates == [{"package_id": pid, "object_id": oid, **AGG_BODY}]
+        by_name = [p for sql, p in world.statements if sql == objects_store._OBJECT_BY_NAME_SQL]
+        assert by_name == [{"pid": pid, "name": "visit"}]
+        assert world.queries == []
+
+    @pytest.mark.parametrize("key", ["package_id", "organization_id", "owner_email", "sort",
+                                     "limit", "offset", "id", "Measures", ""])
+    def test_a_key_outside_the_schema_is_422_and_reads_nothing(self, world, key):
+        """The list keys ``sort``, ``limit`` and ``offset`` are not keys of an
+        aggregate, so they are refused too."""
+        pid, _, _ = _setup(world)
+        r = _call(_client(world), pid, "tally", {"measures": [{"op": "count"}], key: "x"})
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"] == {"code": "query_value_invalid",
+                                      "message": invoke.BAD_AGGREGATE_INPUT, "field": None}
+        _agg_read_nothing(world)
+        assert world.audits[0]["detail"] == {
+            **_AGG_OUTCOME, "outcome": "refused", "reason": "query_value_invalid"}
+
+    @pytest.mark.parametrize("body,code", [
+        ({"measures": [{"op": "median", "field": "site"}]}, "query_op_not_allowed"),
+        ({"measures": [{"op": "count"}] * 5}, "query_too_big"),
+        ({"measures": []}, "query_value_invalid"),
+        ({"measures": "count"}, "query_value_invalid"),
+        ({"measures": [{"op": "count", "field": "site"}]}, "query_value_invalid"),
+        ({"measures": [{"op": "sum"}]}, "query_value_invalid"),
+        ({"measures": [{"op": "sum", "field": "fee", "x": 1}]}, "query_value_invalid"),
+        ({"group_by": "site"}, "query_value_invalid"),
+        ({"group_by": {"field": "site", "bucket": "year"}}, "query_value_invalid"),
+        ({"group_by": {"field": "site", "by": "x"}}, "query_value_invalid"),
+        ({"filter": [{"field": "site", "op": "matches"}]}, "query_op_not_allowed"),
+        ({"filter": [{"field": "site", "op": "eq", "value": 1}] * 9}, "query_too_big"),
+        ({"filter": "text"}, "query_value_invalid"),
+    ], ids=["op", "five", "none", "text", "count_field", "sum_no_field", "measure_key",
+            "group_text", "bucket", "group_key", "filter_op", "filters", "filter_text"])
+    def test_a_bad_op_or_too_many_measures_is_422_and_reads_nothing(self, world, body, code):
+        """The shape check of C2b runs in the door, before the object read. So
+        the door reads no object, no record and no aggregate for these."""
+        pid, _, _ = _setup(world)
+        r = _call(_client(world), pid, "tally", body)
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"]["code"] == code
+        _agg_read_nothing(world)
+        assert world.audits[0]["detail"] == {**_AGG_OUTCOME, "outcome": "refused", "reason": code}
+
+    @pytest.mark.parametrize("content", ["[]", '"text"', "7", "null", "{not json", "   ",
+                                         "[" * 20000 + "]" * 20000, b'{"measures": \xff}',
+                                         '{"measures": [{"op": "count"}], "x": Infinity}'],
+                             ids=["list", "text", "number", "null", "not_json", "blank",
+                                  "deep", "bytes", "infinity"])
+    def test_a_body_that_is_not_a_json_object_is_422_never_500(self, world, content):
+        pid, _, _ = _setup(world)
+        r = _raw(_client(world), pid, "tally", content)
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"]["message"] == invoke.BAD_AGGREGATE_INPUT
+        _agg_read_nothing(world)
+
+    @pytest.mark.parametrize("code", [c for c in studio_query.QUERY_ERROR_CODES
+                                      if c != studio_query.TIMEOUT])
+    def test_each_refusal_of_the_store_is_422_with_its_code(self, world, code):
+        pid, _, _ = _setup(world)
+        world.query_raises = QueryError(code, "One sentence.", "fee")
+        r = _call(_client(world), pid, "tally", {})
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"] == {"code": code, "message": "One sentence.", "field": "fee"}
+        assert world.audits[0]["detail"] == {**_AGG_OUTCOME, "outcome": "refused", "reason": code}
+
+    def test_a_timeout_is_503_with_retry_after(self, world):
+        pid, _, _ = _setup(world)
+        world.query_raises = QueryError(studio_query.TIMEOUT, "Try again.")
+        r = _call(_client(world), pid, "tally", {})
+        assert (r.status_code, r.headers["retry-after"]) == (503, "2")
+        assert world.audits[0]["detail"] == {
+            **_AGG_OUTCOME, "outcome": "failed", "reason": "query_timeout"}
+
+    def test_an_object_that_the_package_lacks_is_404_object_missing(self, world):
+        pid = _package(world)
+        r = _call(_client(world), pid, "tally", {})
+        assert r.status_code == 404
+        assert r.json()["detail"] == {"code": "object_missing", "message": invoke.NO_OBJECT}
+        assert world.aggregates == []
+        assert world.audits[0]["detail"] == {
+            **_AGG_OUTCOME, "outcome": "not_found", "reason": "object_missing"}
+
+    def test_none_from_the_store_is_404_object_missing(self, world):
+        pid, _, _ = _setup(world)
+        world.store_says_none = True
+        r = _call(_client(world), pid, "tally", {})
+        assert (r.status_code, _code(r)) == (404, "object_missing")
+
+    def test_a_package_of_another_member_or_org_is_404_for_an_aggregate(self, world):
+        for org, email in ((ORG, BEN), (OTHER, ANA)):
+            pid = _package(world, org=org, owner=email)
+            _object(world, pid, org=org)
+            r = _call(_client(world), pid, "tally", {})
+            assert (r.status_code, r.json()) == (404, NOT_FOUND)
+        assert world.aggregates == [] and world.audits == []
+
+    def test_an_org_outside_the_switch_is_404_and_reads_no_byte(self, monkeypatch, world):
+        pid, _, _ = _setup(world)
+        _open(monkeypatch, OTHER)
+        body = _Body(world, fails=True)
+        assert _direct(world, pid, "tally", body) == (404, "Not found")
+        assert body.reads == 0 and world.log == []
+
+    def test_no_session_is_open_during_the_read_and_the_check_runs_twice(self, world):
+        pid, _, _ = _setup(world)
+        status, _ = _direct(world, pid, "tally", _Body(world))
+        assert status == 200
+        assert world.log == ["open", "close", "body", "open", "close", "audit"]
+        reads = [sql for sql, _ in world.statements if sql == packages_store._GET_SQL]
+        assert len(reads) == 2
+
+    def test_a_body_past_the_cap_is_413_and_reads_nothing(self, world):
+        pid, _, _ = _setup(world)
+        body = _Body(world, b"x" * 65_536, repeat=4096)
+        status, detail = _direct(world, pid, "tally", body)
+        assert (status, detail["code"]) == (413, "body_too_large")
+        _agg_read_nothing(world)
+
+    def test_an_ask_marker_changes_nothing_for_a_read(self, world, monkeypatch):
+        """A read never asks for a card. With the org flag on, ``ask=1`` still
+        runs the aggregate, and no request opens."""
+        monkeypatch.setattr(invoke.app_requests, "requests_allowed", lambda org: True)
+        pid, _, _ = _setup(world)
+        r = _client(world).post(f"/studio/apps/{pid}/actions/tally", json={},
+                                params={"ask": "1"})
+        assert r.status_code == 200, r.text
+        assert world.audits[0]["detail"] == {**_AGG_OUTCOME, "outcome": "ran"}
+
+    def test_the_row_of_an_aggregate_holds_no_input_and_no_data(self, world):
+        pid, _, _ = _setup(world)
+        _call(_client(world), pid, "tally", {"filter": [
+            {"field": "site", "op": "eq", "value": "leaky_value"}], "leaky_key": 1})
+        _call(_client(world), pid, "tally", AGG_BODY)
+        text = json.dumps(world.audits)
+        assert "leaky" not in text and "Plant" not in text
+        for value in RECORD_DATA.values():
+            assert value not in text
+
+
 # ── The body read ──────────────────────────────────────────────────────────
 
 
@@ -996,11 +1252,13 @@ class TestTheAudit:
 
 
 class TestTheTables:
-    def test_the_object_verb_table_holds_the_five_verbs_of_the_grammar(self):
+    def test_the_object_verb_table_holds_the_six_verbs_of_the_grammar(self):
         """The class table and the A2 ``uses`` grammar list the same verbs, in
-        the same order. A verb in one and not the other fails here."""
+        the same order. A verb in one and not the other fails here. The
+        aggregate (D4b) is the sixth, after the five record verbs."""
         assert tuple(OBJECT_OP_CLASSES) == OBJECT_OPS
-        assert len(OBJECT_OPS) == 5
+        assert OBJECT_OPS == (*RECORD_OPS, "aggregate")
+        assert len(RECORD_OPS) == 5
         for verb in OBJECT_OPS:
             ref = parse_uses(f"object:visit.{verb}")
             assert ref is not None and (ref.source, ref.object, ref.op) == (
@@ -1011,7 +1269,7 @@ class TestTheTables:
     def test_each_object_class_is_a_d136_class_and_none_is_x(self):
         assert set(OBJECT_OP_CLASSES.values()) <= set(CLASSES) - {"X"}
         assert OBJECT_OP_CLASSES == {"list": "A", "get": "A", "create": "B",
-                                     "update": "B", "delete": "C"}
+                                     "update": "B", "delete": "C", "aggregate": "A"}
 
     def test_parse_uses_names_the_source_of_each_form(self):
         assert parse_uses(f"workflow:{WORKFLOW}").source == "workflow"
@@ -1020,12 +1278,17 @@ class TestTheTables:
         for bad in ("", "object:visit.get\n", "workflow:not-a-uuid", None, 7):
             assert parse_uses(bad) is None
 
-    def test_the_door_opens_the_object_get_and_the_object_list_only(self):
-        assert set(invoke.OPEN_EXECUTORS) == {("object", "get"), ("object", "list")}
+    def test_the_door_opens_the_object_get_list_and_aggregate_only(self):
+        assert set(invoke.OPEN_EXECUTORS) == {("object", "get"), ("object", "list"),
+                                              ("object", "aggregate")}
+        # Each open read has one executor, and no other verb has one.
+        assert set(invoke._READS) == {str(op) for _, op in invoke.OPEN_EXECUTORS}
 
     def test_the_accepted_keys_are_the_properties_of_the_input_schema(self):
         assert set(list_input_schema()["properties"]) == invoke.LIST_INPUT_KEYS
         assert {"filter", "sort", "limit", "offset"} == invoke.LIST_INPUT_KEYS
+        assert set(aggregate_input_schema()["properties"]) == invoke.AGGREGATE_INPUT_KEYS
+        assert {"filter", "group_by", "measures"} == invoke.AGGREGATE_INPUT_KEYS
 
     def test_the_refusal_text_names_each_open_verb(self):
         for _, verb in invoke.OPEN_EXECUTORS:
@@ -1056,6 +1319,7 @@ class TestTheTables:
         messages = {**invoke.REFUSALS, "catalog_unavailable": invoke.CATALOG_DOWN,
                     "object_missing": invoke.NO_OBJECT, "bad_input": invoke.BAD_RECORD_ID,
                     "bad_list": invoke.BAD_LIST_INPUT, "body_too_large": invoke.BODY_OVER_CAP,
+                    "bad_aggregate": invoke.BAD_AGGREGATE_INPUT,
                     "request_refused": invoke.ASK_AGAIN,
                     "approval_ask": invoke.APPROVAL_ASK}
         # B2c-2a: each refused spend has its own code and one sentence.

@@ -348,7 +348,8 @@ class TestThePackageRows:
         _open(monkeypatch, "*")
         body = _client().get(URL, params={"app": PKG_B.upper()}).json()["actions"]
         assert {r["app"] for r in body} == {PKG_B}
-        assert len(body) == 5
+        # The five record verbs and the aggregate (STU-D4b): one row for each object op.
+        assert len(body) == 6
         assert db.package_calls[-1][1] == PKG_B
 
     def test_a_bad_app_filter_is_422_and_reads_nothing(self, monkeypatch, db):

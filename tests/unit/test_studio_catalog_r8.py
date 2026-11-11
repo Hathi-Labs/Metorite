@@ -330,7 +330,8 @@ def test_r8_a_member_with_no_package_and_org_b_see_none(pworld):
 def test_r8_the_app_filter_narrows_to_one_package(pworld):
     rows = _list(pworld, pworld.a, ANA, app=pworld.p2)
     assert {r["app"] for r in rows} == {pworld.p2}
-    assert len([r for r in rows if r["id"].startswith("object:")]) == 5
+    # The five record verbs and the aggregate (STU-D4b).
+    assert len([r for r in rows if r["id"].startswith("object:")]) == 6
     # The package of another member and of org B give nothing.
     assert _list(pworld, pworld.a, ANA, app=pworld.p_ben) == []
     assert _list(pworld, pworld.a, ANA, app=pworld.p_b) == []

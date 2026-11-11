@@ -92,6 +92,7 @@ from acb_common.paging import bounds, paged
 from acb_common.studio_manifest import (
     BLOCKS,
     OBJECT_OPS,
+    RECORD_OPS,
     RESERVED_BLOCKS,
     STUDIO_VERSION,
     Manifest,
@@ -516,7 +517,9 @@ def with_record_actions(manifest: Any) -> tuple[Any, list[dict[str, str]]]:
         seen.add(name)  # a second object of this name adds nothing twice
         have = plain.get(name, set())
         writes = not have & {"create", "update", "delete"}
-        for verb in OBJECT_OPS:
+        # The record verbs only. An aggregate is a read that a package declares
+        # by itself (STU-D4b), so no object gets one by default.
+        for verb in RECORD_OPS:
             if verb in have or (verb not in ("list", "get") and not writes):
                 continue
             tail = f"_{verb}"
