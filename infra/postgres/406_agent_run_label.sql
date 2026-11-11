@@ -1,12 +1,12 @@
 -- ============================================================================
--- 402_agent_run_label.sql - the display label of an agent session (WS-MCP
+-- 406_agent_run_label.sql - the display label of an agent session (WS-MCP
 -- SW-7b, Metorite task 2858)
 -- ============================================================================
 -- Spec: project-docs/specs/agent_coordination.md §3.7 item 2 and SW-7b · R1 ·
 --   R5 · R6.
 --
 -- R1: on 2026-11-11 origin/main held 401 as its highest file. Open branches
---   and worktrees held 396, 398, 399, 400 and 401. So this file is 402. Check
+--   and worktrees held 396, 398 to 405. So this file is 406. Check
 --   the number again at merge (scripts/premerge.sh).
 --
 -- Why: two agent sessions of one member and one client read as one name on

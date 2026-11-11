@@ -2178,7 +2178,7 @@ While the flag is off, `yours` is false in every row. Fences: `test_mcp_edge_con
 
 **What stays.**
 
-- `agent_label`, a display name for a session, is built (SW-7b, task 2858, migration 402). It is display only: `claim_task` and `start_agent_run` take it, and no gate, slot or session key reads it (`agent_coordination.md` SW-7b).
+- `agent_label`, a display name for a session, is built (SW-7b, task 2858, migration 406). It is display only: `claim_task` and `start_agent_run` take it, and no gate, slot or session key reads it (`agent_coordination.md` SW-7b).
 - A write by run id (an activity, a finish, a release) checks the member, and the release checks the stamp too. It does not check the session.
 - A client that sends no `Mcp-Session-Id`, and the 2026-07-28 revision when EA-3c accepts it, run with no session. Such a call keeps the transition rule only.
 - **The deploy order.** The deploy restarts the gateway before the edge (`vps_apply.sh`). The new gateway accepts an old edge, because a call with no session signs the old string. The edge starts to send `X-Agent-Session` only after its own restart.

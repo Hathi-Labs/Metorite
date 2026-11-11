@@ -8,7 +8,7 @@
 
 **SW-23 (a task carries a Check) is built and dark, 2026-11-11.**
 
-**SW-7b (a display label for each session) is built, 2026-11-11 (task 2858). Migration 402.**
+**SW-7b (a display label for each session) is built, 2026-11-11 (task 2858). Migration 406.**
 
 **P10 (§3.11, §5.11, D186) was planned on 2026-11-06. No P10 slice is built.** The know-how for other organizations is in `orchestration_playbook.md`.
 
@@ -862,7 +862,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-7b · A display label for each session
 
-- **Built (task 2858), 2026-11-11.** Migration 402 adds `pm_agent_runs.agent_label`, with a CHECK of 1 to 40 characters.
+- **Built (task 2858), 2026-11-11.** Migration 406 adds `pm_agent_runs.agent_label`, with a CHECK of 1 to 40 characters.
   - `agent_runs.clean_agent_label` applies the rules of `_clean_body`. It also drops each control and format character, and it keeps one space for each run of white space.
   - A person's body that names a label gets 422 (`agent_runs.agent_label_of`). A call with no label keeps the old one.
   - The runs wire and the task row carry `agent_label`. The edge sends it as untrusted text.
