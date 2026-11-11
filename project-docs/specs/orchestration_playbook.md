@@ -14,6 +14,7 @@
 - **The know-how lives in six places.** MCP prompts, MCP resources, short tips in tool results, guidance layers, setup tools and an orchestration doctor. Chat reaches the same six (§5).
 - **The default layer is neutral.** HathiLabs rules are the HathiLabs layer in the HathiLabs organization, never the product default (§4).
 - **One agent is the default.** The setup tools propose one lane first. A second lane needs a named bottleneck (§3).
+- **Plan by the gratification ladder.** A plan is a set of rungs, and each rung ends in a demo that a person sees and uses. The nearest rung goes first (§6d).
 - **A fact that spreads needs a source and an age.** One false fact at the hub reaches every agent (§3).
 
 ---
@@ -166,9 +167,17 @@ Fence: `tests/unit/test_kit_core.py` (new, KIT-1) counts the lines and checks ea
 
 ## 6b. Delegating a sub-project, and hand-offs
 
-**Owner directive, 2026-11-10 (D204 points 10 and 11).** The owner gives each app project to one person. That person's agents work along the critical path of that project. This section is the contract between two people and their agents.
+**Owner directive, 2026-11-10 (D204 points 10 and 11).** The owner gives each app project to one person. That person's agents work up the ladder of that project, rung by rung (§6d, D211). This section is the contract between two people and their agents.
 
-**What each project carries.** The description of a project holds a delegation brief with these lines: the owner slot, the entry point (the first ready slice), the critical path (task numbers in order), the hand-ins (work this project needs from others), the hand-outs (work others need from this project), and the first command to run (`my_work`, then `claim_task`). The brief holds no secret. The program plan (task 2546) holds the order of the projects.
+**What each project carries.** The description of a project holds a delegation brief. The brief has these lines:
+- The owner slot.
+- The entry point: the first ready slice of the lowest open rung.
+- The ladder: each rung, its demo task and its state (§6d).
+- The hand-ins: work that this project needs from others.
+- The hand-outs: work that others need from this project.
+- The first command to run: `my_work`, then `claim_task`.
+
+The brief holds no secret. The program plan (task 2546) holds the order of the projects.
 
 **The hand-off form.** When task A in project P gives work that task B in project Q needs, both tasks hold one comment that starts with `Hand-off:`. The comment names the other task number, the other project, the direction (`gives` or `needs`) and the reason in one sentence. A `blocks` link joins A to B. The person who owns Q reads the comment in `my_work` or in the plan of project Q. An agent never starts B while A is open. It posts a question on B instead.
 
@@ -202,6 +211,37 @@ Fence: `tests/unit/test_kit_core.py` (new, KIT-1) counts the lines and checks ea
 **The guide (LL-13).** One guide teaches the best workflow to people and to agents. The member guide and the help chapters show it in the app. A chapter of the playbook serves it through `read_playbook` for agents. The neutral `AGENTS.md` of the kit points to it and holds no copy (PB-10). The guide explains each setting, the first week (connect, import the board, set the weekly time, run one review by hand, approve the first lesson), and what an agent never does.
 
 **Until LL-3 ships,** a person runs the review by hand each Monday, with the pattern of the replan of 2026-11-09 and 2026-11-10.
+
+---
+
+## 6d. The gratification ladder — the default way to plan
+
+**Owner directive, 2026-11-11 (D211).** Plan in stages that each give a visible win. Show a quick win first, as a minimum viable product, and grow from there. This is the default of the Metorite project system and of every harness that connects to it. So it is part of the neutral layer (§4), and not a HathiLabs rule. Any plan that a person or an agent makes in Metorite follows it.
+
+**The rules.**
+
+1. **A plan is a ladder of rungs.** Each rung ends in a demo: a person sees and uses the result on production. A flag that is on for one pilot organization is enough.
+2. **Rung 1 is the smallest path that works end to end.** It goes thin through every layer. It is never one finished layer. A manual step or a seeded example is fine when it shows the result sooner.
+3. **Start from what is live.** The first rungs make a live feature better, easier to reach or more complete. A new area starts after that.
+4. **Order the rungs by visible value for the effort.** Bring a hard unknown forward, but only inside a slice that a person can see.
+5. **A foundation rides with the rung that needs it.** A store change, a refactor or a hardening slice joins the first rung whose demo uses it. No rung ships only plumbing.
+6. **Rung 0 outranks the ladder.** A security leak, data loss, a broken live feature or an owner gate with a date goes first. Keep rung 0 small.
+7. **Size.** Rung 1 fits in one week of the team's capacity, at most. A later rung fits in one or two weeks.
+8. **Plan the near rungs in detail and the far rungs in one line.** Cut rungs 1 to 3 into slices. Give each later rung one line. After each demo, plan the next rungs again with what the demo taught.
+
+**On the board.**
+
+- **The demo task.** Each rung has one task, with the title `<area> · Rung N demo · <what a person can do>` and the tag `Demo`. Its description holds the demo script: what to open, what to click and what to see. Each slice of the rung blocks it. The demo task of rung N blocks the demo task of rung N+1.
+- **The rung tag.** Each slice of a rung has the tag `Rung N`. Rung 0 work has the tag `Rung 0` and no demo task. A slice with no rung tag is Later.
+- **The order.** Take a ready slice of the lowest open rung first. Inside a rung, take the least slack to that rung's demo, then the priority. The critical path runs to the next demo, not to the end of the epic.
+- **The delegation brief** (§6b) names the ladder: each rung, its demo task and its state. The entry point is the first ready slice of the lowest open rung.
+- **Done.** A rung is done when the owner of the project sees the demo and says so on the demo task. For a small rung, the captures are enough.
+
+**What carries the rule to every agent.** Epic task 2887 (WS-LAD) holds four slices.
+
+LAD-1 (task 2888) teaches the rule in `kit/plan-the-work`, `kit/skill/planning`, `start-here` and the `plan_slices` prompt. LAD-2 makes the Projects planning AI draft the rungs first. LAD-3 shows the rungs and the next demo in `get_plan` and in the plan view. LAD-4 makes `my_work` take the nearest rung first. Until LAD-4 ships, an agent applies the order of this section by hand, with the `Rung N` tags and `get_plan`.
+
+**Fence.** Advisory until LAD-1. Then `tests/unit/test_playbook_ladder.py` (new) proves that the planning pages and the `plan_slices` prompt state the demo task, the `Rung N` tag, rung 0 and rule 5.
 
 ---
 
