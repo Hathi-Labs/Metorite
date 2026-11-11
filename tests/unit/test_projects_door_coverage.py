@@ -12,25 +12,31 @@ What it holds:
 
 1. **The router, both ways.** A served route with no row fails, and so does a
    row that names a route the router does not serve.
-2. **The chat manifest, row for row.** The table holds the same pairs, with
-   the same class and the same chat tool. The table adds the door half only,
-   so it is not a second list (D136.1).
+2. **The chat manifest, row for row.** The table repeats the 210 pairs, so
+   it is an exception to AD-1 and D136.1 for Projects (D208.2). This file
+   holds the pairs, the class and the chat tool equal, so the two cannot
+   drift.
 3. **AD-2.** Each A, B or C row names a door ``op`` or an ``off_door``
    reason. A class X row has a reason and neither.
 4. **AD-3.** A row whose route is in ``MCP_ROUTES`` names no op, and it says
    that a typed tool serves it. A row that says so is in ``MCP_ROUTES``.
 5. **§19.11.** No op on a grant, an authority pin, the answer of a person,
    an import, an export, a request decision, the agent delete, or an act
-   that reaches another person. No op deletes a row for good.
-6. **The first acts of §19.16.** The ops of each act are pinned. Import,
-   Goals and teams have none, and the reason is written.
+   that reaches another person. No op deletes a record for good. The source
+   of each op's route deletes from no table but the cycle link table, and
+   only the ops of ``LINK_DELETE_OPS`` do that.
+6. **The first acts of §19.16.** The 11 ops of cycles and saved views are
+   pinned. Status editing and template apply stay off, with the reason of
+   the guard that the route lacks. Import, Goals and teams have none.
 7. **The approval path (§19.5).** Each B or C op asks the member for each
    call. No op is a proposal, and no op sends. A read is a GET.
 8. **The builder and the schema (§19.3, AD-9).** ``build_call`` fills each
    path. No op has a body field with the name of a path or query parameter.
    Each args schema builds from ``route.dependant``, with no identity header.
-9. **Dark.** The table is not in ``app_manifests.APPS``. The door serves no
-   Projects op, and the scopes do not change.
+9. **AD-10.** No plain key is a key of a saved view's ``config``, because a
+   member writes those values.
+10. **Dark.** The table is not in ``app_manifests.APPS``. The door serves no
+    Projects op, and the scopes do not change.
 
 Mutations this file catches (R7):
 
@@ -42,7 +48,10 @@ Mutations this file catches (R7):
 * an op on ``POST /projects/nodes/{project_id}/grants`` ->
   ``test_no_op_on_a_route_of_19_11``;
 * an op on ``DELETE /projects/views/{view_id}`` ->
-  ``test_no_op_deletes_a_row_for_good``;
+  ``test_no_op_deletes_a_record_for_good``;
+* an op on ``POST /projects/nodes/{project_id}/statuses`` ->
+  ``test_status_editing_and_template_apply_stay_off``;
+* ``status_id`` back in ``PLAIN`` -> ``test_ad10_no_plain_key_is_member_text``;
 * ``PROJECTS_DOOR`` added to ``APPS`` -> ``test_the_table_ships_dark``.
 """
 from __future__ import annotations
@@ -73,8 +82,22 @@ NEVER_ON_THE_DOOR = re.compile(
     r"|/agent-delete$|/import/|/export/|/asks$|/nudge$|/recipients|/schedule$")
 
 #: The one DELETE that the door carries. It takes a task out of a cycle, and
-#: the task stays. Each other DELETE op would delete a row for good.
+#: the task stays. Each other DELETE route deletes a record for good.
 DOOR_DELETES = {("DELETE", "/projects/cycles/{cycle_id}/tasks/{task_id}")}
+
+#: The one table that a door op may delete from: the link of a task to an
+#: open cycle. A row there is a membership, not a record.
+LINK_TABLES = {"pm_cycle_tasks"}
+
+#: ``DELETE FROM <table>`` in the source of a route.
+_DELETE_SQL = re.compile(r"DELETE\s+FROM\s+([a-z_]+)", re.IGNORECASE)
+
+#: The plain keys that the server makes (AD-10): ids, times, the task number
+#: and the cycle state.
+SERVER_KEYS = {
+    "id", "project_id", "cycle_id", "task_id", "view_id", "short_id", "state",
+    "created_at", "updated_at", "starts_on", "ends_on", "started_at", "closed_at",
+}
 
 #: The headers of the identity seam. No args schema shows one.
 IDENTITY_HEADERS = ("x-user-email", "x-user-role", "x-actor-via", "authorization")
@@ -190,13 +213,37 @@ def test_no_op_on_a_route_of_19_11():
         assert not _table()[(method, path)].op, (method, path)
 
 
-def test_no_op_deletes_a_row_for_good():
+def _deleted_tables(door: base.DoorOp) -> set[str]:
+    """The tables that the source of the op's route deletes from."""
+    import inspect
+
+    route = _live_route(door.route.method, door.route.path)
+    source = inspect.getsource(inspect.unwrap(route.endpoint))
+    return {m.group(1).lower() for m in _DELETE_SQL.finditer(source)}
+
+
+def test_no_op_deletes_a_record_for_good():
     deletes = {(d.route.method, d.route.path)
                for d in am.door_ops(DOOR).values() if d.route.method == "DELETE"}
     assert deletes <= DOOR_DELETES, sorted(deletes - DOOR_DELETES)
     for row in DOOR.routes:
         if row.off_door == p.HARD_DELETE:
             assert row.method == "DELETE", (row.method, row.path)
+
+
+def test_the_source_of_each_op_deletes_a_link_row_at_most():
+    """A POST can delete too: ``close_cycle`` deletes the link row of a task
+    that goes back to the backlog. So this reads the source of each op's
+    route, whatever its method."""
+    assert _deleted_tables(am.door_ops(DOOR)["remove_cycle_task"]), (
+        "non-vacuity: the scan sees the DELETE of remove_cycle_task")
+    seen: set[str] = set()
+    for door in am.door_ops(DOOR).values():
+        tables = _deleted_tables(door)
+        assert tables <= LINK_TABLES, (door.name, sorted(tables - LINK_TABLES))
+        if tables:
+            seen.add(door.name)
+    assert seen == p.LINK_DELETE_OPS
 
 
 def test_the_import_stays_off_both_doors():
@@ -215,15 +262,34 @@ def test_the_first_acts_are_pinned():
         "cycles", "saved views", "import", "status editing", "template apply", "goals",
         "teams"}
     assert set(am.door_ops(DOOR)) == named
-    assert p.FIRST_ACTS["import"] == p.FIRST_ACTS["goals"] == p.FIRST_ACTS["teams"] == ()
+    for act in ("import", "status editing", "template apply", "goals", "teams"):
+        assert p.FIRST_ACTS[act] == (), act
     ops = am.door_ops(DOOR)
     for op in p.FIRST_ACTS["cycles"]:
         assert "/cycles" in ops[op].route.path, op
     for op in p.FIRST_ACTS["saved views"]:
         assert "/views" in ops[op].route.path, op
-    for op in p.FIRST_ACTS["status editing"]:
-        assert "/status" in ops[op].route.path, op
-    assert ops["apply_template"].route.path == "/projects/templates/{template_id}/apply"
+    classes = sorted(d.route.cls for d in ops.values())
+    assert (len(ops), classes.count("A"), classes.count("B"), classes.count("C")) == (
+        11, 3, 6, 2)
+
+
+def test_status_editing_and_template_apply_stay_off():
+    """The chat client holds guards that these routes lack (PST-4, the
+    preview counts, the copy_from check), the status-set read names projects
+    with no visibility check, and EA3-53 asks a template write for a
+    preview. The registration slice (MCP-G24b) decides each one again."""
+    want = {
+        ("POST", "/projects/nodes/{project_id}/statuses"): p.STATUS_GUARD,
+        ("PATCH", "/projects/statuses/{status_id}"): p.STATUS_GUARD,
+        ("GET", "/projects/nodes/{project_id}/status-set"): p.STATUS_SET_NAMES,
+        ("POST", "/projects/nodes/{project_id}/status-set/preview"): p.PREVIEW_POST,
+        ("POST", "/projects/nodes/{project_id}/status-set"): p.STATUS_SET_GUARDS,
+        ("POST", "/projects/templates/{template_id}/apply"): p.TEMPLATE_APPLY,
+    }
+    for pair, reason in want.items():
+        row = _table()[pair]
+        assert not row.op and row.off_door == reason, pair
 
 
 def test_goals_and_teams_have_no_route_yet():
@@ -321,7 +387,28 @@ def test_ad9_each_args_schema_builds_from_the_live_route():
         am.door_ops(DOOR)["update_cycle"])
 
 
-# ── 9. Dark ─────────────────────────────────────────────────────────────────
+# ── 9. AD-10 ────────────────────────────────────────────────────────────────
+
+
+def test_ad10_no_plain_key_is_member_text():
+    """A plain key leaves the edge as a plain string at any depth. A saved
+    view's ``config`` holds values that a member writes, for example
+    ``filters.status_id``, so no plain key may be one of its keys."""
+    from gateway.routes.projects import filters
+
+    assert set(p.PLAIN) <= SERVER_KEYS, sorted(set(p.PLAIN) - SERVER_KEYS)
+    config = filters.normalise_view_config({
+        "filters": {k: "x" for k in filters.VIEW_FILTER_KEYS},
+        "group_by": "status", "sub_group_by": "assignee", "collapsed_lanes": ["a"],
+        "show_empty_lanes": True})
+    member_keys = set(filters.VIEW_FILTER_KEYS) | set(config)
+    assert "status_id" in member_keys, "non-vacuity: the filter keys are read"
+    assert not set(p.PLAIN) & member_keys, sorted(set(p.PLAIN) & member_keys)
+    for door in am.door_ops(DOOR).values():
+        assert door.route.plain == p.PLAIN, door.name
+
+
+# ── 10. Dark ────────────────────────────────────────────────────────────────
 
 
 def test_the_table_ships_dark():

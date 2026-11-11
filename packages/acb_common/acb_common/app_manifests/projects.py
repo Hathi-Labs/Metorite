@@ -7,31 +7,49 @@ Metorite task 2520.
 **What this table is.** One row for each route of the Projects chat
 manifest (``skill_projects.manifest.MANIFEST``), with the same method, path,
 class and chat tool. The chat manifest stays the allowlist of Mira's
-Projects client, in ``skill_projects`` (AD-1). This table adds the door half
-only: a door ``op``, or an ``off_door`` reason (AD-2). This module cannot
-import ``skill_projects``, so the fence holds the two tables row for row.
+Projects client, in ``skill_projects``. This table adds the door half only:
+a door ``op``, or an ``off_door`` reason (AD-2). This module cannot import
+``skill_projects``, so it repeats the 210 pairs. That is an exception to
+AD-1 and D136.1 for Projects (D208.2), until MCP-G24c moves the chat
+manifest into ``acb_common``. The fence holds the pairs, the class and the
+tool equal, row for row.
 
 **The typed tools stay (§9, §19.3).** A row whose route is in
 ``agent_oauth.MCP_ROUTES`` names no op. Its typed tool serves it, and
 ``MCP_ROUTES`` stays its allowlist. So no pair is a door pair and a typed
 pair at once (AD-3).
 
-**The first door ops (§19.16).** Cycles, saved views, status editing and
-template apply. Each class B or C op asks the member for each call (§19.5).
-No op is a proposal, and no op sends.
+**The door ops (§19.16).** 11 ops: eight for cycles and three for saved
+views. Three are class A, six are class B and two are class C. Each class B
+or C op asks the member for each call (§19.5). No op is a proposal, and no
+op sends.
 
+* Status editing stays off the door. The chat client holds guards that the
+  routes lack: the PST-4 guard of a shared status set, the counts of the
+  preview, and the visibility check of ``copy_from``. The read
+  ``GET .../status-set`` names projects with no visibility check. The
+  registration slice (MCP-G24b) moves each guard to the route first.
+* Template apply stays off the door (EA3-53). An MCP write of a template
+  needs a preview and a confirm step, and the apply adds vocabulary to the
+  whole space.
 * Import stays class X. Its routes need ``admin:access:manage``, the right
   of an admin (§19.11), and its upload is a file, not JSON.
 * Goals and teams have no route in the Projects router. A goal object is
   later work (task 977), and a team is a filter (D87).
 
 **What never gets an op (§19.11).** A grant or a pin that acts as one, the
-answer of a person, a delete for good, a bulk export, and an act that
-reaches another person.
+answer of a person, a bulk export, and an act that reaches another person.
+No op deletes a record for good: a project, a task, a cycle, a view, a
+status, a tag, a report or a file. Two ops delete the link row of a task in
+an open cycle: ``remove_cycle_task``, and ``close_cycle`` with the choice
+``backlog``. The task stays in each case.
 
 **Dark.** :data:`PROJECTS_DOOR` is not in ``app_manifests.APPS``. So the
 edge, branch 0, ``describe_app`` and the Studio catalog serve no op of it.
-A later slice registers it, after MCP-P1b-2 builds the spend (§19.16).
+MCP-G24b, the registration slice, registers it after MCP-P1b-2 builds the
+spend. It also moves the guards of status editing to the routes and builds
+the preview of a template apply. MCP-G24c makes one Projects manifest
+(§19.16).
 
 **The fence.** ``tests/unit/test_projects_door_coverage.py`` walks the real
 Projects router. It fails on a served route with no row, on a row that
@@ -69,16 +87,47 @@ DECISION = (
     "never answers for that person."
 )
 
-#: The door never deletes a row for good.
+#: The door never deletes a record for good.
 HARD_DELETE = (
-    "This route deletes a row for good. The door never does that. A member "
+    "This route deletes a record for good. The door never does that. A member "
     "deletes it in Projects."
 )
 
 #: The count that a delete card shows.
 DELETE_COUNT = (
     "The chat reads this count for the card of a delete or a merge. The door "
-    "deletes no row for good, so it needs no count."
+    "deletes no record for good, so it needs no count."
+)
+
+#: PST-4: the chat client guards a change to a shared status set.
+STATUS_GUARD = (
+    "The chat client holds the PST-4 guard of a shared status set "
+    "(skill_projects/writes.py, status_edit_refusal), and this route does not. "
+    "The registration slice (MCP-G24b) moves the guard to the route before the "
+    "door opens it."
+)
+
+#: The chat client shows the preview counts and checks the copy_from project.
+STATUS_SET_GUARDS = (
+    "The chat client shows the counts of the preview on its card, and it checks "
+    "that the member can see the copy_from project (skill_projects/guarded.py). "
+    "This route does neither. The registration slice (MCP-G24b) adds both before "
+    "the door opens it."
+)
+
+#: The status-set read names projects with no visibility check.
+STATUS_SET_NAMES = (
+    "The answer names the owner project and the project to inherit from, and "
+    "the route reads them with no visibility check (admin.py, _inherit_target). "
+    "A pinned connection could learn a name outside its pin (D-EA-12). The "
+    "registration slice (MCP-G24b) fixes the read before the door opens it."
+)
+
+#: EA3-53: a template write needs a preview and a confirm step.
+TEMPLATE_APPLY = (
+    "EA3-53: an MCP write of a template needs a preview and a confirm step, as "
+    "move_tasks has. The apply also adds task types, fields and tags to the "
+    "whole space. The registration slice (MCP-G24b) builds the preview first."
 )
 
 #: The typed tool ``delete_task`` deletes through the agent-delete route.
@@ -102,7 +151,8 @@ EXPORT = (
 #: §19.3: a door read is a GET.
 PREVIEW_POST = (
     "A door read is a GET (§19.3), and this preview is a POST that writes "
-    "nothing. The agent reads get_status_set before it asks for set_status_set."
+    "nothing. The card of a status-set change shows its counts, so the preview "
+    "joins the door with that change."
 )
 
 # ── The class X reasons ─────────────────────────────────────────────────────
@@ -164,12 +214,13 @@ _AGENT_DELETE = (
 
 #: AD-10: the keys of a Projects answer that may leave as plain strings. The
 #: edge sends each one plain only in a plain shape: an id, a time or a short
-#: token. Each other string leaves as untrusted text.
-_PLAIN: tuple[str, ...] = (
-    "id", "project_id", "cycle_id", "task_id", "view_id", "status_id",
-    "template_id", "owner_id", "inherit_from_id", "parent_project_id", "deleted",
-    "state", "category", "kind", "owner_kind", "short_id", "created_at",
-    "updated_at", "starts_on", "ends_on", "started_at", "closed_at",
+#: token. Each other string leaves as untrusted text. Only the keys that the
+#: server makes: ids, times, the task number and the cycle state. No key of
+#: a saved view's ``config`` is here, because a member writes its values
+#: (``filters.status_id`` holds any text). The fence holds that.
+PLAIN: tuple[str, ...] = (
+    "id", "project_id", "cycle_id", "task_id", "view_id", "short_id", "state",
+    "created_at", "updated_at", "starts_on", "ends_on", "started_at", "closed_at",
 )
 
 PROJECTS_DOOR = App(
@@ -227,36 +278,36 @@ PROJECTS_DOOR = App(
         # ── cycles.py (§19.16, act 1). PROJECTS_SPRINTS_ORGS keeps each route at 404.
         Route("GET", "/projects/nodes/{project_id}/cycles", "list_cycles", "A",
               op="list_cycles", title="List the cycles of a project, a folder or a space.",
-              plain=_PLAIN),
+              plain=PLAIN),
         Route("POST", "/projects/nodes/{project_id}/cycles", "create_cycle", "B",
               op="create_cycle",
-              title="Plan a new cycle on a project, a folder or a space.", plain=_PLAIN),
+              title="Plan a new cycle on a project, a folder or a space.", plain=PLAIN),
         Route("GET", "/projects/cycles/{cycle_id}", "cycle_detail", "A",
               op="get_cycle",
               title="Read one cycle, with the tasks in it that the member can see.",
-              plain=_PLAIN),
+              plain=PLAIN),
         Route("PATCH", "/projects/cycles/{cycle_id}", "update_cycle", "B",
               op="update_cycle",
               title="Change the name, the goal, the dates or the budget of a cycle.",
-              plain=_PLAIN),
+              plain=PLAIN),
         Route("DELETE", "/projects/cycles/{cycle_id}", "delete_cycle", "C",
               off_door=HARD_DELETE),
         Route("POST", "/projects/cycles/{cycle_id}/tasks", "plan_cycle", "B",
               op="add_cycle_task", title="Add one task to a planned or active cycle.",
-              plain=_PLAIN),
+              plain=PLAIN),
         Route("DELETE", "/projects/cycles/{cycle_id}/tasks/{task_id}", "plan_cycle", "B",
               op="remove_cycle_task",
               title="Take one task out of a cycle. The task stays, in the backlog.",
-              plain=_PLAIN),
+              plain=PLAIN),
         Route("POST", "/projects/cycles/{cycle_id}/start", "start_cycle", "C",
               op="start_cycle",
               title="Start a planned cycle. Metorite keeps the tasks and the estimates "
                     "of the start.",
-              plain=_PLAIN),
+              plain=PLAIN),
         Route("POST", "/projects/cycles/{cycle_id}/close", "close_cycle", "C",
               op="close_cycle",
               title="Close an active cycle, with a choice for each task that is not done.",
-              plain=_PLAIN),
+              plain=PLAIN),
         # ── tasks.py ──
         Route("GET", "/projects/tasks", "list_tasks", "A", off_door=TYPED),
         Route("GET", "/projects/tasks/stats", "board_stats", "A", off_door=TYPED),
@@ -289,28 +340,22 @@ PROJECTS_DOOR = App(
               off_door=TYPED),
         Route("POST", "/projects/activities/{activity_id}/revert", "revert_activity", "C",
               off_door=LATER),
-        # ── admin.py: statuses and status sets (§19.16, act 4), and types ──
+        # ── admin.py: statuses and status sets (§19.16, act 4), and types. The
+        # registration slice (MCP-G24b) moves the chat guards to the routes first.
         Route("GET", "/projects/nodes/{project_id}/statuses", "vocabulary", "A",
               off_door=TYPED),
         Route("POST", "/projects/nodes/{project_id}/statuses", "create_status", "B",
-              op="create_status", title="Add a status to the status set of a project.",
-              plain=_PLAIN),
+              off_door=STATUS_GUARD),
         Route("PATCH", "/projects/statuses/{status_id}", "update_status", "B",
-              op="update_status", title="Change one status of a project.", plain=_PLAIN),
+              off_door=STATUS_GUARD),
         Route("DELETE", "/projects/statuses/{status_id}", "delete_status", "C",
               off_door=HARD_DELETE),
         Route("GET", "/projects/nodes/{project_id}/status-set", "vocabulary", "A",
-              op="get_status_set",
-              title="Read where the statuses of a project come from, and if the member "
-                    "may change them.",
-              plain=_PLAIN),
+              off_door=STATUS_SET_NAMES),
         Route("POST", "/projects/nodes/{project_id}/status-set/preview", "set_status_set", "C",
               off_door=PREVIEW_POST),
         Route("POST", "/projects/nodes/{project_id}/status-set", "set_status_set", "C",
-              op="set_status_set",
-              title="Change the status set that a project uses, and move its tasks to "
-                    "the new statuses.",
-              plain=_PLAIN),
+              off_door=STATUS_SET_GUARDS),
         Route("GET", "/projects/nodes/{project_id}/types", "vocabulary", "A", off_door=TYPED),
         Route("POST", "/projects/nodes/{project_id}/types", "create_type", "B", off_door=LATER),
         Route("PATCH", "/projects/types/{type_id}", "update_type", "B", off_door=LATER),
@@ -331,11 +376,11 @@ PROJECTS_DOOR = App(
         Route("DELETE", "/projects/tags/{tag_id}", "delete_tag", "C", off_door=HARD_DELETE),
         # ── views.py: saved views (§19.16, act 2) ──
         Route("GET", "/projects/nodes/{project_id}/views", "project_views", "A",
-              op="list_views", title="List the saved views of a project.", plain=_PLAIN),
+              op="list_views", title="List the saved views of a project.", plain=PLAIN),
         Route("POST", "/projects/nodes/{project_id}/views", "save_view", "B",
-              op="create_view", title="Save a new view on a project.", plain=_PLAIN),
+              op="create_view", title="Save a new view on a project.", plain=PLAIN),
         Route("PATCH", "/projects/views/{view_id}", "save_view", "B",
-              op="update_view", title="Change one saved view of a project.", plain=_PLAIN),
+              op="update_view", title="Change one saved view of a project.", plain=PLAIN),
         Route("DELETE", "/projects/views/{view_id}", "delete_view", "C", off_door=HARD_DELETE),
         Route("GET", "/projects/views/{view_id}/state", "", "X", reason=_SCREEN),
         Route("PUT", "/projects/views/{view_id}/state", "", "X", reason=_SCREEN),
@@ -517,25 +562,27 @@ PROJECTS_DOOR = App(
         Route("GET", "/projects/templates", "list_templates", "A", off_door=TYPED),
         Route("POST", "/projects/templates", "save_as_template", "C", off_door=LATER),
         Route("POST", "/projects/templates/{template_id}/apply", "create_project_from_template",
-              "C", op="apply_template",
-              title="Make a new project from a template, under a parent project that the "
-                    "member can add to.",
-              plain=_PLAIN),
+              "C", off_door=TEMPLATE_APPLY),
     ),
 )
 
 #: The seven acts of §19.16, and the door ops that MCP-G24 gives each one.
-#: Import, Goals and teams have none: see the docstring of this module.
+#: Status editing, template apply, import, Goals and teams have none: see the
+#: docstring of this module.
 FIRST_ACTS: dict[str, tuple[str, ...]] = {
     "cycles": ("list_cycles", "create_cycle", "get_cycle", "update_cycle",
                "add_cycle_task", "remove_cycle_task", "start_cycle", "close_cycle"),
     "saved views": ("list_views", "create_view", "update_view"),
     "import": (),
-    "status editing": ("create_status", "update_status", "get_status_set", "set_status_set"),
-    "template apply": ("apply_template",),
+    "status editing": (),
+    "template apply": (),
     "goals": (),
     "teams": (),
 }
+
+#: The ops that delete a link row: a task leaves an open cycle, and the task
+#: stays. No other op deletes a row (the fence reads each route's source).
+LINK_DELETE_OPS: frozenset[str] = frozenset({"remove_cycle_task", "close_cycle"})
 
 __all__ = [
     "DECISION",
@@ -545,9 +592,15 @@ __all__ = [
     "GRANT",
     "HARD_DELETE",
     "LATER",
+    "LINK_DELETE_OPS",
+    "PLAIN",
     "PREVIEW_POST",
     "PROJECTS_DOOR",
     "REACHES_PERSON",
+    "STATUS_GUARD",
+    "STATUS_SET_GUARDS",
+    "STATUS_SET_NAMES",
     "TASK_DELETE",
+    "TEMPLATE_APPLY",
     "TYPED",
 ]
