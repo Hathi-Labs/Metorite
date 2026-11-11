@@ -37,6 +37,7 @@ import ModuleStudio from "@/app/workflows/components/ModuleStudio";
 import { useLiveRefresh } from "@/lib/liveRefresh";
 import { studioLibraryView, type StudioKind } from "@/lib/studio/library";
 import AppsGallery from "./components/AppsGallery";
+import ReadyApps from "./components/ReadyApps";
 import SkillsGallery from "./components/SkillsGallery";
 import WorkflowsGallery from "./components/WorkflowsGallery";
 
@@ -114,6 +115,7 @@ function StudioLibrary() {
             onChange={(id) => go({ kind: id as StudioKind })}
           />
           <div className="flex-1 overflow-y-auto p-3 sm:p-4 flex flex-col gap-3 sm:gap-4">
+            {view.showApps && <ReadyApps key={`ready-${librarySeq}`} />}
             {view.showApps && <div key={`apps-${librarySeq}`} className={PANEL}><AppsGallery /></div>}
             {view.showWorkflows && <div key={`workflows-${librarySeq}`} className={PANEL}><WorkflowsGallery /></div>}
             {view.showSkills && <div key={`skills-${librarySeq}`} className={PANEL}><SkillsGallery /></div>}
