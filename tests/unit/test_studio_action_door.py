@@ -874,20 +874,18 @@ def _agg_read_nothing(world: Any) -> None:
 class TestTheAggregate:
     """``object:<name>.aggregate`` (D4b), one more class A read of the door.
 
-    **The mutations (R7).** Each one turns the named test red.
+    **The mutations (R7).** Each was run on 2026-11-11, and each turned the
+    named tests red. The R8 suite lists A6 and F1.
 
-    * A1. ``_aggregate_input``: accept any key.
-      ``test_a_key_outside_the_schema_is_422_and_reads_nothing``.
+    * A1. ``_aggregate_input``: accept any key. Nine cases of
+      ``test_a_key_outside_the_schema_is_422_and_reads_nothing`` go red.
     * A2. ``_aggregate_input``: drop the shape check, so the store refuses
-      after the object read. ``test_a_bad_op_or_too_many_measures_is_422_and_reads_nothing``.
+      after the object read. The cases of
+      ``test_a_bad_op_or_too_many_measures_is_422_and_reads_nothing`` go red.
     * A3. ``OPEN_EXECUTORS``: drop the aggregate.
-      ``test_an_aggregate_is_class_a_and_it_runs``.
-    * A4. ``_run_object_aggregate``: pass the package id of the body.
-      ``test_an_aggregate_passes_its_input_to_the_store_with_the_package_of_the_path``.
+      ``test_an_aggregate_is_class_a_and_it_runs`` goes red.
     * A5. ``_wire``: send a ``Decimal`` as a float.
-      ``test_an_aggregate_answers_the_one_row_of_parse_aggregate``.
-    * A6. ``_check``: skip the package read for an aggregate (the R8 suite
-      holds the wall of the member). ``test_a_package_of_another_member_or_org_is_404_for_an_aggregate``.
+      ``test_an_aggregate_answers_the_one_row_of_parse_aggregate`` goes red.
     """
 
     def test_an_aggregate_is_class_a_and_it_runs(self, world):

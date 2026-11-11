@@ -78,8 +78,9 @@ the one row that ``aggregateModel.parseAggregate`` reads: ``measures`` (each
 ``folded`` and ``total``. Each group is ``{key, count, values}``. A
 ``Decimal`` goes on the wire as exact text with no exponent, and a money sum
 is an ``int`` of minor units with its currency. The grammar refuses an
-average of money with ``query_op_not_allowed`` (C2b), so no average reaches
-the client without its unit.
+average of money with ``query_op_not_allowed`` (C2b). The store sends the
+currency of a money average too, so no average of money can reach the
+client without its unit.
 
 **Tenancy and the member (R5).** The org is the bound session
 (``_tenant_session()``), and the member is ``user.email``. No check reads an

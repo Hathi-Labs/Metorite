@@ -2518,11 +2518,18 @@ def test_r8_ax_a_resend_with_only_the_request_id_of_a_declined_change_writes_not
 # **The mutations of D4b (R7).** Each was run on 2026-11-11 and turned the named
 # tests red. ``TestTheAggregate`` of the hermetic half names the rest.
 #
-# * A1. ``_aggregate_input``: accept any key. ``test_r8_ay_bc_a_bad_key_or_op_is_422``.
-# * A4. ``_run_object_aggregate``: read the object of the other package.
-#   ``test_r8_ba_two_packages_with_one_object_name_count_their_own_records``.
+# * A1. ``_aggregate_input``: accept any key. Five cases of
+#   ``test_r8_ay_bc_a_bad_key_or_op_is_422_and_reads_nothing`` go red.
+# * A2. ``_aggregate_input``: drop the shape check. The other cases of that
+#   test go red, because the door reads the object first.
+# * A5. ``_wire``: send a ``Decimal`` as a float.
+#   ``test_r8_ay_the_owner_groups_the_records_and_one_audit_row`` goes red.
 # * A6. ``packages_store._GET_SQL`` (M2): drop ``AND owner_email = :m``.
-#   ``test_r8_az_another_member_and_org_b_get_404_on_an_aggregate``.
+#   ``test_r8_az_another_member_and_org_b_get_404_on_an_aggregate`` goes red.
+# * F1. ``studio_query.MEASURE_TYPES``: open an average of money.
+#   ``test_r8_bd_an_average_of_money_is_refused_with_one_currency`` goes red.
+#   The first run of this mutation survived, because the old case seeded two
+#   currencies, so the refusal of a mixed sum hid it. The case now seeds one.
 
 _AGG_OUTCOME = {"action": "tally", "uses": "object:visit.aggregate", "class": "A"}
 _FEE = [{"op": "count"}, {"op": "sum", "field": "fee"}, {"op": "average", "field": "hours"}]
@@ -2659,6 +2666,39 @@ def _watch_the_aggregate_session(monkeypatch) -> list[int]:
 
     monkeypatch.setattr(objects_store, "aggregate_records", spy)
     return ran
+
+
+def test_r8_bd_an_average_of_money_is_refused_with_one_currency(world) -> None:
+    """Finding F1. Each amount is INR, so only the rule of the grammar can
+    refuse the average. A refusal for two currencies cannot hide it."""
+    async def go() -> tuple[int, Any]:
+        await _add_tallied(world.a, world.obj, world.pkg, [("done", 500, "INR", 1)] * 2)
+        return await _call(world.a, ANA, world.pkg, "tally",
+                           {"measures": [{"op": "average", "field": "fee"}]})
+
+    status, detail = _run(world, go)
+    assert (status, detail["code"], detail["field"]) == (422, "query_op_not_allowed", "fee")
+    assert [r[3] for r in _audits(world, world.pkg)] == [{
+        **_AGG_OUTCOME, "outcome": "refused", "reason": "query_op_not_allowed"}]
+
+
+def test_r8_bd_an_opened_average_of_money_carries_its_currency(world, monkeypatch) -> None:
+    """Finding F1, the other half. Open the average of money in the grammar,
+    as a later slice may. The door then sends the currency with the average,
+    so the client scales it. The value stays in minor units."""
+    monkeypatch.setattr(studio_query, "MEASURE_TYPES", {
+        **studio_query.MEASURE_TYPES, "average": frozenset({"number", "money"})})
+
+    async def go() -> tuple[int, Any]:
+        await _add_tallied(world.a, world.obj, world.pkg,
+                           [("done", 500, "INR", 1), ("done", 1500, "INR", 1)])
+        return await _call(world.a, ANA, world.pkg, "tally",
+                           {"measures": [{"op": "average", "field": "fee"}]})
+
+    status, got = _run(world, go)
+    assert status == 200, got
+    assert got["currencies"] == ["INR"]
+    assert got["total"]["values"] == ["1000"]
 
 
 @pytest.mark.parametrize("body,code,field", [
