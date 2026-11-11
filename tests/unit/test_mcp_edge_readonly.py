@@ -100,6 +100,8 @@ def open_edge(armed, monkeypatch):  # noqa: F811 — a fixture
     monkeypatch.setattr(settings, "agent_access_writes_enabled", True)
     monkeypatch.setattr(settings, "agent_runs_enabled", True)
     monkeypatch.setattr(settings, "agent_door_apps", DOOR_APP)
+    # WS-MCP SW-23: `report_check` shows only while the Check flag is on.
+    monkeypatch.setattr(settings, "agent_task_checks_enabled", True)
     armed.store.tokens[FULL] = _lookup(scope=" ".join(FULL_SCOPES), scopes=FULL_SCOPES)
     armed.store.tokens[READ] = _lookup(scope=" ".join(READ_SCOPES), scopes=READ_SCOPES)
     return armed
