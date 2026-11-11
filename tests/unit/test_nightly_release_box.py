@@ -1,4 +1,6 @@
-"""The home box starts the daily release at 21:30 UTC (CIV-13, D178).
+"""The home box starts each release slot (CIV-13 D178, CIV-21 D194).
+
+The slots are 05:30, 13:30 and 21:30 UTC (11:00, 19:00 and 03:00 IST).
 
 GitHub started the ``30 21 * * *`` cron of ``deploy.yml`` 3.5 to 5.5 h late
 (run 41949347780 started at 01:33 UTC), so the release window often closed
@@ -7,10 +9,11 @@ first. A user timer on the home box now dispatches ``deploy.yml`` with
 
 What this file fences, in ``scripts/home_server/``:
 
-1. The timer fires at 21:30 UTC, catches up after a stop, and is enabled
+1. The timer fires at each slot, catches up after a stop, and is enabled
    under ``timers.target``. The service runs the installed copy of the script.
 2. The script dispatches on ``main`` with ``nightly=true`` and its reason.
-3. It refuses outside 21:00 to 01:00 UTC, and it says so.
+3. It refuses outside 21:00 to 01:00, 05:00 to 09:00 and 13:00 to 17:00
+   UTC, and it says so.
 4. It stops with a clear message when ``gh`` is not signed in, and it never
    prints a token.
 5. It logs the URL of THIS dispatch's run, not of an older one, or it exits
@@ -50,11 +53,26 @@ def _unit(path: pathlib.Path) -> configparser.ConfigParser:
 # ── 1. The units ─────────────────────────────────────────────────────────────
 
 
-def test_the_timer_fires_at_2130_utc_and_catches_up() -> None:
+_SLOTS = ["05:30", "13:30", "21:30"]
+
+
+def _on_calendar() -> list[str]:
+    # configparser keeps only the last of keys that repeat, so read the
+    # lines of the file.
+    lines = _TIMER.read_text(encoding="utf-8").splitlines()
+    return [ln.split("=", 1)[1].strip() for ln in lines if ln.startswith("OnCalendar=")]
+
+
+def test_the_timer_fires_at_each_slot_and_catches_up() -> None:
+    assert _on_calendar() == [f"*-*-* {s}:00 UTC" for s in _SLOTS]
     timer = _unit(_TIMER)
-    assert timer["Timer"]["OnCalendar"] == "*-*-* 21:30:00 UTC"
     assert timer["Timer"]["Persistent"] == "true"
     assert timer["Install"]["WantedBy"] == "timers.target"
+
+
+@pytest.mark.parametrize("slot", _SLOTS)
+def test_each_slot_has_a_timer_line(slot: str) -> None:
+    assert f"*-*-* {slot}:00 UTC" in _on_calendar(), f"the {slot} UTC slot has no OnCalendar line"
 
 
 def test_the_service_runs_the_installed_copy() -> None:
@@ -144,8 +162,11 @@ def test_the_poll_finds_this_dispatch_and_not_an_older_run(tmp_path: pathlib.Pat
 
 
 @needs_bash
-@pytest.mark.parametrize("now", ["2026-11-05T21:00:00Z", "2026-11-05T23:59:00Z", "2026-11-06T00:59:00Z"])
-def test_the_clock_guard_lets_the_night_through(tmp_path: pathlib.Path, now: str) -> None:
+@pytest.mark.parametrize("now", ["2026-11-05T21:00:00Z", "2026-11-05T23:59:00Z", "2026-11-06T00:59:00Z",
+                                 # CIV-21: the 05:30 and 13:30 slots.
+                                 "2026-11-06T05:00:00Z", "2026-11-06T05:30:00Z", "2026-11-06T08:59:00Z",
+                                 "2026-11-06T13:00:00Z", "2026-11-06T13:30:00Z", "2026-11-06T16:59:00Z"])
+def test_the_clock_guard_lets_each_slot_through(tmp_path: pathlib.Path, now: str) -> None:
     runs = [{"url": _URL + "3", "createdAt": now, "displayTitle": "deploy (nightly)"}]
     done, _ = _run(tmp_path, now=now, runs=runs)
     assert done.returncode == 0, done.stderr
@@ -153,11 +174,13 @@ def test_the_clock_guard_lets_the_night_through(tmp_path: pathlib.Path, now: str
 
 @needs_bash
 @pytest.mark.parametrize("now", ["2026-11-05T20:59:00Z", "2026-11-06T01:00:00Z",
-                                 "2026-11-06T08:00:00Z", "2026-11-06T09:30:00Z"])
-def test_the_clock_guard_refuses_outside_the_night(tmp_path: pathlib.Path, now: str) -> None:
+                                 "2026-11-06T04:59:00Z", "2026-11-06T09:00:00Z",
+                                 "2026-11-06T09:30:00Z", "2026-11-06T12:59:00Z",
+                                 "2026-11-06T17:00:00Z", "2026-11-06T20:00:00Z"])
+def test_the_clock_guard_refuses_outside_the_slots(tmp_path: pathlib.Path, now: str) -> None:
     done, calls = _run(tmp_path, now=now)
     assert done.returncode == 3
-    assert "21:00 to 01:00 UTC" in done.stderr
+    assert "21:00 to 01:00, 05:00 to 09:00 or 13:00 to 17:00 UTC" in done.stderr
     assert not any(c.startswith("workflow run") for c in calls), "it must not dispatch"
 
 

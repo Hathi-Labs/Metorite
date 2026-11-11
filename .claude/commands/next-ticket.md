@@ -28,11 +28,12 @@ Sub-agents have no Metorite tools, so you post for them.
 
 | Step | Call |
 |---|---|
-| 1 Select | `my_work`. For a waiting run, `get_agent_run` first. Then `claim_task`, and post one `post_agent_activity` thought: the slice, the tier and the plan |
+| 1 Select | `my_work`. For a waiting run, `get_agent_run` first. Then `claim_task`, then `get_task_context`, and post one `post_agent_activity` thought: the slice, the tier and the plan |
 | Every dispatch and report | A `post_agent_activity` thought on each open run: who runs, on what, and how long you expect to wait. A run with no line for 5 minutes shows idle |
 | 3 Branch | Push the branch at its first commit. `add_task_reference` with the branch URL |
 | 4b Preview | `post_agent_activity` as a `response`, then `ask_on_task`. Read the answer with `get_agent_run` and `after` set to the question's seq. Do not report `AWAITING-OWNER` before that read. If the owner answers in chat and not on the task, record the answer with `record_outside_decision` before you go on |
 | 7 Land | The task URL goes in the PR body. `add_task_reference` with the PR URL. `set_task_status` to review if the project has a review status. After the merge, `set_task_status` to done, then `finish_agent_run` with what shipped and what is left |
+| A test run in the background | Cap it. Run `affected_tests.py --run`, which drops the known hangers and sets a 600 s timeout for each test. A wait of more than 45 minutes with no new output is a stall. Stop the wait, report it with `post_agent_activity` as an `error`, and find the hung test (CIV-15) |
 | Stop early | `release_task`, after a comment that says what is done, what is left and the next step |
 | A new spec slice | `create_task` for each new slice row, in Backlog, under the epic. Write the number in the row |
 
@@ -45,6 +46,10 @@ use it. Run `uv run python scripts/board.py --row WS-n` to read the row of its
 workstream: the owning spec and the Metorite epic. If `my_work` is empty, pick
 the highest-priority open task in that epic that is not owner-gated end to
 end. Say which you picked and why, in one line.
+
+After the claim, call `get_task_context`. Read the description and every
+comment, because the owner's feedback is often in a comment. When the task has
+more than 20 comments, read the older ones with `get_task_timeline`.
 
 **1b — Set the risk tier.** The tier sets how much review the slice gets.
 Owner decision, 2026-10-16. Say the tier and the reason in one line.
@@ -142,6 +147,11 @@ behaviour.
 - **No answer in this session:** leave the draft PR and the open question,
   and end the cycle with `AWAITING-OWNER`. The next session finds the answer in
   `my_work`.
+- **Small screen change (D200).** A LOW or STANDARD slice that is a small change
+  on an existing screen does not wait for **Approve**. Run steps 5 to 7 with the
+  captures and the `Visual review:` line. After the merge, post the captures and
+  call `ask_on_task` with "Looks right" and "Change it". The PR body states why
+  the slice qualifies. D200 lists the cases that do not. When in doubt, wait.
 - `engineering_practice.md` §1.3 owns this step.
 
 **5 — Verify.** Dispatch `ws-verifier`. It checks each behaviour criterion on
@@ -188,18 +198,19 @@ step, dispatch `diff-reviewer` on item 8 only (1d).
   `local-staging` pass. Exit 1 means merge `origin/main` into the branch, fix,
   push, and run the gate and `pr-check` again. Then find the batch that holds
   your merge, as the steps below say.
-- **Production moves at 21:30 UTC (D145).** Do not dispatch `deploy.yml` after
-  a merge. Dispatch only for a hotfix that the owner asks for in this session,
+- **Production moves three times a day, at 05:30, 13:30 and 21:30 UTC (D194).**
+  Do not dispatch `deploy.yml` after a merge. Dispatch only for a hotfix
+  that the owner asks for in this session,
   or when production is down. Then follow D144 point 3: the unit-test job on
   the tip of `main` passes first, you name every merge in
   `git log <prod applied_sha>..origin/main`, and you confirm the pre-migration
   backup for a migration.
-  The home box starts the release: its timer dispatches `deploy.yml` with `nightly=true` (D178).
-- Report "merged at `<sha>`, reaches production at tonight's release". After
+  The home box starts each release: its timer dispatches `deploy.yml` with `nightly=true` (D178).
+- Report "merged at `<sha>`, reaches production at the next release slot". After
   the release, confirm `/version` `applied_sha`. Do not call it live before you
   see that SHA.
-- `RELEASE_HOLD` stops the daily release only. Set it to `1` to hold that
-  night's run. `specs/staging_and_daily_release.md` owns the design.
+- `RELEASE_HOLD` stops the slot releases only. Set it to `1` to hold the
+  release of each slot until you clear it. `specs/staging_and_daily_release.md` owns the design.
 - Watch the job `Unit tests (a signal on a push, a gate on a release)` in that
   same `deploy` run to its end. On a push it does not gate, so two PRs that
   pass alone and fail together can land on `main`. A red `main` also blocks
@@ -232,6 +243,15 @@ organization's membership or credit balance.
 A guard hook enforces all of this independently. If it blocks you, that block is
 correct — do not work around it, and do not ask a subagent to do what you were
 blocked from doing. Report the exact gate id the owner must grant.
+
+## Clean up after yourself
+
+Root `CLAUDE.md` §4 holds the rule (CIV-16). At the end of a cycle, do these steps:
+
+1. Run each test command under `timeout`, and give every wait a deadline.
+2. After the merge, remove your worktree with `bash scripts/worktree.sh remove <slug>`.
+3. Stop each background job, tunnel, tmux session, preview server and container that you started.
+4. Before your final message, list your background jobs. Name the ones that stay, and say why.
 
 ## Final report
 

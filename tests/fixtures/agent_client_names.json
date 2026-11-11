@@ -14,6 +14,9 @@
     {"via": "mcp:client.example:meta", "label": "client.example", "why": "an unknown client stamp reads as its host"},
     {"via": "mcp:0123456789abcdef", "label": "0123456789abcdef", "why": "the hash stamp reads as itself"},
     {"via": "mcp:2001:db8::1", "label": "2001:db8::1", "why": "an IPv6 host stamp reads whole, because an IPv6 host gets no slug"},
+    {"via": "mcp:box:metorite-home-0a1b2c3d", "label": "Box metorite-home", "why": "EA-19b: a box stamp reads Box and its slug"},
+    {"via": "mcp:box:ci-runner-2-deadbeef", "label": "Box ci-runner-2", "why": "EA-19b: a slug may hold a dash and a digit"},
+    {"via": "mcp:box:0a1b2c3d", "label": "Box", "why": "EA-19b: the short box stamp has no slug"},
     {"via": "", "label": "Agent", "why": "no stamp"},
     {"via": "mcp:", "label": "Agent", "why": "an empty stamp"}
   ]

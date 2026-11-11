@@ -45,8 +45,8 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { AppTopBar } from "@/components/AppTopBar";
 import { useAccess } from "@/components/AccessProvider";
 import { useMobileDrawer } from "@/components/AppShell";
+import { usePhoneBar, useSheetTab } from "@/lib/shell/phoneBarEvent";
 import { EmptyState } from "@/components/EmptyState";
-import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { SkeletonRows } from "@/components/ui/Skeleton";
@@ -68,6 +68,7 @@ import {
 import KnowledgeRail, { type SubPageParent } from "./components/KnowledgeRail";
 import AddEntityDialog from "./components/AddEntityDialog";
 import NewPageDialog from "./components/NewPageDialog";
+import SpaceDialog from "./components/SpaceDialog";
 import { usePendingCount } from "./components/useProposals";
 import { withPendingMe } from "./lib/labels";
 import { KNOWLEDGE_CACHE, KnowledgeError, SPACES_KEY, archivePage, listSpaces } from "./lib/api";
@@ -136,7 +137,12 @@ async function readSpaces(): Promise<SpacesRead> {
 }
 
 /** The bar and the body of a state with no rail: loading, off, no feature. */
+const NO_RAIL_TABS = ["knowledge-rail", "knowledge-search", "knowledge-new-page"];
+
 function Frame({ children }: { children: ReactNode }) {
+  // No rail is mounted in these states, so nothing answers the three tabs of
+  // the phone bar. The bar hides them rather than draw a dead tap (MOB-12).
+  usePhoneBar({ hide: NO_RAIL_TABS });
   return (
     <div className="flex h-full min-h-0 flex-col bg-background">
       <AppTopBar title="Knowledge" />
@@ -230,12 +236,14 @@ function KnowledgeReady({ realSpaces, children }: { realSpaces: Space[]; childre
   const searchParams = useSearchParams();
   const router = useRouter();
   const { isMobile } = useViewMode();
-  const { open: openDrawer, close: closeDrawer } = useMobileDrawer();
+  const { open: openDrawer, close: closeDrawer, isOpen: drawerOpen, shows: drawerShows } = useMobileDrawer();
+  const [sheetTab, markSheetTab] = useSheetTab(drawerOpen, drawerShows);
   const rail = useRailFold();
 
   const [focus, setFocus] = useState<PageFocus | null>(null);
   const [ask, setAsk] = useState<NewPageAsk | null>(null);
   const [adding, setAdding] = useState<CreatableType | null>(null);
+  const [makingSpace, setMakingSpace] = useState(false);
   const [archiving, setArchiving] = useState<PageSummary | null>(null);
   const [archiveBusy, setArchiveBusy] = useState(false);
   const toast = useToast();
@@ -328,6 +336,9 @@ function KnowledgeReady({ realSpaces, children }: { realSpaces: Space[]; childre
     else act();
   }, []);
 
+  // KB-2q: the New space form, for a holder of knowledge:manage. The gateway checks again.
+  const openNewSpace = useCallback(() => requestLeave(() => setMakingSpace(true)), [requestLeave]);
+
   // Go to an address through the leave guard. On the Search view, the rail's
   // Search row and the bar's Search tool focus the box and keep the words.
   const go = useCallback(
@@ -402,49 +413,70 @@ function KnowledgeReady({ realSpaces, children }: { realSpaces: Space[]; childre
       ? { selected: atMaintenance, count: expiredCount(maintenanceRead.data) }
       : null,
     onArchive: setArchiving,
+    onNewSpace: manager ? openNewSpace : undefined,
     onAddEntity: canAdd ? (type: CreatableType) => requestLeave(() => openAddEntity(type)) : undefined,
   };
 
-  const title = isMobile ? (
-    <button
-      type="button"
-      onClick={() =>
-        openDrawer(
-          <nav aria-label="Knowledge spaces" className="p-2">
-            <KnowledgeRail
-              {...railProps}
-              onNavigate={(href) => {
-                closeDrawer();
-                go(href);
-              }}
-              onNewSubPage={(parent) => {
-                closeDrawer();
-                newSubPage(parent);
-              }}
-              onArchive={(page) => {
-                closeDrawer();
-                setArchiving(page);
-              }}
-              onAddEntity={
-                railProps.onAddEntity
-                  ? (type) => {
-                      closeDrawer();
-                      railProps.onAddEntity?.(type);
-                    }
-                  : undefined
-              }
-            />
-          </nav>,
-        )
-      }
-      className="inline-flex max-w-full items-center gap-1 align-middle tech-transition hover:opacity-80"
-    >
-      <span className="truncate">Knowledge</span>
-      <Icon name="ChevronDown" size={14} className="shrink-0 text-muted-foreground" />
-    </button>
-  ) : (
-    "Knowledge"
-  );
+  // The spaces rail in the drawer: the title button opens it on a phone, and
+  // so does the bar's Spaces tab (MOB-12).
+  const openRail = () => {
+    markSheetTab("knowledge-rail");
+    openDrawer(
+      <nav aria-label="Knowledge spaces" className="p-2">
+        <KnowledgeRail
+          {...railProps}
+          onNavigate={(href) => {
+            closeDrawer();
+            go(href);
+          }}
+          onNewSubPage={(parent) => {
+            closeDrawer();
+            newSubPage(parent);
+          }}
+          onArchive={(page) => {
+            closeDrawer();
+            setArchiving(page);
+          }}
+          onNewSpace={
+            railProps.onNewSpace
+              ? () => {
+                  closeDrawer();
+                  railProps.onNewSpace?.();
+                }
+              : undefined
+          }
+          onAddEntity={
+            railProps.onAddEntity
+              ? (type) => {
+                  closeDrawer();
+                  railProps.onAddEntity?.(type);
+                }
+              : undefined
+          }
+        />
+      </nav>,
+    );
+  };
+
+  // The phone bar: Spaces and New page answer here. Search is a link.
+  usePhoneBar({ active: sheetTab });
+  const railRef = useRef(openRail);
+  railRef.current = openRail;
+  const newPageRef = useRef(() => {});
+  newPageRef.current = () => requestLeave(() => openNewPage({ spaceId: selectedSpaceId }));
+  useEffect(() => {
+    const h = (e: Event) => {
+      const tab = (e as CustomEvent<string>).detail;
+      if (tab === "knowledge-rail") railRef.current();
+      else if (tab === "knowledge-new-page") newPageRef.current();
+    };
+    window.addEventListener("cc-mobile-nav", h);
+    return () => window.removeEventListener("cc-mobile-nav", h);
+  }, []);
+
+  // Plain text. On a phone the Spaces tab opens the rail, so a title that
+  // opened it too would repeat a tab (navigation_shell.md §9.2 rule 5, MOB-12).
+  const title = "Knowledge";
 
   return (
     <KnowledgeContext.Provider value={context}>
@@ -452,12 +484,14 @@ function KnowledgeReady({ realSpaces, children }: { realSpaces: Space[]; childre
       {/* KC-8e: the two entity jobs. No writable space, or a refused types read: nothing opens. */}
       <ShellJob id="add-product" onOpen={() => canAdd && requestLeave(() => openAddEntity("product"))} />
       <ShellJob id="add-topic" onOpen={() => canAdd && requestLeave(() => openAddEntity("topic"))} />
+      {/* KB-2q: the New space job. A member without knowledge:manage gets nothing. */}
+      <ShellJob id="new-space" onOpen={() => manager && openNewSpace()} />
       <div className="flex h-full w-full flex-col overflow-hidden bg-background">
         <AppTopBar
           rail={{ open: rail.open, onToggle: rail.toggle, noun: "the spaces" }}
           title={title}
           subtitle={selectedSpace?.name}
-          actions={
+          actions={isMobile ? undefined : (
             <Button
               variant="primary"
               size="sm"
@@ -465,10 +499,10 @@ function KnowledgeReady({ realSpaces, children }: { realSpaces: Space[]; childre
               aria-label="New page"
               onClick={() => requestLeave(() => openNewPage({ spaceId: selectedSpaceId }))}
             >
-              {isMobile ? null : "New page"}
+              New page
             </Button>
-          }
-          tools={
+          )}
+          tools={isMobile ? undefined : (
             <Button
               variant="ghost"
               size="sm"
@@ -477,9 +511,9 @@ function KnowledgeReady({ realSpaces, children }: { realSpaces: Space[]; childre
               title="Search Knowledge"
               onClick={() => go(KNOWLEDGE_SEARCH)}
             >
-              {isMobile ? null : "Search"}
+              Search
             </Button>
-          }
+          )}
         />
         <div className="flex min-h-0 flex-1 overflow-hidden">
           {!isMobile && rail.open ? (
@@ -524,6 +558,16 @@ function KnowledgeReady({ realSpaces, children }: { realSpaces: Space[]; childre
         busy={archiveBusy}
         onCancel={() => setArchiving(null)}
         onConfirm={() => void archive()}
+      />
+      <SpaceDialog
+        target={makingSpace && manager ? { mode: "new" } : null}
+        onClose={() => setMakingSpace(false)}
+        onSaved={(space) => {
+          setMakingSpace(false);
+          invalidate(KNOWLEDGE_CACHE);
+          toast.show({ key: `kb-space:${space.id}`, title: `Made ${space.name}` });
+          go(spaceHref(space.id));
+        }}
       />
       <AddEntityDialog
         type={canAdd ? adding : null}

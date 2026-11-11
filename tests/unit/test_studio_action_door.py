@@ -1,6 +1,6 @@
-"""The action door of AI Studio, the hermetic half (STU-B2a and STU-B2b-1).
+"""The action door of AI Studio, the hermetic half (STU-B2a, B2b-1, B2c-1 and B2c-2a).
 
-Spec: ``project-docs/specs/ai_studio.md`` §3.2, and §14 B2a and B2b-1. Code:
+Spec: ``project-docs/specs/ai_studio.md`` §3.2, and §14 B2a, B2b-1, B2c-1 and B2c-2a. Code:
 ``gateway/routes/studio/invoke.py``. The R8 half, on a real Postgres, is
 ``test_studio_action_door_r8.py``. It proves the walls of the org, of the
 member and of the package, and the audit row.
@@ -152,6 +152,23 @@ class _FakeDB:
         assert org, "a door session opened with no bound org"
         self.w = world
         self.org = org
+
+    def begin_nested(self) -> Any:
+        """A SAVEPOINT that logs its end (B2c-2a): a release, or a rollback
+        when the block raises."""
+        log = self.w.log
+
+        @asynccontextmanager
+        async def _savepoint() -> Any:
+            log.append("savepoint")
+            try:
+                yield None
+            except BaseException:
+                log.append("rollback_savepoint")
+                raise
+            log.append("release_savepoint")
+
+        return _savepoint()
 
     async def execute(self, stmt: Any, params: dict[str, Any] | None = None) -> _Result:
         sql, p, w = str(stmt), dict(params or {}), self.w
@@ -1032,10 +1049,15 @@ class TestTheTables:
 
     def test_each_refusal_is_one_short_sentence(self):
         assert set(invoke.REFUSALS) == {"not_declared", "class_x", "not_in_catalog",
-                                        "approval_required", "source_not_open"}
+                                        "approval_required", "source_not_open",
+                                        "no_person_present"}
         messages = {**invoke.REFUSALS, "catalog_unavailable": invoke.CATALOG_DOWN,
                     "object_missing": invoke.NO_OBJECT, "bad_input": invoke.BAD_RECORD_ID,
-                    "bad_list": invoke.BAD_LIST_INPUT, "body_too_large": invoke.BODY_OVER_CAP}
+                    "bad_list": invoke.BAD_LIST_INPUT, "body_too_large": invoke.BODY_OVER_CAP,
+                    "request_refused": invoke.ASK_AGAIN,
+                    "approval_ask": invoke.APPROVAL_ASK}
+        # B2c-2a: each refused spend has its own code and one sentence.
+        messages.update({code: text for _, code, text in invoke.SPEND_REFUSALS.values()})
         for code, message in messages.items():
             assert re.fullmatch(r"[a-z_]+", code)
             assert message.endswith(".") and message.count(". ") == 0, code
@@ -1555,3 +1577,300 @@ class TestTheWriterCap:
         assert (second[0], second[1]["code"], second[2]) == (
             503, "store_busy", {"Retry-After": "1"})
         assert busy == invoke._IN_FLIGHT
+
+
+# ── The delegated writes (STU-B2c-2a) ──────────────────────────────────────
+#
+# Here the store of MCP-P1b-1 is a fake that logs each call, so a test sees the
+# order and the session of each step. The R8 suite runs the real store.
+
+from acb_auth import app_requests as request_store  # noqa: E402
+from acb_common.no_person import no_person_scope  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
+from gateway import app_requests  # noqa: E402
+
+RID = str(uuid.uuid4())
+
+
+@pytest.fixture
+def rw(dw, monkeypatch):
+    """The direct world with the request store on for each org, and a fake
+    store that logs ``open_request``, ``read_request``, ``spend`` and
+    ``classify_refusal`` into ``world.log``."""
+    monkeypatch.setattr(get_settings(), "app_requests_orgs", "*")
+    dw.opened, dw.spends, dw.stored_body, dw.spend_ok = [], [], None, True
+    # The answers of ``open_request``, oldest first: (request id, state,
+    # created). The last one repeats.
+    dw.open_answers = [(RID, "awaiting", True)]
+    # Fix round 2: the open request of the change that the one read finds,
+    # or None. Each call of the read is in ``dw.found_reads``.
+    dw.open_found, dw.found_reads = None, []
+
+    async def _open(db: Any, **kw: Any) -> Any:
+        dw.log.append("open_request")
+        dw.opened.append((db, kw))
+        rid, state, created = dw.open_answers[min(len(dw.opened), len(dw.open_answers)) - 1]
+        return app_requests.Opened(request_id=rid, run_id=str(uuid.uuid4()), state=state,
+                                   expires_at="2026-11-07T00:00:00+00:00", created=created)
+
+    async def _open_of_change(db: Any, **kw: Any) -> Any:
+        dw.log.append("open_of_change")
+        dw.found_reads.append((db, kw))
+        return dw.open_found
+
+    monkeypatch.setattr(app_requests, "open_studio_request", _open_of_change, raising=False)
+
+    async def _read(db: Any, **kw: Any) -> Any:
+        dw.log.append("read_request")
+        return {"call": {"body": dw.stored_body}}
+
+    async def _spend(db: Any, **kw: Any) -> Any:
+        dw.log.append("spend")
+        dw.spends.append((db, kw))
+        if not dw.spend_ok:
+            return None
+        return request_store.Spent(
+            request_id=kw["request_id"], run_id="run", app="studio", op="op", cls="B",
+            source="studio", subject="", call={"body": dw.stored_body}, digest=kw["digest"])
+
+    async def _classify(db: Any, **kw: Any) -> str:
+        dw.log.append("classify")
+        return "declined"
+
+    monkeypatch.setattr(app_requests, "open_request", _open)
+    monkeypatch.setattr(app_requests, "read_request", _read)
+    monkeypatch.setattr(request_store, "spend", _spend)
+    monkeypatch.setattr(request_store, "classify_refusal", _classify)
+    return dw
+
+
+def _request(world: Any, payload: Any = None, request_id: str | None = None,
+             fails: bool = False, ask: bool = True) -> Any:
+    """A request of the handler with *payload* as its body and *request_id* in
+    its query. With no *request_id*, the query holds the ask marker ``ask=1``
+    unless *ask* is False. With *fails*, a read of the body raises."""
+    raw = b"" if payload is None else json.dumps(payload).encode()
+    body = _Body(world, raw, fails=fails)
+    if request_id is not None:
+        body.query_params = {"request_id": request_id}
+    else:
+        body.query_params = {"ask": "1"} if ask else {}
+    return body
+
+
+def _delegated(world: Any, pid: str, action: str, request: Any) -> tuple[int, Any]:
+    """The handler with no proof. A 202 answers its status and its JSON."""
+    status, found = _direct(world, pid, action, request)
+    if isinstance(found, JSONResponse):
+        return found.status_code, json.loads(found.body)
+    return status, found
+
+
+_VERBS = {"add": "create", "change": "update", "remove": "delete"}
+
+
+class TestTheDelegatedWrites:
+    def test_the_delegated_set_is_the_three_object_writes(self):
+        assert set(invoke.DELEGATED_EXECUTORS) == {
+            ("object", "create"), ("object", "update"), ("object", "delete")}
+        assert not invoke.DELEGATED_EXECUTORS & invoke.OPEN_EXECUTORS
+
+    def test_with_the_org_flag_off_a_write_reads_no_byte_and_asks_nothing(self, rw, monkeypatch):
+        monkeypatch.setattr(get_settings(), "app_requests_orgs", "")
+        pid, _, _ = _setup(rw)
+        for request_id in (None, RID):
+            status, detail = _delegated(rw, pid, "add", _request(rw, request_id=request_id,
+                                                                 fails=True))
+            assert (status, detail["code"]) == (403, "approval_required")
+        assert not {"body", "open_request", "read_request", "spend"} & set(rw.log)
+
+    @pytest.mark.parametrize("action", ["add", "change", "remove"])
+    def test_an_ask_opens_one_card_in_the_session_of_the_check(self, rw, action):
+        pid, _, _ = _setup(rw)
+        status, got = _delegated(rw, pid, action, _request(rw, BODIES[action]))
+        assert (status, got) == (202, {"state": "awaiting", "request_id": RID,
+                                       "expires_at": "2026-11-07T00:00:00+00:00"})
+        assert rw.log == ["open", "close", "body", "open", "open_of_change", "open_request",
+                          "audit_in", "close"]
+        (db, kw), (adb, akw) = rw.opened[0], rw.audits_in[0]
+        assert db is adb and rw.writes == []
+        verb = _VERBS[action]
+        assert (kw["org"], kw["member"], kw["source"], kw["app"], kw["subject"], kw["op"]) == (
+            ORG, ANA, "studio", "studio", pid, action)
+        assert kw["cls"] == OBJECT_OP_CLASSES[verb]
+        assert (kw["connection_id"], kw["via"]) == (None, "studio:door")
+        assert kw["call"] == {
+            "method": "POST", "template": "/studio/apps/{app_id}/actions/{action}",
+            "path": f"/studio/apps/{pid}/actions/{action}",
+            "query": [["uses", f"object:visit.{verb}"]], "body": BODIES[action],
+            "if_match": None}
+        binding = request_store.studio_binding(ANA, "studio", pid)
+        assert kw["idempotency_key"].startswith(
+            request_store.call_digest(kw["call"], binding) + ":")
+        assert akw["detail"]["outcome"] == "asked" and akw["detail"]["request_id"] == RID
+
+    def test_the_class_and_the_org_never_come_from_the_body(self, rw):
+        pid, _, _ = _setup(rw)
+        body = {"data": {"site": "x"}, "cls": "A", "organization_id": OTHER}
+        status, detail = _delegated(rw, pid, "add", _request(rw, body))
+        assert (status, detail["code"]) == (422, "bad_input")
+        assert "open_request" not in rw.log
+
+    @pytest.mark.parametrize("action", ["add", "change", "remove"])
+    def test_a_resend_reads_no_byte_and_spends_writes_and_audits_in_one_session(
+            self, rw, action):
+        pid, _, _ = _setup(rw)
+        rw.stored_body = BODIES[action]
+        status, _got = _delegated(rw, pid, action, _request(rw, request_id=RID, fails=True))
+        assert status == 200, _got
+        assert rw.log == ["open", "close", "open", "read_request", "savepoint", "spend",
+                          "write", "release_savepoint", "audit_in", "close"]
+        (sdb, kw), (wdb, _, _, writes), (adb, akw) = (
+            rw.spends[0], rw.writes[0], rw.audits_in[0])
+        assert sdb is wdb is adb
+        binding = request_store.studio_binding(ANA, "studio", pid)
+        assert (kw["org"], kw["member"], kw["app"], kw["binding"], kw["request_id"]) == (
+            ORG, ANA, "studio", binding, RID)
+        call = invoke._door_call(pid, action, f"object:visit.{_VERBS[action]}", BODIES[action])
+        assert kw["digest"] == request_store.call_digest(call, binding)
+        step = writes[0]
+        assert step.op == _VERBS[action]
+        assert (step.record_id, step.data) == (BODIES[action].get("id"),
+                                               BODIES[action].get("data"))
+        assert akw["detail"]["outcome"] == "ran" and akw["detail"]["request_id"] == RID
+
+    def test_a_refused_spend_writes_nothing_and_answers_its_reason(self, rw):
+        pid, _, _ = _setup(rw)
+        rw.stored_body, rw.spend_ok = BODIES["add"], False
+        status, detail = _delegated(rw, pid, "add", _request(rw, request_id=RID, fails=True))
+        assert (status, detail["code"]) == (403, "request_declined")
+        assert "write" not in rw.log and rw.writes == []
+        assert rw.audits_in[0][1]["detail"]["reason"] == "request_declined"
+
+    def test_a_write_that_does_not_run_rolls_the_spend_back(self, rw):
+        pid, _, _ = _setup(rw)
+        rw.stored_body = BODIES["add"]
+        rw.write_raises = _batch(FieldError("site", "Field `site` is too long."))
+        status, detail = _delegated(rw, pid, "add", _request(rw, request_id=RID, fails=True))
+        assert (status, detail["code"]) == (422, "field_invalid")
+        assert rw.log[-4:] == ["write", "rollback_savepoint", "audit_in", "close"]
+
+    @pytest.mark.parametrize("request_id", [None, RID])
+    def test_a_run_with_no_person_present_reads_no_byte_and_asks_nothing(self, rw, request_id):
+        pid, _, _ = _setup(rw)
+        with no_person_scope():
+            status, detail = _delegated(rw, pid, "add", _request(
+                rw, {"data": {"site": "x"}}, request_id=request_id, fails=True))
+        assert (status, detail["code"]) == (403, "no_person_present")
+        assert not {"body", "open_request", "read_request", "spend"} & set(rw.log)
+        assert rw.audits[0]["detail"]["reason"] == "no_person_present"
+
+    def test_a_direct_call_with_a_request_id_stays_direct(self, rw):
+        pid, _, _ = _setup(rw)
+        r = _client(rw).post(f"/studio/apps/{pid}/actions/add?request_id={RID}",
+                             json=BODIES["add"], headers=_proof(pid, "add"))
+        assert r.status_code == 200, r.text
+        assert not {"open_request", "read_request", "spend"} & set(rw.log)
+        assert rw.writes[0][3][0].data == BODIES["add"]["data"]
+
+    # ── Fix round 1 ─────────────────────────────────────────────────────────
+
+    @pytest.mark.parametrize("action", ["add", "change", "remove"])
+    @pytest.mark.parametrize("ask", [None, "0", "true", ""])
+    def test_a_write_with_no_ask_marker_is_403_and_reads_no_byte(self, rw, action, ask):
+        """The flag is on. A call with no proof opens a card only when its
+        query holds ``ask=1``, or names a request. Each other value is today's
+        403, so an unsigned Save of the member's screen never reads as saved."""
+        pid, _, _ = _setup(rw)
+        request = _request(rw, BODIES[action], fails=True, ask=False)
+        if ask is not None:
+            request.query_params = {"ask": ask}
+        status, detail = _delegated(rw, pid, action, request)
+        assert (status, detail["code"]) == (403, "approval_required")
+        assert not {"body", "open_request", "read_request", "spend"} & set(rw.log)
+
+    def test_the_ask_marker_is_in_no_digest_and_no_binding(self, rw):
+        pid, _, _ = _setup(rw)
+        status, _got = _delegated(rw, pid, "add", _request(rw, BODIES["add"]))
+        assert status == 202
+        kw = rw.opened[0][1]
+        assert "ask" not in json.dumps(kw["call"]["query"])
+        binding = request_store.studio_binding(ANA, "studio", pid)
+        digest = request_store.call_digest(kw["call"], binding)
+        assert kw["idempotency_key"].startswith(f"{digest}:")
+        assert rw.found_reads[0][1]["digest"] == digest
+
+    # ── Fix round 2 ─────────────────────────────────────────────────────────
+
+    def test_an_ask_reads_the_open_request_once_then_opens_one(self, rw):
+        """No open request of the change: ONE read, then ONE ``open_request``
+        with a fresh key. The cost does not grow with the closed requests."""
+        pid, _, _ = _setup(rw)
+        status, got = _delegated(rw, pid, "add", _request(rw, BODIES["add"]))
+        assert (status, got["request_id"]) == (202, RID)
+        assert rw.log.count("open_of_change") == 1 and rw.log.count("open_request") == 1
+        assert rw.log.index("open_of_change") < rw.log.index("open_request")
+        (db, kw), (odb, okw) = rw.found_reads[0], rw.opened[0]
+        assert db is odb
+        binding = request_store.studio_binding(ANA, "studio", pid)
+        assert (kw["org"], kw["member"], kw["app"], kw["binding"]) == (
+            ORG, ANA, "studio", binding)
+        assert kw["digest"] == request_store.call_digest(okw["call"], binding)
+
+    def test_two_asks_get_two_fresh_keys(self, rw):
+        """Each new request has a key of its own. The lock and the one read,
+        not the key, make a retry of an open request give that request."""
+        pid, _, _ = _setup(rw)
+        _delegated(rw, pid, "add", _request(rw, BODIES["add"]))
+        _delegated(rw, pid, "add", _request(rw, BODIES["add"]))
+        first, second = (kw["idempotency_key"] for _, kw in rw.opened)
+        assert first != second
+
+    @pytest.mark.parametrize("state", ["awaiting", "approved"])
+    def test_an_open_request_of_the_change_is_the_answer(self, rw, state):
+        pid, _, _ = _setup(rw)
+        rw.open_found = app_requests.Opened(request_id=RID, run_id="run", state=state,
+                                            expires_at="later", created=False)
+        status, got = _delegated(rw, pid, "add", _request(rw, BODIES["add"]))
+        assert (status, got) == (202, {"state": state, "request_id": RID, "expires_at": "later"})
+        assert rw.opened == []
+
+    def test_the_door_holds_no_cap_of_generations(self):
+        for name in ("MAX_ASK_GENERATIONS", "ASK_LIMIT", "ASK_LIMIT_MESSAGE"):
+            assert not hasattr(invoke, name), name
+
+    def test_each_spend_refusal_names_a_step_that_works(self):
+        """A closed request opens a new one on an ask, so each refusal of a
+        closed request says to ask with ``ask=1``. An open request says to
+        wait and send the ``request_id``. A mismatch never says ``ask=1``: an
+        ask finds the same approved request, so the caller would loop."""
+        for why, (_, code, text) in invoke.SPEND_REFUSALS.items():
+            if why == "mismatch":
+                continue
+            step = "request_id" if why == "awaiting" else "ask=1"
+            assert step in text, code
+
+    def test_a_mismatch_names_the_known_limit_and_no_ask(self):
+        _, code, text = invoke.SPEND_REFUSALS["mismatch"]
+        assert code == "request_mismatch"
+        assert "ask=1" not in text and "1e16" in text
+        assert "change the input" in text
+
+    @pytest.mark.parametrize("allowed,action,text", [
+        ("*", "add", "ask"), ("*", "change", "ask"), ("*", "remove", "ask"),
+        ("", "add", "plain"), ("*", "flow", "plain")])
+    def test_the_approval_text_names_ask_only_where_an_ask_works(
+            self, rw, monkeypatch, allowed, action, text):
+        """While the org flag holds, a write of an object with no marker says
+        to send it again with ``ask=1``. A dark org, and a source that is not
+        an object, keep the plain text: an ask cannot help there."""
+        monkeypatch.setattr(get_settings(), "app_requests_orgs", allowed)
+        pid, _, _ = _setup(rw)
+        body = BODIES.get(action, {"id": "x"})
+        status, detail = _delegated(rw, pid, action, _request(rw, body, ask=False))
+        assert (status, detail["code"]) == (403, "approval_required")
+        if text == "ask":
+            assert detail["message"] == invoke.APPROVAL_ASK and "ask=1" in detail["message"]
+        else:
+            assert detail["message"] == invoke.REFUSALS["approval_required"]
+            assert "ask=1" not in detail["message"]

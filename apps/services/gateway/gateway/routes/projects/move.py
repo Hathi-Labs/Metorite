@@ -57,8 +57,8 @@ from gateway.routes.projects.core import (
     _tenant_session,
     actor,
     assert_holds_tasks,
-    assert_not_archived,
     assert_move_keeps_privacy,
+    assert_not_archived,
     emit,
     from_jsonb,
     load_visible_project,
@@ -70,7 +70,9 @@ from gateway.routes.projects.core import (
     resolve_visibility,
     root_project_id,
     router,
+    status_order_sql,
     status_owner_id,
+    transient_as_409,
     update_row,
     vocabulary_scope,
 )
@@ -78,6 +80,7 @@ from gateway.routes.projects.custom_fields import (
     _is_blank,
     load_definitions,
 )
+from gateway.routes.projects.cycles import detach_moved_tasks
 from gateway.routes.projects.landing import (
     CHOICE_TYPES as _CHOICE_TYPES,
 )
@@ -608,7 +611,7 @@ async def _plan(
             text(
                 "SELECT id, name, category FROM pm_task_statuses "
                 " WHERE project_id = CAST(:owner AS uuid) "
-                " ORDER BY position, name"
+                " ORDER BY " + status_order_sql()
             ),
             {"owner": dest_home},
         )).fetchall()
@@ -742,6 +745,7 @@ AGENT_MOVE_NEEDS_DROPS = (
 
 
 @router.post("/tasks/move")
+@transient_as_409
 async def move_tasks(
     payload: MoveIn, user: UserContext = Depends(get_current_user),
 ) -> dict:
@@ -932,6 +936,8 @@ async def move_tasks(
                 field_map=plan["subtree_maps"].get(str(child.root_project_id)),
             )
             carried.append(str(child.id))
+        # WS-39 SP-1. A task that left the node of its open cycle leaves it.
+        await detach_moved_tasks(db, [*moved, *carried], by=actor(user))
 
     for task_id in [*moved, *carried]:
         await emit("pm.task.moved", {"task_id": task_id})

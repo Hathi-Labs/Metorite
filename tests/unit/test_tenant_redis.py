@@ -663,12 +663,16 @@ _ALLOWED_DIRECT_REDIS: dict[str, str] = {
         "the wrapper itself — the one place redis-py is reached",
 
     # ── MT-1e follow-up: convert these to acb_common.tenant_redis ──
-    # H-201c moved cc:activity and cc:activity:live onto the wrapper. What
-    # remains is the cost rollup and the short-lived clients of the no-loop
-    # paths, which the wrapper wraps but which still open through redis-py.
+    # H-201c moved cc:activity and cc:activity:live onto the wrapper, and
+    # H-201e moved the per-tenant cost rollup (cc:<org>:cost:<day>). What
+    # remains is the short-lived clients of the no-loop paths, which the
+    # wrapper wraps but which still open through redis-py. The pooled client
+    # writes ONE deployment-level key by design: cc:_unattributed:cost:<day>,
+    # the priced calls with no tenant. No tenant route reads it.
     "packages/acb_common/acb_common/activity.py":
-        "FOLLOW-UP: cc:cost:{day} on the pooled client at :90-103, and the "
-        "one-shot clients at :287/:390 (wrapped in TenantRedis)",
+        "FOLLOW-UP: the one-shot no-loop clients at :330/:433 (wrapped in "
+        "TenantRedis). The pooled client at :103-116 writes only the "
+        "deployment-level cc:_unattributed:cost:<day> hash (H-201e)",
     "apps/services/orchestrator/orchestrator/stream_relay.py":
         "FOLLOW-UP: cc:stream, cc:active, cc:runactor, cc:runsource, cc:runfloor, "
         "cc:control, cc:ctrl-ack — 31 key call sites, the largest conversion",
@@ -771,8 +775,13 @@ def test_allowlist_entries_say_why() -> None:
 # so they get their own ratchet and their own follow-up entries.
 
 _ALLOWED_CC_LITERALS: dict[str, str] = {
+    # H-201e: the tenant cost rollup is cc:<org>:cost:<day> now. The one
+    # literal left is the deployment-level hash of the priced calls with no
+    # tenant. It has no tenant by definition, and no tenant route reads it.
     "packages/acb_common/acb_common/activity.py":
-        "FOLLOW-UP: COST_PREFIX (:69), the cc:cost:{day} rollup",
+        "DEPLOYMENT-LEVEL: UNATTRIBUTED_COST_PREFIX (:81), the "
+        "cc:_unattributed:cost:<day> hash of priced calls with no tenant. "
+        "The '_' lead is not a legal org id, so no tenant key can equal it",
     "apps/services/orchestrator/orchestrator/stream_relay.py":
         "FOLLOW-UP: seven PREFIX constants (:53, :54, :65, :71, :76, :557, :558)",
     "apps/services/orchestrator/orchestrator/steer.py":

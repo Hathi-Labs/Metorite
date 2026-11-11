@@ -31,6 +31,7 @@
     "call_agent"
   ],
   "floor_opt_out": [
+    "analyze_image",
     "call_agent_background",
     "call_agents_parallel",
     "code_task",

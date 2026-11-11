@@ -64,6 +64,9 @@ EXCLUDED_ROOTS = {
     "project-docs": "the specs quote the scopes",
     # Engineering notes, not code that runs.
     "docs": "engineering notes quote the scopes",
+    # The timings of the tests (CIV-9). The id of a parametrized test holds its
+    # arguments, so the id of a scope test holds a scope. Not code that runs.
+    ".test_durations": "test ids carry the arguments of the scope tests",
 }
 
 

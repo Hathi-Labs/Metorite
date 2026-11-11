@@ -13,6 +13,7 @@ import {
   KNOWN_PROVIDERS,
   PROVIDER_GUIDES,
   SECTIONS,
+  VISION_NOTE,
   guideFor,
   isRoutedToday,
   sectionOf,
@@ -63,7 +64,8 @@ describe("which shelf a vendor sits on", () => {
 
   it("files a transcribe-only vendor where somebody would look", () => {
     expect(sectionOf("assemblyai")).toBe("listen");
-    expect(sectionOf("elevenlabs")).toBe("voice");
+    // VOX-4: Scribe is speech to text, and the transcribe shelf wins.
+    expect(sectionOf("elevenlabs")).toBe("listen");
   });
 
   it("puts a vendor we have never written up in its own section", () => {
@@ -117,5 +119,41 @@ describe("names", () => {
 
   it("matches case-insensitively, because the form does not shout", () => {
     expect(guideFor("  Anthropic ")?.label).toBe("Anthropic");
+  });
+});
+
+describe("VOX-4: the Scribe card and the vision note", () => {
+  it("the ElevenLabs card declares Scribe v2 with the litellm verb", () => {
+    const g = PROVIDER_GUIDES.elevenlabs;
+    expect(g.serves).toContain("transcribe");
+    expect(g.serves).toContain("speak");
+    const text = g.steps.join(" ");
+    expect(text).toContain("elevenlabs/scribe_v2");
+    expect(text).toContain("atranscription");
+    expect(text).toContain("tier-stt");
+  });
+
+  it("the AssemblyAI card names the key, the declared model, the verb and the tier (VOX-6)", () => {
+    const text = PROVIDER_GUIDES.assemblyai.steps.join(" ");
+    expect(text).toContain("provider id assemblyai");
+    expect(text).toContain("assemblyai/universal-3-5-pro/hi,en");
+    expect(text).toContain("native_assemblyai");
+    expect(text).toContain("tier-stt");
+    expect(PROVIDER_GUIDES.assemblyai.description).toContain("until task 2449");
+  });
+
+  it("the Sarvam card is the one VOX-2 wrote", () => {
+    expect(PROVIDER_GUIDES.sarvam.steps.join(" ")).toContain("native_sarvam");
+  });
+
+  it("the vision note names two models, spelled as litellm spells them", () => {
+    expect(VISION_NOTE.tier).toBe("tier-vision");
+    expect(VISION_NOTE.models).toEqual([
+      "gemini/gemini-3.1-flash-lite",
+      "anthropic/claude-haiku-5-5",
+    ]);
+    expect(VISION_NOTE.text).toContain("Gemini 3.1 Flash-Lite");
+    expect(VISION_NOTE.text).toContain("Claude Haiku 5.5");
+    expect(VISION_NOTE.text).toContain("tier-vision");
   });
 });

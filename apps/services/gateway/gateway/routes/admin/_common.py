@@ -821,7 +821,14 @@ def invalidate_for(*emails: str | None) -> None:
             invalidate_access(email)
 
 
-def record_admin_change(actor: str | None, action: str, target: str, **payload: Any) -> None:
+def record_admin_change(
+    actor: str | None,
+    action: str,
+    target: str,
+    *,
+    organization_id: str | None = None,
+    **payload: Any,
+) -> None:
     """Append an access change to the audit log.
 
     Every write in this package goes through here. "Who could see what, and
@@ -829,20 +836,32 @@ def record_admin_change(actor: str | None, action: str, target: str, **payload: 
     first thing an access review needs; structlog alone does not survive as a
     queryable record.
 
+    The row lands in the org of the change (task 2221). An admin route passes
+    no ``organization_id``, and this reads ``current_tenant()``, which
+    ``get_current_user`` bound from the identity. A caller with no bound
+    tenant (the operator door) passes the org of the row that it wrote,
+    never a request field (R5). With no org and ``ACB_GRAPH_TENANT_BIND`` on,
+    ``refuse_tenantless`` skips the row, so it never lands under the operator
+    org. Fence: ``tests/unit/test_admin_audit_org_r8.py`` (R8).
+
     Best-effort by contract (``acb_audit.record`` logs always, DB-writes if it
     can) — an audit backend that is down must not block an admin from
     revoking someone's access.
     """
     try:
-        from acb_audit import AuditEvent, record
+        import acb_audit
+        from acb_common.db import current_tenant
 
-        record(
-            AuditEvent(
-                actor=f"user:{actor}" if actor else "system:internal",
-                action=action,
-                target=target,
-                payload=payload,
-            )
+        org = organization_id or current_tenant()
+        event = acb_audit.AuditEvent(
+            actor=f"user:{actor}" if actor else "system:internal",
+            action=action,
+            target=target,
+            payload=payload,
+            organization_id=str(org) if org else None,
         )
+        if acb_audit.refuse_tenantless(event):
+            return
+        acb_audit.record(event)
     except Exception as exc:
         _log.warning("admin_audit_failed", action=action, error=str(exc))

@@ -37,7 +37,7 @@ import {
   wantLiveSteps,
   type LiveRun,
 } from "@/lib/liveRuns";
-import { isLivePhase, serverHoldsRun, type RunStatus } from "@/lib/runStatus";
+import { isLivePhase, isRestingPhase, restConfirmed, serverHoldsRun, type RunStatus } from "@/lib/runStatus";
 import { stepOfMessage } from "@/lib/runStep";
 import { fetchMessagesFromDb } from "@/lib/sessions";
 import { planReplay, rejectFor } from "@/lib/runReplay";
@@ -77,6 +77,7 @@ import {
   editedMarker, isSuperseded, settleEditAnswer, EDIT_RUN_BUSY, EDIT_UNSENT, type EditOutcome,
 } from "@/lib/chatEdit";
 import { cardAnswerFrom, cardAnswerMarker, CARD_ANSWER_EVENT, type CardAnswer } from "@/lib/cardAnswer";
+import type { CardDraft } from "@/lib/redraftCard";
 import { isQuietArtifact } from "@/lib/artifactCards";
 import { cancelRun, stopConfirmed, stopFailed, stopStarted } from "@/lib/chatStop";
 
@@ -240,6 +241,12 @@ interface UseAgentChatOptions {
    * keeps the mark only for words that the member typed.
    */
   onRunCapped?: (pendingText: string, typed: boolean) => void;
+  /**
+   * §18.11: the member's version of EACH open new-mail card, edited or not
+   * (`lib/redraftCard.ts`). Each steer asks it once, and carries the answer
+   * as `cardDraft`. A send that starts a run never carries it.
+   */
+  cardDraft?: () => CardDraft[];
 }
 
 interface UseAgentChatReturn {
@@ -299,9 +306,12 @@ export function useAgentChat({
   onArtifact,
   onSessionRefused,
   onRunCapped,
+  cardDraft,
 }: UseAgentChatOptions): UseAgentChatReturn {
   const onArtifactRef = useRef(onArtifact);
   useEffect(() => { onArtifactRef.current = onArtifact; }, [onArtifact]);
+  const cardDraftRef = useRef(cardDraft);
+  useEffect(() => { cardDraftRef.current = cardDraft; }, [cardDraft]);
   const onSessionRefusedRef = useRef(onSessionRefused);
   useEffect(() => { onSessionRefusedRef.current = onSessionRefused; }, [onSessionRefused]);
   const onRunCappedRef = useRef(onRunCapped);
@@ -1015,6 +1025,8 @@ export function useAgentChat({
     // One id for the reply row, whether the steer folds in or starts a run.
     const replyId = nanoid();
     const card = opts?.cardAnswer ?? null;
+    // §18.11 step 1: the member's own version of an open new-mail card.
+    const draft = cardDraftRef.current?.() ?? [];
     const out = await sendSteer({
       threadId,
       text: content,
@@ -1037,6 +1049,7 @@ export function useAgentChat({
         userMessageId,
         userMessageTs,
         ...(card ? { cardAnswer: card } : {}),
+        ...(draft.length ? { cardDraft: draft } : {}),
         // WS-63 D-PZ-37: a steer carries the typed mark the same way a send
         // does. Only the composer sets it (`lib/typedMark.ts`).
         ...typedField(opts?.typed),
@@ -1511,6 +1524,7 @@ export function useAgentChat({
   }, [threadId]);
 
   const runPhase = sessionState.run.phase;
+  const restBlind = sessionState.run.restBlind;
   // A remount's "checking" was seen, so the cards on screen came from the log.
   const wasCheckingRef = useRef(false);
   const checkingNow = sessionState.run.checking;
@@ -1539,7 +1553,7 @@ export function useAgentChat({
     // more: the run is finalized here, as its `done` would have done. A cut
     // stream with NO remount keeps its card, so an answer still goes
     // (the restart path, `chat-card-restart.spec.ts`).
-    const resting = runPhase === "done" || runPhase === "stopped" || runPhase === "failed" || runPhase === "idle";
+    const resting = isRestingPhase(runPhase);
     if (runPhase === "working" || runPhase === "waiting_for_you") wasCheckingRef.current = false;
     if (resting && wasCheckingRef.current) {
       wasCheckingRef.current = false;
@@ -1553,7 +1567,12 @@ export function useAgentChat({
     // rest then redraws no stale card. The card on screen now stays: a cut
     // stream's answer still goes by the restart path.
     if (resting) clearCardLog(threadId);
-  }, [runPhase, threadId]);
+    // §18.11 step 7: a slot of a redraft ends with ANY end of a run. A Stop, a
+    // failed model call and an end on the attach stream emit no
+    // `onRunFinalized`, and the slot would then spin with no button. A rest
+    // that only the settle of `FINISH_MAX_MS` made waits for a server list.
+    if (restConfirmed({ phase: runPhase, restBlind })) emitAgentEvent("onRunRested", { threadId });
+  }, [runPhase, restBlind, threadId]);
   // A new run (another run key) has none of the old run's cards.
   const runKeyNow = sessionState.run.runKey;
   const runKeyRef = useRef<string | null>(runKeyNow);

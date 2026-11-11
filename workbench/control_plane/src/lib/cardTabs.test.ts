@@ -10,6 +10,12 @@ describe("the tabs of one approval card (owner, 2026-11-03, D173)", () => {
   it("the count leads the row", () => {
     expect(tabsCount(3)).toBe("3 to approve");
     expect(tabsLabel(2, "changes")).toBe("2 changes to approve. Use the arrow keys to see each one.");
+    // §18.11 fix round 2: a slot waits on the assistant, not the member. A
+    // card beside a slot counts alone, and a row of slots only says so.
+    expect(tabsCount(1, 1)).toBe("1 to approve");
+    expect(tabsCount(0, 1)).toBe("Updating 1 draft");
+    expect(tabsCount(0, 2)).toBe("Updating 2 drafts");
+    expect(tabsLabel(0, "approvals", 2)).toBe("Updating 2 drafts. Use the arrow keys to see each one.");
   });
 
   it("the arrow keys, Home and End move, and the ends do not wrap", () => {
@@ -128,7 +134,8 @@ describe("the tabs of one approval card (owner, 2026-11-03, D173)", () => {
     expect(tabs).toContain("new ResizeObserver");
     expect(tabs).toContain("ro.disconnect()");
     expect(tabs).toContain("aria-label={slim");
-    expect(tabs).toContain("aria-label={tabsCount(total)}");
+    expect(tabs).toContain("const words = tabsCount(waiting, updating);");
+    expect(tabs).toContain("aria-label={words}");
   });
 
   it("the row has a fade at an edge with more tabs, and a narrow tab width", () => {

@@ -484,6 +484,65 @@ _INSERT_APP_RUN_SQL = (
 )
 
 
+async def _lock_scope(db: Any, org_id: str, scope: str) -> None:
+    """The lock of one cap: of one connection, or of one member and app of a
+    Studio request. It holds to the end of the caller's transaction."""
+    await db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+                     {"k": f"app_request:{org_id}:{scope}"})
+
+
+#: How far back a live request can have opened: the life of a request, and
+#: one hour more for the clock of the run row.
+OPEN_WINDOW_SECONDS = int(REQUEST_TTL.total_seconds()) + 3600
+
+#: The newest OPEN Studio request of one exact change (STU-B2c-2a, fix round
+#: 2): awaiting, or approved and not spent, and live. A live request opened
+#: inside :data:`OPEN_WINDOW_SECONDS`, so the read looks back that far only.
+#: The index ``pm_agent_runs_app_member`` (organization_id, member_email,
+#: created_at DESC) WHERE app IS NOT NULL serves it as a bounded range scan.
+#: The window reads ``now()``, because the volatile ``clock_timestamp()``
+#: cannot bound an index. The hour of :data:`OPEN_WINDOW_SECONDS` covers the
+#: gap.
+_OPEN_OF_CHANGE_SQL = (
+    f"{_REQUEST_SELECT}"
+    "   AND r.app = :app AND r.connection_id IS NULL"
+    "   AND r.status IN ('awaiting', 'in_progress')"
+    "   AND r.created_at > now() - make_interval(secs => :window)"
+    "   AND e.content_metadata->'request'->>'binding' = :binding"
+    "   AND e.content_metadata->'request'->>'digest' = :digest"
+    "   AND CAST(e.content_metadata->'request'->>'expires_at' AS timestamptz)"
+    "       > clock_timestamp()"
+    " ORDER BY r.created_at DESC, e.id DESC LIMIT 1"
+)
+
+
+async def open_studio_request(
+    db: Any, *, org: str, member: str, app: str, binding: str, digest: str,
+) -> Opened | None:
+    """The open Studio request of one exact change, or ``None`` (STU-B2c-2a).
+
+    It takes the lock of :func:`open_request` for this member and app FIRST,
+    then reads once. So a second ask of the same change waits for the first
+    one to commit, and then finds its request. A closed request (spent,
+    declined or expired) is never the answer, so the caller opens a new one.
+    One lock and one read, whatever the history of the change.
+    """
+    me = _member(member)
+    org_id = _uuid_or_none(org)
+    if org_id is None or not me:
+        return None
+    await _lock_scope(db, org_id, f"{me}:{app}")
+    row = (await db.execute(text(_OPEN_OF_CHANGE_SQL), {
+        "org": org_id, "me": me, "app": app, "binding": binding, "digest": digest,
+        "window": OPEN_WINDOW_SECONDS,
+    })).fetchone()
+    if row is None:
+        return None
+    request = (from_jsonb(row.content_metadata) or {}).get("request") or {}
+    return Opened(request_id=str(row.request_id), run_id=str(row.run_id), state=_state(row),
+                  expires_at=str(request.get("expires_at")), created=False)
+
+
 async def _replay(db: Any, org: str, me: str, key_hash: str, *, app: str, op: str,
                   digest: str) -> Opened | None:
     """The first request of this key, or ``None``. Another call under the
@@ -569,9 +628,7 @@ async def open_request(
     key_hash = _key_digest(binding, idempotency_key)
 
     # One writer at a time under one cap, so the count and the replay hold.
-    scope = conn if conn is not None else f"{me}:{app}"
-    await db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
-                     {"k": f"app_request:{org_id}:{scope}"})
+    await _lock_scope(db, org_id, conn if conn is not None else f"{me}:{app}")
     replay = await _replay(db, org_id, me, key_hash, app=app, op=op, digest=digest)
     if replay is not None:
         return replay
@@ -695,6 +752,7 @@ __all__ = [
     "MAX_CALL_BYTES",
     "MAX_SAFE_INT",
     "OPEN_CAP",
+    "OPEN_WINDOW_SECONDS",
     "OPTIONS",
     "REQUEST_BODY",
     "REQUEST_TTL",
@@ -705,5 +763,6 @@ __all__ = [
     "decide",
     "list_open",
     "open_request",
+    "open_studio_request",
     "read_request",
 ]
