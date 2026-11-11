@@ -24,6 +24,7 @@ from acb_common import get_logger
 from acb_common.app_manifests.shell_manifest import load_vocabulary
 from acb_common.guide_flags import guide_allowed
 from fastapi import APIRouter, Body, Depends, HTTPException
+from gateway.package_host.flags import package_host_allowed
 from gateway.routes.admin._common import _tenant_session, get_org_id
 from pydantic import (
     BaseModel,
@@ -61,7 +62,47 @@ async def _catalog_slugs(db: Any) -> list[str]:
     return [r.slug for r in rows if getattr(r, "slug", None)]
 
 
-def resolve_features(access: Any, catalog: list[str]) -> dict[str, list[Any]]:
+def _every_feature(_slug: str) -> bool:
+    """The ``can_use`` that :func:`_install_slugs` gives the resolve.
+
+    Step 3 of the resolve drops a claim whose feature the viewer lacks. Then
+    the slug could not reach ``features_denied``. So the resolve keeps every
+    claim that the viewer sees, and :func:`resolve_features` splits the slugs
+    by the access set, as it does for a system slug. This grants nothing.
+    """
+    return True
+
+
+async def _install_slugs(db: Any, user: UserContext) -> list[str]:
+    """The feature slugs of the installs that the viewer sees (WS-PKG PKG-7).
+
+    ``package_host.md`` §10, the PKG-7 row. The org is the bound tenant of
+    the session, and the viewer is ``user.email``, never request input (R5).
+
+    While ``PACKAGE_HOST_ORGS`` leaves the org out, this answers ``[]`` and
+    runs no statement. So the body of ``/auth/me`` stays as it was.
+
+    It fails closed. The resolve runs in a savepoint, and an error gives
+    ``[]`` and a log line, never a 500. ``install_feature_slugs`` drops a
+    slug that is not text or that breaks the grammar of a permission.
+    """
+    if not package_host_allowed(user.organization_id):
+        return []
+    from gateway.package_host import resolve as _resolve
+
+    try:
+        async with db.begin_nested():
+            body = await _resolve.resolve_for(
+                db, viewer=user.email or "", can_use=_every_feature)
+        return _resolve.install_feature_slugs(body)
+    except Exception as exc:
+        _log.warning("auth.me.install_features_failed", error=type(exc).__name__)
+        return []
+
+
+def resolve_features(
+    access: Any, catalog: list[str], installed: list[str] | None = None,
+) -> dict[str, list[Any]]:
     """Split every known feature into what this caller may reach and what they
     may not, naming the permission each absent one needs.
 
@@ -80,11 +121,17 @@ def resolve_features(access: Any, catalog: list[str]) -> dict[str, list[Any]]:
     ``denied`` is what makes the failure legible: "Projects needs
     `feature:projects`" is something a person can act on. A pane that silently
     is not there is something they can only guess at.
+
+    **The third source (WS-PKG PKG-7).** ``installed`` holds the slugs that
+    the installs of the viewer declare (:func:`_install_slugs`). They come
+    after the catalog and the code list. The same access set splits them, so
+    a ``*`` or ``feature:*`` holder sees each one in ``features``, and a
+    guest sees it in ``features_denied``.
     """
     from acb_auth.permissions import FEATURES, feature_permission
 
     known: list[str] = []
-    for slug in [*catalog, *FEATURES]:
+    for slug in [*catalog, *FEATURES, *(installed or ())]:
         if slug and slug not in known:
             known.append(slug)
 
@@ -173,6 +220,7 @@ async def get_me(user: UserContext = Depends(get_current_user)) -> dict[str, Any
     # legitimately absent on a box whose resolve flag has never been on.
     organization: dict[str, str | None] = {}
     catalog: list[str] = []
+    installed: list[str] = []
     try:
         async with _tenant_session() as db:
             # The CALLER's organization, not the deployment's. This line used to
@@ -202,6 +250,8 @@ async def get_me(user: UserContext = Depends(get_current_user)) -> dict[str, Any
                 # CP-2j, and SEPARATE on purpose — see the helper.
                 organization.update(await _registry_projection(db, org_id))
             catalog = await _catalog_slugs(db)
+            # PKG-7: the slugs of the installs. Flag off, no statement runs.
+            installed = await _install_slugs(db, user)
     except Exception:  # noqa: BLE001
         # An unprovisioned org must not stop a member from loading the app —
         # the access set is authoritative either way. An unreachable catalog
@@ -228,7 +278,7 @@ async def get_me(user: UserContext = Depends(get_current_user)) -> dict[str, Any
         # predates its slug — and `features_denied` names the permission each
         # absent pane needs, so "why is Projects missing" has an answer on
         # screen instead of being a silent nothing.
-        **resolve_features(access, catalog),
+        **resolve_features(access, catalog, installed),
         "agents": [n for n in _agent_names() if access.can_run_agent(n)],
         "permissions": sorted(access.granted),
         # Resolved yes/no for every concrete capability, so the browser never

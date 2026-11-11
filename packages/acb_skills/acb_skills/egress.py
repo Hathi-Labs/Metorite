@@ -1103,8 +1103,8 @@ def _register_platform_callable(fn: Any, name: str | None = None) -> Any:
 def _register_platform_wrapper(original: Any, wrapper: Any) -> Any:
     """Trust *wrapper* exactly as far as *original* is trusted. Returns it.
 
-    Our own wrappers call this: the permission gate, the steer wrap of a
-    sandbox tool. A wrapper that another repo made does not, so it stays
+    Our own wrappers call this, for example the permission gate. A wrapper
+    that another repo made does not, so it stays
     untrusted whatever it wraps. A call from outside
     :data:`_PLATFORM_PACKAGES` registers nothing.
     """

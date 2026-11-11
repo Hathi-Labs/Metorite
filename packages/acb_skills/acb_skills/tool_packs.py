@@ -1419,6 +1419,10 @@ class PackTurn:
     stored: bool = True
     #: OA-7d. The cleaned surface of the turn (:func:`clean_surface`), or "".
     surface: str = ""
+    #: WS-STU F3. The published skills that the words of this turn name, each
+    #: a ``skill_packs.SkillPack``, in the order of the skill id. The run reads
+    #: them from the database (``_tool_injection._turn_with_skills``).
+    skills: tuple[Any, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1434,6 +1438,11 @@ class Choice:
     evicted: tuple[str, ...] = ()
     #: The new packs that the cap left out. They were never sticky.
     skipped: tuple[str, ...] = ()
+    #: WS-STU F3. The skill packs of the turn, in load order, after the code
+    #: packs. Each is a ``skill_packs.SkillPack``.
+    skills: tuple[Any, ...] = ()
+    #: WS-STU F3. The slugs of the skill packs that the cap left out.
+    skills_skipped: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1533,16 +1542,27 @@ class PackRun:
     #: can move such a pack out (:meth:`spare`). A pack of the surface or of
     #: a reference is not in it.
     words: tuple[str, ...] = ()
+    #: WS-STU F3. The slugs of the skill packs that this run loaded, in load
+    #: order. A skill pack is never sticky and owns no tool.
+    skills: tuple[str, ...] = ()
+    #: WS-STU F3, review fix P2. The code packs of this run that hold a tool
+    #: of a loaded skill pack. Such a pack never leaves for a load
+    #: (:meth:`spare`), so the run keeps each tool that a skill names.
+    needs: frozenset[str] = frozenset()
 
     @classmethod
     def of(
         cls, turn: PackTurn, choice: Choice, loaded: Sequence[tuple[str, bool]],
         via_loader: Iterable[str] = (), offered: Iterable[str] = (),
+        skills: Iterable[str] = (),
+        needs: Iterable[str] = (),
     ) -> PackRun:
         """The record of a run that loaded *loaded*, pairs of a slug and its
         held answer, in load order. *via_loader* names the owners that the
         loader replaces (OA-7i, :func:`plan_loader`). *offered* names the
-        packs that the loader offers (task 1747, :attr:`gone_offered`)."""
+        packs that the loader offers (task 1747, :attr:`gone_offered`).
+        *skills* names the skill packs that the run loaded (WS-STU F3), and
+        *needs* the code packs that hold a tool of one of them (:attr:`needs`)."""
         slugs = tuple(slug for slug, _held in loaded)
         via = frozenset(str(owner) for owner in via_loader)
         gone = tuple(slug for slug in dict.fromkeys(choice.evicted)
@@ -1563,6 +1583,8 @@ class PackRun:
                   if entry.slug in slugs and _asked_now(turn, entry.slug) is None},
             gone=gone, gone_offered=frozenset(offered) & frozenset(gone),
             words=tuple(slug for slug in slugs if choice.layers.get(slug) == "words"),
+            skills=tuple(str(slug) for slug in skills),
+            needs=frozenset(str(slug) for slug in needs),
         )
 
     def holds(self) -> tuple[str, ...]:
@@ -1585,7 +1607,8 @@ class PackRun:
            outranks a match of a word. A pack of the surface or of a
            reference stays.
 
-        With the org off (``egress.held_card_writes_on``), no pack leaves."""
+        With the org off (``egress.held_card_writes_on``), no pack leaves. A
+        pack that a loaded skill needs (:attr:`needs`) never leaves."""
         from acb_skills.egress import held_card_writes_on
 
         if not held_card_writes_on(self.org):
@@ -1593,7 +1616,8 @@ class PackRun:
         now = self.holds()
 
         def _free(slug: str) -> bool:
-            return slug in now and slug not in self.noted and slug not in self.ran
+            return (slug in now and slug not in self.noted and slug not in self.ran
+                    and slug not in self.needs)
 
         olds = sorted((slug for slug in self.used if _free(slug)),
                       key=lambda slug: (self.used[slug], self.first_of(slug)))
@@ -2176,8 +2200,33 @@ def choose(
         (evicted if victim in sticky else skipped).append(victim)
     first = {slug: sticky[slug].first if slug in sticky else (now, place)
              for place, slug in enumerate(order)}
+    skills, skills_skipped = _skills_of(turn, room=MAX_PACKS - len(order))
     return Choice(slugs=tuple(order), layers=layers, first=first,
-                  evicted=tuple(evicted), skipped=tuple(skipped))
+                  evicted=tuple(evicted), skipped=tuple(skipped),
+                  skills=skills, skills_skipped=skills_skipped)
+
+
+def _skills_of(turn: PackTurn, *, room: int) -> tuple[tuple[Any, ...], tuple[str, ...]]:
+    """The skill packs of *turn* that fit in *room* places, and the slugs of
+    the rest (WS-STU F3, ``ai_studio.md`` §7 and §11.1).
+
+    The order is fixed: the code packs first, then the skills in the order of
+    the skill id, so one set of packs gives one persona. A skill pack takes a
+    place of :data:`MAX_PACKS`. It adds no tool to the request, because its
+    tools are tools that the run holds already, so :data:`MAX_REQUEST_TOOLS`
+    does not move. A skill of more than :data:`MAX_PACK_TOOLS` tools, or one
+    slug twice, never loads."""
+    seen: set[str] = set()
+    fit: list[Any] = []
+    for found in sorted(turn.skills, key=lambda s: str(getattr(s, "slug", ""))):
+        slug = str(getattr(found, "slug", ""))
+        tools = tuple(getattr(found, "tools", ()) or ())
+        if not slug or slug in seen or len(tools) > MAX_PACK_TOOLS:
+            continue
+        seen.add(slug)
+        fit.append(found)
+    room = max(int(room), 0)
+    return tuple(fit[:room]), tuple(str(s.slug) for s in fit[room:])
 
 
 # ── The sticky state in tenant Redis ────────────────────────────────────────
@@ -2411,6 +2460,7 @@ def persona_for(
     persona: str, loaded: Sequence[tuple[str, bool]], bullets: Mapping[str, str],
     via_loader: Iterable[str] = (),
     ctx: Mapping[str, Any] | None = None,
+    skills: Sequence[Any] = (),
 ) -> str:
     """The persona of a run that holds the packs *loaded*, in load order.
 
@@ -2437,6 +2487,9 @@ def persona_for(
     the swap is skipped), or the rules do not hold the *old* line exactly once,
     as ``orchestrator.agents._orchestrator_instructions`` does. So a moved
     line never ships a half-swapped persona.
+
+    WS-STU F3: the rules of each skill pack of *skills* follow the rules of
+    the code packs, in the order of *skills* (``Choice.skills``).
     """
     text = str(persona)
     held_slugs = {slug for slug, _held in loaded}
@@ -2470,6 +2523,8 @@ def persona_for(
                 text = text.replace(old, "", 1)
             swapped.add(found.owner)
         blocks.append(_rules_block(found, held, held_slugs, via, ctx))
+    blocks.extend(str(getattr(s, "rules", "")).rstrip("\n") for s in skills
+                  if str(getattr(s, "rules", "")).strip())
     if not blocks:
         return text if swapped else str(persona)
     return text.rstrip("\n") + "\n\n" + "\n\n".join(blocks) + "\n"
@@ -3248,8 +3303,11 @@ def _room_for(
     run: PackRun, live: Sequence[Any], adding: int, spare: Sequence[str],
 ) -> tuple[str, ...] | None:
     """The packs of *spare* that must leave so that a pack of *adding* tools
-    fits both caps, in order, or None when no such set exists (RX-1)."""
-    packs, tools = len(run.holds()), len(live)
+    fits both caps, in order, or None when no such set exists (RX-1).
+
+    WS-STU F3, review fix P1: each skill pack of the run takes a place of
+    :data:`MAX_PACKS` too, as in :func:`_skills_of`."""
+    packs, tools = len(run.holds()) + len(run.skills), len(live)
     gone: list[str] = []
     rest = list(spare)
     while packs >= MAX_PACKS or tools + adding > MAX_REQUEST_TOOLS:
