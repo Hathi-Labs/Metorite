@@ -4059,12 +4059,16 @@ GUIDANCE_LEVELS: tuple[str, ...] = ("project", "space", "company", "default")
 #: only for an organization on ``agent_protocol_orgs``. Fence:
 #: ``test_mcp_edge_context.py`` ``TestTheProtocolBlock``.
 PROTOCOL_KEY = "protocol"
-PROTOCOL_VERSION = 1
+#: SW-43c raised the version to 2: the second line names the thought before an
+#: act on an answer (agent_coordination.md §3.9, "Protocol"). The sixth line
+#: stays free for the park of SW-60.
+PROTOCOL_VERSION = 2
 PROTOCOL_LINES_MAX = 6
 PROTOCOL_LINE_MAX = 120
 PROTOCOL_LINES: tuple[str, ...] = (
     "Claim the slice, not the epic.",
-    "Post a thought with post_agent_activity each minute.",
+    "Post a thought with post_agent_activity each minute. Before you act on an answer,"
+    " post one that names its id.",
     "When you are blocked, ask with ask_on_task. Never ask only in the terminal.",
     "End each turn with one result: review or done, a question, or release_task.",
     "Hand off with evidence: what is done, what is left, and the proof.",
@@ -9412,7 +9416,8 @@ GET_AGENT_RUN = Tool(
         " person. Its selected holds the chosen option ids, labels holds their"
         " labels, and body holds any text the member wrote. The state is"
         " answered until your next activity, which tells the member that you"
-        " have the answer. If the state is stopping, a person asked you to"
+        " have the answer. Before you act on the answer, post a thought that"
+        " names its id. If the state is stopping, a person asked you to"
         " stop. Stop the work at once. Call finish_agent_run with a summary of"
         " what you did and what is left, and post no activity before it. An"
         " activity on a stopping run ends the run, and the finish then fails."

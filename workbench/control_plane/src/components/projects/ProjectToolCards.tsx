@@ -217,6 +217,8 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   save_as_template: { icon: "LayoutList", label: "Template saved" },
   create_project_from_template: { icon: "FolderPlus", label: "Project made from a template" },
   answer_decision: { icon: "UserPlus", label: "Decision answered" },
+  // SW-43c: the member's own answer to an agent, taken back or changed.
+  change_agent_answer: { icon: "PenLine", label: "Answer to the agent changed" },
   add_report_recipient: { icon: "UserPlus", label: "Recipient added" },
   remove_report_recipient: { icon: "UserMinus", label: "Recipient removed" },
   set_report_schedule: { icon: "CalendarClock", label: "Schedule changed" },
@@ -335,6 +337,8 @@ export const GUARDED_TOOLS: ReadonlySet<string> = new Set([
   "unpin_authority",
   "delete_project_update",
   "answer_decision",
+  // SW-43c
+  "change_agent_answer",
   "add_report_recipient",
   "remove_report_recipient",
   "set_report_schedule",

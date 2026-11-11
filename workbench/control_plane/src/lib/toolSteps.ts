@@ -172,6 +172,8 @@ const NAMED: Record<string, { kind: StepKind; verb: Verb; object: string }> = {
   save_as_template: { kind: "edit", verb: V.save, object: "a project as a template" },
   create_project_from_template: { kind: "edit", verb: V.create, object: "a project from a template" },
   my_decisions: { kind: "read", verb: V.read, object: "the decisions that wait for you" },
+  // SW-43c: the derived words would read "Changed an agent answer".
+  change_agent_answer: { kind: "edit", verb: V.change, object: "your answer to an agent" },
   project_views: { kind: "read", verb: V.read, object: "the saved views" },
   recurrence: { kind: "read", verb: V.read, object: "a repeat rule" },
   team_capacity: { kind: "read", verb: V.read, object: "the team's capacity" },

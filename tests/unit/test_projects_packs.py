@@ -73,7 +73,10 @@ SLUGS = ("projects", "projects-plan", "projects-structure", "projects-bulk", "pr
 #: bulk, ALN-2a added the two decision tools to reminders, and ALN-4 added the authority pack.
 #: WS-39 TPL-1a added the three template tools to structure. WS-39 LP-1a added
 #: the three update tools to authority, and SP-8a added set_epic_contract there.
-SIZES = {"projects": 23, "projects-plan": 25, "projects-structure": 27, "projects-bulk": 22,
+#: SW-43c added change_agent_answer to plan, beside waiting_agent_requests. It takes
+#: the last room of plan in the sticky-pack case (a 27th tool fails
+#: test_the_step_aside_moves_the_sticky_pack_that_the_member_did_not_name).
+SIZES = {"projects": 23, "projects-plan": 26, "projects-structure": 27, "projects-bulk": 22,
          "projects-reminders": 19, "projects-reports": 11, "projects-authority": 7}
 #: CAL-1a: the owner also holds the ``calendar-day`` pack. It is no Projects family
 #: (its eight tools are not in ``skill_projects.__all__``), so ``SLUGS`` stays the seven.
@@ -132,7 +135,8 @@ def test_the_four_families_equal_the_owners_tools() -> None:
     union = [name for slug in SLUGS for name in _family(slug)]
     # SP-12 added get_plan (127). WS-39 LP-1a added the three update tools (130),
     # WS-39 TPL-1a the three template tools (133), and SP-8a set_epic_contract (134).
-    assert len(union) == 134 == len(set(union)), "no tool is in two packs"
+    # SW-43c added change_agent_answer (135).
+    assert len(union) == 135 == len(set(union)), "no tool is in two packs"
     assert set(union) == set(skill_projects.__all__) == _own_tool_scope()
     for slug in SLUGS:
         assert sf.SKILL_FAMILIES[slug]["owner"] == PA and sf.is_pack(slug)
@@ -691,7 +695,7 @@ async def test_no_projects_tool_takes_an_organization_or_a_member_argument(store
             declared = set(tool.input_model.model_fields)
             assert not declared & identity, (_name(tool), sorted(declared & identity))
             seen += 1
-    assert seen == 134  # SP-12, LP-1a, TPL-1a, and SP-8a set_epic_contract
+    assert seen == 135  # SP-12, LP-1a, TPL-1a, SP-8a set_epic_contract, SW-43c
 
 
 async def test_a_pack_call_outside_its_run_refuses(store) -> None:
@@ -727,7 +731,8 @@ async def test_the_loader_adds_a_projects_pack_of_strict_function_tools(store) -
     with _in_run(loader):
         answer, passed = await _call(loader, "projects-plan", live)
     assert passed is False
-    assert answer.startswith("Loaded the Projects planning tools (25 tools)"), answer
+    # SW-43c: change_agent_answer is the 26th tool of the plan pack.
+    assert answer.startswith("Loaded the Projects planning tools (26 tools)"), answer
     assert "PROJECTS PLANNING TOOLS." in answer
     added = live[5:]
     assert [_name(t) for t in added] == list(_family("projects-plan"))

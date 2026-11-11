@@ -267,6 +267,8 @@ const WRITE: readonly string[] = [
   "save_as_template",
   "create_project_from_template",
   "answer_decision",
+  // SW-43c: the member's own answer to an agent, taken back or changed. Class C.
+  "change_agent_answer",
   "add_report_recipient",
   "remove_report_recipient",
   "set_report_schedule",

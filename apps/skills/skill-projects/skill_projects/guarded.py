@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
 
@@ -2563,6 +2564,307 @@ async def answer_decision(decision_id: str, answer_key: str) -> str:
     return f"Answered {data(row.get('question'))} with {data(label)}.{chr(10)}  decision_id: {did}"
 
 
+# ── The member's own answer to an agent (SW-43c, agent_coordination.md §3.9) ─
+#
+# The member answered an outside agent's question on the task card. Until an
+# agent reads the answer or posts after it, the member may take it back or
+# change it. The two routes decide that window under the lock of the run
+# (`filters.answer_changeable_sql`), so these tools only name the answer on
+# the card and send the member's act. Neither tool answers an open question,
+# and neither touches the answer to an archive request (EA3-40, D-OP-13).
+
+#: The tool text while ``agent_answer_change_enabled`` is off. The gateway then
+#: sends no ``answer`` key on a run, and both routes answer 404.
+ANSWER_CHANGE_OFF = (
+    "Changing an answer to an agent is not on in this organization yet. Nothing was changed."
+)
+#: The tool text while agent runs are off (``require_agent_runs`` answers 404).
+ANSWER_RUNS_OFF = "Agent runs are off in this organization. Nothing was changed."
+#: The words of the routes when an agent already read the answer or posted
+#: after it (``agent_runs._ANSWER_STALE``). A pin test holds the copy.
+ANSWER_READ = "The agent already has your answer. Send a comment instead."
+#: SW-43b. The second step of a costly option on the run card (``agentRuns.ts``
+#: ``ARE_YOU_SURE``). A pin test holds the copy.
+ARE_YOU_SURE = "Are you sure?"
+#: The tool text when the new answer is the answer that already stands.
+ANSWER_SAME = "That is already your answer. Nothing was changed."
+#: The tool text when one call both takes the answer back and gives a new one.
+ANSWER_BOTH = (
+    "Take the answer back, or give a new answer. One call does one of the two. "
+    "Nothing was changed."
+)
+
+
+@dataclass(frozen=True)
+class _LiveAnswer:
+    """The member's live answer on one task: the task, the run, the answer and
+    the question it answers, each as the gateway sent it."""
+
+    task_id: str
+    task: dict[str, Any]
+    run: dict[str, Any]
+    answer: dict[str, Any]
+    question: dict[str, Any]
+
+
+def _answer_words(activity: dict[str, Any]) -> str:
+    """The words of one answer, fenced: its option labels, then its text."""
+    content = activity.get("content") or {}
+    parts = [data(label) for label in content.get("labels") or [] if str(label).strip()]
+    body = str(content.get("body") or "").strip()
+    if body:
+        parts.append(data(body))
+    return ", ".join(parts) or "(no words)"
+
+
+def _question_words(question: dict[str, Any]) -> str:
+    return data((question.get("content") or {}).get("body") or "")
+
+
+def _options_of(question: dict[str, Any]) -> list[dict[str, Any]]:
+    meta = question.get("signal_metadata") or {}
+    return [o for o in meta.get("options") or [] if isinstance(o, dict) and o.get("id")]
+
+
+def _option_list(options: list[dict[str, Any]]) -> str:
+    return ", ".join(f"{data(o.get('label'))} (id {data(o.get('id'))})" for o in options)
+
+
+async def _live_answer(task_id: str) -> _LiveAnswer | str:
+    """The member's live answer on *task_id*, or the one sentence that says
+    why no change can go. Every call here is a read, and a read of a member
+    closes no window (``agent_runs._reads_for_member``)."""
+    tid, task = await _task(task_id)
+    name = _ref(task)
+    try:
+        page = (await get(f"/projects/tasks/{tid}/agent-runs")) or {}
+    except GatewayRefusal as exc:
+        if getattr(exc, "status", None) == 404:
+            return ANSWER_RUNS_OFF
+        raise
+    rows = [r for r in page.get("rows") or [] if isinstance(r, dict)]
+    if rows and not any("answer" in r for r in rows):
+        return ANSWER_CHANGE_OFF
+    answered = [r for r in rows if isinstance(r.get("answer"), dict)]
+    if not answered:
+        return f"No answer of a member waits for an agent on {name}. Nothing was changed."
+    me = _client.current_user_email().strip().lower()
+    mine = [r for r in answered if str(r.get("member_email") or "").strip().lower() == me]
+    if not mine:
+        return (
+            f"{REFUSED} The answer on {name} is on the agent run of another member. Only "
+            "that member changes it. Nothing was changed."
+        )
+    run = next((r for r in mine if r["answer"].get("changeable") is True), None)
+    if run is None:
+        return f"{REFUSED} {ANSWER_READ} Nothing was changed."
+    rid = uuid_of(run.get("id"), "run_id")
+    aid = uuid_of(run["answer"].get("id"), "answer_id")
+    got = (await get(f"/projects/agent-runs/{rid}")) or {}
+    acts = {str(a.get("id")).lower(): a for a in got.get("activities") or []
+            if isinstance(a, dict)}
+    answer = acts.get(aid)
+    question = acts.get(str((answer or {}).get("in_reply_to") or "").lower())
+    if answer is None or question is None:
+        return (
+            f"{REFUSED} The agent run of {name} is too long to read here. Change the answer "
+            f"on the task card: /projects?task={tid}. Nothing was changed."
+        )
+    if (question.get("content_metadata") or {}).get("request"):
+        return (
+            f"{REFUSED} This answer is to a request to archive {name}. That answer changes "
+            f"on the task card only: /projects?task={tid}. Nothing was changed."
+        )
+    return _LiveAnswer(tid, task, run, answer, question)
+
+
+def _change_refusal(exc: GatewayRefusal) -> str:
+    """One plain sentence for a 403, 404, 409 or 422 of the two answer routes."""
+    status = getattr(exc, "status", None)
+    said = str(getattr(exc, "detail", "") or "")
+    if status == 404:
+        return f"{REFUSED} The server found no answer to change. Nothing was changed."
+    if status == 403:
+        return (
+            f"{REFUSED} The server says that only the member of this agent run changes "
+            "its answer. Nothing was changed."
+        )
+    if status == 409 and "already has your answer" in said:
+        return f"{REFUSED} {ANSWER_READ} Nothing was changed."
+    if status == 409:
+        return (
+            f"{REFUSED} This answer is no longer the live answer, and the question may "
+            "be open again. Read the task card. Nothing was changed."
+        )
+    if status == 422:
+        return f"{REFUSED} The new answer is not an option of the question. Nothing was changed."
+    raise exc
+
+
+def _new_answer(
+    question: dict[str, Any], option: str, text: str,
+) -> tuple[list[str], list[dict[str, Any]], str] | str:
+    """``(option ids, the options, text)`` of a new answer, or the refusal.
+
+    *option* is an id or a label of the question, matched whole and without
+    case. A question that takes many options also takes a comma list. Each
+    name must match one option, and never the first of two."""
+    options = _options_of(question)
+    wanted = " ".join(str(option or "").split())
+    body = str(text or "").strip()
+    if not wanted and not body:
+        listed = f" The options are: {_option_list(options)}." if options else ""
+        return (
+            f"Give the new answer: an option of the question, a text, or both.{listed} "
+            "Nothing was changed."
+        )
+    if not wanted:
+        return [], [], body
+    if not options:
+        return "This question has no options. Give the new answer as a text. Nothing was changed."
+
+    def named(name: str) -> list[dict[str, Any]]:
+        key = name.lower()
+        return [o for o in options if key in (
+            str(o.get("id")).lower(), " ".join(str(o.get("label") or "").split()).lower())]
+
+    many = bool((question.get("signal_metadata") or {}).get("allow_multiple"))
+    names = [wanted] if named(wanted) or not many else [
+        p.strip() for p in wanted.split(",") if p.strip()]
+    picked: list[dict[str, Any]] = []
+    for name in names:
+        found = named(name)
+        if len(found) != 1:
+            why = "matches no option" if not found else "matches two options"
+            return (
+                f"{data(name)} {why}. The options are: {_option_list(options)}. "
+                "Nothing was changed."
+            )
+        if found[0] not in picked:
+            picked.append(found[0])
+    if len(picked) > 1 and not many:
+        return "This question takes one option. Nothing was changed."
+    return [str(o["id"]) for o in picked], picked, body
+
+
+@dataclass(frozen=True)
+class _ChangeCard:
+    """One card of :func:`change_agent_answer`: what the member reads, what
+    goes on the wire after the approve, and the receipt."""
+
+    title: str
+    detail: str
+    context: str
+    body: dict[str, Any]
+    receipt: str
+
+
+def _withdraw_card(live: _LiveAnswer) -> _ChangeCard:
+    name, words = _ref(live.task), _answer_words(live.answer)
+    impact = (
+        "1 answer leaves the agent run. The question is open again on the task card, "
+        "and the agent sees that you took the answer back"
+    )
+    return _ChangeCard(
+        title="Take back your answer?",
+        detail=f"{name} · {words}",
+        context=_guard_card(impact, {
+            "task": name,
+            "question": _question_words(live.question),
+            "answer": words,
+            "undo": "answer the question again on the task card",
+        }),
+        body={},
+        receipt=(f"Took back your answer {words} on {name}. The question is open again "
+                 "on the task card."),
+    )
+
+
+def _replace_card(live: _LiveAnswer, option: str, text: str) -> _ChangeCard | str:
+    new = _new_answer(live.question, option, text)
+    if isinstance(new, str):
+        return new
+    selected, picked, body = new
+    old = live.answer.get("content") or {}
+    if selected == list(old.get("selected") or []) and body == str(old.get("body") or "").strip():
+        return ANSWER_SAME
+    name = _ref(live.task)
+    words = ", ".join([data(o.get("label")) for o in picked] + ([data(body)] if body else []))
+    rows: dict[str, Any] = {
+        "task": name, "question": _question_words(live.question), "answer": words}
+    costly = [data(o.get("label")) for o in picked if o.get("confirm") is True]
+    if costly:
+        rows["note"] = (
+            f"{ARE_YOU_SURE} The agent marked {', '.join(costly)} as a costly choice, such "
+            "as a stop or a restart. Approve only if you are sure."
+        )
+    impact = (
+        "1 answer changes. The agent reads the new answer and not the old one. You may "
+        "change it again until the agent reads it"
+    )
+    sent: dict[str, Any] = {}
+    if selected:
+        sent["selected"] = selected
+    if body:
+        sent["body"] = body
+    return _ChangeCard(
+        title=f"{ARE_YOU_SURE} Change your answer?" if costly else "Change your answer?",
+        detail=f"{name} · {words}",
+        context=_fields_block(rows, before={"answer": _answer_words(live.answer)},
+                              lead="impact: " + " ".join(impact.split())),
+        body=sent,
+        receipt=f"Changed your answer on {name} to {words}. The agent reads the new answer.",
+    )
+
+
+async def _send_change(live: _LiveAnswer, body: dict[str, Any], withdraw: bool) -> None:
+    """The one write of :func:`change_agent_answer`, after the card. The key is
+    new for each approve, so a second act needs a second card."""
+    rid = uuid_of(live.run.get("id"), "run_id")
+    sent = {"answer_id": uuid_of(live.answer.get("id"), "answer_id"),
+            "idempotency_key": uuid.uuid4().hex, **body}
+    if withdraw:
+        await post(f"/projects/agent-runs/{rid}/answer/withdraw", sent)
+    else:
+        await post(f"/projects/agent-runs/{rid}/answer/replace", sent)
+
+
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+async def change_agent_answer(
+    task_id: str, option: str = "", answer: str = "", withdraw: bool = False,
+) -> str:
+    """Take back or change the member's own answer to an outside agent's
+    question on one task, before the agent reads it. ONE task per call. With
+    withdraw true, the answer goes back, and the question is open again on
+    the task card. Else option names an option of the question by its label
+    or id, and answer is a text that may go with it. With neither, the tool
+    lists the options and changes nothing. A run that no person watches
+    cannot do this, and the tool refuses it before any read. The card shows
+    the question and the answer. An option that the agent marked as costly
+    puts "Are you sure?" on the card. When the agent already read the answer,
+    the server refuses, and the member sends a comment instead."""
+    if no_person_present():
+        return f"{REFUSED} {NO_PERSON_TEXT} Nothing was changed."
+    if _many(task_id):
+        return f"change_agent_answer {ONE_ACT.replace('id', 'task_id')}"
+    if withdraw and (str(option or "").strip() or str(answer or "").strip()):
+        return ANSWER_BOTH
+    live = await _live_answer(task_id)
+    if isinstance(live, str):
+        return live
+    card = _withdraw_card(live) if withdraw else _replace_card(live, option, answer)
+    if isinstance(card, str):
+        return card
+    if not await _confirm(title=card.title, detail=card.detail, context=card.context):
+        return CANCELLED
+    try:
+        await _send_change(live, card.body, withdraw)
+    except GatewayRefusal as exc:
+        return _change_refusal(exc)
+    tid = uuid_of(live.task_id, "task_id")
+    return f"{card.receipt}\n  link: /projects?task={tid}\n  full_id: {tid}"
+
+
 # ── Who gets a report, and when (WS-64 OP-6d, D-OP-9) ───────────────────────
 
 
@@ -2845,6 +3147,7 @@ __all__ = [  # noqa: RUF022 — grouped by what they act on
     "unpin_authority",
     "delete_project_update",
     "answer_decision",
+    "change_agent_answer",
     "add_report_recipient",
     "remove_report_recipient",
     "set_report_schedule",

@@ -2,7 +2,7 @@
 
 > **Dated 2026-11-11, price (D204.9).** Seat tiers are final. The flat ₹500 seat ends when PLN-0 merges. Until then the code sells the flat seat. Read each line that says the flat seat as the seat of D152 after PLN-0. Lines: 474 and 724.
 
-**Status: ACTIVE (SW-0, 2026-10-30). SW-68a (the plan order of `my_work`) is built, 2026-11-08. The rest of SW-68 is open. The replan of 2026-11-09 (task 2518) sets the queue order, the lane scope and pull start (SW-100, new). It parks SW-17, SW-20, SW-22, SW-69, SW-74, SW-75, SW-89, SW-90 and SW-92. SW-43a (withdraw an answer) is built and dark, 2026-11-05. SW-43b (change an answer) is built and dark, 2026-11-11. SW-43c is open. SW-16a (the link tools) is built, 2026-11-08. SW-16b (the write fence) is open.**
+**Status: ACTIVE (SW-0, 2026-10-30). SW-68a (the plan order of `my_work`) is built, 2026-11-08. The rest of SW-68 is open. The replan of 2026-11-09 (task 2518) sets the queue order, the lane scope and pull start (SW-100, new). It parks SW-17, SW-20, SW-22, SW-69, SW-74, SW-75, SW-89, SW-90 and SW-92. SW-43a (withdraw an answer) is built and dark, 2026-11-05. SW-43b (change an answer) is built and dark, 2026-11-11. SW-43c (the chat tools and the agent text) is built, 2026-11-11, and the flag can go on. SW-16a (the link tools) is built, 2026-11-08. SW-16b (the write fence) is open.**
 
 **SW-34b (the read-only door `/mcp/readonly`) is built, 2026-11-07.**
 
@@ -251,7 +251,7 @@ The source is the Linear research of 2026-10-30, the comment on epic 321. Append
 - **Race.** The route takes the same `FOR UPDATE` lock of the run as an agent post. The check runs under the lock. So one write wins. When the agent wins, the member gets 409 "The agent already has your answer. Send a comment instead."
 - **Protocol.** An agent posts a thought that names the answer id before it acts on an answer. The thought ends the window.
 - **Flag.** `agent_answer_change_enabled`, default off. Off: the route answers 404 and the run wire has no `answer` field. No migration.
-- **Slices.** SW-43a withdraw (built dark). SW-43b a replace route, with the option `confirm: true` and the card text "Are you sure?", and a Change button (built dark, 2026-11-11). SW-43c the chat tool, the agent text on by default, and the flag on.
+- **Slices.** SW-43a withdraw (built dark). SW-43b a replace route, with the option `confirm: true` and the card text "Are you sure?", and a Change button (built dark, 2026-11-11). SW-43c the chat tool, the agent text on by default, and the flag on (built, 2026-11-11, and the flag can go on).
 
 ### 3.10 Many people, each with their own agents (P9, D183)
 
@@ -307,7 +307,7 @@ SW-18 names the project lead as a last-resort reviewer.
 - **D-EA-14 and EA-18** (`external_agent_access.md` §12.8, tasks 1788 and 1806 to 1808, 1832). One list of the questions that wait on a person. The task creator, the assignees, the run's member and the roles owner, admin and manager see and answer. Each answer names its author. Task 1806 is built, dark and not merged on 2026-11-06. It holds `person_may_answer_sql` and `may_answer_run`, behind `AGENT_QUESTIONS_ORGS`.
 - **The Waiting spec** (PR 1772, accepted on 2026-11-06). It owns the list at `/waiting`. It also owns the **addressee ladder** of §4.5 (AP-15, task 1875). The ladder runs: the run's member, the assignees and watchers, the project lead (with the `authority.py` walk), and last the holders of `data:org:read`. The ladder stores no addressee column. An owned wait opens to its circle after 24 hours (AP-Q9). AP-16 (task 1876, AP-Q10, open) lets an agent name one person of the circle. AP-14 (forward) got "not now".
 - **Task 1750 (CIV-14k, PR 1741).** The first "Waiting for you" list. AP-2 moves it.
-- **SW-43 (§3.9).** Withdraw (SW-43a, built dark). Change and `confirm: true` (SW-43b, task 1801). The chat tool (SW-43c, task 1802).
+- **SW-43 (§3.9).** Withdraw (SW-43a, built dark). Change and `confirm: true` (SW-43b, task 1801, built dark). The chat tool (SW-43c, task 1802, built).
 - **SW-18.** A named reviewer, or the project lead, accepts agent work.
 - **Task 1731 (CIV-14f, no spec).** An answer watcher on the home box wakes the session that asked. **MCP-G4** (merged, #1742): an answer reaches only the session that asked.
 
@@ -1221,6 +1221,11 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 #### SW-43c · Chat tool and flag on
 
 - **Scope.** The chat tools `withdraw_agent_answer` and a change tool. The agent text on by default. The flag on.
+- **Built (task 1802). The flag can go on.** The Projects skill has ONE chat tool for the two routes, `change_agent_answer` in `guarded.py`. With `withdraw` true it takes the answer back. Else it sends a new option, a text, or both. It takes the task, and it reads the runs of the task and the one run. It shows one card with the question and the answer. A costly option puts "Are you sure?" on the card. Before any card, it refuses a run with no person present and an answer that an agent read. It also refuses the run of another member and the answer to an archive request (D-OP-13).
+- **One tool, class C.** The manifest rows of the two routes name the one tool, class C, as `answer_decision` is. An agent acts on an answer when it reads it, so the change is hard to undo. A held chat holds the tool off (RX-1). The tool is in the pack `projects-plan`, beside `waiting_agent_requests`. The pack had room for one tool more, so the slice builds one tool and not two (`test_projects_packs.py`).
+- **The agent text.** With the runs flag alone, the `work_on_task` steps tell the agent to post a thought first. The thought names the answer id, and it comes before the agent acts on the answer. The reason ("the member may withdraw it") shows only with the flag. The description of `get_agent_run` and line 2 of the SW-56 block say the same (protocol version 2). The server instructions do not grow (task 1803).
+- **The flag** `agent_answer_change_enabled` stays off in code. The turn-on is OWNER-GATE `enforcement-flip`.
+- **Fence.** `test_agent_answer_tools.py`, `test_agent_answer_chat_r8.py` (R8: a second session of the member after the agent read, and a chat change before it), `test_mcp_edge_agent_runs.py` (`TestTheAnswerChangeAtTheEdge`).
 - **Depends on.** SW-43a and SW-43b.
 
 #### CIV-14a · A claim and an ask carry the session link
@@ -1882,7 +1887,7 @@ Read at `9d41f51d4` on 2026-10-30. Line numbers move. Find each symbol by name a
 | `app/projects/components/AskAgentDialog.tsx` | "Ask an agent" (SW-30a) |
 | `app/connect/authorize/consent.ts:106` | `SCOPE_COPY` of the consent page. `scopeRows` is at :133 and `grantedScopes` at :150 (SW-34b) |
 
-**SW-43a** (find each symbol by name): `withdraw_agent_answer` and `_MOVES["member_withdraw"]` in `agent_runs.py`. `answer_changeable_sql` and `live_answer_sql` in `filters.py`. `answer_change_enabled` in `agent_oauth.py`. `agent_answer_change_enabled` in `settings.py`. `ANSWER_RULE` in `agent_edge/prompts.py`. `withdrawPayload` in `agentRuns.ts`.
+**SW-43a** (find each symbol by name): the route `withdraw_agent_answer` and `_MOVES["member_withdraw"]` in `agent_runs.py`. **SW-43c**: `change_agent_answer` and `_live_answer` in `skill_projects/guarded.py`, `answer_thought_rule` in `agent_edge/prompts.py`. `answer_changeable_sql` and `live_answer_sql` in `filters.py`. `answer_change_enabled` in `agent_oauth.py`. `agent_answer_change_enabled` in `settings.py`. `ANSWER_RULE` in `agent_edge/prompts.py`. `withdrawPayload` in `agentRuns.ts`.
 
 **P9** (read on 2026-11-06 at `f504698bd`). Find each symbol by name. `pm_projects.lead` in `infra/postgres/146_projects.sql`. `may_end_run` in `routes/projects/agent_runs.py`. `pm_agent_runs.connection_id` in `267_pm_agent_runs.sql`.
 
@@ -1957,6 +1962,7 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 | SW-35 | `uv run pytest -q -p no:cacheprovider tests/unit/test_triage_suggestions.py` (new) |
 | SW-36 | `uv run pytest -q -p no:cacheprovider tests/unit/test_project_update_draft.py` (new) |
 | SW-43a | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_runs_r8.py tests/unit/test_projects_chat_coverage.py tests/unit/test_projects_ui_actions.py tests/unit/test_mcp_edge_agent_runs.py`, and `npx vitest run src/app/projects/lib/agentRuns.test.ts` |
+| SW-43c | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_answer_tools.py tests/unit/test_agent_answer_chat_r8.py tests/unit/test_chat_parity.py tests/unit/test_mcp_edge_agent_runs.py`, and `npx vitest run src/lib/chatPlacement.test.ts` |
 | SW-44 | `uv run pytest -q -p no:cacheprovider tests/unit/test_needs_attention_r8.py` |
 | SW-45 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_claim_scope_r8.py` (new) `tests/unit/test_agent_label_fence.py` |
 | SW-46 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_questions_r8.py tests/unit/test_agent_approver_r8.py` (new) `tests/unit/test_mcp_edge_prompts.py tests/unit/test_tenant_coverage.py` |

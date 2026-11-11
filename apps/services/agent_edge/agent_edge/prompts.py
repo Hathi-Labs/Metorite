@@ -91,6 +91,19 @@ ANSWER_RULE = (
     " Before you act on an answer, post a thought that names the answer id,"
     " because the member may withdraw it until you post."
 )
+#: SW-43c. The same step while the flag is off, so the work steps carry it by
+#: default. It holds no reason, because with the flag off no member takes an
+#: answer back. The flag turns it into :data:`ANSWER_RULE`
+#: (:func:`answer_thought_rule`). Fence: ``test_mcp_edge_agent_runs.py``
+#: ``TestTheAnswerChangeAtTheEdge``.
+ANSWER_THOUGHT_RULE = (
+    "Before you act on an answer, post a thought that names the answer id.")
+
+
+def answer_thought_rule() -> str:
+    """The step of the thought before an act on an answer, by the flag of
+    SW-43. The step shows with the runs flag alone (SW-43c)."""
+    return ANSWER_RULE.strip() if agent_oauth.answer_change_enabled() else ANSWER_THOUGHT_RULE
 
 #: The same words as ``tools._UNTRUSTED_NOTE``, the note of each tool.
 _UNTRUSTED = (
@@ -413,8 +426,8 @@ def _work_steps(*, runs: bool) -> list[str]:
             " such as in this chat, call record_outside_decision at once. The"
             " question then closes, and the task stops waiting on me.")
         steps.append(WAITING_RULE)
-        if agent_oauth.answer_change_enabled():
-            steps.append(ANSWER_RULE.strip())
+        # SW-43c: on by default, so an agent posts the thought before the flip.
+        steps.append(answer_thought_rule())
     else:
         steps.append("Report progress with add_comment.")
     steps += [
@@ -454,6 +467,7 @@ def _rules() -> str:
 
 __all__ = [
     "ANSWER_RULE",
+    "ANSWER_THOUGHT_RULE",
     "ARGUMENT",
     "BRIEF_RULE",
     "IMAGE_RULE",
@@ -466,6 +480,7 @@ __all__ = [
     "TEXT_UNKNOWN",
     "WAITING_RULE",
     "PromptRefused",
+    "answer_thought_rule",
     "get",
     "listed",
     "logged_name",

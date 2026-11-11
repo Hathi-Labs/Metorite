@@ -747,6 +747,39 @@ class TestTheAnswerChangeAtTheEdge:
         assert prompts.ANSWER_RULE.strip() in steps
         assert "delet" not in prompts.ANSWER_RULE
 
+    def test_the_thought_step_shows_by_default(self, monkeypatch):
+        """SW-43c: "the agent text on by default". With the runs flag alone,
+        the work steps tell the agent to post a thought that names the answer
+        id before it acts. The reason (the member may withdraw it) shows only
+        with the flag, because only then is it true. The instructions do not
+        grow (task 1803). Mutation: gate the step on the flag again -> red."""
+        from agent_edge import mcp, prompts
+
+        monkeypatch.setattr(get_settings(), "agent_runs_enabled", True)
+        monkeypatch.setattr(get_settings(), "agent_access_writes_enabled", True)
+        monkeypatch.setattr(get_settings(), "agent_answer_change_enabled", False)
+        steps = prompts._work_steps(runs=True)
+        assert prompts.ANSWER_THOUGHT_RULE in steps
+        assert "withdraw" not in "\n".join(steps)
+        assert prompts.ANSWER_THOUGHT_RULE not in mcp.instructions(
+            ("projects:read", "projects:write"))
+        monkeypatch.setattr(get_settings(), "agent_answer_change_enabled", True)
+        steps = prompts._work_steps(runs=True)
+        assert prompts.ANSWER_RULE.strip() in steps
+        assert prompts.ANSWER_THOUGHT_RULE not in steps
+        # The flag form says the same act, and gives the reason.
+        assert prompts.ANSWER_RULE.strip().startswith(prompts.ANSWER_THOUGHT_RULE.rstrip("."))
+        assert "names the answer id" in prompts.ANSWER_THOUGHT_RULE
+        assert prompts.ANSWER_THOUGHT_RULE not in "\n".join(prompts._work_steps(runs=False))
+
+    def test_the_read_of_a_run_tells_the_agent_to_post_the_thought(self):
+        """SW-43c. The description of ``get_agent_run`` is where the edge says
+        how to read an answer, and it shows with the runs flag alone. One
+        sentence more. Mutation: drop the sentence -> red."""
+        description = tools.TOOLS["get_agent_run"].description
+        assert "Before you act on the answer, post a thought that names its id." in description
+        assert description.index("names its id") < description.index("stopping")
+
     def test_the_sentence_needs_the_runs_flag(self, monkeypatch):
         from agent_edge import mcp, prompts
 

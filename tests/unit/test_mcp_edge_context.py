@@ -1191,7 +1191,8 @@ class TestTheProtocolBlock:
 
     async def test_the_block_shows_in_my_work_when_on(self, on):
         result = await self._result()
-        assert result["protocol"] == {"version": 1, "lines": list(tools.PROTOCOL_LINES)}
+        # SW-43c raised the version to 2 with the line of the answer thought.
+        assert result["protocol"] == {"version": 2, "lines": list(tools.PROTOCOL_LINES)}
         assert "rows" in result
 
     async def test_the_block_shows_with_no_row(self, on):
@@ -1209,8 +1210,12 @@ class TestTheProtocolBlock:
         text = " ".join(tools.PROTOCOL_LINES)
         for needle in ("slice, not the epic", "post_agent_activity", "ask_on_task",
                        "Never ask only in the terminal", "one result", "release_task",
-                       "Hand off with evidence"):
+                       "Hand off with evidence",
+                       # SW-43c (agent_coordination.md §3.9, "Protocol").
+                       "Before you act on an answer, post one that names its id"):
             assert needle in text, needle
+        # SW-43c keeps the sixth line free for the park of SW-60.
+        assert len(tools.PROTOCOL_LINES) == 5
 
     def test_each_tool_named_in_a_line_exists_and_is_a_run_tool(self):
         import re
