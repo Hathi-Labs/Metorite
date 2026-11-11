@@ -216,9 +216,12 @@ describe("one component, no copy", () => {
   it("a failed send resets the exit gate and never remounts the card", () => {
     // A remount would throw away the typed text and the picks (DESIGN_SYSTEM §9).
     for (const host of [panel, list]) {
-      expect(host).not.toMatch(/<AgentQuestionCard[^>]*\bkey=/);
+      // No key may hold a failure or retry count.
+      expect(host).not.toMatch(/<AgentQuestionCard[^>]*\bkey=\{[^}]*(retry|fail|attempt)/i);
       expect(host).toContain("retryToken=");
     }
+    // A new question is a new card (review of #945, P1): the panel keys on the question id.
+    expect(panel).toMatch(/<AgentQuestionCard\s+key=\{elicitation\.id\}/);
     expect(list).toContain("attempts[row.activity_id]");
     const card = readFileSync(`${dir}../../../components/ElicitationCard.tsx`, "utf8");
     expect(card).toMatch(/\}, \[closed, retryToken\]\)/);

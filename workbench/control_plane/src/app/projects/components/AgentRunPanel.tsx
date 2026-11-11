@@ -555,6 +555,7 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
       {elicitation ? (
         // EA-18b: the answer part is ONE component, shared with the Questions list.
         <AgentQuestionCard
+          key={elicitation.id}
           retryToken={retryToken}
           elicitation={elicitation}
           run={run}
