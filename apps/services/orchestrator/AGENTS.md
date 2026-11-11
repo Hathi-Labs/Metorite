@@ -88,6 +88,12 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
 20. **A self-anneal retry holds no tool that the first try did not hold.** Access is an intersection, never a union.
    - `_assemble_batch_agents` is the one batch assembly. `_narrow_to_held` removes each tool outside the held set of `_BatchRunInputs`.
    - Do not build or inject agents for a retry anywhere else. Fence: `test_anneal_retry_scope.py`.
+20a. **A member's steer is a USER turn of the next model call, never text in a tool result** (task 2494, `chat_run_continuity.md` §4.9).
+   - `_tool_injection._apply_steer_turns` puts `steer.SteerTurnsProvider` on a per-run view of each native agent of a run with a relay thread. Do not drain the steer buffer anywhere else.
+   - Only `stream_relay._steer_apply` calls `steer.buffer_guidance`. Fence: `test_steer_user_turn.py`.
+   - The session history stores each steer turn after its tool result (`native_session_store.SessionHistoryProvider.after_run`, `steer.with_steer_turns`).
+   - ⚠️ On the web chat, the next turn does not load that session yet. The gateway saves the steer as a user row, and the save digest does not hold it, so the next load gives `digest_drop`. The next turn then reads the member's words from the text history. Task 2948 owns the fix.
+   - A Copilot SDK agent (`GitHubCopilotAgent`) gets no steer turn during its run. `steer.return_unconsumed` gives the steer back at the run end, and the follow-up turn answers it.
 20b. **Each turn carries today's date.** `_context_preamble_parts` adds `acb_common.today.today_line()` LAST. Fence: `test_crm_answer_consistency.py`.
 21. **The orchestrator's per-turn context carries the Knowledge index block** (spec `knowledge_base.md` §6.5).
    - Only the agent `orchestrator` gets it, behind `COMPANY_SEARCH_ENABLED`, `KNOWLEDGE_ENABLED` and `KNOWLEDGE_ORGS`. The org comes from `_current_run_org()` and the member from `_verified_run_member()`, never from the payload.

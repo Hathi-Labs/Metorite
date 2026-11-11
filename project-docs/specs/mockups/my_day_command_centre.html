@@ -1,0 +1,580 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>My Day Command Centre</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap">
+<style>
+/* Layout: one reading column for the argument, with wide mockup frames that scroll inside themselves on a phone. */
+:root {
+  --bg: #f3f4f7; --fg: #17191d; --muted: #5d6470; --line: #dde1e7; --card: #ffffff; --accent: #0a6cdf; --accent-soft: rgb(10 108 223 / 0.09);
+  --app-bg: #f2f2f7; --app-card: #ffffff; --app-raised: #ffffff; --app-fg: #1c1c1e; --app-muted: #6e6e73; --app-line: rgb(60 60 67 / 0.16);
+  --app-chip: rgb(118 118 128 / 0.12); --app-primary: #0a84ff; --app-primary-soft: rgb(10 132 255 / 0.12);
+  --gold: #b25e00; --gold-soft: rgb(255 159 10 / 0.16); --danger: #d70015; --danger-soft: rgb(255 59 48 / 0.12);
+  --ok: #248a3d; --ok-soft: rgb(52 199 89 / 0.14); --violet: #8944ab; --violet-soft: rgb(175 82 222 / 0.12);
+  --event: #5856d6; --event-soft: rgb(88 86 214 / 0.14); --shadow: 0 8px 30px rgb(20 24 31 / 0.10), 0 1px 2px rgb(20 24 31 / 0.08);
+  --font: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0d0e11; --fg: #eceef2; --muted: #9aa1ab; --line: #262a31; --card: #15171b; --accent: #4aa3ff; --accent-soft: rgb(74 163 255 / 0.12);
+  --app-bg: #121214; --app-card: #1c1c1e; --app-raised: #2c2c2e; --app-fg: #f5f5f7; --app-muted: #98989d; --app-line: rgb(84 84 88 / 0.5);
+  --app-chip: rgb(118 118 128 / 0.24); --app-primary: #0a84ff; --app-primary-soft: rgb(10 132 255 / 0.2);
+  --gold: #ffd60a; --gold-soft: rgb(255 214 10 / 0.14); --danger: #ff453a; --danger-soft: rgb(255 69 58 / 0.16);
+  --ok: #30d158; --ok-soft: rgb(48 209 88 / 0.16); --violet: #bf5af2; --violet-soft: rgb(191 90 242 / 0.16);
+  --event: #7d7aff; --event-soft: rgb(125 122 255 / 0.2); --shadow: 0 10px 34px rgb(0 0 0 / 0.55), 0 1px 3px rgb(0 0 0 / 0.3); color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #0d0e11; --fg: #eceef2; --muted: #9aa1ab; --line: #262a31; --card: #15171b; --accent: #4aa3ff; --accent-soft: rgb(74 163 255 / 0.12);
+  --app-bg: #121214; --app-card: #1c1c1e; --app-raised: #2c2c2e; --app-fg: #f5f5f7; --app-muted: #98989d; --app-line: rgb(84 84 88 / 0.5);
+  --app-chip: rgb(118 118 128 / 0.24); --app-primary: #0a84ff; --app-primary-soft: rgb(10 132 255 / 0.2);
+  --gold: #ffd60a; --gold-soft: rgb(255 214 10 / 0.14); --danger: #ff453a; --danger-soft: rgb(255 69 58 / 0.16);
+  --ok: #30d158; --ok-soft: rgb(48 209 88 / 0.16); --violet: #bf5af2; --violet-soft: rgb(191 90 242 / 0.16);
+  --event: #7d7aff; --event-soft: rgb(125 122 255 / 0.2); --shadow: 0 10px 34px rgb(0 0 0 / 0.55), 0 1px 3px rgb(0 0 0 / 0.3); color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font-family: var(--font); font-size: 15px; line-height: 1.55; -webkit-font-smoothing: antialiased; }
+.page { max-width: 1120px; margin: 0 auto; padding-block: 40px 80px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); display: grid; gap: 56px; }
+.prose { max-width: 70ch; }
+h1, h2, h3 { text-wrap: balance; margin: 0; letter-spacing: -0.02em; }
+h1 { font-size: clamp(30px, 4.4vw, 44px); font-weight: 800; line-height: 1.08; }
+h2 { font-size: 24px; font-weight: 700; line-height: 1.2; }
+h3 { font-size: 16px; font-weight: 650; }
+p { margin: 0; }
+.eyebrow { font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+.lede { font-size: 18px; color: var(--muted); margin-top: 14px; }
+.stack { display: grid; gap: 14px; }
+.muted { color: var(--muted); }
+section { display: grid; gap: 20px; }
+code { font-family: var(--mono); font-size: 0.86em; background: var(--accent-soft); padding: 1px 5px; border-radius: 5px; }
+a { color: var(--accent); }
+
+/* The loop */
+.loop { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+.verb { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; display: grid; gap: 8px; align-content: start; position: relative; }
+.verb b { font-size: 17px; }
+.verb .where { font-size: 12.5px; color: var(--muted); }
+.verb .home { font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--accent); }
+@media (max-width: 860px) { .loop { grid-template-columns: 1fr; } }
+
+/* Mockup frame */
+.frame-wrap { overflow-x: auto; border-radius: 18px; }
+.frame { min-width: 1060px; background: var(--app-bg); border: 1px solid var(--app-line); border-radius: 18px; box-shadow: var(--shadow); color: var(--app-fg); font-size: 13px; line-height: 1.4; display: grid; grid-template-columns: 196px 1fr; overflow: hidden; position: relative; }
+.side { border-right: 1px solid var(--app-line); padding: 14px 10px; display: grid; gap: 2px; align-content: start; }
+.side .org { font-weight: 700; padding: 4px 8px 12px; display: flex; gap: 8px; align-items: center; }
+.side .logo { width: 20px; height: 20px; border-radius: 6px; background: linear-gradient(135deg, var(--app-primary), var(--violet)); }
+.nav { display: flex; align-items: center; justify-content: space-between; padding: 7px 10px; border-radius: 9px; color: var(--app-fg); }
+.nav.on { background: var(--app-primary-soft); color: var(--app-primary); font-weight: 600; }
+.nav small { font-size: 11px; color: var(--app-muted); }
+.nav .count { background: var(--app-primary-soft); color: var(--app-primary); border-radius: 99px; padding: 0 7px; font-size: 11px; font-weight: 600; }
+.sec { font-size: 11px; color: var(--app-muted); padding: 12px 10px 4px; font-weight: 600; }
+.main { padding: 22px 26px 84px; display: grid; gap: 16px; align-content: start; }
+.tabs { display: inline-flex; gap: 4px; background: var(--app-chip); border-radius: 99px; padding: 3px; }
+.tabs button { font: inherit; font-size: 12px; font-weight: 600; border: 0; background: transparent; color: var(--app-muted); padding: 5px 12px; border-radius: 99px; cursor: pointer; }
+.tabs button[aria-selected="true"] { background: var(--app-raised); color: var(--app-fg); box-shadow: 0 1px 2px rgb(0 0 0 / 0.15); }
+.tabs button:focus-visible, .phase-btn:focus-visible { outline: 2px solid var(--app-primary); outline-offset: 2px; }
+.hello { display: flex; align-items: end; justify-content: space-between; gap: 16px; }
+.hello h4 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -0.02em; }
+.hello .sub { color: var(--app-muted); font-size: 12.5px; margin-top: 2px; }
+.capture { display: flex; gap: 8px; align-items: center; }
+.cap-box { flex: 1; display: flex; align-items: center; gap: 10px; background: var(--app-card); border: 1.5px solid var(--app-primary); border-radius: 12px; padding: 10px 14px; box-shadow: 0 0 0 4px var(--app-primary-soft); }
+.cap-box .ph { color: var(--app-muted); flex: 1; }
+.kbd { font-family: var(--mono); font-size: 10.5px; color: var(--app-muted); border: 1px solid var(--app-line); border-radius: 5px; padding: 1px 5px; }
+.pill { display: inline-flex; align-items: center; gap: 6px; border-radius: 99px; padding: 7px 12px; font-weight: 600; font-size: 12px; background: var(--app-chip); color: var(--app-fg); white-space: nowrap; }
+.pill.primary { background: var(--app-primary); color: #fff; }
+.pill.ai { background: var(--violet-soft); color: var(--violet); }
+.pill.quiet { background: transparent; border: 1px solid var(--app-line); }
+.grid2 { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; align-items: start; }
+.card { background: var(--app-card); border: 1px solid var(--app-line); border-radius: 16px; }
+.card-h { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px 6px; }
+.card-h b { font-size: 12.5px; }
+.card-h .muted { color: var(--app-muted); font-size: 12px; }
+.label { font-size: 11px; font-weight: 600; letter-spacing: 0.04em; color: var(--app-muted); text-transform: uppercase; }
+
+/* Now card */
+.now { padding: 16px; display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 18px; align-items: center; border-color: color-mix(in srgb, var(--app-primary) 45%, var(--app-line)); }
+.ring { width: 112px; height: 112px; border-radius: 50%; display: grid; place-items: center; position: relative; background: conic-gradient(var(--app-primary) 0 74%, var(--app-chip) 74% 100%); }
+.ring::after { content: ""; position: absolute; inset: 7px; border-radius: 50%; background: var(--app-card); }
+.ring span { position: relative; z-index: 1; text-align: center; font-family: var(--mono); font-size: 22px; font-weight: 600; line-height: 1.1; }
+.ring small { display: block; font-family: var(--font); font-size: 10px; color: var(--app-muted); font-weight: 500; }
+.now h5 { margin: 4px 0 6px; font-size: 16px; font-weight: 650; letter-spacing: -0.01em; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.chip { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 99px; background: var(--app-chip); color: var(--app-muted); white-space: nowrap; }
+.chip.time { background: var(--app-primary-soft); color: var(--app-primary); }
+.chip.gold { background: var(--gold-soft); color: var(--gold); }
+.chip.red { background: var(--danger-soft); color: var(--danger); }
+.chip.ok { background: var(--ok-soft); color: var(--ok); }
+.chip.event { background: var(--event-soft); color: var(--event); }
+.acts { display: flex; gap: 6px; margin-top: 12px; flex-wrap: wrap; }
+.steps { margin-top: 10px; display: grid; gap: 4px; font-size: 12px; color: var(--app-muted); }
+.steps .done { text-decoration: line-through; }
+.next { border-top: 1px solid var(--app-line); padding: 10px 16px; display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: var(--app-muted); }
+
+/* rows */
+.rows { display: grid; }
+.row { display: grid; grid-template-columns: 22px 58px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 9px 14px; border-top: 1px solid var(--app-line); }
+.row:first-child { border-top: 0; }
+.tick { width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid var(--app-muted); }
+.tick.on { background: var(--ok); border-color: var(--ok); }
+.when { font-family: var(--mono); font-size: 11.5px; color: var(--app-muted); }
+.ttl { min-width: 0; }
+.ttl b { font-weight: 550; display: block; }
+.ttl .m { color: var(--app-muted); font-size: 11.5px; }
+.go { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; background: var(--app-chip); color: var(--app-fg); font-size: 11px; }
+.go.play { background: var(--app-primary-soft); color: var(--app-primary); }
+.row.done .ttl b { text-decoration: line-through; color: var(--app-muted); }
+.row.now-row { background: var(--app-primary-soft); }
+.subhead { padding: 10px 14px 4px; display: flex; gap: 8px; align-items: center; font-size: 11.5px; font-weight: 600; color: var(--app-muted); border-top: 1px solid var(--app-line); }
+.need { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 9px 14px; border-top: 1px solid var(--app-line); }
+.need:first-of-type { border-top: 0; }
+.ico { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; font-size: 13px; font-weight: 700; }
+
+/* Timeline */
+.tl { position: relative; height: 640px; margin: 4px 12px 12px 46px; }
+.hr { position: absolute; left: -40px; right: 0; border-top: 1px solid var(--app-line); font-family: var(--mono); font-size: 10px; color: var(--app-muted); }
+.hr span { position: absolute; top: -7px; left: 0; background: var(--app-card); padding-right: 4px; }
+.blk { position: absolute; left: 4px; right: 4px; border-radius: 8px; padding: 5px 8px; font-size: 11px; line-height: 1.25; overflow: hidden; }
+.blk b { font-weight: 600; display: block; }
+.blk.task { background: var(--app-primary-soft); color: var(--app-fg); border-left: 3px solid var(--app-primary); }
+.blk.ev { background: var(--event-soft); border-left: 3px solid var(--event); }
+.blk.active { box-shadow: 0 0 0 2px var(--app-primary); }
+.blk.gap { background: transparent; border: 1.5px dashed var(--app-line); color: var(--app-muted); display: flex; align-items: center; gap: 6px; }
+.blk.gold { background: var(--gold-soft); border-left: 3px solid var(--gold); }
+.nowline { position: absolute; left: -6px; right: 0; border-top: 2px solid var(--danger); }
+.nowline::before { content: ""; position: absolute; left: -4px; top: -5px; width: 8px; height: 8px; border-radius: 50%; background: var(--danger); }
+.dock { position: absolute; left: calc(196px + 50%); transform: translateX(-50%); bottom: 18px; width: 460px; display: flex; align-items: center; gap: 10px; background: var(--app-raised); border: 1px solid var(--app-line); border-radius: 99px; padding: 9px 16px; box-shadow: var(--shadow); color: var(--app-muted); font-size: 12.5px; }
+.dock .dot { width: 8px; height: 8px; border-radius: 50%; background: linear-gradient(135deg, var(--app-primary), var(--violet)); }
+
+/* Plan phase */
+.brief { padding: 14px 16px; display: grid; gap: 8px; }
+.brief ol { margin: 0; padding-left: 18px; display: grid; gap: 5px; }
+.brief .first { font-size: 12px; color: var(--app-muted); font-style: italic; }
+.pick { display: grid; grid-template-columns: 22px minmax(0,1fr) auto; gap: 10px; align-items: center; padding: 9px 14px; border-top: 1px solid var(--app-line); }
+.box { width: 17px; height: 17px; border-radius: 5px; border: 1.5px solid var(--app-muted); display: grid; place-items: center; font-size: 11px; color: #fff; }
+.box.on { background: var(--app-primary); border-color: var(--app-primary); }
+.star { color: var(--gold); font-size: 14px; }
+.preview { padding: 12px 14px; display: grid; gap: 6px; font-size: 12px; }
+.preview .line { display: grid; grid-template-columns: 92px minmax(0,1fr); gap: 8px; }
+.preview .new { color: var(--app-primary); font-weight: 600; }
+.foot { display: flex; gap: 8px; justify-content: flex-end; padding: 10px 14px 14px; }
+
+/* Close phase */
+.stats { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 10px; padding: 14px; }
+.stat { background: var(--app-chip); border-radius: 12px; padding: 12px; }
+.stat b { font-size: 20px; display: block; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.stat span { font-size: 11.5px; color: var(--app-muted); }
+
+/* Phone and check-in */
+.duo { display: grid; grid-template-columns: 360px minmax(0, 1fr); gap: 28px; align-items: start; }
+@media (max-width: 860px) { .duo { grid-template-columns: 1fr; } }
+.phone { width: 340px; max-width: 100%; margin-inline: auto; background: var(--app-bg); color: var(--app-fg); border: 1px solid var(--app-line); border-radius: 36px; padding: 14px 12px 12px; box-shadow: var(--shadow); font-size: 12.5px; line-height: 1.4; display: grid; gap: 10px; }
+.phone .bar { display: flex; justify-content: space-between; padding: 0 8px; font-weight: 600; font-size: 12px; }
+.phone .title { font-size: 20px; font-weight: 700; padding: 2px 6px 0; letter-spacing: -0.02em; }
+.mini-now { display: grid; grid-template-columns: 54px minmax(0,1fr) auto; gap: 10px; align-items: center; padding: 10px 12px; }
+.mini-ring { width: 54px; height: 54px; border-radius: 50%; display: grid; place-items: center; background: conic-gradient(var(--app-primary) 0 74%, var(--app-chip) 74% 100%); position: relative; }
+.mini-ring::after { content: ""; position: absolute; inset: 4px; border-radius: 50%; background: var(--app-card); }
+.mini-ring span { position: relative; z-index: 1; font-family: var(--mono); font-size: 12px; font-weight: 600; }
+.prow { display: grid; grid-template-columns: 20px minmax(0,1fr) auto; gap: 10px; align-items: center; padding: 9px 12px; border-top: 1px solid var(--app-line); }
+.prow:first-child { border-top: 0; }
+.prow .m { color: var(--app-muted); font-size: 11px; }
+.pbottom { display: flex; gap: 8px; align-items: center; background: var(--app-raised); border: 1px solid var(--app-line); border-radius: 99px; padding: 8px 12px; color: var(--app-muted); }
+.fab { width: 34px; height: 34px; border-radius: 50%; background: var(--app-primary); color: #fff; display: grid; place-items: center; font-weight: 700; font-size: 18px; }
+.checkin { background: var(--app-raised); color: var(--app-fg); border: 1px solid var(--app-line); border-radius: 18px; box-shadow: var(--shadow); padding: 18px; display: grid; gap: 12px; max-width: 460px; font-size: 13px; }
+.checkin h5 { margin: 0; font-size: 16px; }
+.opts { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 8px; }
+.opt { border: 1px solid var(--app-line); border-radius: 12px; padding: 10px 12px; display: grid; gap: 2px; }
+.opt b { font-size: 13px; }
+.opt span { font-size: 11.5px; color: var(--app-muted); }
+.opt.rec { border-color: var(--app-primary); background: var(--app-primary-soft); }
+
+/* Tables and lists */
+.tbl-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 14px; background: var(--card); }
+table { border-collapse: collapse; width: 100%; min-width: 760px; font-size: 13.5px; }
+th, td { text-align: left; padding: 11px 14px; border-top: 1px solid var(--line); vertical-align: top; }
+thead th { border-top: 0; font-size: 11.5px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); background: color-mix(in srgb, var(--card) 70%, var(--bg)); }
+td b { font-weight: 650; }
+.tag { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 99px; background: var(--accent-soft); color: var(--accent); white-space: nowrap; }
+.tag.high { background: var(--danger-soft); color: var(--danger); }
+.tag.built { background: var(--ok-soft); color: var(--ok); }
+.cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+@media (max-width: 760px) { .cols { grid-template-columns: 1fr; } }
+.panel { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 18px; display: grid; gap: 10px; align-content: start; }
+.panel ul { margin: 0; padding-left: 18px; display: grid; gap: 6px; font-size: 14px; }
+.decision { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 18px; display: grid; gap: 8px; }
+.decision .id { font-family: var(--mono); font-size: 12px; color: var(--accent); font-weight: 600; }
+.decision .rec { font-size: 14px; }
+.decision .rec b { color: var(--ok); }
+.decision .alt { font-size: 13.5px; color: var(--muted); }
+.decisions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+@media (max-width: 760px) { .decisions { grid-template-columns: 1fr; } }
+.note { font-size: 13px; color: var(--muted); }
+@media (prefers-reduced-motion: no-preference) { .phase-panel { animation: fade 0.25s ease; } @keyframes fade { from { opacity: 0.4; } to { opacity: 1; } } }
+</style>
+</head>
+<body>
+
+<main class="page">
+
+<header class="stack prose">
+  <span class="eyebrow">Design proposal · task 1946 · for the owner's decision</span>
+  <h1>My Day becomes the place where you run your day</h1>
+  <p class="lede">Capture, plan, start work, focus and close the day from one page. Calendar stays the place for deep planning, and Projects stays the place for the structure of the work. All three read and write the same tasks, the same time blocks and the same focus sessions, so nothing needs a sync.</p>
+  <p class="note">Written 2026-11-07 from a map of the code on main and a study of the open-source app Stride, which you shared. The mockups use example tasks. Nothing here is built yet.</p>
+</header>
+
+<section>
+  <div class="prose stack">
+    <span class="eyebrow">The idea</span>
+    <h2>One loop, five verbs, one rule for each</h2>
+    <p>A day of work follows one loop: you capture what comes in, clarify it, put it on time, do it, and close the day. Today each verb lives in a different app, and some cannot run from My Day at all. The proposal gives each verb one rule and one component, and lets every surface use the same one.</p>
+  </div>
+  <div class="loop" role="list">
+    <div class="verb" role="listitem"><span class="home">Capture</span><b>Get it out of your head</b><span class="where">One capture box on My Day, ⌘K, the chat and Projects. Everything lands in your Inbox (D170). A time such as "at 3 pm" also makes a block.</span></div>
+    <div class="verb" role="listitem"><span class="home">Clarify</span><b>Decide what it is</b><span class="where">"Clarify 5" on My Day opens a quick pass over the Inbox. Projects keeps the full Inbox and the project tree.</span></div>
+    <div class="verb" role="listitem"><span class="home">Plan</span><b>Put it on time</b><span class="where">Pick today's top 3 and a One Thing, then "Fit my day" proposes blocks. You approve once. Calendar keeps the week and the full grid.</span></div>
+    <div class="verb" role="listitem"><span class="home">Do</span><b>Start, focus, finish</b><span class="where">▶ on any task or block starts one focus session. The timer follows you into every app. At the end it asks "Is it done?".</span></div>
+    <div class="verb" role="listitem"><span class="home">Close</span><b>End the day cleanly</b><span class="where">See what got done and the time you focused. Roll the rest over, and choose tomorrow's One Thing.</span></div>
+  </div>
+</section>
+
+<section>
+  <div class="prose stack">
+    <span class="eyebrow">Mockup 1 · desktop</span>
+    <h2>My Day changes with the time of day</h2>
+    <p>In the morning it helps you plan. During the day it shows what you do now and what comes next. In the evening it helps you close. It picks the phase from the clock and your day state, and you can switch by hand. Try the three tabs.</p>
+  </div>
+
+  <div class="frame-wrap">
+  <div class="frame">
+    <aside class="side" aria-label="Example sidebar">
+      <div class="org"><span class="logo"></span>Metorite</div>
+      <div class="nav on">My Day <span class="count">7</span></div>
+      <div class="nav">Chat</div>
+      <div class="sec">Personal Center</div>
+      <div class="nav">Calendar</div>
+      <div class="nav">My Email <small>3</small></div>
+      <div class="sec">Across teams</div>
+      <div class="nav">Projects <small>5</small></div>
+      <div class="nav">People</div>
+      <div class="nav">Knowledge</div>
+      <div class="sec">Admin</div>
+      <div class="nav">Approvals</div>
+    </aside>
+
+    <div class="main">
+      <div class="hello">
+        <div><h4 id="hello-line">Good morning, Vijay</h4><div class="sub">Saturday, 7 November · 3 things need you · 4 on your calendar · Inbox 5</div></div>
+        <div class="tabs" role="tablist" aria-label="Phase of the day">
+          <button class="phase-btn" role="tab" id="t-plan" aria-controls="p-plan" aria-selected="false">Morning · Plan</button>
+          <button class="phase-btn" role="tab" id="t-do" aria-controls="p-do" aria-selected="true">Day · Do</button>
+          <button class="phase-btn" role="tab" id="t-close" aria-controls="p-close" aria-selected="false">Evening · Close</button>
+        </div>
+      </div>
+
+      <div class="capture">
+        <div class="cap-box"><span style="color:var(--app-primary);font-weight:700">+</span><span class="ph">Capture a task, a note or a reminder…  "call the bank at 3 pm"</span><span class="kbd">↵ Inbox</span><span class="kbd">⇧↵ AI split</span></div>
+        <span class="pill">Inbox 5 · Clarify</span>
+      </div>
+
+      <!-- DO -->
+      <div class="phase-panel" id="p-do" role="tabpanel" aria-labelledby="t-do">
+        <div class="grid2">
+          <div class="stack">
+            <div class="card">
+              <div class="now">
+                <div class="ring"><span>18:42<small>of 25:00 · 2 of 2</small></span></div>
+                <div>
+                  <div class="chips"><span class="label">Now · focus</span><span class="chip time">10:00 – 11:00</span><span class="chip gold">★ One Thing</span></div>
+                  <h5>Send the revised quote to Fracktal for the printer order</h5>
+                  <div class="chips"><span class="chip">Sales · Fracktal</span><span class="chip red">Due today</span><span class="chip">In progress on the board</span></div>
+                  <div class="steps"><span class="done">✓ Update the unit price sheet</span><span class="done">✓ Add the shipping terms</span><span>○ Write the cover note</span></div>
+                  <div class="acts"><span class="pill">❚❚ Pause</span><span class="pill primary">✓ Done</span><span class="pill">+10 min</span><span class="pill quiet">⋯</span></div>
+                </div>
+              </div>
+              <div class="next"><span><b style="color:var(--app-fg)">Up next 11:00</b> · Design review with Kim and Ravi · meeting, 3 people</span><span class="pill quiet">Join</span></div>
+            </div>
+
+            <div class="card">
+              <div class="card-h"><b>Today's plan · 6</b><span class="pill ai">✦ Fit what's left</span></div>
+              <div class="rows">
+                <div class="row done"><span class="tick on"></span><span class="when">09:30</span><span class="ttl"><b>Stand-up</b><span class="m">Meeting · 15 min</span></span><span class="chip ok">Done</span></div>
+                <div class="row now-row"><span class="tick"></span><span class="when">10:00</span><span class="ttl"><b>★ Send the revised quote to Fracktal</b><span class="m">Focus now · 2 Pomodoros</span></span><span class="chip time">Now</span></div>
+                <div class="row"><span class="tick"></span><span class="when">11:00</span><span class="ttl"><b>Design review with Kim and Ravi</b><span class="m">Event · 1 h</span></span><span class="go">↗</span></div>
+                <div class="row"><span class="tick"></span><span class="when">14:00</span><span class="ttl"><b>Review the Q4 hiring plan</b><span class="m">People · 90 min block</span></span><span class="go play">▶</span></div>
+                <div class="subhead">To fit · 2 <span style="font-weight:500">· drag onto the timeline, or let Fit place them</span></div>
+                <div class="row"><span class="tick"></span><span class="when">—</span><span class="ttl"><b>Reply to Meera about the demo</b><span class="m">Email · 15 min · due today</span></span><span class="go play">▶</span></div>
+                <div class="row"><span class="tick"></span><span class="when">—</span><span class="ttl"><b>Approve the vendor onboarding checklist</b><span class="m">Projects · 10 min</span></span><span class="go play">▶</span></div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-h"><b>Needs you · 3</b><span class="muted">The top 3 of Waiting</span></div>
+              <div class="need"><span class="ico" style="background:var(--violet-soft);color:var(--violet)">✓</span><span class="ttl"><b>2 approvals wait for you</b><span class="m">The oldest waits 2 days</span></span><span class="pill quiet">Open</span></div>
+              <div class="need"><span class="ico" style="background:var(--app-primary-soft);color:var(--app-primary)">@</span><span class="ttl"><b>Kim mentioned you on Launch checklist</b><span class="m">"Can you confirm the venue by Friday?"</span></span><span class="pill quiet">Reply</span></div>
+              <div class="need"><span class="ico" style="background:var(--gold-soft);color:var(--gold)">?</span><span class="ttl"><b>Claude Code asks: which pricing tier for the quote?</b><span class="m">AI agent question on task 1774</span></span><span class="pill quiet">Answer</span></div>
+            </div>
+          </div>
+
+          <div class="card" aria-label="Example day timeline">
+            <div class="card-h"><b>Today</b><span class="muted">Calendar ↗</span></div>
+            <div class="tl">
+              <div class="hr" style="top:0"><span>08</span></div><div class="hr" style="top:64px"><span>09</span></div><div class="hr" style="top:128px"><span>10</span></div><div class="hr" style="top:192px"><span>11</span></div><div class="hr" style="top:256px"><span>12</span></div><div class="hr" style="top:320px"><span>13</span></div><div class="hr" style="top:384px"><span>14</span></div><div class="hr" style="top:448px"><span>15</span></div><div class="hr" style="top:512px"><span>16</span></div><div class="hr" style="top:576px"><span>17</span></div>
+              <div class="blk ev" style="top:96px;height:16px"><b>Stand-up</b></div>
+              <div class="blk task gold active" style="top:128px;height:62px"><b>★ Quote for Fracktal</b>Focus · 18:42 left</div>
+              <div class="blk ev" style="top:192px;height:62px"><b>Design review</b>Kim, Ravi</div>
+              <div class="blk gap" style="top:258px;height:44px">+ 45 min free · Fill</div>
+              <div class="blk task" style="top:384px;height:94px"><b>Review the Q4 hiring plan</b>90 min</div>
+              <div class="blk ev" style="top:512px;height:30px"><b>Call with Fracktal</b></div>
+              <div class="nowline" style="top:147px"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- PLAN -->
+      <div class="phase-panel" id="p-plan" role="tabpanel" aria-labelledby="t-plan" hidden>
+        <div class="grid2">
+          <div class="stack">
+            <div class="card brief">
+              <div class="chips"><span class="pill ai">✦ Your 07:30 brief</span><span class="chip">from email, calendar, tasks and CRM</span></div>
+              <b style="font-size:15px">A quote due today, a review at 11, and 5 captures to clarify</b>
+              <ol>
+                <li><b>Send the revised quote to Fracktal</b> · due today, and the order waits on it (60 min)</li>
+                <li><b>Review the Q4 hiring plan</b> · Ravi asked for comments before Monday (90 min)</li>
+                <li><b>Reply to Meera about the demo</b> · 4 days without a reply (15 min)</li>
+              </ol>
+              <span class="first">First move: one 25-minute Pomodoro on the quote, before you open email.</span>
+            </div>
+            <div class="card">
+              <div class="card-h"><b>Pick today's top 3</b><span class="muted">2 of 3 · ★ marks the One Thing</span></div>
+              <div class="pick"><span class="box on">✓</span><span class="ttl"><b><span class="star">★</span> Send the revised quote to Fracktal</b><span class="m" style="color:var(--app-muted);font-size:11.5px">Due today · Sales</span></span><span class="chip">60 min</span></div>
+              <div class="pick"><span class="box on">✓</span><span class="ttl"><b>Review the Q4 hiring plan</b><span class="m" style="color:var(--app-muted);font-size:11.5px">Next action · People</span></span><span class="chip">90 min</span></div>
+              <div class="pick"><span class="box"></span><span class="ttl"><b>Reply to Meera about the demo</b><span class="m" style="color:var(--app-muted);font-size:11.5px">Due today · Email</span></span><span class="chip">15 min</span></div>
+              <div class="pick"><span class="box"></span><span class="ttl"><b>Draft the investor update</b><span class="m" style="color:var(--app-muted);font-size:11.5px">Overdue 1 day</span></span><span class="chip red">late</span></div>
+              <div class="foot"><span class="pill">Clarify the Inbox · 5</span><span class="pill primary">Fit my day →</span></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-h"><b>Proposed day</b><span class="muted">Before → after</span></div>
+            <div class="preview">
+              <div class="line"><span class="when">09:30</span><span>Stand-up <span class="chip event">event</span></span></div>
+              <div class="line"><span class="when">10:00</span><span class="new">★ Quote for Fracktal · 60 min</span></div>
+              <div class="line"><span class="when">11:00</span><span>Design review <span class="chip event">event</span></span></div>
+              <div class="line"><span class="when">12:00</span><span class="new">Reply to Meera · 15 min</span></div>
+              <div class="line"><span class="when">14:00</span><span class="new">Q4 hiring plan · 90 min</span></div>
+              <div class="line"><span class="when">16:00</span><span>Call with Fracktal <span class="chip event">event</span></span></div>
+              <div class="line"><span class="when">—</span><span class="muted" style="color:var(--app-muted)">3 h 45 min free stays free</span></div>
+            </div>
+            <div class="foot"><span class="pill quiet">Change</span><span class="pill primary">Approve · 3 blocks</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- CLOSE -->
+      <div class="phase-panel" id="p-close" role="tabpanel" aria-labelledby="t-close" hidden>
+        <div class="card">
+          <div class="card-h"><b>Your day</b><span class="muted">18:30 close-out</span></div>
+          <div class="stats">
+            <div class="stat"><b>4 of 6</b><span>planned tasks done</span></div>
+            <div class="stat"><b>3 h 10 m</b><span>focused, in 7 Pomodoros</span></div>
+            <div class="stat"><b style="color:var(--ok)">★ Done</b><span>One Thing: the Fracktal quote</span></div>
+            <div class="stat"><b>1</b><span>left in the Inbox</span></div>
+          </div>
+        </div>
+        <div class="grid2" style="margin-top:16px">
+          <div class="card">
+            <div class="card-h"><b>2 tasks are not done</b><span class="muted">Choose for each</span></div>
+            <div class="pick"><span class="box"></span><span class="ttl"><b>Review the Q4 hiring plan</b><span class="m" style="color:var(--app-muted);font-size:11.5px">50 of 90 min done</span></span><span class="pill">Tomorrow 10:00</span></div>
+            <div class="pick"><span class="box"></span><span class="ttl"><b>Approve the vendor onboarding checklist</b><span class="m" style="color:var(--app-muted);font-size:11.5px">Not started</span></span><span class="pill">Next week</span></div>
+            <div class="foot"><span class="pill primary">Roll over · 2</span></div>
+          </div>
+          <div class="card">
+            <div class="card-h"><b>Tomorrow's One Thing</b></div>
+            <div class="pick"><span class="star">★</span><span class="ttl"><b>Review the Q4 hiring plan</b></span><span class="chip gold">suggested</span></div>
+            <div class="foot"><span class="pill quiet">Pick another</span><span class="pill primary">Close the day</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="dock"><span class="dot"></span>Ask or tell Metorite…  "plan my afternoon, I have 3 hours"</div>
+  </div>
+  </div>
+  <p class="note">In the Day phase, the right column is the Calendar's own day grid in a compact form. Drag a row from "To fit" onto it, and the block appears in Calendar too. In every app, the running timer shows in the focus dock that already exists.</p>
+</section>
+
+<section>
+  <div class="prose stack">
+    <span class="eyebrow">Mockups 2 and 3</span>
+    <h2>The phone, and the end of a session</h2>
+    <p>On a phone, My Day is one column: the running session first, then the plan, then what needs you. Capture sits at the thumb beside the Ask bar. When a session ends, Metorite asks one question and does the follow-up for you.</p>
+  </div>
+  <div class="duo">
+    <div class="phone" aria-label="Example phone view">
+      <div class="bar"><span>10:18</span><span>●●● 5G</span></div>
+      <div class="title">My Day</div>
+      <div class="card mini-now">
+        <div class="mini-ring"><span>18:42</span></div>
+        <div style="min-width:0"><div class="label">Now · ★ One Thing</div><b style="display:block;font-weight:600">Send the revised quote to Fracktal</b></div>
+        <span class="go play" style="width:34px;height:34px">❚❚</span>
+      </div>
+      <div class="card">
+        <div class="card-h"><b>Today's plan</b><span class="muted">4 left</span></div>
+        <div class="prow"><span class="when">11:00</span><span style="min-width:0"><b style="font-weight:550;display:block">Design review with Kim and Ravi</b><span class="m">Event · 1 h</span></span><span class="go">↗</span></div>
+        <div class="prow"><span class="when">14:00</span><span style="min-width:0"><b style="font-weight:550;display:block">Review the Q4 hiring plan</b><span class="m">90 min</span></span><span class="go play">▶</span></div>
+        <div class="prow"><span class="when">—</span><span style="min-width:0"><b style="font-weight:550;display:block">Reply to Meera about the demo</b><span class="m">To fit · 15 min</span></span><span class="go play">▶</span></div>
+      </div>
+      <div class="card">
+        <div class="card-h"><b>Needs you · 3</b><span class="muted">See all</span></div>
+        <div class="prow"><span class="ico" style="width:20px;height:20px;font-size:10px;background:var(--violet-soft);color:var(--violet)">✓</span><span><b style="font-weight:550">2 approvals wait</b></span><span class="go">›</span></div>
+        <div class="prow"><span class="ico" style="width:20px;height:20px;font-size:10px;background:var(--app-primary-soft);color:var(--app-primary)">@</span><span><b style="font-weight:550">Kim mentioned you</b></span><span class="go">›</span></div>
+      </div>
+      <div class="pbottom"><span class="fab">+</span><span style="flex:1">Ask or capture…</span><span>✦</span></div>
+    </div>
+
+    <div class="stack">
+      <div class="checkin">
+        <span class="label">25:00 is up · Send the revised quote to Fracktal</span>
+        <h5>Is it done?</h5>
+        <div class="opts">
+          <div class="opt rec"><b>✓ Done</b><span>Marks it done on the board, and logs 50 min</span></div>
+          <div class="opt"><b>Almost · +10 min</b><span>Keeps the timer going, and moves the next block</span></div>
+          <div class="opt"><b>Not now</b><span>Finds the next free slot today or tomorrow</span></div>
+          <div class="opt"><b>Blocked</b><span>Moves it to Waiting, and asks who it waits on</span></div>
+        </div>
+        <span class="note" style="color:var(--app-muted)">A break of 5 minutes starts after Done or Almost. Esc keeps the session and closes this card.</span>
+      </div>
+      <p class="note">Stride asks the same question at the end of a session. It does not log the time it measures. Metorite logs each session against the task, so the Calendar shows planned against actual time, and the estimates learn from it.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="prose stack">
+    <span class="eyebrow">The system</span>
+    <h2>One rule per verb, the same on every surface</h2>
+    <p>Each rule names one component or route. A second copy of any of them would be a defect, as the repo rules say for every seam.</p>
+  </div>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>Verb</th><th>The one rule</th><th>My Day</th><th>Calendar</th><th>Projects</th><th>Chat</th></tr></thead>
+      <tbody>
+        <tr><td><b>Capture</b></td><td>Every capture lands in the Inbox (D170). An explicit time also makes a block or a reminder, with Undo. "AI split" proposes many items with a project each, and you confirm once.</td><td>Capture box at the top</td><td>Click an empty slot</td><td>Inbox quick add</td><td><code>capture_intake</code></td></tr>
+        <tr><td><b>Today</b></td><td>One rule for "Today": the One Thing, your top 3, what is on today's calendar, and what is due or starts by today. My Day, My work's Today chip and the Calendar's "To fit" tray all read it.</td><td>Today's plan</td><td>To-fit tray</td><td>Today chip</td><td>"What is on today?"</td></tr>
+        <tr><td><b>Plan</b></td><td>A plan is time on a task: <code>pm_task_personal.scheduled_*</code>, written by the planner routes. Every AI plan shows before and after, and one Approve writes it with one Undo.</td><td>Fit my day, drag to the rail</td><td>The full grid and the week</td><td>Schedule from the task</td><td>Plan my day (CAL-1)</td></tr>
+        <tr><td><b>Start</b></td><td>One focus session at a time, global. ▶ on any task or block starts it. The dock shows it in every app. A company task in To do moves to In progress, with Undo.</td><td>▶ on a row, the Now card</td><td>Now bar, block menu</td><td>▶ in the task panel</td><td>"Start the quote"</td></tr>
+        <tr><td><b>Finish</b></td><td>The end of a session asks "Is it done?", logs the minutes and does the follow-up: done, extend, reschedule or wait.</td><td>Check-in card</td><td>Planned and actual</td><td>Time on the task</td><td>"Stop, it is done"</td></tr>
+        <tr><td><b>Close</b></td><td>The day close-out rolls the rest over and seeds tomorrow's One Thing. The 18:30 brief points to it.</td><td>Evening phase</td><td>End-of-day review</td><td>—</td><td>"Close my day"</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <div class="prose stack">
+    <span class="eyebrow">What exists</span>
+    <h2>Most of the parts are built. They sit in the wrong place.</h2>
+  </div>
+  <div class="cols">
+    <div class="panel">
+      <h3>Built, to move onto My Day</h3>
+      <ul>
+        <li><span class="tag built">built</span> The global focus session and its dock (<code>FocusMode.tsx</code>, mounted in <code>AppShell</code>), with 25/5, 50/10 and Flow. Only the Calendar can start it today.</li>
+        <li><span class="tag built">built</span> The now/next bar, "Fit what's left", "Rebuild my day", the startup ritual, the end-of-day review and the ★ One Thing, all in Calendar.</li>
+        <li><span class="tag built">built</span> The planner routes (plan, replan, rollover) and the day state.</li>
+        <li><span class="tag built">built</span> Quick Capture with sweep, the AI split and "Remind me". Today it opens only inside My work.</li>
+        <li><span class="tag built">built</span> The feed's in-place acts, the Reminders band and the AI waiting group.</li>
+        <li><span class="tag built">built, dark</span> The 07:30 brief card and the events store.</li>
+      </ul>
+    </div>
+    <div class="panel">
+      <h3>Missing or in conflict</h3>
+      <ul>
+        <li><span class="tag high">rule</span> <code>navigation_shell.md</code> §4.3 says My Day only notices, and Calendar owns start, focus and end of day. Your ask changes that rule.</li>
+        <li><span class="tag high">rule</span> Two "Today" rules: My Day reads time blocks, and My work reads due and start dates. They disagree.</li>
+        <li>No capture on My Day. The command bar's "New task" only opens Projects.</li>
+        <li>The focus room reads a store that My Day never loads, and its capture button no longer works.</li>
+        <li>Actual time is one start and end pair per task, and a new session overwrites it. No session log, no pauses, no auto-stop.</li>
+        <li>No "top 3" or star on a task. Only the One Thing.</li>
+        <li>The chat cannot plan or roll over the day yet (CAL-1 to CAL-6 are in Backlog).</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="prose stack">
+    <span class="eyebrow">Your decisions</span>
+    <h2>Eight choices, each with a recommendation</h2>
+    <p>Approve all eight, or change any of them on task 1946. After that I write the spec section and the D-numbers, and make one task for each slice.</p>
+  </div>
+  <div class="decisions">
+    <div class="decision"><span class="id">MD-Q1 · the job of My Day</span><p class="rec"><b>Recommended:</b> My Day becomes the command centre: notice, plan, start, focus and close. Calendar keeps the week, the full grid and events. Projects keeps the structure. This amends <code>navigation_shell.md</code> §4.3.</p><p class="alt">Other: keep My Day as "notice only", and add links into Calendar.</p></div>
+    <div class="decision"><span class="id">MD-Q2 · one Today</span><p class="rec"><b>Recommended:</b> one rule for Today: the One Thing, a top 3 that you pick, what is on today's calendar, and what is due or starts by today. Every surface reads one helper.</p><p class="alt">Other: keep the two rules, and label them differently.</p></div>
+    <div class="decision"><span class="id">MD-Q3 · the top 3</span><p class="rec"><b>Recommended:</b> a "today's focus" mark on a task, with a cap of 3 that you can set from 1 to 10. The One Thing is one of them, with a gold star.</p><p class="alt">Other: the One Thing only, with no cap list.</p></div>
+    <div class="decision"><span class="id">MD-Q4 · phases</span><p class="rec"><b>Recommended:</b> My Day changes by phase: Plan until you start the day, Do while you work, Close after 17:30 or when you ask. A switch lets you pick one.</p><p class="alt">Other: one fixed layout all day.</p></div>
+    <div class="decision"><span class="id">MD-Q5 · the focus log</span><p class="rec"><b>Recommended:</b> a new table of focus sessions, one row per session, private to you, scoped to the organization. It holds the task, start, end, pauses and the answer to "Is it done?". Only you see your own minutes.</p><p class="alt">Other: also show the total minutes per task to the project's people.</p></div>
+    <div class="decision"><span class="id">MD-Q6 · the board</span><p class="rec"><b>Recommended:</b> starting focus on a company task in a To do lane moves it to In progress on its board, with Undo. "Done" in the check-in closes it there too.</p><p class="alt">Other: focus never changes the board.</p></div>
+    <div class="decision"><span class="id">MD-Q7 · capture with a time</span><p class="rec"><b>Recommended:</b> a capture always goes to the Inbox. If it names a time ("at 3 pm"), Metorite also makes a block or a reminder, and the toast offers Undo.</p><p class="alt">Other: the Inbox only, and you schedule it later.</p></div>
+    <div class="decision"><span class="id">MD-Q8 · the phone</span><p class="rec"><b>Recommended:</b> one column in this order: the running session, the capture and Ask bar at the thumb, today's plan, then what needs you. The Today card merges into the plan.</p><p class="alt">Other: keep the Today card first, as it is now.</p></div>
+  </div>
+</section>
+
+<section>
+  <div class="prose stack">
+    <span class="eyebrow">After you decide</span>
+    <h2>The slices, in order</h2>
+    <p>Each ships alone, dark where it changes behaviour, through the usual preview, Approve, local gate and merge.</p>
+  </div>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>Slice</th><th>What</th><th>Done when</th><th>Tier</th></tr></thead>
+      <tbody>
+        <tr><td><b>CC-0</b></td><td>The spec section, the D-numbers, the amendment of §4.3 and one task per slice</td><td>INDEX lists it, and each slice has a task</td><td><span class="tag">LOW</span></td></tr>
+        <tr><td><b>CC-1</b></td><td>The capture box and "Clarify" on My Day, reusing Quick Capture</td><td>A capture from My Day lands in the Inbox, and a time makes a block with Undo</td><td><span class="tag">MEDIUM</span></td></tr>
+        <tr><td><b>CC-2</b></td><td>One Today rule and the top-3 mark</td><td>My Day, the Today chip and the Calendar tray list the same tasks</td><td><span class="tag">MEDIUM</span></td></tr>
+        <tr><td><b>CC-3</b></td><td>Today's plan on My Day, with ▶ and ✓ on each row, in place of the Today card</td><td>One tap starts focus or finishes a task from My Day</td><td><span class="tag">MEDIUM</span></td></tr>
+        <tr><td><b>CC-4</b></td><td>Start focus from anywhere: My Day, the task panel in Projects and the chat. Fix the dead capture button.</td><td>The dock runs the same session from each door</td><td><span class="tag">MEDIUM</span></td></tr>
+        <tr><td><b>CC-5</b></td><td>The focus-session log and the "Is it done?" check-in</td><td>Each session is a row, minutes add up, and the follow-up runs</td><td><span class="tag high">HIGH · migration</span></td></tr>
+        <tr><td><b>CC-6</b></td><td>The day rail on My Day: the Calendar day grid in compact form, with drag from "To fit"</td><td>A drop on My Day shows in Calendar at once</td><td><span class="tag">MEDIUM</span></td></tr>
+        <tr><td><b>CC-7</b></td><td>The Plan phase: the brief, pick the top 3, Fit my day with before and after</td><td>One Approve writes the blocks, with one Undo</td><td><span class="tag">MEDIUM</span></td></tr>
+        <tr><td><b>CC-8</b></td><td>The Close phase: stats, roll over, tomorrow's One Thing</td><td>The day closes from My Day</td><td><span class="tag">LOW</span></td></tr>
+        <tr><td><b>CC-9</b></td><td>The phone layout</td><td>At 390 px and 360 px, the session, capture and plan work one-handed</td><td><span class="tag">MEDIUM</span></td></tr>
+        <tr><td><b>CC-10</b></td><td>Chat parity: capture, start and stop focus, plan and close the day (with CAL-1)</td><td>Each verb works from the chat with one card</td><td><span class="tag high">HIGH</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+</main>
+
+<script>
+(() => {
+  const tabs = [...document.querySelectorAll('.phase-btn')];
+  const hello = document.getElementById('hello-line');
+  const lines = { 't-plan': 'Good morning, Vijay', 't-do': 'Good morning, Vijay', 't-close': 'Good evening, Vijay' };
+  const pick = (btn) => {
+    for (const t of tabs) {
+      const on = t === btn;
+      t.setAttribute('aria-selected', on ? 'true' : 'false');
+      t.tabIndex = on ? 0 : -1;
+      document.getElementById(t.getAttribute('aria-controls')).hidden = !on;
+    }
+    hello.textContent = lines[btn.id];
+  };
+  tabs.forEach((t, i) => {
+    t.addEventListener('click', () => pick(t));
+    t.addEventListener('keydown', (e) => {
+      if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+      e.preventDefault();
+      const next = tabs[(i + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length];
+      pick(next); next.focus();
+    });
+  });
+  pick(document.getElementById('t-do'));
+})();
+</script>
+</body>
+</html>
