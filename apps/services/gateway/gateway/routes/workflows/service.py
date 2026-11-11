@@ -1482,6 +1482,29 @@ def _pause_snapshot(
     }
 
 
+#: The error of a run whose gate clears a Studio write that does not resolve.
+_WRITE_UNRESOLVED_ERROR = (
+    "The approval step clears a Studio write that its owner cannot run: the app, "
+    "the action or the owner's access is missing. Nothing was written."
+)
+
+
+async def _fail_unresolved_write(run_id: str, organization_id: str) -> None:
+    """End a paused run as ``failed`` before any pause row or card exists
+    (fix round 2). The guard on ``paused`` changes no other state."""
+    try:
+        async with _run_session(organization_id) as db:
+            await db.execute(
+                text(
+                    "UPDATE workflow_runs SET status = 'failed', error = :error, "
+                    "finished_at = now() WHERE id = :id AND status = 'paused'"
+                ),
+                {"id": run_id, "error": _WRITE_UNRESOLVED_ERROR},
+            )
+    except Exception as exc:  # pragma: no cover - best effort persistence
+        _log.warning("workflows.unresolved_fail_failed", run_id=run_id, error=str(exc)[:160])
+
+
 async def _park_with_decision(
     *,
     run_id: str,
@@ -1541,6 +1564,12 @@ async def _park_with_decision(
             run_id=run_id,
             reason=str(getattr(exc, "reason", "") or type(exc).__name__)[:80],
         )
+        if getattr(exc, "reason", "") == park.WRITE_UNRESOLVED:
+            # STU-B2c-2d fix round 2: the gate clears a Studio write that the
+            # owner cannot run. A broker card could only end in a failed
+            # write, so the run fails here and files no card.
+            await _fail_unresolved_write(run_id, organization_id)
+            return True
         return False
     _log.info("workflows.parked", run_id=run_id, decision_id=parked["decision_id"])
     # After the commit: the subject task sent no event, so move the owner's

@@ -287,6 +287,38 @@ def test_the_detail_names_the_action_and_the_fields_and_hides_a_secret() -> None
     assert "api_token: (hidden)" in detail and "s3cr3t" not in detail
 
 
+def test_fifteen_fields_each_appear_or_are_counted_and_the_text_stays_bounded() -> None:
+    """Fix round 2: the detail never drops a field in silence."""
+    plan = SimpleNamespace(package_name="P" * 200, object="visit", op="create",
+                           uses="object:visit.create")
+    data = {f"field_{i:02d}_{'x' * 30}": "v" * 300 for i in range(15)}
+    detail = park.park_write_detail(plan, PKG, data)
+    assert len(detail) <= park._DETAIL_MAX
+    assert "Fields (15):" in detail
+    # Each key of the fifteen is named: the long values give way to the keys.
+    assert [k for k in data if k not in detail] == []
+    assert "Values not shown for:" in detail
+    # Many fields with long keys: the count names what does not fit.
+    wide = {f"k{i:03d}_{'y' * 34}": i for i in range(200)}
+    detail = park.park_write_detail(plan, None, wide)
+    assert len(detail) <= park._DETAIL_MAX
+    shown = [k for k in wide if k in detail]
+    assert 0 < len(shown) < len(wide)
+    assert f"{len(wide) - len(shown)} more fields not shown." in detail
+    # A short write names every field and its value, with no marker.
+    small = park.park_write_detail(plan, None, {"site": "a", "amount": 4})
+    assert '- site: "a"' in small and "- amount: 4" in small
+    assert "not shown" not in small
+
+
+@pytest.mark.parametrize("key", ["access_key", "private_key", "pin", "auth_header", "key"])
+def test_each_new_secret_word_hides_its_value(key: str) -> None:
+    plan = SimpleNamespace(package_name="Visits", object="visit", op="update",
+                           uses="object:visit.update")
+    detail = park.park_write_detail(plan, None, {key: "s3cr3t-value"})
+    assert f"{key}: (hidden)" in detail and "s3cr3t-value" not in detail
+
+
 def test_the_digest_binds_each_part_of_the_write() -> None:
     base = {"package_id": PKG, "action": "add", "uses": "object:visit.create",
             "record_id": None, "data": {"site": "a", "status": "planned"}}
@@ -766,16 +798,15 @@ class TestTheStudioWriteOfAWorkflowNodeOnARealDatabase:
     # ── The org wall ────────────────────────────────────────────────────
 
     def test_a_run_of_org_a_cannot_write_a_package_of_org_b(self, w):
-        """The park reads the package as the owner in org A and finds none, so
-        it asks no decision. The broker door then resumes with no decision."""
+        """The park reads the package as the owner in org A and finds none.
+        Fix round 2: the run fails at the gate, with no decision, no broker
+        card and no pause row."""
         run_id = _start(w, "A writes into B")
-        assert _run(w, run_id).status == "paused"
-        assert _decisions_of(w, run_id) == []
-        assert [p.action for p in w.proposals] == ["workflow.resume_run"]
-        _on_app_role(w, lambda: service.resume_run(
-            run_id, resumed_by=OWNER_A, organization_id=w.org_a))
         assert _run(w, run_id).status == "failed"
-        assert f"({service.STUDIO_NO_DECISION})" in _error_of(w, run_id)
+        assert _error_of(w, run_id) == service._WRITE_UNRESOLVED_ERROR
+        assert _decisions_of(w, run_id) == [] and w.proposals == []
+        assert _all(w, "SELECT id FROM workflow_run_pauses WHERE run_id = CAST(:r AS uuid)",
+                    r=run_id) == []
         assert _records(w, w.obj_b) == 0 and _records(w, w.obj_a) == 0
         assert _audit(w) == [] and w.events == []
 

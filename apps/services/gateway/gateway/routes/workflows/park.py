@@ -149,14 +149,22 @@ def asker(workflow_id: str) -> str:
     return workflow_actor(workflow_id)
 
 
+#: Why a park refused a gate whose Studio write does not resolve. The gate
+#: then fails the run and files no broker card (fix round 2).
+WRITE_UNRESOLVED = "write_unresolved"
 #: The key of the write digest in the decision payload (fix round 1).
 WRITE_DIGEST = "write_digest"
 _PACKAGE_MAX = 32
 _OBJECT_MAX = 24
 _VALUE_MAX = 40
-_DETAIL_MAX = 600
+_KEY_MAX = 40
+#: The most characters of the description of a write gate. Fix round 2: the
+#: text is never cut in silence. A field past the bound keeps its key, and a
+#: key past the bound is counted in a line that says so.
+_DETAIL_MAX = 1500
 #: A field whose key holds one of these words shows no value in the question.
-_SECRET_WORDS = ("token", "secret", "password", "credential", "api_key", "apikey")
+_SECRET_WORDS = ("token", "secret", "password", "credential", "api_key", "apikey", "key",
+                 "access_key", "private_key", "pin", "auth")
 
 
 def park_write_question(workflow_name: str, plan: Any) -> str:
@@ -173,21 +181,58 @@ def park_write_question(workflow_name: str, plan: Any) -> str:
 
 
 def _shown(key: str, value: Any) -> str:
+    """One field line. ``_clip`` ends a cut value with an ellipsis."""
     if any(w in key.lower() for w in _SECRET_WORDS):
-        return f"{key}: (hidden)"
-    return f"{key}: {_clip(json.dumps(value, default=str), _VALUE_MAX)}"
+        return f"- {key}: (hidden)"
+    return f"- {key}: {_clip(json.dumps(value, default=str), _VALUE_MAX)}"
+
+
+def _field_lines(data: dict[str, Any], budget: int) -> list[str]:
+    """The field lines of a write, within *budget* characters, never cut in
+    silence (fix round 2). Each field gets a line with its value while the
+    lines fit. The rest keep their key names on one line. Keys that do not
+    fit there either are counted: "N more fields not shown".
+
+    The value lines leave room for the key names of every field, up to half
+    of the budget, so a long value cannot push the keys out."""
+    keys = [_clip(str(k), _KEY_MAX) for k in data]
+    keys_room = min(sum(len(k) + 2 for k in keys), budget // 2)
+    lines: list[str] = []
+    used = 0
+    for i, (key, value) in enumerate(zip(keys, data.values(), strict=True)):
+        line = _shown(key, value)
+        if used + len(line) + 1 <= budget - keys_room - 40:
+            lines.append(line)
+            used += len(line) + 1
+            continue
+        rest = keys[i:]
+        named: list[str] = []
+        room = budget - used - len("Values not shown for: ") - 40
+        for k in rest:
+            if sum(len(n) + 2 for n in named) + len(k) + 2 > room:
+                break
+            named.append(k)
+        if named:
+            lines.append("Values not shown for: " + ", ".join(named))
+        if len(rest) > len(named):
+            lines.append(f"{len(rest) - len(named)} more fields not shown.")
+        return lines
+    return lines
 
 
 def park_write_detail(plan: Any, record_id: Any, data: Any) -> str:
-    """The description of the subject task of a write gate (fix round 1): the
-    action, the record and a short summary of each field. A field whose key
-    looks like a secret shows no value."""
+    """The description of the subject task of a write gate: the action, the
+    record and each field. A field whose key looks like a secret shows no
+    value. The text stays within :data:`_DETAIL_MAX`, and it never drops a
+    field in silence (fix round 2)."""
     lines = [SUBJECT_TEXT, "", f"The write: {plan.uses} in the app \"{plan.package_name}\"."]
     if record_id:
         lines.append(f"Record: {record_id}")
     if isinstance(data, dict) and data:
-        lines.append("Fields: " + "; ".join(_shown(str(k), v) for k, v in data.items()))
-    return "\n".join(lines)[:_DETAIL_MAX]
+        lines.append(f"Fields ({len(data)}):")
+        head = len("\n".join(lines)) + 1
+        lines.extend(_field_lines(data, _DETAIL_MAX - head))
+    return "\n".join(lines)
 
 
 def _write_below(serialized: Any, node_id: str) -> dict[str, Any] | None:
@@ -286,7 +331,7 @@ async def park_with_decision(
             action=config.get("action"), data=config.get("data"),
             record_id=config.get("record_id"))
         if plan is None:
-            raise ParkRefused("write_unresolved")
+            raise ParkRefused(WRITE_UNRESOLVED)
         question = park_write_question(workflow_name, plan)
         description = park_write_detail(plan, config.get("record_id"), config.get("data"))
         write_digest = plan.digest
