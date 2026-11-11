@@ -1325,6 +1325,7 @@ def test_store_busy_on_the_first_step_is_503_with_retry_after(world: SimpleNames
     world.busy_steps = {1}
     r = _delete(_client(world), pid, {"confirm": world.preview(pid).confirm})
     assert r.status_code == 503 and r.json()["detail"]["code"] == "store_busy"
+    assert r.json()["detail"]["records_removed"] == 0
     assert r.headers["Retry-After"] == packages.RETRY_AFTER
     assert world.packages[pid]["records"] == 1200
 
@@ -1405,6 +1406,8 @@ def test_a_busy_preview_at_the_end_of_a_call_is_503_and_the_partial_row_stays(
     world.preview_busy = True
     r = _delete(_client(world), pid, {"confirm": token})
     assert r.status_code == 503 and r.json()["detail"]["code"] == "store_busy"
+    # A5c-2 fix round 1: the 503 names the records of the call, for the chat total.
+    assert r.json()["detail"]["records_removed"] == 500
     assert world.audits[0]["op"] == store.PARTIAL_OP
     assert world.packages[pid]["records"] == 700
 
@@ -1443,6 +1446,7 @@ def test_a_busy_row_wait_of_a_later_step_is_503_and_writes_the_partial_row(
     world.row_busy_steps = {2}
     r = _delete(_client(world), pid, {"confirm": world.preview(pid).confirm})
     assert r.status_code == 503 and r.json()["detail"]["code"] == "store_busy"
+    assert r.json()["detail"]["records_removed"] == 500
     assert r.headers["Retry-After"] == packages.RETRY_AFTER
     [row] = world.audits
     assert (row["records_this_call"], row["reason"]) == (500, "busy")

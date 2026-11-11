@@ -243,8 +243,8 @@ MAX_INSTALL_BODY_BYTES = 4 * 1024
 SHARE_RIGHT = "studio:publish"
 #: The right of the admin path of a delete (A5c-2): the right that manages the
 #: members of the org (``routes/admin/members.py``). Only ``_delete_mode``
-#: reads it. Fence:
-#: ``test_studio_route_gate.py::test_the_share_verb_is_read_by_the_install_only``.
+#: reads it, and no other code of ``routes/studio`` names the right. Fence:
+#: ``test_studio_route_gate.py::test_the_admin_right_is_read_by_the_delete_mode_only``.
 ADMIN_RIGHT = "admin:members:manage"
 _DIGITS = re.compile(r"[0-9]{1,10}", re.ASCII)
 _HASH = re.compile(r"[0-9a-f]{64}", re.ASCII)
@@ -741,9 +741,13 @@ def _preview_out(found: store.DeletePreview) -> dict[str, Any]:
     }
 
 
-def _busy(exc: Exception) -> HTTPException:
-    return HTTPException(status_code=503, detail={"code": STORE_BUSY, "message": str(exc)},
-                         headers={"Retry-After": RETRY_AFTER})
+def _busy(exc: Exception, records_removed: int = 0) -> HTTPException:
+    """The 503 of a delete call. ``records_removed`` names the records that the
+    earlier steps of the call removed, so a caller that sums the calls of one
+    delete keeps a true total (A5c-2 fix round 1)."""
+    return HTTPException(status_code=503, detail={
+        "code": STORE_BUSY, "message": str(exc), "records_removed": records_removed},
+        headers={"Retry-After": RETRY_AFTER})
 
 
 def _owner_active(records_removed: int = 0) -> HTTPException:
@@ -846,7 +850,7 @@ async def delete_package(
                                            as_admin=as_admin)
             _log.info("studio.packages.delete_partial", package_id=pid, records=removed,
                       changed=False, busy=True, as_admin=as_admin)
-            raise _busy(exc) from None
+            raise _busy(exc, removed) from None
         if step is None:
             raise _not_found()
         removed += step.removed
@@ -867,7 +871,7 @@ async def delete_package(
             # A later step of the admin path: the owner is active again.
             raise _owner_active(removed)
         if step.left is None:
-            raise _busy(objects_store.StoreBusy(objects_store._BUSY_MESSAGE))
+            raise _busy(objects_store.StoreBusy(objects_store._BUSY_MESSAGE), removed)
         if step.changed:
             raise HTTPException(status_code=409, detail={
                 "code": COUNTS_CHANGED,

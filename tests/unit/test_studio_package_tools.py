@@ -1538,6 +1538,20 @@ async def test_the_delete_follows_each_202_with_its_new_token(dgw, card) -> None
     assert len(card.shown) == 1
 
 
+async def test_a_503_after_a_202_keeps_the_true_total(dgw, card) -> None:
+    """A5c-2 fix round 1: a 503 of a later call names the records that the call
+    removed before it, so the total of the result counts them."""
+    pid = dgw.seed_app(records=1200)
+    dgw.answers = [(202, {"deleted": False, "package_id": pid, "remaining": 700,
+                          "remaining_capped": False, "records_removed": 500,
+                          "confirm": "b" * 64}),
+                   (503, {"detail": {"code": "store_busy", "message": "busy",
+                                     "records_removed": 300}})]
+    out = await st.studio_delete_package(pid)
+    assert out["ok"] is False and out["status"] == 503 and _msg(out) == st._DEL_BUSY
+    assert out["records_removed"] == 800
+
+
 async def test_the_202_loop_has_a_bound(dgw, card) -> None:
     """Criterion: the loop stops after ``MAX_DELETE_CALLS`` calls, and the
     result says what is left. The next call shows a new card."""

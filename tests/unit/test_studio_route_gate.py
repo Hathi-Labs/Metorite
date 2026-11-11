@@ -55,6 +55,11 @@ with 16 routes, and each test named here went red.
   ``CAPABILITIES``. Red: ``test_the_share_verb_is_read_by_the_install_only``,
   and the pins in ``test_org_access_control.py`` and
   ``test_auth_me_features.py``.
+* M6 (STU-A5c-2 fix round 1): read ``ADMIN_RIGHT`` in ``install_package``,
+  or the text ``"admin:members:manage"`` in a function of another module of
+  ``routes/studio``. Red: ``test_the_admin_right_is_read_by_the_delete_mode_only``.
+  ``test_a_second_read_of_the_admin_right_fails`` runs both changes on the
+  real sources on each run, and holds the scan to them.
 """
 
 from __future__ import annotations
@@ -386,6 +391,84 @@ def test_the_share_verb_is_read_by_the_install_only() -> None:
                              ("packages.py", "install_package",
                               "user.has_permission(SHARE_RIGHT)")], calls
     assert packages.ADMIN_RIGHT == "admin:members:manage"
+
+
+#: The one right of the admin path of a delete (STU-A5c-2).
+_ADMIN_TEXT = "admin:members:manage"
+#: Each read of that right in ``routes/studio``: the definition of
+#: ``packages.ADMIN_RIGHT`` (its name and its text), and one load in
+#: ``_delete_mode``.
+_ADMIN_READS = [("packages.py", "<module>", "Store"),
+                ("packages.py", "<module>", "constant"),
+                ("packages.py", "_delete_mode", "Load")]
+
+
+def _docstrings(tree: Any) -> set[int]:
+    """The ids of the docstring nodes of a module and of each def in it."""
+    import ast
+
+    out: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            body = node.body
+            if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+                out.add(id(body[0].value))
+    return out
+
+
+def admin_right_reads(sources: dict[str, str]) -> list[tuple[str, str, str]]:
+    """Each read of ``ADMIN_RIGHT``, and each string that holds the text of
+    the right, in *sources* (a file name -> its text), as ``(file, top-level
+    function, kind)``. A docstring may name the right. Any other string that
+    holds it counts, an f-string part too."""
+    import ast
+
+    found: list[tuple[str, str, str]] = []
+    for name, text in sorted(sources.items()):
+        tree = ast.parse(text)
+        owner, docs = _owners(tree), _docstrings(tree)
+        for node in ast.walk(tree):
+            where = (name, owner.get(id(node), "<module>"))
+            if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                    and _ADMIN_TEXT in node.value and id(node) not in docs):
+                found.append((*where, "constant"))
+            if isinstance(node, ast.Name) and node.id == "ADMIN_RIGHT":
+                found.append((*where, type(node.ctx).__name__))
+            if isinstance(node, ast.Attribute) and node.attr == "ADMIN_RIGHT":
+                found.append((*where, "attribute"))
+    return sorted(found)
+
+
+def _studio_sources() -> dict[str, str]:
+    return {p.name: p.read_text(encoding="utf-8") for p in sorted(_STUDIO_DIR.glob("*.py"))}
+
+
+def test_the_admin_right_is_read_by_the_delete_mode_only() -> None:
+    """STU-A5c-2 fix round 1. The admin path reads ``admin:members:manage``
+    in ``_delete_mode`` and nowhere else in ``routes/studio``. So no other
+    route grows an admin path by a second read, and no route names the right
+    in its own text. Mutation M6 -> red."""
+    from gateway.routes.studio import packages
+
+    assert packages.ADMIN_RIGHT == _ADMIN_TEXT
+    assert admin_right_reads(_studio_sources()) == _ADMIN_READS
+
+
+def test_a_second_read_of_the_admin_right_fails() -> None:
+    """M6, run on the real sources: a read of ``ADMIN_RIGHT`` in
+    ``install_package``, and the text of the right in a function of another
+    module, each give one more read."""
+    sources = _studio_sources()
+    share = "    if not user.has_permission(SHARE_RIGHT):\n"
+    text = sources["packages.py"].replace("\r\n", "\n")
+    assert text.count(share) == 1, "non-vacuity: the share check of the install"
+    mutated = {**sources, "packages.py": text.replace(
+        share, "    if not (user.has_permission(SHARE_RIGHT) or user.has_permission(ADMIN_RIGHT)):\n")}
+    assert admin_right_reads(mutated) == sorted(
+        [*_ADMIN_READS, ("packages.py", "install_package", "Load")])
+    other = {**sources, "skills.py": sources["skills.py"] + (
+        "\n\ndef _peek(user):\n    return user.has_permission(f\"admin:members:manage\")\n")}
+    assert admin_right_reads(other) == sorted([*_ADMIN_READS, ("skills.py", "_peek", "constant")])
 
 
 # ── g. The chat gets the refusal ──────────────────────────────────────────
