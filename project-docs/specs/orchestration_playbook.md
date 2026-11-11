@@ -79,7 +79,7 @@ Guidance comes in layers (D140.6, SW-31). P10 adds one at the bottom. The neares
 | # | Place | What it holds | Mechanism |
 |---|---|---|---|
 | 1 | **MCP prompts** (slash commands) | `set_up_agent_team`, `plan_slices`, `write_brief`, `review_my_fleet`, `run_retro`, and the session commands of SW-82 | `prompts/list` (EA3-39) |
-| 2 | **MCP resources** | `metorite://playbook/index`, `.../pattern/{slug}`, `.../brief-contract`, `.../gates`, `.../failures`, `.../cost-model`, `.../lane-templates`, `.../kit/{file}`. Each has a version | SW-34a |
+| 2 | **MCP resources** | One resource for each topic: `metorite://playbook/{slug}`, such as `metorite://playbook/brief-contract` and `metorite://playbook/patterns/one-agent-first`. The slug is the path of the topic in `acb_playbook`. Each has a version | SW-34a, PB-3b |
 | 3 | **Tips in results** | At most 2 short lines in the result of `claim_task`, `my_work` and `delegate_task`. Example on `claim_task`: "Write a brief before you delegate." Each line names a playbook topic and shows once for each run | SW-56 |
 | 4 | **Guidance layers** | The Metorite default, then the organization, the space and the project | SW-31 |
 | 5 | **Setup tools** | `propose_agent_setup` reads the organization and proposes lanes, leads, gates and budgets on a card. `get_starter_kit` returns the kit files | New tools (PB-6) |
@@ -211,7 +211,7 @@ Each names its scope, its done-when, its fence (R7), its risk tier and its gate.
 #### PB-3 · The resources and `read_playbook`
 
 - **Metorite task.** 1949.
-- **Scope.** The `metorite://playbook/...` resources of §5 beside the three resources of SW-34a. The tool `read_playbook(topic)` for a client with no resources. Content is the same for every organization. The organization layer adds its notes after the default text, marked as the organization's.
+- **Scope.** PB-3 is split (orchestrator, 2026-11-07). **PB-3a** is the tool `read_playbook`, built. **PB-3b** is the `metorite://playbook/{slug}` resources of §5, beside the project and task resources of SW-34a, and it needs both flags: `agent_resources_orgs` and `playbook_orgs`. Content is the same for every organization. The organization layer adds its notes after the default text, marked as the organization's.
 - **Done when.** A client lists and reads each resource. An unknown topic answers not found. The text leaves as `untrusted_text`.
 - **Fence.** The transport test of SW-34a, `test_mcp_edge_coverage.py`.
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE. **Depends on.** PB-1, SW-34a.
@@ -219,10 +219,10 @@ Each names its scope, its done-when, its fence (R7), its risk tier and its gate.
 #### PB-4 · Tips in the results
 
 - **Metorite task.** 1950.
-- **Scope.** `tips` beside `protocol` (SW-56): at most 2 lines of 120 characters, chosen by a rule table on the tool and the context. Each names a topic and shows once for each run. The edge keeps no state, so the gateway stores which tips a run has seen in a column `pm_agent_runs.tips_seen` (migration, expand only). They are separate from the safety lines.
+- **Scope.** `tips` beside `protocol` (SW-56): at most 2 lines of 120 characters, chosen by a rule table on the tool and the context. Each names a topic and shows once for each run. The edge keeps one `SET NX` key in the tenant Redis wrapper for each connection, run and tip, so "once" needs no migration. **Changed on 2026-11-07 (PB-4 build):** the first text said a gateway column `pm_agent_runs.tips_seen`. A tip is a hint and grants nothing. A lost key shows a tip again, and a store outage shows none. So the state does not belong on the lease table. The tips show only while the runs flag is on and the organization is on `playbook_orgs`. The first tips are `brief` (a task with little text, until SW-70 gives the task a brief) and `stalled` (a quiet run in `my_work`). They are separate from the safety lines.
 - **Done when.** A claim of a delegated task with no brief carries the brief tip once. The same run sees it once. An organization that switched tips off sees none, and still sees the safety lines.
 - **Fence.** `test_mcp_edge_context.py`, `test_mcp_edge_prompts.py`.
-- **Risk.** HIGH (a migration). **Gate.** AGENT-SAFE. **Depends on.** PB-1, SW-56.
+- **Risk.** STANDARD (no migration, see above). **Gate.** AGENT-SAFE. **Depends on.** PB-1, SW-56.
 
 #### PB-5 · The default layer, and the neutral fence
 
@@ -403,7 +403,7 @@ Each slice ships dark behind `LEARNING_ORGS`. Each slice that adds a rule names 
 | PB-1 | `uv run pytest -q -p no:cacheprovider tests/unit/test_playbook_content.py tests/unit/test_playbook_org_neutral.py` |
 | PB-2 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_prompts.py` |
 | PB-3 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_session.py tests/unit/test_mcp_edge_coverage.py` |
-| PB-4 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_context.py tests/unit/test_mcp_edge_prompts.py` |
+| PB-4 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_context.py tests/unit/test_mcp_edge_claim.py tests/unit/test_mcp_edge_prompts.py` |
 | PB-5 | `uv run pytest -q -p no:cacheprovider tests/unit/test_playbook_org_neutral.py tests/unit/test_agent_guidance_r8.py` |
 | PB-6 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_setup_proposal_r8.py tests/unit/test_mcp_edge_coverage.py` |
 | PB-7 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_doctor_r8.py tests/unit/test_needs_attention_r8.py` |
