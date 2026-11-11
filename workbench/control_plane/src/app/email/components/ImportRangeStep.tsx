@@ -6,7 +6,8 @@
  *
  * `ConnectChoices` draws it in place of the provider list, so the empty state
  * and the add-account dialog show the same step. It holds no state. The
- * caller owns the chosen range, and "Continue" starts the sign-in.
+ * caller owns the chosen range, and "Continue" opens the disclosure step
+ * (EM-G11a item 1).
  *
  * The choices are a radio group of `Button`s, the worked pattern of
  * `projects/components/SpaceSettings.tsx`: `selected` draws the state, and
@@ -23,14 +24,13 @@
  */
 
 import { useEffect, useId, useRef } from "react";
-import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import {
-  CONNECT_PROVIDERS,
   IMPORT_RANGE_CHOICES,
   IMPORT_RANGE_COPY,
   type ConnectProviderId,
 } from "../lib/connect";
+import { ProviderGlyph } from "./ProviderGlyph";
 
 export function ImportRangeStep({
   provider,
@@ -45,7 +45,6 @@ export function ImportRangeStep({
   onBack: () => void;
   onContinue: () => void;
 }) {
-  const p = CONNECT_PROVIDERS.find((c) => c.id === provider);
   const titleId = useId();
   const groupRef = useRef<HTMLDivElement>(null);
 
@@ -57,9 +56,7 @@ export function ImportRangeStep({
   return (
     <section aria-labelledby={titleId} className="flex flex-col gap-3">
       <div className="flex items-start gap-3">
-        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
-          <Icon name={p?.icon ?? "Mail"} size={18} />
-        </span>
+        <ProviderGlyph provider={provider} />
         <div className="min-w-0 flex-1">
           <h3 id={titleId} className="text-sm font-medium text-foreground">
             {IMPORT_RANGE_COPY.title}
@@ -91,7 +88,7 @@ export function ImportRangeStep({
           {IMPORT_RANGE_COPY.back}
         </Button>
         <Button variant="primary" size="sm" onClick={onContinue}>
-          {IMPORT_RANGE_COPY.continueTo(provider)}
+          {IMPORT_RANGE_COPY.next}
         </Button>
       </div>
     </section>

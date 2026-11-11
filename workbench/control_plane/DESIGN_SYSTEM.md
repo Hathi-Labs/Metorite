@@ -181,6 +181,8 @@ A literal is right only when the value is **not a theme decision**:
 2. **Someone else's palette** — Gmail's label colours must match Gmail's or the
    value does not round-trip to the real mailbox. Meta blue on a "Connect with
    Facebook" button is Meta's, not ours.
+   Google's colours on a "Continue with Google" button are Google's
+   (`app/email/components/GoogleButton.tsx`).
 3. **Identity** — a per-person avatar hue derived from their email must be
    *stable*; deriving it from the theme defeats the thing it is for.
 4. **Our brand mark.** The Metorite comet keeps its own colour under every

@@ -176,11 +176,13 @@ async def test_a_failed_mailbox_read_shows_the_picker(monkeypatch) -> None:
 
 async def test_gmail_one_more_mailbox_adds_the_account_chooser(has_mailbox) -> None:
     q = _query(await oauth.oauth_authorize("gmail", user=_member(),
-                                           redirect_after=""))
+                                           redirect_after="",
+                                           disclosure=oauth.GMAIL_DISCLOSURE_VERSION))
     assert q["prompt"] == ["consent"]
     has_mailbox.answer = True
     q = _query(await oauth.oauth_authorize("gmail", user=_member(),
-                                           redirect_after=""))
+                                           redirect_after="",
+                                           disclosure=oauth.GMAIL_DISCLOSURE_VERSION))
     assert q["prompt"] == ["consent select_account"]
     assert "login_hint" not in q
 

@@ -221,6 +221,9 @@ const COLOR_EXCEPTIONS: Record<string, string> = {
   "app/settings/appearance/page.tsx":
     "the theme picker: accent presets and swatches, i.e. colour as this page's DATA",
   "app/whatsapp/connect/page.tsx": "Meta brand blue on a 'Connect with Facebook' button",
+  "app/email/components/GoogleButton.tsx":
+    "Google's own palette on a 'Continue with Google' button. Its branding rules fix the " +
+    "fill, the border and the text in each colour mode, so no accent may touch them",
   "components/MetoriteMark.tsx":
     "the Metorite comet's own fill, black or white, copied once from " +
     "brand/metorite-logo.svg and its -dark twin. A brand mark keeps its colours " +

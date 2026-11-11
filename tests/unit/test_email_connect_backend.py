@@ -263,6 +263,9 @@ async def test_the_runtime_environment_is_read_after_settings(
 
 async def _authorize(provider: str = "microsoft", **kw):
     kw.setdefault("redirect_after", "")
+    if provider == "gmail":
+        # EM-G11a item 6: a Gmail authorize needs the acknowledged version.
+        kw.setdefault("disclosure", oauth.GMAIL_DISCLOSURE_VERSION)
     resp = await oauth.oauth_authorize(provider, user=kw.pop("user", _member()), **kw)
     assert resp.status_code == 302
     url = urlparse(resp.headers["location"])

@@ -26,7 +26,15 @@ export interface ConnectProviderFacts {
   detail: string;
   /** A Lucide name. Never a brand colour (DESIGN_SYSTEM.md §1). */
   icon: string;
+  /**
+   * A company's own mark, unchanged, which draws in place of `icon`
+   * (EM-G11a item 8). `ProviderGlyph` is the one place that reads it.
+   */
+  mark?: string;
 }
+
+/** Google's "G", from Google's own download (`public/brand/google-g.svg`). */
+export const GOOGLE_G_MARK = "/brand/google-g.svg";
 
 export interface ConnectProvider extends ConnectProviderFacts {
   /** False draws the choice disabled, with `note` beside it. */
@@ -53,6 +61,7 @@ export const CONNECT_PROVIDERS: readonly ConnectProviderFacts[] = [
     label: "Google / Gmail",
     detail: "Google Workspace and Gmail",
     icon: "Mail",
+    mark: GOOGLE_G_MARK,
   },
 ];
 
@@ -154,16 +163,22 @@ export const RECONNECT_LABEL: Readonly<Record<ConnectProviderId, string>> = {
  * first connect sends it. A reconnect keeps the range of the mailbox
  * (D-EM-13), so the reconnect banner passes none. A value that is not a
  * whole number from 0 to 6 is not sent, and the gateway then uses 1.
+ *
+ * `disclosure` is the version the member acknowledged in `DisclosureStep`
+ * (EM-G11a item 6). The gateway refuses a Gmail connect without the current
+ * one. It is a record of a tick, never a credential.
  */
 export function connectQuery(
   redirectAfter: string,
   loginHint?: string | null,
   importMonths?: number | null,
+  disclosure?: string | null,
 ): string {
   const params = new URLSearchParams({ redirect_after: redirectAfter });
   const hint = (loginHint ?? "").trim();
   if (hint) params.set("login_hint", hint);
   if (isImportMonths(importMonths)) params.set("import_months", String(importMonths));
+  if (disclosure) params.set("disclosure", disclosure);
   return params.toString();
 }
 
@@ -201,10 +216,254 @@ export const IMPORT_RANGE_COPY = {
     "Metorite imports the mail that you received in this range. After that, it gets each new message as it arrives. " +
     `Metorite never imports mail older than ${MAX_IMPORT_MONTHS} months.`,
   back: "Back",
-  /** The button that starts the sign-in, for each provider. */
-  continueTo: (provider: ConnectProviderId) =>
-    provider === "microsoft" ? "Continue to Microsoft" : "Continue to Google",
+  /** The button that opens the disclosure step (EM-G11a item 1). */
+  next: "Continue",
 } as const;
+
+// ── The disclosure before the sign-in (EM-G11a, §12.3.13.4) ────────────────
+
+/**
+ * The version of `DISCLOSURE_COPY`. A change of the words changes this value.
+ *
+ * ⚠️ `GMAIL_DISCLOSURE_VERSION` in `transport/oauth.py` holds the same value.
+ * The gateway refuses any other version, so the two move in ONE change.
+ * Fence: `test_the_disclosure_versions_match`.
+ *
+ * ⚠️ This is a DRAFT, and it is live for each member. The Google submission
+ * waits for the owner's final words and a final version (Q-GM-7).
+ */
+export const DISCLOSURE_VERSION = "2026-11-draft";
+
+/**
+ * The version and the SHA-256 of `DISCLOSURE_COPY`, as `<version>:<hash>`.
+ *
+ * Change the words, and `disclosure-version-changes-with-the-words` fails
+ * until a new version and a new hash stand here. Write a new version. An old
+ * version with new words would record a tick for words the member never saw.
+ */
+export const DISCLOSURE_PIN =
+  "2026-11-draft:1b1699c869c4ddd8da1cfea902392147b89717b1368521a8a441597e3fdeaee3";
+
+/** The privacy page. The step opens it in a new tab. */
+export const PRIVACY_POLICY_URL = "https://metorite.com/privacy.html";
+
+/**
+ * Each company that gets mail text from an AI feature, in the order of the
+ * words. This is the live set on production (§12.3.13.4.1, measured
+ * 2026-11-02). Gemini is not here: a key sits on the box, but no tier binds it.
+ *
+ * ⚠️ A new name here is a new `DISCLOSURE_VERSION`. A tier that binds a new
+ * company needs this change first.
+ */
+export const DISCLOSURE_SUBPROCESSORS = ["TypeSafe", "AI/ML API", "DeepSeek"] as const;
+
+const SUBPROCESSOR_NAMES = `${DISCLOSURE_SUBPROCESSORS.slice(0, -1).join(", ")} and ${
+  DISCLOSURE_SUBPROCESSORS[DISCLOSURE_SUBPROCESSORS.length - 1]
+}`;
+
+export interface DisclosureSection {
+  heading: string;
+  body: string;
+}
+
+/** The words of the step for one provider. */
+export interface DisclosureWords {
+  title: string;
+  lead: string;
+  sections: readonly DisclosureSection[];
+  /** The label of the checkbox. */
+  agree: string;
+  /** The button that leaves for the provider. */
+  button: string;
+}
+
+/**
+ * The label of `auto_dispatch_emails` in `NotesSettingsModal.tsx`, in the words
+ * a member sees there. `connect.test.ts` reads that file, so the two cannot part.
+ */
+const NOTES_SEND_SETTING = "“Send committed emails automatically”";
+
+/** The two paragraphs that do not change with the provider. */
+const AI_FEATURES: DisclosureSection = {
+  heading: "AI features",
+  body:
+    "Metorite uses AI on new mail to decide which of your rules matches, to fill in what those rules ask " +
+    "for, and to find the threads that need your reply. AI also writes a draft reply when you ask for one " +
+    "or turn on automatic drafts, answers your questions about your mail, and writes the AI morning brief " +
+    "if you turn it on. Metorite learns your writing style from the mail you send and from how you edit AI drafts, " +
+    "and it stores what it learns. A draft reply stays a draft until you send it.",
+};
+
+const AI_PROCESSORS: DisclosureSection = {
+  heading: "Who processes your mail for AI",
+  body:
+    `To do this, Metorite sends your mail to these sub-processors: ${SUBPROCESSOR_NAMES}. ` +
+    "TypeSafe receives the parts of a message that a sorting decision needs, through AI/ML API. " +
+    "DeepSeek receives the text that each other AI feature works on, which can be mail you received, " +
+    "your drafts or mail you sent. " +
+    "DeepSeek processes that text in China under its own terms, and those terms let it use that text " +
+    "to train its models.",
+};
+
+/**
+ * The one copy of the disclosure (EM-G11a item 5). §12.3.13.4.1 mirrors it.
+ *
+ * Each sentence must be true for a live member today. The rule match and the
+ * thread status run with Auto-run off too. A rule saves a draft and never
+ * sends. The revoke skips a Google account that another Metorite row shares.
+ * ⚠️ One background send exists: `routes/notes/dispatch.py` sends from an
+ * Outlook mailbox with no click, and `auto_dispatch_emails` defaults to true.
+ * From Gmail it only drafts. So the two providers have different words there.
+ * That path uses the default mailbox of the member (`_default_email_account`),
+ * so the words hang on "this is your default mailbox". A mailbox beside another
+ * default gets none of it, and the other provider's words would be false here.
+ * The digest makes no model call of its own. Only the AI morning brief does.
+ *
+ * ⚠️ Do NOT add a promise about what a sub-processor does with mail. Metorite
+ * can state only what Metorite does, and the privacy policy of DeepSeek lets
+ * it train on what it receives. Task 33204727 moves Gmail text off direct
+ * DeepSeek, and that change is a new version.
+ *
+ * Plain data, so the hash of the pin is stable. Product copy, so
+ * `docs/style_ste.md` §1 does not bind it.
+ */
+export const DISCLOSURE_COPY: Readonly<Record<ConnectProviderId, DisclosureWords>> & {
+  readonly privacy: string;
+  readonly back: string;
+  readonly cancel: string;
+} = {
+  gmail: {
+    title: "Before you connect Gmail",
+    lead: "Metorite will ask Google for two permissions.",
+    sections: [
+      {
+        heading: "1. Read, send and organise your email",
+        body:
+          "Metorite reads your messages, with their headers and attachments, your labels and your drafts. " +
+          "It shows your mail in Metorite and keeps it in step with Gmail in both directions. " +
+          "It sends mail when you ask it to, and if you turn on the digest, it sends the digest from your " +
+          "mailbox to you on its schedule. It saves a draft when you ask for one, when a rule that you set " +
+          "says so, or when you turn on automatic drafts. It archives, labels and moves mail when you or " +
+          "your rules do.",
+      },
+      {
+        heading: "2. Manage your Gmail filters",
+        body:
+          "Metorite reads your Gmail filters and shows them on its rules screen. When you choose " +
+          "Auto-archive for a sender, or an unsubscribe does not work, Metorite creates a Gmail filter for " +
+          "that sender. It removes the filters it made when you change your mind or disconnect.",
+      },
+      {
+        heading: "After a meeting",
+        body:
+          "By default, if this is your default mailbox, Metorite saves each email that your meeting notes " +
+          `commit to as a draft here. To stop this, turn off ${NOTES_SEND_SETTING} in Note Taker settings.`,
+      },
+      AI_FEATURES,
+      AI_PROCESSORS,
+      {
+        heading: "What Metorite never does",
+        body:
+          "Metorite itself does not use your Gmail data for advertising, does not sell it, and does not " +
+          "use it to train a general AI model.",
+      },
+      {
+        heading: "Disconnect at any time",
+        body:
+          "Disconnect the mailbox in Metorite, and Metorite deletes its copy and removes its access at " +
+          "Google, unless the same Gmail account is connected elsewhere in Metorite. A task, a note or a " +
+          "chat message that you made from an email stays until you delete it. Backups hold a copy for up " +
+          "to 30 days. Your mail stays in Gmail.",
+      },
+    ],
+    agree: "I understand and agree that Metorite accesses my Gmail data as described above.",
+    button: "Continue with Google",
+  },
+  microsoft: {
+    title: "Before you connect Outlook",
+    lead: "Metorite will ask Microsoft for permission to use your mailbox.",
+    sections: [
+      {
+        heading: "1. Read, send and organise your email",
+        body:
+          "Metorite reads your messages, with their headers and attachments, your folders, your " +
+          "categories and your drafts. It shows your mail in Metorite and keeps it in step with Outlook " +
+          "in both directions. It sends mail when you ask it to, and if you turn on the digest, it sends " +
+          "the digest from your mailbox to you on its schedule. It saves a draft when you ask for one, when " +
+          "a rule that you set says so, or when you turn on automatic drafts. It archives, categorises and " +
+          "moves mail when you or your rules do.",
+      },
+      {
+        heading: "2. Manage your mailbox settings",
+        body:
+          "Metorite reads your Outlook rules and shows them on its rules screen, and it creates the " +
+          "categories that your rules name. When you choose Auto-archive for a sender, or an unsubscribe " +
+          "does not work, Metorite creates an Outlook rule for that sender. It removes the rules it made " +
+          "when you change your mind or disconnect.",
+      },
+      {
+        heading: "After a meeting",
+        body:
+          "By default, if this is your default mailbox, AI writes each email that your meeting notes commit " +
+          "to, and Metorite sends it from here with no further step from you, if it can find the recipient. " +
+          "If it cannot, it saves a draft instead. To stop this, turn off " +
+          `${NOTES_SEND_SETTING} in Note Taker settings.`,
+      },
+      AI_FEATURES,
+      AI_PROCESSORS,
+      {
+        heading: "What Metorite never does",
+        body:
+          "Metorite itself does not use your Outlook data for advertising, does not sell it, and does " +
+          "not use it to train a general AI model.",
+      },
+      {
+        heading: "Disconnect at any time",
+        body:
+          "Disconnect the mailbox in Metorite, and Metorite deletes its copy and its sign-in tokens. " +
+          "Microsoft keeps Metorite in the list of apps of your account until you remove it there. A task, " +
+          "a note or a chat message that you made from an email stays until you delete it. Backups hold a " +
+          "copy for up to 30 days. Your mail stays in Outlook.",
+      },
+    ],
+    agree: "I understand and agree that Metorite accesses my Outlook data as described above.",
+    button: "Continue to Microsoft",
+  },
+  privacy: "Read our privacy policy",
+  back: "Back",
+  cancel: "Cancel",
+};
+
+/** One acknowledgement for one action (`ackLatch`). */
+export interface AckLatch {
+  /** Runs `send` once, and only with the box ticked. */
+  fire: (agreed: boolean, send: () => void) => void;
+  /** Opens the latch again, for a page that the browser restored. */
+  reset: () => void;
+}
+
+/**
+ * Lets one click through, so one action writes one ack line (DESIGN_SYSTEM.md
+ * M3). A double click would start two navigations, and each one would reach
+ * the gateway.
+ *
+ * ⚠️ The latch must be synchronous. A React state read in the handler is stale
+ * for the second click of a double click. `DisclosureStep` keeps the state for
+ * the look of the button only.
+ */
+export function ackLatch(): AckLatch {
+  let spent = false;
+  return {
+    fire(agreed, send) {
+      if (!agreed || spent) return;
+      spent = true;
+      send();
+    },
+    reset() {
+      spent = false;
+    },
+  };
+}
 
 /**
  * Where the range step keeps the last range the member chose (fix round 1).
@@ -625,6 +884,9 @@ const RETRY_CODES = new Set([
   "email_fetch_failed",
   "account_save_failed",
   "gateway_unreachable",
+  // A tab from before a new version of the words (EM-G11a). The retry goes
+  // through the disclosure step, which sends the current version.
+  "disclosure_required",
 ]);
 
 /**
@@ -670,7 +932,7 @@ export function callbackView(params: {
       title: "You cancelled the connection",
       body:
         `${name} did not give Metorite access to your mailbox, so nothing was connected. ` +
-        "Try again when you are ready. Metorite reads and sends mail only as you tell it to.",
+        "Try again when you are ready.",
     };
   }
   // EM-G7 item 2: Google lets a member clear a permission on its consent
