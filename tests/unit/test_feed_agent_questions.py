@@ -208,24 +208,33 @@ async def test_a_long_question_and_many_options_are_clipped(world) -> None:
 
 async def test_a_new_newer_question_moves_the_state_fingerprint_not_only_the_content(world) -> None:
     """P1-b. ``state_fp`` hashes ``STATE_FACTS`` only. The card keys ``waiting_since``
-    on the NEWEST question, so two questions with the same oldest time and a newer
-    second one give a new ``state_fp``, and a dismissed card comes back."""
+    on the NEWEST question of the WHOLE list. The newest here is the 4th, which is
+    NOT among the 3 shown, so a build that reads the newest of the shown rows fails.
+
+    ⚠️ A stateless fingerprint cannot both bring a card back for a new question
+    and keep it hidden when the newest is answered. The set {Q1} would need two
+    fingerprints. The card follows ``agent_asks``: a new question wins, and a
+    dismissed card also returns when the newest question leaves the list."""
     from datetime import timedelta
 
     from gateway.routes.shell import state
 
-    world.pairs = [_pair(1)]
-    [one] = (await needs.REGISTRY["agent_questions"].run(_user())).signals()
-    newer = _pair(2)
-    newer[1].created_at = NOW + timedelta(hours=1)
-    newer[2].created_at = NOW + timedelta(hours=1)
-    world.pairs = [_pair(1), newer]
-    [two] = (await needs.REGISTRY["agent_questions"].run(_user())).signals()
-    assert one.facts["waiting_since"] != two.facts["waiting_since"]
-    assert state.state_fp("questions:mine", one.facts) != state.state_fp("questions:mine", two.facts)
+    three = [_pair(1), _pair(2), _pair(3)]
+    world.pairs = three
+    [before] = (await needs.REGISTRY["agent_questions"].run(_user())).signals()
+    newest = _pair(4)
+    newest[1].created_at = NOW + timedelta(hours=1)
+    newest[2].created_at = NOW + timedelta(hours=1)
+    world.pairs = [*three, newest]
+    [after] = (await needs.REGISTRY["agent_questions"].run(_user())).signals()
+    # The same 3 questions are shown. Only the hidden 4th is new.
+    assert before.facts["questions"] == after.facts["questions"]
+    assert before.facts["waiting_since"] != after.facts["waiting_since"]
+    assert after.facts["waiting_since"] == "2026-11-11T11:00:00+00:00"
+    assert state.state_fp("questions:mine", before.facts) != state.state_fp("questions:mine", after.facts)
     # The same list again keeps the fingerprint (no churn).
     [again] = (await needs.REGISTRY["agent_questions"].run(_user())).signals()
-    assert state.state_fp("questions:mine", two.facts) == state.state_fp("questions:mine", again.facts)
+    assert state.state_fp("questions:mine", after.facts) == state.state_fp("questions:mine", again.facts)
 
 
 def test_the_kind_has_a_reach_class() -> None:

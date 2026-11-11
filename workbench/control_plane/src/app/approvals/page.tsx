@@ -253,7 +253,7 @@ export default function ApprovalsPage() {
       <div className="min-h-0 flex-1 overflow-auto">
     <div className="mx-auto max-w-3xl px-4 py-6">
       {tabsPending(questions.on, questions.failed) && (
-        <div className="mb-4 h-8" aria-hidden="true" data-approval-tabs-reserved="" />
+        <div className="mb-4 h-7 glass:pointer-coarse:h-10" aria-hidden="true" data-approval-tabs-reserved="" />
       )}
       {tabs && (
         <ApprovalTabs active={shownTab ?? "actions"} questionCount={questions.count} onPick={setPicked} />
