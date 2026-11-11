@@ -1064,6 +1064,23 @@ def _question_fact(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _agent_questions_signal(rows: list[dict[str, Any]], total: int) -> Signal:
+    """The one card of the member's questions: the 3 oldest *rows* of the list,
+    and *total*, the whole "mine" count."""
+    shown = [_question_fact(r) for r in rows]
+    title = ("An agent question waits for you" if total == 1
+             else f"{total} agent questions wait for you")
+    asked = _iso(rows[0].get("asked_at"))
+    return Signal(
+        signal_id="questions:mine", app="projects", kind="agent_questions",
+        entity={"type": "questions", "id": "mine", "label": title}, title=title,
+        facts={"total": total, "questions": shown, "waiting_since": asked,
+               "request_ids": [q["activity_id"] for q in shown]},
+        href=QUESTIONS_HREF, acts=(link("answer", "Answer", QUESTIONS_HREF),),
+        at=asked,
+    )
+
+
 async def _agent_questions(user: UserContext) -> Found:
     from gateway.routes.projects import agent_questions as aq
     from gateway.routes.projects.filters import agent_questions_allowed
@@ -1072,21 +1089,7 @@ async def _agent_questions(user: UserContext) -> Found:
         raise needs.SourceAbsent("AGENT_QUESTIONS_ORGS does not hold the org")
     # The Projects app's own read: its session, its tenant and its visibility.
     rows, total_mine = await aq.read_mine(user, QUESTIONS_SHOWN)
-    signals: list[Signal] = []
-    if rows:
-        total = total_mine
-        shown = [_question_fact(r) for r in rows]
-        title = ("An agent question waits for you" if total == 1
-                 else f"{total} agent questions wait for you")
-        asked = _iso(rows[0].get("asked_at"))
-        signals.append(Signal(
-            signal_id="questions:mine", app="projects", kind="agent_questions",
-            entity={"type": "questions", "id": "mine", "label": title}, title=title,
-            facts={"total": total, "questions": shown, "waiting_since": asked,
-                   "request_ids": [q["activity_id"] for q in shown]},
-            href=QUESTIONS_HREF, acts=(link("answer", "Answer", QUESTIONS_HREF),),
-            at=asked,
-        ))
+    signals = [_agent_questions_signal(rows, total_mine)] if rows else []
     return Found([], total_mine, capped=False, signals=lambda: signals)
 
 
