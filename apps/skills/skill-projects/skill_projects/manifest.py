@@ -1746,7 +1746,6 @@ UI_ACTIONS: dict[str, str] = {
     # ── projectsApi: the tree and the roll-ups ───────────────────────────
     "projectsApi.tree": "projects_tree",
     "projectsApi.summary": "project_summary",
-    "attentionApi.mine": "needs_attention",
     "projectsApi.portfolio": "project_summary",
     "projectsApi.createProject": "create_project",
     "projectsApi.patchProject": "update_project",
@@ -1892,10 +1891,6 @@ UI_ACTIONS: dict[str, str] = {
 #: exemption only where the route the method calls is class X. Where a tool
 #: reaches the route, the method names the tool in ``UI_ACTIONS``.
 UI_EXEMPT: dict[str, str] = {
-    "projectsApi.mySummary": (
-        "WS-64 OP-11: the counts and Overview of My tasks, from the mine rule. "
-        "The chat reads the same set with my_work and list_tasks."
-    ),
     "agentRunsApi.archiveApproval": (
         "The run's member answers an agent's request on the task card only "
         "(EA3-40, D-OP-13). The chat lists the request and links the card."
