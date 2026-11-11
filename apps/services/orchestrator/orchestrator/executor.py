@@ -3755,7 +3755,7 @@ def _custom_apps_root() -> Path:
 
 
 #: The folders of the App Workshop apps of one organization. The explicit
-#: ``organization_id`` filter holds also on an unbound session (the flag OFF).
+#: ``organization_id`` filter holds also for a role that bypasses RLS.
 #: A Studio package (``format = 'manifest'``) has no folder.
 _ORG_APP_FOLDERS_SQL = (
     "SELECT workspace_path FROM apps "
@@ -3773,19 +3773,20 @@ def _app_workspace_of_org(resolved: Path, org: str | None) -> bool:
     the folder of a new app of org B. A path check under the root is not
     enough. The run's org must own an ``apps`` row whose folder holds the path.
 
-    It fails closed: no org, no opener, a read error or no matching row
-    answers False. *org* comes from the run binding, never from input (R5).
+    It fails closed: no org, a read error or no matching row answers False.
+    *org* comes from the run binding, never from input (R5). The read always
+    binds *org* (``acb_graph.tenant_session``), as the gateway's twin
+    ``workspace._app_workspace_for`` does, so it holds with the
+    ``ACB_GRAPH_TENANT_BIND`` flag OFF too.
     Fence: ``tests/unit/test_app_delete_workspace_r8.py``.
     """
     if not org:
         return False
-    opener = _opener_for_org(org)
-    if opener is None:
-        return False
     try:
+        from acb_graph import tenant_session
         from sqlalchemy import text
 
-        with opener() as s:
+        with tenant_session(str(org)) as s:
             rows = s.execute(text(_ORG_APP_FOLDERS_SQL), {"org": str(org)}).fetchall()
     except Exception as exc:
         _log.warning("executor.app_workspace_lookup_failed", error=str(exc)[:200])

@@ -36,7 +36,8 @@ a. The hard delete clears the folder of each chat of the org that points into
 b. A chat of org A whose path names the folder that org B took never runs
    there. The executor falls back, and the broker refuses the mount. A chat
    of org B on its own folder still runs there.
-c. The owner check filters by org also on a session that RLS does not bind.
+c. The owner check answers for the run's org only, with the
+   ``ACB_GRAPH_TENANT_BIND`` flag OFF, also for a role that bypasses RLS.
 
 **The mutations (R7).**
 
@@ -46,8 +47,8 @@ c. The owner check filters by org also on a session that RLS does not bind.
   clause. Test b goes red.
 * M3. ``_mount_source_for``: drop the ``_app_dir_of_org`` check. Test b goes
   red.
-* M4. ``_ORG_APP_FOLDERS_SQL``: drop the ``organization_id`` filter. Test c
-  goes red.
+* M4. ``_ORG_APP_FOLDERS_SQL``: drop the ``organization_id`` filter. The
+  superuser case of test c goes red.
 """
 
 from __future__ import annotations
@@ -253,21 +254,23 @@ def test_r8_a_stale_chat_never_runs_in_the_folder_that_another_org_took(world) -
         write=True) == folder
 
 
-# ── c. The org filter holds on a session that RLS does not bind ──────────
+# ── c. The org filter holds for a role that RLS does not bind ────────────
 
 
-def test_r8_the_owner_check_filters_by_org_on_an_unbound_session(
-        world, monkeypatch: pytest.MonkeyPatch) -> None:
-    """With ``ACB_GRAPH_TENANT_BIND`` OFF the executor opens the unbound
-    ``get_session``. A role that bypasses RLS then sees every org. The
-    explicit ``organization_id`` filter still answers for the run's org only."""
+@pytest.mark.parametrize("role", ["app", "superuser"])
+def test_r8_the_owner_check_answers_for_the_run_org_only(
+        world, monkeypatch: pytest.MonkeyPatch, role: str) -> None:
+    """The check holds with ``ACB_GRAPH_TENANT_BIND`` OFF. A role that
+    bypasses RLS sees every org, and the explicit ``organization_id`` filter
+    still answers for the run's org only."""
     from orchestrator import executor
 
     a, b = world.p.org_a, world.p.org_b
     mine = _create(world, b, f"Baz {TAG}", CAT)
     folder = (world.root / mine.slug).resolve()
-    admin = sessionmaker(bind=world.p.admin_engine, expire_on_commit=False, future=True)
-    monkeypatch.setattr(graph_db, "_session_factory", lambda: admin)
+    if role == "superuser":
+        admin = sessionmaker(bind=world.p.admin_engine, expire_on_commit=False, future=True)
+        monkeypatch.setattr(graph_db, "_session_factory", lambda: admin)
     monkeypatch.delenv("ACB_GRAPH_TENANT_BIND")
 
     assert executor._app_workspace_of_org(folder, b) is True
