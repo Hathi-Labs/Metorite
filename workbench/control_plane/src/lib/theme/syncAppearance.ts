@@ -39,8 +39,12 @@
  *    sends the browser copy only when the mark is newer than the server
  *    `updated_at`. Otherwise it applies the server copy and clears the mark.
  *    So a failed write, or a tab that closes inside the 500 ms, never lets an
- *    older server copy replace the last choice, and an old choice never
- *    replaces a newer copy of another device (last write wins).
+ *    older server copy replace the last choice, and an old choice does not
+ *    replace a newer copy of another device (last write wins).
+ *    The limit: the mark is the browser clock, and `updated_at` is the server
+ *    clock. When the two clocks differ, the wrong side can win. With clocks
+ *    that NTP keeps in step, the window is a few seconds. A mark exists only
+ *    after a failed write or a tab that closed inside the 500 ms.
  * 8. Only one write is out at a time. A change while a write is out sends
  *    the newest record once, when the answer comes. So the server ends on
  *    the newest change.
