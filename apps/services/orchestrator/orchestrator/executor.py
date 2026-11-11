@@ -2036,10 +2036,13 @@ def _log_request_tools_view(agents: list[Any], agent_name: str) -> list[Any]:
         if not isinstance(agents[0], Agent):
             return agents
         from acb_skills.tool_guard import LogRequestToolsProvider
+        from acb_skills.unknown_tool import UnknownToolProvider
 
         from orchestrator._native_run_context import agent_with_providers
 
-        agents[0] = agent_with_providers(agents[0], [LogRequestToolsProvider(agent_name)])
+        # HRD-1: the answer to an unknown tool name rides in the same view.
+        agents[0] = agent_with_providers(
+            agents[0], [LogRequestToolsProvider(agent_name), UnknownToolProvider()])
     except Exception as exc:  # a log never costs the turn
         _log.warning("executor.request_tools_log_off", error_type=type(exc).__name__)
     return agents
