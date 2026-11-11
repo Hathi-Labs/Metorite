@@ -1226,7 +1226,8 @@ class Tool:
     #: PLACE of its write to :attr:`route`, for some inputs. An input may
     #: fill a parameter of one of them (§9.5 rule 4), and each pair is in
     #: ``MCP_WRITE_ROUTES``. Only ``update_task`` has one: the move of
-    #: ``parent_task_id``.
+    #: ``parent_task_id``. MCP-P1b-2: ``app_write`` sends the ask in place of
+    #: the write of an op that waits for the member.
     alt_writes: tuple[tuple[str, str], ...] = ()
     #: IMG-3. Each GET route of :attr:`routes`, other than :attr:`route`,
     #: whose path parameters an input fills (§9.5 rule 4). Only
@@ -10501,6 +10502,9 @@ APP_WRITE = Tool(
     door=True,
     app_scope="write",
     timeout_s=APP_WRITE_TIMEOUT_S,
+    # MCP-P1b-2: for an op that waits for the member, the ask goes out in
+    # place of the write of the op. The read of the wait is not a write.
+    alt_writes=(agent_oauth.REQUEST_ASK_ROUTE,),
 )
 
 
@@ -10782,6 +10786,7 @@ __all__ = [
     "APP_READ",
     "APP_WRITE",
     "APP_WRITE_ANNOTATIONS",
+    "APP_WRITE_TIMEOUT_S",
     "ARCHIVE_REQUEST_ROUTE",
     "ASK_ON_TASK",
     "ASSIGNEES_ROUTE",
@@ -10967,6 +10972,8 @@ __all__ = [
     "REMOVE_TASK_LINK",
     "REPORT_CHECK",
     "REPORT_CHECK_KEYS",
+    "REQUEST_ASK_ROUTE",
+    "REQUEST_READ_ROUTE",
     "REQUEST_TASK_ARCHIVE",
     "RUN_ACTIVITY_KEYS",
     "RUN_KEYS",
@@ -10986,6 +10993,8 @@ __all__ = [
     "SUBTASK_NOT_BELOW",
     "SUBTASK_WORDS",
     "TAG_KEYS",
+    "TEXT_APPROVAL_MISMATCH",
+    "TEXT_APPROVAL_USED",
     "TEXT_APPS_OFF",
     "TEXT_APP_OFF",
     "TEXT_ARCHIVE_CONFLICT",
@@ -11091,6 +11100,12 @@ __all__ = [
     "TEXT_REF_BAD_URL",
     "TEXT_REF_RETRY",
     "TEXT_RELEASE_FORBIDDEN",
+    "TEXT_REQUEST_OTHER_APP",
+    "TEXT_REQUEST_SECRET",
+    "TEXT_REQUEST_SPENT",
+    "TEXT_REQUEST_STALE",
+    "TEXT_REQUEST_TOO_LARGE",
+    "TEXT_REQUEST_UNSHOWABLE",
     "TEXT_RUNS_OFF",
     "TEXT_RUN_CONFLICT",
     "TEXT_RUN_NOT_FOUND",
@@ -11103,6 +11118,7 @@ __all__ = [
     "TEXT_TASK_HELD_SAME_CLIENT",
     "TEXT_TASK_NOT_FOUND",
     "TEXT_TOOLS_APP",
+    "TEXT_TOO_MANY_REQUESTS",
     "TEXT_TREE_RACE",
     "TEXT_TWO_FORMS",
     "TEXT_UNAVAILABLE",
@@ -11131,6 +11147,7 @@ __all__ = [
     "UPDATE_TASK",
     "UPDATE_TASKS",
     "WAITING_REASONS",
+    "WAITING_STATES",
     "WHOAMI",
     "WHOAMI_KEYS",
     "WHY_NOT_TEXTS",
@@ -11176,17 +11193,4 @@ __all__ = [
     "untrusted",
     "updated_comment",
     "write_limit_line",
-    "TEXT_APPROVAL_MISMATCH",
-    "TEXT_APPROVAL_USED",
-    "TEXT_TOO_MANY_REQUESTS",
-    "TEXT_REQUEST_TOO_LARGE",
-    "TEXT_REQUEST_SECRET",
-    "TEXT_REQUEST_UNSHOWABLE",
-    "TEXT_REQUEST_OTHER_APP",
-    "TEXT_REQUEST_SPENT",
-    "TEXT_REQUEST_STALE",
-    "WAITING_STATES",
-    "REQUEST_ASK_ROUTE",
-    "REQUEST_READ_ROUTE",
-    "APP_WRITE_TIMEOUT_S",
 ]
