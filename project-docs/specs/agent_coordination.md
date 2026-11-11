@@ -12,7 +12,7 @@
 
 **P9 (§3.10, §5.10, D183) was planned on 2026-11-06.** **SW-63 is built. SW-53 (GitHub per organization) is built and dark, 2026-11-07. Its backfill is not built.**
 
-**1045a (the `waiting` state, migration 399) is built, 2026-11-06. It also carries SW-4 item 2. The owner's change of 2026-11-07 is built: own sub-agents keep a run working, and `agent` is a wait on another agent. 1045b and 1045c are open.**
+**1045a (the `waiting` state, migration 403) is built, 2026-11-06. It also carries SW-4 item 2. The owner's change of 2026-11-07 is built: own sub-agents keep a run working, and `agent` is a wait on another agent. 1045b and 1045c are open.**
 
 This spec gates every SW slice (D135.4). The decisions are **D140** in `work_plan.md` §3.
 
@@ -881,7 +881,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### 1045a · The `waiting` state
 
-- **Built** 2026-11-06, migration 399, live under `agent_runs_enabled`. The build also caps a wait at one lease when the lease is shorter than 2 hours (SW-4 item 2, `filters.agent_run_waiting_cap_min`). The task row carries `agent_waiting`, so the card says "waiting on CI".
+- **Built** 2026-11-06, migration 403, live under `agent_runs_enabled`. The build also caps a wait at one lease when the lease is shorter than 2 hours (SW-4 item 2, `filters.agent_run_waiting_cap_min`). The task row carries `agent_waiting`, so the card says "waiting on CI".
 - **Scope.**
   1. `post_agent_activity` takes an optional `waiting: {on, until_minutes, note}`. `on` is `ci`, `review`, `deploy`, `member` or `agent`. `agent` is another (external) agent, and the card says "another agent". No value names the agent's own sub-agents. While they work, the run reads `working`, so the gateway refuses `subagents` with 422 (owner, 2026-11-07). `until_minutes` is 1 to 120. 1045a ships this fixed cap of 120 minutes. SW-4 later lowers the cap to the lease when the lease is shorter. `note` holds at most 200 characters.
   2. Migration, expand only: `pm_agent_runs.waiting_on TEXT NULL`, with a CHECK of the five values, and `waiting_until TIMESTAMPTZ NULL`.
