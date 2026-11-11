@@ -137,12 +137,11 @@ _INSTRUCTIONS = (
 #: ``create_task``, so it shows only where the protocol shows: on a write
 #: connection. Fence: ``test_mcp_edge_prompts.py`` ``TestAskedWork``.
 _ASKED_WORK = (
-    " A person may ask you in chat for work that changes code, data or a"
-    " server. That work needs a task too. Before the first edit, find it with"
-    " search_tasks, or make it with create_task. Then claim it and follow"
-    " steps 4 to 6. A session that only reads or answers needs no task."
-    " Before you release a task, comment what is done, what is left and the"
-    " next step."
+    " Work that a person asks for in chat needs a task too. Before the first"
+    " edit, find it with search_tasks, or make it with create_task. Then claim"
+    " it and follow steps 4 to 6. A session that only reads or answers needs"
+    " no task. Before you release a task, comment what is done, what is left"
+    " and the next step."
 )
 
 #: The routine of §12 (EA-6e, EA3-39). It shows on the same test as the
@@ -158,10 +157,8 @@ _ROUTINE_INSTRUCTIONS = (
     " says review. Move the task to done only after the merge, and not when"
     " GitHub already did. See prompt work_on_task."
     # MCP-G1. The tools of the project tree and of a move between projects.
-    " To make or change a space, project or subproject, call create_project or"
-    " update_project. To move tasks to another project, call"
-    " preview_move_tasks, show the person what the move drops, and then call"
-    " move_tasks with its preview_id."
+    " For a project, call create_project or update_project. To move tasks,"
+    " call preview_move_tasks, show the person what it drops, then move_tasks."
 )
 
 #: The protocol of EA-15c (§12.4): one order of steps for each session. The
@@ -287,11 +284,17 @@ def instructions(scopes: Iterable[str] = ()) -> str:
     protocol = _PROTOCOL_RUNS_ON.replace("{terminals}", _terminals()).replace(
         "{answer}", prompts.answer_pointer()) if runs \
         else _PROTOCOL_RUNS_OFF
-    text += protocol + _ASKED_WORK + _ROUTINE_INSTRUCTIONS + prompts.PR_RULE
+    # MCP-G16 (task 1803). Claude Code cuts the instructions at 4096
+    # characters. The safety rules of a run (the held task, the heartbeat,
+    # release_task, record_outside_decision, the stop) come BEFORE the routine
+    # and the PR rule, so the cut falls on the routine. Fence:
+    # ``test_mcp_edge_prompts.py`` ``TestTheSafetyRulesBeforeTheCut``.
+    text += protocol + _ASKED_WORK
     if runs:
         text += _RUN_INSTRUCTIONS
         if agent_oauth.answer_change_enabled():
             text += prompts.ANSWER_RULE
+    text += _ROUTINE_INSTRUCTIONS + prompts.PR_RULE
     return text + _IMAGE_INSTRUCTIONS
 
 #: The methods the route accepts, so that check 3 answers and not the router.

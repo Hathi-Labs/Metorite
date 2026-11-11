@@ -424,3 +424,71 @@ async def get_version(db: Any, member: str, skill_id: str,
     row = (await db.execute(text(_GET_VERSION_SQL), {
         "m": _member(member), "id": _skill_id(skill_id), "v": version})).first()
     return None if row is None else _version(row)
+
+
+# ── The reads of the tool packs (WS-STU F3) ─────────────────────────────────
+#
+# ``orchestrator._tool_injection._turn_with_skills`` is the one caller. It
+# opens ``tenant_session()`` on the bound tenant of the run, so RLS binds each
+# statement, and each statement filters on ``_BOUND_ORG`` too. The member is
+# the verified member of the run, never request input (R5).
+#
+# **The rule of a loadable skill.** The state is ``published``, the skill has
+# a version, and the member owns it OR its visibility is ``org``. A skill of
+# visibility ``group`` loads for its owner only: J2 adds the group and its
+# members, so until then a group share reaches no other member (it fails
+# closed). A draft, a paused and an archived skill never load. The fence is
+# ``tests/unit/test_skill_packs_r8.py``.
+
+#: The most skill heads that one turn reads. The match runs on the name, so
+#: the head read takes no body.
+MAX_LOADABLE = 200
+
+_LOADABLE_WHERE = (
+    f"s.organization_id = {_BOUND_ORG} AND s.state = 'published' "
+    "AND s.current_version IS NOT NULL "
+    "AND (s.owner_email = :m OR s.visibility = 'org')"
+)
+
+_LOADABLE_SQL = (
+    "SELECT s.id::text, s.name, s.slug, s.description, s.owner_email, s.visibility, "
+    "s.state, s.current_version, s.created_at, s.updated_at FROM studio_skills s "
+    f"WHERE {_LOADABLE_WHERE} ORDER BY s.id LIMIT :lim"
+)
+
+#: The current version of each loadable skill in *ids*. The statement checks
+#: the rule again, so a skill that left ``published`` after the head read
+#: gives no row.
+_LOADABLE_VERSIONS_SQL = (
+    "SELECT s.id::text, s.name, s.slug, s.description, s.owner_email, s.visibility, "
+    "s.state, s.current_version, s.created_at, s.updated_at, "
+    "v.skill_id::text, v.version, v.body, v.content_hash, v.created_by, v.created_at "
+    "FROM studio_skills s JOIN studio_skill_versions v "
+    "ON v.organization_id = s.organization_id AND v.skill_id = s.id "
+    "AND v.version = s.current_version "
+    f"WHERE {_LOADABLE_WHERE} AND v.organization_id = {_BOUND_ORG} "
+    "AND s.id = ANY(CAST(:ids AS uuid[])) ORDER BY s.id"
+)
+
+
+async def list_loadable(db: Any, member: str) -> list[Skill]:
+    """The skills that a turn of *member* may load, in the order of their id.
+
+    A published skill with a version, that *member* owns or that the org
+    shares (``visibility = 'org'``). At most :data:`MAX_LOADABLE`. No body."""
+    rows = (await db.execute(text(_LOADABLE_SQL), {
+        "m": _member(member), "lim": MAX_LOADABLE})).all()
+    return [_skill(r) for r in rows]
+
+
+async def loadable_versions(db: Any, member: str,
+                            skill_ids: list[str]) -> list[tuple[Skill, Version]]:
+    """The current version of each skill of *skill_ids* that *member* may
+    load, with its skill, in the order of the id. A skill that is no longer
+    loadable gives no pair. An id that is no UUID raises before the database."""
+    ids = [_skill_id(i) for i in skill_ids]
+    if not ids:
+        return []
+    rows = (await db.execute(text(_LOADABLE_VERSIONS_SQL), {
+        "m": _member(member), "ids": ids})).all()
+    return [(_skill(r[:10]), _version(r[10:])) for r in rows]
