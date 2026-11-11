@@ -2690,6 +2690,8 @@ _KIND_TOOLS: dict[str, tuple[str, ...]] = {
     "reminder.update": ("update_reminder", "reschedule_reminder", "resolve_reminder",
                         "reopen_reminder"),
     "decision": ("answer_decision",),
+    # WS-55 EA-18d: the member answers one agent question.
+    "agent.question": ("answer_agent_question",),
     "project.create": ("create_project", "propose_plan", "convert_folder_to_project",
                        "create_project_from_template"),
     "project.update": ("update_project", "edit_project", "move_project", "archive_project",
