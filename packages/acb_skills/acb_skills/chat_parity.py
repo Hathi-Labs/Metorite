@@ -363,7 +363,7 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "POST /api/studio/packages": "studio_save",
     # STU-G3c: the IDE saves a draft with the PUT that studio_save sends (based_on in the query).
     "PUT /api/studio/packages/{}/draft": "studio_save",
-    # STU-G5: the IDE publishes with the POST that studio_publish sends (notes and based_on in the body).
+    # STU-G5: the IDE publishes with the POST that studio_publish sends (notes, based_on and origin in the body).
     "POST /api/studio/packages/{}/versions": "studio_publish",
     "POST /api/studio/apps/{}/actions/{}": "studio_record_list",
     "GET /api/studio/skills": "studio_skill_list",
@@ -630,6 +630,24 @@ EXEMPT: dict[str, tuple[str, str]] = {
     "POST /api/agent-access/authorize/check": (
         "oauth",
         "The consent screen of an outside agent (MCP OAuth). The member answers it in the browser.",
+    ),
+    # EA-19d (D-EA-5, spec §10.9): the box token routes. The page shows the token once, so a
+    # secret never goes through the chat. The routes are person-only: an agent cannot mint.
+    "POST /api/agent-access/box-tokens": (
+        "secret",
+        "Makes a box token and shows it once. A secret never goes through the chat, and an agent may not mint.",
+    ),
+    "POST /api/agent-access/box-tokens/check": (
+        "secret",
+        "Asks for the one-time ticket of a box token. The token is a secret, and the route is person-only.",
+    ),
+    "POST /api/agent-access/box-tokens/revoke-all": (
+        "secret",
+        "Revokes every box token of the organization. An admin acts on a box token only in the page.",
+    ),
+    "POST /api/agent-access/box-tokens/{}/rotate": (
+        "secret",
+        "Gives a box a new token and shows it once. A secret never goes through the chat.",
     ),
     "POST /api/integrations/configure": (
         "secret",
@@ -1012,7 +1030,7 @@ DEBT: dict[str, str] = {
 #: The most debt that each app may carry. A count may go down, never up.
 #: Lower the number in the change that pays the debt.
 DEBT_CEILING: dict[str, int] = {
-    "projects": 8,  # F3: UI_PLANNED, and UI_ACTIONS rows whose tool is PLANNED. SW-43a (2026-11-05) added agentRunsApi.withdrawAnswer, paid by the chat tool of SW-43c (task 1802).
+    "projects": 9,  # F3: UI_PLANNED, and UI_ACTIONS rows whose tool is PLANNED. SW-43a (2026-11-05) added agentRunsApi.withdrawAnswer, and SW-43b (2026-11-11) added agentRunsApi.replaceAnswer. The chat tools of SW-43c (task 1802) pay both.
     "tasks": 9,
     "calendar": 1,
     "email": 14,  # SG-1 (task 2177, 2026-11-07) added the signature image upload, paid by SG-6 (task 2182).

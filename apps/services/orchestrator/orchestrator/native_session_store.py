@@ -149,10 +149,40 @@ class SessionHistoryProvider(InMemoryHistoryProvider):
     has no id when a stored message has the same role and content. A member
     who answers "yes" on two turns would lose the second answer. A run here
     sends only its own new turn, so a plain append is exact.
+
+    It also stores each steer turn of the run (task 2494), see
+    :meth:`after_run`.
     """
 
     def __init__(self) -> None:
         super().__init__(HISTORY_SOURCE_ID)
+
+    async def after_run(
+        self,
+        *,
+        agent: Any,
+        session: AgentSession,
+        context: Any,
+        state: dict[str, Any],
+    ) -> None:
+        """Store the run as MAF does, with each steer turn in its place.
+
+        A steer reaches the model as a user turn of one model request
+        (``steer.SteerTurns``). MAF stores the input and the response of the
+        run, and neither holds that turn. So the save asks
+        ``steer.with_steer_turns`` to put each one back right after its tool
+        result. The next turn then reads the member's words as their own turn.
+        A run with no steer stores exactly what MAF 1.19 stores.
+        """
+        from orchestrator.steer import with_steer_turns
+
+        messages: list[Message] = [*self._get_context_messages_to_store(context)]
+        if self.store_inputs:
+            messages.extend(context.input_messages)
+        if self.store_outputs and context.response and context.response.messages:
+            messages.extend(with_steer_turns(context, context.response.messages))
+        if messages:
+            await self.save_messages(context.session_id, messages, state=state)
 
     async def save_messages(
         self,

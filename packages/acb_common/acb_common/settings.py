@@ -601,6 +601,15 @@ class Settings(BaseSettings):
     # send mail or WhatsApp and spend credits, so a flip is the owner's. Fence:
     # tests/unit/test_workflows_unattended_flag.py.
     workflow_unattended_orgs: str = ""
+    # STU-J1-3 (ai_studio.md section 14 J1-3): the orgs where a workflow write
+    # needs `feature:studio` on top of `feature:workflows`. A write is a
+    # create, a duplicate, an edit, a delete, a Copilot turn or a test run of
+    # the draft. `*` is every org. Empty, the default, keeps the rule before
+    # J1-3. The one reader is
+    # `gateway.routes.workflows.core.author_gate_on`. A flip is gate
+    # `enforcement-flip`, and a SIGHUP reload applies it. Fences:
+    # tests/unit/test_workflows_author_gate.py, test_workflows_author_gate_r8.py.
+    workflow_studio_gate_orgs: str = ""
 
     reach_enabled: bool = False
     reach_orgs: str = ""
@@ -700,6 +709,15 @@ class Settings(BaseSettings):
     # `gateway.package_host.flags.package_host_allowed`. Spec:
     # package_host.md section 10.
     package_host_orgs: str = ""
+    # WS-PKG PKG-10b: PACKAGE_EXPIRY_ENABLED starts the daily expiry loop of
+    # package_host.md section 6.2. Default OFF. While it is false, the gateway
+    # starts no loop task, and a tick reads nothing. When it is on, the tick
+    # archives each due install, and it DELETES each install that stayed 30
+    # days in the archive. The delete is one-way. Reader:
+    # `gateway.package_host.flags.package_expiry_enabled`.
+    # 🔴 OWNER-GATE: a flip on production is the owner's act only (gate
+    # `enforcement-flip`), because the tick deletes member data.
+    package_expiry_enabled: bool = False
     vapid_public_key: str = ""
     vapid_private_key: str = ""
     vapid_subject: str = ""
@@ -962,6 +980,17 @@ class Settings(BaseSettings):
     # a change (`gateway/flag_reload.py`). Fence:
     # tests/unit/test_agent_guidance.py.
     agent_guidance_orgs: str = ""
+    # ── The policy store of agent work (WS-MCP SW-94, agent_coordination.md
+    #    §3.11.5 and SW-94) ───────────────────────────────────────────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, `POST /agent-policies` answers 404, and `policy_for`
+    # and `policy_for_actor` give the shipped default under the master flag of
+    # each key. The one reader is
+    # `gateway.routes.agent_policies.policies_allowed`. A SIGHUP reload applies
+    # a change (`gateway/flag_reload.py`). Fence:
+    # tests/unit/test_agent_policies_r8.py.
+    agent_policy_orgs: str = ""
     # SW-68a (agent_coordination.md SW-68): the organizations where `my_work`
     # (MCP and chat) ranks the tasks under an epic by the plan engine. Comma
     # list of organization ids, or `*`. Empty: off, and `my_work` keeps its old
@@ -2297,7 +2326,7 @@ class Settings(BaseSettings):
     # the edge lists the playbook prompts (`set_up_agent_team`, `plan_slices`,
     # `write_brief`, `review_my_fleet`, `run_retro`). The same shape as
     # `agent_access_orgs`: ids with a comma between them, or `*`. Empty, the
-    # default, keeps them dark. Only the edge reads it, at each call, through
+    # default, keeps them dark. The edge and the gateway read it, at each call, through
     # `acb_auth.agent_oauth.playbook_allowed`. 🔴 A change on a box is gate
     # `enforcement-flip`.
     playbook_orgs: str = ""

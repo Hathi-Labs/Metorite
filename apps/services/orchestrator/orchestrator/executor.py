@@ -3754,6 +3754,60 @@ def _custom_apps_root() -> Path:
     return (Path(settings.agents_clone_dir).expanduser() / "custom_apps").resolve()
 
 
+#: The folders of the App Workshop apps of one organization. The explicit
+#: ``organization_id`` filter holds also for a role that bypasses RLS.
+#: A Studio package (``format = 'manifest'``) has no folder.
+_ORG_APP_FOLDERS_SQL = (
+    "SELECT workspace_path FROM apps "
+    "WHERE organization_id = CAST(:org AS uuid) "
+    "AND format IS DISTINCT FROM 'manifest' "
+    "AND workspace_path IS NOT NULL AND btrim(workspace_path) <> ''"
+)
+
+
+def _app_workspace_of_org(resolved: Path, org: str | None) -> bool:
+    """True when *resolved* lies in the folder of an app of *org* (task 2462).
+
+    The slug of an app is unique over all orgs, and each app folder is
+    ``apps_root()/<slug>``. So a folder of a deleted app of org A can become
+    the folder of a new app of org B. A path check under the root is not
+    enough. The run's org must own an ``apps`` row whose folder holds the path.
+
+    It fails closed: no org, a read error or no matching row answers False.
+    *org* comes from the run binding, never from input (R5). The read always
+    binds *org* (``acb_graph.tenant_session``), as the gateway's twin
+    ``workspace._app_workspace_for`` does, so it holds with the
+    ``ACB_GRAPH_TENANT_BIND`` flag OFF too.
+    Fence: ``tests/unit/test_app_delete_workspace_r8.py``.
+    """
+    if not org:
+        return False
+    try:
+        from acb_graph import tenant_session
+        from sqlalchemy import text
+
+        with tenant_session(str(org)) as s:
+            rows = s.execute(text(_ORG_APP_FOLDERS_SQL), {"org": str(org)}).fetchall()
+    except Exception as exc:
+        _log.warning("executor.app_workspace_lookup_failed", error=str(exc)[:200])
+        return False
+    try:
+        root = _custom_apps_root()
+    except OSError:
+        return False
+    for row in rows:
+        try:
+            folder = Path(str(row.workspace_path)).expanduser().resolve(strict=True)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        # A corrupt row that names the root itself must never cover every app.
+        if folder == root or not folder.is_relative_to(root):
+            continue
+        if resolved == folder or resolved.is_relative_to(folder):
+            return True
+    return False
+
+
 def _session_workspace_override(
     thread_id: str | None, agent_config: dict[str, Any]
 ) -> str | None:
@@ -3767,9 +3821,14 @@ def _session_workspace_override(
     Fail-closed containment: the stored path must resolve to an existing
     directory inside the Custom Apps root — anything else (traversal,
     symlink escape, stale path) falls back to the agent clone.
+
+    Task 2462: the folder must also be the folder of an app of the run's own
+    org (:func:`_app_workspace_of_org`). A stale path to a slug that another
+    org took after a delete falls back the same way.
     """
     if not thread_id or not agent_config.get("allow_session_workspace"):
         return None
+    run_org = _RUN_ORG.get(thread_id)
     workspace_path = ""
     try:
         from sqlalchemy import text
@@ -3792,7 +3851,10 @@ def _session_workspace_override(
     try:
         resolved = Path(workspace_path).expanduser().resolve(strict=True)
         root = _custom_apps_root()
-        if resolved.is_dir() and resolved != root and resolved.is_relative_to(root):
+        if (
+            resolved.is_dir() and resolved != root and resolved.is_relative_to(root)
+            and _app_workspace_of_org(resolved, run_org)
+        ):
             return str(resolved)
     except OSError:
         pass
@@ -8892,23 +8954,16 @@ async def run_agent_stream(
                         })
                         raise
                     else:
-                        # Mid-run steer (§4.6): a tool boundary is where guidance
-                        # that arrived during the turn enters the model's
-                        # context. No pending steer => `result` is returned
-                        # unchanged, so this path is a dict lookup for every
-                        # ordinary call.
+                        # Task 2494: a mid-run steer never joins a tool
+                        # result. The model reads it as a user turn of its
+                        # next call (`steer.SteerTurns`).
                         from acb_common.tool_refusals import (  # noqa: PLC0415
                             is_refusal,
                         )
-                        from orchestrator.steer import (  # noqa: PLC0415
-                            decorate_tool_result,
-                        )
-                        # Asked BEFORE the steer text joins the result. A
-                        # refused call returns its text for the model, and it
-                        # is still no success for the card (event_translator
-                        # asks the same function).
+                        # A refused call returns its text for the model, and
+                        # it is still no success for the card
+                        # (event_translator asks the same function).
                         refused = is_refusal(result)
-                        result = decorate_tool_result(result, thread_id)
                         result_str = str(result) if result is not None else ""
                         await queue.put({
                             "type": "TOOL_CALL_RESULT",

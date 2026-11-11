@@ -17,10 +17,18 @@ The checks here:
    when there is none.
 5. The publish route answers a store refusal with ``detail_for`` of the
    member, never with ``holder``, and it keeps the install after the sync.
+7. The origin (PKG-12): the route reads ``chat`` or ``ide`` and refuses each
+   other value. A chat publish gives the first install an end date 30 days
+   out, an IDE publish gives None, and a move passes no end date. The chat
+   tool sends ``chat``, and the route takes no date, org or member from the
+   body.
 
 **R7.** M1: give ``claims_of`` an href under ``/studio``. Check 2 goes red.
 M2: drop the ``moved is not None`` return of ``keep_private_install``. Check
 4 goes red. M3: read ``exc.holder`` in ``_keep_install``. Check 5 goes red.
+M4: in ``_keep_install``, give the end date for each origin. Check 7 goes red.
+M5: in ``keep_private_install``, pass ``ends_at=None`` to ``install``. Check
+7 goes red.
 """
 
 from __future__ import annotations
@@ -28,10 +36,15 @@ from __future__ import annotations
 import ast
 import asyncio
 import re
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import pytest
+from acb_auth import UserContext, UserRole, build_access
 from acb_common.app_manifests.shell_manifest import load_contributes, load_gates
+from acb_skills import studio_tools
+from fastapi import HTTPException
 from gateway.package_host import store, studio_app
 from gateway.routes.studio import packages
 
@@ -184,9 +197,10 @@ def _fake_store(monkeypatch: Any, moved: store.Install | None) -> list[str]:
     return calls
 
 
-def _keep() -> store.Install:
+def _keep(ends_at: datetime | None = None) -> store.Install:
     return asyncio.run(studio_app.keep_private_install(
-        object(), app_id=PID, version=3, owner="ana@pkg8a.test", manifest={"name": "V"}))
+        object(), app_id=PID, version=3, owner="ana@pkg8a.test", manifest={"name": "V"},
+        ends_at=ends_at))
 
 
 def test_the_first_publish_writes_the_install(monkeypatch) -> None:
@@ -248,3 +262,98 @@ def test_set_version_takes_the_org_lock_through_the_one_helper() -> None:
     for copied in ("_LOCK_SQL", "_ORG_SQL", "transaction_isolation"):
         assert copied not in src, copied
     assert "_APP_SQL" in src and "check the app first" in src
+
+
+# ── 7. The origin of a publish (PKG-12) ────────────────────────────────────
+
+
+def test_the_origin_is_chat_or_ide_and_none_is_ide() -> None:
+    assert frozenset({"chat", "ide"}) == packages.ORIGINS
+    assert packages._origin(None) == "ide"
+    assert packages._origin("chat") == "chat"
+    assert packages._origin("ide") == "ide"
+
+
+@pytest.mark.parametrize("bad", ["", "Chat", " chat", "mcp", 1, True, [], {}, "chat\x00"])
+def test_each_other_origin_is_422_at_the_origin_path(bad: object) -> None:
+    with pytest.raises(HTTPException) as caught:
+        packages._origin(bad)
+    assert caught.value.status_code == 422
+    assert caught.value.detail["errors"] == [
+        {"path": "$.origin", "message": packages.BAD_ORIGIN}]
+
+
+def test_the_chat_tool_sends_the_chat_origin_of_the_route() -> None:
+    assert studio_tools.PUBLISH_ORIGIN == packages.ORIGIN_CHAT
+
+
+def test_the_first_publish_writes_the_end_date_that_it_gets(monkeypatch) -> None:
+    ends = datetime(2026, 12, 11, tzinfo=UTC)
+    calls = _fake_store(monkeypatch, None)
+    _keep(ends)
+    assert calls[-1] == f"install:private:ana@pkg8a.test:{ends}"
+
+
+def test_a_move_passes_no_end_date_to_the_store(monkeypatch) -> None:
+    """``set_version`` keeps the end date of the install. So a later publish
+    never sends one, from chat or from the IDE."""
+    seen: list[dict[str, Any]] = []
+
+    async def set_version(db: Any, **kw: Any) -> store.Install:
+        seen.append(kw)
+        return store.Install(id="old", app_id=PID, version=3, scope_kind="private",
+                             scope_subject="ana@pkg8a.test", installed_by="ana@pkg8a.test",
+                             ends_at=None, contributions=())
+
+    monkeypatch.setattr(store, "set_version", set_version)
+    _keep(datetime(2026, 12, 11, tzinfo=UTC))
+    assert [sorted(kw) for kw in seen] == [
+        ["app_id", "contributions", "scope_kind", "scope_subject", "version"]]
+
+
+def _route_ends(monkeypatch: Any, origin: str) -> list[Any]:
+    """The ``ends_at`` that ``_keep_install`` gives for *origin*."""
+    got: list[Any] = []
+
+    async def keep(db: Any, **kw: Any) -> None:
+        got.append(kw["ends_at"])
+
+    monkeypatch.setattr(packages, "package_host_allowed", lambda org: True)
+    monkeypatch.setattr(studio_app, "keep_private_install", keep)
+    user = UserContext(email="ana@pkg8a.test", role=UserRole.EMPLOYEE,
+                       access=build_access(["feature:studio"]), organization_id="org-a")
+    version = packages.store.PackageVersion(
+        package_id=PID, version=1, manifest={"name": "V"}, bundle_sha256="x",
+        release_notes="", published_by="ana@pkg8a.test",
+        published_at=datetime.now(UTC), review_status="none")
+    asyncio.run(packages._keep_install(object(), user, PID, version, origin))
+    return got
+
+
+def test_a_chat_publish_gives_an_end_date_30_days_out(monkeypatch) -> None:
+    before = datetime.now(UTC)
+    [ends] = _route_ends(monkeypatch, "chat")
+    after = datetime.now(UTC)
+    assert timedelta(days=30) == store.CHAT_ENDS
+    assert before + store.CHAT_ENDS <= ends <= after + store.CHAT_ENDS
+    assert ends.tzinfo is not None
+
+
+def test_an_ide_publish_gives_no_end_date(monkeypatch) -> None:
+    assert _route_ends(monkeypatch, "ide") == [None]
+
+
+def test_the_publish_reads_the_origin_from_the_body_and_no_date_org_or_member() -> None:
+    publish = ast.unparse(_function("publish"))
+    assert '_origin(body.get(\'origin\'))' in publish
+    assert "_keep_install(db, user, pid, version, origin)" in publish
+    keys = {n.args[0].value for n in ast.walk(_function("publish"))
+            if isinstance(n, ast.Call) and ast.unparse(n.func) == "body.get"
+            and n.args and isinstance(n.args[0], ast.Constant)}
+    assert keys == {"notes", "based_on", "origin"}
+    keep = ast.unparse(_function("_keep_install"))
+    assert "datetime.now(UTC) + host_store.CHAT_ENDS" in keep
+    # The docstring may say "request input". Only a real name would read it.
+    names = {n.id for n in ast.walk(_function("_keep_install"))
+             if isinstance(n, ast.Name)}
+    assert not names & {"body", "request"}
