@@ -697,6 +697,13 @@ class Settings(BaseSettings):
     # none. Reader: `gateway.routes.studio.flags.studio_allowed`. Spec:
     # ai_studio.md section 3.2.
     studio_orgs: str = ""
+    # STU-B2b-2b: STUDIO_DOOR_OPS_ORGS lists the org ids where the Studio
+    # action door runs a class A door op (`<app>.<op>`) of another app, as the
+    # caller. `*` opens every org. Empty opens none. Reader:
+    # `gateway.routes.studio.flags.door_ops_allowed`. A SIGHUP reload applies
+    # a change (docs/flag_reload.md). A flip in production is the gate
+    # `enforcement-flip`. Spec: ai_studio.md section 14 B2b-2.
+    studio_door_ops_orgs: str = ""
     # WS-OB GD-5a: GUIDE_ORGS lists the org ids whose members see the entries
     # of the guide's tour (the welcome button and the account menu row). `*`
     # opens every org. Empty opens none. Reader: `acb_common.guide_flags.
