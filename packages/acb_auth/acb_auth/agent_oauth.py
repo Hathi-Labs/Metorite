@@ -874,6 +874,8 @@ ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
 #: ``record_outside_decision``. An agent records a decision that its member
 #: made outside Metorite, on its OWN awaiting run. It writes an agent
 #: ``response`` and never a ``prompt``, and it refuses a typed request.
+#: SW-25 adds no route here: `add_task_link` takes the types `relates_to` and
+#: `affects` and a `note` over the SW-16a POST. The route checks both ends.
 #: SW-16a adds the link pair: the POST and the DELETE of a task link, the
 #: routes of ``add_task_link`` and ``remove_task_link``. The route checks that
 #: the member sees BOTH tasks. SW-16b owns the write fence for these routes.

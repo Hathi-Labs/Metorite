@@ -2,7 +2,7 @@
 
 > **Dated 2026-11-11, price (D204.9).** Seat tiers are final. The flat ₹500 seat ends when PLN-0 merges. Until then the code sells the flat seat. Read each line that says the flat seat as the seat of D152 after PLN-0. Lines: 474 and 724.
 
-**Status: ACTIVE (SW-0, 2026-10-30). SW-68a (the plan order of `my_work`) is built, 2026-11-08. The rest of SW-68 is open. The replan of 2026-11-09 (task 2518) sets the queue order, the lane scope and pull start (SW-100, new). It parks SW-17, SW-20, SW-22, SW-69, SW-74, SW-75, SW-89, SW-90 and SW-92. SW-43a (withdraw an answer) is built and dark, 2026-11-05. SW-43b (change an answer) is built and dark, 2026-11-11. SW-43c (the chat tools and the agent text) is built, 2026-11-11, and the flag can go on. SW-16a (the link tools) is built, 2026-11-08. SW-16b (the write fence) is open.**
+**Status: ACTIVE (SW-0, 2026-10-30). SW-68a (the plan order of `my_work`) is built, 2026-11-08. The rest of SW-68 is open. The replan of 2026-11-09 (task 2518) sets the queue order, the lane scope and pull start (SW-100, new). It parks SW-17, SW-20, SW-22, SW-69, SW-74, SW-75, SW-89, SW-90 and SW-92. SW-43a (withdraw an answer) is built and dark, 2026-11-05. SW-43b (change an answer) is built and dark, 2026-11-11. SW-43c (the chat tools and the agent text) is built, 2026-11-11, and the flag can go on. SW-16a (the link tools) is built, 2026-11-08. SW-25 (affects notes) is BUILT 2026-11-11, not merged (branch `mt-bedc23fc-affects-notes`, task 859). SW-16b (the write fence) is open.**
 
 **SW-34b (the read-only door `/mcp/readonly`) is built, 2026-11-07.**
 
@@ -1129,6 +1129,8 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **Risk.** HIGH (a write authority rule). **Gate.** AGENT-SAFE. **Depends on.** SW-16a. **Metorite:** task 2298.
 
 #### SW-25 · Affects notes between tasks
+
+**Status: BUILT 2026-11-11, not merged (branch `mt-bedc23fc-affects-notes`, task 859).** Migration 417 widens the CHECK and adds `note` and `note_read_at`. The gateway takes `note` on `POST /projects/tasks/{id}/links` (500 characters, needed for `affects`, refused on `blocks` and `duplicates`). `GET /projects/affects-notes` lists the unread notes of the asked tasks, and only when the caller sees both tasks. `my_work` lists a note as the reason `note_from_task`, with a `notes` field, until the agent reads the task with `get_task_context` (a read with `mark_read=true`). A person on the target task gets the bell, as a comment gives it (the kind `comment`, so no new bell kind). The panel lists "Affected by" and "Affects". The feature has no flag. `my_work` shows a note on a task that the session holds through an open run. The read of a person never marks a note read.
 
 - **Scope.** As task 859. The link type `affects`, with a short note (widen the CHECK of `pm_task_links`, expand only). `add_task_link` takes `affects` and `relates_to` with a `note`. `my_work` gains the reason `note_from_task`, once per note. A person holder gets the bell. The task panel lists "Affects" and "Affected by".
 - **Done when.** Agent A links its task to task B as `affects`. Agent B sees the note on its next `my_work`, once. R8: a link to a task that the caller cannot see is refused, and the answer never shows that the task exists.
