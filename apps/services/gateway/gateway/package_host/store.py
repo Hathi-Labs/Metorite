@@ -1016,6 +1016,37 @@ async def private_install_id(db: Any, *, app_id: str, member: str) -> str | None
     return None if row is None else str(row[0])
 
 
+#: The lifetime of one install of the bound org, for a read (PKG-10e-1). It
+#: takes no row lock and no org lock, because it writes nothing.
+_LIFETIME_READ_SQL = (
+    "SELECT state, ends_at, archived_at FROM package_install "
+    f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:install AS uuid)"
+)
+
+
+@dataclass(frozen=True)
+class Lifetime:
+    """The state, the end date and the archive time of one install."""
+
+    state: str
+    ends_at: datetime | None
+    archived_at: datetime | None
+
+
+async def read_lifetime(db: Any, *, install_id: str) -> Lifetime | None:
+    """The lifetime of the install *install_id* of the bound org, or None
+    when the bound org has no install with this id (PKG-10e-1).
+
+    The lifetime route calls this with the id that :func:`private_install_id`
+    gave, in the same session. It is a plain read: no lock and no write.
+    """
+    install = _install_id(install_id)
+    row = (await db.execute(text(_LIFETIME_READ_SQL), {"install": install})).first()
+    if row is None:
+        return None
+    return Lifetime(state=str(row[0]), ends_at=row[1], archived_at=row[2])
+
+
 def notice_times(ends_at: datetime | None,
                  archived_at: datetime | None) -> tuple[datetime | None, datetime | None]:
     """The times of the two bell notes of §6.2, and nothing more.
