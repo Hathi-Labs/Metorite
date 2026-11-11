@@ -710,3 +710,51 @@ def test_this_suite_and_the_r8_suite_are_on_the_must_run_lists() -> None:
     for workflow in ("pr-check.yml", "deploy.yml"):
         text = (_ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
         assert re.search(r"^[ \t]+tests/unit/test_studio_row_rules_r8\.py(?: \\)?$", text, re.M), workflow
+
+
+# ── Fix round 4 ─────────────────────────────────────────────────────────────
+
+
+def test_a_grant_cannot_hide_the_field_that_links_a_line_to_its_record() -> None:
+    """Rule 19. A save of the lines compares that field with the record."""
+    doc = _manifest([HR])
+    doc["objects"][0]["fields"].append({"key": "rows", "type": "relation", "to": "row",
+                                        "lines": "payslip"})
+    doc["objects"].append({"name": "row", "fields": [
+        {"key": "payslip", "type": "relation", "to": "payslip"}, {"key": "what", "type": "text"}],
+        "access": [{"role": "hr", "read": "all", "hide": ["payslip"]}]})
+    errors = validate_manifest(doc)
+    assert [e.path for e in errors] == ["$.objects[1].access[0].hide"]
+    assert "links each line" in errors[0].message
+    doc["objects"][1]["access"] = [{"role": "hr", "read": "all", "hide": ["what"]}]
+    assert validate_manifest(doc) == []
+
+
+@pytest.mark.parametrize("spec", [
+    {"key": "t", "type": "text"}, {"key": "lt", "type": "longText"},
+    {"key": "n", "type": "number"}, {"key": "m", "type": "money"},
+    {"key": "d", "type": "date"}, {"key": "dt", "type": "datetime"},
+    {"key": "c", "type": "checkbox"}, {"key": "p", "type": "person"},
+    {"key": "e", "type": "email"}, {"key": "r", "type": "relation", "to": "x"},
+    {"key": "f", "type": "file"}, {"key": "u", "type": "url"}, {"key": "ph", "type": "phone"},
+    {"key": "g", "type": "geo"}, {"key": "s", "type": "select", "options": ["a", "ünï"]},
+    {"key": "ms", "type": "multiSelect", "options": ["a", "bb", "ccc"]},
+    {"key": "tm", "type": "text", "many": True},
+])
+def test_the_largest_value_of_a_field_fits_its_bound(spec: dict[str, Any]) -> None:
+    """Rule 18. ``max_entry_bytes`` holds the largest value of each type."""
+    field = sf.parse_field_spec(spec)
+    worst = {
+        "text": "\x01" * sf.MAX_TEXT_CHARS, "longText": "\x01" * sf.MAX_LONG_TEXT_CHARS,
+        "number": -0.00012345678901234567, "money": {"minor": -(10**15 - 1), "currency": "INR"},
+        "date": "2026-12-31", "datetime": "2026-12-31T23:59:59.999999Z", "checkbox": False,
+        "person": "a" * 240 + "@example.test", "email": "a" * 240 + "@example.test",
+        "relation": {"id": "a" * sf.MAX_ID_CHARS},
+        "file": {"id": "00000000-0000-0000-0000-000000000000"},
+        "url": "https://x.test/" + "\u00fc" * (sf.MAX_URL_CHARS - 15),
+        "phone": "+123456789012345", "geo": {"lat": -89.12345678901234, "lng": -179.1234567890123},
+        "select": "ünï", "multiSelect": ["a", "bb", "ccc"],
+    }[field.type]
+    value = [worst] * sf.MAX_MANY_ITEMS if field.many else worst
+    sf.check_value(field, value)
+    assert sf.entry_bytes(field.key, value) <= sf.max_entry_bytes(field)

@@ -139,12 +139,23 @@ function checkAccess(
   err: (path: string, message: string) => void,
 ): void {
   const roles = new Set((Array.isArray(manifest.roles) ? manifest.roles : []).map(text));
+  // Fix round 4 (rule 19): the field of each line object that links a line to its record.
+  const vias = new Map<string, Set<string>>();
+  objects.forEach((o) => {
+    list(o.fields).forEach((f) => {
+      const child = text(f.lines) ? text(f.to) : "";
+      if (child) vias.set(child, (vias.get(child) ?? new Set<string>()).add(text(f.lines)));
+    });
+  });
   objects.forEach((o, i) => {
     const fields = new Map(list(o.fields).map((f) => [text(f.key), f]));
     list(o.access).forEach((g, k) => {
       const at = `$.objects[${i}].access[${k}]`;
       const role = text(g.role);
       if (!roles.has(role)) err(`${at}.role`, `The role ${role || "(none)"} is not in the roles of the app.`);
+      const hides = Array.isArray(g.hide) ? g.hide.map(text) : [];
+      const via = hides.find((h) => vias.get(text(o.name))?.has(h));
+      if (via) err(`${at}.hide`, `The field ${via} links each line to its record, so a grant cannot hide it.`);
       if (g.read === "all") return;
       const where = isObject(g.read) && typeof g.read.where === "string" ? WHERE_RE.exec(g.read.where) : null;
       if (!where) {

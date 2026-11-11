@@ -65,7 +65,7 @@ pytest.importorskip("sqlalchemy")
 
 from acb_common.db import tenant_session
 from acb_common.studio_access import AccessError, Viewer
-from acb_common.studio_fields import FieldError
+from acb_common.studio_fields import MAX_RECORD_BYTES, FieldError
 from acb_common.studio_query import QueryError
 from gateway.studio import objects_store as store
 from gateway.studio.objects_store import (
@@ -379,6 +379,93 @@ BADGE_ACCESS: list[dict[str, Any]] = [
 ]
 
 
+# ── The fix round 4 world, in the third package ─────────────────────────────
+PY1 = f"py1.{TAG}@stuc8a.test"
+AS_PAYEE = Viewer(PY1, frozenset({"payee"}))
+AS_PEEKER = Viewer(PY1, frozenset({"peeker"}))
+AS_PAYER = Viewer(PY1, frozenset({"payer"}))
+#: P1. A sheet near the record cap: the payee writes `notes`, and `salary` and
+#: `bank` are hidden from the payee.
+SHEET_FIELDS: list[dict[str, Any]] = [
+    {"key": "employee", "type": "person", "hot": True},
+    {"key": "notes", "type": "longText"},
+    {"key": "salary", "type": "number"},
+    {"key": "bank", "type": "text"},
+]
+SHEET_ACCESS: list[dict[str, Any]] = [
+    {"role": "payee", "read": {"where": "employee = $me"}, "write": "all",
+     "hide": ["salary", "bank"]},
+]
+#: P1, the derived write. A folder is open. `open_sum` adds the open items, and
+#: `secret_sum` adds the secrets, whose `amount` is hidden from a peeker.
+FOLDER_FIELDS: list[dict[str, Any]] = [
+    {"key": "notes", "type": "longText"},
+    {"key": "open_sum", "type": "number"},
+    {"key": "secret_sum", "type": "number"},
+]
+FOLDER_RULES: list[dict[str, Any]] = [
+    {"name": "open_of", "kind": "rollup", "target": "open_sum", "source": "item",
+     "via": "folder", "agg": "sum", "field": "amount"},
+    {"name": "secret_of", "kind": "rollup", "target": "secret_sum", "source": "secret",
+     "via": "folder", "agg": "sum", "field": "amount"},
+]
+ITEM_FIELDS: list[dict[str, Any]] = [
+    {"key": "folder", "type": "relation", "to": "folder", "hot": True},
+    {"key": "amount", "type": "number", "hot": True},
+]
+SECRET_ACCESS: list[dict[str, Any]] = [
+    {"role": "peeker", "read": "all", "hide": ["amount"]},
+]
+#: P2. A bill and its rows. The grant of a row hides `bill`, the field that
+#: links a row to its bill. The store took it, because the row came first.
+ROW_FIELDS: list[dict[str, Any]] = [
+    {"key": "bill", "type": "relation", "to": "bill", "hot": True},
+    {"key": "what", "type": "text"},
+]
+ROW_ACCESS: list[dict[str, Any]] = [
+    {"role": "payer", "read": "all", "write": "all", "hide": ["bill"]},
+]
+BILL_FIELDS: list[dict[str, Any]] = [
+    {"key": "who", "type": "person", "hot": True},
+    {"key": "memo", "type": "text"},
+    {"key": "rows", "type": "relation", "to": "row", "lines": "bill"},
+]
+BILL_ACCESS: list[dict[str, Any]] = [
+    {"role": "payer", "read": {"where": "who = $me"}, "write": "all"},
+]
+
+
+async def _build_round_four(db: Any, pkg: str) -> dict[str, Any]:
+    """The objects and the records of fix round 4, in the package *pkg* of org B."""
+    sheet = await _define(db, pkg, "sheet", SHEET_FIELDS, access=SHEET_ACCESS)
+    folder = await _define(db, pkg, "folder", FOLDER_FIELDS)
+    item = await _define(db, pkg, "item", ITEM_FIELDS)
+    secret = await _define(db, pkg, "secret", ITEM_FIELDS, access=SECRET_ACCESS)
+    assert await store.set_constraints(db, folder.id, FOLDER_RULES, package_id=pkg)
+    row = await _define(db, pkg, "row", ROW_FIELDS, access=ROW_ACCESS)
+    bill = await _define(db, pkg, "bill", BILL_FIELDS, access=BILL_ACCESS)
+
+    async def put(*writes: Write) -> list[Any]:
+        return await store.apply_writes(db, OWNER, package_id=pkg, viewer=AS_OWNER,
+                                        writes=list(writes))
+
+    sh1, sh2 = await put(
+        Write("create", sheet.id, data={"employee": PY1, "salary": 9}),
+        Write("create", sheet.id, data={"employee": PY1, "salary": 999_999_999_999_999,
+                                        "bank": "x" * 400}))
+    f1, f2 = await put(Write("create", folder.id, data={}), Write("create", folder.id, data={}))
+    await put(Write("create", secret.id, data={"folder": {"id": f1.id}, "amount": 9}),
+              Write("create", secret.id, data={"folder": {"id": f2.id},
+                                               "amount": 999_999_999_999_999}))
+    bill1, bill2 = await put(Write("create", bill.id, data={"who": PY1}),
+                             Write("create", bill.id, data={"who": PY1}))
+    r1, r2 = await put(Write("create", row.id, data={"bill": {"id": bill1.id}, "what": "a"}),
+                       Write("create", row.id, data={"bill": {"id": bill2.id}, "what": "b"}))
+    return {"sheet": sheet, "folder": folder, "item": item, "secret": secret, "row": row,
+            "bill": bill, "sh1": sh1.id, "sh2": sh2.id, "f1": f1.id, "f2": f2.id,
+            "bill1": bill1.id, "bill2": bill2.id, "r1": r1.id, "r2": r2.id}
+
+
 async def _build_round_three(db: Any, pkg: str) -> dict[str, Any]:
     """The objects and the records of fix round 3, in the package *pkg* of org B."""
     move2 = await _define(db, pkg, "move2", MOVE2_FIELDS, MOVE2_RULES, MOVE2_ACCESS)
@@ -514,10 +601,11 @@ def world(promoted):  # noqa: F811
             two = await _build_round_two(db, ids["a2"])
         async with tenant_session(p.org_b) as db:
             three = await _build_round_three(db, ids["b3"])
+            four = await _build_round_four(db, ids["b3"])
         return SimpleNamespace(p=p, a=p.org_a, b=p.org_b, pkg=pkg, pkg_b=ids["b"], slip=slip,
                                team=team, claim=claim, t1=t1.id, t2=t2.id,
                                s1=made[0].id, s2=made[1].id, s3=made[2].id, s4=made[3].id,
-                               **two, **three)
+                               **two, **three, **four)
 
     w = _run(p, build)
     yield w
@@ -1288,3 +1376,127 @@ def _get3(world: Any, viewer: Viewer, oid: str, rid: str) -> Any:
         async with tenant_session(world.b) as db:
             return await store.get_record(db, oid, rid, package_id=world.pkg3, viewer=viewer)
     return _run(world.p, go)
+
+
+# ── Fix round 4 ─────────────────────────────────────────────────────────────
+
+
+def _notes_of(size: int) -> str:
+    """A text whose JSON form takes *size* bytes: `\\u0001` takes 6 and `a` takes 1."""
+    six, one = divmod(size - 2, 6)
+    text_ = "\x01" * six + "a" * one
+    assert len(json.dumps(text_).encode("utf-8")) == size
+    return text_
+
+
+def _outcome3(world: Any, viewer: Viewer, *writes: Write) -> str:
+    """The outcome of one batch in the third package, rolled back."""
+    async def go() -> str:
+        async with tenant_session(world.b) as db:
+            try:
+                async with db.begin_nested():
+                    await store.apply_writes(db, viewer.email, package_id=world.pkg3,
+                                             viewer=viewer, writes=list(writes))
+                    raise _Undo
+            except _Undo:
+                return "ok"
+            except BatchError as exc:
+                return f"{type(exc.cause).__name__}: {exc.cause}"
+    return _run(world.p, go)
+
+
+def test_r8_the_record_cap_never_follows_a_hidden_value(world) -> None:
+    """Rule 18. sh1 holds a salary of 1 digit, and sh2 a salary of 15 digits and
+    a bank of 400 characters, both hidden from the payee. For each length of
+    `notes` near the cap, both sheets get the same outcome."""
+    wrong = []
+    for size in range(65_000, 65_601, 50):
+        notes = _notes_of(size)
+        pair = {_outcome3(world, AS_PAYEE, Write("update", world.sheet.id, rid, {"notes": notes}))
+                for rid in (world.sh1, world.sh2)}
+        if len(pair) != 1:
+            wrong.append((size, sorted(pair)))
+    assert wrong == []
+
+
+def test_r8_a_visible_write_of_an_ordinary_size_still_passes(world) -> None:
+    """Rule 18. The store counts each hidden value at its largest, and a write
+    of an ordinary size still passes on each sheet."""
+    for rid in (world.sh1, world.sh2):
+        for size in (2, 500, 20_000, 40_000):
+            said = _outcome3(world, AS_PAYEE,
+                             Write("update", world.sheet.id, rid, {"notes": _notes_of(size)}))
+            assert said == "ok", (rid, size, said)
+
+
+def test_r8_a_derived_write_counts_a_hidden_roll_up_at_its_largest(world) -> None:
+    """Rule 18, the derived write. `secret_sum` is 9 on f1 and 15 digits on f2,
+    and it is hidden from a peeker. The owner fills `notes` so that f2 would be
+    one byte over the cap after an item of 1000000. The item gets the same
+    outcome on each folder."""
+    d2 = _get3(world, AS_OWNER, world.folder.id, world.f2)
+    assert d2 is not None and d2.data["secret_sum"] == 999_999_999_999_999
+    rest = {k: v for k, v in d2.data.items() if k != "notes"}
+    rest["open_sum"] = 1_000_000
+    others = sum(len(json.dumps({k: v}).encode("utf-8")) for k, v in rest.items())
+    notes = _notes_of(MAX_RECORD_BYTES + 1 - others - len('{"notes": }'))
+    for rid in (world.f1, world.f2):
+        _write3(world, AS_OWNER, Write("update", world.folder.id, rid, {"notes": notes}))
+    said = {_outcome3(world, AS_PEEKER, Write("create", world.item.id, data={
+        "folder": {"id": rid}, "amount": 1_000_000})) for rid in (world.f1, world.f2)}
+    for rid in (world.f1, world.f2):
+        _write3(world, AS_OWNER, Write("update", world.folder.id, rid, {"notes": None}))
+    assert len(said) == 1, said
+    assert said.pop().startswith("RecordError")
+
+
+def test_r8_a_line_save_never_reads_a_hidden_parent_field(world) -> None:
+    """Rule 19. A stale grant hides `bill` from a payer. A save of bill1 with r1,
+    its own line, and with r2, a line of bill2, gets the same outcome."""
+    said = {_outcome3(world, AS_PAYER,
+                      Write("update", world.bill.id, world.bill1, {"memo": "m"}),
+                      Write("update", world.row.id, rid, {"what": "w"}, parent=0))
+            for rid in (world.r1, world.r2)}
+    assert len(said) == 1, said
+    assert said.pop().startswith("AccessDenied")
+
+
+def test_r8_a_grant_cannot_hide_the_parent_field_of_a_line(world) -> None:
+    """Rule 19. Now that bill names its rows, a grant of a row cannot hide `bill`."""
+    async def go() -> None:
+        async with tenant_session(world.b) as db:
+            with pytest.raises(AccessError) as refused:
+                await store.set_access(db, world.row.id, ROW_ACCESS, package_id=world.pkg3)
+            assert refused.value.path == "[0].hide"
+    _run(world.p, go)
+
+
+def test_r8_an_employee_deletes_the_own_draft_and_the_own_badge(world) -> None:
+    """Rule 14. A guard and a `unique` never run on a delete, so each owner of a
+    record deletes it."""
+    draft = _write2(world, AS_E1, Write("create", world.request.id, data={"by": E1}))[0]
+    _write2(world, AS_E1, Write("delete", world.request.id, draft.id))
+    badge = _write3(world, AS_HOLDER, Write("create", world.badge.id, data={"by": H1}))[0]
+    _write3(world, AS_HOLDER, Write("delete", world.badge.id, badge.id))
+
+
+def test_r8_a_delete_that_moves_a_tainted_rule_is_refused_for_each_value(world) -> None:
+    """Rule 14. A delete that lowers a stock over rows that the viewer cannot
+    read, and a delete of an expense under a floor of its budget, are refused
+    with one text, for each value that the owner wrote."""
+    cases = [(AS_MOVER2, world.move2, world.mine2, world.move2, world.other2, "qty_in"),
+             (AS_SPENDER, world.expense, world.e1, world.budget, world.b2, "cap")]
+    for viewer, obj, rid, holder_obj, holder, key in cases:
+        start = _get3(world, AS_OWNER, holder_obj.id, holder)
+        assert start is not None
+        said = set()
+        for value in _HIDDEN_VALUES:
+            change = Write("update", holder_obj.id, holder, {key: value})
+            if _outcome3(world, AS_OWNER, change) != "ok":
+                continue
+            _write3(world, AS_OWNER, change)
+            said.add(_outcome3(world, viewer, Write("delete", obj.id, rid)))
+        _write3(world, AS_OWNER, Write("update", holder_obj.id, holder,
+                                       {key: start.data.get(key)}))
+        assert len(said) == 1, (obj.name, said)
+        assert said.pop().startswith("AccessDenied: Your roles cannot delete")

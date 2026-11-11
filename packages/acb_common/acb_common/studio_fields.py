@@ -662,6 +662,52 @@ def record_json(data: Mapping[str, Any]) -> str:
     return encoded
 
 
+#: Fix round 4 (C8a rule 18). The most bytes that one character takes in the
+#: JSON of a record: ``json.dumps`` writes a control character as ``\u0001``.
+_MAX_CHAR_BYTES = 6
+#: The longest JSON of one plain number below 10^15 with no exponent, with room.
+_MAX_NUMBER_BYTES = 32
+
+
+def entry_bytes(key: str, value: Any) -> int:
+    """The bytes that the pair *key* and *value* adds to the JSON of a record,
+    with its separator. The JSON of a record that holds at least one pair takes
+    the sum over its pairs, in the form of :func:`record_json`."""
+    return len(json.dumps({key: value}, ensure_ascii=False, allow_nan=False).encode("utf-8"))
+
+
+def _max_value_bytes(field: FieldSpec) -> int:
+    """The most bytes of the JSON of one value of *field*. A type with no bound
+    here gets the whole record (it fails closed)."""
+    kind = field.type
+    chars = {"text": MAX_TEXT_CHARS, "longText": MAX_LONG_TEXT_CHARS, "url": MAX_URL_CHARS}
+    if kind in chars:
+        return 2 + chars[kind] * _MAX_CHAR_BYTES
+    fixed = {"number": _MAX_NUMBER_BYTES, "money": 32 + _MAX_NUMBER_BYTES,
+             "geo": 32 + 2 * _MAX_NUMBER_BYTES, "date": 16, "datetime": 40, "checkbox": 5,
+             "person": 2 + MAX_EMAIL_CHARS, "email": 2 + MAX_EMAIL_CHARS,
+             "relation": 16 + MAX_ID_CHARS, "file": 16 + MAX_ID_CHARS, "phone": 24}
+    if kind in fixed:
+        return fixed[kind]
+    options = [len(json.dumps(o, ensure_ascii=False).encode("utf-8")) for o in field.options or ()]
+    if kind == "select":
+        return max(options, default=2)
+    if kind == "multiSelect":
+        return 2 + sum(o + 2 for o in options)
+    return MAX_RECORD_BYTES
+
+
+def max_entry_bytes(field: FieldSpec) -> int:
+    """Fix round 4 (C8a rule 18). The most bytes that a value of *field* can add
+    to the JSON of a record, with its key and its separator (:func:`entry_bytes`).
+    A lines relation holds no value, so it adds none."""
+    if field.lines is not None:
+        return 0
+    one = _max_value_bytes(field)
+    value = 2 + MAX_MANY_ITEMS * (one + 2) if field.many else one
+    return len(json.dumps(field.key)) + 4 + value
+
+
 def relation_key(value: str) -> str:
     """The text that a hot relation row holds for the id *value*. An id of 32 hex
     digits, with or without the four dashes and in any case, gets the one

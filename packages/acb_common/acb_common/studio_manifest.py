@@ -803,6 +803,13 @@ def _check_access(m: Manifest, out: list[ManifestError]) -> None:
     except AccessError as exc:
         out.append(_err(f"$.roles{exc.path}", exc.message))
         return
+    # Fix round 4 (rule 19): the field of each line object that links a line to
+    # its record. A grant of the line object cannot hide it.
+    vias: dict[str, set[str]] = {}
+    for o in m.objects:
+        for f in o.fields:
+            if isinstance(f.lines, str) and isinstance(f.to, str):
+                vias.setdefault(f.to, set()).add(f.lines)
     for oi, o in enumerate(m.objects):
         if o.access is None:
             continue
@@ -811,7 +818,7 @@ def _check_access(m: Manifest, out: list[ManifestError]) -> None:
             grants = parse_access(o.access, roles)
             specs = _parsed_fields(o)
             if specs is not None:
-                check_access_fit(grants, specs)
+                check_access_fit(grants, specs, vias.get(o.name, set()))
         except AccessError as exc:
             out.append(_err(f"{path}{exc.path}", exc.message))
     _check_open_lines(m, out)

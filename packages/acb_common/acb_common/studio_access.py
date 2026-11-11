@@ -249,10 +249,15 @@ def parse_access(raw: Any, roles: Collection[str] | None = None) -> tuple[Grant,
     return tuple(grants)
 
 
-def check_access_fit(grants: Sequence[Grant] | None, fields: Sequence[FieldSpec]) -> None:
+def check_access_fit(grants: Sequence[Grant] | None, fields: Sequence[FieldSpec],
+                     vias: Collection[str] = ()) -> None:
     """Refuse a grant that does not fit the *fields* of the object. A ``where``
     names a hot ``person`` field with no ``many``, and ``hide`` names fields of
-    the object. Raises :class:`AccessError`."""
+    the object. Raises :class:`AccessError`.
+
+    Fix round 4 (rule 19). *vias* are the fields of this object that link each
+    line to its record, for each lines relation that names it. A save of the
+    lines compares that field with the record, so a grant cannot hide it."""
     by_key = {f.key: f for f in fields}
     for i, grant in enumerate(grants or ()):
         if grant.where is not None:
@@ -266,6 +271,9 @@ def check_access_fit(grants: Sequence[Grant] | None, fields: Sequence[FieldSpec]
         for key in grant.hide:
             if key not in by_key:
                 raise AccessError(f"[{i}].hide", f"`{key}` is not a field of this object.")
+            if key in vias:
+                raise AccessError(f"[{i}].hide", f"`{key}` links each line to its record, so a "
+                                  "grant cannot hide it. A save of the lines compares it.")
 
 
 def access_reads(grants: Sequence[Grant] | None) -> frozenset[str]:

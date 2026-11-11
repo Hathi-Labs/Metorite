@@ -261,7 +261,7 @@ import json
 import re
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Collection, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from dataclasses import field as dc_field
@@ -296,13 +296,16 @@ from acb_common.studio_fields import (
     MAX_LABEL_CHARS,
     MAX_OBJECTS_PER_ORG,
     MAX_OBJECTS_PER_PACKAGE,
+    MAX_RECORD_BYTES,
     NAME_PATTERN,
     FieldError,
     FieldSpec,
     RecordError,
     check_can_be_hot,
+    entry_bytes,
     hot_value,
     lines_problem,
+    max_entry_bytes,
     parse_field_spec,
     record_json,
     relation_key,
@@ -1300,7 +1303,11 @@ async def set_access(db: Any, object_id: str, access: Any, *,
     if locked is None:
         return None
     fields = await _fields(db, oid)
-    check_access_fit(grants, fields)
+    # Fix round 4 (rule 19): the field that links each line of this object to
+    # its record. A grant cannot hide it.
+    lines = (await db.execute(text(_LINES_SQL), {"pid": pid})).all()
+    vias = {str(r[3]) for r in lines if r[4] is not None and str(r[4]) == oid}
+    check_access_fit(grants, fields, vias)
     return _object(await _write_access(db, oid, pid, grants), fields)
 
 
@@ -3547,16 +3554,109 @@ def _check_write(held: _Held, before: Mapping[str, Any] | None,
     if not held.blocked or (before is None and after is None):
         return
     if after is None:
-        # Fix rounds 2 and 3 (rule 3): a delete takes each key of the record out
-        # of a sum, a key rule or a roll-up. So a delete is refused when the
-        # object has a blocked key, whatever the record holds: a test of the
-        # stored keys would follow a value that the viewer cannot read.
-        raise AccessDenied(f"Your roles cannot delete this record of `{held.name}`, because "
-                           "a rule over data that you cannot read uses it.")
+        # Fix round 4 (rule 14): `_check_delete` decides a delete, because most
+        # blocked keys come from rules that never run on one.
+        return
     changed = _changed(held, before, after) if sent is None else sent
     for key in sorted(changed & held.blocked):
         raise AccessDenied(f"Your roles cannot set `{key}` of `{held.name}`, because a rule "
                            "over data that you cannot read uses it.")
+
+
+def _check_delete(batch: _Batch, held: _Held, before: Mapping[str, Any]) -> None:
+    """Fix rounds 2 to 4 (rule 14). A delete runs no formula, no ``range``, no
+    move, no ``unique`` and no walk of a tree. Two rules move on a delete, so
+    a delete is refused when one of them reads data that the viewer cannot
+    read:
+
+    * a tainted ``group_sum_min`` that the delete would read again. A key or a
+      field that the viewer cannot see on the record refuses it, so the test
+      reads only visible values.
+    * a roll-up that counts the record in a parent, when the roll-up target is
+      blocked on the parent, or when the viewer cannot read each record and
+      key that the roll-up reads. A parent field that the viewer cannot see
+      refuses it.
+
+    The text is one for each value."""
+    refusal = AccessDenied(f"Your roles cannot delete this record of `{held.name}`, because "
+                           "a rule over data that you cannot read uses it.")
+    if held.scope is None:
+        return
+    hidden = held.view().hidden(before)
+    for rule in held.rules:
+        if rule.kind != GROUP_SUM_MIN or rule.name not in held.taint:
+            continue
+        if rule_reads(rule) & hidden or any(
+                not floor_holds_at_zero(rule) or add_change(rule, key, before, None) < 0
+                for key in touched_keys(rule, before, None)):
+            raise refusal
+    for parent, _, rule in batch.rollups:
+        if rule.source != held.name:
+            continue
+        above = batch.objects.get(parent)
+        moves = (above is not None and rule.target in above.blocked) or (
+            not held.scope.shows_all(rule.source_keys()))
+        if moves and (str(rule.via) in hidden or rollup_parents(rule, before, None)):
+            raise refusal
+
+
+def _check_line_of(held: _Held, link: _Lines, parent: str,
+                   before: Mapping[str, Any] | None) -> None:
+    """C13: an update of a line must be a line of its parent write. Fix round 4
+    (rule 19): for a viewer that a rule binds, the test runs after the row
+    rule. A hidden link field refuses the save whatever it holds, and a line
+    of another record gets the one text of a blocked write."""
+    bound = held.scope is not None and not held.scope.open
+    if bound and link.via in held.view().hidden(before or {}):
+        raise AccessDenied(_BLOCKED.format(name=held.name))
+    if _parent_of(link.via, before) != parent:
+        if bound:
+            raise AccessDenied(_BLOCKED.format(name=held.name))
+        raise RecordError("A line of this save is not a line of this record. "
+                          "Change it through its own record.")
+
+
+#: Fix round 4 (rule 18). The one text of a record over the cap, for a viewer
+#: that cannot read each value of the record.
+_SIZE_TEXT = (f"A record holds at most {MAX_RECORD_BYTES} bytes of JSON. The store counts "
+              "each value that you cannot read at its largest size, so shorten a long value.")
+
+
+def _record_text(held: _Held, before: Mapping[str, Any] | None, after: Mapping[str, Any],
+                 fresh: Collection[str] = ()) -> str:
+    """Fix round 4 (rule 18). The JSON of a change, under the record cap. For a
+    viewer that cannot read each value of the record, the cap decides on
+    data that the viewer can read: the size of each value that the viewer
+    reads, plus the largest size of each value that it cannot. That bound is
+    at least the real size, so the real cap never decides on hidden data.
+
+    A hidden value that the change keeps counts at the smaller of two bounds:
+    the largest value of its field (``max_entry_bytes``), and the room that
+    the visible values of the stored record leave. A hidden roll-up target in
+    *fresh*, which a derived write computes again, counts at its largest. A
+    hidden formula target that does not read hidden data counts as it is.
+    Each refusal gets one text. The owner gets the real cap."""
+    hidden = frozenset() if held.scope is None or before is None else held.view().hidden(before)
+    if not hidden:
+        return record_json(after)
+    by_key = {f.key: f for f in held.fields}
+    again = {str(r.target) for r in held.rules
+             if r.kind == FORMULA and r.name not in held.frozen}
+    new = hidden & set(fresh)
+    same = hidden - again - new
+
+    def most(keys: Collection[str]) -> int:
+        return sum(max_entry_bytes(by_key[k]) if k in by_key else MAX_RECORD_BYTES for k in keys)
+
+    known = sum(entry_bytes(k, v) for k, v in after.items() if k not in same and k not in new)
+    seen = sum(entry_bytes(k, v) for k, v in before.items() if k not in hidden)
+    room = min(most(same), max(MAX_RECORD_BYTES - seen, 0)) + most(new)
+    if known + room > MAX_RECORD_BYTES:
+        raise RecordError(_SIZE_TEXT)
+    try:
+        return record_json(after)
+    except RecordError:
+        raise RecordError(_SIZE_TEXT) from None
 
 
 def _formulas(held: _Held, checked: Mapping[str, Any],
@@ -3605,13 +3705,12 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
             batch.moved[(oid, made.id)] = batch.index
         return made
     mark = _live_mark(batch, step)
-    if linked is not None and _parent_of(linked[0].via, mark.after) != linked[1]:
-        raise RecordError("A line of this save is not a line of this record. "
-                          "Change it through its own record.")
     binds = {"oid": oid, "rid": step.record_id, "pid": batch.pid}
     if step.op == "delete":
         # Fix round 1 (P1-1): a grant that reads the record must also write.
         _check_write(held, mark.after, None)
+        assert mark.after is not None
+        _check_delete(batch, held, mark.after)
         await db.execute(text(_DELETE_RECORD_SQL), binds)
         mark.after = None
         return True
@@ -3619,6 +3718,9 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
     # The row rule before the change (P1-1). The delete rule of P1-C is no
     # part of it, so `_check_row` asks the scope alone.
     _check_row(held, mark.after)
+    if linked is not None:
+        # Fix round 4 (rule 19): the test of the link comes after the row rule.
+        _check_line_of(held, linked[0], linked[1], mark.after)
     _refuse_hidden_write(held, changes)
     refuse_computed_keys(held.plan, held.name, changes)
     merged = without_targets(held.plan, {**(mark.after or {}), **changes})
@@ -3631,7 +3733,7 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
     if _line_moves(batch, oid, mark.after, clean):
         batch.moved[(oid, str(step.record_id))] = batch.index
     row = (await db.execute(text(_UPDATE_RECORD_SQL), {
-        **binds, "data": record_json(clean), "actor": batch.who,
+        **binds, "data": _record_text(held, mark.after, clean), "actor": batch.who,
         "hot": _hot_rows(held.fields, clean)})).one()
     mark.after = clean
     return _record(row)
@@ -3881,7 +3983,7 @@ async def _lock_parents(db: Any, batch: _Batch,
 
 
 async def _derive_parent(timed: _Timed, batch: _Batch, key: tuple[str, str],
-                         data: dict[str, Any]) -> None:
+                         data: dict[str, Any], fresh: Collection[str] = ()) -> None:
     """Step 4b, the derived write of one parent. It is a store write: the
     formulas of the parent run again, the record is checked, and the hot rows
     are rebuilt. It writes no history row. The actor is the member of the batch,
@@ -3900,7 +4002,9 @@ async def _derive_parent(timed: _Timed, batch: _Batch, key: tuple[str, str],
             f"Object `{held.name}`: field `{moved[0]}` is read by a roll-up of another object, "
             "and a roll-up of this object fills it. A roll-up cannot read a roll-up.")
     await timed.execute(text(_UPDATE_RECORD_SQL), {
-        "oid": oid, "rid": rid, "pid": batch.pid, "data": record_json(clean),
+        "oid": oid, "rid": rid, "pid": batch.pid,
+        # Fix round 4 (rule 18): the cap of a parent with a hidden roll-up target.
+        "data": _record_text(held, mark.after, clean, fresh),
         "actor": batch.who, "hot": _hot_rows(held.fields, clean)})
     mark.after = clean
 
@@ -3941,7 +4045,8 @@ async def _recompute_parents(db: Any, batch: _Batch, deadline: float) -> None:
                     data.pop(field.key, None)
                 else:
                     data[field.key] = value
-            await _derive_parent(timed, batch, key, data)
+            await _derive_parent(timed, batch, key, data,
+                                 frozenset(str(r.target) for r in work[key]))
 
 
 async def _run_steps(db: Any, batch: _Batch) -> list[Record | bool]:

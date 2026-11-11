@@ -127,6 +127,10 @@ describe("checkDraft, the row rules of C8a", () => {
     });
     expect(only(withLines(undefined), "error")).toEqual(["$.objects[1]"]);
     expect(only(withLines([{ role: "hr", read: "all" }]), "error")).toEqual([]);
+    // Fix round 4 (rule 19): a grant cannot hide the field that links a line to its record.
+    expect(only(withLines([{ role: "hr", read: "all", hide: ["m"] }]), "error")).toEqual([
+      "$.objects[1].access[0].hide",
+    ]);
   });
 });
 
