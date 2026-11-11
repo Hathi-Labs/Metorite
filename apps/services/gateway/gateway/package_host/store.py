@@ -13,8 +13,10 @@ package_install`` and the only ``INSERT INTO package_contribution`` of
 this module too. The disposal of §5.3 (PKG-9) holds the moves of ``state``
 and the delete of an install: :func:`remove_install`, :func:`pause_install`
 and :func:`resume_install`. :func:`set_version` (PKG-8a) holds the UPDATE of
-``version`` and the DELETE of the claims of one install. The hermetic suite
-scans ``apps/`` and ``packages/`` for a write outside this module. The member
+``version`` and the DELETE of the claims of one install. The lifetime of
+§6.2 (PKG-10a) holds the other UPDATE statements: :func:`keep_install`,
+:func:`restore_install` and :func:`expire_due`. The hermetic suite scans
+``apps/`` and ``packages/`` for a write outside this module. The member
 purge deletes rows, and that stays legal.
 
 **The disposal.** Each of the three takes the org lock of :func:`install`
@@ -23,6 +25,14 @@ another org is :class:`InstallNotFound`, as a missing id is. A pause keeps
 the claims and their keys. A move from ``archived`` is
 :class:`StateRefused`. The routes of PKG-8, PKG-12 and J3 decide who may
 call each one.
+
+**The lifetime (§6.2, PKG-10a).** The four lifetime functions take the same
+org lock and the same guards. :func:`keep_install` clears ``ends_at``.
+:func:`restore_install` makes an archived install active again, until 30
+days after ``archived_at``. :func:`expire_due` archives each due install,
+then deletes each install that was archived 30 days before. A paused
+install never expires (PKG-Q8). :func:`notice_times` gives the times of the
+two bell notes and sends nothing. No route, loop or flag calls them yet.
 
 **Tenancy (R5).** :func:`install` takes a session that the caller opened with
 ``tenant_session(org)``. It opens no session and commits nothing. No function
@@ -139,7 +149,7 @@ import json
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import cache
 from typing import Any
 
@@ -279,6 +289,69 @@ _STATE_SQL = (
 _SET_STATE_SQL = (
     "UPDATE package_install SET state = :to, updated_at = now() "
     f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:install AS uuid) AND state = :was"
+)
+
+# ── The lifetime SQL (§6.2, PKG-10a) ────────────────────────────────────────
+
+#: The time that the owner has to restore an archived install (§6.2).
+RESTORE_DAYS = timedelta(days=30)
+#: The end date of a restored install, after the restore (PKG-Q7 default).
+RESTORED_ENDS = timedelta(days=30)
+#: The first bell note comes this long before ``ends_at`` (PKG-10c).
+NOTICE_BEFORE_END = timedelta(days=3)
+#: The second bell note comes this long after ``archived_at`` (PKG-10c).
+NOTICE_AFTER_ARCHIVE = RESTORE_DAYS - NOTICE_BEFORE_END
+#: The most rows that one step of :func:`expire_due` moves in one call.
+EXPIRE_LIMIT = 500
+
+#: The lifetime of one install of the bound org, with the row lock.
+_LIFE_SQL = (
+    "SELECT state, ends_at, archived_at, CAST(app_id AS text) FROM package_install "
+    f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:install AS uuid) FOR UPDATE"
+)
+
+#: A keep of one install that is not archived. The read under the lock
+#: found ``ends_at`` set.
+_KEEP_SQL = (
+    "UPDATE package_install SET ends_at = NULL, updated_at = now() "
+    f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:install AS uuid) "
+    "AND state IN ('active', 'paused')"
+)
+
+#: A restore of one archived install. One statement sets ``state`` and
+#: clears ``archived_at``, because the CHECK ``package_install_archived_at``
+#: reads both.
+_RESTORE_SQL = (
+    "UPDATE package_install SET state = 'active', archived_at = NULL, "
+    "ends_at = :ends, updated_at = now() "
+    f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:install AS uuid) "
+    "AND state = 'archived'"
+)
+
+#: The active installs of the bound org whose end date is at or before
+#: ``:now``, oldest first. A paused install is not due (PKG-Q8).
+_DUE_SQL = (
+    "SELECT CAST(id AS text) FROM package_install "
+    f"WHERE organization_id = {_BOUND_ORG} AND state = 'active' "
+    "AND ends_at IS NOT NULL AND ends_at <= :now "
+    "ORDER BY ends_at, id LIMIT :limit FOR UPDATE"
+)
+
+#: The archive of one due install. The guard repeats the rule of
+#: :data:`_DUE_SQL`, so the statement never archives a row that changed.
+_ARCHIVE_SQL = (
+    "UPDATE package_install SET state = 'archived', archived_at = :now, updated_at = now() "
+    f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:install AS uuid) "
+    "AND state = 'active' AND ends_at <= :now RETURNING 1"
+)
+
+#: The archived installs of the bound org whose restore time has ended,
+#: oldest first.
+_SPENT_SQL = (
+    "SELECT CAST(id AS text) FROM package_install "
+    f"WHERE organization_id = {_BOUND_ORG} AND state = 'archived' "
+    "AND archived_at <= :cutoff "
+    "ORDER BY archived_at, id LIMIT :limit FOR UPDATE"
 )
 
 
@@ -519,6 +592,20 @@ def _ends_at(ends_at: object) -> datetime | None:
     if not isinstance(ends_at, datetime) or ends_at.tzinfo is None:
         raise InstallError("bad_ends_at", "The end date must be a datetime with a time zone.")
     return ends_at
+
+
+def _now(now: object) -> datetime:
+    """The time of a lifetime call. A time with no zone is refused, because
+    Postgres would read it in the zone of the session."""
+    if not isinstance(now, datetime) or now.tzinfo is None or now.utcoffset() is None:
+        raise InstallError("bad_now", "The time must be a datetime with a time zone.")
+    return now
+
+
+def _limit(limit: object) -> int:
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= _INT4_MAX:
+        raise InstallError("bad_limit", "The limit must be a whole number from 1.")
+    return limit
 
 
 def _too_deep(payload: object) -> bool:
@@ -786,6 +873,128 @@ async def resume_install(db: Any, *, install_id: str) -> bool:
     and writes nothing. Answers True when the state changed.
     """
     return await _move_state(db, _install_id(install_id), "paused", "active", "a resume")
+
+
+# ── The lifetime (§6.2, PKG-10a) ────────────────────────────────────────────
+#
+# ``resolve.py`` already hides an install at its ``ends_at`` (§5.2 step 2),
+# so a member stops seeing it at that time with no write. The daily job of
+# PKG-10b calls :func:`expire_due` only to archive the install and, 30 days
+# later, to delete it. No function here sends a bell note (PKG-10c).
+
+
+async def _life(db: Any, install: str, act: str) -> tuple[str, datetime | None,
+                                                          datetime | None, str]:
+    """The state, ``ends_at``, ``archived_at`` and app id of one install,
+    under the org lock and the row lock, or :class:`InstallNotFound`."""
+    await _lock_org(db, act)
+    row = (await db.execute(text(_LIFE_SQL), {"install": install})).first()
+    if row is None:
+        raise InstallNotFound("install_not_found", "No install has this id.")
+    return str(row[0]), row[1], row[2], str(row[3])
+
+
+async def keep_install(db: Any, *, install_id: str) -> bool:
+    """Clear the end date of the install *install_id* of the bound org.
+
+    This is the Keep of §6.2 step 2. An active or a paused install can be
+    kept. An archived install raises :class:`StateRefused` (409) and writes
+    nothing: a restore comes first. A keep of an install with no end date
+    changes nothing and answers False. Answers True when ``ends_at`` changed.
+    """
+    install = _install_id(install_id)
+    state, ends_at, _, _ = await _life(db, install, "a keep")
+    if state == "archived":
+        raise StateRefused(
+            "state_refused", "An archived install cannot be kept. Restore it first.")
+    if ends_at is None:
+        return False
+    await db.execute(text(_KEEP_SQL), {"install": install})
+    return True
+
+
+async def restore_install(db: Any, *, install_id: str, now: datetime) -> datetime:
+    """Make the archived install *install_id* of the bound org active again.
+
+    *now* is the time of the restore, with a time zone. The restore must come
+    before ``archived_at`` plus :data:`RESTORE_DAYS`. Else, and for an install
+    that is not archived, it raises :class:`StateRefused` (409) and writes
+    nothing. An app that is archived, or that is no longer a Studio package,
+    raises :class:`AppNotInstallable` (404), as :func:`install` does.
+
+    The install keeps its id, version, scope and claim rows. An archived
+    install kept each claim and its key (§4), so the restore checks no claim.
+    The new ``ends_at`` is *now* plus :data:`RESTORED_ENDS` (PKG-Q7). Answers
+    the new ``ends_at``.
+    """
+    install = _install_id(install_id)
+    at = _now(now)
+    state, _, archived_at, app = await _life(db, install, "a restore")
+    if state != "archived" or archived_at is None:
+        raise StateRefused(
+            "state_refused", f"An install that is {state} cannot be restored.")
+    if at >= archived_at + RESTORE_DAYS:
+        raise StateRefused(
+            "restore_closed", "The time to restore this install has ended.")
+    if (await db.execute(text(_APP_SQL), {"app": app})).first() is None:
+        raise AppNotInstallable(
+            "app_not_installable", "No Studio package that is not archived has this id.")
+    ends = at + RESTORED_ENDS
+    await db.execute(text(_RESTORE_SQL), {"install": install, "ends": ends})
+    return ends
+
+
+async def expire_due(db: Any, *, now: datetime, limit: int = EXPIRE_LIMIT) -> dict[str, int]:
+    """Archive the due installs of the bound org, then delete the spent ones.
+
+    *now* is the time of the run, with a time zone. Step 1 archives each
+    ``active`` install whose ``ends_at`` is at or before *now*, with
+    ``archived_at`` = *now*. It keeps each claim. A paused install does not
+    change (PKG-Q8). Step 2 deletes, through :func:`remove_install`, each
+    archived install whose ``archived_at`` is at or before *now* minus
+    :data:`RESTORE_DAYS`. Step 1 runs first, and an install that it archived
+    has ``archived_at`` = *now*, so step 2 never deletes it in the same call.
+
+    Each step moves at most *limit* rows. The org lock makes two runs of one
+    org go one at a time, so the second run finds no due install. The lock is
+    an advisory transaction lock, and Postgres lets one session take it again.
+    So :func:`remove_install` takes it again with no wait. Answers the count
+    of each step as ``{"archived": n, "deleted": n}``.
+    """
+    at = _now(now)
+    most = _limit(limit)
+    await _lock_org(db, "an expiry")
+    archived = 0
+    due = (await db.execute(text(_DUE_SQL), {"now": at, "limit": most})).all()
+    for (install,) in due:
+        hit = (await db.execute(text(_ARCHIVE_SQL), {"install": install, "now": at})).first()
+        archived += hit is not None
+    deleted = 0
+    spent = (await db.execute(text(_SPENT_SQL), {
+        "cutoff": at - RESTORE_DAYS, "limit": most})).all()
+    for (install,) in spent:
+        try:
+            await remove_install(db, install_id=install)
+        except InstallNotFound:
+            # The row lock holds it, so this is not expected. The removal
+            # raised before its statement, so the transaction is still good.
+            continue
+        deleted += 1
+    return {"archived": archived, "deleted": deleted}
+
+
+def notice_times(ends_at: datetime | None,
+                 archived_at: datetime | None) -> tuple[datetime | None, datetime | None]:
+    """The times of the two bell notes of §6.2, and nothing more.
+
+    The first note is :data:`NOTICE_BEFORE_END` before *ends_at*. The second
+    is :data:`NOTICE_AFTER_ARCHIVE` after *archived_at*, which is 3 days
+    before the deletion. A None input gives None for its note. This function
+    sends nothing. PKG-10c owns the send.
+    """
+    first = None if ends_at is None else ends_at - NOTICE_BEFORE_END
+    second = None if archived_at is None else archived_at + NOTICE_AFTER_ARCHIVE
+    return first, second
 
 
 # ── The version of an install (PKG-8a) ──────────────────────────────────────

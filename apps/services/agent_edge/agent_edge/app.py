@@ -10,6 +10,7 @@ Routes, all under the issuer ``https://mcp.metorite.com``:
   (``/.well-known/oauth-protected-resource/mcp``), which RFC 9728 §3.1 names.
 * ``POST /oauth/token`` and ``POST /oauth/revoke`` — :mod:`agent_edge.token_endpoint`.
 * ``POST /mcp`` — the MCP endpoint (EA-3b-1), :mod:`agent_edge.mcp`.
+* ``POST /mcp/readonly`` — the same endpoint with the read scopes only (SW-34b).
 
 ⚠️ **The flag.** While ``agent_access_enabled`` is false, EVERY request
 answers 404 and does nothing else: every path, every method, ``OPTIONS`` and
@@ -110,6 +111,10 @@ def create_app() -> FastAPI:
     # of spec §9.6 in their order (the key before the method) and the router
     # never answers a 405 first.
     app.add_api_route(mcp.path(), mcp.endpoint, methods=mcp.ROUTE_METHODS)
+    # SW-34b: the read-only door. The same token, with its scopes narrowed to
+    # the read scopes. Fence: tests/unit/test_mcp_edge_readonly.py.
+    app.add_api_route(mcp.readonly_path(), mcp.readonly_endpoint,
+                      methods=mcp.ROUTE_METHODS)
     return app
 
 

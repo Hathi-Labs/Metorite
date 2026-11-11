@@ -158,6 +158,7 @@ import {
   setAssistantSession,
   setDockWidth,
   barMayJoin,
+  joinOnlyTakes,
   stripText,
   surfaceContext,
   switchTarget,
@@ -318,6 +319,15 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
     if (assistantState().sessionId !== st.sessionId) return;
     // A chat this page made counts, also when a full storage lost its row.
     const cur = getSessions().find((s) => s.id === st.sessionId) ?? madeHere.current.get(st.sessionId);
+    // STU-B2c-2c fix round 1: the answer of an approval card goes into the
+    // card's own chat or into no chat. It never opens a fresh chat, because a
+    // new chat lacks the turn that asked. The card then says that the words
+    // did not reach the chat.
+    if (ask.joinOnly) {
+      if (joinOnlyTakes(cur)) setDecided({ seq: ask.seq, sessionId: st.sessionId });
+      else consumeAsk(ask.seq, "lost");
+      return;
+    }
     // An empty chat of the member's own takes the words. Any other chat
     // takes them only if the bar may join it: never a room, never an
     // archived chat, never a stale one.

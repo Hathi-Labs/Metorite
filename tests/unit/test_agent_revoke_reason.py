@@ -12,8 +12,8 @@ store runs as a NON-privileged role on a phase-4-promoted catalog, the
 ``promoted`` fixture of ``test_agent_oauth_server.py`` (R8).
 
 * one case for each reason that a path writes;
-* ``REVOKE_REASONS`` equals the reasons that the code passes, plus
-  ``flag_off``, which EA-19d writes;
+* ``REVOKE_REASONS`` equals the reasons that the code passes. EA-19c
+  writes ``flag_off``;
 * an unknown reason raises ``ValueError`` before any SQL runs;
 * a row that an old writer revoked keeps NULL, and the migration is
   idempotent.
@@ -89,7 +89,8 @@ _CALLERS = (
 )
 
 #: The writers that revoke a connection. Each call of one must pass ``reason``.
-_WRITERS = {"_revoke_in", "revoke_connection", "revoke_connection_scoped"}
+_WRITERS = {"_revoke_in", "revoke_connection", "revoke_connection_scoped",
+            "revoke_box_connections"}
 
 
 def _migration() -> Path:
@@ -453,10 +454,9 @@ class TestTheSetIsTheReasonsTheCodePasses:
     def test_the_set_is_the_reasons_the_code_passes(self):
         passed, defects = _passed_reasons()
         assert defects == []
-        # flag_off has no writer until EA-19d (spec §10.9 question 5).
-        expected = set(agent_tokens.REVOKE_REASONS)
-        assert passed | {agent_tokens.REVOKE_FLAG_OFF} == expected
-        assert agent_tokens.REVOKE_FLAG_OFF not in passed
+        # EA-19c writes flag_off: the revoke of all box tokens (spec §10.9
+        # question 5).
+        assert passed == set(agent_tokens.REVOKE_REASONS)
         spec = frozenset({
             "member", "admin", "replaced", "refresh_reuse", "code_replay",
             "oauth_revoke", "approve_rollback", "flag_off"})
@@ -475,4 +475,5 @@ class TestTheSetIsTheReasonsTheCodePasses:
                     found += 1
                     name = node.targets[0].id
                     assert "revoked_reason = CAST(:reason AS TEXT)" in sql, name
-        assert found == 3, f"expected 3 connection revoke statements, found {found}"
+        # EA-19c adds the revoke of all box connections of an organization.
+        assert found == 4, f"expected 4 connection revoke statements, found {found}"
