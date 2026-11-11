@@ -33,13 +33,16 @@ i. No connection of the app role is in a transaction while the app runs the
    call.
 
 **The mutations (R7).** Commit before each, and restore with git after.
+Each result below was run on 2026-11-11.
 
-* R1. ``door_op.forwarded``: forward no header. Each read of a and c goes
-  red, because the app then answers 401.
+* R1. ``door_op.forwarded``: forward no header. Seven tests go red, the
+  owner read first, because the app then answers 401.
 * R2. ``invoke._run_executor``: run the call inside the session of the
-  second check. ``test_no_connection_is_in_a_transaction_during_the_call``.
+  second check. Only ``test_no_connection_is_in_a_transaction_during_the_call``
+  goes red.
 * R3. ``invoke._audit_detail``: drop ``status``.
-  ``test_each_call_writes_one_audit_row_with_no_page_data``.
+  ``test_each_call_writes_one_audit_row_with_no_page_data`` and the org B test
+  go red.
 
 Run (a PRIVATE ladder database, one R8 suite at a time)::
 

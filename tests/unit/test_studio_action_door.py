@@ -1,6 +1,7 @@
-"""The action door of AI Studio, the hermetic half (STU-B2a, B2b-1, B2c-1 and B2c-2a).
+"""The action door of AI Studio, the hermetic half (STU-B2a, B2b-1, B2b-2b, B2c-1, B2c-2a).
 
-Spec: ``project-docs/specs/ai_studio.md`` §3.2, and §14 B2a, B2b-1, B2c-1 and B2c-2a. Code:
+Spec: ``project-docs/specs/ai_studio.md`` §3.2, and §14 B2a, B2b-1, B2b-2, B2c-1 and B2c-2a.
+The door op of B2b-2b is in ``TestTheDoorOp`` at the end of this file. Code:
 ``gateway/routes/studio/invoke.py``. The R8 half, on a real Postgres, is
 ``test_studio_action_door_r8.py``. It proves the walls of the org, of the
 member and of the package, and the audit row.
@@ -1901,14 +1902,16 @@ class TestTheDelegatedWrites:
 # the fake, which records what it got. The R8 half is
 # ``test_studio_door_op_r8.py``: the real gateway app and the real Knowledge.
 #
-# The mutations (R7). Each turns a named test red:
+# The mutations (R7). Each ran on 2026-11-11, and each turned a named test red:
 #
 # * DO1. ``door_op.run``: await ``_send`` in the task of the door, not in a new
 #   task. ``test_no_context_var_of_the_app_returns_to_the_door``.
 # * DO2. ``_run_executor``: run the call inside the session of the second
 #   check. ``test_no_session_is_open_during_the_call``.
-# * DO3. ``door_op.forwarded``: forward every inbound header.
-#   ``test_the_call_carries_exactly_the_four_identity_headers``.
+# * DO3. ``door_op.forwarded``: forward a header that comes twice.
+#   ``test_a_header_sent_twice_is_not_forwarded``.
+# * DO3b. ``door_op.forwarded``: forward every inbound header.
+#   ``test_the_call_carries_exactly_the_four_identity_headers`` and two more.
 # * DO4. ``refusal_for``: drop the switch of the door op.
 #   ``test_with_the_switch_off_a_door_op_is_source_not_open_and_calls_nothing``.
 # * DO5. ``_door_op_of``: drop the ``/studio`` check.
