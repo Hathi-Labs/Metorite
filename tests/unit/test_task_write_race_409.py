@@ -78,6 +78,8 @@ def test_other_errors_and_http_errors_pass_through():
         # run that an agent write holds (NOWAIT, 55P03), and answers 409.
         ("tasks.py", '@router.patch("/tasks/{task_id}")'),
         ("tasks.py", '@router.post("/tasks/{task_id}/archive")'),
+        # Fix round 1: the put-back of a run locks it with NOWAIT too.
+        ("tasks.py", '@router.post("/tasks/{task_id}/unarchive")'),
         ("personal.py", '@router.delete("/my/tasks/{task_id}")'),
         ("imports.py", '@router.post("/import/runs/{run_id}/discard"'),
     ],
