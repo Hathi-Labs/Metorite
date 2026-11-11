@@ -28,7 +28,7 @@ import {
   attentionPage,
   resumeBody,
 } from "./needsAttention";
-import { type AgentsOverview, parseOverview } from "./agentsAtWork";
+import { type AgentRuns, type AgentsOverview, parseAgentRuns, parseOverview } from "./agentsAtWork";
 import type { Rule as RecurrenceRule } from "./recurrence";
 import { taskVersions } from "./taskUndo";
 
@@ -3427,6 +3427,23 @@ export const agentsOverviewApi = {
         throw new ProjectsApiError("The agents answer could not be read.", 200);
       }
       return overview;
+    } catch (err) {
+      if (err instanceof ProjectsApiError && [401, 403, 404].includes(err.status)) return null;
+      throw err;
+    }
+  },
+};
+
+/**
+ * WS-AGA AGA-9: the last runs of one agent (`GET /projects/agents/{key}/runs`).
+ * `null` means the member may not see this agent (404, 401 or 403).
+ */
+export const agentRecentRunsApi = {
+  read: async (agentKey: string): Promise<AgentRuns | null> => {
+    try {
+      const runs = parseAgentRuns(await call<unknown>(`agents/${encodeURIComponent(agentKey)}/runs`));
+      if (!runs) throw new ProjectsApiError("The runs answer could not be read.", 200);
+      return runs;
     } catch (err) {
       if (err instanceof ProjectsApiError && [401, 403, 404].includes(err.status)) return null;
       throw err;
