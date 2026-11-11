@@ -1186,7 +1186,7 @@ def _merge_style(prior: dict[str, Any], value: dict[str, Any]) -> dict[str, Any]
     merged = _merge(prior, value)
     if "languages" not in value and "language" in value:
         held, one = prior.get("languages"), value["language"]
-        if isinstance(one, str) and isinstance(held, list) and held[:1] == [one]:
+        if isinstance(one, str) and isinstance(held, list) and bool(held) and held[0] == one:
             merged["language"] = prior.get("language", one)
         else:
             merged.pop("languages", None)
