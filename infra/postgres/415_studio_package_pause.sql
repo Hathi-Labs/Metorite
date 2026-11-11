@@ -1,11 +1,11 @@
 -- ============================================================================
--- 412_studio_package_pause.sql - the kill switch of a Studio package
+-- 415_studio_package_pause.sql - the kill switch of a Studio package
 -- (WS-STU J3a, Metorite task 1201)
 -- ============================================================================
 -- Spec: project-docs/specs/ai_studio.md §9 item 7 and §14 J3a,
 --   package_host.md §5.3 (PKG-9). R1 · R5 · R6.
 -- R1: origin/main held 404 as its highest file on 2026-11-11. Open branches
---   held 405 to 410, and the PR of C8a took 411. So this file is 412. Check
+--   held 405 to 414 (C8a took 411, today-focus 412, publish-admin 413, slug 414). So this file is 415. Check
 --   the number again at merge (scripts/premerge.sh).
 --
 -- Why: an admin must stop a package in one step, and new actions must stop
