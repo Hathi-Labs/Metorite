@@ -112,9 +112,11 @@ verification commands.)
   table names the rung of each slice. The board holds one demo task for each
   rung, with the tag `Demo`, and a `Rung N` tag on each slice. Rung 0 (a
   leak, data loss, a broken live feature, a dated owner gate) outranks the
-  ladder. **Fence.** `tests/unit/test_playbook_ladder.py` (LAD-1, task 2888)
-  fences the playbook half. The spec half is advisory: the spec-auditor checks
-  the rung column.
+  ladder. R10 binds where the ladder is on, which is the default. A
+  plan-driven project, or a project that turns the ladder off, follows its own
+  style (D211 point 9). **Fence.** `tests/unit/test_playbook_ladder.py` (LAD-1,
+  task 2888) fences the playbook half. The spec half is advisory: the
+  spec-auditor checks the rung column.
 
 ---
 
@@ -6056,6 +6058,12 @@ The owner said in chat on 2026-11-11: prioritize in stages that give the most gr
 6. **The order of work.** Take the lowest open rung first, then the least slack to that rung's demo, then the priority. This changes the queue order of 2026-11-09 (the critical path by least slack). The product follows when LAD-4 (task 2891) ships. Until then, agents apply the order by hand.
 7. **The product default.** The playbook (LAD-1, task 2888), the Projects planning AI (LAD-2) and `get_plan` (LAD-3) teach and show the ladder. The text of the playbook stays neutral, as §4 of the playbook spec says. Epic: task 2887 (WS-LAD).
 8. **The program order.** AI Studio and the MCP climb first. Every other app project then gets its own ladder. The milestones M0 to M4 stay as the company's dates.
+9. **The default, not the only way** (owner, in chat, 2026-11-11). The owner asked that the project system defaults to the ladder and stays flexible for other ways of planning. So the ladder is one block of the work-style catalogue of D195 (`project_management_app.md` §13.1 rule 7).
+   - The ladder is on by default in Flow, Sprints or Cycles, Shape Up and Personal. It is off by default in Plan-driven, which keeps milestones, phase gates and the critical path.
+   - A project owner can switch it for one project. An org admin sets the default for new projects (LAD-5, task 2942).
+   - A person can ask for another way at any time. The agent then plans in that way and says what changes.
+   - Point 6 applies where the ladder is on. Where it is off, the order of the style applies, which for Plan-driven is D195.6 (the least slack on the critical path).
+   - HathiLabs keeps the ladder on for its own projects.
 
 Fence: `tests/unit/test_playbook_ladder.py` (LAD-1, task 2888) fences the playbook half (R7). R10 in §1 carries the rule to specs, and that half is advisory.
 
