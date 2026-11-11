@@ -980,6 +980,17 @@ class Settings(BaseSettings):
     # a change (`gateway/flag_reload.py`). Fence:
     # tests/unit/test_agent_guidance.py.
     agent_guidance_orgs: str = ""
+    # ── The policy store of agent work (WS-MCP SW-94, agent_coordination.md
+    #    §3.11.5 and SW-94) ───────────────────────────────────────────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, `POST /agent-policies` answers 404, and `policy_for`
+    # and `policy_for_actor` give the shipped default under the master flag of
+    # each key. The one reader is
+    # `gateway.routes.agent_policies.policies_allowed`. A SIGHUP reload applies
+    # a change (`gateway/flag_reload.py`). Fence:
+    # tests/unit/test_agent_policies_r8.py.
+    agent_policy_orgs: str = ""
     # SW-68a (agent_coordination.md SW-68): the organizations where `my_work`
     # (MCP and chat) ranks the tasks under an epic by the plan engine. Comma
     # list of organization ids, or `*`. Empty: off, and `my_work` keeps its old
