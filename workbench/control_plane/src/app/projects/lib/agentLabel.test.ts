@@ -128,5 +128,7 @@ describe("the surfaces pass the label", () => {
     const src = read("../components/AgentRunPanel.tsx");
     expect(src).toContain("agent_label: run?.agent_label ?? null");
     expect(src).toContain("(task.agent_label ?? null) === next.agent_label");
+    // A change of the label alone must run the effect again.
+    expect(src).toContain("run?.member_email, run?.agent_label]);");
   });
 });
