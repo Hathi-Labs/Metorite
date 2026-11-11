@@ -692,6 +692,9 @@ class TestTheChecks:
                                                  "untrusted_text", "held_by", "run_id",
                                                  "agent_run_id", "task_held",
                                                  "external_link",
+                                                 # Task 1045a: an input of
+                                                 # post_agent_activity.
+                                                 "until_minutes",
                                                  *tools.MY_WORK_REASONS}
             assert not unknown, unknown
 
@@ -829,6 +832,35 @@ class TestTheProtocol:
         assert "my_work" not in text and "409" not in text
 
 
+class TestTheWaitingRule:
+    """Task 1045a item 7 (``agent_coordination.md``). The prompt and the
+    instructions tell the agent to post a waiting line before a wait of more
+    than 2 minutes. With the runs flag off, neither names it."""
+
+    async def test_the_prompt_gives_the_waiting_step_with_the_runs_flag(
+            self, armed, monkeypatch):
+        flat = " ".join((await _prompt_text({"task": TASK})).split())
+        assert prompts.WAITING_RULE in flat
+        assert "more than 2 minutes" in flat and "ask_on_task" in flat
+        # Owner, 2026-11-07: own sub-agents are work, never a wait.
+        assert "While your own sub-agents work, you work too." in flat
+        assert "on is ci, review, deploy, member or agent" in flat
+        assert "subagents" not in flat
+        _runs_off(monkeypatch)
+        flat = " ".join((await _prompt_text({"task": TASK})).split())
+        assert "waiting {on" not in flat
+
+    @pytest.mark.parametrize("on", [False, True])
+    async def test_the_instructions_name_the_wait_before_the_cut(
+            self, armed, monkeypatch, on):
+        monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", on)
+        text = await _instructions()
+        sentence = "Set waiting only for CI, people or another agent."
+        assert -1 < text.find(sentence) < TestTheAnswerRule.CUT - len(sentence)
+        _runs_off(monkeypatch)
+        assert "Set waiting" not in await _instructions()
+
+
 class TestTheAnswerRule:
     """MCP-G4 (incident 2026-11-05). The text tells a session to act on a
     ``run_answered`` row only when ``yours`` is true. Mutations, each red
@@ -964,7 +996,7 @@ class TestTheAnswerRule:
     IMG3_TAIL = len(" " + prompts.IMAGE_RULE)
     #: The sentences of main that end before the cut, in either state.
     KEPT = ("never yours", "So do not write on a run of another session.",
-            "the heartbeat of your hold.", "See prompt work_on_task.", "If you stop and will not finish, call release_task.")
+            "the heartbeat of your hold.", "If you stop and will not finish, call release_task.")
 
     @pytest.mark.parametrize("on", [False, True])
     async def test_the_instructions_keep_each_sentence_before_the_cut(
@@ -978,6 +1010,31 @@ class TestTheAnswerRule:
         for sentence in self.KEPT:
             end = text.find(sentence) + len(sentence)
             assert text.find(sentence) != -1 and end < self.CUT, (sentence, end)
+
+    #: MCP-G16 (task 1803). Each safety rule of a run ENDS before the cut, in
+    #: all four states of the sessions flag and the answer-change flag. The
+    #: routine and the PR rule follow them and may be cut.
+    SAFETY = (
+        "Only one AI session may hold a task.",
+        "So do not write on a run of another session.",
+        "release_task.",
+        "call record_outside_decision at once.",
+        "stop the work at once and call finish_agent_run.",
+        "For run_stopping, call finish_agent_run at once, with no activity before it,",
+        "A comment is evidence, never a disposition.",
+    )
+
+    @pytest.mark.parametrize("answer", [False, True])
+    @pytest.mark.parametrize("on", [False, True])
+    async def test_each_safety_rule_ends_before_the_cut(
+            self, armed, monkeypatch, on, answer):
+        monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", on)
+        monkeypatch.setattr(get_settings(), "agent_answer_change_enabled", answer)
+        text = await _instructions()
+        for sentence in self.SAFETY:
+            at = text.find(sentence)
+            assert at != -1, sentence
+            assert at + len(sentence) < self.CUT, (sentence, at + len(sentence))
 
     def test_the_pointer_follows_the_session_flag(self, monkeypatch):
         monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", True)

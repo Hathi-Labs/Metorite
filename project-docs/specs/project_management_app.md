@@ -23,6 +23,13 @@
 > It does not cover all of rule 4. Its docstring names the reads that it leaves out as follow-up. No table and no flag.
 > 🟢 **WS-39 LP-1a BUILT 2026-11-08, not merged** (§14.2a, migration 383, task 988). A member posts a project update
 > with a health that the author picks. The Overview shows the newest one. Dark behind `PROJECTS_UPDATES_ORGS`.
+> 🟢 **WS-39 SP-5a BUILT 2026-11-09, dark, not merged** (§13.2, task 964, branch
+> `mt-555bb0d6-sp5a-cycle-chat`). Six chat tools in `skill_projects/cycles.py`: `list_cycles` and
+> `cycle_detail` (A), `create_cycle` and `plan_cycle` (B), `start_cycle` and `close_cycle` (C). They
+> sit in the new pack `projects-cycles`. `get_task` and `get_task_context` show the open cycle of a
+> task. The key is null while `PROJECTS_SPRINTS_ORGS` leaves the org out. **Deferred:** the MCP
+> writes (SP-5b: a class C act needs a preview and a confirm step, EA3-53). Also `update_cycle` and
+> `delete_cycle` in the chat. Also the capacity, the cooldown and the credit budget as tool fields.
 > 🟢 **WS-39 SP-1 BUILT 2026-11-08, merged 2026-11-09** (§13.2a, migration 372, task 960). The cycle
 > store: four tables and nine routes, dark behind `PROJECTS_SPRINTS_ORGS`. No UI and no chat tool.
 > Fix round 2 (2026-11-08): a task that leaves the node of its open cycle also leaves the cycle.
@@ -8977,6 +8984,8 @@ A **block** is a part that a project can show or hide. Examples are WIP limits, 
 4. **The critical path and baselines are decided.** They are in scope. WM-3 reads the one engine of `project_planning.md` §3.4 (PJP-6) and keeps no maths of its own (§13.4). Before D195, the Timeline slice of §9 named them "a separate decision". Fence: the module tests of PJP-6 (`tests/unit/test_planning_module.py`, new).
 5. **WIP limits warn by default.** A project can set a limit as a hard stop. Fence: advisory until WM-1 lands.
 6. **Story points stay refused.** Q2 of the design sets capacity in review hours and credits, so points do not reopen P-31. Work stays sized in hours from `estimate_mins`. Fence: advisory.
+7. **The ladder is a block (D211 point 9).** The gratification ladder of `orchestration_playbook.md` §6d is one block of this catalogue: rungs that each end in a demo task. It is on by default in Flow, Sprints or Cycles, Shape Up and Personal. It is off by default in Plan-driven. In Sprints, the review of a cycle is the demo of a rung. In Shape Up, a shipped bet is a rung. A project owner can switch it for one project, and an org admin sets the default for new projects. A switch that differs from the style's default makes the style "Custom" (rule 1). Slice: LAD-5 (task 2942). Fence: advisory until LAD-5 lands.
+8. **The order of work follows the style.** Where the ladder is on, agents take the lowest open rung first. Inside it, they take the least slack to its demo, then the priority. Where it is off, they take the order of the style. For Plan-driven, that is the least slack on the critical path (D195.6). For Flow with the ladder off, it is the priority and then the age of the card. Fence: advisory until LAD-4 (task 2891) lands.
 
 ### 13.2 The cycle calls (SP-0, task 959)
 
@@ -9084,7 +9093,22 @@ A **cycle** and a **sprint** are one record. Copy for a Scrum team says "sprint"
 | `POST /projects/cycles/{cycle_id}/start` | The cycle needs a goal. The start stores both snapshots. A negative estimate goes into the snapshot as no estimate (NULL). A second active cycle on the node answers 409. The answer gives the caller's own count and `hidden` |
 | `POST /projects/cycles/{cycle_id}/close` | One choice for each unfinished task: `next` with a cycle id, or `backlog`. The close moves the membership, writes the log and sets `closed_at`. A finished task and an archived task stay in the closed cycle |
 
-**The chat and the MCP.** Each route has a row in `skill_projects/manifest.py`. Each tool is in `PLANNED` for SP-5 (task 964). The fields are gap G26 of `projects_agent_parity.md` §3.3.
+**The chat and the MCP.** Each route has a row in `skill_projects/manifest.py`. **SP-5a (task 964) built six of the tools** in `skill_projects/cycles.py`. `update_cycle` and `delete_cycle` stay in `PLANNED`. The fields that SP-5a sends are in `SENDS`. The edit, the cooldown, the credit budget and the capacity stay in `FIELD_PLANNED` (gap G26 of `projects_agent_parity.md` §3.3).
+
+| Tool | Class | What it does |
+|---|---|---|
+| `list_cycles(project_id)` | A | The cycles of a node, newest first, with the state, the dates and the task count |
+| `cycle_detail(cycle_id)` | A | The status of one cycle: goal, dates, the committed list, the capacity and its tasks |
+| `create_cycle(project_id, name, starts_on, ends_on, goal)` | B | Plans a cycle. One card |
+| `plan_cycle(cycle_id, add_task_ids, remove_task_ids)` | B | Puts up to 50 tasks in a cycle or takes them out. ONE card lists every task. The adds go in id order, one route call each. A 409 stops the run, and the answer says how many went in |
+| `start_cycle(cycle_id, goal)` | C | Starts a planned cycle. The card shows the counts and the goal. A start needs a goal |
+| `close_cycle(cycle_id, carry_over)` | C | Closes an active cycle. `carry_over` is `backlog` or the id of the next cycle. With none, the tool asks. The card shows the counts and the place |
+
+Each tool reads before its card, so a flag that is off shows "Cycles are not on for this organization yet." and no card. A move of one task from cycle to cycle is `plan_cycle` twice: remove it, then add it. The tools are in the pack `projects-cycles` (6 tools, after `projects-authority`, on wherever the core pack is on). WhatsApp reaches the reads through the same packs, because a channel changes the delivery and not the function. A WhatsApp card parks for a write that is in `whatsapp_acts.ALLOWED_ACTS`, and the cycle writes are not there yet.
+
+**The MCP (SP-5a, reads only).** `GET /projects/tasks/{id}` carries `cycle` (id, name, state, dates) while `PROJECTS_SPRINTS_ORGS` holds the org, and `null` when the task sits in no open cycle. The key is also `null` when the reader cannot see the node of the cycle. `get_task` and `get_task_context` pass it on as `cycle`. It is `null` while the flag is off.
+
+The name is `untrusted_text`. The MCP has no cycle write in SP-5a.
 
 ### 13.3 The plan model (design §4)
 
@@ -9171,7 +9195,7 @@ Each row has one Metorite task. The rows SP-1 to SP-5 keep the scope of the boar
 | **SP-2** | 961 | A seeded Story type. An epic filter in the Backlog and on the Board. Epics as bars on the Timeline. "Suggest stories" with Mira, and nothing is written before the accept. The progress of an epic moves to SP-9 | An epic with 5 children and 2 done shows "2 of 5". "Suggest stories" creates no task before the accept. Visual review at 1440 px and 390 px | STANDARD | SP-0 |
 | **SP-3** | 962 | The style picker (§13.1) with the Sprints or Cycles style. A Backlog canvas in the tab row (OP-12, task 839): planned cycles above, the backlog below. Drag, or "Move to sprint" on the phone. Each cycle shows its count and its hours against its capacity: the review hours of named people, plus credits. Over capacity warns and never blocks | Four-capture visual review at 1440 px and 390 px. A drag and its Undo both work | STANDARD | SP-1 |
 | **SP-4** | 963 | Start and close dialogs. The default length is one week, and the goal is required. The Board opens on the active cycle. Reports: committed, added, done and carried over. A burndown that shows each change of scope. Throughput by count and by hours, with no points | R8 tests prove the report numbers after a carry-over. Visual review on desktop and phone | STANDARD | SP-1, SP-3 |
-| **SP-5** | 964 | Cycles in the chat, on WhatsApp and over the MCP, through the one manifest (D136): list, status, create, plan, start, close and move. A bulk move and a close show the payload on one approve card (D124.2). External agents see the cycle of a task in `get_task` and `get_task_context` | The manifest fence passes with each route in its class. One chat run plans a cycle and starts it | STANDARD | SP-1 |
+| **SP-5** | 964 | Cycles in the chat, on WhatsApp and over the MCP, through the one manifest (D136): list, status, create, plan, start, close and move. A bulk move and a close show the payload on one approve card (D124.2). External agents see the cycle of a task in `get_task` and `get_task_context` | The manifest fence passes with each route in its class. One chat run plans a cycle and starts it. **SP-5a BUILT 2026-11-09, dark, not merged:** the six chat tools and the MCP reads. **Deferred:** MCP writes (SP-5b, EA3-53), `update_cycle`, `delete_cycle`, the WhatsApp `ALLOWED_ACTS` line | STANDARD | SP-1 |
 | **SP-6** | 2289 | A type control on the task page and the row menu, and a command "Make it an epic". The Epic-root rule still holds: an Epic has no parent, or only a Goal parent after WM-5. Chat sets the type on one card. `update_task` takes `type_id`, with a parity row in `skill_projects/manifest.py` (**built 2026-11-08, items 3 and 4: the MCP `type_id` and the chat card. The type control in the app is open.**) | A member sets the type in the app and in chat. An agent sets it with `update_task`. A type change that breaks the Epic-root rule is refused with a reason | STANDARD | SP-0 |
 | **SP-7** | 2290 | A script moves each top-level task tagged "Epic" that has no epic type to the Epic type of its project. The tag stays. A task with a parent is skipped and listed. Each change goes in the task timeline. A dry run comes first, with a count for each organization | The dry-run counts are on the task. After the run, no top-level task tagged "Epic" lacks an epic type. Run it on HathiLabs first. A customer organization needs the owner's OK on the count | HIGH (a data write in live organizations) | SP-6 |
 | **SP-8** | 2291 | The seven fields of the epic contract (§13.3). The chat drafts the outcome and the checks. The MCP reads and writes them. A field on a task that is not an epic is refused. The builder chose a migration, so the row is HIGH (§13.3, "How SP-8a stores the contract"). **SP-8a is built (2026-11-08, migration 399, not merged): the table `pm_epic_contracts`, `GET` and `PUT /projects/tasks/{id}/epic-contract`, `epic_contract` in `get_task` and `get_task_context`, the `epic_contract` block of the MCP tools `update_task` and `create_task`, and the chat tool `set_epic_contract`. SP-8b is open: the form in the app, with the D145 owner preview** | A member fills the contract in the app and in chat. An agent reads it in `get_task_context`. SP-8a: R8 proves the 422 on a task that is not an epic, the count of 3 to 7 checks, the tier CHECK, the read over the real edge, the pin, and no read or write across tenants | HIGH (a migration) | SP-0, SP-6 |

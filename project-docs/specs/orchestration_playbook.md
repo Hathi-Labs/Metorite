@@ -1,6 +1,6 @@
 # Orchestration playbook — the know-how that Metorite ships to every organization that connects
 
-**Status: ACTIVE (PB-0, 2026-11-06). KIT-1 (the kit core, task 2549), KIT-2b, KIT-2c and KIT-2d (the Codex, Copilot, Gemini CLI and Antigravity packs, tasks 2550 to 2552) and the KIT-6 tooling are built, with no live client run. The rest is not.** The decision is **D186** in `work_plan.md` §3, and task 1906 (SW-P10) planned this spec. Its slices are PB-1 to PB-10, and the kit slices KIT-0 to KIT-9 (§6a, epic 2547). Each has a task on the board.
+**Status: ACTIVE (PB-0, 2026-11-06). Built so far: PB-1, PB-2, PB-3a, PB-3b, PB-4, PB-5, KIT-0, KIT-1, KIT-2b, KIT-2c, KIT-2d and the KIT-6 tooling, with no live client run. The rest is not.** The decision is **D186** in `work_plan.md` §3, and task 1906 (SW-P10) planned this spec. Its slices are PB-1 to PB-10, and the kit slices KIT-0 to KIT-9 (§6a, epic 2547). Each has a task on the board.
 
 **Board row:** **WS-MCP** in `work_plan.md` §2.1. **Owner direction (2026-11-06):** Metorite "not only becomes a place we use for orchestrating multiple agents". It "also contains the know-how and understanding in the system prompt to help set up multi-org orchestration systems for whoever connects the Metorite MCP." **Price:** part of the flat seat (`launch_surface.md` §4). No SKU and no add-on (D186.3).
 
@@ -237,9 +237,23 @@ The brief holds no secret. The program plan (task 2546) holds the order of the p
 - **The delegation brief** (§6b) names the ladder: each rung, its demo task and its state. The entry point is the first ready slice of the lowest open rung.
 - **Done.** A rung is done when the owner of the project sees the demo and says so on the demo task. For a small rung, the captures are enough.
 
-**What carries the rule to every agent.** Epic task 2887 (WS-LAD) holds four slices.
+**Other ways of planning.** The ladder is the default, not the only way (D211 point 9). It is one block of the work-style catalogue of `project_management_app.md` §13.1.
+- The ladder is on by default in Flow, Sprints or Cycles, Shape Up and Personal. In Sprints, the review of a cycle is the demo of a rung. In Shape Up, a shipped bet is a rung.
+- The ladder is off by default in Plan-driven. That style plans by milestones, phase gates and the critical path to the end date.
+- A project owner can turn the ladder off or on for one project. An org admin sets the default for new projects (LAD-5).
+- A person can ask for another way at any time, in the app or in chat. The agent then plans in that way, says what changes, and does not add rungs.
+- Where the ladder is off, the order of work is the order of the style. For a plan-driven project, that is the least slack on the critical path (D195.6).
 
-LAD-1 (task 2888) teaches the rule in `kit/plan-the-work`, `kit/skill/planning`, `start-here` and the `plan_slices` prompt. LAD-2 makes the Projects planning AI draft the rungs first. LAD-3 shows the rungs and the next demo in `get_plan` and in the plan view. LAD-4 makes `my_work` take the nearest rung first. Until LAD-4 ships, an agent applies the order of this section by hand, with the `Rung N` tags and `get_plan`.
+**What carries the rule to every agent.** Epic task 2887 (WS-LAD) holds seven slices.
+
+- LAD-0 (task 2941) records that the ladder is the default and that other ways stay open.
+- LAD-1 (task 2888) teaches the rule in `kit/plan-the-work`, `kit/skill/planning`, `start-here` and the `plan_slices` prompt. LAD-1b (task 2943) teaches the other ways in the same pages.
+- LAD-5 (task 2942) adds the switch for each project and the org default.
+- LAD-2 makes the Projects planning AI draft the rungs first, where the ladder is on.
+- LAD-3 shows the rungs and the next demo in `get_plan` and in the plan view.
+- LAD-4 makes `my_work` take the nearest rung first, where the ladder is on.
+
+Until LAD-4 ships, an agent applies the order of this section by hand, with the `Rung N` tags and `get_plan`.
 
 **Fence.** `tests/unit/test_playbook_ladder.py` (LAD-1) proves that the planning pages and the `plan_slices` prompt state the demo task, the `Rung N` tag, rung 0 and rule 5. It checks words, so it cannot catch a page that contradicts the rule. The reviewer of a playbook change reads the pages against this section.
 
@@ -284,7 +298,7 @@ Each names its scope, its done-when, its fence (R7), its risk tier and its gate.
 #### PB-5 · The default layer, and the neutral fence
 
 - **Metorite task.** 1951.
-- **Scope.** The Metorite default level in guidance (SW-31): read-only, versioned, below the organization. The setting that switches tips off. It widens the neutral test to the product strings and defaults, and adds the drift test of §4.
+- **Scope.** The Metorite default level in guidance (SW-31): read-only, versioned, below the organization. It widens the neutral test to the product strings and defaults, and adds the drift test of §4. **As built (2026-11-07):** the gateway adds one block of level `default` at the end of the guidance answer, built from the playbook topic `default-guidance` (its version is the topic's version), for an organization on `playbook_orgs` and on `AGENT_GUIDANCE_ORGS`. It is the farthest block, so the cap drops it first. No route writes it and the history never lists it. The edge accepts the level `default` and the source kind `default`. The PB-1 drift test already exists (`test_playbook_org_neutral.py`), and PB-5 widens the scan to the instructions, the `work_on_task` messages, every tool description, the default block, and (when they exist) the protocol lines and tips. **Not built:** the setting that switches tips off for one organization. The allowlist `playbook_orgs` is the switch for now, and the per-organization policy key waits for SW-94.
 - **Done when.** `get_task_context` returns the default block last. A HathiLabs token in any playbook file fails the test. A token in the fixture that is gone from `CLAUDE.md` fails the second test.
 - **Fence.** `test_playbook_org_neutral.py` (extended), `test_agent_guidance_r8.py`.
 - **Risk.** HIGH (a channel that reaches every agent, tenancy). **Gate.** AGENT-SAFE. **Depends on.** PB-1, SW-31.
