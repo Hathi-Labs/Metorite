@@ -20,6 +20,7 @@ R7, the mutations (each turns a test here red, see the AGA-7 report):
 * **M4** ``_reach_sql`` drops the lead arm (``:led``) -> the lead test.
 * **M5** the row name of an outside agent reads the self-declared
   ``agent_connection.client_name`` -> the spoofed-name test.
+* **M6** ``_reach_sql`` drops ``lower()`` in one arm -> the mixed-case test.
 """
 
 from __future__ import annotations
@@ -47,6 +48,13 @@ LEAD_A = "aga7-lead@a-overview.test"
 MEMBER_A = "aga7-member@a-overview.test"
 OTHER_A = "aga7-other@a-overview.test"
 ADMIN_B = "aga7-admin@b-overview.test"
+#: A member whose session email is in mixed case. Each stored value below is
+#: in another case, so each arm of the reach matches only through lower().
+MIXED_SESSION = "AGA7-Mixed.Member@A-Overview.TEST"
+MIXED_CREATOR = "aga7-MIXED.member@a-overview.test"
+MIXED_ASSIGNEE = "Aga7-Mixed.MEMBER@a-overview.test"
+MIXED_RUNNER = "aga7-mixed.Member@A-OVERVIEW.test"
+MIXED_LEAD = "AGA7-MIXED.MEMBER@A-OVERVIEW.TEST"
 
 #: One stamp for each outside agent.
 VIA_X = "mcp:acme:x-agent"  # on the member's own task; org B has one too
@@ -54,6 +62,11 @@ VIA_Y = "mcp:acme:y-agent"  # awaiting on another member's task
 VIA_Z = "mcp:acme:z-agent"  # failed on a task of the led project
 VIA_W = "mcp:acme:w-agent"  # the member's own run on another member's task
 VIA_C = "mcp:acme:c-agent"  # an open run on a revoked connection
+VIA_M1 = "mcp:acme:m1-agent"  # on a task the mixed-case member created
+VIA_M2 = "mcp:acme:m2-agent"  # on a task assigned to the mixed-case member
+VIA_M3 = "mcp:acme:m3-agent"  # the mixed-case member's own run
+VIA_M4 = "mcp:acme:m4-agent"  # on a task of the project the mixed-case member leads
+MIXED_VIAS = {VIA_M1, VIA_M2, VIA_M3, VIA_M4}
 #: An outside agent whose connection declares the name "Claude Code".
 VIA_E = "mcp:evil.example:claude-code"
 SPOOF = "Claude Code"
@@ -139,6 +152,8 @@ def world(promoted):  # noqa: F811 — a fixture
     ns.lead_a = b._principal(LEAD_A, p.org_a, unrestricted=False)
     ns.member_a = b._principal(MEMBER_A, p.org_a, unrestricted=False)
     ns.admin_b = b._principal(ADMIN_B, p.org_b)
+    ns.mixed_a = b._principal(MIXED_SESSION, p.org_a, unrestricted=False)
+    b.member(p, p.org_a, MIXED_SESSION.lower())
     for email in (ADMIN_A, LEAD_A, MEMBER_A, OTHER_A):
         b.member(p, p.org_a, email)
     b.member(p, p.org_b, ADMIN_B)
@@ -187,6 +202,16 @@ def _seed(w: Any) -> None:
     with p.admin_engine.begin() as c:
         c.execute(text("UPDATE pm_agent_runs SET connection_id = CAST(:c AS uuid) "
                        "WHERE id = CAST(:r AS uuid)"), {"c": spoof_conn, "r": spoof})
+    # The mixed-case member: one run for each arm of the reach.
+    mixed_led = b.project(p, p.org_a, OTHER_A, grant="org")
+    with p.admin_engine.begin() as c:
+        c.execute(text("UPDATE pm_projects SET lead = :l WHERE id = CAST(:p AS uuid)"),
+                  {"l": MIXED_LEAD, "p": mixed_led["id"]})
+    b.run(p, p.org_a, b.task(p, p.org_a, MIXED_CREATOR, w.plain), OTHER_A, "completed", via=VIA_M1)
+    b.run(p, p.org_a, b.task(p, p.org_a, OTHER_A, w.plain, assignee=MIXED_ASSIGNEE),
+          OTHER_A, "completed", via=VIA_M2)
+    b.run(p, p.org_a, b.task(p, p.org_a, OTHER_A, w.plain), MIXED_RUNNER, "completed", via=VIA_M3)
+    b.run(p, p.org_a, b.task(p, p.org_a, OTHER_A, mixed_led), OTHER_A, "completed", via=VIA_M4)
     w.proj_b = b.project(p, p.org_b, ADMIN_B, grant="org")
     task_b = b.task(p, p.org_b, ADMIN_B, w.proj_b)
     b.run(p, p.org_b, task_b, ADMIN_B, "awaiting", via=VIA_X)
@@ -239,7 +264,7 @@ class TestTheOverview:
         assert status == 200, body
         assert body["viewer"] == "admin"
         ext = _external(body)
-        assert set(ext) == {VIA_X, VIA_Y, VIA_Z, VIA_W, VIA_C, VIA_E}
+        assert set(ext) == {VIA_X, VIA_Y, VIA_Z, VIA_W, VIA_C, VIA_E} | MIXED_VIAS
         # Org B's run of the same agent is not counted, and its state is not A's.
         assert ext[VIA_X]["runs"] == 1 and ext[VIA_X]["state"] == "working"
         rows = _by_key(body)
@@ -322,6 +347,11 @@ class TestTheOverview:
         assert set(_external(body)) == {VIA_Z}
         # Another member's live run is not the lead's.
         assert _by_key(body)["built_in:projects-assistant"]["state"] == "idle"
+
+    async def test_the_reach_ignores_the_case_of_an_email(self, w):
+        _, body = await _get(w, w.mixed_a)
+        assert body["viewer"] == "lead"
+        assert set(_external(body)) == MIXED_VIAS
 
     async def test_a_hostile_org_in_the_request_changes_nothing(self, w, monkeypatch):
         monkeypatch.setattr(_settings(), "agents_view_orgs", w.p.org_b)
