@@ -108,9 +108,9 @@ store that must work before a tenant is known.
     transaction. Its WHERE names the id, the organization AND the member,
     and the caller passes the member of the session. It locks the connection
     row first, as rule 3 says. A resource scope must be in the ceiling, the
-    scopes that every live token of the connection covers
-    (:func:`ceiling_of`), because the edge intersects the token scope with
-    the connection scopes. The ceiling binds a turn-on only: a scope that the
+    scopes that every live token of the connection covers inside
+    ``requested_scopes`` (:func:`ceiling_of`), because the edge intersects
+    the token scope with the connection scopes. The ceiling binds a turn-on only: a scope that the
     row holds, or that a held scope covers, needs no check. A mark that the
     member no longer sees stays, and a new one is refused. A grant that
     equals the row writes nothing. ``offline_access`` and
@@ -145,6 +145,23 @@ store that must work before a tenant is known.
     row id for each new-address mark, and :func:`audited_events` tells the
     gateway list route which marks have their row. This module writes no
     audit row. Fence: ``tests/unit/test_agent_box_token_routes.py`` (R8).
+
+14. ⚠️ **A token carries what the agent asked for (EA-17c-3, D-EA-13 rule
+    2, spec §10.8).** ``approve`` mints the code at
+    ``agent_oauth.mint_scope``: every requested resource scope, and
+    ``offline_access`` only when the member granted it. So a token scope can
+    be WIDER than the grant, and the connection scopes alone narrow it.
+    Every reader of ``agent_token.scope`` takes the intersection through
+    ``agent_oauth.effective_scopes`` or ``agent_oauth.granted_scope``. An
+    issue and a rotation keep the token scope on the new rows, read the
+    scopes of the row under the lock, name the grant in their answer, and
+    give a refresh token only when the grant holds ``offline_access``.
+    :func:`ceiling_of` bounds a turn-on by the live tokens AND by
+    ``requested_scopes``. A connection from before EA-17c-3 keeps a token at
+    the grant, so a cleared scope still needs a reconnect there. A box keeps
+    ``requested_scopes`` NULL and a token at its scopes. Fence:
+    ``tests/unit/test_agent_change_access.py`` (R8,
+    ``TestTheMintAtTheRequestedScopes``).
 
 Fence: ``tests/unit/test_agent_connection_tokens.py`` (R8, a phase-4-promoted
 catalog, as a NON-privileged role). D-EA-11:
@@ -259,7 +276,10 @@ class TokenLookup:
     scope: str | None
     expires_at: datetime
     #: The connection row, read in the same transaction (EA-3a, spec §7.1
-    #: step 3). The edge intersects ``scope`` with ``scopes``.
+    #: step 3). The edge intersects ``scope`` with ``scopes``. ⚠️ Since
+    #: EA-17c-3 ``scope`` holds every scope that the agent asked for, so
+    #: ``scopes`` is the grant. Read the two through
+    #: ``agent_oauth.effective_scopes``, never ``scope`` alone (rule 14).
     scopes: tuple[str, ...] = ()
     pinned_projects: tuple[str, ...] = ()
     include_personal: bool = False
@@ -339,6 +359,9 @@ class IssuedTokens:
     connection_id: str
     organization_id: str
     client_id: str | None
+    #: The scope that the token may use now: ``agent_oauth.granted_scope`` of
+    #: the token scope and the connection scopes (rule 14). The token row
+    #: keeps its own scope, which can be wider.
     scope: str | None
 
 
@@ -467,9 +490,11 @@ SELECT connection_id, organization_id
 #: ⚠️ The lock that serializes every issue against every revoke (rule 3 of the
 #: module docstring). Runs bound to the token's tenant. Under READ COMMITTED a
 #: caller that waits behind a revoke re-reads the row when the revoke commits,
-#: finds ``revoked_at`` set, and gets no row.
+#: finds ``revoked_at`` set, and gets no row. It also reads the scopes of the
+#: row under the lock, because an issue names the grant and not the token
+#: scope alone (rule 14).
 _LOCK_LIVE_CONNECTION_SQL = """
-SELECT id
+SELECT id, scopes
   FROM agent_connection
  WHERE id = CAST(:connection_id AS UUID)
    AND organization_id = CAST(:org AS UUID)
@@ -699,8 +724,12 @@ async def _bind(session: Any, organization_id: str) -> None:
 
 async def _lock_live_connection(
     session: Any, organization_id: str, connection_id: str
-) -> bool:
-    """Lock the connection row if it is live. False when it is not."""
+) -> tuple[str, ...] | None:
+    """Lock the connection row if it is live, and give its scopes.
+
+    ``None`` when the row is not live. A live row with no scope gives an
+    empty tuple, so a caller tests ``is None`` and never the truth value.
+    """
     from sqlalchemy import text
 
     row = (
@@ -709,7 +738,7 @@ async def _lock_live_connection(
             {"connection_id": connection_id, "org": organization_id},
         )
     ).one_or_none()
-    return row is not None
+    return None if row is None else tuple(row.scopes or ())
 
 
 # ── Connections ─────────────────────────────────────────────────────────────
@@ -923,8 +952,8 @@ class ConnectionRow:
     #: connection from before EA-17a. Change access never writes it.
     requested_scopes: tuple[str, ...] | None = None
     #: The resource scopes that a change may turn on (D-EA-13 rule 2,
-    #: EA-17c-1): :func:`ceiling_of` the live tokens of the connection.
-    #: Empty when no token is live.
+    #: EA-17c-1): :func:`ceiling_of` the live tokens of the connection, inside
+    #: ``requested_scopes`` (EA-17c-3). Empty when no token is live.
     ceiling_scopes: tuple[str, ...] = ()
     #: EA-19c (spec §10.9): ``oauth`` or ``box``. The view shows a Box badge.
     credential: str = "oauth"
@@ -968,25 +997,34 @@ SELECT CAST(c.id AS TEXT) AS id, c.member_email, c.client_name,
 """
 
 
-def ceiling_of(token_scopes: Sequence[str | None]) -> tuple[str, ...]:
-    """The resource scopes that every live token in *token_scopes* covers.
+def ceiling_of(
+    token_scopes: Sequence[str | None],
+    requested_scopes: Sequence[str] | None = None,
+) -> tuple[str, ...]:
+    """The resource scopes that a change may turn on (D-EA-13 rule 2).
 
-    D-EA-13 rule 2 (EA-17c-1). The edge takes the token scope intersected
-    with the connection scopes, so a connection scope above the token scope
-    is never live. Each token gives ``agent_oauth.covered_scopes`` of its
-    scope, the cover rule of the edge, and two tokens that differ give their
-    intersection. No token gives no scope. A token with no scope, or with a
-    malformed one, gives no scope, as ``bearer.effective_scopes`` reads it.
+    The edge takes the token scope intersected with the connection scopes
+    (``agent_oauth.effective_scopes``), so a connection scope above the token
+    scope is never live. So each live token gives the scopes that it would
+    grant on a connection that held each scope of *requested_scopes*, and
+    two tokens that differ give their intersection. No token gives no scope.
+    A token with no scope, or with a malformed one, gives no scope.
     ``offline_access`` is never in the answer. The order is canonical.
+
+    EA-17c-3: ``approve`` mints a token at the requested scopes, so for a
+    connection that it made the ceiling is the cover of *requested_scopes*.
+    A connection from before EA-17c-3 has a token at the scopes the member
+    granted, so its ceiling stays that grant, and a cleared scope still
+    needs a reconnect. ``None`` (a connection from before EA-17a, or a box)
+    sets no bound beyond the tokens.
     """
-    ceiling: set[str] | None = None
+    bound: Sequence[str] = (
+        agent_oauth.RESOURCE_SCOPES if requested_scopes is None else requested_scopes)
+    ceiling: frozenset[str] | None = None
     for raw in token_scopes:
-        try:
-            covered = agent_oauth.covered_scopes(agent_oauth.parse_scope(raw))
-        except ValueError:
-            covered = set()
-        ceiling = covered if ceiling is None else ceiling & covered
-    held = ceiling or set()
+        live = agent_oauth.effective_scopes(raw, bound)
+        ceiling = live if ceiling is None else ceiling & live
+    held = ceiling or frozenset()
     return tuple(s for s in agent_oauth.SUPPORTED_SCOPES if s in held)
 
 
@@ -1009,7 +1047,9 @@ def _connection_row(row: Any) -> ConnectionRow:
             None if row.requested_scopes is None
             else tuple(row.requested_scopes)
         ),
-        ceiling_scopes=ceiling_of(tuple(row.token_scopes or ())),
+        ceiling_scopes=ceiling_of(
+            tuple(row.token_scopes or ()),
+            None if row.requested_scopes is None else tuple(row.requested_scopes)),
         credential=row.credential or "oauth",
         last_seen_addr=row.last_seen_addr,
         addr_changed_at=row.addr_changed_at,
@@ -1653,12 +1693,23 @@ async def _insert_pair_and_slide(
     client_id: str | None,
     resource: str | None,
     scope: str | None,
+    connection_scopes: Sequence[str],
     with_refresh: bool,
 ) -> IssuedTokens:
-    """Insert a new pair and slide the idle window. Needs the connection lock."""
+    """Insert a new pair and slide the idle window. Needs the connection lock.
+
+    Rule 14 (EA-17c-3). The new rows keep the token *scope*, so a scope that
+    Change access turns on later is live with no reconnect. The answer names
+    ``agent_oauth.granted_scope`` of *scope* and *connection_scopes*, the
+    scopes of the locked row. A refresh token comes only when the caller
+    asks for one (the token side) AND the row holds ``offline_access`` (the
+    grant side).
+    """
     from sqlalchemy import text
 
     settings = get_settings()
+    granted = agent_oauth.granted_scope(scope, connection_scopes)
+    with_refresh = with_refresh and agent_oauth.OFFLINE_ACCESS in connection_scopes
     access = new_token()
     refresh = new_token() if with_refresh else None
     base = {
@@ -1701,7 +1752,7 @@ async def _insert_pair_and_slide(
         connection_id=connection_id,
         organization_id=organization_id,
         client_id=client_id,
-        scope=scope,
+        scope=granted,
     )
 
 
@@ -1728,9 +1779,9 @@ async def _issue_in(
     if not agent_oauth.org_allowed(grant.organization_id):
         return Refused(ORG_NOT_ALLOWED, grant.connection_id, grant.organization_id)
     await _bind(session, grant.organization_id)
-    if not await _lock_live_connection(
-        session, grant.organization_id, grant.connection_id
-    ):
+    connection_scopes = await _lock_live_connection(
+        session, grant.organization_id, grant.connection_id)
+    if connection_scopes is None:
         return Refused(
             CONNECTION_DEAD, grant.connection_id, grant.organization_id
         )
@@ -1741,6 +1792,7 @@ async def _issue_in(
         client_id=grant.client_id,
         resource=grant.resource,
         scope=grant.scope,
+        connection_scopes=connection_scopes,
         with_refresh=with_refresh,
     )
 
@@ -1753,8 +1805,10 @@ async def issue_tokens(
     Takes the :class:`CodeGrant` that :func:`consume_code` returned, so the
     organization and the connection come from the code row and never from the
     caller. ``with_refresh`` is true when the client asked for
-    ``offline_access``. Refused with :data:`CONNECTION_DEAD` when the
-    connection was revoked or expired after the code was minted.
+    ``offline_access``. The store gives the refresh token only when the
+    connection holds ``offline_access`` too (rule 14). Refused with
+    :data:`CONNECTION_DEAD` when the connection was revoked or expired after
+    the code was minted.
     """
     return await _run(lambda s: _issue_in(s, grant, with_refresh=with_refresh))
 
@@ -1789,7 +1843,9 @@ async def _rotate_in(
     connection_id = str(peek.connection_id)
 
     await _bind(session, organization_id)
-    if not await _lock_live_connection(session, organization_id, connection_id):
+    connection_scopes = await _lock_live_connection(
+        session, organization_id, connection_id)
+    if connection_scopes is None:
         return Refused(CONNECTION_DEAD, connection_id, organization_id)
 
     # Rule 8 (fix round 1). An organization off the list gets no token, and
@@ -1843,6 +1899,7 @@ async def _rotate_in(
         client_id=row.client_id,
         resource=row.resource,
         scope=row.scope,
+        connection_scopes=connection_scopes,
         with_refresh=True,
     )
 

@@ -817,6 +817,12 @@ async def approve_authorize(
     if not chosen:
         raise _error("invalid_scope", "Choose one scope or more.")
     granted = agent_oauth.scope_string(chosen)
+    # EA-17c-3 (D-EA-13 rule 2): the code, and so the token, carries every
+    # resource scope that the agent asked for. The connection holds the
+    # grant, and every reader intersects the two, so a cleared scope stays
+    # off until Change access turns it on. `offline_access` stays the
+    # member's choice.
+    token_scope = agent_oauth.mint_scope(validated.scopes, chosen)
     view = _client_view(req.client_id, validated.metadata)
 
     connection_id = await agent_tokens.create_connection(
@@ -842,7 +848,7 @@ async def approve_authorize(
             code_challenge=req.code_challenge or "",
             redirect_uri=req.redirect_uri,
             resource=agent_oauth.resource(),
-            scope=granted,
+            scope=token_scope,
         )
     except Exception:
         tenant = current_tenant()
