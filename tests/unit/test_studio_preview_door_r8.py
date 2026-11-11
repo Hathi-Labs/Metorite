@@ -32,14 +32,19 @@ f. Another member and org B get 404 for a preview, and nothing changes.
 g. The path with no preview key is unchanged: a direct write commits its
    record and an audit row that says ``ran``.
 
-**The mutations (R7).** Each was run on 2026-11-11. The build note of G4 in
-``ai_studio.md`` holds the results.
+**The mutations (R7).** Each was run on 2026-11-11, and then restored with
+git. The hermetic half lists P3 to P6.
 
-* P1. ``_run_preview_write``: drop ``raise _Undo``. Cases a, b and d go red.
-* P2. ``refusal_for``: drop the preview branch. Cases a, c and d go red with
-  403.
-* P7. ``_run_preview_write``: call ``_run_object_write`` in place of the
-  SAVEPOINT. Cases a, b and d go red.
+* P1. ``_run_preview_write``: drop ``raise _Undo``. Cases a (both), b and
+  ``test_r8_a_preview_create_id_is_never_stored`` go red. Case d stays green,
+  because the mark, not the rollback, holds the event. P5 of the hermetic
+  half is the mutation of the mark.
+* P2. ``refusal_for``: drop the preview branch. Case a (unsigned), b, c (both),
+  d, e and ``test_r8_a_preview_create_id_is_never_stored`` go red with 403.
+  Case a (signed) stays green, because a signed call passes the class check
+  and ``_mode`` still answers ``preview``.
+* P7. ``_run_preview_write``: write with no SAVEPOINT. Cases a (both), b and
+  ``test_r8_a_preview_create_id_is_never_stored`` go red.
 """
 
 from __future__ import annotations

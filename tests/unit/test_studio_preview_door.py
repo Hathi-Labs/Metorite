@@ -22,22 +22,28 @@ proves:
   nothing inside it;
 - only ``gateway/studio/preview.py`` reaches the event hooks.
 
-**The mutations (R7).** Each was run on 2026-11-11 (the build note of G4 in
-``ai_studio.md`` holds the results).
+**The mutations (R7).** Each was run on 2026-11-11 on this file and the R8
+half, and then restored with git.
 
-* P1. ``_run_preview_write``: drop ``raise _Undo``.
-  ``test_a_preview_write_rolls_its_savepoint_back`` goes red here, and the R8
-  test of each verb goes red.
-* P2. ``refusal_for``: drop the preview branch. Each preview write and send
-  test goes red with 403.
+* P1. ``_run_preview_write``: drop ``raise _Undo``. 8 tests here go red,
+  first ``test_a_preview_write_rolls_its_savepoint_back``, and 4 of the R8
+  half.
+* P2. ``refusal_for``: drop the preview branch. 13 tests here go red, among
+  them each simulated send, and 7 of the R8 half.
 * P3. ``_mode``: drop the preview branch, so a signed preview runs the direct
-  write. ``test_a_signed_preview_still_rolls_back`` goes red.
-* P4. ``_previews``: answer False for an unknown value.
-  ``test_a_bad_preview_value_is_422_and_opens_no_session`` goes red.
+  write and an unsigned one asks. 11 tests go red, among them
+  ``test_a_signed_preview_still_rolls_back`` and
+  ``test_a_preview_opens_no_card_and_spends_none``.
+* P4. ``_previews``: answer False for an unknown value. The 5 cases of
+  ``test_a_bad_preview_value_is_422_and_opens_no_session`` go red.
 * P5. ``emit_record_event``: drop the preview check.
   ``test_a_record_event_in_a_preview_reaches_no_sink`` goes red.
-* P6. ``invoke_action``: let a preview keep ``allowed``, so a preview may ask.
-  ``test_a_preview_opens_no_card_and_spends_none`` goes red.
+* P6. ``invoke_action``: let a preview keep ``allowed``. No test goes red,
+  because ``_mode`` answers ``preview`` first, so a preview never asks and
+  never spends. ``not preview`` in ``allowed`` is a second guard, and P3 is
+  the mutation of the first.
+* P7. ``_run_preview_write``: write with no SAVEPOINT. 9 tests here go red,
+  and 4 of the R8 half.
 """
 
 from __future__ import annotations
