@@ -529,6 +529,10 @@ Two things to carry: the **session must be visible as a task activity** the inst
 
 What is *not* yet adopted, and should bind any future agent-facing tool in this app: per-item outcomes on batch payloads, lenient removes, no internal UUIDs in the agent-facing contract, and permission-filtered tool listing. **Record it here so the next tool surface starts from the collapsed design rather than rediscovering it at 16 tools.**
 
+#### U9 — A Studio write node (`studio_write`) 🔨 **BUILT, dark 2026-11-11** · *`ai_studio.md` row B2c-2d, task 1867*
+
+The node type `studio_write` writes one record of a Studio package. `ai_studio.md` row B2c-2d owns its scope, its refusals and its fence. The node must follow an `approval` node directly, and one approval clears one write. It runs only in a schedule run that the decided scan of AUTO-7b resumed, after a yes of the workflow owner. The editor palette does not offer it yet. Fence: `tests/unit/test_studio_workflow_write_r8.py`.
+
 ### 13.4 What is deliberately refused
 
 Not oversights — decisions, so a future reader does not "fix" them:

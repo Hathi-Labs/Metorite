@@ -1041,12 +1041,14 @@ class TestTheTables:
 
     def test_one_check_runs_twice(self):
         """One check before the body read and the same check after it. A
-        second read of a package in this module is a second copy of the rule."""
+        second read of a package in this module is a second copy of the rule.
+        B2c-2d adds the third call: the write of a workflow node runs the same
+        check once, in its one session (``run_workflow_write``)."""
         from pathlib import Path
 
         src = Path(invoke.__file__).read_text(encoding="utf-8")
         assert src.count("packages_store.get_package(") == 1
-        assert src.count("await _check(") == 2
+        assert src.count("await _check(") == 3
         assert src.count("_declared(package") == 1
 
     def test_each_refusal_is_one_short_sentence(self):

@@ -35,6 +35,11 @@ clock ends an unanswered one. The snapshot, the trigger payload and a node
 output never decide. :func:`end_parked` ends a run with a compare-and-set on
 the pause row. Only the winner tells the member, once.
 
+**The write (STU-B2c-2d).** A ``studio_write`` node directly after the gate
+runs only when :func:`approves_one_write` reads the same decision row again,
+in the run's org, and finds a yes of the owner. The decision is the ONE
+approval of that write, and the Studio door opens no second card.
+
 **No score for any person (ALN-Q5).** Nothing here counts, groups or ranks a
 person.
 
@@ -324,6 +329,36 @@ def outcome_of(decision: Any | None) -> str:
             return RESUME
         return DECLINE
     return EXPIRE if decision.is_expired else WAIT
+
+
+async def approves_one_write(
+    db: Any,
+    *,
+    organization_id: str,
+    owner: str,
+    decision_id: str,
+    run_id: str,
+    pause_id: str,
+) -> bool:
+    """True when the parked decision still approves the write of its gate
+    (STU-B2c-2d). *db* binds the run's org.
+
+    The ``studio_write`` node reads the decision ROW again, in the org of the
+    run, as the scan read it. It runs only when :func:`outcome_of` gives
+    :data:`RESUME`, the decider is *owner* (``workflows.owner_email``, read
+    in the same org), and :func:`_owner_in_org` finds the owner ACTIVE in that
+    org now. The snapshot, the trigger payload and a node output never decide.
+    """
+    org = str(organization_id or "").strip().lower()
+    who = str(owner or "").strip().lower()
+    if not org or "@" not in who:
+        return False
+    decision = await read_decision(db, decision_id, run_id, pause_id)
+    if outcome_of(decision) != RESUME:
+        return False
+    if str(decision.decider or "").strip().lower() != who:
+        return False
+    return await _owner_in_org(db, who, org)
 
 
 async def end_parked(

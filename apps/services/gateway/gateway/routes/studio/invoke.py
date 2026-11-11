@@ -156,6 +156,16 @@ never falls through to a live write.
 * The call runs inside ``studio.preview.preview_scope``. A record event (C3)
   goes out only through ``studio.preview.emit_record_event``, which emits
   nothing in that scope.
+
+**The write of a workflow node (B2c-2d).** :func:`run_workflow_write` is the
+one internal path, and the HTTP route does not reach it. A workflow node of
+type ``studio_write`` calls it after the AUTO-7b parked decision of the
+workflow owner said yes. That decision is the ONE approval, so this path opens
+no card. ``workflows.service._studio_writer`` checks the run, the flags and
+the decision first. Here the door runs :func:`_check` as the owner, the class
+check of :data:`DELEGATED_EXECUTORS`, :func:`_do_object_write` and the audit
+row, in one session. The audit row names the run and the node. Fence:
+``tests/unit/test_studio_workflow_write_r8.py``.
 """
 
 from __future__ import annotations
@@ -195,7 +205,8 @@ from gateway.studio.preview import emit_record_event, preview_scope
 __all__ = ["ASK_MARKER", "DELEGATED_EXECUTORS", "DIRECT_EXECUTORS", "DOOR_TEMPLATE",
            "LIST_INPUT_KEYS", "MAX_AUDIT_TEXT", "MAX_BODY_BYTES",
            "OPEN_EXECUTORS", "PREVIEW_MARKER", "REFUSALS", "REQUEST_APP", "REQUEST_VIA",
-           "SPEND_REFUSALS", "WRITERS_PER_ORG", "WRITERS_TOTAL", "router"]
+           "SPEND_REFUSALS", "WORKFLOW_VIA", "WRITERS_PER_ORG", "WRITERS_TOTAL", "router",
+           "run_workflow_write"]
 
 _log = get_logger("gateway.studio.invoke")
 
@@ -1096,6 +1107,86 @@ async def _run_spend(db: Any, org: str, member: str, package: packages_store.Pac
     await record_app_audit_in(db, app_id=package.id, user_email=member, kind="action",
                               detail=_audit_detail(out))
     out.audited = True
+
+
+# ── The write of a workflow node (B2c-2d) ─────────────────────────────────
+
+
+#: The ``via`` of the audit row of a write that a workflow node ran (B2c-2d).
+WORKFLOW_VIA = "workflow"
+#: The codes of a refused write of a workflow node, before any session.
+WORKFLOW_NO_ORG = "no_org"
+WORKFLOW_STUDIO_OFF = "studio_off"
+WORKFLOW_NO_PACKAGE = "not_found"
+
+
+def _workflow_body(data: Any, record_id: Any) -> bytes:
+    """The body of the door, from the literal config of the node. A key with
+    no value stays out, so ``_write_input`` checks the keys of the verb."""
+    body = {k: v for k, v in (("id", record_id), ("data", data)) if v is not None}
+    return json.dumps(body).encode("utf-8")
+
+
+def _workflow_result(out: _Outcome) -> dict[str, Any]:
+    """What the node reads back. It holds ids and codes, and no record data,
+    because the run row stores the output of each node."""
+    outcome, reason = _outcome(out)
+    return {"ok": _wrote(out), "outcome": outcome, "code": reason,
+            "record_id": out.record_id, "deleted": out.deleted is not None}
+
+
+async def run_workflow_write(*, organization_id: str, member: str, package_id: str,
+                             action: str, data: Any, record_id: Any, run_id: str,
+                             node_id: str) -> dict[str, Any]:
+    """Run ONE object write of a workflow node, with no second card (B2c-2d).
+
+    ⚠️ **The one internal path to the executor of a delegated write.** The
+    caller is ``workflows.service._studio_writer`` only. It runs after the
+    AUTO-7b parked decision of the workflow owner said yes, and that decision
+    is the ONE approval of this write. So this path opens no card and spends
+    no request. The HTTP route keeps its 403 ``no_person_present``.
+
+    The caller binds the facts: *organization_id* is the org of the run row,
+    and *member* is the owner, the decider of the decision. Neither comes
+    from node input. In ONE ``_tenant_session(org)``, this function runs
+    :func:`_check` as the member, then the class check of
+    :data:`DELEGATED_EXECUTORS`, then :func:`_do_object_write`, then
+    ``record_app_audit_in``. The audit row names the run and the node. A
+    failed audit rolls the write back. The record event of C3 goes out after
+    the commit. It never raises an ``HTTPException``: the answer says what
+    happened, and the node fails on each answer that is not ``ok``.
+    """
+    org = str(organization_id or "").strip()
+    out = _Outcome(action=action)
+    if not org:
+        return {"ok": False, "outcome": "refused", "code": WORKFLOW_NO_ORG}
+    if not flags.studio_allowed(org):
+        return {"ok": False, "outcome": "refused", "code": WORKFLOW_STUDIO_OFF}
+    pid = _uuid_or_none(package_id)
+    if pid is None or not _ACTION_ID.fullmatch(str(action or "")):
+        return {"ok": False, "outcome": "not_found", "code": WORKFLOW_NO_PACKAGE}
+    with _writer_slot(org, True) as admitted:
+        if not admitted:
+            return {"ok": False, "outcome": "failed", "code": STORE_BUSY}
+        try:
+            async with _tenant_session(org) as db:
+                package, ref = await _check(db, member, pid, action, out, delegated=True)
+                if out.refusal is None and (
+                        ref is None or (ref.source, ref.op) not in DELEGATED_EXECUTORS):
+                    out.refusal = SOURCE_NOT_OPEN
+                if out.refusal is None and ref is not None:
+                    await _do_object_write(db, member, package, ref,
+                                           _workflow_body(data, record_id), out)
+                detail = {**_audit_detail(out), "via": WORKFLOW_VIA,
+                          "run_id": _cap(str(run_id)), "node_id": _cap(str(node_id))}
+                await record_app_audit_in(db, app_id=package.id, user_email=member,
+                                          kind="action", detail=detail)
+        except HTTPException:
+            # The package is not the member's in this org. A 404 writes no row.
+            return {"ok": False, "outcome": "not_found", "code": WORKFLOW_NO_PACKAGE}
+    # C3: after the commit of the write, so no event names a rolled back change.
+    await _emit_record_event(out, org)
+    return _workflow_result(out)
 
 
 def _mode(first: UsesRef | None, direct: bool, delegated: bool,
