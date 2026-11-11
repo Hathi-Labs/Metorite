@@ -24,7 +24,9 @@ and its two guards, and finds the install in the bound org only. An id of
 another org is :class:`InstallNotFound`, as a missing id is. A pause keeps
 the claims and their keys. A move from ``archived`` is
 :class:`StateRefused`. The routes of PKG-8, PKG-12 and J3 decide who may
-call each one.
+call each one. The first caller of :func:`remove_install` is the uninstall
+route of PKG-8e. It finds the install with :func:`install_at_scope`, which
+takes the org lock first.
 
 **The lifetime (§6.2, PKG-10a).** The four lifetime functions take the same
 org lock and the same guards. :func:`keep_install` clears ``ends_at``.
@@ -833,12 +835,65 @@ async def remove_install(db: Any, *, install_id: str) -> bool:
     nothing. The store does not check that the member may remove the install.
     The routes own that check.
     Answers True.
+
+    ⚠️ The store keeps no copy of what goes. A caller that must keep the
+    claims or the extension values (a snapshot, MKT-7) reads them in the
+    same transaction BEFORE this call. This function does not call
+    ``field_values.delete_values``. That function deletes the values of one
+    host record, and the cascade deletes the values of one install.
     """
     install = _install_id(install_id)
     await _lock_org(db, "a removal")
     if (await db.execute(text(_DELETE_INSTALL_SQL), {"install": install})).first() is None:
         raise InstallNotFound("install_not_found", "No install has this id.")
     return True
+
+
+#: The install of one app at one scope in the bound org (PKG-8e). The caller
+#: holds the org lock, so the row stays until the removal that follows.
+_INSTALL_ROW_AT_SCOPE_SQL = (
+    "SELECT CAST(id AS text), version, installed_by, ends_at FROM package_install "
+    f"WHERE organization_id = {_BOUND_ORG} AND app_id = CAST(:app AS uuid) "
+    "AND scope_kind = :kind AND scope_subject = :subject"
+)
+
+
+async def install_at_scope(
+    db: Any, *, app_id: str, scope_kind: str, scope_subject: str,
+) -> Install | None:
+    """The install of *app_id* at one scope of the bound org, or None.
+
+    *db* is a session that the caller opened with ``tenant_session(org)``.
+    The read takes the org lock of :func:`install` first. So the install
+    that it finds stays until the caller's transaction ends, and a
+    :func:`remove_install` in the same transaction deletes that row. The
+    lock is reentrant in one transaction. The answer holds no claims. The
+    uninstall route of PKG-8e calls this, and the route decides who may
+    call it. A bad scope raises :class:`ScopeRefused` before the first
+    statement.
+    """
+    app = _app_id(app_id)
+    if not _plain(scope_subject, limit=MAX_SUBJECT_BYTES):
+        raise ScopeRefused("bad_scope", "The scope must be org, group:<slug> or an address.")
+    try:
+        subject = normalize_grant_subject(str(scope_subject))
+    except ValueError as exc:
+        raise ScopeRefused(
+            "bad_scope", "The scope must be org, group:<slug> or an address.") from exc
+    kind = _kind_of(subject)
+    if scope_kind != kind:
+        raise ScopeRefused(
+            "scope_kind_mismatch",
+            f"The scope {subject!r} is a {kind} scope. Ask for the {kind} kind.")
+    await _lock_org(db, "a removal")
+    row = (await db.execute(text(_INSTALL_ROW_AT_SCOPE_SQL), {
+        "app": app, "kind": kind, "subject": subject})).first()
+    if row is None:
+        return None
+    return Install(
+        id=str(row[0]), app_id=app, version=None if row[1] is None else int(row[1]),
+        scope_kind=kind, scope_subject=subject, installed_by=str(row[2]), ends_at=row[3],
+        contributions=())
 
 
 async def _move_state(db: Any, install: str, was: str, to: str, act: str) -> bool:

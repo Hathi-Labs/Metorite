@@ -42,6 +42,11 @@ install at the scope when it exists, and writes it when it does not, with
 the claims of :func:`claims_of`. A later publish moves only the private
 install, so the holder approves a new version by a new call.
 
+**The uninstall (PKG-8e).** The route ``DELETE /studio/packages/{id}/install``
+calls :func:`install_scope` on the body, checks ``studio:publish``, and then
+calls :func:`remove_scope_install`. That function finds the install at the
+scope and removes it through ``store.remove_install``.
+
 This module runs no SQL. The store is the one writer, and the route is the
 one place that decides who may call this.
 """
@@ -247,3 +252,43 @@ async def keep_scope_install(
         db, app_id=app_id, version=version, scope_subject=scope_subject, scope_kind=scope_kind,
         installed_by=member, ends_at=None, contributions=claims)
     return made, True
+
+
+#: The refusal when the app has no install at the scope of the call (PKG-8e).
+NO_INSTALL_AT_SCOPE = ("This app has no install at this scope, so nothing was removed. "
+                       "Check the scope, then try again.")
+
+
+async def remove_scope_install(
+    db: Any,
+    *,
+    app_id: str,
+    scope_kind: str,
+    scope_subject: str,
+) -> Install:
+    """Remove the install of *app_id* at an org or a group scope (PKG-8e).
+
+    *db* is the session of the route. The function finds the install with
+    ``store.install_at_scope``, which takes the org lock first. Then it calls
+    ``store.remove_install``, the one path of §5.3. Answers the install that
+    went, with no claims.
+
+    **What goes, in one transaction.** The DELETE of the install row, and
+    two FK cascades of it: each claim in ``package_contribution`` and each
+    extension value in ``package_field_value`` (PKG-13). So the nav entry
+    and each job leave every member in scope at the next read. A private
+    install of another app that the wider claim hid shows again (PKG-Q6).
+    ⚠️ A snapshot of the claims or the values (MKT-7) goes between the find
+    and the removal, in this transaction.
+
+    An app with no install at the scope raises ``store.InstallNotFound``
+    (404). A private scope raises ``store.ScopeRefused`` (422).
+    """
+    if scope_kind not in ROUTE_KINDS:
+        raise store.ScopeRefused("bad_scope", BAD_SCOPE)
+    found = await store.install_at_scope(
+        db, app_id=app_id, scope_kind=scope_kind, scope_subject=scope_subject)
+    if found is None:
+        raise store.InstallNotFound("install_not_found", NO_INSTALL_AT_SCOPE)
+    await store.remove_install(db, install_id=found.id)
+    return found
