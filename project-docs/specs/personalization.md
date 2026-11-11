@@ -4162,3 +4162,203 @@ merge confirms the number (R1).
 | **D-SH-6** | Where does the nudge show? | **Decided: owner, 2026-11-08 15:02 UTC, accepted as D196 ("Approve all 7 recommended defaults", task 945).** The chat first (Q6) |
 | **D-SH-8** | Where does the nudge state live? | **Decided: owner, 2026-11-08 15:07 UTC, on task 945 ("Keep it in the Get started settings (my_day_prefs), no new table"), recorded in D196.** The `setup` key of `my_day_prefs`, beside the item state. No new table (Q8) |
 | **D-SH-7** | A band or a streak? | **Decided: owner, 2026-11-08 15:02 UTC, accepted as D196 ("Approve all 7 recommended defaults", task 945).** No (Q7) |
+
+---
+
+## 19. How I work: the member model of how the member acts (PROPOSED, 2026-11-11)
+
+**Status: PROPOSED, 2026-11-11. Nothing is built.** Owner ask of 2026-11-11,
+in chat. Epic task 2876. It extends §4, §12 and §15, and it changes no rule
+of them. The decisions D-PZ-47 to D-PZ-52 of §19.12 wait on the owner.
+
+### 19.1 The owner's ask
+
+The owner asked for three things on 2026-11-11:
+
+1. **Learn the member's patterns** from how the member answers each kind of
+   email.
+2. **Suggest before the member asks:** a better reply, or the act itself,
+   from what the member did before.
+3. **One place** that holds how the member writes and how the member acts.
+   Drafts, suggestions and decisions all read it. The Email app's own
+   writing-style section raised the question.
+
+### 19.2 The answer in one screen
+
+- **Yes, one place.** The member model has three parts. Two parts already
+  have a home and an accepted design. The third part is new.
+- **How the assistant talks to the member:** the profile of §4. It is built.
+- **How the member writes to other people:** the member voice of §12.3
+  (PZ-12, task 306) and the audience rule (PZ-13, task 307). D110 accepted
+  both on 2026-10-24. Neither is built. PZ-12 waits on the consent wording
+  (D-PZ-10).
+- **How the member acts:** new in this section. A record of the member's own
+  acts, habits that come from that record, and suggestions from the habits.
+- **One page, "How I work",** shows the three parts. The member reads,
+  changes and forgets each item there.
+
+### 19.3 What exists (measured on `main`, 2026-11-11)
+
+Three stores hold parts of a writing style today, and they never meet.
+
+| Store | What it holds | How it learns | Reader |
+|---|---|---|---|
+| `email_voice_profiles` (migration 94) | One voice for each mailbox: tone, formality, length, greetings, sign-offs | The member presses Build. A job reads up to 150 sent mails | The email drafter only |
+| `email_learned_patterns` and `email_assistant_settings.learned_writing_style` (migrations 28, 38) | The changes from the AI draft to the sent mail, by sender, domain and topic | In silence, after each send (`drafting.py:772`). It also writes to Mem0, which D132 retires | The email drafter only |
+| `user_settings.assistant_profile.style` (migration 294) | How the assistant talks to the member | Only the member's typed words, or a yes on a card (D-PZ-2, D-PZ-37) | Each chat turn |
+
+**No store records how the member acts.** These are the gaps:
+
+- `email_thread_status` (migration 27) stores DONE, but not who set it. It
+  cannot tell the member from the AI.
+- A forward has no field for its target. The target is only in the
+  `to_addresses` of the sent row.
+- The outcome of a chat card sits in `chat_message.custom_events`. No reader
+  treats it as a signal. A `chat_pending_ask` row expires after 7 days.
+- `my_day_card_state` (migration 258) is the one clean record of a member
+  choice today: acted, later, snoozed or dismissed.
+- Triage decisions and rule fires are acts of the AI, not choices of the
+  member. A learner must not count them.
+
+### 19.4 The act record (MM-1)
+
+**One table, `member_action`, holds the member's own acts.** It is app data,
+like a sent mail. It is not a profile fact, so D-PZ-1 and D-PZ-2 stand.
+
+| Column | What it holds |
+|---|---|
+| `organization_id`, `member_email` | The tenant and the member. FORCE ROW LEVEL SECURITY, bound at the `get_db()` seam (D15, R5) |
+| `app`, `act` | For example `email` and `forward`. The first acts are `reply`, `forward`, `send`, `mark_done`, `archive`, `snooze`, `label` and `delegate`. A chat card adds `card_approve`, `card_reject` and `card_revise` |
+| `via` | `app` (a press in the app), `card` (a yes on a chat card) or `rule` (an automatic act). Only `app` and `card` count as a choice of the member |
+| `item_kind`, `item_id` | The object, for example an email and its id |
+| `mailbox_id` | The mailbox of the act. The learner reads one mailbox at a time (D-EM-18) |
+| `features` | Derived features of the item only: the domain of the sender, the kind of sender (customer, supplier or colleague), the triage label, and a reply or a new thread. **No subject and no body** |
+| `targets` | The addresses that the act sent the item to |
+| `at` | The time of the act |
+
+**The writer.** One function in `acb_common` writes a row. Each act seam
+calls it: the send, reply and forward routes, the Reply Zero resolve route,
+archive, snooze, label, and the card answer in `ask_tools`. A fence fails on
+a second writer.
+
+**The limits:**
+
+- A row lives 180 days (D-PZ-51). A nightly job deletes the older rows.
+- The member purge in `routes/admin/members.py` deletes the rows of the
+  member.
+- With `learning` off (D-PZ-7), the writer records nothing.
+- An org switch can turn it off for each member (D-PZ-17).
+- A shared mailbox (WS-65) records no act until its spec says how.
+- It ships dark behind `MEMBER_ACTIONS_ORGS`.
+
+### 19.5 Habits (MM-2)
+
+**A habit is a repeated act on one kind of item.** An example: "mail from
+`@ge.com` with the label `Purchase order`: you forward it to Veena and Kiran, 6
+of 7 times".
+
+- One function, `member_habits(org, member, item)`, returns the habit of an
+  item, or none.
+- It groups the acts of the member in the last 90 days by the features of
+  §19.4.
+- A habit needs 3 acts or more, and a share of 70% or more (D-PZ-52).
+- The function counts on read. A cache of one hour for each member goes
+  through the Redis prefix wrapper (R5).
+- **A habit is never a profile fact** (D-PZ-2, §12.4). It is a count of the
+  member's own acts, shown as a suggestion. Only the yes of §19.7 keeps one.
+
+### 19.6 Suggestions (MM-3, MM-4)
+
+**A suggestion offers the act of a habit. It never acts.** Each act still
+goes through its own card.
+
+| Where | What the member sees |
+|---|---|
+| The chat | "You usually forward these to Veena and Kiran. Forward this one with a note?" The chat offers the habit first, before it drafts a reply |
+| `find_priority` and the needs-reply list | Each row carries its habit, for example "Usually: forward to Veena and Kiran" |
+| My Day | The card of a mail with a habit shows that act as its first button |
+| The email drafter | The member voice for the audience (PZ-13). A reply to a customer comes in the member's voice for customers |
+
+**The feedback.** The member takes, changes or ignores a suggestion, and each
+of those goes back to the act record. So a habit that the member stops
+following fades.
+
+**Later: decisions.** The `decide` tier may read the habits of the member as
+context. An example: it ranks "what needs you" by the kinds of mail that the
+member answers. That use waits for the data of MM-2 and its own slice.
+
+### 19.7 From a habit to a rule (MM-5)
+
+- After a habit holds for 14 days, the coach (§12.5) may ask once: "You
+  always forward PO mail from GE to Veena and Kiran. Keep that as a habit?"
+- A yes writes `assistant_profile.habits[]` through the PZ-6 tools, with
+  Undo (PZ-15, task 309). A kept habit shows on "How I work", and it wins
+  over a count.
+- "Do it for me" makes an email rule through the existing rule card. **An
+  automatic act exists only as a rule that the member approved** (D-PZ-48).
+- The limits of the coach apply: one question a day, and a wait of 14 days
+  after a dismiss (D-PZ-13).
+
+### 19.8 The voice joins the same model (MM-7, PZ-12, PZ-13)
+
+- The member voice of §12.3 has three sources: what the member said, the
+  mailbox voice profiles, and the style items of the draft-and-send loop.
+- MM-7 makes `_learn_from_sent` a source of the member voice. It also removes
+  the write of that loop to Mem0 (D132).
+- The writing-style section of the Email app shows the member voice, and it
+  links to "How I work". No second store of the voice exists (§12.6).
+
+### 19.9 The page "How I work" (MM-6)
+
+One page in Settings → Assistant settings, with three parts:
+
+1. **How you like answers:** the style of §4, as today.
+2. **How you write:** the member voice for each audience. Each line has
+   Change and Forget.
+3. **How you work:** the kept habits, and the strongest counted habits, each
+   with "Keep" and "Not a habit". A line "Stop learning from what I do" sets
+   `learning` off.
+
+Only the member reads the page (D-PZ-3). An admin sees nothing of it.
+
+### 19.10 The fences (R7)
+
+| Rule | Fence |
+|---|---|
+| One writer of `member_action` | `tests/unit/test_member_action_writer.py` (MM-1). An AST scan fails on a second INSERT |
+| No subject and no body in a row | The same file. A `subject` key, or a text value above 120 characters, fails |
+| Only `app` and `card` acts count | `tests/unit/test_member_habits.py` (MM-2). A `rule` act never makes a habit |
+| A suggestion never acts | `tests/unit/test_member_habit_suggest.py` (MM-3). The suggestion path calls no write tool |
+| Apps read habits through one function | The fence of §12.6 (PZ-18) names `member_habits` too |
+
+### 19.11 The slices
+
+| Slice | Task | What | Gate · tier |
+|---|---|---|---|
+| **MM-0** | 2877 | This section and the INDEX row | AGENT-SAFE · LOW |
+| **MM-1** | 2878 | The act record of §19.4 | AGENT-SAFE, dark · HIGH |
+| **MM-2** | 2879 | Habits, §19.5 | AGENT-SAFE · STANDARD |
+| **MM-3** | 2880 | Suggestions in the chat and in Email | AGENT-SAFE, dark · STANDARD |
+| **MM-4** | 2881 | Suggestions on My Day | AGENT-SAFE, dark · STANDARD |
+| **MM-5** | 2882 | From a habit to a rule | AGENT-SAFE, after PZ-15 · STANDARD |
+| **MM-6** | 2883 | The page "How I work" | Owner preview (a new screen) · STANDARD |
+| **MM-7** | 2884 | The draft-and-send loop feeds the voice | AGENT-SAFE, after PZ-12 · STANDARD |
+
+**The order:** MM-1, then MM-2, then MM-3 and MM-4 side by side. PZ-12 (task
+306) unblocks part 2 of MM-6, and MM-7. The gate of PZ-12 is the consent
+wording.
+
+### 19.12 Decisions for the owner
+
+| # | Question | Default |
+|---|---|---|
+| **D-PZ-47** | May Metorite record the member's own acts, with no text, to learn habits? | Yes. It follows the learning switch, and it stays dark until the owner says |
+| **D-PZ-48** | May Metorite act on a habit by itself? | No. It suggests. An automatic act needs a rule that the member approved on a card |
+| **D-PZ-49** | One page "How I work" for the style, the voice and the habits? | Yes. The writing-style section of the Email app becomes a view of the member voice |
+| **D-PZ-50** | The consent wording of D-PZ-10. The voice needs it before it reads any sent mail | PZ-12 drafts it, and the owner reads it before PZ-12 merges (§12.8). It unblocks PZ-12 (task 306) |
+| **D-PZ-51** | How long does an act row live? | 180 days |
+| **D-PZ-52** | When is a pattern a habit? | 3 acts or more, a share of 70% or more, in 90 days |
+
+**Open question Q-MM-1.** May a habit from one mailbox make a suggestion in
+another mailbox of the same member? The default is no, because D-EM-18 makes
+the mailbox the boundary of the AI context.
