@@ -74,6 +74,8 @@ from gateway.routes.projects.core import (
     archive_note,
     assert_assignable_here,
     assert_epic_has_no_parent,
+    assert_goal_has_no_links,
+    assert_goal_link,
     assert_holds_tasks,
     assert_move_keeps_privacy,
     assert_no_task_cycle,
@@ -82,12 +84,16 @@ from gateway.routes.projects.core import (
     clean_payload,
     count_where,
     diff_changes,
+    drop_lost_goal,
     emit,
     from_jsonb,
+    goal_link_lost,
     insert_assignees,
     insert_row,
+    is_goal_type,
     lift_subtasks_to_grandparent,
     load_default_status,
+    load_row,
     load_visible_project,
     load_visible_task,
     lock_task,
@@ -102,6 +108,7 @@ from gateway.routes.projects.core import (
     remap_one_status,
     remap_one_type,
     require_exact_version,
+    require_goals,
     require_precondition,
     require_row,
     require_status_in_project,
@@ -495,6 +502,10 @@ class TaskCreateIn(TaskIn):
     #: PATCH field on ``TaskPatchIn``, never on ``TaskIn``, which other
     #: doors share. 422 while ``agent_task_checks_enabled`` is off.
     check_text: str | None = None
+    #: WS-39 WM-5. The Goal of the new epic (``core.assert_goal_link``). A
+    #: create field here and a PATCH field on ``TaskPatchIn``. 422 while
+    #: ``PROJECTS_GOALS_ORGS`` does not hold the org.
+    goal_task_id: str | None = None
 
 
 class LinkIn(BaseModel):
@@ -1108,9 +1119,13 @@ async def get_task(
         # SP-9 — an epic rolls up EVERY descendant the reader can see. The key
         # is absent for any other task. `subtasks` (direct children) is not
         # touched. The one home of the rule is `rollup.py`.
-        from gateway.routes.projects.rollup import epic_rollup
+        from gateway.routes.projects.rollup import epic_rollup, goal_rollup
 
         rollup = await epic_rollup(db, vis, row)
+        if rollup is None:
+            # WM-5 — a Goal rolls up its linked epics, in any project. No key
+            # while PROJECTS_GOALS_ORGS does not hold the org.
+            rollup = await goal_rollup(db, vis, row)
         if rollup is not None:
             result["rollup"] = rollup
         # SP-8a — the contract of an epic, or null (§13.3).
@@ -1242,6 +1257,11 @@ def check_task_values(
         values["check_text"] = clean_check_text(values["check_text"])
         if values["check_text"] is None:
             values.pop("check_text")
+    if "goal_task_id" in values:
+        # WM-5. 422 while the Goal flag is off. A null is no Goal.
+        require_goals(getattr(user, "organization_id", None))
+        if values["goal_task_id"] is None:
+            values.pop("goal_task_id")
     if getattr(user, "agent", None) is not None:
         # The task source of an agent comes from branch 0's signed context,
         # never from the body (the narrowing above refuses a body `source`).
@@ -1317,6 +1337,10 @@ async def create_task_in(
     _refuse_agent_parent(user, parent, str(project_id))
     await _refuse_agent_type(db, user, values.get("type_id"), str(root))
     await assert_epic_has_no_parent(db, values.get("type_id"), parent_id)
+    # WM-5. Only an epic carries a Goal, and the writer sees the Goal.
+    await assert_goal_link(
+        db, vis, values.get("type_id"), values.get("goal_task_id"),
+    )
 
     # A stated status always wins. A new step with no stated status takes
     # its parent's lane through the ONE seam (D-PM-38, D79), so the
@@ -1376,6 +1400,36 @@ async def create_task_in(
     return CreatedTask(row=row, assigned=assigned)
 
 
+async def _check_goal_patch(
+    db: Any, vis: Any, before: Any, values: dict[str, Any],
+) -> None:
+    """WM-5. The Goal rules of a PATCH, before any write.
+
+    A body that sends a Goal in ``goal_task_id`` gets 422 while the flag is
+    off. A null clears the link with the flag on or off, because a clear is
+    the way out of a stale link. Only an epic carries a Goal. A new link
+    names a Goal that the writer sees, and it replaces the old one, because
+    the link is one column. A new type that is not an epic clears the link in
+    the same write (:func:`core.goal_link_lost`). A Goal that epics point at
+    keeps a Goal type (:func:`core.assert_goal_has_no_links`, 409).
+    """
+    type_after = (
+        values["type_id"] if "type_id" in values else getattr(before, "type_id", None)
+    )
+    if "goal_task_id" in values:
+        if values["goal_task_id"] is not None:
+            require_goals(vis.organization_id)
+            await assert_goal_link(db, vis, type_after, values["goal_task_id"])
+    elif "type_id" in values and await goal_link_lost(db, before, type_after):
+        values["goal_task_id"] = None
+    type_before = getattr(before, "type_id", None)
+    if "type_id" in values and type_before and str(type_after or "") != str(type_before):
+        old = await load_row(db, "pm_task_types", str(type_before))
+        new = await load_row(db, "pm_task_types", str(type_after)) if type_after else None
+        if is_goal_type(old) and not is_goal_type(new):
+            await assert_goal_has_no_links(db, vis.organization_id, str(before.id))
+
+
 @router.patch("/tasks/{task_id}")
 async def patch_task(
     task_id: str, payload: TaskPatchIn,
@@ -1431,6 +1485,8 @@ async def patch_task(
         require_precondition(before, if_match, row_to_dict(before, TaskModel))
         # SW-23. A new Check text clears its last result, in this same write.
         check_patch_values(before, values)
+        # WM-5. The Goal of an epic, after the visibility load, before a write.
+        await _check_goal_patch(db, vis, before, values)
 
         # WS-27l. Merged against the definitions on the task's OWN root, not the
         # caller's current project: a task opened from My work can belong to a
@@ -1596,6 +1652,10 @@ async def _cross_root_values(
         values["type_id"] = await remap_one_type(
             db, type_id=str(task.type_id), root_id=new_root,
         )
+    # WS-39 WM-5. Only an epic carries a Goal. A type that lands as no type or
+    # as a type that is not an epic clears the link in this same write, and
+    # the timeline keeps the old Goal.
+    await drop_lost_goal(db, task, values, dropped)
     # The number belongs to the old root's sequence and would collide in the
     # new one, so it is reallocated rather than carried. The old number is
     # recorded on the timeline by the caller — a task's human id changing

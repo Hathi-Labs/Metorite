@@ -1087,6 +1087,17 @@ class Settings(BaseSettings):
     # value. Fence: tests/unit/test_pm_templates_r8.py.
     projects_templates_orgs: str = ""
 
+    # ── The Goals of Projects (WS-39 WM-5, task 984) ───────────────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, a task write or a type write that sends a Goal field
+    # gets 422 `goals_off`, and `GET /projects/tasks/{id}` adds no roll-up to
+    # a Goal. The one reader is
+    # `gateway.routes.projects.core.goals_allowed`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). Only the owner writes the value.
+    # Fence: tests/unit/test_goal_rollup_r8.py.
+    projects_goals_orgs: str = ""
+
     # ── The app requests of agents (WS-MCP MCP-P1b-1) ──────────────────────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,

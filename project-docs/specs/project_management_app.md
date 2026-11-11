@@ -13,6 +13,9 @@
 
 > **Product:** Metorite · **Feature:** Projects (the primary work-management
 > module, sliced into every other Center) · **Created:** 2026-08-05 · **Updated: 2026-11-11**
+> 🟢 **WS-39 WM-5 BUILT 2026-11-11, not merged** (§13.6a, migration 405, task 984). The Goal type
+> (`pm_task_types.is_goal`) and the Goal of an epic (`pm_tasks.goal_task_id`). `GET /projects/tasks/{id}` rolls a Goal
+> up over its linked epics. Dark behind `PROJECTS_GOALS_ORGS`. No UI. The chat and MCP tool fields are gap G27.
 > 🟢 **SP-8a BUILT 2026-11-08, not merged** (§13.3, §13.6 row SP-8, migration 402, branch
 > `mt-1cb9f2de-sp8-epic-contract`). An epic has a contract: the store, the routes, `epic_contract`
 > in `get_task` and `get_task_context`, the MCP block and the chat tool `set_epic_contract`.
@@ -9190,7 +9193,7 @@ A Goal is a task type with a rank. It has an owner and a target date. A Goal is 
 
 | Row | Task | Scope | Done when | Risk | Depends on |
 |---|---|---|---|---|---|
-| **WM-5** | 984 | The Goal type, as the paragraph above defines it. The Goal has an owner and a target date. The chat and the MCP make and read a Goal through the one manifest (D136). Progress and health come from the roll-up of SP-9 over the linked epics | A Goal with 2 epics from 2 projects shows the progress of both. A hidden epic is counted in `hidden` and never named. `tests/unit/test_goal_rollup_r8.py` (new) passes | STANDARD | SP-8, SP-9, SW-21 |
+| **WM-5** | 984 | **BUILT 2026-11-11, not merged (migration 405). The chat and MCP tool fields are gap G27 of `projects_agent_parity.md`. Fence: `tests/unit/test_goal_rollup_r8.py`.** The Goal type. A migration adds `pm_task_types.is_goal` (the pattern of `is_epic`, migration 168) and `pm_tasks.goal_task_id`, a nullable self reference with ON DELETE SET NULL. In this spec "the parent of epics" means this link for a Goal. The link works across projects, because `parent_task_id` stays the in-project tree. One column makes one Goal for each epic (D199.6). Rules in `core.py` beside `assert_epic_has_no_parent`: only an epic carries `goal_task_id`, and the target is a Goal task of the same organization that the writer can see. `goal_rollup` in `rollup.py` sums `epic_rollup` over the linked epics. `GET /projects/tasks/{id}` returns it for a Goal, and `skill_projects/manifest.py` gets a parity row. Dark behind `PROJECTS_GOALS_ORGS`, default empty. **Out:** the rank (RM-1), the Goal as agent context (SW-21, owner gate) and the UI. Code: `rollup.py` `epic_rollup`, `core.py` `is_epic_type`, `tasks.py` `get_task` | A Goal with 2 epics from 2 projects shows the progress of both. A hidden epic is counted in `hidden` and never named. A second link on one epic replaces the first. No read crosses an organization. `tests/unit/test_goal_rollup_r8.py` (new) passes. Run `eval "$(bash scripts/dev_db.sh --export)"` then `timeout 900 uv run pytest tests/unit/test_goal_rollup_r8.py tests/unit/test_epic_rollup_r8.py -rs` with no skip | HIGH (a migration and access). AGENT-SAFE | SP-8, SP-9, D204.4 |
 | **RM-1** | 2528 | The Roadmap view (D199.3 and D199.5). It lists the Goals of a space in rank order, with live progress from epics in any project. A Goal has a rank field. The view adds no initiative record and no milestone record | The Roadmap shows 3 Goals in rank order. A change of rank moves the Goal and writes one `pm_activities` row. `tests/unit/test_goal_rank_r8.py` (new) passes | HIGH if the rank field needs a column, else STANDARD. Gate: the R8 test and the full loop | WM-5, SW-21 |
 
 Proposed, owner review in this pull request: the plan id RM-1 for task 2528. The rank is a whole number, and a lower number ranks first.

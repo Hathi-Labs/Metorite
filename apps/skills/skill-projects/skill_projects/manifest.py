@@ -1716,11 +1716,22 @@ FIELD_GAPS: dict[str, str] = {
     "G25": "AP-10",
     # WS-39 SP-1: the cycle routes. The chat and the MCP get them in SP-5.
     "G26": "SP-5",
+    # WS-39 WM-5: the Goal of an epic and the Goal type. `get_task` reads the
+    # roll-up of a Goal now. A later slice gives the chat and the MCP a tool
+    # argument for each field.
+    "G27": "WM-5 follow-up",
 }
 
 #: A field that a later slice gives the chat: field -> its gap id. The slice
 #: that closes a gap moves its rows to ``SENDS``, so this table only shrinks.
 FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
+    # G27 (WS-39 WM-5, Metorite task 984): the Goal fields. Dark behind
+    # PROJECTS_GOALS_ORGS. A signed agent cannot send them yet either
+    # (`tasks.AGENT_CREATE_FIELDS` and `AGENT_PATCH_FIELDS` leave them out).
+    ("POST", "/projects/tasks"): {"goal_task_id": "G27"},
+    ("PATCH", "/projects/tasks/{task_id}"): {"goal_task_id": "G27"},
+    ("POST", "/projects/nodes/{project_id}/types"): {"is_goal": "G27"},
+    ("PATCH", "/projects/types/{type_id}"): {"is_goal": "G27"},
     # G26 (WS-39 SP-1): the cycle routes. SP-5 (Metorite task 964) sends each
     # field.
     ("POST", "/projects/nodes/{project_id}/cycles"): {

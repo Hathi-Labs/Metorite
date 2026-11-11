@@ -2,9 +2,20 @@
 
 Spec: ``project-docs/specs/project_management_app.md`` §13.3 "Roll-ups".
 
-One read, ``epic_rollup``. ``GET /projects/tasks/{id}`` adds its answer under
-``rollup`` for a task whose type is an epic type. The web app, the chat and the
-MCP ``get_task`` all read it from that one place. There is no route of its own.
+Two reads. ``epic_rollup``: ``GET /projects/tasks/{id}`` adds its answer under
+``rollup`` for a task whose type is an epic type. ``goal_rollup`` (WS-39 WM-5,
+task 984): the same key for a Goal, the sum of ``epic_rollup`` over the epics
+that point at the Goal (``pm_tasks.goal_task_id``, migration 405). The web
+app, the chat and the MCP ``get_task`` all read it from that one place. There
+is no route of its own.
+
+* **Goal.** The epics of a Goal may sit in many projects. An epic that the
+  reader cannot see is counted in ``hidden`` and never named. ``hidden``
+  also counts the hidden slices of each listed epic. The health of
+  each visible epic is the health of the newest update of its project
+  (``pm_project_updates``, migration 383), while ``PROJECTS_UPDATES_ORGS``
+  holds the org and the reader sees that project. The health of the Goal is
+  the worst of them. ``PROJECTS_GOALS_ORGS`` off, a Goal gets no key.
 
 * **Progress.** A slice is a descendant with no child of its own. The read
   counts slices done and total, and ``estimate_mins`` done and total, over
@@ -28,7 +39,10 @@ from __future__ import annotations
 from typing import Any
 
 from gateway.routes.projects.core import (
+    EPIC_TYPE_NAME,
+    goals_allowed,
     is_epic_type,
+    is_goal_type,
     load_row,
     task_visibility_clause,
 )
@@ -189,3 +203,123 @@ async def epic_rollup(db: Any, vis: Any, task: Any) -> dict[str, Any] | None:
     for key in _NOT_YET:
         out[key] = None
     return out
+
+
+# ── WS-39 WM-5 — the roll-up of a Goal ──────────────────────────────────────
+
+#: The most epics of one Goal that the read rolls up. ``epics_total`` and
+#: ``hidden`` stay exact, and ``truncated`` says when the list stops short.
+MAX_GOAL_EPICS = 200
+
+#: The order of health from good to bad. The Goal takes the worst.
+HEALTH_ORDER = ("on_track", "at_risk", "off_track")
+
+#: Every live epic that points at ``:goal``, in this tenant, with ``seen`` for
+#: the reader. The epic test is the SQL of ``core.is_epic_type``: the flag,
+#: or the seeded system type by name.
+_GOAL_EPICS_SQL = """
+SELECT t.id, t.type_id, t.project_id, t.task_number, t.title,
+       ({visible}) AS seen
+  FROM pm_tasks t
+  JOIN pm_task_types ty ON ty.id = t.type_id
+ WHERE t.goal_task_id = CAST(:goal AS uuid)
+   AND t.organization_id = CAST(:vis_org AS uuid)
+   AND t.archived_at IS NULL
+   AND (ty.is_epic OR (ty.is_system AND ty.name = :epic_name))
+ ORDER BY t.created_at, t.id
+"""
+
+#: The health of the newest live update of each project in ``:pids`` that
+#: the reader sees. The project clause keeps a project that the reader sees
+#: only through an assigned epic out.
+_HEALTH_SQL = """
+SELECT DISTINCT ON (u.project_id) u.project_id, u.health
+  FROM pm_project_updates u
+ WHERE u.project_id = ANY(CAST(:pids AS uuid[]))
+   AND u.organization_id = CAST(:vis_org AS uuid)
+   AND u.deleted_at IS NULL
+   AND ({projects})
+ ORDER BY u.project_id, u.posted_at DESC, u.id DESC
+"""
+
+
+async def _healths(db: Any, vis: Any, project_ids: list[str]) -> dict[str, str]:
+    """The health of each project, or no key. Empty while
+    ``PROJECTS_UPDATES_ORGS`` does not hold the org."""
+    from gateway.routes.projects.updates import updates_allowed
+
+    if not project_ids or not updates_allowed(vis.organization_id):
+        return {}
+    rows = (await db.execute(
+        text(_HEALTH_SQL.format(projects=vis.project_clause("u.project_id"))),
+        {"pids": sorted(set(project_ids)), **vis.params},
+    )).fetchall()
+    return {str(r.project_id): str(r.health) for r in rows}
+
+
+def _worst(healths: list[str | None]) -> str | None:
+    known = [h for h in healths if h in HEALTH_ORDER]
+    return max(known, key=HEALTH_ORDER.index) if known else None
+
+
+async def goal_rollup(db: Any, vis: Any, task: Any) -> dict[str, Any] | None:
+    """The roll-up of the Goal *task*, or ``None`` when its type is not a Goal
+    type or ``PROJECTS_GOALS_ORGS`` does not hold the org.
+
+    *task* is a row that the caller already loaded through
+    ``core.load_visible_task``. Each epic number is ``epic_rollup`` of that
+    epic, so the two reads cannot disagree.
+    """
+    type_id = getattr(task, "type_id", None)
+    if type_id is None or not goals_allowed(vis.organization_id):
+        return None
+    type_row = await load_row(db, "pm_task_types", str(type_id))
+    if type_row is None or not is_goal_type(type_row):
+        return None
+    rows = (await db.execute(
+        text(_GOAL_EPICS_SQL.format(visible=task_visibility_clause(vis, "t"))),
+        {"goal": str(task.id), "epic_name": EPIC_TYPE_NAME, **vis.params},
+    )).fetchall()
+    seen = [r for r in rows if r.seen]
+    listed = seen[:MAX_GOAL_EPICS]
+    healths = await _healths(db, vis, [str(r.project_id) for r in listed])
+    slices = {"done": 0, "total": 0}
+    estimate = {"done": 0, "total": 0}
+    waits = 0
+    hidden_slices = 0
+    epics: list[dict[str, Any]] = []
+    for r in listed:
+        one = await epic_rollup(db, vis, r)
+        if one is None:
+            continue
+        for key in ("done", "total"):
+            slices[key] += one["slices"][key]
+            estimate[key] += one["estimate_mins"][key]
+        waits += one["waits"]["count"]
+        hidden_slices += one["hidden"]
+        health = healths.get(str(r.project_id))
+        epics.append({
+            "id": str(r.id),
+            "project_id": str(r.project_id),
+            "task_number": r.task_number,
+            "title": r.title,
+            "slices": one["slices"],
+            "estimate_mins": one["estimate_mins"],
+            "waits": one["waits"]["count"],
+            "hidden": one["hidden"],
+            "health": health,
+        })
+    return {
+        "kind": "goal",
+        "epics": epics,
+        "epics_total": len(seen),
+        "truncated": len(seen) > len(listed),
+        "slices": slices,
+        "estimate_mins": estimate,
+        "waits": {"count": waits, "items": []},
+        # An epic that the reader cannot see, and a hidden slice of a listed
+        # epic: counted here, never named. The epic reply counts its own
+        # hidden slices the same way, so the two reads agree.
+        "hidden": (len(rows) - len(seen)) + hidden_slices,
+        "health": _worst([e["health"] for e in epics]),
+    }

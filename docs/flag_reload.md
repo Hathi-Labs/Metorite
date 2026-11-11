@@ -24,6 +24,12 @@ it does not change who may flip it. The flip stays OWNER-GATE
 `gateway.routes.shell.waiting.waiting_allowed`. A reload applies a change. The
 flip stays OWNER-GATE (`enforcement-flip`).
 
+`PROJECTS_GOALS_ORGS` opens the Goals of Projects (`project_management_app.md`
+§13.6a row WM-5). Its one reader is
+`gateway.routes.projects.core.goals_allowed`. While the list does not hold the
+org, a write that sends a Goal field gets 422 `goals_off`. A reload applies a
+change, and the flip stays OWNER-GATE (`enforcement-flip`).
+
 `GITHUB_APP_ORGS` turns the Metorite GitHub App on for each named org
 (`agent_coordination.md` SW-53). `GITHUB_APP_ENABLED` stays the master, and a
 reload does not apply the master. With the master on, an empty list turns

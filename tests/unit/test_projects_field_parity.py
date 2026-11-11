@@ -793,7 +793,8 @@ def test_the_spec_tables_parse() -> None:
     # 23 since WS-55 EA-12a added G23, the agent-run routes (EA12-9). 24
     # since WS-66 RM-1 added G24, the reminder routes. 25 since WS-AP AP-8a
     # added G25, the person ask. 26 since WS-39 SP-1 added G26, the cycles.
-    assert len(_spec_gaps()) == 26
+    # 27 since WS-39 WM-5 added G27, the Goal fields.
+    assert len(_spec_gaps()) == 27
     assert {"P1", "P2", "P3"} <= _built_slices()
 
 

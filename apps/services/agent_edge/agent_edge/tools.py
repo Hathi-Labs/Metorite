@@ -3401,6 +3401,25 @@ _WAIT_SCHEMA = _object({
     "task_number": _NULLABLE_INTEGER, "title": _UNTRUSTED_SCHEMA,
     "person": _NULLABLE_STRING, "since": _NULLABLE_STRING,
 })
+#: WS-39 WM-5. A Goal rolls up its linked epics (``rollup.goal_rollup`` of the
+#: gateway). Its roll-up has the epic keys, then these four. ``health`` of a
+#: Goal is the worst health of its epics, one of :data:`HEALTH_VALUES`.
+GOAL_KEYS: tuple[str, ...] = ("kind", "epics", "epics_total", "truncated")
+GOAL_EPIC_KEYS: tuple[str, ...] = (
+    "id", "project_id", "task_number", "title", "slices", "estimate_mins",
+    "waits", "hidden", "health",
+)
+HEALTH_VALUES: tuple[str, ...] = ("on_track", "at_risk", "off_track")
+_HEALTH_SCHEMA: dict[str, Any] = {
+    "type": ["string", "null"], "enum": [*HEALTH_VALUES, None],
+}
+_GOAL_EPIC_SCHEMA = _object({
+    "id": {"type": "string"}, "project_id": _NULLABLE_STRING,
+    "task_number": _NULLABLE_INTEGER, "title": _UNTRUSTED_SCHEMA,
+    "slices": _DONE_TOTAL_SCHEMA, "estimate_mins": _DONE_TOTAL_SCHEMA,
+    "waits": {"type": "integer"}, "hidden": {"type": "integer"},
+    "health": _HEALTH_SCHEMA,
+})
 _ROLLUP_SCHEMA = _object({
     "slices": _DONE_TOTAL_SCHEMA,
     "estimate_mins": _DONE_TOTAL_SCHEMA,
@@ -3408,8 +3427,15 @@ _ROLLUP_SCHEMA = _object({
                       "items": {"type": "array", "items": _WAIT_SCHEMA}}),
     "hidden": {"type": "integer"},
     "spend": {"type": "null"}, "forecast": {"type": "null"},
-    "health": {"type": "null"}, "hill": {"type": "null"},
+    # Always null for an epic. A Goal carries the worst health of its epics.
+    "health": _HEALTH_SCHEMA, "hill": {"type": "null"},
+    "kind": {"type": "string", "enum": ["goal"]},
+    "epics": {"type": "array", "items": _GOAL_EPIC_SCHEMA},
+    "epics_total": {"type": "integer"},
+    "truncated": {"type": "boolean"},
 })
+# The four Goal keys are present for a Goal only.
+_ROLLUP_SCHEMA["required"] = list(ROLLUP_KEYS)
 
 
 def _rollup_count(value: Any) -> int:
@@ -3421,13 +3447,51 @@ def _done_total(value: Any) -> dict[str, int]:
     return {"done": _rollup_count(raw.get("done")), "total": _rollup_count(raw.get("total"))}
 
 
+def _health(value: Any) -> str | None:
+    return value if isinstance(value, str) and value in HEALTH_VALUES else None
+
+
+def _goal_epic(row: dict[str, Any]) -> dict[str, Any]:
+    """One epic of a Goal (WM-5), the pinned keys and no other. The title is
+    text from other people, so it is (U)."""
+    return {
+        "id": str(row.get("id")),
+        "project_id": _str_or_none(row.get("project_id")),
+        "task_number": _int_or_none(row.get("task_number")),
+        "title": untrusted(row.get("title") or ""),
+        "slices": _done_total(row.get("slices")),
+        "estimate_mins": _done_total(row.get("estimate_mins")),
+        "waits": _rollup_count(row.get("waits")),
+        "hidden": _rollup_count(row.get("hidden")),
+        "health": _health(row.get("health")),
+    }
+
+
 def rollup(raw: Any) -> dict[str, Any] | None:
-    """The roll-up of an epic (SP-9), the pinned keys and no other. ``None``
-    when the gateway sent none (the task is not an epic). The title of a task
-    that waits is text from other people, so it is (U). The four keys that wait
-    for their source stay ``None``, whatever the gateway sends."""
+    """The roll-up of an epic (SP-9) or of a Goal (WM-5), the pinned keys and
+    no other. ``None`` when the gateway sent none (the task is neither). The
+    title of a task that waits, and of an epic of a Goal, is text from other
+    people, so it is (U). The four keys that wait for their source stay
+    ``None`` for an epic, whatever the gateway sends. A Goal keeps its
+    ``health``, the worst of its epics, and adds :data:`GOAL_KEYS`."""
     if not isinstance(raw, dict):
         return None
+    shaped_rollup = _epic_rollup(raw)
+    if raw.get("kind") != "goal":
+        return shaped_rollup
+    epics = raw.get("epics")
+    shaped_rollup["health"] = _health(raw.get("health"))
+    shaped_rollup["kind"] = "goal"
+    shaped_rollup["epics"] = [
+        _goal_epic(e) for e in epics if isinstance(e, dict)
+    ] if isinstance(epics, list) else []
+    shaped_rollup["epics_total"] = _rollup_count(raw.get("epics_total"))
+    shaped_rollup["truncated"] = raw.get("truncated") is True
+    return shaped_rollup
+
+
+def _epic_rollup(raw: dict[str, Any]) -> dict[str, Any]:
+    """The :data:`ROLLUP_KEYS` of a roll-up, in that order."""
     waits = raw.get("waits") if isinstance(raw.get("waits"), dict) else {}
     items = waits.get("items")
     return {
