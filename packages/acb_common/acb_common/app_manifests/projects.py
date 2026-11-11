@@ -9,7 +9,7 @@ manifest (``skill_projects.manifest.MANIFEST``), with the same method, path,
 class and chat tool. The chat manifest stays the allowlist of Mira's
 Projects client, in ``skill_projects``. This table adds the door half only:
 a door ``op``, or an ``off_door`` reason (AD-2). This module cannot import
-``skill_projects``, so it repeats the 210 pairs. That is an exception to
+``skill_projects``, so it repeats the 211 pairs. That is an exception to
 AD-1 and D136.1 for Projects (D208.2), until MCP-G24c moves the chat
 manifest into ``acb_common``. The fence holds the pairs, the class and the
 tool equal, row for row.
@@ -324,6 +324,8 @@ PROJECTS_DOOR = App(
               off_door=LATER),
         Route("PUT", "/projects/tasks/{task_id}/assignees", "assign", "B", off_door=TYPED),
         Route("POST", "/projects/tasks/{task_id}/claim", "claim_task", "B", off_door=TYPED),
+        Route("POST", "/projects/tasks/{task_id}/check-result", "report_check", "B",
+              off_door=TYPED),
         Route("POST", "/projects/tasks/{task_id}/links", "link_tasks", "B", off_door=TYPED),
         Route("DELETE", "/projects/tasks/{task_id}/links/{link_id}", "unlink_tasks", "B",
               off_door=TYPED),
