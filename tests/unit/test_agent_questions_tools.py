@@ -59,7 +59,7 @@ def _open_run(*, status="awaiting", archive=False, multiple=False) -> dict:
     if multiple:
         meta["allow_multiple"] = True
     question = {
-        "id": QID, "content": {"body": "Which nozzle size?"}, "signal_metadata": meta,
+        "id": QID, "task_id": TASK, "content": {"body": "Which nozzle size?"}, "signal_metadata": meta,
         "content_metadata": {"request": {"kind": "archive_task"}} if archive else None,
     }
     return {"run": {"id": RUN, "status": status, "open_elicitation": question}, "activities": []}
@@ -81,7 +81,7 @@ def _gateway(monkeypatch, *, rows=None, off=False, run=None, post=None, total=No
                 return reads.pop(0) if len(reads) > 1 else reads[0]
             return run if run is not None else _open_run()
         if path == f"/projects/agent-runs/{RUN}/activities" and method == "POST":
-            return post if post is not None else {"created": True, "activity": {"id": "x"}}
+            return post if post is not None else {"created": True, "activity": {"id": "x", "in_reply_to": QID}}
         return {"rows": [], "total": 0}
 
     return fake_gateway(monkeypatch, answer)
@@ -185,9 +185,9 @@ def test_the_answer_posts_one_prompt_after_a_confirmed_card(monkeypatch) -> None
     body = posted[0]["json"]
     assert body["type"] == "prompt" and body["selected"] == ["a"]
     assert body["body"] == "Use the small one"
-    assert body["idempotency_key"] == skill_projects.question_answers._answer_key(
-        QID, "Use the small one", ["a"])
-    assert body["idempotency_key"].startswith(f"chat-answer-{QID}-")
+    base = skill_projects.question_answers._answer_key(QID, "Use the small one", ["a"])
+    assert body["idempotency_key"].startswith(base + "-")
+    assert len(body["idempotency_key"]) <= 128
 
 
 def test_a_declined_card_writes_nothing(monkeypatch) -> None:
@@ -244,7 +244,7 @@ def test_a_403_of_the_server_is_one_sentence_and_the_tool_holds_no_rule(monkeypa
 
 
 def test_a_retry_that_the_server_replays_says_already_answered(monkeypatch) -> None:
-    _gateway(monkeypatch, post={"created": False, "activity": {"content": {"body": "x"}}})
+    _gateway(monkeypatch, post={"created": False, "activity": {"content": {"body": "x"}, "in_reply_to": QID}})
     approve(monkeypatch)
     assert "Already answered" in _run(skill_projects.answer_agent_question(RUN, answer="x"))
 
@@ -284,7 +284,7 @@ def test_a_race_that_returns_another_answer_is_not_called_the_same(monkeypatch) 
 
 
 def test_a_replay_with_the_same_selected_ids_is_the_same_answer(monkeypatch) -> None:
-    _gateway(monkeypatch, post={"created": False, "activity": {"content": {"selected": ["a"]}}})
+    _gateway(monkeypatch, post={"created": False, "activity": {"content": {"selected": ["a"]}, "in_reply_to": QID}})
     approve(monkeypatch)
     assert "same answer" in _run(skill_projects.answer_agent_question(RUN, selected="a"))
 
@@ -302,3 +302,38 @@ def test_a_422_of_the_server_is_one_sentence(monkeypatch) -> None:
     approve(monkeypatch)
     said = _run(skill_projects.answer_agent_question(RUN, answer="x"))
     assert "Nothing was changed" in said
+
+
+def test_a_replay_of_a_withdrawn_answer_is_not_already_answered(monkeypatch) -> None:
+    replay = {"created": False, "activity": {
+        "content": {"body": "x", "withdrawn": {"at": "2026-11-10T09:00:00+00:00"}},
+        "in_reply_to": None}}
+    _gateway(monkeypatch, post=replay)
+    approve(monkeypatch)
+    said = _run(skill_projects.answer_agent_question(RUN, answer="x"))
+    assert "Already answered" not in said
+    assert said == skill_projects.question_answers.ANSWER_RECORDED
+
+
+def test_each_confirmed_call_has_its_own_key(monkeypatch) -> None:
+    calls = _gateway(monkeypatch)
+    approve(monkeypatch)
+    _run(skill_projects.answer_agent_question(RUN, answer="x"))
+    _run(skill_projects.answer_agent_question(RUN, answer="x"))
+    keys = [c["json"]["idempotency_key"] for c in writes(calls)]
+    assert len(keys) == 2 and keys[0] != keys[1]
+
+
+def test_an_answer_that_landed_off_the_question_says_so_with_the_link(monkeypatch) -> None:
+    _gateway(monkeypatch, post={"created": True, "activity": {"id": "x", "in_reply_to": None}})
+    approve(monkeypatch)
+    said = _run(skill_projects.answer_agent_question(RUN, answer="x"))
+    assert said.startswith(skill_projects.question_answers.NOT_ON_QUESTION)
+    assert f"/projects?task={TASK}" in said and not said.startswith("Answered")
+
+
+def test_a_refusal_shows_the_clean_detail_and_not_the_route(monkeypatch) -> None:
+    _gateway(monkeypatch, post=FakeResponse({"detail": "Only the task creator can answer."}, 403))
+    approve(monkeypatch)
+    said = _run(skill_projects.answer_agent_question(RUN, answer="x"))
+    assert "Only the task creator can answer." in said and "/projects/agent-runs" not in said

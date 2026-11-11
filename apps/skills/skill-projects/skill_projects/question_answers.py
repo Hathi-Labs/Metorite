@@ -20,6 +20,7 @@ nothing before the member confirms.
 from __future__ import annotations
 
 import hashlib
+import uuid
 from typing import Any
 
 from acb_common.no_person import NO_PERSON_TEXT, no_person_present
@@ -63,6 +64,11 @@ STALE_CARD = (
     "so nothing was sent. Ask for the questions again."
 )
 
+NOT_ON_QUESTION = (
+    "The answer was recorded, but not on that question. It went on the task as a comment, "
+    "or to a newer question. Open the task to check: "
+)
+
 ANSWER_RECORDED = (
     "Another answer is already recorded for this question, so nothing new was sent. "
     "Open the task to read it."
@@ -72,13 +78,17 @@ ANSWER_RECORDED = (
 def _answer_key(question_id: Any, text: str, picked: list[str]) -> str:
     """One key for one question and one answer. A second answer to the same
     question (after a withdraw, or from another member) gets its own key."""
-    digest = hashlib.sha256(
-        "\x1f".join([text, *sorted(picked)]).encode("utf-8")).hexdigest()[:12]
+    digest = hashlib.blake2b(
+        "\x1f".join([text, *sorted(picked)]).encode("utf-8"), digest_size=6).hexdigest()
     return f"chat-answer-{question_id}-{digest}"
 
 
-def _same_answer(activity: dict[str, Any], text: str, picked: list[str]) -> bool:
+def _same_answer(activity: dict[str, Any], question_id: Any, text: str, picked: list[str]) -> bool:
+    """True when *activity* is a live answer to THIS question with this content.
+    A withdrawn row is not an answer: the question is open again."""
     content = (activity or {}).get("content") or {}
+    if content.get("withdrawn") or str(activity.get("in_reply_to") or "") != str(question_id):
+        return False
     return (str(content.get("body") or "").strip() == text
             and sorted(str(x) for x in content.get("selected") or []) == sorted(picked))
 
@@ -119,6 +129,20 @@ def _pick_refusal(question: dict[str, Any], options: list[dict[str, Any]], picke
     return ""
 
 
+def _outcome(written: Any, question: dict[str, Any], text: str, picked: list[str],
+             asks: str, rid: str) -> str:
+    """The sentence for the route's answer. It says "Answered" only for a live
+    answer on THIS question."""
+    created = (written or {}).get("created", True)
+    activity = (written or {}).get("activity") or {}
+    if not created and not _same_answer(activity, question.get("id"), text, picked):
+        return ANSWER_RECORDED
+    if created and str(activity.get("in_reply_to") or "") != str(question.get("id")):
+        return f"{NOT_ON_QUESTION}/projects?task={question.get('task_id')}"
+    done = "Answered" if created else "Already answered, with the same answer"
+    return f"{done}: {asks}\n  run_id: {rid}"
+
+
 @_annotate(read_only=False, destructive=False, idempotent=True, open_world=False, card_write=True)
 async def answer_agent_question(run_id: str, answer: str = "", selected: str = "") -> str:
     """Answer ONE question that an agent put and that waits on the member. run_id
@@ -148,7 +172,9 @@ async def answer_agent_question(run_id: str, answer: str = "", selected: str = "
         return refusal
     body: dict[str, Any] = {
         "type": "prompt",
-        "idempotency_key": _answer_key(question.get("id"), text, picked),
+        # A nonce for each confirmed call: a replay of a withdrawn row must not
+        # stand for a new answer. A second call meets NOT_AWAITING after a live one.
+        "idempotency_key": f"{_answer_key(question.get('id'), text, picked)}-{uuid.uuid4().hex}",
     }
     if text:
         body["body"] = text
@@ -177,10 +203,7 @@ async def answer_agent_question(run_id: str, answer: str = "", selected: str = "
         written = await post(f"/projects/agent-runs/{rid}/activities", body)
     except GatewayRefusal as exc:
         if getattr(exc, "status", None) in (403, 422):
-            return f"{REFUSED} {exc} Nothing was changed."
+            said = str(getattr(exc, "detail", "") or "").strip() or "The server refused it."
+            return f"{REFUSED} {said} Nothing was changed."
         raise
-    created = (written or {}).get("created", True)
-    if not created and not _same_answer((written or {}).get("activity") or {}, text, picked):
-        return ANSWER_RECORDED
-    done = "Answered" if created else "Already answered, with the same answer"
-    return f"{done}: {asks}\n  run_id: {rid}"
+    return _outcome(written, question, text, picked, asks, rid)
