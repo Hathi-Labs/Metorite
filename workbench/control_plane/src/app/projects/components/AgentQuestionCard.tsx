@@ -16,8 +16,10 @@
  *   sends them to `archive-approval`, never to `/activities`;
  * - the same request as a read-only block, with "Waiting for <name>", for
  *   everybody else, and its expired state;
- * - a read-only question with "<name> or an admin can answer this", for a
- *   reader the server says may not answer (`canAnswer` false);
+ * - a read-only question with the line "Only <name>, the creator of the
+ *   task, its assignees, or an owner, admin or manager can answer this"
+ *   (`readOnlyLine`), for a reader the server says may not answer
+ *   (`canAnswer` false);
  * - after the answer, one line: "Answered by <name>: <labels>".
  *
  * ⚠️ **It decides no rule.** `canAnswer` is the server's (`can_answer`, from
@@ -74,8 +76,14 @@ export interface AgentQuestionCardProps {
    * reads the request off the activity. The list sends the server's word.
    */
   kind?: "question" | "archive_request";
-  /** A list row has no expiry stamp. The server refuses a late decision. */
+  /**
+   * The host may force the expired state. A list row carries its expiry in
+   * `question.expires_at`, so the card reads it off the activity. The server
+   * still refuses a late decision.
+   */
   expired?: boolean;
+  /** The host bumps this after a failed send. The input stays and Submit works again. */
+  retryToken?: number;
   busy?: boolean;
   personLabels?: ReadonlyMap<string, string>;
   /** An option or free-text answer to a question. */
@@ -94,6 +102,7 @@ export function AgentQuestionCard({
   archiveMine,
   kind,
   expired,
+  retryToken,
   busy = false,
   personLabels,
   onAnswer,
@@ -142,6 +151,7 @@ export function AgentQuestionCard({
         onSubmit={onAnswer}
         disabled={busy}
         hint={AGENT_SUBMIT_HINT}
+        retryToken={retryToken}
       />
     );
   }
@@ -185,6 +195,7 @@ export function AgentQuestionCard({
           disabled={busy}
           hint={ARCHIVE_HINT}
           title={ARCHIVE_CARD_TITLE}
+          retryToken={retryToken}
         />
       </div>
     );

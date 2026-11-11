@@ -53,6 +53,9 @@ import {
   emptyCopy,
   everyoneTabShown,
   groupByProject,
+  keepRowsAfterFailedRead,
+  queryKey,
+  rowsAreStale,
   pathLabel,
   projectHref,
   questionActivity,
@@ -99,11 +102,14 @@ export function QuestionsView({
   const [off, setOff] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  /** Failed sends of each row. The card remounts on a change, so its Submit works again. */
+  /** Failed sends of each row. A bump gives that row's card a new exit gate. The input stays. */
   const [attempts, setAttempts] = useState<Record<string, number>>({});
   const [failed, setFailed] = useState<Record<string, string>>({});
   /** The answer sent from here, by activity id, until the list reads again. */
   const [sent, setSent] = useState<Record<string, AgentActivity>>({});
+  /** The query the rows of `page` were read for. */
+  const [pageKey, setPageKey] = useState<string | null>(null);
+  const pageKeyRef = useRef<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
 
   const query = useRef({ scope, project, sort });
@@ -130,15 +136,25 @@ export function QuestionsView({
       }
       setOff(false);
       setPage(got);
+      setPageKey(queryKey(q));
+      pageKeyRef.current = queryKey(q);
       setCounts(got.counts);
       setNow(Date.now());
       setError(null);
       setSent({});
     } catch (err) {
+      // A slow failure of an old tab must not touch the new one.
+      if (queryKey(q) !== queryKey(query.current)) return;
       const status = err instanceof ProjectsApiError ? err.status : undefined;
       if (status === 403 && q.scope === "everyone") {
         setScope("mine");
         return;
+      }
+      // A failed read of a changed query: the old rows must not stay.
+      if (!keepRowsAfterFailedRead(pageKeyRef.current, queryKey(q))) {
+        setPage(null);
+        setPageKey(null);
+        pageKeyRef.current = null;
       }
       setError(
         err instanceof Error && err.message
@@ -150,7 +166,7 @@ export function QuestionsView({
 
   // A new tab, project or sort reads at once.
   useEffect(() => {
-    // The last rows stay on screen while the new read runs.
+    // The last rows stay (marked busy) while the new read runs.
     void load();
   }, [scope, project, sort, load]);
 
@@ -236,6 +252,7 @@ export function QuestionsView({
     });
   }
 
+  const stale = rowsAreStale(pageKey, queryKey({ scope, project, sort }));
   const groups = useMemo(() => (page ? groupByProject(page.rows) : []), [page]);
   const capped = page ? cappedLine(page, sort) : null;
   const empty = emptyCopy(scope);
@@ -328,7 +345,12 @@ export function QuestionsView({
         ) : null}
 
         {groups.map((group) => (
-          <div key={group.key} className="mb-5" data-questions-group={group.key}>
+          <div
+            key={group.key}
+            className={`mb-5 ${stale ? "pointer-events-none opacity-60" : ""}`}
+            aria-busy={stale || undefined}
+            data-questions-group={group.key}
+          >
             <p className="mb-2 flex min-w-0 flex-wrap items-center gap-x-1 text-xs text-muted-foreground">
               {group.path.map((step, i) => (
                 <span key={step.id} className="inline-flex min-w-0 items-center gap-1">
@@ -386,7 +408,7 @@ export function QuestionsView({
                       </div>
                     </div>
                     <AgentQuestionCard
-                      key={`${row.activity_id}:${attempts[row.activity_id] ?? 0}`}
+                      retryToken={attempts[row.activity_id] ?? 0}
                       elicitation={questionActivity(row)}
                       run={{ member_email: "" }}
                       clientLabel={row.agent_name || "The agent"}

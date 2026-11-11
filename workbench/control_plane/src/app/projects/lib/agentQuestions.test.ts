@@ -26,6 +26,9 @@ import {
   emptyCopy,
   everyoneTabShown,
   groupByProject,
+  keepRowsAfterFailedRead,
+  queryKey,
+  rowsAreStale,
   pathLabel,
   questionActivity,
   questionsCount,
@@ -306,5 +309,27 @@ describe("the expiry of a typed request", () => {
 
   it("a free question carries no request", () => {
     expect(questionActivity(questionsPage({ rows: [wire()] }).rows[0]).content_metadata).toBeUndefined();
+  });
+});
+
+describe("rows of an old query", () => {
+  const mine = queryKey({ scope: "mine", project: "", sort: "oldest" });
+  const everyone = queryKey({ scope: "everyone", project: "", sort: "oldest" });
+
+  it("keys differ per scope, project and sort", () => {
+    expect(mine).not.toBe(everyone);
+    expect(queryKey({ scope: "mine", project: "p1", sort: "oldest" })).not.toBe(mine);
+    expect(queryKey({ scope: "mine", project: "", sort: "newest" })).not.toBe(mine);
+  });
+
+  it("rows are stale only when read for another query", () => {
+    expect(rowsAreStale(null, mine)).toBe(false);
+    expect(rowsAreStale(mine, mine)).toBe(false);
+    expect(rowsAreStale(mine, everyone)).toBe(true);
+  });
+
+  it("a failed read clears rows of another query and keeps rows of the same one", () => {
+    expect(keepRowsAfterFailedRead(mine, everyone)).toBe(false);
+    expect(keepRowsAfterFailedRead(mine, mine)).toBe(true);
   });
 });

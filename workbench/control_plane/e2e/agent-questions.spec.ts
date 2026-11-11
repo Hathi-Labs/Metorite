@@ -212,6 +212,26 @@ test("a typed archive request goes to archive-approval and never to activities",
   expect(posts.some((p) => p.path.endsWith("/activities"))).toBe(false);
 });
 
+test("an expired archive request draws Decline only", async ({ page }) => {
+  test.setTimeout(120_000);
+  const expired = row({
+    ...ARCHIVE,
+    question: { ...ARCHIVE.question, expires_at: "2020-01-01T00:00:00+00:00" },
+  });
+  const { posts } = await stub(page, { rows: [expired] });
+  const card = page.locator('[data-question-row="archive_request"]');
+  await expect(card).toBeVisible({ timeout: 30_000 });
+  await expect(card.locator('[data-archive-request="expired"]')).toBeVisible();
+  await expect(card.locator("[data-archive-decline]")).toBeVisible();
+  await expect(card.getByRole("button", { name: "Approve" })).toHaveCount(0);
+  await expect(card.locator("[data-elicitation-option]")).toHaveCount(0);
+
+  await card.locator("[data-archive-decline]").click();
+  await expect.poll(() => posts.length).toBe(1);
+  expect(posts[0].path).toBe("projects/agent-runs/r2/archive-approval");
+  expect(posts[0].body).toMatchObject({ decision: "decline" });
+});
+
 test("with the route off, the sidebar has no Questions entry", async ({ page }) => {
   test.setTimeout(120_000);
   await stub(page, { off: true });

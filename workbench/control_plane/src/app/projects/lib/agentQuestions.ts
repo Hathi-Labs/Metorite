@@ -213,6 +213,29 @@ export function readOnlyLine(who: string): string {
   return `Only ${who}, the creator of the task, its assignees, or an owner, admin or manager can answer this`;
 }
 
+/* ── Rows of an old query ────────────────────────────────────────────────── */
+
+/** One word for a query: the scope, the project and the sort. */
+export function queryKey(q: { scope: QuestionScope; project: string; sort: QuestionSort }): string {
+  return `${q.scope}|${q.project}|${q.sort}`;
+}
+
+/**
+ * The rows on screen belong to an OLD query. They stay only to avoid a flicker
+ * while the new read runs, and the list marks them busy.
+ */
+export function rowsAreStale(pageKey: string | null, current: string): boolean {
+  return pageKey !== null && pageKey !== current;
+}
+
+/**
+ * A read failed. Old rows of another query must not stay under the new tab, so
+ * they go. Rows of the same query stay (a poll that failed keeps its list).
+ */
+export function keepRowsAfterFailedRead(pageKey: string | null, readKey: string): boolean {
+  return pageKey === readKey;
+}
+
 /* ── Age ─────────────────────────────────────────────────────────────────── */
 
 /** "just now", "12 m", "3 h" or "2 d". The age of one moment. */

@@ -213,9 +213,31 @@ describe("one component, no copy", () => {
     expect(panel).toContain("run.can_answer !== false");
   });
 
-  it("both hosts remount the card after a failed send, so Submit works again", () => {
-    expect(panel).toMatch(/key=\{`\$\{elicitation\.id\}:\$\{failures\}`\}/);
+  it("a failed send resets the exit gate and never remounts the card", () => {
+    // A remount would throw away the typed text and the picks (DESIGN_SYSTEM §9).
+    for (const host of [panel, list]) {
+      expect(host).not.toMatch(/<AgentQuestionCard[^>]*\bkey=/);
+      expect(host).toContain("retryToken=");
+    }
     expect(list).toContain("attempts[row.activity_id]");
+    const card = readFileSync(`${dir}../../../components/ElicitationCard.tsx`, "utf8");
+    expect(card).toMatch(/\}, \[closed, retryToken\]\)/);
+    expect(card).toMatch(/exit\.current = cardExit\(\)/);
+  });
+
+  it("the panel bumps the token for a failed answer only, not for a failed Stop", () => {
+    const write = panel.slice(panel.indexOf("async function write("), panel.indexOf("async function submitAnswer"));
+    expect(write).not.toContain("setRetryToken");
+    const submit = panel.slice(panel.indexOf("async function submitAnswer"), panel.indexOf("async function withdraw"));
+    expect(submit.match(/setRetryToken/g)?.length).toBe(2);
+    const stop = panel.slice(panel.indexOf("async function stop()"), panel.indexOf("return (\n    <section"));
+    expect(stop).not.toContain("setRetryToken");
+  });
+
+  it("the list dims old rows and clears them after a failed read of a changed query", () => {
+    expect(list).toContain("rowsAreStale(");
+    expect(list).toContain("aria-busy={stale || undefined}");
+    expect(list).toContain("keepRowsAfterFailedRead(");
   });
 
   it("the list has a Retry for a failed read and passes the server's expiry", () => {
