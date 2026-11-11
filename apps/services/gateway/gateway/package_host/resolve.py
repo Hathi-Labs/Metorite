@@ -20,7 +20,10 @@ PKG-5b row of §10. The route is ``GET /shell/manifest`` in
    holds ``key``, ``source`` ``system``, ``install_id`` None, ``needs_setup``
    False, ``feature`` and ``package``, and no payload.
 2. An install shows only when it is ``active``, its ``ends_at`` is NULL or
-   in the future, and its app is a Studio package that is not archived.
+   in the future, and its app is a Studio package that is not archived and
+   not paused (``apps.paused_at``, WS-STU J3a). The pause of a package also
+   pauses each install, so this term covers an install that a publish or a
+   restore makes active during the pause.
    This read hides an install at its ``ends_at`` with no write. So
    ``store.expire_due`` (PKG-10a) only archives it later, and never has to
    hide it. An ``org`` install shows to each member. A ``group`` install shows to a
@@ -344,7 +347,7 @@ INSTALLS_SQL = (
     f" WHERE package_install.organization_id = {_BOUND_ORG}"
     " AND package_install.state = 'active'"
     " AND (package_install.ends_at IS NULL OR package_install.ends_at > now())"
-    " AND a.format = 'manifest' AND a.status <> 'archived'"
+    " AND a.format = 'manifest' AND a.status <> 'archived' AND a.paused_at IS NULL"
     " AND (package_install.version IS NOT NULL"
     " OR package_install.scope_subject = :viewer)"
     " AND (package_install.scope_kind = 'org'"
