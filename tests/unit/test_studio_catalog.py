@@ -272,7 +272,8 @@ def test_the_flag_reader_is_per_call(monkeypatch):
 
 PKG_A = str(uuid.uuid4())
 PKG_B = str(uuid.uuid4())
-VERBS = {"list": "A", "get": "A", "create": "B", "update": "B", "delete": "C"}
+#: The class of each object op. STU-D4b adds the aggregate, a read.
+VERBS = {"list": "A", "get": "A", "create": "B", "update": "B", "delete": "C", "aggregate": "A"}
 
 
 def _pkg(pid, objects=(), actions=()):
@@ -287,7 +288,7 @@ def _rows(db, monkeypatch, **params):
 
 
 class TestThePackageRows:
-    def test_an_object_gives_five_rows_with_the_class_of_its_verb(self, monkeypatch, db):
+    def test_an_object_gives_six_rows_with_the_class_of_its_verb(self, monkeypatch, db):
         db.packages = [_pkg(PKG_A, ["items"])]
         rows = _rows(db, monkeypatch)
         assert {r["id"]: r["class"] for r in rows} == {

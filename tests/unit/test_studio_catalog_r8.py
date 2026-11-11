@@ -193,7 +193,8 @@ def test_r8_an_unbound_session_sees_no_workflow(world):
 
 ANA = f"ana.{TAG}@stub1c.test"
 BEN = f"ben.{TAG}@stub1c.test"
-_VERBS = {"list": "A", "get": "A", "create": "B", "update": "B", "delete": "C"}
+#: The class of each object op. STU-D4b adds the aggregate, a read.
+_VERBS = {"list": "A", "get": "A", "create": "B", "update": "B", "delete": "C", "aggregate": "A"}
 
 
 def _manifest(mid: str, wf_a: str, wf_b: str, objects: list[str]) -> dict:
