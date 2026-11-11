@@ -1854,3 +1854,186 @@ class TestTheWaitingState:
                                " '1 minute' WHERE id = CAST(:r AS uuid)"), {"r": rid})
             assert await _status(call, w.a, rid) == ("in_progress", "stale")
             assert _count(w.p, stranded, r=rid) == 1
+
+
+# ── Task 1049 (SW-32): the plan of a run (agent_coordination.md SW-32) ──────
+
+
+def _plan_migration() -> Path:
+    """The migration that adds ``pm_agent_runs.plan``, found by content (R1)."""
+    found = [
+        p for p in sorted(_MIGRATIONS.glob("*.sql"))
+        if "CONSTRAINT pm_agent_runs_plan_shape" in p.read_text(encoding="utf-8")
+    ]
+    assert len(found) == 1, found
+    return found[0]
+
+
+def test_the_plan_migration_is_expand_only_and_caps_the_list() -> None:
+    """SW-32. One nullable column, no default, a CHECK of the 30-step cap that
+    the gateway and the edge hold. Mutation: change the 30 of the CHECK."""
+    from agent_edge import tools as edge_tools
+
+    sql = _plan_migration().read_text(encoding="utf-8")
+    body = sql.split("-- ====")[-1]
+    assert "ADD COLUMN IF NOT EXISTS plan JSONB;" in body
+    assert "<= 30" in body and "jsonb_typeof(plan) = 'array'" in body
+    for forbidden in ("DROP ", "RENAME", "UPDATE ", "DEFAULT", "NOT NULL"):
+        assert forbidden not in body.upper().replace("IF NOT EXISTS", ""), forbidden
+    assert agent_runs.MAX_PLAN_STEPS == edge_tools.MAX_PLAN_STEPS == 30
+    assert agent_runs.MAX_PLAN_STEP == edge_tools.MAX_PLAN_STEP == 200
+    assert agent_runs.PLAN_STATUSES == edge_tools.PLAN_STATUSES
+
+
+def _step(content: str, status: str = "pending") -> dict[str, str]:
+    return {"content": content, "status": status}
+
+
+def _plan_of(w: Any, rid: str) -> Any:
+    from gateway.routes.projects.core import from_jsonb
+
+    return from_jsonb(_rows(
+        w.p, "SELECT plan FROM pm_agent_runs WHERE id = CAST(:r AS uuid)", r=rid)[0][0])
+
+
+@_DB_GATE
+class TestTheRunPlan:
+    async def test_each_call_replaces_the_whole_list(self, w):
+        """SW-32 done-when. Mutation: make the UPDATE append to the list."""
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            url = f"/projects/agent-runs/{rid}/plan"
+            first = await call(w.agent_a, "PUT", url, {"steps": [
+                _step("Read the spec", "completed"), _step("Write the code", "inProgress"),
+                _step("Run the tests")]})
+            assert first.status_code == 200, first.text
+            assert [s["status"] for s in first.json()["run"]["plan"]] == [
+                "completed", "inProgress", "pending"]
+            second = await call(w.agent_a, "PUT", url, {"steps": [_step("Only this", "pending")]})
+            assert second.status_code == 200, second.text
+            assert second.json()["run"]["plan"] == [_step("Only this")]
+            assert _plan_of(w, rid) == [_step("Only this")]
+            cleared = await call(w.agent_a, "PUT", url, {"steps": []})
+            assert cleared.status_code == 200 and cleared.json()["run"]["plan"] == []
+            read = await call(w.a, "GET", f"/projects/agent-runs/{rid}")
+            assert read.json()["run"]["plan"] == []
+
+    async def test_a_call_writes_one_action_activity_with_the_counts_and_no_step_text(self, w):
+        """A plan change is a run activity (spec). The step text stays out of
+        the timeline. Mutation: drop the activity write."""
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            got = await call(w.agent_a, "PUT", f"/projects/agent-runs/{rid}/plan", {"steps": [
+                _step("SECRET-STEP one", "completed"), _step("two", "inProgress"),
+                _step("three"), _step("four", "canceled")]})
+            assert got.status_code == 200, got.text
+            activity = got.json()["activity"]
+            assert activity["type"] == "action"
+            assert activity["content"]["action"] == "set_run_plan"
+            assert activity["content"]["parameters"] == {
+                "steps": "4", "completed": "1", "in_progress": "1"}
+            rows = _rows(w.p, "SELECT content::text FROM pm_agent_run_activities"
+                              " WHERE run_id = CAST(:r AS uuid)", r=rid)
+            assert not any("SECRET-STEP" in r[0] for r in rows)
+            assert _count(w.p, "SELECT count(*) FROM pm_agent_run_activities WHERE"
+                               " run_id = CAST(:r AS uuid) AND content->>'action' = 'set_run_plan'",
+                          r=rid) == 1
+            assert _count(w.p, "SELECT count(*) FROM pm_activities WHERE type = 'comment'") == 0
+
+    async def test_the_caps_are_422_and_leave_the_plan_as_it_was(self, w):
+        """30 steps and 200 characters are the limits. Mutation: raise either
+        cap in ``PlanIn`` or ``PlanStepIn``."""
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            url = f"/projects/agent-runs/{rid}/plan"
+            ok = await call(w.agent_a, "PUT", url, {"steps": [_step(f"s{i}") for i in range(30)]})
+            assert ok.status_code == 200, ok.text
+            edge = await call(w.agent_a, "PUT", url, {"steps": [_step("x" * 200)]})
+            assert edge.status_code == 200, edge.text
+            kept = _plan_of(w, rid)
+            for bad in (
+                {"steps": [_step(f"s{i}") for i in range(31)]},
+                {"steps": [_step("x" * 201)]},
+                {"steps": [_step("")]},
+                {"steps": [_step("   ")]},
+                {"steps": [_step("a", "done")]},
+                {"steps": [{"content": "a"}]},
+                {"steps": [{"content": "a", "status": "pending", "extra": 1}]},
+                {"steps": "nope"},
+                {},
+            ):
+                refused = await call(w.agent_a, "PUT", url, bad)
+                assert refused.status_code == 422, (bad, refused.text)
+            assert _plan_of(w, rid) == kept
+
+    async def test_the_database_check_refuses_a_plan_past_30_or_not_an_array(self, w):
+        """The last guard, under the route. Mutation: drop the CHECK."""
+        from sqlalchemy.exc import IntegrityError
+
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+        for bad in ('[' + ",".join(['{}'] * 31) + ']', '{"a": 1}', '"text"'):
+            with (pytest.raises(IntegrityError, match="pm_agent_runs_plan_shape"),
+                  w.p.admin_engine.begin() as c):
+                c.execute(text("UPDATE pm_agent_runs SET plan = CAST(:p AS jsonb)"
+                               " WHERE id = CAST(:r AS uuid)"), {"p": bad, "r": rid})
+
+    async def test_only_the_agent_of_the_run_writes_its_plan(self, w):
+        """A person, another member's agent, a read-only agent and another
+        organization all fail, and the plan stays null."""
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            url = f"/projects/agent-runs/{rid}/plan"
+            body = {"steps": [_step("x")]}
+            assert (await call(w.a, "PUT", url, body)).status_code == 403
+            agent_c = _principal(w.c_email, w.p.org_a, agent_connection=w.conn_a)
+            assert (await call(agent_c, "PUT", url, body)).status_code == 403
+            read_only = _principal(w.a_email, w.p.org_a, agent_connection=w.conn_a,
+                                   scopes=("projects:read",))
+            assert (await call(read_only, "PUT", url, body)).status_code == 403
+            assert (await call(w.agent_b, "PUT", url, body)).status_code == 404
+            assert _plan_of(w, rid) is None
+
+    async def test_a_run_that_ended_takes_no_plan(self, w):
+        """The status machine: an agent write on a finished run is 409."""
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            done = await call(w.agent_a, "POST", f"/projects/agent-runs/{rid}/finish",
+                              {"idempotency_key": _key()})
+            assert done.status_code == 200, done.text
+            late = await call(w.agent_a, "PUT", f"/projects/agent-runs/{rid}/plan",
+                              {"steps": [_step("x")]})
+            assert late.status_code == 409, late.text
+            assert _plan_of(w, rid) is None
+
+    async def test_the_flag_off_gives_404(self, w, monkeypatch):
+        from acb_common import get_settings
+
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            monkeypatch.setattr(get_settings(), "agent_runs_enabled", False)
+            got = await call(w.agent_a, "PUT", f"/projects/agent-runs/{rid}/plan",
+                             {"steps": [_step("x")]})
+            assert got.status_code == 404
+
+    async def test_the_task_row_carries_the_count_and_the_step_in_progress(self, w):
+        """The card line. ``done`` counts completed and canceled steps.
+        Mutation: count ``completed`` only, or read the first step."""
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            before = await call(w.a, "PATCH", f"/projects/tasks/{w.task_a}",
+                                {"description": "plan row"})
+            assert before.json()["agent_plan"] is None
+            put = await call(w.agent_a, "PUT", f"/projects/agent-runs/{rid}/plan", {"steps": [
+                _step("one", "completed"), _step("two", "canceled"),
+                _step("three " + "w" * 120, "inProgress"), _step("four")]})
+            assert put.status_code == 200, put.text
+            row = await call(w.a, "PATCH", f"/projects/tasks/{w.task_a}",
+                             {"description": "plan row 2"})
+            plan = row.json()["agent_plan"]
+            assert plan["done"] == 2 and plan["total"] == 4
+            assert plan["step"].startswith("three ") and len(plan["step"]) == 80
+            await call(w.agent_a, "PUT", f"/projects/agent-runs/{rid}/plan", {"steps": []})
+            empty = await call(w.a, "PATCH", f"/projects/tasks/{w.task_a}",
+                               {"description": "plan row 3"})
+            assert empty.json()["agent_plan"] is None

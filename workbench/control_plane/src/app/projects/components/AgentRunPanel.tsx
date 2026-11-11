@@ -101,6 +101,7 @@ import {
 import { newestHandoff } from "../lib/agentHandoff";
 import { ASK_COPY, hasOpenRunOf } from "../lib/askAgent";
 import { AgentPill } from "./AgentPill";
+import AgentRunPlan from "./AgentRunPlan";
 import { AskAgentDialog } from "./AskAgentDialog";
 import { HandoffCard } from "./HandoffCard";
 
@@ -644,6 +645,8 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
           ) : null}
         </div>
       ) : null}
+
+      <AgentRunPlan plan={run.plan} />
 
       {cardOpen && elicitation && !archiveRequest ? (
         <ElicitationCard

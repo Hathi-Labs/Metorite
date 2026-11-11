@@ -9,6 +9,7 @@
  *
  * | state            | edge        | line                              |
  * | working/answered | live        | "<client> · <agent_note>"         |
+ * |   with a plan    | live        | "<client> · <step> · 3 of 7"      |
  * | waiting          | steady      | "Waiting on CI · about 25 min"    |
  * | queued           | steady      | none (the pill says "Queued for") |
  * | awaiting         | warning     | "Needs you: <question>"           |
@@ -31,6 +32,7 @@ import {
   agentPillText,
   asAgentState,
   clientName,
+  planProgressText,
   waitingText,
 } from "./agentRuns";
 
@@ -53,7 +55,16 @@ export function agentCardLook(
   const note = facts.note?.trim() || null;
   switch (known) {
     case "working":
-    case "answered":
+    case "answered": {
+      // SW-32: a plan puts the step in progress and "3 of 7" on the line.
+      const progress = planProgressText(facts.plan);
+      if (progress) {
+        const step = facts.plan?.step?.trim();
+        return {
+          edge: "live",
+          line: [client, step || note, progress].filter(Boolean).join(" · "),
+        };
+      }
       return {
         edge: "live",
         line: note
@@ -62,6 +73,7 @@ export function agentCardLook(
             ? `${client} working`
             : agentPillText(known, facts).text,
       };
+    }
     case "waiting": {
       const wait = waitingText(facts.waiting, facts.nowMs);
       return { edge: "steady", line: wait.charAt(0).toUpperCase() + wait.slice(1) };
