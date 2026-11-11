@@ -20,7 +20,6 @@ from __future__ import annotations
 from typing import Any
 
 from acb_auth import UserContext, agent_oauth, get_current_user
-from acb_common import get_settings
 from acb_common.db import current_tenant
 from acb_playbook import CLIENTS, build_kit_zip, kit_version
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -51,7 +50,7 @@ async def kit_download(client: str) -> Response:
     """The zip of one client. 404 for an unknown client."""
     if client not in CLIENTS:
         raise HTTPException(status_code=404, detail=NOT_FOUND)
-    body = build_kit_zip(client, get_settings().agent_resource)
+    body = build_kit_zip(client, agent_oauth.resource())
     return Response(
         content=body,
         media_type="application/zip",

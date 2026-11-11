@@ -122,10 +122,33 @@ def test_unknown_client_raises():
 
 @pytest.mark.parametrize("client", CLIENTS)
 def test_readme_has_at_most_five_lines_and_no_semicolon(client):
-    text = _entries(client)["README.md"].decode("utf-8")
+    text = _entries(client)["METORITE_KIT.md"].decode("utf-8")
     lines = [ln for ln in text.splitlines() if ln.strip()]
     assert 1 <= len(lines) <= 5
     assert ";" not in text
     for ln in lines:
         for sentence in re.split(r"(?<=[.:])\s+", ln):
             assert len(sentence.split()) <= 20, sentence
+
+
+@pytest.mark.parametrize("client", CLIENTS)
+def test_the_zip_never_replaces_a_project_readme(client):
+    """P1 of the review: an unzip into a repository must not replace its README.md."""
+    names = set(_entries(client))
+    assert "README.md" not in names
+    assert "METORITE_KIT.md" in names
+
+
+@pytest.mark.parametrize("client", CLIENTS)
+def test_the_install_note_tells_the_member_to_merge_instruction_files(client):
+    text = _entries(client)["METORITE_KIT.md"].decode("utf-8")
+    assert "merge" in text.lower()
+
+
+def test_the_claude_instruction_file_is_one_import_line():
+    assert _entries("claude")["CLAUDE.md"] == b"@AGENTS.md\n"
+
+
+def test_a_command_in_the_note_has_no_trailing_period_after_the_address():
+    text = _entries("claude", "https://mcp.example.test/mcp")["METORITE_KIT.md"].decode("utf-8")
+    assert "https://mcp.example.test/mcp." not in text

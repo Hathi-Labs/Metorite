@@ -43,7 +43,7 @@ PACK_PATHS: dict[str, dict[str, str]] = {
 
 #: The third line of the README: the one step that is special to the client.
 _STEP = {
-    "claude": "Run: claude mcp add --transport http metorite {url}. CLAUDE.md imports AGENTS.md.",
+    "claude": "CLAUDE.md imports AGENTS.md. Then run this command: claude mcp add --transport http metorite {url}",
     "codex": "Add .codex/config.toml.example to .codex/config.toml, then run: codex mcp login metorite.",
     "copilot": "Rename .vscode/mcp.json.example to .vscode/mcp.json. For GitHub.com, use coding-agent-mcp.json.example.",
     "gemini": "Merge .gemini/settings.json.example into .gemini/settings.json, then run: /mcp auth metorite.",
@@ -69,7 +69,7 @@ def kit_version() -> int:
 def _readme(client: str, mcp_url: str, version: int) -> str:
     lines = [
         f"Metorite agent kit for {client}, kit_version {version}.",
-        "Unzip the files into the root of your project.",
+        "Unzip the files into your project. If AGENTS.md, CLAUDE.md or GEMINI.md exists, merge the two files.",
         _STEP[client].format(url=mcp_url),
         "Sign in with OAuth, or mint a box token. The kit holds no token.",
         "Then send the first message: Call my_work.",
@@ -91,11 +91,12 @@ def build_files(client: str, mcp_url: str) -> dict[str, bytes]:
     for dest, name in PACK_PATHS.get(client, {}).items():
         text[dest] = _text(PACKS_DIR / client / name)
     if client == "claude":
-        text["CLAUDE.md"] = "@AGENTS.md\n\nThe Claude plugin pack comes in a later release.\n"
+        text["CLAUDE.md"] = "@AGENTS.md\n"
     if client == "generic":
         text["mcp.json.example"] = json.dumps({"mcpServers": {"metorite": {"url": url}}}, indent=2) + chr(10)
     files = {p: t.replace(DEFAULT_MCP_URL, url).encode("utf-8") for p, t in text.items()}
-    files["README.md"] = _readme(client, url, version).encode("utf-8")
+    # Not README.md: a project already has one, and an unzip would replace it.
+    files["METORITE_KIT.md"] = _readme(client, url, version).encode("utf-8")
     files["KIT_VERSION"] = f"{version}\n".encode()
     sums = "".join(f"{hashlib.sha256(files[p]).hexdigest()}  {p}\n" for p in sorted(files))
     files["SHA256SUMS"] = sums.encode("utf-8")
