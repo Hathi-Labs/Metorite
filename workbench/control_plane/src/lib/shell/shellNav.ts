@@ -206,6 +206,19 @@ export const APPEARANCE_LINK: AccountLink = {
 };
 
 /**
+ * "Agents" opens Settings → Agents, the written rules for agents (WS-MCP
+ * SW-31b, `agent_coordination.md` SW-31). An admin writes the org's rules, and
+ * a project lead writes the rules of a project, so every member needs a way
+ * in. The Organisation bar is admin-only. It shows only when
+ * `useAgentGuidanceEnabled` says yes for the member's organization.
+ */
+export const AGENTS_LINK: AccountLink = {
+  href: "/settings/agents",
+  label: "Agents",
+  icon: "Bot",
+};
+
+/**
  * The account menu's rows: the member's own pages, with "My access" after My
  * Profile, and "Assistant settings" after Appearance when `opts.assistant` is
  * true. That order puts Appearance first in the Settings group. A
@@ -215,7 +228,7 @@ export const APPEARANCE_LINK: AccountLink = {
  */
 export function accountLinks(
   sections: readonly NavSection[],
-  opts: { assistant?: boolean } = {},
+  opts: { assistant?: boolean; agents?: boolean } = {},
 ): AccountLink[] {
   // No sections is an unresolved viewer (`visibleSections(null)`). A member
   // who holds nothing still gets My Profile and Appearance, which no grant
@@ -228,7 +241,8 @@ export function accountLinks(
   // Right after My Profile, because both describe the member.
   const at = mine.findIndex((l) => l.href === "/people/me") + 1;
   const assistant = opts.assistant === true ? [ASSISTANT_LINK] : [];
-  return [...mine.slice(0, at), MY_ACCESS, ...mine.slice(at), APPEARANCE_LINK, ...assistant, ...org];
+  const agents = opts.agents === true ? [AGENTS_LINK] : [];
+  return [...mine.slice(0, at), MY_ACCESS, ...mine.slice(at), APPEARANCE_LINK, ...assistant, ...agents, ...org];
 }
 
 /**
@@ -270,7 +284,7 @@ export interface AccountMenuGroup {
 const APP_MENU_ONLY: ReadonlySet<AccountMenuGroup["id"]> = new Set(["you", "settings", "brand"]);
 
 /** The account pages that are settings, not facts about the member. */
-const SETTINGS_PAGES: ReadonlySet<string> = new Set(["/settings/appearance", "/settings/assistant"]);
+const SETTINGS_PAGES: ReadonlySet<string> = new Set(["/settings/appearance", "/settings/assistant", "/settings/agents"]);
 
 /** NS-7: ask the first sign-in question again (§8.4 rule 3). */
 export const CHANGE_LAYOUT_ITEM: AccountMenuItem = {
@@ -301,7 +315,8 @@ export const TAKE_TOUR_ITEM: Extract<AccountMenuItem, { kind: "action" }> = {
  *    need the switcher flag, so `switcher: false` drops the group.
  * 3. **You**: My Profile and My access.
  * 4. **Settings**: Appearance, "Assistant settings" when `opts.assistant` is
- *    true (PZ-25, PZ-28), the colour mode, and "Change my layout" while the
+ *    true (PZ-25, PZ-28), "Agents" when `opts.agents` is true (SW-31b),
+ *    the colour mode, and "Change my layout" while the
  *    shell nav is on (NS-7 asks the question only then). "Take the tour"
  *    follows it when `opts.tour` is true (the guide's switch, GD-5a).
  * 5. **Sign out**, then "Sign out of all accounts" with another account held.
@@ -318,9 +333,17 @@ export const TAKE_TOUR_ITEM: Extract<AccountMenuItem, { kind: "action" }> = {
  */
 export function accountMenu(
   sections: readonly NavSection[],
-  opts: { layout: boolean; switcher: boolean; others: number; pages?: boolean; assistant?: boolean; tour?: boolean },
+  opts: {
+    layout: boolean;
+    switcher: boolean;
+    others: number;
+    pages?: boolean;
+    assistant?: boolean;
+    agents?: boolean;
+    tour?: boolean;
+  },
 ): AccountMenuGroup[] {
-  const links = accountLinks(sections, { assistant: opts.assistant });
+  const links = accountLinks(sections, { assistant: opts.assistant, agents: opts.agents });
   const link = (l: AccountLink): AccountMenuItem => ({ kind: "link", ...l });
   const others = opts.switcher ? opts.others : 0;
   const groups: AccountMenuGroup[] = [
