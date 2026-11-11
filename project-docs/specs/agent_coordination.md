@@ -1234,7 +1234,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 | Slice | What | Waits on | Gate |
 |---|---|---|---|
 | SW-20 | Cost for each agent, task and request. A self-reported `usage` first | H-42, the rate card. Parked 2026-11-09 (Later epic, task 2543) | OWNER-GATE |
-| SW-21 | Goals linked to projects, given to agents as context | The link half is decided by D204.4 and built by WM-5 (task 984). The agent-context half is a product-shape call, Q4 of §8 | OWNER-GATE for the agent context |
+| SW-21 | Goals linked to projects, given to agents as context | The link half is decided by D204.4 and built by WM-5 (task 984, BUILT 2026-11-11, not merged). The agent-context half is a product-shape call, Q4 of §8 | OWNER-GATE for the agent context |
 | SW-22 | A watchdog: a verifier agent for a finished subtree | P3 live, then SW-10, SW-15 and SW-16. Parked 2026-11-09 (Later epic, task 2543) | OWNER-GATE |
 
 ### 5.10 P9 — many people, each with their own agents
