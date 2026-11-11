@@ -385,8 +385,18 @@ def test_roster_reads_no_dynamic_agent_of_another_org(world):
     from gateway.routes.observability import roster
 
     a, b = world
-    agent_routes._save_dynamic_agents(
-        [{"name": a.dyn_agent, "description": "agent saved by org A"}])
+    # Org A saves with its own tenant bound, as a request would. A fix that
+    # saves under the request tenant then still writes the agent.
+    with _bound(a.org):
+        agent_routes._save_dynamic_agents(
+            [{"name": a.dyn_agent, "description": "agent saved by org A"}])
+
+    # Positive check: org A sees its own agent. Today it comes from the shared
+    # file. After a fix it comes from the DB row. Either way an empty answer
+    # (a broken loader that the roster swallows) cannot turn this test into a
+    # pass for the wrong reason.
+    names_a = {e["name"] for e in _call(a, lambda v: roster(viewer=v))["agents"]}
+    assert a.dyn_agent in names_a
 
     names_b = {e["name"] for e in _call(b, lambda v: roster(viewer=v))["agents"]}
 
