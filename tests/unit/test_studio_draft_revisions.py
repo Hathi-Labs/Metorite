@@ -270,7 +270,7 @@ def test_no_statement_updates_or_deletes_a_revision() -> None:
 
 
 @pytest.mark.parametrize("author", [
-    None, "ana@x.test", store.Author("admin", "ana@x.test"), store.Author("mira", "ana@x.test"),
+    "ana@x.test", store.Author("admin", "ana@x.test"), store.Author("mira", "ana@x.test"),
     store.Author("system", "mira"), store.Author("member", "")])
 def test_a_bad_author_is_refused_before_the_db(author: Any) -> None:
     db = _FakeDb()

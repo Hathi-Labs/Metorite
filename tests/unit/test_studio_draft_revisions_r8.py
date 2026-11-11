@@ -237,7 +237,7 @@ def test_r8_e_org_b_cannot_read_the_revisions_of_org_a(world) -> None:
                     "VALUES (CAST(:o AS uuid), CAST(:i AS uuid), 9, CAST('{}' AS jsonb), "
                     ":h, 'member', :m, :m)"), {"o": a, "i": pkg.id, "h": "0" * 64, "m": ANA})
             out["write_b"] = "written"
-        except Exception as exc:  # noqa: BLE001 - RLS WITH CHECK refuses
+        except Exception as exc:  # RLS WITH CHECK refuses the row of org A
             out["write_b"] = type(exc).__name__
         async with tenant_session(a) as db:
             out["sql_a"] = (await db.execute(text(
