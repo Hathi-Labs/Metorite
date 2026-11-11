@@ -21,6 +21,7 @@ no second table (§3.5). ``?parent_task_id=`` lists one task's children;
 
 from __future__ import annotations
 
+import contextlib
 import re
 import uuid
 from dataclasses import dataclass
@@ -1115,6 +1116,14 @@ async def get_task(
             result["rollup"] = rollup
         # SP-8a — the contract of an epic, or null (§13.3).
         result["epic_contract"] = await epic_contract_of(db, row)
+        # MCP 1095 — a task made from an email names its thread (ids only),
+        # and only to the member who owns that mailbox.
+        from gateway.routes.tasks.email_link import linked_email_of
+
+        linked = await linked_email_of(
+            db, getattr(row, "origin", None), actor(user).lower())
+        if linked is not None:
+            result["linked_email"] = linked
         return result
 
 
@@ -1376,6 +1385,21 @@ async def create_task_in(
     return CreatedTask(row=row, assigned=assigned)
 
 
+async def _propagate_done_to_email(
+    db: Any, after: Any, moved: dict[str, Any], who: str,
+) -> None:
+    """MCP 1095. A done move of a task made from an email marks its thread
+    Done, as the tick (`complete_for_member`) does, and the timeline names the
+    thread. Only a move INTO done: a cancel leaves the mail alone. Best-effort:
+    the move stands."""
+    if not getattr(after, "origin", None) or moved["to"].category != COMPLETED_CATEGORY:
+        return
+    from gateway.routes.tasks.email_link import propagate_task_done_to_thread
+
+    with contextlib.suppress(Exception):
+        await propagate_task_done_to_thread(db, after, closer_email=who.lower())
+
+
 @router.patch("/tasks/{task_id}")
 async def patch_task(
     task_id: str, payload: TaskPatchIn,
@@ -1493,6 +1517,7 @@ async def patch_task(
                                 refused=AGENT_MOVE_REFUSED,
                                 detail=AGENT_MOVE_REFUSAL)
             after = moved["row"]
+            await _propagate_done_to_email(db, after, moved, actor(user))
             # In the SAME transaction as the parent's own move, so a refused
             # cascade (a set with no Done status) leaves the parent open too.
             if include_subtasks and moved["to"].category == COMPLETED_CATEGORY:

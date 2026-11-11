@@ -3535,6 +3535,30 @@ def rollup(raw: Any) -> dict[str, Any] | None:
     }
 
 
+#: MCP 1095. The email thread that a task links to: ids only. The key is
+#: absent for a task with no email origin, and for a member who does not own
+#: the mailbox (the gateway decides).
+LINKED_EMAIL_KEY = "linked_email"
+_LINKED_EMAIL_ID = {"type": "string", "pattern": r"^[^\s\x00-\x1f]{1,200}$"}
+_LINKED_EMAIL_SCHEMA: dict[str, Any] = _object({
+    "account_id": _LINKED_EMAIL_ID, "thread_id": _LINKED_EMAIL_ID,
+})
+_LINKED_EMAIL_RE = re.compile(_LINKED_EMAIL_SCHEMA["properties"]["thread_id"]["pattern"])
+
+
+def linked_email_of(row: Mapping[str, Any]) -> dict[str, str] | None:
+    """``{account_id, thread_id}`` from the task row of the gateway, or None.
+    Two plain ids and nothing else: a value of another shape drops the link."""
+    raw = row.get(LINKED_EMAIL_KEY)
+    if not isinstance(raw, dict):
+        return None
+    account, thread = raw.get("account_id"), raw.get("thread_id")
+    if not (isinstance(account, str) and isinstance(thread, str)
+            and _LINKED_EMAIL_RE.match(account) and _LINKED_EMAIL_RE.match(thread)):
+        return None
+    return {"account_id": account, "thread_id": thread}
+
+
 _GET_TASK_OUTPUT: dict[str, Any] = _object({
     "task": _TASK_SCHEMA,
     "subtasks": {"type": "array", "items": _SUBTASK_SCHEMA},
@@ -3547,6 +3571,7 @@ _GET_TASK_OUTPUT: dict[str, Any] = _object({
 })
 # `rollup` is present for an epic only, so it is the one key that is not required.
 _GET_TASK_OUTPUT["required"].remove("rollup")
+_GET_TASK_OUTPUT["properties"][LINKED_EMAIL_KEY] = _LINKED_EMAIL_SCHEMA  # not required
 
 
 def _custom_fields(value: Any) -> dict[str, Any]:
@@ -3678,6 +3703,9 @@ async def _get_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     shaped_rollup = rollup(row.get("rollup"))
     if shaped_rollup is not None:
         out["rollup"] = shaped_rollup
+    linked = linked_email_of(row)
+    if linked is not None:
+        out[LINKED_EMAIL_KEY] = linked
     return out
 
 
@@ -3704,7 +3732,9 @@ GET_TASK = Tool(
         " links itself to the task. epic_contract is the contract of an epic:"
         " the outcome, 3 to 7 acceptance checks, what is out of scope, the risk"
         " tier, the appetite in credits and review hours, the workstream and the"
-        " spec link. It is null for a task that is not an epic." + _UNTRUSTED_NOTE
+        " spec link. It is null for a task that is not an epic. linked_email"
+        " (account_id and thread_id) is present for a task made from an email"
+        " of this member." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_READ,
     input_schema=_TASK_ID_INPUT,
@@ -4411,6 +4441,7 @@ _CONTEXT_OUTPUT = _optional(_CONTEXT_OUTPUT, COMMENTS_TRUNCATED_KEY, {"type": "b
 _CONTEXT_OUTPUT = _optional(_CONTEXT_OUTPUT, ATTACHMENTS_TRUNCATED_KEY, {"type": "boolean"})
 # SW-23: the Check, the FIRST key of the result while the Check flag is on.
 _CONTEXT_OUTPUT = _optional(_CONTEXT_OUTPUT, CHECK_KEY, _CHECK_SCHEMA)
+_CONTEXT_OUTPUT = _optional(_CONTEXT_OUTPUT, LINKED_EMAIL_KEY, _LINKED_EMAIL_SCHEMA)
 
 
 async def _statuses_of(ctx: Context, project: str) -> dict[str, Mapping[str, Any]]:
@@ -4690,6 +4721,9 @@ async def _get_task_context(ctx: Context, args: dict[str, Any]) -> dict[str, Any
     })
     if files[1]:
         result[ATTACHMENTS_TRUNCATED_KEY] = True
+    linked = linked_email_of(row)
+    if linked is not None:
+        result[LINKED_EMAIL_KEY] = linked
     if guidance is not None:
         result[GUIDANCE_KEY] = guidance
     if every:
@@ -5461,9 +5495,12 @@ _SET_STATUS_INPUT: dict[str, Any] = {
     "additionalProperties": False,
 }
 
-_SET_STATUS_OUTPUT: dict[str, Any] = _object({
+_SET_STATUS_OUTPUT: dict[str, Any] = _optional(_object({
     "id": {"type": "string"}, "status": _STATUS_SCHEMA, "version": _NULLABLE_STRING,
-})
+}), LINKED_EMAIL_KEY, _LINKED_EMAIL_SCHEMA)
+#: MCP 1095. The sentence that tells an agent a done move reaches the mailbox.
+TEXT_STATUS_EMAIL_LINK = (
+    "A task made from an email: a done status also marks the email thread Done.")
 
 
 async def _set_task_status(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
@@ -5500,7 +5537,7 @@ async def _set_task_status(ctx: Context, args: dict[str, Any]) -> dict[str, Any]
     status_id = after.get("status_id")
     named = statuses.get(str(status_id).lower()) if status_id is not None else None
     name = named.get("name") if named is not None else None
-    return {
+    result: dict[str, Any] = {
         "id": str(after.get("id")),
         "status": {
             "id": str(status_id) if status_id is not None else "",
@@ -5508,6 +5545,12 @@ async def _set_task_status(ctx: Context, args: dict[str, Any]) -> dict[str, Any]
         },
         "version": _str_or_none(after.get("updated_at")),
     }
+    # MCP 1095. The link comes from the read before the move: an origin never
+    # changes, and the gateway shows it to the mailbox owner only.
+    linked = linked_email_of(row)
+    if linked is not None:
+        result[LINKED_EMAIL_KEY] = linked
+    return result
 
 
 SET_TASK_STATUS = Tool(
@@ -5519,8 +5562,9 @@ SET_TASK_STATUS = Tool(
         " task changed after that read, the tool refuses, and you read the task"
         " again. Move the task to a done status when the work is finished. A"
         " move into a cancelled status stays a human step, so the tool refuses"
-        " it. A move to done does not close the subtasks. Returns the task id,"
-        " its status and its new version." + _UNTRUSTED_NOTE
+        " it. A move to done does not close the subtasks. " + TEXT_STATUS_EMAIL_LINK +
+        " Returns the task id, its status and its new version, and linked_email"
+        " (account_id and thread_id) for such a task." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,
     input_schema=_SET_STATUS_INPUT,

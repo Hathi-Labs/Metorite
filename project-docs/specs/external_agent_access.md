@@ -3877,7 +3877,14 @@ Why the existing task tools do not serve the first job.
 - `POST /tasks/capture/from-email` calls a model (`routes/tasks/capture_email.py`, `_llm_capture`), so AD-11 keeps it off the door.
 - A task that `create_task` makes with `source_ref` has no thread link. Closing it does not mark the mail Done, and the thread context does not list it.
 
-⚠️ The reverse effect already exists. A Projects door write `set_task_status` to a done status marks the linked thread Done and takes it off the reply queue (`email_link.py`, `propagate_task_done_to_thread`). The Projects door asks no card (MCP-Q5). So the task result must carry `linked_email: {account_id, thread_id}`, and the tool text must say so. Fence: a unit test that a task with an email origin returns the link.
+⚠️ The reverse effect. A Projects door write `set_task_status` to a done status marks the linked thread Done and takes it off the reply queue (`email_link.py`, `propagate_task_done_to_thread`). The Projects door asks no card (MCP-Q5). So the task result carries `linked_email: {account_id, thread_id}`, and the tool text says so.
+
+**BUILT 2026-11-11 and not merged (branch `mt-ad5bcb8a-linked-email`, Metorite task 1095).**
+- `get_task`, `get_task_context` and `set_task_status` return `linked_email` (ids only, no mail text) for a task with an email origin. The key is absent for any other task. The gateway adds the key to `GET /projects/tasks/{id}` for the mailbox owner only, so a member who does not own the account gets no link.
+- The description of `set_task_status` says: "A task made from an email: a done status also marks the email thread Done."
+- ⚠️ The code did not match the earlier text of this paragraph. Only the tick (`complete_for_member`) called the hop. `PATCH /projects/tasks/{id}` did not, so `set_task_status` left the mail alone. Task 1095 wires `_propagate_done_to_email` into the PATCH route, for a move into the done category only. A cancel leaves the mail alone. The hop keeps the owner guard (D-EM-4).
+- The same code path writes a `system` line on the task timeline. It names the thread id and the client stamp. Its `meta` holds `kind`, `account_id`, `thread_id` and `via`.
+- Fences: `tests/unit/test_task_linked_email.py` and `tests/unit/test_task_linked_email_r8.py`.
 
 #### 19.10a.5 What stays off, and why
 

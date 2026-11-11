@@ -67,6 +67,54 @@ async def _closer_owns_mailbox(db: Any, account_id: str, closer_email: str) -> b
     return row is not None
 
 
+async def linked_email_of(
+    db: Any, origin: Any, viewer_email: str,
+) -> dict[str, str] | None:
+    """``{account_id, thread_id}`` of the email thread that a task links to, or
+    None. IDS ONLY: no subject, no text, no address (MCP 1095).
+
+    The link shows only to the member who owns the mailbox (the same guard as
+    :func:`propagate_task_done_to_thread`). A member who cannot see the account
+    gets None, so the id of a mailbox never leaks to a reader of a shared task.
+    """
+    link = _thread_from_origin(origin)
+    if link is None or not await _closer_owns_mailbox(db, link[0], viewer_email):
+        return None
+    return {"account_id": link[0], "thread_id": link[1]}
+
+
+async def _record_thread_done(db: Any, item_row: Any, *, closer_email: str,
+                              account_id: str, thread_id: str) -> None:
+    """One timeline line on the task: the thread changed, who did it, and the
+    client stamp (``via``). Best-effort in a savepoint, so a store that has no
+    ``pm_tasks`` row for the item leaves the transaction usable."""
+    task_id = str(getattr(item_row, "id", "") or "")
+    if not task_id:
+        return
+    # Function-local: ``routes/projects`` imports this module's package.
+    from gateway.routes.projects.core import ACTOR_VIA, record_activity
+
+    via = ACTOR_VIA.get("")
+    body = f"Email thread {thread_id} marked Done" + (f" via {via}" if via else "")
+    begin_nested = getattr(db, "begin_nested", None)
+    try:
+        if begin_nested is None:
+            await record_activity(
+                db, activity_type="system", created_by=closer_email,
+                task_id=task_id, body=body,
+                meta={"kind": "email_thread_done", "account_id": account_id,
+                      "thread_id": thread_id})
+            return
+        async with begin_nested():
+            await record_activity(
+                db, activity_type="system", created_by=closer_email,
+                task_id=task_id, body=body,
+                meta={"kind": "email_thread_done", "account_id": account_id,
+                      "thread_id": thread_id})
+    except Exception:
+        _log.warning("tasks.email_link.timeline_failed", task_id=task_id)
+
+
 async def propagate_task_done_to_thread(
     db: Any, item_row: Any, *, closer_email: str,
 ) -> None:
@@ -128,6 +176,10 @@ async def propagate_task_done_to_thread(
         ), {"aid": account_id, "tid": thread_id,
             "lmid": lm.id if lm else None,
             "lmat": lm.received_at if lm else None})
+
+    await _record_thread_done(
+        db, item_row, closer_email=closer_email,
+        account_id=account_id, thread_id=thread_id)
 
     # Collapse provider/local labels to "Done" (clear stale Reply/Awaiting/
     # Follow-up) — best-effort, mirrors resolve_thread. Lazy import: the email
