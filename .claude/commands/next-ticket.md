@@ -47,6 +47,12 @@ workstream: the owning spec and the Metorite epic. If `my_work` is empty, pick
 the highest-priority open task in that epic that is not owner-gated end to
 end. Say which you picked and why, in one line.
 
+**The ladder (D211).** When the user names no task, take a ready slice of the
+lowest open rung first. Its tag is `Rung N`, and it blocks a demo task.
+Rung 0 comes before every rung. Until LAD-4 (task 2891) ships, `my_work` does
+not order by rung, so check the tags of the top rows before you claim.
+`orchestration_playbook.md` §6d owns the rule.
+
 After the claim, call `get_task_context`. Read the description and every
 comment, because the owner's feedback is often in a comment. When the task has
 more than 20 comments, read the older ones with `get_task_timeline`.

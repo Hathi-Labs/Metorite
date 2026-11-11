@@ -106,6 +106,14 @@ verification commands.)
   new palette, bell, assistant rail or ⌘K listener in any app. The spec half is
   advisory: the spec-auditor refuses an app spec with no "Shell manifest"
   section, and nothing in CI reads specs for it.
+- **R10 — plan by the gratification ladder** *(D211, 2026-11-11. Owning text:
+  `specs/orchestration_playbook.md` §6d.)* A plan is a set of rungs. Each rung
+  ends in a demo that a person sees and uses on production. A spec's slice
+  table names the rung of each slice. The board holds one demo task for each
+  rung, with the tag `Demo`, and a `Rung N` tag on each slice. Rung 0 (a
+  leak, data loss, a broken live feature, a dated owner gate) outranks the
+  ladder. **Fence.** Advisory until LAD-1 (task 2888) adds
+  `tests/unit/test_playbook_ladder.py`. The spec-auditor checks the rung column.
 
 ---
 
@@ -116,6 +124,8 @@ This section is an index of the workstreams, not their state (D118). Metorite ho
 ### 2.0 Roadmap
 
 The core function brief sets the phases (D119). Customer zero comes first inside Phase 1.
+
+⚠️ **D211 (2026-11-11) sets the order of work inside each milestone.** Each app project climbs its own ladder of rungs, and each rung ends in a demo. AI Studio and the MCP climb first, and the other apps follow (task 2885). The milestones below stay as the company's dates. The critical path below still names the rung 0 work.
 
 ⚠️ **D190 (2026-11-07) sets the order of work.** The M0 items and the cheap isolation fixes go first: steps 1 and 4 of the critical path below. Studio and the package host (lane L7) continue beside them. M2 has no date. The owner sets the date of the first paying customer after the main components of Metorite are built.
 
@@ -199,6 +209,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-MIR | **CRM mirror and connectors**: HubSpot, Salesforce, Pipedrive, Zoho and files, with AI mapping | 🟢 active · M2 | `specs/crm_connectors.md`, planned (MIR-0, task 2791) | Metorite: epic 2790 (CRM), slices MIR-n · keeps the Zoho adapter first |
 | WS-MKT | **App marketplace**: a company installs ready apps, customizes them with an overlay, and keeps getting updates through a three-way merge | 🟢 active · M3 | `specs/app_marketplace.md`, planned (MKT-0, task 2820) · base `specs/package_host.md` | Metorite: epic 2818 (Package Host), MKT-0 to MKT-13 · decisions MKT-Q1 to Q4 in task 2852 |
 | WS-OPS | **Operations apps**: inventory, procurement, BOM, production, MRP, shop floor, quality, maintenance, costing, dispatch and operational accounting, as AI Studio apps | 🟢 active · M3 | `specs/operations_apps.md`, planned (OPM-0, task 2824) · base `specs/ai_studio.md` K3, K4 | Metorite: epic 2819 (AI Studio), OPM-0 to OPM-17 · decisions OPS-Q1 to Q3 in task 2852 · pilot Fracktal (owner act) |
+| WS-LAD | **The gratification ladder**: the default way to plan, in the playbook, the Projects planning AI, `get_plan` and `my_work` (D211) | 🟢 active · M1 | `specs/orchestration_playbook.md` §6d | Metorite: epic 2887 (Projects/Tasks App), LAD-1 = task 2888 (MCP), LAD-2 to LAD-4 = tasks 2889 to 2891 · replan task 2885 |
 | WS-SND | **Sound cues**: a few tasteful sounds for an email sent or arrived, the agent needs me, new in My Day, and a reminder (D210) | 🟢 active · M2 | `workbench/control_plane/DESIGN_SYSTEM.md` §4c and `specs/proactive_reach.md` §8.4, planned (SND-0, task 2864) | Metorite: epic 2862 (My Day), SND-P to SND-7 = tasks 2863 to 2872 · flag `NEXT_PUBLIC_SOUND_CUES`, default OFF |
 
 ### 2.2 Earlier rows (WS-0 to WS-67)
@@ -6031,6 +6042,23 @@ The owner asked in chat on 2026-11-11 for tasteful sound effects. The clear chim
 Fence: `src/lib/shell/sound.test.ts` (the rules of points 3 and 5) and `src/lib/shell/soundSeam.test.ts` (no `new Audio(` or `AudioContext` outside the player, the voice code and the recorder). Both land with SND-1 (task 2865). Until then, point 1 is advisory (R7).
 
 Re-check this number at merge. On 2026-11-11, open branches hold D208 and D209.
+
+### D211 — Plan by the gratification ladder: each stage ends in a win that a person sees and uses (2026-11-11)
+
+The owner said in chat on 2026-11-11: prioritize in stages that give the most gratification as the features evolve. Do not plan only by the critical path. Show quick wins first, as a minimum viable product, and grow from there. This is the default philosophy of the Metorite project system and of its harnesses. Any planning in Metorite, or by an agent that connects to Metorite, follows it. Task 2885 holds the replan.
+
+1. **The rule is the gratification ladder** of `orchestration_playbook.md` §6d. A plan is a set of rungs. Each rung ends in a demo that a person sees and uses on production.
+2. **Rung 1 is the smallest path that works end to end.** Start from what is live. Order the rungs by visible value for the effort.
+3. **A foundation rides with the rung that needs it.** No rung ships only plumbing.
+4. **Rung 0 outranks the ladder.** Rung 0 is a security leak, data loss, a broken live feature, or an owner gate with a date.
+5. **On the board.** Each rung has one demo task with the tag `Demo`. Each slice has a `Rung N` tag and a blocks link to its demo task. Each delegation brief names its ladder.
+6. **The order of work.** Take the lowest open rung first, then the least slack to that rung's demo, then the priority. This changes the queue order of 2026-11-09 (the critical path by least slack). The product follows when LAD-4 (task 2891) ships. Until then, agents apply the order by hand.
+7. **The product default.** The playbook (LAD-1, task 2888), the Projects planning AI (LAD-2) and `get_plan` (LAD-3) teach and show the ladder. The text of the playbook stays neutral, as §4 of the playbook spec says. Epic: task 2887 (WS-LAD).
+8. **The program order.** AI Studio and the MCP climb first. Every other app project then gets its own ladder. The milestones M0 to M4 stay as the company's dates.
+
+Fence: advisory until LAD-1 adds `tests/unit/test_playbook_ladder.py` (R7). R10 in §1 carries the rule to specs.
+
+Re-check this number at merge. The first merge wins a D-number.
 
 ## 4. Single-owner registry (who owns duplicated work)
 
