@@ -1621,7 +1621,7 @@ async def pipeline_takes_unset(db: Any, pipeline_id: str | None) -> bool:
     if not pipeline_id:
         return False
     row = (await db.execute(
-        text("SELECT count(*) AS total FROM crm_pipelines"), {},
+        text(f"SELECT count(*) AS total FROM crm_pipelines WHERE {DEAL_PIPELINE_SQL}"), {},
     )).first()
     if row is None or int(row.total or 0) < 2:
         return False
@@ -1629,19 +1629,113 @@ async def pipeline_takes_unset(db: Any, pipeline_id: str | None) -> bool:
     return default is not None and str(default).lower() == str(pipeline_id).strip().lower()
 
 
+#: CRM-M4a (migration 386): ``crm_pipelines`` holds the deal pipelines AND the
+#: lead pipelines, told apart by ``kind``. Each reader that means a deal
+#: pipeline names this term: the list, the board, a deal's own pipeline, the
+#: default, the reports, the switch and the sync. A lead pipeline never
+#: reaches a deal surface. ``tests/unit/test_crm_lead_pipelines.py`` holds it.
+DEAL_PIPELINE_SQL = "kind = 'deal'"
+
+
 async def default_pipeline_id(db: Any) -> str | None:
     """The id of the organization's default deal pipeline, or ``None``.
 
     A deal with no stated pipeline joins it (native create and lead convert).
+    A lead pipeline is never the default (CRM-M4a).
     """
     row = (await db.execute(
         text(
-            "SELECT id FROM crm_pipelines "
+            f"SELECT id FROM crm_pipelines WHERE {DEAL_PIPELINE_SQL} "
             "ORDER BY is_default DESC, position, created_at LIMIT 1"
         ),
         {},
     )).first()
     return str(row.id) if row is not None else None
+
+
+async def require_deal_pipeline(db: Any, pipeline_id: str) -> Any:
+    """The row of one deal pipeline, else 404 (CRM-M4a).
+
+    A deal names a deal pipeline only, so the id of a lead pipeline reads as
+    an unknown pipeline: the board, a new deal, a moved deal and a convert
+    all call this. The row of a lead pipeline has ``kind = 'lead'``.
+    """
+    row = await require_row(db, "crm_pipelines", pipeline_id, "Pipeline")
+    if str(getattr(row, "kind", "deal") or "deal") != "deal":
+        raise HTTPException(status_code=404, detail="Pipeline not found")
+    return row
+
+
+#: One pipeline create at a time in an org (CRM-M3a). ``crm_pipelines`` has no
+#: unique index on the name (migration 247), so the create holds this lock
+#: from the check of the name to the INSERT.
+PIPELINE_CREATE_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"
+
+
+async def lock_pipeline_creates(db: Any) -> None:
+    """Take the pipeline create lock of the bound org until the transaction ends.
+
+    ⚠️ One lock order (CRM-M4a repair 3): this lock FIRST, then a row of
+    ``crm_change_log``, then a status row or a pipeline row. Each path that
+    can change who holds a status takes it first: the create of a pipeline,
+    each Undo (``change_log.undo_change``, before it locks its row), each
+    delete of a status, and the routes that put a stage in a pipeline or take
+    it out. So no two of them wait on each other in a cycle (40P01). A status
+    delete then reads :func:`pipelines_holding` and deletes in one state. The
+    lock is re-entrant inside one transaction.
+    ``tests/unit/test_crm_lead_pipelines.py`` holds the order in the source."""
+    await db.execute(text(PIPELINE_CREATE_LOCK_SQL), {
+        "key": f"crm_pipeline_create:{current_tenant()}",
+    })
+
+
+class Holder(NamedTuple):
+    """A pipeline that holds a status (:func:`pipelines_holding`)."""
+
+    id: str
+    name: str
+
+
+#: CRM-M4a repair 4: the pipelines of one kind that hold a status, by their
+#: names now. A pipeline holds the status when it still exists AND an open
+#: change of that pipeline (not undone, and not itself an Undo) names it:
+#:
+#: * its create lists the status, new or reused (``after.stages``);
+#: * a stage add put the status in it (``after.status_id``);
+#: * a take-out took the status out of it (``before.status_id``).
+#:
+#: The Undo of each of these needs the status. A pipeline that only holds the
+#: status, with no open change, holds nothing here, as on main: an imported
+#: pipeline, or the default deal pipeline that a new stage joins with no row
+#: (:func:`add_stage_to_default_pipeline`). The ids are canonical
+#: (:func:`checked_uuid` and :class:`uuid.UUID`), because JSONB compares text.
+_HOLDERS_SQL = (
+    "SELECT p.id, p.name FROM crm_pipelines p WHERE p.kind = :kind AND EXISTS ("
+    "SELECT 1 FROM crm_change_log c WHERE c.organization_id = p.organization_id "
+    "AND c.entity_id = p.id::text AND c.undone_by IS NULL AND c.undoes_id IS NULL AND ("
+    "(c.area = 'pipeline' AND c.action = 'create' "
+    "AND c.after -> 'stages' @> CAST(:listed AS jsonb)) "
+    "OR (c.area = 'pipeline_stage' AND c.action = 'create' AND c.after ->> 'status_id' = :s) "
+    "OR (c.area = 'pipeline_stage' AND c.action = 'delete' AND c.before ->> 'status_id' = :s))) "
+    "ORDER BY p.position, p.name, p.id"
+)
+
+
+async def pipelines_holding(db: Any, table: str, status_id: str) -> list[Holder]:
+    """The pipelines that hold one status of *table*, in order.
+
+    A status that a pipeline holds cannot go (CRM-M4a repairs 2 to 4). The
+    cascade would take it out of that pipeline with no row, and then an Undo
+    of that pipeline never matches again. A lead pipeline has no route that
+    removes a status, so it could never go. It reads the tables under the
+    tenant session. *status_id* may come from a path in any case, so it is
+    made canonical first."""
+    canonical = str(UUID(str(status_id)))
+    kind = "lead" if table == "crm_lead_statuses" else "deal"
+    rows = (await db.execute(text(_HOLDERS_SQL), {
+        "s": canonical, "kind": kind, "listed": json.dumps([{"id": canonical}]),
+    })).fetchall()
+    return [Holder(str(r.id), str(r.name)) for r in rows]
 
 
 # ── SQL helpers ─────────────────────────────────────────────────────────────
@@ -1874,6 +1968,9 @@ MIRROR_RECORD_TABLES: frozenset[str] = frozenset({
 MIRROR_SETTINGS_TABLES: frozenset[str] = frozenset({
     "crm_deal_statuses", "crm_lead_statuses", "crm_lost_reasons",
     "crm_pipelines", "crm_pipeline_stages",
+    # CRM-M4a: the lead statuses of each lead pipeline. A Mirror org creates
+    # no pipeline, so each write gives 409.
+    "crm_lead_pipeline_stages",
     # CRM-C4a (§20.7 item 10): the field studio. In Mirror mode Zoho owns the
     # fields until CRM-C5, so each studio route gives 409. The sync writes
     # `crm_field_defs` with raw SQL and never calls the guard.
@@ -2350,6 +2447,13 @@ STATUS_REFERENCES: dict[str, tuple[str, str]] = {
 }
 
 
+#: The pipeline membership table of each status table (CRM-Q2, CRM-M4a).
+_STAGE_TABLES: dict[str, str] = {
+    "crm_deal_statuses": "crm_pipeline_stages",
+    "crm_lead_statuses": "crm_lead_pipeline_stages",
+}
+
+
 async def merge_status_from_source(
     db: Any, table: str, keep_id: str, drop_id: str, name: str,
 ) -> None:
@@ -2370,8 +2474,8 @@ async def merge_status_from_source(
       names *drop_id* moves to *keep_id*. A pipeline that holds both rows
       keeps one membership, at the place of *keep_id*. These are the only
       references to a status id: the foreign keys of ``crm_deals``,
-      ``crm_leads`` and ``crm_pipeline_stages``, and the ``status`` filter of
-      a view.
+      ``crm_leads``, ``crm_pipeline_stages`` and ``crm_lead_pipeline_stages``
+      (CRM-M4a), and the ``status`` filter of a view.
     * ``crm_status_changes`` stores names, not ids, so it needs no change.
     * **The overlay rule** (task #1096). The kept row's overlay wins. A NULL
       overlay column of the kept row takes the value of the folded row, so a
@@ -2412,19 +2516,22 @@ async def merge_status_from_source(
         ),
         ids,
     )
-    if table == "crm_deal_statuses":
+    # CRM-M4a repair 1: a lead status sits in lead pipelines, so a merged
+    # lead status keeps its places there too, and the cascade takes none.
+    stages = _STAGE_TABLES.get(table)
+    if stages is not None:
         await db.execute(
             text(
-                "DELETE FROM crm_pipeline_stages ps "
+                f"DELETE FROM {stages} ps "
                 "WHERE ps.status_id = CAST(:drop AS uuid) AND EXISTS ("
-                "SELECT 1 FROM crm_pipeline_stages k WHERE k.pipeline_id = "
+                f"SELECT 1 FROM {stages} k WHERE k.pipeline_id = "
                 "ps.pipeline_id AND k.status_id = CAST(:keep AS uuid))"
             ),
             ids,
         )
         await db.execute(
             text(
-                "UPDATE crm_pipeline_stages SET status_id = CAST(:keep AS uuid) "
+                f"UPDATE {stages} SET status_id = CAST(:keep AS uuid) "
                 "WHERE status_id = CAST(:drop AS uuid)"
             ),
             ids,
@@ -2810,6 +2917,9 @@ RESET_TABLES: tuple[str, ...] = (
     "crm_activities", "crm_deal_contacts", "crm_deals", "crm_leads",
     "crm_contacts", "crm_companies", "crm_module_records",
     "crm_status_changes", "crm_field_defs", "crm_pipeline_stages",
+    # CRM-M4a: the lead statuses of each lead pipeline. The cascade from the
+    # two tables below takes them too, and naming them keeps the list whole.
+    "crm_lead_pipeline_stages",
     "crm_pipelines", "crm_deal_statuses", "crm_lead_statuses",
     "crm_lost_reasons",
     # The sync state of the old account. A cursor with ``initial_done_at``

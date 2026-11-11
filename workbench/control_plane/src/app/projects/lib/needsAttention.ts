@@ -34,6 +34,12 @@ export type AttentionKind = (typeof ATTENTION_KINDS)[number];
 export type AttentionAction = "resume" | "close_run" | "open_blocker" | "open_project";
 
 /** One row of `GET /projects/needs-attention`. A field that does not apply is null. */
+export interface AttentionBlocker {
+  id: string;
+  number: number | null;
+  title: string | null;
+}
+
 export interface AttentionRow {
   kind: AttentionKind;
   /** Null on a `no_lead` row, which names a project. */
@@ -58,6 +64,9 @@ export interface AttentionRow {
   blocker_id: string | null;
   blocker_number: number | null;
   blocker_title: string | null;
+  /** Every parked blocker of a blocked row, the oldest link first. The `blocker_*` fields name the first. */
+  blockers?: AttentionBlocker[] | null;
+  blocker_count?: number | null;
   action: AttentionAction;
   actions: AttentionAction[];
   /** The rule of Release, decided by the server. */
@@ -254,6 +263,13 @@ export function rowDetail(row: AttentionRow): string {
     const why =
       row.reason === "archived" ? "archived" : row.reason === "cancelled" ? "cancelled" : "done";
     return `The task is ${why}. The run of ${client(row)} is still open, quiet for ${age}.`;
+  }
+  const all = row.blockers ?? [];
+  if (all.length > 1) {
+    const list = all
+      .map((b) => taskLabel({ task_number: b.number, title: b.title ?? "a task" }))
+      .join(", ");
+    return `Blocked by ${all.length} tasks for ${age}: ${list}. They are in the backlog, and nobody holds them.`;
   }
   const blocker = taskLabel({
     task_number: row.blocker_number,

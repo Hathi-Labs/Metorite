@@ -101,6 +101,7 @@ from gateway.crm_sync.runs import CursorRow, RunLost, SyncRunning
 from gateway.routes.crm import access as crm_access
 from gateway.routes.crm import flags
 from gateway.routes.crm.core import (
+    DEAL_PIPELINE_SQL,
     STAGE_RESTAMP_BATCH,
     compute_lead_name,
     delete_from_source,
@@ -1471,7 +1472,8 @@ class _PipelineIndex:
 
 _PIPELINE_INDEX_SQL = (
     "SELECT id, name, ext_id, is_default FROM crm_pipelines "
-    "WHERE ext_source = :src ORDER BY position, created_at, id"
+    # CRM-M4a: Zoho mirrors the deal pipelines only.
+    f"WHERE ext_source = :src AND {DEAL_PIPELINE_SQL} ORDER BY position, created_at, id"
 )
 
 
@@ -3278,7 +3280,9 @@ async def _discover(ctx: _Ctx) -> None:
 
 
 #: The Zoho pipelines that this org already mirrors (CRM-Q10).
-_ZOHO_PIPELINES_SQL = "SELECT count(*) FROM crm_pipelines WHERE ext_source = :src"
+_ZOHO_PIPELINES_SQL = (
+    f"SELECT count(*) FROM crm_pipelines WHERE ext_source = :src AND {DEAL_PIPELINE_SQL}"
+)
 
 
 async def _mirror_deferred_pipelines(ctx: _Ctx) -> None:
