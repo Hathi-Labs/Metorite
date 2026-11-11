@@ -6,7 +6,7 @@
 --
 -- Nullable ADD COLUMN. No table scan, no lock of consequence. Safe to apply on a live system.
 --
--- Tables in this phase: 234
+-- Tables in this phase: 192
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -83,35 +83,7 @@ ALTER TABLE apps
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
-ALTER TABLE artifact_member
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE artifact_shares
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE artifacts
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE attachments
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
 ALTER TABLE audit_event
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE brief_claims
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE brief_runs
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE calendar_day_state
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
@@ -120,10 +92,6 @@ ALTER TABLE calendar_entries
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
 ALTER TABLE calendar_entry_attendees
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE calendar_rollover_log
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
@@ -163,23 +131,7 @@ ALTER TABLE crm_auto_lead_cursors
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
-ALTER TABLE crm_business_rules
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE crm_change_log
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE crm_companies
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
 ALTER TABLE crm_contacts
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE crm_convert_mappings
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
@@ -195,27 +147,7 @@ ALTER TABLE crm_deals
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
-ALTER TABLE crm_digests
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
 ALTER TABLE crm_field_defs
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE crm_field_fill
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE crm_field_rules
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE crm_field_sections
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE crm_lead_pipeline_stages
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
@@ -231,35 +163,11 @@ ALTER TABLE crm_lost_reasons
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
-ALTER TABLE crm_mapping_plans
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE crm_module_records
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE crm_note_labels
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE crm_note_vectors
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE crm_pipeline_stages
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE crm_pipelines
+ALTER TABLE crm_companies
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
 ALTER TABLE crm_settings
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE crm_source_profiles
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
@@ -275,7 +183,35 @@ ALTER TABLE crm_sync_runs
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
+ALTER TABLE crm_pipeline_stages
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE crm_pipelines
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE crm_source_profiles
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
 ALTER TABLE crm_views
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE crm_module_records
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE crm_field_rules
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE crm_field_sections
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE crm_convert_mappings
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
@@ -351,14 +287,6 @@ ALTER TABLE email_learned_patterns
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
-ALTER TABLE email_mailbox_grants
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE email_mailbox_member_prefs
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
 ALTER TABLE email_mailbox_purges
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
@@ -383,31 +311,11 @@ ALTER TABLE email_rules
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
-ALTER TABLE email_scheduled_sends
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE email_send_log
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
 ALTER TABLE email_senders
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
-ALTER TABLE email_signature_images
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE email_signature_settings
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
 ALTER TABLE email_sync_log
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE email_thread_assignments
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
@@ -419,155 +327,15 @@ ALTER TABLE email_voice_profiles
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
-ALTER TABLE goal_records
+ALTER TABLE attachments
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
-ALTER TABLE integration_connections
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE jobs
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE kb_chunks
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE kb_entities
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE kb_favorites
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE kb_gaps
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE kb_links
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE kb_node_access
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE kb_page_proposals
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE kb_page_versions
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE kb_pages
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE kb_source_nodes
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE kb_sources
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE kb_space_grants
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE kb_spaces
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE kb_sync_cursors
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE kb_sync_runs
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE live_session
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE maf_agent_session
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE meeting
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE meeting_bot
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE meeting_note
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE meeting_recording
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE message
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE my_day_card_state
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE my_day_judgments
+ALTER TABLE calendar_day_state
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
 ALTER TABLE my_tasks_horizons
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE my_tasks_reviews
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE notes_glossary
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE org_group_member
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE org_role_permission
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE org_settings
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE package_contribution
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE package_field_value
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE package_install
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE pending_actions
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE pending_commit
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
@@ -591,6 +359,78 @@ ALTER TABLE people_skills
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
+ALTER TABLE my_tasks_reviews
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE calendar_rollover_log
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE pm_import_runs
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE maf_agent_session
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE user_settings
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE integration_connections
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE live_session
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE meeting
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE meeting_bot
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE meeting_note
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE meeting_recording
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE message
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE notes_glossary
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE org_group_member
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE org_role_permission
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE org_settings
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE pending_actions
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE pending_commit
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
 ALTER TABLE person
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
@@ -600,14 +440,6 @@ ALTER TABLE plugins
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
 ALTER TABLE pm_activities
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE pm_agent_guidance
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE pm_agent_policies
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
@@ -627,30 +459,6 @@ ALTER TABLE pm_custom_fields
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
-ALTER TABLE pm_cycle_capacity
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE pm_cycle_committed
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE pm_cycle_tasks
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE pm_cycles
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE pm_decisions
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE pm_import_runs
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
 ALTER TABLE pm_intake
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
@@ -659,15 +467,7 @@ ALTER TABLE pm_notifications
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
-ALTER TABLE pm_project_authorities
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
 ALTER TABLE pm_project_grants
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE pm_project_updates
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
@@ -711,11 +511,11 @@ ALTER TABLE pm_task_links
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
-ALTER TABLE pm_task_personal
+ALTER TABLE pm_task_refs
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
-ALTER TABLE pm_task_refs
+ALTER TABLE pm_task_personal
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
@@ -739,14 +539,6 @@ ALTER TABLE pm_tasks
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
-ALTER TABLE pm_template_applies
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE pm_templates
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
 ALTER TABLE pm_view_task_positions
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
@@ -760,54 +552,6 @@ ALTER TABLE pm_views
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
 ALTER TABLE project
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE push_subscriptions
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE reach_outbox
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE reach_requests
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE reach_signal_log
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE reminder_events
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE reminders
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE studio_object_fields
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE studio_objects
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE studio_record_hot
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE studio_records
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE studio_skill_versions
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE studio_skills
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
@@ -827,23 +571,11 @@ ALTER TABLE transcript_segment
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
-ALTER TABLE unattended_incidents
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE unattended_runs
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
 ALTER TABLE user_permission_override
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
 ALTER TABLE user_role
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE user_settings
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
@@ -948,5 +680,277 @@ ALTER TABLE workflow_versions
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
 ALTER TABLE workflows
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE my_day_card_state
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE my_day_judgments
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE reach_outbox
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE reach_signal_log
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE artifact_member
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE artifact_shares
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE artifacts
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE reach_requests
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE kb_links
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE kb_page_versions
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE kb_pages
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE kb_space_grants
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE kb_spaces
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE kb_chunks
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE crm_field_fill
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE crm_mapping_plans
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE crm_note_labels
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE crm_note_vectors
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE crm_digests
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE crm_business_rules
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE email_scheduled_sends
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE kb_favorites
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE kb_page_proposals
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE kb_gaps
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE email_mailbox_grants
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE email_thread_assignments
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE email_send_log
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE email_mailbox_member_prefs
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE kb_entities
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE kb_sources
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE kb_source_nodes
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE push_subscriptions
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE reminders
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE reminder_events
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE kb_sync_cursors
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE kb_sync_runs
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE kb_node_access
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE jobs
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE unattended_incidents
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE unattended_runs
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE brief_runs
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE brief_claims
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE studio_skills
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE studio_skill_versions
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE package_install
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE package_contribution
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE studio_objects
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE studio_object_fields
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE studio_records
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE studio_record_hot
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE goal_records
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE pm_project_authorities
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE pm_decisions
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE pm_agent_guidance
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE crm_change_log
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE package_field_value
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE pm_agent_policies
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE pm_cycles
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE pm_cycle_tasks
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE pm_cycle_committed
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE pm_cycle_capacity
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE email_signature_images
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE pm_project_updates
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE pm_templates
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE pm_template_applies
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE crm_lead_pipeline_stages
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE email_signature_settings
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE pm_epic_contracts
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
