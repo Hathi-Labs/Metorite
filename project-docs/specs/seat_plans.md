@@ -1,12 +1,12 @@
 # Seat plans — one price per seat, AI included, sold worldwide (WS-PLN)
 
 - **Product:** Metorite · **Feature:** seat tiers, individual mode, many orgs per person and global sales · **Updated:** 2026-11-02 · **Owner:** vjvarada
-- **Status:** 📐 **SPECIFIED, NOT BUILT.** The owner answered PLN-Q1, Q3, Q4 and Q5 on 2026-11-01. §3 is the proposed offer. The owner confirms it in the pull request that adds this spec (PLN-Q2).
+- **Status:** 📐 **SPECIFIED, NOT BUILT.** The owner answered PLN-Q1, Q3, Q4 and Q5 on 2026-11-01. The owner confirmed the offer of §3 (PLN-Q2 closed, 2026-11-11), and the tiers are final (D190.3, D204 point 9).
 - **Verified against code on 2026-11-02 at `2d15a28a1`.** Each path in §2 was read on that commit. Re-verify each anchor at dispatch.
 - **Board:** WS-PLN in `work_plan.md` §2.1. **Decision:** D152. §10 lists each decision that it amends or keeps.
 - **Metorite:** project "Billing & Accounts", epic 1273, this spec task 1274. §11 gives the task of each slice.
 - **Research first:** §14 here, the survey of 2026-11-02, with its sources.
-- **Gate summary:** three owner calls open the money work: PLN-Q2, PLN-Q6 and PLN-Q7. A build slice is AGENT-SAFE. A live charge, a live org's price and the launch flip are OWNER-GATE (§11).
+- **Gate summary:** two owner calls open the money work: PLN-Q6 and PLN-Q7. PLN-Q2 is closed. A build slice is AGENT-SAFE. A live charge, a live org's price and the launch flip are OWNER-GATE (§11).
 
 ---
 
@@ -80,6 +80,8 @@ Each row is a measured fact and what it means for this work.
 ---
 
 ## 3. The offer
+
+> **Open gap (D204 point 9).** The owner's final decision says the tiers carry base pricing. This section prices only per seat and does not yet say what the base price is. A slice must add it before PLN-1 starts. Task 1274 asks the owner for the numbers.
 
 ### 3.1 The three tiers
 
@@ -345,7 +347,7 @@ Each seat holds AI that costs real money, and a global signup page is a target. 
 
 | Decision | Change |
 |---|---|
-| **D49 part 1** | Superseded when PLN-50 flips. Until then, flat ₹500 stays the live offer. |
+| **D49 part 1** | Superseded when PLN-50 flips. Until PLN-50 flips, the code sells the flat ₹500 seat, but the direction is these tiers (D190.3). |
 | **D123 item 3** | "Flat per user" is superseded. The soft cap of ten users stays. |
 | **D19 item 5** | Amended. Two rails at launch. PLN-Q6 picks the second one. |
 | **D19 item 6** | Amended. It stays for storage, and the data agreement names where AI providers process text. |
@@ -372,7 +374,7 @@ Each seat holds AI that costs real money, and a global signup page is a target. 
 | Slice | Task | Question | State |
 |---|---|---|---|
 | PLN-Q1 | 1275 | Currency and prices | ✅ Answered. Global from day 1. |
-| PLN-Q2 | 1276 | The offer of §3 | 🟡 Open. The owner confirms it in the PR of this spec. |
+| PLN-Q2 | 1276 | The offer of §3 | ✅ Closed 2026-11-11. The owner confirmed the offer when told to revive and merge this spec (D190.3, D204 point 9: final). |
 | PLN-Q3 | 1277 | Allowance rules | ✅ Answered. §4. |
 | PLN-Q4 | 1278 | Existing orgs | ✅ Answered. The date stays open. §9.7. |
 | PLN-Q5 | 1279 | One login in many orgs | 🔁 Reversed by the owner on 2026-11-02. One person may belong to many orgs. §8a. |
@@ -444,7 +446,7 @@ Tests run against provider sandboxes. A live charge is OWNER-GATE (CLAUDE.md §3
 | PLN-41 | 1320 | The global rail | HIGH | AGENT-SAFE | PLN-Q6, PLN-1, PLN-12, PLN-42 | Buy, upgrade, downgrade, a failed renewal and a refund each move the ledger once in the sandbox. A replayed webhook changes nothing. | One contract suite for both rails |
 | PLN-44 | 1323 | Fraud controls and the trial | HIGH | AGENT-SAFE | PLN-41, PLN-7, PLN-9 | A signup with no card gets no AI. A second trial on one card is refused. A chargeback suspends AI within one minute. | `test_signup_abuse.py` |
 | PLN-43 | 1322 | Legal pack, export and delete | HIGH | Part A OWNER-GATE. Part B AGENT-SAFE. | PLN-Q6 | Export of org A holds no row of org B. Delete of org A leaves no row after the grace period, and it writes an audit row. | `test_org_export_delete_r8.py` |
-| PLN-47 | 1408 | The pricing page | LOW | AGENT-SAFE | PLN-1, PLN-42, PLN-Q2 | The page shows USD or INR by country and lists only what is live. | `test_marketing_site.py` |
+| PLN-47 | 1408 | The pricing page | LOW | AGENT-SAFE | PLN-1, PLN-42 | The page shows USD or INR by country and lists only what is live. | `test_marketing_site.py` |
 
 **PLN-43 has two parts.** Part A is the legal text of §9.5. A lawyer reviews it, and the owner publishes it. Part B is the product: export and delete for an org and for a member.
 
@@ -493,7 +495,7 @@ These slices run beside Phases 4 to 6. Each one stays dark until its gate works.
 
 The critical path runs through money:
 
-> PLN-Q2, Q6, Q7 → PLN-1 → PLN-2, PLN-3 → PLN-7 → PLN-12 → PLN-41 → PLN-44 → PLN-50
+> PLN-Q6, Q7 → PLN-1 → PLN-2, PLN-3 → PLN-7 → PLN-12 → PLN-41 → PLN-44 → PLN-50
 
 | Phase | Target | Why this order |
 |---|---|---|
