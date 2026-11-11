@@ -776,6 +776,8 @@ _PROJECTS_PLAN_WORDS = (
     "task references", "reference link", "reference to the task",
     "reference from the task", "task dataset", "dataset of all the tasks",
     "dataset of the tasks", "agent requests", "agent request",
+    # WS-55 EA-18d: the questions that agents put and that wait on the member.
+    "agent questions", "agent question", "questions wait on me",
 )
 _PROJECTS_STRUCTURE_WORDS = (
     "task status", "task statuses", "status set", "task type", "task types",

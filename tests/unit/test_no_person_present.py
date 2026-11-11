@@ -913,6 +913,8 @@ _READERS = frozenset({
     # WS-ALN ALN-2a: the one tool that names a route that answers. See
     # `_NAMED_TOOL_EXEMPTIONS`.
     "apps/skills/skill-projects/skill_projects/guarded.py",
+    # WS-55 EA-18d: `answer_agent_question` refuses a marked run before any call.
+    "apps/skills/skill-projects/skill_projects/question_answers.py",
     "apps/services/gateway/gateway/routes/workflows/service.py",
     "apps/services/orchestrator/orchestrator/executor.py",
     # WS-STU B2c-2a: the Studio door refuses a delegated write of a marked run
@@ -1027,6 +1029,10 @@ _ROUTE_TABLES = frozenset({
 #: the same route in another file, still fails the scan.
 _NAMED_TOOL_EXEMPTIONS: dict[str, frozenset[str]] = {
     "apps/skills/skill-projects/skill_projects/guarded.py": frozenset({"/decisions/{}/answer"}),
+    # WS-55 EA-18d: one `prompt` on the activities route, after a card and after the
+    # no-person refusal. `may_answer_run` decides on the server.
+    "apps/skills/skill-projects/skill_projects/question_answers.py": frozenset(
+        {"/agent-runs/{}/activities"}),
 }
 
 
@@ -1130,7 +1136,8 @@ def test_no_injected_tool_can_approve() -> None:
     pattern = re.compile(r"approve|reject|resume|respond|settle|answer", re.I)
     # `answer_decision` (WS-ALN ALN-2a) refuses a marked run before it reads or
     # raises a card. `test_decisions_tool.py` holds that.
-    assert {n for n in names if pattern.search(n)} == {"crm_answer_question", "answer_decision"}
+    assert {n for n in names if pattern.search(n)} == {
+        "crm_answer_question", "answer_decision", "answer_agent_question"}
 
 
 def test_a_new_module_keeps_the_import_graph_low() -> None:

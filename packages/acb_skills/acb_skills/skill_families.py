@@ -527,7 +527,9 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         ),
         "tools": (
             "add_task_ref",
+            "agent_questions",
             "analytics_finished",
+            "answer_agent_question",
             "analytics_load",
             "analytics_outlook",
             "analytics_stuck",

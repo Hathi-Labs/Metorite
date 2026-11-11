@@ -146,6 +146,8 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "link_tasks_batch": ("link these tasks in order as dependencies",),
     "update_tasks": ("update these tasks, a different due date for each",),
     "needs_attention": ("which tasks need attention?",),
+    "agent_questions": ("what agent questions wait on me?",),
+    "answer_agent_question": ("answer the agent question: use the staging box",),
     "propose_plan": ("propose a project plan for launching the site",),
     "rebalance": ("rebalance the workload",),
     "recurrence": ("when does the recurring task repeat?",),

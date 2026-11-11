@@ -77,7 +77,9 @@ from skill_projects.inbox import (
     watchers,
 )
 from skill_projects.nav import open_in_app, show_view
+from skill_projects.question_answers import answer_agent_question
 from skill_projects.reads import (
+    agent_questions,
     analytics_finished,
     analytics_load,
     analytics_outlook,
@@ -176,6 +178,8 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "waiting_agent_requests",
     # Class A — WS-55 SW-11a, what needs a person (spec §12.7)
     "needs_attention",
+    # Class A — WS-55 EA-18d, the agent questions that wait on the member (spec §12.8)
+    "agent_questions",
     # Class A — the two reads S2b needed
     "my_task",
     "recurrence",
@@ -235,6 +239,8 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "update_task",
     "update_tasks",
     "watch",
+    # Class B — WS-55 EA-18d, the member answers one agent question (spec §12.8)
+    "answer_agent_question",
     # Class B — the rest: vocabulary, a comment of one's own, the repeat
     # rule, the private capture and the overlay (S2b)
     "create_field",

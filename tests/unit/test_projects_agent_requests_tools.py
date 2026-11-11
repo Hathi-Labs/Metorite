@@ -167,7 +167,13 @@ ANSWER_PATHS = ("archive-approval", "agent-runs/")
 #: `/projects/decisions/{id}/answer`. A person confirms its card, and
 #: `no_person_present()` refuses a run with no person first. The tests
 #: `test_answer_decision_*` in `test_decisions_tool.py` hold both facts.
-NAMED_ANSWER_TOOLS = frozenset({"answer_decision"})
+NAMED_ANSWER_TOOLS = frozenset({"answer_decision", "answer_agent_question"})
+
+#: WS-55 EA-18d (spec §12.8). The ONE module that may name the activities
+#: route. `answer_agent_question` posts one `prompt` there, after a card, and
+#: the server decides who may answer (`may_answer_run`). It still never names
+#: `archive-approval`: a typed archive request is answered on the task card.
+ACTIVITIES_MODULE = "question_answers.py"
 
 
 def test_no_tool_of_the_skill_calls_an_answer_route() -> None:
@@ -178,6 +184,8 @@ def test_no_tool_of_the_skill_calls_an_answer_route() -> None:
             continue
         text = path.read_text(encoding="utf-8")
         for word in ANSWER_PATHS:
+            if path.name == ACTIVITIES_MODULE and word == "agent-runs/":
+                continue
             for hit in re.finditer(re.escape(word), text):
                 line = text.count("\n", 0, hit.start()) + 1
                 offenders.append(f"{path.name}:{line} names {word}")
@@ -212,3 +220,15 @@ def test_the_list_is_a_read_the_agent_offers_and_the_instructions_never_claim_to
     text = (agent / "instructions.md").read_text(encoding="utf-8")
     assert "waiting_agent_requests" in text
     assert "No tool of yours can" in text and "Give the link" in text
+
+
+def test_the_one_module_that_posts_an_answer_reaches_two_routes_only() -> None:
+    """EA-18d. `question_answers.py` reads one run and posts to its activities,
+    and it never names the archive approval."""
+    lines = (SKILL_DIR / ACTIVITIES_MODULE).read_text(encoding="utf-8").splitlines()
+    assert not [ln for ln in lines if "archive-approval" in ln]
+    code = [ln for ln in lines if "agent-runs/" in ln and ('f"' in ln)]
+    assert code, "the module no longer reaches a run"
+    for ln in code:
+        assert "agent-runs/{rid}" in ln, ln
+        assert ln.strip().startswith(("payload = (await get(", "written = await post(")), ln

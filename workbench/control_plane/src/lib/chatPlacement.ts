@@ -123,6 +123,7 @@ const EVIDENCE: readonly string[] = [
   "report_recipients",
   "waiting_agent_requests",
   "needs_attention",
+  "agent_questions",
   "report_render",
   "open_in_app",
   "show_view",
@@ -206,6 +207,8 @@ const WRITE: readonly string[] = [
   // SP-8a: the contract of an epic, one card.
   "set_epic_contract",
   "watch",
+  // WS-55 EA-18d: the member answers one agent question, one card.
+  "answer_agent_question",
   "complete",
   "defer",
   "unarchive_task",
