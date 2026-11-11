@@ -3,7 +3,7 @@
 Spec: ``project-docs/specs/my_day_command_centre.md`` §9.2 and the third row of
 §10 (D-MD-3). Metorite task 1969.
 
-The mark is ``pm_task_personal.focus_on`` (migration 411). It takes the
+The mark is ``pm_task_personal.focus_on`` (migration 412). It takes the
 member's today or null, and another date is a 422. ONE statement counts the
 marks of the day and writes the mark, under a transaction lock of the org, the
 member and the day (``personal.mark_focus``). A mark past the cap is a 409

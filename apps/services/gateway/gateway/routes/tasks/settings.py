@@ -94,7 +94,7 @@ class UserSettingsModel(BaseModel):
     # Recurring day-templates (migration 94): flexible block/focus windows —
     # [{days:[0..6], start_hour, end_hour, kind:'block'|'focus', label, theme}].
     day_templates: list[dict] = []
-    # Today's focus (migration 411, WS-MDC CC-2, D-MD-3): how many tasks the
+    # Today's focus (migration 412, WS-MDC CC-2, D-MD-3): how many tasks the
     # member may mark for one day. NULL reads as 3, and a read clamps to 1..10
     # (`projects.today_rule.clamp_focus_cap`).
     today_focus_cap: int = 3

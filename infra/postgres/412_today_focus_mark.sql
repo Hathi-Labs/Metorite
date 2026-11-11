@@ -1,10 +1,10 @@
 -- ============================================================================
--- 411_today_focus_mark.sql - the today's-focus mark and its cap (WS-MDC CC-2,
+-- 412_today_focus_mark.sql - the today's-focus mark and its cap (WS-MDC CC-2,
 -- task 1969)
 -- ============================================================================
 -- Spec: project-docs/specs/my_day_command_centre.md §9.2 (D-MD-2, D-MD-3)
 -- · R5 · R6 · R8. R1: this file was 349 on 2026-11-07. On 2026-11-11 origin/main held 402 and
--- the open branches held up to 410, so it moved to 411. Check the number again
+-- the open branches held up to 410, so it moved to 412 (a branch took 411). Check the number again
 -- at merge (scripts/premerge.sh).
 --
 -- What: two nullable columns.

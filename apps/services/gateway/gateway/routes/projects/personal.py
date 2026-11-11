@@ -193,7 +193,7 @@ class PersonalIn(BaseModel):
     #: PATCH as well, so a client can clear it.
     last_nudged_at: str | None = None
 
-    # ── Today's focus (migration 411, WS-MDC CC-2) ──────────────────────────
+    # ── Today's focus (migration 412, WS-MDC CC-2) ──────────────────────────
     #: My mark "today's focus": my today as ``YYYY-MM-DD``, or null to clear.
     #: Any other date is a 422. A mark past my cap is a 409
     #: ``focus_cap_reached`` (:func:`mark_focus`, ``today_rule``). Only the
@@ -1237,7 +1237,7 @@ def _personal_to_dict(row: Any) -> dict[str, Any]:
         # collecting a real value that no caller could read — the Weekly
         # Review's "when did I last look at this" had no way to ask.
         "clarified_at": _iso(row, "clarified_at"),
-        # WS-MDC CC-2 (411): my mark of today's focus, a date or None.
+        # WS-MDC CC-2 (412): my mark of today's focus, a date or None.
         "focus_on": _iso(row, "focus_on"),
     }
 
@@ -1286,7 +1286,7 @@ def _apply_overlay(task: dict[str, Any], row: Any) -> None:
     # and it read as a plain bool before 188. Kept that way rather than widened
     # in passing — a wire-shape change is not a free rider on a column add.
     task["is_two_minute"] = bool(getattr(row, "p_is_two_minute", False))
-    # WS-MDC CC-2 (411): my mark of today's focus, a date or None. The chat's
+    # WS-MDC CC-2 (412): my mark of today's focus, a date or None. The chat's
     # card reads it as the value before a change.
     focus = getattr(row, "p_focus_on", None)
     task["focus_on"] = focus.isoformat() if focus is not None else None
