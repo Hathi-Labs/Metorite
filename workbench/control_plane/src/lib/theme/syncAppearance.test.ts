@@ -361,6 +361,39 @@ describe("the write of the server copy", () => {
     expect(gets()).toHaveLength(1);
   });
 
+  it("keeps the unsent mark when a newer change came while a write was out", async () => {
+    let release: () => void = () => {};
+    calls = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const method = init?.method ?? "GET";
+        calls.push({ url: String(input), method, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+        if (method === "PUT") {
+          await new Promise<void>((r) => {
+            release = r;
+          });
+          return new Response("{}", { status: 200 });
+        }
+        return json({ mode: "dark", density: null, accent: "#0ea5e9", updated_at: STAMP });
+      }),
+    );
+    bindA();
+    await startAppearanceSync(A.email, A.org, { setMode: vi.fn() });
+    useAppearanceStore.getState().setAccent(ROSE);
+    await vi.advanceTimersByTimeAsync(WRITE_DELAY_MS);
+    // The first write is out. A newer change comes, then the first write answers 200.
+    useAppearanceStore.getState().setAccent("#7c3aed");
+    release();
+    await vi.advanceTimersByTimeAsync(0);
+    newPage();
+    calls = [];
+    bindA();
+    await startAppearanceSync(A.email, A.org, { setMode: vi.fn() });
+    expect(gets()).toHaveLength(0);
+    expect(useAppearanceStore.getState().accent).toBe("#7c3aed");
+  });
+
   it("holds a change made before the bind, and sends it to the bound scope", async () => {
     stubFetch(() => json({ mode: "light", density: "compact", accent: ROSE, updated_at: STAMP }));
     useAppearanceStore.getState().setUserDensity("comfortable");

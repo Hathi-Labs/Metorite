@@ -88,6 +88,8 @@ const sync = {
   memberMode: null as ThemeMode | null,
   /** The gateway answered 404: the feature is dark for this org. */
   off: false,
+  /** Counts the member changes. A write clears the unsent mark only if no change came after it started. */
+  changes: 0,
 };
 
 function modeOf(value: unknown): ThemeMode {
@@ -145,6 +147,7 @@ function hasUnsent(scope: string): boolean {
 
 async function send(record: AppearanceRecord, scope: string): Promise<void> {
   if (sync.off) return;
+  const seen = sync.changes;
   try {
     const res = await fetch(APPEARANCE_URL, {
       method: "PUT",
@@ -155,7 +158,7 @@ async function send(record: AppearanceRecord, scope: string): Promise<void> {
     if (res.status === 404) sync.off = true;
     // Only a 2xx clears the mark. A 404 means the feature is dark here, so
     // the mark stays and nothing reads the server copy in that case.
-    else if (res.ok) setUnsent(scope, false);
+    else if (res.ok && sync.changes === seen) setUnsent(scope, false);
   } catch {
     // Silent: the mark stays, and the next bind sends the browser copy.
   }
@@ -178,6 +181,7 @@ function flush(): void {
  */
 export function noteMemberAppearanceChange(): void {
   sync.touched = true;
+  sync.changes += 1;
   setUnsent(tabAppearanceScope(), true);
   if (sync.timer) clearTimeout(sync.timer);
   sync.timer = setTimeout(flush, WRITE_DELAY_MS);
@@ -317,4 +321,5 @@ export function __resetAppearanceSyncForTests(): void {
   sync.timer = null;
   sync.memberMode = null;
   sync.off = false;
+  sync.changes = 0;
 }
