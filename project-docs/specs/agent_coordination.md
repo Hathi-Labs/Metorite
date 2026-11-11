@@ -989,6 +989,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **Done when.** The next agent's `get_task_context` starts with the note. A release with work left and no `next` gets 422 with the reason.
 - **Fence.** `test_mcp_edge_context.py`, the edge tool schema test, and an R8 test for the 422.
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE.
+- **Built (task 858).** Not merged yet. The `response` activity carries `content.handoff`. No migration is needed, because the `type` CHECK already allows `response` and `content` is JSONB. A note holds at most 1,000 characters in each text. The rule: `left` with text needs `next`, else 422 "A handoff with work left needs a next step." A release or a finish with no `handoff` works as before. A release with a note writes the `response` and the release in one transaction. The newest note rides on the task-runs read, so `get_task_context` makes no new gateway call, and it returns `handoff` first, as untrusted text. The task panel shows the card "Handed off by <client> for <member>" above the run card. Fence: `test_mcp_edge_agent_runs.py` (R8) and `agentHandoff.test.ts`.
 
 #### SW-31 · Agent guidance
 
@@ -1311,7 +1312,7 @@ They keep their own gates.
 #### SW-48 · The lead acts on the runs of their apps
 
 - **Metorite task.** 1881.
-- **Scope.** Edit `person_may_end_sql` in `agent_runs.py`, the one text. `may_end_run` and `needs_attention.py` read it. So the button and the route agree. Add one branch with the public lead-walk SQL of `authority.py`. The app lead of the run's task may Release and Resume the run. Today the org-wide case uses `RELEASE_ADMIN_PERMISSION = "admin:members:read"`. Q5 recommends `admin:members:manage` and is still open. The lead does not answer by this rule (SW-46).
+- **Scope.** Edit `person_may_end_sql` in `agent_runs.py`, the one text. `may_end_run` and `needs_attention.py` read it. So the button and the route agree. Add one branch with the public lead-walk SQL of `authority.py`. The app lead of the run's task may Release and Resume the run. The org-wide case uses `RELEASE_ADMIN_PERMISSION = "admin:members:manage"`. The owner decided Q5 on 2026-11-06, and H-409 built it (task 748). The lead does not answer by this rule (SW-46).
 - **Done when.** R8: the lead of the app gets 200 on Release and Resume. A member who is not the run's member and not the lead gets 403. A lead of another app gets 403. `can_act` on Needs attention agrees with the route.
 - **Fence.** `test_agent_runs_r8.py`, `test_agent_run_exclusive.py` and `test_needs_attention_r8.py`.
 - **Risk.** HIGH (a write authority rule). **Gate.** AGENT-SAFE. **Depends on.** SW-44. Q5 and Q9.

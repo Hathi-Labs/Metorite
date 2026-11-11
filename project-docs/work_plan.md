@@ -156,7 +156,7 @@ The core function brief sets the phases (D119). Customer zero comes first inside
 10. **The daily promise** (brief tasks 2, 4 and 5): BR-4, BR-2a to BR-2d, BR-5 and WS-58. The brief reads across every app, so fast retrieval comes with it: KG-1 to KG-3 (D128). The brief runs unattended, so AUTO-2 makes each run happen at most once.
 11. **Email and calendar out of preview** (brief task 3): E-05, E-09, E-11, E-07, WS-21-P4 and CE-0.
 12. **A real second organization**: MT-1j-exec provisions it and runs the smoke. E-58 and BR-14 follow.
-13. **Pay** (Phase 2): H-14, the rate card and the spend gate (D123), SC-5, H-292 and H-287.
+13. **Pay** (Phase 2): H-14, the rate card and the spend gate (D123), SC-5, H-292 and H-287. WS-PLN holds the offer, its slices and the launch gate (D152).
 14. **The Phase 2 brief tasks**: BR-10, BR-11, BR-12, BR-9, BR-8, BR-13 and BR-15.
 15. **Project alignment and the proactive agent** (M2, D160 and D161): the order is in `specs/project_alignment.md` §10 and `specs/proactive_agent.md` §9. H-328 comes first for any second org.
 
@@ -170,7 +170,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 |---|---|---|---|---|
 | WS-CZ | **Customer Zero**: Fracktal and Shaurrya Tele (DEWiN) | 🟢 active · M0 | none yet | Metorite: epic 519 (Metorite Application) · next H-259, BO-23b, CP-8-act, H-326 |
 | WS-TS | **Tenancy and Security**: a second organization is safe | 🟢 active · M1 | `specs/saas_multitenancy.md` · `specs/saas_multitenancy_handover.md` | Metorite: epic 520 · gates H3.2 (D120) and WS-40-Q (D121) · H6a done 2026-10-29 (parity fence, H3.3 enacted) · H-312 five `user_settings` reads built 2026-11-04 (the other `:uid` statements wait on H-104, task 1646) · next AX-0, H-249, H2 |
-| WS-CM | **Console and Money**: seats, credits, invoices | 🟡 gated · M2 | `specs/customer_console.md` | Metorite: epic 478 (Billing & Accounts) · gates H-14 and the rate card (D123) · next H-170, CP-10 |
+| WS-CM | **Console and Money**: seats, credits, invoices | 🟡 gated · M2 | `specs/customer_console.md` | Metorite: epic 478 (Billing & Accounts) · gates H-14 and the rate card (D123) · WS-PLN holds the new offer (D152) · next H-170, CP-10 |
 | WS-TO | **Trust and Operations**: enforced controls, restore, compliance | 🟢 active · M1 | `specs/box_hardening.md` | Metorite: epic 521 (Platform & CI/CD) · SBX-0 decided (D130, `specs/agent_sandbox.md`) · next WS-1e, WS-3, BH-3 with SBX-1, the WS-37 spec (D119.4) |
 | WS-PL | **Platform and CI**: delivery, staging, branch protection | 🟢 active · M1 | `specs/development_and_delivery_framework.md` · the local loop LD-7 to LD-10: `specs/engineering_practice.md` §1.3 (D145) | Metorite: project Platform & CI/CD, and epic 1100 in Developer Workflow · next LD-8c (the backup verify fails each night), LD-8a, LD-8b, LD-9, LD-10, then WS-38a, WS-38e, WS-5a |
 | WS-PT | **Projects and Tasks** | 🟢 active · M1 | `specs/project_management_app.md` · `specs/one_projects_app.md` | Metorite: project Projects/Tasks App · D170 (the inbox holds captures), D172 (the task card), D181 (one record card: `specs/one_record_card.md`, ORC-2 and ORC-3) · `one_projects_app.md` §9b and §9c: the phone (epic 1500), the inbox, Undo, select many, the archive · next MOB-1 and INB-1 (in build), then UNDO-1, SEL-1, MOB-2 · H-257, H-387 |
@@ -192,6 +192,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-AP | **Waiting**: one list of every agent, approval and person that waits on a member, and of every person the member waits on | 🟢 active · started 2026-11-06 · M2 | `specs/waiting_on_me.md` | Metorite: project "Proactive Intelligence", epic 1615 · D12, D87, D103, D124, D171 and ALN-Q5 · AP-0 is this spec (task 1855) · the owner accepted AP-Q1 to AP-Q8 on 2026-11-06 · the owner answered AP-Q10 on 2026-11-06 at 10:33 UTC: a person of the circle only (AP-16) · AP-1a (task 1616) merged dark as `bf0ece44b` (PR 1797). AP-1b waits on the owner: D-EA-14 or AP-Q2 · AP-8a (task 1858) is built and dark on branch `pro-ap8`, migration 352 · AP-8b is NO-GO until the spec answers B4 to B6 of §8 · next AP-BUG-1 (task 1857) · AP-15 (task 1875) routes a wait that no person owns |
 | WS-MDC | **My Day command centre**: capture, plan, start, focus and close the day from My Day, joined with Calendar and Projects | 🟢 active · started 2026-11-07 · M2 | `specs/my_day_command_centre.md` | Metorite: project "Calendar App", epic 1946 · D12, D89, D101, D170, D171 and D188 (D-MD-1 to D-MD-9) · CC-0 is this spec (task 1967) · next CC-1 (task 1968), CC-2 (task 1969) and CC-4 (task 1971) in parallel · CC-11 (task 1973) waits on PR 1789 |
 | WS-CO | **Chat organization**: topics, picking up a chat, one search, and the full-screen chat | 🟢 active · started 2026-11-02 (D162, D163) · M1 | `specs/chat_organization.md` · `specs/artifact_management.md` §6.0 | next CO-0 (AGENT-SAFE). CO-1 waits for the PZ-33b question on numbers, and its flip is owner-only |
+| WS-PLN | **Seat plans**: seat tiers with an AI allowance, mixed tiers, individual mode, the upgrade to a team, and global sales from day 1 | 🟡 gated · started 2026-11-01 (D152) · M2 | `specs/seat_plans.md` | Metorite: project "Billing & Accounts", epic 1273 · D19, D49, D66, D67, D108, D123, D152 · gates PLN-Q6, PLN-Q7, task 524 · next PLN-6, PLN-20, PLN-42, PLN-1 |
 | WS-UX | **UX System**: the one look, the action contract and the motion vocabulary | 🟢 active · M1 | `workbench/control_plane/DESIGN_SYSTEM.md` (§4b, §11, §12) · `specs/glass_look.md` (phase GL, D143) | Metorite: epic 492, sub-epic UX-D, task 1125 (GL) · UI-G1 is built · **GL (owner, 2026-10-31): Aroh's glass look, LIVE in production since 2026-10-31 05:38 UTC behind `NEXT_PUBLIC_UI_LOOK` (GL-9 done on the owner's word; staging no longer exists). GL-0 to GL-4 built (gate and tokens, primitives, shell, chat). GL-10, GL-11 and GL-12 are built (GL-12, 2026-11-01: the Ask bar at the foot, no top bar, Needs you beside its sidebar row) (GL-11, 2026-11-01: desktop proportions, raised chat cards, the full-height sidebar with hover to expand) (cards, rail, chat edge). **GL-Z1 is built, 2026-10-31 (D149): glass is the only look, and the Design switch and the gate are gone.** Next GL-Z2 (fold each `glass:` class into a plain class, then delete the classic token blocks), then GL-5 and GL-6** · then UXD-1 to UXD-3 (the silent failures), then UXD-5 and UXD-6 (D119.3) |
 | WS-WH | **Writing Help** | ⏸ after Phase 2 · M4 | none yet | Metorite: epic 493 · next WA-1 |
 | WS-CHAT | **AI chat**: Mira, the one assistant | 🟢 active · M1 | `specs/one_assistant_context.md` · `specs/chat_first_surface.md` | Metorite: project AI Chat Interface, epic 470 · a parallel session owns it · next #469 with BR-5, #471, WS-58, SUB-1 (the sub-agent policy for OA-9) |
@@ -1216,6 +1217,7 @@ by D15/D16) — read their banners before citing either.
   owning spec `specs/launch_surface.md`, WS-34.)*
   Four parts, taken together because they are one decision about what we sell on
   day one.
+  ⚠️ *Part 1 stays the live offer until D152 takes over at PLN-50 (`seat_plans.md`). Build no new seat, checkout or signup work against it.*
   **(1) Pricing is flat.** ₹500 per user per month, carrying everything that is
   live, plus AI credits metered as before. This **supersedes D23 and D24** —
   `saas_multitenancy.md` §2.4b's Center packages, the two org-wide add-ons, the
@@ -2230,10 +2232,12 @@ by D15/D16) — read their banners before citing either.
      while invoicing is by hand, per §5's Phase-2 posture). Online
      checkout/top-up arrives with MT-4. Owning spec:
      `specs/subscription_console.md` (WS-30).
-  5. **Payments (§8 item 3 — closed): Razorpay only at launch**, behind the
+  5. ⚠️ *Amended by D152, 2026-11-01: two rails at launch. PLN-Q6 picks the second one.*
+     **Payments (§8 item 3 — closed): Razorpay only at launch**, behind the
      `payment_provider` seam; Stripe lands as a second implementation of the same
      seam when the first international customer appears.
-  6. **Data residency (§8 item 4 — closed): promise India-only at launch.** All
+  6. ⚠️ *Amended by D152, 2026-11-01: it stays for storage, and the data agreement names where AI providers process text.*
+     **Data residency (§8 item 4 — closed): promise India-only at launch.** All
      customer data on India-region infrastructure until a second residency tier
      is deliberately priced. Amended for email triage by D-EM-9 (2026-10-02). Mail content may go to TypeSafe and AI/ML API for a triage decision.
 - **D18 — Three owner calls taken 2026-08-09** *(via the consolidation session's
@@ -4683,7 +4687,7 @@ Owner decision, 2026-10-27, in chat, taking the recommendations.
 
 1. **Rate card.** Price it from measured burn before the first paid customer. Flip `CUSTOMER_CONSOLE_SPEND_GATE` after the price is set, never before.
 2. **Razorpay.** The owner creates the TEST account now (H-14). The owner takes the GST position before SC-5 builds the invoice.
-3. **Seats.** Pricing stays flat per user. Ten users per organization is a soft cap that matches `MAX_TEAM_SIZE`.
+3. **Seats.** Pricing stays flat per user. Ten users per organization is a soft cap that matches `MAX_TEAM_SIZE`. ⚠️ *D152 supersedes the flat price at PLN-50. The soft cap stays.*
 4. **Production database.** Move off the free tier before the pilots start. For the tenant plane, use the Supabase Pro plan at Small compute or larger (H-262). The Console database must not auto-pause (H-108). The owner approves the spend.
 
 ### D124 — External agents get full parity with the in-built assistant. Writes and deletes ask the member each time (2026-10-27)
@@ -5070,6 +5074,26 @@ Owner decision, 2026-11-02, in chat, on the four defaults of `specs/onboarding.m
 3. **D-OB-3. The founder's four default steps** are `invite_team`, `connect_email`, `first_project` and `ask_assistant`.
 4. **D-OB-4. The card leaves My Day for good when the last step is done.** A later setup item goes to the setup coach (D110), not back onto the card.
 
+### D152 — One seat price holds the AI. An org mixes tiers, one person is an org of one, and the plans sell worldwide from day 1 (2026-11-01)
+
+Owner directive, 2026-11-01, in chat: "I don't want to separately charge customers for seats and then charge for AI compute." The owner then added "we want to go global from day 1 live", and accepted the recommendations on the allowance, on existing orgs and on one login. Owning spec: **`specs/seat_plans.md`**. Board: **WS-PLN**.
+
+1. **A seat tier is the one thing we sell.** Standard, Pro and Max, at $20, $100 and $200 a month. Each tier holds a price, an AI allowance, feature gates and limits, as catalog data. `core` stays the slug of Standard.
+2. **An org mixes tiers.** Each member holds one live tier, and the database enforces this. An admin sets the mix. A person always buys by an explicit act.
+3. **The allowance is per seat.** It resets each month. It does not roll over, and it does not pool. Extra usage is prepaid and OFF by default. A small org pool pays for work with no member.
+4. **An individual is an organization of one** (`organization.kind`). The mode changes presentation and defaults, and it never grants a permission.
+5. **The upgrade to a team keeps the same org id.** A privacy review runs first, and the flow cannot skip it.
+6. **Global from day 1.** USD for the world and INR for India. India stays on Razorpay. PLN-Q6 picks the second rail, and PLN-Q7 picks the AI route.
+7. **Existing orgs stay on `core` at ₹500** until a date that the owner sets.
+8. **One person may belong to many organizations, and may create more.** The owner reversed the first answer on 2026-11-02. Signup first shows the orgs and invites of the verified address, by the exact address only. MT-1k slices B and C move before the launch. `seat_plans.md` §8a holds the rules and the screens.
+
+**The offer is final.** The owner confirmed `seat_plans.md` §3 (PLN-Q2 closed, 2026-11-11; D190.3 and D204 point 9 record the same). D204 point 9 adds base pricing to the tiers. `seat_plans.md` does not yet say how, so a slice must add it (see its §3 note).
+
+**When it binds.** Build work binds now, so new seat, checkout and signup work targets this decision. D49 part 1 stays the live offer until PLN-50 flips.
+
+**What it changes.** It supersedes D49 part 1 and the flat price of D123 item 3, at that flip. The soft cap of ten users stays. It amends D19 items 5 and 6. D32.6 now binds bought credits only. `seat_plans.md` §10 lists each one, and the decisions it keeps.
+
+**Fence.** Each slice in `seat_plans.md` §11 names its fence. Until PLN-1 lands, this decision is advisory.
 ### D153 — Onboarding: the AI-led layer, company context first (2026-11-02)
 
 Owner direction and decision, 2026-11-02, in chat, on the four defaults of `specs/onboarding.md` §12.10. Board: **WS-OB**. Metorite: epic 1351. The owner accepted each default.
@@ -6029,6 +6053,21 @@ Fence: `tests/unit/test_app_capability_parity.py` (new, task of WS-MKT) proves t
 
 Re-check this number at merge. The first merge wins a D-number.
 
+### D208 — A Projects act with no typed MCP tool reaches the MCP through the app door (2026-11-11)
+
+The owner chose option (b) in chat on 2026-11-09 (Metorite tasks 2520 and 2521). MCP-G24 records it. `external_agent_access.md` §19.16 holds the design.
+
+1. **One path for the rest of Projects.** A Projects act that no typed tool serves reaches the MCP through the app door of §19 (D136.2). Nobody builds one typed tool for each act. The typed tools of §9 stay, and `MCP_ROUTES` stays their allowlist (§19.3).
+2. **The door table, and an exception to AD-1 and D136.1.** `acb_common/app_manifests/projects.py` holds one row for each of the 215 routes of the Projects chat manifest. Each row has the class and the chat tool of its chat row. It adds an `op` or an `off_door` reason (AD-2). `acb_common` cannot import `skill_projects`, so the table repeats the 215 pairs. That is a second list, so D208 amends AD-1 and D136.1 for Projects. The exception ends when MCP-G24c moves the chat manifest into `acb_common`. Until then, the fence holds the pairs, the class and the tool equal, row for row.
+3. **No pair is in both sets (AD-3).** A row whose route is in `MCP_ROUTES` names no op. It says that a typed tool serves it.
+4. **The first acts.** Cycles and saved views get 11 door ops. Status editing and template apply stay off the door until MCP-G24b, the registration slice. The chat client holds guards that their routes lack (§19.16). Import stays class X, because its routes need `admin:access:manage` (§19.11). Goals and teams have no route. A goal object is later work (task 977), and a team is a filter (D87).
+5. **The approval path.** Each class B or C op asks the member for each call (§19.5, D124.2). No op is a proposal, and no op sends. No op writes a grant, answers for a person, or reaches another person. No op deletes a record for good. Two ops delete the link row of a task in an open cycle, and the task stays.
+6. **Dark.** The table is not in `app_manifests.APPS`, so the door serves no Projects op. MCP-G24b registers it, after MCP-P1b-2 builds the spend. Until then, the table needs no flag.
+
+Fence: `tests/unit/test_projects_door_coverage.py`. MCP-G25 adds `tests/unit/test_mcp_projects_parity.py` on the same table.
+
+Re-check this number at merge. The first merge wins a D-number.
+
 ### D210 — Sound cues: a few tasteful sounds for the moments that matter (2026-11-11)
 
 The owner asked in chat on 2026-11-11 for tasteful sound effects. The clear chimes are for an email sent or received, the agent with something for me, a new item in My Day, and a reminder. The owner's standing word applies to the details: the product manager's recommendation, when it fits the philosophy. Epic: task 2862 (WS-SND, project My Day).
@@ -6112,6 +6151,7 @@ Fence: named per slice in `specs/my_day_command_centre.md` §10. Advisory until 
 | **The single member of record** | **`vjvarada@fracktal.in` is the only signed-in member** (⚠️ **owner-reported 2026-08-04, NOT measured** — it is a live-DB fact and §6 forbids an agent the tool that could measure it; re-check on the box before relying on it) | There is exactly one. `EXECUTIVE_EMAILS` is the bootstrap candidate list (`acb_auth/access.py:467-519`) and is **not** a role — a member's real access is resolved from `app_user` + `user_role` + `user_permission_override`. **No agent may add, promote or suspend a member**: `POST /admin/members`, `PUT /admin/members/{email}/roles` and `PATCH/DELETE /admin/members/{email}` are live-DB writes to the access model and are registered in §6. Onboarding runbook: `specs/colleague_onboarding.md` §2 |
 | Groups admin UI + seeding | **WS-13 / Centers B** | groups_sessions_authority §6.5 · org_access §8 Ph2 · multiplayer §4.5 |
 | Team-instanced agents | **WS-14 / Centers C3** (mechanism per D3) | `docs/multiplayer/agent-kinds.md` §6/§8 — **note the path: it is under `docs/multiplayer/`, not `project-docs/specs/`**, and its §6 roster is a **design proposal, not a work list** (seven of its twelve agents do not exist; it contradicts three shipped `config.json` files — both annotated there 2026-08-03) · agent_architecture §6/§12A · memory_architecture §6.1 · groups §6.2 |
+| **The offer and the account model**: seat tiers, the AI allowance, individual mode, the upgrade to a team, one person in many orgs, and global sales || **WS-PLN — `specs/seat_plans.md`** (D152) | `launch_surface.md` §4 keeps the flat offer until PLN-50 · `customer_console.md` owns the catalog tables · `credit_pricing.md` owns the worth of a credit |
 | Shared mailboxes | ⚠️ **OWNERLESS IN FACT — do not dispatch** (measured 2026-08-03) | D5 assigns implementation to `email_app_master_plan.md`, sequenced by WS-14. That spec contains **zero** occurrences of "shared mailbox", and `email_account_member` — cited as Phase-2 content by `department_centers.md` and `org_access_control.md:311` — **exists nowhere in the repo** (0 hits in `*.sql` and `*.py`). D5's *sequencing* stands; its *ownership* is nominal. **Next action is a doc action, not a build:** either `email_app_master_plan.md` gains a section for it, or this row names a different owner. Recorded in `department_centers.md` C2. | org_access §8 Ph2 · groups §1 · research §16.7 |
 | Per-Center approvals routing | **WS-14 C4 — 🔴 OWNER-DECISION, not dispatchable** | `org_access_control.md:405` Q2 is open verbatim (*"who is asked? … per-module approvers is a Phase 2 question"*), **and there is no column to route on**: `infra/postgres/66_pending_actions.sql:13-38` carries no requesting-member, group or Center column. ⚠️ **Corrected 2026-08-03** — this cell used to add "(`actor` is the proposing *agent*)", which is **false**: two of `actor`'s six writers put the requesting human in the string (`routes/apps/tools.py:393`, `routes/apps/actions.py:345`, both `actor=f"app:{slug}:{email}"`), so a group **is** derivable there. The verdict holds on the real evidence — `actor` is free text with five shapes (`app:<slug>:<email>` · `app:<slug>` · `workflow:<name>` · `tasks:<provider>` · `tasks:clickup:ws:<id>`) and a human in only **two of six** proposers, so a Center inbox filtered on it would be silently empty for every workflow-, publish- and provider-originated proposal. The new column must be written by every proposer, not parsed from an ad-hoc string. Evidence: `department_centers.md` C4. The ticket is "answer Q2, then add a column", never "add a filter" |
 | Cost attribution | **WS-6** (D1) | multiplayer §5.3/Ph4 · agent-kinds §9 Q4 · Centers D |

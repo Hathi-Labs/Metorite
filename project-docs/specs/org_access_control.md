@@ -355,6 +355,10 @@ Deploy order makes fail-closed safe: `apply_migrations.sh` runs before the gatew
 
 ## 8a. Integration credentials and org memory (seam 3, authorization half)
 
+> **Status, 2026-11-11 (task 1627, MCP-C3):** 🟢 A delegated run gets the filter of the member of its parent run. A hand-off names no member, so `_integration_authorizer` reads the member of the run binding (`_bound_run_member`). The server binds that member, and a request body never sets it. `_run_sub_agent_streaming` now filters its own credential build too. A delegated run uses the room of the chat that asked (`_delegated_authority_thread`), so a shared room keeps its intersection. A top-level run with no member keeps no filter, as before. Fences: `tests/unit/test_delegated_integration_filter.py` and `tests/unit/test_delegated_integration_filter_r8.py` (R8).
+>
+> The lookup of a delegated run arms the memory gate (`memory:write_org`) on the task of its parent. So `run_agent` and `_run_sub_agent_streaming` give the parent its own gate back when the hand-off ends. A wider gate of a child never outlives the hand-off.
+>
 > **Status, 2026-11-07 (task 1120, H-437):** 🟢 A web chat run gets the filter of its session member. MCP-C1 shipped this on 2026-11-04 with no flag. `_integration_authorizer` takes the member as the keyword `session_user`, and the stream route passes the session member. A run with no session keeps the body's claim. Fence: `tests/unit/test_org_access_credentials.py`.
 
 ### What is enforced
@@ -386,6 +390,8 @@ Real isolation needs the sandbox work — **BO-7** in `FOUNDATION_BUILDOUT_CHECK
 The filter engages only when a run is attributable to an **active member**. Cron, the reconciler, webhook-triggered runs, and any address that does not resolve to a provisioned member all run unfiltered, exactly as before.
 
 This asymmetry is on purpose. The feature exists to restrict a known member's reach. If it also starved background runs whose payload happened to carry an unfamiliar address, the failure would be silent — no 403, no error, just work that quietly stops happening. Who may start a run at all is already enforced upstream by `assert_can_run_agent`.
+
+**A delegated run is not a background run (MCP-C3).** It acts for the member of the run that delegated to it. That member comes from the run binding, never from the message of the hand-off. So a deny on `integrations:use:<service>` holds through `call_agent`, `call_agents_parallel`, `call_agent_background`, `delegate_to_agent` and each specialist tool. In a shared room, the delegated run uses the intersection of the chat that asked, as its parent does.
 
 ---
 
