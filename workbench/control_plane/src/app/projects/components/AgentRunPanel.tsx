@@ -49,6 +49,7 @@ import { Textarea } from "@/components/ui/Input";
 import { useAccess } from "@/components/AccessProvider";
 import type { ElicitationAnswers } from "@/lib/elicitationAnswer";
 
+import { holderLine } from "../lib/agentHolder";
 import { ProjectsApiError, type TaskRow, agentRunsApi } from "../lib/api";
 import {
   ARCHIVE_CARD_TITLE,
@@ -72,7 +73,6 @@ import {
   canReleaseRun,
   cardQuestion,
   clientName,
-  heldByLine,
   RELEASE_COPY,
   releaseBody,
   STALE_HOLD_TEXT,
@@ -324,6 +324,19 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
   // EA-14a: one AI for each task. The card says who holds the task, and the
   // run's member, an assignee or an admin may release it.
   const holding = isOpenRun(run);
+  // SW-5: "Worked by <client> for <member> since <time>", from the run.
+  const holdText = run
+    ? holderLine(
+        {
+          member: run.member_email,
+          member_name: run.member_name,
+          client_via: run.client_via,
+          client_name: run.client_name,
+          since: run.started_at,
+        },
+        personLabels,
+      )
+    : "";
   const canRelease = canReleaseRun(run, {
     me,
     isAdmin: access.is_admin,
@@ -506,8 +519,8 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
       {/* EA-14a: who holds the task, and the Release control. */}
       {holding ? (
         <div className="flex min-w-0 items-center gap-2 text-xs" data-agent-held-by="">
-          <p className="min-w-0 flex-1 truncate text-muted-foreground" title={heldByLine(run, personLabels)}>
-            {heldByLine(run, personLabels)}
+          <p className="min-w-0 flex-1 truncate text-muted-foreground" title={holdText}>
+            {holdText}
             {run.lease_expired ? (
               <span
                 className="ml-1.5 rounded border border-border px-1 text-[10px] uppercase tracking-wide"

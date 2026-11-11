@@ -29,6 +29,8 @@
 
 import type { ElicitationAnswers, ElicitationQuestion } from "@/lib/elicitationAnswer";
 
+import type { TaskHeldBy } from "./agentHolder";
+
 
 /* ── The wire types ──────────────────────────────────────────────────────── */
 
@@ -762,6 +764,8 @@ export interface AgentRowFacts {
   agent_state?: AgentState | null;
   agent_client_via?: string | null;
   agent_member_email?: string | null;
+  /** SW-5. Who holds the task, from the gateway's `held_by`. Null for a free task. */
+  held_by?: TaskHeldBy | null;
   assignees?: string[];
 }
 
@@ -876,6 +880,41 @@ export function stripVisible(summary?: AgentSummary | null): boolean {
   return Boolean(summary) && AGENT_STRIP.some((item) => (summary?.[item.field] ?? 0) > 0);
 }
 
+/**
+ * SW-5: the two hold filters of the board. They ride the same `agent_focus`
+ * parameter, so the server takes one of them, or one strip focus, at a time.
+ * `held`: an AI session holds the task now. `free`: none does, and the
+ * server reads the `unheld` rule of the lease (`filters.unheld_clause`).
+ */
+export type HoldFocus = "held" | "free";
+
+export const HOLD_FILTERS: readonly { focus: HoldFocus; label: string; icon: string; title: string }[] = [
+  {
+    focus: "held",
+    label: "Held by an agent",
+    icon: "Bot",
+    title: "Tasks that an AI session holds now",
+  },
+  {
+    focus: "free",
+    label: "Free",
+    icon: "CircleDashed",
+    title: "Tasks that no AI session holds. An agent may claim them.",
+  },
+];
+
+/** The one focus the page and the server take: a strip focus or a hold filter. */
+export type AnyAgentFocus = AgentFocus | HoldFocus;
+
+export function isHoldFocus(focus: AnyAgentFocus | null | undefined): focus is HoldFocus {
+  return focus === "held" || focus === "free";
+}
+
+/** Does an AI session hold the task now? A held task whose lease ended is free. */
+export function isHeldByAgent(task: AgentRowFacts): boolean {
+  return Boolean(task.held_by) && task.held_by?.stale !== true;
+}
+
 /** The states that read as "working" on the strip and on the filter. */
 const WORKING_AGENT_STATES: readonly string[] = ["working", "answered", "stale"];
 
@@ -904,11 +943,15 @@ export function isAgentWork(task: AgentOversightFacts): boolean {
  */
 export function matchesAgentFocus(
   task: AgentOversightFacts,
-  focus: AgentFocus,
+  focus: AnyAgentFocus,
   me: string,
   nowMs: number = Date.now(),
 ): boolean {
   switch (focus) {
+    case "held":
+      return isHeldByAgent(task);
+    case "free":
+      return !isHeldByAgent(task);
     case "waiting":
       return isWaitingOnMe(task, me);
     case "queued":

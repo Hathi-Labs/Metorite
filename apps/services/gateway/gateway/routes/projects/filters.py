@@ -1532,6 +1532,12 @@ WORKING_STATES: tuple[str, ...] = ("working", "answered", "stale")
 #: "Waiting on me". The list filter ``agent_focus`` accepts exactly these.
 AGENT_FOCI: tuple[str, ...] = ("queued", "working", "waiting", "review", "merged")
 
+#: SW-5. The two hold filters of the board, on the same ``agent_focus``
+#: parameter. ``held``: an open run keeps the task. ``free``: none does, by the
+#: ``unheld`` rule. The strip has no button for them, so they stay out of
+#: :data:`AGENT_FOCI`, which the summary counts.
+HOLD_FOCI: tuple[str, ...] = ("held", "free")
+
 #: The one named parameter of :func:`agent_focus_clause`: the lower-cased
 #: address of the SESSION's member. The route binds it, never the request (R11).
 AGENT_FOCUS_ME = "af_me"
@@ -1576,6 +1582,9 @@ def agent_focus_clause(focus: str) -> str:
       task then counts too. It also reads ``agent_runs.listed_question_sql``
       over the task's one open run. So a closed task counts in neither, and a
       typed archive request counts for the run's member only, in both.
+    * ``held`` and ``free`` (SW-5): the lease. ``free`` is :func:`unheld_clause`,
+      the text of the ``unheld`` filter, and ``held`` is its negation. They read
+      no pill state, so the runs flag does not change them.
     * ``review``: an open or draft GitHub pull request, and the task is not in
       a closing category. ``merged``: a pull request merged in the last 7 days.
 
@@ -1583,8 +1592,13 @@ def agent_focus_clause(focus: str) -> str:
     the cards show no pill. The two pull request foci do not read the flag.
     An unknown focus is a ``ValueError``: the route turns it into a 422.
     """
+    if focus == "free":
+        return unheld_clause()
+    if focus == "held":
+        return f"NOT ({unheld_clause()})"
     if focus not in AGENT_FOCI:
-        raise ValueError(f"Unknown agent focus '{focus}'. One of: {list(AGENT_FOCI)}.")
+        raise ValueError(
+            f"Unknown agent focus '{focus}'. One of: {list(AGENT_FOCI + HOLD_FOCI)}.")
     if focus in _RUN_FOCI and not agent_runs_enabled():
         return "false"
     if focus == "queued":
@@ -1641,10 +1655,11 @@ def agent_filter_clauses(
     clauses: list[str] = []
     params: dict[str, Any] = {}
     if agent_focus is not None:
-        if agent_focus not in AGENT_FOCI:
+        if agent_focus not in AGENT_FOCI + HOLD_FOCI:
             raise HTTPException(
                 status_code=422,
-                detail=f"Unknown agent focus '{agent_focus}'. One of: {list(AGENT_FOCI)}.",
+                detail=(f"Unknown agent focus '{agent_focus}'."
+                        f" One of: {list(AGENT_FOCI + HOLD_FOCI)}."),
             )
         clauses.append(agent_focus_clause(agent_focus))
         params[AGENT_FOCUS_ME] = me.strip().lower()

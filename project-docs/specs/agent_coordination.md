@@ -828,6 +828,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 #### SW-5 · Show the lease on the board and in the MCP tools
 
 - **Built.** `held_by` on `get_task` and `list_tasks`, the `unheld` filter, the fixed text of a 409 `task_held`, and the Release button (EA-14a).
+- **Status (2026-11-11).** Built on branch `sw5-lease`, not merged. The card and the run panel draw "Worked by <client> for <member> since <time>" (`agentHolder.ts`). The board has the buttons "Held by an agent" and "Free". They send `agent_focus=held` and `agent_focus=free`, and the gateway reads `unheld_clause` for both (`HOLD_FOCI`). The `claim_task` and `start_agent_run` descriptions carry "A 409 means another agent holds this task. Do not retry. Pick another task." Not rendered: the `visual-review` pass is open.
 - **Scope left.**
   1. List what EA-13g already draws. Read `agentCardLook.ts` and `TaskBoard.tsx`. By `external_agent_access.md` §12.2 item 7, the card draws an edge for each run state. For `working` and `answered` it draws a live line with the client glyph and `agent_note`. It draws "Needs you" with the question, and "<client> idle". The panel has the Release button (EA-14a). That list names no member and no start time for the holder.
   2. Add only what is missing: a holder line on the card and in the task panel, "Worked by <client> for <member> since <time>".

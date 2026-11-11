@@ -25,7 +25,7 @@ import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 
 import { activeChips, foldedAgentText } from "../lib/compactChrome";
-import { AGENT_STRIP, type AgentFocus, type AgentSummary } from "../lib/agentRuns";
+import { AGENT_STRIP, type AgentFocus, type AgentSummary, type HoldFocus } from "../lib/agentRuns";
 import type { ViewMode } from "../lib/commands";
 import { EMPTY_FILTERS, labelWith } from "../lib/grouping";
 import { FilterBar, type Props as FilterBarProps } from "./FilterBar";
@@ -44,6 +44,9 @@ export type CompactFilterBarProps = FilterBarProps & {
   agentSummary: AgentSummary | null;
   agentFocus: AgentFocus | null;
   onAgentFocus: (next: AgentFocus | null) => void;
+  /** SW-5: "Held by an agent" and "Free". Absent while the agent-run routes are off. */
+  holdFocus?: HoldFocus | null;
+  onHoldFocus?: (next: HoldFocus | null) => void;
   /** WS-64 OP-11 fix round: doors beside the View sheet's tabs (`ViewSheet`). */
   sheetLenses?: readonly SheetLens[];
   /** False hides the View sheet's Saved views block. Default true. */
@@ -74,6 +77,8 @@ export function CompactFilterBar(props: CompactFilterBarProps) {
     agentSummary,
     agentFocus,
     onAgentFocus,
+    holdFocus = null,
+    onHoldFocus,
     viewOnly = false,
   } = props;
 
@@ -90,6 +95,7 @@ export function CompactFilterBar(props: CompactFilterBarProps) {
     filters,
     waitingOnMe,
     agentWork,
+    holdFocus,
     me,
     labelOf: labelWith(personLabels),
   });
@@ -98,6 +104,7 @@ export function CompactFilterBar(props: CompactFilterBarProps) {
     onFilters({ ...EMPTY_FILTERS, q: filters.q });
     onWaitingOnMe?.(false);
     onAgentWork?.(false);
+    onHoldFocus?.(null);
   };
 
   return (
@@ -129,6 +136,8 @@ export function CompactFilterBar(props: CompactFilterBarProps) {
           onWaitingOnMe={onWaitingOnMe}
           agentWork={agentWork}
           onAgentWork={onAgentWork}
+          holdFocus={holdFocus}
+          onHoldFocus={onHoldFocus}
           resultCount={resultCount}
           activeCount={chips.length}
           onClearAll={clearAll}
@@ -191,6 +200,8 @@ export function CompactFilterBar(props: CompactFilterBarProps) {
                     onFilters({ ...filters, ...chip.clear.patch });
                   } else if (chip.clear.kind === "waitingOnMe") {
                     onWaitingOnMe?.(false);
+                  } else if (chip.clear.kind === "holdFocus") {
+                    onHoldFocus?.(null);
                   } else {
                     onAgentWork?.(false);
                   }

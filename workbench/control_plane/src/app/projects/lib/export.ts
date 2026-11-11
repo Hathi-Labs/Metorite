@@ -17,7 +17,7 @@
  */
 
 import { type Filters, type SubtaskMode, toQuery } from "./grouping";
-import type { AgentFocus } from "./agentRuns";
+import type { AnyAgentFocus } from "./agentRuns";
 import { agentReadParams } from "./paging";
 import { subtaskReadParams } from "./subtaskView";
 import { type TableSort, sortQuery } from "./table";
@@ -38,7 +38,7 @@ export interface ExportRequest {
   subtasks?: SubtaskMode | null;
   /** Task #986 — the board's agent filters, so the file holds the rows on screen. */
   waitingOnMe?: boolean;
-  agentFocus?: AgentFocus | null;
+  agentFocus?: AnyAgentFocus | null;
   agentWork?: boolean;
 }
 

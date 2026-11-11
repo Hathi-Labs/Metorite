@@ -18,6 +18,7 @@ import {
   normalizeRunDetail,
 } from "./agentRuns";
 import { type TaskDecisions, answerBody, readTaskDecisions } from "./decisions";
+import type { TaskHeldBy } from "./agentHolder";
 import type { EpicRollup } from "./epicRollup";
 import {
   ATTENTION_LIMIT,
@@ -1834,6 +1835,11 @@ export interface TaskRow {
   agent_state?: AgentState | null;
   agent_client_via?: string | null;
   agent_member_email?: string | null;
+  /**
+   * SW-5 — who holds the task now: the member, the client, since when. The
+   * gateway sets it for an open run (`filters.held_by_of`). Null for a free task.
+   */
+  held_by?: TaskHeldBy | null;
   /**
    * WS-55 EA-13d (EA3-41) — the first line of the newest thing the agent said
    * on its open run, at most 140 characters. The pill shows it on hover.
