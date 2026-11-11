@@ -300,21 +300,47 @@ class ActivityIn(BaseModel):
     signal: Literal["continue", "stop"] | None = None
 
 
+#: SW-24. The most characters of one text of a handoff note.
+HANDOFF_TEXT_MAX = 1000
+#: SW-24. The four texts of a handoff note, in the order that a reader meets them.
+HANDOFF_KEYS: tuple[str, ...] = ("done", "left", "evidence", "next")
+#: SW-24. The refusal of a handoff with work left and no next step.
+HANDOFF_NEEDS_NEXT = "A handoff with work left needs a next step."
+
+
+class HandoffIn(BaseModel):
+    """SW-24. The note of an agent that stops: what is done, what is left, the
+    proof, and the next step. Plain strings, at most :data:`HANDOFF_TEXT_MAX`
+    characters each. ``left`` names work that remains, so it needs ``next``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    done: str | None = Field(default=None, max_length=HANDOFF_TEXT_MAX)
+    left: str | None = Field(default=None, max_length=HANDOFF_TEXT_MAX)
+    evidence: str | None = Field(default=None, max_length=HANDOFF_TEXT_MAX)
+    next: str | None = Field(default=None, max_length=HANDOFF_TEXT_MAX)
+
+
 class FinishIn(BaseModel):
     """``POST /projects/agent-runs/{id}/finish``. ``summary`` writes a final
-    ``response`` with ``idempotency_key``."""
+    ``response`` with ``idempotency_key``. SW-24: ``handoff`` rides on that
+    ``response`` as ``content.handoff``."""
 
     model_config = ConfigDict(extra="forbid")
 
     summary: str | None = Field(default=None, max_length=MAX_BODY)
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=128)
+    handoff: HandoffIn | None = None
 
 
 class ReleaseIn(BaseModel):
-    """``POST /projects/agent-runs/{id}/release`` (EA-14a). No field: the run
-    is the path, and the actor is the context."""
+    """``POST /projects/agent-runs/{id}/release`` (EA-14a). The run is the
+    path, and the actor is the context. SW-24: an optional ``handoff``, so an
+    old client that sends no body keeps working."""
 
     model_config = ConfigDict(extra="forbid")
+
+    handoff: HandoffIn | None = None
 
 
 class ResumeIn(BaseModel):
@@ -570,6 +596,27 @@ def _clean_body(value: str | None) -> str | None:
         return None
     cleaned = value.replace("\x00", "").strip()
     return cleaned or None
+
+
+def _handoff_of(note: HandoffIn | None) -> dict[str, str] | None:
+    """The cleaned handoff note, or ``None`` when it holds no text (SW-24).
+
+    Each text is trimmed by :func:`_clean_body`, and an empty one is left out.
+    ``left`` names work that remains, so a note with ``left`` and no ``next``
+    is 422 with :data:`HANDOFF_NEEDS_NEXT`.
+    """
+    if note is None:
+        return None
+    clean = {k: v for k in HANDOFF_KEYS if (v := _clean_body(getattr(note, k))) is not None}
+    if "left" in clean and "next" not in clean:
+        raise HTTPException(status_code=422, detail=HANDOFF_NEEDS_NEXT)
+    return clean or None
+
+
+def _handoff_body(note: dict[str, str]) -> str:
+    """The Markdown of the timeline comment of a handoff note."""
+    labels = {"done": "Done", "left": "Left", "evidence": "Evidence", "next": "Next"}
+    return "\n".join(f"**{labels[k]}:** {note[k]}" for k in HANDOFF_KEYS if k in note)
 
 
 def _check_link(value: str | None) -> str | None:
@@ -1486,7 +1533,33 @@ async def list_task_agent_runs(
             ),
             {"tid": task_id},
         )).fetchall()
-        return {"rows": await _runs_out(db, list(rows))}
+        # SW-24. The newest handoff note of the task, for `get_task_context`.
+        # It rides on this read, so the context makes no new gateway call.
+        note = (await db.execute(
+            text(
+                "SELECT a.content, a.actor, a.actor_via, a.run_id, a.created_at"
+                "  FROM pm_agent_run_activities a"
+                " WHERE a.task_id = CAST(:tid AS uuid) AND a.type = 'response'"
+                "   AND a.content -> 'handoff' IS NOT NULL"
+                " ORDER BY a.seq DESC LIMIT 1"
+            ),
+            {"tid": task_id},
+        )).fetchone()
+        return {"rows": await _runs_out(db, list(rows)), "handoff": _handoff_out(note)}
+
+
+def _handoff_out(row: Any) -> dict[str, Any] | None:
+    """The wire of the newest handoff note, or ``None`` (SW-24)."""
+    if row is None:
+        return None
+    note = (from_jsonb(row.content) or {}).get("handoff")
+    if not isinstance(note, dict):
+        return None
+    return {
+        **{k: note.get(k) for k in HANDOFF_KEYS},
+        "actor": row.actor, "actor_via": row.actor_via,
+        "run_id": str(row.run_id), "created_at": wire(row.created_at),
+    }
 
 
 # ── One AI for each task (WS-55 EA-14a) ─────────────────────────────────────
@@ -2242,6 +2315,12 @@ async def finish_agent_run(
     if _agent_via(user) is None:
         raise HTTPException(status_code=403, detail="Only the agent finishes its run.")
     summary = _clean_body(payload.summary)
+    handoff = _handoff_of(payload.handoff)
+    # SW-24. A note with no summary is its own summary, so the finish still
+    # writes the one `response` that moves the run.
+    if handoff is not None and not summary:
+        summary = _handoff_body(handoff)
+    note = {"handoff": handoff} if handoff is not None else None
     written: _Written | None = None
     cleared: list[str] = []
     async with _tenant_session() as db:
@@ -2265,7 +2344,7 @@ async def finish_agent_run(
             # The summary is kept as a `response`, and the run stays closed.
             written = await _write_activity(
                 db, run, user, kind="response", key=payload.idempotency_key, body=summary,
-                event="late_summary",
+                event="late_summary", extra=note,
             )
         elif summary:
             # The response and the finish are ONE move: the response is
@@ -2273,7 +2352,7 @@ async def finish_agent_run(
             # (or `stopped`, when a Stop waits) itself.
             written = await _write_activity(
                 db, run, user, kind="response", key=payload.idempotency_key, body=summary,
-                event="agent_finish",
+                event="agent_finish", extra=note,
             )
         else:
             new_status = transition(run.status, "agent_finish")
@@ -2497,7 +2576,9 @@ async def release_agent_run(
     _require_write_scope(user)
     via = _agent_via(user)
     me = _member(user)
+    handoff = _handoff_of(payload.handoff)
     cleared: list[str] = []
+    written: _Written | None = None
     async with _tenant_session() as db:
         await _load_visible_run(db, user, run_id)
         run = await _lock_run(db, run_id)
@@ -2506,9 +2587,20 @@ async def release_agent_run(
                 status_code=403, detail="You may not release this agent run.",
             )
         if run.status != "released":
-            new_status = transition(run.status, "release")
-            ts = await _clock(db)
-            cleared = await _move_run(db, run, new_status, ts=ts, user=user, via=via)
+            if handoff is not None:
+                # SW-24. The note and the release are ONE move, in this
+                # transaction: the `response` is written under the event
+                # `release`, so it sets `released` itself.
+                written = await _write_activity(
+                    db, run, user, kind="response", key=None,
+                    body=_handoff_body(handoff), event="release",
+                    extra={"handoff": handoff},
+                )
+                cleared = written.cleared
+            else:
+                new_status = transition(run.status, "release")
+                ts = await _clock(db)
+                cleared = await _move_run(db, run, new_status, ts=ts, user=user, via=via)
             client = agent_oauth.client_label(via) if via else "the app"
             await _system_activity(
                 db, run, actor_email=me, via=via,
@@ -2517,6 +2609,8 @@ async def release_agent_run(
         out_run = (await _runs_out(db, [await _load_run(db, run_id)]))[0]
     # AP-BUG-3: a release of an awaiting run closes its question, and a
     # release emits no `pm.*` event, so each cleared member's My Day moves here.
+    if written is not None and written.commented:
+        await emit("pm.task.comment_added", {"task_id": out_run["task_id"]})
     await _bump_cleared(user, cleared)
     return {"run": out_run, "released": True}
 
