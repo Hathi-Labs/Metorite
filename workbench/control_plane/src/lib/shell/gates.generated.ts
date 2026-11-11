@@ -25,6 +25,7 @@ export const GENERATED_HREF_FEATURES: ReadonlyArray<readonly [string, string]> =
   ["/settings/models", "models"],
   ["/people", "people"],
   ["/projects", "projects"],
+  ["/projects/agents", "agents_view"],
   ["/studio", "studio"],
   ["/build/apps", "build.apps"],
   ["/build/agents", "build.agents"],

@@ -65,7 +65,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 import pytest
@@ -236,6 +236,10 @@ async def _context(task_id: str = TASK) -> dict[str, Any]:
     return _structured(await _tool("get_task_context", {"task_id": task_id}))
 
 
+async def _tool_body(name: str, task_id: str = TASK) -> dict[str, Any]:
+    return _structured(await _tool(name, {"task_id": task_id}))
+
+
 async def _work(**args: Any) -> list[dict[str, Any]]:
     return _structured(await _tool("my_work", args))["rows"]
 
@@ -262,6 +266,25 @@ class TestTheContext:
         assert tuple(body) == tools.CONTEXT_KEYS
         assert tuple(body["task"]) == tools.GET_TASK_KEYS  # the shape of get_task
         assert body["held_by"] == body["task"]["held_by"]
+
+    async def test_sp5a_the_task_shows_its_open_cycle_or_null(self, board):
+        """WS-39 SP-5a: ``cycle`` is in ``get_task`` and ``get_task_context``. It
+        is null while the gateway sends no ``cycle`` (the flag is off, or the task
+        is in no open cycle). The name is text that people wrote."""
+        for read in (_context, lambda: _tool_body("get_task")):
+            body = await read()
+            assert body["cycle"] is None
+        board.tasks[TASK]["cycle"] = {
+            "id": _uuid(9100), "name": "Week 47", "state": "active",
+            "starts_on": "2026-11-16", "ends_on": "2026-11-22", "organization_id": "x"}
+        for read in (_context, lambda: _tool_body("get_task")):
+            body = await read()
+            assert tuple(body["cycle"]) == tools.CYCLE_KEYS
+            assert body["cycle"]["name"] == {"untrusted_text": "Week 47"}
+            assert body["cycle"]["state"] == "active"
+        # A state that the edge does not know is dropped, not passed on.
+        board.tasks[TASK]["cycle"]["state"] = "weird"
+        assert (await _context())["cycle"] is None
 
     async def test_x2_the_ancestors_come_root_first_with_their_fields(self, board):
         near, root = _chain(board, 2)
@@ -1245,6 +1268,52 @@ class TestTheProtocolBlock:
         monkeypatch.setattr(get_settings(), "agent_protocol_orgs", "*")
         await self._result()
         assert board.paths() == before
+
+
+class TestTheHandoffNote:
+    """SW-24. ``handoff`` leads the result, as untrusted text, and is absent
+    when no run left a note.
+
+    Mutations (R7):
+
+    * a text leaves bare: ``test_the_note_leads_and_each_text_is_untrusted``.
+    * the key shows with no note: ``test_no_note_means_no_key``.
+    * a tool drops ``handoff`` from its input:
+      ``test_the_run_tools_take_a_handoff_and_it_is_optional``.
+    """
+
+    NOTE: ClassVar[dict[str, str]] = {"done": "Built it.", "left": "The UI.", "evidence": "PR 12.",
+            "next": "Add the card.", "actor": ME, "actor_via": "mcp:claude.ai:claude-code",
+            "run_id": "11111111-1111-4111-8111-111111111111",
+            "created_at": "2026-11-11T06:00:00Z"}
+
+    async def test_the_note_leads_and_each_text_is_untrusted(self, board):
+        board.answers[("GET", f"/projects/tasks/{TASK}/agent-runs")] = (
+            200, {"rows": [], "handoff": self.NOTE})
+        body = await _context()
+        assert next(iter(body)) == "handoff"
+        note = body["handoff"]
+        for key in ("done", "left", "evidence", "next"):
+            assert note[key] == {"untrusted_text": self.NOTE[key]}
+        assert note["client"] == "Claude Code"
+        assert note["run_id"] == self.NOTE["run_id"]
+        assert SENTINEL not in json.dumps(note)
+
+    async def test_no_note_means_no_key(self, board):
+        board.answers[("GET", f"/projects/tasks/{TASK}/agent-runs")] = (
+            200, {"rows": [], "handoff": None})
+        assert "handoff" not in await _context()
+
+    def test_the_run_tools_take_a_handoff_and_it_is_optional(self):
+        for tool in (tools.FINISH_AGENT_RUN, tools.RELEASE_TASK):
+            schema = tool.input_schema
+            assert "handoff" in schema["properties"] and "handoff" not in schema["required"]
+            note = schema["properties"]["handoff"]
+            assert set(note["properties"]) == {"done", "left", "evidence", "next"}
+            assert note["additionalProperties"] is False
+            assert all(p["maxLength"] == 1000 for p in note["properties"].values())
+        out = tools.GET_TASK_CONTEXT.output_schema
+        assert "handoff" in out["properties"] and "handoff" not in out["required"]
 
 
 # ═══════════════════════════════════════════════════════════════════════════

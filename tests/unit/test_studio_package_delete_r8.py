@@ -148,6 +148,8 @@ class _Request:
             b"" if payload is None else json.dumps(payload).encode("utf-8"))
         self.method, self.headers = "POST", {}
         self.url = SimpleNamespace(path="/studio/apps/x/actions/y")
+        # The door reads the query of each call: the preview marker (G4).
+        self.query_params: dict[str, str] = {}
 
     async def stream(self) -> Any:
         yield self._raw

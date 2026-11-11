@@ -37,7 +37,7 @@ from gateway.routes.apps._common import (
     manifest_entry_rel,
     parse_db_manifest,
     read_workspace_manifest,
-    record_app_audit,
+    record_app_audit_bound,
     require_app_user,
     router,
 )
@@ -542,7 +542,7 @@ async def sync_app(
         row, _grants = await get_app_or_404(db, slug, user, edit=True)
         files = await sync_workspace_to_store(db, row)
     checkpoint = await _git_under_dir_lock(app_workspace(row), git_checkpoint, "checkpoint")
-    await record_app_audit(
+    await record_app_audit_bound(
         app_id=str(row.id), user_email=_uid(user), kind="storage",
         detail={"op": "sync", "files": files, "checkpoint": checkpoint},
     )
@@ -583,7 +583,7 @@ async def restore_app_checkpoint(
                 status_code=409, detail="Checkpoint restore failed",
             )
         await sync_workspace_to_store(db, row)
-    await record_app_audit(
+    await record_app_audit_bound(
         app_id=str(row.id), user_email=_uid(user), kind="storage",
         detail={"op": "restore", "from": sha, "checkpoint": new_sha},
     )

@@ -103,6 +103,8 @@ EXPECTED_WITHHELD: dict[str, frozenset[str]] = {
         "answer_decision",
         # WS-39 LP-1a: the delete of a project update is class C.
         "delete_project_update",
+        # WS-39 SP-5a: a start and a close of a cycle are class C.
+        "start_cycle", "close_cycle",
         # WS-39 TPL-1a: a template save and an apply are class C, so a held
         # run gets no card.
         "save_as_template", "create_project_from_template",
