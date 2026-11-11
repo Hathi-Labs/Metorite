@@ -259,6 +259,10 @@ class OptionIn(BaseModel):
     label: str = Field(min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=1_000)
     recommended: bool = False
+    #: SW-43b. A costly choice (stops machines, ends sessions, deletes data).
+    #: The question card asks "Are you sure?" before it sends this option.
+    #: ``None`` is left out of the stored option, so old rows keep their shape.
+    confirm: bool | None = None
 
 
 class StartIn(BaseModel):
@@ -336,6 +340,19 @@ class WithdrawIn(BaseModel):
 
     answer_id: str = Field(min_length=1, max_length=64)
     idempotency_key: str = Field(min_length=1, max_length=128)
+
+
+class ReplaceIn(BaseModel):
+    """``POST /projects/agent-runs/{id}/answer/replace`` (SW-43b, spec
+    ``agent_coordination.md`` §3.9). The answer to replace, the new option
+    ids and the key. The run is the path, and the actor is the context."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    answer_id: str = Field(min_length=1, max_length=64)
+    selected: list[str] | None = Field(default=None, min_length=1, max_length=10)
+    body: str | None = Field(default=None, max_length=MAX_BODY)
+    idempotency_key: str = Field(min_length=1, max_length=118)
 
 
 class ArchiveRequestIn(BaseModel):
@@ -2727,6 +2744,78 @@ async def withdraw_agent_answer(
         activity = written.activity if written is not None else replay
         out_activity = _activity_out(activity)
     return {"run": out_run, "activity": out_activity, "withdrawn": True,
+            "created": written is not None and written.created}
+
+
+def _is_replace(row: Any) -> bool:
+    """True when *row* is the new answer of a replace (``content.replaces``)."""
+    return row.type == "prompt" and bool((from_jsonb(row.content) or {}).get("replaces"))
+
+
+@router.post("/agent-runs/{run_id}/answer/replace",
+             dependencies=[*_ENABLED, Depends(require_answer_change)])
+async def replace_agent_answer(
+    run_id: str, payload: ReplaceIn, user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Withdraw the answer of a member and answer again, in ONE transaction,
+    until an agent reads it or posts (SW-43b, spec ``agent_coordination.md``
+    §3.9). The rules of :func:`withdraw_agent_answer` hold: the run's member
+    only, never an agent (403), the lock of the run, and
+    :func:`filters.answer_changeable_sql` under the lock (409).
+
+    The old answer is marked as a withdraw does, with its quiet marker
+    prompt. The new answer is an ordinary member prompt with
+    ``content.replaces`` set to the old answer id, so an agent that long polls
+    sees both in order. A bad ``selected`` gives 422 and rolls the withdraw
+    back. A replay of the key returns the first answer and writes nothing.
+    """
+    run_id = _parse_uuid(run_id, "Agent run")
+    answer_id = _parse_uuid(payload.answer_id, "Answer")
+    if _agent_via(user) is not None:
+        raise HTTPException(status_code=403, detail="Only a member changes an answer.")
+    if not payload.selected and not _clean_body(payload.body):
+        raise HTTPException(status_code=422, detail="Pick an option or type an answer.")
+    written: _Written | None = None
+    async with _tenant_session() as db:
+        seen = await _load_visible_run(db, user, run_id)
+        if seen.member_email != _member(user):
+            raise HTTPException(status_code=403, detail="This agent run belongs to another member.")
+        run = await _lock_run(db, run_id)
+        replay = await _existing_activity(db, run_id, payload.idempotency_key)
+        if replay is not None and not _is_replace(replay):
+            raise HTTPException(status_code=409, detail=_KEY_USED)
+        if replay is None:
+            live = (await db.execute(text(_LIVE_ANSWER_ONE_SQL), {"rid": run_id})).fetchone()
+            if live is None or str(live.id) != answer_id:
+                raise HTTPException(status_code=409, detail=_ANSWER_GONE)
+            if not live.changeable:
+                raise HTTPException(status_code=409, detail=_ANSWER_STALE)
+            ts = await _clock(db)
+            await db.execute(text(_WITHDRAW_MARK_SQL), {
+                "aid": answer_id,
+                "mark": _jsonb({"withdrawn": {"at": ts.isoformat(), "by": _member(user)}}),
+                "qmeta": _jsonb({"question_id": str(live.in_reply_to)}),
+            })
+            await _write_activity(
+                db, run, user, kind="prompt", key=f"{payload.idempotency_key}:w",
+                body="Withdrew the answer", extra=None, quiet=True,
+                event="member_withdraw", withdraws=answer_id,
+            )
+            # The marker moved the run to `awaiting`. Read it again, then
+            # answer the question that is open again. A bad `selected`
+            # raises here, and the transaction rolls the withdraw back.
+            run = await _lock_run(db, run_id)
+            written = await _write_activity(
+                db, run, user, kind="prompt", key=payload.idempotency_key,
+                body=_clean_body(payload.body), selected=payload.selected,
+                extra={"replaces": answer_id},
+            )
+        out_run = (await _runs_out(db, [await _load_run(db, run_id)]))[0]
+        activity = written.activity if written is not None else replay
+        out_activity = _activity_out(activity)
+    if written is not None and written.commented:
+        await emit("pm.task.comment_added", {"task_id": out_run["task_id"]})
+    return {"run": out_run, "activity": out_activity, "replaced": True,
             "created": written is not None and written.created}
 
 
