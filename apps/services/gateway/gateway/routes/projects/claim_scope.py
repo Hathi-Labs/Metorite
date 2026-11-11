@@ -84,6 +84,11 @@ def _free_sql(vis: Any) -> str:
         " JOIN pm_task_statuses s ON s.id = t.status_id"
         " WHERE t.project_id = ANY(CAST(:own AS uuid[]))"
         "   AND t.archived_at IS NULL"
+        # Review P1: `archive_node` files the project and its subtree, and
+        # stamps no task. So a task of a filed project leaves this list by
+        # the project, as `filters.build_task_filters` does (WS-27bg).
+        "   AND EXISTS (SELECT 1 FROM pm_projects p"
+        "               WHERE p.id = t.project_id AND p.archived_at IS NULL)"
         f"  AND s.category IN ({categories})"
         "   AND NOT EXISTS (SELECT 1 FROM pm_task_assignees a WHERE a.task_id = t.id)"
         f"  AND {unheld_clause()}"
@@ -111,19 +116,26 @@ async def free_rows(db: Any, user: Any, vis: Any, *,
     rows = [row_to_dict(r, TaskModel) for r in found]
     await attach_relation_counts(db, rows, vis)
     rows = [r for r in rows if not r.get("blocked_by_count")][:limit]
-    names = await _app_names(db, {apps[str(r["project_id"])] for r in rows})
+    names = await _app_names(db, vis, {apps[str(r["project_id"])] for r in rows})
     for row in rows:
         app_id = apps[str(row["project_id"])]
-        row["app_project"] = {"id": app_id, "name": names.get(app_id)}
+        # Review P2: an app that the caller cannot see, such as the parent of
+        # a pinned project, gives no id and no name.
+        row["app_project"] = (
+            {"id": app_id, "name": names[app_id]} if app_id in names
+            else {"id": None, "name": None})
     return rows
 
 
-async def _app_names(db: Any, ids: set[str]) -> dict[str, str]:
+async def _app_names(db: Any, vis: Any, ids: set[str]) -> dict[str, str]:
+    """The names of the apps *ids* that *vis* can see. An id that *vis*
+    cannot see has no key (review P2)."""
     if not ids:
         return {}
     found = (await db.execute(
-        text("SELECT id, name FROM pm_projects WHERE id = ANY(CAST(:ids AS uuid[]))"),
-        {"ids": sorted(ids)},
+        text("SELECT id, name FROM pm_projects WHERE id = ANY(CAST(:ids AS uuid[]))"
+             f" AND {vis.project_clause('id')}"),
+        {"ids": sorted(ids), **vis.params},
     )).fetchall()
     return {str(r.id): str(r.name or "") for r in found}
 
@@ -156,20 +168,27 @@ REFUSED_TEXT = (
 
 
 async def check_claim_scope(db: Any, user: Any, project_id: Any,
-                            current: set[str]) -> dict[str, Any] | None:
-    """The scope check of a claim, before any write. (SW-45.)
+                            current: set[str], vis: Any) -> dict[str, Any] | None:
+    """The scope check of an agent hold, before any write. (SW-45.)
 
-    ``None`` lets the claim go with no note. A dict is a claim in mode
-    ``warn``: the claim goes, and the caller adds :func:`apply_warning`. In
-    mode ``refuse`` it raises the 403. *current* is the set of assignees
-    that the claim read before its insert.
+    The ONE check of three routes, so that ``refuse`` has no second door
+    (review P1): ``claim_task``, an agent's ``set_assignees`` that adds its
+    own member to a task with no assignee, and an agent's
+    ``start_agent_run`` on a task with no assignee.
+
+    ``None`` lets the hold go with no note. A dict is a hold in mode
+    ``warn``: the hold goes, and the caller writes
+    :func:`record_outside_claim` and adds :func:`apply_warning`. In mode
+    ``refuse`` it raises the 403. *current* is the set of assignees that the
+    route read before its write. *vis* is the caller's visibility: the lead
+    of a project outside it is ``None`` (review P2).
     """
     if getattr(user, "agent", None) is None or current:
         return None
     mode = scope_mode(user)
     if mode == "off":
         return None
-    lead, own = await app_owner(db, user, project_id)
+    lead, own = await app_owner(db, user, project_id, vis=vis)
     if own:
         return None
     if mode == "refuse":

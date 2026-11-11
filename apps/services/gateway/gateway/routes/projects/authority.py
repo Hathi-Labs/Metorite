@@ -193,13 +193,15 @@ APP_WALK_MAX_DEPTH = 64
 
 #: Each project of :data:`LED_SUBTREE_SQL`, with ``app_id``: the nearest
 #: project at or above it that the member leads. A nested lead resets
-#: ``app_id``, so the shallowest row of an id holds its nearest app.
+#: ``app_id``, so the shallowest row of an id holds its nearest app. The lead
+#: compare is ``lower(btrim(lead))``, as in :data:`APP_LEADS_SQL`, so a lead
+#: that is stored with a space gives the same answer in both.
 OWN_APPS_SQL = (
     "WITH RECURSIVE own AS ("
-    "  SELECT id, id AS app_id, 0 AS depth FROM pm_projects WHERE lower(lead) = :me"
+    "  SELECT id, id AS app_id, 0 AS depth FROM pm_projects WHERE lower(btrim(lead)) = :me"
     "  UNION ALL"
     "  SELECT p.id,"
-    "         CASE WHEN lower(coalesce(p.lead, '')) = :me THEN p.id ELSE own.app_id END,"
+    "         CASE WHEN lower(btrim(coalesce(p.lead, ''))) = :me THEN p.id ELSE own.app_id END,"
     "         own.depth + 1"
     "    FROM pm_projects p JOIN own ON p.parent_project_id = own.id"
     "   WHERE own.depth < :max_depth"
@@ -216,7 +218,7 @@ APP_LEADS_SQL = (
     "  SELECT p.id, p.parent_project_id, p.lead, up.depth + 1"
     "    FROM pm_projects p JOIN up ON p.id = up.parent_project_id"
     "   WHERE up.depth < :max_depth"
-    ") SELECT lower(btrim(lead)) AS lead FROM up"
+    ") SELECT id, lower(btrim(lead)) AS lead FROM up"
     "   WHERE nullif(btrim(lead), '') IS NOT NULL ORDER BY depth"
 )
 
@@ -237,14 +239,18 @@ async def own_apps(db: Any, user: Any) -> dict[str, str]:
     return {str(r.id): str(r.app_id) for r in rows}
 
 
-async def app_owner(db: Any, user: Any, project_id: Any) -> tuple[str | None, bool]:
+async def app_owner(db: Any, user: Any, project_id: Any,
+                    vis: Any = None) -> tuple[str | None, bool]:
     """``(lead, own)`` for the app of *project_id*. (SW-45.)
 
-    *lead* is the nearest lead of the project or of an ancestor, in lower
-    case, or ``None`` when no project on the path has one. It is the first
-    addressee of a routing note (§3.10.1). *own* is True when *user* leads
-    the project or an ancestor, the rule of :func:`may_write_grant` without
-    its role arm.
+    *lead* is the lead of the nearest project at or above *project_id* that
+    has one, in lower case. It is the first addressee of a routing note
+    (§3.10.1). It is ``None`` when no project on the path has a lead, or when
+    *vis* is given and that project is outside it. A connection that is
+    pinned to a child project does not read the lead of a parent outside its
+    pins (review P2). *own* is True when *user* leads the project or an
+    ancestor, the rule of :func:`may_write_grant` without its role arm. *own*
+    reads the whole path, because it is a fact about the member.
     """
     if not project_id:
         return None, False
@@ -254,7 +260,23 @@ async def app_owner(db: Any, user: Any, project_id: Any) -> tuple[str | None, bo
     )).fetchall()
     leads = [str(r.lead) for r in rows]
     me = _me(user)
-    return (leads[0] if leads else None), bool(me) and me in leads
+    own = bool(me) and me in leads
+    if not rows:
+        return None, own
+    lead: str | None = leads[0]
+    if vis is not None and not await project_visible(db, vis, rows[0].id):
+        lead = None
+    return lead, own
+
+
+async def project_visible(db: Any, vis: Any, project_id: Any) -> bool:
+    """True when *vis* can see the project *project_id*. (SW-45.)"""
+    found = (await db.execute(
+        text("SELECT 1 FROM pm_projects WHERE id = CAST(:vis_pid AS uuid)"
+             f" AND {vis.project_clause('id')}"),
+        {"vis_pid": str(project_id), **vis.params},
+    )).fetchone()
+    return found is not None
 
 
 async def may_delete_task(

@@ -2571,6 +2571,13 @@ async def set_assignees(
     (:func:`_require_exact_version`, fix round 1), checked after the read of
     the current set. An absent header passes (D-PM-20), so the app's calls
     are unchanged. The writer is :func:`_write_assignees`.
+
+    SW-45 (review P1). An agent that adds its own member to a task with no
+    assignee gets the scope check of ``claim_task``
+    (``claim_scope.check_claim_scope``). Outside the member's own apps, mode
+    ``warn`` writes one timeline line and the answer has ``warning`` and
+    ``outside_apps``. Mode ``refuse`` answers 403 ``outside_apps`` and
+    writes nothing. A task that had an assignee before is not checked.
     """
     agent_call = getattr(user, "agent", None) is not None
     async with _tenant_session() as db:
@@ -2603,12 +2610,22 @@ async def set_assignees(
             # After the read of `current`: an assignment that this read saw
             # moved `updated_at` in the same commit, so it stales the token.
             await _require_exact_version(db, task_id, if_match)
+        # SW-45 (review P1): an agent that adds its own member to a task with
+        # no assignee holds it as a claim does. So the claim's ONE check runs
+        # here too, before any write, and `refuse` has no second door.
+        me = actor(user).strip().lower()
+        scope_note = (
+            await check_claim_scope(db, user, task.project_id, current, vis)
+            if agent_call and me in wanted else None
+        )
         assigned = await _write_assignees(
             db, user, task_id=task_id, project_id=str(task.project_id),
             wanted=wanted, current=current,
         )
         added, removed, notified = (
             assigned.added, assigned.removed, assigned.notified)
+        if scope_note is not None and me in added:
+            await record_outside_claim(db, user, task_id, scope_note)
 
     if added:
         await emit("pm.task.assigned", {
@@ -2629,7 +2646,7 @@ async def set_assignees(
         from gateway.routes.shell import cache as feed_cache
 
         await feed_cache.bump_org(task_org)
-    return {
+    result: dict[str, Any] = {
         "task_id": task_id,
         "assignees": sorted(wanted),
         # Named rather than swallowed: assigning somebody outside the project's
@@ -2638,6 +2655,10 @@ async def set_assignees(
         # fix it.
         "not_notified": notified["skipped"],
     }
+    # SW-45: the warning of a self-add outside the own apps, in mode `warn`.
+    if scope_note is not None:
+        apply_warning(result, scope_note)
+    return result
 
 
 # ── Claim (WS-55 EA-6b) ─────────────────────────────────────────────────────
@@ -2811,7 +2832,7 @@ async def claim_task(
         # SW-45: an agent claim of a task with no assignee, outside the
         # member's own apps, warns or is refused (AGENT_CLAIM_SCOPE_MODES).
         # Before any write, so a refusal writes nothing.
-        scope_note = await check_claim_scope(db, user, seen.project_id, current)
+        scope_note = await check_claim_scope(db, user, seen.project_id, current, vis)
         wanted = sorted({me} - current)
         await assert_assignable_here(db, str(seen.project_id), set(wanted))
         # Final fix (review P2): `added` is the set that THIS insert wrote,

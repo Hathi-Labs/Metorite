@@ -38,6 +38,21 @@ Mutations (R7). ``G`` is ``apps/services/gateway/gateway/routes/projects``.
   added. ``test_warn_claims_names_the_lead_and_writes_one_line`` (two lines).
 * M7. ``G/claim_scope.py`` ``check_claim_scope`` drops the agent test.
   ``test_a_member_claim_is_never_checked``.
+* M8. ``G/tasks.py`` ``set_assignees`` skips ``check_claim_scope``.
+  ``test_a_self_add_outside_is_refused``, ``test_a_self_add_outside_warns``.
+* M9. ``G/agent_runs.py`` ``start_agent_run`` skips ``check_claim_scope``.
+  ``test_an_agent_start_outside_is_refused``,
+  ``test_an_agent_start_outside_warns``.
+* M10. ``G/claim_scope.py`` ``_free_sql`` drops the project archive test.
+  ``test_a_task_of_a_filed_project_is_not_free``.
+* M11. ``G/claim_scope.py`` ``_app_names`` drops the visibility clause.
+  ``test_a_pinned_connection_reads_no_app_outside_its_pins``.
+* M12. ``G/claim_scope.py`` ``check_claim_scope`` calls ``app_owner`` with no
+  ``vis``. ``test_a_pinned_connection_reads_no_lead_outside_its_pins``.
+
+A pinned connection reaches its pins and the projects below them, and no
+parent (review P2). ``pin_mine`` is pinned to ``Mine sub``, and
+``pin_theirs`` to ``Theirs sub``, a child of ``Theirs`` with no lead.
 """
 from __future__ import annotations
 
@@ -138,7 +153,12 @@ def world():
         admin=eng, org=org, seeder=a, mine=mine, mine_sub=mine_sub, theirs=theirs,
         loose=loose, s={p: _lanes(a, p) for p in (mine, theirs, loose)},
         b=SimpleNamespace(seeder=b, app=b_app, task=b_task), c={}, tok={})
+    world_.theirs_sub = _sub(a, "Theirs sub", theirs)
     world_.c["write"], world_.tok["write"] = a.connection(scopes=w.WRITE_SCOPES)
+    world_.c["pin_mine"], world_.tok["pin_mine"] = a.connection(
+        scopes=w.WRITE_SCOPES, pins=(mine_sub,))
+    world_.c["pin_theirs"], world_.tok["pin_theirs"] = a.connection(
+        scopes=w.WRITE_SCOPES, pins=(world_.theirs_sub,))
     world_.app_dsn = admin_url.set(
         database=dedicated, username=_APP_ROLE, password=_APP_PW,
     ).render_as_string(hide_password=False)
@@ -158,8 +178,12 @@ def mode(monkeypatch, world):
 
 
 def _task(world, project: str, title: str, *, status: str = "todo",
-          importance: int | None = None, leveraged: bool = False) -> str:
-    root = world.mine if project == world.mine_sub else project
+          importance: int | None = None, leveraged: bool = False,
+          root: str | None = None) -> str:
+    if root is None:
+        root = world.mine if project == world.mine_sub else project
+    if project == world.theirs_sub:
+        root = world.theirs
     lane = getattr(world.s[root], status)
     world.seeder.number += 1
     return str(world.seeder.one(
@@ -334,3 +358,148 @@ class TestTheClaimScope:
             "task_id": live.b.task, "expected_version": "2026-01-01T00:00:00+00:00"})
         assert result["isError"] is True
         assert result["content"][0]["text"] == "Task not found."
+
+
+def _runs(world, task: str) -> list[Any]:
+    with world.admin.begin() as c:
+        return list(c.execute(text(
+            "SELECT id FROM pm_agent_runs WHERE task_id = CAST(:t AS uuid)"), {"t": task}))
+
+
+async def _self_add(world, task: str) -> Any:
+    return await _send(world, "PUT", f"/projects/tasks/{task}/assignees",
+                       body={"assignees": [MEMBER]},
+                       headers={"If-Match": await _version(world, task)})
+
+
+async def _start(world, task: str) -> Any:
+    return await _send(world, "POST", f"/projects/tasks/{task}/agent-runs", body={})
+
+
+@pytest.fixture
+def runs_on(monkeypatch):
+    monkeypatch.setattr(get_settings(), "agent_runs_enabled", True)
+
+
+class TestTheSecondDoors:
+    """Review P1: ``refuse`` has no second door through ``set_assignees`` or
+    ``start_agent_run``. ONE check, ``claim_scope.check_claim_scope``."""
+
+    pytestmark = _DB_GATE
+
+    async def test_a_self_add_outside_is_refused(self, live, mode):
+        mode("refuse")
+        task = _task(live, live.theirs, "self add refuse")
+        r = await _self_add(live, task)
+        assert r.status_code == 403, r.text
+        assert r.json()["detail"]["error"] == "outside_apps"
+        assert r.json()["detail"]["lead"] == LEAD
+        assert _assignees(live, task) == []
+        assert _scope_lines(live, task) == []
+        # So the claim after it is still checked.
+        claim = await _send(live, "POST", f"/projects/tasks/{task}/claim", body={},
+                            headers={"If-Match": await _version(live, task)})
+        assert claim.status_code == 403, claim.text
+
+    async def test_a_self_add_outside_warns(self, live, mode):
+        mode("warn")
+        task = _task(live, live.theirs, "self add warn")
+        r = await _self_add(live, task)
+        assert r.status_code == 200, r.text
+        assert r.json()["warning"] == (
+            f"This task is outside your apps. Its app lead is {LEAD}."
+            " The task timeline records this claim.")
+        assert r.json()["outside_apps"] == {"lead": LEAD}
+        assert _assignees(live, task) == [MEMBER]
+        assert len(_scope_lines(live, task)) == 1
+        again = await _self_add(live, task)
+        assert again.status_code == 200, again.text
+        assert "warning" not in again.json()
+        assert len(_scope_lines(live, task)) == 1
+
+    async def test_a_self_add_to_an_assigned_task_passes(self, live, mode):
+        mode("refuse")
+        task = _task(live, live.theirs, "self add assigned")
+        _assign(live, task, OTHER)
+        r = await _send(live, "PUT", f"/projects/tasks/{task}/assignees",
+                        body={"assignees": [OTHER, MEMBER]},
+                        headers={"If-Match": await _version(live, task)})
+        assert r.status_code == 200, r.text
+        assert "warning" not in r.json()
+        assert _assignees(live, task) == sorted([OTHER, MEMBER])
+
+    async def test_an_agent_start_outside_is_refused(self, live, mode, runs_on):
+        mode("refuse")
+        task = _task(live, live.theirs, "start refuse")
+        r = await _start(live, task)
+        assert r.status_code == 403, r.text
+        assert r.json()["detail"]["error"] == "outside_apps"
+        assert _runs(live, task) == []
+        assert _scope_lines(live, task) == []
+
+    async def test_an_agent_start_outside_warns(self, live, mode, runs_on):
+        mode("warn")
+        task = _task(live, live.theirs, "start warn")
+        r = await _start(live, task)
+        assert r.status_code == 201, r.text
+        assert r.json()["outside_apps"] == {"lead": LEAD}
+        assert r.json()["warning"].startswith("This task is outside your apps.")
+        assert len(_runs(live, task)) == 1
+        assert len(_scope_lines(live, task)) == 1
+
+    async def test_an_agent_start_inside_passes_in_refuse(self, live, mode, runs_on):
+        mode("refuse")
+        task = _task(live, live.mine_sub, "start inside")
+        r = await _start(live, task)
+        assert r.status_code == 201, r.text
+        assert "warning" not in r.json()
+
+
+class TestTheReviewReads:
+    pytestmark = _DB_GATE
+
+    async def test_a_task_of_a_filed_project_is_not_free(self, live, mode):
+        """Review P1: ``archive_node`` stamps the project, not its tasks."""
+        mode("warn")
+        filed = _sub(live.seeder, "Mine filed", live.mine)
+        task = _task(live, filed, "filed", importance=3, leveraged=True, root=live.mine)
+        live.seeder.one("UPDATE pm_projects SET archived_at = now()"
+                        " WHERE id = CAST(:p AS uuid) RETURNING id", p=filed)
+        r = await _send(live, "GET", FREE)
+        assert r.status_code == 200, r.text
+        assert task not in [row["id"] for row in r.json()["rows"]]
+
+    async def test_a_pinned_connection_reads_no_app_outside_its_pins(self, live, mode):
+        """Review P2: the pin is ``Mine sub``, so ``Mine`` is out of reach."""
+        mode("warn")
+        task = _task(live, live.mine_sub, "pinned free", importance=3, leveraged=True)
+        r = await _send(live, "GET", FREE, signed="pin_mine")
+        assert r.status_code == 200, r.text
+        rows = {row["id"]: row for row in r.json()["rows"]}
+        assert task in rows, rows
+        assert rows[task]["app_project"] == {"id": None, "name": None}
+        # The task row's own `root_project_id` is the task model's, outside
+        # SW-45. The app is what this test pins.
+        # The unpinned connection still names the app.
+        full = await _send(live, "GET", FREE)
+        named = {row["id"]: row for row in full.json()["rows"]}
+        assert named[task]["app_project"] == {"id": live.mine, "name": "Mine"}
+
+    @pytest.mark.parametrize("value", ["warn", "refuse"])
+    async def test_a_pinned_connection_reads_no_lead_outside_its_pins(
+            self, live, mode, value):
+        """Review P2: the lead of ``Theirs`` is above the pin ``Theirs sub``."""
+        mode(value)
+        task = _task(live, live.theirs_sub, f"pinned lead {value}")
+        r = await _send(live, "POST", f"/projects/tasks/{task}/claim", body={},
+                        headers={"If-Match": await _version(live, task)},
+                        signed="pin_theirs")
+        assert LEAD not in r.text
+        if value == "refuse":
+            assert r.status_code == 403, r.text
+            assert r.json()["detail"]["lead"] is None
+        else:
+            assert r.status_code == 200, r.text
+            assert r.json()["outside_apps"] == {"lead": None}
+            [line] = _scope_lines(live, task)
+            assert line.meta["lead"] is None
