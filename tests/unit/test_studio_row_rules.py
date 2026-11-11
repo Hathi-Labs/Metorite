@@ -368,6 +368,52 @@ def test_the_lines_of_a_table_with_access_need_their_own_access() -> None:
     assert validate_manifest(doc) == []
 
 
+
+# ── Fix round 2 ─────────────────────────────────────────────────────────────
+
+CLERK = {"role": "clerk", "read": "all", "write": "all", "hide": ["salary"]}
+SELF = {"role": "self", "read": {"where": "employee = $me"}}
+
+
+def _scope_roles(roles: set[str], specs: tuple[dict[str, Any], ...],
+                 rules: Any = ()) -> sa.Scope:
+    names = sorted({str(g["role"]) for g in specs})
+    grants = sa.parse_access(list(specs), names)
+    return sa.scope_for(grants, sa.Viewer(ME, frozenset(roles)), owner=False, rules=rules)
+
+
+def test_a_grant_that_writes_all_cannot_move_a_record_into_a_grant_that_hides_less() -> None:
+    """P1-A. The hide test binds every viewer that a rule binds, a write-all
+    grant too, on a change and on a create."""
+    both = _scope_roles({"clerk", "self"}, (CLERK, SELF))
+    ceo = {"employee": "ceo@x.test", "salary": 9}
+    assert both.write_all
+    assert both.write_problem(ceo, {**ceo, "employee": ME}) == ("widens", None)
+    assert both.write_problem(None, {"employee": ME}) == ("widens", None)
+    assert both.write_problem(ceo, {**ceo, "note": "x"}) is None
+    # Back from the own record to the CEO hides more, so it passes.
+    assert both.write_problem({"employee": ME}, {"employee": "ceo@x.test"}) is None
+    hr = _scope_roles({"hr"}, (HR,))
+    assert hr.write_problem(ceo, {**ceo, "employee": ME}) is None
+
+
+def test_a_source_view_hides_each_formula_of_a_hidden_key() -> None:
+    """P1-B. `net = gross - tax`, and a clerk cannot see `gross`, so a roll-up of
+    `net` is hidden from the clerk."""
+    rules = parse_rules([{"name": "net_of", "kind": "formula", "target": "net",
+                          "rounding": "half_up",
+                          "expr": {"fn": "sub", "args": [{"ref": "gross"}, {"ref": "tax"}]}}])
+    clerk = {"role": "clerk", "read": "all", "write": "all", "hide": ["gross"]}
+    with_rules = _scope_roles({"clerk"}, (clerk,), rules)
+    no_rules = _scope_roles({"clerk"}, (clerk,))
+    assert not with_rules.shows_all(["crew", "net"]) and no_rules.shows_all(["crew", "net"])
+    assert with_rules.shows_all(["crew", "tax"])
+    roll = parse_rules([{"name": "net_sum", "kind": "rollup", "target": "net_total",
+                         "source": "paycheck", "via": "crew", "agg": "sum", "field": "net"}])
+    assert sa.rollup_hidden(roll, {"paycheck": with_rules}) == {"net_total"}
+    assert sa.blocked_keys(with_rules, (), frozenset(), roll) == {"crew", "net"}
+
+
 # ── The field type and the query grammar ────────────────────────────────────
 
 

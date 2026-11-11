@@ -311,6 +311,10 @@ class Scope:
     #: reads, in the grants of every role. A write of one can move a record
     #: into a grant that hides less.
     guarded: frozenset[str] = frozenset()
+    #: Fix round 2 (P1-B). The rules of the object. A hide also hides each
+    #: formula target that reads it (:func:`with_formulas`), so a roll-up over a
+    #: source reads the effective hidden keys of the source.
+    rules: tuple[Rule, ...] = ()
 
     @property
     def read_all(self) -> bool:
@@ -375,9 +379,16 @@ class Scope:
         (the write leaves a record that no grant of the viewer writes),
         ``guarded`` (P1-2: a write of a person field that a ``where`` reads,
         by a viewer with no grant that writes all, unless a write grant of
-        the viewer reads that field) and ``widens`` (an update that makes
-        more grants read the record). The owner and a viewer of an open
-        object get None."""
+        the viewer reads that field) and ``widens`` (a write that shows the
+        viewer more of the record, or that makes more grants read it). The
+        owner and a viewer of an open object get None.
+
+        Fix round 2 (P1-A). The hide check runs for EVERY viewer that a rule
+        binds, a grant that writes all too: the keys hidden on the record
+        before a change must stay hidden after it. A create starts from
+        :meth:`maybe_hidden`, the most that a record may hide from the
+        viewer. So no write moves a record into a grant that hides less. A
+        grant that hides nothing still writes every record."""
         if self.open:
             return None
         if before is not None and not self.may_write(before):
@@ -386,12 +397,16 @@ class Scope:
             return None
         if not self.may_write(after):
             return ("leaves", None)
+        if not self.write_all:
+            old = before or {}
+            for key in sorted(self.guarded - set(self.write_keys)):
+                if old.get(key) != after.get(key):
+                    return ("guarded", key)
+        start = self.maybe_hidden() if before is None else self.hidden_for(before)
+        if start - self.hidden_for(after):
+            return ("widens", None)
         if self.write_all:
             return None
-        old = before or {}
-        for key in sorted(self.guarded - set(self.write_keys)):
-            if old.get(key) != after.get(key):
-                return ("guarded", key)
         if before is not None and not self.covering(after) <= self.covering(before):
             return ("widens", None)
         return None
@@ -423,20 +438,26 @@ class Scope:
 
     def shows_all(self, keys: Collection[str]) -> bool:
         """True when the viewer reads every record and sees each of *keys* on
-        each one. A roll-up of a source needs it (:func:`rollup_hidden`)."""
+        each one. A roll-up of a source needs it (:func:`rollup_hidden`).
+
+        Fix round 2 (P1-B): a grant hides each formula target of a key that it
+        hides too, so a roll-up of a formula of a hidden key is hidden."""
         if self.open:
             return True
-        return any(g.where is None and not set(keys) & set(g.hide) for g in self.grants)
+        wanted = set(keys)
+        return any(g.where is None and not wanted & with_formulas(frozenset(g.hide), self.rules)
+                   for g in self.grants)
 
 
-def scope_for(grants: Sequence[Grant] | None, viewer: Viewer, *, owner: bool) -> Scope:
-    """The scope of *viewer* on an object with the stored *grants*. *owner* is
-    True when the viewer owns the package. The store decides it from the
-    package row, never from the caller."""
+def scope_for(grants: Sequence[Grant] | None, viewer: Viewer, *, owner: bool,
+              rules: Sequence[Rule] = ()) -> Scope:
+    """The scope of *viewer* on an object with the stored *grants* and the
+    *rules* of the object. *owner* is True when the viewer owns the package.
+    The store decides it from the package row, never from the caller."""
     if owner or grants is None:
         return Scope(viewer.email, True)
     return Scope(viewer.email, False, tuple(g for g in grants if g.role in viewer.roles),
-                 access_reads(grants))
+                 access_reads(grants), tuple(rules))
 
 
 def rollup_hidden(rules: Sequence[Rule], sources: Mapping[str, Scope]) -> frozenset[str]:

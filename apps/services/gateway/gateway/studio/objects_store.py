@@ -475,7 +475,7 @@ _VIEW_SQL = (
 
 #: C8a. The grants of the objects of the package that a roll-up reads, by name.
 _SOURCE_ACCESS_SQL = (
-    "SELECT name, access FROM studio_objects "
+    "SELECT name, access, constraints FROM studio_objects "
     f"WHERE organization_id = {_BOUND_ORG} AND package_id = CAST(:pid AS uuid) "
     "AND name = ANY(CAST(:names AS text[]))"
 )
@@ -1956,7 +1956,10 @@ async def _tainted(db: Any, pid: str, rules: Sequence[Rule], viewer: Viewer,
     if owner or not names:
         return frozenset()
     rows = (await db.execute(text(_SOURCE_ACCESS_SQL), {"pid": pid, "names": names})).all()
-    sources = {str(r[0]): scope_for(stored_access(_json(r[1])), viewer, owner=False) for r in rows}
+    # Fix round 2 (P1-B): the source view runs the formulas of the source, so a
+    # roll-up of a formula of a hidden key is hidden too.
+    sources = {str(r[0]): scope_for(stored_access(_json(r[1])), viewer, owner=False,
+                                    rules=stored_rules(_json(r[2]))) for r in rows}
     return rollup_hidden(rules, sources)
 
 
@@ -1969,7 +1972,7 @@ async def _view(db: Any, oid: str, pid: str, viewer: Viewer) -> _View | None:
         return None
     owner = row[2] is not None and str(row[2]) == viewer.email
     rules = stored_rules(_json(row[0]))
-    scope = scope_for(stored_access(_json(row[1])), viewer, owner=owner)
+    scope = scope_for(stored_access(_json(row[1])), viewer, owner=owner, rules=rules)
     return _View(scope, rules, await _tainted(db, pid, rules, viewer, owner))
 
 
@@ -3191,7 +3194,8 @@ async def _lock_objects(db: Any, batch: _Batch) -> None:
         # A delete computes nothing, so only a create or an update builds the plan.
         plan = plan_formulas(rules, str(row[0]), fields) if oid in writes else None
         batch.owner = row[3] is not None and str(row[3]) == batch.viewer.email
-        scope = scope_for(stored_access(_json(row[2])), batch.viewer, owner=batch.owner)
+        scope = scope_for(stored_access(_json(row[2])), batch.viewer, owner=batch.owner,
+                          rules=rules)
         if oid in stepped and not scope.writes:
             raise AccessDenied(f"Your roles in this app cannot change records of `{row[0]}`.")
         tainted = await _tainted(db, batch.pid, rules, batch.viewer, batch.owner)
@@ -3200,6 +3204,24 @@ async def _lock_objects(db: Any, batch: _Batch) -> None:
         hidden = _View(scope, rules, tainted).maybe_hidden()
         blocked = blocked_keys(scope, rules, hidden, readers)
         batch.objects[oid] = _Held(str(row[0]), fields, rules, plan, scope, tainted, blocked)
+    _block_children(batch)
+
+
+def _block_children(batch: _Batch) -> None:
+    """Fix round 2 (P1-D), the second pass of step 2. A roll-up whose target a
+    rule of the parent reads beside data that the viewer cannot read is in the
+    blocked keys of the parent. A child write moves that target, so the keys
+    that the roll-up reads in the child are blocked too: a refusal of the
+    parent rule would show the hidden data. Each parent has its first-pass
+    keys here, because a roll-up never reads a roll-up."""
+    first = {oid: held.blocked for oid, held in batch.objects.items()}
+    for parent, _, rule in batch.rollups:
+        if rule.target is None or rule.target not in first.get(parent, frozenset()):
+            continue
+        child = batch.names.get(str(rule.source))
+        held = batch.objects.get(child) if child is not None else None
+        if held is not None:
+            batch.objects[str(child)] = replace(held, blocked=held.blocked | set(rule.source_keys()))
 
 
 async def _lock_records(db: Any, batch: _Batch) -> None:
@@ -3435,8 +3457,27 @@ def _changed(held: _Held, before: Mapping[str, Any] | None,
     return keys - held.computed
 
 
+def _sent(held: _Held, data: Any) -> set[str]:
+    """Fix round 2 (P2). The keys that a create sets, from what the caller
+    sent, before the machine fills its initial state. A state equal to the
+    initial state is the default of the store, and a create holds no move, so
+    no guard runs on it."""
+    if not isinstance(data, Mapping):
+        return set()
+    initial = {str(r.field): r.initial for r in held.rules if r.kind == STATE_MACHINE}
+    return {str(k) for k, v in data.items()
+            if v is not None and not (k in initial and v == initial[k])} - held.computed
+
+
+def _check_row(held: _Held, before: Mapping[str, Any] | None) -> None:
+    """Fix round 1 (P1-1). Before a change, ONE grant must read and write the
+    record. The text is the one of ``_check_write``."""
+    if held.scope is not None and before is not None and not held.scope.may_write(before):
+        raise AccessDenied(f"Your roles in this app cannot change this record of `{held.name}`.")
+
+
 def _check_write(held: _Held, before: Mapping[str, Any] | None,
-                 after: Mapping[str, Any] | None) -> None:
+                 after: Mapping[str, Any] | None, sent: set[str] | None = None) -> None:
     """C8a and fix round 1. The rules of one write of a viewer that a row rule
     binds (``Scope.write_problem`` and ``studio_access.blocked_keys``). Each
     refusal is :class:`AccessDenied`, and its text names the object and at
@@ -3460,9 +3501,18 @@ def _check_write(held: _Held, before: Mapping[str, Any] | None,
                                "changes every record sets it.")
         raise AccessDenied(f"This write would show you more of this record of `{held.name}`, "
                            "so your roles cannot make it.")
-    if after is None or not held.blocked:
+    if not held.blocked or (before is None and after is None):
         return
-    for key in sorted(_changed(held, before, after) & held.blocked):
+    if after is None:
+        # Fix round 2 (P1-C): a delete takes each key of the record out of a
+        # sum, a key rule or a roll-up, so it drives the same rules as a write.
+        assert before is not None
+        if _changed(held, before, {}) & held.blocked:
+            raise AccessDenied(f"Your roles cannot delete this record of `{held.name}`, because "
+                               "a rule over data that you cannot read uses it.")
+        return
+    changed = _changed(held, before, after) if sent is None else sent
+    for key in sorted(changed & held.blocked):
         raise AccessDenied(f"Your roles cannot set `{key}` of `{held.name}`, because a rule "
                            "over data that you cannot read uses it.")
 
@@ -3482,7 +3532,7 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
         refuse_computed_keys(held.plan, held.name, data)
         data = with_rollup_zero(held.plan, data)
         clean = run_formulas(held.plan, held.name, validate_record(plain, data))
-        _check_write(held, None, clean)
+        _check_write(held, None, clean, _sent(held, step.data))
         moves = _line_moves(batch, oid, None, clean)
         row = (await db.execute(text(_CREATE_RECORD_SQL), {
             "oid": oid, "data": record_json(clean), "actor": batch.who,
@@ -3505,7 +3555,9 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
         mark.after = None
         return True
     changes = dict(step.data or {})
-    _check_write(held, mark.after, None)
+    # The row rule before the change (P1-1). The delete rule of P1-C is no
+    # part of it, so `_check_row` asks the scope alone.
+    _check_row(held, mark.after)
     _refuse_hidden_write(held, changes)
     refuse_computed_keys(held.plan, held.name, changes)
     merged = without_targets(held.plan, {**(mark.after or {}), **changes})

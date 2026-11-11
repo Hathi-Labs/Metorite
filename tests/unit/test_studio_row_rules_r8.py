@@ -102,6 +102,12 @@ AS_STRANGER = Viewer(f"x.{TAG}@stuc8a.test", frozenset({"intern"}))
 # Fix round 1: two roles of one member.
 AS_M1_BOTH = Viewer(M1, frozenset({"manager", "employee"}))
 AS_E1_AUDIT = Viewer(E1, frozenset({"auditor", "employee"}))
+# Fix round 2: a clerk grant reads and writes all, and hides one key.
+CEO = f"ceo.{TAG}@stuc8a.test"
+X1 = f"x1.{TAG}@stuc8a.test"
+AS_CLERK_EMP = Viewer(X1, frozenset({"clerk", "employee"}))
+AS_CLERK = Viewer(f"clerk.{TAG}@stuc8a.test", frozenset({"clerk"}))
+AS_MOVER = Viewer(M1, frozenset({"mover"}))
 
 TEAM_FIELDS: list[dict[str, Any]] = [
     {"key": "name", "type": "text"},
@@ -150,6 +156,135 @@ SLIP_ACCESS: list[dict[str, Any]] = [
 ]
 _HIDDEN = {"bank_account", "bonus", "total"}
 
+# ── The fix round 2 world: a second package of org A ─────────────────────────
+#: P1-A. A clerk reads and writes all, and `salary` is hidden from it. An
+#: employee reads the own record with no key hidden.
+STAFF_FIELDS: list[dict[str, Any]] = [
+    {"key": "employee", "type": "person", "hot": True},
+    {"key": "salary", "type": "number"},
+    {"key": "note", "type": "text"},
+]
+STAFF_ACCESS: list[dict[str, Any]] = [
+    {"role": "clerk", "read": "all", "write": "all", "hide": ["salary"]},
+    {"role": "employee", "read": {"where": "employee = $me"}},
+]
+#: P1-B. `net = gross - tax`, and `gross` is hidden from a clerk. A crew is
+#: open, and its roll-up `net_total` adds the `net` of its paychecks.
+CREW_FIELDS: list[dict[str, Any]] = [
+    {"key": "name", "type": "text"},
+    {"key": "net_total", "type": "number"},
+]
+CREW_RULES: list[dict[str, Any]] = [
+    {"name": "net_sum", "kind": "rollup", "target": "net_total", "source": "paycheck",
+     "via": "crew", "agg": "sum", "field": "net"},
+]
+PAYCHECK_FIELDS: list[dict[str, Any]] = [
+    {"key": "crew", "type": "relation", "to": "crew", "hot": True},
+    {"key": "gross", "type": "number"},
+    {"key": "tax", "type": "number"},
+    {"key": "net", "type": "number", "hot": True},
+]
+PAYCHECK_RULES: list[dict[str, Any]] = [
+    {"name": "net_of", "kind": "formula", "target": "net", "rounding": "half_up",
+     "expr": {"fn": "sub", "args": [{"ref": "gross"}, {"ref": "tax"}]}},
+]
+PAYCHECK_ACCESS: list[dict[str, Any]] = [
+    {"role": "clerk", "read": "all", "write": "all", "hide": ["gross"]},
+]
+#: P1-C. A stock that never goes below 0, and a mover who reads and writes the
+#: own movements only.
+MOVEMENT_FIELDS: list[dict[str, Any]] = [
+    {"key": "by", "type": "person", "hot": True},
+    {"key": "sku", "type": "text", "hot": True},
+    {"key": "qty", "type": "number", "hot": True},
+]
+MOVEMENT_RULES: list[dict[str, Any]] = [
+    {"name": "stock", "kind": "group_sum_min", "field": "qty", "group_by": ["sku"], "min": 0},
+]
+MOVEMENT_ACCESS: list[dict[str, Any]] = [
+    {"role": "mover", "read": {"where": "by = $me"}, "write": "all"},
+]
+#: P1-D. `margin = total - cost`, at most 100, and `cost` is hidden from a
+#: clerk. `total` adds the `amount` of the lines, and a line is open.
+ORDER_FIELDS: list[dict[str, Any]] = [
+    {"key": "name", "type": "text"},
+    {"key": "cost", "type": "number"},
+    {"key": "total", "type": "number"},
+    {"key": "margin", "type": "number"},
+]
+ORDER_RULES: list[dict[str, Any]] = [
+    {"name": "line_sum", "kind": "rollup", "target": "total", "source": "line",
+     "via": "order", "agg": "sum", "field": "amount"},
+    {"name": "margin_of", "kind": "formula", "target": "margin", "rounding": "half_up",
+     "expr": {"fn": "sub", "args": [{"ref": "total"}, {"ref": "cost"}]}},
+    {"name": "margin_ok", "kind": "range", "field": "margin", "max": 100},
+]
+ORDER_ACCESS: list[dict[str, Any]] = [
+    {"role": "clerk", "read": "all", "write": "all", "hide": ["cost"]},
+]
+LINE_FIELDS: list[dict[str, Any]] = [
+    {"key": "order", "type": "relation", "to": "order", "hot": True},
+    {"key": "amount", "type": "number", "hot": True},
+]
+#: P2. A guard of the machine reads `hr_note`, which is hidden from an employee.
+REQUEST_FIELDS: list[dict[str, Any]] = [
+    {"key": "by", "type": "person", "hot": True},
+    {"key": "status", "type": "select", "options": ["draft", "approved"]},
+    {"key": "hr_note", "type": "text"},
+]
+REQUEST_RULES: list[dict[str, Any]] = [
+    {"name": "flow", "kind": "state_machine", "field": "status", "initial": "draft",
+     "moves": [{"from": "draft", "to": "approved",
+                "guard": [{"field": "hr_note", "op": "not_empty"}]}]},
+]
+REQUEST_ACCESS: list[dict[str, Any]] = [
+    {"role": "employee", "read": {"where": "by = $me"}, "write": "all", "hide": ["hr_note"]},
+]
+
+
+async def _define(db: Any, pkg: str, name: str, fields: Any, rules: Any = None,
+                  access: Any = None) -> Any:
+    made = await store.define_object(db, OWNER, package_id=pkg, name=name, fields=fields)
+    assert made is not None
+    if rules:
+        assert await store.set_constraints(db, made.id, rules, package_id=pkg)
+    if access:
+        assert await store.set_access(db, made.id, access, package_id=pkg)
+    return made
+
+
+async def _build_round_two(db: Any, pkg: str) -> dict[str, Any]:
+    """The objects and the records of fix round 2, in the package *pkg*."""
+    staff = await _define(db, pkg, "staff", STAFF_FIELDS, access=STAFF_ACCESS)
+    crew = await _define(db, pkg, "crew", CREW_FIELDS)
+    paycheck = await _define(db, pkg, "paycheck", PAYCHECK_FIELDS, PAYCHECK_RULES, PAYCHECK_ACCESS)
+    assert await store.set_constraints(db, crew.id, CREW_RULES, package_id=pkg)
+    movement = await _define(db, pkg, "movement", MOVEMENT_FIELDS, MOVEMENT_RULES,
+                             MOVEMENT_ACCESS)
+    order = await _define(db, pkg, "order", ORDER_FIELDS)
+    line = await _define(db, pkg, "line", LINE_FIELDS)
+    assert await store.set_constraints(db, order.id, ORDER_RULES, package_id=pkg)
+    assert await store.set_access(db, order.id, ORDER_ACCESS, package_id=pkg)
+    request = await _define(db, pkg, "request", REQUEST_FIELDS, REQUEST_RULES, REQUEST_ACCESS)
+
+    async def put(*writes: Write) -> list[Any]:
+        return await store.apply_writes(db, OWNER, package_id=pkg, viewer=AS_OWNER,
+                                        writes=list(writes))
+
+    ceo = (await put(Write("create", staff.id, data={"employee": CEO, "salary": 999_000})))[0]
+    c1 = (await put(Write("create", crew.id, data={"name": "Crew 1"})))[0]
+    await put(Write("create", paycheck.id, data={"crew": {"id": c1.id}, "gross": 1000, "tax": 200}))
+    mv1, mv2, mv3 = await put(
+        Write("create", movement.id, data={"by": M1, "sku": "A", "qty": 5}),
+        Write("create", movement.id, data={"by": M2, "sku": "A", "qty": -3}),
+        Write("create", movement.id, data={"by": M1, "sku": "B", "qty": 1}))
+    o1 = (await put(Write("create", order.id, data={"name": "O1", "cost": 50})))[0]
+    l0 = (await put(Write("create", line.id, data={"order": {"id": o1.id}, "amount": 10})))[0]
+    return {"pkg2": pkg, "staff": staff, "crew": crew, "paycheck": paycheck,
+            "movement": movement, "order": order, "line": line, "request": request,
+            "ceo": ceo.id, "c1": c1.id, "mv1": mv1.id, "mv2": mv2.id, "mv3": mv3.id,
+            "o1": o1.id, "l0": l0.id}
+
 _PACKAGE_INSERT = (
     "INSERT INTO apps (slug, name, owner_email, workspace_path, organization_id, "
     "format, manifest) VALUES (:s, 'stuc8a', :oe, '', CAST(:org AS uuid), 'manifest', "
@@ -183,7 +318,7 @@ def world(promoted):  # noqa: F811
     p = promoted
     ids: dict[str, str] = {}
     with p.admin_engine.begin() as c:
-        for key, org in (("a", p.org_a), ("b", p.org_b)):
+        for key, org in (("a", p.org_a), ("b", p.org_b), ("a2", p.org_a)):
             ids[key] = str(c.execute(text(_PACKAGE_INSERT), {
                 "s": f"stuc8a-{TAG}-{key}", "oe": OWNER, "org": org,
                 "manifest": _PACKAGE_MANIFEST}).scalar_one())
@@ -210,9 +345,11 @@ def world(promoted):  # noqa: F811
                     _slip(M1, M2, t1.id, 4)]
             made = await store.apply_writes(db, OWNER, package_id=pkg, viewer=AS_OWNER,
                                             writes=[Write("create", slip.id, data=r) for r in rows])
+            two = await _build_round_two(db, ids["a2"])
         return SimpleNamespace(p=p, a=p.org_a, b=p.org_b, pkg=pkg, pkg_b=ids["b"], slip=slip,
                                team=team, claim=claim, t1=t1.id, t2=t2.id,
-                               s1=made[0].id, s2=made[1].id, s3=made[2].id, s4=made[3].id)
+                               s1=made[0].id, s2=made[1].id, s3=made[2].id, s4=made[3].id,
+                               **two)
 
     w = _run(p, build)
     yield w
@@ -655,3 +792,99 @@ def test_r8_the_migration_is_idempotent_and_a_replay_changes_nothing(world) -> N
             "SELECT count(*) FROM pg_constraint WHERE conname = 'studio_objects_access_shape'")
         ).scalar_one()
     assert kept == SLIP_ACCESS and count == 1
+
+
+# ── Fix round 2 ─────────────────────────────────────────────────────────────
+
+
+def _write2(world: Any, viewer: Viewer, *writes: Write) -> list[Any]:
+    async def go() -> list[Any]:
+        async with tenant_session(world.a) as db:
+            return await store.apply_writes(db, viewer.email, package_id=world.pkg2,
+                                            viewer=viewer, writes=list(writes))
+    return _run(world.p, go)
+
+
+def _refused2(world: Any, viewer: Viewer, *writes: Write) -> Exception:
+    with pytest.raises(BatchError) as caught:
+        _write2(world, viewer, *writes)
+    return caught.value.cause
+
+
+def _get2(world: Any, viewer: Viewer, oid: str, rid: str) -> store.Record | None:
+    async def go() -> store.Record | None:
+        async with tenant_session(world.a) as db:
+            return await store.get_record(db, oid, rid, package_id=world.pkg2, viewer=viewer)
+    return _run(world.p, go)
+
+
+def test_r8_a_write_all_grant_cannot_move_a_record_into_a_grant_that_hides_less(world) -> None:
+    """P1-A. X1 holds a clerk grant (reads and writes all, `salary` hidden) and an
+    employee grant (the own record, nothing hidden). A write of `employee = X1` on
+    the CEO's record would show `salary`. Each write of a viewer that a rule binds
+    must not shrink the hidden keys of the record, also on a create."""
+    cause = _refused2(world, AS_CLERK_EMP, Write("update", world.staff.id, world.ceo,
+                                                 {"employee": X1}))
+    assert isinstance(cause, AccessDenied), cause
+    assert _stored(world, world.ceo)["employee"] == CEO
+    seen = _get2(world, AS_CLERK_EMP, world.staff.id, world.ceo)
+    assert seen is not None and "salary" not in seen.data
+    made = _refused2(world, AS_CLERK_EMP, Write("create", world.staff.id, data={"employee": X1}))
+    assert isinstance(made, AccessDenied), made
+    # A change that hides no less still passes.
+    done = _write2(world, AS_CLERK_EMP, Write("update", world.staff.id, world.ceo, {"note": "ok"}))
+    assert isinstance(done[0], store.Record) and "salary" not in done[0].data
+
+
+def test_r8_a_roll_up_over_a_formula_of_a_hidden_key_is_hidden(world) -> None:
+    """P1-B. `net = gross - tax` and `gross` is hidden from a clerk, so `net` is
+    hidden too. The crew roll-up `net_total` adds `net`, so it would show `gross`
+    for a crew of one. The source view of a roll-up runs the formulas."""
+    seen = _get2(world, AS_CLERK, world.crew.id, world.c1)
+    assert seen is not None and "net_total" not in seen.data, seen
+    full = _get2(world, AS_OWNER, world.crew.id, world.c1)
+    assert full is not None and full.data["net_total"] == 800
+
+
+def test_r8_a_delete_cannot_drive_a_rule_over_rows_that_the_viewer_cannot_read(world) -> None:
+    """P1-C. The stock of sku A is 5 - 3 = 2, and M1 reads only the own movements.
+    A delete of the +5 would break the floor, and a delete of the +1 of sku B
+    would not. Each refusal is the same, so a delete tells M1 nothing."""
+    said = set()
+    for rid in (world.mv1, world.mv3):
+        cause = _refused2(world, AS_MOVER, Write("delete", world.movement.id, rid))
+        assert isinstance(cause, AccessDenied), (rid, cause)
+        said.add(str(cause))
+    assert len(said) == 1
+    assert _get2(world, AS_OWNER, world.movement.id, world.mv1) is not None
+    assert _get2(world, AS_OWNER, world.movement.id, world.mv3) is not None
+
+
+def test_r8_a_child_write_cannot_drive_a_parent_rule_over_a_hidden_key(world) -> None:
+    """P1-D. `margin = total - cost` is at most 100, `total` adds the lines, and
+    `cost` (50) is hidden from a clerk. A line of a chosen amount would tell the
+    clerk the cost by the refusal, so each line write of the clerk gets one text,
+    a delete too."""
+    said = set()
+    for amount in (10, 140, 150, 151, 200):
+        cause = _refused2(world, AS_CLERK, Write("create", world.line.id, data={
+            "order": {"id": world.o1}, "amount": amount}))
+        assert isinstance(cause, AccessDenied), (amount, cause)
+        said.add(str(cause))
+    assert len(said) == 1
+    gone = _refused2(world, AS_CLERK, Write("delete", world.line.id, world.l0))
+    assert isinstance(gone, AccessDenied), gone
+    total = _get2(world, AS_OWNER, world.order.id, world.o1)
+    assert total is not None and total.data["total"] == 10
+
+
+def test_r8_an_employee_creates_a_record_when_a_guard_reads_a_hidden_key(world) -> None:
+    """P2. The machine fills `status` with its initial state. That is no key that
+    the employee sent, so the create passes. A move of the state still reads the
+    hidden key, so it stays refused."""
+    made = _write2(world, AS_E1, Write("create", world.request.id, data={"by": E1}))[0]
+    assert made.data["status"] == "draft"
+    moved = _refused2(world, AS_E1, Write("update", world.request.id, made.id,
+                                          {"status": "approved"}))
+    assert isinstance(moved, AccessDenied)
+    _write2(world, AS_OWNER, Write("delete", world.request.id, made.id))
