@@ -5,9 +5,9 @@
 -- Spec: project-docs/specs/agent_coordination.md §3.7 item 2 and SW-7b · R1 ·
 --   R5 · R6.
 --
--- R1: on 2026-11-11 origin/main held 401 as its highest file. Open branches
---   and worktrees held 396, 398 to 405. So this file is 406. Check
---   the number again at merge (scripts/premerge.sh).
+-- R1: main held 404 on 2026-11-11 when this file took 406. Open branches
+--   and worktrees held 396, 398 to 405. Later that day main reached 414, so
+--   check the number again at merge (scripts/premerge.sh).
 --
 -- Why: two agent sessions of one member and one client read as one name on
 --   the board ("Claude Code"). An agent may now name its own session, for
