@@ -39,6 +39,8 @@ DISPOSITION_STATUS = re.compile(r"review|done", re.I)
 BRANCH_ID = re.compile(r"mt-[0-9a-f]{8}")
 MAX_GAP_SECONDS = 60
 MAX_SLEEP_SECONDS = 30
+#: A declared park excuses at most this many seconds, and only right after a thought or a question.
+MAX_PARK_SECONDS = 900
 
 SINGLE_STEPS = [
     ("connect_reads", "Reads my_work, then get_plan or get_task_context, before the first write."),
@@ -188,8 +190,23 @@ def _step_worktree(ev):
 
 
 def _parks(ev):
-    return [(e["t"], float((e.get("args") or {}).get("until", e["t"])))
-            for e in ev if e.get("kind") == "note" and e.get("name") == "park"]
+    """The windows that a declared park excuses. A park counts only when a thought
+    or a question came at most MAX_GAP_SECONDS before it, and it excuses at most
+    MAX_PARK_SECONDS. A longer wait means the agent ends the session and a later
+    session resumes the run."""
+    found = []
+    for e in ev:
+        if e.get("kind") != "note" or e.get("name") != "park":
+            continue
+        said = [p for p in ev if p.get("kind") == "tool" and p["t"] <= e["t"]
+                and e["t"] - p["t"] <= MAX_GAP_SECONDS
+                and (p["name"] == "ask_on_task" or (p["name"] == "post_agent_activity"
+                     and (p.get("args") or {}).get("type") == "thought"))]
+        if not said:
+            continue
+        until = float((e.get("args") or {}).get("until", e["t"]))
+        found.append((e["t"], min(until, e["t"] + MAX_PARK_SECONDS)))
+    return found
 
 
 def _step_heartbeat(ev):
@@ -255,6 +272,10 @@ def score(events: list[dict], header: dict) -> Result:
     scenario = header["scenario"]
     if scenario not in SCENARIOS:
         raise ValueError(f"unknown scenario {scenario!r}, use one of {sorted(SCENARIOS)}")
+    for e in events:
+        actor = str(e.get("actor", "coordinator"))
+        if actor != "coordinator" and not actor.startswith("subagent:"):
+            raise ValueError(f"unknown actor {actor!r}: use 'coordinator' or 'subagent:<id>'")
     ordered = sorted(events, key=lambda e: e["t"])
     main = [e for e in ordered if not _is_sub(e)]
     subs = [e for e in ordered if _is_sub(e)]

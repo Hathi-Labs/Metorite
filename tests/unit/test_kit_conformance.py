@@ -102,8 +102,28 @@ def test_activity_gap_of_90_seconds():
 
 def test_declared_park_excuses_a_gap():
     ev = [e for e in good() if e["t"] not in (60, 100)]
-    ev = [*ev, note(20, "park", until=120)]
+    ev = [*ev, tool(19, "post_agent_activity", type="thought"), note(20, "park", until=120)]
     assert "heartbeat" not in failed(ev)
+
+
+def test_a_park_with_no_thought_before_it_excuses_nothing():
+    ev = [e for e in good() if e["t"] not in (60, 100)]
+    ev = [*ev, note(500, "park", until=1e9)]
+    assert "heartbeat" in failed(ev)
+
+
+def test_a_park_is_capped():
+    ev = [tool(40, "post_agent_activity", type="thought"), note(41, "park", until=1e9)]
+    base = [e for e in good() if e["t"] < 40]
+    long_run = [*base, *ev, tool(5050, "post_agent_activity", type="thought"),
+                tool(5051, "set_task_status", status="In review"), tool(5052, "finish_agent_run")]
+    assert "heartbeat" in failed(long_run)
+
+
+def test_an_unknown_actor_is_refused():
+    bad = [*good(), {"t": 50, "kind": "tool", "name": "add_comment", "args": {}, "actor": "sub-agent-c"}]
+    with pytest.raises(ValueError):
+        kc.score(bad, HEADER)
 
 
 def test_long_sleep():
