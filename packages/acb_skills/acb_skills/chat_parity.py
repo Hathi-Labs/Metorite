@@ -359,6 +359,10 @@ COVERED: dict[str, str | tuple[str, str]] = {
     # (lib/studio/packageDraft.ts createDraftPackage). studio_save makes one with
     # the same POST when it gets no package_id.
     "POST /api/studio/packages": "studio_save",
+    # STU-G3c: the IDE saves a draft with the PUT that studio_save sends (based_on in the query).
+    "PUT /api/studio/packages/{}/draft": "studio_save",
+    # STU-G5: the IDE publishes with the POST that studio_publish sends (notes and based_on in the body).
+    "POST /api/studio/packages/{}/versions": "studio_publish",
     "POST /api/studio/apps/{}/actions/{}": "studio_record_list",
     "GET /api/studio/skills": "studio_skill_list",
     "GET /api/studio/skills/{}": "studio_skill_list",
@@ -607,6 +611,11 @@ EXEMPT: dict[str, tuple[str, str]] = {
         "Creates an account and an organization. A person who signs up has no chat yet.",
     ),
     # ── Integrations ──
+    "GET /api/agent-access/requests/{}": (
+        "chat",
+        "The approval card in the chat reads its own request to draw it, also after a reload "
+        "(STU-B2c-2c). It is the chat's own card. The tool result gives Mira the request.",
+    ),
     "POST /api/agent-access/authorize/approve": (
         "oauth",
         "The member's approval on the consent screen of an outside agent (MCP OAuth).",
@@ -642,6 +651,8 @@ DEBT: dict[str, str] = {
     # ── AI Studio (BETA-1): the app page deletes a package. A5c-2 builds the chat tool. ──
     "DELETE /api/studio/packages/{}": "P-9",
     "GET /api/studio/packages/{}/delete-preview": "P-9",
+    # STU-G5: the Publish dialog reads the live version with its manifest. G1d (chat reads versions) pays it.
+    "GET /api/studio/packages/{}/versions/{}": "P-9",
     # ── Tasks ──
     "POST /api/tasks/ai/backfill-context": "P-1",
     "POST /api/tasks/capture/from-email": "P-1",
@@ -668,6 +679,9 @@ DEBT: dict[str, str] = {
     "POST /api/email/reply-card/discard": "P-2",
     "POST /api/email/rules/generate": "P-2",
     "POST /api/email/rules/patterns/review": "P-2",
+    # Paid by SG-6 (task 2182): the chat sets a signature image from an image
+    # the member attaches.
+    "POST /api/email/signature/images": "P-2",
     # ── Notes ──
     "DELETE /api/notes/glossary/{}": "P-4",
     "DELETE /api/notes/meetings/{}": "P-4",
@@ -962,7 +976,10 @@ DEBT: dict[str, str] = {
     "DELETE /api/integrations/plugins/{}": "P-8",
     "GET /api/agent-access/connections": "P-8",
     # MCP-P1b-1: the list "Waiting for you" and Approve or Decline on
-    # AppRequestCard. The chat tool and card are MCP-P1b-4 (task 1703).
+    # AppRequestCard. In a chat, the card of STU-B2c-2c (task 1866) is the
+    # chat surface of the decision: the member presses Approve or Decline on
+    # the card. No chat tool decides, because Mira calls as the member and
+    # would approve her own change. So the decision stays debt of P-8.
     "GET /api/agent-access/requests": "P-8",
     "POST /api/agent-access/requests/{}/decision": "P-8",
     "GET /api/integrations/agent-connections": "P-8",
@@ -987,7 +1004,7 @@ DEBT_CEILING: dict[str, int] = {
     "projects": 8,  # F3: UI_PLANNED, and UI_ACTIONS rows whose tool is PLANNED. SW-43a (2026-11-05) added agentRunsApi.withdrawAnswer, paid by the chat tool of SW-43c (task 1802).
     "tasks": 9,
     "calendar": 1,
-    "email": 13,
+    "email": 14,  # SG-1 (task 2177, 2026-11-07) added the signature image upload, paid by SG-6 (task 2182).
     "crm": 72,  # CRM-M2a: the manifest decides. The count is UI actions with no built tool. Field Studio GET /fields reaches crm_list_fields, so it left the debt (73 to 72).
     "notes": 51,
     "whatsapp": 25,
@@ -1002,7 +1019,7 @@ DEBT_CEILING: dict[str, int] = {
     "settings": 26,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write.
     "admin": 36,
     "integrations": 21,  # MCP-P1b-1 added the app-request list and decision (task 1703).
-    "studio": 2,  # BETA-1: the delete of a package waits for the chat tool of A5c-2. B2c-2b adds no debt: its writes are ALSO rows of the door route.
+    "studio": 3,  # BETA-1: the delete of a package waits for the chat tool of A5c-2. G5 adds the version read. B2c-2b adds no debt: its writes are ALSO rows of the door route.
 }
 
 #: A UI file -> the most requests in it that the fence cannot read. A new

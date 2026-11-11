@@ -532,6 +532,32 @@ GMAIL_FETCH_HOLD_CYCLES = 3
 GMAIL_RESET_SWEEP_NAME = "all mail"
 
 
+def _json_or_empty(resp: httpx.Response) -> Any:
+    """The JSON body of a Gmail read, or ``{}`` for an empty body.
+
+    Google can answer 200 with an EMPTY body (production, 2026-11-08, task
+    2268). An empty or blank body, and a JSON ``null``, both give ``{}``.
+    A body that is not empty and not JSON still raises ``ValueError``
+    (``json.JSONDecodeError``), so a real fault reaches the log.
+
+    Four reads use it, and each one is safe on ``{}``: ``list_filters``
+    (a mailbox with no filter), ``_history_page`` (no record and no token,
+    so the cursor stays and the next cycle reads again),
+    ``_draft_id_for`` (no draft found) and ``fetch_label_assignments`` (one
+    label must not abort a restore).
+
+    Every other read keeps ``.json()``, so an empty body raises. That holds
+    for a read whose answer is never empty: the labels list always holds
+    the system labels, and the profile always holds ``historyId``. It also
+    holds where an empty list ends a job: the message lists of an import or
+    a sweep would end as complete with 0 messages. A JSON value that is not
+    an object passes through unchanged."""
+    if not resp.content.strip():
+        return {}
+    data = resp.json()
+    return {} if data is None else data
+
+
 class _StaleCursor(Exception):
     """``history.list`` answered 404. Gmail holds no history after the
     cursor, so the provider seeds again and sweeps (item 5)."""
@@ -569,8 +595,9 @@ _SWEEP_LAST = ("SPAM", "TRASH")
 
 #: One label of the first sweep: its id, and its ``canonical_override``.
 SweepLabel = tuple[str, str | None]
-#: The seed of a reset sweep, and the time range that it still has to read.
-ResetPoint = tuple[str, datetime | None, datetime | None]
+#: The seed of a reset sweep, the time range that it still has to read, and
+#: the cycles that a failed fetch held its bound (EM-G4b-f4).
+ResetPoint = tuple[str, datetime | None, datetime | None, int]
 
 
 def _parse_sweep(raw: Any) -> tuple[str, list[SweepLabel]] | None:
@@ -598,8 +625,10 @@ def _parse_reset(raw: Any) -> ResetPoint | None:
     (EM-G4b-f3), or None for each other text.
 
     The form is ``{"v": 1, "seed": "<id>", "reset": [<after>, <until>]}``,
-    with epoch seconds or null. It has no ``history_id``, so ``_parse_cursor``
-    reads it as no cursor. An older process then sweeps from the start."""
+    with epoch seconds or null. A bound that a failed fetch holds adds
+    ``"held": <n>`` (EM-G4b-f4). It has no ``history_id``, so
+    ``_parse_cursor`` reads it as no cursor. An older process then sweeps
+    from the start, and a process before EM-G4b-f4 ignores ``held``."""
     text = str(raw or "").strip()
     if not text.startswith("{"):
         return None
@@ -608,19 +637,23 @@ def _parse_reset(raw: Any) -> ResetPoint | None:
         seed = str(data["seed"])
         after, until = (None if at is None else datetime.fromtimestamp(int(at), UTC)
                         for at in data["reset"])
+        held = max(int(data.get("held", 0)), 0)
     except (ValueError, TypeError, KeyError, AttributeError, OverflowError, OSError):
         return None
-    return (seed, after, until) if _is_history_id(seed) else None
+    return (seed, after, until, held) if _is_history_id(seed) else None
 
 
 def _format_reset(
-    seed: str, after: datetime | None, until: datetime | None,
+    seed: str, after: datetime | None, until: datetime | None, held: int = 0,
 ) -> str:
-    """The stored form of a reset sweep that stopped early."""
+    """The stored form of a reset sweep that stopped early. A count of held
+    cycles above 0 goes in ``held``, as ``_format_cursor`` does."""
     bounds = [None if at is None else int(_utc(at).timestamp())
               for at in (after, until)]
-    return json.dumps({"reset": bounds, "seed": seed, "v": 1},
-                      sort_keys=True, separators=(",", ":"))
+    data: dict[str, Any] = {"reset": bounds, "seed": seed, "v": 1}
+    if held > 0:
+        data["held"] = held
+    return json.dumps(data, sort_keys=True, separators=(",", ":"))
 
 
 def _format_sweep(seed: str, labels: list[SweepLabel]) -> str:
@@ -799,6 +832,21 @@ def _index_of_failure(
     tail = set(ids[ids.index(failed_id):])
     return next((index for index in range(start, len(messages))
                  if messages[index].provider_message_id in tail), len(messages))
+
+
+def _older_bound(
+    read: list[EmailMessage], until: datetime | None,
+) -> datetime | None:
+    """The time of the oldest mail of *read*, when its whole second is older
+    than *until*. None when the bound of a reset sweep cannot move: *read*
+    holds no dated mail, or its oldest mail has the second of *until*."""
+    dates = [m.received_at for m in read if m.received_at is not None]
+    oldest = min(dates, default=until)
+    if oldest is None or (until is not None
+                          and int(_utc(oldest).timestamp())
+                          >= int(_utc(until).timestamp())):
+        return None
+    return oldest
 
 
 def _in_import_window(
@@ -1515,7 +1563,11 @@ class GmailProvider(BaseEmailProvider):
                     resp.raise_for_status()
                 except httpx.HTTPError:
                     break  # one bad label must not abort the whole restore
-                data = resp.json()
+                data = _json_or_empty(resp)
+                if not data:
+                    # An empty body skips this label, and the restore goes on.
+                    # The line makes the partial restore visible (task 2434).
+                    logger.warning("gmail.label_restore_empty_page label_id=%s", lid)
                 for ref in data.get("messages", []) or []:
                     mid = ref.get("id")
                     if mid:
@@ -1973,7 +2025,7 @@ class GmailProvider(BaseEmailProvider):
                 params["pageToken"] = token
             resp = await client.get("/users/me/drafts", params=params)
             resp.raise_for_status()
-            data = resp.json() or {}
+            data = _json_or_empty(resp)
             for draft in data.get("drafts") or []:
                 mid = (draft.get("message") or {}).get("id")
                 if mid and draft.get("id"):
@@ -2430,7 +2482,8 @@ class GmailProvider(BaseEmailProvider):
         if resp.status_code == 403:
             return []
         resp.raise_for_status()
-        filters = resp.json().get("filter") or []
+        # An EMPTY 200 body means no filter, the same as {} (task 2268).
+        filters = _json_or_empty(resp).get("filter") or []
         if any(self._filter_user_label_ids(f) for f in filters):
             # Fills ``_label_names_by_id`` with the names of the user labels.
             await self._label_name_id_map()
@@ -2685,7 +2738,7 @@ class GmailProvider(BaseEmailProvider):
         if resp.status_code == 404:
             raise _StaleCursor
         resp.raise_for_status()
-        return resp.json()
+        return _json_or_empty(resp)
 
     async def _apply_history_page(
         self, records: list[dict[str, Any]], marked: set[str],
@@ -2824,14 +2877,14 @@ class GmailProvider(BaseEmailProvider):
         follows gets each change made during the sweep."""
         if resume is None:
             seed = await self._try_seed()
-            after, until = _reset_sweep_after(catch_up, since), None
+            after, until, held = _reset_sweep_after(catch_up, since), None, 0
         else:
-            seed, after, until = resume
+            seed, after, until, held = resume
         result = result if result is not None else SyncResult()
         result.reseed_history_id = seed
         result.cursor_reset = True
         complete = await self._sweep_after_reset(
-            max_results, after, until, seed, result)
+            max_results, after, until, seed, result, held=held)
         if result.rate_limited:
             return result
         if complete and seed is not None:
@@ -2843,7 +2896,7 @@ class GmailProvider(BaseEmailProvider):
 
     async def _sweep_after_reset(
         self, max_results: int, after: datetime | None, until: datetime | None,
-        seed: str | None, result: SyncResult,
+        seed: str | None, result: SyncResult, *, held: int = 0,
     ) -> bool:
         """Page all mail after *after* and before *until* into *result* (item
         6, E-B1).
@@ -2858,8 +2911,10 @@ class GmailProvider(BaseEmailProvider):
         the sweep through ``_cut_reset`` (EM-G4b-f3). A fetch that a later
         cycle can fix does not lift the share. The list runs newest first, so
         ``held_at`` keeps the bound at the mail before the failed one, and
-        the next cycle reads the failed mail again. With no seed the sweep
-        reads on, because a cursor could not hold the point that it reached."""
+        the next cycle reads the failed mail again. *held* counts the cycles
+        that a failed fetch held the bound (EM-G4b-f4, ``_cut_reset``). With
+        no seed the sweep reads on, because a cursor could not hold the point
+        that it reached."""
         client = await self._get_client()
         params: dict[str, Any] = {"maxResults": max_results,
                                   "includeSpamTrash": "true"}
@@ -2869,6 +2924,8 @@ class GmailProvider(BaseEmailProvider):
         first = len(result.messages)
         complete = True
         held_at: int | None = None
+        failed_ids: list[str] = []
+        listed: list[str] = []
         for page in range(self.DEEP_SYNC_MAX_PAGES):
             kept = (len(result.messages), result.messages_synced,
                     len(result.errors))
@@ -2885,16 +2942,20 @@ class GmailProvider(BaseEmailProvider):
                 del result.messages[kept[0]:]
                 result.messages_synced = kept[1]
                 del result.errors[kept[2]:]
-                return self._cut_reset(seed, after, until,
-                                       result.messages[first:held_at], result)
+                return self._cut_reset(
+                    seed, after, until, result.messages[first:], result,
+                    held_at=None if held_at is None else held_at - first,
+                    failed=failed_ids, listed=listed, held=held)
             except Exception as exc:
                 logger.warning("gmail.reset_sweep_failed error=%s status=%s",
                                type(exc).__name__, getattr(
                                    getattr(exc, "response", None),
                                    "status_code", None))
                 return False
+            listed.extend(ids)
             if failed:
                 complete = False
+                failed_ids.extend(failed)
                 if held_at is None:
                     held_at = _index_of_failure(result.messages, kept[0], ids,
                                                 failed[0])
@@ -2902,33 +2963,67 @@ class GmailProvider(BaseEmailProvider):
             if not token:
                 return complete
             if self._share_spent() and seed is not None:
-                return self._cut_reset(seed, after, until,
-                                       result.messages[first:held_at], result)
+                return self._cut_reset(
+                    seed, after, until, result.messages[first:], result,
+                    held_at=None if held_at is None else held_at - first,
+                    failed=failed_ids, listed=listed, held=held)
             params["pageToken"] = token
         return False
 
     def _cut_reset(
         self, seed: str, after: datetime | None, until: datetime | None,
-        read: list[EmailMessage], result: SyncResult,
+        read: list[EmailMessage], result: SyncResult, *,
+        held_at: int | None = None, failed: list[str] | None = None,
+        listed: list[str] | None = None, held: int = 0,
     ) -> bool:
-        """Stop a reset sweep at the oldest mail of *read*, and return False
-        for a sweep that did not move.
+        """Stop a reset sweep, and return False for a sweep that did not move.
 
-        The bound is the whole second of that mail, and the next cycle reads
-        that second again, so the upsert makes the overlap harmless. A sweep
-        that cannot move the bound counts as short, and the stored cursor
-        stays. That is a page whose mail all has one second, or a failed
-        fetch at the top of the read. The scheduler abandons the sweep after
-        ``CATCH_UP_MAX_MISSES``, so a mail that always fails cannot stop it
-        from ending."""
-        dates = [m.received_at for m in read if m.received_at is not None]
-        oldest = min(dates, default=until)
-        if oldest is None or (until is not None
-                              and int(_utc(oldest).timestamp())
-                              >= int(_utc(until).timestamp())):
+        The bound is the whole second of the oldest mail of *read* before
+        *held_at*, the index of the first failed fetch. The next cycle reads
+        that second again, so the upsert makes the overlap harmless.
+
+        A failed fetch at the top of the read cannot move the bound. The
+        bound then stays, and the cycle counts in ``held`` (EM-G4b-f4). On
+        the cycle that reaches ``GMAIL_FETCH_HOLD_CYCLES``, the bound moves
+        to the oldest mail of the whole read. A mail of *failed* that
+        *listed*, the ids of the finished pages, names before the last mail
+        of the read is passed. It gets the log ``gmail.fetch_abandoned`` and
+        a record in ``result.errors``, with its id only, as
+        ``_cursor_after_read`` does. A failed mail below the last mail of the
+        read is older than the bound, so the next cycle reads it again, and
+        it gets no record (verifier finding, task 1448). Before EM-G4b-f4 the sweep counted as short, and the abandon after
+        ``CATCH_UP_MAX_MISSES`` dropped the older mail with no record.
+
+        A sweep that still cannot move counts as short, and the stored cursor
+        stays. That is a page whose mail all has one second, or a read with
+        no mail that came. The scheduler abandons it after
+        ``CATCH_UP_MAX_MISSES``."""
+        bound = _older_bound(read[:held_at], until)
+        cycles = 0
+        if bound is None and held_at is not None:
+            cycles = held + 1
+            if cycles < GMAIL_FETCH_HOLD_CYCLES:
+                logger.warning("gmail.reset_held held_cycles=%d", cycles)
+                result.new_history_id = _format_reset(seed, after, until, cycles)
+                result.rate_limited = True
+                return True
+            bound = _older_bound(read, until)
+            if bound is not None:
+                last = read[-1].provider_message_id
+                above = (set(listed[:listed.index(last)])
+                         if listed and last in listed else None)
+                for mid in (m for m in failed or []
+                            if above is None or m in above):
+                    logger.warning(
+                        "gmail.fetch_abandoned message_id=%s held_cycles=%d",
+                        mid, cycles)
+                    result.errors.append(
+                        f"gmail.fetch_abandoned id={mid} held_cycles={cycles}")
+                held_at = None
+        if bound is None:
             return False
-        logger.warning("gmail.reset_partial read=%d", len(read))
-        result.new_history_id = _format_reset(seed, after, oldest)
+        logger.warning("gmail.reset_partial read=%d", len(read[:held_at]))
+        result.new_history_id = _format_reset(seed, after, bound)
         result.rate_limited = True
         return True
 

@@ -103,6 +103,7 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     ("PUT", "/studio/packages/{package_id}/draft"),
     ("POST", "/studio/packages/{package_id}/versions"),
     ("GET", "/studio/packages/{package_id}/versions"),
+    ("GET", "/studio/packages/{package_id}/versions/{version}"),
     # A5c-1, the package delete.
     ("GET", "/studio/packages/{package_id}/delete-preview"),
     ("DELETE", "/studio/packages/{package_id}"),

@@ -1,5 +1,7 @@
 # Knowledge curation — company files in, and a brain that keeps itself current
 
+> **Dated 2026-11-11, `email_knowledge` (D105, WS-KS).** KS-12 (task 2726) moves email reading to the one read seam. It stops new writes to `email_knowledge`.
+
 **Status: ACTIVE, 2026-10-25 (D112).** Owner directive of 2026-10-25, in
 chat. The owner accepted every decision of §20 and the default of every
 question of §21 the same day, as the spec recommends them. `work_plan.md` §3 records them once, as **D112**.

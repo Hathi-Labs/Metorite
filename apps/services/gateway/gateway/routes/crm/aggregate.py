@@ -121,6 +121,7 @@ from acb_common import get_logger
 from fastapi import Depends, HTTPException, Query, Request
 from gateway.routes.crm.core import (
     CLOSING_TYPES,
+    DEAL_PIPELINE_SQL,
     ENTITIES,
     MAX_PAGE_SIZE,
     WEIGHTED_SQL,
@@ -495,7 +496,8 @@ async def _labels(db: Any, entity: Entity, group_by: str) -> dict[str, str]:
         return {str(r.id): str(r.name) for r in rows}
     if group_by == "pipeline":
         rows = (await db.execute(
-            text("SELECT id, name FROM crm_pipelines"), {},
+            # CRM-M4a: a deal names a deal pipeline only.
+            text(f"SELECT id, name FROM crm_pipelines WHERE {DEAL_PIPELINE_SQL}"), {},
         )).fetchall()
         return {str(r.id): str(r.name) for r in rows}
     return {}

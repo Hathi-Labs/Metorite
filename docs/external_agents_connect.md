@@ -51,7 +51,7 @@ Each agent session follows the same six steps. The server instructions and the c
 
 1. The runs of this connection that wait. You queued work for it, you answered its question, or you asked it to stop.
 2. The tasks of a run of this connection whose session went quiet for five minutes. The agent can take that work back. A run that another session of this connection works on now does not show.
-3. The tasks assigned to you that no AI session holds and that no open task blocks.
+3. The tasks assigned to you that no AI session holds and that no open task blocks. Metorite ranks a task under an epic by the plan of the epic, when your organization has this on. A ready slice comes before a held slice. Then the least slack comes first, then the best priority. A task under no epic keeps its place. A row under an epic has a `plan` field. It holds `ready`, `slack_mins`, `blocked_by` (task ids) and `blocked_by_hidden`. The last one counts the blockers that you cannot see, and it never names them.
 
 It never gives a task that is not assigned to you and that this connection does not hold. A run of another client or of another connection does not show. Each computer that you connect gets its own connection, so the work of your other computer stays with it. Two terminals on one connection share it, so `my_work` cannot tell them apart until the MCP sessions of spec §12.5 are on.
 
@@ -134,7 +134,7 @@ Twelve tools read:
 | `get_task_context` | One task, with its parent tasks, its project, the tasks that block it and the newest 20 comments. A parent task that you cannot see shows as hidden, with no title |
 | `my_work` | The next work of this agent, at most 25 rows. "How the agent finds its next work" above tells the order |
 
-Nine tools make or change a task:
+Eleven tools make or change a task or its comments:
 
 | Tool | What it does |
 |---|---|
@@ -147,6 +147,17 @@ Nine tools make or change a task:
 | `add_task_link` | It says that one task blocks another. `task_id` blocks `target_task_id`, so `my_work` does not offer the second task until the first is done. A claim of the second task is not refused. You must see both tasks. The same link twice keeps one link. Metorite refuses a link that makes a loop, and a link from a task to itself |
 | `remove_task_link` | It removes one `blocks` link. Send the `link_id` that `get_task` shows for the link. The agent must be able to see both tasks. A person removes other kinds of link in the app |
 | `add_comment` | It writes a comment on a task, such as a short progress note while it works. You are the author of the comment. It can reply to a top-level comment. A comment holds at most 20,000 characters. With the same `idempotency_key`, a second call gives back the first comment and adds no second comment |
+| `update_comment` | It replaces the text of a comment that this agent app wrote, such as a note with no end after a stop. Metorite keeps no copy of the old text. The agent cannot change a comment that you typed in Metorite, a comment of another person, or a comment of another agent app. It also cannot change its own comment when a person edited it, it belongs to an agent run, or someone else wrote on the task after it. Metorite refuses it, and nothing changes. The task history gets one line, "Edited a comment", with the name of the agent app |
+| `delete_comment` | It deletes a comment that this agent app wrote. You cannot undo a delete. The same rule as `update_comment` holds. The task history gets one line, "Deleted a comment", with the name of the agent app and no words of the comment |
+
+Two tools reach the updates of a project, while your organization has project updates on:
+
+| Tool | What it does |
+|---|---|
+| `list_project_updates` | It reads the updates of one project, newest first. Each update holds a health (`on_track`, `at_risk` or `off_track`), a short text, the person who posted it and the time |
+| `post_project_update` | It posts an update on a project that you can see: a health that you pick and a short text of at most 20,000 characters. You are the author. The project shows the newest update. With the same `idempotency_key`, a second call gives back the first update and posts no second update |
+
+While project updates are off for your organization, both tools say so and change nothing. A space, a folder and an archived project take no update.
 
 Each change shows in the task history, with the agent as `mcp:<host>`. A status change of the agent can start a workflow of your organization that runs on a status change, as your own change does. A move to done is a status change too.
 
@@ -165,6 +176,16 @@ The agent can also do these three things:
 - **Delete a task that you can delete.** You cannot undo a delete. Most agent apps ask you before each delete. Metorite cannot make an app ask, so an app that you set to allow the tool asks nothing. The agent must name the exact task and say which subtasks to delete. The other subtasks stay.
 
 **The delete switch is on by default.** The switch **Let my AI agents delete tasks** is in **Integrations**, in the **AI agents** view. To stop all deletes by your agents, turn it off there. Your agents cannot change this switch.
+
+### Project templates
+
+When your organization has project templates turned on, one more tool shows:
+
+| Tool | What it reads |
+|---|---|
+| `list_templates` | The project templates of your organization, or one template by its id. Each template gives its name, its description and how many statuses, task types, fields, tags and starter tasks it holds. Every member sees the same list. An agent that you pinned to some projects sees only a template whose source project it can see |
+
+The agent cannot save a template or make a project from one. Do that in Metorite, in the chat or in the app.
 
 ## Ask an agent in Metorite
 

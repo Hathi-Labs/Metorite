@@ -48,6 +48,11 @@ from gateway.routes.projects.cascade import (
     movable_subtree,
     subtree_privacy_refusals,
 )
+from gateway.routes.projects.checks import (
+    attach_check,
+    check_patch_values,
+    clean_check_text,
+)
 from gateway.routes.projects.core import (
     AGENT_TASK_SOURCE,
     CLIENT_TASK_SOURCES,
@@ -105,6 +110,7 @@ from gateway.routes.projects.core import (
     status_owner_id,
     task_visibility_clause,
     touch_task,
+    transient_as_409,
     triage_exclusion_clause,
     update_row,
     validate_choice,
@@ -114,6 +120,7 @@ from gateway.routes.projects.custom_fields import (
     apply_values,
     load_definitions,
 )
+from gateway.routes.projects.cycles import detach_moved_tasks
 from gateway.routes.projects.filters import (
     UPDATED_AGE_SQL,
     agent_filter_clauses,
@@ -161,6 +168,9 @@ _log = get_logger("gateway.projects.tasks")
 _TRACKED_TASK_FIELDS: tuple[str, ...] = (
     "title", "description", "importance", "leveraged", "due_at", "start_date",
     "estimate_mins", "type_id", "parent_task_id", "project_id",
+    # SW-23: the Check decides when a pass may close the task, so each change
+    # of it is on the timeline. It is not revertible (`activities._REVERTIBLE`).
+    "check_text",
 )
 
 _LINK_TYPES: tuple[str, ...] = ("blocks", "relates_to", "duplicates")
@@ -176,6 +186,8 @@ AGENT_CREATE_FIELDS: frozenset[str] = frozenset({
     "project_id", "title", "description", "parent_task_id", "type_id",
     "status_id", "tags", "due_at",
     "importance", "leveraged", "estimate_mins", "start_date", "assignees",
+    # SW-23: the `check` of `create_task`. 422 while the Check flag is off.
+    "check_text",
 })
 #: The PATCH set is the union of `set_task_status` (`status_id`) and
 #: `update_task` (the other fields). MCP-G2 adds the four planning fields.
@@ -184,6 +196,8 @@ AGENT_PATCH_FIELDS: frozenset[str] = frozenset({
     "importance", "leveraged", "estimate_mins", "start_date",
     # SP-6: `update_task` sets the type, and null clears it.
     "type_id",
+    # SW-23: the `check` of `update_task`, and null clears it.
+    "check_text",
 })
 #: WS-55 MCP-G2. The one body key of a signed agent MOVE. A move to another
 #: project stays a person's step in the app, so `project_id`,
@@ -487,6 +501,10 @@ class TaskCreateIn(TaskIn):
     """
 
     assignees: list[str] | None = None
+    #: WS-MCP SW-23. The Check of the new task. A create field here and a
+    #: PATCH field on ``TaskPatchIn``, never on ``TaskIn``, which other
+    #: doors share. 422 while ``agent_task_checks_enabled`` is off.
+    check_text: str | None = None
 
 
 class LinkIn(BaseModel):
@@ -897,6 +915,9 @@ async def list_tasks(
             await attach_assignees(db, page_rows)
             # WS-55 EA-12a — the agent pill, in one query for the page.
             await attach_agent_state(db, page_rows)
+            # SW-23 — the Check of each row, in one query. `my_work` reads
+            # `check.due`. No key while the flag is off.
+            await attach_check(db, page_rows)
             await attach_relation_counts(db, page_rows, vis)
             # D-PM-38 — "↳ Parent" on every flat row, under the reader's grants.
             await attach_parent_context(db, vis, page_rows)
@@ -1143,8 +1164,18 @@ async def get_task(
         result["time_spent_mins"] = await time_spent_mins(db, task_id)
         # WS-55 EA-12a — the agent pill on the task detail (EA12-10).
         await attach_agent_state(db, [result])
+        # SW-23 — the Check, with its last run. No key while the flag is off.
+        await attach_check(db, [result])
         # WS-64 OP-8 — the chat refuses before its card where this is false.
         await attach_can_delete(db, user, [result], kind="task")
+        # SP-9 — an epic rolls up EVERY descendant the reader can see. The key
+        # is absent for any other task. `subtasks` (direct children) is not
+        # touched. The one home of the rule is `rollup.py`.
+        from gateway.routes.projects.rollup import epic_rollup
+
+        rollup = await epic_rollup(db, vis, row)
+        if rollup is not None:
+            result["rollup"] = rollup
         return result
 
 
@@ -1189,120 +1220,14 @@ async def create_task(
     payload: TaskCreateIn, user: UserContext = Depends(get_current_user),
 ) -> dict:
     values = clean_payload(payload)
-    # WS-55 EA-6d. A signed agent write sends only the keys of `create_task`.
-    _narrow_agent_body(user, values, AGENT_CREATE_FIELDS)
-    _refuse_agent_values(user, values)
-    # MCP-G2. Not a column: the assignees land after the insert, below.
-    first_assignees = _clean_assignees(values.pop("assignees", None) or ())
-    title = str(values.get("title") or "").strip()
-    if not title:
-        raise HTTPException(status_code=422, detail="A task needs a title.")
-    project_id = values.get("project_id")
-    if not project_id:
-        raise HTTPException(status_code=422, detail="A task needs a project_id.")
-    validate_choice(values.get("source"), CLIENT_TASK_SOURCES, "source")
-    if getattr(user, "agent", None) is not None:
-        # The task source of an agent comes from branch 0's signed context,
-        # never from the body (the narrowing above refuses a body `source`).
-        values["source"] = AGENT_TASK_SOURCE
-    values["title"] = title
-    values["created_by"] = actor(user)
+    first_assignees = check_task_values(user, values)
+    project_id = values["project_id"]
+    title = values["title"]
 
     async with _tenant_session() as db:
-        await _store_due(db, user, values)
-        vis = await resolve_visibility(db, user)
-        # FOR SHARE: a concurrent move of this project to the top (a space)
-        # waits for this insert (`core.load_visible_project`).
-        target = await load_visible_project(
-            db, vis, str(project_id), lock_share=True,
-        )
-        # Migration 193 and the space rule — a folder groups and a space
-        # summarises. Tasks live on projects. A task filed on either would
-        # sit outside every board (`core.assert_holds_tasks`).
-        assert_holds_tasks(target, then="Create the task in")
-        assert_not_archived(target, then="Create the task in")
-        root = await root_project_id(db, str(project_id))
-        values["root_project_id"] = root
-        # The values pass the gate a PATCH puts them through
-        # (`custom_fields.apply_values`), against the definitions of the root
-        # the task is created in, in this transaction and before any write.
-        # Before this the create stored the body as it came: a wrong type, an
-        # option nobody defined, or a key from another project landed in the
-        # row and read back as a saved value. A stated null means "no value",
-        # so it leaves the column default rather than writing NULL into a
-        # NOT NULL column.
-        if "custom_fields" in values:
-            custom = values.pop("custom_fields")
-            if custom is not None:
-                shaped, _ = apply_values(
-                    {}, custom, await load_definitions(db, root),
-                )
-                if shaped:
-                    values["custom_fields"] = shaped
-        # The ROOT scopes the counter, the types and the tenant. A STATUS scopes
-        # to the nearest node that owns a set, which is the root until a
-        # subproject overrides it (migration 196). Two names for two questions,
-        # because the bug where they diverge is silent — everything works until
-        # somebody uses the feature.
-        status_home = await status_owner_id(db, str(project_id))
-
-        parent_id = values.get("parent_task_id")
-        parent = (
-            await load_visible_task(db, vis, str(parent_id)) if parent_id else None
-        )
-        _refuse_agent_parent(user, parent, str(project_id))
-        await _refuse_agent_type(db, user, values.get("type_id"), str(root))
-        await assert_epic_has_no_parent(db, values.get("type_id"), parent_id)
-
-        # A stated status always wins. A new step with no stated status takes
-        # its parent's lane through the ONE seam (D-PM-38, D79), so the
-        # Projects panel, the board, both chat tools and My Tasks agree.
-        if values.get("status_id"):
-            status = await require_status_in_project(
-                db, status_home, str(values["status_id"]),
-            )
-            _refuse_agent_close(user, getattr(status, "category", None),
-                                refused=AGENT_CREATE_REFUSED,
-                                detail=AGENT_CREATE_REFUSAL)
-        elif parent is not None:
-            status = await parent_lane_status(db, parent, status_home)
-        else:
-            status = await load_default_status(db, status_home)
-        values["status_id"] = str(status.id)
-        values["task_number"] = await next_task_number(db, root)
-        # WS-27m — through the registry, never straight into the array. Create
-        # and patch both go this way, so there is no route by which a tag enters
-        # the system unregistered; that is the only thing that keeps the
-        # registry's "one spelling per tag" true rather than aspirational.
-        if "tags" in values:
-            values["tags"] = await apply_task_tags(
-                db, root, values["tags"], by=actor(user),
-            )
-
-        row = await insert_row(db, "pm_tasks", values)
+        made = await create_task_in(db, user, values, first_assignees)
+        row, assigned = made.row, made.assigned
         task_id = str(row.id)
-        await record_activity(
-            db, activity_type="system", created_by=actor(user),
-            task_id=task_id, body="Task created",
-        )
-        # WS-27v — the creator watches their own task, which is what keeps the
-        # WS-27j author-hears-about-comments behaviour once the audience is
-        # watchers ∪ assignees (migration 165 seeds the same for older tasks).
-        await ensure_watchers(db, task_id, [actor(user)], by=actor(user))
-        # WS-55 MCP-G2. The first assignees, in THIS transaction and through
-        # the writer of `set_assignees`, so a refused assignee leaves no task.
-        assigned = (
-            await _write_assignees(
-                db, user, task_id=task_id, project_id=str(project_id),
-                wanted=first_assignees, current=set(),
-            ) if first_assignees else None
-        )
-        # WS-ALN ALN-1 (`project_alignment.md` §5). In THIS transaction, so a
-        # crash can lose neither half alone. `target` is the row of the
-        # project, so a personal task (§1.2) costs no read and gets no job.
-        # Fence: `test_the_seam_*` in `test_align_trigger.py`.
-        if not getattr(target, "personal_owner", None):
-            await enqueue_check(db, task_id, current_tenant(), row=row, known_team=True)
         result = row_to_dict(row, TaskModel)
 
     await emit("pm.task.created", {
@@ -1319,6 +1244,182 @@ async def create_task(
     # the commit and in a transaction of its own (`text_links.py`).
     await link_from_text(user, [(task_id, [(title, False, None), (values.get("description"), True, None)])])
     return result
+
+
+@dataclass(frozen=True)
+class CreatedTask:
+    """What :func:`create_task_in` made: the row, and the first assignees."""
+
+    row: Any
+    assigned: Any
+
+
+def check_task_values(
+    user: UserContext, values: dict[str, Any], *, narrow: bool = True,
+) -> set[str]:
+    """The checks of a new task that need no database. Returns the first
+    assignees, which are not a column.
+
+    It sets ``title`` (trimmed), ``created_by`` and, for a signed agent,
+    ``source`` on *values*. ``POST /tasks`` and the apply of a template
+    (WS-39 TPL-1a) both call it before :func:`create_task_in`.
+
+    *narrow* False skips the two body rules of a signed agent (EA-6d,
+    MCP-G2). Only the apply of a template passes it: the server builds those
+    values from a stored template, and the agent sent none of them. The
+    agent's stamp on ``source`` and each check of :func:`create_task_in`
+    still apply.
+    """
+    if narrow:
+        # WS-55 EA-6d. A signed agent write sends only the keys of `create_task`.
+        _narrow_agent_body(user, values, AGENT_CREATE_FIELDS)
+        _refuse_agent_values(user, values)
+    # MCP-G2. Not a column: the assignees land after the insert, below.
+    first_assignees = _clean_assignees(values.pop("assignees", None) or ())
+    title = str(values.get("title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=422, detail="A task needs a title.")
+    project_id = values.get("project_id")
+    if not project_id:
+        raise HTTPException(status_code=422, detail="A task needs a project_id.")
+    validate_choice(values.get("source"), CLIENT_TASK_SOURCES, "source")
+    if "check_text" in values:
+        # SW-23. 422 while the Check flag is off. A blank text is no Check.
+        values["check_text"] = clean_check_text(values["check_text"])
+        if values["check_text"] is None:
+            values.pop("check_text")
+    if getattr(user, "agent", None) is not None:
+        # The task source of an agent comes from branch 0's signed context,
+        # never from the body (the narrowing above refuses a body `source`).
+        values["source"] = AGENT_TASK_SOURCE
+    values["title"] = title
+    values["created_by"] = actor(user)
+    return first_assignees
+
+
+async def create_task_in(
+    db: Any, user: UserContext, values: dict[str, Any],
+    first_assignees: set[str], *, vis: Any = None, align: bool = True,
+    task_number: int | None = None,
+) -> CreatedTask:
+    """THE one creator of a ``pm_tasks`` row on a member's request.
+
+    It runs in the caller's transaction. It emits nothing and links no text:
+    the caller does each after the commit, or stays quiet, as the apply of a
+    template does (WS-39 TPL-1a, like the importer of §6.10). *values* passed
+    :func:`check_task_values` first. *vis* saves the read of the caller's
+    visibility when one transaction creates many tasks. *align* False skips
+    the ALN-1 check job: the apply of a template is a bulk creator, and
+    ``project_alignment.md`` §5 leaves the bulk creators out, as it leaves
+    out the file import. *task_number* is a number that the caller reserved
+    with ``core.reserve_task_numbers`` in a short transaction of its own, as
+    the file import does. Then this transaction never takes the lock of the
+    counter row, so a long apply of a template does not hold up each task
+    create in the space (TPL-1a repair, P1-b).
+    """
+    project_id = values["project_id"]
+    await _store_due(db, user, values)
+    if vis is None:
+        vis = await resolve_visibility(db, user)
+    # FOR SHARE: a concurrent move of this project to the top (a space)
+    # waits for this insert (`core.load_visible_project`).
+    target = await load_visible_project(
+        db, vis, str(project_id), lock_share=True,
+    )
+    # Migration 193 and the space rule — a folder groups and a space
+    # summarises. Tasks live on projects. A task filed on either would
+    # sit outside every board (`core.assert_holds_tasks`).
+    assert_holds_tasks(target, then="Create the task in")
+    assert_not_archived(target, then="Create the task in")
+    root = await root_project_id(db, str(project_id))
+    values["root_project_id"] = root
+    # The values pass the gate a PATCH puts them through
+    # (`custom_fields.apply_values`), against the definitions of the root
+    # the task is created in, in this transaction and before any write.
+    # Before this the create stored the body as it came: a wrong type, an
+    # option nobody defined, or a key from another project landed in the
+    # row and read back as a saved value. A stated null means "no value",
+    # so it leaves the column default rather than writing NULL into a
+    # NOT NULL column.
+    if "custom_fields" in values:
+        custom = values.pop("custom_fields")
+        if custom is not None:
+            shaped, _ = apply_values(
+                {}, custom, await load_definitions(db, root),
+            )
+            if shaped:
+                values["custom_fields"] = shaped
+    # The ROOT scopes the counter, the types and the tenant. A STATUS scopes
+    # to the nearest node that owns a set, which is the root until a
+    # subproject overrides it (migration 196). Two names for two questions,
+    # because the bug where they diverge is silent — everything works until
+    # somebody uses the feature.
+    status_home = await status_owner_id(db, str(project_id))
+
+    parent_id = values.get("parent_task_id")
+    parent = (
+        await load_visible_task(db, vis, str(parent_id)) if parent_id else None
+    )
+    _refuse_agent_parent(user, parent, str(project_id))
+    await _refuse_agent_type(db, user, values.get("type_id"), str(root))
+    await assert_epic_has_no_parent(db, values.get("type_id"), parent_id)
+
+    # A stated status always wins. A new step with no stated status takes
+    # its parent's lane through the ONE seam (D-PM-38, D79), so the
+    # Projects panel, the board, both chat tools and My Tasks agree.
+    # MCP-G20: a signed agent create is not one of those doors. Its tool
+    # `create_task` says "leave status_id out to use the default status",
+    # so an agent's subtask with no stated status starts in the default
+    # lane, and never inherits an In progress parent's lane.
+    if values.get("status_id"):
+        status = await require_status_in_project(
+            db, status_home, str(values["status_id"]),
+        )
+        _refuse_agent_close(user, getattr(status, "category", None),
+                            refused=AGENT_CREATE_REFUSED,
+                            detail=AGENT_CREATE_REFUSAL)
+    elif parent is not None and getattr(user, "agent", None) is None:
+        status = await parent_lane_status(db, parent, status_home)
+    else:
+        status = await load_default_status(db, status_home)
+    values["status_id"] = str(status.id)
+    values["task_number"] = (
+        task_number if task_number is not None else await next_task_number(db, root)
+    )
+    # WS-27m — through the registry, never straight into the array. Create
+    # and patch both go this way, so there is no route by which a tag enters
+    # the system unregistered; that is the only thing that keeps the
+    # registry's "one spelling per tag" true rather than aspirational.
+    if "tags" in values:
+        values["tags"] = await apply_task_tags(
+            db, root, values["tags"], by=actor(user),
+        )
+
+    row = await insert_row(db, "pm_tasks", values)
+    task_id = str(row.id)
+    await record_activity(
+        db, activity_type="system", created_by=actor(user),
+        task_id=task_id, body="Task created",
+    )
+    # WS-27v — the creator watches their own task, which is what keeps the
+    # WS-27j author-hears-about-comments behaviour once the audience is
+    # watchers ∪ assignees (migration 165 seeds the same for older tasks).
+    await ensure_watchers(db, task_id, [actor(user)], by=actor(user))
+    # WS-55 MCP-G2. The first assignees, in THIS transaction and through
+    # the writer of `set_assignees`, so a refused assignee leaves no task.
+    assigned = (
+        await _write_assignees(
+            db, user, task_id=task_id, project_id=str(project_id),
+            wanted=first_assignees, current=set(),
+        ) if first_assignees else None
+    )
+    # WS-ALN ALN-1 (`project_alignment.md` §5). In THIS transaction, so a
+    # crash can lose neither half alone. `target` is the row of the
+    # project, so a personal task (§1.2) costs no read and gets no job.
+    # Fence: `test_the_seam_*` in `test_align_trigger.py`.
+    if align and not getattr(target, "personal_owner", None):
+        await enqueue_check(db, task_id, current_tenant(), row=row, known_team=True)
+    return CreatedTask(row=row, assigned=assigned)
 
 
 @router.patch("/tasks/{task_id}")
@@ -1374,6 +1475,8 @@ async def patch_task(
         # write — so a caller who cannot see the task still gets 404 and never
         # learns from a 412 that it exists (R5: 404, never 403).
         require_precondition(before, if_match, row_to_dict(before, TaskModel))
+        # SW-23. A new Check text clears its last result, in this same write.
+        check_patch_values(before, values)
 
         # WS-27l. Merged against the definitions on the task's OWN root, not the
         # caller's current project: a task opened from My work can belong to a
@@ -1476,6 +1579,8 @@ async def patch_task(
         # WS-55 EA-12c — the pill survives an edit. The client merges this
         # row over its copy, so a null here would erase the pill (EA12-10).
         await attach_agent_state(db, [result])
+        # SW-23 — the Check survives an edit too. No key while the flag is off.
+        await attach_check(db, [result])
         if include_subtasks:
             result["subtasks_completed"] = len(cascade.ids) if cascade else 0
             result["subtask_changes"] = cascade.changes if cascade else []
@@ -1689,6 +1794,9 @@ async def move_task_in(
                   "from_number": getattr(task, "task_number", None)},
         )
         await record_drops(db, task_id=task_id, dropped=dropped, by=by)
+    if "project_id" in values:
+        # WS-39 SP-1. A task that left the node of its open cycle leaves it.
+        await detach_moved_tasks(db, [task_id], by=by)
 
     # ── Promote-and-assign, in the SAME transaction ─────────────────────
     #
@@ -2047,6 +2155,7 @@ async def task_subtree(
 
 
 @router.delete("/tasks/{task_id}")
+@transient_as_409
 async def delete_task(
     task_id: str, user: UserContext = Depends(get_current_user),
     delete_subtask_ids: list[str] = Query(default=[]),
@@ -2154,6 +2263,7 @@ def _agent_delete_via(user: UserContext) -> str:
 
 
 @router.post("/tasks/{task_id}/agent-delete")
+@transient_as_409
 async def agent_delete_task(
     task_id: str, payload: AgentDeleteIn,
     user: UserContext = Depends(get_current_user),

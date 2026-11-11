@@ -1,6 +1,6 @@
 # One Projects app — My Tasks becomes a view, and the phone shows the work
 
-**Status: ACTIVE, 2026-10-23. PJP-14 is BUILT 2026-11-04 (task 1605, no migration): a ready agent task is not New (D170 amendment, §4.2). INB-1 is BUILT 2026-11-03 (D170, task 1522, no migration): the task inbox holds only captures, and assigned untriaged work shows in My tasks as New. OP-12b is BUILT 2026-10-30 (task 1108, UI only, no migration): one name and one heading for the private space (§4.1, D-OP-2).** The owner accepted D-OP-1 to D-OP-8 (§8). Owner directive of 2026-10-23, recorded in §1.
+**Status: ACTIVE, 2026-10-23. ARC-1 is BUILT 2026-11-09 (task 1545, no migration): the Archive chip of My tasks lists the member's archived tasks across projects, and Restore works for one task or many (§9b.4). PJP-14 is BUILT 2026-11-04 (task 1605, no migration): a ready agent task is not New (D170 amendment, §4.2). INB-1 is BUILT 2026-11-03 (D170, task 1522, no migration): the task inbox holds only captures, and assigned untriaged work shows in My tasks as New. OP-12b is BUILT 2026-10-30 (task 1108, UI only, no migration): one name and one heading for the private space (§4.1, D-OP-2).** The owner accepted D-OP-1 to D-OP-8 (§8). Owner directive of 2026-10-23, recorded in §1.
 Verified against code on 2026-10-23, at `origin/main` `f206f5251`. Board row
 **WS-64**. OP-1 is merged (#1255), dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME`. OP-7 is merged (#1258), and done-when 4 is met (visual review passed 2026-10-23 at 390 and 1280 px, light, compact, changed accent). OP-6a is merged (#1260). OP-8 is merged (#1261), with fix round 1 (D-OP-14 and the lead write of D-OP-11). OP-6c is merged (#1262): `nudge_task`, `export_tasks` and `attach_to_task`, with eval cases PO-15 to PO-17 and an R8 test (`test_projects_nudge_attach_r8.py`). OP-6b is BUILT 2026-10-24, with fix round 1, in review: `grant_access` and `revoke_access`, with eval cases PO-18 to PO-20 and an R8 test (`test_projects_grant_tools_r8.py`). The OP-3 precondition of task #304 is BUILT 2026-10-24: each node of a private tree carries `personal_owner` (migration 297). OP-6d is BUILT 2026-10-24: `report_recipients`, `add_report_recipient`, `remove_report_recipient` and `set_report_schedule`, with eval cases PO-21 to PO-25 and an R8 test (`test_projects_report_delivery_r8.py`). OP-6 now owes no route, and `PENDING_OP6` is empty. OP-6e is BUILT 2026-10-24 (task #301): `waiting_agent_requests` lists the agent requests that wait for the member, with a card link for each, and answers none. The archive approval is class X (reason: D-OP-13, EA3-40), with eval cases PO-26 and PO-27 and an R8 test (`test_projects_agent_requests_r8.py`). OP-2 is BUILT 2026-10-24, dark, with fix round 2. OP-3 is BUILT 2026-10-24 (task #297), dark behind the OP-2 flag: the server half and the sidebar half. OP-10 is BUILT 2026-10-24, with fix rounds 1 and 2 (D-OP-16): a folder becomes a project through `POST /projects/nodes/{id}/convert`, with the tree menu entry, the chat tool `convert_folder_to_project`, eval case PO-28 and an R8 test (`test_projects_folder_convert.py`). OP-2b is BUILT 2026-10-24 and meets §4.3. OP-5 is not built. OP-4 is BUILT 2026-10-24 (task #298), dark behind the OP-2 flag, with fix round 2: the /tasks redirect keeps the NS-4b `fill.*` keys and opens capture through the `capture` ShellJob, and `chatLink` no longer rewrites /tasks. Post-merge fixes are BUILT 2026-10-25, with no migration. #128 has a stopgap: the board and My work read again on a chat write, and on focus or on a return to the tab (at most once in 15 s). #8 is fixed: the page closes the phone drawer only when it opened it. #11 is fixed: a move refreshes My work and the open panel. The feed names the app My work, and "Show all" opens `/projects?app=my-today`. "New task" falls back to `/tasks?do=capture` for a member with `feature:tasks` and no `feature:projects`. The visible "My Tasks" labels of Email, Notes and the chat cards now say My work. The labels of the two lists are renamed (WS-64, 2026-10-27, labels only): Inbox is now "My task inbox", and "My Next Actions" is now "My tasks". The internal ids `my-inbox`, `my-next`, `INBOX` and `NEXT` stay. The same change keeps archived projects out of the summaries, My work and every picker (§9, OP-11 slice 1). OP-11 "My tasks" is IN PROGRESS. Its server half is BUILT 2026-10-27, with no migration: one "mine" (`core.mine_clause`), `scope=mine` on the list and the calendar, `GET /projects/my/summary`, `subject=me` on Analytics, and the MCP edge fixes of audit P1-3 and P1-4 (§9 OP-11, "The server half"). Its UI half is BUILT 2026-10-27 on branch `ws64-op11-my-tasks-ui`, with fix round 1, behind the My work flag: the My tasks roll-up space with the project tabs, the chips, a board by stage, a project chip on each row, and the old list ids as aliases (§9 OP-11, "The UI half"). The Timeline tab is not built.
 
@@ -1520,7 +1520,10 @@ The audit captured every Projects surface at 390 px and 360 px, in dark and ligh
 | UNDO-1 | 1528 | Undo for a status change (and a reopen), each panel edit, a move, archive and unarchive | Each act shows a toast with Undo and answers Ctrl+Z. Undo restores the exact state before | MEDIUM |
 | UNDO-2 | 1543 | Undo for bulk acts and delete | One Undo restores every task of a bulk act. Delete acts at once with Undo, as D109.5 asks | MEDIUM |
 | SEL-1 | 1544 | Select many in My tasks (each chip, Done too) and in Table, with Ctrl+A and a bulk bar across projects | The member selects every done task and archives them in one act, with Undo | MEDIUM |
-| ARC-1 | 1545 | One Archive view across projects in My work | It lists the member's archived tasks. Restore works for one task or many | LOW |
+| ARC-1 | 1545 | One Archive view across projects in My work | It lists the member's archived tasks. Restore works for one task or many | LOW. BUILT 2026-11-09 as the Archive chip of My tasks (`MyArchiveView`). It reads `scope=mine` with `archived_only`. A row of an archived project keeps Restore off. The chat read is `my_work(view="archived")` |
+| ARC-2a | 2502 | The bar on an archived space, project or subproject, with Restore (§9b.6 rule 1) | An archived project shows the bar with its date, and names the ancestor it was filed with. Restore returns it to the live tree with no reload | LOW |
+| ARC-2b | 2503 | The server refuses task writes in an archived project (§9b.6 rule 2) | Each refused route answers 409 with the sentence. Each read and each allowed act still answers. Chat and MCP show the same words | STANDARD |
+| ARC-2c | 2504 | The app draws an archived project read-only (§9b.6 rule 3) | Board, List, Table, Calendar, Timeline and the panel draw no write control. Filters, views, search and export stay | STANDARD |
 
 ### 9b.5 Fences
 
@@ -1528,10 +1531,34 @@ The audit captured every Projects surface at 390 px and 360 px, in dark and ligh
 - INB-1: a test that a capture is in the inbox, that an assigned untriaged task is not, and that the count equals the list. The SQL runs against a real database (R8).
 - UNDO-1 and UNDO-2: a test for each act that its inverse restores the row it changed.
 - SEL-1 and ARC-1: a test that a bulk archive of the Done chip writes one request and that the Archive view lists the rows.
+- ARC-2a: a vitest of the bar's words for an archive root and for a row filed with its parent.
+- ARC-2b: an R8 test for each refused route family, and a test that each read and each allowed act still answers.
+- ARC-2c: a vitest of the one read-only rule, for each write control it hides.
 - MOB-9: `lib/layers.test.ts`, `lib/phoneBarTap.test.ts`, `lib/menuClamp.test.ts` and `e2e/phone-bar-always.spec.ts`.
 - MOB-10: `lib/tasksRedirect.test.ts`. MOB-11: `components/TaskBoardPhone.test.ts`. MOB-12: `lib/shell/phoneBar.test.ts`.
 
 Each fence is advisory until its slice builds.
+
+### 9b.6 An archived project opens read-only (2026-11-09)
+
+**Status:** ARC-2a BUILT 2026-11-09. ARC-2b and ARC-2c are 📋 SPEC. The owner accepted this on 2026-11-09, in chat. Metorite: tasks 2502 (ARC-2a), 2503 (ARC-2b) and 2504 (ARC-2c).
+
+On 2026-11-08 the owner asked whether the archive design was settled. A review found that an archived project opened from the rail's Archived section gave no sign that it was archived. Its board also kept every edit control. The rail itself drew a filed project twice (ARC-BUG-1, task 2325, merged 69c40d08e).
+
+**What archive does today.** `archive_node` stamps `archived_at` and `archived_root_id` on each project of the subtree. It never touches a task row (D-PM-26). The server keeps automation and reports out of an archived project (`runnable_project_clause`, `reportable_project_clause`). It refuses no task write.
+
+**Rules.**
+
+1. **The bar.** A space, a project or a subproject with `archived_at` shows one bar under its title.
+   - It says "Archived on <date>. Restore it to change its work."
+   - A row that was filed with an ancestor (`archived_root_id` is not its own id) says "Archived with <ancestor name> on <date>."
+   - The bar holds one Restore button. Restore runs the unarchive of `archived_root_id`, the same act as Unarchive on the rail menu. The whole filed branch returns.
+2. **Read-only on the server.** A task write into a project with `archived_at` answers 409: "This project is archived. Restore it to change its work."
+   - Refused: make a task, edit a field, change the status, assignees, tags, dates or the parent, move a task, set positions, add a subtask, a comment, an attachment or a relation, and unarchive a task. A bulk act follows the bulk refusal rule that exists. It names each refused task.
+   - Allowed: every read and export, Restore, Delete of the project (its own gate), and the agent-run routes. A run keeps its own lifecycle, so an agent can still finish or release it.
+   - Chat and MCP reach the same routes. So they show the same words, and no tool needs its own check.
+3. **Read-only in the app.** The views of an archived project draw no write control. That means no New task, no quick add, no drag, no inline edit and no bulk bar. The task panel shows its fields as text. Filters, views, search and export stay. ARC-2c builds after ARC-2b, so a control that the app misses still meets the server's refusal.
+4. **What does not change.** Archive still stamps projects and never tasks. Reports and automation still skip archived work. The rail keeps one Archived section (task 2325).
 
 ## 9c. The task card (D172, 2026-11-03)
 
