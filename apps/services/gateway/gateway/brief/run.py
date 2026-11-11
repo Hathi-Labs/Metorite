@@ -45,6 +45,13 @@ Handled read that is not ok raises :class:`HandledIncomplete`, and the queue
 retries. The lead is the template lead (``gather.closeout_lead``), and
 :func:`_composes` is False for a close-out, so it makes no model call.
 
+**The acts** (BR-7b-2, ``core_brief.md`` §8). After ``done`` and ``moved``,
+the close-out reads the acts of the member's day (:func:`_acted_reads`):
+the allow-listed ``audit_event`` rows and the sent ``reach_outbox`` rows,
+from 00:00 to 24:00 in the offset of the slot. They make the section
+``acted`` (``gather.acted_claims``). A read that fails raises
+:class:`ActedIncomplete`, and the queue retries.
+
 **The ledger slot goes back** (``unattended.release``) when the run gathered
 nothing: an exception, a cancel (the worker's ``HANDLER_TIMEOUT``), a skip,
 or a lost claim. So a retry or a moved slot can begin it again. The release
@@ -88,7 +95,7 @@ the seed hook and the prune hook.
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
 from acb_common import assistant_profile, get_logger
@@ -123,6 +130,11 @@ class SnapshotIncomplete(Exception):
 class HandledIncomplete(Exception):
     """A Handled read of the close-out failed (``HandledRun.ok`` is False),
     so the ``done`` list is not the truth. The queue retries the run."""
+
+
+class ActedIncomplete(Exception):
+    """A read of the acts of the close-out failed (BR-7b-2), so the
+    ``acted`` list is not the truth. The queue retries the run."""
 
 
 class IdentityReadFailed(Exception):
@@ -205,32 +217,74 @@ def _why_not(prefs: dict[str, Any], slot_at: datetime, kind: str = planner.KIND)
     return None
 
 
-async def _closeout_reads(member: str, user: Any, run: store.Run, snap: Any,
-                          now: datetime) -> tuple[list[store.ClaimIn], str | None]:
+def day_window(local_date: date, slot_at: datetime) -> tuple[datetime, datetime]:
+    """The member's day of *local_date*, from 00:00 to 24:00, in the offset
+    of *slot_at*. The planner made the slot in the member's zone, so its
+    offset is the member's (BR-7b-2)."""
+    if slot_at.tzinfo is None:
+        raise ValueError("the day window needs an aware slot")
+    since = datetime.combine(local_date, time.min, tzinfo=slot_at.tzinfo)
+    return since, since + timedelta(days=1)
+
+
+async def _acted_reads(org: str, member: str, local_date: date,
+                       slot_at: datetime) -> tuple[list[Any], list[Any]]:
+    """The acts of the member's day (BR-7b-2): the allow-listed
+    ``audit_event`` rows (``acb_audit.read.acts``) and the sent
+    ``reach_outbox`` rows (``outbox.sent_rows``). The org comes from the
+    worker and the member from the payload, never from request input. A
+    read that fails raises :class:`ActedIncomplete`, so the queue retries,
+    as a Handled read that is not ok does."""
+    from acb_audit import read as audit_read
+
+    from gateway.reach.outbox import sent_rows
+
+    since, until = day_window(local_date, slot_at)
+    try:
+        acts = await asyncio.to_thread(audit_read.acts, org, member, since, until)
+        sent = await sent_rows(org, member, since, until)
+    except Exception as exc:
+        _log.warning("brief.acted_read_failed", error=type(exc).__name__)
+        raise ActedIncomplete(member) from exc
+    return acts, sent
+
+
+async def _closeout_reads(org: str, member: str, user: Any, run: store.Run, snap: Any,
+                          now: datetime, slot_at: datetime,
+                          ) -> tuple[list[store.ClaimIn], str | None]:
     """The claims and the template lead of a close-out (BR-2b-1). The
     Handled read runs here, as the member, because ``loop.snapshot`` does not
-    run it. A read that is not ok raises, so the queue retries."""
+    run it. A read that is not ok raises, so the queue retries. Then the
+    acts of the day (BR-7b-2, :func:`_acted_reads`) make the section
+    ``acted``, after ``done`` and ``moved``."""
     from gateway.routes.shell import handled
 
     closed = await handled.handled_run(user, now, budget_s=HANDLED_BUDGET_S)
     if not closed.ok:
         raise HandledIncomplete(member)
     claims = gather.closeout_claims(closed.closed, snap.cards, now)
-    return claims, gather.closeout_lead(run.local_date, claims)
+    acts, sent = await _acted_reads(org, member, run.local_date, slot_at)
+    acted = gather.acted_claims(acts, sent, snap.cards, closed.closed, len(claims))
+    if acted.claims:
+        _log.info("brief.acted", lines=len(acted.claims), acts=acted.total, shown=acted.shown,
+                  no_policy=gather.no_policy_count(acted.claims))
+    claims += acted.claims
+    return claims, gather.closeout_lead(run.local_date, claims, acted)
 
 
 async def _gather(org: str, member: str, user: Any, run: store.Run, claim: queue.Claim,
-                  now: datetime) -> str:
+                  now: datetime, slot_at: datetime) -> str:
     """Steps 6 and 7. Answers ``ready``, ``delivered``, ``empty``,
     ``exists`` or ``lost``. A close-out takes the claims of
-    :func:`_closeout_reads`, and the rest is the same."""
+    :func:`_closeout_reads`, and the rest is the same. *slot_at* is the
+    aware slot of the payload, in the member's offset."""
     from gateway.reach import loop
 
     snap = await loop.snapshot(org, user, now)
     if not snap.complete:
         raise SnapshotIncomplete(member)
     if run.kind == planner.CLOSEOUT:
-        claims, lead = await _closeout_reads(member, user, run, snap, now)
+        claims, lead = await _closeout_reads(org, member, user, run, snap, now, slot_at)
     else:
         claims = gather.claims(snap.cards, now)
         parts = plan.brief_parts(snap.cards, run.local_date, now=now)
@@ -406,7 +460,7 @@ async def _run_slot(org: str, member: str, local_date: date, slot_at: datetime,
         _log.info("brief.run_exists", state=created.run.state)
         await _settle_done(org, claim, now)
         return "exists"
-    return await _gather(org, member, user, created.run, claim, now)
+    return await _gather(org, member, user, created.run, claim, now, slot_at)
 
 
 async def run(org: str, payload: dict[str, Any], claim: queue.Claim) -> None:

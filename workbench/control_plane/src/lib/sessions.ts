@@ -475,13 +475,98 @@ export function isUnresolvedAgent(agentName: string | null | undefined): boolean
   return UNRESOLVED_AGENT_SENTINELS.has((agentName ?? "").trim().toLowerCase());
 }
 
-/** Write to localStorage without letting a QuotaExceededError crash the caller
- *  (the session list / message cache can fill the quota on heavy users). */
-function safeSetItem(key: string, value: string): void {
+/** True for the error that a full storage throws, in each browser's words. */
+export function isQuotaError(e: unknown): boolean {
+  if (!e || typeof e !== "object") return false;
+  const { name, code } = e as { name?: unknown; code?: unknown };
+  return (
+    name === "QuotaExceededError" ||
+    name === "NS_ERROR_DOM_QUOTA_REACHED" ||
+    code === 22 ||
+    code === 1014
+  );
+}
+
+/** The part of a key that marks a cached transcript: `cc-chat::<scope>::msgs::<id>`. */
+const MSGS_MARK = "::msgs::";
+/** One eviction frees at least this share of the cached transcripts. */
+const EVICT_SHARE = 0.25;
+
+/**
+ * Make room in a full storage (production bug, 2026-11-06). A heavy member
+ * kept up to 200 messages of EACH chat here, and nothing removed old ones.
+ * Then the write of a new chat failed, and the dock waited for ever.
+ *
+ * This drops the cached transcripts of the chats updated longest ago. The
+ * bound member's namespace goes first, and other namespaces only by the same
+ * rule. It stops when it has freed `need` characters and a quarter of the
+ * cache, so the next write does not hit the wall again. Postgres holds every
+ * message, and the cache is only for a fast first paint.
+ *
+ * ⚠️ It drops `::msgs::` keys and nothing else. The session list stays. The
+ * send queue (`::queue::`) stays, because it holds words the member has not
+ * sent (see `forgetSession`). `keep` is the key being written, and it stays.
+ * Returns how many caches it dropped. Fence: `sessionsQuota.test.ts`.
+ */
+export function freeChatCacheRoom(keep: string, need: number): number {
+  if (typeof window === "undefined") return 0;
+  let keys: string[];
+  try {
+    keys = keysWhere((k) => k.startsWith(NS_PREFIX) && k.includes(MSGS_MARK) && k !== keep);
+  } catch {
+    return 0;
+  }
+  if (keys.length === 0) return 0;
+  // When each chat was last updated, from the list of its own namespace.
+  const times = new Map<string, Map<string, number>>();
+  const rank = (k: string) => {
+    const at = k.indexOf(MSGS_MARK);
+    const scope = k.slice(NS_PREFIX.length, at);
+    let list = times.get(scope);
+    if (!list) {
+      list = new Map(readList(chatKey("sessions", undefined, scope)).map((s) => [s.id, Date.parse(s.updatedAt) || 0]));
+      times.set(scope, list);
+    }
+    return { key: k, own: scope === boundScope, at: list.get(k.slice(at + MSGS_MARK.length)) ?? 0 };
+  };
+  // The bound namespace first, and the oldest chat first inside each group.
+  const ranked = keys.map(rank).sort((a, b) => (a.own === b.own ? a.at - b.at : a.own ? -1 : 1));
+  const sizes = ranked.map(({ key }) => key.length + (localStorage.getItem(key)?.length ?? 0));
+  const ownTotal = ranked.reduce((sum, r, i) => (r.own ? sum + sizes[i] : sum), 0);
+  const target = Math.max(need, Math.ceil(ownTotal * EVICT_SHARE));
+  let freed = 0;
+  let dropped = 0;
+  for (let i = 0; i < ranked.length && freed < target; i++) {
+    const { key } = ranked[i];
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      continue;
+    }
+    freed += sizes[i];
+    dropped += 1;
+  }
+  return dropped;
+}
+
+/**
+ * THE write of every chat cache. A full storage first frees the oldest
+ * transcripts (`freeChatCacheRoom`), and then the write runs once more. It
+ * never throws: Postgres stays the durable store. True when the value landed.
+ */
+function safeSetItem(key: string, value: string): boolean {
   try {
     localStorage.setItem(key, value);
+    return true;
+  } catch (e) {
+    if (!isQuotaError(e)) return false;
+  }
+  if (freeChatCacheRoom(key, key.length + value.length) === 0) return false;
+  try {
+    localStorage.setItem(key, value);
+    return true;
   } catch {
-    /* quota exceeded or storage unavailable — Postgres remains the durable store */
+    return false;
   }
 }
 
@@ -934,11 +1019,15 @@ export function getQueue(sessionId: string): string[] {
 export function saveQueue(sessionId: string, queue: string[]): void {
   const key = chatKey("queue", sessionId);
   if (typeof window === "undefined" || !key) return;
+  if (queue.length > 0) {
+    // A full storage frees old transcripts first, so unsent words still land.
+    safeSetItem(key, JSON.stringify(queue));
+    return;
+  }
   try {
-    if (queue.length === 0) localStorage.removeItem(key);
-    else localStorage.setItem(key, JSON.stringify(queue));
-  } catch (_e) {
-    // Storage quota exceeded — best-effort only.
+    localStorage.removeItem(key);
+  } catch {
+    /* storage off */
   }
 }
 
@@ -961,11 +1050,13 @@ export function getMessages(sessionId: string): PersistedMessage[] {
 export function cacheMessages(sessionId: string, messages: unknown[]): void {
   const key = chatKey("msgs", sessionId);
   if (typeof window === "undefined" || !key) return;
+  let value: string;
   try {
-    localStorage.setItem(key, JSON.stringify(messages));
-  } catch (_e) {
-    /* quota exceeded */
+    value = JSON.stringify(messages);
+  } catch {
+    return;
   }
+  safeSetItem(key, value);
 }
 
 /**

@@ -42,6 +42,11 @@ gives the answer, and no later check runs:
    (MCP-P1a, spec §19.4, ``tools.scope_of``). An app that no manifest holds
    gets a tool error, and no 403.
 
+**The read-only door (SW-34b).** ``POST /mcp/readonly`` runs the same checks
+in the same order. Right after check 6 it narrows the caller's scopes to the
+read scopes (``bearer.read_only``). Check 8 and each method then read the
+narrowed scopes, so a write tool gets the 403 of check 8 there.
+
 **The error body (EA3-13).** Each 4xx and each 503 carries a JSON-RPC error
 with ``id: null``. The code is ``-32700`` for a body that is not JSON,
 ``-32603`` for a 503, and ``-32600`` for every other case.
@@ -247,6 +252,14 @@ _RUN_INSTRUCTIONS = (
 )
 
 
+#: IMG-3 (``projects_ai_chat.md`` §30.4 item 9). The last sentence of the
+#: instructions on every connection. On a write connection it sits after the
+#: cut of Claude Code at 4096 characters, so it moves no sentence before the
+#: cut. There the prompt and the ``get_task_context`` description carry it.
+#: Fence: ``test_mcp_edge_prompts.py`` ``TestTheImageRule``.
+_IMAGE_INSTRUCTIONS = " " + prompts.IMAGE_RULE
+
+
 def instructions(scopes: Iterable[str] = ()) -> str:
     """The ``instructions`` of ``initialize``.
 
@@ -255,12 +268,13 @@ def instructions(scopes: Iterable[str] = ()) -> str:
     ``projects:write`` on the connection. So a read-only connection names no
     write tool. The agent-run part shows only when ``tools/list`` shows the
     run writes: the runs flag too. The protocol of EA-15c (§12.4) comes first
-    in the routine, in its form for the runs flag.
+    in the routine, in its form for the runs flag. The image sentence of
+    IMG-3 comes last.
     """
     held = frozenset(scopes)
     text = _INSTRUCTIONS + prompts.BRIEF_RULE
     if not prompts.offered(held):
-        return text
+        return text + _IMAGE_INSTRUCTIONS
     runs = agent_oauth.runs_enabled()
     protocol = _PROTOCOL_RUNS_ON.replace("{terminals}", _terminals()).replace(
         "{answer}", prompts.answer_pointer()) if runs \
@@ -270,7 +284,7 @@ def instructions(scopes: Iterable[str] = ()) -> str:
         text += _RUN_INSTRUCTIONS
         if agent_oauth.answer_change_enabled():
             text += prompts.ANSWER_RULE
-    return text
+    return text + _IMAGE_INSTRUCTIONS
 
 #: The methods the route accepts, so that check 3 answers and not the router.
 ROUTE_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
@@ -279,6 +293,20 @@ ROUTE_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 def path() -> str:
     """The path of the resource, ``/mcp`` by default."""
     return urlsplit(agent_oauth.resource()).path or "/mcp"
+
+
+#: SW-34b. The last segment of the read-only door, below :func:`path`.
+READONLY_SEGMENT = "readonly"
+
+
+def readonly_path() -> str:
+    """The read-only door, ``/mcp/readonly`` by default (SW-34b).
+
+    The same token works here and on :func:`path`, because the audience is
+    the resource of :func:`path`. The path is the mode: each call here runs
+    with its scopes narrowed to the read scopes (``bearer.read_only``).
+    """
+    return f"{path().rstrip('/')}/{READONLY_SEGMENT}"
 
 
 def resource_metadata_url() -> str:
@@ -427,6 +455,24 @@ def _session_of(request: Request, caller: bearer.Caller,
 
 async def endpoint(request: Request) -> Response:
     """``/mcp``. Checks 2 to 8 of §9.6, in order, then the method."""
+    return await _serve(request, read_only=False)
+
+
+async def readonly_endpoint(request: Request) -> Response:
+    """``/mcp/readonly`` (SW-34b). The same checks, in the same order, with
+    the caller's scopes narrowed to the read scopes right after check 6.
+
+    So ``tools/list`` shows only reads, and check 8 answers 403
+    ``insufficient_scope`` for each write tool. The prompt, the resources
+    and the instructions read the same narrowed scopes. The path can only
+    narrow a token, never widen it. Fence:
+    ``tests/unit/test_mcp_edge_readonly.py``.
+    """
+    return await _serve(request, read_only=True)
+
+
+async def _serve(request: Request, *, read_only: bool) -> Response:
+    """Checks 2 to 8 of §9.6, in order, then the method."""
     key = agent_signing.signing_key()
     if key is None:
         return http_error(503, INTERNAL_ERROR, "The server is not ready.",
@@ -458,12 +504,20 @@ async def endpoint(request: Request) -> Response:
     try:
         if len(authorizations) > 1:
             raise bearer.BearerRefused(401, sent=True, reason="two_tokens")
-        caller = await bearer.authenticate(authorizations[0] if authorizations else None)
+        # EA-19b: the client address that uvicorn read from the proxy, never
+        # `X-Real-IP`, which a client could set. Only a box token reads it.
+        caller = await bearer.authenticate(
+            authorizations[0] if authorizations else None,
+            request.client.host if request.client else None)
     except bearer.BearerRefused as refused:
         if refused.status == 503:
             return http_error(503, INTERNAL_ERROR, "Metorite is busy. Try again.",
                               {"Retry-After": str(bearer.OUTAGE_RETRY_AFTER_S)})
         return challenge_401(sent=refused.sent)
+    if read_only:
+        # SW-34b: the one narrowing of the read-only door. Every later check
+        # reads `caller.scopes`, so no second scope rule exists.
+        caller = bearer.read_only(caller)
 
     method = message.get("method") if kind != "response" else None
     # 7. The version, and 7b. the session (SW-7).
@@ -546,17 +600,18 @@ async def _dispatch(request_id: Any, method: str, params: dict[str, Any],
                                                       session=session))
         return _result(request_id, {"tools": listed})
     if method == "prompts/list":
-        return _result(request_id, {"prompts": prompts.listed(caller.scopes)})
+        return _result(request_id, {"prompts": prompts.listed(caller.scopes, caller.lookup.organization_id)})
     if method.startswith("resources/"):
         return await _resources_method(
             request_id, method, params, caller,
             tools.Context(caller=caller, key=key, session=session))
     if method == "prompts/get":
         try:
-            result = prompts.get(caller.scopes, params)
+            result = prompts.get(caller.scopes, params, caller.lookup.organization_id)
         except prompts.PromptRefused as refused:
             return _rpc_error(request_id, INVALID_PARAMS, refused.message)
-        _log.info("agent_edge.prompt_get", prompt=prompts.PROMPT_NAME,
+        _log.info("agent_edge.prompt_get",
+                  prompt=prompts.logged_name(params),
                   connection_id=caller.lookup.connection_id)
         return _result(request_id, result)
     if tool is None:
@@ -569,6 +624,16 @@ async def _dispatch(request_id: Any, method: str, params: dict[str, Any],
             params.get("arguments"))
     except tools.GatewayUnauthorized:
         return challenge_401(sent=True)
+    # IMG-3: the result of `get_attachment` can hold an image part
+    # (`tools.image_result`). It goes out as it is, with no second wrap.
+    # MCP-G10: a refusal that names a wait also sends `Retry-After`, where the
+    # transport allows it. The answer stays HTTP 200 with `isError: true`.
+    wait = None
+    if result.get("isError"):
+        wait = (result.get("structuredContent") or {}).get("retry_after")
+    if isinstance(wait, int):
+        return JSONResponse({"jsonrpc": "2.0", "id": request_id, "result": result},
+                            headers={"Retry-After": str(wait)})
     return _result(request_id, result)
 
 
@@ -578,6 +643,7 @@ __all__ = [
     "LEGACY_VERSION",
     "MAX_BODY_BYTES",
     "NO_KEY_RETRY_AFTER_S",
+    "READONLY_SEGMENT",
     "ROUTE_METHODS",
     "SESSION_HEADER",
     "SUPPORTED_VERSIONS",
@@ -585,5 +651,7 @@ __all__ = [
     "challenge_403",
     "endpoint",
     "path",
+    "readonly_endpoint",
+    "readonly_path",
     "resource_metadata_url",
 ]

@@ -293,8 +293,9 @@ async def rename_organization(
         raise HTTPException(status_code=404, detail=f"no organization {slug!r}")
 
     _log.info("operator_org_renamed", slug=row["slug"], organization_id=org_id)
+    # Task 2221: the door binds no tenant, so it names the org it wrote.
     record_admin_change(_OPERATOR_ACTOR, "org.renamed", f"org:{row['slug']}",
-                        display_name=name, via="operator")
+                        organization_id=org_id, display_name=name, via="operator")
     return {"slug": row["slug"], "organization_id": row["id"],
             "display_name": row["display_name"]}
 
@@ -381,7 +382,8 @@ async def remove_organization_member(
         _log.warning("operator_member_removed", slug=slug,
                      email=member["email"], tree_projects=tree_projects)
         record_admin_change(_OPERATOR_ACTOR, "org.member_removed",
-                            f"user:{member['email']}", tree="sealed",
+                            f"user:{member['email']}", organization_id=org_id,
+                            tree="sealed",
                             tree_projects=tree_projects, via="operator")
         return {"status": "removed", "email": member["email"],
                 "tree_projects": tree_projects}

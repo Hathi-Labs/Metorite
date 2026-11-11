@@ -454,6 +454,24 @@ def _run_org() -> str:
         return ""
 
 
+def _forms_offer(area: str, profile: dict[str, Any]) -> str:
+    """The PZ-40 offer for the name question, or ``""``. It comes only for the
+    area ``name``, only where ``ADDRESS_FORMS_ORGS`` is on for the run's org,
+    and it reads the language that the profile stores, never a guess."""
+    if area != "name":
+        return ""
+    try:
+        from acb_common import honorifics
+        from acb_common.assistant_profile import address_forms_for
+
+        if not address_forms_for(_run_org()):
+            return ""
+        style = profile.get("style") if isinstance(profile.get("style"), dict) else {}
+        return " " + honorifics.offer_line(style.get("language"))
+    except Exception:
+        return ""
+
+
 def _card_channel() -> bool:
     """True when a card may ground a value or carry an offer (PZ-32).
 
@@ -1474,7 +1492,8 @@ async def profile_interview(action: str, area: str = "") -> str:
         if not open_:
             return NO_OPEN_AREA
         return "\n".join([INTERVIEW_HEADER, *(
-            f"{a}: {AREA_INTENTS[a]}. {EXAMPLE_TAG} «{AREAS[a]}»" for a in open_)])
+            f"{a}: {AREA_INTENTS[a]}. {EXAMPLE_TAG} «{AREAS[a]}»"
+            f"{_forms_offer(a, profile)}" for a in open_)])
     status, data = await _send(headers, "POST", f"/interview/{area_id}", {"state": act})
     if status == 422 and act == "asked":
         raise _Refused(NO_SITTING_TEXT)

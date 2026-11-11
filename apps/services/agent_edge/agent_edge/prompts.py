@@ -34,6 +34,8 @@ from typing import Any
 
 from acb_auth import agent_oauth
 
+from agent_edge import playbook_prompts
+
 #: The one prompt of the edge.
 PROMPT_NAME = "work_on_task"
 
@@ -75,6 +77,13 @@ PR_RULE = (
     " task N. Write the URL of the pull request, or call add_task_reference."
 )
 
+#: IMG-3 (``projects_ai_chat.md`` §30.4 item 9). The one sentence that sends
+#: an agent to the images of a task. The prompt, the ``initialize``
+#: instructions and the ``get_task_context`` description each hold it. Fence:
+#: ``test_mcp_edge_prompts.py`` ``TestTheImageRule``.
+IMAGE_RULE = ("When the task has images, call get_attachment for each one before"
+              " you start.")
+
 #: SW-43 (agent_coordination.md §3.9). One sentence, shown only while
 #: ``agent_answer_change_enabled`` is on. The member may take an answer back
 #: until an agent activity follows it, so the agent posts a thought first.
@@ -107,8 +116,23 @@ def offered(scopes: Iterable[str]) -> bool:
     return agent_oauth.writes_enabled() and agent_oauth.PROJECTS_WRITE in set(scopes)
 
 
-def listed(scopes: Iterable[str]) -> list[dict[str, Any]]:
-    """The ``prompts/list`` entries. Empty, never an error, when hidden."""
+def listed(scopes: Iterable[str], organization_id: object = None) -> list[dict[str, Any]]:
+    """The ``prompts/list`` entries. Empty, never an error, when hidden.
+
+    PB-2: the playbook prompts follow ``work_on_task``, for an organization on
+    ``playbook_orgs``. They need only ``projects:read``.
+    """
+    held = set(scopes)
+    return _work_on_task_entry(held) + playbook_prompts.listed(held, organization_id)
+
+
+def logged_name(params: object) -> str:
+    """The prompt name for the log: a known name, never client text."""
+    name = params.get("name") if isinstance(params, dict) else None
+    return name if name == PROMPT_NAME or name in playbook_prompts.PROMPTS else "unknown"
+
+
+def _work_on_task_entry(scopes: set[str]) -> list[dict[str, Any]]:
     if not offered(scopes):
         return []
     runs = agent_oauth.runs_enabled()
@@ -125,12 +149,34 @@ def listed(scopes: Iterable[str]) -> list[dict[str, Any]]:
     }]
 
 
-def get(scopes: Iterable[str], params: dict[str, Any]) -> dict[str, Any]:
+def get(scopes: Iterable[str], params: dict[str, Any],
+        organization_id: object = None) -> dict[str, Any]:
     """The ``prompts/get`` result, or raise :class:`PromptRefused`.
 
     No gateway request. The text is fixed text and the validated argument.
     """
     name = params.get("name")
+    if isinstance(name, str) and name in playbook_prompts.PROMPTS:
+        arguments = params.get("arguments")
+        if arguments is None:
+            arguments = {}
+        if not playbook_prompts.offered(name, scopes, organization_id):
+            raise PromptRefused(TEXT_UNKNOWN)
+        if not isinstance(arguments, dict):
+            raise PromptRefused(
+                playbook_prompts.TEXT_BAD_ARGUMENT.format(
+                    name=playbook_prompts.PROMPTS[name].argument or "arguments"))
+        try:
+            result = playbook_prompts.get(name, scopes, organization_id, arguments)
+        except ValueError as refused:
+            raise PromptRefused(str(refused)) from None
+        if result is None:
+            raise PromptRefused(TEXT_UNKNOWN)
+        description, text = result
+        return {
+            "description": description,
+            "messages": [{"role": "user", "content": {"type": "text", "text": text}}],
+        }
     if name != PROMPT_NAME or not offered(scopes):
         raise PromptRefused(TEXT_UNKNOWN)
     arguments = params.get("arguments")
@@ -308,7 +354,8 @@ def _context_step(*, start_run: bool) -> str:
     when the claim opened none (EA-13c gives ``agent_run_id``)."""
     step = (
         "Call get_task_context for the task. It shows why the task exists: its"
-        " parents, its project, its blockers and the newest comments.")
+        " parents, its project, its blockers and the newest comments. "
+        + IMAGE_RULE)
     if start_run:
         step += " Call start_agent_run only when claim_task gave no agent_run_id."
     return step
@@ -393,9 +440,10 @@ __all__ = [
     "ANSWER_RULE",
     "ARGUMENT",
     "BRIEF_RULE",
-    "PR_RULE",
+    "IMAGE_RULE",
     "MAX_DIGITS",
     "PROMPT_NAME",
+    "PR_RULE",
     "TEXT_BAD_TASK",
     "TEXT_EXTRA",
     "TEXT_NO_TASK",
@@ -403,5 +451,6 @@ __all__ = [
     "PromptRefused",
     "get",
     "listed",
+    "logged_name",
     "offered",
 ]

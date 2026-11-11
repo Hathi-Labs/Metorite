@@ -880,7 +880,8 @@ async def get_assistant_profile_block(
         raise HTTPException(status_code=503, detail="unavailable",
                             headers=headers) from exc
     preferred, _zone, display = names[:3] if names else (None, None, None)
-    text = member_block(row[0] if row is not None else None, preferred, display)
+    text = member_block(row[0] if row is not None else None, preferred, display,
+                        getattr(user, "organization_id", None))
     return JSONResponse({"enabled": True, "text": text}, headers=headers)
 
 

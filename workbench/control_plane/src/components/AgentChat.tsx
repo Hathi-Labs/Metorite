@@ -23,6 +23,9 @@ import ArtifactViewerModal from "@/components/ArtifactViewerModal";
 import { subscribe as subscribeSidePanel, getOpenDocsForSession, openGenUI } from "@/lib/sidePanelStore";
 import type { FileEntry } from "@/components/ArtifactSidebar";
 import FileUploadButton from "@/components/FileUploadButton";
+import VoiceInputButton, { type VoiceControls } from "@/components/VoiceInputButton";
+import { useVoiceAvailability } from "@/hooks/useVoiceDictation";
+import { insertAtCaret, type VoicePhase } from "@/lib/voiceDictation";
 import { wordsOfMessage } from "@/lib/chatUpload";
 import { PendingChips, workspaceFileUrl } from "@/components/ChatAttachmentChips";
 import { useChatAttachments } from "@/hooks/useChatAttachments";
@@ -63,6 +66,8 @@ import { DraftPinContext, draftPin, draftsOf } from "@/lib/pinnedDraft";
 import { withEmailSteps } from "@/lib/delegatedSteps";
 import { mailboxMarksOf } from "@/lib/mailboxMark";
 import MailboxMark from "@/components/MailboxMark";
+import ContinueOffer from "@/components/ContinueOffer";
+import { newestOfferId, type ContinueOpened } from "@/lib/chatContinue";
 import { ANSWER_CAPTION, typedAnswers, typedAnswerTarget } from "@/lib/typedAnswer";
 import { RollupRegistry, TURN_ATTR, turnThenArrival } from "@/lib/cardRollup";
 import { attachStickToBottom, nearAfterScroll, showJumpToBottom } from "@/lib/stickToBottom";
@@ -147,6 +152,7 @@ import { buildFrontendToolsAddendum, runFrontendToolEvent } from "@/hooks/useFro
 import { isInterruptedReply } from "@/lib/chatInterrupted";
 import { missingAgentIntegrations, missingIntegrationsText } from "@/lib/missingIntegrations";
 import { EMPTY_BOX, composerTyped, edited, filled, type ComposerMark } from "@/lib/typedMark";
+import type { AskOutcome } from "@/lib/shell/assistant";
 import {
   composerControls,
   composerModelPlan,
@@ -165,7 +171,9 @@ import {
 // Always includes the tiers (always accessible) and Gemini models (default provider).
 // Provider-specific models for other providers are added dynamically after fetch.
 const MODELS_FALLBACK: UnifiedModel[] = [
-  { id: "auto",              label: "auto (SDK picks)",     runtime: "copilot", group: "GitHub Copilot SDK" },
+  // "copilot" is the name of the agent-executor mode (the MAF tool path), not the SDK.
+  // The name retires with WS-43q (task 2285).
+  { id: "auto",              label: "Auto (the assistant picks)", runtime: "copilot", group: "Assistant" },
   { id: "tier-fast",     label: "Tier 1 (fast / cheap)", runtime: "litellm", group: "LiteLLM — Tiers" },
   { id: "tier-balanced", label: "Tier 2 (balanced)",     runtime: "litellm", group: "LiteLLM — Tiers" },
   { id: "tier-powerful", label: "Tier 3 (powerful)",     runtime: "litellm", group: "LiteLLM — Tiers" },
@@ -366,10 +374,12 @@ interface AgentChatProps {
    * Words to SEND once, as the member's turn (D99: the shell's chat bar).
    * Unlike `pendingInput`, the member already pressed Enter in the bar. It
    * waits until the history has loaded, sends each `seq` once, and then
-   * calls `onAutoSendConsumed`.
+   * calls `onAutoSendConsumed` with `sent`, or with `kept` when the chat
+   * refused the send and the words wait in the composer. A steer that the
+   * server refuses later calls it again with `kept` (STU-B2c-2c).
    */
   autoSend?: { seq: number; text: string; typed?: boolean } | null;
-  onAutoSendConsumed?: (seq: number) => void;
+  onAutoSendConsumed?: (seq: number, outcome: AskOutcome) => void;
   /**
    * D99: the one assistant's name, "Metorite". The member talks to one
    * assistant and never picks an agent, so with this set the chat shows the
@@ -384,6 +394,13 @@ interface AgentChatProps {
    * on purpose omits it, and its refusal shows as an error.
    */
   onSessionRefused?: (pendingText: string) => boolean;
+  /**
+   * The shell opens the fresh chat that the pill "Continue in a fresh chat"
+   * made (`lib/chatContinue.ts`, `one_assistant_context.md` §9 WT-2). Pass it
+   * only from the shell's dock. A host that omits it draws no pill. The new
+   * chat gets `text` in its composer, and nothing is sent.
+   */
+  onContinueHeld?: (opened: ContinueOpened) => void;
 }
 
 /** The `answer` of a resolved card that closed with no answer. */
@@ -425,6 +442,7 @@ export default function AgentChat({
   onAutoSendConsumed,
   assistantName,
   onSessionRefused,
+  onContinueHeld,
 }: AgentChatProps) {
   // Active agent / model can change mid-chat (VS Code Copilot style).
   const [currentAgentName, setCurrentAgentName] = useState(agentName);
@@ -901,6 +919,28 @@ export default function AgentChat({
   const runView = useSteadyRunView(run);
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // VOX-1 (projects_ai_chat §31): the mic beside Attach. The flag decides
+  // whether it shows. The transcript goes in at the caret, and the member
+  // sends it. Enter and Escape in the box stop or cancel a recording.
+  const voiceAvailability = useVoiceAvailability();
+  const voiceRef = useRef<VoiceControls>(null);
+  const [voicePhase, setVoicePhase] = useState<VoicePhase>("idle");
+  const putDictation = useCallback((text: string) => {
+    const el = inputRef.current;
+    const prev = el?.value ?? "";
+    const next = insertAtCaret(prev, el?.selectionStart ?? prev.length, el?.selectionEnd ?? prev.length, text);
+    // D-PZ-37: the member spoke these words and did not type them. A program
+    // put them in the box, so a send of the box carries no typed mark.
+    boxMarkRef.current = filled(boxMarkRef.current, false);
+    setInput(next.value);
+    setComposerNotice(null);
+    requestAnimationFrame(() => {
+      const box = inputRef.current;
+      if (!box) return;
+      box.focus();
+      box.setSelectionRange(next.caret, next.caret);
+    });
+  }, [setInput, setComposerNotice]);
   // IMG-1 (projects_ai_chat §30.4): a file is a chip until the member sends.
   const att = useChatAttachments(sessionId);
   const attRef = useRef(att);
@@ -1816,6 +1856,8 @@ export default function AgentChat({
     () => (messages.length > renderLimit ? messages.slice(-renderLimit) : messages),
     [messages, renderLimit],
   );
+  // WT-2: the newest settled turn that the server marked as held.
+  const continueOfferId = useMemo(() => newestOfferId(visibleMessages), [visibleMessages]);
 
   // A steer the server refused gives its words back, and says why. Text the
   // member typed since then keeps its place (`mergeCappedText`).
@@ -1849,7 +1891,9 @@ export default function AgentChat({
    * prompt call this with no mark (`lib/typedMark.test.ts`).
    */
   const submitText = useCallback(
-    (text: string, opts?: { typed?: boolean }): boolean => {
+    // `opts.onKept` (STU-B2c-2c): a steer that the server refuses later gives
+    // the words back to the box, and this tells the sender so.
+    (text: string, opts?: { typed?: boolean; onKept?: () => void }): boolean => {
       const trimmed = text.trim();
       // Guard ALL senders (suggestion pills, MCQ choices, HITL card submits,
       // the email "Fix" flow) — not just the textarea form — against sending
@@ -1869,6 +1913,7 @@ export default function AgentChat({
       }
       void (typed ? steerMessage(trimmed, { typed: true }) : steerMessage(trimmed)).then((out) => {
         if (out.kind === "refused") giveBack(trimmed, out.notice, typed);
+        if (out.kind === "refused") opts?.onKept?.();
       });
       return true;
     },
@@ -1889,11 +1934,16 @@ export default function AgentChat({
     // D-PZ-37: the Ask field is one box with the composer, so its typed
     // words carry the mark. A start pill of the field sends none.
     const askTyped = autoSend.typed === true;
-    if (!submitText(autoSend.text, askTyped ? { typed: true } : undefined)) {
+    // STU-B2c-2c: the sender learns what became of the words. A card says
+    // "Sent to the chat" only after a send, never while they wait in the box.
+    const seq = autoSend.seq;
+    const onKept = () => onAutoSendConsumed?.(seq, "kept");
+    const sent = submitText(autoSend.text, askTyped ? { typed: true, onKept } : { onKept });
+    if (!sent) {
       boxMarkRef.current = filled(boxMarkRef.current, askTyped);
       setInput((prev) => mergeCappedText(prev, autoSend.text));
     }
-    onAutoSendConsumed?.(autoSend.seq);
+    onAutoSendConsumed?.(seq, sent ? "sent" : "kept");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoSend?.seq, loadingHistory]);
 
@@ -1939,6 +1989,18 @@ export default function AgentChat({
   }, [input]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // VOX-1: while the mic records, Enter stops it and Escape cancels it.
+    // Neither sends: the transcript goes in the box first.
+    if (voicePhase === "recording" && e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      voiceRef.current?.stop();
+      return;
+    }
+    if ((voicePhase === "recording" || voicePhase === "asking") && e.key === "Escape") {
+      e.preventDefault();
+      voiceRef.current?.cancel();
+      return;
+    }
     // Enter sends and Shift+Enter is a new line (owner, 2026-10-31). On a
     // touch keyboard Enter stays a new line (`enterSends`, lib/chatSteer.ts).
     if (enterSends({ ...e, isComposing: e.nativeEvent.isComposing }, touchKeyboard())) {
@@ -2660,6 +2722,11 @@ export default function AgentChat({
                   receipts={confirmations.receipts.filter((r) => r.afterId === msg.id)}
                   onUndo={undoReject}
                 />
+                {/* WT-2: the server marked this held turn, and the shell can open
+                    the fresh chat. Under the newest marked turn only. */}
+                {onContinueHeld && msg.id === continueOfferId && (
+                  <ContinueOffer sessionId={sessionId} onOpened={onContinueHeld} />
+                )}
                 {/* Inline HITL card — anchored to the asking assistant turn. */}
                 {msg.id === hitlAnchorId && renderHitlCards()}
               </div>
@@ -2921,6 +2988,11 @@ export default function AgentChat({
               <FileUploadButton sessionId={sessionId}
                 onPick={(files) => { att.add(files); inputRef.current?.focus(); }}
                 className={`shrink-0 flex ${tap} items-center justify-center`} />
+              {voiceAvailability.shown && (
+                <VoiceInputButton ref={voiceRef} availability={voiceAvailability}
+                  onText={putDictation} onNotice={setComposerNotice} onPhase={setVoicePhase}
+                  className={`shrink-0 flex ${tap} items-center justify-center`} />
+              )}
             {hasComposerControls && !phoneChrome && (
             <div data-chat-pickers="" className="order-first flex min-w-0 basis-full flex-wrap items-center gap-1 text-[11px] text-muted-foreground sm:order-none sm:basis-auto sm:flex-initial sm:self-center" ref={modelMenuRef}>
             <>

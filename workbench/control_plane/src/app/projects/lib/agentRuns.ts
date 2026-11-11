@@ -162,6 +162,13 @@ export interface AgentRun {
    * lease, so the next claim may take the task over. The gateway decides it.
    */
   lease_expired?: boolean;
+  /**
+   * SW-4. True when an OPEN run no longer keeps its task: its lease ended, or
+   * its connection is revoked or expired. The same answer as `held_by.stale`.
+   * A gateway before SW-4 does not send it, so `runHolderFree` falls back to
+   * `lease_expired`.
+   */
+  holder_free?: boolean;
   status: AgentRunStatus;
   /** The derived state (`AGENT_RUN_STATE_SQL`). A closed run reads its status. */
   state?: AgentRunState | null;
@@ -266,13 +273,29 @@ export const CLIENT_LABELS: Readonly<Record<string, string>> = {
   "claude.ai": "Claude",
 };
 
+/** WS-55 EA-19b (spec §10.9). The start of a box stamp. */
+export const BOX_STAMP_PREFIX = "mcp:box:";
+
+/** True for a box stamp, `mcp:box:<slug>-<8 hex>` (EA-19b). */
+export function isBoxStamp(via?: string | null): boolean {
+  return (via ?? "").trim().toLowerCase().startsWith(BOX_STAMP_PREFIX);
+}
+
 /**
  * The name of a client stamp. A known stamp reads its label. Else the label
  * of its host, else the host itself, so `mcp:evil.example:claude-code` reads
- * "evil.example". An empty value reads "Agent".
+ * "evil.example". An empty value reads "Agent". EA-19b: a box stamp
+ * `mcp:box:<slug>-<8 hex>` reads "Box <slug>", and `mcp:box:<8 hex>` reads
+ * "Box". The rule of `agent_oauth.client_label`.
  */
 export function clientName(via?: string | null): string {
   const raw = (via ?? "").trim().toLowerCase();
+  if (raw.startsWith(BOX_STAMP_PREFIX)) {
+    const tail = raw.slice(BOX_STAMP_PREFIX.length);
+    const named = /^(.+)-[0-9a-f]{8}$/.exec(tail);
+    if (named) return `Box ${named[1]}`;
+    return !tail || /^[0-9a-f]{8}$/.test(tail) ? "Box" : `Box ${tail}`;
+  }
   const body = raw.startsWith("mcp:") ? raw.slice(4) : raw;
   // An own key only: `mcp:constructor` must not read a property of Object.
   const label = (key: string) =>
@@ -786,6 +809,8 @@ export function runIdentity(
   run: Pick<AgentRun, "client_via" | "client_name" | "client_host">,
 ): string {
   const name = run.client_name?.trim() || clientName(run.client_via);
+  // EA-19b: the pill of a box reads the label only. Its host is `box`.
+  if (isBoxStamp(run.client_via)) return name;
   const host = run.client_host?.trim() || hostOfStamp(run.client_via);
   return host && host.toLowerCase() !== name.toLowerCase() ? `${name} \u00b7 ${host}` : name;
 }
@@ -1025,6 +1050,11 @@ export function heldByLine(
 
 /** The word beside the line when the lease ended. */
 export const STALE_HOLD_TEXT = "stale";
+
+/** SW-4. Whether the next claim can take the task: the server's holder-free answer. */
+export function runHolderFree(run: Pick<AgentRun, "holder_free" | "lease_expired">): boolean {
+  return run.holder_free ?? run.lease_expired ?? false;
+}
 
 /**
  * May the caller release this run? The run's member, an assignee of the

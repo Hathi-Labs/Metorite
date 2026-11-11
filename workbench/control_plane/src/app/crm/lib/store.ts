@@ -14,7 +14,7 @@
 
 import { create } from "zustand";
 import * as api from "./api";
-import { CrmError } from "./api";
+import { CrmError, TRY_AGAIN } from "./api";
 import {
   applyLeadMove,
   applyMove,
@@ -37,7 +37,16 @@ import {
   listQuery,
   queryString,
 } from "./filters";
+import type { NewPipelineDraft, PipelineKind } from "./newPipeline";
 import type { SettingsDraft, VocabularyState } from "./settings";
+
+/** The New pipeline dialog of CRM settings (CRM-M3a), and its kind (CRM-M4a). */
+export type NewPipelineState = {
+  open: boolean;
+  draft: NewPipelineDraft | null;
+  /** `lead` for a lead pipeline. Absent or `deal`: a deal pipeline. */
+  kind?: PipelineKind;
+};
 import { cardSortQuery, type CardSort } from "./nextActivity";
 import {
   applyPatches,
@@ -51,6 +60,7 @@ import type {
   CrmReports,
   Deal,
   DealContact,
+  DealPipeline,
   EntitySlug,
   Lead,
   LostReason,
@@ -159,6 +169,14 @@ type CrmState = {
   /** Keep a draft, or drop it with `null`. */
   setSettingsDraft: (key: string, draft: SettingsDraft | null) => void;
   /**
+   * WS-CRM CRM-M3a: the New pipeline dialog, open or shut, and its draft. In
+   * the store, because the page mounts another tree at the phone width, and
+   * the dialog must stay open with what the member typed. CRM-M4a: `kind`
+   * says which pipeline the one dialog makes. Absent: a deal pipeline.
+   */
+  newPipeline: NewPipelineState;
+  setNewPipeline: (next: Partial<NewPipelineState>) => void;
+  /**
    * The view the visible collection was loaded for.
    *
    * Kept so a write can re-read WHAT IS ON SCREEN without every caller
@@ -266,6 +284,13 @@ type CrmState = {
    * failed, the stage stays at the end and the error says so.
    */
   addStageBeforeClosed: (kind: StatusKind, body: Record<string, unknown>) => Promise<string | null>;
+  /**
+   * WS-CRM CRM-M3a: create a deal pipeline. Null when it is made, else the
+   * words of the refusal. The dialog shows them, so the page banner does not.
+   * The stages re-read, because a create can make new ones, and
+   * `usePipelines` wakes through the api call.
+   */
+  createPipeline: (body: Record<string, unknown>) => Promise<string | null>;
   saveLostReason: (
     reasonId: string | null,
     body: Record<string, unknown>
@@ -343,8 +368,10 @@ export const useCrmStore = create<CrmState>((set, get) => ({
   refusal: null,
   lastView: null,
   settingsDrafts: {},
+  newPipeline: { open: false, draft: null },
 
   setError: (error) => set({ error }),
+  setNewPipeline: (next) => set((state) => ({ newPipeline: { ...state.newPipeline, ...next } })),
   setSettingsDraft: (key, draft) =>
     set((state) => {
       const next = { ...state.settingsDrafts };
@@ -941,6 +968,19 @@ export const useCrmStore = create<CrmState>((set, get) => ({
       await get().loadVocabulary();
     }
     return created.id;
+  },
+
+  async createPipeline(body) {
+    set({ saving: true });
+    try {
+      await api.createPipeline(body);
+      return null;
+    } catch (err) {
+      return message(err) || TRY_AGAIN;
+    } finally {
+      set({ saving: false });
+      await get().loadVocabulary();
+    }
   },
 
   async saveLostReason(reasonId, body) {

@@ -304,7 +304,8 @@ second. `sha` speaks for the gateway, and `applied_sha` for the whole apply. The
 
 - **Staging takes every merge** to `main` that passes lint, within about 15
   minutes.
-- **Production takes one release a day**, at 03:00 IST.
+- **Production takes three releases a day**, at 11:00, 19:00 and 03:00 IST
+  (05:30, 13:30 and 21:30 UTC, D194).
 - **The staging data is rebuilt each day** at 09:00 IST, from the production copy
   of the night before.
 - **To skip one production release,** set the repository variable `RELEASE_HOLD`

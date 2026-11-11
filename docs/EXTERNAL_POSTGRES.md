@@ -144,7 +144,7 @@ manual acts. The generator is the authority, not a running system.
 
 | Trap | Where | What to do |
 |---|---|---|
-| `scripts/setup_secrets.sh` rewrites `DATABASE_URL` to `localhost` and rotates `GATEWAY_INTERNAL_TOKEN` | `setup_secrets.sh:13-25` | **Never run it on a managed-DB box.** |
+| `scripts/setup_secrets.sh` rewrites `DATABASE_URL` to `localhost`. Each run also rotates `POSTGRES_PASSWORD`, `LITELLM_MASTER_KEY` and `GATEWAY_SESSION_SECRET`. It writes a new `GATEWAY_INTERNAL_TOKEN` only when the token is absent, empty or equal to the LLM key (2026-11-07, WS-24c) | `setup_secrets.sh` | **Never run it on a managed-DB box.** |
 | `scripts/import_hr_people.py` defaults to a localhost DSN when `DATABASE_URL` is unset | `:173` | export `DATABASE_URL` first |
 | The compose `core` profile still starts the (unused) `acb-postgres` container | `infra/docker-compose.yml` | harmless; remove from the profile only as its own reviewed change |
 | Pool arithmetic assumes `max_connections=100` | `acb_common/settings.py` (`db_pool_size`/`db_max_overflow`) | redo the math against the provider tier; pooler mitigates |

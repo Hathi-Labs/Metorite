@@ -97,6 +97,20 @@ async def active(
     return {"runs": runs, "count": len(runs)}
 
 
+def _effective_runtime(name: str, entry: dict[str, Any], org: str | None) -> str:
+    """The runtime that a run of *name* in *org* takes, not only its label.
+
+    WS-43h (review P3): app-builder is labelled ``"maf"``, and its factory
+    builds the Copilot agent for an org outside ``app_builder:<org>``.
+    """
+    label = str(entry.get("agent_runtime") or entry.get("runtime") or "maf")
+    try:
+        from orchestrator.code_session import APP_BUILDER_AGENT, app_builder_runtime_for
+    except ImportError:
+        return label
+    return app_builder_runtime_for(org) if name == APP_BUILDER_AGENT else label
+
+
 @router.get("/roster")
 async def roster(
     viewer: UserContext = _VIEWER,
@@ -158,7 +172,7 @@ async def roster(
             "name": name,
             "display_name": aliases.get(name, ""),
             "description": str(a.get("description") or ""),
-            "runtime": a.get("agent_runtime") or a.get("runtime") or "maf",
+            "runtime": _effective_runtime(name, a, org),
             "status": "working" if live else "idle",
             "active_runs": len(live),
             "last_ts": live[0].get("ts") if live else None,
@@ -440,8 +454,14 @@ def _save_avatar(
     H-201: the write binds the tenant, and the column default stamps the row
     with it. ``tenant_session`` commits on exit and refuses no tenant.
 
-    ⚠️ The conflict key is still ``agent_name`` alone. Under FORCE RLS, an
-    upsert of a name that another org holds fails. Task 1719 owns that key.
+    H-201d (task 1719): the conflict target is ``(organization_id,
+    agent_name)``, the unique index of migration 354. A save never matches
+    a row of another org.
+
+    ⚠️ Expand phase. The old primary key on ``agent_name`` alone still
+    exists, so a save of a name that another org holds fails with a unique
+    violation on ``agent_avatars_pkey``. The contract release drops that
+    key (HANDOFF H-443), and then the save succeeds.
     """
     from acb_graph import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
@@ -451,7 +471,7 @@ def _save_avatar(
             text(
                 "INSERT INTO agent_avatars (agent_name, config, sprite, updated_at) "
                 "VALUES (:n, CAST(:c AS jsonb), :s, now()) "
-                "ON CONFLICT (agent_name) DO UPDATE SET "
+                "ON CONFLICT (organization_id, agent_name) DO UPDATE SET "
                 "config = CAST(:c AS jsonb), sprite = :s, updated_at = now()"
             ),
             {"n": name, "c": json.dumps(config or {}), "s": sprite},

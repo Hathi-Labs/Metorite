@@ -286,6 +286,11 @@ def run(monkeypatch: pytest.MonkeyPatch, settings):
         state["reads"].append((org, member))
         return state["row"]
 
+    # A fresh profile cache for each test. Another test file can leave
+    # "nothing set" for the same (org, member), and the prime then skips the
+    # read (seen 2026-11-08 with test_executor_briefing_block.py first).
+    monkeypatch.setattr(ex, "_PROFILE_CACHE", {})
+    monkeypatch.setattr(ex, "_CELEBRATIONS_SET", {})
     monkeypatch.setattr(ex, "_current_run_org", lambda: state["org"])
     monkeypatch.setattr(ex, "_verified_run_member", lambda: state["member"])
     monkeypatch.setattr(ex, "_celebration_read", read)

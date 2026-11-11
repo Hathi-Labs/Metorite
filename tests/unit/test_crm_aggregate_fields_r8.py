@@ -83,15 +83,14 @@ async def _call(p: Any, user: Any, method: str, path: str, body: dict | None = N
     import httpx
     from acb_auth import get_current_user
     from acb_common.db import bind_tenant, clear_tenant, release_tenant
-    from fastapi import FastAPI
-    from gateway.routes import crm as crm_package
 
     async def _caller() -> Any:
         bind_tenant(user.organization_id)
         return user
 
-    app = FastAPI()
-    app.include_router(crm_package.router)
+    from tests.unit._crm_app import crm_app
+
+    app = crm_app()
     app.dependency_overrides[get_current_user] = _caller
     scope = clear_tenant()
     try:
@@ -947,8 +946,6 @@ async def _timed(p: Any, org: str, queries: dict[str, dict]) -> dict[str, tuple]
     import httpx
     from acb_auth import get_current_user
     from acb_common.db import bind_tenant, clear_tenant, release_tenant
-    from fastapi import FastAPI
-    from gateway.routes import crm as crm_package
 
     user = _admin(org)
 
@@ -956,8 +953,9 @@ async def _timed(p: Any, org: str, queries: dict[str, dict]) -> dict[str, tuple]
         bind_tenant(user.organization_id)
         return user
 
-    app = FastAPI()
-    app.include_router(crm_package.router)
+    from tests.unit._crm_app import crm_app
+
+    app = crm_app()
     app.dependency_overrides[get_current_user] = _caller
     out: dict[str, tuple] = {}
     scope = clear_tenant()
@@ -1332,8 +1330,6 @@ async def _best_of(p: Any, org: str, queries: dict[str, dict], runs: int = 3,
     import httpx
     from acb_auth import get_current_user
     from acb_common.db import bind_tenant, clear_tenant, release_tenant
-    from fastapi import FastAPI
-    from gateway.routes import crm as crm_package
 
     user = _admin(org)
 
@@ -1341,8 +1337,9 @@ async def _best_of(p: Any, org: str, queries: dict[str, dict], runs: int = 3,
         bind_tenant(user.organization_id)
         return user
 
-    app = FastAPI()
-    app.include_router(crm_package.router)
+    from tests.unit._crm_app import crm_app
+
+    app = crm_app()
     app.dependency_overrides[get_current_user] = _caller
     out: dict[str, tuple[dict, float]] = {}
     scope = clear_tenant()

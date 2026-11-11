@@ -219,6 +219,8 @@ launch: "live" | "preview"   // src/lib/nav.ts, NavPane
 
 ## 4. Pricing — flat, per user, plus AI credits (D49)
 
+> **The direction changed (owner, 2026-11-10, D204 point 9 and D190.3).** The D152 seat tiers with base pricing replace the flat seat. The code sells the flat seat until PLN-0 merges. This section stays the record of what the code does today.
+
 ⚠️ **WS-PLN replaces this offer at launch (D152, `seat_plans.md`).** This section stays the live offer until PLN-50 flips. Build no new seat, checkout or signup work against it.
 
 ### 4.1 The shape

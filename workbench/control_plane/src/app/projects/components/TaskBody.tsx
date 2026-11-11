@@ -58,6 +58,7 @@ import RecordTabBar from "@/components/RecordTabBar";
 import { TaskLinks } from "./TaskLinks";
 import { AgentRunPanel } from "./AgentRunPanel";
 import { DecisionPanel } from "./DecisionPanel";
+import { TaskCheckBlock } from "./TaskCheckBlock";
 import { activityAttribution, agentKindLabel, viaLabel } from "../lib/agentRuns";
 import { MarkdownBody } from "@/components/MarkdownMessage";
 import { taskRefResolverFor, type TaskRefResolver } from "@/lib/taskRefs";
@@ -72,6 +73,7 @@ import {
   type StatusRow,
   type TagRow,
   type TaskRow,
+  type TaskTypeRow,
   attachmentsApi,
   projectsApi,
   watchersApi,
@@ -113,6 +115,8 @@ import {
   rollUp,
   threadComments,
 } from "../lib/activityStream";
+import { typeRefusal, typeSelectOptions } from "../lib/taskEpic";
+import { type EpicRollup, rollupLine } from "../lib/epicRollup";
 import { parseAssignees, withAssignee, withoutAssignee } from "../lib/assignees";
 import { insertMention, notDeliveredNotice } from "../lib/notifications";
 
@@ -507,6 +511,35 @@ export function TaskBody({
   // D77 — every member's timed work on the task, summed by the gateway
   // (`GET /projects/tasks/{id}` → `time_spent_mins`). Null until read.
   const [spent, setSpent] = useState<number | null>(null);
+  // SP-9 — the roll-up of an epic, from the same single read. Absent for a
+  // task that is not an epic.
+  const [rollup, setRollup] = useState<EpicRollup | null>(null);
+  // SP-6 — the types of THIS task's project, read here so the host (the
+  // Projects panel or My Tasks' detail) need not pass them. A failed read
+  // leaves the list empty: the control then offers "No type" only.
+  // `typesFor` names the project the list belongs to, so the control stays
+  // disabled until the types of THIS task's project have loaded.
+  const [taskTypes, setTaskTypes] = useState<TaskTypeRow[]>([]);
+  const [typesFor, setTypesFor] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setTaskTypes([]);
+    setTypesFor(null);
+    projectsApi
+      .types(task.project_id)
+      .then((res) => {
+        if (!live) return;
+        setTaskTypes(res.rows);
+        setTypesFor(task.project_id);
+      })
+      .catch(() => {
+        if (live) setError("Couldn't load the task types. Close this task and open it again.");
+      });
+    return () => {
+      live = false;
+    };
+  }, [task.project_id]);
   const assignees = task.assignees ?? [];
   // Agents are excluded: an agent cannot receive a notification (migration
   // 152's CHECK), so offering to mention one would promise nothing.
@@ -541,6 +574,7 @@ export function TaskBody({
       .catch(() => undefined);
     setWatching(null);
     setSpent(null);
+    setRollup(null);
     watchersApi
       .get(task.id)
       .then((res) => {
@@ -551,7 +585,9 @@ export function TaskBody({
     projectsApi
       .task(task.id)
       .then((row) => {
-        if (live) setSpent(row.time_spent_mins ?? 0);
+        if (!live) return;
+        setSpent(row.time_spent_mins ?? 0);
+        setRollup(row.rollup ?? null);
       })
       .catch(() => undefined);
     return () => {
@@ -822,9 +858,28 @@ export function TaskBody({
     }
   }
 
+  /** SP-6 — set the type through the same save path as the other fields. */
+  async function changeType(next: string) {
+    const type = taskTypes.find((t) => t.id === next);
+    const refusal = typeRefusal(task, type);
+    if (refusal) {
+      setError(refusal);
+      return;
+    }
+    await patch(
+      { type_id: next === "" ? null : next },
+      "Couldn't change the type.",
+      "Check the task and try again.",
+    );
+  }
+
   /** One shared fact of the task — due date, priority, tags — patched and
    *  merged back. The board's cell editors write the same payloads. */
-  async function patch(payload: Record<string, unknown>) {
+  async function patch(
+    payload: Record<string, unknown>,
+    failure?: string,
+    nextStep?: string,
+  ) {
     setBusy(true);
     setError(null);
     try {
@@ -837,7 +892,8 @@ export function TaskBody({
         after: reload,
       });
     } catch (err) {
-      setError(String((err as Error).message));
+      const detail = String((err as Error).message);
+      setError(failure ? `${failure} ${detail} ${nextStep ?? ""}`.trim() : detail);
     } finally {
       setBusy(false);
     }
@@ -982,6 +1038,9 @@ export function TaskBody({
             then the Add row. Nothing that waits on the member hides behind
             a tab (D181, `specs/one_record_card.md` §3.3). */}
         <div className="px-3 py-3">
+          {/* WS-MCP SW-23 — the Check of the task, read only. It draws
+              nothing while the Check flag is off or the task has none. */}
+          <TaskCheckBlock check={task.check} />
           {/* WS-55 EA-12c — the open agent run. ORC-3 moved it from the
               discussion. It draws nothing while the routes are off. */}
           <AgentRunPanel
@@ -1218,6 +1277,21 @@ export function TaskBody({
                   />
                 </FieldCell>
 
+                {/* SP-6 — the type. Epic is a type that only a top-level task
+                    may wear, so the epic option is disabled on a subtask. */}
+                <FieldCell label="Type" icon="Layers">
+                  <SelectButton
+                    label="Type"
+                    layer="top"
+                    align="end"
+                    widthClass="w-full"
+                    value={task.type_id ?? ""}
+                    disabled={busy || typesFor !== task.project_id}
+                    onChange={(next) => void changeType(next)}
+                    options={typeSelectOptions(taskTypes, task)}
+                  />
+                </FieldCell>
+
                 {/* D77 — when the work starts, shared. A DATE, so the value is
                     the day itself, never routed through `new Date()` (the
                     `start_date` note on `TaskRow`). My Tasks hides the task
@@ -1259,6 +1333,16 @@ export function TaskBody({
                     {spent === null ? "…" : spent > 0 ? durationLabel(spent) : "None yet"}
                   </span>
                 </FieldCell>
+
+                {/* SP-9 — an epic rolls up EVERY slice below it that the reader
+                    can see. The board card keeps its direct-child count. */}
+                {rollup ? (
+                  <FieldCell label="Slices" icon="GitBranch">
+                    <span className="text-sm text-foreground" data-testid="epic-rollup">
+                      {rollupLine(rollup)}
+                    </span>
+                  </FieldCell>
+                ) : null}
 
                 <FieldCell label="Repeats" icon="Repeat">
                   <RepeatEditor taskId={task.id} bare />
