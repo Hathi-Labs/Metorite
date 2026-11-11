@@ -1245,6 +1245,8 @@ async def test_a_run_with_nobody_to_act_as_makes_no_call(tool: str, monkeypatch)
             # recipient tools' own tests (test_projects_report_delivery_tools.py)
             # pin the name, the address and the schedule on the card.
             "add_report_recipient",
+            # WS-55 EA-18d: the card names the agent's question, not a row.
+            "answer_agent_question",
             "remove_report_recipient",
             "set_report_schedule",
             # WS-66 RM-3: a NEW reminder, as create_personal_task is a new task.

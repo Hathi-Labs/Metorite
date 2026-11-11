@@ -773,8 +773,6 @@ _PROJECTS_WORDS = (
     "to-do", "to-do list", "todo", "my projects", "all projects",
     "project summary", "task board",
     "kanban board", "show the board", "draw a board",
-    # WS-55 EA-18d: the questions that agents put and that wait on the member.
-    "agent questions", "agent question", "questions wait on me",
 )
 _PROJECTS_PLAN_WORDS = (
     "burndown", "velocity", "team capacity", "workload",
@@ -873,6 +871,8 @@ _PROJECTS_AUTHORITY_WORDS = (
     "pin this page", "pin the page", "pin a page", "unpin",
     # WS-39 LP-1a: the updates of a project.
     "project update", "project updates",
+    # WS-55 EA-18d: the questions that agents put and that wait on the member.
+    "agent questions", "agent question", "questions wait on me",
     # SP-8a: the contract of an epic.
     "epic contract", "contract of the epic", "contract of this epic",
     "acceptance checks",

@@ -1224,7 +1224,7 @@ CHILD_TOOLS: dict[str, frozenset[str]] = {
         "crm_change_history", "crm_search_notes", "get_pipeline", "get_record",
         "get_timeline", "search_crm"}),
     "projects": frozenset({
-        "agent_questions", "calendar", "find_tasks", "list_tasks", "my_task", "my_work", "people_for",
+        "calendar", "find_tasks", "list_tasks", "my_task", "my_work", "people_for",
         "project_summary", "projects_tree", "task_detail", "vocabulary"}),
     "projects-plan": frozenset({
         "analytics_finished", "analytics_load", "analytics_outlook", "analytics_stuck",
@@ -1238,7 +1238,7 @@ CHILD_TOOLS: dict[str, frozenset[str]] = {
     "projects-reminders": frozenset({
         "intake_queue", "list_reminders", "my_areas", "my_contexts", "my_decisions",
         "notifications"}),
-    "projects-authority": frozenset({"list_project_updates", "project_authorities"}),
+    "projects-authority": frozenset({"agent_questions", "list_project_updates", "project_authorities"}),
     "projects-cycles": frozenset({"cycle_detail", "list_cycles"}),  # WS-39 SP-5a
     # STU-G1: STUDIO_ORGS holds no org here, so the pack builds no tool.
     "studio": frozenset(),
