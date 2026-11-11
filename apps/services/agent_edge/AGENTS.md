@@ -94,6 +94,11 @@ This unit serves outside agents on `https://mcp.metorite.com` (WS-55). The spec 
   - While `AGENT_GUIDANCE_ORGS` does not name the org, the gateway answers 404, and the edge leaves out each key. A claim whose guidance read fails still succeeds, with no key.
   - The server instructions say how to read the guidance. Fences: `test_agent_guidance.py`, `test_mcp_edge_claim.py` (`TestClaimReturnsGuidance`), `test_mcp_edge_prompts.py` (`TestGuidanceRule`).
 
+- WS-MCP SW-23 (`agent_coordination.md` SW-23) adds the Check of a task. Dark behind `agent_task_checks_enabled`, read through `agent_oauth.task_checks_enabled`.
+  - `create_task` and `update_task` take the input `check`, and the edge sends it as `check_text` (`_body_inputs`, `_check_body`). While the flag is off, `Tool.describe` leaves the input out of `tools/list` (`shown_inputs`), and a call that sends it gets `TEXT_CHECKS_OFF` with no request.
+  - `report_check` posts one run to `POST /projects/tasks/{task_id}/check-result` with `If-Match`. It shows only while the flag is on (`Tool.checks`). The gateway decides when a pass closes the task, and the edge maps `not_closed` and the two 409 codes to fixed texts.
+  - `get_task_context` returns `check` as its FIRST key, and a `my_work` row carries `check` with no evidence. An assigned task whose Check is due gets the reason `check_due`, between `held_by_you` and `assigned`. The gateway marks `due`, and the edge reads no clock.
+  - The Check text and the evidence leave as untrusted text. `CHECK_RULE` tells an agent to run only a read-only command. `CHECK_TEXTS` fills the description markers by the flag. Fence: `tests/unit/test_task_check_r8.py`.
 - WS-39 TPL-1a (`project_management_app.md` §14.8) adds one read, `list_templates`, over `GET /projects/templates`. The input `template_id` reads one template. The name and the description of a template leave as untrusted text. It answers the flag text while `PROJECTS_TEMPLATES_ORGS` does not hold the org. ⚠️ The save and the apply of a template stay OFF the edge: both are class C in the chat manifest, and rule 2 of the coverage fence refuses a class C pair. An MCP write of a template needs a preview and a confirm step first, as `move_tasks` has. Fence: `tests/unit/test_mcp_edge_templates.py`.
 
 ## Local contract

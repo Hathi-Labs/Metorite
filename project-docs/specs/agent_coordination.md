@@ -6,6 +6,8 @@
 
 **SW-34b (the read-only door `/mcp/readonly`) is built, 2026-11-07.**
 
+**SW-23 (a task carries a Check) is built and dark, 2026-11-11.**
+
 **P10 (§3.11, §5.11, D186) was planned on 2026-11-06. No P10 slice is built.** The know-how for other organizations is in `orchestration_playbook.md`.
 
 **P9 (§3.10, §5.10, D183) was planned on 2026-11-06.** **SW-63 is built. SW-53 (GitHub per organization) is built and dark, 2026-11-07. Its backfill is not built.**
@@ -966,6 +968,15 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **Done when.** An agent reads a Check from `my_work`, runs it and closes the task with the evidence. A `cannot_run` never closes a task. R8 runs as the NOBYPASSRLS role.
 - **Fence.** A new R8 suite, `test_task_check_r8.py`, with `pytestmark = _DB_GATE`, and the edge coverage fence.
 - **Risk.** HIGH (a migration). **Gate.** AGENT-SAFE.
+- **Status.** Built and dark, 2026-11-11. The flag is `AGENT_TASK_CHECKS_ENABLED`, default off. The flip is OWNER-GATE `enforcement-flip`.
+- **As built.** These notes record the build.
+  - **Migration.** `401_pm_tasks_check.sql`, expand only. The four columns are nullable with no default. The CHECK `pm_tasks_check_result_known` holds the three results. The CHECK `pm_tasks_check_run_whole` keeps the result and its time together. Check the number again at merge (R1).
+  - **Gateway.** `routes/projects/checks.py` is the one writer of the result columns. The route is `POST /projects/tasks/{task_id}/check-result`. It takes `result` and `evidence`, and a signed agent must send `If-Match`. `create_task` and `update_task` send `check` as the body field `check_text`. A new text clears the last result, and the timeline records each change.
+  - **Who may close.** A pass closes the task only under the rule of a status move. The caller sees the task and the version holds. A live run of another session or another member keeps the task open, with `not_closed: held_by_other`. A task in a closed lane gives `already_closed`, and a set with no done lane gives `no_done_status`. The gateway records the run in each case. A pass that closes moves the task to the first done lane and writes the evidence as one comment.
+  - **Reads.** `GET /projects/tasks` and `GET /projects/tasks/{id}` carry `check`: the text, the last run, the result, the evidence and `due`. The gateway decides `due` in SQL: never run, or not run for 7 days. While the flag is off, no row has the key. `get_task_context` returns `check` as its first key. A `my_work` row carries `check` with no evidence. An assigned task whose Check is due gets the reason `check_due`, below the claimed and the answered work and above the other assigned tasks.
+  - **Safety.** The Check is text that a person or an agent wrote, so it leaves the edge as untrusted text. The tool descriptions tell an agent to run only a read-only command, and to report `cannot_run` with the reason for any other command.
+  - **The task panel.** `TaskCheckBlock` shows the command, the last result and the day of the last run. It is read only, and it draws nothing while the flag is off.
+  - **Deferred.** The manifest holds the chat tool `report_check` in `PLANNED`, after EA-12e. Nobody can edit the Check in the task panel yet.
 
 #### SW-24 · A structured handoff note
 

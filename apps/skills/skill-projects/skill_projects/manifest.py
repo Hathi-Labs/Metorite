@@ -214,6 +214,11 @@ MANIFEST: tuple[Route, ...] = (
     # WS-55 EA-6b (EA3-34). An outside agent reaches it over MCP as
     # `claim_task` (external_agent_access.md §9.2). The chat has no tool yet.
     Route("POST", "/projects/tasks/{task_id}/claim", "claim_task", "B"),
+    # WS-MCP SW-23 (agent_coordination.md SW-23). An outside agent reports a
+    # run of the task's Check over MCP as `report_check`. A pass moves the task
+    # to done, which a member moves back. A newer run replaces the result. So
+    # class B. Dark behind AGENT_TASK_CHECKS_ENABLED. The chat has no tool yet.
+    Route("POST", "/projects/tasks/{task_id}/check-result", "report_check", "B"),
     Route("POST", "/projects/tasks/{task_id}/links", "link_tasks", "B"),
     Route("DELETE", "/projects/tasks/{task_id}/links/{link_id}", "unlink_tasks", "B"),
     # ── bulk.py · move.py · merge.py ─────────────────────────────────────
@@ -636,6 +641,9 @@ PLANNED: dict[str, str] = {
     # WS-55 EA-6b (2026-10-15) added the claim route for an outside agent.
     # The chat assigns through `assign` and moves through `update_task`.
     "claim_task": "WS-55, in-product chat parity, after EA-12e",
+    # WS-MCP SW-23 (2026-11-11) added the report of a Check for an outside
+    # agent. The chat moves a task through `update_task`.
+    "report_check": "WS-MCP SW-23 follow-up, in-product chat parity, after EA-12e",
     # WS-55 EA-6g (2026-10-15) added the archive request and its approval.
     # The chat archives through `archive_task`.
     "request_task_archive": "WS-55, in-product chat parity, after EA-12e",
@@ -1364,6 +1372,16 @@ _TASK_PREFIX_REASON = (
 #: it read. The model never names it.
 _HELD_CARD_REASON = "The card of a held chat sets it from the rows it read."
 
+#: WS-MCP SW-23. The Check of a task and the report of its run. An outside
+#: agent sets and reports them over MCP. The chat gets them after EA-12e.
+_CHECK_TEXT_REASON = (
+    "The Check of a task (SW-23). An outside agent sets it over MCP with the check "
+    "input of create_task and update_task. The chat sets none yet."
+)
+_CHECK_REPORT_REASON = (
+    "The report of a run of a Check (SW-23). An outside agent sends it over MCP "
+    "with report_check. The chat has no report tool."
+)
 _STATUS_PLACE_REASON = (
     "create_status and update_status send it when the model passes slot or after, in "
     "every organization, and the route accepts it at all times. "
@@ -1481,6 +1499,13 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
             "has no claim tool."
         ),
     },
+    # WS-MCP SW-23: the report of a Check. An outside agent sends each field
+    # over MCP (`report_check`). The chat has no report tool.
+    ("POST", "/projects/tasks/{task_id}/check-result"): {
+        "result": _CHECK_REPORT_REASON,
+        "evidence": _CHECK_REPORT_REASON,
+        "If-Match": _CHECK_REPORT_REASON,
+    },
     ("PATCH", "/projects/tasks/{task_id}"): {
         "If-Match": (
             "The browser's edit guard (D-PM-20). A chat edit reads the row first. "
@@ -1490,6 +1515,7 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "project_id": "The route refuses it: a move goes through move_task.",
         "parent_task_id": "The route refuses it: a re-parent goes through move_task.",
         "source": "Where a task came from is a fact of its create. An edit keeps it.",
+        "check_text": _CHECK_TEXT_REASON,
     },
     ("POST", "/projects/tasks/{task_id}/move"): {
         "assignees": (
@@ -1507,6 +1533,7 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
             "An outside agent assigns in the create's own transaction. The chat "
             "assigns through assign, after the create."
         ),
+        "check_text": _CHECK_TEXT_REASON,
     },
     ("PUT", "/projects/tasks/{task_id}/assignees"): {
         "If-Match": (
