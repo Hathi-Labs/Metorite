@@ -103,11 +103,24 @@ describe("the page", () => {
 
   it("keeps the old section and says so when the first read fails, and retries on the poll", () => {
     expect(src).toContain("waitingSectionOn(questions.on, questions.failed)");
-    expect(src).toContain("QUESTIONS_READ_FAILED");
-    const hook = readFileSync(new URL("../../projects/components/useQuestionsBadge.ts", import.meta.url), "utf8");
-    expect(code(hook)).toMatch(/catch \{[\s\S]*setFailed\(true\)/);
-    // Only a 404 (null) sets off. The poll keeps reading while `on` is not false.
-    expect(code(hook)).toMatch(/if \(page === null\) \{\s*offRef\.current = true;/);
+    // The error line is RENDERED, not only imported.
+    expect(src).toMatch(/questions\.failed && questions\.on === null[\s\S]{0,200}\{QUESTIONS_READ_FAILED\}/);
+  });
+
+  it("the hook: a failed read sets `failed` and never `on`; a good read clears it", () => {
+    const hook = code(readFileSync(new URL("../../projects/components/useQuestionsBadge.ts", import.meta.url), "utf8"));
+    const start = hook.indexOf("} catch");
+    const end = hook.indexOf("}, [])", start);
+    expect(start).toBeGreaterThan(-1);
+    const block = hook.slice(start, end);
+    // Only a null page (404/403) sets off. The catch (500, timeout, network) must not.
+    expect(block).toContain("setFailed(true)");
+    expect(block).not.toContain("setOn(");
+    expect(block).not.toContain("offRef");
+    const good = hook.slice(hook.indexOf("setOn(true)"), start);
+    expect(good).toContain("setFailed(false)");
+    // The poll that retries.
+    expect(hook).toContain("window.setInterval");
   });
 
   it("reserves the tab bar and decides the default tab once (no layout shift)", () => {
