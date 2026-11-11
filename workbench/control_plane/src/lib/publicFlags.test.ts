@@ -118,6 +118,8 @@ describe("every NEXT_PUBLIC flag reaches the browser", () => {
       "NEXT_PUBLIC_BRIEF_CARD",
       // WS-PKG PKG-18a: My Day draws the Today band above the feed.
       "NEXT_PUBLIC_TODAY_BAND",
+      // WS-PKG PKG-19a-2: the shell counts pane opens, and My Day draws the pin card.
+      "NEXT_PUBLIC_PIN_SUGGEST",
       // WS-62 CF-1: the chat-first surface, first the peek strip on a phone.
       "NEXT_PUBLIC_CHAT_FIRST",
       // WS-64 OP-1: the compact chrome of Projects (tool row, sheets, chips).
