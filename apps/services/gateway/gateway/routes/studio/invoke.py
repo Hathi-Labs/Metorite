@@ -538,6 +538,12 @@ def _list_input(raw: bytes) -> dict[str, Any]:
     return payload
 
 
+def _installed_object(package: _App, name: str) -> bool:
+    """True for the owner's package. For a viewer (J2a), True only when the
+    installed version declares the object *name*."""
+    return not isinstance(package, _viewer.InstalledApp) or name in package.object_names
+
+
 async def _run_object_get(db: Any, package: _App, ref: UsesRef,
                           raw: bytes, out: _Outcome) -> None:
     """Read one record of the object *ref* of *package*. The id comes from
@@ -551,7 +557,7 @@ async def _run_object_get(db: Any, package: _App, ref: UsesRef,
         # leaves the session usable.
         obj = await objects_store.get_object_by_name(
             db, str(ref.object), package_id=package.id)
-        if obj is None:
+        if obj is None or not _installed_object(package, obj.name):
             out.object_missing = True
             return
         rec = await objects_store.get_record(db, obj.id, rid, package_id=package.id)
@@ -560,6 +566,9 @@ async def _run_object_get(db: Any, package: _App, ref: UsesRef,
         return
     if rec is None:
         out.missing = True
+    elif isinstance(package, _viewer.InstalledApp):
+        # J2a fix round 1: the values of the installed fields only, and no writer.
+        out.record = package.project_record(obj.name, rec)
     else:
         out.record = rec
 
@@ -572,15 +581,24 @@ async def _run_object_list(db: Any, package: _App, ref: UsesRef,
         body = _list_input(raw)
         obj = await objects_store.get_object_by_name(
             db, str(ref.object), package_id=package.id)
-        if obj is None:
+        if obj is None or not _installed_object(package, obj.name):
             out.object_missing = True
             return
+        if isinstance(package, _viewer.InstalledApp):
+            # J2a fix round 1: a viewer filters and sorts on the fields of the
+            # installed version only. The one grammar refuses another key with
+            # ``query_field_unknown``, before any read.
+            studio_query.parse_query(package.project(obj).fields, body.get("filter"),
+                                     body.get("sort"))
         # The store checks each id and the input before its first statement,
         # and a timeout rolls back its SAVEPOINT only. So a refusal here
         # leaves the session usable.
         page = await objects_store.query_records(
             db, package_id=package.id, object_id=obj.id, filter=body.get("filter"),
             sort=body.get("sort"), limit=body.get("limit"), offset=body.get("offset"))
+        if page is not None and isinstance(package, _viewer.InstalledApp):
+            page = dataclasses.replace(page, records=tuple(
+                package.project_record(obj.name, r) for r in page.records))
     except studio_query.QueryError as exc:
         out.query_error = exc
         return

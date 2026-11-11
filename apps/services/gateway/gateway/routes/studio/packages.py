@@ -39,7 +39,9 @@ When the owner read misses and ``PACKAGE_HOST_ORGS`` holds the org, the
 route reads the app through ``package_host/viewer.py``: the install that
 the sidebar shows to the member. The answer holds the INSTALLED version
 (``access: viewer``, ``version``, its manifest and its hash), never the
-draft. The objects are the rows that the installed version names. A draft,
+draft. The objects are the rows that the installed version names, with only
+the fields and the rules of that version (``viewer.InstalledApp.project``,
+because a later publish adds fields to the rows). A draft,
 a paused, an archived and an expired install give 404, and so does each
 read while the switch is off. Each other route stays the owner's.
 
@@ -555,7 +557,9 @@ async def get_package(
             if app is None:
                 raise _not_found()
             names = app.object_names
-            shown = [o for o in await objects_store.list_objects(db, pid) if o.name in names]
+            # The installed version only: its objects, and their fields and rules (fix round 1).
+            shown = [app.project(o) for o in await objects_store.list_objects(db, pid)
+                     if o.name in names]
             return {"package": _viewer_out(app), "objects": [_object_out(o) for o in shown]}
         objects = await objects_store.list_objects(db, pid)
     return {"package": _package_out(package), "objects": [_object_out(o) for o in objects]}

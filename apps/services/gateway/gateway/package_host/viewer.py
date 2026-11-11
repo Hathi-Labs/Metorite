@@ -22,6 +22,13 @@ archived and an expired install, and an archived app, give None, because the
 resolve shows none of them. When the member sees the app at two scopes, the
 widest install wins (``widest_per_app``), as in the sidebar.
 
+**The fields of the installed version (J2a fix round 1).** A publish only adds
+fields to the object rows, so the rows can hold a field that a newer version
+added. :meth:`InstalledApp.project` keeps the fields and the rules that the
+installed version declares, and :meth:`InstalledApp.project_record` keeps
+only their values. A record that a viewer reads names no member who wrote
+it.
+
 **Records (C8 is not built).** A member who reads an app reads every record
 of its objects, through the declarations of the installed version.
 ``ai_studio.md`` §19.7 records this gap. Row rules (C8) close it.
@@ -38,10 +45,13 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
+from acb_common.studio_rules import ConstraintError, Rule, parse_rules, stored_rules
+
 from gateway.package_host import resolve
+from gateway.studio.objects_store import Record, StudioObject
 
 #: The access of a member who reads an app through an install.
 VIEWER = "viewer"
@@ -71,11 +81,56 @@ class InstalledApp:
     @property
     def object_names(self) -> frozenset[str]:
         """The names of the objects that the installed version declares."""
+        return frozenset(self._objects())
+
+    def _objects(self) -> dict[str, Mapping[str, Any]]:
+        """Each object entry of the installed manifest, by its name."""
         found = self.manifest.get("objects")
         if not isinstance(found, list):
+            return {}
+        return {o["name"]: o for o in found
+                if isinstance(o, Mapping) and isinstance(o.get("name"), str)}
+
+    def field_keys(self, object_name: str) -> frozenset[str]:
+        """The keys of the fields that the installed version declares for
+        *object_name*. An object that the version does not declare has none."""
+        entry = self._objects().get(object_name)
+        fields = entry.get("fields") if entry is not None else None
+        if not isinstance(fields, list):
             return frozenset()
-        return frozenset(o["name"] for o in found
-                         if isinstance(o, Mapping) and isinstance(o.get("name"), str))
+        return frozenset(f["key"] for f in fields
+                         if isinstance(f, Mapping) and isinstance(f.get("key"), str))
+
+    def _rules(self, object_name: str) -> tuple[Rule, ...]:
+        """The rules that the installed version declares for *object_name*,
+        read as a publish reads them. A list that the authoring check refuses
+        now is read with the store reader, which never fails."""
+        entry = self._objects().get(object_name)
+        raw = (entry.get("rules") if entry is not None else None) or []
+        try:
+            return parse_rules(raw)
+        except ConstraintError:
+            return stored_rules(raw)
+
+    def project(self, obj: StudioObject) -> StudioObject:
+        """The object row *obj* as the installed version declares it.
+
+        A publish only adds a field, so the rows can hold a field of a newer
+        version. A viewer sees only the fields of the installed version, and
+        its rules. A published field never changes its spec (``objects_store``
+        refuses it), so a kept field is the field that the version declares.
+        Only its ``hot`` flag can differ."""
+        keys = self.field_keys(obj.name)
+        return replace(obj, fields=tuple(f for f in obj.fields if f.key in keys),
+                       constraints=self._rules(obj.name))
+
+    def project_record(self, object_name: str, record: Record) -> Record:
+        """The record *record* as a viewer reads it: only the values of the
+        fields that the installed version declares, and no address of the
+        member who wrote it."""
+        keys = self.field_keys(object_name)
+        return replace(record, data={k: v for k, v in record.data.items() if k in keys},
+                       created_by="", updated_by="")
 
 
 def _manifest(raw: Any) -> dict[str, Any] | None:

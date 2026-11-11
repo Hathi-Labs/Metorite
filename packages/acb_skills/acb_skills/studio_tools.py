@@ -3019,9 +3019,23 @@ async def studio_package_get(package_id: str = "", offset: int = 0, limit: int =
         True, [], [], id=_tag(package.get("id"), 40), name=_name(package.get("name", ""), True),
         status=_tag(package.get("status"), 20), live_version=package.get("live_version"),
         objects=objects, actions=_declared_actions(reply))
-    if not objects:
+    if package.get("access") == "viewer":
+        # J2a: the member reads the installed version of an app that another member owns.
+        version = package.get("version")
+        out["access"] = "viewer"
+        out["installed_version"] = version if type(version) is int else None
+        out["note"] = _VIEWER_EMPTY if not objects else _VIEWER_NOTE
+    elif not objects:
         out["note"] = "This package has no object yet. Publish it in Studio to make its objects."
     return out
+
+
+#: J2a. The notes of a package read by a viewer: a member who reads an app
+#: through an install, and does not own it.
+_VIEWER_NOTE = ("You read this app through an install. You can read its records, and only "
+                "its owner can change them.")
+_VIEWER_EMPTY = ("This app has no object that you can read yet. Only its owner can publish "
+                 "one in Studio.")
 
 
 _BAD_ARG: Any = object()

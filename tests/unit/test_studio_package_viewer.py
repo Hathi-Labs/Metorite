@@ -42,6 +42,14 @@ turns a test of this file red.
 * V4. ``invoke._run_executor``: take no reader slot. Check 5 goes red.
 * V5. ``packages.get_package``: show a viewer each object row, also one that
   the installed version does not name. Check 3 goes red.
+* V6 (fix round 1). ``viewer.InstalledApp.project``: keep every field of the
+  row. The field and record tests of section 6b go red.
+* V7 (fix round 1). ``invoke._run_object_list``: drop the ``parse_query`` of
+  a viewer. ``test_a_viewer_cannot_filter_or_sort_on_a_newer_field`` goes red.
+
+Section 6b (fix round 1) holds the fields of the installed version: a field
+and a rule that a newer version added never reach a viewer, a record names
+no writer, and the chat read tells a viewer that only the owner changes it.
 """
 
 from __future__ import annotations
@@ -63,7 +71,9 @@ pytest.importorskip("sqlalchemy")
 
 from acb_auth import UserContext, UserRole, build_access, get_current_user
 from acb_common import get_settings
+from acb_common.studio_fields import stored_field
 from acb_common.studio_manifest import parse_uses, validate_manifest
+from acb_common.studio_rules import parse_rules
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from gateway import app_requests
@@ -103,10 +113,26 @@ DRAFT: dict[str, Any] = {
 }
 
 
+#: The rule that a newer version (v2) adds on its new field ``cost``.
+COST_RULE = {"name": "cost_ok", "kind": "range", "field": "cost", "min": 0}
+
+
 def _object(name: str) -> objects_store.StudioObject:
+    """The object row after v2: ``visit`` holds ``site`` (v1) and ``cost`` with a
+    rule (v2 added both), because a publish only adds to the rows."""
+    if name != "visit":
+        return objects_store.StudioObject(
+            id=f"obj-{name}", package_id=PID, name=name, label=None, created_by=OWEN,
+            created_at=NOW, updated_at=NOW, fields=())
     return objects_store.StudioObject(
-        id=f"obj-{name}", package_id=PID, name=name, label=None, created_by=OWEN,
-        created_at=NOW, updated_at=NOW, fields=())
+        id="obj-visit", package_id=PID, name=name, label=None, created_by=OWEN,
+        created_at=NOW, updated_at=NOW,
+        fields=(stored_field("site", "text", {}, False), stored_field("cost", "number", {}, True)),
+        constraints=parse_rules([COST_RULE]))
+
+
+#: The values of a record after v2. A viewer of v1 reads ``site`` only.
+ROW_DATA = {"site": "Hosur", "cost": 42}
 
 
 def _package() -> packages_store.Package:
@@ -278,11 +304,11 @@ def world(monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNamespace]:
 
     async def get_record(db: Any, oid: str, rid: str, *, package_id: str) -> Any:
         w.reads.append(("get", oid, rid))
-        return objects_store.Record(rid, oid, {"site": "Hosur"}, OWEN, OWEN, NOW, NOW)
+        return objects_store.Record(rid, oid, dict(ROW_DATA), OWEN, OWEN, NOW, NOW)
 
     async def query(db: Any, *, package_id: str, object_id: str, **_: Any) -> Any:
         w.reads.append(("list", object_id))
-        rec = objects_store.Record("r1", object_id, {"site": "Hosur"}, OWEN, OWEN, NOW, NOW)
+        rec = objects_store.Record("r1", object_id, dict(ROW_DATA), OWEN, OWEN, NOW, NOW)
         return objects_store.RecordPage((rec,), 1, None, 0, 50, "")
 
     async def audit(**kw: Any) -> None:
@@ -330,8 +356,11 @@ def test_a_viewer_reads_the_installed_version_and_never_the_draft(world: SimpleN
     assert pkg["manifest"] == INSTALLED
     # The objects that the installed version names, and not the new one of v2.
     assert [o["name"] for o in r.json()["objects"]] == ["visit"]
+    # Fix round 1 (P2): the fields and the rules of v1 only, not the field that v2 added.
+    [visit] = r.json()["objects"]
+    assert [f["key"] for f in visit["fields"]] == ["site"] and visit["rules"] == []
     text = r.text
-    for secret in ("Draft name", "draft_only", OWEN, f"visits-{PID[:8]}"):
+    for secret in ("Draft name", "draft_only", OWEN, f"visits-{PID[:8]}", "cost"):
         assert secret not in text, secret
     assert world.calls == ["owner", f"viewer:{ANA}", "objects"]
 
@@ -515,6 +544,89 @@ def test_the_audit_row_of_a_viewer_names_the_installed_version(world: SimpleName
     assert viewer_row["user_email"] == ANA and viewer_row["app_id"] == PID
     assert viewer_row["detail"]["viewer"] is True and viewer_row["detail"]["version"] == 1
     assert "viewer" not in owner_row["detail"] and "version" not in owner_row["detail"]
+
+
+# ── 6b. Fix round 1: the fields of the installed version ───────────────────
+
+
+def test_project_keeps_the_fields_and_the_rules_of_the_installed_version() -> None:
+    """V6. A publish only adds fields to the rows. The view of a viewer keeps
+    the fields and the rules that the installed version declares."""
+    shown = _app().project(_object("visit"))
+    assert [f.key for f in shown.fields] == ["site"] and shown.constraints == ()
+    v2 = {**INSTALLED, "objects": [{"name": "visit", "fields": [
+        {"key": "site", "type": "text"}, {"key": "cost", "type": "number", "hot": True}],
+        "rules": [COST_RULE]}]}
+    pinned_v2 = viewer.InstalledApp(id=PID, version=2, manifest=v2)
+    shown = pinned_v2.project(_object("visit"))
+    assert [f.key for f in shown.fields] == ["site", "cost"]
+    assert [r.name for r in shown.constraints] == ["cost_ok"]
+    # An object that the version does not declare keeps no field.
+    assert _app().project(_object("secret")).fields == ()
+
+
+def test_project_record_keeps_the_installed_values_and_no_writer() -> None:
+    rec = objects_store.Record("r1", "obj-visit", dict(ROW_DATA), OWEN, OWEN, NOW, NOW)
+    shown = _app().project_record("visit", rec)
+    assert shown.data == {"site": "Hosur"}
+    assert (shown.created_by, shown.updated_by) == ("", "")
+    assert (shown.id, shown.created_at) == ("r1", NOW)
+
+
+def test_a_viewer_record_holds_no_newer_value_and_no_writer(world: SimpleNamespace) -> None:
+    for action, body in (("peek", {"id": str(uuid.uuid4())}), ("find", {})):
+        r = _door(ANA, action, body)
+        assert r.status_code == 200, r.text
+        rec = r.json()["record"] if action == "peek" else r.json()["records"][0]
+        assert rec["data"] == {"site": "Hosur"}, action
+        assert (rec["created_by"], rec["updated_by"]) == ("", ""), action
+    # The owner reads the newest version, as before.
+    mine = _door(OWEN, "find", {}).json()["records"][0]
+    assert mine["data"] == ROW_DATA and mine["created_by"] == OWEN
+
+
+@pytest.mark.parametrize("body", [
+    {"filter": [{"field": "cost", "op": "gt", "value": 1}]},
+    {"sort": {"field": "cost", "dir": "desc"}},
+], ids=["filter", "sort"])
+def test_a_viewer_cannot_filter_or_sort_on_a_newer_field(world: SimpleNamespace,
+                                                         body: dict[str, Any]) -> None:
+    """V7. A filter on a field of a newer version would tell a viewer its
+    values. The one grammar refuses the key before any read."""
+    r = _door(ANA, "find", body)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["code"] == "query_field_unknown"
+    assert world.reads == []
+    # The owner may filter on it.
+    assert _door(OWEN, "find", body).status_code == 200
+
+
+def test_the_chat_read_of_a_viewer_says_who_changes_the_app(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """The chat tool reads the same answer. A viewer is told that only the
+    owner changes the app, and never to publish it."""
+    import asyncio
+
+    from acb_skills import studio_tools as st
+
+    answers: dict[str, Any] = {}
+
+    async def fake_get(path: str) -> Any:
+        return st._Reply(200, answers["body"])
+
+    monkeypatch.setattr(st, "_get", fake_get)
+    pkg = {"id": PID, "name": "Site visits", "access": "viewer", "version": 1,
+           "manifest": INSTALLED}
+    for objects, note in (([], st._VIEWER_EMPTY), ([{"name": "visit", "fields": [], "rules": []}],
+                                                   st._VIEWER_NOTE)):
+        answers["body"] = {"package": pkg, "objects": objects}
+        out = asyncio.run(st.studio_package_get(PID))
+        assert (out["access"], out["installed_version"], out["note"]) == ("viewer", 1, note)
+        assert "Publish" not in out["note"]
+    answers["body"] = {"package": {"id": PID, "name": "Site visits", "status": "live",
+                                   "manifest": INSTALLED}, "objects": []}
+    owner = asyncio.run(st.studio_package_get(PID))
+    assert "access" not in owner and owner["note"].startswith("This package has no object yet.")
 
 
 # ── 7. The R8 twin runs in CI ──────────────────────────────────────────────

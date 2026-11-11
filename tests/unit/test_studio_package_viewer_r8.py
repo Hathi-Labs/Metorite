@@ -43,6 +43,10 @@ f. A paused, an archived and an expired install, and an archived app, give
    body read gives 404 at the second check, and no record is read.
 g. Past the cap of the reads of a viewer the door answers 503
    ``store_busy``. The owner read takes no slot.
+h. Fix round 1 (P2). A newer version adds a field and a rule. A viewer of the
+   older version sees neither, on the route or at the door: no field, no
+   rule, no stored value and no filter or sort on it. A record that a viewer
+   reads names no member who wrote it.
 
 **R7: red first, then mutate.** Each mutation ran on 2026-11-11, on this
 file and its hermetic twin together (60 tests).
@@ -55,6 +59,11 @@ file and its hermetic twin together (60 tests).
   (13 failed).
 * M4. ``resolve.visible_installs``: pass ``groups=[]``. Cases a, c, d, f
   and g go red (6 failed).
+* M5 (fix round 1). ``viewer.InstalledApp.project``: keep every field of the
+  row. Case h goes red (5 failed of 67, with the hermetic twin).
+* M6 (fix round 1). ``invoke._run_object_list``: drop the ``parse_query``
+  of a viewer. Case h goes red, because a filter on ``cost`` runs (3 failed
+  of 67).
 """
 
 from __future__ import annotations
@@ -490,6 +499,74 @@ def test_r8_a_pause_during_the_read_gives_404_at_the_second_check(world) -> None
     assert (status, got) == (404, NOT_FOUND)
     assert request.reads == 1
     assert _audits(world, world.pid, ANA) == []
+
+
+# ── h. A newer version adds a field that a pinned viewer never sees ────────
+
+_COST = {"key": "cost", "type": "number", "hot": True}
+_COST_RULE = {"name": "cost_ok", "kind": "range", "field": "cost", "min": 0}
+
+
+def test_r8_a_field_of_a_newer_version_never_reaches_a_pinned_viewer(world) -> None:
+    """Fix round 1 (P2). The group installs v1, with ``visit{site}``. Then the
+    owner adds the hot field ``cost`` and a rule on it, and publishes v2. The
+    sync adds ``cost`` to the object row, and the group install stays at v1.
+    Ana reads v1: no ``cost`` in the fields, the rules, the records or a
+    filter, and no address of the writer."""
+    mid = _mid()
+
+    async def go() -> dict[str, Any]:
+        pid = await _live(world.a, mid)
+        status, got = await _call("install_package", world.a, OWEN, pid,
+                                  payload={"scope": OPS}, grants=PUBLISHER)
+        assert status == 201, got
+        v2 = _manifest(mid)
+        v2["objects"][0]["fields"].append(_COST)
+        v2["objects"][0]["rules"] = [_COST_RULE]
+        assert (await _call("save_draft", world.a, OWEN, pid, payload=v2))[0] == 200
+        assert (await _call("publish", world.a, OWEN, pid, payload={}))[0] == 200
+        async with tenant_session(world.a) as db:
+            obj = await objects_store.get_object_by_name(db, "visit", package_id=pid)
+            assert obj is not None
+            rec = await objects_store.create_record(
+                db, OWEN, obj.id, {"site": "Plant 4, Hosur", "cost": 42}, package_id=pid)
+            assert rec is not None
+        return {
+            "rid": rec.id,
+            "viewer": await _call("get_package", world.a, ANA, pid),
+            "owner": await _call("get_package", world.a, OWEN, pid),
+            "find": await _door(world.a, ANA, pid, "find", {}),
+            "peek": await _door(world.a, ANA, pid, "peek", {"id": rec.id}),
+            "filter": await _door(world.a, ANA, pid, "find", {
+                "filter": [{"field": "cost", "op": "gt", "value": 1}]}),
+            "sort": await _door(world.a, ANA, pid, "find", {"sort": {"field": "cost"}}),
+            "owner_find": await _door(world.a, OWEN, pid, "find", {}),
+        }
+
+    got = _run(world, go)
+    status, viewer = got["viewer"]
+    assert status == 200 and viewer["package"]["version"] == 1, viewer
+    [obj] = viewer["objects"]
+    assert [f["key"] for f in obj["fields"]] == ["site"] and obj["rules"] == []
+    status, owner = got["owner"]
+    assert status == 200 and [f["key"] for f in owner["objects"][0]["fields"]] == ["site", "cost"]
+    assert [r["name"] for r in owner["objects"][0]["rules"]] == ["cost_ok"]
+    status, page = got["find"]
+    assert status == 200, page
+    [row] = page["records"]
+    assert row["data"] == {"site": "Plant 4, Hosur"}
+    assert (row["created_by"], row["updated_by"]) == ("", "")
+    status, one = got["peek"]
+    assert status == 200 and one["record"]["data"] == {"site": "Plant 4, Hosur"}, one
+    assert (one["record"]["created_by"], one["record"]["updated_by"]) == ("", "")
+    for case in ("filter", "sort"):
+        status, refused = got[case]
+        assert status == 422 and refused["code"] == "query_field_unknown", (case, refused)
+    seen = json.dumps([got["viewer"], got["find"], got["peek"]], default=str)
+    assert "cost" not in seen and OWEN not in seen
+    # The owner reads the newest version, as before.
+    status, mine = got["owner_find"]
+    assert status == 200 and mine["records"][0]["data"]["cost"] == 42
 
 
 # ── g. The cap of the reads of a viewer ────────────────────────────────────
