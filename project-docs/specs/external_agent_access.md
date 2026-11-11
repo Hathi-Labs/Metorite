@@ -2388,7 +2388,7 @@ A clear also needs a change to the CHECK of `cleared_reason` and a second writer
 **The design: one list, three doors.** The list is one read (see "The route"). Each door shows it. No door keeps a copy, and no door builds a second list (D87 to D89, D52 and D53).
 
 1. **Projects.** A "Questions for me" item joins the workspace section of the sidebar, beside Reports and Settings. It has a count badge. `?app=questions` opens it.
-2. **My Day.** A card, "AI agents wait on you · N", shows the top questions. The member answers in place (D100, D101). "See all N questions" opens door 1.
+2. **My Day.** One card shows the top questions and the count N. In EA-18c the card holds an "Answer" link that opens door 1, where the answer runs the list's write (D100, D101). The in-card answer is a later slice. It needs an `expand` act in FeedCard. The owner decides this on task 1808.
 3. **Approvals.** An "Agent questions · N" tab sits beside "Actions · N". It shows the same list. "Open the full list in Projects" opens door 1.
 
 **The row.** Rows group under the project path, from space to subproject, as "Metorite › Metorite Application › AI Studio · 2 questions". Each name in the path links to its project. A row holds:
@@ -2459,7 +2459,7 @@ The agent paths do not change. The "no person present" 403 (`_refuse_a_marked_pr
 
 **My Day (EA-18c).** A new card kind, `agent_questions`, joins the catalogue of `my_day_feed.md`. A provider in the feed route (`gateway/routes/shell/feed.py`) and a type in `lib/shell/feed.ts` carry it. It reads the "mine" list, the 3 oldest. It shows the project path, the question and the options. An answer runs the same write as the list (D100, D101).
 
-**Built (2026-11-11).** The source is `agent_questions`. It gives ONE card, keyed `questions:mine`, with the 3 oldest questions and the whole "mine" count. It is gated like the other feed-only sources, so `MY_DAY_PROVIDERS` must list it and `AGENT_QUESTIONS_ORGS` must hold the org. The provider calls `agent_questions.read_mine`, which writes no SQL. The one act, "Answer", opens the list in Projects (`?app=questions`), and an answer there runs the same write (D100, D101). The card does not answer in place.
+**Built (2026-11-11).** The source is `agent_questions`. It gives ONE card, keyed `questions:mine`, with the 3 oldest questions and the whole "mine" count. It is gated like the other feed-only sources, so `MY_DAY_PROVIDERS` must list it and `AGENT_QUESTIONS_ORGS` must hold the org. The provider calls `agent_questions.read_mine`, which writes no SQL. The one act, "Answer", opens the list in Projects (`?app=questions`), and an answer there runs the same write (D100, D101). The in-card answer is a later slice, and it needs an `expand` act in FeedCard. The card needs both `AGENT_QUESTIONS_ORGS` and `MY_DAY_PROVIDERS` to show.
 
 The card gets a row in the old-path table of `my_day_feed.md`, group "Needs you". It gets a weight in `feed_rank.BASE`. A member with no open question sees no card. `lib/shell/AiWaitingCard.tsx` is the chat's card, and it is not this one.
 
@@ -2469,7 +2469,7 @@ The card gets a row in the old-path table of `my_day_feed.md`, group "Needs you"
 
 **The app and the shell (R9).** The Projects item is a destination inside one app. So it joins `projectApps.ts` (`ProjectAppId`, `PROJECT_APP_SECTIONS`, `resolveAppLink`), and not `PANES` in `nav.ts`.
 
-The app plugs into the shell. It builds no palette, bell or assistant rail, and it adds nothing to `SEAM_DEBT`. The Projects manifest declares the My Day provider. That manifest edit is a part of EA-18c.
+The app plugs into the shell. It builds no palette, bell or assistant rail, and it adds nothing to `SEAM_DEBT`. The My Day provider is registered as the gateway `Provider` `agent_questions` in `gateway/routes/shell/feed.py`. The client has no manifest field for it.
 
 **Flag.** `AGENT_QUESTIONS_ORGS`, an `*_ORGS` setting. It reloads by SIGHUP (`docs/flag_reload.md`), and it is empty by default, so it ships dark. The check follows `routes/projects/authorities.py` and `decisions.py`: true when the setting holds the organization of the session or `*`. `tests/unit/test_flag_reload.py` fails when the reload list does not hold the key.
 
@@ -3003,7 +3003,7 @@ Both jobs use `ManagerFrame` and the shared primitives. They add no palette, bel
 
 **The consent page (EA-4a).** The page follows rules 1 to 3 and rule 8 of `workbench/control_plane/AGENTS.md`. It writes no colour, it uses `<Icon>`, it uses the primitives of `src/components/ui/`, and it imports no headless library. The builder checks it by eye in light mode, at compact density and with a changed accent.
 
-**Questions for me (EA-18b, EA-18c).** These slices add no app and no nav pane. The section joins the Projects app through `projectApps.ts`. The Projects manifest gains the My Day provider of the `agent_questions` card in EA-18c. The Approvals tab renders the same list component and adds no shell element. `SEAM_DEBT` does not change, and `src/lib/shell/seams.test.ts` fences it.
+**Questions for me (EA-18b, EA-18c).** These slices add no app and no nav pane. The section joins the Projects app through `projectApps.ts`. The gateway registers the My Day provider of the `agent_questions` card in `gateway/routes/shell/feed.py` (EA-18c). The Approvals tab renders the same list component and adds no shell element. `SEAM_DEBT` does not change, and `src/lib/shell/seams.test.ts` fences it.
 
 ## 17. Open risks
 

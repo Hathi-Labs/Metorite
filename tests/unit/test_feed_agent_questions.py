@@ -204,3 +204,31 @@ async def test_a_long_question_and_many_options_are_clipped(world) -> None:
     [fact] = signal.facts["questions"]
     assert len(fact["question"]) == feed.QUESTION_CLIP and fact["question"].endswith("\u2026")
     assert len(fact["options"]) == feed.OPTIONS_SHOWN
+
+
+async def test_a_new_newer_question_moves_the_state_fingerprint_not_only_the_content(world) -> None:
+    """P1-b. ``state_fp`` hashes ``STATE_FACTS`` only. The card keys ``waiting_since``
+    on the NEWEST question, so two questions with the same oldest time and a newer
+    second one give a new ``state_fp``, and a dismissed card comes back."""
+    from datetime import timedelta
+
+    from gateway.routes.shell import state
+
+    world.pairs = [_pair(1)]
+    [one] = (await needs.REGISTRY["agent_questions"].run(_user())).signals()
+    newer = _pair(2)
+    newer[1].created_at = NOW + timedelta(hours=1)
+    newer[2].created_at = NOW + timedelta(hours=1)
+    world.pairs = [_pair(1), newer]
+    [two] = (await needs.REGISTRY["agent_questions"].run(_user())).signals()
+    assert one.facts["waiting_since"] != two.facts["waiting_since"]
+    assert state.state_fp("questions:mine", one.facts) != state.state_fp("questions:mine", two.facts)
+    # The same list again keeps the fingerprint (no churn).
+    [again] = (await needs.REGISTRY["agent_questions"].run(_user())).signals()
+    assert state.state_fp("questions:mine", two.facts) == state.state_fp("questions:mine", again.facts)
+
+
+def test_the_kind_has_a_reach_class() -> None:
+    from gateway.reach import classes
+
+    assert classes.REACH_CLASS["agent_questions"] == classes.REACH_CLASS["agent_asks"]
