@@ -66,6 +66,15 @@ the install store comes after the two locks above. A refusal of the install
 store is 409 or 422 with its ``detail_for`` of the member, and it rolls the
 publish back. With the switch off, a publish writes no install.
 
+**The origin of a publish (WS-PKG PKG-12, ``package_host.md`` §6.2 step 1).**
+The body may hold ``origin``: ``chat`` or ``ide`` (:data:`ORIGINS`). With no
+``origin``, the publish is ``ide``. Each other value is 422. The chat tool
+``studio_publish`` sends ``chat``, and the Studio IDE sends nothing. A first
+publish from chat writes the private install with ``ends_at`` 30 days after
+now (``host_store.CHAT_ENDS``). A publish from the IDE writes no end date. A
+later publish keeps the end date that the install holds (``set_version``).
+The route takes no date, org or member from the body (R5).
+
 **The org and group install (WS-PKG PKG-8b, ``package_host.md`` §6.1).**
 ``POST /packages/{id}/install`` with the body ``{"scope": "org"}`` or
 ``{"scope": "group:<slug>"}``. The scope comes from the body, and the member
@@ -165,6 +174,7 @@ import json
 import re
 import uuid
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
@@ -227,6 +237,12 @@ CATALOG_UNAVAILABLE = "catalog_unavailable"
 STORE_BUSY = "store_busy"
 BODY_TOO_LARGE = "body_too_large"
 DRAFT_CHANGED = "draft_changed"
+#: The origin of a publish from chat (PKG-12). The chat tool sends it.
+ORIGIN_CHAT = "chat"
+#: The origin of a publish with no ``origin`` in its body: the Studio IDE.
+ORIGIN_IDE = "ide"
+#: The closed set of origins of a publish (PKG-12).
+ORIGINS = frozenset({ORIGIN_CHAT, ORIGIN_IDE})
 COUNTS_CHANGED = "counts_changed"
 NOT_PUBLISHED = "not_published"
 VERSION_CHANGED = "version_changed"
@@ -241,6 +257,7 @@ BAD_CURSOR = "The cursor before is a version number, so send a whole number from
 BAD_VERSION = "The version is a whole number from 1, so send a version that the list names."
 BAD_HASH = ("based_on is the hash of the draft that you read: 64 hexadecimal digits. Send it, "
             "or leave it out.")
+BAD_ORIGIN = "origin is chat or ide. Send one of the two, or leave it out."
 BAD_CONFIRM = ("confirm is the token of the delete preview: 64 hexadecimal digits. Read the "
                "preview, then send its token.")
 NO_SHARE_RIGHT = ("Only a holder of studio:publish installs an app for the organization or "
@@ -281,6 +298,21 @@ def _based_on(raw: object, path: str = "$.based_on") -> str | None:
     if isinstance(raw, str) and _HASH.fullmatch(raw.strip().lower()):
         return raw.strip().lower()
     raise _unprocessable(BAD_HASH, [{"path": path, "message": BAD_HASH}])
+
+
+def _origin(raw: object) -> str:
+    """The origin of a publish (PKG-12): ``chat``, or ``ide`` when the body
+    holds none. Each other value is 422 at ``$.origin``.
+
+    ⚠️ A browser can send ``chat`` too. That is harmless: the origin only
+    sets the end date of the private install of the session member, on the
+    first publish of their own package. It reaches no other member, org or
+    install, and the member can keep the install (§6.2 step 2)."""
+    if raw is None:
+        return ORIGIN_IDE
+    if isinstance(raw, str) and raw in ORIGINS:
+        return raw
+    raise _unprocessable(BAD_ORIGIN, [{"path": "$.origin", "message": BAD_ORIGIN}])
 
 
 def _cursor(raw: str | None) -> int | None:
@@ -418,7 +450,7 @@ def _object_out(obj: objects_store.StudioObject) -> dict[str, Any]:
         "fields": [{
             "key": f.key, "type": f.type, "label": f.label, "required": f.required,
             "many": f.many, "options": None if f.options is None else list(f.options),
-            "to": f.to, "hot": f.hot} for f in obj.fields],
+            "to": f.to, "hot": f.hot, "lines": f.lines} for f in obj.fields],
         "rules": [r.stored() for r in obj.constraints],
         "created_at": obj.created_at, "updated_at": obj.updated_at,
     }
@@ -442,17 +474,23 @@ def _sync_out(result: objects_store.SyncResult) -> dict[str, Any]:
 
 
 async def _keep_install(db: Any, user: UserContext, pid: str,
-                        version: store.PackageVersion) -> None:
+                        version: store.PackageVersion, origin: str) -> None:
     """PKG-8a: the private install of the owner follows the publish, in its
     session. With ``PACKAGE_HOST_ORGS`` off for the org, it writes nothing.
     A refusal of the install store is its ``detail_for`` of the member and
-    nothing else, and the raise rolls the publish back."""
+    nothing else, and the raise rolls the publish back.
+
+    PKG-12: *origin* is the value of :func:`_origin`. A publish from chat
+    gives an end date of now plus ``host_store.CHAT_ENDS``. The store writes
+    it on the first publish only, and a later publish keeps the date of the
+    install. The time is the server clock, never request input (R5)."""
     if not package_host_allowed(user.organization_id) or version.manifest is None:
         return
+    ends_at = (datetime.now(UTC) + host_store.CHAT_ENDS) if origin == ORIGIN_CHAT else None
     try:
         await studio_app.keep_private_install(
             db, app_id=pid, version=version.version, owner=user.email,
-            manifest=version.manifest)
+            manifest=version.manifest, ends_at=ends_at)
     except host_store.InstallError as exc:
         raise HTTPException(status_code=exc.status, detail=exc.detail_for(user.email)) from None
 
@@ -582,6 +620,7 @@ async def publish(
         raise _unprocessable("The release notes are text.", [
             {"path": "$.notes", "message": "The release notes are text."}])
     expected = _based_on(body.get("based_on"))
+    origin = _origin(body.get("origin"))
     known = await _catalog()
     async with _tenant_session() as db:
         with _store_errors():
@@ -593,7 +632,7 @@ async def publish(
                 db, user.email, package_id=pid, objects=version.manifest.get("objects") or [])
             if result is None:
                 raise _not_found()
-            await _keep_install(db, user, pid, version)
+            await _keep_install(db, user, pid, version, origin)
             rows = await objects_store.list_objects(db, pid)
     if result.changed:
         await record_app_audit_bound(

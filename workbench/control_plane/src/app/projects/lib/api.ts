@@ -10,9 +10,11 @@ import {
   type AgentStartBody,
   type AgentStartResult,
   type AgentState,
+  type AgentWaiting,
   type ArchiveApprovalBody,
   type ArchiveApprovalResult,
   type AgentSummary,
+  type ReplaceBody,
   type WithdrawBody,
   agentRunRows,
   normalizeRunDetail,
@@ -1726,6 +1728,23 @@ export interface SubtreeRow {
   archived: boolean;
 }
 
+/** WS-MCP SW-23 — the three results of a run of a Check. */
+export type CheckResult = "open" | "passed" | "cannot_run";
+
+/**
+ * WS-MCP SW-23 — the Check of a task, as `checks.attach_check` sends it. The
+ * text and the evidence are words that a person or an agent wrote.
+ */
+export interface TaskCheck {
+  text: string;
+  /** The instant of the last reported run, or `null` when none ran yet. */
+  last_run_at: string | null;
+  last_result: CheckResult | null;
+  last_evidence: string | null;
+  /** Never run, or not run for seven days. The gateway decides it. */
+  due: boolean;
+}
+
 export interface TaskRow {
   id: string;
   project_id: string;
@@ -1840,6 +1859,11 @@ export interface TaskRow {
    */
   agent_note?: string | null;
   /**
+   * Task 1045a (`agent_coordination.md` §3.2) — the wait of a run that reads
+   * `waiting`: what it waits on and when the wait ends. Null in any other state.
+   */
+  agent_waiting?: Pick<AgentWaiting, "on" | "until"> | null;
+  /**
    * WS-55 EA-13d (EA3-48) — the ONE pull request that the gateway picked for
    * the task, with its CI. `lib/taskCard.pullRequestChip` draws it.
    */
@@ -1849,6 +1873,12 @@ export interface TaskRow {
    * `agent_worked.py`. The "Agent work" filter reads it.
    */
   agent_worked?: boolean | null;
+  /**
+   * WS-MCP SW-23 — the Check of the task: a read-only command that an agent
+   * runs, with its last result. Absent while the gateway's Check flag is off,
+   * and `null` for a task with no Check. `TaskCheckBlock` draws it.
+   */
+  check?: TaskCheck | null;
   /**
    * WS-64 OP-11 — the CALLER's overlay, on a read with `with_overlay=1`
    * (`mine.attach_my_overlay`). `disposition` is the effective one (D77).
@@ -3322,6 +3352,17 @@ export const agentRunsApi = {
   withdrawAnswer: (runId: string, body: WithdrawBody) =>
     call<{ run: AgentRun; activity: AgentActivity; withdrawn: boolean }>(
       `agent-runs/${encodeURIComponent(runId)}/answer/withdraw`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+
+  /**
+   * SW-43b. The run's member swaps an answer that no agent has read for a new
+   * one, in one write. The same 404, 403 and 409 as the withdraw, and 422 for
+   * an id that is not an option. A retry with the same key writes once.
+   */
+  replaceAnswer: (runId: string, body: ReplaceBody) =>
+    call<{ run: AgentRun; activity: AgentActivity; replaced: boolean }>(
+      `agent-runs/${encodeURIComponent(runId)}/answer/replace`,
       { method: "POST", body: JSON.stringify(body) },
     ),
 

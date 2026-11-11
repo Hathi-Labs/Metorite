@@ -818,6 +818,14 @@ starts with `/centers/`. The six `preview` Center panes stay (D49). A new `src/l
 Home file calls a `center.` feature check. A gateway test drives rule 4 with a
 private task of another member and asserts that no card returns it.
 
+### 4.2a The team scope contract (T-4, task 2535, replan 2026-11-09)
+
+Decided 2026-11-10: the owner approved this on task 2531. The shell holds one scope value. The value is a team slug or the word "all". The scope rides on `scope=<slug>` as §4.2 rule 1 says. Every app reads this one value and builds no scope of its own.
+
+A scope never grants. It narrows a view and opens nothing that the member could not already open (§4.2 rule 4). A team is a group, and the shell shows no team object (D87). The rules of hidden spaces are in `project_management_app.md` §14.9.
+
+Fence: `src/lib/shell/teamScope.test.ts` (new) fails when the value takes a third form or when a scope opens a row. Until T-4 builds it, the rule is advisory (R7).
+
 ### 4.3 Personal Center — three apps, three jobs
 
 My Tasks and Calendar already read the one task store. My Day joins them at
@@ -840,7 +848,7 @@ acts in the table above for that feed:** a card acts in place, unless the act
 needs more context. `my_day_feed.md` §11 holds the rule. This spec keeps the
 page frame, the bell, the manifest and the flags.
 
-**D204 (owner, 2026-11-09) changes "A longer act opens the owning app" for
+**D213 (owner, 2026-11-09) changes "A longer act opens the owning app" for
 each link to a task.** Behind `NEXT_PUBLIC_MY_DAY_PEEK`, a row's link or an
 act's link opens the task in a panel on My Day, and the member stays on My
 Day. An act with its own button runs in place. "Open in Projects" and a

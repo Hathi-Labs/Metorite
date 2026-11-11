@@ -39,7 +39,7 @@
  * the feed column and shows the top five cards with their reasons. It reads
  * the same feed answer as the column. `showTodayBand` is its one gate.
  *
- * **The panel** (`my_day_feed.md` §11.5, PK-1, D204) is a fifth flag,
+ * **The panel** (`my_day_feed.md` §11.5, PK-1, D213) is a fifth flag,
  * `NEXT_PUBLIC_MY_DAY_PEEK` (`myDayPeekOn`). With it on, a plain click on a
  * task row opens the task in a panel at the right of the page, or in a full
  * sheet on a phone, and the path stays `/`. `useMyDayPeek` is its one seam.

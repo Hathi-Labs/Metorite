@@ -59,8 +59,12 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - Call `run` on `_agent_for_run(agent, provider)`, never on the agent with the input alone. Never append a run's provider to the agent object itself. `agent_with_providers` is the one per-run copy.
    - `native_session_store.py` is the one module that reads or writes `maf_agent_session`, through `tenant_session(organization_id)`. A session loads and saves ONLY in the actor's own thread.
    - A failed load falls back to the text history and never fails the run. Fence: `test_native_session_persistence.py`.
+   - Each harness agent holds exactly one provider of history. Give it `native_session_store.SessionHistoryProvider`, the store's own, and the store then loads and saves its session. `agent_for_run` attaches no second provider with the same source id. Fence: `test_app_builder_engine.py`.
 14. **`sandbox_broker.py` is the one seam that runs `docker` for the coding sandbox** (D83, spec `maf_coding_engine.md` §7.1). A tool never calls `docker` itself.
    - It keys one container on the org, the agent and the thread, from the run binding, so `acquire()` takes no argument. It never falls back to the host.
+   - The `app_builder` target (WS-43h, §7.8) mounts two read-only sources from code, and no other: a copy of the build scripts and `artifactUi.tsx` at `/opt/app-builder/build`, and the T2 vendor cache at `/opt/t2-vendor`. Never mount the agent dir or a clone.
+   - Before an `app_builder` start, `ensure_app_git` makes the app's `.git` and refuses a `.git` that is a link or a file, so the cover always covers it. After each command, the sweep removes each link in the app dir.
+   - `code_session.coding_harness_agent` is the one call of `create_harness_agent` (CA-14). `code_task` and app-builder both build their agent there.
    - `copilot_sandbox.py` and `mutation.py` still run `docker`, on a legacy list that only shrinks.
    - Fences: `test_sandbox_broker_seam.py`, `test_sandbox_broker_argv.py`, `test_sandbox_broker_tenant.py`, `test_sandbox_exec_hygiene.py`, `test_projects_sandbox_tools.py`, `test_run_data_hygiene.py`.
 15. **A shared agent runs no shell on the host** (D85, spec `maf_coding_engine.md` §7.9).
@@ -118,6 +122,7 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - `PACK_RUN_KEY` and `PACKS_KEY` go into the run binding after `bind_artifact_context`. `_run_sub_agent_streaming` drops both from a child's context. A spawn child (the worker) gets the key of its own pack tools instead (OA-9c, `_job_pack_keys`), and the batch run binds it again. Fence: `test_spawn_subagents.py`.
    - `tool_packs.delegation_refusal` is the ONE refusal rule. `_run_sub_agent_streaming`, `agent_tools.call_agent` and `call_agents_parallel` ask it. Do not add a refusal with a rule of its own. The "Delegatable agents" block leaves out an agent only while the run refuses the hand-off to it (`PACK_REFUSED_ATTR`).
    - `_pack_base_count` reads the same scope and withheld names as `_inject_agent_tools`. Change both together. Pack names stay out of `run_tools`.
+   - WS-STU F3: `_turn_with_skills` is the ONE reader of the published skills of a turn, inside `_apply_tool_packs`. It needs `STUDIO_ORGS` and `feature:studio`, the bound tenant and the verified member of the turn, and it fails closed. A skill pack adds no tool. `_skills_present` drops a skill whose tool the run does not hold. Fences: `test_skill_packs.py`, `test_skill_packs_r8.py` (R8).
    - `_record_pack_call` holds a lock of the chat around the email working set. Its event goes through `_emit_to_run_or_relay`.
    - Fences: `test_tool_packs_choice.py`, `test_tool_packs_off.py`.
 

@@ -67,7 +67,7 @@ const SIDE_CARD_REM = 24;
 /**
  * The narrowest page beside a docked card: one list column and its tools.
  * A host whose page needs more room passes its own (`useCardStop`). My Day's
- * rows keep their acts at the end, so it passes 36 (PK-1, D204).
+ * rows keep their acts at the end, so it passes 36 (PK-1, D213).
  */
 export const PAGE_MIN_REM = 20;
 

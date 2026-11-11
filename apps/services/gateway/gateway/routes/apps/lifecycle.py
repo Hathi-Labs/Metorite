@@ -17,15 +17,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import secrets
 import shutil
-import subprocess
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
 from acb_auth import UserContext
-from acb_common.child_env import child_env
+from acb_skills import safe_open
 from fastapi import Depends, HTTPException
 from gateway.routes.apps._common import (
     _log,
@@ -168,27 +168,20 @@ def starter_index_html(name: str) -> str:
 
 
 def _git_init(workspace: Path) -> None:
-    """Best-effort ``git init`` + baseline commit — never fails creation."""
-    git_env = [
-        "-c", "user.name=Metorite",
-        "-c", "user.email=metorite@local",
-    ]
+    """Best-effort ``git init`` + baseline commit — never fails creation.
+
+    Through ``durability._git``, the one host git of an app dir, with its
+    safe flags and its config check (§7.5 rule A, WS-43h).
+    """
+    from gateway.routes.apps.durability import _GIT_IDENT, _git
+
     for args in (
-        ["git", "init"],
-        ["git", "add", "-A"],
-        ["git", *git_env, "commit", "-m", "initial scaffold"],
+        ("init",),
+        ("add", "-A"),
+        (*_GIT_IDENT, "commit", "-m", "initial scaffold"),
     ):
-        try:
-            subprocess.run(
-                args, cwd=str(workspace), capture_output=True,
-                timeout=30, check=False,
-                env=child_env(),
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            _log.warning(
-                "apps.git_init_skipped",
-                workspace=str(workspace), error=str(exc)[:120],
-            )
+        if _git(workspace, *args) is None:
+            _log.warning("apps.git_init_skipped", workspace=str(workspace))
             return
 
 
@@ -196,12 +189,10 @@ def _scaffold_workspace(
     workspace: Path, manifest: dict[str, Any], name: str,
 ) -> None:
     workspace.mkdir(parents=True, exist_ok=True)
-    (workspace / "app.json").write_text(
-        json.dumps(manifest, indent=2) + "\n", encoding="utf-8",
+    safe_open.write_bytes(
+        workspace, "app.json", (json.dumps(manifest, indent=2) + "\n").encode("utf-8"),
     )
-    (workspace / "index.html").write_text(
-        starter_index_html(name), encoding="utf-8",
-    )
+    safe_open.write_bytes(workspace, "index.html", starter_index_html(name).encode("utf-8"))
     _git_init(workspace)
 
 
@@ -219,11 +210,10 @@ def _fork_workspace(
     newly-created app."""
     new_workspace.mkdir(parents=True, exist_ok=True)
     for rel, (content, _sha) in files.items():
-        target = new_workspace / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
-    (new_workspace / "app.json").write_text(
-        json.dumps(manifest, indent=2) + "\n", encoding="utf-8",
+        # The safe opener refuses a link at any depth (WS-43h review P0).
+        safe_open.write_bytes(new_workspace, rel, content.encode("utf-8"))
+    safe_open.replace_bytes(
+        new_workspace, "app.json", (json.dumps(manifest, indent=2) + "\n").encode("utf-8"),
     )
     _git_init(new_workspace)
 
@@ -236,10 +226,10 @@ def _sync_workspace_manifest(workspace: Path, fields: dict[str, Any]) -> None:
         return
     manifest.update(fields)
     try:
-        (workspace / "app.json").write_text(
-            json.dumps(manifest, indent=2) + "\n", encoding="utf-8",
+        safe_open.replace_bytes(
+            workspace, "app.json", (json.dumps(manifest, indent=2) + "\n").encode("utf-8"),
         )
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         _log.warning("apps.manifest_sync_failed", error=str(exc)[:120])
 
 
@@ -664,13 +654,36 @@ async def patch_app(
     return _to_detail(row, user, grants)
 
 
+#: Clear the bound folder of each chat of this org that points into the
+#: folder of a deleted app (task 2462). RLS scopes it to the caller's org.
+#: ``left`` and not ``LIKE``, so a ``_`` or ``%`` in a slug matches only itself.
+_UNBIND_SESSIONS_SQL = (
+    "UPDATE chat_session SET workspace_path = NULL "
+    "WHERE workspace_path IN (:stored, :resolved) "
+    "OR left(workspace_path, length(:stored_prefix)) = :stored_prefix "
+    "OR left(workspace_path, length(:resolved_prefix)) = :resolved_prefix"
+)
+
+
+def _unbind_params(stored: Path, resolved: Path) -> dict[str, str]:
+    """The folder of the app as the row stored it and as it resolves, each
+    also as a prefix that ends with the path separator."""
+    return {
+        "stored": str(stored),
+        "resolved": str(resolved),
+        "stored_prefix": str(stored).rstrip(os.sep) + os.sep,
+        "resolved_prefix": str(resolved).rstrip(os.sep) + os.sep,
+    }
+
+
 @router.delete("/{slug}")
 async def delete_app(
     slug: str,
     user: UserContext = Depends(require_app_author),
 ) -> dict[str, Any]:
     """Soft-archive (edit-gated); a second delete by the OWNER of an already
-    archived app removes the row (cascades) and its workspace folder."""
+    archived app removes the row (cascades) and its workspace folder. The
+    hard delete also unbinds each chat of the org from that folder (task 2462)."""
     async with _tenant_session() as db:
         row, _grants = await get_app_or_404(db, slug, user, edit=True)
         if row.status != "archived":
@@ -689,17 +702,26 @@ async def delete_app(
             )
         # The folder BEFORE the DELETE: a row with no folder answers 409 and
         # the session rolls back, so nothing is deleted (WS-STU A3).
-        workspace = app_workspace(row).resolve()
+        stored = app_workspace(row)
+        workspace = stored.resolve()
         await db.execute(
             text("DELETE FROM apps WHERE id = :id"), {"id": str(row.id)},
         )
+        # Task 2462: the slug is free now, so another org can take this
+        # folder. Unbind every chat of this org that points into it, for
+        # every member, in the same transaction as the DELETE.
+        await db.execute(text(_UNBIND_SESSIONS_SQL), _unbind_params(stored, workspace))
     # Remove the workspace folder — but only when it's really under apps_root
     # (a corrupt workspace_path must never delete arbitrary directories).
     root = apps_root().resolve()
     if workspace != root and workspace.is_relative_to(root):
-        import shutil
-        await asyncio.get_event_loop().run_in_executor(
-            None, lambda: shutil.rmtree(workspace, ignore_errors=True),
-        )
+        def _remove() -> None:
+            # Follows no link inside the app dir (WS-43h review P0).
+            try:
+                safe_open.remove_tree(workspace.parent, workspace.name)
+            except (OSError, ValueError) as exc:
+                _log.warning("apps.workspace_remove_failed", error=str(exc)[:120])
+
+        await asyncio.get_event_loop().run_in_executor(None, _remove)
     _log.info("apps.deleted", slug=slug, by=_uid(user))
     return {"slug": slug, "deleted": True}

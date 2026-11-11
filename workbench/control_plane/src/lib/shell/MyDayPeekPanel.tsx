@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * The panel on My Day (PK-1, task 2469, D204, `my_day_feed.md` §11.5).
+ * The panel on My Day (PK-1, task 2469, D213, `my_day_feed.md` §11.5).
  *
  * It shows what a row of My Day links to, on My Day. PK-1 shows a task.
  *

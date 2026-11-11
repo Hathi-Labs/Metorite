@@ -656,6 +656,7 @@ jobs:
               tests/unit/test_customer_console_catalog.py \
               tests/unit/test_customer_console_decide.py \
               tests/unit/test_customer_console_try_voice.py \
+              tests/unit/test_catalog_health_r8.py \
               tests/unit/test_customer_console_embed.py \
               tests/unit/test_customer_console_aroh_app.py \
               tests/unit/test_operator_identity.py \
@@ -682,6 +683,8 @@ jobs:
               tests/unit/test_owner_bootstrap.py \
               tests/unit/test_credential_tenant_threading.py \
               tests/unit/test_h3_rls_promotion_rehearsal.py \
+              tests/unit/test_skill_packs_r8.py \
+              tests/unit/test_studio_hierarchy_r8.py \
               tests/unit/test_action_broker_tenancy_r8.py \
               tests/unit/test_org_settings_tenancy_r8.py \
               tests/unit/test_user_settings_per_org_r8.py \
@@ -707,6 +710,7 @@ jobs:
               tests/unit/test_studio_expr.py \
               tests/unit/test_studio_formula_r8.py \
               tests/unit/test_studio_rollup_r8.py \
+              tests/unit/test_studio_lines_r8.py \
               tests/unit/test_no_person_present_r8.py \
               tests/unit/test_studio_packages_r8.py \
               tests/unit/test_studio_publish_install_r8.py \
@@ -718,10 +722,14 @@ jobs:
               tests/unit/test_studio_package_delete_r8.py \
               tests/unit/test_studio_chat_build_r8.py \
               tests/unit/test_studio_route_gate_r8.py \
+              tests/unit/test_workflows_author_gate_r8.py \
               tests/unit/test_package_host_store_r8.py \
               tests/unit/test_shell_layout_r8.py \
               tests/unit/test_package_disposal_r8.py \
+              tests/unit/test_package_lifetime_r8.py \
               tests/unit/test_package_field_values_r8.py \
+              tests/unit/test_agent_policies_r8.py \
+              tests/unit/test_package_expiry_loop_r8.py \
               tests/unit/test_app_requests_r8.py \
               tests/unit/test_workflows_lifecycle_rls_r8.py \
               tests/unit/test_project_rules.py \
@@ -733,11 +741,15 @@ jobs:
               tests/unit/test_headless_turn_r8.py \
               tests/unit/test_projects_status_set_read_r8.py \
               tests/unit/test_email_signature_images_r8.py \
+              tests/unit/test_email_signature_settings_r8.py \
               tests/unit/test_mcp_edge_attachment_r8.py \
               tests/unit/test_mcp_edge_comment_edit_r8.py \
               tests/unit/test_projects_status_slot_r8.py \
               tests/unit/test_pm_project_updates_r8.py \
+              tests/unit/test_task_check_r8.py \
               tests/unit/test_app_create_slug_r8.py \
+              tests/unit/test_app_delete_workspace_r8.py \
+              tests/unit/test_team_scope_isolation_r8.py \
               tests/unit/test_staging_export.py
 
   # ── Publish the ref the STAGING box will poll (WS-38) ─────────────────
@@ -1403,7 +1415,10 @@ jobs:
               elif curl -fsS --max-time 10 "http://$SSH_HOST:8080/health" >/dev/null 2>&1; then
                 gw_ok=1
               fi
-              wb_code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "$WORKBENCH_URL/" 2>/dev/null || echo 000)
+              # One code, never two. `|| echo 000` inside the `$(...)` read a
+              # failed connect as `000000` (vps-health.yml, 2026-10-03).
+              wb_code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "$WORKBENCH_URL/" 2>/dev/null) || true
+              [ -n "$wb_code" ] || wb_code=000
               got_sha=$(deployed_sha)
               sha_note=""
               sha_ok=0
@@ -1419,7 +1434,7 @@ jobs:
                 fi
               fi
 
-              if [ "$gw_ok" = 1 ]                  && printf '%s' "$wb_code" | grep -qE '^[23]'                  && [ "$sha_ok" = 1 ]; then
+              if [ "$gw_ok" = 1 ]                  && printf '%s' "$wb_code" | grep -qE '^[23][0-9][0-9]$'                  && [ "$sha_ok" = 1 ]; then
                 echo "  ✅ gateway healthy; workbench / -> HTTP $wb_code; serving $got_sha$sha_note (poll $i)"
                 return 0
               fi

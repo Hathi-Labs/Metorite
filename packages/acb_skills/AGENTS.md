@@ -76,6 +76,13 @@ not write a second copy of that seam. A bare test file name is under
    - OA-7i: `plan_loader` is the ONE reachability rule of the loader in a run. Its `LoaderPlan` gives the offer and `via_loader`, the owners whose specialist leaves. A hand-off to such an owner answers `LOADER_HANDOFF_REFUSED`. Fence: `test_loader_replaces_handoff.py`.
    - `PackRun.holds()` gives each pack of the run, loads too. `PackRun.refusal` applies `_refusals_for` to them. `_rules_block` is the ONE rules text of both layers. Fence: `test_load_skill_tools.py`.
    - `owner_scope(owner, held)` binds `no_egress` for any value of `held` but `False`. Fences: `test_tool_packs_registry.py`, `test_pack_guards.py`.
+5a-2. skill_packs.py -- a published Studio skill as a pack of one turn (WS-STU F3, spec `ai_studio.md` §14 F3). It does no I/O and never imports the orchestrator or the gateway.
+   - `orchestrator._tool_injection._turn_with_skills` is the ONE reader. It runs inside `_apply_tool_packs`, so only where `packs_on` gives a pack. It also needs `STUDIO_ORGS` and `feature:studio`, and it fails closed.
+   - The reader takes the bound tenant and the verified member, and both must agree with the turn (R5). `gateway.studio.skills_store.list_loadable` and `loadable_versions` hold the rule: published, with a version, owned by the member or of visibility `org`.
+   - `action_tool` is the ONE map from a catalog action to a chat tool. An action with no chat tool makes the skill fail to load. So does a tool that the run does not hold (`_skills_present`).
+   - `build` strips each hidden character first (5m-1). It refuses a `{{` or `}}`, more than `MAX_PACK_TOOLS` tools and rules over `MAX_RULES_TOKENS`.
+   - `tool_packs.choose` puts the skills after the code packs, in the order of the skill id, in the places that `MAX_PACKS` leaves. `persona_for` puts their rules after the rules of the code packs. A skill pack is never sticky.
+   - For each skill that loads, the run writes one `executor.skill_loaded` line, with no skill text. Fences: `test_skill_packs.py`, `test_skill_packs_r8.py` (R8).
 5b. decide_tools.py -- the `decide` core-floor tool (spec `customer_console.md` §6A.14). It sends no member and never logs `context`.
    - `decide_tool_enabled()` is its ONE switch. `decide_tool_for(agent_name)` is the one place that picks `system_one_decide` or the Jev `decide`.
    - Fences: `test_decide_tool.py`, `test_system_one_tool.py`.
@@ -88,13 +95,14 @@ not write a second copy of that seam. A bare test file name is under
 5c. permission_policy.py -- the B6 risk-aware handler and the D85 guard `guard_shared_agent_shell`.
    - The guard refuses a shell request unless the artifact context says `host_shell_refused=False`. Fence: `test_shared_agent_shell_tools.py`.
    - `decide()` refuses a read of a BINARY workspace file (`read_binary_file`). ⚠️ It never refuses a name in `_CLI_IMAGE_SUFFIXES`, and a CLI upgrade must check that list again. Fence: `test_chat_nul_persist.py`.
-5d. safe_open.py -- the ONE safe opener (spec `maf_coding_engine.md` §7.5 rule B). Every host reader and writer of a dir that a sandbox container mounts opens its paths here.
+5d. safe_open.py -- the ONE safe opener (spec `maf_coding_engine.md` §7.5 rule B). Every host reader and writer of a dir that a sandbox container mounts opens its paths here. The Custom Apps routes do too (WS-43h). `remove_links` and `remove_nested_git` remove each link and each nested `.git` that an `app_builder` command made.
    - A link at any depth fails the call. Do not open a mounted dir any other way. Fence: `test_sandbox_safe_open.py`.
 5e. sandbox_tools.py + tenant_file_store.py -- the sandbox tools (D86, spec §7.4 and §16.3).
    - Only `attach_for_run` hands them out, to ONE run, when `sandbox_broker.covers()` is true for the run's own tenant. They are never injected.
-   - A covered run does not hold `WITHHELD_HOST_TOOLS` or `HOST_NETWORK_TOOLS`. Do not write that no data leaves the platform, because a called agent runs outside the sandbox.
-   - The store takes only the heads `agent-data/`, `inputs/`, `outputs/` and `.run/`. Put prose for a sandbox-only tool in `addendum.RUN_SECTIONS`, never in `FULL_SECTIONS`.
-   - Fences: `test_run_command_tool.py`, `test_maf_code_session.py` (R8), `test_projects_sandbox_tools.py`, `test_generated_addendum.py`.
+   - Two harness agents take their own parts. The `code_task` session takes `code_task_session_parts`. The app-builder factory takes `app_builder_session_parts` under `app_builder:<org>` (WS-43h). Each of those tools reads the run binding and the scope on every call.
+   - A covered run does not hold `WITHHELD_HOST_TOOLS` or `HOST_NETWORK_TOOLS`, and app-builder's harness agent holds neither (`host_tool_guard`). Do not write that no data leaves the platform, because a called agent runs outside the sandbox.
+   - `TenantFileStore` takes only the heads `agent-data/`, `inputs/`, `outputs/` and `.run/`. `AppWorkspaceFileStore` maps each path of the app dir as it is, refuses each name that starts with a dot, and mirrors nothing to the blob store. The app-builder tools refuse a tenant dir `o:<org>`. Put prose for a sandbox-only tool in `addendum.RUN_SECTIONS`, never in `FULL_SECTIONS`.
+   - Fences: `test_run_command_tool.py`, `test_maf_code_session.py` (R8), `test_projects_sandbox_tools.py`, `test_generated_addendum.py`, `test_app_builder_engine.py`.
 5f. attachment_text.py + attachment_tools.py -- `read_attachment` (spec `projects_ai_chat.md` §22).
    - `attachment_text` parses bytes only, with no subprocess and no code. Every cap is a module constant there. No regex may run over a whole line of HTML.
    - `attachment_tools` takes the workspace and the thread from `artifact_context()`, and only a file name from the model. `agent_paths.upload_dir_rel` is the ONE rule for where an upload lands.

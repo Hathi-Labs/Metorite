@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * The one way a part of My Day goes to a link in code (PK-1, D204).
+ * The one way a part of My Day goes to a link in code (PK-1, D213).
  *
  * A row link is a real `<a>`, and My Day takes a plain click on it in its
  * capture handler (`useMyDayPeek.tsx`). A menu item or a key press goes in

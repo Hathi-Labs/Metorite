@@ -6,7 +6,7 @@
 --
 -- ENABLE + FORCE ROW LEVEL SECURITY + the policy. Instant — no scan. ⚠️ AND IT IS A CLIFF: the moment this applies, any connection that has not bound app.tenant_id reads ZERO ROWS. That is the fail-closed property working (§0.1). MT-1c must be deployed AND VERIFIED first, or the product goes dark.
 --
--- Tables in this phase: 191
+-- Tables in this phase: 192
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -1587,6 +1587,13 @@ CREATE POLICY package_field_value_tenant_isolation ON package_field_value
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
+ALTER TABLE pm_agent_policies ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_agent_policies FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS pm_agent_policies_tenant_isolation ON pm_agent_policies;
+CREATE POLICY pm_agent_policies_tenant_isolation ON pm_agent_policies
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
 ALTER TABLE pm_cycles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pm_cycles FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS pm_cycles_tenant_isolation ON pm_cycles;
@@ -1647,5 +1654,19 @@ ALTER TABLE crm_lead_pipeline_stages ENABLE ROW LEVEL SECURITY;
 ALTER TABLE crm_lead_pipeline_stages FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS crm_lead_pipeline_stages_tenant_isolation ON crm_lead_pipeline_stages;
 CREATE POLICY crm_lead_pipeline_stages_tenant_isolation ON crm_lead_pipeline_stages
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE email_signature_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE email_signature_settings FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS email_signature_settings_tenant_isolation ON email_signature_settings;
+CREATE POLICY email_signature_settings_tenant_isolation ON email_signature_settings
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE pm_epic_contracts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_epic_contracts FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS pm_epic_contracts_tenant_isolation ON pm_epic_contracts;
+CREATE POLICY pm_epic_contracts_tenant_isolation ON pm_epic_contracts
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);

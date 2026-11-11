@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * The panel on My Day — the page's half (PK-1, task 2469, D204,
+ * The panel on My Day — the page's half (PK-1, task 2469, D213,
  * `my_day_feed.md` §11.5). Behind `NEXT_PUBLIC_MY_DAY_PEEK`, default OFF.
  *
  * ONE seam on My Day. Every card keeps its plain `<a>` and its own markup,

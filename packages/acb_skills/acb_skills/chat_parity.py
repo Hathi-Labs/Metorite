@@ -119,6 +119,8 @@ APP_OF: tuple[tuple[str, str], ...] = (
     ("/api/health", "shell"),
     ("/api/actions", "shell"),
     ("/api/settings", "settings"),
+    # SW-31b: Settings, Agents, Guidance. The gateway serves `/agent-guidance`.
+    ("/api/agent-guidance", "settings"),
     ("/api/auth", "settings"),
     ("/api/accounts", "settings"),
     ("/api/admin", "admin"),
@@ -361,7 +363,7 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "POST /api/studio/packages": "studio_save",
     # STU-G3c: the IDE saves a draft with the PUT that studio_save sends (based_on in the query).
     "PUT /api/studio/packages/{}/draft": "studio_save",
-    # STU-G5: the IDE publishes with the POST that studio_publish sends (notes and based_on in the body).
+    # STU-G5: the IDE publishes with the POST that studio_publish sends (notes, based_on and origin in the body).
     "POST /api/studio/packages/{}/versions": "studio_publish",
     "POST /api/studio/apps/{}/actions/{}": "studio_record_list",
     "GET /api/studio/skills": "studio_skill_list",
@@ -392,6 +394,11 @@ EXEMPT: dict[str, tuple[str, str]] = {
         "stream",
         "The shell reads the installed packages to draw the sidebar and the command bar, and reads them "
         "again every few seconds (PKG-6). No member click sends it. The chat acts on the same records.",
+    ),
+    "GET /api/shell/layout": (
+        "stream",
+        "The shell reads the org default of the star set and the preset, to draw the sidebar for a member "
+        "with no choice of their own (PKG-17b). No member click sends it. The chat sets no org default here.",
     ),
     # ── Email ──
     "GET /api/email/attachments/{}/download": (
@@ -904,6 +911,10 @@ DEBT: dict[str, str] = {
     "POST /api/shell/intent": "P-7",
     "PUT /api/shell/feed/prefs": "P-7",
     # ── Settings and the assistant profile ──
+    # SW-31b: Settings, Agents, Guidance reads the versions of a scope and
+    # saves a new version. The chat tool is SW-31c (task 1531).
+    "GET /api/agent-guidance/history": "P-8",
+    "POST /api/agent-guidance": "P-8",
     "DELETE /api/auth/me/assistant-profile": "P-8",
     "DELETE /api/auth/me/assistant-profile/interview": "P-8",
     "DELETE /api/auth/me/assistant-profile/interview/{}": "P-8",
@@ -1001,7 +1012,7 @@ DEBT: dict[str, str] = {
 #: The most debt that each app may carry. A count may go down, never up.
 #: Lower the number in the change that pays the debt.
 DEBT_CEILING: dict[str, int] = {
-    "projects": 8,  # F3: UI_PLANNED, and UI_ACTIONS rows whose tool is PLANNED. SW-43a (2026-11-05) added agentRunsApi.withdrawAnswer, paid by the chat tool of SW-43c (task 1802).
+    "projects": 9,  # F3: UI_PLANNED, and UI_ACTIONS rows whose tool is PLANNED. SW-43a (2026-11-05) added agentRunsApi.withdrawAnswer, and SW-43b (2026-11-11) added agentRunsApi.replaceAnswer. The chat tools of SW-43c (task 1802) pay both.
     "tasks": 9,
     "calendar": 1,
     "email": 14,  # SG-1 (task 2177, 2026-11-07) added the signature image upload, paid by SG-6 (task 2182).
@@ -1016,7 +1027,7 @@ DEBT_CEILING: dict[str, int] = {
     "agents": 20,
     "chat": 25,
     "shell": 15,
-    "settings": 26,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write.
+    "settings": 28,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write. SW-31b added the guidance read and save, paid by SW-31c (task 1531).
     "admin": 36,
     "integrations": 21,  # MCP-P1b-1 added the app-request list and decision (task 1703).
     "studio": 3,  # BETA-1: the delete of a package waits for the chat tool of A5c-2. G5 adds the version read. B2c-2b adds no debt: its writes are ALSO rows of the door route.

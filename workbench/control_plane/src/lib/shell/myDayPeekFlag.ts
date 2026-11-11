@@ -1,5 +1,5 @@
 /**
- * The flag for the panel on My Day (PK-1, `my_day_feed.md` §11.5, D204).
+ * The flag for the panel on My Day (PK-1, `my_day_feed.md` §11.5, D213).
  * Off, a task row on My Day opens Projects, as before. On, a plain click
  * on a task row opens the task in a panel on My Day, and the path stays `/`.
  *

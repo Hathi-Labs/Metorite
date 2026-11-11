@@ -66,7 +66,7 @@ production. So the answer is the same as before, byte for byte.
 `MY_DAY_PROVIDERS` gates the sources `people` and `chat`, and the list is
 empty in production. So the answer is the same as before, byte for byte.
 
-**PK-1 is BUILT, 2026-11-09** (the task panel on My Day, §11.5, D204, task
+**PK-1 is BUILT, 2026-11-09** (the task panel on My Day, §11.5, D213, task
 2469, no migration). It is dark behind `NEXT_PUBLIC_MY_DAY_PEEK`, default
 OFF. PK-2 (email) and PK-3 (reminders) are not built.
 
@@ -2155,9 +2155,9 @@ test above runs in code after the answer.
 - An act never calls a route that its owning app does not own.
 - A `decide` answer never turns an `open` act into another way.
 
-### 11.5 The panel — a task opens on My Day (PK-1, D204)
+### 11.5 The panel — a task opens on My Day (PK-1, D213)
 
-**Decided by the owner, 2026-11-09 (D204).** The owner wrote that a task
+**Decided by the owner, 2026-11-09 (D213).** The owner wrote that a task
 card "opens up the projects app itself". Then the owner must go "back to My
 Day to look at the rest of my day". So the context of a row now opens on My
 Day. This amends D101 point 2 for each link to a task. The act test of §11.2

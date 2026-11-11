@@ -1,7 +1,7 @@
 import { expect, test, type Page, type Request, type Route } from "@playwright/test";
 
 /**
- * PK-1, the panel on My Day (task 2469, D204, `my_day_feed.md` §11.5).
+ * PK-1, the panel on My Day (task 2469, D213, `my_day_feed.md` §11.5).
  *
  * The owner, 2026-11-09: a task card on My Day opened Projects, and the
  * member had to go back to My Day for the rest of the day. With

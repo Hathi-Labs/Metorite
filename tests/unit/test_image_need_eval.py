@@ -228,3 +228,31 @@ def test_the_live_path_scores_and_the_budget_stops_it(monkeypatch) -> None:
     assert stopped and len(rows) == 1
     summary = run.summarise(rows, "tier-balanced", 0.08, stopped)
     assert summary["stopped_by_budget"] and summary["cost_usd"] == 0.04
+
+
+def test_the_addendum_tells_a_task_with_an_upload_to_pass_files() -> None:
+    """IMG-A3 (task 2489): create_task(files=...) is named where the model reads it."""
+    from acb_skills import addendum
+
+    rule = addendum.FILES_ON_TASK_RULE
+    assert "attached files and asks for a task" in rule
+    assert "create_task" in rule and "`files`" in rule
+    for sections in (addendum.FULL_SECTIONS, addendum.COMPACT_SECTIONS):
+        sec = next(s for s in sections if s.gate == ("read_attachment",))
+        assert rule in sec.text
+
+
+def test_the_real_request_for_a_task_with_an_image_holds_the_files_rule() -> None:
+    """IMG-A3: the prompt of "make a task with this screenshot" holds the rule.
+
+    The scripted model proves the prompt only. Whether a live model passes
+    `files` needs a live run: ``python -m evals.image_need.run --live``.
+    """
+    case = _case("N2")
+    models = run.script_for(case)
+    with hs.ImageHarness() as harness:
+        harness.models = models
+        asyncio.run(run._drive(harness, case))
+    body = models[ORCHESTRATOR].bodies[0]
+    text = run._flat(body["messages"][0]["content"])
+    assert "pass the file names in its `files` argument" in text

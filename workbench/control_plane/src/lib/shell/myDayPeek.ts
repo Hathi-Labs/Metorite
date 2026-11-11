@@ -1,5 +1,5 @@
 /**
- * The panel on My Day — the pure rules (PK-1, task 2469, D204,
+ * The panel on My Day — the pure rules (PK-1, task 2469, D213,
  * `my_day_feed.md` §11.5).
  *
  * The owner, 2026-11-09: "when I open any task card ... it opens up the
