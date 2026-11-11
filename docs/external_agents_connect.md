@@ -207,6 +207,7 @@ Seven tools work with these runs:
 | `post_agent_activity` | It posts a progress line, a result or a question in the run |
 | `ask_on_task` | It asks you a question on a task, with choices or free text |
 | `record_outside_decision` | You answered the question in another place, such as the agent's chat. It records your answer on the task, so the task stops waiting on you |
+| `set_run_plan` | It keeps a checklist on your run. Each call replaces the whole list, with up to 30 steps. The task card shows the step in progress and a count such as 3 of 7 |
 | `get_agent_run` | It reads a run and your answers |
 | `list_agent_runs` | It lists all your runs, from each agent, for the full history |
 | `finish_agent_run` | It ends a run |

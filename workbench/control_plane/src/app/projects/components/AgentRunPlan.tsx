@@ -50,7 +50,7 @@ export default function AgentRunPlan({ plan }: { plan?: AgentPlanStep[] | null }
   return (
     <div data-agent-plan="" className="space-y-1 text-xs">
       <p className="font-medium text-foreground" data-agent-plan-count="">
-        Plan{progress ? ` · ${progress}` : ""}
+        {progress ? `Plan · ${progress}` : "Plan"}
       </p>
       <ul className="space-y-0.5">
         {steps.map((step, i) => (
@@ -60,7 +60,7 @@ export default function AgentRunPlan({ plan }: { plan?: AgentPlanStep[] | null }
             className={`flex min-w-0 items-start gap-1.5 ${STATUS_CLASS[step.status]}`}
           >
             <Icon name={STATUS_ICON[step.status]} size={12} className="mt-0.5 shrink-0" aria-hidden />
-            <span className="sr-only">{STATUS_WORD[step.status]}: </span>
+            <span className="sr-only">{`${STATUS_WORD[step.status]}: `}</span>
             <span className="min-w-0 break-words">{step.content}</span>
           </li>
         ))}
