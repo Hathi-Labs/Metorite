@@ -231,4 +231,5 @@ def test_the_one_module_that_posts_an_answer_reaches_two_routes_only() -> None:
     assert code, "the module no longer reaches a run"
     for ln in code:
         assert "agent-runs/{rid}" in ln, ln
-        assert ln.strip().startswith(("payload = (await get(", "written = await post(")), ln
+        assert ln.strip().startswith(
+            ("payload = (await get(", "again = ((await get(", "written = await post(")), ln

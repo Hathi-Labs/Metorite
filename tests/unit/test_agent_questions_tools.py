@@ -65,7 +65,9 @@ def _open_run(*, status="awaiting", archive=False, multiple=False) -> dict:
     return {"run": {"id": RUN, "status": status, "open_elicitation": question}, "activities": []}
 
 
-def _gateway(monkeypatch, *, rows=None, off=False, run=None, post=None, total=None):
+def _gateway(monkeypatch, *, rows=None, off=False, run=None, post=None, total=None, runs=None):
+    reads = list(runs or [])
+
     def answer(call: dict) -> Any:
         path, method = call["path"], call["method"]
         if path == "/projects/agent-questions" and method == "GET":
@@ -75,6 +77,8 @@ def _gateway(monkeypatch, *, rows=None, off=False, run=None, post=None, total=No
             return {"rows": found, "total": len(found) if total is None else total,
                     "counts": {"mine": len(found), "everyone": None}}
         if path == f"/projects/agent-runs/{RUN}" and method == "GET":
+            if reads:
+                return reads.pop(0) if len(reads) > 1 else reads[0]
             return run if run is not None else _open_run()
         if path == f"/projects/agent-runs/{RUN}/activities" and method == "POST":
             return post if post is not None else {"created": True, "activity": {"id": "x"}}
@@ -181,7 +185,9 @@ def test_the_answer_posts_one_prompt_after_a_confirmed_card(monkeypatch) -> None
     body = posted[0]["json"]
     assert body["type"] == "prompt" and body["selected"] == ["a"]
     assert body["body"] == "Use the small one"
-    assert body["idempotency_key"] == f"chat-answer-{QID}"
+    assert body["idempotency_key"] == skill_projects.question_answers._answer_key(
+        QID, "Use the small one", ["a"])
+    assert body["idempotency_key"].startswith(f"chat-answer-{QID}-")
 
 
 def test_a_declined_card_writes_nothing(monkeypatch) -> None:
@@ -238,6 +244,61 @@ def test_a_403_of_the_server_is_one_sentence_and_the_tool_holds_no_rule(monkeypa
 
 
 def test_a_retry_that_the_server_replays_says_already_answered(monkeypatch) -> None:
-    _gateway(monkeypatch, post={"created": False})
+    _gateway(monkeypatch, post={"created": False, "activity": {"content": {"body": "x"}}})
     approve(monkeypatch)
     assert "Already answered" in _run(skill_projects.answer_agent_question(RUN, answer="x"))
+
+
+def test_a_stale_card_is_refused_and_nothing_is_posted(monkeypatch) -> None:
+    newer = _open_run()
+    newer["run"]["open_elicitation"]["id"] = str(uuid.uuid4())
+    calls = _gateway(monkeypatch, runs=[_open_run(), newer])
+    approve(monkeypatch)
+    said = _run(skill_projects.answer_agent_question(RUN, answer="x"))
+    assert said == skill_projects.question_answers.STALE_CARD
+    assert writes(calls) == []
+
+
+def test_a_text_answer_is_refused_when_the_run_stops_awaiting_after_the_card(monkeypatch) -> None:
+    calls = _gateway(monkeypatch, runs=[_open_run(), _open_run(status="running")])
+    approve(monkeypatch)
+    said = _run(skill_projects.answer_agent_question(RUN, answer="x"))
+    assert said == skill_projects.question_answers.STALE_CARD
+    assert writes(calls) == []
+
+
+def test_a_reanswer_after_a_withdraw_gets_a_new_key_and_a_changed_answer_a_new_key() -> None:
+    key = skill_projects.question_answers._answer_key
+    assert key(QID, "x", ["a"]) == key(QID, "x", ["a"])
+    assert key(QID, "x", ["a"]) != key(QID, "y", ["a"])
+    assert key(QID, "x", ["a", "b"]) == key(QID, "x", ["b", "a"])
+    assert key(QID, "x", ["a"]) != key(QID, "x", ["b"])
+
+
+def test_a_race_that_returns_another_answer_is_not_called_the_same(monkeypatch) -> None:
+    _gateway(monkeypatch, post={"created": False, "activity": {"content": {"body": "other"}}})
+    approve(monkeypatch)
+    said = _run(skill_projects.answer_agent_question(RUN, answer="x"))
+    assert said == skill_projects.question_answers.ANSWER_RECORDED
+    assert "same answer" not in said
+
+
+def test_a_replay_with_the_same_selected_ids_is_the_same_answer(monkeypatch) -> None:
+    _gateway(monkeypatch, post={"created": False, "activity": {"content": {"selected": ["a"]}}})
+    approve(monkeypatch)
+    assert "same answer" in _run(skill_projects.answer_agent_question(RUN, selected="a"))
+
+
+def test_duplicate_ids_are_refused_before_the_card(monkeypatch) -> None:
+    calls = _gateway(monkeypatch, run=_open_run(multiple=True))
+    asked = approve(monkeypatch)
+    said = _run(skill_projects.answer_agent_question(RUN, selected="a,a"))
+    assert "twice" in said
+    assert asked == [] and writes(calls) == []
+
+
+def test_a_422_of_the_server_is_one_sentence(monkeypatch) -> None:
+    _gateway(monkeypatch, post=FakeResponse({"detail": "selected names an id that is not an option."}, 422))
+    approve(monkeypatch)
+    said = _run(skill_projects.answer_agent_question(RUN, answer="x"))
+    assert "Nothing was changed" in said

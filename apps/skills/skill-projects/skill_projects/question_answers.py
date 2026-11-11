@@ -19,6 +19,7 @@ nothing before the member confirms.
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 from acb_common.no_person import NO_PERSON_TEXT, no_person_present
@@ -57,6 +58,46 @@ def _options_of(question: dict[str, Any]) -> list[dict[str, Any]]:
     return [o for o in meta.get("options") or [] if isinstance(o, dict)]
 
 
+STALE_CARD = (
+    "The question changed while the card was open, or nobody waits on this run now, "
+    "so nothing was sent. Ask for the questions again."
+)
+
+ANSWER_RECORDED = (
+    "Another answer is already recorded for this question, so nothing new was sent. "
+    "Open the task to read it."
+)
+
+
+def _answer_key(question_id: Any, text: str, picked: list[str]) -> str:
+    """One key for one question and one answer. A second answer to the same
+    question (after a withdraw, or from another member) gets its own key."""
+    digest = hashlib.sha256(
+        "\x1f".join([text, *sorted(picked)]).encode("utf-8")).hexdigest()[:12]
+    return f"chat-answer-{question_id}-{digest}"
+
+
+def _same_answer(activity: dict[str, Any], text: str, picked: list[str]) -> bool:
+    content = (activity or {}).get("content") or {}
+    return (str(content.get("body") or "").strip() == text
+            and sorted(str(x) for x in content.get("selected") or []) == sorted(picked))
+
+
+def _input_refusal(text: str, picked: list[str]) -> str:
+    if not text and not picked:
+        return "An answer needs text, an option id, or both. Nothing was changed."
+    if len(text) > ANSWER_BODY_MAX:
+        return f"An answer is at most {ANSWER_BODY_MAX} characters. Nothing was changed."
+    return ""
+
+
+async def _still_open(rid: str, question: dict[str, Any]) -> bool:
+    """True when the run still awaits the very question that the card showed."""
+    again = ((await get(f"/projects/agent-runs/{rid}")) or {}).get("run") or {}
+    return (again.get("status") == "awaiting"
+            and (again.get("open_elicitation") or {}).get("id") == question.get("id"))
+
+
 def _is_archive_request(question: dict[str, Any]) -> bool:
     request = (question.get("content_metadata") or {}).get("request") or {}
     return bool(request.get("kind"))
@@ -66,6 +107,8 @@ def _pick_refusal(question: dict[str, Any], options: list[dict[str, Any]], picke
     """The sentence that refuses a bad ``selected``, or an empty string."""
     if not picked:
         return ""
+    if len(set(picked)) != len(picked):
+        return "selected names the same option twice. Nothing was changed."
     ids = {str(o.get("id")) for o in options}
     if not ids:
         return "This question has no options, so selected does not apply. Answer in text."
@@ -91,10 +134,8 @@ async def answer_agent_question(run_id: str, answer: str = "", selected: str = "
     rid = uuid_of(run_id, "run_id")
     text = str(answer or "").strip()
     picked = [p.strip() for p in str(selected or "").split(",") if p.strip()]
-    if not text and not picked:
-        return "An answer needs text, an option id, or both. Nothing was changed."
-    if len(text) > ANSWER_BODY_MAX:
-        return f"An answer is at most {ANSWER_BODY_MAX} characters. Nothing was changed."
+    if refusal := _input_refusal(text, picked):
+        return refusal
     payload = (await get(f"/projects/agent-runs/{rid}")) or {}
     run = payload.get("run") or {}
     question = run.get("open_elicitation") or {}
@@ -107,7 +148,7 @@ async def answer_agent_question(run_id: str, answer: str = "", selected: str = "
         return refusal
     body: dict[str, Any] = {
         "type": "prompt",
-        "idempotency_key": f"chat-answer-{question.get('id')}",
+        "idempotency_key": _answer_key(question.get("id"), text, picked),
     }
     if text:
         body["body"] = text
@@ -129,12 +170,17 @@ async def answer_agent_question(run_id: str, answer: str = "", selected: str = "
                        "the task reads. The agent then reads it."),
     ):
         return CANCELLED
+    # The server answers the newest open question at POST time, so read again.
+    if not await _still_open(rid, question):
+        return STALE_CARD
     try:
         written = await post(f"/projects/agent-runs/{rid}/activities", body)
     except GatewayRefusal as exc:
-        if getattr(exc, "status", None) == 403:
+        if getattr(exc, "status", None) in (403, 422):
             return f"{REFUSED} {exc} Nothing was changed."
         raise
     created = (written or {}).get("created", True)
+    if not created and not _same_answer((written or {}).get("activity") or {}, text, picked):
+        return ANSWER_RECORDED
     done = "Answered" if created else "Already answered, with the same answer"
     return f"{done}: {asks}\n  run_id: {rid}"
