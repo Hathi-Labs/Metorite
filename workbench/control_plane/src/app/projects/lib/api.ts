@@ -18,6 +18,7 @@ import {
   normalizeRunDetail,
 } from "./agentRuns";
 import { type TaskDecisions, answerBody, readTaskDecisions } from "./decisions";
+import type { EpicRollup } from "./epicRollup";
 import {
   ATTENTION_LIMIT,
   type AttentionPage,
@@ -300,6 +301,13 @@ export interface NodeSummary {
     overdue: number;
     by_category: Record<string, number>;
   };
+  /**
+   * WS-39 LP-1a — the newest live update of a project or a subproject, or
+   * null when it has none. The key is there only while
+   * `PROJECTS_UPDATES_ORGS` holds the org, so the Overview draws the line
+   * with the roll-up, in one read, and nothing moves when it arrives.
+   */
+  latest_update?: ProjectUpdate | null;
   /**
    * WS-64 OP-11 — the My tasks summary only (`GET /projects/my/summary`).
    * `due_soon` is open work due in the next `due_soon_days`. `by_disposition`
@@ -1812,6 +1820,12 @@ export interface TaskRow {
    */
   time_spent_mins?: number;
   /**
+   * SP-9 — the roll-up of an EPIC over every descendant the reader can see.
+   * Only the single read carries it, and only for a task whose type is an
+   * epic type. `subtasks` above still counts the direct children.
+   */
+  rollup?: EpicRollup;
+  /**
    * WS-55 EA-12c — the derived state of the newest open agent run, or null
    * when the task has none (`external_agent_access.md` §12.1, EA12-10).
    * The run types live in `agentRuns.ts`, with the two optional run facts
@@ -2143,6 +2157,31 @@ export function refusedFields(err: unknown): FieldRow[] {
 }
 
 /**
+ * WS-39 LP-1a — one update of a project (`GET /projects/nodes/{id}/updates`).
+ * The author picks the health by hand. `body` is the text a person wrote.
+ */
+export type ProjectHealthValue = "on_track" | "at_risk" | "off_track";
+
+export type ProjectUpdate = {
+  id: string;
+  project_id: string;
+  author: string;
+  health: ProjectHealthValue;
+  body: string;
+  posted_at: string | null;
+  drafted_by_ai: boolean;
+  via: string | null;
+  /** This reader's right to delete it (`authority.may_delete_update`). */
+  can_delete?: boolean;
+  delete_refusal?: string | null;
+};
+
+export type ProjectUpdatesPage = {
+  rows: ProjectUpdate[];
+  next_before: string | null;
+};
+
+/**
  * The one request seam for `/api/projects/*`.
  *
  * Exported as `projectsCall` (WS-39 S3a-client) because the Tasks lens speaks
@@ -2295,6 +2334,7 @@ export const projectsApi = {
 
   /** The same shape one level up — every space the caller can see. */
   portfolio: () => call<NodeSummary>("summary"),
+
 
   /**
    * §9.12.7 analytics. `nodeId` omitted means the PORTFOLIO.

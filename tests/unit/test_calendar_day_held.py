@@ -26,11 +26,12 @@ from acb_skills.tool_guard import tool_name
 from orchestrator import _tool_injection as ti
 
 from tests.unit._egress_mark_store import install_memory_mark_store
-from tests.unit.test_calendar_day_pack import SLUG, TEN
+from tests.unit.test_calendar_day_pack import SIXTEEN, SLUG
 from tests.unit.test_tool_packs_choice import _run_ctx, _tenant
 
-READS = ("my_tasks_day_digest", "my_tasks_get_calendar_settings", "my_tasks_list_schedule")
-WRITES = tuple(n for n in TEN if n not in READS)
+READS = ("my_tasks_day_digest", "my_tasks_get_calendar_settings",
+         "my_tasks_list_day_rules", "my_tasks_list_schedule")
+WRITES = tuple(n for n in SIXTEEN if n not in READS)
 
 
 @pytest.fixture(autouse=True)
@@ -49,7 +50,7 @@ def test_the_reads_are_marked_read_only() -> None:
         assert not getattr(skill_my_tasks, name).__tool_risk__.get("read_only"), name
 
 
-@pytest.mark.parametrize("name", TEN)
+@pytest.mark.parametrize("name", SIXTEEN)
 def test_the_tasks_assistant_keeps_every_planner_tool_in_a_held_chat(name: str) -> None:
     """The regression fence. On main no planner tool is held off for the Tasks
     assistant. Mutation: put the family in ``_owner_tool_names()`` -> red."""
@@ -59,7 +60,7 @@ def test_the_tasks_assistant_keeps_every_planner_tool_in_a_held_chat(name: str) 
     assert name not in eg._owner_tool_names()
 
 
-def test_the_pack_holds_off_its_seven_writes_and_keeps_its_three_reads() -> None:
+def test_the_pack_holds_off_its_twelve_writes_and_keeps_its_four_reads() -> None:
     """Mutation: add a read to ``HELD_OFF_PACK_WRITES`` or drop a write -> red."""
     assert set(eg.HELD_OFF_PACK_WRITES[SLUG]) == set(WRITES)
     for name in WRITES:
@@ -74,13 +75,13 @@ def test_the_switch_off_holds_nothing_off(monkeypatch) -> None:
     from acb_common import get_settings
 
     monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "")
-    for name in TEN:
+    for name in SIXTEEN:
         assert not eg.is_held_off_pack_write(name, SLUG)
 
 
 async def test_check_my_inbox_and_rebuild_my_day_in_a_held_chat(monkeypatch) -> None:
     """The turn "check my inbox and rebuild my day": the chat read mail, so the
-    pack builds held. The three reads stay and the seven writes go. Mutation: skip
+    pack builds held. The four reads stay and the twelve writes go. Mutation: skip
     ``_is_held_off_pack`` in ``_pack_tools`` -> the writes stay -> red. Mutation:
     hold off a read -> red."""
     install_memory_mark_store(monkeypatch)

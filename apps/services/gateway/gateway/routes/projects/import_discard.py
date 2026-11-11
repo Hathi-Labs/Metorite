@@ -172,6 +172,8 @@ NODE_TABLES: dict[str, str] = {
     "pm_project_watchers": "a watcher",
     "pm_project_grants": "an access grant",
     "pm_activities": "a comment or an edit",
+    # WS-39 LP-1a: a member's project update counts as their work too.
+    "pm_project_updates": "a project update",
 }
 #: The node tables an import writes into a node it did not create (§6.9).
 IMPORT_WRITES = ("pm_task_statuses", "pm_task_types", "pm_tags")
