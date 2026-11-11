@@ -326,6 +326,10 @@ BAD_WRITE_INPUT = (
     "Send a JSON object with only data for a create, id and data for an update, "
     "and id for a delete.")
 STORE_REFUSED = "The store refuses this write, so check the id and the data."
+#: C19. The lookups of one batch passed their cap. The cap is of the whole
+#: save, so the sentence names no line.
+LOOKUP_BUDGET = (
+    "This save needs more lookup reads than one save can run, so save fewer lines at a time.")
 
 #: C13. The codes and the sentences of a refused list of lines.
 TOO_MANY_LINES = "too_many_lines"
@@ -677,6 +681,8 @@ def _set_write_error(out: _Outcome, exc: Exception, line: _Line | None = None) -
                          _query_refusal(exc))
     elif isinstance(exc, RecordError):
         out.fail = _refused(RECORD_INVALID, _at(line, str(exc)))
+    elif isinstance(exc, objects_store.LookupBudgetExceeded):
+        out.fail = _refused(RECORD_INVALID, LOOKUP_BUDGET)
     elif isinstance(exc, objects_store.ObjectStoreError):
         out.fail = _refused(RECORD_INVALID, _at(line, STORE_REFUSED))
     else:

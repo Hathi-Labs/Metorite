@@ -31,6 +31,9 @@ the rate. Org B never reads a row of org A.
   ``test_r8_an_update_keeps_the_quoted_rate_until_a_key_or_the_date_changes`` goes red.
 * M4. ``objects_store.set_field_hot``: skip ``_check_no_lookup_reads``.
   ``test_r8_a_key_of_the_table_cannot_turn_cold`` goes red.
+* M5. ``objects_store._apply_write``: drop ``batch.lookups.forget(oid)`` after
+  the create. ``test_r8_a_kept_read_is_dropped_when_the_batch_writes_the_source``
+  goes red.
 """
 
 from __future__ import annotations
@@ -262,6 +265,20 @@ def test_r8_a_row_of_the_same_batch_is_read(world) -> None:
                           _quote(quote, lane="DEL-CCU", slab=500, on="2026-02-01", kg=1))
 
     assert _go(world, go)[1].data["rate"] == _inr(900)
+
+
+def test_r8_a_kept_read_is_dropped_when_the_batch_writes_the_source(world) -> None:
+    """The batch keeps the rows of each read. A row of the card that a later
+    write of the same batch makes is still read: the write drops the kept rows."""
+    async def go() -> list[Any]:
+        card, quote = await _freight(world.a, world.pkg_a)
+        keys = {"lane": "BLR-DEL", "slab": 500, "on": "2026-03-15", "kg": 1}
+        return await _put(world.a, world.pkg_a, _quote(quote, **keys), _quote(quote, **keys),
+                          _row(card, "BLR-DEL", 500, "2026-03-01", 1100),
+                          _quote(quote, **keys))
+
+    made = _go(world, go)
+    assert [made[i].data["rate"] for i in (0, 1, 3)] == [_inr(1000), _inr(1000), _inr(1100)]
 
 
 def test_r8_two_rows_on_one_date_are_ambiguous(world) -> None:

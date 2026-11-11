@@ -130,10 +130,13 @@ MAX_ROLLUP_WHERE = 2
 MAX_ROLLUP_PARENTS = 100
 MAX_ROLLUP_STATEMENTS = 100
 #: The lookup rules of one object (C19), the keys of one lookup, and the lookup
-#: statements of one batch.
+#: statements of one batch. Each write of a batch fills its lookups once, so a
+#: legal batch runs at most one read for each lookup of each write. The cap
+#: comes from those two caps, so a legal batch never reaches it. It stays as a
+#: hard bound.
 MAX_LOOKUP_RULES = 4
 MAX_LOOKUP_KEYS = 3
-MAX_LOOKUP_STATEMENTS = 100
+MAX_LOOKUP_STATEMENTS = MAX_LOOKUP_RULES * MAX_WRITES_PER_BATCH
 
 #: The closed ops of a guard atom. All but ``not_empty`` are ops of C2a.
 GUARD_OPS: tuple[str, ...] = (

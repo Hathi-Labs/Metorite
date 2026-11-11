@@ -632,6 +632,13 @@ class BudgetExceeded(ObjectStoreError):
     """A cap: hot fields, fields, objects, the backfill size, or the size of a batch."""
 
 
+class LookupBudgetExceeded(BudgetExceeded):
+    """The lookups of one batch ran more reads than
+    :data:`~acb_common.studio_rules.MAX_LOOKUP_STATEMENTS` (C19). A route
+    gives it its own sentence, so the member sees that the lookup cap refused
+    the write."""
+
+
 class RecordNotFound(ObjectStoreError):
     """A write names no such object or record in the package of the batch."""
 
@@ -3047,6 +3054,7 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
         row = (await db.execute(text(_CREATE_RECORD_SQL), {
             "oid": oid, "data": record_json(clean), "actor": batch.who,
             "hot": _hot_rows(held.fields, clean)})).one()
+        batch.lookups.forget(oid)
         made = _record(row)
         batch.marks[(oid, made.id)] = _Mark(oid, batch.index, None, clean)
         batch.made[batch.index] = made.id
@@ -3060,6 +3068,7 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
     binds = {"oid": oid, "rid": step.record_id, "pid": batch.pid}
     if step.op == "delete":
         await db.execute(text(_DELETE_RECORD_SQL), binds)
+        batch.lookups.forget(oid)
         mark.after = None
         return True
     changes = dict(step.data or {})
@@ -3073,6 +3082,7 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
     row = (await db.execute(text(_UPDATE_RECORD_SQL), {
         **binds, "data": record_json(clean), "actor": batch.who,
         "hot": _hot_rows(held.fields, clean)})).one()
+    batch.lookups.forget(oid)
     mark.after = clean
     return _record(row)
 
@@ -3313,6 +3323,7 @@ async def _derive_parent(timed: _Timed, batch: _Batch, key: tuple[str, str],
     await timed.execute(text(_UPDATE_RECORD_SQL), {
         "oid": oid, "rid": rid, "pid": batch.pid, "data": record_json(clean),
         "actor": batch.who, "hot": _hot_rows(held.fields, clean)})
+    batch.lookups.forget(oid)
     mark.after = clean
 
 
@@ -3445,17 +3456,34 @@ async def _one_write(db: Any, who: str, package_id: str, write: Write) -> Record
 # * No row is `lookup_missing`, never a zero. Two rows on one date is
 #   `lookup_ambiguous`. A key of the record with no value clears the target.
 # * All lookups of a batch share one deadline (`query_timeout`) and at most
-#   `MAX_LOOKUP_STATEMENTS` statements (`BudgetExceeded`).
+#   `MAX_LOOKUP_STATEMENTS` statements (`LookupBudgetExceeded`).
+# * The batch keeps the rows of each read, by its SQL and its binds. A second
+#   read with the same keys uses those rows and runs no statement. A write to a
+#   source object drops the kept rows of that source (`_Lookups.forget`), so a
+#   row that an earlier write of the batch made or changed is still read.
 
 
 @dataclass
 class _Lookups:
     """The lookup state of one batch: each source by name, as its object id and
-    fields, the one deadline, and the count of the statements."""
+    fields, the one deadline, the count of the statements, and the rows of
+    each read, by the source object id and then by the read."""
 
     sources: dict[str, tuple[str, list[FieldSpec]]] = dc_field(default_factory=dict)
     deadline: float | None = None
     statements: int = 0
+    rows: dict[str, dict[str, list[tuple[Any, Any]]]] = dc_field(default_factory=dict)
+
+    def forget(self, object_id: str) -> None:
+        """Drop the kept rows of the source *object_id*. A write to a record
+        of that object calls it after its statement."""
+        self.rows.pop(object_id, None)
+
+
+def _read_key(sql: str, params: Mapping[str, Any]) -> str:
+    """The key of one read in the batch: its SQL and its binds. ``repr`` keeps
+    the type of each value, so ``1`` and ``"1"`` are two keys."""
+    return repr((sql, sorted(params.items())))
 
 
 _LOOKUP_PROBE = '[{"kind": "lookup"}]'
@@ -3535,20 +3563,26 @@ async def _read_lookup(db: Any, batch: _Batch, rule: Rule, held: _Held,
     """The value of the target from the one row of the source."""
     oid, fields = await _lookup_source(db, batch, rule, held)
     state = batch.lookups
-    state.statements += 1
-    if state.statements > MAX_LOOKUP_STATEMENTS:
-        raise BudgetExceeded(f"A batch runs at most {MAX_LOOKUP_STATEMENTS} lookups.")
     try:
         conditions = parse_query(fields, lookup_filter(rule, inputs)).conditions
     except QueryError:
         # A value that a key of the source cannot hold matches no row.
         raise lookup_missing(rule, held.name) from None
     sql, params = build_lookup(rule, conditions, object_id=oid, package_id=batch.pid)
-    if state.deadline is None:
-        state.deadline = _deadline()
-    async with _time_limit(db, state.deadline, _RULE_TIMEOUT_MESSAGE) as timed:
-        rows = (await timed.execute(text(sql), params)).all()
-    return lookup_result(rule, held.name, target, [(dict(_json(r[0])), r[1]) for r in rows])
+    kept = state.rows.setdefault(oid, {})
+    key = _read_key(sql, params)
+    found = kept.get(key)
+    if found is None:
+        state.statements += 1
+        if state.statements > MAX_LOOKUP_STATEMENTS:
+            raise LookupBudgetExceeded(f"A batch runs at most {MAX_LOOKUP_STATEMENTS} lookups.")
+        if state.deadline is None:
+            state.deadline = _deadline()
+        async with _time_limit(db, state.deadline, _RULE_TIMEOUT_MESSAGE) as timed:
+            rows = (await timed.execute(text(sql), params)).all()
+        found = [(dict(_json(r[0])), r[1]) for r in rows]
+        kept[key] = found
+    return lookup_result(rule, held.name, target, [(dict(d), v) for d, v in found])
 
 
 async def _fill_lookups(db: Any, batch: _Batch, held: _Held, before: Mapping[str, Any] | None,

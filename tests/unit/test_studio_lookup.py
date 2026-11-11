@@ -287,3 +287,99 @@ def test_a_lookup_target_is_computed_in_the_description() -> None:
                              created_at=_DAY, updated_at=_DAY, fields=tuple(_QUOTE),
                              constraints=(_rule(_RATE),))
     assert obj.computed == ("rate",)
+
+
+# -- the read budget of one batch --------------------------------------------
+
+
+class _Reads:
+    """A fake of `_time_limit` that counts the lookup reads and answers one row."""
+
+    def __init__(self) -> None:
+        self.count = 0
+
+    async def execute(self, stmt: Any, params: dict[str, Any]) -> Any:
+        self.count += 1
+        rows = [({"rate": {"minor": 1000, "currency": "INR"}}, _DAY)]
+        return type("Rows", (), {"all": lambda _self: rows})()
+
+
+def _counted(monkeypatch: pytest.MonkeyPatch) -> _Reads:
+    import contextlib
+
+    reads = _Reads()
+
+    @contextlib.asynccontextmanager
+    async def limit(db: Any, deadline: float, message: str = "") -> Any:
+        yield reads
+
+    monkeypatch.setattr(store, "_time_limit", limit)
+    return reads
+
+
+def _batch() -> Any:
+    batch = store._Batch("ana@x.test", "p", [])
+    batch.lookups.sources["card"] = ("o", list(_CARD))
+    return batch
+
+
+def _read(batch: Any, rule: sr.Rule, **inputs: Any) -> Any:
+    import asyncio
+
+    held = store._Held(name="quote", fields=list(_QUOTE), rules=(rule,))
+    keys = {"lane": "BLR-DEL", "slab": 500, "on": "2026-03-01", **inputs}
+    return asyncio.run(store._read_lookup(None, batch, rule, held, keys, _TARGET))
+
+
+def test_the_lookup_cap_comes_from_the_rule_cap_and_the_batch_cap() -> None:
+    assert sr.MAX_LOOKUP_STATEMENTS == sr.MAX_LOOKUP_RULES * sr.MAX_WRITES_PER_BATCH
+    assert store.MAX_LOOKUP_STATEMENTS is sr.MAX_LOOKUP_STATEMENTS
+    assert issubclass(store.LookupBudgetExceeded, store.BudgetExceeded)
+
+
+def test_a_second_read_with_the_same_keys_runs_no_statement(monkeypatch) -> None:
+    reads = _counted(monkeypatch)
+    batch, rule = _batch(), _rule(_RATE)
+    assert _read(batch, rule) == _read(batch, rule) == {"minor": 1000, "currency": "INR"}
+    assert reads.count == 1 and batch.lookups.statements == 1
+    _read(batch, rule, slab=1000)
+    assert reads.count == 2 and batch.lookups.statements == 2
+
+
+def test_a_write_to_the_source_drops_its_kept_rows(monkeypatch) -> None:
+    reads = _counted(monkeypatch)
+    batch, rule = _batch(), _rule(_RATE)
+    _read(batch, rule)
+    batch.lookups.forget("other")
+    _read(batch, rule)
+    assert reads.count == 1
+    batch.lookups.forget("o")
+    _read(batch, rule)
+    assert reads.count == 2
+
+
+def test_49_lines_with_4_lookups_each_stay_under_the_cap(monkeypatch) -> None:
+    """The largest legal save: a parent and 49 lines, each with 4 lookups that
+    read 4 other rows. The 200 reads fit, and one more read is refused."""
+    reads = _counted(monkeypatch)
+    batch = _batch()
+    rules = [_rule({**_RATE, "name": f"rate_{i}"}) for i in range(sr.MAX_LOOKUP_RULES)]
+    for write in range(sr.MAX_WRITES_PER_BATCH):
+        for i, rule in enumerate(rules):
+            _read(batch, rule, lane=f"lane-{i}", slab=write)
+    assert reads.count == sr.MAX_LOOKUP_STATEMENTS
+    with pytest.raises(store.LookupBudgetExceeded):
+        _read(batch, rules[0], lane="one-more")
+    assert reads.count == sr.MAX_LOOKUP_STATEMENTS
+
+
+def test_the_lookup_cap_has_its_own_sentence() -> None:
+    from gateway.routes.studio import invoke
+
+    out = invoke._Outcome(action="create")
+    assert invoke._set_write_error(out, store.LookupBudgetExceeded("cap"))
+    assert out.fail is not None and out.fail.reason == invoke.RECORD_INVALID
+    detail = out.fail.error.detail
+    assert detail["code"] == invoke.RECORD_INVALID
+    assert detail["message"] == invoke.LOOKUP_BUDGET != invoke.STORE_REFUSED
+    assert "lookup" in invoke.LOOKUP_BUDGET and len(invoke.LOOKUP_BUDGET.split()) <= 25
