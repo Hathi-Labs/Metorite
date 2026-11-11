@@ -1299,15 +1299,20 @@ class TestTheStructuralFences:
         """The real guard behind the heuristic scan: a tool call gets the
         parsed arguments and a :class:`Context` of the caller and the key, and
         never the request object. SW-7 adds the session key, a string that
-        ``mcp.py`` verified from ``Mcp-Session-Id``, still no request."""
+        ``mcp.py`` verified from ``Mcp-Session-Id``, still no request.
+        MCP-G28a adds the batch key, a string that the edge mints itself for
+        one call of ``update_tasks`` (``gateway_client.new_batch_key``). No
+        request and no tool input sets it."""
         import dataclasses
         import inspect
 
         from agent_edge import tools
 
         fields = {f.name: f.type for f in dataclasses.fields(tools.Context)}
-        assert list(fields) == ["caller", "key", "session"]
+        assert list(fields) == ["caller", "key", "session", "batch"]
         assert fields["session"] in ("str | None", str | None)
+        assert fields["batch"] in ("str | None", str | None)
+        assert tools.Context.__dataclass_fields__["batch"].default is None
         assert list(inspect.signature(tools.call).parameters) == [
             "tool", "ctx", "arguments"]
         assert list(inspect.signature(tools.Tool).parameters).count("request") == 0

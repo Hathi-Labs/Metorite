@@ -1075,9 +1075,34 @@ def path_shapes(method: str, template: str) -> Mapping[str, str]:
 #: MCP-G20: these two are the DEFAULTS. The settings ``AGENT_WRITE_CAP`` and
 #: ``AGENT_WRITE_WINDOW_S`` set the live values, and the two readers below
 #: are the one source of them.
+#:
+#: MCP-G28a (D209): the cap has two counters, per connection, both with the
+#: window of :func:`write_window_s`. The CALL counter (:func:`write_cap`,
+#: under :data:`WRITE_CAP_NAMESPACE`) counts one for each signed write, and
+#: one for each batch key of a bulk call. The ROW counter
+#: (:func:`write_row_cap`, under :data:`WRITE_ROW_CAP_NAMESPACE`) counts one
+#: for each signed write. So a batch of 50 rows costs 1 call and 50 rows,
+#: and a single write costs 1 call and 1 row.
 WRITE_CAP = 120
 WRITE_WINDOW_S = 600
 WRITE_CAP_NAMESPACE = "agent_writes"
+#: MCP-G28a. The default of ``AGENT_WRITE_ROW_CAP``.
+WRITE_ROW_CAP = 5000
+WRITE_ROW_CAP_NAMESPACE = "agent_write_rows"
+#: MCP-G28a. The rows of one batch key, under this namespace and the
+#: connection. Each :data:`WRITE_ROWS_PER_CALL` rows of one key cost one
+#: more call, so a key that the edge used again never escapes the call
+#: counter.
+WRITE_BATCH_NAMESPACE = "agent_write_batch"
+#: MCP-G28a. The most rows of one write call. The edge refuses a larger
+#: ``update_tasks`` call before any request (``tools.MAX_BULK_UPDATES`` is
+#: this value), and branch 0 counts one more call for each further
+#: :data:`WRITE_ROWS_PER_CALL` rows of one batch key.
+WRITE_ROWS_PER_CALL = 50
+#: The details of the two 429 answers of the cap. The edge reads the detail
+#: to name the counter that refused, and never sends the detail.
+WRITE_CAP_DETAIL = "Too many write calls from this connection. Wait a few minutes."
+WRITE_ROW_CAP_DETAIL = "Too many changed rows from this connection. Wait a few minutes."
 
 
 def _positive(value: object, default: int) -> int:
@@ -1088,12 +1113,24 @@ def _positive(value: object, default: int) -> int:
 
 
 def write_cap() -> int:
-    """The writes that one connection makes in one window (MCP-G20).
+    """The write calls that one connection makes in one window (MCP-G20,
+    MCP-G28a).
 
     ``agent_write_cap``, or :data:`WRITE_CAP` for a value below 1. Branch 0
-    reads it at each write, and the edge names it in each write tool.
+    reads it at each write, and the edge names it in each write tool. A
+    bulk call counts as one call for each :data:`WRITE_ROWS_PER_CALL` rows.
     """
     return _positive(get_settings().agent_write_cap, WRITE_CAP)
+
+
+def write_row_cap() -> int:
+    """The rows that one connection changes in one window (MCP-G28a, D209).
+
+    ``agent_write_row_cap``, or :data:`WRITE_ROW_CAP` for a value below 1.
+    Each signed write is one row. Branch 0 reads it at each write, and the
+    edge names it in each write tool.
+    """
+    return _positive(get_settings().agent_write_row_cap, WRITE_ROW_CAP)
 
 
 def write_window_s() -> int:
@@ -1338,8 +1375,14 @@ __all__ = [
     "S256",
     "SUPPORTED_SCOPES",
     "WRITES_DISABLED_CODE",
+    "WRITE_BATCH_NAMESPACE",
     "WRITE_CAP",
+    "WRITE_CAP_DETAIL",
     "WRITE_CAP_NAMESPACE",
+    "WRITE_ROWS_PER_CALL",
+    "WRITE_ROW_CAP",
+    "WRITE_ROW_CAP_DETAIL",
+    "WRITE_ROW_CAP_NAMESPACE",
     "WRITE_WINDOW_S",
     "actor_via_for",
     "advertised_resource_scopes",
@@ -1387,6 +1430,7 @@ __all__ = [
     "task_checks_enabled",
     "token_endpoint",
     "write_cap",
+    "write_row_cap",
     "write_window_s",
     "writes_enabled",
 ]

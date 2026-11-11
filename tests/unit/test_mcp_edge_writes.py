@@ -1087,7 +1087,8 @@ class TestTheGatewayHalf:
         result = await _result(live, "write", "set_task_status", task_id=task,
                                status_id=live.s.todo,
                                expected_version=await _version(live, task))
-        assert result["content"][0]["text"] == "Too many changes. Wait a few minutes."
+        # MCP-G28a: the text names the counter that refused, the calls.
+        assert result["content"][0]["text"] == tools.TEXT_CALL_CAP
 
     async def test_the_counter_starts_its_window_on_the_first_write(self, live):
         task = live.task(live.team, live.s.todo, "window")

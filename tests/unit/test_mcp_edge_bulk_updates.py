@@ -8,9 +8,10 @@ Four gaps, one file.
 * **The bulk write.** ``update_tasks`` takes up to 50 items, each the input
   of ``update_task``. Each item is one call of ``update_task``: its own
   request, its own nonce, its own version and its own transaction. A failed
-  item never stops the others. Each item counts once against the cap.
+  item never stops the others. MCP-G28a (D209): one call counts as 1 call
+  and each item as 1 row (``tests/unit/test_mcp_write_limit.py``).
 * **The cap is a setting.** ``AGENT_WRITE_CAP`` and ``AGENT_WRITE_WINDOW_S``,
-  defaults 120 and 600. With the cap at 300, a 300-write sweep fits.
+  defaults 120 and 600. MCP-G28a adds ``AGENT_WRITE_ROW_CAP``, default 5000.
 * **The move says why.** A move across projects, a loop and an Epic under a
   parent each answer one plain text with the next step.
 * **The default status.** An agent's subtask with no ``status_id`` starts in
@@ -32,8 +33,8 @@ non-privileged role. Run::
 
 * B1. ``E/tools.py``: ``UPDATE_TASKS`` needs ``projects:read``. ``test_a_read_only_connection_cannot_bulk_update``.
 * B2. ``G/tasks.py``: ``patch_task`` loads the task with no visibility. ``test_a_hidden_task_reads_as_a_task_that_does_not_exist``.
-* B3. ``A/deps.py``: ``_claim_write`` counts each write as the first. ``test_each_item_counts_once_against_the_cap`` and ``test_the_cap_counts_each_item``.
-* B4. ``A/deps.py``: ``_claim_write`` reads ``WRITE_CAP`` and not ``write_cap()``. ``test_a_300_write_sweep_fits_with_the_cap_at_300``.
+* B3. ``A/deps.py``: ``_claim_write`` counts a call for each row of a batch key. ``test_a_call_counts_once_against_the_call_cap`` and ``test_the_cap_counts_the_call_and_each_row``.
+* B4. ``A/deps.py``: ``_claim_write`` reads ``WRITE_CAP`` and not ``write_cap()``. ``test_the_call_cap_is_the_setting``.
 * B5. ``E/tools.py``: ``_update_tasks`` raises the first item error. ``test_a_failed_item_never_stops_the_others``.
 * B6. ``G/tasks.py``: ``create_task`` keeps the parent lane for an agent. ``test_an_agent_subtask_starts_in_the_default_status``.
 """
@@ -147,10 +148,16 @@ def _results(result: dict[str, Any]) -> list[dict[str, Any]]:
     return result["structuredContent"]["results"]
 
 
-def _counter(fake: Any) -> int:
-    key = f"cc:{w.ORG}:{agent_oauth.WRITE_CAP_NAMESPACE}:{w.CONN}"
+def _counter(fake: Any, namespace: str = agent_oauth.WRITE_CAP_NAMESPACE) -> int:
+    """The count of one counter of the cap of ``w.CONN``: the calls, or
+    with ``WRITE_ROW_CAP_NAMESPACE`` the rows (MCP-G28a)."""
+    key = f"cc:{w.ORG}:{namespace}:{w.CONN}"
     found = fake.store.get(key)
     return int(found[0]) if found else 0
+
+
+def _rows(fake: Any) -> int:
+    return _counter(fake, agent_oauth.WRITE_ROW_CAP_NAMESPACE)
 
 
 class TestTheToolRecord:
@@ -164,12 +171,15 @@ class TestTheToolRecord:
         assert entry["annotations"]["readOnlyHint"] is False
         assert entry["annotations"]["destructiveHint"] is False
         assert tools.write_limit_line().strip() in entry["description"]
-        assert "Each item counts as one change in the limit" in entry["description"]
+        assert ("One call counts as 1 write call in the limit, and each item counts"
+                " as 1 changed row") in entry["description"]
         assert "untrusted_text" in entry["description"]
 
     def test_the_items_are_the_input_of_update_task(self):
         updates = self._listed()["inputSchema"]["properties"]["updates"]
+        # MCP-G28a: the most items is the most rows of one write call.
         assert updates["maxItems"] == tools.MAX_BULK_UPDATES == 50
+        assert tools.MAX_BULK_UPDATES == agent_oauth.WRITE_ROWS_PER_CALL
         assert updates["minItems"] == 1
         assert updates["items"] == tools.UPDATE_TASK.describe()["inputSchema"]
         assert {"type_id", "parent_task_id"} <= set(updates["items"]["properties"])
@@ -311,61 +321,69 @@ class TestEachItemIsItsOwnWrite:
                             "error": tools.TEXT_BULK_TIME}
 
 
-class TestTheCapCountsEachItem:
-    """The REAL branch 0 cap (``deps._claim_write``) in front of the board."""
+class TestTheCapCountsTheCall:
+    """The REAL branch 0 cap (``deps._claim_write``) in front of the board.
+    MCP-G28a (D209): one ``update_tasks`` call is 1 call and 1 row for each
+    item. ``tests/unit/test_mcp_write_limit.py`` holds the two counters."""
 
-    async def test_each_item_counts_once_against_the_cap(self, edge, redis_fake, monkeypatch):
+    async def test_a_call_counts_once_against_the_call_cap(self, edge, redis_fake,
+                                                           monkeypatch):
         monkeypatch.setattr(get_settings(), "agent_write_cap", 3)
-        board = _Board(5)
+        board = _Board(8)
         with gateway_client.use_transport(httpx.ASGITransport(app=c._CapGateway(board))):
             result = await _tool("update_tasks", {"updates": [
                 _item(_id(i), title=f"t{i}") for i in range(5)]})
-        rows = _results(result)
-        assert [r["ok"] for r in rows] == [True, True, True, False, False]
-        assert rows[3]["error"] == rows[4]["error"] == tools.TEXT_CAP
-        assert rows[3]["tried"] is True and rows[4]["tried"] is False
-        assert rows[3]["retry_after"] == rows[4]["retry_after"] == 600
-        # Item 4 met the cap, and item 5 was never sent.
-        assert _counter(redis_fake) == 4
-        assert board.writes == 3
+            rows = _results(result)
+            # Five items, one call: all land under a call cap of 3.
+            assert all(r["ok"] for r in rows), rows
+            assert (_counter(redis_fake), _rows(redis_fake)) == (1, 5)
+            singles = [await _tool("update_task", _item(_id(i), title=f"u{i}"))
+                       for i in (5, 6, 7)]
+        assert [s["isError"] for s in singles] == [False, False, True]
+        assert _text(singles[2]) == tools.TEXT_CALL_CAP
+        assert singles[2]["structuredContent"]["retry_after"] == 600
+        assert board.writes == 7
 
-    async def test_with_the_default_cap_a_300_write_sweep_stops_at_120(self, edge, redis_fake):
+    async def test_with_the_default_cap_a_300_write_sweep_lands(self, edge, redis_fake):
+        """Before MCP-G28a, this sweep stopped at 120 rows. Now six calls of
+        50 are 6 calls and 300 rows, under 120 calls and 5000 rows."""
         board = _Board(300)
         rows: list[dict[str, Any]] = []
         with gateway_client.use_transport(httpx.ASGITransport(app=c._CapGateway(board))):
             for start in range(0, 300, 50):
                 rows += _results(await _tool("update_tasks", {"updates": [
                     _item(_id(i), title=f"s{i}") for i in range(start, start + 50)]}))
-        assert sum(r["ok"] for r in rows) == 120
-        assert rows[120]["error"] == tools.TEXT_CAP
-
-    async def test_a_300_write_sweep_fits_with_the_cap_at_300(self, edge, redis_fake,
-                                                              monkeypatch):
-        """DONE WHEN of task 2212: with ``AGENT_WRITE_CAP=300`` a sweep of
-        300 writes, six calls of 50, lands with no retry. The 301st write in
-        the same window meets the cap."""
-        monkeypatch.setattr(get_settings(), "agent_write_cap", 300)
-        board = _Board(301)
-        rows: list[dict[str, Any]] = []
-        with gateway_client.use_transport(httpx.ASGITransport(app=c._CapGateway(board))):
-            for start in range(0, 300, 50):
-                rows += _results(await _tool("update_tasks", {"updates": [
-                    _item(_id(i), title=f"s{i}") for i in range(start, start + 50)]}))
-            over = await _tool("update_task", _item(_id(300), title="one more"))
         assert len(rows) == 300 and all(r["ok"] for r in rows)
-        assert _counter(redis_fake) == 301
-        assert _text(over) == tools.TEXT_CAP
-        assert 0 < over["structuredContent"]["retry_after"] <= 600
+        assert (_counter(redis_fake), _rows(redis_fake)) == (6, 300)
+
+    async def test_the_call_cap_is_the_setting(self, edge, redis_fake, monkeypatch):
+        """B4. With ``AGENT_WRITE_CAP=2`` the third call meets the cap,
+        and none of its items is sent after the first."""
+        monkeypatch.setattr(get_settings(), "agent_write_cap", 2)
+        board = _Board(9)
+        with gateway_client.use_transport(httpx.ASGITransport(app=c._CapGateway(board))):
+            calls = [_results(await _tool("update_tasks", {"updates": [
+                _item(_id(i), title=f"s{i}") for i in range(start, start + 3)]}))
+                for start in (0, 3, 6)]
+        assert all(r["ok"] for r in calls[0] + calls[1])
+        third = calls[2]
+        assert [(r["ok"], r["tried"], r["error"]) for r in third] == [
+            (False, True, tools.TEXT_CALL_CAP), (False, False, tools.TEXT_CALL_CAP),
+            (False, False, tools.TEXT_CALL_CAP)]
+        assert all(r["retry_after"] == 600 for r in third)
+        assert board.writes == 6
+        assert (_counter(redis_fake), _rows(redis_fake)) == (3, 6)
 
     async def test_the_window_is_the_setting(self, edge, redis_fake, monkeypatch):
         settings = get_settings()
-        monkeypatch.setattr(settings, "agent_write_cap", 1)
+        monkeypatch.setattr(settings, "agent_write_row_cap", 1)
         monkeypatch.setattr(settings, "agent_write_window_s", 900)
         board = _Board(2)
         with gateway_client.use_transport(httpx.ASGITransport(app=c._CapGateway(board))):
             result = await _tool("update_tasks", {"updates": [
                 _item(_id(0), title="a"), _item(_id(1), title="b")]})
         rows = _results(result)
+        assert rows[1]["error"] == tools.TEXT_ROW_CAP
         assert rows[1]["retry_after"] == 900
 
 
@@ -536,20 +554,32 @@ class TestBulkUpdatesOnARealDatabase:
         assert rows[1]["ok"] is True
         assert _row(live, a).title == "g20 stale A, first"
 
-    async def test_the_cap_counts_each_item(self, live, monkeypatch):
-        monkeypatch.setattr(get_settings(), "agent_write_cap", 3)
-        tasks = [live.task(live.team, live.s.todo, f"g20 cap {i}") for i in range(5)]
+    async def test_the_cap_counts_the_call_and_each_row(self, live, monkeypatch):
+        """MCP-G28a through the REAL branch 0: the signed batch key of each
+        item verifies, the call counts once and each item counts one row."""
+        settings = get_settings()
+        tasks = [live.task(live.team, live.s.todo, f"g20 cap {i}") for i in range(6)]
         versions = [await _version(live, task) for task in tasks]
+        monkeypatch.setattr(settings, "agent_write_cap", 2)
+        monkeypatch.setattr(settings, "agent_write_row_cap", 3)
         rows = _results(await _bulk(live, [
             {"task_id": task, "expected_version": version, "title": f"g20 cap {i}, new"}
-            for i, (task, version) in enumerate(zip(tasks, versions, strict=True))]))
+            for i, (task, version) in enumerate(zip(tasks[:5], versions[:5], strict=True))]))
         assert [r["ok"] for r in rows] == [True, True, True, False, False]
-        assert rows[3]["error"] == tools.TEXT_CAP and rows[3]["tried"] is True
+        assert rows[3]["error"] == tools.TEXT_ROW_CAP and rows[3]["tried"] is True
         assert rows[4]["tried"] is False and rows[4]["retry_after"] > 0
-        assert [_row(live, task).title for task in tasks] == [
+        assert [_row(live, task).title for task in tasks[:5]] == [
             "g20 cap 0, new", "g20 cap 1, new", "g20 cap 2, new", "g20 cap 3", "g20 cap 4"]
-        key = f"cc:{live.org}:{agent_oauth.WRITE_CAP_NAMESPACE}:{live.c['write']}"
-        assert int(live.redis.store[key][0]) == 4
+        calls = f"cc:{live.org}:{agent_oauth.WRITE_CAP_NAMESPACE}:{live.c['write']}"
+        rows_key = f"cc:{live.org}:{agent_oauth.WRITE_ROW_CAP_NAMESPACE}:{live.c['write']}"
+        # The reads above are GETs, so they count nothing.
+        assert int(live.redis.store[calls][0]) == 1
+        assert int(live.redis.store[rows_key][0]) == 4
+        # A single write is 1 call more, and the row counter still refuses.
+        single = await _mcp(live, "write", "update_task", {
+            "task_id": tasks[5], "expected_version": versions[5], "title": "g20 cap 5"})
+        assert _text(single) == tools.TEXT_ROW_CAP
+        assert int(live.redis.store[calls][0]) == 2
 
     async def test_a_read_only_connection_cannot_bulk_update(self, live):
         task = live.task(live.team, live.s.todo, "g20 read only")

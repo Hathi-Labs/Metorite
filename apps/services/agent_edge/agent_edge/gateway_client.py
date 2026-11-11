@@ -7,7 +7,8 @@ Spec ``project-docs/specs/external_agent_access.md`` §5.1, §9.5, §9.6 and
 ``acb_auth.agent_signing.signed_headers`` and nothing else that this module
 sets. A write (EA-6a) also carries the fifth signed header,
 ``X-Agent-Nonce``, a ``Content-Type`` of JSON, and ``If-Match`` when the
-tool sends a version. No ``Authorization`` header, no member header, and no
+tool sends a version. A write of a bulk call also carries the signed
+``X-Agent-Batch`` (MCP-G28a). No ``Authorization`` header, no member header, and no
 header copied from the client request. The gateway reads the member from the
 connection row (branch 0 of ``get_current_user``). ``trust_env`` is off, so no
 proxy setting and no ``.netrc`` entry can add a credential either.
@@ -163,13 +164,18 @@ def actor_via(caller: TokenLookup) -> str:
 def signed_request_headers(
     key: str, caller: TokenLookup, path: str, query: Sequence[tuple[str, str]],
     *, method: str = _GET, body: bytes = b"", session: str | None = None,
+    batch: str | None = None,
 ) -> dict[str, str]:
     """The signed headers of one gateway request: four for a read, and five
     for a write, whose fifth is a fresh ``X-Agent-Nonce`` (EA3-28).
 
     SW-7: *session* is the MCP session key that ``mcp.py`` read from a
     verified ``Mcp-Session-Id``. It goes out as the signed
-    ``X-Agent-Session``, and ``None`` sends no such header."""
+    ``X-Agent-Session``, and ``None`` sends no such header.
+
+    MCP-G28a (D209): *batch* is the batch key of one bulk call
+    (:func:`new_batch_key`). It goes out as the signed ``X-Agent-Batch`` on
+    a write, and ``None`` sends no such header."""
     return agent_signing.signed_headers(
         key,
         organization_id=caller.organization_id,
@@ -180,7 +186,15 @@ def signed_request_headers(
         query=list(query),
         body=body,
         session=session,
+        batch=batch,
     )
+
+
+def new_batch_key() -> str:
+    """A fresh batch key for one call of a bulk tool (MCP-G28a, D209). Each
+    write of the call sends it, so branch 0 counts the call once. The agent
+    never sees it, and the edge never takes it from a tool input."""
+    return agent_signing.new_batch_key()
 
 
 async def get(
@@ -233,6 +247,7 @@ async def write(
     query: Sequence[tuple[str, str]] = (),
     if_match: str | None = None,
     session: str | None = None,
+    batch: str | None = None,
 ) -> Answer:
     """One signed write to the gateway (EA-6a), or raise
     :class:`GatewayUnreachable`.
@@ -241,6 +256,7 @@ async def write(
     of *json_body*, and the signature covers its bytes and a fresh nonce
     (EA3-28). *if_match* goes out as ``If-Match`` when it is set, and only
     in the shape of a timestamp. Nothing else of the client request goes out.
+    MCP-G28a: *batch* is the signed batch key of a bulk call, or ``None``.
     """
     path = _path(template, path_params or {}, method)
     pairs = [(str(k), str(v)) for k, v in query]
@@ -250,7 +266,8 @@ async def write(
         body = json.dumps(dict(json_body), ensure_ascii=False,
                           separators=(",", ":")).encode("utf-8")
         headers = signed_request_headers(key, caller, path, pairs,
-                                         method=method, body=body, session=session)
+                                         method=method, body=body, session=session,
+                                         batch=batch)
         headers["Content-Type"] = "application/json"
         if if_match is not None:
             headers["If-Match"] = if_match
@@ -403,6 +420,7 @@ __all__ = [
     "RouteRefused",
     "actor_via",
     "get",
+    "new_batch_key",
     "send_call",
     "signed_request_headers",
     "use_transport",

@@ -52,11 +52,12 @@ from typing import Annotated, Any
 from fastapi import Header, Request
 
 #: The four signed headers, the two that tell branch 0 to refuse a body on a
-#: GET, the nonce of a write (EA-6a), and the signed MCP session key (SW-7).
+#: GET, the nonce of a write (EA-6a), the signed MCP session key (SW-7), and
+#: the signed batch key of a bulk call (MCP-G28a, D209).
 ALLOWED_HEADERS = frozenset({
     "x-agent-connection", "x-agent-timestamp", "x-agent-signature",
     "x-actor-via", "content-length", "transfer-encoding", "x-agent-nonce",
-    "x-agent-session",
+    "x-agent-session", "x-agent-batch",
 })
 
 #: ``route`` and ``app`` find the matched template. ``path`` and
