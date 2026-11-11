@@ -36,8 +36,10 @@ Each reader test asserts three things, so it cannot pass on an empty answer:
 * the whole answer of org B holds no marker of org A, and the reverse.
 
 The one exception is ``dynamic_agents``. The roster reads it through the
-unbound ``get_session()``, so under FORCE RLS no org sees its own row. That
-test pins the isolation only.
+unbound ``get_session()``, so under FORCE RLS no org sees its own row, and the
+roster falls back to the one deployment-wide ``agents.json``. That fallback
+can show the agent of one org to another (task 2956). The test for it is an
+``xfail(strict=True)`` probe. It does NOT prove isolation.
 
 ``model_config`` has no row policy. Its ``WHERE organization_id = %s`` is the
 only fence of the alias overlay, so this suite is the proof for it.
@@ -360,22 +362,35 @@ def test_roster(world):
 
 
 @_DB_GATE
+@pytest.mark.xfail(
+    strict=True,
+    reason="task 2956: with no tenant bound on get_session(), the agent that "
+           "one org saves falls back to the shared agents.json and the roster "
+           "of another org reads it. Remove this mark when 2956 is fixed.",
+)
 def test_roster_reads_no_dynamic_agent_of_another_org(world):
-    """``dynamic_agents`` under FORCE RLS: org B reads no agent of org A.
+    """``dynamic_agents``: an agent that org A saves must not reach org B.
 
-    The roster reads this table through the unbound ``get_session()``. Under
-    the app role, ``_tenant_is_bound()`` is false there, so the roster reads
-    the agents file and no row. This test pins the isolation. The gap that
-    an org does not see its OWN registered agent is in the AGA-5 report.
+    This drives the REAL save path. ``_save_dynamic_agents`` inserts through
+    the unbound ``get_session()``. Under the app role and FORCE RLS the
+    insert fails, and the ``except`` writes the whole list to the shared
+    ``agents.json``. ``_load_dynamic_agents`` reads that file when no tenant
+    is bound. The roster of org B then lists the agent of org A.
+
+    It is a strict expected failure until task 2956 is fixed. A fix turns it
+    into an XPASS, which fails the run and tells the fixer to drop the mark.
+    The tests above pin the other sources. This one does NOT pin isolation.
     """
+    from gateway.routes import agent as agent_routes
     from gateway.routes.observability import roster
 
     a, b = world
-    names_a = {e["name"] for e in _call(a, lambda v: roster(viewer=v))["agents"]}
+    agent_routes._save_dynamic_agents(
+        [{"name": a.dyn_agent, "description": "agent saved by org A"}])
+
     names_b = {e["name"] for e in _call(b, lambda v: roster(viewer=v))["agents"]}
 
     assert a.dyn_agent not in names_b
-    assert b.dyn_agent not in names_a
 
 
 @_DB_GATE
