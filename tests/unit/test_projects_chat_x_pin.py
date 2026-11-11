@@ -139,7 +139,7 @@ def test_the_counts_the_spec_states() -> None:
     took 2 and OP-6d took 4. The 27 that remain all stay. OP-6e moved the
     archive approval INTO class X (D-OP-13), so 28 stay. WS-64 OP-11 added
     the Overview of My tasks, a second door to a read the chat has: 29.
-    PJP-6a and PKG-14a add three routes that wait for a chat tool: 32."""
+    The two PKG-14a routes wait for a chat tool (PKG-14b): 29 + 2 = 31."""
     assert len(STAYS_X) == 29
     assert len(PENDING_OP6) == 0
     assert len(PENDING_TOOL) == 2
