@@ -1537,18 +1537,24 @@ class PackRun:
     #: WS-STU F3. The slugs of the skill packs that this run loaded, in load
     #: order. A skill pack is never sticky and owns no tool.
     skills: tuple[str, ...] = ()
+    #: WS-STU F3, review fix P2. The code packs of this run that hold a tool
+    #: of a loaded skill pack. Such a pack never leaves for a load
+    #: (:meth:`spare`), so the run keeps each tool that a skill names.
+    needs: frozenset[str] = frozenset()
 
     @classmethod
     def of(
         cls, turn: PackTurn, choice: Choice, loaded: Sequence[tuple[str, bool]],
         via_loader: Iterable[str] = (), offered: Iterable[str] = (),
         skills: Iterable[str] = (),
+        needs: Iterable[str] = (),
     ) -> PackRun:
         """The record of a run that loaded *loaded*, pairs of a slug and its
         held answer, in load order. *via_loader* names the owners that the
         loader replaces (OA-7i, :func:`plan_loader`). *offered* names the
         packs that the loader offers (task 1747, :attr:`gone_offered`).
-        *skills* names the skill packs that the run loaded (WS-STU F3)."""
+        *skills* names the skill packs that the run loaded (WS-STU F3), and
+        *needs* the code packs that hold a tool of one of them (:attr:`needs`)."""
         slugs = tuple(slug for slug, _held in loaded)
         via = frozenset(str(owner) for owner in via_loader)
         gone = tuple(slug for slug in dict.fromkeys(choice.evicted)
@@ -1570,6 +1576,7 @@ class PackRun:
             gone=gone, gone_offered=frozenset(offered) & frozenset(gone),
             words=tuple(slug for slug in slugs if choice.layers.get(slug) == "words"),
             skills=tuple(str(slug) for slug in skills),
+            needs=frozenset(str(slug) for slug in needs),
         )
 
     def holds(self) -> tuple[str, ...]:
@@ -1592,7 +1599,8 @@ class PackRun:
            outranks a match of a word. A pack of the surface or of a
            reference stays.
 
-        With the org off (``egress.held_card_writes_on``), no pack leaves."""
+        With the org off (``egress.held_card_writes_on``), no pack leaves. A
+        pack that a loaded skill needs (:attr:`needs`) never leaves."""
         from acb_skills.egress import held_card_writes_on
 
         if not held_card_writes_on(self.org):
@@ -1600,7 +1608,8 @@ class PackRun:
         now = self.holds()
 
         def _free(slug: str) -> bool:
-            return slug in now and slug not in self.noted and slug not in self.ran
+            return (slug in now and slug not in self.noted and slug not in self.ran
+                    and slug not in self.needs)
 
         olds = sorted((slug for slug in self.used if _free(slug)),
                       key=lambda slug: (self.used[slug], self.first_of(slug)))
@@ -3283,8 +3292,11 @@ def _room_for(
     run: PackRun, live: Sequence[Any], adding: int, spare: Sequence[str],
 ) -> tuple[str, ...] | None:
     """The packs of *spare* that must leave so that a pack of *adding* tools
-    fits both caps, in order, or None when no such set exists (RX-1)."""
-    packs, tools = len(run.holds()), len(live)
+    fits both caps, in order, or None when no such set exists (RX-1).
+
+    WS-STU F3, review fix P1: each skill pack of the run takes a place of
+    :data:`MAX_PACKS` too, as in :func:`_skills_of`."""
+    packs, tools = len(run.holds()) + len(run.skills), len(live)
     gone: list[str] = []
     rest = list(spare)
     while packs >= MAX_PACKS or tools + adding > MAX_REQUEST_TOOLS:

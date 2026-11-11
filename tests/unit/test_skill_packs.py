@@ -388,3 +388,127 @@ async def test_a_turn_that_names_a_skill_loads_its_rules_in_the_run(monkeypatch)
     assert len(events) == 1 and events[0]["skill"] == _ID_A
     assert events[0]["token_cost"] == found.token_cost and events[0]["changes_prefix"] is True
     assert "Read the price list" not in repr(events), "the log holds no skill text"
+
+
+# ── Review fixes: the loader counts the skill packs (P1), and a skill keeps
+# the code pack that holds its tool (P2) ─────────────────────────────────────
+
+
+async def test_the_loader_plan_counts_the_skill_packs_of_the_run(monkeypatch) -> None:
+    """P1, the plan of layer (b). Three skills fill the 3 places, so the
+    loader offers no pack. Mutation: pass only the code slugs as ``held`` to
+    ``_plan_pack_loader`` → the plan offers ``email`` → red."""
+    import dataclasses
+    from types import SimpleNamespace
+
+    from orchestrator import _tool_injection as ti
+
+    three = (_pack(_ID_A, "Quote desk", actions=[]), _pack(_ID_B, "Price check", actions=[]),
+             _pack(_ID_C, "Visit plan", actions=[]))
+
+    async def _with(turn: Any) -> Any:
+        return dataclasses.replace(turn, skills=three)
+
+    seen: dict[str, Any] = {}
+
+    async def _plan(_agent: Any, allow: frozenset[str], held: list[str], **kw: Any) -> Any:
+        seen["held"] = list(held)
+        seen["plan"] = tp.plan_loader(allow, held, current=kw["current"])
+        return seen["plan"]
+
+    monkeypatch.setattr(ti, "_turn_with_skills", _with)
+    monkeypatch.setattr(ti, "_plan_pack_loader", _plan)
+    monkeypatch.setattr(ti, "_load_disabled_skill_families", lambda _name: frozenset())
+    monkeypatch.setattr(ti, "_pack_base_count", lambda *_a, **_k: 40)
+    monkeypatch.setattr(ti, "_pack_base_names", lambda *_a, **_k: set())
+    agent = SimpleNamespace(default_options={"tools": [], "instructions": "BASE"})
+    words = "use the quote desk, the price check and the visit plan"
+    with _tenant():
+        applied = await ti._apply_tool_packs(
+            [agent], _turn(words), {"session_id": SESSION}, allowed=frozenset({"email"}),
+            agent_name="orchestrator", tool_scope=None, agent_config=None, bullets={},
+            offer_loader=True)
+    assert applied is not None and applied.record.slugs == ()
+    assert len(applied.record.skills) == tp.MAX_PACKS, "non-vacuity: three skills load"
+    assert set(seen["held"]) == {s.slug for s in three}
+    assert seen["plan"].offered == ()
+
+
+async def test_a_load_by_the_model_counts_the_skill_packs_of_the_run() -> None:
+    """P1, the admission of layer (b). With three skills, a load refuses on
+    the cap and builds nothing. With two, the load fits. Mutation: drop
+    ``len(run.skills)`` from ``_room_for`` → the build runs → red."""
+    built: list[str] = []
+
+    async def _build(slug: str, *_a: Any) -> Any:
+        built.append(slug)
+        return None
+
+    turn = _turn("x")
+    choice = tp.choose(turn, allowed=frozenset(), base_tools=10)
+    full = tp.PackRun.of(turn, choice, [], skills=["skill:a", "skill:b", "skill:c"])
+    two = tp.PackRun.of(turn, choice, [], skills=["skill:a", "skill:b"])
+    assert tp._room_for(full, [], 5, ()) is None
+    assert tp._room_for(two, [], 5, ()) == ()
+    loader = tp.LoadSkillTools(offered=("email",), run_key="k", record=full, build=_build)
+    answer = await loader._admit_pack(tp.PACKS["email"], {}, [], full)
+    assert isinstance(answer, str) and built == []
+    await loader._admit_pack(tp.PACKS["email"], {}, [], two)
+    assert built == ["email"], "non-vacuity: with a free place the build runs"
+
+
+def test_a_code_pack_that_a_skill_needs_never_leaves_for_a_load(monkeypatch) -> None:
+    """P2. A pack that came in only by the words is spare, unless a loaded
+    skill needs one of its tools. Mutation: drop the ``needs`` check of
+    ``PackRun.spare`` → red."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "*")
+    turn = _turn("check my inbox")
+    choice = tp.choose(turn, allowed=frozenset({"email"}), base_tools=10)
+    assert choice.layers.get("email") == "words"
+    loaded = [("email", False)]
+    skills = ["skill:a", "skill:b"]
+    free = tp.PackRun.of(turn, choice, loaded, skills=skills)
+    kept = tp.PackRun.of(turn, choice, loaded, skills=skills, needs=["email"])
+    assert free.spare() == ("email",), "non-vacuity: a words pack is spare"
+    assert tp._room_for(free, [], 5, free.spare()) == ("email",)
+    assert kept.spare() == ()
+    assert tp._room_for(kept, [], 5, kept.spare()) is None
+
+
+async def test_the_apply_names_the_code_pack_that_a_skill_needs(monkeypatch) -> None:
+    """P2, the apply. A skill whose tool only a code pack of the turn holds
+    marks that pack in ``PackRun.needs``. Mutation: pass no ``needs`` to
+    ``PackRun.of`` → red."""
+    import dataclasses
+    from types import SimpleNamespace
+
+    from orchestrator import _tool_injection as ti
+
+    found = _pack(actions=["knowledge.get_page"])
+
+    async def _with(turn: Any) -> Any:
+        return dataclasses.replace(turn, skills=(found,))
+
+    def read_page() -> str:
+        return ""
+
+    async def _tools(slug: str, *_a: Any, **_k: Any) -> Any:
+        return ti.PackBuild(slug=slug, owner="email-assistant", held=False, tools=(read_page,))
+
+    monkeypatch.setattr(ti, "_turn_with_skills", _with)
+    monkeypatch.setattr(ti, "_pack_tools", _tools)
+    monkeypatch.setattr(tp, "persona_for", lambda *_a, **_k: "BASE")
+    monkeypatch.setattr(ti, "_load_disabled_skill_families", lambda _name: frozenset())
+    monkeypatch.setattr(ti, "_pack_base_count", lambda *_a, **_k: 40)
+    monkeypatch.setattr(ti, "_pack_base_names", lambda *_a, **_k: set())
+    agent = SimpleNamespace(default_options={"tools": [], "instructions": "BASE"})
+    with _tenant():
+        applied = await ti._apply_tool_packs(
+            [agent], _turn("check my inbox and use the quote helper"),
+            {"session_id": SESSION}, allowed=frozenset({"email"}),
+            agent_name="orchestrator", tool_scope=None, agent_config=None, bullets={})
+    assert applied is not None and applied.record.slugs == ("email",)
+    assert applied.record.skills == (found.slug,)
+    assert applied.record.needs == frozenset({"email"})

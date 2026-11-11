@@ -4020,7 +4020,13 @@ async def _apply_tool_packs(
         return None
     loaded = [(build.slug, build.held) for build in builds]
     added = _as_agent_tools([tool for build in builds for tool in build.tools])
-    draft = tool_packs.PackRun.of(turn, choice, loaded)
+    # WS-STU F3, review fixes P1 and P2: a skill pack takes a place of the 3,
+    # so the plan and the loader count it. A code pack that holds a tool of a
+    # skill never leaves for a load (``PackRun.needs``).
+    skill_slugs = [s.slug for s in skills]
+    named = {name for s in skills for name in s.tools}
+    needs = [b.slug for b in builds if named & {_tool_name(t) for t in b.tools}]
+    draft = tool_packs.PackRun.of(turn, choice, loaded, skills=skill_slugs, needs=needs)
     kept = [t for t in pool if _delegates_to(t) not in draft.replaced]
     current = base + len(added) - (len(pool) - len(kept))
     plan = tool_packs.LoaderPlan()
@@ -4031,7 +4037,8 @@ async def _apply_tool_packs(
         # also reaches the owner through it.
         built = {b.slug: len(b.tools) for b in builds}
         plan = await _plan_pack_loader(
-            agent, allow, [b.slug for b in builds], builds=builds, current=current,
+            agent, allow, [*(b.slug for b in builds), *skill_slugs], builds=builds,
+            current=current,
             pool=kept, persona=str(opts.get("instructions") or ""), bullets=bullets,
             agent_name=agent_name, no_egress=bool(run_ctx.get("no_egress")),
             is_authorized=is_authorized,
@@ -4050,7 +4057,7 @@ async def _apply_tool_packs(
     # this turn, and which of them the loader offers. The context of the turn
     # names them (``executor._pack_left_block``, ``tool_packs.left_line``).
     record = tool_packs.PackRun.of(turn, choice, loaded, via, offered=plan.offered,
-                                   skills=[s.slug for s in skills])
+                                   skills=skill_slugs, needs=needs)
     replaced = frozenset(record.replaced)
     # OA-8f: the count that the run sends once this apply is done: the base
     # (with the load tool only when the plan offers it), the pack tools, less
