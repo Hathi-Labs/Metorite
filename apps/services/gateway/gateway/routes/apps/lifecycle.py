@@ -24,6 +24,9 @@ import json
 import os
 import secrets
 import shutil
+import stat
+import threading
+import time
 import uuid
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -333,7 +336,6 @@ async def _reserve_app(
             text("SELECT slug FROM apps"),
         )).fetchall()
     }
-    loop = asyncio.get_event_loop()
     for slug in _slug_candidates(name, taken):
         app_id = _new_app_id()
         workspace = root / str(app_id)
@@ -350,7 +352,9 @@ async def _reserve_app(
         })).fetchone()
         if row is None:
             continue
-        if await loop.run_in_executor(None, _claim_folder, workspace):
+        # A direct call, with no await: a cancel can then never come between
+        # the mkdir and the return, so the caller always knows the folder.
+        if _claim_folder(workspace):
             return row, workspace, manifest
         await db.execute(text(_UNRESERVE_SQL), {"id": str(row.id)})
     raise HTTPException(status_code=409, detail=_NO_SLUG)
@@ -369,14 +373,140 @@ def _claim_folder(workspace: Path) -> bool:
     return True
 
 
-async def _discard_new_folder(workspace: Path) -> None:
-    """Remove the folder of a new app whose row did not commit.
+def _make_writable(path: str) -> None:
+    """Set the owner write bit on *path* and on its parent folder. Follow no link."""
+    for target in (path, os.path.dirname(path)):
+        try:
+            mode = os.lstat(target).st_mode
+            if not stat.S_ISLNK(mode):
+                os.chmod(target, stat.S_IMODE(mode) | stat.S_IRWXU)
+        except OSError:
+            pass
+
+
+def _remove_folder(folder: Path) -> bool:
+    """Remove *folder* and all below it. Answer True when nothing is left.
+
+    A read-only file or folder gets the owner write bit, and the removal
+    tries it once more (task 2462). A failure that stays is logged with the
+    folder and the error, and never with the contents of a file. ``rmtree``
+    follows no link below *folder*, and a link at *folder* is only unlinked.
+    """
+    failures: list[str] = []
+
+    def give_up(_func: Any, path: str, exc: BaseException) -> None:
+        if not isinstance(exc, FileNotFoundError):
+            failures.append(f"{type(exc).__name__}: {exc}"[:160])
+
+    def retry_once(_func: Any, path: str, exc: BaseException) -> None:
+        if isinstance(exc, FileNotFoundError):
+            return
+        _make_writable(path)
+        try:
+            if os.path.isdir(path) and not os.path.islink(path):
+                shutil.rmtree(path, onexc=give_up)
+            else:
+                os.unlink(path)
+        except FileNotFoundError:
+            pass
+        except OSError as again:
+            give_up(_func, path, again)
+
+    try:
+        if folder.is_symlink():
+            folder.unlink()
+        else:
+            shutil.rmtree(folder, onexc=retry_once)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        give_up(None, str(folder), exc)
+    if failures or os.path.lexists(folder):
+        _log.warning(
+            "apps.folder_remove_failed", folder=str(folder),
+            errors=len(failures), error=failures[0] if failures else "left",
+        )
+        return False
+    return True
+
+
+class _NewFolder:
+    """The folder that a create or a fork made, and its removal on a failure.
 
     Only a folder that :func:`_claim_folder` made in this request comes here.
+    A cancel (a restart during the request) does not stop the executor
+    thread that writes the folder. So :meth:`discard` never removes the
+    folder under a write that runs. The writer removes it when it stops, and
+    a write that has not started never starts (task 2462).
     """
-    await asyncio.get_event_loop().run_in_executor(
-        None, lambda: shutil.rmtree(workspace, ignore_errors=True),
-    )
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._lock = threading.Lock()
+        self._busy = False
+        self._discard = False
+
+    def write(self, fn: Callable[..., None], *args: Any) -> None:
+        """Run ``fn(*args)``. The executor thread calls this."""
+        with self._lock:
+            if self._discard:
+                return
+            self._busy = True
+        try:
+            fn(*args)
+        finally:
+            with self._lock:
+                self._busy = False
+                discard = self._discard
+            if discard:
+                _remove_folder(self.path)
+
+    def discard(self) -> None:
+        """Remove the folder now, or when the write that runs stops.
+
+        It never awaits, so a cancelled task can call it."""
+        with self._lock:
+            self._discard = True
+            if self._busy:
+                return
+        _remove_folder(self.path)
+
+
+# ── The tombstone of a deleted app (task 2462) ──────────────────────────────
+
+#: The name prefix of the folder of a deleted app, until its removal. A name
+#: that starts with a dot is never a slug and never an app id, and
+#: ``clean_app_rel`` refuses it, so no route reaches a tombstone as an app.
+_TOMBSTONE_PREFIX = ".deleted-"
+
+#: A tombstone older than this is a leftover of a delete that a restart
+#: stopped after its commit. The next hard delete removes it.
+_TOMBSTONE_MAX_AGE_S = 3600
+
+
+def _tombstone_for(root: Path, app_id: str) -> Path:
+    """The tombstone of app *app_id*: ``<root>/.deleted-<id>-<unix time>``."""
+    return root / f"{_TOMBSTONE_PREFIX}{app_id}-{int(time.time())}"
+
+
+def _sweep_tombstones(root: Path) -> None:
+    """Remove each tombstone in *root* that is older than the maximum age.
+
+    A newer tombstone can belong to a delete that is still open, which puts
+    the folder back when its session rolls back. So the sweep keeps it."""
+    now = time.time()
+    try:
+        entries = list(os.scandir(root))
+    except OSError:
+        return
+    for entry in entries:
+        if not entry.name.startswith(_TOMBSTONE_PREFIX):
+            continue
+        stamp = entry.name.rsplit("-", 1)[-1]
+        if not stamp.isdigit() or now - int(stamp) < _TOMBSTONE_MAX_AGE_S:
+            continue
+        _log.warning("apps.tombstone_left", name=entry.name)
+        _remove_folder(Path(entry.path))
 
 
 # ── Row → model ──────────────────────────────────────────────────────────────
@@ -500,7 +630,7 @@ async def create_app(
     icon = body.icon.strip()
     description = body.description.strip()
     loop = asyncio.get_event_loop()
-    made: Path | None = None
+    made: _NewFolder | None = None
     try:
         async with _tenant_session() as db:
             # The row reserves the slug BEFORE any file write (task 2429).
@@ -509,14 +639,19 @@ async def create_app(
                 manifest_for=lambda s: default_manifest(
                     s, name, icon, description),
             )
-            made = workspace
+            made = _NewFolder(workspace)
             await loop.run_in_executor(
-                None, _scaffold_workspace, workspace, manifest, name,
+                None, made.write, _scaffold_workspace, workspace, manifest, name,
             )
-    except Exception:
+    except BaseException as exc:
         # The row rolled back, so the folder that this request made goes too.
+        # A cancel (a restart) removes it at once, with no await, because the
+        # task may get no further turn (task 2462).
         if made is not None:
-            await _discard_new_folder(made)
+            if isinstance(exc, Exception):
+                await loop.run_in_executor(None, made.discard)
+            else:
+                made.discard()
         raise
     slug = row.slug
     # Durability: mirror the fresh scaffold into app_files right away so a
@@ -545,7 +680,7 @@ async def fork_app(
     """
     owner = _uid(user)
     loop = asyncio.get_event_loop()
-    made: Path | None = None
+    made: _NewFolder | None = None
     try:
         async with _tenant_session() as db:
             source_row, _source_grants = await get_app_or_404(db, slug, user)
@@ -569,14 +704,19 @@ async def fork_app(
                 description=source_row.description or "",
                 manifest_for=manifest_for,
             )
-            made = new_workspace
+            made = _NewFolder(new_workspace)
             await loop.run_in_executor(
-                None, _fork_workspace, new_workspace, files, manifest,
+                None, made.write, _fork_workspace, new_workspace, files, manifest,
             )
-    except Exception:
+    except BaseException as exc:
         # The row rolled back, so the folder that this request made goes too.
+        # A cancel (a restart) removes it at once, with no await, because the
+        # task may get no further turn (task 2462).
         if made is not None:
-            await _discard_new_folder(made)
+            if isinstance(exc, Exception):
+                await loop.run_in_executor(None, made.discard)
+            else:
+                made.discard()
         raise
     new_slug = row.slug
     await sync_workspace_best_effort(row)
@@ -693,6 +833,43 @@ def _unbind_params(stored: Path, resolved: Path) -> dict[str, str]:
     }
 
 
+def _move_to_tombstone(workspace: Path, tomb: Path) -> bool:
+    """Rename the app folder to its tombstone. Answer False when no folder is
+    there. Any other failure answers 500, so the session rolls back and the
+    row stays (task 2462). A link at *workspace* moves as a link."""
+    try:
+        os.rename(workspace, tomb)
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        _log.warning(
+            "apps.tombstone_failed", folder=str(workspace),
+            error=f"{type(exc).__name__}: {exc}"[:160],
+        )
+        raise HTTPException(
+            status_code=500, detail="The app folder could not be removed.",
+        ) from None
+    return True
+
+
+def _restore_tombstone(tomb: Path, workspace: Path) -> None:
+    """Put the folder back after a delete that did not commit."""
+    try:
+        os.rename(tomb, workspace)
+    except OSError as exc:
+        _log.error(
+            "apps.tombstone_restore_failed", tombstone=tomb.name,
+            folder=str(workspace), error=f"{type(exc).__name__}: {exc}"[:160],
+        )
+
+
+def _remove_tombstone(root: Path, tomb: Path | None) -> None:
+    """Remove the tombstone of this delete, then each old leftover."""
+    if tomb is not None:
+        _remove_folder(tomb)
+    _sweep_tombstones(root)
+
+
 @router.delete("/{slug}")
 async def delete_app(
     slug: str,
@@ -700,45 +877,59 @@ async def delete_app(
 ) -> dict[str, Any]:
     """Soft-archive (edit-gated); a second delete by the OWNER of an already
     archived app removes the row (cascades) and its workspace folder. The
-    hard delete also unbinds each chat of the org from that folder (task 2462)."""
-    async with _tenant_session() as db:
-        row, _grants = await get_app_or_404(db, slug, user, edit=True)
-        if row.status != "archived":
-            await db.execute(
-                text(
-                    "UPDATE apps SET status = 'archived', updated_at = now() "
-                    "WHERE id = :id"
-                ),
-                {"id": str(row.id)},
-            )
-            # Early return is a clean exit — the wrapper commits the UPDATE.
-            return {"slug": slug, "status": "archived"}
-        if row.owner_email != user.email:
-            raise HTTPException(
-                status_code=403, detail="Only the owner can hard-delete",
-            )
-        # The folder BEFORE the DELETE: a row with no folder answers 409 and
-        # the session rolls back, so nothing is deleted (WS-STU A3).
-        stored = app_workspace(row)
-        workspace = stored.resolve()
-        await db.execute(
-            text("DELETE FROM apps WHERE id = :id"), {"id": str(row.id)},
-        )
-        # Task 2462: the slug is free now, so another org can take this
-        # folder. Unbind every chat of this org that points into it, for
-        # every member, in the same transaction as the DELETE.
-        await db.execute(text(_UNBIND_SESSIONS_SQL), _unbind_params(stored, workspace))
-    # Remove the workspace folder — but only when it's really under apps_root
-    # (a corrupt workspace_path must never delete arbitrary directories).
-    root = apps_root().resolve()
-    if workspace != root and workspace.is_relative_to(root):
-        def _remove() -> None:
-            # Follows no link inside the app dir (WS-43h review P0).
-            try:
-                safe_open.remove_tree(workspace.parent, workspace.name)
-            except (OSError, ValueError) as exc:
-                _log.warning("apps.workspace_remove_failed", error=str(exc)[:120])
+    hard delete also unbinds each chat of the org from that folder (task 2462).
 
-        await asyncio.get_event_loop().run_in_executor(None, _remove)
+    ⚠️ The folder moves to a tombstone BEFORE the commit, and the tombstone
+    goes after it (task 2462). The commit frees the slug. An app made before
+    A3b-1 has its folder at ``apps_root()/<slug>``, so a removal of that path
+    after the commit could remove a folder that another org made there. A
+    delete that does not commit renames the tombstone back."""
+    root = apps_root().resolve()
+    tomb: Path | None = None
+    workspace: Path | None = None
+    try:
+        async with _tenant_session() as db:
+            row, _grants = await get_app_or_404(db, slug, user, edit=True)
+            if row.status != "archived":
+                await db.execute(
+                    text(
+                        "UPDATE apps SET status = 'archived', updated_at = now() "
+                        "WHERE id = :id"
+                    ),
+                    {"id": str(row.id)},
+                )
+                # Early return is a clean exit — the wrapper commits the UPDATE.
+                return {"slug": slug, "status": "archived"}
+            if row.owner_email != user.email:
+                raise HTTPException(
+                    status_code=403, detail="Only the owner can hard-delete",
+                )
+            # The folder BEFORE the DELETE: a row with no folder answers 409
+            # and the session rolls back, so nothing is deleted (WS-STU A3).
+            stored = app_workspace(row)
+            workspace = stored.resolve()
+            await db.execute(
+                text("DELETE FROM apps WHERE id = :id"), {"id": str(row.id)},
+            )
+            # Task 2462: the slug is free after the commit. Unbind every chat
+            # of this org that points into the folder, for every member, in
+            # the same transaction as the DELETE.
+            await db.execute(
+                text(_UNBIND_SESSIONS_SQL), _unbind_params(stored, workspace))
+            # Only a folder really under apps_root moves (a corrupt
+            # workspace_path must never touch arbitrary directories). A direct
+            # call, with no await, so no cancel comes between the rename and
+            # the assignment.
+            if workspace != root and workspace.is_relative_to(root):
+                candidate = _tombstone_for(root, str(row.id))
+                if _move_to_tombstone(workspace, candidate):
+                    tomb = candidate
+    except BaseException:
+        if tomb is not None and workspace is not None:
+            _restore_tombstone(tomb, workspace)
+        raise
+    await asyncio.get_event_loop().run_in_executor(
+        None, _remove_tombstone, root, tomb,
+    )
     _log.info("apps.deleted", slug=slug, by=_uid(user))
     return {"slug": slug, "deleted": True}

@@ -40,6 +40,11 @@ b. A chat of org A whose path names the folder that org B took never runs
    of org B on its own folder still runs there.
 c. The owner check answers for the run's org only, with the
    ``ACB_GRAPH_TENANT_BIND`` flag OFF, also for a role that bypasses RLS.
+d. The delete of an app made before A3b-1 (its folder is
+   ``apps_root()/<slug>``) never removes a folder that another org put at
+   that path after the commit. The folder moves to a tombstone before the
+   commit, and only the tombstone goes after it. A rename that fails keeps
+   the row, and a delete that does not commit puts the folder back.
 
 **The mutations (R7).**
 
@@ -51,6 +56,10 @@ c. The owner check answers for the run's org only, with the
   red.
 * M4. ``_ORG_APP_FOLDERS_SQL``: drop the ``organization_id`` filter. The
   superuser case of test c goes red.
+* M5. ``delete_app``: remove ``apps_root()/<slug>`` after the commit (the
+  old order, the code before this fix). The race case of test d goes red.
+* M6. ``delete_app``: no ``_restore_tombstone`` on a failure. The rollback
+  case of test d goes red.
 """
 
 from __future__ import annotations
@@ -285,6 +294,111 @@ def test_r8_the_owner_check_answers_for_the_run_org_only(
     assert executor._app_workspace_of_org(folder, a) is False
     assert executor._app_workspace_of_org(folder, None) is False
     assert executor._app_workspace_of_org(world.root.resolve(), b) is False
+
+
+# ── d. The delete of an old-path app never removes the folder of org B ──
+
+
+def _old_path_app(world: Any, org: str, name: str, member: str) -> tuple[Any, Path]:
+    """An app of *org* with its folder at ``apps_root()/<slug>``, as before A3b-1."""
+    app = _create(world, org, name, member)
+    old = world.root / app.slug
+    Path(app.workspace_path).rename(old)
+    with world.p.admin_engine.begin() as c:
+        c.execute(text("UPDATE apps SET workspace_path = :p WHERE slug = :s"),
+                  {"p": str(old), "s": app.slug})
+    (old / "index.html").write_text("<p>org A</p>\n", encoding="utf-8")
+    return app, old.resolve()
+
+
+def _row_count(world: Any, slug: str) -> int:
+    with world.p.admin_engine.connect() as c:
+        return c.execute(text("SELECT count(*) FROM apps WHERE slug = :s"),
+                         {"s": slug}).scalar()
+
+
+def test_r8_the_delete_never_removes_the_folder_that_org_b_put_at_the_old_path(
+        world, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Org B reserves the freed slug between the commit and the removal, and
+    puts its folder at ``apps_root()/<slug>``. Its folder must stay."""
+    a, b = world.p.org_a, world.p.org_b
+    foo, old = _old_path_app(world, a, f"Qux {TAG}", ANA)
+    assert _delete(world, a, foo.slug, ANA)["status"] == "archived"
+    seen: list[str] = []
+
+    def org_b_takes_the_slug() -> None:
+        # The DELETE of org A committed: the slug is free now.
+        assert _row_count(world, foo.slug) == 0, "the hook ran before the commit"
+        with world.p.admin_engine.begin() as c:
+            c.execute(text(
+                "INSERT INTO apps (id, slug, name, owner_email, workspace_path, "
+                "organization_id) VALUES (CAST(:id AS uuid), :s, 'B', :o, :p, :org)"),
+                {"id": str(uuid.uuid4()), "s": foo.slug, "o": CAT, "p": str(old), "org": b})
+        old.mkdir()
+        (old / "index.html").write_text(SECRET, encoding="utf-8")
+        seen.append(foo.slug)
+
+    def hook(real: Any) -> Any:
+        def wrapped(*args: Any, **kwargs: Any) -> Any:
+            if not seen:
+                org_b_takes_the_slug()
+            return real(*args, **kwargs)
+        return wrapped
+
+    # The step after the commit: ``_remove_tombstone`` now, and
+    # ``safe_open.remove_tree`` in the code before this fix.
+    if hasattr(lifecycle, "_remove_tombstone"):
+        monkeypatch.setattr(lifecycle, "_remove_tombstone", hook(lifecycle._remove_tombstone))
+    monkeypatch.setattr(lifecycle.safe_open, "remove_tree", hook(lifecycle.safe_open.remove_tree))
+
+    assert _delete(world, a, foo.slug, ANA) == {"slug": foo.slug, "deleted": True}
+
+    assert seen, "the hook never ran"
+    assert (old / "index.html").read_text(encoding="utf-8") == SECRET, (
+        "the late removal of org A removed the folder of org B")
+    assert [p.name for p in world.root.iterdir() if p.name.startswith(".deleted-")] == [], (
+        "the tombstone of org A stayed")
+
+
+def test_r8_a_failed_rename_keeps_the_row_and_the_folder(
+        world, monkeypatch: pytest.MonkeyPatch) -> None:
+    a = world.p.org_a
+    foo, old = _old_path_app(world, a, f"Quux {TAG}", ANA)
+    assert _delete(world, a, foo.slug, ANA)["status"] == "archived"
+    real_rename = lifecycle.os.rename
+
+    def refuse(src: Any, dst: Any) -> None:
+        if Path(dst).name.startswith(".deleted-"):
+            raise PermissionError("busy")
+        real_rename(src, dst)
+
+    monkeypatch.setattr(lifecycle.os, "rename", refuse)
+    out = _delete(world, a, foo.slug, ANA)
+
+    assert getattr(out, "status_code", None) == 500, out
+    assert _row_count(world, foo.slug) == 1, "the row went, and the folder stayed"
+    assert (old / "index.html").exists()
+
+
+def test_r8_a_delete_that_does_not_commit_puts_the_folder_back(
+        world, monkeypatch: pytest.MonkeyPatch) -> None:
+    a = world.p.org_a
+    foo, old = _old_path_app(world, a, f"Corge {TAG}", ANA)
+    assert _delete(world, a, foo.slug, ANA)["status"] == "archived"
+    real_move = lifecycle._move_to_tombstone
+
+    def move_then_fail(workspace: Path, tomb: Path) -> bool:
+        assert real_move(workspace, tomb)
+        raise RuntimeError("the session fails after the rename")
+
+    monkeypatch.setattr(lifecycle, "_move_to_tombstone", move_then_fail)
+    out = _delete(world, a, foo.slug, ANA)
+
+    assert isinstance(out, RuntimeError), out
+    assert _row_count(world, foo.slug) == 1, "the DELETE committed"
+    assert (old / "index.html").read_text(encoding="utf-8") == "<p>org A</p>\n", (
+        "the folder did not come back")
+    assert [p.name for p in world.root.iterdir() if p.name.startswith(".deleted-")] == []
 
 
 def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
