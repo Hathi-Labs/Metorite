@@ -23,6 +23,10 @@ the sub-run bound the Zoho credential.
    minted thread (``executor._delegated_authority_thread``). Sections B and D.
 5. Each call of ``build_integrations`` in the executor passes a filter.
    Section E.
+6. A hand-off gives the parent its own memory gate back. The child's lookup
+   arms the gate on the parent's task, so ``run_agent`` scopes it
+   (``memory_tools.memory_permission_scope``) and ``_run_sub_agent_streaming``
+   resets its token. Section F.
 
 **The mutations.** Each ran by a script on 2026-11-11, and each named test
 went red. The allow cases (A6, B2) and the no-member cases (A3, A7, B3, D4)
@@ -30,12 +34,14 @@ stay green under each one, as they must: no mutation widens a run that the
 filter already left open.
 
 * M1: ``_integration_authorizer`` drops the ``_bound_run_member()`` fallback.
-  Red: A1, A2, A4, A5, B1, B4, C1 to C4, D1 to D3.
+  Red: A1, A2, A4, A5, B1, B4, C1 to C4, D1 to D3, F1 to F3.
 * M2: ``_run_sub_agent_streaming`` drops ``is_authorized=_sub_authorizer``.
   Red: D1, D2, D3, E1.
 * M3: the batch path folds on its own thread. Red: B4.
 * M4: the sub-run folds on no thread. Red: D3, E2.
 * M5: the fallback reads a verified member only. Red: A5.
+* M6: ``run_agent`` drops ``memory_permission_scope()``. Red: F1.
+* M7: ``_run_sub_agent_streaming`` drops ``reset_memory_permission``. Red: F2.
 
 No database and no network: the access read, the model call and the store
 are stubbed. The R8 half, with the real ``resolve_access``, is
@@ -125,6 +131,10 @@ def install_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *,
         builds=[],  # (resolved names, filtered?) of each credential build
         bound=[],  # names that the sub-run bound before its env injection
         ran=[],  # names that the batch run handed to its model call
+        gates=[],  # may the run write org memory, read at each credential build
+        # True: the participant read fails, and the fold gives the actor's
+        # access alone, as acb_auth.access.resolve_session_access does.
+        room_read_fails=False,
         agents=lambda: [_NativeAgent()],
     )
 
@@ -135,7 +145,7 @@ def install_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *,
         state.folds.append((session_id, actor))
         own = await resolve_access(actor)
         room = state.rooms.get(session_id)
-        if not room:
+        if not room or state.room_read_fails:
             return own, [actor]
         folded = own
         for other in room:
@@ -152,6 +162,10 @@ def install_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *,
         )
 
     def build(m: list[str], o: list[str], _s: Any, *, is_authorized: Any = None) -> Any:
+        from acb_skills import memory_tools
+
+        # The access lookup just before this build armed the memory gate.
+        state.gates.append(memory_tools._may("memory:write_org"))
         names = [*m, *o]
         ok = {n: {"token": f"{n}-secret"} for n in names
               if is_authorized is None or is_authorized(n)}
@@ -495,6 +509,84 @@ def test_d4_a_sub_run_with_no_member_keeps_every_credential(world) -> None:
     with parent_chat(world, None):
         sub_run()
     assert world.state.builds == [(["apollo", "zoho-crm"], False)], world.state.builds
+
+
+# ── F. A hand-off gives the parent its memory gate back ────────────────────
+#
+# The review case of MCP-C3. Bob types in a room that Priya reads, so the
+# parent's memory gate is the room's intersection, which holds no
+# ``memory:write_org``. In the hand-off the participant read fails, so the
+# fold gives Bob's access alone, and the child's lookup arms that wider gate
+# on the parent's task. After the hand-off, the parent must hold its own
+# gate again, or it can write org memory that the room refuses.
+
+#: Bob may write org memory. Priya may not, so the room may not.
+WRITER = build_access(["integrations:use:*", "memory:read_org", "memory:write_org"])
+
+
+def _hand_off_in_a_room(world: Any, hand_off: Any) -> tuple[Any, Any, bool]:
+    """Run *hand_off* under Bob's parent chat with the room gate armed.
+    Returns the room gate, the parent's gate after the hand-off, and whether
+    the parent may write org memory then."""
+    from acb_skills import memory_tools
+
+    world.state.access[BOB] = WRITER
+    world.state.rooms[CHAT] = [PRIYA]
+    world.state.room_read_fails = True
+    room_gate = WRITER.intersect(DENIED).has
+    assert not room_gate("memory:write_org")
+
+    async def go() -> tuple[Any, bool]:
+        memory_tools._set_memory_permission(room_gate)
+        await hand_off()
+        return memory_tools._memory_permission.get(), memory_tools._may("memory:write_org")
+
+    with parent_chat(world, BOB):
+        after, may = asyncio.run(go())
+    assert True in world.state.gates, "the child never held the wider gate: no case"
+    return room_gate, after, may
+
+
+def test_f1_a_batch_hand_off_gives_the_parent_its_gate_back(world) -> None:
+    """``run_agent`` scopes the gate (``memory_permission_scope``, M6). The
+    batch fallback of ``call_agent`` awaits it on the parent's task."""
+    from acb_skills import agent_tools
+
+    _no_stream()
+
+    async def hand_off() -> None:
+        assert await agent_tools.call_agent(AGENT, "the deals of Welmont") == "ok"
+
+    room_gate, after, may = _hand_off_in_a_room(world, hand_off)
+    assert after is room_gate, "the child's gate outlived the hand-off"
+    assert may is False
+
+
+def test_f2_a_streaming_sub_run_gives_the_parent_its_gate_back(world) -> None:
+    """``_run_sub_agent_streaming`` resets its own token in its finally (M7)."""
+    from orchestrator import executor
+
+    world.state.agents = lambda: []
+
+    async def hand_off() -> None:
+        await executor._run_sub_agent_streaming(
+            AGENT, "the deals of Welmont", "r-sub", event_queue=asyncio.Queue(),
+        )
+
+    room_gate, after, may = _hand_off_in_a_room(world, hand_off)
+    assert after is room_gate, "the child's gate outlived the hand-off"
+    assert may is False
+
+
+def test_f3_the_child_still_holds_its_own_gate_while_it_runs(world) -> None:
+    """The scope does not open the child's gate: during the hand-off a member
+    with no ``memory:write_org`` still may not write org memory."""
+    from acb_skills import agent_tools
+
+    _no_stream()
+    with parent_chat(world, PRIYA):
+        asyncio.run(agent_tools.call_agent(AGENT, "the deals of Welmont"))
+    assert world.state.gates == [False], world.state.gates
 
 
 # ── E. Source fences ────────────────────────────────────────────────────────

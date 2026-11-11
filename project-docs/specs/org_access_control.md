@@ -357,6 +357,8 @@ Deploy order makes fail-closed safe: `apply_migrations.sh` runs before the gatew
 
 > **Status, 2026-11-11 (task 1627, MCP-C3):** 🟢 A delegated run gets the filter of the member of its parent run. A hand-off names no member, so `_integration_authorizer` reads the member of the run binding (`_bound_run_member`). The server binds that member, and a request body never sets it. `_run_sub_agent_streaming` now filters its own credential build too. A delegated run uses the room of the chat that asked (`_delegated_authority_thread`), so a shared room keeps its intersection. A top-level run with no member keeps no filter, as before. Fences: `tests/unit/test_delegated_integration_filter.py` and `tests/unit/test_delegated_integration_filter_r8.py` (R8).
 >
+> The lookup of a delegated run arms the memory gate (`memory:write_org`) on the task of its parent. So `run_agent` and `_run_sub_agent_streaming` give the parent its own gate back when the hand-off ends. A wider gate of a child never outlives the hand-off.
+>
 > **Status, 2026-11-07 (task 1120, H-437):** 🟢 A web chat run gets the filter of its session member. MCP-C1 shipped this on 2026-11-04 with no flag. `_integration_authorizer` takes the member as the keyword `session_user`, and the stream route passes the session member. A run with no session keeps the body's claim. Fence: `tests/unit/test_org_access_credentials.py`.
 
 ### What is enforced

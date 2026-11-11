@@ -3247,6 +3247,11 @@ async def _run_sub_agent_streaming(
         reset_artifact_context,
     )
     _artifact_token = enter_artifact_context()
+    # MCP-C3 review: this run's access lookup below arms the memory gate on
+    # the PARENT's task. The token gives the parent its own gate back in the
+    # finally, so a child's wider gate never outlives the hand-off.
+    from acb_skills.memory_tools import enter_memory_permission, reset_memory_permission
+    _memory_gate_token = enter_memory_permission()
     # WS-63 PZ-6a: a delegated run never writes the member's profile.
     _sub_writes_token = _bind_profile_writes(False)
     # The parent run's acting member, from the parent's bound context and
@@ -3738,6 +3743,9 @@ async def _run_sub_agent_streaming(
         # B6 Phase-5 Tier 0: tear down this sub-agent's scoped integration creds
         # so a delegated agent's secrets don't linger for the parent/next run.
         _release_run_credentials(_integration_env_token)
+        # MCP-C3 review: give the parent back its own memory gate, before any
+        # await of this finally, so nothing can skip it.
+        reset_memory_permission(_memory_gate_token)
         # WS-43d (§16.3): a delegated run's run data ends with it too.
         await _end_sandbox_run()
         # Give the parent back its own artifact context (H-201, §21.16).
@@ -5691,10 +5699,12 @@ async def run_agent(
         # made here reached the Router with no member, no app and no run, and
         # billed nobody by name. Scoped so a NESTED run restores its parent.
         from acb_common import run_context_scope
+        from acb_skills.memory_tools import memory_permission_scope
         from acb_skills.write_artifact import artifact_context_scope
         # H-201 (§21.16): the run's artifact context ends with the run, and a
-        # nested run gives its parent back the parent's exact context.
-        with run_context_scope(), artifact_context_scope():
+        # nested run gives its parent back the parent's exact context. MCP-C3
+        # review: the memory gate too, because this run's lookup arms it here.
+        with run_context_scope(), artifact_context_scope(), memory_permission_scope():
             try:
                 return await _run_agent_inner(
                     agent_name, event_payload,
@@ -10391,15 +10401,11 @@ def _verified_run_member() -> str:
     ``run_agent_stream`` binds from the session's member (H-73), never from
     the payload. The store loads a session only for a thread that is this
     member's alone, so a run with no verified member gets none.
-    """
-    try:
-        from acb_common import get_run_context
 
-        ctx = get_run_context() or {}
-    except Exception:
-        return ""
-    member = str(ctx.get("user") or "").strip().lower()
-    return member if member and ctx.get("member_verified") == "1" else ""
+    :func:`_bound_run_member` is the one reader of the binding (MCP-C3).
+    """
+    member, verified = _bound_run_member()
+    return member.lower() if verified else ""
 
 
 async def _finish_native_session(turn: Any) -> None:
