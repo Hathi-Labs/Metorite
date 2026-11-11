@@ -137,7 +137,7 @@ class TestTheRules:
         """C3. The close never waits on a run lock, so it cannot close a
         cycle with an agent write (run, then task row)."""
         sql = " ".join(agent_runs._LOCK_OPEN_TASK_RUNS_SQL.split())
-        assert sql.endswith("FOR UPDATE NOWAIT")
+        assert sql.endswith("FOR NO KEY UPDATE NOWAIT")
         assert "task_id IS NOT NULL" in sql
         assert f"organization_id = {filters.BOUND_ORG_SQL}" in sql
 

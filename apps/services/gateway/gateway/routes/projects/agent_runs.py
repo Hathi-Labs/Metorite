@@ -3059,11 +3059,14 @@ async def close_closed_task_run(db: Any, run: Any, why: str) -> list[str]:
 #: holds the task row. A wait here could close a cycle, so the close refuses
 #: at once: Postgres raises 55P03, and the route answers 409 through
 #: ``core.transient_as_409``. Nothing is written, and the person tries again.
+#: ``NO KEY UPDATE`` is the lock of the status UPDATE that follows. It meets
+#: the ``FOR UPDATE`` of ``_lock_run`` in each run write, and it lets a bare
+#: foreign key check (``FOR KEY SHARE``) pass, so that check gives no 409.
 _LOCK_OPEN_TASK_RUNS_SQL = (
     "SELECT id FROM pm_agent_runs WHERE task_id = CAST(:tid AS uuid)"
     " AND task_id IS NOT NULL AND status = ANY(:open)"
     f" AND organization_id = {BOUND_ORG_SQL}"
-    " ORDER BY id FOR UPDATE NOWAIT"
+    " ORDER BY id FOR NO KEY UPDATE NOWAIT"
 )
 
 
