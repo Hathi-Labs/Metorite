@@ -31,6 +31,7 @@ h. With ``STUDIO_DOOR_OPS_ORGS`` empty, the door op is 403
    ``source_not_open``, as before B2b-2b.
 i. No connection of the app role is in a transaction while the app runs the
    call.
+j. A row limit of 100 reaches the real ``list_recent`` as 50 (review P2).
 
 **The mutations (R7).** Commit before each, and restore with git after.
 Each result below was run on 2026-11-11.
@@ -99,6 +100,7 @@ MANIFEST: dict[str, Any] = {
     "actions": [
         {"id": "page", "uses": "knowledge.get_page"},
         {"id": "maint", "uses": "knowledge.list_maintenance"},
+        {"id": "recent", "uses": "knowledge.list_recent"},
         {"id": "propose", "uses": "knowledge.propose"},
         {"id": "search", "uses": "knowledge.search"},
     ],
@@ -396,3 +398,22 @@ class TestTheDoorOp:
         r = await _door(live, OWNER, live.pkg, "page", {"page_id": live.page})
         assert r.status_code == 200, r.text
         assert seen == [0]
+
+    async def test_the_row_limit_is_at_most_50_before_the_real_call(self, live, monkeypatch):
+        """Review P2: the real ``list_recent`` gets ``limit=50`` when the caller
+        asks for 100, so the cursor of Knowledge never skips a row that the
+        door cut."""
+        sent: list[Any] = []
+        real = door_op._send
+
+        async def _spy(app: Any, call: Any, headers: Any) -> Any:
+            sent.append(dict(call.query))
+            return await real(app, call, headers)
+
+        monkeypatch.setattr(door_op, "_send", _spy)
+        r = await _door(live, OWNER, live.pkg, "recent", {"limit": 100})
+        assert r.status_code == 200, r.text
+        assert sent == [{"limit": "50"}]
+        got = r.json()
+        assert live.page in {row["id"] for row in got["result"]["pages"]}
+        assert got["truncated"] is False
