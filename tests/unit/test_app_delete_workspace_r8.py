@@ -67,6 +67,7 @@ from __future__ import annotations
 import asyncio
 import re
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -386,15 +387,29 @@ def test_r8_a_delete_that_does_not_commit_puts_the_folder_back(
     foo, old = _old_path_app(world, a, f"Corge {TAG}", ANA)
     assert _delete(world, a, foo.slug, ANA)["status"] == "archived"
     real_move = lifecycle._move_to_tombstone
+    real_session = lifecycle._tenant_session
+    moved: list[Path] = []
 
-    def move_then_fail(workspace: Path, tomb: Path) -> bool:
+    def move(workspace: Path, tomb: Path) -> bool:
         assert real_move(workspace, tomb)
-        raise RuntimeError("the session fails after the rename")
+        moved.append(tomb)
+        return True
 
-    monkeypatch.setattr(lifecycle, "_move_to_tombstone", move_then_fail)
+    @asynccontextmanager
+    async def session_that_does_not_commit() -> Any:
+        # The DELETE and the rename ran. The session then fails before its
+        # commit, as a lost connection or a cancel would.
+        async with real_session() as db:
+            yield db
+            if moved:
+                raise RuntimeError("the commit fails")
+
+    monkeypatch.setattr(lifecycle, "_move_to_tombstone", move)
+    monkeypatch.setattr(lifecycle, "_tenant_session", session_that_does_not_commit)
     out = _delete(world, a, foo.slug, ANA)
 
     assert isinstance(out, RuntimeError), out
+    assert moved, "the folder never moved to a tombstone"
     assert _row_count(world, foo.slug) == 1, "the DELETE committed"
     assert (old / "index.html").read_text(encoding="utf-8") == "<p>org A</p>\n", (
         "the folder did not come back")
