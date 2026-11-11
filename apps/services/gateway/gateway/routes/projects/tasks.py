@@ -2438,17 +2438,19 @@ async def archive_task(
     return result
 
 
-async def _reopen_after_unarchive(db: Any, row: Any) -> None:
-    """H-409 fix round 1: put back the run that the archive ended, when the
-    task's status is open. A task in a closing lane stays closed, so its run
-    stays closed too."""
+async def _reopen_after_unarchive(db: Any, row: Any) -> list[str]:
+    """H-409 fix rounds 1 and 2: put back the run that the archive ended. The
+    marker of the close decides, in any lane: an agent that moved its own
+    task to done kept its run, so an archive and an Undo bring that run
+    back. It returns the members whose question bells moved."""
     status = await require_row(db, "pm_task_statuses", str(row.status_id), "Status")
-    if str(getattr(status, "category", "") or "") in CLOSING_CATEGORIES:
-        return
     # Imported here: `agent_runs` imports this module.
     from gateway.routes.projects.agent_runs import reopen_run_of_reopened_task
 
-    await reopen_run_of_reopened_task(db, str(row.id), status_id=None)
+    return await reopen_run_of_reopened_task(
+        db, str(row.id), status_id=None,
+        task_open=str(getattr(status, "category", "") or "") not in CLOSING_CATEGORIES,
+    )
 
 
 @router.post("/tasks/{task_id}/unarchive")
@@ -2504,9 +2506,10 @@ async def unarchive_task(
                 else "Task restored from the archive"
             ),
         )
-        await _reopen_after_unarchive(db, row)
+        bells = await _reopen_after_unarchive(db, row)
         result = await _with_agent_state(db, row_to_dict(row, TaskModel))
 
+    await _bump_closed_runs(user, bells)
     await emit("pm.task.unarchived", {"task_id": task_id})
     return result
 

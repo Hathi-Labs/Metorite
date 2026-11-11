@@ -151,6 +151,7 @@ from gateway.routes.projects.filters import (
 from gateway.routes.projects.notifications import (
     excerpt_of,
     mark_rows_read,
+    mark_rows_unread,
     notify,
     task_audience,
 )
@@ -2413,7 +2414,10 @@ async def finish_agent_run(
         if not summary and run.status in _FINISHED:
             # A retry of a finish with no summary. That finish wrote no
             # activity, so no key finds it. The run is the result, as the
-            # edge's `finish_agent_run` reads it.
+            # edge's `finish_agent_run` reads it. H-409 fix round 2: on a run
+            # that a task close ended, the finish spends the marker of the
+            # close, so a later put-back never reopens a finished run.
+            await _spend_marker_on_finish(db, run, user)
             return {"run": (await _runs_out(db, [run]))[0], "activity": None}
         if summary and run.status == "completed" and await _server_closed(db, run_id):
             # SW-10a fix round. The server closed this run (an approved
@@ -3063,11 +3067,39 @@ async def close_closed_task_run(db: Any, run: Any, why: str,
     (AP-BUG-3), for a caller that moves their My Day after its commit. The
     sweep and :func:`end_runs_of_closed_task` call it."""
     new_status = transition(run.status, "task_close")
+    pending = await _unread_question_bells(db, run) if undo is not None else []
     cleared = await _move_run(db, run, new_status, ts=await _clock(db), user=None, via=None)
+    if pending:
+        # Fix round 2: the exact rows that THIS close marked read. The bell
+        # writer stamps `now()`, the start of this transaction, so a click of
+        # a member in another transaction never counts here.
+        undo = {**undo, "bells": await _bells_marked_now(db, pending)}
     await _system_activity(db, run, actor_email=run.member_email, via=None,
                            body=CLOSED_TASK_BODIES[why], server_close=why,
                            extra={"task_close": undo} if undo is not None else None)
     return cleared
+
+
+#: H-409 fix round 2. Of the rows *ids*, the ones that this transaction marked
+#: read (``notifications.mark_rows_read`` writes ``now()``).
+_BELLS_MARKED_NOW_SQL = (
+    "SELECT id FROM pm_notifications WHERE id = ANY(CAST(:ids AS uuid[]))"
+    " AND read_at = now() ORDER BY id"
+)
+
+
+async def _unread_question_bells(db: Any, run: Any) -> list[str]:
+    """The unread bell rows of the questions of an ``awaiting`` run, which the
+    close is about to mark read (AP-BUG-3). Any other run has none to mark."""
+    if run.status != "awaiting":
+        return []
+    rows = (await db.execute(text(_RUN_QUESTION_BELLS_SQL), {"rid": str(run.id)})).fetchall()
+    return [str(r.id) for r in rows]
+
+
+async def _bells_marked_now(db: Any, ids: list[str]) -> list[str]:
+    return [str(r.id) for r in (await db.execute(
+        text(_BELLS_MARKED_NOW_SQL), {"ids": ids})).fetchall()]
 
 
 #: H-409 item 1 (task 748). The open runs of one task, locked for the end of
@@ -3177,16 +3209,22 @@ REOPEN_REFUSED_BODIES: dict[str, str] = {
     "newer_run": "Not reopened: a newer run of this task exists.",
     "held": "Not reopened: another run holds the task.",
     "race": "Not reopened: another run took the task at the same moment.",
+    "other_close": "Not reopened: this put-back does not undo the close of this run.",
 }
+
+#: Fix round 2. The line of a finish with no summary on a run that a task
+#: close ended. It keeps ``server_close``, and it carries no marker, so no
+#: later put-back reopens the run.
+FINISHED_AFTER_CLOSE_BODY = "Finished: the agent ended its run after the close."
 
 #: The one candidate of a put-back: the newest run of the task that is
 #: ``completed`` and whose newest line that is not ephemeral is the line of a
 #: task-side close (the marker ``task_close``, with the open status that the
-#: close moved the run from) of this kind. A status
-#: put-back names the closing status that the task leaves (``:sid``). An
-#: unarchive binds NULL and matches an archive close. The run is locked as
-#: the close locks it (``NOWAIT``, because the task row is held).
-#: ``in_window`` and ``newer`` are the rules (d) and (b) of the fix round.
+#: close moved the run from). Fix round 2: of any kind. The caller decides if
+#: the kind matches the put-back, and spends a marker that does not match
+#: when the task comes back open. The run is locked as the close locks it
+#: (``NOWAIT``, because the task row is held). ``in_window`` and ``newer``
+#: are the rules (d) and (b) of the fix round.
 _REOPEN_CANDIDATE_SQL = (
     "SELECT r.id, a.id AS line_id, a.content AS line,"
     " (a.created_at >= clock_timestamp() - CAST(:win AS integer) * interval '1 second')"
@@ -3202,8 +3240,6 @@ _REOPEN_CANDIDATE_SQL = (
     "   AND r.status = 'completed'"
     f"  AND r.organization_id = {BOUND_ORG_SQL}"
     "   AND a.content->'task_close'->>'from' = ANY(:open)"
-    "   AND ((CAST(:sid AS text) IS NULL AND a.content->>'server_close' = 'archived')"
-    "        OR a.content->'task_close'->>'status_id' = CAST(:sid AS text))"
     " ORDER BY r.created_at DESC, r.id DESC LIMIT 1"
     " FOR NO KEY UPDATE OF r NOWAIT"
 )
@@ -3233,18 +3269,39 @@ def _instant(value: Any) -> datetime | None:
         return None
 
 
-async def reopen_run_of_reopened_task(db: Any, task_id: str, *,
-                                      status_id: str | None) -> bool:
-    """H-409 fix round 1 (task 748, spec §12.3). The task left its closed
+async def _refuse_reopen(db: Any, run: Any, why: str, reason: str) -> None:
+    """Leave a candidate run closed, with one line that says why. The line
+    keeps ``server_close``, so the agent may still leave one late summary, and
+    it carries no marker, so no later put-back matches (it spends the marker)."""
+    await _system_activity(db, run, actor_email=run.member_email, via=None,
+                           body=REOPEN_REFUSED_BODIES[reason], server_close=why,
+                           extra={"reopen_refused": reason})
+
+
+def _undoes(marker: dict[str, Any], why: str, status_id: str | None) -> bool:
+    """True when the put-back undoes the close of *marker*: a status put-back
+    leaves the closing status of the close, and an unarchive undoes an
+    archive close."""
+    if status_id is None:
+        return why == "archived"
+    return marker.get("status_id") == status_id
+
+
+async def reopen_run_of_reopened_task(db: Any, task_id: str, *, status_id: str | None,
+                                      task_open: bool) -> list[str]:
+    """H-409 fix rounds 1 and 2 (task 748, spec §12.3). The task left a closed
     state: a status move out of the closing status *status_id*, or an
-    unarchive (``None``). Reopen the run that the task-side close ended, in
-    the caller's transaction, when ALL of these hold:
+    unarchive (``None``). *task_open* is true when the task is open after the
+    put-back (not archived, and not in a closing lane). Reopen the run that
+    the task-side close ended, in the caller's transaction, when ALL of these
+    hold:
 
     (a) The run is the candidate of :data:`_REOPEN_CANDIDATE_SQL`: its newest
-        line that is not ephemeral is the close line of THIS kind of close,
-        by the marker ``task_close``, never by the text. A run that the sweep
-        closed carries no marker. A run with a later line (a late summary, a
-        refusal) is no candidate.
+        line that is not ephemeral is the line of a task-side close, by the
+        marker ``task_close``, never by the text, and the put-back undoes
+        THAT close (:func:`_undoes`). A run that the sweep closed carries no
+        marker. A run with a later line (a late summary, a finish, a refusal)
+        is no candidate.
     (b) The run is still the newest run of the task.
     (c) No other run is open on the task (``_HOLDER_SQL``). The unique index
         ``pm_agent_runs_one_open_per_task`` decides a race.
@@ -3253,58 +3310,104 @@ async def reopen_run_of_reopened_task(db: Any, task_id: str, *,
     The run goes back to the open status that the close moved it from, with
     the last activity and the wait that it had, so its lease is the lease it
     had. An ``awaiting`` run keeps the same question, because (a) means that
-    no answer came. It gets the line :data:`REOPENED_BODY`. Nothing else
-    changes. The session key stays clear, and the next write of the agent's
-    connection adopts the run (SW-7).
+    no answer came, and the bell rows that the close marked read are unread
+    again (``notifications.mark_rows_unread``). It gets the line
+    :data:`REOPENED_BODY`. The session key stays clear, and the next write of
+    the agent's connection adopts the run (SW-7).
 
-    A candidate that fails (b), (c) or (d) stays closed, with one line of
-    :data:`REOPEN_REFUSED_BODIES`. The line keeps ``server_close``, so the
-    agent may still leave one late summary, and no later put-back matches.
-    While ``agent_runs_enabled`` is off, no statement runs. True when a run
-    reopened."""
+    Fix round 2: an unarchive decides by the marker in any lane, so the run
+    of an agent that moved its own task to done comes back too. A status
+    put-back that undoes the close of a task that stays archived waits: the
+    marker stays for the unarchive.
+
+    Every other put-back of a candidate SPENDS the marker, with one line of
+    :data:`REOPEN_REFUSED_BODIES`: a candidate that fails (b), (c) or (d), and
+    a put-back that undoes another close and leaves the task open. So no later
+    put-back reopens the run by surprise. While ``agent_runs_enabled`` is
+    off, no statement runs. It returns the members whose question bells came
+    back, for the caller's My Day bump after its commit."""
     if not agent_runs_enabled():
-        return False
+        return []
     found = (await db.execute(text(_REOPEN_CANDIDATE_SQL), {
-        "tid": str(task_id), "sid": status_id, "win": task_close_undo_s(),
-        "open": list(AGENT_RUN_OPEN_STATUSES),
+        "tid": str(task_id), "win": task_close_undo_s(), "open": list(AGENT_RUN_OPEN_STATUSES),
     })).fetchone()
     if found is None:
-        return False
+        return []
     line = from_jsonb(found.line) or {}
     marker = line["task_close"]
-    prior = marker["from"]
-    run = await _load_run(db, str(found.id))
     why = str(line.get("server_close") or "")
-    reason: str | None = None
-    if not found.in_window:
-        reason = "window"
-    elif found.newer:
-        reason = "newer_run"
-    elif (await db.execute(
-            text(_HOLDER_SQL), {"tid": str(task_id), "open": list(AGENT_RUN_OPEN_STATUSES)},
-    )).fetchone() is not None:
-        reason = "held"
-    else:
-        seen = _instant(marker.get("seen")) or await _clock(db)
-        try:
-            await _move_run(db, run, transition(run.status, f"task_reopen:{prior}"),
-                            ts=seen, user=None, via=None)
-        except HTTPException:
-            reason = "race"
+    run = await _load_run(db, str(found.id))
+    if not _undoes(marker, why, status_id):
+        if task_open:
+            await _refuse_reopen(db, run, why, "other_close")
+        return []
+    if status_id is not None and not task_open:
+        return []
+    reason = await _reopen_refusal(db, run, found, task_id)
     if reason is not None:
-        await _system_activity(db, run, actor_email=run.member_email, via=None,
-                               body=REOPEN_REFUSED_BODIES[reason], server_close=why,
-                               extra={"reopen_refused": reason})
-        return False
+        await _refuse_reopen(db, run, why, reason)
+        return []
     wait_until = _instant(marker.get("waiting_until"))
     if marker.get("waiting_on") and wait_until is not None:
         await db.execute(text(_RESTORE_WAIT_SQL), {
             "rid": str(run.id), "won": marker["waiting_on"], "wun": wait_until,
         })
+    bells = (await mark_rows_unread(db, list(marker.get("bells") or []))
+             if marker["from"] == "awaiting" else [])
     await db.execute(text(_SPEND_CLOSE_LINE_SQL), {"aid": str(found.line_id), "why": why})
     await _system_activity(db, run, actor_email=run.member_email, via=None,
                            body=REOPENED_BODY, extra={"server_reopen": why})
-    return True
+    return bells
+
+
+async def _reopen_refusal(db: Any, run: Any, found: Any, task_id: str) -> str | None:
+    """The rules (b), (c) and (d) of :func:`reopen_run_of_reopened_task`, then
+    the move. None when the run reopened, else the reason that it did not."""
+    if not found.in_window:
+        return "window"
+    if found.newer:
+        return "newer_run"
+    holder = (await db.execute(
+        text(_HOLDER_SQL), {"tid": str(task_id), "open": list(AGENT_RUN_OPEN_STATUSES)},
+    )).fetchone()
+    if holder is not None:
+        return "held"
+    marker = (from_jsonb(found.line) or {})["task_close"]
+    seen = _instant(marker.get("seen")) or await _clock(db)
+    try:
+        await _move_run(db, run, transition(run.status, f"task_reopen:{marker['from']}"),
+                        ts=seen, user=None, via=None)
+    except HTTPException:
+        return "race"
+    return None
+
+
+#: Fix round 2. The newest line of a run that is not ephemeral, for the spend
+#: of a marker by a finish with no summary.
+_NEWEST_LINE_SQL = (
+    "SELECT a.content FROM pm_agent_run_activities a"
+    " WHERE a.run_id = CAST(:rid AS uuid) AND NOT a.ephemeral"
+    " ORDER BY a.seq DESC LIMIT 1"
+)
+
+
+async def _spend_marker_on_finish(db: Any, run: Any, user: UserContext) -> None:
+    """H-409 fix round 2. A finish with no summary on a run that a task close
+    ended writes one line, :data:`FINISHED_AFTER_CLOSE_BODY`. It keeps
+    ``server_close``, so a late summary still works, and it carries no
+    marker. So rule (a) of :func:`reopen_run_of_reopened_task` no longer
+    matches, and a put-back never reopens a run that its agent finished. A
+    retry finds no marker and writes nothing."""
+    if run.status != "completed":
+        return
+    found = (await db.execute(text(_NEWEST_LINE_SQL), {"rid": str(run.id)})).fetchone()
+    line = from_jsonb(found.content) if found is not None else None
+    if not isinstance(line, dict) or "task_close" not in line:
+        return
+    await _system_activity(db, run, actor_email=_member(user), via=_agent_via(user),
+                           body=FINISHED_AFTER_CLOSE_BODY,
+                           server_close=str(line.get("server_close") or ""),
+                           extra={"agent_finished": True})
 
 
 async def bump_closed_questions(user: UserContext, recipients: list[str]) -> None:

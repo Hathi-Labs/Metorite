@@ -3775,10 +3775,10 @@ async def _runs_follow_the_task(
     """H-409 item 1 and fix round 1 (task 748). The agent run follows a
     member door's crossing, in the caller's transaction. INTO a closing
     category: the task's open run ends (``end_runs_of_closed_task``). OUT of
-    one, on a task that is not archived: the run that the close ended comes
-    back inside the undo window (``reopen_run_of_reopened_task``). Imported
-    here for the reason of ``spawn_successor`` above. It returns the members
-    whose question bells closed."""
+    one: the run that the close ended comes back inside the undo window
+    (``reopen_run_of_reopened_task``). Imported here for the reason of
+    ``spawn_successor`` above. It returns the members whose question bells
+    moved, so the caller moves their My Day after its commit."""
     from gateway.routes.projects.agent_runs import (
         end_runs_of_closed_task,
         reopen_run_of_reopened_task,
@@ -3789,9 +3789,12 @@ async def _runs_follow_the_task(
             db, str(row.id), str(new_status.category), closer,
             status_id=str(new_status.id),
         )
-    if getattr(row, "archived_at", None) is None:
-        await reopen_run_of_reopened_task(db, str(row.id), status_id=str(old_status.id))
-    return []
+    # Fix round 2: the marker decides. A task that stays archived is not
+    # open, so a matching close waits for its unarchive.
+    return await reopen_run_of_reopened_task(
+        db, str(row.id), status_id=str(old_status.id),
+        task_open=getattr(row, "archived_at", None) is None,
+    )
 
 
 # ── The task row lock of a claim (WS-55 EA-6b) ──────────────────────────────

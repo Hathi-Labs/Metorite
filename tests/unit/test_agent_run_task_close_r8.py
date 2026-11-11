@@ -94,6 +94,21 @@ lease when the lease is shorter (``agent_runs.task_close_undo_s``).
   ``server_close``. ``test_u3_...`` (the late summary gets 409).
 * U10. ``G`` ``reopen_run_of_reopened_task``: no wait restore.
   ``test_u6_the_wait_comes_back``.
+
+Fix round 2 (the second Opus review):
+
+* V1. ``G`` ``finish_agent_run``: no ``_spend_marker_on_finish``.
+  ``test_u9_a_finish_with_no_summary_spends_the_marker``.
+* V2. ``G`` ``reopen_run_of_reopened_task``: no ``mark_rows_unread``.
+  ``test_u5_a_question_comes_back_with_the_run`` (the bell row stays read).
+* V3. ``G`` ``close_closed_task_run``: no ``bells`` in the marker.
+  ``test_u5_...``.
+* V4. ``G`` ``reopen_run_of_reopened_task``: a put-back that undoes another
+  close spends nothing. ``test_u10_a_put_back_of_another_close_spends_the_marker``.
+* V5. ``T`` ``_reopen_after_unarchive``: return early in a closing lane.
+  ``test_u11_an_unarchive_in_the_done_lane_brings_the_own_run_back``.
+* V6. ``G`` ``reopen_run_of_reopened_task``: no wait for a task that stays
+  archived. ``test_u12_a_status_put_back_of_an_archived_task_waits``.
 """
 
 from __future__ import annotations
@@ -755,13 +770,21 @@ class TestAPutBackReopensTheRun:
                 "options": [{"id": "a", "label": "A"}, {"id": "b", "label": "B"}]})
             assert asked.status_code == 201, asked.text
             question = asked.json()["activity"]["id"]
+            bells = _question_bells(w, run)
+            assert bells and all(b.read_at is None for b in bells), bells
             assert (await _move(call, w.eve_stranger, t.id, t.done)).status_code == 200
+            assert all(b.read_at is not None for b in _question_bells(w, run))
             assert (await _move(call, w.eve_stranger, t.id, doing)).status_code == 200
             listed = await call(w.alice_person, "GET", f"/projects/tasks/{t.id}/agent-runs", None)
         assert _run(w, run).status == "awaiting"
         [row] = listed.json()["rows"]
         assert row["open_elicitation"] is not None
         assert row["open_elicitation"]["id"] == question
+        # Fix round 2: the question waits again, so its bell rows that the
+        # close marked read are unread again (My Day "Needs you" reads them).
+        after = _question_bells(w, run)
+        assert [b.id for b in after] == [b.id for b in bells]
+        assert all(b.read_at is None for b in after), after
 
     async def test_u6_the_wait_comes_back(self, w):
         t = _closable(w.p, w.org, ALICE)
@@ -819,3 +842,124 @@ class TestAPutBackReopensTheRun:
             back = await _move(call, w.eve_stranger, t.id, doing)
         assert back.status_code == 200, back.text
         assert _run(w, run).status == "completed"
+
+
+# ── Fix round 2 ─────────────────────────────────────────────────────────────
+
+
+def _question_bells(ns: Any, run_id: str) -> list[Any]:
+    """The ``agent_question`` bell rows of the questions of *run_id*."""
+    return _rows(ns.p, "SELECT n.id, n.read_at FROM pm_notifications n"
+                       " WHERE n.kind = 'agent_question' AND n.activity_id IN"
+                       " (SELECT a.pm_activity_id FROM pm_agent_run_activities a"
+                       "   WHERE a.run_id = CAST(:i AS uuid) AND a.type = 'elicitation')"
+                       " ORDER BY n.id", i=run_id)
+
+
+class TestTheSecondReview:
+    def test_a_put_back_undoes_only_its_own_kind_of_close(self) -> None:
+        sid = str(uuid.uuid4())
+        assert agent_runs._undoes({"status_id": sid}, "done", sid) is True
+        assert agent_runs._undoes({"status_id": sid}, "done", str(uuid.uuid4())) is False
+        assert agent_runs._undoes({"status_id": None}, "archived", sid) is False
+        assert agent_runs._undoes({"status_id": None}, "archived", None) is True
+        assert agent_runs._undoes({"status_id": sid}, "done", None) is False
+
+    def test_the_way_back_of_a_bell_is_narrow(self) -> None:
+        import inspect
+
+        from gateway.routes.projects import notifications
+
+        src = " ".join(inspect.getsource(notifications.mark_rows_unread).split())
+        assert "kind = 'agent_question'" in src and "read_at IS NOT NULL" in src
+        assert "id = ANY(CAST(:ids AS uuid[]))" in src
+
+
+@_DB_GATE
+class TestTheSecondReviewR8:
+
+    async def test_u9_a_finish_with_no_summary_spends_the_marker(self, w):
+        """Eve closes. The agent finishes with no summary and goes away. A
+        put-back inside the window must not reopen a run that its agent
+        finished, or the task would read held for a whole lease."""
+        t = _closable(w.p, w.org, ALICE)
+        async with _session(w.p) as call:
+            run = await _claimed(call, w, t)
+            doing = _status_of(w, t.id)
+            assert (await _move(call, w.eve_stranger, t.id, t.done)).status_code == 200
+            fin = await call(w.alice, "POST", f"/projects/agent-runs/{run}/finish",
+                             {"idempotency_key": _key()})
+            assert fin.status_code == 200, fin.text
+            again = await call(w.alice, "POST", f"/projects/agent-runs/{run}/finish",
+                               {"idempotency_key": _key()})
+            assert again.status_code == 200, again.text
+            assert _bodies(w, run)[-1] == agent_runs.FINISHED_AFTER_CLOSE_BODY
+            lines = len(_bodies(w, run))
+            back = await _move(call, w.eve_stranger, t.id, doing)
+            assert back.status_code == 200, back.text
+            taken = await _claim(call, w.bob, t.id)
+        assert _run(w, run).status == "completed"
+        assert len(_bodies(w, run)) == lines
+        assert taken.status_code == 200, taken.text
+        assert _server_closed(w, run) is True
+
+    async def test_u10_a_put_back_of_another_close_spends_the_marker(self, w):
+        """Done, then cancelled (no crossing), then to do: that put-back
+        leaves Cancelled, and the close was of Done, so it does not undo it.
+        The task is open now, so the marker is spent with one line. A later
+        Done and to do inside the window reopens nothing."""
+        t = _closable(w.p, w.org, ALICE)
+        async with _session(w.p) as call:
+            run = await _claimed(call, w, t)
+            for lane in (t.done, t.cancelled, t.todo):
+                assert (await _move(call, w.eve_stranger, t.id, lane)).status_code == 200
+            assert _run(w, run).status == "completed"
+            assert _bodies(w, run)[-1] == agent_runs.REOPEN_REFUSED_BODIES["other_close"]
+            for lane in (t.done, t.todo):
+                assert (await _move(call, w.eve_stranger, t.id, lane)).status_code == 200
+        assert _run(w, run).status == "completed"
+        refusals = [b for b in _bodies(w, run) if b.startswith("Not reopened")]
+        assert refusals == [agent_runs.REOPEN_REFUSED_BODIES["other_close"]]
+
+    async def test_u11_an_unarchive_in_the_done_lane_brings_the_own_run_back(self, w):
+        """Q1: the agent moves its own task to done and keeps its run. Eve
+        archives (the run ends), then unarchives inside the window. The task
+        stays in Done, and the run comes back as it was."""
+        t = _closable(w.p, w.org, ALICE)
+        async with _session(w.p) as call:
+            run = await _claimed(call, w, t)
+            assert (await _move(call, w.alice, t.id, t.done)).status_code == 200
+            assert _run(w, run).status == "in_progress"
+            shelved = await call(w.eve_stranger, "POST", f"/projects/tasks/{t.id}/archive", None)
+            assert shelved.status_code == 200, shelved.text
+            assert _run(w, run).status == "completed"
+            back = await call(w.eve_stranger, "POST", f"/projects/tasks/{t.id}/unarchive", None)
+            assert back.status_code == 200, back.text
+            beat = await _beat(call, w, run)
+        assert _status_of(w, t.id) == t.done
+        assert _run(w, run).status == "in_progress"
+        assert _bodies(w, run)[-1] == agent_runs.REOPENED_BODY
+        assert beat.status_code == 201, beat.text
+
+    async def test_u12_a_status_put_back_of_an_archived_task_waits(self, w):
+        """Eve closes (Done), then archives the closed task. A status
+        put-back while the task stays archived leaves the task closed, so it
+        reopens nothing and spends nothing. The unarchive then brings the
+        task back open, and it does not undo a status close, so it spends the
+        marker with one line."""
+        t = _closable(w.p, w.org, ALICE)
+        async with _session(w.p) as call:
+            run = await _claimed(call, w, t)
+            doing = _status_of(w, t.id)
+            assert (await _move(call, w.eve_stranger, t.id, t.done)).status_code == 200
+            shelved = await call(w.eve_stranger, "POST", f"/projects/tasks/{t.id}/archive", None)
+            assert shelved.status_code == 200, shelved.text
+            lines = len(_bodies(w, run))
+            moved = await _move(call, w.eve_stranger, t.id, doing)
+            assert moved.status_code == 200, moved.text
+            assert _run(w, run).status == "completed"
+            assert len(_bodies(w, run)) == lines
+            back = await call(w.eve_stranger, "POST", f"/projects/tasks/{t.id}/unarchive", None)
+            assert back.status_code == 200, back.text
+        assert _run(w, run).status == "completed"
+        assert _bodies(w, run)[-1] == agent_runs.REOPEN_REFUSED_BODIES["other_close"]
