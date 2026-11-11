@@ -78,6 +78,7 @@ import pytest
 from acb_auth import UserContext, UserRole, build_access, get_current_user
 from acb_common import get_settings, studio_query
 from acb_common.app_manifests.base import CLASSES
+from acb_common.studio_fields import FieldSpec
 from acb_common.studio_manifest import (
     OBJECT_OP_CLASSES,
     OBJECT_OPS,
@@ -85,7 +86,6 @@ from acb_common.studio_manifest import (
     parse_uses,
     validate_manifest,
 )
-from acb_common.studio_fields import FieldSpec
 from acb_common.studio_query import QueryError, aggregate_input_schema, list_input_schema
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
@@ -1257,7 +1257,7 @@ class TestTheTables:
         the same order. A verb in one and not the other fails here. The
         aggregate (D4b) is the sixth, after the five record verbs."""
         assert tuple(OBJECT_OP_CLASSES) == OBJECT_OPS
-        assert OBJECT_OPS == (*RECORD_OPS, "aggregate")
+        assert (*RECORD_OPS, "aggregate") == OBJECT_OPS
         assert len(RECORD_OPS) == 5
         for verb in OBJECT_OPS:
             ref = parse_uses(f"object:visit.{verb}")

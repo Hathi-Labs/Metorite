@@ -1,4 +1,4 @@
-"""The action door of AI Studio on a real database (STU-B2a, B2b-1, B2c-1 and B2c-2a, R8).
+"""The action door of AI Studio on a real database (STU-B2a, B2b-1, B2c-1, B2c-2a and D4b, R8).
 
 Spec: ``project-docs/specs/ai_studio.md`` §3.2, and §14 B2a, B2b-1, B2c-1 and B2c-2a. Code:
 ``gateway/routes/studio/invoke.py`` over ``gateway/studio/packages_store.py``
@@ -242,6 +242,9 @@ _FIELDS: list[dict[str, Any]] = [
     {"key": "site", "type": "text"},
     {"key": "status", "type": "select", "options": ["planned", "done"], "hot": True},
     {"key": "notes", "type": "text"},
+    # STU-D4b: the hot fields that an aggregate sums and averages.
+    {"key": "fee", "type": "money", "hot": True},
+    {"key": "hours", "type": "number", "hot": True},
 ]
 _DATA = {"site": "Plant 4, Hosur", "status": "planned", "notes": "Bring the nozzle kit"}
 
@@ -256,6 +259,7 @@ def _manifest(mid: str, wf_a: str, wf_b: str) -> dict[str, Any]:
         "actions": [
             {"id": "peek", "uses": "object:visit.get"},
             {"id": "find", "uses": "object:visit.list"},
+            {"id": "tally", "uses": "object:visit.aggregate"},
             {"id": "add", "uses": "object:visit.create", "set": {"status": "planned"}},
             {"id": "change", "uses": "object:visit.update", "set": {"status": "done"}},
             {"id": "remove", "uses": "object:visit.delete"},
@@ -434,7 +438,7 @@ def _record_count(world: Any, oid: str) -> int:
             {"o": oid}).scalar_one())
 
 
-_EVERY_ACTION = ("peek", "find", "add", "change", "remove", "flow", "flow_b", "pages",
+_EVERY_ACTION = ("peek", "find", "tally", "add", "change", "remove", "flow", "flow_b", "pages",
                  "propose", "no_such_action")
 
 
@@ -840,7 +844,7 @@ def _connections_in_a_transaction(world: Any) -> int:
             {"role": world.p.app_url.username}).scalar_one())
 
 
-@pytest.mark.parametrize("action", ["find", "peek"])
+@pytest.mark.parametrize("action", ["find", "peek", "tally"])
 def test_r8_no_connection_is_in_a_transaction_during_the_read(world, action) -> None:
     held: list[int] = []
     body = {"id": world.rec} if action == "peek" else {}
@@ -907,7 +911,7 @@ async def _change(world: Any, change: str, action: str) -> None:
         }[change])
 
 
-@pytest.mark.parametrize("action", ["find", "peek"])
+@pytest.mark.parametrize("action", ["find", "peek", "tally"])
 @pytest.mark.parametrize("change,answer,row", [
     ("package_gone", (404, NOT_FOUND), None),
     ("owner_changed", (404, NOT_FOUND), None),
@@ -922,7 +926,7 @@ def test_r8_a_change_during_the_read_is_seen_and_reads_no_record(
     def _no_read(*_: Any, **__: Any) -> Any:
         raise AssertionError("the door read a record after the change")
 
-    for name in ("get_object_by_name", "get_record", "query_records"):
+    for name in ("get_object_by_name", "get_record", "query_records", "aggregate_records"):
         monkeypatch.setattr(objects_store, name, _no_read)
     request = _Request({"id": world.rec} if action == "peek" else {},
                        on_read=lambda: _change(world, change, action))
@@ -2491,3 +2495,193 @@ def test_r8_ax_a_resend_with_only_the_request_id_of_a_declined_change_writes_not
     resend = got["resend"]
     assert (resend["saved"], resend["code"]) == (False, "request_declined"), resend
     assert _record_row(w, w.trec) == before, "a declined change writes nothing"
+
+
+# ── ay to bf. The aggregate (STU-D4b) ──────────────────────────────────────
+#
+# Acceptance (D4b). ``object:<name>.aggregate`` is one more class A read of the
+# door. It takes the checks of the list and its reader path: the object by its
+# name in the package of the path, then the one reader of C2b.
+#
+# ay. The owner groups the records of the package, a money sum is an int of
+#     minor units with its currency, and one audit row lands. The count equals
+#     the total of the list for the same filter.
+# az. Another member and org B get 404 on the aggregate (in ``_EVERY_ACTION``
+#     too), and the aggregate of org B's own package never counts org A.
+# ba. Two packages with one object name each count their own records.
+# bb. An object that the package lacks is 404 ``object_missing``.
+# bc. A bad key or a bad op is 422 and reads no object and no record.
+# bd. An average of money is 422 ``query_op_not_allowed`` (finding F1), two
+#     currencies refuse a sum, and a field that is not hot is
+#     ``query_not_indexed``. The session stays usable after each.
+#
+# **The mutations of D4b (R7).** Each was run on 2026-11-11 and turned the named
+# tests red. ``TestTheAggregate`` of the hermetic half names the rest.
+#
+# * A1. ``_aggregate_input``: accept any key. ``test_r8_ay_bc_a_bad_key_or_op_is_422``.
+# * A4. ``_run_object_aggregate``: read the object of the other package.
+#   ``test_r8_ba_two_packages_with_one_object_name_count_their_own_records``.
+# * A6. ``packages_store._GET_SQL`` (M2): drop ``AND owner_email = :m``.
+#   ``test_r8_az_another_member_and_org_b_get_404_on_an_aggregate``.
+
+_AGG_OUTCOME = {"action": "tally", "uses": "object:visit.aggregate", "class": "A"}
+_FEE = [{"op": "count"}, {"op": "sum", "field": "fee"}, {"op": "average", "field": "hours"}]
+
+
+async def _add_tallied(org: str, oid: str, pid: str,
+                       rows: list[tuple[str, int | None, str, int]]) -> list[str]:
+    """Records of (status, fee in minor units, currency, hours)."""
+    ids = []
+    async with tenant_session(org) as db:
+        for status, minor, currency, hours in rows:
+            data: dict[str, Any] = {"site": "Plant", "status": status, "hours": hours}
+            if minor is not None:
+                data["fee"] = {"minor": minor, "currency": currency}
+            rec = await objects_store.create_record(db, ANA, oid, data, package_id=pid)
+            assert rec is not None
+            ids.append(rec.id)
+    return ids
+
+
+def test_r8_ay_the_owner_groups_the_records_and_one_audit_row(world) -> None:
+    async def go() -> dict[str, Any]:
+        await _add_tallied(world.a, world.obj, world.pkg, [
+            ("planned", 12550, "INR", 2), ("done", 7, "INR", 3), ("done", 100, "INR", 4)])
+        body = {"group_by": {"field": "status"}, "measures": _FEE}
+        planned = [{"field": "status", "op": "eq", "value": "planned"}]
+        return {
+            "grouped": await _call(world.a, ANA, world.pkg, "tally", body),
+            "one": await _call(world.a, ANA, world.pkg, "tally", {"filter": planned}),
+            "list": await _call(world.a, ANA, world.pkg, "find", {"filter": planned}),
+        }
+
+    got = _run(world, go)
+    status, agg = got["grouped"]
+    assert status == 200, agg
+    assert agg["measures"] == [{"op": "count", "field": None}, {"op": "sum", "field": "fee"},
+                               {"op": "average", "field": "hours"}]
+    assert agg["currencies"] == [None, "INR", None]
+    # A select comes in the order of its options. The seed record of the world
+    # is planned, with no fee and no hours.
+    assert [(g["key"], g["count"], g["values"]) for g in agg["groups"]] == [
+        ("planned", 2, [2, 12550, "2"]), ("done", 2, [2, 107, "3.5"])]
+    assert (agg["other"], agg["folded"]) == (None, 0)
+    assert agg["total"] == {"key": None, "count": 4, "values": [4, 12657, "3"]}
+    # A money sum is an int of minor units on the wire, never a float or text.
+    assert type(agg["total"]["values"][1]) is int
+    # The aggregate reads the records that the list reads, for the same filter.
+    status, one = got["one"]
+    assert status == 200, one
+    assert one["total"]["count"] == got["list"][1]["total"] == 2
+    assert one["groups"] == [] and one["measures"] == [{"op": "count", "field": None}]
+    rows = _audits(world, world.pkg)
+    assert [r[3] for r in rows] == [{**_AGG_OUTCOME, "outcome": "ran"}] * 2 + [
+        {**_LIST_OUTCOME, "outcome": "ran"}]
+    assert {(r[0], r[1]) for r in rows} == {(world.a, ANA)}
+    for value in ("Plant", "planned", "12550"):
+        assert value not in json.dumps(rows[0][3])
+
+
+def test_r8_az_another_member_and_org_b_get_404_on_an_aggregate(world) -> None:
+    async def go() -> list[tuple[int, Any]]:
+        await _add_tallied(world.b, world.obj_b, world.pkg_b, [("done", 999, "USD", 9)])
+        return [await _call(world.a, BEN, world.pkg, "tally", {}),
+                await _call(world.b, ANA, world.pkg, "tally", {}),
+                await _call(world.a, ANA, world.pkg_b, "tally", {}),
+                await _call(world.a, ANA, world.pkg_ben, "tally", {}),
+                await _call(world.b, ANA, world.pkg_b, "tally", {"measures": _FEE[:2]})]
+
+    *walls, own_b = _run(world, go)
+    assert walls == [(404, NOT_FOUND)] * 4
+    assert _audits(world, world.pkg) == [] and _audits(world, world.pkg_ben) == []
+    # Org B's own package counts its own two records, and none of org A.
+    assert own_b[0] == 200, own_b
+    assert own_b[1]["total"] == {"key": None, "count": 2, "values": [2, 999]}
+    assert own_b[1]["currencies"] == [None, "USD"]
+    # Ben reads the aggregate of his own package, so the wall is the owner.
+    status, got = _run(world, lambda: _call(world.a, BEN, world.pkg_ben, "tally", {}))
+    assert (status, got["total"]["count"]) == (200, 1)
+
+
+def test_r8_ba_two_packages_with_one_object_name_count_their_own_records(world) -> None:
+    async def go() -> list[tuple[int, Any]]:
+        await _add_tallied(world.a, world.obj2, world.pkg2, [("done", 1, "INR", 1)] * 3)
+        return [await _call(world.a, ANA, world.pkg, "tally", {}),
+                await _call(world.a, ANA, world.pkg2, "tally", {})]
+
+    (s1, mine), (s2, other) = _run(world, go)
+    assert (s1, s2) == (200, 200)
+    assert (mine["total"]["count"], other["total"]["count"]) == (1, 4)
+
+
+def test_r8_bb_an_object_that_the_package_lacks_is_object_missing(world) -> None:
+    status, detail = _run(world, lambda: _call(world.a, ANA, world.pkg_empty, "tally", {}))
+    assert (status, detail) == (404, {"code": "object_missing", "message": invoke.NO_OBJECT})
+    assert [r[3] for r in _audits(world, world.pkg_empty)] == [{
+        **_AGG_OUTCOME, "outcome": "not_found", "reason": "object_missing"}]
+
+
+@pytest.mark.parametrize("body,code", [
+    ({"sort": {"field": "status"}}, "query_value_invalid"),
+    ({"limit": 5}, "query_value_invalid"),
+    ({"package_id": str(uuid.uuid4())}, "query_value_invalid"),
+    ({"organization_id": str(uuid.uuid4())}, "query_value_invalid"),
+    ({"measures": [{"op": "median", "field": "hours"}]}, "query_op_not_allowed"),
+    ({"measures": [{"op": "count"}] * 5}, "query_too_big"),
+    ({"group_by": {"field": "status", "bucket": "year"}}, "query_value_invalid"),
+    ({"filter": [{"field": "status", "op": "matches"}]}, "query_op_not_allowed"),
+    ({"measures": [{"op": "sum", "field": "fee"}], "x": float("inf")}, "query_value_invalid"),
+], ids=["sort", "limit", "package", "org", "median", "five", "bucket", "filter_op", "inf"])
+def test_r8_ay_bc_a_bad_key_or_op_is_422_and_reads_nothing(world, monkeypatch, body, code) -> None:
+    def _no_read(*_: Any, **__: Any) -> Any:
+        raise AssertionError("a refused body must read nothing")
+
+    monkeypatch.setattr(objects_store, "get_object_by_name", _no_read)
+    monkeypatch.setattr(objects_store, "aggregate_records", _no_read)
+    status, detail = _run(world, lambda: _call(world.a, ANA, world.pkg, "tally", body))
+    assert (status, detail["code"]) == (422, code), detail
+    assert set(detail) == {"code", "message", "field"}
+    assert [r[3] for r in _audits(world, world.pkg)] == [{
+        **_AGG_OUTCOME, "outcome": "refused", "reason": code}]
+
+
+def _watch_the_aggregate_session(monkeypatch) -> list[int]:
+    """After each refused aggregate, run one statement on the door's session."""
+    real = objects_store.aggregate_records
+    ran: list[int] = []
+
+    async def spy(db: Any, **kw: Any) -> Any:
+        try:
+            return await real(db, **kw)
+        except QueryError:
+            ran.append((await db.execute(text("SELECT 1"))).scalar_one())
+            raise
+
+    monkeypatch.setattr(objects_store, "aggregate_records", spy)
+    return ran
+
+
+@pytest.mark.parametrize("body,code,field", [
+    ({"measures": [{"op": "average", "field": "fee"}]}, "query_op_not_allowed", "fee"),
+    ({"measures": [{"op": "sum", "field": "fee"}]}, "query_op_not_allowed", "fee"),
+    ({"group_by": {"field": "site"}}, "query_not_indexed", "site"),
+    ({"group_by": {"field": "fee"}}, "query_op_not_allowed", "fee"),
+    ({"measures": [{"op": "sum", "field": "nope"}]}, "query_field_unknown", "nope"),
+], ids=["average_of_money", "two_currencies", "not_hot", "group_money", "unknown"])
+def test_r8_bd_the_store_refuses_and_the_session_stays_usable(
+        world, monkeypatch, body, code, field) -> None:
+    """Finding F1: the grammar refuses an average of money, so no average of a
+    money field reaches the client without its unit. Two currencies refuse a
+    sum (H-333)."""
+    async def seed() -> None:
+        await _add_tallied(world.a, world.obj, world.pkg,
+                           [("done", 500, "INR", 1), ("done", 700, "USD", 1)])
+
+    _run(world, seed)
+    ran = _watch_the_aggregate_session(monkeypatch)
+    status, detail = _run(world, lambda: _call(world.a, ANA, world.pkg, "tally", body))
+    assert (status, detail["code"], detail["field"]) == (422, code, field), detail
+    assert "USD" not in detail["message"] and "INR" not in detail["message"]
+    assert ran == [1]
+    assert [r[3] for r in _audits(world, world.pkg)] == [{
+        **_AGG_OUTCOME, "outcome": "refused", "reason": code}]
