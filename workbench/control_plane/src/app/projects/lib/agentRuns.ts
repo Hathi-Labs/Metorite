@@ -155,6 +155,12 @@ export interface AgentRun {
   client_name?: string | null;
   /** EA-13d. The host that the gateway verified, "claude.ai". Never self-declared. */
   client_host?: string | null;
+  /**
+   * WS-MCP SW-7b. The name that the agent gave its session, such as
+   * "backend-worker-3". Display data only: the agent chose it, and it grants
+   * nothing. `withAgentLabel` puts it beside the client name.
+   */
+  agent_label?: string | null;
   /** EA-14a. The display name of the run's member, for "Held by <name>". */
   member_name?: string | null;
   /**
@@ -306,6 +312,35 @@ export function clientName(via?: string | null): string {
   return label(body) ?? label(host) ?? (host || "Agent");
 }
 
+/** WS-MCP SW-7b. The most characters of a session label, as the gateway caps it. */
+export const AGENT_LABEL_MAX = 40;
+
+/**
+ * WS-MCP SW-7b (`agent_coordination.md` §3.7 item 2). The label of an agent
+ * session, cleaned again here: no control or format character, one space for
+ * each run of white space, and at most `AGENT_LABEL_MAX` characters. Null
+ * when nothing is left. The gateway cleans it first, by the same rules.
+ */
+export function agentLabelText(label?: string | null): string | null {
+  if (typeof label !== "string") return null;
+  const text = label
+    .replace(/[\p{Cc}\p{Cf}]/gu, (ch) => (/\s/.test(ch) ? " " : ""))
+    .replace(/\s+/g, " ")
+    .trim();
+  const shown = Array.from(text).slice(0, AGENT_LABEL_MAX).join("").trim();
+  return shown || null;
+}
+
+/**
+ * WS-MCP SW-7b. The client name with the label of the session beside it:
+ * "Claude Code (backend-worker-3)". The curated client name always comes
+ * first, so a label never takes its place. With no label, the client name.
+ */
+export function withAgentLabel(client: string, label?: string | null): string {
+  const shown = agentLabelText(label);
+  return shown ? `${client} (${shown})` : client;
+}
+
 /* ── The honest timeline (EA-13b) ─────────────────────────────────────────── */
 
 /** The `via` of a row that the GitHub App wrote (`github_integration.md` §12.4). */
@@ -409,6 +444,8 @@ export function firstName(
 export interface AgentPillFacts {
   /** `mcp:<slug>` of the run, when the caller knows it. */
   clientVia?: string | null;
+  /** SW-7b. The label of the run's agent session. The card line shows it. */
+  agentLabel?: string | null;
   /** The run's member, when the caller knows it. */
   memberEmail?: string | null;
   /** The newest thought, for the tooltip of "working". */
@@ -769,6 +806,8 @@ export interface AgentRowFacts {
   agent_state?: AgentState | null;
   agent_client_via?: string | null;
   agent_member_email?: string | null;
+  /** SW-7b. The label of the run's agent session, display data only. */
+  agent_label?: string | null;
   assignees?: string[];
 }
 
@@ -806,13 +845,15 @@ export const WAITING_ON_ME_HINT = "No agent waits for your answer on a task in t
  * label comes from the map and never from the client.
  */
 export function runIdentity(
-  run: Pick<AgentRun, "client_via" | "client_name" | "client_host">,
+  run: Pick<AgentRun, "client_via" | "client_name" | "client_host" | "agent_label">,
 ): string {
   const name = run.client_name?.trim() || clientName(run.client_via);
+  // SW-7b: the label of the session sits beside the client name.
+  const shown = withAgentLabel(name, run.agent_label);
   // EA-19b: the pill of a box reads the label only. Its host is `box`.
-  if (isBoxStamp(run.client_via)) return name;
+  if (isBoxStamp(run.client_via)) return shown;
   const host = run.client_host?.trim() || hostOfStamp(run.client_via);
-  return host && host.toLowerCase() !== name.toLowerCase() ? `${name} \u00b7 ${host}` : name;
+  return host && host.toLowerCase() !== name.toLowerCase() ? `${shown} \u00b7 ${host}` : shown;
 }
 
 /** The host part of a stamp, `mcp:claude.ai:claude-code` -> `claude.ai`. */
@@ -1037,14 +1078,21 @@ export function releaseBody(clientLabel: string): string {
  * comes next, then the address.
  */
 export function heldByLine(
-  run: Pick<AgentRun, "member_email" | "member_name" | "client_via" | "client_name" | "client_host">,
+  run: Pick<
+    AgentRun,
+    "member_email" | "member_name" | "client_via" | "client_name" | "client_host" | "agent_label"
+  >,
   labels?: ReadonlyMap<string, string>,
 ): string {
   const who =
     labels?.get(run.member_email.trim().toLowerCase()) ||
     run.member_name?.trim() ||
     run.member_email;
-  const client = run.client_name?.trim() || clientName(run.client_via);
+  // SW-7b: "via Claude Code (backend-worker-3)".
+  const client = withAgentLabel(
+    run.client_name?.trim() || clientName(run.client_via),
+    run.agent_label,
+  );
   return `Held by ${who} via ${client}`;
 }
 

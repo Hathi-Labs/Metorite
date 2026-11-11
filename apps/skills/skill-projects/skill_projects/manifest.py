@@ -1389,6 +1389,14 @@ _STATUS_PLACE_REASON = (
 )
 
 
+#: WS-MCP SW-7b (``agent_coordination.md`` §3.7 item 2). The name that an
+#: outside agent gives its own MCP session. The gateway answers 422 when a
+#: person sends it, so the chat, which acts as its member, never sends it.
+_AGENT_LABEL_REASON = (
+    "The display name of an outside agent session (SW-7b). Only a signed agent "
+    "sends it, and the gateway refuses it from a person, so the chat sends none."
+)
+
 FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
     ("GET", "/projects/assignable-members"): {"project_id": _MEMBERS_ROUTE_REASON},
     # SP-12: `get_plan` and the MCP tool plan from today. A first working day
@@ -1498,6 +1506,11 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
             "The edit guard of an outside agent (D-PM-20, WS-55 EA-6b). The chat "
             "has no claim tool."
         ),
+        "agent_label": _AGENT_LABEL_REASON,
+    },
+    # SW-7b. The start route keeps its other fields in FIELD_PLANNED (G23).
+    ("POST", "/projects/tasks/{task_id}/agent-runs"): {
+        "agent_label": _AGENT_LABEL_REASON,
     },
     # WS-MCP SW-23: the report of a Check. An outside agent sends each field
     # over MCP (`report_check`). The chat has no report tool.

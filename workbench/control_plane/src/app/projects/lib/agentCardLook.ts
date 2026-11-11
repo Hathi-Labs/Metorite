@@ -18,9 +18,18 @@
  * No edge is dashed (EA-13h, owner 2026-10-30). "live" travels round the card.
  * "breathing" glows slowly and means idle. "steady" is still. The pill already
  * says "idle" or "Queued for", so the stale and queued lines never repeat it.
+ *
+ * SW-7b: `<client>` carries the label of the agent session when it has one,
+ * "Claude Code (backend-worker-3)" (`withAgentLabel`).
  */
 
-import { type AgentPillFacts, agentPillText, asAgentState, clientName } from "./agentRuns";
+import {
+  type AgentPillFacts,
+  agentPillText,
+  asAgentState,
+  clientName,
+  withAgentLabel,
+} from "./agentRuns";
 
 export type AgentEdge = "live" | "steady" | "warning" | "breathing" | "destructive";
 
@@ -37,7 +46,8 @@ export function agentCardLook(
 ): AgentCardLook {
   const known = asAgentState(state);
   if (!known) return NO_AGENT_LOOK;
-  const client = clientName(facts.clientVia);
+  // SW-7b: "Claude Code (backend-worker-3)" when the session has a label.
+  const client = withAgentLabel(clientName(facts.clientVia), facts.agentLabel);
   const note = facts.note?.trim() || null;
   switch (known) {
     case "working":

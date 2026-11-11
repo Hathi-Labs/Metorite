@@ -943,6 +943,10 @@ class TaskModel(BaseModel):
     #: `response` or `elicitation` of that run, at most 140 characters, for the
     #: hover of the pill. Filled by ``attach_agent_state``, as the three above.
     agent_note: str | None = None
+    #: WS-MCP SW-7b. The display label that the agent gave its session, at
+    #: most 40 characters, for "Claude Code (backend-worker-3)" on the card.
+    #: Display data only. Filled by ``attach_agent_state``, as the four above.
+    agent_label: str | None = None
     #: WS-55 EA-13d (EA3-48). The ONE pull request chip of the task:
     #: ``{repo, number, state, checks_state, checks_summary, url, title,
     #: merged_at, more}``, or ``None``. ``filters.attach_pr_chip`` fills it in

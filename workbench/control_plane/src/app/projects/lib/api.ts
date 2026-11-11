@@ -1852,6 +1852,11 @@ export interface TaskRow {
   agent_client_via?: string | null;
   agent_member_email?: string | null;
   /**
+   * WS-MCP SW-7b — the name that the agent gave its session, such as
+   * "backend-worker-3". Display data only. The card shows it beside the client.
+   */
+  agent_label?: string | null;
+  /**
    * WS-55 EA-13d (EA3-41) — the first line of the newest thing the agent said
    * on its open run, at most 140 characters. The pill shows it on hover.
    */

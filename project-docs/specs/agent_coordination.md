@@ -8,6 +8,8 @@
 
 **SW-23 (a task carries a Check) is built and dark, 2026-11-11.**
 
+**SW-7b (a display label for each session) is built, 2026-11-11 (task 2858). Migration 402.**
+
 **P10 (§3.11, §5.11, D186) was planned on 2026-11-06. No P10 slice is built.** The know-how for other organizations is in `orchestration_playbook.md`.
 
 **P9 (§3.10, §5.10, D183) was planned on 2026-11-06.** **SW-63 is built. SW-53 (GitHub per organization) is built and dark, 2026-11-07. Its backfill is not built.**
@@ -214,7 +216,7 @@ The delegate (SW-29a) stores this reference. It names the member and the stamp, 
 
 | Limit | Fence |
 |---|---|
-| A label never reaches an authorization check | SW-7b: a structural test that no module of `acb_auth` and no visibility seam reads `agent_label` |
+| A label never reaches an authorization check | SW-7b: a structural test that no module of `acb_auth` and no visibility seam reads `agent_label` (`tests/unit/test_agent_label_fence.py`) |
 | A delegate never widens what an agent can see | SW-29a: an R8 test that a delegate on a task the agent's member cannot see gives the agent nothing |
 | The session key comes only from the signed header | Built: `test_mcp_edge_signing.py` |
 | Guidance never overrides the server's rules | SW-31: a prompt fence in `test_mcp_edge_prompts.py` |
@@ -860,6 +862,13 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-7b · A display label for each session
 
+- **Built (task 2858), 2026-11-11.** Migration 402 adds `pm_agent_runs.agent_label`, with a CHECK of 1 to 40 characters.
+  - `agent_runs.clean_agent_label` applies the rules of `_clean_body`. It also drops each control and format character, and it keeps one space for each run of white space.
+  - A person's body that names a label gets 422 (`agent_runs.agent_label_of`). A call with no label keeps the old one.
+  - The runs wire and the task row carry `agent_label`. The edge sends it as untrusted text.
+  - The card line, the run pill and the held-by line read "Claude Code (backend-worker-3)" (`agentRuns.withAgentLabel`).
+  - No flag. The label is display data on the runs, and `agent_runs_enabled` already gates the runs.
+  - The roster (SW-8) is not built. The runs wire carries the label for it.
 - **Scope.** `claim_task` and `start_agent_run` take an optional `agent_label`. The gateway cleans it and caps it at 40 characters. Migration, expand only: `pm_agent_runs.agent_label TEXT NULL`. The card, the run panel and the roster show it beside the client name.
 - **Done when.** Two sessions with two labels show two names on the board.
 - **Fence.** The structural test of §3.7. An edge schema test for the argument.
