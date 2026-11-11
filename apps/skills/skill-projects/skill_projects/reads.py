@@ -548,6 +548,44 @@ async def _timeline_block(task_id: str) -> list[str]:
     return out
 
 
+#: SP-8a. The parts of an epic contract that ``task_detail`` prints, in order.
+_EPIC_LINES: tuple[tuple[str, str], ...] = (
+    ("outcome", "outcome"), ("out_of_scope", "out of scope"),
+    ("risk_tier", "risk tier"), ("appetite_credits", "appetite (credits)"),
+    ("appetite_review_hours", "appetite (review hours)"),
+    ("workstream", "workstream"), ("spec_link", "spec link"),
+)
+
+
+def _epic_contract_block(contract: Any) -> list[str]:
+    """The contract of an epic (SP-8a), or nothing for a task that has none.
+
+    Each part prints, so a model that changes one part can send the rest
+    back: ``set_epic_contract`` replaces the whole contract."""
+    if not isinstance(contract, dict):
+        return []
+    out = ["Epic contract:"]
+    for key, label in _EPIC_LINES:
+        value = contract.get(key)
+        if value in (None, ""):
+            out.append(f"  {label}: (none)")
+        elif isinstance(value, str):
+            out.append(f"  {label}: {data(value)}")
+        else:
+            # A whole number reads as 40, not 40.0.
+            shown = int(value) if isinstance(value, float) and value.is_integer() else value
+            out.append(f"  {label}: {shown}")
+    for check in contract.get("acceptance") or ():
+        if not isinstance(check, dict):
+            continue
+        mark = "[x]" if check.get("done") else "[ ]"
+        line = f"  check {mark} {data(check.get('text') or '')}"
+        if check.get("evidence"):
+            line += f" (evidence: {data(check['evidence'])})"
+        out.append(line)
+    return out
+
+
 @_annotate(read_only=True, idempotent=True, open_world=False)
 async def task_detail(task_id: str) -> str:
     """Everything about one task: fields, assignees, subtasks, links and
@@ -601,6 +639,8 @@ async def task_detail(task_id: str) -> str:
     else:
         if rule:
             out.append(f"  Repeats: {_rule_text(rule)}")
+    # SP-8a: the contract of an epic rides on the task row, so no read more.
+    out.extend(_epic_contract_block(task.get("epic_contract")))
 
     out.extend(await _relations_block(tid))
     out.extend(await _refs_block(tid))
@@ -718,13 +758,27 @@ def _plan_note(plan: Any, labels: dict[str, Any] | None = None) -> str:
     return "  plan: " + (" · ".join(parts) or "blocked")
 
 
+async def _personal_home(home: list[str]) -> None:
+    """Add the member's personal project to the head lines of ``my_work``, or
+    say there is none yet."""
+    try:
+        mine = await get("/projects/my/project")
+    except GatewayRefusal:
+        home.append("No personal project yet. create_personal_task makes it.")
+        return
+    if mine and mine.get("id"):
+        home.append(f"Personal project {data(mine.get('name'))} · project_id {mine.get('id')}")
+
+
 @_annotate(read_only=True, idempotent=True, open_world=False)
 async def my_work(
     view: str = "assigned", include_done: bool = False, page: int = 1, untriaged: bool = False
 ) -> str:
     """The member's own work. view="assigned" lists tasks assigned to them
     across every project. view="inbox" lists the member's task inbox: only
-    what they captured, as the app's inbox shows it. untriaged=true reads the
+    what they captured, as the app's inbox shows it. view="archived" lists the
+    tasks they archived, across projects (ARC-1), as the Archive chip of My
+    tasks shows them. To bring one back, use unarchive_task. untriaged=true reads the
     work assigned to them that they have not planned, with who
     assigned each one. My tasks shows it as New: "what landed on my plate". A ready agent
     task (D170 amendment) is not here. It shows under Next or Someday. The first line is the member's own date and
@@ -756,13 +810,14 @@ async def my_work(
         # 404 until the member captures their first private task. That is
         # an empty state, not a failure: the trial showed the model telling
         # the member their inbox "failed to load".
-        try:
-            mine = await get("/projects/my/project")
-        except GatewayRefusal:
-            mine = None
-            home.append("No personal project yet. create_personal_task makes it.")
-        if mine and mine.get("id"):
-            home.append(f"Personal project {data(mine.get('name'))} · project_id {mine.get('id')}")
+        await _personal_home(home)
+    elif which == "archived":
+        # ARC-1: the one list route over mine, filed tasks only. The app's
+        # Archive chip reads the same two words (`scope`, `archived_only`).
+        payload = await get(
+            "/projects/tasks", {**params, "scope": "mine", "archived_only": True},
+        )
+        title = "My archive"
     else:
         if include_done:
             params["include_done"] = True
@@ -774,7 +829,7 @@ async def my_work(
         return "\n".join([*home, f"{title}: nothing."])
     plans: dict[str, Any] = {}
     labels: dict[str, Any] = {}
-    if which != "inbox":
+    if which not in ("inbox", "archived"):
         rows, plans, labels = await _plan_ordered(rows)
     names = await _status_names(
         {str(r.get("root_project_id")) for r in rows if r.get("root_project_id")}
@@ -2139,7 +2194,9 @@ def _attention_lines(row: dict[str, Any]) -> list[str]:
         facts.append(f"the task is {row.get('reason') or 'closed'}, and the run is "
                      f"{row.get('run_status')}, quiet {_hours_ago(row.get('age_hours'))}")
     elif kind == "blocked":
-        facts.append(f"blocked by #{row.get('blocker_number')} {data(row.get('blocker_title'))} "
+        more = int(row.get("blocker_count") or 1) - 1
+        facts.append(f"blocked by #{row.get('blocker_number')} {data(row.get('blocker_title'))}"
+                     f"{f' and {more} more' if more > 0 else ''} "
                      f"{_hours_ago(row.get('age_hours'))}")
     owner = row.get("owner_name") or row.get("owner")
     facts.append(f"owner {data(owner)}" if owner else "no owner")

@@ -55,10 +55,12 @@ from gateway.routes.projects import attachments as _attachments  # noqa: F401
 from gateway.routes.projects import bulk as _bulk  # noqa: F401
 from gateway.routes.projects import calendar as _calendar  # noqa: F401
 from gateway.routes.projects import candidates as _candidates  # noqa: F401
+from gateway.routes.projects import checks as _checks  # noqa: F401
 from gateway.routes.projects import custom_fields as _custom_fields  # noqa: F401
 from gateway.routes.projects import cycles as _cycles  # noqa: F401
 from gateway.routes.projects import decisions as _decisions  # noqa: F401
 from gateway.routes.projects import delta as _delta  # noqa: F401
+from gateway.routes.projects import epic_contract as _epic_contract  # noqa: F401
 from gateway.routes.projects import export as _export  # noqa: F401
 from gateway.routes.projects import imports as _imports  # noqa: F401
 from gateway.routes.projects import intake as _intake  # noqa: F401

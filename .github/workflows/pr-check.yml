@@ -698,7 +698,9 @@ jobs:
               tests/unit/test_package_host_store_r8.py \
               tests/unit/test_shell_layout_r8.py \
               tests/unit/test_package_disposal_r8.py \
+              tests/unit/test_package_lifetime_r8.py \
               tests/unit/test_package_field_values_r8.py \
+              tests/unit/test_package_expiry_loop_r8.py \
               tests/unit/test_app_requests_r8.py \
               tests/unit/test_workflows_lifecycle_rls_r8.py \
               tests/unit/test_project_rules.py \
@@ -715,7 +717,10 @@ jobs:
               tests/unit/test_mcp_edge_comment_edit_r8.py \
               tests/unit/test_projects_status_slot_r8.py \
               tests/unit/test_pm_project_updates_r8.py \
+              tests/unit/test_task_check_r8.py \
               tests/unit/test_app_create_slug_r8.py \
+              tests/unit/test_app_delete_workspace_r8.py \
+              tests/unit/test_team_scope_isolation_r8.py \
               tests/unit/test_staging_export.py
 
       # CIV-3. A selection run holds part of the timings. Only a full run
@@ -778,9 +783,9 @@ jobs:
         if: runner.environment == 'github-hosted'
         run: |
           sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
-          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/pgdg.gpg
+          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 60 https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/pgdg.gpg
           sudo sed -i 's|deb http|deb [signed-by=/usr/share/keyrings/pgdg.gpg] http|' /etc/apt/sources.list.d/pgdg.list
-          sudo apt-get update -qq
+          sudo apt-get -o Acquire::Retries=5 update -qq
           sudo apt-get install -y -qq postgresql-client-16
 
       - name: Rehearse
@@ -854,9 +859,9 @@ jobs:
         if: runner.environment == 'github-hosted'
         run: |
           sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
-          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/pgdg.gpg
+          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 60 https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/pgdg.gpg
           sudo sed -i 's|deb http|deb [signed-by=/usr/share/keyrings/pgdg.gpg] http|' /etc/apt/sources.list.d/pgdg.list
-          sudo apt-get update -qq
+          sudo apt-get -o Acquire::Retries=5 update -qq
           sudo apt-get install -y -qq postgresql-client-16
 
       - name: Seed the init schema (what initdb does on a fresh volume)
@@ -1223,7 +1228,7 @@ jobs:
         # Pull the prebuilt release binary instead — faster and path-stable.
         run: |
           VERSION=8.18.4
-          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz" -o gitleaks.tar.gz
+          curl -sSfL --retry 5 --retry-delay 5 --retry-all-errors --max-time 120 "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz" -o gitleaks.tar.gz
           tar -xzf gitleaks.tar.gz gitleaks
           sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
           gitleaks version

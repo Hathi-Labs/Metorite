@@ -700,6 +700,15 @@ class Settings(BaseSettings):
     # `gateway.package_host.flags.package_host_allowed`. Spec:
     # package_host.md section 10.
     package_host_orgs: str = ""
+    # WS-PKG PKG-10b: PACKAGE_EXPIRY_ENABLED starts the daily expiry loop of
+    # package_host.md section 6.2. Default OFF. While it is false, the gateway
+    # starts no loop task, and a tick reads nothing. When it is on, the tick
+    # archives each due install, and it DELETES each install that stayed 30
+    # days in the archive. The delete is one-way. Reader:
+    # `gateway.package_host.flags.package_expiry_enabled`.
+    # 🔴 OWNER-GATE: a flip on production is the owner's act only (gate
+    # `enforcement-flip`), because the tick deletes member data.
+    package_expiry_enabled: bool = False
     vapid_public_key: str = ""
     vapid_private_key: str = ""
     vapid_subject: str = ""
@@ -1011,6 +1020,16 @@ class Settings(BaseSettings):
     # reader is `gateway.routes.projects.updates.updates_allowed`. A SIGHUP
     # reload applies a change. Fence: tests/unit/test_pm_project_updates_r8.py.
     projects_updates_orgs: str = ""
+
+    # ── The contract of an epic (SP-8a, project_management_app.md §13.3) ────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, `GET` and `PUT /projects/tasks/{id}/epic-contract`
+    # answer 404, `get_task` carries `epic_contract: null`, a create with a
+    # contract makes no task, and the chat tool makes no card. The one reader
+    # is `gateway.routes.projects.epic_contract.epic_contracts_allowed`. A
+    # SIGHUP reload applies a change. Fence: tests/unit/test_epic_contract_r8.py.
+    epic_contract_orgs: str = ""
 
     # ── Questions for me (WS-55 EA-18a, external_agent_access.md §12.8) ──────
     #
@@ -1771,6 +1790,15 @@ class Settings(BaseSettings):
     # gateway.routes.apps.t2_vendor_dir().
     custom_apps_t2_vendor_dir: str = ""
 
+    # Task 2464: the HOST build route (`POST /apps/{slug}/build`, `files.py`)
+    # runs build_t2.mjs on the gateway box, beside every org's app dir. It
+    # ships dark. Off (the default), the route builds nothing and tells the
+    # member to ask the builder, whose sandbox build sees only its own app.
+    # Only the owner sets CUSTOM_APPS_HOST_BUILD: `env_guard` refuses every
+    # `CUSTOM_APPS_` name on a tenant write. Fence:
+    # tests/unit/test_app_builder_t2_containment.py.
+    custom_apps_host_build: bool = False
+
     # -- Bot git identity (written into every local clone via git config) --
     # Commits and PRs opened by Self_Mutation_Node carry this identity.
     # Create a dedicated GitHub machine user (or use the GitHub App's identity).
@@ -2261,6 +2289,14 @@ class Settings(BaseSettings):
     # (`docs/flag_reload.md`). `acb_auth.agent_oauth.change_access_allowed`
     # is the one reader. 🔴 A change on a box is gate `enforcement-flip`.
     agent_change_access_orgs: str = ""
+    # PB-2 (D186, `orchestration_playbook.md` §5, §7): the organizations where
+    # the edge lists the playbook prompts (`set_up_agent_team`, `plan_slices`,
+    # `write_brief`, `review_my_fleet`, `run_retro`). The same shape as
+    # `agent_access_orgs`: ids with a comma between them, or `*`. Empty, the
+    # default, keeps them dark. Only the edge reads it, at each call, through
+    # `acb_auth.agent_oauth.playbook_allowed`. 🔴 A change on a box is gate
+    # `enforcement-flip`.
+    playbook_orgs: str = ""
     # EA-6a (EA3-29, spec §6.1 and §9.2): the second switch, for the WRITE
     # tools. Default OFF. While it is false, branch 0 refuses every method
     # other than GET with 401, so the read tools work and no write lands.
@@ -2281,6 +2317,15 @@ class Settings(BaseSettings):
     # has no `answer` field. `acb_auth.agent_oauth.answer_change_enabled` is
     # the one reader. 🔴 A flip on a box is gate `enforcement-flip`.
     agent_answer_change_enabled: bool = False
+    # SW-23 (spec agent_coordination.md SW-23): a task carries a Check, a
+    # read-only command that an agent runs. Default OFF. While it is false,
+    # `POST /projects/tasks/{id}/check-result` answers 404, a task write that
+    # sends `check_text` gets 422, the task rows carry no `check` key, and the
+    # edge leaves `report_check` and the `check` input out of `tools/list`.
+    # Both units read it, so both need the same value.
+    # `acb_auth.agent_oauth.task_checks_enabled` is the one reader. 🔴 A flip
+    # on a box is gate `enforcement-flip`.
+    agent_task_checks_enabled: bool = False
     # SW-7 (spec §12.5): MCP sessions at the edge. Default OFF. While it is
     # false, `initialize` answers no `Mcp-Session-Id`, an id that a client
     # still sends is read as no session (never a 404), and no
