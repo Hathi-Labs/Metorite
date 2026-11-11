@@ -552,6 +552,10 @@ MANIFEST: tuple[Route, ...] = (
     # answer that no agent has read. It writes one marker prompt and changes
     # no task, so class B. The chat gets the tool with SW-43c.
     Route("POST", "/projects/agent-runs/{run_id}/answer/withdraw", "withdraw_agent_answer", "B"),
+    # SW-43b. The same member swaps the answer for a new one in one write:
+    # a withdraw marker and a new prompt. No task changes, so class B. The
+    # chat gets the tool with SW-43c.
+    Route("POST", "/projects/agent-runs/{run_id}/answer/replace", "replace_agent_answer", "B"),
     # WS-55 MCP-G15. An outside agent records a decision that its member made
     # outside Metorite, on its own awaiting run. It writes an agent response
     # and changes no task, so class B. The chat acts as the member, and the
@@ -653,6 +657,7 @@ PLANNED: dict[str, str] = {
     # SW-43a. A member withdraws an answer on the run card. The chat gets the
     # tool with the change tool in slice SW-43c (spec agent_coordination.md §3.9).
     "withdraw_agent_answer": "SW-43c, in-product chat parity",
+    "replace_agent_answer": "SW-43c, in-product chat parity",
     # WS-55 EA-13e (2026-10-18) added the summary route for the board strip.
     "agent_summary": "WS-55, in-product chat parity, after EA-12e",
     # WS-55 EA-6b (2026-10-15) added the claim route for an outside agent.
@@ -1939,6 +1944,9 @@ UI_ACTIONS: dict[str, str] = {
     # SW-43a: a member takes back an answer on the run card
     # (`withdraw_agent_answer`, PLANNED for SW-43c).
     "agentRunsApi.withdrawAnswer": "withdraw_agent_answer",
+    # SW-43b: a member changes an answer on the run card
+    # (`replace_agent_answer`, PLANNED for SW-43c).
+    "agentRunsApi.replaceAnswer": "replace_agent_answer",
     "attentionApi.list": "needs_attention",
     # The Needs attention lens of My tasks: the same route with `mine=true`.
     "attentionApi.mine": "needs_attention",

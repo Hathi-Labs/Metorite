@@ -601,6 +601,15 @@ class Settings(BaseSettings):
     # send mail or WhatsApp and spend credits, so a flip is the owner's. Fence:
     # tests/unit/test_workflows_unattended_flag.py.
     workflow_unattended_orgs: str = ""
+    # STU-J1-3 (ai_studio.md section 14 J1-3): the orgs where a workflow write
+    # needs `feature:studio` on top of `feature:workflows`. A write is a
+    # create, a duplicate, an edit, a delete, a Copilot turn or a test run of
+    # the draft. `*` is every org. Empty, the default, keeps the rule before
+    # J1-3. The one reader is
+    # `gateway.routes.workflows.core.author_gate_on`. A flip is gate
+    # `enforcement-flip`, and a SIGHUP reload applies it. Fences:
+    # tests/unit/test_workflows_author_gate.py, test_workflows_author_gate_r8.py.
+    workflow_studio_gate_orgs: str = ""
 
     reach_enabled: bool = False
     reach_orgs: str = ""
