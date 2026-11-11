@@ -268,6 +268,9 @@ BROADENED_OPENING = "No record holds all of the words. Each word alone:"
 #: The line of a zero answer, kept from KR-2.
 NOTHING = "(no matching records)"
 
+#: The sentence of a dated zero answer that the model must not skip (KR-ZERO).
+ZERO_IS_NO_PROOF = "A zero answer is not proof that no record exists."
+
 #: The sentence of each ``meaning`` value of the route (KR-ZERO).
 MEANING_WORDS: dict[str, str] = {
     "ran": "The meaning search ran too.",
@@ -281,8 +284,9 @@ def _broadened_line(body: dict[str, Any]) -> str:
     """The opening line of a broadened answer, or ``""``.
 
     For example: "No record holds all of the words. Each word alone: Aroh
-    (5), Attero (3)." ``""`` when the route did not broaden. A word with apps that ran out of
-    time names them, so a zero of that word is not read as proof (KR-ZERO).
+    (5), Attero (3)." ``""`` when the route did not broaden. A word with
+    apps that ran out of time names them, so a zero of that word is not read
+    as proof (KR-ZERO).
     """
     entries = body.get("broadened")
     if not isinstance(entries, list):
@@ -313,7 +317,7 @@ def _tried_line(body: dict[str, Any]) -> str:
     meaning = MEANING_WORDS.get(str(body.get("meaning") or ""))
     if meaning:
         parts.append(meaning)
-    parts.append("Zero records is no proof that none exist.")
+    parts.append(ZERO_IS_NO_PROOF)
     if body.get("broadened"):
         parts.append("Try other words, such as a full name or an email address, "
                      "before you tell the member that no record exists.")

@@ -492,7 +492,7 @@ class TestTheAnswerText:
         assert lines[2] == (
             'Tried: "Aroh Attero", with every word in one record. '
             "The meaning search did not finish in time, so it found nothing. "
-            "Zero records is no proof that none exist. "
+            "A zero answer is not proof that no record exists. "
             "Search each name alone before you tell the member that no record exists.")
 
     def test_a_broadened_zero_says_both(self):
@@ -504,7 +504,8 @@ class TestTheAnswerText:
         assert lines[2] == "(no matching records)"
         assert lines[3].startswith('Tried: "Aroh Attero", with every word in one record, '
                                    "then each word alone. The meaning search ran too.")
-        assert "Zero records is no proof" in lines[3]
+        assert cst.ZERO_IS_NO_PROOF in lines[3]
+        assert lines[3].endswith("before you tell the member that no record exists.")
 
     @pytest.mark.parametrize("value", ["ran", "timed_out", "failed", "off"])
     def test_each_meaning_value_has_its_sentence(self, value):
