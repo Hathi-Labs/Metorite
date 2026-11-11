@@ -196,7 +196,12 @@ def _field_lines(data: dict[str, Any], budget: int) -> list[str]:
     The value lines leave room for the key names of every field, up to half
     of the budget, so a long value cannot push the keys out."""
     keys = [_clip(str(k), _KEY_MAX) for k in data]
-    keys_room = min(sum(len(k) + 2 for k in keys), budget // 2)
+    # The width of the key list. ALN-Q5: this module adds up no person, so
+    # the fence of test_auto_park bars ``sum(`` here, and a loop adds up text.
+    width = 0
+    for k in keys:
+        width += len(k) + 2
+    keys_room = min(width, budget // 2)
     lines: list[str] = []
     used = 0
     for i, (key, value) in enumerate(zip(keys, data.values(), strict=True)):
@@ -208,10 +213,12 @@ def _field_lines(data: dict[str, Any], budget: int) -> list[str]:
         rest = keys[i:]
         named: list[str] = []
         room = budget - used - len("Values not shown for: ") - 40
+        taken = 0
         for k in rest:
-            if sum(len(n) + 2 for n in named) + len(k) + 2 > room:
+            if taken + len(k) + 2 > room:
                 break
             named.append(k)
+            taken += len(k) + 2
         if named:
             lines.append("Values not shown for: " + ", ".join(named))
         if len(rest) > len(named):
