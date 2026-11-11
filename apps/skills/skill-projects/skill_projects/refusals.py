@@ -107,7 +107,11 @@ def refusals_as_text(
         except CardClosedByChat as closed:
             return str(closed)
 
-    return _shared.refusals_as_text(closed_card_as_text, PROJECTS_VOICE)
+    wrapped = _shared.refusals_as_text(closed_card_as_text, PROJECTS_VOICE)
+    # Two layers, one tool: ``__wrapped__`` names the tool itself, so a pack
+    # that reuses it still shows one write path (test_calendar_day_pack.py).
+    wrapped.__wrapped__ = fn
+    return wrapped
 
 
 def bad_value_text(tool: str, fields: Iterable[str]) -> str:
