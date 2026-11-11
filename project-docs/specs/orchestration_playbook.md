@@ -1,6 +1,6 @@
 # Orchestration playbook — the know-how that Metorite ships to every organization that connects
 
-**Status: ACTIVE (PB-0, 2026-11-06). KIT-1 (the kit core, task 2549) and KIT-2b (the Codex pack, task 2550) are built. The rest is not.** The decision is **D186** in `work_plan.md` §3, and task 1906 (SW-P10) planned this spec. Its slices are PB-1 to PB-10, and the kit slices KIT-0 to KIT-9 (§6a, epic 2547). Each has a task on the board.
+**Status: ACTIVE (PB-0, 2026-11-06). KIT-1 (the kit core, task 2549) and KIT-2b (the Codex pack, task 2550) and the KIT-6 tooling are built, with no live client run. The rest is not.** The decision is **D186** in `work_plan.md` §3, and task 1906 (SW-P10) planned this spec. Its slices are PB-1 to PB-10, and the kit slices KIT-0 to KIT-9 (§6a, epic 2547). Each has a task on the board.
 
 **Board row:** **WS-MCP** in `work_plan.md` §2.1. **Owner direction (2026-11-06):** Metorite "not only becomes a place we use for orchestrating multiple agents". It "also contains the know-how and understanding in the system prompt to help set up multi-org orchestration systems for whoever connects the Metorite MCP." **Price:** part of the flat seat (`launch_surface.md` §4). No SKU and no add-on (D186.3).
 
@@ -144,6 +144,23 @@ The kit is the static part of the playbook. It is a set of files that a member p
 8. A sub-agent never posts to Metorite. The coordinator posts for it.
 
 Fence: `tests/unit/test_kit_core.py` (new, KIT-1) counts the lines and checks each tool name against the allowlist.
+
+**The conformance matrix.** KIT-6 scores a recorded run of a client against the protocol. The script is `scripts/kit_conformance.py`. Its test is `tests/unit/test_kit_conformance.py`. Each row holds the client, its version, the kit version, the date and the score. A step that passed before and now fails blocks the release, but a live run is advisory (R7).
+
+| Client | Client version | Kit version | Date | Score |
+|---|---|---|---|---|
+| Claude Code | not run | not run | not run | not run |
+| OpenAI Codex | not run | not run | not run | not run |
+| GitHub Copilot editor | not run | not run | not run | not run |
+| GitHub Copilot coding agent | not run | not run | not run | not run |
+| Gemini CLI | not run | not run | not run | not run |
+| Google Antigravity | not run | not run | not run | not run |
+
+**Scenario 1, one agent.** A fresh agent has only the kit. It reads `my_work` and `get_plan`, claims a slice and works in a worktree. It posts activity each minute and parks at a wait. It ends with one disposition and calls `finish_agent_run`. The seven steps are `connect_reads`, `claims_slice`, `worktree`, `heartbeat`, `parks_at_wait`, `one_disposition` and `finishes_run`.
+
+**Scenario 2, a coordinator.** A coordinator starts two sub-agents under one parent run. It adds three steps: `two_subagents`, `subagents_silent` and `coordinator_posts`. A sub-agent must not post. Only the coordinator posts.
+
+**Who starts a run.** Claude Code, Codex and Gemini CLI can run in a script. A person starts a run of the Copilot editor, the Copilot coding agent and Antigravity. The transcript comes from the activity of the run on Metorite and from the shell log. The script reads it as lines of JSON, and its header holds the scenario. No live client run is done yet.
 
 ---
 
@@ -342,7 +359,7 @@ The Claude pack is SW-82 (task 1927) in `agent_coordination.md`. It follows this
 #### KIT-6 · The conformance matrix
 
 - **Metorite task.** 2556. It extends MCP-G23 (task 2523).
-- **Scope.** A table of clients against the protocol steps, with the result of a scripted run for each.
+- **Scope.** The scenarios, the scoring script and the matrix of §6a. Live runs are advisory (R7).
 - **Done when.** Each client of the file map has one row with a date and a result.
 - **Fence.** The suite of MCP-G23, extended. A live client run is advisory (R7).
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE. **Depends on.** KIT-2b, KIT-2c, KIT-2d, SW-82.
