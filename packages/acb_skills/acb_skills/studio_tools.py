@@ -2903,7 +2903,10 @@ _OWNER_ACTIVE = "owner_active"  # packages.OWNER_ACTIVE
 MAX_DELETE_CALLS = 12
 #: The most tables that one delete card names. The card counts the rest.
 MAX_DELETE_CARD_TABLES = 10
-_TOKEN = re.compile(r"[0-9a-f]{64}")
+#: The confirm token of a delete preview: 64 lower-case hex digits. A pattern
+#: text and ``re.fullmatch``, because no studio module calls ``compile``
+#: (``test_studio_builder_tools.py``).
+_TOKEN = r"[0-9a-f]{64}"
 
 _DEL_NOTE = ("Approve to delete this app for good: its tables, records, versions and "
              "installs. Nothing can bring them back. Reject to delete nothing.")
@@ -2944,7 +2947,7 @@ def _preview_of(data: Any) -> dict[str, Any] | None:
     package, totals, objects = data.get("package"), data.get("totals"), data.get("objects")
     token = data.get("confirm")
     if not (isinstance(package, dict) and isinstance(totals, dict) and isinstance(objects, list)
-            and isinstance(token, str) and _TOKEN.fullmatch(token)):
+            and isinstance(token, str) and re.fullmatch(_TOKEN, token)):
         return None
     if not all(_whole(totals.get(k)) for k in (
             "objects", "fields", "records", "versions", "installs", "other_member_installs")):
@@ -3030,7 +3033,7 @@ async def _delete_calls(pid: str, token: str, decision: str) -> dict[str, Any]:
             return {"ok": True, "errors": [], "diff": [], "deleted": True, "package_id": pid,
                     "records_removed": removed, "decision": decision, "note": _DEL_DONE}
         nxt = data.get("confirm")
-        if reply.status == 202 and isinstance(nxt, str) and _TOKEN.fullmatch(nxt):
+        if reply.status == 202 and isinstance(nxt, str) and re.fullmatch(_TOKEN, nxt):
             token = nxt
             left = int(data["remaining"]) if _whole(data.get("remaining")) else 0
             continue
