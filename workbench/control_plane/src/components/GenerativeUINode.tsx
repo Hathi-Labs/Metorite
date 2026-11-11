@@ -56,6 +56,9 @@ import {
 } from "@/lib/studio/dataDoor";
 import StudioTable from "@/components/studio/StudioTable";
 import StudioBoard from "@/components/studio/StudioBoard";
+import StudioChart from "@/components/studio/StudioChart";
+import StudioStat from "@/components/studio/StudioStat";
+import { parseAggregate } from "@/lib/studio/aggregateModel";
 import { StudioDataContext } from "@/lib/studio/dataContext";
 import { TypedActionButton } from "@/lib/studio/TypedActionButton";
 import { useCachedResource } from "@/lib/useCachedResource";
@@ -195,6 +198,13 @@ function BoundSource({
   // A board is not a template of the registry: it needs the door to move a card.
   if (s(node.type) === "template" && props.name === "board") {
     return <StudioBoard data={rest.data} rows={rows} door={door} />;
+  }
+  // A Chart or a Stat of an aggregate (STU-D4): one row, the C2b result. A read that is no
+  // aggregate falls through and draws as the template always did.
+  if (s(node.type) === "template" && (props.name === "chart" || props.name === "sparkTrend") && parseAggregate(rows)) {
+    return props.name === "chart"
+      ? <StudioChart data={rest.data} rows={rows} />
+      : <StudioStat data={rest.data} rows={rows} />;
   }
   // A Table with inline edit needs the door to write a cell (STU-D2b).
   const gridProps = (rest.data ?? {}) as Record<string, unknown>;
