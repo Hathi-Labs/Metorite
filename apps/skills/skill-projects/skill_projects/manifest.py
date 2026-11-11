@@ -567,6 +567,10 @@ MANIFEST: tuple[Route, ...] = (
     # Five counts over the tasks the caller can see. A read, so class A. The
     # chat reads the same counts through a tool after EA-12e.
     Route("GET", "/projects/{project_id}/agent-summary", "agent_summary", "A"),
+    # WS-AGA AGA-7 (agents_view.md §6): the member view of agents, dark behind
+    # AGENTS_VIEW_ORGS. A read, so class A. The chat tool comes with the pack
+    # `agents-overview` of AGA-11. It is in no door set (no MCP_ROUTES row).
+    Route("GET", "/projects/agents/overview", "agents_list", "A"),
     # ── needs_attention.py — Needs attention (WS-55 SW-11a, spec §12.7) ──────
     # Stalled runs, open runs of closed tasks and tasks blocked by parked work,
     # over the tasks the caller can see. A read, so class A, and the chat asks
@@ -649,6 +653,8 @@ PLANNED: dict[str, str] = {
     "replace_agent_answer": "SW-43c, in-product chat parity",
     # WS-55 EA-13e (2026-10-18) added the summary route for the board strip.
     "agent_summary": "WS-55, in-product chat parity, after EA-12e",
+    # WS-AGA AGA-7 (2026-11-11) added the member view of agents.
+    "agents_list": "WS-AGA AGA-11 (Metorite task 2114), the chat pack agents-overview",
     # WS-55 EA-6b (2026-10-15) added the claim route for an outside agent.
     # The chat assigns through `assign` and moves through `update_task`.
     "claim_task": "WS-55, in-product chat parity, after EA-12e",
