@@ -266,6 +266,8 @@ from acb_common.studio_fields import (
 from acb_common.studio_query import Condition, Query, QueryError, parse_query
 from acb_common.studio_rules import (
     FORMULA,
+    LOOKUP,
+    MAX_LOOKUP_STATEMENTS,
     MAX_ROLLUP_PARENTS,
     MAX_ROLLUP_STATEMENTS,
     MAX_WRITES_PER_BATCH,
@@ -276,12 +278,14 @@ from acb_common.studio_rules import (
     UNIQUE,
     ConstraintError,
     FormulaPlan,
+    LookupRefused,
     RollupError,
     RollupSource,
     Rule,
     add_change,
     check_group_sum,
     check_kind_known,
+    check_lookups,
     check_move,
     check_range,
     check_rollup_currency,
@@ -292,9 +296,16 @@ from acb_common.studio_rules import (
     check_unique_count,
     floor_holds_at_zero,
     key_filter,
+    lookup_filter,
+    lookup_inputs,
+    lookup_missing,
+    lookup_result,
+    lookup_source_keys,
+    lookup_stale,
     parse_rules,
     plan_formulas,
     refuse_computed_keys,
+    refuse_lookup_keys,
     rollup_parents,
     rollup_result,
     rule_reads,
@@ -665,10 +676,11 @@ class StudioObject:
 
     @property
     def computed(self) -> tuple[str, ...]:
-        """The keys of the fields that a formula (C7a) or a roll-up (C7b) computes.
-        A caller writes none of them, so a Form shows each one read-only and
-        sends no key."""
-        return tuple(str(r.target) for r in self.constraints if r.kind in (FORMULA, ROLLUP))
+        """The keys of the fields that a formula (C7a), a roll-up (C7b) or a lookup
+        (C19) computes. A caller writes none of them, so a Form shows each one
+        read-only and sends no key."""
+        return tuple(str(r.target) for r in self.constraints
+                     if r.kind in (FORMULA, ROLLUP) or r.kind == LOOKUP)
 
 
 @dataclass(frozen=True)
@@ -1027,6 +1039,7 @@ async def set_field_hot(db: Any, object_id: str, key: str, hot: bool) -> bool:
     if not hot:
         _check_no_rule_reads(_object(row, fields).constraints, key)
         await _check_no_rollup_reads(db, row, key)
+        await _check_no_lookup_reads(db, row, key)
         await db.execute(text(_SET_HOT_SQL), {"oid": oid, "key": key, "hot": False})
         await db.execute(text(_UNHOT_SQL), {"oid": oid, "key": key})
         return True
@@ -1074,6 +1087,8 @@ def _rollup_key(rule: Rule) -> str:
 
 
 def _computed_key(rule: Rule) -> str:
+    if rule.kind == LOOKUP:
+        return _lookup_key(rule)  # C19
     return _formula_key(rule) if rule.kind == FORMULA else _rollup_key(rule)
 
 
@@ -1083,14 +1098,14 @@ async def _check_formulas_first(db: Any, oid: str, old: Sequence[Rule],
     C7b). There is no backfill, and a stored result that the rule did not
     compute is worse than a refusal. A rule that stays as it is, and a removed
     one, pass: a removed rule leaves its stored values as plain values."""
-    kinds = (FORMULA, ROLLUP)
+    kinds = (FORMULA, ROLLUP, LOOKUP)
     kept = {(r.kind, _computed_key(r)) for r in old if r.kind in kinds}
     fresh = [r for r in new if r.kind in kinds and (r.kind, _computed_key(r)) not in kept]
     if fresh and (await db.execute(text(_HAS_RECORDS_SQL), {"oid": oid})).scalar_one():
         raise ConstraintError(
             fresh[0].name, f"Rule `{fresh[0].name}`: declare before the first record. This "
-            "object holds records, so a new or changed formula or roll-up would leave their "
-            "results stale.")
+            "object holds records, so a new or changed formula, roll-up or lookup would leave "
+            "their results stale.")
 
 
 async def _rollup_sources(db: Any, pid: str, rules: Sequence[Rule]) -> dict[str, RollupSource]:
@@ -1098,7 +1113,7 @@ async def _rollup_sources(db: Any, pid: str, rules: Sequence[Rule]) -> dict[str,
     fields and rules. A name that the package does not hold is left out, and
     the check then refuses the rule. The org lock is held."""
     out: dict[str, RollupSource] = {}
-    for name in sorted({str(r.source) for r in rules if r.kind == ROLLUP}):
+    for name in sorted({str(r.source) for r in rules if r.kind in (ROLLUP, LOOKUP)}):
         row = (await db.execute(text(_OBJECT_BY_NAME_SQL), {"pid": pid, "name": name})).first()
         if row is not None:
             out[name] = RollupSource(
@@ -1376,10 +1391,11 @@ def _staying_rules(it: _Item) -> list[Rule] | None:
     if it.row is None or not it.set_rules:
         return None
     forms = {_rule_form(r) for r in it.rules}
-    keys = {(r.kind, _computed_key(r)) for r in it.rules if r.kind in (FORMULA, ROLLUP)}
+    kinds = (FORMULA, ROLLUP, LOOKUP)
+    keys = {(r.kind, _computed_key(r)) for r in it.rules if r.kind in kinds}
     stored = it.row.constraints
     kept = [r for r in stored if _rule_form(r) in forms
-            or (r.kind in (FORMULA, ROLLUP) and (r.kind, _computed_key(r)) in keys)]
+            or (r.kind in kinds and (r.kind, _computed_key(r)) in keys)]
     return None if len(kept) == len(stored) else kept
 
 
@@ -2724,6 +2740,8 @@ class _Batch:
         #: The last write that gave each line a new parent (C13), for the place
         #: of a refusal.
         self.moved: dict[tuple[str, str], int] = {}
+        #: The sources, the deadline and the count of the lookups (C19).
+        self.lookups: _Lookups = _Lookups()
 
 
 @dataclass(frozen=True)
@@ -3021,8 +3039,10 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
             step = replace(step, data={**step.data, linked[0].via: {"id": linked[1]}})
         data = with_initial(held.rules, step.data)
         refuse_computed_keys(held.plan, held.name, data)
+        refuse_lookup_keys(held.rules, held.name, data)
         data = with_rollup_zero(held.plan, data)
-        clean = run_formulas(held.plan, held.name, validate_record(plain, data))
+        clean = run_formulas(held.plan, held.name, await _fill_lookups(
+            db, batch, held, None, validate_record(plain, data)))
         moves = _line_moves(batch, oid, None, clean)
         row = (await db.execute(text(_CREATE_RECORD_SQL), {
             "oid": oid, "data": record_json(clean), "actor": batch.who,
@@ -3044,8 +3064,10 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
         return True
     changes = dict(step.data or {})
     refuse_computed_keys(held.plan, held.name, changes)
+    refuse_lookup_keys(held.rules, held.name, changes)
     merged = without_targets(held.plan, {**(mark.after or {}), **changes})
-    clean = run_formulas(held.plan, held.name, validate_record(plain, merged))
+    clean = run_formulas(held.plan, held.name, await _fill_lookups(
+        db, batch, held, mark.after, validate_record(plain, merged)))
     if _line_moves(batch, oid, mark.after, clean):
         batch.moved[(oid, str(step.record_id))] = batch.index
     row = (await db.execute(text(_UPDATE_RECORD_SQL), {
@@ -3401,3 +3423,156 @@ async def _one_write(db: Any, who: str, package_id: str, write: Write) -> Record
         if isinstance(exc.cause, RecordNotFound):
             return None
         raise exc.cause from None
+
+
+# --- the lookup tables (C19) ------------------------------------------------
+#
+# A lookup table is a plain object of the same package (a rate card, a price
+# list, a material master). It needs no new table. A rule of kind `lookup` on
+# another object reads ONE row of it by its keys, inside the write of the
+# record: after `validate_record`, before `run_formulas`. So a formula reads the
+# target as a plain field, and `mark.after` and the hot rows hold it.
+#
+# * The org is the bound session only. Each statement names the bound org, the
+#   source object and the package (`_q_filtered` adds `_IN_PACKAGE`).
+# * The source object needs no row lock. The org lock of the batch holds every
+#   record write and every registry change of the org out, so the rows and the
+#   fields of the source cannot change during the batch. A row that an earlier
+#   write of the same batch made or changed is read as it is now.
+# * The keys read hot rows (`build_lookup`, under the f-string fence). A field
+#   that the lookup finds its row by must stay hot. A source that no longer
+#   fits refuses the write with `declaration` (it fails closed).
+# * No row is `lookup_missing`, never a zero. Two rows on one date is
+#   `lookup_ambiguous`. A key of the record with no value clears the target.
+# * All lookups of a batch share one deadline (`query_timeout`) and at most
+#   `MAX_LOOKUP_STATEMENTS` statements (`BudgetExceeded`).
+
+
+@dataclass
+class _Lookups:
+    """The lookup state of one batch: each source by name, as its object id and
+    fields, the one deadline, and the count of the statements."""
+
+    sources: dict[str, tuple[str, list[FieldSpec]]] = dc_field(default_factory=dict)
+    deadline: float | None = None
+    statements: int = 0
+
+
+_LOOKUP_PROBE = '[{"kind": "lookup"}]'
+
+
+async def _check_no_lookup_reads(db: Any, row: Any, key: str) -> None:
+    """A field of a source that a lookup of the package finds its row by stays
+    hot: the lookup reads its hot rows. *row* is the locked object row."""
+    rows = (await db.execute(text(_ROLLUP_OBJECTS_SQL), {
+        "pid": str(row[1]), "probe": _LOOKUP_PROBE})).all()
+    for found in rows:
+        for rule in stored_rules(_json(found[2])):
+            if rule.kind == LOOKUP and rule.source == str(row[2]) and key in lookup_source_keys(rule):
+                raise ObjectStoreError(
+                    f"Field `{key}` must stay hot, because rule `{rule.name}` of object "
+                    f"`{found[1]}` reads it. Remove the rule first.")
+
+
+def _lookup_key(rule: Rule) -> str:
+    """What makes a stored lookup value stale: the target, the source, the read
+    field, the keys and the dates. The name and the message do not."""
+    stored = rule.stored()
+    kept = {k: stored.get(k) for k in (
+        "target", "source", "field", "match", "as_of", "valid_from")}
+    return json.dumps(kept, sort_keys=True, ensure_ascii=False)
+
+
+def build_lookup(rule: Rule, conditions: Sequence[Condition], *, object_id: str,
+                 package_id: str) -> tuple[str, dict[str, Any]]:
+    """The read of the row of the lookup *rule*: its SQL and its binds. Pure.
+
+    *conditions* are the keys of the record on the SOURCE *object_id*, from
+    ``studio_rules.lookup_filter`` through the grammar of C2a. So the candidates
+    are hot rows, and each key and each value is a bind. Each row holds the data
+    of one record of the source and its ``valid_from`` (or NULL). With
+    ``valid_from`` the latest date comes first. At most two rows come back, so
+    the store can see a tie.
+    """
+    params: dict[str, Any] = {"oid": object_id, "pid": package_id}
+    ids = _q_filtered(conditions, params, "c.id AS id")
+    if rule.valid_from is None:
+        return (f"SELECT r.data, CAST(NULL AS timestamptz) FROM ({ids}) g "
+                f"{_q_lookup('g.id')} ORDER BY r.id LIMIT 2"), params
+    params["vk"] = rule.valid_from
+    return (f"SELECT r.data, s.v_ts FROM ({ids}) g "
+            "CROSS JOIN LATERAL (SELECT s.v_ts FROM studio_record_hot s "
+            f"WHERE s.{_OF_ORG} AND s.{_OF_OBJECT} AND s.field_key = CAST(:vk AS text) "
+            "AND s.record_id = g.id OFFSET 0) s "
+            f"{_q_lookup('g.id')} ORDER BY s.v_ts DESC, r.id LIMIT 2"), params
+
+
+async def _lookup_source(db: Any, batch: _Batch, rule: Rule,
+                         held: _Held) -> tuple[str, list[FieldSpec]]:
+    """The source object of *rule*, read once for each batch, and checked
+    against the rule again. A source that is gone, or that no longer fits,
+    refuses the write with ``declaration``."""
+    name = str(rule.source)
+    found = batch.lookups.sources.get(name)
+    if found is None:
+        row = (await db.execute(text(_OBJECT_BY_NAME_SQL), {"pid": batch.pid, "name": name})).first()
+        found = ("", []) if row is None else (str(row[0]), await _fields(db, str(row[0])))
+        batch.lookups.sources[name] = found
+    oid, fields = found
+    try:
+        if not oid:
+            raise ConstraintError(rule.name, f"Rule `{rule.name}`: `{name}` is not an object "
+                                  "of this package.")
+        check_lookups([rule], held.fields, held.name, {name: RollupSource(name, tuple(fields))})
+    except ConstraintError as exc:
+        raise LookupRefused(rule.name, held.name, "declaration",
+                            f"Object `{held.name}`: {exc.message}", field=str(rule.target)) from None
+    return oid, fields
+
+
+async def _read_lookup(db: Any, batch: _Batch, rule: Rule, held: _Held,
+                       inputs: Mapping[str, Any], target: FieldSpec) -> Any:
+    """The value of the target from the one row of the source."""
+    oid, fields = await _lookup_source(db, batch, rule, held)
+    state = batch.lookups
+    state.statements += 1
+    if state.statements > MAX_LOOKUP_STATEMENTS:
+        raise BudgetExceeded(f"A batch runs at most {MAX_LOOKUP_STATEMENTS} lookups.")
+    try:
+        conditions = parse_query(fields, lookup_filter(rule, inputs)).conditions
+    except QueryError:
+        # A value that a key of the source cannot hold matches no row.
+        raise lookup_missing(rule, held.name) from None
+    sql, params = build_lookup(rule, conditions, object_id=oid, package_id=batch.pid)
+    if state.deadline is None:
+        state.deadline = _deadline()
+    async with _time_limit(db, state.deadline, _RULE_TIMEOUT_MESSAGE) as timed:
+        rows = (await timed.execute(text(sql), params)).all()
+    return lookup_result(rule, held.name, target, [(dict(_json(r[0])), r[1]) for r in rows])
+
+
+async def _fill_lookups(db: Any, batch: _Batch, held: _Held, before: Mapping[str, Any] | None,
+                        clean: dict[str, Any]) -> dict[str, Any]:
+    """The checked record *clean* with each lookup target filled (C19). *before*
+    is the record before this write, or None for a create. A lookup whose
+    inputs did not change keeps its stored value. Raises ``LookupRefused``."""
+    rules = [r for r in held.rules if r.kind == LOOKUP]
+    if not rules:
+        return clean
+    out = dict(clean)
+    by_key = {f.key: f for f in held.fields}
+    for rule in rules:
+        key = str(rule.target)
+        if not lookup_stale(rule, before, out):
+            continue
+        inputs = lookup_inputs(rule, out)
+        target = by_key.get(key)
+        if target is None:
+            raise LookupRefused(rule.name, held.name, "declaration",
+                                f"Object `{held.name}`: `{key}` is not a field of this object.",
+                                field=key)
+        if inputs is None:
+            out.pop(key, None)
+            continue
+        out[key] = await _read_lookup(db, batch, rule, held, inputs, target)
+    return {f.key: out[f.key] for f in held.fields if f.key in out}

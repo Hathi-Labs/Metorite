@@ -45,6 +45,17 @@ rules. :data:`RULE_KINDS` is the closed list of kinds.
   (:meth:`Rule.source_keys`), and the store keeps them hot.
   :func:`check_rollups` checks a declaration against the source, and
   :func:`rollup_parents` and :func:`rollup_result` serve the recompute.
+* ``lookup`` (C19): ``{target, source, match, field, as_of?, valid_from?}``. The
+  object *source* of the same package is a lookup table, such as a rate card.
+  The store fills *target* with the value of the field *field* of the ONE row of
+  the source whose keys equal the fields of this record (``match`` pairs a
+  source ``field`` with a ``ref`` of this record). With ``valid_from`` (a hot
+  date field of the source) and ``as_of`` (a date field of this record), the row
+  is the one with the latest ``valid_from`` on or before ``as_of``. No row is a
+  refusal with ``lookup_missing``, never a zero, and two rows are a refusal with
+  ``lookup_ambiguous``. A formula reads the target as a plain field.
+  :func:`check_lookups` checks a declaration against the source, and the section
+  at the end of the file holds the pure steps of a write.
 
 **A key.** A ``unique`` field and a group field have a type of
 :data:`KEY_TYPES`. A checkbox has two states and a money value has a currency,
@@ -118,6 +129,11 @@ MAX_ROLLUP_WHERE = 2
 #: The parents that one batch recomputes, and the aggregate statements it runs.
 MAX_ROLLUP_PARENTS = 100
 MAX_ROLLUP_STATEMENTS = 100
+#: The lookup rules of one object (C19), the keys of one lookup, and the lookup
+#: statements of one batch.
+MAX_LOOKUP_RULES = 4
+MAX_LOOKUP_KEYS = 3
+MAX_LOOKUP_STATEMENTS = 100
 
 #: The closed ops of a guard atom. All but ``not_empty`` are ops of C2a.
 GUARD_OPS: tuple[str, ...] = (
@@ -133,9 +149,11 @@ GROUP_SUM_MIN = "group_sum_min"
 STATE_MACHINE = "state_machine"
 FORMULA = "formula"
 ROLLUP = "rollup"
+LOOKUP = "lookup"
 
 #: The closed list of kinds.
-RULE_KINDS: tuple[str, ...] = (RANGE, UNIQUE, GROUP_SUM_MIN, STATE_MACHINE, FORMULA, ROLLUP)
+RULE_KINDS: tuple[str, ...] = (RANGE, UNIQUE, GROUP_SUM_MIN, STATE_MACHINE, FORMULA, ROLLUP,
+                               LOOKUP)
 #: The aggregates of a roll-up.
 ROLLUP_AGGS: tuple[str, ...] = ("sum", "count", "min", "max")
 #: The field types that a roll-up reads, for each aggregate. ``count`` reads none.
@@ -169,6 +187,7 @@ _KIND_KEYS: Mapping[str, frozenset[str]] = {
     STATE_MACHINE: frozenset({"field", "initial", "moves"}),
     FORMULA: frozenset({"target", "expr", "scale", "rounding", "currency"}),
     ROLLUP: frozenset({"target", "source", "via", "agg", "field", "where", "currency"}),
+    LOOKUP: frozenset({"target", "source", "match", "field", "as_of", "valid_from"}),
 }
 assert tuple(_KIND_KEYS) == RULE_KINDS, "each kind has its keys"
 
@@ -298,6 +317,13 @@ class Rule:
     via: str | None = None
     agg: str | None = None
     where: tuple[Atom, ...] = ()
+    #: A ``lookup`` (C19) pairs each key field of ``source`` with a field of this
+    #: record, as ``(source key, own key)``. ``field`` is the source field that it
+    #: reads. ``valid_from`` is a date field of the source, and ``as_of`` a date
+    #: field of this record.
+    match: tuple[tuple[str, str], ...] = ()
+    as_of: str | None = None
+    valid_from: str | None = None
 
     def stored(self) -> dict[str, Any]:
         """The JSON of this rule, as the store keeps it."""
@@ -329,6 +355,7 @@ class Rule:
                 out["where"] = where_filter(self)
             if self.currency is not None:
                 out["currency"] = self.currency
+        out.update(_stored_lookup(self))  # C19: empty for each other kind
         if self.min is not None:
             out["min"] = self.min
         if self.max is not None:
@@ -341,6 +368,8 @@ class Rule:
         :meth:`source_keys` names them."""
         if self.kind in (RANGE, STATE_MACHINE, FORMULA, ROLLUP):
             return ()
+        if self.kind == LOOKUP:
+            return ()  # C19: it reads fields of its source (`lookup_source_keys`)
         return (*self.keys, self.field) if self.field is not None else self.keys
 
     def source_keys(self) -> tuple[str, ...]:
@@ -613,6 +642,43 @@ def where_filter(rule: Rule) -> list[dict[str, Any]]:
     return out
 
 
+# C19: the parser of a lookup. The rest of C19 is the section at the end of the file.
+_MATCH_KEYS = frozenset({"field", "ref"})
+
+
+def _parse_match_item(rule: str, item: Any) -> tuple[str, str]:
+    if not isinstance(item, Mapping) or set(item) != _MATCH_KEYS:
+        raise ConstraintError(
+            rule, f"Rule `{rule}`: a `match` item is an object with `field` (a key of the "
+            "source) and `ref` (a field of this record).")
+    return _key(rule, "match.field", item.get("field")), _key(rule, "match.ref", item.get("ref"))
+
+
+def _parse_lookup(rule: str, spec: Mapping[str, Any], message: str | None) -> Rule:
+    target = _key(rule, "target", spec.get("target"))
+    source = _object_name(rule, "source", spec.get("source"))
+    field = _key(rule, "field", spec.get("field"))
+    raw = spec.get("match")
+    if not isinstance(raw, list) or not 1 <= len(raw) <= MAX_LOOKUP_KEYS:
+        raise ConstraintError(
+            rule, f"Rule `{rule}`: `match` is a list of 1 to {MAX_LOOKUP_KEYS} keys.")
+    match = tuple(_parse_match_item(rule, item) for item in raw)
+    if len({s for s, _ in match}) != len(match):
+        raise ConstraintError(rule, f"Rule `{rule}`: `match` names a key of the source twice.")
+    as_of, valid_from = spec.get("as_of"), spec.get("valid_from")
+    if (as_of is None) != (valid_from is None):
+        raise ConstraintError(
+            rule, f"Rule `{rule}`: `as_of` and `valid_from` go together. Give both, or neither.")
+    if as_of is not None:
+        as_of = _key(rule, "as_of", as_of)
+        valid_from = _key(rule, "valid_from", valid_from)
+        if valid_from in {s for s, _ in match} or valid_from == field:
+            raise ConstraintError(
+                rule, f"Rule `{rule}`: `valid_from` cannot also be a key or the read field.")
+    return Rule(rule, LOOKUP, message, field=field, target=target, source=source,
+                match=match, as_of=as_of, valid_from=valid_from)
+
+
 def _parse_rollup(rule: str, spec: Mapping[str, Any], message: str | None) -> Rule:
     target = _key(rule, "target", spec.get("target"))
     source = _object_name(rule, "source", spec.get("source"))
@@ -634,7 +700,8 @@ def _parse_rollup(rule: str, spec: Mapping[str, Any], message: str | None) -> Ru
 
 
 _PARSERS = {RANGE: _parse_range, UNIQUE: _parse_unique, GROUP_SUM_MIN: _parse_group,
-            STATE_MACHINE: _parse_machine, FORMULA: _parse_formula, ROLLUP: _parse_rollup}
+            STATE_MACHINE: _parse_machine, FORMULA: _parse_formula, ROLLUP: _parse_rollup,
+            LOOKUP: _parse_lookup}
 assert tuple(_PARSERS) == RULE_KINDS, "each kind has one parser"
 
 
@@ -680,6 +747,8 @@ def parse_rules(specs: Any) -> tuple[Rule, ...]:
                 raise ConstraintError(
                     rule.name, f"Rule `{rule.name}`: a field has one state machine.")
             machines.add(str(rule.field))
+    if sum(r.kind == LOOKUP for r in rules) > MAX_LOOKUP_RULES:
+        raise ConstraintError("?", f"An object holds at most {MAX_LOOKUP_RULES} lookup rules.")
     return rules
 
 
@@ -782,6 +851,7 @@ def check_rules_fit(rules: Sequence[Rule], fields: Sequence[FieldSpec], *,
     by_key = {f.key: f for f in fields}
     check_formulas([r for r in rules if r.kind == FORMULA], fields)
     check_rollups(rules, fields, object_name, sources)
+    check_lookups(rules, fields, object_name, sources)
 
     def named(rule: Rule, key: str) -> FieldSpec:
         field = by_key.get(key)
@@ -795,6 +865,8 @@ def check_rules_fit(rules: Sequence[Rule], fields: Sequence[FieldSpec], *,
             continue
         if rule.kind in (FORMULA, ROLLUP):
             continue
+        if rule.kind == LOOKUP:
+            continue  # C19: `check_lookups` checks it
         if rule.field is not None:
             field = named(rule, rule.field)
             _number_field(rule, field)
@@ -835,7 +907,7 @@ def _stored_rule(item: Any) -> Rule:
     name = item.get("name") if isinstance(item, Mapping) else None
     if not isinstance(name, str) or not name:
         return Rule("?", MALFORMED)
-    if item.get("kind") in (STATE_MACHINE, FORMULA, ROLLUP):
+    if item.get("kind") in (STATE_MACHINE, FORMULA, ROLLUP) or item.get("kind") == LOOKUP:
         # The one parser reads it. A role atom or a bad shape fails closed.
         try:
             return parse_rule(item)
@@ -944,6 +1016,8 @@ def touched_keys(rule: Rule, before: Mapping[str, Any] | None,
     """
     if rule.kind in (RANGE, STATE_MACHINE, FORMULA, ROLLUP):
         return []
+    if rule.kind == LOOKUP:
+        return []  # C19: a lookup reads no key of its own object
     states: Collection[Mapping[str, Any] | None] = (
         (after,) if rule.kind == UNIQUE else (before, after))
     out: list[tuple[Any, ...]] = []
@@ -1295,6 +1369,8 @@ def rule_reads(rule: Rule) -> frozenset[str]:
         return studio_expr.expr_reads(rule.expr) if rule.expr is not None else frozenset()
     if rule.kind == ROLLUP:
         return frozenset()  # it reads fields of its source, never of its own record
+    if rule.kind == LOOKUP:
+        return lookup_reads(rule)
     reads = set(rule.keys)
     if rule.field is not None:
         reads.add(rule.field)
@@ -1565,3 +1641,239 @@ def rollup_result(rule: Rule, object_name: str, field: FieldSpec, raw: Any) -> A
         return check_value(field, stored)
     except (FieldError, ArithmeticError):
         raise _too_large(rule, object_name) from None
+
+
+# --- the lookup tables (C19) --------------------------------------------------
+#
+# A lookup table is a plain object of the same package, such as a rate card or a
+# price list. It needs no new table and no new store. A rule of kind `lookup` on
+# another object reads ONE row of it by its keys, and fills a field of the
+# record. A formula then reads that field as a plain field.
+#
+# The store runs a lookup inside the write of the record, after the record is
+# checked and before the formulas run. A create always reads the row. An update
+# reads it again only when a key field or the `as_of` field changed. So a later
+# change of the table never changes an old quote.
+
+
+class LookupRefused(RuleViolation):
+    """A write that a lookup refuses (C19). ``object`` is the name of the object
+    that holds the rule, ``code`` is :data:`LOOKUP_MISSING`,
+    :data:`LOOKUP_AMBIGUOUS`, ``bad_result`` or ``declaration``, and ``field`` is
+    the key of the target. The message never echoes a value."""
+
+    def __init__(self, rule: str, object_name: str, code: str, message: str,
+                 field: str | None = None) -> None:
+        super().__init__(rule, message)
+        self.object = object_name
+        self.code = code
+        self.field = field
+
+
+#: No row of the source matches the keys of the record, or the row holds no value.
+LOOKUP_MISSING = "lookup_missing"
+#: Two rows of the source match the keys of the record on the same date.
+LOOKUP_AMBIGUOUS = "lookup_ambiguous"
+#: The field types of a target, and so of the field that a lookup reads.
+LOOKUP_VALUE_TYPES: tuple[str, ...] = ("number", "money", "text", "checkbox", "date")
+def _stored_lookup(rule: Rule) -> dict[str, Any]:
+    """The keys of a lookup in the JSON of :meth:`Rule.stored`. Empty for each
+    other kind."""
+    if rule.kind != LOOKUP:
+        return {}
+    out: dict[str, Any] = {"target": rule.target, "source": rule.source, "field": rule.field,
+                           "match": [{"field": s, "ref": r} for s, r in rule.match]}
+    if rule.as_of is not None:
+        out.update(as_of=rule.as_of, valid_from=rule.valid_from)
+    return out
+
+
+def lookup_reads(rule: Rule) -> frozenset[str]:
+    """The fields of its OWN record that a lookup reads: each ``ref`` and ``as_of``."""
+    reads = {r for _, r in rule.match}
+    if rule.as_of is not None:
+        reads.add(rule.as_of)
+    return frozenset(reads)
+
+
+def lookup_source_keys(rule: Rule) -> tuple[str, ...]:
+    """The fields of the SOURCE that a lookup finds its row by, each once: each
+    key and ``valid_from``. Each must stay hot. The read field need not be hot."""
+    keys = [s for s, _ in rule.match]
+    if rule.valid_from is not None:
+        keys.append(rule.valid_from)
+    return tuple(dict.fromkeys(keys))
+
+
+def _computed_targets(rules: Sequence[Rule]) -> set[str]:
+    return {str(r.target) for r in rules if r.kind in (FORMULA, ROLLUP, LOOKUP)}
+
+
+def _fit_lookup_target(rule: Rule, by_key: Mapping[str, FieldSpec]) -> FieldSpec:
+    key = str(rule.target)
+    field = by_key.get(key)
+    if field is None:
+        raise _refuse(rule, f"`{key}` is not a field of this object.")
+    if field.type not in LOOKUP_VALUE_TYPES or field.many:
+        raise _refuse(rule, f"target `{key}` must be one {', '.join(LOOKUP_VALUE_TYPES)} field.")
+    if field.required:
+        raise _refuse(rule, f"target `{key}` cannot be required, because a lookup with an "
+                      "empty key gives no value.")
+    return field
+
+
+def _fit_own_input(rule: Rule, by_key: Mapping[str, FieldSpec], key: str,
+                   computed: set[str]) -> FieldSpec:
+    field = by_key.get(key)
+    if field is None:
+        raise _refuse(rule, f"`{key}` is not a field of this object.")
+    if field.many:
+        raise _refuse(rule, f"field `{key}` must hold one value.")
+    if key in computed:
+        raise _refuse(rule, f"field `{key}` is computed. A lookup reads plain fields only, "
+                      "because it runs before the formulas.")
+    return field
+
+
+def _fit_lookup(rule: Rule, own_name: str, by_key: Mapping[str, FieldSpec],
+                source: RollupSource | None, computed: set[str]) -> None:
+    target = _fit_lookup_target(rule, by_key)
+    if source is None or source.name == own_name:
+        raise _refuse(rule, f"`{rule.source}` must be another object of this package.")
+    src = {f.key: f for f in source.fields}
+    read = src.get(str(rule.field))
+    if read is None:
+        raise _refuse(rule, f"`{rule.field}` is not a field of `{source.name}`.")
+    if read.type != target.type or read.many:
+        raise _refuse(rule, f"target `{target.key}` must be a {read.type} field, as "
+                      f"`{read.key}` of `{source.name}` is.")
+    for skey, ref in rule.match:
+        key = src.get(skey)
+        if key is None:
+            raise _refuse(rule, f"`{skey}` is not a field of `{source.name}`.")
+        if key.type not in KEY_TYPES or key.many:
+            raise _refuse(rule, f"field `{skey}` of `{source.name}` cannot be a key. "
+                          f"Use one value of {', '.join(KEY_TYPES)}.")
+        _source_hot(rule, source, key)
+        own = _fit_own_input(rule, by_key, ref, computed)
+        if own.type != key.type:
+            raise _refuse(rule, f"field `{ref}` must be a {key.type} field, as `{skey}` of "
+                          f"`{source.name}` is.")
+    if rule.valid_from is not None:
+        start = src.get(rule.valid_from)
+        if start is None or start.type != "date" or start.many:
+            raise _refuse(rule, f"`valid_from` must be one date field of `{source.name}`.")
+        _source_hot(rule, source, start)
+        if _fit_own_input(rule, by_key, str(rule.as_of), computed).type != "date":
+            raise _refuse(rule, "`as_of` must be one date field of this object.")
+
+
+def check_lookups(rules: Sequence[Rule], fields: Sequence[FieldSpec], object_name: str | None,
+                  sources: Mapping[str, RollupSource] | None) -> None:
+    """Refuse the lookups of one object that do not fit it and their *sources*.
+
+    The source is another object of the same package. Each key of the source is
+    one hot field of :data:`KEY_TYPES`, and its ``ref`` is a plain field of this
+    object of the same type. ``valid_from`` is a hot date field of the source,
+    and ``as_of`` a plain date field of this object. The read field and the
+    target have one type of :data:`LOOKUP_VALUE_TYPES`. No other computed rule
+    fills the target. Raises :class:`ConstraintError`.
+    """
+    lookups = [r for r in rules if r.kind == LOOKUP]
+    if not lookups:
+        return
+    if object_name is None or sources is None:
+        raise _refuse(lookups[0], "a lookup is checked with the other objects of its package.")
+    by_key = {f.key: f for f in fields}
+    computed = _computed_targets(rules)
+    taken = {str(r.target) for r in rules if r.kind in (FORMULA, ROLLUP)}
+    for rule in lookups:
+        _fit_lookup(rule, object_name, by_key, sources.get(str(rule.source)), computed)
+        key = str(rule.target)
+        if key in taken:
+            raise _refuse(rule, f"another formula, roll-up or lookup fills `{key}` already.")
+        taken.add(key)
+
+
+def refuse_lookup_keys(rules: Sequence[Rule], object_name: str, data: Any) -> None:
+    """Refuse a write that holds a key of a lookup target, also with the same
+    value or with no value. The code is ``computed_field``, as for a formula."""
+    if not isinstance(data, Mapping):
+        return
+    for rule in rules:
+        if rule.kind == LOOKUP and rule.target in data:
+            key = str(rule.target)
+            raise FormulaError(
+                rule.name, object_name, COMPUTED_FIELD,
+                f"Rule `{rule.name}` of object `{object_name}`: field `{key}` is computed. "
+                "Write no value for it.", field=key)
+
+
+def lookup_stale(rule: Rule, before: Mapping[str, Any] | None, after: Mapping[str, Any]) -> bool:
+    """True when a write must read the row again. *before* is the record before
+    this write (None for a create). A create always reads it. An update reads it
+    only when a field that the lookup reads changed."""
+    if before is None:
+        return True
+    return any(before.get(k) != after.get(k) for k in lookup_reads(rule))
+
+
+def lookup_inputs(rule: Rule, data: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The values of the record that the lookup reads, by their own keys. None
+    when one of them is empty: the target then clears, and no row is read."""
+    out: dict[str, Any] = {}
+    for key in lookup_reads(rule):
+        value = data.get(key)
+        if is_blank(value):
+            return None
+        out[key] = value
+    return out
+
+
+def lookup_filter(rule: Rule, inputs: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The filter of the query grammar (C2a) on the SOURCE: each key equals the
+    value of its ``ref``, and ``valid_from`` is on or before ``as_of``."""
+    out: list[dict[str, Any]] = [
+        {"field": skey, "op": "eq", "value": inputs[ref]} for skey, ref in rule.match]
+    if rule.valid_from is not None:
+        out.append({"field": rule.valid_from, "op": "lte", "value": inputs[str(rule.as_of)]})
+    return out
+
+
+def lookup_missing(rule: Rule, object_name: str, *, empty: bool = False) -> LookupRefused:
+    """The refusal of a lookup that finds no row. It names the keys and never a value."""
+    keys = ", ".join(f"`{r}`" for r in sorted(lookup_reads(rule)))
+    why = (f"the row of `{rule.source}` for this record holds no `{rule.field}`."
+           if empty else f"no row of `{rule.source}` matches {keys} of this record.")
+    return LookupRefused(
+        rule.name, object_name, LOOKUP_MISSING,
+        f"Rule `{rule.name}` of object `{object_name}`: {rule.message or why} "
+        f"Add the row to `{rule.source}`, or change {keys}.", field=str(rule.target))
+
+
+def lookup_result(rule: Rule, object_name: str, target: FieldSpec,
+                  rows: Sequence[tuple[Mapping[str, Any], Any]]) -> Any:
+    """The value of the target from the *rows* that the store read: at most two,
+    each as ``(data, valid_from)``, latest first. No row, and a row with no
+    value, raise ``lookup_missing``. Two rows on the same date (or two rows with
+    no ``valid_from``) raise ``lookup_ambiguous``. The value runs through
+    ``check_value`` of the target. Never a zero in place of a missing row."""
+    if not rows:
+        raise lookup_missing(rule, object_name)
+    if len(rows) > 1 and (rule.valid_from is None or rows[0][1] == rows[1][1]):
+        keys = ", ".join(f"`{s}`" for s in lookup_source_keys(rule))
+        raise LookupRefused(
+            rule.name, object_name, LOOKUP_AMBIGUOUS,
+            f"Rule `{rule.name}` of object `{object_name}`: two rows of `{rule.source}` match "
+            f"this record. Keep one row for each {keys}.", field=str(rule.target))
+    value = rows[0][0].get(str(rule.field))
+    if is_blank(value):
+        raise lookup_missing(rule, object_name, empty=True)
+    try:
+        return check_value(target, value)
+    except FieldError:
+        raise LookupRefused(
+            rule.name, object_name, studio_expr.BAD_RESULT,
+            f"Rule `{rule.name}` of object `{object_name}`: the value of `{rule.field}` of "
+            f"`{rule.source}` is not a valid value of `{target.key}`.",
+            field=str(rule.target)) from None
