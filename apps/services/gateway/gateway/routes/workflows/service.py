@@ -578,6 +578,14 @@ def _studio_refusal(
     return None
 
 
+def _pinned_config(serialized: dict[str, Any], node_id: str) -> dict[str, Any]:
+    """The config of *node_id* in the run's pinned graph (fix round 1)."""
+    for block in serialized.get("blocks") or []:
+        if str(block.get("id")) == node_id and isinstance(block.get("config"), dict):
+            return dict(block["config"])
+    return {}
+
+
 def _studio_writer(
     *,
     run_id: str,
@@ -592,9 +600,12 @@ def _studio_writer(
     The org is the org of the run row, and the member is the workflow owner,
     ``workflows.owner_email``, read in that org. The owner is the decider of
     the parked decision. The node re-reads that decision with
-    ``park.approves_one_write`` in the run's org, and the write runs only on
-    its yes. Then ``studio.invoke.run_workflow_write`` runs the write with no
-    second card. ONE decision clears ONE write: the seam spends the gate
+    ``park.approved_write_digest`` in the run's org, and the write runs only
+    on its yes. Then ``studio.invoke.run_workflow_write`` runs the write with
+    no second card, and only when the write has the digest that the decision
+    bound at the park (fix round 1). The config is read from the run's own
+    pinned graph (*serialized*, the snapshot of the published version), never
+    from the live draft. ONE decision clears ONE write: the seam spends the gate
     before the write, so a second call in this execution refuses. A replay
     never calls the seam, because the runner passes a stored ``ok`` output
     through (``precomputed``).
@@ -612,22 +623,24 @@ def _studio_writer(
             spent.add(parked.gate)
             _, owner = await _workflow_owner(workflow_id, org)
             async with _tenant_session(org) as db:
-                approved = await park.approves_one_write(
+                digest = await park.approved_write_digest(
                     db, organization_id=org, owner=owner, decision_id=parked.decision_id,
                     run_id=run_id, pause_id=parked.pause_id,
                 )
-            if not approved:
+            if digest is None:
                 refused = STUDIO_NOT_APPROVED
         if refused is not None or parked is None:
             _log.warning("workflows.studio_write_refused", run_id=run_id, reason=refused)
             raise NodeExecutionError(f"the Studio write did not run ({refused})")
+        pinned = _pinned_config(serialized or {}, node_id)
         token = bind_tenant(org)
         try:
             result = await run_workflow_write(
                 organization_id=org, member=owner,
-                package_id=str(config.get("package_id") or ""),
-                action=str(config.get("action") or ""), data=config.get("data"),
-                record_id=config.get("record_id"), run_id=run_id, node_id=node_id,
+                package_id=str(pinned.get("package_id") or ""),
+                action=str(pinned.get("action") or ""), data=pinned.get("data"),
+                record_id=pinned.get("record_id"), run_id=run_id, node_id=node_id,
+                expected_digest=digest, decision_id=parked.decision_id,
             )
         finally:
             release_tenant(token)

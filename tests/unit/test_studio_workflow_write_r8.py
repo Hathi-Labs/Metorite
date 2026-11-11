@@ -258,10 +258,45 @@ def test_the_internal_door_refuses_with_no_org_or_the_switch_off(monkeypatch) ->
     async def go(org: str) -> dict:
         return await invoke.run_workflow_write(
             organization_id=org, member="o@a.test", package_id=PKG, action="add",
-            data={}, record_id=None, run_id="r", node_id="write")
+            data={}, record_id=None, run_id="r", node_id="write", expected_digest="d",
+            decision_id="x")
 
     assert asyncio.run(go(""))["code"] == invoke.WORKFLOW_NO_ORG
     assert asyncio.run(go(ORG))["code"] == invoke.WORKFLOW_STUDIO_OFF
+
+
+# ── Fix round 1: the question names the write, and the digest binds it ──────
+
+
+def test_the_question_names_the_verb_the_object_and_the_package() -> None:
+    plan = SimpleNamespace(package_name="Visits", object="visit", op="delete",
+                           uses="object:visit.delete")
+    question = park.park_write_question("Weekly check", plan)
+    assert question == 'Let "Weekly check" delete a record of visit in "Visits"?'
+    long = park.park_write_question("W" * 200, SimpleNamespace(
+        package_name="P" * 200, object="o" * 200, op="create", uses="object:o.create"))
+    assert len(long) <= park.QUESTION_MAX
+
+
+def test_the_detail_names_the_action_and_the_fields_and_hides_a_secret() -> None:
+    plan = SimpleNamespace(package_name="Visits", object="visit", op="update",
+                           uses="object:visit.update")
+    detail = park.park_write_detail(plan, PKG, {"site": "Plant 4", "api_token": "s3cr3t"})
+    assert "object:visit.update" in detail and '"Visits"' in detail and PKG in detail
+    assert 'site: "Plant 4"' in detail
+    assert "api_token: (hidden)" in detail and "s3cr3t" not in detail
+
+
+def test_the_digest_binds_each_part_of_the_write() -> None:
+    base = {"package_id": PKG, "action": "add", "uses": "object:visit.create",
+            "record_id": None, "data": {"site": "a", "status": "planned"}}
+    first = invoke.workflow_write_digest(**base)
+    assert first == invoke.workflow_write_digest(**{**base, "data": {
+        "status": "planned", "site": "a"}})
+    for key, value in (("package_id", str(uuid.uuid4())), ("action", "add2"),
+                       ("uses", "object:visit.delete"), ("record_id", PKG),
+                       ("data", {"site": "b", "status": "planned"})):
+        assert invoke.workflow_write_digest(**{**base, key: value}) != first, key
 
 
 # ── The source fences ───────────────────────────────────────────────────────
@@ -393,9 +428,15 @@ def _grant_app_role(ded_admin_url, dedicated: str) -> None:
 
 
 def _seed_member(conn, org: str, email: str) -> None:
-    conn.execute(text(
+    """An active member who holds ``feature:studio`` through one override."""
+    uid = conn.execute(text(
         "INSERT INTO app_user (email, display_name, role, status, organization_id) "
-        "VALUES (:e, :e, 'employee', 'active', CAST(:o AS uuid))"), {"e": email, "o": org})
+        "VALUES (:e, :e, 'employee', 'active', CAST(:o AS uuid)) RETURNING id"),
+        {"e": email, "o": org}).scalar()
+    conn.execute(text(
+        "INSERT INTO user_permission_override (user_id, permission, effect, reason, set_by, "
+        "organization_id) VALUES (:u, 'feature:studio', 'allow', 'B2c-2d R8', 'seed', "
+        "CAST(:o AS uuid))"), {"u": uid, "o": org})
 
 
 def _seed_workflow(conn, org: str, owner: str, name: str, serialized: dict) -> str:
@@ -674,6 +715,13 @@ class TestTheStudioWriteOfAWorkflowNodeOnARealDatabase:
     def test_an_approved_decision_writes_exactly_one_record_and_opens_no_card(self, w):
         run_id, made = _park(w)
         assert _records(w, w.obj_a) == 0
+        # Fix round 1: the owner approves the write that runs, by name.
+        assert made.question == 'Let "Write in A" add a record of visit in "Visits"?'
+        task = _one(w, "SELECT description FROM pm_tasks WHERE id = :t", t=made.subject_id)
+        assert "object:visit.create" in task.description and "site" in task.description
+        assert made.payload[park.WRITE_DIGEST] == invoke.workflow_write_digest(
+            package_id=w.pkg_a, action="add", uses="object:visit.create", record_id=None,
+            data=_write_config(w.pkg_a)["data"])
         _answer(w, w.org_a, OWNER_A, str(made.id), "yes")
         assert _scan(w) == 1
         assert _run(w, run_id).status == "succeeded", _error_of(w, run_id)
@@ -686,6 +734,7 @@ class TestTheStudioWriteOfAWorkflowNodeOnARealDatabase:
         assert (row["org"], row["user"], row["outcome"], row["via"]) == (
             w.org_a, OWNER_A, "ran", invoke.WORKFLOW_VIA)
         assert (row["run_id"], row["node_id"], row["action"]) == (run_id, "write", "add")
+        assert (row["decision_id"], row["approver"]) == (str(made.id), OWNER_A)
         rec = _one(w, "SELECT id, organization_id::text AS org, created_by FROM studio_records")
         assert row["record_id"] == str(rec.id) and rec.org == w.org_a
         # C3: one record event, after the commit, in the run's org.
@@ -717,14 +766,31 @@ class TestTheStudioWriteOfAWorkflowNodeOnARealDatabase:
     # ── The org wall ────────────────────────────────────────────────────
 
     def test_a_run_of_org_a_cannot_write_a_package_of_org_b(self, w):
-        run_id, made = _park(w, "A writes into B")
-        _answer(w, w.org_a, OWNER_A, str(made.id), "yes")
-        assert _scan(w) == 1
+        """The park reads the package as the owner in org A and finds none, so
+        it asks no decision. The broker door then resumes with no decision."""
+        run_id = _start(w, "A writes into B")
+        assert _run(w, run_id).status == "paused"
+        assert _decisions_of(w, run_id) == []
+        assert [p.action for p in w.proposals] == ["workflow.resume_run"]
+        _on_app_role(w, lambda: service.resume_run(
+            run_id, resumed_by=OWNER_A, organization_id=w.org_a))
         assert _run(w, run_id).status == "failed"
-        assert f"({invoke.WORKFLOW_NO_PACKAGE})" in _error_of(w, run_id)
+        assert f"({service.STUDIO_NO_DECISION})" in _error_of(w, run_id)
         assert _records(w, w.obj_b) == 0 and _records(w, w.obj_a) == 0
-        # A 404 at the package read writes no audit row.
         assert _audit(w) == [] and w.events == []
+
+    def test_the_door_refuses_a_package_of_another_org_at_write_time(self, w):
+        """Past every other check, the door itself reads the package in the
+        run's org only. A package id of org B is 404 and writes no row."""
+        async def body() -> dict:
+            return await invoke.run_workflow_write(
+                organization_id=w.org_a, member=OWNER_A, package_id=w.pkg_b, action="add",
+                data={"site": "x", "status": "planned"}, record_id=None, run_id="r",
+                node_id="write", expected_digest="d", decision_id="x")
+
+        got = _on_app_role(w, body)
+        assert got["code"] == invoke.WORKFLOW_NO_PACKAGE
+        assert _records(w, w.obj_b) == 0 and _audit(w) == []
 
     def test_a_run_of_org_b_writes_in_org_b_only(self, w):
         run_id, made = _park(w, "Write in B")
@@ -868,4 +934,61 @@ class TestTheStudioWriteOfAWorkflowNodeOnARealDatabase:
                           {"e": OWNER_A})
         assert _run(w, run_id).status == "failed"
         assert f"({service.STUDIO_NOT_APPROVED})" in _error_of(w, run_id)
+        assert _records(w, w.obj_a) == 0 and _audit(w) == []
+
+    # ── Fix round 1 ─────────────────────────────────────────────────────
+
+    def test_an_edited_graph_after_the_park_writes_nothing(self, w):
+        run_id, made = _park(w)
+        with w.admin_engine.begin() as c:
+            c.execute(text(
+                "UPDATE workflow_run_pauses SET snapshot = jsonb_set(snapshot, "
+                "'{serialized,blocks,2,config,data,site}', '\"Somewhere else\"') "
+                "WHERE run_id = CAST(:r AS uuid)"), {"r": run_id})
+        _answer(w, w.org_a, OWNER_A, str(made.id), "yes")
+        assert _scan(w) == 1
+        assert _run(w, run_id).status == "failed"
+        assert f"({invoke.WORKFLOW_MISMATCH})" in _error_of(w, run_id)
+        assert _records(w, w.obj_a) == 0 and w.events == []
+        assert [(a["outcome"], a["reason"]) for a in _audit(w)] == [
+            ("refused", invoke.WORKFLOW_MISMATCH)]
+
+    def test_a_draft_manifest_change_after_the_park_writes_nothing(self, w):
+        run_id, made = _park(w)
+        with w.admin_engine.begin() as c:
+            c.execute(text(
+                "UPDATE apps SET manifest = jsonb_set(manifest, '{actions,0,uses}', "
+                "'\"object:visit.delete\"') WHERE id = CAST(:p AS uuid)"), {"p": w.pkg_a})
+        try:
+            _answer(w, w.org_a, OWNER_A, str(made.id), "yes")
+            assert _scan(w) == 1
+        finally:
+            with w.admin_engine.begin() as c:
+                c.execute(text(
+                    "UPDATE apps SET manifest = jsonb_set(manifest, '{actions,0,uses}', "
+                    "'\"object:visit.create\"') WHERE id = CAST(:p AS uuid)"), {"p": w.pkg_a})
+        assert _run(w, run_id).status == "failed"
+        assert f"({invoke.WORKFLOW_MISMATCH})" in _error_of(w, run_id)
+        assert _records(w, w.obj_a) == 0
+        assert [(a["outcome"], a["reason"], a["uses"]) for a in _audit(w)] == [
+            ("refused", invoke.WORKFLOW_MISMATCH, "object:visit.delete")]
+
+    def test_an_owner_without_feature_studio_writes_nothing(self, w):
+        run_id, made = _park(w)
+        _answer(w, w.org_a, OWNER_A, str(made.id), "yes")
+        with w.admin_engine.begin() as c:
+            c.execute(text(
+                "UPDATE user_permission_override SET effect = 'deny' "
+                "WHERE permission = 'feature:studio' AND user_id = "
+                "(SELECT id FROM app_user WHERE email = :e)"), {"e": OWNER_A})
+        try:
+            assert _scan(w) == 1
+        finally:
+            with w.admin_engine.begin() as c:
+                c.execute(text(
+                    "UPDATE user_permission_override SET effect = 'allow' "
+                    "WHERE permission = 'feature:studio' AND user_id = "
+                    "(SELECT id FROM app_user WHERE email = :e)"), {"e": OWNER_A})
+        assert _run(w, run_id).status == "failed"
+        assert f"({invoke.WORKFLOW_NO_FEATURE})" in _error_of(w, run_id)
         assert _records(w, w.obj_a) == 0 and _audit(w) == []

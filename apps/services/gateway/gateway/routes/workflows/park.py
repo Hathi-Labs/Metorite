@@ -36,8 +36,10 @@ output never decide. :func:`end_parked` ends a run with a compare-and-set on
 the pause row. Only the winner tells the member, once.
 
 **The write (STU-B2c-2d).** A ``studio_write`` node directly after the gate
-runs only when :func:`approves_one_write` reads the same decision row again,
-in the run's org, and finds a yes of the owner. The decision is the ONE
+runs only when :func:`approved_write_digest` reads the same decision row
+again, in the run's org, and finds a yes of the owner. The question of such a
+gate names the write (:func:`park_write_question`), and the decision payload
+binds its digest. The door refuses a write whose digest differs. The decision is the ONE
 approval of that write, and the Studio door opens no second card.
 
 **No score for any person (ALN-Q5).** Nothing here counts, groups or ranks a
@@ -147,6 +149,60 @@ def asker(workflow_id: str) -> str:
     return workflow_actor(workflow_id)
 
 
+#: The key of the write digest in the decision payload (fix round 1).
+WRITE_DIGEST = "write_digest"
+_PACKAGE_MAX = 32
+_OBJECT_MAX = 24
+_VALUE_MAX = 40
+_DETAIL_MAX = 600
+#: A field whose key holds one of these words shows no value in the question.
+_SECRET_WORDS = ("token", "secret", "password", "credential", "api_key", "apikey")
+
+
+def park_write_question(workflow_name: str, plan: Any) -> str:
+    """The question of a gate that clears a Studio write (fix round 1). It
+    names the verb, the object and the package, so the owner approves the
+    write that runs. Stored fields and the package read only."""
+    from gateway.routes.studio.invoke import WORKFLOW_VERBS
+
+    name = _clip(workflow_name, 32) or "a workflow"
+    verb = WORKFLOW_VERBS.get(plan.op, plan.op)
+    obj = _clip(plan.object, _OBJECT_MAX)
+    package = _clip(plan.package_name, _PACKAGE_MAX) or "a Studio app"
+    return f'Let "{name}" {verb} a record of {obj} in "{package}"?'[:QUESTION_MAX]
+
+
+def _shown(key: str, value: Any) -> str:
+    if any(w in key.lower() for w in _SECRET_WORDS):
+        return f"{key}: (hidden)"
+    return f"{key}: {_clip(json.dumps(value, default=str), _VALUE_MAX)}"
+
+
+def park_write_detail(plan: Any, record_id: Any, data: Any) -> str:
+    """The description of the subject task of a write gate (fix round 1): the
+    action, the record and a short summary of each field. A field whose key
+    looks like a secret shows no value."""
+    lines = [SUBJECT_TEXT, "", f"The write: {plan.uses} in the app \"{plan.package_name}\"."]
+    if record_id:
+        lines.append(f"Record: {record_id}")
+    if isinstance(data, dict) and data:
+        lines.append("Fields: " + "; ".join(_shown(str(k), v) for k, v in data.items()))
+    return "\n".join(lines)[:_DETAIL_MAX]
+
+
+def _write_below(serialized: Any, node_id: str) -> dict[str, Any] | None:
+    """The ``studio_write`` block that the gate *node_id* clears, or None."""
+    from gateway.routes.workflows.engine.graph import runtime_gate_of
+
+    if not isinstance(serialized, dict):
+        return None
+    for block in serialized.get("blocks") or []:
+        if str(block.get("type") or "") == "studio_write" and runtime_gate_of(
+                serialized, str(block.get("id"))) == node_id:
+            return block
+    return None
+
+
 _INSERT_PAUSE = (
     "INSERT INTO workflow_run_pauses (id, run_id, node_id, snapshot, reason, status) "
     "VALUES (CAST(:id AS uuid), :run_id, :node_id, :snapshot ::jsonb, 'approval', "
@@ -216,13 +272,30 @@ async def park_with_decision(
     if not await _owner_in_org(db, who, org):
         raise ParkRefused("owner_not_member")
 
-    question = park_question(workflow_name, node_label)
+    question, description, write_digest = park_question(workflow_name, node_label), \
+        SUBJECT_TEXT, None
+    block = _write_below(snapshot.get("serialized"), node_id)
+    if block is not None:
+        # STU-B2c-2d fix round 1: the gate clears a Studio write, so the
+        # question names it, and the decision binds its digest.
+        from gateway.routes.studio.invoke import plan_workflow_write
+
+        config = block.get("config") if isinstance(block.get("config"), dict) else {}
+        plan = await plan_workflow_write(
+            db, member=who, package_id=config.get("package_id"),
+            action=config.get("action"), data=config.get("data"),
+            record_id=config.get("record_id"))
+        if plan is None:
+            raise ParkRefused("write_unresolved")
+        question = park_write_question(workflow_name, plan)
+        description = park_write_detail(plan, config.get("record_id"), config.get("data"))
+        write_digest = plan.digest
     project = await ensure_personal_project(db, who)
     project_id = str(project.id)
     status = await load_default_status(db, project_id)
     task = await create_personal_task(
         db, who, project_id, project_id, str(status.id),
-        {"title": question, "description": SUBJECT_TEXT, "source": "automation"},
+        {"title": question, "description": description, "source": "automation"},
         announce=False,
     )
     task_id = str(task.id)
@@ -240,6 +313,7 @@ async def park_with_decision(
             "pause_id": pause_id,
             "node_id": node_id,
             "workflow_id": workflow_id,
+            **({WRITE_DIGEST: write_digest} if write_digest else {}),
         },
         expires_in=PARK_LIFE,
     )
@@ -277,7 +351,7 @@ PARKED_SQL = (
 #: THIS run and THIS pause, so an answer to gate 1 never opens gate 2. The
 #: expiry is read with the DB clock.
 _DECISION_SQL = (
-    "SELECT id, decider, answered_by, answer_key, answered_at, subject_id, "
+    "SELECT id, decider, answered_by, answer_key, answered_at, subject_id, payload, "
     "       (expires_at <= now()) AS is_expired "
     "  FROM pm_decisions "
     " WHERE id = CAST(:id AS uuid) AND source = 'auto' "
@@ -331,7 +405,7 @@ def outcome_of(decision: Any | None) -> str:
     return EXPIRE if decision.is_expired else WAIT
 
 
-async def approves_one_write(
+async def approved_write_digest(
     db: Any,
     *,
     organization_id: str,
@@ -339,26 +413,34 @@ async def approves_one_write(
     decision_id: str,
     run_id: str,
     pause_id: str,
-) -> bool:
-    """True when the parked decision still approves the write of its gate
+) -> str | None:
+    """The write digest that the parked decision approved, or None
     (STU-B2c-2d). *db* binds the run's org.
 
     The ``studio_write`` node reads the decision ROW again, in the org of the
-    run, as the scan read it. It runs only when :func:`outcome_of` gives
-    :data:`RESUME`, the decider is *owner* (``workflows.owner_email``, read
-    in the same org), and :func:`_owner_in_org` finds the owner ACTIVE in that
-    org now. The snapshot, the trigger payload and a node output never decide.
+    run, as the scan read it. It gets a digest only when :func:`outcome_of`
+    gives :data:`RESUME`, the decider is *owner* (``workflows.owner_email``,
+    read in the same org), :func:`_owner_in_org` finds the owner ACTIVE in
+    that org now, and the payload holds the ``write_digest`` of the park. The
+    snapshot, the trigger payload and a node output never decide. The door
+    then writes only when the write it would run has the same digest.
     """
     org = str(organization_id or "").strip().lower()
     who = str(owner or "").strip().lower()
     if not org or "@" not in who:
-        return False
+        return None
     decision = await read_decision(db, decision_id, run_id, pause_id)
     if outcome_of(decision) != RESUME:
-        return False
+        return None
     if str(decision.decider or "").strip().lower() != who:
-        return False
-    return await _owner_in_org(db, who, org)
+        return None
+    if not await _owner_in_org(db, who, org):
+        return None
+    payload = decision.payload
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    digest = payload.get(WRITE_DIGEST) if isinstance(payload, dict) else None
+    return str(digest) if digest else None
 
 
 async def end_parked(
