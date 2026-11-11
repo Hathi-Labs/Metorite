@@ -988,6 +988,11 @@ class TaskPatchIn(TaskIn):
     """
 
     completed_at: str | None = None
+    #: WS-MCP SW-23. The Check of the task, a read-only command. A PATCH that
+    #: changes it clears the last result (``checks.check_patch_values``). A
+    #: write that sends it while ``agent_task_checks_enabled`` is off gets
+    #: 422. Not on ``TaskIn``, so only this PATCH and ``POST /tasks`` take it.
+    check_text: str | None = None
 
 
 class StatusModel(BaseModel):
