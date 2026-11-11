@@ -131,6 +131,10 @@ async def _team_row(
     # Two passes, so the tops keep the order of the node read (position,
     # name, id) and each project lands under its top in the same order.
     tops = {node_id: _top_of(node_id, by_id) for node_id in by_id}
+    # A climb that `MAX_DEPTH` cut short (a parent cycle, which the tree
+    # writes refuse) did not reach a top. Such a node is a top of its own, so
+    # no task is lost from a count.
+    tops = {n: (t if tops.get(t) == t else n) for n, t in tops.items()}
     # A top below a space that the team does not hold names a node outside
     # the view: its parent, and the root of an archive that took it. When the
     # caller cannot read that node, its id is not given either (rule 4), as

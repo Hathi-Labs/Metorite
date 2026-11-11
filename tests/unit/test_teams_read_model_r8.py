@@ -47,20 +47,35 @@ branch of ``resolve_visibility``. ``x`` is the member of tenant two.
   value is 404, and a read without one does not change.
 * A removed grant and a removed member take effect on the next read.
 
-**The mutations (R7).** Each planted fault below must turn the named tests
-red. ``S`` is ``apps/services/gateway/gateway/routes/projects/team_scope.py``.
+**The mutations (R7).** Each planted fault below turned the named tests red
+on 2026-11-11, and each was reverted. ``G`` is
+``apps/services/gateway/gateway/routes/projects``.
 
-* M1. ``S`` ``_TEAM_PROJECTS_SQL`` without ``g.organization_id = :vis_org``:
-  the Puffin grant of tenant two reaches nothing here, because the closure
-  then reads it under RLS of tenant one, so this mutation needs RLS off to
-  show. The test of tenant two pins the grant line by its own count.
-* M2. ``S`` ``resolve_team_scope`` returns a scope for any well-formed slug:
-  ``TestTheValue.test_a_team_of_another_member_is_the_404_of_no_group`` fails.
-* M3. ``S`` ``parse_team`` without the ``isprintable`` check:
-  ``TestTheValue.test_a_malformed_value_is_422`` fails.
-* M4. ``tasks.py`` ``_task_scope`` drops the team clause:
-  ``TestCountsAgree`` fails for each team.
-* M5. ``S`` ``teams_allowed`` answers True: ``TestTheFlag`` fails.
+* M1. ``G/team_scope.py`` ``resolve_team_scope`` gives a scope for any slug
+  of the right shape. 7 fail: each read of
+  ``TestTheValue.test_a_team_of_another_member_is_the_404_of_no_group``, and
+  ``TestTheNextRead``.
+* M2. ``G/team_scope.py`` ``parse_team`` without the ``isprintable`` check.
+  7 fail: each read of ``TestTheValue.test_a_malformed_value_is_422``, and
+  ``test_the_value_takes_a_slug_or_all_through_the_one_grammar``. A NUL then
+  answers 404, not 500, because a slug reaches SQL only when it is a group
+  of the caller.
+* M3. ``G/tasks.py`` ``_task_scope`` drops the team clause. 14 fail: each
+  team of ``TestCountsAgree.test_the_list_the_count_and_the_search_agree``
+  and of ``TestTheTeamsOfAMember.test_a_team_names_its_spaces_and_only_those``,
+  ``test_the_slug_is_matched_folded`` and ``TestTheNextRead``.
+* M4. ``G/search.py`` drops the team clause. 7 fail: each team of
+  ``test_the_list_the_count_and_the_search_agree``, and
+  ``test_a_word_outside_the_team_finds_nothing_under_the_team``.
+* M5. ``G/team_scope.py`` ``teams_allowed`` answers True. 3 fail: both cases
+  of ``TestTheFlag`` and ``test_the_flag_is_off_by_default_and_reads_a_list_or_a_star``.
+* M6. ``G/teams.py`` ``_readable`` keeps each parent id. 5 fail in
+  ``TestTheTeamsOfAMember``, for ``a`` and ``ab``: the hidden Gannet space is
+  then named by its id.
+
+The tenant line of the grant row in ``_TEAM_PROJECTS_SQL`` cannot fail here
+with RLS on, because RLS already hides a grant of tenant two.
+``test_the_team_clause_names_the_tenant_on_both_arms`` pins it by its text.
 
 Run (one R8 suite at a time)::
 
