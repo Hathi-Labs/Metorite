@@ -18,6 +18,9 @@
       ]
     }
   ],
+  "actions": [
+    { "id": "visit_aggregate", "uses": "object:visit.aggregate", "title": "Count visits" }
+  ],
   "views": [
     { "id": "visit-table", "block": "table", "title": "Visits", "source": { "object": "visit" } },
     {
@@ -30,6 +33,18 @@
     },
     { "id": "visit-form", "block": "form", "title": "New visit", "object": "visit", "fields": ["title", "status", "owner", "visit_date", "done"] },
     { "id": "visit-detail", "block": "detail", "title": "Visit", "object": "visit" },
+    {
+      "id": "visit-chart",
+      "block": "chart",
+      "title": "Visits by status",
+      "source": { "action": "visit_aggregate", "args": { "kind": "donut", "group_by": { "field": "status" }, "measures": [{ "op": "count" }] } }
+    },
+    {
+      "id": "visit-stat",
+      "block": "stat",
+      "title": "Visits",
+      "source": { "action": "visit_aggregate", "args": { "good": "up", "group_by": { "field": "visit_date", "bucket": "day" }, "measures": [{ "op": "count" }] } }
+    },
     { "id": "visit-week", "block": "calendar", "title": "Week", "source": { "object": "visit" }, "start": "visit_date" }
   ],
   "pages": [
@@ -52,7 +67,9 @@
           "id": "plan",
           "title": "Plan",
           "cells": [
-            { "view": "visit-board", "span": 3 }
+            { "view": "visit-board", "span": 3 },
+            { "view": "visit-stat" },
+            { "view": "visit-chart", "span": 2 }
           ]
         }
       ]
