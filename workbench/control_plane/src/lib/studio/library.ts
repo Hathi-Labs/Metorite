@@ -7,6 +7,11 @@
  * Workflows pill, the Workflows section and the Module Studio tab need
  * `workflows`. A pure function, so a test can hold each case with no render.
  * Fence: `library.test.ts`.
+ *
+ * The Module Studio tab also needs `moduleRuns` (WS-STU STU-Q15a): the
+ * gateway's `MODULE_RUN_ORGS` holds the member's org. A code module runs on
+ * the box, which is not a sandbox, so the switch ships off. The shell read
+ * says it as `module_runs` (`useModuleRunsOn` in `lib/shell/shellPrefs.ts`).
  */
 import { canUseFeature, type Access } from "@/lib/access";
 import type { TabDef } from "@/components/Tabs";
@@ -32,23 +37,30 @@ function readKind(raw: string | null): StudioKind {
   return (STUDIO_KINDS as readonly string[]).includes(raw ?? "") ? (raw as StudioKind) : "all";
 }
 
-/** The view of the library for *access*, from the raw `?kind=` and `?tab=`. */
+/**
+ * The view of the library for *access*, from the raw `?kind=` and `?tab=`.
+ * *moduleRuns* is the server's word that the member's org may run code
+ * modules (STU-Q15a). Off, the page draws no Module Studio tab.
+ */
 export function studioLibraryView(
   access: Access,
   rawKind: string | null,
   rawTab: string | null,
+  moduleRuns: boolean,
 ): StudioLibraryView {
   const canBuildApps = canUseFeature(access, "build.apps");
   // The Workflows pill, section and Module Studio tab call `/api/workflows`,
   // and that API keeps `feature:workflows` (J1-1).
   const canWorkflows = canUseFeature(access, "workflows");
+  // Module Studio also needs the org's switch, because its test runs code.
+  const canModules = canWorkflows && moduleRuns;
   const requested = readKind(rawKind);
   const activeKind: StudioKind =
     (requested === "apps" && !canBuildApps) || (requested === "workflows" && !canWorkflows)
       ? "all"
       : requested;
-  const tab: StudioTab = rawTab === "modules" && canWorkflows ? "modules" : "library";
-  const tabs: TabDef[] = canWorkflows
+  const tab: StudioTab = rawTab === "modules" && canModules ? "modules" : "library";
+  const tabs: TabDef[] = canModules
     ? [
         { id: "library", label: "Library", icon: "LayoutGrid" },
         { id: "modules", label: "Module Studio", icon: "Boxes" },

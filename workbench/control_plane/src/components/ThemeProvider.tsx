@@ -3,7 +3,7 @@
 /**
  * ThemeProvider — the appearance runtime.
  *
- * Renders nothing. Four jobs, all side effects:
+ * Renders nothing. Five jobs, all side effects:
  *
  *   1. Read the member's stored preferences into the store on mount. The boot
  *      script has already applied them to the DOM; this is what tells React
@@ -18,6 +18,10 @@
  *      scope. next-themes writes only its bare `theme` key, and one watcher
  *      here covers every caller of `setTheme`. A mode that arrived from
  *      another tab is not copied (`lib/theme/storage.ts`).
+ *   5. After the bind and the org defaults, read the member's server copy of
+ *      the appearance once, and apply a field that differs
+ *      (`lib/theme/syncAppearance.ts`, PKG-20). The browser copy stays the
+ *      first paint, and a member change in this page wins.
  *
  * ⚠️ A third job — preloading the active theme's icon pack — went with the
  * theming engine on 2026-08-31. There is one pack, it ships in the bundle,
@@ -34,6 +38,7 @@ import { useAccess } from "@/components/AccessProvider";
 import { reconcileAppearanceScope } from "@/lib/theme/scope";
 import { themeStorage, watchAppearanceStorage } from "@/lib/theme/storage";
 import { useAppearanceStore } from "@/lib/theme/store";
+import { startAppearanceSync } from "@/lib/theme/syncAppearance";
 import type { AppearanceSettings } from "@/lib/theme/types";
 
 export default function ThemeProvider() {
@@ -45,6 +50,8 @@ export default function ThemeProvider() {
   const email = access.email ?? null;
   const orgId = access.organization?.id ?? null;
   const [org, setOrg] = useState<AppearanceSettings["org"] | null>(null);
+  // True once the org defaults answered or failed, so the sync knows the lock.
+  const [orgSettled, setOrgSettled] = useState(false);
   // ⚠️ Out of the bind's deps on purpose (review round 2, P1). next-themes
   // gives `setTheme` a new identity when another tab's `storage` event
   // changes the mode. In the deps, that re-ran the bind, and two tabs on two
@@ -82,16 +89,27 @@ export default function ThemeProvider() {
     if (!loading && org) setOrgDefaults(org);
   }, [loading, org, setOrgDefaults]);
 
+  // PKG-20: the server copy, once for each account, after the bind above and
+  // after the org defaults (an org that locks the density keeps it). Written
+  // after both effects, so React runs it after them in the same commit.
+  useEffect(() => {
+    if (loading || !orgSettled) return;
+    void startAppearanceSync(email, orgId, { setMode: (m) => setThemeRef.current(m) });
+  }, [loading, orgSettled, email, orgId]);
+
   useEffect(() => {
     const controller = new AbortController();
     fetch("/api/settings/appearance", { signal: controller.signal })
       .then((r) => (r.ok ? r.json() : null))
       .then((data: AppearanceSettings | null) => {
         if (data?.org) setOrg(data.org);
+        setOrgSettled(true);
       })
       .catch(() => {
         // Signed out, offline, or the gateway is down — the cached org
-        // defaults the boot script already applied remain in force.
+        // defaults the boot script already applied remain in force. An
+        // abort on unmount settles nothing: the provider is gone.
+        if (!controller.signal.aborted) setOrgSettled(true);
       });
     return () => controller.abort();
   }, []);

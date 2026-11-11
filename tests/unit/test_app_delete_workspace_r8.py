@@ -5,8 +5,10 @@ Code: ``gateway/routes/apps/lifecycle.py`` ``delete_app``,
 ``_session_workspace_override``, and ``orchestrator/sandbox_broker.py``
 ``_mount_source_for``.
 
-The slug of an app is unique over all orgs, and each folder is
-``apps_root()/<slug>``. A chat of the App Workshop stores its folder in
+The slug of an app is unique over all orgs. Before WS-STU A3b-1, each folder
+was ``apps_root()/<slug>``. Since A3b-1, the folder of a new app is
+``apps_root()/<app id>``, so step 3 below gives org B a new folder. The
+checks stay, because an app made before A3b-1 keeps its slug folder. A chat of the App Workshop stores its folder in
 ``chat_session.workspace_path``. Before this fix, the hard delete left that
 path in place, and the executor and the broker checked only that the path lay
 under the root. So:
@@ -190,13 +192,14 @@ def test_r8_the_hard_delete_unbinds_every_chat_of_the_org(world) -> None:
     # A sibling whose slug starts with the slug of foo.
     sib = _create(world, a, f"Foo {TAG} x", ANA)
     assert sib.slug.startswith(foo.slug)
-    folder = (world.root / foo.slug).resolve()
+    folder = Path(foo.workspace_path).resolve()
     (folder / "src").mkdir()
     chat_ana = _chat(world, a, ANA, folder)
     chat_bob = _chat(world, a, BOB, folder)
     chat_sub = _chat(world, a, BOB, folder / "src")
-    chat_raw = _chat(world, a, ANA, world.root / foo.slug)
-    chat_sib = _chat(world, a, ANA, (world.root / sib.slug).resolve())
+    chat_raw = _chat(world, a, ANA, Path(foo.workspace_path))
+    sib_folder = Path(sib.workspace_path).resolve()
+    chat_sib = _chat(world, a, ANA, sib_folder)
     chat_none = _chat(world, a, ANA, None)
 
     archived = _delete(world, a, foo.slug, ANA)
@@ -209,7 +212,7 @@ def test_r8_the_hard_delete_unbinds_every_chat_of_the_org(world) -> None:
     assert not folder.exists()
     for sid in (chat_ana, chat_bob, chat_sub, chat_raw):
         assert _path_of(world, sid) is None, f"the delete left chat {sid} bound to the folder"
-    assert _path_of(world, chat_sib) == str((world.root / sib.slug).resolve()), (
+    assert _path_of(world, chat_sib) == str(sib_folder), (
         "the delete unbound the chat of a sibling app")
     assert _path_of(world, chat_none) is None
 
@@ -222,18 +225,22 @@ def test_r8_a_stale_chat_never_runs_in_the_folder_that_another_org_took(world) -
 
     a, b = world.p.org_a, world.p.org_b
     foo = _create(world, a, f"Bar {TAG}", ANA)
-    folder = (world.root / foo.slug).resolve()
-    chat_a = _chat(world, a, ANA, folder)
-    assert _override(chat_a, a) == str(folder), "org A cannot run in its own app"
+    old = Path(foo.workspace_path).resolve()
+    chat_a = _chat(world, a, ANA, old)
+    assert _override(chat_a, a) == str(old), "org A cannot run in its own app"
     assert _delete(world, a, foo.slug, ANA)["status"] == "archived"
     assert _delete(world, a, foo.slug, ANA)["deleted"] is True
 
     took = _create(world, b, f"Bar {TAG}", CAT)
     assert took.slug == foo.slug, "org B did not get the freed slug"
-    assert (world.root / took.slug).resolve() == folder
+    # A3b-1: the folder is the app id, so org B never gets the old folder.
+    folder = Path(took.workspace_path).resolve()
+    assert folder != old, "org B got the folder of the deleted app of org A"
     (folder / "index.html").write_text(SECRET, encoding="utf-8")
     chat_b = _chat(world, b, CAT, folder)
-    # The path that a chat of org A held before this fix shipped.
+    # A stale path of org A that names a folder of org B. Before A3b-1 the
+    # folder of a freed slug was the same folder, and an app made before
+    # A3b-1 keeps it.
     _set_path(world, chat_a, folder)
 
     assert _override(chat_a, a) is None, "the run of org A works in the folder of org B"
@@ -267,7 +274,7 @@ def test_r8_the_owner_check_answers_for_the_run_org_only(
 
     a, b = world.p.org_a, world.p.org_b
     mine = _create(world, b, f"Baz {TAG}", CAT)
-    folder = (world.root / mine.slug).resolve()
+    folder = Path(mine.workspace_path).resolve()
     if role == "superuser":
         admin = sessionmaker(bind=world.p.admin_engine, expire_on_commit=False, future=True)
         monkeypatch.setattr(graph_db, "_session_factory", lambda: admin)

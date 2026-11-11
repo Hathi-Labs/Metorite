@@ -29,13 +29,14 @@ writes longer, and at most :data:`MAX_MANIFEST_BYTES` bytes. So no manifest
 reaches a statement that the CHECK ``apps_manifest_package`` refuses. Each
 refusal raises one :class:`PackageStoreError` that carries every path.
 
-**The slug.** ``apps.slug`` is UNIQUE for all orgs. The slug of a package is
-``<manifest id>-<8 hex digits of the new id>``. So a slug that org A holds
-never blocks a package of org B. When the slug is taken anyway, the INSERT
-writes nothing (``ON CONFLICT (slug) DO NOTHING``), and the store tries a new
-id. No refusal names the slug of another org. The slug never changes after
-the INSERT, and so the manifest id never changes either:
-:func:`update_manifest` refuses a new id.
+**The slug.** ``apps.slug`` is UNIQUE for all orgs until WS-STU A3b-2. The
+slug of a package is ``<manifest id>-<8 hex digits of the new id>``. So a slug
+that org A holds never blocks a package of org B. When the slug is taken
+anyway, the INSERT writes nothing (``ON CONFLICT DO NOTHING``), and the store
+tries a new id. The clause names no column, so it holds with
+``apps_slug_key`` and with ``apps_org_slug_key`` (A3b-1). No refusal names
+the slug of another org. The slug never changes after the INSERT, and so the
+manifest id never changes either: :func:`update_manifest` refuses a new id.
 
 **Private and a draft.** A new package has ``visibility = 'private'``,
 ``status = 'draft'`` and ``workspace_path = ''``, because it has no files. No
@@ -146,9 +147,22 @@ _CREATE_SQL = (
     "status, manifest, workspace_path, format) "
     "VALUES (CAST(:id AS uuid), :slug, :name, :desc, :m, 'private', 'draft', "
     "CAST(:manifest AS jsonb), '', 'manifest') "
-    "ON CONFLICT (slug) DO NOTHING "
+    "ON CONFLICT DO NOTHING "
     f"RETURNING {_PACKAGE_COLUMNS}"
 )
+
+#: The lock of one create from a template (STU-K1a): the bound org, the
+#: member and the manifest id, until the transaction ends. The idiom of
+#: ``objects_store._ORG_LOCK_SQL``. The first column is false when no tenant
+#: is bound, and then the lock key is NULL and Postgres takes no lock.
+_CREATE_LOCK_SQL = (
+    f"SELECT {_BOUND_ORG} IS NOT NULL, pg_advisory_xact_lock(hashtextextended("
+    f"'studio_package_create:' || CAST({_BOUND_ORG} AS text) || ':' || :m || ':' || :mid, 0))"
+)
+
+#: The longest wait for the create lock, in milliseconds. It covers one
+#: publish of a template. Past it the caller gets ``StoreBusy`` (503).
+CREATE_LOCK_WAIT_MS = 5_000
 
 _GET_SQL = (
     f"SELECT {_PACKAGE_COLUMNS} FROM apps "
@@ -586,6 +600,24 @@ async def create_package(db: Any, member: str, manifest: dict[str, Any]) -> Pack
             return _package(row)
     # The text names no slug, so it tells nothing of a package of another org.
     raise PackageStoreError("No free name is left for this package. Try again.")
+
+
+async def lock_create(db: Any, member: str, manifest_id: str) -> None:
+    """Take the advisory lock of one create of *member* with *manifest_id* in
+    the bound org, until the transaction ends (STU-K1a).
+
+    The template route takes it first in its create session and first in its
+    publish session. So two calls of one member for one template run one
+    after the other, and the second one reads the package of the first. The
+    wait stops at :data:`CREATE_LOCK_WAIT_MS` with ``objects_store.StoreBusy``.
+    The key holds the org, so a lock of org A never blocks org B."""
+    m = _member(member)
+    if not isinstance(manifest_id, str) or not manifest_id:
+        raise PackageStoreError("manifest_id must be a non-empty string")
+    async with objects_store.bounded_wait(db, CREATE_LOCK_WAIT_MS):
+        bound = (await db.execute(text(_CREATE_LOCK_SQL), {"m": m, "mid": manifest_id})).first()
+    if bound is None or not bound[0]:
+        raise PackageStoreError("A create needs a session bound to a tenant")
 
 
 async def get_package(db: Any, member: str, package_id: str, *,
