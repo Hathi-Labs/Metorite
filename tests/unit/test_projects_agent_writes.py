@@ -446,6 +446,20 @@ def _aln4_answers(call: dict) -> Any:
     return None
 
 
+def _sp8a_answers(call: dict) -> Any:
+    """SP-8a: the epic contract of the task UUID, which is an epic here, and
+    the PUT that replaces it."""
+    path, method = call["path"], call["method"]
+    if path != f"/projects/tasks/{UUID}/epic-contract":
+        return None
+    if method == "GET":
+        return {"task_id": UUID, "is_epic": True, "epic_contract": None,
+                "version": "2026-11-08T10:00:00+00:00"}
+    return {"task_id": UUID, "is_epic": True, "changed": ["epic_outcome", "epic_acceptance"],
+            "epic_contract": call["json"]["epic_contract"],
+            "version": "2026-11-08T10:00:01+00:00"}
+
+
 #: WS-ALN ALN-2a. One open decision that names the member, on the task LIVE.
 DECISION_ID = "d1f8fad5-d9cb-469f-a165-70867728950e"
 DECISION = {"id": DECISION_ID, "subject_kind": "task", "subject_id": LIVE,
@@ -608,7 +622,7 @@ def responder(call: dict) -> Any:
     # `_op6c_answers` before `_s2b_answers`: its task answers a `/my/tasks/` read that
     # `_s2b_answers` also claims. WS-66 RM-3: `_reminder_answers` claims only the
     # member's zone and `/projects/my/reminders`, so it may lead.
-    answered = _answered(call, _reminder_answers, _op6d_answers, _op6c_answers, _op6b_answers, _aln4_answers, _lp1a_answers, _aln2a_answers, _refs_answers, _s5_answers, _s3_reads, _s3_writes,
+    answered = _answered(call, _reminder_answers, _op6d_answers, _op6c_answers, _op6b_answers, _aln4_answers, _lp1a_answers, _sp8a_answers, _aln2a_answers, _refs_answers, _s5_answers, _s3_reads, _s3_writes,
                          _s2b_answers, _subtree_answers, _area_answers)
     if answered is not None:
         return answered
@@ -886,6 +900,16 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
             "links": f'[{{"from_task_id": "{UUID}", "to_task_id": "{OTHER}"}}, '
             f'{{"from_task_id": "{OTHER}", "to_task_id": "{UUID}", "type": "duplicates"}}, '
             f'{{"from_task_id": "{UUID}", "to_task_id": "{OTHER}", "type": "duplicates"}}]',
+        }
+    ],
+    # SP-8a — the contract of an epic, one card.
+    "set_epic_contract": [
+        {
+            "task_id": UUID,
+            "acceptance": "- The page renders\n- [x] The R8 suite passes\n3. The owner approves",
+            "outcome": "Members fill an epic contract.",
+            "risk_tier": "high",
+            "appetite_credits": "40",
         }
     ],
     # WS-PJP PJP-4 — several edits, a different change for each task, one card.
@@ -2494,6 +2518,9 @@ async def test_every_manifest_tool_is_now_built() -> None:
     mcp_g19a = {"board_stats"}
     # WS-55 MCP-G21: the assignable member read serves an outside agent.
     mcp_g21 = {"assignable_members"}
+    # WS-MCP SW-23: an outside agent reports a run of a Check over MCP. The
+    # chat moves a task through `update_task`.
+    sw_23 = {"report_check"}
     # WS-66 RM-3 built the seven reminder tools that RM-1 planned, so no
     # reminder tool is planned now.
     # WS-AP AP-8a: the person ask and its withdraw. AP-10 builds both tools.
@@ -2502,7 +2529,8 @@ async def test_every_manifest_tool_is_now_built() -> None:
     sp_5 = {"list_cycles", "cycle_detail", "create_cycle", "update_cycle", "delete_cycle",
             "plan_cycle", "start_cycle", "close_cycle"}
     assert set(m.PLANNED) <= ({"my_areas"} | ea_12e | ea_6b | ea_6g | ea_13e
-                              | mcp_g15 | sw_43 | ea_18a | ap_10 | mcp_g19a | mcp_g21 | sp_5), m.PLANNED
+                              | mcp_g15 | sw_43 | ea_18a | ap_10 | mcp_g19a | mcp_g21 | sp_5
+                              | sw_23), m.PLANNED
     assert not {t for t in m.PLANNED if "reminder" in t}, m.PLANNED
 
 
