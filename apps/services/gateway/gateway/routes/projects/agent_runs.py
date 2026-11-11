@@ -1341,6 +1341,9 @@ async def _write_activity(
         ended = getattr(run, "ended_at", None)
         reopened_end = ended.isoformat() if isinstance(ended, datetime) else None
         await _clear_for_reopen(db, run, user)
+        # SW-7b. The ended run kept the label of the session that ran it. The
+        # reopen hands the run to the next session, so the old name goes.
+        await _clear_run_label(db, str(run.id))
 
     content: dict[str, Any] = {"body": body}
     # MCP-G15: only `record_outside_decision` passes these, on a response.
@@ -2009,17 +2012,31 @@ _SET_LABEL_SQL = (
 )
 
 
-async def _set_run_label(db: Any, run_id: str, label: str | None, *,
-                         adopted: bool = False) -> None:
+async def _set_run_label(db: Any, run_id: str, label: str | None) -> None:
     """SW-7b. Set the label of an open run that the caller already owns, as
     :func:`_set_run_link` sets the link. A call with no label keeps the old
-    one, except for a run with no session key (*adopted*): its session ended
-    (a Resume, a reopen or a take-over cleared the key), so the old label
-    names a session that is gone, and a call with no label clears it. The run
-    came from the gate, so the label never chooses the run."""
-    if label is None and not adopted:
+    one. A Resume and a reopen clear the label (:func:`_clear_run_label`), so
+    a label never outlives its session on an open run. The run came from the
+    gate, so the label never chooses the run."""
+    if label is None:
         return
     await db.execute(text(_SET_LABEL_SQL), {"rid": run_id, "label": label})
+
+
+#: SW-7b. The clear of the label when the run passes to the next session.
+_CLEAR_LABEL_SQL = (
+    "UPDATE pm_agent_runs SET agent_label = NULL"
+    " WHERE id = CAST(:rid AS uuid) AND agent_label IS NOT NULL"
+)
+
+
+async def _clear_run_label(db: Any, run_id: str) -> None:
+    """SW-7b. Clear the label of a run that passes to the next session of
+    its connection: a Resume (it clears the key) and a reopen. A label never
+    outlives its session on an open run, so a call with no label can always
+    keep the old one (:func:`_set_run_label`). It is a separate statement,
+    so no run-slot rule names the label (the fence of §3.7)."""
+    await db.execute(text(_CLEAR_LABEL_SQL), {"rid": run_id})
 
 
 #: The ONE open-run read of EA12-6: the open run of a task for a member and a
@@ -2196,8 +2213,7 @@ async def start_agent_run(
             # CIV-14a: an agent's start on its open run sets the link.
             await _set_run_link(db, str(existing.id), link)
             # SW-7b: and the label of its session.
-            await _set_run_label(db, str(existing.id), label,
-                            adopted=getattr(existing, "session_key", None) is None)
+            await _set_run_label(db, str(existing.id), label)
             existing = await _load_run(db, str(existing.id))
         if existing is not None:
             # The open run is the answer (EA12-6). A member's instruction is
@@ -2934,6 +2950,8 @@ async def resume_agent_run(
             # A person's prompt keeps the key (`_move_run`), so Resume clears
             # it here, once, in the same transaction.
             await db.execute(text(_RESUME_KEY_SQL), {"rid": run_id})
+            # SW-7b. The label names the quiet session, so it goes too.
+            await _clear_run_label(db, run_id)
         out_run = (await _runs_out(db, [await _load_run(db, run_id)]))[0]
         activity = written.activity if written is not None else replay
         out_activity = _activity_out(activity)
@@ -3263,8 +3281,7 @@ async def _agent_open_run(db: Any, user: UserContext, task_id: str, me: str,
                                 session=_agent_session(user))
     if existing is not None:
         await _set_run_link(db, str(existing.id), link)
-        await _set_run_label(db, str(existing.id), label,
-                            adopted=getattr(existing, "session_key", None) is None)
+        await _set_run_label(db, str(existing.id), label)
         return str(existing.id), False
     ts = await _clock(db)
     made = (await db.execute(text(_INSERT_RUN_SQL), {
@@ -3282,8 +3299,7 @@ async def _agent_open_run(db: Any, user: UserContext, task_id: str, me: str,
                                 session=_agent_session(user))
     if existing is not None:
         await _set_run_link(db, str(existing.id), link)
-        await _set_run_label(db, str(existing.id), label,
-                            adopted=getattr(existing, "session_key", None) is None)
+        await _set_run_label(db, str(existing.id), label)
     return (str(existing.id) if existing is not None else None), False
 
 

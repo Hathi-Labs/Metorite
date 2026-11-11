@@ -483,23 +483,74 @@ class TestTheLabelOnARealDatabase:
         assert row_one.json()["agent_label"] == "backend-worker-1"
         assert row_two.json()["agent_label"] == "backend-worker-2"
 
-    async def test_a_label_less_call_clears_the_label_of_an_ended_session(self, w):
-        """A Resume, a reopen or a take-over clears the session key and leaves
-        the label. The next session that adopts the run and sends no label
-        must not show the old name. Mutation: pass `adopted=False` and the
-        last assert fails."""
-        from sqlalchemy import text
-
+    async def test_a_label_less_start_keeps_the_label_of_a_keyless_live_run(self, w):
+        """An agent with no MCP session claims with a label, so its run has
+        no session key. Its own start with no label must keep the label.
+        Mutation: clear the label on a call with no label when the run has
+        no key (the old `adopted` rule), and the assert fails."""
         task = _fresh(w)
-        session = _in_session(w.alice, _key())
         async with _session(w.p) as call:
-            claimed = await call(session, "POST", f"/projects/tasks/{task}/claim",
+            claimed = await call(w.alice, "POST", f"/projects/tasks/{task}/claim",
                                  {"agent_label": "lane-3"})
             run_id = claimed.json()["agent_run_id"]
+            started = await call(w.alice, "POST", f"/projects/tasks/{task}/agent-runs",
+                                 {"idempotency_key": _key()})
+            assert started.status_code == 200, started.text
+            assert started.json()["run"]["id"] == run_id
+        assert _label_of(w, run_id) == "lane-3"
+
+    async def test_a_resume_clears_the_label_with_the_key(self, w):
+        """Resume clears the key of a quiet session, and its label with it. A
+        NEW session that adopts the run with no label shows no old name.
+        Mutation: drop the `_clear_run_label` call of `resume_agent_run`, and
+        both label asserts fail."""
+        task = _fresh(w)
+        quiet = _in_session(w.alice, _key())
+        async with _session(w.p) as call:
+            claimed = await call(quiet, "POST", f"/projects/tasks/{task}/claim",
+                                 {"agent_label": "lane-3"})
+            run_id = claimed.json()["agent_run_id"]
+            # An open recovery record, as the second miss of the sweep writes it.
             with w.p.admin_engine.begin() as c:
-                c.execute(text("UPDATE pm_agent_runs SET session_key = NULL "
-                               "WHERE id = CAST(:r AS uuid)"), {"r": run_id})
-            later = await call(w.alice, "POST", f"/projects/tasks/{task}/claim", None)
+                c.execute(text(
+                    "INSERT INTO pm_agent_run_strands (organization_id, run_id, task_id,"
+                    " member_email, reason, seen_activity_at, recovered_at, evidence)"
+                    " SELECT r.organization_id, r.id, r.task_id, r.member_email,"
+                    " 'agent_quiet', r.last_activity_at, now(), '{}'::jsonb"
+                    " FROM pm_agent_runs r WHERE r.id = CAST(:r AS uuid)"), {"r": run_id})
+            resumed = await call(w.alice_person, "POST",
+                                 f"/projects/agent-runs/{run_id}/resume",
+                                 {"idempotency_key": _key()})
+            assert resumed.status_code == 200, resumed.text
+            assert resumed.json()["run"]["session_key"] is None
+            assert _label_of(w, run_id) is None
+            later = await call(_in_session(w.alice, _key()), "POST",
+                               f"/projects/tasks/{task}/claim", None)
+            assert later.json()["agent_run_id"] == run_id
+        assert _label_of(w, run_id) is None
+
+    async def test_an_ended_run_keeps_its_label_and_a_reopen_clears_it(self, w):
+        """A finished run keeps the name of the session that ran it. A
+        member's prompt opens the run again for the next session, and the old
+        name goes. Mutation: drop the `_clear_run_label` call of the reopen
+        in `_write_activity`, and the last two asserts fail."""
+        task = _fresh(w)
+        first = _in_session(w.alice, _key())
+        async with _session(w.p) as call:
+            claimed = await call(first, "POST", f"/projects/tasks/{task}/claim",
+                                 {"agent_label": "lane-3"})
+            run_id = claimed.json()["agent_run_id"]
+            fin = await call(first, "POST", f"/projects/agent-runs/{run_id}/finish", {})
+            assert fin.status_code == 200, fin.text
+            assert _label_of(w, run_id) == "lane-3"
+            prompt = await call(w.alice_person, "POST",
+                                f"/projects/agent-runs/{run_id}/activities",
+                                {"type": "prompt", "body": "One more thing",
+                                 "idempotency_key": _key()})
+            assert prompt.status_code == 201, prompt.text
+            assert _label_of(w, run_id) is None
+            later = await call(_in_session(w.alice, _key()), "POST",
+                               f"/projects/tasks/{task}/claim", None)
             assert later.json()["agent_run_id"] == run_id
         assert _label_of(w, run_id) is None
 
