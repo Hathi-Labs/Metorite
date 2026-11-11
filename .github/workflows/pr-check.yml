@@ -700,6 +700,7 @@ jobs:
               tests/unit/test_package_disposal_r8.py \
               tests/unit/test_package_lifetime_r8.py \
               tests/unit/test_package_field_values_r8.py \
+              tests/unit/test_package_expiry_loop_r8.py \
               tests/unit/test_app_requests_r8.py \
               tests/unit/test_workflows_lifecycle_rls_r8.py \
               tests/unit/test_project_rules.py \
@@ -718,6 +719,7 @@ jobs:
               tests/unit/test_pm_project_updates_r8.py \
               tests/unit/test_task_check_r8.py \
               tests/unit/test_app_create_slug_r8.py \
+              tests/unit/test_app_delete_workspace_r8.py \
               tests/unit/test_team_scope_isolation_r8.py \
               tests/unit/test_staging_export.py
 

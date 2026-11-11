@@ -199,6 +199,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-MIR | **CRM mirror and connectors**: HubSpot, Salesforce, Pipedrive, Zoho and files, with AI mapping | 🟢 active · M2 | `specs/crm_connectors.md`, planned (MIR-0, task 2791) | Metorite: epic 2790 (CRM), slices MIR-n · keeps the Zoho adapter first |
 | WS-MKT | **App marketplace**: a company installs ready apps, customizes them with an overlay, and keeps getting updates through a three-way merge | 🟢 active · M3 | `specs/app_marketplace.md`, planned (MKT-0, task 2820) · base `specs/package_host.md` | Metorite: epic 2818 (Package Host), MKT-0 to MKT-13 · decisions MKT-Q1 to Q4 in task 2852 |
 | WS-OPS | **Operations apps**: inventory, procurement, BOM, production, MRP, shop floor, quality, maintenance, costing, dispatch and operational accounting, as AI Studio apps | 🟢 active · M3 | `specs/operations_apps.md`, planned (OPM-0, task 2824) · base `specs/ai_studio.md` K3, K4 | Metorite: epic 2819 (AI Studio), OPM-0 to OPM-17 · decisions OPS-Q1 to Q3 in task 2852 · pilot Fracktal (owner act) |
+| WS-SND | **Sound cues**: a few tasteful sounds for an email sent or arrived, the agent needs me, new in My Day, and a reminder (D210) | 🟢 active · M2 | `workbench/control_plane/DESIGN_SYSTEM.md` §4c and `specs/proactive_reach.md` §8.4, planned (SND-0, task 2864) | Metorite: epic 2862 (My Day), SND-P to SND-7 = tasks 2863 to 2872 · flag `NEXT_PUBLIC_SOUND_CUES`, default OFF |
 
 ### 2.2 Earlier rows (WS-0 to WS-67)
 
@@ -6011,6 +6012,25 @@ The owner approved every recommendation of decision pack task 2852 in chat on 20
 Fence: `tests/unit/test_app_capability_parity.py` (new, task of WS-MKT) proves that each standard app installs through the package path and uses no capability outside the manifest. Until it exists, point 8 is advisory (R7).
 
 Re-check this number at merge. The first merge wins a D-number.
+
+### D210 — Sound cues: a few tasteful sounds for the moments that matter (2026-11-11)
+
+The owner asked in chat on 2026-11-11 for tasteful sound effects. The clear chimes are for an email sent or received, the agent with something for me, a new item in My Day, and a reminder. The owner's standing word applies to the details: the product manager's recommendation, when it fits the philosophy. Epic: task 2862 (WS-SND, project My Day).
+
+1. **Sound is a delivery of the Signals and delivery block** (`building_blocks.md` §2). It is not a new seam. One player, `src/lib/shell/sound.ts`, plays every cue. No app plays its own sound, as no app has its own palette.
+2. **Six cues of one family.** `sent`: my email or message left. `arrived`: an important email or a hand-over came in. `agent`: the assistant or an agent run needs me, or finished a long job. `my_day`: a new card in My Day. `reminder`: a reminder is due. `done`: I finished a task. A cue is shorter than 0.6 seconds, and `reminder` is at most 1.2 seconds. All cues have one loudness. No cue plays for an error.
+3. **Rare by rule.** Cues inside 2 seconds merge into one. A kind plays at most once each 30 seconds, except `reminder`. Only one open tab plays. No cue plays when a page loads. `arrived` plays only for a message in the important group, never for bulk mail.
+4. **The member controls it.** Settings → Notifications → Sounds holds one switch, a volume, a switch for each cue and a Play button for each. The same settings work from chat (D109). The values are a new `sounds` key of `user_settings.my_day_prefs`. No new table. The defaults are on, at volume 40, with `done` off.
+5. **Quiet hours and Focus.** Outside the work hours and during a Focus session, only `reminder` plays. A kind that the member muted makes no sound. The quiet hours are those of `proactive_reach.md` §6.1.
+6. **One sound for one event.** With a visible tab, the push worker gives the event to the tab and shows the notification with no sound. With no visible tab, the phone or the computer plays its own notification sound. Web push cannot carry a custom sound.
+7. **Never sound alone.** Every cue has a visual pair: a card, a badge or a toast.
+8. **Apps (D207.8).** A Studio, standard or marketplace app gets a cue through a signal kind in its manifest. The cue follows the reach class of the kind. An app brings no sound file.
+9. **The sound set** is a small set of files, CC0 or commissioned, with the licence on record. The owner listens to the set and approves it before the first merge (SND-1).
+10. **Ship dark.** `NEXT_PUBLIC_SOUND_CUES`, default OFF. The flip comes after SND-2, so that a member can turn the sounds off before the first one plays.
+
+Fence: `src/lib/shell/sound.test.ts` (the rules of points 3 and 5) and `src/lib/shell/soundSeam.test.ts` (no `new Audio(` or `AudioContext` outside the player, the voice code and the recorder). Both land with SND-1 (task 2865). Until then, point 1 is advisory (R7).
+
+Re-check this number at merge. On 2026-11-11, open branches hold D208 and D209.
 
 ## 4. Single-owner registry (who owns duplicated work)
 
