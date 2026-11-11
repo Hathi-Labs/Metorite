@@ -106,6 +106,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from acb_common import get_logger, get_settings
+from acb_common.secret_shapes import REDACTION_SHAPES
 
 if TYPE_CHECKING:
     from agent_framework import FunctionInvocationContext
@@ -1014,23 +1015,9 @@ _WHOLE_SCHEMES = (
     re.compile(r"bearer\s+[A-Za-z0-9._~+/=\-]+", re.IGNORECASE),
     re.compile(r"basic\s+[A-Za-z0-9+/=]{8,}", re.IGNORECASE),
 )
-#: Keys with a known prefix, hidden wherever they stand in a value: OpenAI,
-#: Stripe and GitHub (review of PR #897).
-_KEY_PREFIXES = (
-    re.compile(r"(?<![A-Za-z0-9_])sk-[A-Za-z0-9_\-]{6,}"),
-    re.compile(r"(?<![A-Za-z0-9_])(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{8,}"),
-    re.compile(r"(?<![A-Za-z0-9_])pk_live_[A-Za-z0-9]{16,}"),
-    re.compile(r"(?<![A-Za-z0-9_])gh[pousr]_[A-Za-z0-9]{20,}"),
-    re.compile(r"(?<![A-Za-z0-9_])github_pat_[A-Za-z0-9_]{20,}"),
-)
-#: Tokens with a known shape, hidden wherever they stand in a value: Slack,
-#: AWS, Google and a JWT (three base64url segments).
-_TOKEN_SHAPES = (
-    re.compile(r"(?<![A-Za-z0-9_])xox[abprs]-[A-Za-z0-9\-]{10,}"),
-    re.compile(r"(?<![A-Za-z0-9])(?:AKIA|ASIA)[0-9A-Z]{16}(?![0-9A-Z])"),
-    re.compile(r"(?<![A-Za-z0-9_])AIza[0-9A-Za-z_\-]{30,}"),
-    re.compile(r"(?<![A-Za-z0-9_\-])eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]+"),
-)
+#: Keys and tokens with a known shape, hidden wherever they stand in a value.
+#: The list lives in ``acb_common.secret_shapes`` (task 1272).
+_KEY_SHAPES = REDACTION_SHAPES
 #: A PEM private key, from its BEGIN line through its END line (or to the
 #: end of the value, when the END line is missing).
 _PEM_KEY = re.compile(
@@ -1089,7 +1076,7 @@ def _secret_value(text: str) -> bool:
     """True when the WHOLE value is a credential."""
     stripped = text.strip()
     return any(p.fullmatch(stripped) for p in (
-        *_WHOLE_SCHEMES, *_KEY_PREFIXES, *_TOKEN_SHAPES, _PEM_KEY))
+        *_WHOLE_SCHEMES, *_KEY_SHAPES, _PEM_KEY))
 
 
 def _key_value(match: re.Match[str]) -> str:
@@ -1105,7 +1092,7 @@ def _mask_secrets(text: str) -> str:
     text = _PEM_KEY.sub(REDACTED, text)
     text = _URL_PASSWORD.sub(lambda m: m.group("head") + REDACTED, text)
     text = _KEY_VALUE.sub(_key_value, text)
-    for pattern in (*_KEY_PREFIXES, *_TOKEN_SHAPES):
+    for pattern in _KEY_SHAPES:
         text = pattern.sub(REDACTED, text)
     return text
 

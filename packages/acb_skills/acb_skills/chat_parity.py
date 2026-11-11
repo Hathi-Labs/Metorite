@@ -943,6 +943,7 @@ DEBT: dict[str, str] = {
     "DELETE /api/settings/branding": "P-8",
     "GET /api/auth/me": "P-8",
     "GET /api/auth/me/agent-access": "P-8",
+    "GET /api/auth/me/appearance": "P-8",
     "GET /api/auth/me/assistant-profile": "P-8",
     "GET /api/auth/me/assistant-profile/address": "P-8",
     "GET /api/auth/me/assistant-profile/block": "P-8",
@@ -955,6 +956,7 @@ DEBT: dict[str, str] = {
     "GET /api/settings/llm": "P-8",
     "GET /api/settings/number-system": "P-8",
     "PUT /api/auth/me/agent-access": "P-8",
+    "PUT /api/auth/me/appearance": "P-8",
     "PUT /api/auth/me/shell": "P-8",
     "PUT /api/auth/me/zone": "P-8",
     "PUT /api/settings/appearance": "P-8",
@@ -1004,6 +1006,8 @@ DEBT: dict[str, str] = {
     "DELETE /api/integrations/github": "P-8",
     "DELETE /api/integrations/plugins/{}": "P-8",
     "GET /api/agent-access/connections": "P-8",
+    # EA-17c-2: Change access in the AI agents view. The chat tool is not built.
+    "PATCH /api/agent-access/connections/{}": "P-8",
     # MCP-P1b-1: the list "Waiting for you" and Approve or Decline on
     # AppRequestCard. In a chat, the card of STU-B2c-2c (task 1866) is the
     # chat surface of the decision: the member presses Approve or Decline on
@@ -1030,7 +1034,7 @@ DEBT: dict[str, str] = {
 #: The most debt that each app may carry. A count may go down, never up.
 #: Lower the number in the change that pays the debt.
 DEBT_CEILING: dict[str, int] = {
-    "projects": 9,  # F3: UI_PLANNED, and UI_ACTIONS rows whose tool is PLANNED. SW-43a (2026-11-05) added agentRunsApi.withdrawAnswer, and SW-43b (2026-11-11) added agentRunsApi.replaceAnswer. The chat tools of SW-43c (task 1802) pay both.
+    "projects": 7,  # F3: UI_PLANNED, and UI_ACTIONS rows whose tool is PLANNED. SW-43c (task 1802) built the chat tools of agentRunsApi.withdrawAnswer and agentRunsApi.replaceAnswer (9 to 7).
     "tasks": 9,
     "calendar": 1,
     "email": 14,  # SG-1 (task 2177, 2026-11-07) added the signature image upload, paid by SG-6 (task 2182).
@@ -1045,9 +1049,9 @@ DEBT_CEILING: dict[str, int] = {
     "agents": 20,
     "chat": 25,
     "shell": 15,
-    "settings": 28,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write. SW-31b added the guidance read and save, paid by SW-31c (task 1531).
+    "settings": 30,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write. SW-31b added the guidance read and save, paid by SW-31c (task 1531). PKG-20 added the appearance read and write.
     "admin": 36,
-    "integrations": 21,  # MCP-P1b-1 added the app-request list and decision (task 1703).
+    "integrations": 22,  # MCP-P1b-1 added the app-request list and decision (task 1703). EA-17c-2 (task 1814) added the PATCH of Change access.
     "studio": 3,  # BETA-1: the delete of a package waits for the chat tool of A5c-2. G5 adds the version read. B2c-2b adds no debt: its writes are ALSO rows of the door route.
 }
 
