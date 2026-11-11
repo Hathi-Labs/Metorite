@@ -124,6 +124,13 @@ export interface AgentActivity {
     withdrawn?: { at?: string | null; by?: string | null } | null;
     /** SW-43. On the marker prompt of a withdraw: the id of the answer it took back. */
     withdraws?: string | null;
+    /** SW-24. On a `response`: the note of an agent that stops. */
+    handoff?: {
+      done?: string | null;
+      left?: string | null;
+      evidence?: string | null;
+      next?: string | null;
+    } | null;
   };
   /**
    * The server's own facts. EA-6g: an archive request carries `request`.
@@ -1168,8 +1175,18 @@ export function runHolderFree(run: Pick<AgentRun, "holder_free" | "lease_expired
 }
 
 /**
+ * H-409 item 2 (task 748). The permission that lets a person release the
+ * run of another member. It is the slug of the gateway's
+ * `agent_runs.RELEASE_ADMIN_PERMISSION`, and a Python fence holds the two
+ * equal. Ending a run is a write, so `admin:members:read` does not give it
+ * (owner, Q5 of `agent_coordination.md` §8).
+ */
+export const RELEASE_ADMIN_PERMISSION = "admin:members:manage";
+
+/**
  * May the caller release this run? The run's member, an assignee of the
- * task, or an admin, as the gateway checks. The server decides in the end.
+ * task, or a holder of `RELEASE_ADMIN_PERMISSION` (`isAdmin`), as the
+ * gateway checks. The server decides in the end.
  */
 export function canReleaseRun(
   run: Pick<AgentRun, "member_email" | "status">,
