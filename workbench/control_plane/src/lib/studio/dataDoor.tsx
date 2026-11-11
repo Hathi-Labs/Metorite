@@ -105,11 +105,12 @@ export function parseSource(raw: unknown): StudioSource | null {
   return { action, args: isObject(raw.args) ? raw.args : undefined };
 }
 
-/** The kinds that bind: a `table`, and the `dataGrid` and `board` templates (D1, D3). */
+/** The kinds that bind: a `table`, and the `dataGrid`, `board`, `chart` and `sparkTrend` templates (D1, D3, D4). */
 export function bindsSource(type: string, props: Record<string, unknown>): boolean {
   if (parseSource(props.source) === null) return false;
   if (type === "table") return true;
-  return type === "template" && (props.name === "dataGrid" || props.name === "board");
+  return type === "template"
+    && (props.name === "dataGrid" || props.name === "board" || props.name === "chart" || props.name === "sparkTrend");
 }
 
 /** A button's action: the old sentence, or a typed action. */
