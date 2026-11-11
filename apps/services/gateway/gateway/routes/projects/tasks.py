@@ -48,6 +48,11 @@ from gateway.routes.projects.cascade import (
     movable_subtree,
     subtree_privacy_refusals,
 )
+from gateway.routes.projects.checks import (
+    attach_check,
+    check_patch_values,
+    clean_check_text,
+)
 from gateway.routes.projects.core import (
     AGENT_TASK_SOURCE,
     CLIENT_TASK_SOURCES,
@@ -163,6 +168,9 @@ _log = get_logger("gateway.projects.tasks")
 _TRACKED_TASK_FIELDS: tuple[str, ...] = (
     "title", "description", "importance", "leveraged", "due_at", "start_date",
     "estimate_mins", "type_id", "parent_task_id", "project_id",
+    # SW-23: the Check decides when a pass may close the task, so each change
+    # of it is on the timeline. It is not revertible (`activities._REVERTIBLE`).
+    "check_text",
 )
 
 _LINK_TYPES: tuple[str, ...] = ("blocks", "relates_to", "duplicates")
@@ -178,6 +186,8 @@ AGENT_CREATE_FIELDS: frozenset[str] = frozenset({
     "project_id", "title", "description", "parent_task_id", "type_id",
     "status_id", "tags", "due_at",
     "importance", "leveraged", "estimate_mins", "start_date", "assignees",
+    # SW-23: the `check` of `create_task`. 422 while the Check flag is off.
+    "check_text",
 })
 #: The PATCH set is the union of `set_task_status` (`status_id`) and
 #: `update_task` (the other fields). MCP-G2 adds the four planning fields.
@@ -186,6 +196,8 @@ AGENT_PATCH_FIELDS: frozenset[str] = frozenset({
     "importance", "leveraged", "estimate_mins", "start_date",
     # SP-6: `update_task` sets the type, and null clears it.
     "type_id",
+    # SW-23: the `check` of `update_task`, and null clears it.
+    "check_text",
 })
 #: WS-55 MCP-G2. The one body key of a signed agent MOVE. A move to another
 #: project stays a person's step in the app, so `project_id`,
@@ -489,6 +501,10 @@ class TaskCreateIn(TaskIn):
     """
 
     assignees: list[str] | None = None
+    #: WS-MCP SW-23. The Check of the new task. A create field here and a
+    #: PATCH field on ``TaskPatchIn``, never on ``TaskIn``, which other
+    #: doors share. 422 while ``agent_task_checks_enabled`` is off.
+    check_text: str | None = None
 
 
 class LinkIn(BaseModel):
@@ -878,6 +894,9 @@ async def list_tasks(
             await attach_assignees(db, page_rows)
             # WS-55 EA-12a — the agent pill, in one query for the page.
             await attach_agent_state(db, page_rows)
+            # SW-23 — the Check of each row, in one query. `my_work` reads
+            # `check.due`. No key while the flag is off.
+            await attach_check(db, page_rows)
             await attach_relation_counts(db, page_rows, vis)
             # D-PM-38 — "↳ Parent" on every flat row, under the reader's grants.
             await attach_parent_context(db, vis, page_rows)
@@ -1092,6 +1111,8 @@ async def get_task(
         result["time_spent_mins"] = await time_spent_mins(db, task_id)
         # WS-55 EA-12a — the agent pill on the task detail (EA12-10).
         await attach_agent_state(db, [result])
+        # SW-23 — the Check, with its last run. No key while the flag is off.
+        await attach_check(db, [result])
         # WS-64 OP-8 — the chat refuses before its card where this is false.
         await attach_can_delete(db, user, [result], kind="task")
         # SP-9 — an epic rolls up EVERY descendant the reader can see. The key
@@ -1209,6 +1230,11 @@ def check_task_values(
     if not project_id:
         raise HTTPException(status_code=422, detail="A task needs a project_id.")
     validate_choice(values.get("source"), CLIENT_TASK_SOURCES, "source")
+    if "check_text" in values:
+        # SW-23. 422 while the Check flag is off. A blank text is no Check.
+        values["check_text"] = clean_check_text(values["check_text"])
+        if values["check_text"] is None:
+            values.pop("check_text")
     if getattr(user, "agent", None) is not None:
         # The task source of an agent comes from branch 0's signed context,
         # never from the body (the narrowing above refuses a body `source`).
@@ -1396,6 +1422,8 @@ async def patch_task(
         # write — so a caller who cannot see the task still gets 404 and never
         # learns from a 412 that it exists (R5: 404, never 403).
         require_precondition(before, if_match, row_to_dict(before, TaskModel))
+        # SW-23. A new Check text clears its last result, in this same write.
+        check_patch_values(before, values)
 
         # WS-27l. Merged against the definitions on the task's OWN root, not the
         # caller's current project: a task opened from My work can belong to a
@@ -1498,6 +1526,8 @@ async def patch_task(
         # WS-55 EA-12c — the pill survives an edit. The client merges this
         # row over its copy, so a null here would erase the pill (EA12-10).
         await attach_agent_state(db, [result])
+        # SW-23 — the Check survives an edit too. No key while the flag is off.
+        await attach_check(db, [result])
         if include_subtasks:
             result["subtasks_completed"] = len(cascade.ids) if cascade else 0
             result["subtask_changes"] = cascade.changes if cascade else []
