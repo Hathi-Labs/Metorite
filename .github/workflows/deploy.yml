@@ -732,6 +732,7 @@ jobs:
               tests/unit/test_auth_me_shell_install_r8.py \
               tests/unit/test_auth_me_appearance_r8.py \
               tests/unit/test_package_lifetime_r8.py \
+              tests/unit/test_package_keep_restore_r8.py \
               tests/unit/test_package_field_values_r8.py \
               tests/unit/test_agent_policies_r8.py \
               tests/unit/test_package_expiry_loop_r8.py \
