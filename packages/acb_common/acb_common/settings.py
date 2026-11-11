@@ -2289,6 +2289,15 @@ class Settings(BaseSettings):
     # has no `answer` field. `acb_auth.agent_oauth.answer_change_enabled` is
     # the one reader. 🔴 A flip on a box is gate `enforcement-flip`.
     agent_answer_change_enabled: bool = False
+    # SW-23 (spec agent_coordination.md SW-23): a task carries a Check, a
+    # read-only command that an agent runs. Default OFF. While it is false,
+    # `POST /projects/tasks/{id}/check-result` answers 404, a task write that
+    # sends `check_text` gets 422, the task rows carry no `check` key, and the
+    # edge leaves `report_check` and the `check` input out of `tools/list`.
+    # Both units read it, so both need the same value.
+    # `acb_auth.agent_oauth.task_checks_enabled` is the one reader. 🔴 A flip
+    # on a box is gate `enforcement-flip`.
+    agent_task_checks_enabled: bool = False
     # SW-7 (spec §12.5): MCP sessions at the edge. Default OFF. While it is
     # false, `initialize` answers no `Mcp-Session-Id`, an id that a client
     # still sends is read as no session (never a 404), and no
