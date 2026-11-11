@@ -2653,11 +2653,14 @@ async def github_account(
     """
     from gateway.connections import github_app
 
-    summary = await github_connection.account_summary(_github_org())
+    org = _github_org()
+    summary = await github_connection.account_summary(org)
     scopes: list[str] = summary["scopes"]
     try:
         # WS-54 GH-3: the card offers Connect GitHub only when the App can run.
-        app_available = github_app.app_enabled() and bool(github_app.slug())
+        # SW-53: and only when GITHUB_APP_ORGS holds this org, so an org off
+        # the list never sees a button that the connect route refuses.
+        app_available = github_app.github_app_org_allowed(org) and bool(github_app.slug())
     except github_app.GitHubAppNotConfigured:
         app_available = False
     return {

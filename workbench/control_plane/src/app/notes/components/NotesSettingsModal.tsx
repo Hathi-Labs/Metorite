@@ -12,6 +12,7 @@
  * can see what it *would* do before deciding to override it.
  */
 
+import { useCloseOnBarTap } from "@/lib/phoneBarTap";
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
 import { useEffect, useState } from "react";
@@ -79,6 +80,8 @@ const SENSITIVITY_HELP: Record<string, string> = {
 };
 
 export default function NotesSettingsModal({ onClose }: { onClose: () => void }) {
+  // A bar tap closes the window (MOB-9).
+  useCloseOnBarTap(onClose);
   const [s, setS] = useState<NotesSettings>(DEFAULTS);
   const [templates, setTemplates] = useState<TemplateInfo[]>([]);
   const [loading, setLoading] = useState(true);

@@ -209,6 +209,10 @@ async def test_deleting_a_memory_outside_your_scope_is_a_404(monkeypatch) -> Non
         async def get_all(self, scope):
             return [{"id": "alice-1"}, {"id": "alice-2"}]
 
+        async def scope_ids(self, scope):
+            # KG-9 review: the delete reads its owner ids here, ungated.
+            return {"alice-1", "alice-2"}
+
         async def delete(self, memory_id):
             deleted.append(memory_id)
 

@@ -113,7 +113,8 @@ def _put(body: Any, user: UserContext | None = None):
 class TestTheAllowlist:
     def test_the_keys_are_the_spec_s(self) -> None:
         assert prefs.PREF_KEYS == ("mutes", "open_in_app", "corrections",
-                                   "hide_push_details", "push_prompt", "rule_mutes")
+                                   "hide_push_details", "push_prompt", "rule_mutes",
+                                   "block_notify")
         assert set(prefs._CLEAN) == set(prefs.PREF_KEYS)
 
     @pytest.mark.parametrize("body", [

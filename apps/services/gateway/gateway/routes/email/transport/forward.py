@@ -284,13 +284,15 @@ async def forward_email(
         if chosen and str(row.provider or "").lower() == "imap":
             raise HTTPException(status_code=422, detail=_IMAP_FILES)
 
-        # 3. The note and the signature of the mailbox, as on a send.
-        from gateway.routes.email.signature import build_signed_bodies
-        sig_row = (await db.execute(text(
-            "SELECT signature FROM email_assistant_settings WHERE account_id = :aid"
-        ), {"aid": account_id})).fetchone()
-        note_text, note_html = build_signed_bodies(
-            (sig_row.signature if sig_row else "") or "", req.note or "", None)
+        # 3. The note and the signature of the mailbox, as on a send. The
+        # resolver gives the signature of a forward (WS-17 SG-2, D-EM-66).
+        from gateway.routes.email.signature import (
+            build_signed_bodies,
+            resolve_signature_for_send,
+        )
+        signature = await resolve_signature_for_send(
+            db, account_id, "forward", req.note or "")
+        note_text, note_html = build_signed_bodies(signature, req.note or "", None)
         if note_text.strip() and not (note_html or "").strip():
             note_html = _html.escape(note_text).replace("\n", "<br>")
         subject = forward_subject(row.subject)

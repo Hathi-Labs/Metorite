@@ -117,7 +117,10 @@ production key. That is owner gate WS43-G6.
    ```
 
 4. Set `LITELLM_BASE_URL` and `LITELLM_MASTER_KEY` to the local gateway, as
-   the gateway uses them.
+   the gateway uses them. The LLM key opens `/v1` only. Set
+   `GATEWAY_INTERNAL_TOKEN` to the token of the local gateway too, and never
+   to the LLM key. Since WS-24b, the gateway refuses the LLM key on its
+   internal routes (2026-11-07, WS-24c).
 5. Run the sweep on the tier that you chose:
 
    ```bash

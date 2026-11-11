@@ -531,6 +531,9 @@ def test_the_handoff_list_is_the_one_delegation_list() -> None:
 #: join this list in the same change, so the owner of the contract sees it.
 _CONTRACT_CALLERS = [
     "apps/agents/agent-worker/agents.py",
+    # WS-AUTO AUTO-8a: the headless turn runs the worker with one bound read-only
+    # job (`bind_job`), and `child_may_hold` is the one test of a tool it holds.
+    "apps/services/gateway/gateway/jobs/headless_turn.py",
     "apps/services/orchestrator/orchestrator/_tool_injection.py",
     "apps/services/orchestrator/orchestrator/agents.py",
     "apps/services/orchestrator/orchestrator/executor.py",

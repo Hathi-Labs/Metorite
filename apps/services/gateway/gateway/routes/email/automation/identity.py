@@ -91,11 +91,19 @@ def _member_mailboxes_from(anchor: str) -> str:
     """The mailboxes of the member who owns the mailbox ``anchor``.
 
     ``a`` is that mailbox and ``o`` is each mailbox of the same member, ``a``
-    included. Row level security binds the organization. The organization
-    predicate repeats that bind for a session that row level security does
-    not bind, so a mailbox of the same member in another organization is
-    never ``o``. ``anchor`` is code, never a value from a request, and any
-    other shape raises.
+    included. Row level security binds the organization. Two predicates repeat
+    that bind for a role that bypasses row level security. ``o`` shares the
+    organization of ``a``, and ``a`` is in the bound tenant (R5, H-334c and
+    H-334d). So a mailbox of the same member in another organization is never
+    ``o``, and an ``anchor`` of another organization gives no row. ``anchor``
+    is code, never a value from a request, and any other shape raises.
+
+    Every reader takes the tenant predicate from here: the self set, the
+    rows of :func:`resolve_self` and the pair set. So all of them agree for
+    every role. Each caller reads inside ``tenant_session``, which raises
+    ``TenantUnbound`` with no tenant bound. A session with no
+    ``app.tenant_id`` compares to NULL, so each set is empty. It is never a
+    set of another tenant. Fence: ``tests/unit/test_email_self_reader_tenant_fence.py``.
 
     A shared mailbox is never "self" for any member (D-SM-5, WS-65 SM-2).
     ``user_id`` of a shared row is only the member who connected it, so a
@@ -109,20 +117,14 @@ def _member_mailboxes_from(anchor: str) -> str:
         "JOIN email_accounts o ON (o.id = a.id OR (o.user_id = a.user_id "
         "AND o.shared_since IS NULL AND a.shared_since IS NULL)) "
         "AND o.organization_id IS NOT DISTINCT FROM a.organization_id "
-        f"WHERE a.id = {anchor}")
+        f"WHERE a.id = {anchor} AND a.organization_id = {_bound_org()}")
 
 
-#: The FROM clause over ``:aid``. It names the bound tenant on ``a`` (R5,
-#: H-334b and H-334c). ``o`` shares the organization of ``a``, so a role that
-#: bypasses RLS reads the mailboxes of one tenant only. :data:`SELF_ADDRESSES_SQL`,
-#: :data:`SELF_MAILBOX_IDS_SQL` and ``_MEMBER_MAILBOXES_SQL`` all read this one
-#: clause, so the three sets agree for every role.
-#:
-#: Each caller reads inside ``tenant_session``, which raises ``TenantUnbound``
-#: with no tenant bound. A session with no ``app.tenant_id`` compares to NULL,
-#: so the set is empty. It is never a set of another tenant.
-_MEMBER_MAILBOXES_FROM = (
-    f"{_member_mailboxes_from(':aid')} AND a.organization_id = {_bound_org()}")
+#: The FROM clause over ``:aid``. The tenant predicate comes from
+#: :func:`_member_mailboxes_from`, so :data:`SELF_ADDRESSES_SQL`,
+#: :data:`SELF_MAILBOX_IDS_SQL`, ``_MEMBER_MAILBOXES_SQL`` and the pair set
+#: read one clause and agree for every role (H-334d).
+_MEMBER_MAILBOXES_FROM = _member_mailboxes_from(":aid")
 
 #: The lower-case address of each mailbox of the member who owns ``:aid``
 #: (D-EM-27). A SQL caller puts it in its own text as a subquery, for example
@@ -143,6 +145,10 @@ def paired_mailbox_ids_sql(anchor: str = ":aid") -> str:
     each separate mailbox, and it is empty when ``anchor`` is separate.
     "Also in" and the draft dedupe read only this set. ``anchor`` is ``:aid``
     for one mailbox, or a column such as ``m.account_id`` for a page of mail.
+
+    The FROM clause names the bound tenant on ``a`` (H-334d). So an anchor of
+    another organization gives no pair for a role that bypasses RLS, and an
+    unbound session reads an empty set.
     """
     return (f"SELECT o.id {_member_mailboxes_from(anchor)} "
             f"AND o.id <> a.id AND a.{IN_ALL_INBOXES_SQL} "
@@ -365,7 +371,7 @@ _PROVEN_OWN_SEND_SQL = f"""
      LIMIT 1"""
 
 #: The same mailboxes as rows, for :func:`resolve_self`. One FROM clause, and
-#: it names the bound tenant (H-334c). So the set in SQL and the set in Python
+#: it names the bound tenant (H-334c, H-334d). So the set in SQL and the set in Python
 #: agree, also for a role that bypasses RLS. An unbound session reads no row,
 #: so the identity is empty: it fails closed.
 _MEMBER_MAILBOXES_SQL = (

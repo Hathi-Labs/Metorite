@@ -92,7 +92,8 @@ def build_agents() -> list[Any]:
                 "Owns the studio tool pack: draft, patch, validate and outline an "
                 "AI Studio app manifest, list the actions an app may use, save and "
                 "publish the app, save, publish, pause and list the skills of a member, "
-                "and read the records of a package."
+                "and read the records of a package. Three write tools add, change and "
+                "delete a record, and each asks the member first."
             ),
             tools=_agent_tools(),
         )

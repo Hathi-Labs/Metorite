@@ -93,8 +93,10 @@ describe("one task panel composition (S6e)", () => {
     expect(BODY).toContain('label="Priority"');
     expect(BODY).toContain('label="Assignees"');
     expect(BODY).toContain('label="Due"');
-    expect(BODY).toContain('label="Discussion"');
-    expect(BODY).toContain('label="Files"');
+    // ORC-3 — Discussion and Files are tabs of the body, so the tab is the
+    // heading and no section draws the word again.
+    expect(BODY).toContain("aria-label={TASK_TAB_LABEL.discussion}");
+    expect(BODY).toContain("aria-label={TASK_TAB_LABEL.files}");
   });
 
   it("draws the facts a member sets most at the top of Details (owner, 2026-10-19)", () => {
@@ -111,15 +113,17 @@ describe("one task panel composition (S6e)", () => {
 
   it("offers Subtask, Link and Attach above Details, each reaching its field", () => {
     const bar = BODY.slice(BODY.indexOf('aria-label="Add to this task"'), BODY.indexOf('label="Details"'));
-    expect(bar).toMatch(/reach\("links", subtaskBox\)/);
-    expect(bar).toMatch(/reach\("refs", linkBox\)/);
-    expect(bar).toMatch(/filePicker\.current\?\.click\(\)/);
+    // ORC-3 — each button opens the tab of what it adds, then its section.
+    expect(bar).toMatch(/reach\("related", "links", subtaskBox\)/);
+    expect(bar).toMatch(/reach\("related", "refs", linkBox\)/);
+    expect(bar).toMatch(/showTab\("files"\);\s*filePicker\.current\?\.click\(\)/);
     expect(BODY).toMatch(/ref=\{subtaskBox\}/);
     expect(BODY).toMatch(/inputRef=\{linkBox\}/);
     // A folded section unmounts its content. The file input must live
-    // outside Files, or Attach finds no input while Files is folded.
-    const files = BODY.indexOf('label="Files"');
-    const filesEnd = BODY.indexOf("</CollapsibleSection>", files);
+    // outside Files, or Attach finds no input while Files is folded. Files
+    // is a tab now (ORC-3), and the rule holds for its panel.
+    const files = BODY.indexOf("aria-label={TASK_TAB_LABEL.files}");
+    const filesEnd = BODY.indexOf('role="tabpanel"', files);
     const input = BODY.indexOf("ref={filePicker}");
     expect(input, "the file input is in the tree").toBeGreaterThan(0);
     expect(input > files && input < filesEnd, "the file input sits inside Files").toBe(false);

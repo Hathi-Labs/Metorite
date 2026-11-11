@@ -100,6 +100,11 @@ Fix round 5 (2026-10-18), each one red when run:
   a re-read of a closed row counts as a move -> ``test_r5_3_a_closed_reread_never_runs_the_rule_again``.
 * **R5-3b** a merge is final. R5-3b-M1 the guard ``NOT (state = 'merged' AND
   :state <> 'merged')`` dropped -> ``test_r5_3b_a_stale_closed_never_overwrites_a_merge``.
+
+SW-53 fix round 1 (2026-11-07), red when run:
+
+* **SW53-M4** ``installation_of`` ignores ``GITHUB_APP_ORGS`` ->
+  ``test_sw53_an_org_off_the_list_refreshes_nothing``.
 """
 
 from __future__ import annotations
@@ -973,6 +978,48 @@ async def test_r4_4_a_lookup_error_writes_no_pr_state(world, monkeypatch) -> Non
     await _lazy_read(w, task)
     assert g.scalar(w.p, "SELECT state FROM pm_task_refs WHERE ref = :r",
                     r=f"{REPO}#861") == "open", "TR-1 wrote past the one write path"
+
+
+async def test_sw53_an_org_off_the_list_refreshes_nothing(world, monkeypatch) -> None:
+    """SW-53 fix round 1 (P1). The org holds a live App row, and the master is
+    on. Off ``GITHUB_APP_ORGS``, the lazy read of ``GET /refs`` calls no
+    GitHub, writes no pull request state and moves no task. Back on the list,
+    the same read finds ``merged`` and moves the task (the control)."""
+    from acb_common import get_settings
+
+    w = world
+    task = _task(w)
+    _run(w, task)
+    _ref(w, task, 871)
+    stamp = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/access_tokens"):
+            return httpx.Response(201, json={"token": "ghs_sw53",
+                                             "expires_at": "2099-01-01T00:00:00Z"})
+        if request.url.path == f"/repos/{REPO}/pulls/871":
+            return httpx.Response(200, json={
+                "number": 871, "title": "PR 871", "state": "closed", "merged": True,
+                "merged_at": stamp, "updated_at": stamp, "draft": False,
+                "merged_by": {"login": "octo"}, "head": {"ref": "agent/y", "sha": "f" * 40}})
+        return httpx.Response(404, json={})
+
+    g.patch_github(monkeypatch, handler, REAL_CLIENT)
+    state = "SELECT state FROM pm_task_refs WHERE ref = :r"
+    monkeypatch.setattr(get_settings(), "github_app_orgs", w.p.org_b)
+    await _lazy_read(w, task)
+    assert requests == [], "an org off the list calls no GitHub"
+    assert g.scalar(w.p, state, r=f"{REPO}#871") == "open"
+    assert _category(w, task) == "in_progress"
+    assert _moves(w, task) == []
+    monkeypatch.setattr(get_settings(), "github_app_orgs", w.p.org_a)
+    _stale(w, 871)
+    await _lazy_read(w, task)
+    assert requests, "the org on the list reads GitHub"
+    assert g.scalar(w.p, state, r=f"{REPO}#871") == "merged"
+    assert _category(w, task) == "done"
 
 
 # ── Fix round 5 ─────────────────────────────────────────────────────────────

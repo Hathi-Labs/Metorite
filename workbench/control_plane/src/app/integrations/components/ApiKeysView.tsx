@@ -2,6 +2,7 @@
 
 /** The API keys view: the per-org service-key catalog (moved from the old APIs tab, no behaviour change). */
 
+import { useCloseOnBarTap } from "@/lib/phoneBarTap";
 import Button from "@/components/ui/Button";
 import Icon, { themedIcon } from "@/components/Icon";
 import React, { useCallback, useEffect, useRef, useState } from "react";
@@ -785,6 +786,9 @@ export default function ApiKeysView() {
   const [selected, setSelected] = useState<string | null>(null);
   const [showDiscover, setShowDiscover] = useState(false);
   const hasFetched = useRef(false);
+  // A bar tap closes the key panel and the discover window (MOB-9).
+  useCloseOnBarTap(() => setSelected(null), selected !== null);
+  useCloseOnBarTap(() => setShowDiscover(false), showDiscover);
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
@@ -913,7 +917,7 @@ export default function ApiKeysView() {
           <>
             <div className="sm:hidden fixed inset-0 z-[60] pointer-events-none">
               <div className="absolute inset-0 bg-black/50 pointer-events-auto" onClick={() => setSelected(null)} />
-              <aside className="absolute inset-x-0 bottom-14 pointer-events-auto flex max-h-[55%] flex-col rounded-t-2xl border-t border-border bg-card shadow-2xl chat-fade-in">
+              <aside className="absolute inset-x-0 bottom-0 pointer-events-auto flex max-h-[55%] flex-col rounded-t-2xl border-t border-border bg-card shadow-2xl chat-fade-in">
                 <div className="flex items-center justify-between px-4 py-2 border-b border-border shrink-0">
                   <div className="flex items-center gap-2">
                     <ServiceLogo service={selectedApi.service} label={selectedApi.label ?? selectedApi.service} category={selectedApi.category} size="sm" />

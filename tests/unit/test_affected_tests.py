@@ -9,6 +9,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 _ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT / "scripts"))
 
@@ -716,3 +718,87 @@ def test_a_module_that_reaches_the_package_through_a_sibling_is_picked(
     picked, _, _ = sel.select(["packages/pkg/pkg/api/deep.py"], root)
     assert "tests/unit/test_mounts_r8.py" in picked
     assert "tests/unit/test_hub_a.py" not in picked
+
+
+def test_a_test_helper_that_imports_a_test_module_carries_the_change(tmp_path: Path) -> None:
+    """CIV-3c (task 1720). `_board.py` imports `test_runs`, and a suite imports
+    `_board`. A change to `test_runs` must select the suite."""
+    root = _repo(tmp_path)
+    _write(root, "tests/__init__.py")
+    _write(root, "tests/unit/__init__.py")
+    _write(root, "tests/unit/test_runs.py", "X = 1\n")
+    _write(root, "tests/unit/_board.py", "from tests.unit.test_runs import X\n")
+    _write(root, "tests/unit/test_board_user.py", "from tests.unit._board import X\n")
+    _write(root, "tests/unit/test_unrelated.py", "import os\n")
+    picked, _, _ = sel.select(["tests/unit/test_runs.py"], root)
+    assert "tests/unit/test_board_user.py" in picked
+    assert "tests/unit/test_unrelated.py" not in picked
+
+
+def test_the_gate_selects_every_suite_behind_the_agent_board_helper() -> None:
+    """CIV-3c acceptance, on the real tree. `_agent_board_r8` imports
+    `test_agent_runs_r8`, and every suite that imports the helper must come
+    with a change to that module."""
+    root = sel.ROOT
+    helper = "_agent_board_r8"
+    importers = {
+        f.relative_to(root).as_posix()
+        for f in (root / "tests" / "unit").glob("test_*.py")
+        if helper in f.read_text(encoding="utf-8", errors="replace")
+    }
+    assert len(importers) >= 10, "the helper is imported by many suites"
+    result = sel.gate(["tests/unit/test_agent_runs_r8.py"], root)
+    assert not result["full"], result["reasons"]
+    assert importers <= set(result["files"]), sorted(importers - set(result["files"]))
+
+
+def test_a_test_helper_has_no_hub_limit(tmp_path: Path, monkeypatch) -> None:
+    """CIV-3c review. A helper that more than HUB_LIMIT suites import still
+    carries a change of a product module it imports to all of them."""
+    monkeypatch.setattr(sel, "HUB_LIMIT", 1)
+    root = _repo(tmp_path)
+    _write(root, "tests/__init__.py")
+    _write(root, "tests/unit/__init__.py")
+    _write(root, "tests/unit/_fakes.py", "from pkg import leaf\n")
+    _write(root, "tests/unit/test_fake_a.py", "from tests.unit._fakes import leaf\n")
+    _write(root, "tests/unit/test_fake_b.py", "from tests.unit._fakes import leaf\n")
+    _write(root, "tests/unit/test_fake_c.py", "from tests.unit._fakes import leaf\n")
+    picked, _, _ = sel.select(["packages/pkg/pkg/leaf.py"], root)
+    assert {"tests/unit/test_fake_a.py", "tests/unit/test_fake_b.py",
+            "tests/unit/test_fake_c.py"} <= set(picked)
+
+
+# ── CIV-3d: only a glob that can list a Python file makes a test a scanner ──
+
+
+@pytest.mark.parametrize("body,scanner", [
+    ('from pathlib import Path\nfor p in Path("x").glob("*.sql"): pass\n', False),
+    ('import glob\nglob.glob("infra/**/*.json", recursive=True)\n', False),
+    ('Path("x").rglob("*.ts")\nPath("y").glob("a/*.md")\n', False),
+    ('Path("x").glob("*.py")\n', True),
+    ('Path("x").rglob("*")\n', True),
+    ('Path("x").glob(PATTERN)\n', True),
+    ('Path("x").glob(f"*{ext}")\n', True),
+    ('Path("x").glob(pattern="*.sql")\n', True),  # a keyword argument is not read: fail open
+    ('Path("x").glob("*.sql")\nPath("y").glob("*.py")\n', True),  # one risky call is enough
+    ('Path("x").glob("*.sql")\nos.walk(".")\n', True),  # another idiom still counts
+    ('Path("x").glob("*.sql")\nPath(".").iterdir()\n', True),
+    ('Path("x").glob("*.sql"\n', True),  # does not parse: fail open
+    ('x = 1\n', False),
+])
+def test_a_scanner_is_a_test_that_can_list_python_files(body: str, scanner: bool) -> None:
+    assert sel._is_scanner(body) is scanner
+    both = sel.scanning_tests({"tests/unit/test_x.py": body})
+    expected = scanner and bool(sel._SCAN_IDIOM.search(body))
+    assert (("tests/unit/test_x.py" in both) is expected)
+
+
+def test_the_sql_glob_files_of_the_real_tree_are_no_longer_scanners() -> None:
+    tests = sel._texts(sorted((sel.ROOT / sel.TESTS).glob("test_*.py")), sel.ROOT)
+    scanners = sel.scanning_tests(tests)
+    r8 = set(sel.r8_files())
+    # Before CIV-3d 146 R8 files were scanners. The ones that only glob data files are not.
+    assert len(scanners & r8) < 100, len(scanners & r8)
+    # The scanners that read Python stay.
+    for must in ("tests/unit/test_data_engine.py", "tests/unit/test_crm_mirror_readonly.py"):
+        assert must in scanners, must

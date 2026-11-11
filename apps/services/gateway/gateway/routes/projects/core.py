@@ -34,8 +34,9 @@ correct in the UI and silently empties the timeline — the CRM learned this in
 
 from __future__ import annotations
 
+import functools
 import json
-from collections.abc import Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -48,6 +49,7 @@ from acb_auth.agent_oauth import ACTOR_VIA_PATTERN
 from acb_auth.permissions import normalize_grant_subject
 from acb_common import get_logger
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from gateway.db import tenant_session as _tenant_session  # noqa: F401
 
 # The shared seam (BO-10 → MT-1c/H2). `_tenant_session` IS
 # `acb_common.db.tenant_session`, aliased per-package for the same reason
@@ -59,7 +61,6 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query
 # ⚠️ It reads as UNUSED inside this module — it is a re-export. `ruff --fix`
 # deletes it and takes 25 test modules with it; do not let a linter "tidy" it.
 from pydantic import BaseModel, field_validator
-from gateway.db import tenant_session as _tenant_session
 from skill_projects.hues import hue_of
 from sqlalchemy import text
 
@@ -409,9 +410,13 @@ STARTED_CATEGORY = "in_progress"
 #: they monkeypatch ``record_activity`` and so never exercised the vocabulary
 #: it guards. A tuple that mirrors a migration by hand needs a test that reads
 #: the migration; anything else is a comment claiming to be an invariant.
+#:
+#: `cycle_transfer` (WS-39 SP-1, the cycle migration): the logged move of one
+#: unfinished task at the close of a cycle (`cycles.close_cycle`).
 ACTIVITY_TYPES: tuple[str, ...] = (
     "comment", "status_change", "field_change", "link", "assignment",
     "agent_run", "sync", "system", "attachment", "mention", "merge",
+    "cycle_transfer",
 )
 
 #: `pm_projects.source` / `pm_tasks.source`. Tasks carry two extra origins.
@@ -983,6 +988,11 @@ class TaskPatchIn(TaskIn):
     """
 
     completed_at: str | None = None
+    #: WS-MCP SW-23. The Check of the task, a read-only command. A PATCH that
+    #: changes it clears the last result (``checks.check_patch_values``). A
+    #: write that sends it while ``agent_task_checks_enabled`` is off gets
+    #: 422. Not on ``TaskIn``, so only this PATCH and ``POST /tasks`` take it.
+    check_text: str | None = None
 
 
 class StatusModel(BaseModel):
@@ -2492,6 +2502,38 @@ def require_precondition(row: Any, if_match: str | None, current: dict) -> None:
     )
 
 
+async def require_exact_version(db: Any, task_id: str, if_match: str | None) -> None:
+    """Strict ``If-Match`` for an agent that REPLACES a satellite of a task.
+
+    WS-55 MCP-G2, fix round 1. An assignment moves ``updated_at`` and not
+    ``fields_at``, so ``precondition_holds`` passes a token from before
+    somebody else's assignment. A replaced set would then drop that person
+    in silence. So an agent's PUT keeps strict equality, as
+    ``agent_delete_task`` does: any change after the read, a comment too,
+    stales the token. The caller reads what it replaces first, so the stamp
+    read here is at least as new as the state it replaces. A member's PUT
+    keeps :func:`require_precondition`. An absent header passes (D-PM-20).
+
+    The ONE strict check of a replace. Two routes call it: the PUT of the
+    assignees (``tasks.set_assignees``) and the PUT of an epic contract
+    (``epic_contract.put_epic_contract``, SP-8a), whose save is a satellite
+    bump too. It moved here from ``tasks.py`` so that both share it. Do not
+    write another copy.
+    """
+    if not isinstance(if_match, str):
+        return
+    expected = parse_precondition(if_match)
+    stamp = (await db.execute(
+        text("SELECT updated_at FROM pm_tasks WHERE id = CAST(:tid AS uuid)"),
+        {"tid": task_id},
+    )).scalar()
+    if stamp != expected:
+        raise HTTPException(status_code=412, detail={
+            "error": "precondition_failed",
+            "message": "This row changed since you loaded it.",
+        })
+
+
 async def count_where(db: Any, table: str, column: str, value: str) -> int:
     total = (await db.execute(
         text(f"SELECT count(*) FROM {table} WHERE {column} = CAST(:value AS uuid)"),
@@ -3364,6 +3406,38 @@ async def assert_epic_has_no_parent(
         )
 
 
+#: SP-8a (``project_management_app.md`` §13.3). The 422 of an epic contract
+#: on a task that is not an epic. It says what happened and the next step.
+#: ``agent_edge.tools.NOT_EPIC_DETAIL`` is the edge's pinned copy.
+NOT_EPIC_DETAIL = (
+    "This task is not an epic, so it takes no epic contract. Nothing changed. "
+    "Make it an epic first: set its type to Epic, then save the contract."
+)
+
+
+async def task_is_epic(db: Any, type_id: Any) -> bool:
+    """Does a task of type *type_id* carry an epic contract (SP-8a)?
+
+    The same predicate as the Epic-root rule (:func:`is_epic_type`), so the
+    two rules never disagree about a type. No type is not an epic.
+    """
+    if not type_id:
+        return False
+    row = await load_row(db, "pm_task_types", str(type_id))
+    return row is not None and is_epic_type(row)
+
+
+async def assert_task_is_epic(db: Any, type_id: Any) -> None:
+    """Refuse an epic contract on a task that is not an epic, with 422.
+
+    The twin of :func:`assert_epic_has_no_parent`. A READ of a task that is
+    not an epic gives ``epic_contract: null`` and never this refusal. A task
+    whose type stops being an epic keeps its row, and the reads ignore it.
+    """
+    if not await task_is_epic(db, type_id):
+        raise HTTPException(status_code=422, detail=NOT_EPIC_DETAIL)
+
+
 async def next_task_number(db: Any, root_id: str) -> int:
     """Allocate the next human-readable number for a root project.
 
@@ -3701,11 +3775,13 @@ _LOCK_TASK_SQL = (
 
 async def lock_task(db: Any, task_id: str) -> Any:
     """Lock one task row until the transaction ends, and return the row as
-    the lock read it. Only ``claim_task`` calls it. The claim has passed its
-    visibility load, so the lock reads by id only. 404 when a delete crossed
-    that load."""
-    # WS-55 EA-6h: `tasks.agent_delete_task` calls it too, after its own
-    # visibility load, so the version and title checks hold until the delete.
+    the lock read it. Four callers, each after its own visibility load, so
+    the lock reads by id only: ``claim_task``; ``tasks.agent_delete_task``
+    (WS-55 EA-6h, so the version and title checks hold until the delete);
+    ``activities._load_agent_comment`` (WS-55 MCP-G9 fix round 3, so no new
+    comment on the task commits during the last-word check); and
+    ``epic_contract.put_epic_contract`` (SP-8a, so the version check and the
+    save hold together). 404 when a delete crossed that load."""
     row = (await db.execute(text(_LOCK_TASK_SQL), {"tid": str(task_id)})).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -4268,3 +4344,35 @@ def is_transient(err: BaseException) -> bool:
             return True
         seen = getattr(seen, "orig", None) or seen.__cause__
     return False
+
+
+#: The words of the 409 when the database refuses a task write for a race.
+TASK_RACE_DETAIL = (
+    "Someone else changed these tasks at the same moment. Try again."
+)
+
+
+def transient_as_409(
+    route: Callable[..., Awaitable[Any]],
+) -> Callable[..., Awaitable[Any]]:
+    """Answer a deadlock or lock timeout in a task-write *route* with a 409.
+
+    Postgres rolled the transaction back, so nothing was written and the
+    caller may send the same request again. The SQLSTATE set is
+    ``TRANSIENT_SQLSTATES``, the one ``tree._tree_race_as_409`` reads.
+    Put it under ``@router.<verb>``: ``functools.wraps`` keeps the
+    signature that FastAPI reads.
+    """
+
+    @functools.wraps(route)
+    async def guarded(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return await route(*args, **kwargs)
+        except HTTPException:
+            raise
+        except Exception as err:
+            if is_transient(err):
+                raise HTTPException(status_code=409, detail=TASK_RACE_DETAIL) from err
+            raise
+
+    return guarded
