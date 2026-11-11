@@ -224,6 +224,17 @@ def task_checks_enabled() -> bool:
     return bool(get_settings().agent_task_checks_enabled)
 
 
+def agent_review_enabled() -> bool:
+    """True when ``agent_review_enabled`` is on (SW-18a).
+
+    The ONE reader of the flag, for both units. While it is false, the
+    gateway answers 404 on the two review routes, and an agent's move to done
+    goes to done whatever a project says. The edge leaves the review
+    sentences out of its tool texts. So both units need the same value.
+    """
+    return bool(get_settings().agent_review_enabled)
+
+
 @functools.lru_cache(maxsize=16)
 def _parse_door_apps(raw: str) -> frozenset[str]:
     """The door app ids that *raw* names. An entry that names no door app
@@ -1351,6 +1362,7 @@ __all__ = [
     "actor_via_for",
     "advertised_resource_scopes",
     "advertised_scopes",
+    "agent_review_enabled",
     "allowed_orgs",
     "ascii_host",
     "authorization_redirect",

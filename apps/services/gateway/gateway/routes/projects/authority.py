@@ -59,8 +59,16 @@ tree the owner of the tree may also convert their own folder. Door:
 ``POST /nodes/{id}/convert``. The tree and node reads carry
 ``can_convert`` through :func:`attach_can_convert`.
 
+**Agent work that waits for review (WS-MCP SW-18a).** The named reviewer of
+the task, or a lead of its project or of an ancestor, approves it. Nobody
+else does, a Projects admin too: the setting names who accepts the work. A
+signed agent never approves. Door: ``POST /tasks/{id}/agent-review``
+(``agent_review.py``). The setting itself is a write of who decides, so it
+needs :func:`may_write_grant`. Door: ``PUT /nodes/{id}/agent-review``.
+
 Each read runs inside the caller's tenant session, so RLS bounds it.
-Fence: ``tests/unit/test_projects_write_authority.py`` (R8).
+Fences: ``tests/unit/test_projects_write_authority.py`` (R8) and
+``tests/unit/test_pm_agent_review_r8.py`` (R8).
 """
 
 from __future__ import annotations
@@ -403,6 +411,53 @@ async def assert_may_write_guidance(db: Any, user: Any, project: Any) -> None:
     refused = await guidance_write_refusal(db, user, project)
     if refused:
         raise HTTPException(status_code=403, detail=refused)
+
+
+#: The 403 of an approve of agent work by a member who may not decide
+#: (WS-MCP SW-18a).
+AGENT_REVIEW_REFUSED = (
+    "Only the reviewer of this task or the project lead can approve the agent's work."
+)
+#: The 403 of a change of the review setting (SW-18a).
+AGENT_REVIEW_SETTING_REFUSED = (
+    "Only the project lead or a Projects admin can change who reviews agent work here."
+)
+
+
+async def may_approve_agent_work(db: Any, user: Any, task: Any) -> bool:
+    """May *user* approve the agent work that waits on *task*? (SW-18a.)
+
+    The named reviewer (``pm_tasks.agent_reviewer``, compared without case),
+    or a lead of the task's project or of an ancestor. A signed agent never
+    may, whoever its member is: a person accepts the work. The cheap arm
+    goes first, so the reviewer costs no query.
+    """
+    if getattr(user, "agent", None) is not None:
+        return False
+    me = _me(user)
+    if not me:
+        return False
+    if _same_person(_field(task, "agent_reviewer"), me):
+        return True
+    return await _leads(db, user, _field(task, "project_id"), None)
+
+
+async def assert_may_approve_agent_work(db: Any, user: Any, task: Any) -> None:
+    """403 with :data:`AGENT_REVIEW_REFUSED`, or return. (SW-18a.)"""
+    if not await may_approve_agent_work(db, user, task):
+        raise HTTPException(status_code=403, detail=AGENT_REVIEW_REFUSED)
+
+
+async def assert_may_set_agent_review(db: Any, user: Any, project: Any) -> None:
+    """403 with :data:`AGENT_REVIEW_SETTING_REFUSED`, or return. (SW-18a.)
+
+    The setting names who accepts agent work, so its floor is the floor of a
+    grant (:func:`may_write_grant`): a lead of the project or of an
+    ancestor, or a Projects admin. A signed agent never sets it.
+    """
+    if getattr(user, "agent", None) is not None or not await may_write_grant(
+            db, user, project):
+        raise HTTPException(status_code=403, detail=AGENT_REVIEW_SETTING_REFUSED)
 
 
 async def attach_can_write_grants(db: Any, user: Any, row: dict[str, Any]) -> dict[str, Any]:

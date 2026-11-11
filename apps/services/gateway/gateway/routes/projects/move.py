@@ -44,6 +44,7 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
+from gateway.routes.projects.agent_review import refuse_agent_move, refuse_agent_move_out
 from gateway.routes.projects.authority import assert_may_move_task
 from gateway.routes.projects.bulk import MAX_BULK, dedupe_ids
 from gateway.routes.projects.cascade import (
@@ -437,6 +438,10 @@ async def _plan(
     #: through `move_task_in`, so the preview names them first: the card
     #: then holds Move and says which subtask, and why.
     privacy_refused = await subtree_privacy_refusals(db, carried, dest_id)
+    #: WS-MCP SW-18a. A signed agent moves no work out of a reviewed project,
+    #: the named tasks and each carried subtask alike. In `_plan`, so the
+    #: preview refuses it too, by the rule above.
+    await refuse_agent_move_out(db, user, [*tasks, *carried], dest_id)
     #: WS-55 MCP-G1, fix round 1. For an agent only: the audience of every
     #: task that the move takes, the named ones and the carried ones.
     audience = (
@@ -842,6 +847,12 @@ async def move_tasks(
                         ),
                     )
                 values["status_id"] = landing
+            # WS-MCP SW-18a. A signed agent's move never skips the review:
+            # no landing in done of a project that needs review. `_plan`
+            # already refused a waiting task and a move out of a reviewed
+            # project. A member's move is unchanged.
+            await refuse_agent_move(db, user, task, plan["destination_project_id"],
+                                    landing_category)
 
             dropped: dict[str, Any] = {}
             if plan["crosses_root"]:

@@ -135,7 +135,8 @@ class TestTheRecords:
         assert tools.NO_CHECK_DETAIL == checks.NO_CHECK
         assert tools.CHECK_CHANGED_DETAIL == checks.CHECK_CHANGED
         assert tools.CHECK_NOT_CLOSED == (
-            checks.ALREADY_CLOSED, checks.NO_DONE_STATUS, checks.HELD_BY_OTHER)
+            checks.ALREADY_CLOSED, checks.NO_DONE_STATUS, checks.HELD_BY_OTHER,
+            checks.WAITING_REVIEW)
         assert "check_text" in tools.CREATE_BODY_KEYS
         assert tools.TOOLS["create_task"].params["check"] == "check_text"
         assert tools.TOOLS["update_task"].params["check"] == "check_text"

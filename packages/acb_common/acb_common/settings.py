@@ -2335,6 +2335,15 @@ class Settings(BaseSettings):
     # `acb_auth.agent_oauth.task_checks_enabled` is the one reader. 🔴 A flip
     # on a box is gate `enforcement-flip`.
     agent_task_checks_enabled: bool = False
+    # SW-18a (spec agent_coordination.md SW-18a): a person accepts agent work
+    # before it is done. Default OFF. While it is false, the two review routes
+    # (`PUT /projects/nodes/{id}/agent-review` and `POST
+    # /projects/tasks/{id}/agent-review`) answer 404, and an agent's move to
+    # done goes to done as before, whatever a project says. The edge reads it
+    # too, for the review sentences of two tool texts, so both units need the
+    # same value. `acb_auth.agent_oauth.agent_review_enabled` is the one
+    # reader. 🔴 A flip on a box is gate `enforcement-flip`.
+    agent_review_enabled: bool = False
     # SW-7 (spec §12.5): MCP sessions at the edge. Default OFF. While it is
     # false, `initialize` answers no `Mcp-Session-Id`, an id that a client
     # still sends is read as no session (never a 404), and no

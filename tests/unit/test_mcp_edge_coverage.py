@@ -257,6 +257,11 @@ NEVER_ON_THE_EDGE = (
     # WS-39 LP-1a (project_management_app.md §14.2a): the delete of a project
     # update stays a member's act in this slice.
     ("DELETE", "/projects/nodes/{project_id}/updates/{update_id}"),
+    # WS-MCP SW-18a (agent_coordination.md SW-18a): a person accepts agent
+    # work, and a lead says that a project needs it. An agent never reaches
+    # either act, so it cannot approve its own work.
+    ("PUT", "/projects/nodes/{project_id}/agent-review"),
+    ("POST", "/projects/tasks/{task_id}/agent-review"),
 )
 
 
