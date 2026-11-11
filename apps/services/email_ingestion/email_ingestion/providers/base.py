@@ -33,6 +33,11 @@ class ProviderRateLimited(Exception):
     (EM-G4b review round 1, F2)."""
 
 
+class FolderCheckIncomplete(ValueError):
+    """The provider could not read the whole folder tree, so it made no
+    folder. The cause may pass, so a later try can succeed (H-267)."""
+
+
 class ProviderAttachmentFailed(Exception):
     """A file did not reach a draft at the provider (WS-17 EM-T9).
 

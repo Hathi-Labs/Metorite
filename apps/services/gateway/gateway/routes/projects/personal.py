@@ -82,6 +82,7 @@ from gateway.routes.projects.core import (
     status_owner_id,
     task_visibility_clause,
     touch_task,
+    transient_as_409,
     update_row,
 )
 from gateway.routes.projects.due_day import (
@@ -192,7 +193,7 @@ class PersonalIn(BaseModel):
     #: PATCH as well, so a client can clear it.
     last_nudged_at: str | None = None
 
-    # ── Today's focus (migration 349, WS-MDC CC-2) ──────────────────────────
+    # ── Today's focus (migration 411, WS-MDC CC-2) ──────────────────────────
     #: My mark "today's focus": my today as ``YYYY-MM-DD``, or null to clear.
     #: Any other date is a 422. A mark past my cap is a 409
     #: ``focus_cap_reached`` (:func:`mark_focus`, ``today_rule``). Only the
@@ -2459,6 +2460,7 @@ async def in_my_tree(db: Any, email: str, task: Any) -> bool:
 
 
 @router.delete("/my/tasks/{task_id}")
+@transient_as_409
 async def purge_my_task(
     task_id: str, user: UserContext = Depends(get_current_user),
 ) -> DeleteResponse:

@@ -88,6 +88,7 @@ from tests.unit.test_mcp_edge_writes import (  # noqa: F401 — fixtures
     _tool,
     _uuid,
     edge,
+    redis_fake,
 )
 
 ME = "agent-member@context.test"
@@ -1093,3 +1094,296 @@ class TestTheAttachments:
 
     async def test_g17_no_agent_text_names_a_removal(self):
         assert "delet" not in tools.GET_TASK_CONTEXT.description.lower()
+
+    # ── IMG-3: the count of images (projects_ai_chat.md §30.4 item 9) ────────
+
+    async def test_img3_images_counts_the_four_image_types_only(self, board):
+        """A PNG, a JPEG, a GIF and a WebP count. An SVG (the gateway calls it
+        ``kind: image``), a PDF and a text file do not. Mutation: count
+        ``kind == "image"``, and the SVG makes it 5."""
+        board.attachments = [
+            _file(1, name="a.png", mime="image/png"),
+            _file(2, name="b.jpg", mime="image/jpeg"),
+            _file(3, name="c.gif", mime="image/gif"),
+            _file(4, name="d.webp", mime="image/webp"),
+            _file(5, name="e.svg", mime="image/svg+xml"),
+            _file(6),
+            _file(7, name="f.txt", mime="text/plain"),
+        ]
+        body = await _context()
+        assert body["images"] == 4
+        assert [r["kind"] for r in body["attachments"]].count("image") == 5
+
+    async def test_img3_a_task_with_one_screenshot_says_images_1(self, board):
+        board.attachments = [_file(1, name="shot.png", mime="image/png")]
+        body = await _context()
+        assert body["images"] == 1
+        assert tuple(body)[:len(tools.CONTEXT_KEYS)] == tools.CONTEXT_KEYS
+
+    async def test_img3_no_files_and_a_refused_list_say_images_0(self, board):
+        assert (await _context())["images"] == 0
+        board.attachments = [_file(1, name="a.png", mime="image/png")]
+        board.answers[("GET", f"/projects/tasks/{TASK}/attachments")] = (404, {})
+        assert (await _context())["images"] == 0
+
+    async def test_img3_the_count_reads_only_the_kept_100_rows(self, board):
+        """Each counted image has an id in ``attachments``."""
+        board.attachments = ([_file(n, name=f"f{n}.txt", mime="text/plain")
+                              for n in range(100)]
+                             + [_file(200, name="late.png", mime="image/png")])
+        body = await _context()
+        assert body["images"] == 0 and body["attachments_truncated"] is True
+
+    async def test_img3_the_count_makes_no_call_and_the_ceiling_stays_14(self, board):
+        _chain(board, 7, project=OTHER_PROJECT)
+        board.attachments = [_file(1, name="a.png", mime="image/png")]
+        body = await _context()
+        assert body["images"] == 1
+        assert tools.CONTEXT_CALL_CEILING == 14
+        assert len(board.requests) == tools.CONTEXT_CALL_CEILING
+        assert not [p for p in board.paths() if p.startswith("/projects/attachments/")]
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SW-56: the protocol block of my_work (and of claim_task, see test_mcp_edge_claim.py)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestTheProtocolBlock:
+    """``protocol: {version, lines}`` in the ``my_work`` result.
+
+    Fixed server text, at most six lines of 120 characters. It shows only while
+    the runs flag is on and the organization of the token row is on
+    ``agent_protocol_orgs``.
+
+    Mutations (R7), each turned the named test red:
+
+    * S56-M1. ``tools._protocol`` drops the ``protocol_allowed`` check.
+      ``test_the_block_is_dark_while_agent_protocol_orgs_is_empty``.
+    * S56-M2. ``tools._protocol`` drops the ``runs_enabled`` check.
+      ``test_the_block_is_dark_with_the_runs_flag_off``.
+    * S56-M3. a seventh line, or a line of 121 characters.
+      ``test_the_text_is_fixed_and_within_its_limits``.
+    * S56-M4. ``_my_work`` does not add the key.
+      ``test_the_block_shows_in_my_work_when_on``.
+    * S56-M5. a line drops ``ask_on_task``.
+      ``test_the_lines_carry_the_rules_of_the_spec``.
+    """
+
+    @pytest.fixture
+    def on(self, board, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_protocol_orgs", "*")
+        return board
+
+    async def _result(self) -> dict[str, Any]:
+        return _structured(await _tool("my_work", {}))
+
+    async def test_the_block_is_dark_while_agent_protocol_orgs_is_empty(self, board):
+        assert "protocol" not in await self._result()
+
+    async def test_the_block_stays_dark_for_an_organization_off_the_list(self, board, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_protocol_orgs",
+                            "00000000-0000-4000-8000-000000000001")
+        assert "protocol" not in await self._result()
+
+    async def test_the_block_is_dark_with_the_runs_flag_off(self, on, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_runs_enabled", False)
+        assert "protocol" not in await self._result()
+
+    async def test_the_block_shows_in_my_work_when_on(self, on):
+        result = await self._result()
+        assert result["protocol"] == {"version": 1, "lines": list(tools.PROTOCOL_LINES)}
+        assert "rows" in result
+
+    async def test_the_block_shows_with_no_row(self, on):
+        result = await self._result()
+        assert result["rows"] == [] and result["protocol"]["lines"]
+
+    def test_the_text_is_fixed_and_within_its_limits(self):
+        lines = tools.PROTOCOL_LINES
+        assert 1 <= len(lines) <= tools.PROTOCOL_LINES_MAX == 6
+        assert all(isinstance(line, str) and 0 < len(line) <= tools.PROTOCOL_LINE_MAX == 120
+                   for line in lines)
+        assert len(set(lines)) == len(lines)
+
+    def test_the_lines_carry_the_rules_of_the_spec(self):
+        text = " ".join(tools.PROTOCOL_LINES)
+        for needle in ("slice, not the epic", "post_agent_activity", "ask_on_task",
+                       "Never ask only in the terminal", "one result", "release_task",
+                       "Hand off with evidence"):
+            assert needle in text, needle
+
+    def test_each_tool_named_in_a_line_exists_and_is_a_run_tool(self):
+        import re
+        named = set(re.findall(r"\b[a-z]+(?:_[a-z]+)+\b", " ".join(tools.PROTOCOL_LINES)))
+        assert named <= set(tools.TOOLS), named - set(tools.TOOLS)
+        assert all(tools.TOOLS[n].runs for n in named)
+
+    def test_the_lines_hold_no_organization_rule(self):
+        text = " ".join(tools.PROTOCOL_LINES)
+        for term in ("HathiLabs", "STE", "OWNER-GATE", "AGENT-SAFE", "21:30", "premerge"):
+            assert term not in text, term
+
+    def test_the_schema_pins_the_block_and_leaves_it_optional(self):
+        schema = tools.MY_WORK.output_schema
+        assert "protocol" in schema["properties"] and "protocol" not in schema["required"]
+        block = schema["properties"]["protocol"]
+        assert block["properties"]["lines"]["maxItems"] == 6
+        assert block["properties"]["lines"]["items"]["maxLength"] == 120
+        assert block["additionalProperties"] is False
+        claim = tools.CLAIM_TASK.output_schema
+        assert "protocol" in claim["properties"] and "protocol" not in claim["required"]
+
+    async def test_the_block_adds_no_gateway_request(self, board, monkeypatch):
+        await self._result()
+        before = list(board.paths())
+        board.requests.clear()
+        monkeypatch.setattr(get_settings(), "agent_protocol_orgs", "*")
+        await self._result()
+        assert board.paths() == before
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PB-4: the tips of my_work (and of claim_task, see test_mcp_edge_claim.py)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestTheTips:
+    """``tips`` in the ``my_work`` result: at most two lines of fixed server text,
+    each naming a playbook topic, shown once for each session.
+
+    Dark: the runs flag, and the organization on ``playbook_orgs``. A tip is a
+    hint. The key that records "shown" is one ``SET NX`` in the tenant Redis.
+
+    Mutations (R7), each turned the named test red:
+
+    * PB4-M1. ``tools._tips`` drops the ``playbook_allowed`` check.
+      ``test_the_tips_are_dark_while_playbook_orgs_is_empty``.
+    * PB4-M2. ``tools._tips`` drops the ``runs_enabled`` check.
+      ``test_the_tips_are_dark_with_the_runs_flag_off``.
+    * PB4-M3. ``_tip_unseen`` always returns true.
+      ``test_a_tip_shows_once_for_a_session``.
+    * PB4-M4. ``_tip_unseen`` returns true on a store failure.
+      ``test_a_store_outage_shows_no_tip_and_no_error``.
+    * PB4-M5. ``_tip_applies`` is always true for ``stalled``.
+      ``test_no_stalled_tip_without_a_quiet_run``.
+    * PB4-M6. ``_tips`` drops the cap.
+      ``test_the_cap_of_two_tips_holds``.
+    * PB4-M7. the tips key joins the protocol block.
+      ``test_the_tips_are_apart_from_the_protocol_block``.
+    """
+
+    HELD = _uuid(7500)
+
+    @pytest.fixture
+    def tips_redis(self, redis_fake):  # noqa: F811 — the fixture of test_mcp_edge_writes
+        return redis_fake
+
+    @pytest.fixture
+    def quiet(self, board, tips_redis, monkeypatch):
+        """A run of this client went quiet, so ``my_work`` lists it as held."""
+        monkeypatch.setattr(get_settings(), "playbook_orgs", "*")
+        board.tasks[self.HELD] = _task_row(self.HELD)
+        board.runs = [_run(_uuid(5500), self.HELD, state="stale")]
+        return board
+
+    async def _result(self) -> dict[str, Any]:
+        return _structured(await _tool("my_work", {}))
+
+    async def test_the_tips_are_dark_while_playbook_orgs_is_empty(self, board, tips_redis):
+        board.tasks[self.HELD] = _task_row(self.HELD)
+        board.runs = [_run(_uuid(5500), self.HELD, state="stale")]
+        assert "tips" not in await self._result()
+        assert tips_redis.calls == []
+
+    async def test_the_tips_stay_dark_for_an_organization_off_the_list(self, quiet, monkeypatch):
+        monkeypatch.setattr(get_settings(), "playbook_orgs", "00000000-0000-4000-8000-000000000001")
+        assert "tips" not in await self._result()
+
+    async def test_the_tips_are_dark_with_the_runs_flag_off(self, quiet, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_runs_enabled", False)
+        assert "tips" not in await self._result()
+
+    async def test_a_quiet_run_gets_the_stalled_tip(self, quiet):
+        result = await self._result()
+        assert [t["id"] for t in result["tips"]] == ["stalled"]
+        assert result["tips"][0]["topic"] == "failures"
+        assert "read_playbook" in result["tips"][0]["text"]
+
+    async def test_a_tip_shows_once_for_a_session(self, quiet):
+        assert "tips" in await self._result()
+        assert "tips" not in await self._result()
+
+    async def test_no_stalled_tip_without_a_quiet_run(self, board, tips_redis, monkeypatch):
+        monkeypatch.setattr(get_settings(), "playbook_orgs", "*")
+        _assign(board, _uuid(7501))
+        assert "tips" not in await self._result()
+
+    async def test_a_store_outage_shows_no_tip_and_no_error(self, quiet, tips_redis):
+        tips_redis.fail = ConnectionError("redis is down")
+        result = await self._result()
+        assert "tips" not in result and result["rows"]
+
+    async def test_the_key_is_in_the_tenant_namespace_and_holds_no_text(self, quiet, tips_redis):
+        await self._result()
+        names = [name for op, name in tips_redis.calls if op == "set"]
+        assert names and all("agent_tips" in n for n in names)
+        assert not any("quiet" in n or "failures" in n for n in names)
+
+    def test_the_text_is_fixed_and_within_its_limits(self):
+        rules = tools.TIP_RULES
+        assert len(rules) >= 1
+        assert tools.TIPS_MAX == 2 and tools.TIP_LINE_MAX == 120
+        assert len({r.id for r in rules}) == len(rules)
+        for rule in rules:
+            assert 0 < len(rule.text) <= tools.TIP_LINE_MAX, rule.id
+            assert rule.topic in rule.text, rule.id
+            assert rule.tool in {"claim_task", "my_work"}, rule.id
+
+    async def test_the_cap_of_two_tips_holds(self, quiet, tips_redis, monkeypatch):
+        rules = tuple(tools.Tip(f"t{i}", "my_work", "failures", "Read failures.") for i in range(3))
+        monkeypatch.setattr(tools, "TIP_RULES", rules)
+        monkeypatch.setattr(tools, "_tip_applies", lambda tip, result: True)
+        assert len((await self._result())["tips"]) == tools.TIPS_MAX
+
+    async def test_no_post_write_time_means_no_tip_and_no_store_call(
+            self, quiet, tips_redis, monkeypatch):
+        monkeypatch.setattr(tools, "_post_write_budget", lambda: 0.0)
+        assert "tips" not in await self._result()
+        assert tips_redis.calls == []
+
+    def test_each_tip_names_a_topic_that_the_playbook_holds(self):
+        pytest.importorskip("acb_playbook")
+        from acb_playbook import load_topic
+        for rule in tools.TIP_RULES:
+            assert load_topic(rule.topic) is not None, rule.topic
+
+    def test_the_tips_hold_no_organization_rule(self):
+        for rule in tools.TIP_RULES:
+            for term in ("HathiLabs", "STE", "OWNER-GATE", "AGENT-SAFE", "21:30", "premerge"):
+                assert term not in rule.text, (rule.id, term)
+
+    def test_the_tips_pass_the_neutral_fixture(self):
+        from tests.unit.test_playbook_org_neutral import hits
+        for rule in tools.TIP_RULES:
+            assert hits(rule.text) == [], rule.id
+
+    async def test_the_tips_are_apart_from_the_protocol_block(self, quiet, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_protocol_orgs", "*")
+        result = await self._result()
+        assert set(result["protocol"]) == {"version", "lines"}
+        assert "tips" in result and "tips" not in result["protocol"]
+
+    async def test_an_organization_that_has_no_tips_still_gets_the_safety_lines(
+            self, board, tips_redis, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_protocol_orgs", "*")
+        result = await self._result()
+        assert "tips" not in result and result["protocol"]["lines"]
+
+    def test_the_schema_pins_the_tips_and_leaves_them_optional(self):
+        for tool in (tools.MY_WORK, tools.CLAIM_TASK):
+            schema = tool.output_schema
+            assert "tips" in schema["properties"] and "tips" not in schema["required"]
+            tips = schema["properties"]["tips"]
+            assert tips["maxItems"] == 2
+            assert tips["items"]["properties"]["text"]["maxLength"] == 120
+            assert tips["items"]["additionalProperties"] is False

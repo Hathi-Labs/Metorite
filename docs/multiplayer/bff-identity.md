@@ -228,7 +228,10 @@ with the deployment's cron and CI callers confirmed against the list above.
 
 Two adjacent things noticed and deliberately left alone, because neither is this change:
 
-- `scripts/setup_secrets.sh` seeds `GATEWAY_INTERNAL_TOKEN=${LITELLM_KEY}` — the two
+- **Fixed 2026-11-07 (WS-24c, task 1843).** The script now writes a random token
+  of its own, and `tests/unit/test_setup_secrets.py` fences it. The text below
+  is the record of the old bug.
+  `scripts/setup_secrets.sh` seeded `GATEWAY_INTERNAL_TOKEN=${LITELLM_KEY}` — the two
   secrets `deps.py` calls "deliberately distinct" start life as the same value, which is
   the BO-2 residual #4 separation not taking effect on a fresh install.
 - `require_internal_auth` and `_get_internal_token` fail OPEN when no token is configured.

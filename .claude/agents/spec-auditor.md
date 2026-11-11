@@ -48,6 +48,12 @@ a sub-item.
    cards and the agent. If the section is missing, the verdict is NO-GO. It is
    also NO-GO if the spec plans a palette, a bell, an assistant rail or a ⌘K
    listener of the app's own. Cite D89 and `specs/navigation_shell.md` §5.
+
+   Also apply **R10** (D211, the gratification ladder). The slice table of a
+   NEW spec names the rung of each slice, and each rung names its demo. A
+   slice table with no rungs is a finding: report it under Gaps. It is not a
+   NO-GO, and an older spec gains the rung column when it is next worked on.
+   Cite `specs/orchestration_playbook.md` §6d.
 5. **Check the open documentation tasks** that the dispatcher pasted into
    your brief. The dispatcher finds them in Metorite with `search_tasks` and
    the spec's file name. If one names this spec and is open, the spec's

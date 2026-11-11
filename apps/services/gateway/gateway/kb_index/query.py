@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -45,6 +45,7 @@ from sqlalchemy import text
 
 from gateway.kb_index import embed as embed_door
 from gateway.kb_index.index import vector_literal
+from gateway.retrieval import turn_vector
 from gateway.routes.knowledge import core
 from gateway.routes.knowledge.flags import knowledge_embed_allowed
 
@@ -87,6 +88,10 @@ async def embed_query(organization_id: str | None, q: str) -> list[float] | None
     words = " ".join(str(q or "").split())
     if not words or not knowledge_embed_allowed(organization_id):
         return None
+    # KG-3b: inside a company-search turn, the vector that Email made is reused.
+    kept = turn_vector.recall(organization_id, words)
+    if kept is not None:
+        return kept
     try:
         vectors = await asyncio.wait_for(
             embed_door.embed([words], org=organization_id, timeout=QUERY_EMBED_TIMEOUT_S),
@@ -95,7 +100,9 @@ async def embed_query(organization_id: str | None, q: str) -> list[float] | None
     except Exception as exc:  # a timeout is an answer: degraded
         _log.warning("knowledge.query_embed_failed", error=type(exc).__name__)
         return None
-    return vectors[0] if vectors else None
+    vector = vectors[0] if vectors else None
+    turn_vector.remember(organization_id, words, vector)
+    return vector
 
 
 def _age_years(valid_from: Any, today: date) -> float:
@@ -129,6 +136,28 @@ def review_factor(review_at: Any, now: datetime) -> float:
     return 1.0
 
 
+def rrf_scores(
+    lists: Sequence[Sequence[Any]],
+    *,
+    key: Callable[[Any], Any],
+    rrf_k: int = RRF_K,
+) -> tuple[dict[Any, float], dict[Any, Any]]:
+    """Reciprocal rank fusion: ``1 / (rrf_k + rank)`` summed over the lists.
+
+    The one place that holds the sum (§6.3). *key* names an item. The rank
+    starts at 1. Returns the score of each key and the first item seen for it,
+    both in order of first sight. Pure. Company search reuses it (KG-3b).
+    """
+    scores: dict[Any, float] = {}
+    items: dict[Any, Any] = {}
+    for ranked in lists:
+        for rank, item in enumerate(ranked, start=1):
+            ident = key(item)
+            scores[ident] = scores.get(ident, 0.0) + 1.0 / (rrf_k + rank)
+            items.setdefault(ident, item)
+    return scores, items
+
+
 def fuse(
     lexical: Sequence[dict[str, Any]],
     semantic: Sequence[dict[str, Any]],
@@ -153,13 +182,7 @@ def fuse(
     with, and its default is the midnight UTC of *today*. A row of another kind keeps the
     age decay, which is the rule of a source document (KB-7, §4.2).
     """
-    scores: dict[Any, float] = {}
-    rows: dict[Any, dict[str, Any]] = {}
-    for ranked in (lexical, semantic):
-        for rank, row in enumerate(ranked, start=1):
-            cid = row["chunk_id"]
-            scores[cid] = scores.get(cid, 0.0) + 1.0 / (rrf_k + rank)
-            rows.setdefault(cid, row)
+    scores, rows = rrf_scores((lexical, semantic), key=lambda row: row["chunk_id"], rrf_k=rrf_k)
     clock = now or datetime(today.year, today.month, today.day, tzinfo=UTC)
     for cid, row in rows.items():
         if reviewed and row.get("source_kind", "page") == "page":

@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from acb_auth import require_feature_router
@@ -71,8 +71,14 @@ router = APIRouter(
     #   webhook/microsoft— Graph change notification. It echoes the
     #                      validationToken, verifies the signed `org` in its
     #                      own URL, then checks clientState inside that tenant.
+    #   signature-image  — WS-17 SG-1 (D-EM-68). A mail reader fetches a
+    #                      signature logo with no session. The 256-bit token in
+    #                      the URL is the capability, and the route reads it
+    #                      under tenant_session(org) and RLS. Never gated, so a
+    #                      mail that went out keeps its logo.
     dependencies=[require_feature_router("email", exempt=[
         "/email/webhook/microsoft",
+        "/email/signature-image/{org}/{token}.{ext}",
     ])],
 )
 
@@ -125,6 +131,10 @@ class EmailMessageModel(BaseModel):
     snippet: str = ""
     has_attachments: bool = False
     attachments: list[AttachmentModel] = []
+    # "failed" only when the provider call for the files failed, so the
+    # reader can offer a retry. An empty list with "ok" is a mail whose parts
+    # are all inline pictures (Graph sets ``hasAttachments`` for those).
+    attachments_status: Literal["ok", "failed"] = "ok"
     is_read: bool = False
     is_starred: bool = False
     is_flagged: bool = False
@@ -172,6 +182,12 @@ def _instantiate_provider(provider_name: str, creds: dict[str, Any]):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+def _scope_provider(provider: Any, account_id: str) -> None:
+    """Name the mailbox on a provider that keeps a shared folder-id cache."""
+    if hasattr(provider, "folder_cache_scope"):
+        provider.folder_cache_scope = account_id
+
+
 def _decrypt_credentials(blob: str) -> tuple[dict, Any]:
     """Decrypt a stored credential blob. Returns the credentials and the store.
 
@@ -210,6 +226,7 @@ async def _provider_for_message(db: Any, message_id: str, user_email: str):
         raise HTTPException(status_code=404, detail="Message not found")
     creds, store = _decrypt_credentials(row.credentials_encrypted)
     provider = _instantiate_provider(row.provider, creds)
+    _scope_provider(provider, str(row.account_id))
     return provider, row.provider_message_id, str(row.account_id), store
 
 
@@ -233,6 +250,7 @@ async def _provider_for_account(db: Any, account_id: str, user_email: str):
         raise HTTPException(status_code=404, detail="Account not found")
     creds, store = _decrypt_credentials(row.credentials_encrypted)
     provider = _instantiate_provider(row.provider, creds)
+    _scope_provider(provider, str(account_id))
     return provider, store, row.email_address
 
 
@@ -254,6 +272,7 @@ async def _provider_for_account_any(db: Any, account_id: str):
         raise HTTPException(status_code=404, detail="Account not found")
     creds, store = _decrypt_credentials(row.credentials_encrypted)
     provider = _instantiate_provider(row.provider, creds)
+    _scope_provider(provider, str(account_id))
     return provider, store, row.email_address
 
 

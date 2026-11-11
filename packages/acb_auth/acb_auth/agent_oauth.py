@@ -39,6 +39,8 @@ write pairs, and :func:`writes_enabled` is the one reader of the writes flag. :f
 ``mcp:<host>:<slug>`` stamp of a connection (EA-13a). :data:`ACTOR_VIA_PATTERN`
 is the one shape of that stamp, and the Projects routes import it from here.
 :data:`CLIENT_LABELS` and :func:`client_label` give the name of a stamp.
+EA-19b adds the box stamp ``mcp:box:<slug>-<8 hex>`` (spec §10.9), and
+:func:`box_tokens_enabled` is the one reader of the box-token flag.
 
 **The app door (MCP-P1a, spec §19).** The app scopes come from
 ``acb_common.app_manifests`` (:data:`APP_SCOPES`), and :func:`covered_scopes`
@@ -118,6 +120,23 @@ def scope_holds(scopes: Iterable[str], required: str) -> bool:
     return required in held or any(covered_by(s) == required for s in held)
 
 
+#: SW-34b (``agent_coordination.md``). The read scopes of the resource:
+#: ``projects:read``, ``context:read`` and each ``<app>:read``. A scope that
+#: covers another scope (a write scope) is never one.
+READ_SCOPES: tuple[str, ...] = tuple(
+    s for s in RESOURCE_SCOPES if covered_by(s) is None and s.endswith(":read"))
+
+
+def read_only(scopes: Iterable[str]) -> frozenset[str]:
+    """The read scopes among *scopes* (SW-34b). The ONE narrowing rule of the
+    read-only door ``/mcp/readonly``. Call it on scopes that the cover rule
+    already expanded, so ``projects:write`` has given ``projects:read``. It
+    only removes a scope, so it can never widen a token.
+
+    Fence: ``tests/unit/test_mcp_edge_readonly.py``."""
+    return frozenset(s for s in scopes if s in READ_SCOPES)
+
+
 #: The longest ``scope`` string the server reads.
 MAX_SCOPE_CHARS = 1024
 
@@ -184,6 +203,20 @@ def runs_enabled() -> bool:
     return bool(get_settings().agent_runs_enabled)
 
 
+#: Task 1045a (``agent_coordination.md`` §3.2). What a ``waiting`` line of an
+#: agent run may wait on. ONE copy for both units: the gateway checks the
+#: input against it, and the edge offers it as the enum of the tool. The CHECK
+#: ``pm_agent_runs_waiting_on`` of the migration lists the same five. It lives
+#: here because the edge's ``tools.py`` may not hold the word as a literal
+#: (rule 15 of the edge's AGENTS.md).
+#: The wait is on work that is not the agent's own (owner, 2026-11-07). While
+#: the agent's own sub-agents work, the run is working, so no value names
+#: them. ``agent`` is another (external) agent.
+RUN_WAITING_ON: tuple[str, ...] = ("ci", "review", "deploy", "member", "agent")
+#: The longest wait, in minutes (D140.8). A shorter lease lowers it.
+RUN_WAITING_MAX_MIN = 120
+
+
 def answer_change_enabled() -> bool:
     """True when ``agent_answer_change_enabled`` is on (SW-43).
 
@@ -191,6 +224,18 @@ def answer_change_enabled() -> bool:
     answer answers 404 and the runs wire has no ``answer`` field.
     """
     return bool(get_settings().agent_answer_change_enabled)
+
+
+def task_checks_enabled() -> bool:
+    """True when ``agent_task_checks_enabled`` is on (SW-23).
+
+    The ONE reader of the flag, for both units. While it is false, the
+    gateway answers 404 on the report route of a Check, refuses a task write
+    that sends ``check_text``, and puts no ``check`` key on a task row. The
+    edge leaves ``report_check`` and the ``check`` input out of
+    ``tools/list``. So both units need the same value.
+    """
+    return bool(get_settings().agent_task_checks_enabled)
 
 
 @functools.lru_cache(maxsize=16)
@@ -250,6 +295,19 @@ def mcp_sessions_enabled() -> bool:
     return bool(get_settings().agent_mcp_sessions_enabled)
 
 
+def box_tokens_enabled() -> bool:
+    """True when ``agent_box_tokens_enabled`` is on (EA-19b, spec §10.9).
+
+    The ONE reader of the box-token flag, for both units. The edge bearer
+    check and ``agent_tokens.read_live_connection`` (branch 0) refuse a
+    connection of credential ``box`` while it is false, next to
+    :func:`org_allowed`. ``agent_tokens.lookup_token`` does not read it,
+    because ``/oauth/revoke`` must still find a box token (rule 8). It is a
+    pause, not a kill.
+    """
+    return bool(get_settings().agent_box_tokens_enabled)
+
+
 #: The ``detail`` of the 403 that branch 0 answers to a SIGNED write while the
 #: writes flag is off (EA-6a fix round 1). The edge maps it to a tool error,
 #: never to the MCP 401, so a client keeps its token and its reads.
@@ -296,6 +354,37 @@ def allowed_orgs() -> frozenset[str]:
     return _parse_orgs(str(get_settings().agent_access_orgs or ""))
 
 
+def protocol_allowed(organization_id: object) -> bool:
+    """True when ``agent_protocol_orgs`` allows *organization_id*.
+
+    SW-56. The ONE reader of the flag. It keeps the ``protocol`` block of the
+    ``claim_task`` and ``my_work`` results dark: an organization that it
+    refuses gets results with no such key. The list has the shape of
+    ``agent_access_orgs`` and the same parser, and the default is empty. It
+    reads the settings at each call. The caller passes the organization of
+    the token row, never request input.
+    """
+    org = _canonical_org(organization_id)
+    if org is None:
+        return False
+    orgs = _parse_orgs(str(get_settings().agent_protocol_orgs or ""))
+    return ALL_ORGS in orgs or org in orgs
+
+
+def plan_order_allowed(organization_id: object) -> bool:
+    """True when ``my_work_plan_order_orgs`` allows *organization_id* (SW-68a).
+
+    The ONE reader of the flag. Off by default. The edge and the gateway route
+    both ask it, and the organization comes from the token row or the session,
+    never from request input. It reads the settings at each call.
+    """
+    org = _canonical_org(organization_id)
+    if org is None:
+        return False
+    orgs = _parse_orgs(str(get_settings().my_work_plan_order_orgs or ""))
+    return ALL_ORGS in orgs or org in orgs
+
+
 def org_allowed(organization_id: object) -> bool:
     """True when ``agent_access_orgs`` allows *organization_id*.
 
@@ -309,6 +398,22 @@ def org_allowed(organization_id: object) -> bool:
     if org is None:
         return False
     orgs = allowed_orgs()
+    return ALL_ORGS in orgs or org in orgs
+
+
+def resources_allowed(organization_id: object) -> bool:
+    """True when ``agent_resources_orgs`` allows *organization_id*.
+
+    SW-34a. The ONE reader of the flag. It keeps the MCP resources dark: an
+    organization that it refuses gets an empty list and a not-found read. The
+    list has the shape of ``agent_access_orgs`` and the same parser, and the
+    default is empty. It reads the settings at each call. The caller passes
+    the organization of the token row, never request input.
+    """
+    org = _canonical_org(organization_id)
+    if org is None:
+        return False
+    orgs = _parse_orgs(str(get_settings().agent_resources_orgs or ""))
     return ALL_ORGS in orgs or org in orgs
 
 
@@ -326,6 +431,23 @@ def change_access_allowed(organization_id: object) -> bool:
     if org is None:
         return False
     orgs = _parse_orgs(str(get_settings().agent_change_access_orgs or ""))
+    return ALL_ORGS in orgs or org in orgs
+
+
+def playbook_allowed(organization_id: object) -> bool:
+    """True when ``playbook_orgs`` allows *organization_id*.
+
+    PB-2 (D186, ``orchestration_playbook.md`` §7). The ONE reader of the flag.
+    It keeps the playbook prompts dark: an organization that it refuses sees
+    only the prompts it saw before. The list has the shape of
+    ``agent_access_orgs`` and the same parser, and the default is empty. It
+    reads the settings at each call. The caller passes the organization of the
+    token row, never request input.
+    """
+    org = _canonical_org(organization_id)
+    if org is None:
+        return False
+    orgs = _parse_orgs(str(get_settings().playbook_orgs or ""))
     return ALL_ORGS in orgs or org in orgs
 
 
@@ -739,7 +861,7 @@ ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
 #: switch is on, and it checks the version and the exact title. ⚠️ The plain
 #: ``DELETE /projects/tasks/{task_id}`` stays OUT of both sets.
 #: WS-55 MCP-G2 adds two pairs. The ``PUT`` of the assignees is the route of
-#: ``set_assignees``, the one ``PUT`` of the set. The task move is the route
+#: ``set_assignees``, the first ``PUT`` of the set. The task move is the route
 #: of the ``parent_task_id`` of ``update_task``, and the route refuses a
 #: signed move to another project.
 #: WS-55 MCP-G1 adds four pairs. The node POST and PATCH are the routes of
@@ -752,7 +874,34 @@ ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
 #: ``record_outside_decision``. An agent records a decision that its member
 #: made outside Metorite, on its OWN awaiting run. It writes an agent
 #: ``response`` and never a ``prompt``, and it refuses a typed request.
+#: SW-16a adds the link pair: the POST and the DELETE of a task link, the
+#: routes of ``add_task_link`` and ``remove_task_link``. The route checks that
+#: the member sees BOTH tasks. SW-16b owns the write fence for these routes.
+#: SP-8a adds the ``PUT`` of the epic contract, the route of the
+#: ``epic_contract`` block of ``update_task``. It replaces the whole contract,
+#: and the route refuses a task that is not an epic.
+#: WS-55 MCP-G9 adds the PATCH and the DELETE of one comment, the routes of
+#: ``update_comment`` and ``delete_comment``. For a signed agent the route
+#: changes only a comment that the member wrote AND whose ``meta.via`` is the
+#: stamp of this client, on a task in the reach of the connection. Any other
+#: comment gets 403 or 404 (``activities._load_agent_comment``).
+#: ⚠️ WS-39 TPL-1a keeps the template save and the apply OFF this set. Both
+#: are class C in the chat manifest, and rule 2 refuses a class C pair. An MCP
+#: write of a template comes later, with a preview and a confirm step, as
+#: ``move_tasks`` has (EA3-53).
+#: Fence: ``tests/unit/test_mcp_edge_coverage.py`` (rules 1 and 2) and
+#: ``tests/unit/test_mcp_edge_comment_edit_r8.py``.
+#: WS-39 LP-1a adds the POST of a project update, the route of
+#: ``post_project_update``. The route needs the right of a task write on the
+#: project, so a pinned connection posts only inside its pin.
 #: Fence: ``tests/unit/test_mcp_edge_coverage.py`` (rules 1 and 2).
+#: WS-MCP SW-23 adds the report of a Check, the route of ``report_check``.
+#: It records one run. A pass moves the task to done only under the rule of
+#: a status move (the caller sees the task, the version holds, and no live
+#: run of another session holds it). ``open`` and ``cannot_run`` never move
+#: the task. It answers 404 while ``agent_task_checks_enabled`` is off. HIGH
+#: tier from the start (identity of who may close a task).
+#: Fence: ``tests/unit/test_task_check_r8.py`` and the coverage fence.
 MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/projects/nodes"),
     ("PATCH", "/projects/nodes/{project_id}"),
@@ -762,8 +911,18 @@ MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("PUT", "/projects/tasks/{task_id}/assignees"),
     ("POST", "/projects/tasks/{task_id}/move"),
     ("POST", "/projects/tasks/{task_id}/refs"),
+    # SW-16a: `add_task_link` and `remove_task_link`.
+    ("POST", "/projects/tasks/{task_id}/links"),
+    ("DELETE", "/projects/tasks/{task_id}/links/{link_id}"),
+    # SP-8a: the `epic_contract` block of `update_task`. It replaces the
+    # whole contract of an epic. The gateway refuses a task that is not an
+    # epic (422), and a pinned connection reaches only the epics of its pin.
+    ("PUT", "/projects/tasks/{task_id}/epic-contract"),
     ("POST", "/projects/tasks"),
     ("POST", "/projects/tasks/{task_id}/comments"),
+    # MCP-G9: `update_comment` and `delete_comment`, own client only.
+    ("PATCH", "/projects/comments/{activity_id}"),
+    ("DELETE", "/projects/comments/{activity_id}"),
     ("POST", "/projects/tasks/{task_id}/claim"),
     ("POST", "/projects/tasks/{task_id}/agent-runs"),
     ("POST", "/projects/agent-runs/{run_id}/activities"),
@@ -774,6 +933,13 @@ MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/projects/agent-runs/{run_id}/outside-decision"),
     ("POST", "/projects/tasks/{task_id}/archive-request"),
     ("POST", "/projects/tasks/{task_id}/agent-delete"),
+    # WS-39 LP-1a: `post_project_update`. The route needs the right of a task
+    # write on the project, and it answers 404 while PROJECTS_UPDATES_ORGS
+    # does not hold the org.
+    ("POST", "/projects/nodes/{project_id}/updates"),
+    # WS-MCP SW-23: `report_check`. A pass closes the task only when the
+    # caller may move it. It answers 404 while the Check flag is off.
+    ("POST", "/projects/tasks/{task_id}/check-result"),
 })
 
 #: The ONE allowlist of the MCP edge (EA3-6). Each pair is a method and the
@@ -795,6 +961,17 @@ MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("GET", "/projects/nodes/{project_id}/fields"),
     ("GET", "/projects/nodes/{project_id}/tags"),
     ("GET", "/projects/tasks"),
+    # MCP-G19a: the counts of `board_stats`, over the same scope as the list.
+    ("GET", "/projects/tasks/stats"),
+    # SW-68a: the plan order of `my_work`. The answer holds ids, counts and
+    # `labels`: the number and title of the VISIBLE blockers, for the chat. The
+    # edge ignores `labels`, and a hidden blocker is never named.
+    ("GET", "/projects/plan/order"),
+    # MCP-G21: the members that `set_assignees` would accept, for `list_members`.
+    ("GET", "/projects/assignable-members"),
+    # SP-12: the order of work under one goal, epic or project, for `get_plan`.
+    # A read. The route narrows by the pin, and counts a hidden slice without a name.
+    ("GET", "/projects/plan/analysis"),
     ("GET", "/projects/tasks/{task_id}"),
     ("GET", "/projects/tasks/{task_id}/relations"),
     ("GET", "/projects/tasks/{task_id}/timeline"),
@@ -802,6 +979,11 @@ MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # MCP-G18: the metadata of the files on a task, for `get_task_context`.
     # The row also holds a cookie URL, which the edge never returns.
     ("GET", "/projects/tasks/{task_id}/attachments"),
+    # IMG-3 (projects_ai_chat.md §30.4, owner answer 2026-11-07): the bytes
+    # of one file, for `get_attachment`. The route checks only that the file
+    # hangs off SOME task that the member can see. So the tool first finds
+    # the id in the list of THIS task, and sends no bytes call otherwise.
+    ("GET", "/projects/attachments/{attachment_id}/{filename}"),
     ("GET", "/projects/search"),
     ("GET", "/projects/tasks/{task_id}/agent-runs"),
     ("GET", "/projects/agent-runs"),
@@ -816,17 +998,38 @@ MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # for `list_apps` and `describe_app`. They hold no data of an app.
     ("GET", "/agent-access/apps"),
     ("GET", "/agent-access/apps/{app}"),
+    # WS-39 LP-1a: `list_project_updates`, newest first. It answers 404 while
+    # PROJECTS_UPDATES_ORGS does not hold the org.
+    ("GET", "/projects/nodes/{project_id}/updates"),
+    # WS-39 TPL-1a: `list_templates`. It answers 404 while
+    # `PROJECTS_TEMPLATES_ORGS` does not hold the org.
+    ("GET", "/projects/templates"),
     *MCP_WRITE_ROUTES,
 })
+
+#: IMG-3. The file name in the path of the bytes route. The route ignores
+#: it (the stored name wins), so the shape only keeps the path plain: the
+#: characters of the upload rule (``_safe_name``), 1 to 120 of them, no
+#: ``/``, no ``\\``, no ``..``, no control character, and no dot or space
+#: first. The edge sends a stand-in name for a stored name of another shape.
+ATTACHMENT_FILENAME_PATTERN = r"(?!.*\.\.)[A-Za-z0-9_-][A-Za-z0-9._ -]{0,119}"
 
 #: The path parameters of a pair of :data:`MCP_ROUTES` that are not ids, each
 #: with its pattern (MCP-P1a). The edge client refuses every other value.
 MCP_PATH_SHAPES: Mapping[tuple[str, str], Mapping[str, str]] = MappingProxyType({
     ("GET", "/agent-access/apps/{app}"): MappingProxyType(
         {"app": app_manifests.APP_ID_PATTERN}),
+    ("GET", "/projects/attachments/{attachment_id}/{filename}"): MappingProxyType(
+        {"filename": ATTACHMENT_FILENAME_PATTERN}),
 })
 
 # ── The app door (MCP-P1a, spec §19.3 to §19.7) ─────────────────────────────
+
+#: WS-39 LP-1a. The ``detail`` of the 404 of the two update routes while
+#: ``PROJECTS_UPDATES_ORGS`` does not hold the org. The gateway sends it and
+#: the edge maps it to a tool text that says the feature is off. ONE copy:
+#: the gateway may not be imported by the edge.
+PROJECT_UPDATES_OFF = "Project updates are off for this organization."
 
 #: The ``detail`` of the 403 of a door call for an app that the door flag
 #: does not name (§19.6). The edge maps it to a fixed tool error.
@@ -886,13 +1089,40 @@ def path_shapes(method: str, template: str) -> Mapping[str, str]:
         return dict(door.route.path_shapes)
     return MCP_PATH_SHAPES.get((method, template), {})
 
-#: The cap of EA3-30: a connection makes at most :data:`WRITE_CAP` writes in
-#: :data:`WRITE_WINDOW_S` seconds, counted from its first write of the window.
+#: The cap of EA3-30: a connection makes at most :func:`write_cap` writes in
+#: :func:`write_window_s` seconds, counted from its first write of the window.
 #: Branch 0 counts in the tenant Redis wrapper, under the namespace
-#: :data:`WRITE_CAP_NAMESPACE`, and the 121st write gets 429.
+#: :data:`WRITE_CAP_NAMESPACE`, and the write after the cap gets 429.
+#: MCP-G20: these two are the DEFAULTS. The settings ``AGENT_WRITE_CAP`` and
+#: ``AGENT_WRITE_WINDOW_S`` set the live values, and the two readers below
+#: are the one source of them.
 WRITE_CAP = 120
 WRITE_WINDOW_S = 600
 WRITE_CAP_NAMESPACE = "agent_writes"
+
+
+def _positive(value: object, default: int) -> int:
+    """*value* as a whole number of 1 or more, else *default* (MCP-G20)."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return default
+    return value
+
+
+def write_cap() -> int:
+    """The writes that one connection makes in one window (MCP-G20).
+
+    ``agent_write_cap``, or :data:`WRITE_CAP` for a value below 1. Branch 0
+    reads it at each write, and the edge names it in each write tool.
+    """
+    return _positive(get_settings().agent_write_cap, WRITE_CAP)
+
+
+def write_window_s() -> int:
+    """The seconds of one window of the cap (MCP-G20).
+
+    ``agent_write_window_s``, or :data:`WRITE_WINDOW_S` for a value below 1.
+    """
+    return _positive(get_settings().agent_write_window_s, WRITE_WINDOW_S)
 
 
 #: EA-13a (spec §12.2 item 1, EA3-47). The longest ``<slug>`` of a client
@@ -925,8 +1155,66 @@ def client_slug(client_id: str | None) -> str:
     return segment[:CLIENT_SLUG_MAX].rstrip("-")
 
 
-def actor_via_for(client_origin: str | None, *, client_id: str | None) -> str:
+#: EA-19b (spec §10.9 question 6). The ``credential`` of a box connection,
+#: its ``client_id``, and the longest ``<slug>`` of its stamp.
+BOX_CREDENTIAL = "box"
+BOX_CLIENT_ID = "urn:metorite:box"
+BOX_SLUG_MAX = 40
+#: The start of each box stamp. It keeps ``mcp:``, so a header from a person
+#: that names a box stamp starts branch 0 and fails the HMAC (§10.9 q. 1).
+BOX_STAMP_PREFIX = "mcp:box:"
+_BOX_LABEL = re.compile(r"(?P<slug>.+)-[0-9a-f]{8}")
+_BOX_HEX = re.compile(r"[0-9a-f]{8}")
+
+
+def box_slug(name: str | None) -> str:
+    """The ``<slug>`` of a box name (EA-19b, spec §10.9 question 1).
+
+    The name in lower case. Each run of characters other than ``[a-z0-9-]``
+    becomes one ``-``, a ``-`` at either end goes, and the slug keeps at most
+    :data:`BOX_SLUG_MAX` characters. A name with no such character gives
+    ``""``.
+    """
+    slug = _SLUG_JUNK.sub("-", (name or "").lower()).strip("-")
+    return slug[:BOX_SLUG_MAX].rstrip("-")
+
+
+def _box_stamp(connection_id: str | None, client_name: str | None) -> str:
+    """``mcp:box:<slug>-<8 hex>``, else ``mcp:box:<8 hex>``, else ``""``.
+
+    ``<8 hex>`` is the start of the canonical connection id, so two boxes of
+    one name stay apart. A stamp that does not fully match
+    :data:`ACTOR_VIA_PATTERN` falls back to the short form. A connection id
+    that is not a UUID gives ``""``, which branch 0 refuses.
+    """
+    try:
+        short = str(uuid.UUID(str(connection_id or "")))[:8]
+    except ValueError:
+        return ""
+    slug = box_slug(client_name)
+    if slug:
+        stamp = f"{BOX_STAMP_PREFIX}{slug}-{short}"
+        if ACTOR_VIA_PATTERN.fullmatch(stamp):
+            return stamp
+    return f"{BOX_STAMP_PREFIX}{short}"
+
+
+def actor_via_for(
+    client_origin: str | None,
+    *,
+    client_id: str | None,
+    credential: str | None = None,
+    connection_id: str | None = None,
+    client_name: str | None = None,
+) -> str:
     """The ``X-Actor-Via`` stamp of a connection (spec §10.1, §12.2 item 1).
+
+    EA-19b (spec §10.9 question 1). For *credential* ``box`` the stamp is
+    ``mcp:box:<slug>-<8 hex>`` (:func:`_box_stamp`), from *client_name* (the
+    box name) and *connection_id*. The origin and the client id do not
+    count then. Every other credential, and the defaults, give the stamp
+    below, as before. An OAuth connection whose origin host is ``box`` gets
+    the hash stamp, so it can never read as a box.
 
     EA-13a (EA3-47): ``mcp:<host>:<slug>``, where ``<host>`` is the
     lower-case ASCII host of *client_origin* and ``<slug>`` is
@@ -949,6 +1237,8 @@ def actor_via_for(client_origin: str | None, *, client_id: str | None) -> str:
     both accept it. The label of an old row reads it, through
     :data:`CLIENT_LABELS`.
     """
+    if credential == BOX_CREDENTIAL:
+        return _box_stamp(connection_id, client_name)
     origin = (client_origin or "").strip()
     if not origin:
         return ""
@@ -956,7 +1246,8 @@ def actor_via_for(client_origin: str | None, *, client_id: str | None) -> str:
         host = (urlsplit(origin).hostname or "").lower()
     except ValueError:
         host = ""
-    host_ok = bool(host) and host.isascii()
+    # EA-19b: the host `box` is the namespace of the box stamps.
+    host_ok = bool(host) and host.isascii() and host != "box"
     # An IPv6 host has colons of its own, so a slug after it could not be
     # read back. Such a host keeps the host stamp (EA-13a fix round 1).
     slug = client_slug(client_id) if host_ok and ":" not in host else ""
@@ -994,8 +1285,17 @@ def client_label(via: str | None) -> str:
 
     A body with more than one colon is an IPv6 host stamp, because
     :func:`actor_via_for` adds no slug to an IPv6 host. It reads whole.
+
+    EA-19b: a box stamp ``mcp:box:<slug>-<8 hex>`` reads ``Box <slug>``. The
+    short form ``mcp:box:<8 hex>`` reads ``Box``.
     """
     raw = (via or "").strip().lower()
+    if raw.startswith(BOX_STAMP_PREFIX):
+        tail = raw.removeprefix(BOX_STAMP_PREFIX)
+        named = _BOX_LABEL.fullmatch(tail)
+        if named is not None:
+            return f"Box {named.group('slug')}"
+        return "Box" if not tail or _BOX_HEX.fullmatch(tail) else f"Box {tail}"
     body = raw.removeprefix("mcp:")
     host = body if body.count(":") > 1 else body.split(":", 1)[0]
     return CLIENT_LABELS.get(body) or CLIENT_LABELS.get(host) or host or "Agent"
@@ -1007,7 +1307,7 @@ def client_host(via: str | None) -> str:
     value gives ``""``. An IPv6 host stamp reads whole, as in
     :func:`client_label`. The host is the part that the gateway verified when
     the member connected the client, so it is the part that no client names for
-    itself.
+    itself. A box stamp (EA-19b) gives ``box``.
     """
     body = (via or "").strip().lower().removeprefix("mcp:")
     return body if body.count(":") > 1 else body.split(":", 1)[0]
@@ -1032,6 +1332,11 @@ __all__ = [
     "APPROVAL_REQUIRED_CODE",
     "APP_OFF_CODE",
     "APP_SCOPES",
+    "ATTACHMENT_FILENAME_PATTERN",
+    "BOX_CLIENT_ID",
+    "BOX_CREDENTIAL",
+    "BOX_SLUG_MAX",
+    "BOX_STAMP_PREFIX",
     "CLIENT_LABELS",
     "CLIENT_SLUG_MAX",
     "CONTEXT_READ",
@@ -1048,6 +1353,8 @@ __all__ = [
     "OFFLINE_ACCESS",
     "PROJECTS_READ",
     "PROJECTS_WRITE",
+    "PROJECT_UPDATES_OFF",
+    "READ_SCOPES",
     "RESOURCE_SCOPES",
     "S256",
     "SUPPORTED_SCOPES",
@@ -1062,6 +1369,8 @@ __all__ = [
     "ascii_host",
     "authorization_redirect",
     "authorize_url",
+    "box_slug",
+    "box_tokens_enabled",
     "client_host",
     "client_label",
     "client_origin",
@@ -1083,15 +1392,22 @@ __all__ = [
     "parse_scope",
     "path_shapes",
     "pkce_matches",
+    "playbook_allowed",
+    "protocol_allowed",
+    "read_only",
     "redirect_display",
     "redirect_host",
     "redirect_uri_matches",
     "resource",
+    "resources_allowed",
     "revocation_endpoint",
     "runs_enabled",
     "s256",
     "scope_holds",
     "scope_string",
+    "task_checks_enabled",
     "token_endpoint",
+    "write_cap",
+    "write_window_s",
     "writes_enabled",
 ]

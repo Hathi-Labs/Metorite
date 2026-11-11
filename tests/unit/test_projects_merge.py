@@ -258,6 +258,11 @@ def test_the_activity_vocabulary_matches_the_migration():
     Two lists of the same words in two languages is a mirror, and mirrors go
     stale. This is the only thing that makes it fail here rather than in
     somebody's merge.
+
+    WS-39 SP-1 widened the CHECK again (`cycle_transfer`), in a later file.
+    So this file's CHECK is now a SUBSET of the tuple, and it must still hold
+    `merge`. The exact mirror of the LAST CHECK is
+    `test_projects_migration.py::test_the_activity_vocabulary_mirror_is_exact`.
     """
     written = re.search(
         r"ADD CONSTRAINT pm_activities_type_check\s*CHECK \(type IN \(([^)]*)\)\)",
@@ -266,9 +271,9 @@ def test_the_activity_vocabulary_matches_the_migration():
     )
     assert written is not None, "the migration no longer widens the CHECK here"
     in_sql = set(re.findall(r"'([a-z_]+)'", written.group(1)))
-    assert in_sql == set(ACTIVITY_TYPES), (
-        f"only in SQL: {in_sql - set(ACTIVITY_TYPES)}; "
-        f"only in Python: {set(ACTIVITY_TYPES) - in_sql}"
+    assert "merge" in in_sql
+    assert in_sql <= set(ACTIVITY_TYPES), (
+        f"only in SQL: {in_sql - set(ACTIVITY_TYPES)}"
     )
 
 

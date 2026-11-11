@@ -44,6 +44,7 @@ grandfathered. Do not open a pull request that only repairs old text.
 | # | File | What it owns |
 |---|---|---|
 | 1 | **`project-docs/INDEX.md`** | Which specs are **ACTIVE** (you may build from these), and which are deferred or historical (you may not). A spec missing from INDEX is a defect. Say so. |
+| 1a | **`project-docs/specs/building_blocks.md`** | The product shape and the seams (D205). Read it before you add a table, registry, manifest, queue, engine or spec. A vertical is a preset over core blocks. |
 | 2 | **`project-docs/work_plan.md` §1** | The agent-ready spec contract and the standing **R** rules. Binding on every PR. |
 | 3 | **The HathiLabs project Metorite**, then **`project-docs/work_plan.md` §2** | **Metorite holds the state (D118):** the status, the priority, the owner and the order of each work item. Call `my_work` through the Metorite MCP, then `claim_task`. §2 is the index: one row per workstream, with its owning spec and its Metorite epic. Start at **§2.0**, the roadmap (M0 to M4). For scope, the spec wins. For order and owner, Metorite wins. |
 | 4 | **`project-docs/work_plan.md` §6** | The owner-gate registry. Actions you must **refuse by name**, unless §3a opens them. |
@@ -87,11 +88,12 @@ reference tied to code. Do not put product specs in `docs/`.
   palette, bell or assistant rail. A team view is a filter, never a Center.
   `specs/navigation_shell.md` owns it, and `workbench/control_plane/AGENTS.md`
   rule 10 carries it to UI work.
-- **Pricing is FLAT: ₹500/user/month + AI credits**, one sellable seat
-  (`core`), everything live included. `specs/launch_surface.md` §4 is the
-  shape of record. `saas_multitenancy.md` §2.4b is the superseded D23/D24
-  record. Still binding: D19.3's hard cap, D32.5's three counts, the
-  entitlement seam.
+- **Pricing is SEAT TIERS with base pricing (D152, final: owner 2026-11-10, D204
+  point 9)**, plus AI credits. The flat ₹500 seat ends (D190.3) when PLN-0
+  merges. Until then the code sells the flat seat (`core`).
+  `specs/launch_surface.md` §4 is the old shape. The Billing project (epic
+  WS-PLN) builds the tiers. Still binding: D19.3's hard cap, D32.5's three
+  counts, the entitlement seam.
 - **Tenancy is a ROW, not a deployment.** `organization_id` + Postgres FORCE ROW
   LEVEL SECURITY, bound at the `get_db()` seam. We are **multi-tenant from
   customer #1**. "Silo" describes *placement* only. No phase accepts
@@ -219,7 +221,7 @@ delivery makes a silent failed deploy more likely, not less.
 > the local stack up (`scripts/dev_up.sh`) → **preview** it to the owner and
 > wait for **approval** → **verify** independently and **review** by risk tier,
 > beside the **local staging gate** (`scripts/stage_local.sh`). Then **merge
-> it**. Production takes it at the 21:30 UTC release.
+> it**. Production takes it at the next release slot (05:30, 13:30 or 21:30 UTC).
 
 **Merging is not skipping the loop.** Verify always runs, and the verifier is
 never the implementer. A small slice (LOW, or STANDARD in build) skips the
@@ -236,12 +238,14 @@ The owner retired staging (D144), and this PC does its job now.
    merge with today's `main`. It runs the full suite and the production build.
    It rehearses the migrations on production's reduced copy, and runs smoke.
    A pass posts `local-staging` on the head commit, and `premerge.sh` needs it.
-3. **Production moves once a day, at 21:30 UTC.** Do not dispatch `deploy.yml`
-   after a merge. Dispatch only for a hotfix the owner asks for, or when
-   production is down.
-   The home box starts the release: its timer dispatches `deploy.yml` with `nightly=true` (D178).
+3. **Production moves three times a day, at 05:30, 13:30 and 21:30 UTC (D194).**
+   Do not dispatch `deploy.yml` after a merge. Dispatch only for a hotfix the
+   owner asks for, or when production is down.
+   The home box starts each release: its timer dispatches `deploy.yml` with `nightly=true` (D178).
 
-A slice with nothing to see skips step 1. Until LD-8 to LD-10 land, the gate is
+A slice with nothing to see skips step 1. **D200 (2026-11-08):** a small, low-risk
+change on an existing screen skips the wait in step 1. It merges after the
+captures and the full gates, and the owner reviews it afterwards. Until LD-8 to LD-10 land, the gate is
 `scripts/ci_local.sh` and then `premerge.sh`. `engineering_practice.md` §1.3
 owns the loop, and `next-ticket.md` steps 4b and 7 hold the commands.
 
@@ -280,6 +284,12 @@ When the owner answers in chat and not on the task, call
 
 Rules that make it work:
 
+- **⚠️ PLAN BY THE GRATIFICATION LADDER** *(owner directive, 2026-11-11,
+  D211)*. A plan is a set of rungs, and each rung ends in a demo that the owner
+  sees and uses on production. Take the lowest open rung first, then the least
+  slack to its demo. Rung 0 (a leak, data loss, a broken live feature) goes
+  before all rungs. Every plan you make, on the board or for a spec, follows
+  `orchestration_playbook.md` §6d.
 - **The verifier is never the implementer**, and re-derives facts from the code
   instead of trusting the write-up.
 - **Sonnet does the work. Opus takes the hard cases.** Owner directive,
@@ -302,6 +312,16 @@ Rules that make it work:
   verify. One `harden` PR per feature runs the full review and makes them
   block. A HIGH-tier slice keeps the full loop. Contract:
   `engineering_practice.md` §7a. Lists: `tests/fences.json`.
+- **⚠️ CLEAN UP AFTER YOURSELF** *(owner directive, 2026-11-06, CIV-16)*. Other
+  sessions share the box. Give every wait a deadline, and run each test command
+  under `timeout`. Stop each background job, tunnel, tmux session, preview server
+  and container that you started, when you no longer need it. Remove your
+  worktree after the merge with `bash scripts/worktree.sh remove <slug>`. Before
+  the final message of a turn, list your background jobs. Then stop each one
+  that the next step does not need. Name the ones that stay, and say why. The Stop
+  hook `.claude/hooks/stop-children.mjs` lists your old children. The reaper
+  `scripts/reaper.py` catches what is left. Fence:
+  `tests/unit/test_task_routine.py`.
 - **The reviewer hunts for the case where this is wrong.** An agent asked "is
   this correct?" says yes.
 - **Re-verify every anchor at dispatch** (file paths, line numbers, migration
@@ -375,7 +395,11 @@ Rules that make it work:
   Windows PC with Ubuntu 24.04 in WSL, on the tailnet as `metorite-home`.
   From this PC, `ssh metorite-home` reaches user `dev`, and
   `ssh metorite-home-admin` reaches `acb`, who has sudo.
-  `scripts/home_server/` sets it up.
+  `scripts/home_server/` sets it up. **To give the box a session, or to run
+  CI there, read `docs/home_box.md`.** It holds the lane start and wake
+  commands, the keeper, the merge queue, the accounts and the traps. **To size
+  lanes, sub-agents, runners and CI to the machines you have, or to add a
+  machine such as a cloud VPS, read `docs/dev_capacity.md`.**
 - **Run the whole pr-check suite before you push:** `bash scripts/ci_local.sh`.
   **The home server runs it**, as user `ci`. This PC's `metorite-ci` WSL2
   distro takes the run only when the home server is busy or does not answer.
@@ -391,7 +415,7 @@ Rules that make it work:
   diff can affect, and it prints the `vitest related` command for frontend
   files. pr-check runs the tests that the diff can affect, and the full suite
   when the diff is FULL. The R8 suites run on `main` only after CIV-4b ("main's
-  batch and the 21:30 release gate run the R8 suites"). The four tiers are in
+  batch and the release-slot gate run the R8 suites"). The four tiers are in
   `specs/ci_velocity.md` §4 (D176).
 - **R8 needs a database. Without one, 843 tests SKIP while the run reads
   green.** Run `bash scripts/dev_db.sh` first, then

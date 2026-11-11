@@ -63,6 +63,7 @@ from gateway.routes.projects.core import (
     resolve_visibility,
     router,
     touch_task,
+    transient_as_409,
     update_row,
 )
 from gateway.routes.projects.notifications import notifiable, notify
@@ -492,6 +493,7 @@ async def _act_on_one(
 
 
 @router.post("/tasks/bulk")
+@transient_as_409
 async def bulk_edit(
     payload: BulkIn, user: UserContext = Depends(get_current_user),
 ) -> dict:

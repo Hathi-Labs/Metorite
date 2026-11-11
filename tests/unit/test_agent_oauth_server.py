@@ -79,6 +79,7 @@ from redis.exceptions import TimeoutError as RedisTimeoutError
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
+from tests.unit.test_h3_rls_promotion_rehearsal import _clone_promoted_database  # noqa: E402
 from tests.unit._tenant_ladder import apply_ladder, tenant_engine_scope
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -1404,6 +1405,7 @@ class TestTheStructuralFences:
         # EA-4b added the member's own list and revoke (spec §15 EA-4b).
         # MCP-P1a added the two list routes of the app door (spec §19.4).
         # MCP-P1b-1 added the four routes of an app request (spec §19.5).
+        # EA-19c added the four box-token routes (spec §10.9).
         assert set(routes) == {"/agent-access/authorize/check",
                                "/agent-access/authorize/approve",
                                "/agent-access/connections",
@@ -1413,7 +1415,11 @@ class TestTheStructuralFences:
                                "/agent-access/apps/{app}/requests",
                                "/agent-access/requests",
                                "/agent-access/requests/{request_id}",
-                               "/agent-access/requests/{request_id}/decision"}, (
+                               "/agent-access/requests/{request_id}/decision",
+                               "/agent-access/box-tokens/check",
+                               "/agent-access/box-tokens",
+                               "/agent-access/box-tokens/{connection_id}/rotate",
+                               "/agent-access/box-tokens/revoke-all"}, (
             "the router did not mount — main.py swallows an import error")
         for path, route in routes.items():
             assert _is_guarded(route), path
@@ -1445,18 +1451,10 @@ def promoted():
     """A dedicated, fully phase-4-promoted catalog and a non-privileged role."""
     admin_url = make_url(_URL)
     dedicated = f"{admin_url.database}_agentoauth"
-    _drop_database(admin_url, dedicated)
-    with create_engine(admin_url, isolation_level="AUTOCOMMIT").connect() as c:
-        c.execute(text(f'CREATE DATABASE "{dedicated}"'))
+    _clone_promoted_database(admin_url, dedicated)
 
     ded_admin_url = admin_url.set(database=dedicated)
     eng = create_engine(ded_admin_url, future=True)
-    with eng.begin() as conn:
-        apply_ladder(conn)
-    for phase in ("01_add_columns.sql", "02_backfill.sql",
-                  "03_constraints.sql", "04_policies.sql"):
-        with eng.begin() as conn:
-            _exec_sql_file(conn, (_GENERATED / phase).read_text(encoding="utf-8"))
 
     with create_engine(ded_admin_url, isolation_level="AUTOCOMMIT").connect() as c:
         c.execute(text(

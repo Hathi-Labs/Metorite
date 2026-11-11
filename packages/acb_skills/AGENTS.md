@@ -40,6 +40,7 @@ not write a second copy of that seam. A bare test file name is under
    - WEB-7: `web_render_client.py` is the ONE client of the web worker (`POST /render`, bearer `WEB_WORKER_TOKEN`). The walk runs first, and the org comes from `_run_org` only. Fence: `test_web_render.py`.
 4a. child_confine.py -- the ONE confinement of a child process that parses hostile input (WS-WEB WEB-2b). Landlock, the seccomp filter, `close_inherited_fds` and `close_limits`. It is stdlib only.
    - A worker loads it BY PATH with `importlib`, never with `import acb_skills`, because the package `__init__` loads the whole tool set. It writes no bytecode on that load. Do not write a second copy of Landlock or of the filter. WEB-3 and each later parser use this module.
+   - A worker outside this dir gets the path from its parent. The gateway's signature image child (`gateway/signature_image_worker.py`, WS-17 SG-1) is the first: `gateway/signature_image.py` puts the file of `acb_skills.child_confine` in the spec. A move or a rename of this file breaks that child too.
    - `confine(min_abi)` fails closed on Linux with `Refused("unavailable")`. The OCR child asks ABI 4, and the web child asks ABI 1 (the file system), because seccomp already refuses `socket`.
    - `SECCOMP_DENIED` holds `truncate` and the `chmod`, `chown`, `utime` and `xattr` calls, so a file of the gateway user is safe at every ABI. Both workers call `close_inherited_fds()` first.
    - Fences: `test_attachment_ocr.py` (`TestTheConfinement`) and `test_web_reader_confine.py`.
@@ -75,6 +76,13 @@ not write a second copy of that seam. A bare test file name is under
    - OA-7i: `plan_loader` is the ONE reachability rule of the loader in a run. Its `LoaderPlan` gives the offer and `via_loader`, the owners whose specialist leaves. A hand-off to such an owner answers `LOADER_HANDOFF_REFUSED`. Fence: `test_loader_replaces_handoff.py`.
    - `PackRun.holds()` gives each pack of the run, loads too. `PackRun.refusal` applies `_refusals_for` to them. `_rules_block` is the ONE rules text of both layers. Fence: `test_load_skill_tools.py`.
    - `owner_scope(owner, held)` binds `no_egress` for any value of `held` but `False`. Fences: `test_tool_packs_registry.py`, `test_pack_guards.py`.
+5a-2. skill_packs.py -- a published Studio skill as a pack of one turn (WS-STU F3, spec `ai_studio.md` §14 F3). It does no I/O and never imports the orchestrator or the gateway.
+   - `orchestrator._tool_injection._turn_with_skills` is the ONE reader. It runs inside `_apply_tool_packs`, so only where `packs_on` gives a pack. It also needs `STUDIO_ORGS` and `feature:studio`, and it fails closed.
+   - The reader takes the bound tenant and the verified member, and both must agree with the turn (R5). `gateway.studio.skills_store.list_loadable` and `loadable_versions` hold the rule: published, with a version, owned by the member or of visibility `org`.
+   - `action_tool` is the ONE map from a catalog action to a chat tool. An action with no chat tool makes the skill fail to load. So does a tool that the run does not hold (`_skills_present`).
+   - `build` strips each hidden character first (5m-1). It refuses a `{{` or `}}`, more than `MAX_PACK_TOOLS` tools and rules over `MAX_RULES_TOKENS`.
+   - `tool_packs.choose` puts the skills after the code packs, in the order of the skill id, in the places that `MAX_PACKS` leaves. `persona_for` puts their rules after the rules of the code packs. A skill pack is never sticky.
+   - For each skill that loads, the run writes one `executor.skill_loaded` line, with no skill text. Fences: `test_skill_packs.py`, `test_skill_packs_r8.py` (R8).
 5b. decide_tools.py -- the `decide` core-floor tool (spec `customer_console.md` §6A.14). It sends no member and never logs `context`.
    - `decide_tool_enabled()` is its ONE switch. `decide_tool_for(agent_name)` is the one place that picks `system_one_decide` or the Jev `decide`.
    - Fences: `test_decide_tool.py`, `test_system_one_tool.py`.
@@ -87,18 +95,22 @@ not write a second copy of that seam. A bare test file name is under
 5c. permission_policy.py -- the B6 risk-aware handler and the D85 guard `guard_shared_agent_shell`.
    - The guard refuses a shell request unless the artifact context says `host_shell_refused=False`. Fence: `test_shared_agent_shell_tools.py`.
    - `decide()` refuses a read of a BINARY workspace file (`read_binary_file`). ⚠️ It never refuses a name in `_CLI_IMAGE_SUFFIXES`, and a CLI upgrade must check that list again. Fence: `test_chat_nul_persist.py`.
-5d. safe_open.py -- the ONE safe opener (spec `maf_coding_engine.md` §7.5 rule B). Every host reader and writer of a dir that a sandbox container mounts opens its paths here.
+5d. safe_open.py -- the ONE safe opener (spec `maf_coding_engine.md` §7.5 rule B). Every host reader and writer of a dir that a sandbox container mounts opens its paths here. The Custom Apps routes do too (WS-43h). `remove_links` and `remove_nested_git` remove each link and each nested `.git` that an `app_builder` command made.
    - A link at any depth fails the call. Do not open a mounted dir any other way. Fence: `test_sandbox_safe_open.py`.
 5e. sandbox_tools.py + tenant_file_store.py -- the sandbox tools (D86, spec §7.4 and §16.3).
    - Only `attach_for_run` hands them out, to ONE run, when `sandbox_broker.covers()` is true for the run's own tenant. They are never injected.
-   - A covered run does not hold `WITHHELD_HOST_TOOLS` or `HOST_NETWORK_TOOLS`. Do not write that no data leaves the platform, because a called agent runs outside the sandbox.
-   - The store takes only the heads `agent-data/`, `inputs/`, `outputs/` and `.run/`. Put prose for a sandbox-only tool in `addendum.RUN_SECTIONS`, never in `FULL_SECTIONS`.
-   - Fences: `test_run_command_tool.py`, `test_maf_code_session.py` (R8), `test_projects_sandbox_tools.py`, `test_generated_addendum.py`.
+   - Two harness agents take their own parts. The `code_task` session takes `code_task_session_parts`. The app-builder factory takes `app_builder_session_parts` under `app_builder:<org>` (WS-43h). Each of those tools reads the run binding and the scope on every call.
+   - A covered run does not hold `WITHHELD_HOST_TOOLS` or `HOST_NETWORK_TOOLS`, and app-builder's harness agent holds neither (`host_tool_guard`). Do not write that no data leaves the platform, because a called agent runs outside the sandbox.
+   - `TenantFileStore` takes only the heads `agent-data/`, `inputs/`, `outputs/` and `.run/`. `AppWorkspaceFileStore` maps each path of the app dir as it is, refuses each name that starts with a dot, and mirrors nothing to the blob store. The app-builder tools refuse a tenant dir `o:<org>`. Put prose for a sandbox-only tool in `addendum.RUN_SECTIONS`, never in `FULL_SECTIONS`.
+   - Fences: `test_run_command_tool.py`, `test_maf_code_session.py` (R8), `test_projects_sandbox_tools.py`, `test_generated_addendum.py`, `test_app_builder_engine.py`.
 5f. attachment_text.py + attachment_tools.py -- `read_attachment` (spec `projects_ai_chat.md` §22).
    - `attachment_text` parses bytes only, with no subprocess and no code. Every cap is a module constant there. No regex may run over a whole line of HTML.
    - `attachment_tools` takes the workspace and the thread from `artifact_context()`, and only a file name from the model. `agent_paths.upload_dir_rel` is the ONE rule for where an upload lands.
    - Do not add a second reader of an attachment. `attachment_tools.parse_bounded` is the ONE bounded parse of the process. `read_attachment` is a core floor tool in `_FLOOR_KEEP`.
    - Fences: `test_read_attachment.py`, `test_chat_upload_every_agent.py`, `test_email_attachment_text.py`, `test_attachment_xlsx.py`.
+   - WS-VOX VOX-3: `analyze_image(file_name, question)` reads the bytes through `read_attachment_bytes` and sends one `image_url` part to `tier-vision` with `task="vision"` through `acb_llm.context.acompletion_with_fallback`. It is a core tool, NOT in `_FLOOR_KEEP`. The email assistant and the worker opt out of it.
+   - ⚠️ It decodes no pixel in the process. `acb_common.image_probe.sniff_image_mime` is the ONE sniff, by the first bytes only. It refuses a file over `MAX_IMAGE_BYTES` (4 MB). A downscale needs a confined child, as OCR has.
+   - It answers one sentence and calls no model in three cases. `routing_is_on()` is false, `assistant_profile.image_analysis_for` is false for the bound tenant, or the member passed `IMAGE_CAP` calls in an hour (tenant Redis, `image-analysis`). The answer comes back in one `IMAGE` block of `UntrustedFrame`. `addendum.IMAGE_CALL_RULE` is the "when to call" text of the docstring and of both addendum sections. Fence: `test_attachment_analyze_image.py`.
 5f-1. attachment_ocr.py + attachment_ocr_worker.py -- OCR of a scanned file (D116, spec `one_assistant_context.md` §4.1), dark behind `ATTACHMENT_OCR` (reader `ocr_enabled()`).
    - Only a caller that can wait gets OCR. `TestTheCallers` fails on a new caller.
    - The child starts as `python -I <path>`, never with `-m`. It imports nothing from `acb_` packages, and at most one child lives in the process.
@@ -169,15 +181,20 @@ not write a second copy of that seam. A bare test file name is under
    - Fences: `test_knowledge_tools.py`, `test_knowledge_chat_coverage.py`, `test_kb_proposals.py`.
 5n-2. chat_parity.py -- the ONE parity table of the whole control plane (spec `chat_parity.md`, Metorite task 1238). It is data, and it imports nothing.
    - Each request of the UI has one row: `COVERED` with a tool, `EXEMPT` with a kind of `EXEMPT_KINDS`, or `DEBT` with a wave. Projects rows stay in `skill_projects.manifest` (F3), and Knowledge rows in its manifest. Do not copy them here.
+   - `ALSO` names the other tools of a `COVERED` request that more than one tool sends. The fence checks each one as it checks the `COVERED` tool (STU-B2c-2b: the door route of a package page).
    - `DEBT_CEILING` and `UNREAD_CEILING` only go down. Lower a number in the change that pays the debt.
    - Fence: `test_chat_parity.py`.
 5o. reports.py -- `make_report`, the ONE report tool of the chat (spec `projects_ai_chat.md` §14.10). It keeps no copy of the checks of `documents.py`.
    - `by_code` is the ONE gate of a report that a tool builds from its own reads. Fences: `test_chat_reports.py`, `test_reports_by_code.py`.
-5p. studio_tools.py -- the chat tools of the `studio` pack (spec `ai_studio.md` §14 G1, G2, F2d and G1c). Each tool calls a `/studio` route over HTTP as the member of the run, and takes no org or member argument.
+5p. studio_tools.py -- the chat tools of the `studio` pack (spec `ai_studio.md` §14 G1, G2, F2d, G1c, D2b and B2c-2b). Each tool calls a `/studio` route over HTTP as the member of the run, and takes no org or member argument.
    - J1-1: `studio_draft`, `studio_outline`, `studio_describe` and `studio_interview` call no route. So the pack is empty unless the org is in `STUDIO_ORGS` and the member holds `feature:studio`. `orchestrator._tool_injection._studio_member_open` decides it, and it fails closed. Fence: `tests/unit/test_tool_packs_registry.py`.
    - G1c: `studio_plan` writes the approval record of a plan to tenant Redis only on `approved`. The key holds a hash of the member and a hash of the manifest id, the value is `manifest_hash`, and it lives 2 hours (`PLAN_NAMESPACE`). A stopped or revised plan card writes a withdraw stamp for the member, and a record from before it gives no plan. When the stamp write fails, `_UNWITHDRAWN` (process memory, bounded) makes the publish of that process refuse.
    - `studio_publish` reads the record of the stored draft and fails closed. It sends that hash as `based_on`, and the store compares it under its row lock. After a 201 it deletes the record that names the published draft. No other code reads or writes the record. `acb_common.studio_manifest.manifest_hash` is the ONE hash of a draft.
-   - Fences: `test_studio_package_tools.py`, `test_studio_chat_build_r8.py` (R8), `test_studio_interview_plan.py`, `test_studio_skill_tools.py`.
+   - B2c-2b: `studio_record_create`, `studio_record_update` and `studio_record_delete` call the door with no proof, so the door treats each call as delegated. A first call sends `ask=1` and the body, and it saves nothing. A call with `request_id` sends no body, and the door runs the stored call once. Only a 200 of a resend gives `ok` and `saved` true.
+   - Before an ask, `_fields_problem` checks the change against the package read: the object, the field keys, and on a create the required fields. It reuses `studio_rules.with_initial` and `studio_fields.is_blank`, and keeps no rule of its own. A read with no field list checks nothing, because the store checks again at the resend. A resend that carries `data` or `record_id` is a refusal (`_RESEND_HAS_VALUES`).
+   - ⚠️ No tool here names the decision route of a request, reads the direct key or sends the direct header. No write tool asks with `request_confirmation`, because the request of the store is the one approval. `WRITE_REFUSALS` gives one sentence for each refusal code of the door.
+   - `orchestrator._tool_injection._drop_studio_writes_unless_requests` takes the three writes out of the pack while `APP_REQUESTS_ORGS` leaves the org out or `AGENT_ACCESS_ENABLED` is off, and it fails closed. The member's list of Waiting for you needs both flags. `STUDIO_RECORD_WRITES` is the one list of their names.
+   - Fences: `test_studio_package_tools.py`, `test_studio_chat_build_r8.py` (R8), `test_studio_interview_plan.py`, `test_studio_skill_tools.py`, `test_studio_record_writes.py`, cases ap to as of `test_studio_action_door_r8.py` (R8).
 6. artifact_lint.py -- lints agent-generated HTML before it reaches the sandbox. It is advisory only: it never blocks a write and never raises.
    - `CC_CLASSES` mirrors the stylesheet in `SandboxedHtml.tsx`, so register a new `cc-` block in BOTH places. Fence: `test_artifact_lint.py`.
 

@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12, <3.14"
 resolution-markers = [
     "python_full_version >= '3.13' and sys_platform == 'win32'",
@@ -18,6 +18,7 @@ members = [
     "acb-graph",
     "acb-llm",
     "acb-memory",
+    "acb-playbook",
     "acb-skills",
     "acb-stt",
     "action-broker",
@@ -190,6 +191,11 @@ requires-dist = [
 provides-extras = ["graphiti"]
 
 [[package]]
+name = "acb-playbook"
+version = "0.0.1"
+source = { editable = "packages/acb_playbook" }
+
+[[package]]
 name = "acb-skills"
 version = "0.0.1"
 source = { editable = "packages/acb_skills" }
@@ -349,6 +355,7 @@ source = { editable = "apps/services/agent_edge" }
 dependencies = [
     { name = "acb-auth" },
     { name = "acb-common" },
+    { name = "acb-playbook" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "uvicorn", extra = ["standard"] },
@@ -358,6 +365,7 @@ dependencies = [
 requires-dist = [
     { name = "acb-auth", editable = "packages/acb_auth" },
     { name = "acb-common", editable = "packages/acb_common" },
+    { name = "acb-playbook", editable = "packages/acb_playbook" },
     { name = "fastapi", specifier = ">=0.141" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.54" },
@@ -1486,6 +1494,7 @@ dependencies = [
     { name = "acb-auth" },
     { name = "acb-common" },
     { name = "acb-llm" },
+    { name = "acb-playbook" },
     { name = "acb-stt" },
     { name = "action-broker" },
     { name = "agent-framework-ag-ui" },
@@ -1513,6 +1522,7 @@ requires-dist = [
     { name = "acb-auth", editable = "packages/acb_auth" },
     { name = "acb-common", editable = "packages/acb_common" },
     { name = "acb-llm", editable = "packages/acb_llm" },
+    { name = "acb-playbook", editable = "packages/acb_playbook" },
     { name = "acb-stt", editable = "packages/acb_stt" },
     { name = "action-broker", editable = "apps/services/action_broker" },
     { name = "agent-framework-ag-ui", specifier = ">=1.4.0" },
@@ -3002,6 +3012,7 @@ dependencies = [
     { name = "acb-graph" },
     { name = "acb-llm" },
     { name = "acb-memory" },
+    { name = "acb-playbook" },
     { name = "acb-skills" },
     { name = "action-broker" },
     { name = "agent-edge" },
@@ -3045,6 +3056,7 @@ requires-dist = [
     { name = "acb-graph", editable = "packages/acb_graph" },
     { name = "acb-llm", editable = "packages/acb_llm" },
     { name = "acb-memory", editable = "packages/acb_memory" },
+    { name = "acb-playbook", editable = "packages/acb_playbook" },
     { name = "acb-skills", editable = "packages/acb_skills" },
     { name = "action-broker", editable = "apps/services/action_broker" },
     { name = "agent-edge", editable = "apps/services/agent_edge" },

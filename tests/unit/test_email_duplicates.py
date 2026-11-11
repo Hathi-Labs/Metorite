@@ -127,20 +127,38 @@ _SEARCH_OFF: dict[str, Any] = {
 class TestThePairSet:
     """Item 4: one SQL constant in ``identity.py``, beside the self set."""
 
+    #: The tenant predicate of the shared FROM clause. H-334c put it on the
+    #: self set, and H-334d moved it into ``_member_mailboxes_from``, so the
+    #: pair set names it too and the two texts agree (H-334d).
+    _BOUND = (" AND a.organization_id = "
+              "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)")
+
     def test_it_is_the_self_set_less_this_mailbox_and_each_separate_one(self):
-        assert identity.PAIRED_MAILBOX_IDS_SQL == (
-            identity.SELF_MAILBOX_IDS_SQL
-            + " AND o.id <> a.id AND a.in_all_inboxes AND o.in_all_inboxes")
+        self_set = identity.SELF_MAILBOX_IDS_SQL
+        pair = identity.PAIRED_MAILBOX_IDS_SQL
+        assert pair == (
+            self_set + " AND o.id <> a.id AND a.in_all_inboxes AND o.in_all_inboxes")
+
+    def test_the_pair_set_names_the_bound_tenant(self):
+        """H-334d: the pair set of one mailbox and of a page both name the
+        bound tenant on ``a``. A role that bypasses RLS, given an anchor of
+        another organization, reads no pair. The R8 proof is
+        ``test_email_mailbox_list_tenant_r8.py``."""
+        assert self._BOUND in identity.PAIRED_MAILBOX_IDS_SQL
+        assert ("WHERE a.id = m.account_id" + self._BOUND
+                in identity.paired_mailbox_ids_sql("m.account_id"))
+        assert "WHERE a.id = m.account_id" + self._BOUND in identity.ALSO_IN_SQL
 
     def test_the_self_text_did_not_change(self):
         """WS-65 SM-2 (D-SM-5): a shared mailbox is never "self". With no
-        shared row the set is the set of before."""
+        shared row the set is the set of before. H-334c adds the bound
+        tenant on ``a``, and since H-334d the shared FROM clause holds it."""
         assert identity.SELF_MAILBOX_IDS_SQL == (
             "SELECT o.id FROM email_accounts a "
             "JOIN email_accounts o ON (o.id = a.id OR (o.user_id = a.user_id "
             "AND o.shared_since IS NULL AND a.shared_since IS NULL)) "
             "AND o.organization_id IS NOT DISTINCT FROM a.organization_id "
-            "WHERE a.id = :aid")
+            "WHERE a.id = :aid" + self._BOUND)
 
     def test_a_column_anchors_it_for_a_page_and_nothing_else_does(self):
         assert "WHERE a.id = m.account_id AND" in identity.paired_mailbox_ids_sql(
@@ -461,13 +479,22 @@ class TestAlsoIn:
 
     def test_the_org_predicate_holds_where_rls_does_not_bind(self, family):
         """The owner role bypasses row level security, so only the predicates
-        of the pair set keep C, D and E out here."""
+        of the pair set keep C, D and E out here. Since H-334d the pair set
+        names the bound tenant: a session that no tenant binds reads no pair,
+        and it fails closed."""
         f = family
         both = _imid(f, "admin")
         m_a = _mail(f.admin, org=f.org, account_id=f.a, imid=both)
         for box, org in ((f.b, f.org), (f.c, f.p.org_a), (f.d, f.org), (f.e, f.org)):
             _mail(f.admin, org=org, account_id=box, imid=both)
         with f.admin.connect() as c:
+            unbound = c.execute(text(identity.ALSO_IN_SQL), {
+                "ids": [m_a], "uid": f.member,
+                "not_a_copy": list(core.NOT_A_COPY_FOLDERS)}).fetchall()
+        assert unbound == []
+        with f.admin.begin() as c:
+            c.execute(text("SELECT set_config('app.tenant_id', :o, true)"),
+                      {"o": str(f.org)})
             rows = c.execute(text(identity.ALSO_IN_SQL), {
                 "ids": [m_a], "uid": f.member,
                 "not_a_copy": list(core.NOT_A_COPY_FOLDERS)}).fetchall()
@@ -501,14 +528,23 @@ class TestAlsoIn:
         async with _as_member(f.p, f.org):
             listed = await messages_mod.list_messages(
                 user=f.me, **{**_LIST_OFF, "account_id": f.a})
-        # The owner role sees every organization, so only the SQL keeps the
-        # copy out there.
-        with f.admin.connect() as c:
+        # The owner role bypasses row level security. The session binds the
+        # tenant of the member, so the pair set reads, and only the SQL keeps
+        # the copy in a mailbox that does not pair out. The owner role also
+        # sees the copy in the other organization, so the SQL must keep that
+        # one out too.
+        with f.admin.begin() as c:
+            c.execute(text("SELECT set_config('app.tenant_id', :o, true)"),
+                      {"o": str(f.org)})
+            # Non-vacuity: the bound session reads the pair A and B.
+            paired = {str(r[0]) for r in c.execute(
+                text(identity.PAIRED_MAILBOX_IDS_SQL), {"aid": f.a})}
             rows = c.execute(text(identity.ALSO_IN_SQL), {
                 "ids": [m_a], "uid": f.member,
                 "not_a_copy": list(core.NOT_A_COPY_FOLDERS)}).fetchall()
-        assert _also_in(listed)[m_a] == []
+        assert paired == {f.b}
         assert rows == []
+        assert _also_in(listed)[m_a] == []
 
     async def test_a_copy_from_another_sender_does_not_pair(self, family):
         """Review round 1, F3: an outsider sends a DIFFERENT mail with the same
@@ -852,8 +888,11 @@ class TestTheDraftDedupeRace:
         assert _drafts(f.admin, f.a, f.b) == 1
         assert later == "answered"
         # The lock is transaction-scoped: after the commit, a connection that
-        # is not in the pool of the app takes it at once.
-        with f.admin.connect() as c:
+        # is not in the pool of the app takes it at once. The pair set names
+        # the bound tenant (H-334d), so the connection binds the org.
+        with f.admin.begin() as c:
+            c.execute(text("SELECT set_config('app.tenant_id', :o, true)"),
+                      {"o": str(f.org)})
             free = c.execute(text(identity._DRAFT_LOCK_SQL),
                              {"aid": f.a, "mid": in_a}).scalar_one()
         assert free is True

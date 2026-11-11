@@ -38,6 +38,7 @@ import {
   KNOWN_PROVIDERS,
   type ProviderGuide,
   SECTIONS,
+  VISION_NOTE,
   guideFor,
   sectionOf,
   vendorLabel,
@@ -569,6 +570,9 @@ export default function ProviderAdmin({ creds }: Props) {
             <div className="panel-head">
               <h2>{section.title}</h2>
               <p>{section.note}</p>
+              {section.key === "chat" && (
+                <p className="field-hint">{VISION_NOTE.text}</p>
+              )}
             </div>
             {/* 🔴 **SET UP FIRST, THE REST ROLLED AWAY.** A section mixed the
                 four vendors serving traffic in with thirteen nobody has

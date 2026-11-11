@@ -186,7 +186,11 @@ async def _run_path(
     router = StubRouter()
     flag = AGENT if which == "after" else ""
     env = {"NARROWING_AGENTS": flag, "GATEWAY_URL": running.url,
-           "OPENAI_API_KEY": os.environ.get("OPENAI_API_KEY") or "sk-whatsapp-narrowing-eval"}
+           "OPENAI_API_KEY": os.environ.get("OPENAI_API_KEY") or "sk-whatsapp-narrowing-eval",
+           # WS-24b: the agent sends GATEWAY_INTERNAL_TOKEN as its bearer, and
+           # the stub checks only that one is present.
+           "GATEWAY_INTERNAL_TOKEN": (os.environ.get("GATEWAY_INTERNAL_TOKEN")
+                                      or "whatsapp-narrowing-eval-internal-token")}
     if door is not None:
         env.update({
             "DECIDE_ENABLED": "true",

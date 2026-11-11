@@ -82,13 +82,15 @@ def test_the_config_is_shared_and_not_shareable() -> None:
 
 
 def test_the_opt_out_is_the_allowed_set_without_the_two_web_tools() -> None:
-    """20 names: ``FLOOR_OPT_OUT_ALLOWED`` (22) without ``web_search`` and
-    ``fetch_page``. An opted-out name leaves the scope even when the job names it."""
+    """21 names: ``FLOOR_OPT_OUT_ALLOWED`` (23) without ``web_search`` and
+    ``fetch_page``. An opted-out name leaves the scope even when the job names it.
+    WS-VOX VOX-3 added ``analyze_image``: a headless run has no member to pay."""
     from orchestrator._tool_injection import FLOOR_OPT_OUT_ALLOWED
 
-    assert len(CONFIG["floor_opt_out"]) == 20
+    assert len(CONFIG["floor_opt_out"]) == 21
+    assert "analyze_image" in CONFIG["floor_opt_out"]
     assert set(CONFIG["floor_opt_out"]) == FLOOR_OPT_OUT_ALLOWED - sc.WEB_TOOLS
-    assert len(set(CONFIG["floor_opt_out"])) == 20
+    assert len(set(CONFIG["floor_opt_out"])) == 21
 
 
 def test_the_default_scope_is_not_empty_and_there_is_no_own_scope() -> None:

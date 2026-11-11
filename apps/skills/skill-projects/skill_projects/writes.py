@@ -39,6 +39,7 @@ import asyncio
 import calendar
 import functools
 import json
+import math
 import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime, timedelta
@@ -56,7 +57,7 @@ from acb_common.card_body import (
 )
 from acb_common.mentions import mention_targets, new_mentions
 
-from skill_projects import choices
+from skill_projects import choices, task_files
 from skill_projects.client import (
     GatewayRefusal,
     data,
@@ -64,6 +65,7 @@ from skill_projects.client import (
     get,
     patch,
     post,
+    post_file,
     put,
     uuid_of,
 )
@@ -1020,6 +1022,7 @@ async def create_task(
     type: str = "",
     fields: str = "",
     source: str = "",
+    files: list[str] | None = None,
 ) -> str:
     """Create one task in a project. project_id is a `full_id` from
     projects_tree (a project or subproject, never a folder). status is by
@@ -1048,6 +1051,12 @@ async def create_task(
     it out for work the member typed. Use email only for a task made from a
     mail that email-assistant described. The card then says that the text
     leaves the mailbox.
+    files are the names of files the member attached in THIS chat, as the
+    upload message shows them. When the member attached files and asks for a
+    task, pass them here, and do not call attach_to_task after it. The one
+    card names each file. An image also goes at the end of the description.
+    A file that is empty, of a blocked type, or past the 10 MB a task holds
+    is refused before the card.
     The card may flag an open task that looks the same."""
     pid, by_name = await _project_ref(project_id)
     name = str(title or "").strip()
@@ -1076,6 +1085,9 @@ async def create_task(
     stop = await space_refusal(pid, node)
     if stop:
         return stop
+    chat_files = await _chat_files_for_new_task(files)
+    if isinstance(chat_files, str):
+        return chat_files
     new = await _prepare_new_task(
         pid,
         name,
@@ -1112,6 +1124,8 @@ async def create_task(
     card = {"project": place, **{k: v for k, v in card.items() if k not in hidden}}
     if new.parent is not None:
         card["parent"] = _ref(new.parent)
+    if chat_files:
+        card["files"] = task_files.card_line(chat_files)
     where = f" · in {place}"
     held = await _held_chat()
     if held:
@@ -1142,7 +1156,121 @@ async def create_task(
     lines = [*_task_line(task, status_label), *level_note(priority, task)]
     if twin is not None:
         lines.append(f"  note: {choices.twin_note(twin)}")
-    return repeating.receipt(task, lines, saved, failed, new.extra)
+    receipt = repeating.receipt(task, lines, saved, failed, new.extra)
+    if chat_files:
+        receipt += await _attach_new_files(task, chat_files, str(new.payload.get("description") or ""))
+    return receipt
+
+
+async def _chat_files_for_new_task(files: list[str] | None) -> list[task_files.ChatFile] | str:
+    """The files of ``create_task``, read and checked BEFORE the card, or the
+    refusal that names the file and the reason (IMG-2). ``[]`` for none.
+
+    A held chat refuses ``files``: a file on a shared task is one more person's
+    reach, and ``attach_to_task`` is off there too (``egress.HELD_REFUSED_PARAMS``).
+    The total is checked against an empty task, because the task is new.
+    """
+    names = task_files.split_names(files)
+    if not names:
+        return []
+    refused = await _held_param_refusal("create_task", "files")
+    if refused:
+        return refused
+    got = await task_files.read_checked(names)
+    if isinstance(got, str):
+        return got
+    return task_files.budget_refusal(got, 0, "The new task") or got
+
+
+async def _attach_new_files(
+    task: dict[str, Any], chat_files: list[task_files.ChatFile], description: str
+) -> str:
+    """The posts after the create: each file, then ONE description PATCH that
+    puts each image at the end (IMG-2, as TR-4 does for a paste).
+
+    The task exists, so nothing here raises. A file that fails is named with
+    its reason and ``attach_to_task`` finishes it. A failed PATCH leaves the
+    files in place, and the receipt says the description has no inline image.
+    """
+    tid = uuid_of(str(task.get("id")), "task_id")
+    landed: list[dict[str, Any]] = []
+    lines: list[str] = []
+    for name, content in chat_files:
+        try:
+            row = (
+                await post_file(
+                    f"/projects/tasks/{tid}/attachments", "file", name, content,
+                    task_files.mime_of(name),
+                )
+            ) or {}
+        except _WRITE_FAILED as exc:
+            lines.append(
+                f"not attached: {data(name)}. {_file_failure(exc)} "
+                f"Next: call attach_to_task with task_id {tid} and file_name "
+                f"{data(name)} to try this file again."
+            )
+            continue
+        row.setdefault("name", name)
+        landed.append(row)
+    out = ["Files attached:"] if landed else []
+    out += [f"  {data(r.get('name'))} · attachment_id: {r.get('attachment_id')}" for r in landed]
+    images = [md for md in (task_files.image_markdown(r) for r in landed) if md]
+    if images:
+        failure = await _put_images_in_description(tid, description, images)
+        if failure:
+            lines.append(
+                f"The description has no inline image. {failure} The files are on the task."
+            )
+    return "\n" + "\n".join([*out, *lines]) if (out or lines) else ""
+
+
+async def _put_images_in_description(task_id: str, written: str, images: list[str]) -> str:
+    """Append *images* to the description, under ``If-Match``. ``""`` when it
+    is done, else the reason it is not.
+
+    *written* is the text the create wrote. The PATCH carries the version that
+    was read, so an edit made since is a 412, never a lost edit. On a 412 the
+    task is read once more. The images go on the CURRENT text only when it still
+    starts with *written*. Any other change, or a second 412, stops here.
+    """
+    tid = uuid_of(task_id, "task_id")
+    base = written.rstrip()
+    changed = "Someone changed the description, so I left it alone."
+    for attempt in range(2):
+        try:
+            cur = await get(f"/projects/tasks/{tid}") or {}
+        except _WRITE_FAILED as exc:
+            return _file_failure(exc)
+        now = str(cur.get("description") or "")
+        if not now.startswith(base):
+            return changed
+        text = "\n\n".join(([now.rstrip()] if now.strip() else []) + images)
+        token = str(cur.get("updated_at") or "")
+        try:
+            await patch(
+                f"/projects/tasks/{tid}", {"description": text},
+                headers={"If-Match": token} if token else None,
+            )
+        except GatewayRefusal as exc:
+            if exc.status == 412 and attempt == 0:
+                continue
+            return changed if exc.status == 412 else _file_failure(exc)
+        except httpx.TransportError as exc:
+            return _file_failure(exc)
+        return ""
+    return ""
+
+
+def _file_failure(exc: Exception) -> str:
+    """Why a write after the create failed, for the receipt."""
+    if isinstance(exc, httpx.TransportError):
+        return (
+            f"The connection to the gateway broke ({type(exc).__name__}), so it may or "
+            "may not have landed. Read the task first."
+        )
+    if isinstance(exc, GatewayRefusal):
+        return f"Gateway said: {_refusal_words(exc)}."
+    return str(exc)
 
 
 #: WS-46 P9 (G10). Where a new task came from: the values of
@@ -1965,6 +2093,333 @@ async def unlink_tasks(task_id: str, link_id: str) -> str:
         return CANCELLED
     await delete(f"/projects/tasks/{tid}/links/{lid}")
     return f"Removed the link: {label}.\n  full_id: {tid}"
+
+
+# ── SP-8a — the contract of an epic (project_management_app.md §13.3) ──────
+#
+# One class B tool. The route replaces the whole contract. The card shows
+# only what changes: the parts that move, and one row for each check that is
+# added, removed or changed. The draft lives on the card: the store keeps no
+# contract with fewer than 3 checks.
+
+#: The rules of a contract. Copies of the gateway's ``epic_contract.py``,
+#: and ``test_epic_contract_r8.py`` pins each pair equal. The tool checks
+#: them BEFORE the card, so a card never asks for a save that the route
+#: refuses.
+EPIC_MIN_CHECKS = 3
+EPIC_MAX_CHECKS = 7
+EPIC_RISK_TIERS: tuple[str, ...] = ("LOW", "STANDARD", "HIGH")
+EPIC_MAX_CHECK_CHARS = 300
+EPIC_MAX_EVIDENCE_CHARS = 1000
+EPIC_MAX_OUTCOME_CHARS = 500
+EPIC_MAX_OUT_OF_SCOPE_CHARS = 2000
+EPIC_MAX_WORKSTREAM_CHARS = 120
+EPIC_MAX_SPEC_LINK_CHARS = 500
+EPIC_MAX_APPETITE_CREDITS = 1_000_000_000
+EPIC_MAX_APPETITE_REVIEW_HOURS = 100_000
+#: The answer while ``EPIC_CONTRACT_ORGS`` does not hold the org. The route
+#: answers 404, and the tool makes no card.
+EPIC_CONTRACTS_OFF = "Epic contracts are not on for this organization yet. Nothing was changed."
+#: The answer of a 412: the task changed after the card was made, for
+#: example an agent ticked a check. The save sends the version of the read
+#: as ``If-Match``, so it never replaces a change that the card did not show.
+EPIC_CONTRACT_CHANGED = (
+    "The epic contract changed after this card was made, so nothing was changed. "
+    "Read the task again, then set the contract."
+)
+#: A list mark at the start of a line of checks: "- ", "* ", "1. " or "2) ".
+_CHECK_BULLET = re.compile(r"^\s*(?:[-*•]|\d{1,2}[.)])\s+")
+#: A done mark at the start of a check: "[x] " or "[ ] ". The word "check"
+#: before it is the line of task_detail, so a copied line reads right.
+_CHECK_DONE = re.compile(r"^(?:check\s+)?\[([xX ])\]\s*", re.IGNORECASE)
+#: The parts of a contract that the card names, in the order of the card.
+_EPIC_PARTS: tuple[tuple[str, str], ...] = (
+    ("outcome", "outcome"), ("out_of_scope", "out of scope"),
+    ("risk_tier", "risk tier"), ("appetite_credits", "appetite credits"),
+    ("appetite_review_hours", "appetite review hours"),
+    ("workstream", "workstream"), ("spec_link", "spec link"),
+)
+#: The cap of each text part, with the name that a refusal uses.
+_EPIC_TEXT_CAPS: tuple[tuple[str, str, int], ...] = (
+    ("outcome", "outcome", EPIC_MAX_OUTCOME_CHARS),
+    ("out_of_scope", "out_of_scope", EPIC_MAX_OUT_OF_SCOPE_CHARS),
+    ("workstream", "workstream", EPIC_MAX_WORKSTREAM_CHARS),
+    ("spec_link", "spec_link", EPIC_MAX_SPEC_LINK_CHARS),
+)
+#: The impact line of the card. It is a ``key: value`` row, so the card
+#: client draws the body as rows (one note line at most before the rows).
+_EPIC_FIRST = "This is the first contract of this epic."
+_EPIC_CHANGE = "Only the rows below change. The rest of the contract stays as it is."
+
+
+def _epic_items(acceptance: str) -> list[dict[str, Any]] | str:
+    """The checks that the member gave: a JSON list, or one check on each
+    line. A line that starts with ``[x]`` is done. A refusal is a string."""
+    raw = str(acceptance or "").strip()
+    if raw.startswith("["):
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, list):
+            items: list[dict[str, Any]] = []
+            for entry in parsed:
+                if isinstance(entry, str):
+                    items.append({"text": entry.strip()})
+                elif isinstance(entry, dict) and isinstance(entry.get("text"), str):
+                    item: dict[str, Any] = {"text": entry["text"].strip()}
+                    if isinstance(entry.get("done"), bool):
+                        item["done"] = entry["done"]
+                    if isinstance(entry.get("evidence"), str):
+                        item["evidence"] = entry["evidence"].strip()
+                    items.append(item)
+                else:
+                    return ("Each item of acceptance is a text, or an object with a "
+                            "text. Nothing was changed.")
+            return [i for i in items if i["text"]]
+    lines: list[dict[str, Any]] = []
+    for line in raw.splitlines():
+        text_ = _CHECK_BULLET.sub("", line, count=1).strip()
+        mark = _CHECK_DONE.match(text_)
+        item = {}
+        if mark:
+            item["done"] = mark.group(1).lower() == "x"
+            text_ = text_[mark.end():].strip()
+        if text_:
+            lines.append({"text": text_, **item})
+    return lines
+
+
+def _epic_checks(acceptance: str, stored: list[dict[str, Any]]) -> list[dict[str, Any]] | str:
+    """The checks to save, or a refusal. A check with the text of a saved
+    check keeps its id, and its done mark and its evidence unless the member
+    set them again. So a new outcome never loses the evidence of a check."""
+    items = _epic_items(acceptance)
+    if isinstance(items, str):
+        return items
+    if not EPIC_MIN_CHECKS <= len(items) <= EPIC_MAX_CHECKS:
+        return (
+            f"An epic contract needs {EPIC_MIN_CHECKS} to {EPIC_MAX_CHECKS} acceptance "
+            f"checks, and this one has {len(items)}. Nothing was changed. Send "
+            f"{EPIC_MIN_CHECKS} to {EPIC_MAX_CHECKS} checks, one on each line."
+        )
+    saved = {str(c.get("text") or "").casefold(): c for c in stored if isinstance(c, dict)}
+    out: list[dict[str, Any]] = []
+    for item in items:
+        if len(item["text"]) > EPIC_MAX_CHECK_CHARS:
+            return (f"A check is longer than {EPIC_MAX_CHECK_CHARS} characters. "
+                    "Nothing was changed. Make each check one short sentence.")
+        old = saved.get(item["text"].casefold()) or {}
+        check: dict[str, Any] = {
+            "text": item["text"],
+            "done": item["done"] if "done" in item else bool(old.get("done")),
+        }
+        if old.get("id"):
+            check["id"] = str(old["id"])
+        evidence = item["evidence"] if "evidence" in item else old.get("evidence")
+        if isinstance(evidence, str) and evidence.strip():
+            if len(evidence.strip()) > EPIC_MAX_EVIDENCE_CHARS:
+                return (f"The evidence of a check is longer than {EPIC_MAX_EVIDENCE_CHARS} "
+                        "characters. Nothing was changed. Link to the evidence.")
+            check["evidence"] = evidence.strip()
+        out.append(check)
+    texts = [c["text"].casefold() for c in out]
+    if len(set(texts)) != len(texts):
+        return "Two checks have the same text. Nothing was changed. Give each check its own text."
+    return out
+
+
+def _appetite(value: Any, name: str, cap: int) -> float | str | None:
+    """A number from 0 to *cap*, ``None`` for blank, or a refusal string."""
+    raw = str(value if value is not None else "").strip().replace(",", "")
+    if not raw:
+        return None
+    try:
+        number = float(raw)
+    except ValueError:
+        number = -1.0
+    if not math.isfinite(number) or not 0 <= number <= cap:
+        return f"{name} is a number from 0 to {cap:,}, such as 40. Nothing was changed."
+    return number
+
+
+def _epic_text(value: Any) -> str | None:
+    """A stripped text part, ``None`` for blank. (``_blank`` of this module
+    is another helper that answers a bool, so the name differs.)"""
+    text_ = str(value or "").strip()
+    return text_ or None
+
+
+def _epic_number(value: Any) -> Any:
+    """A number as a member reads it: 40, not 40.0."""
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
+
+
+def _epic_shown(value: Any) -> Any:
+    """One part on the card: "(none)" for an empty part, a whole number with
+    no ".0"."""
+    if value is None or value == "":
+        return "(none)"
+    return _epic_number(value)
+
+
+def _check_line(check: dict[str, Any]) -> str:
+    line = f"{'[x]' if check.get('done') else '[ ]'} {check.get('text') or ''}"
+    if check.get("evidence"):
+        line += f" (evidence: {check['evidence']})"
+    return line
+
+
+def _epic_change_rows(
+    before: dict[str, Any] | None, after: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """``(rows, before_rows)`` of the card: only what changes.
+
+    A part that changes shows its old and new value. A first contract shows
+    each part that it sets. Each check that is added, removed or changed has
+    one row, and "checks unchanged" counts the rest. So a tick of one check
+    makes a card of a few lines, whatever the size of the contract.
+    """
+    found = before or {}
+    rows: dict[str, Any] = {}
+    old_rows: dict[str, Any] = {}
+    for part, label in _EPIC_PARTS:
+        old, new = found.get(part), after.get(part)
+        if before is None:
+            if new not in (None, ""):
+                rows[label] = _epic_shown(new)
+            continue
+        if _epic_shown(old) != _epic_shown(new):
+            rows[label] = _epic_shown(new)
+            old_rows[label] = _epic_shown(old)
+    kept = {str(c.get("text") or "").casefold(): c
+            for c in found.get("acceptance") or () if isinstance(c, dict)}
+    seen: set[str] = set()
+    added = changed = same = 0
+    for check in after.get("acceptance") or ():
+        key = str(check.get("text") or "").casefold()
+        seen.add(key)
+        old = kept.get(key)
+        if old is None:
+            added += 1
+            rows[f"new check {added}"] = _check_line(check)
+        elif _check_line(old) != _check_line(check):
+            changed += 1
+            rows[f"changed check {changed}"] = (
+                f"{data(_check_line(old))} → {data(_check_line(check))}")
+        else:
+            same += 1
+    removed = 0
+    for key, old in kept.items():
+        if key not in seen:
+            removed += 1
+            rows[f"removed check {removed}"] = _check_line(old)
+    if before is not None and same:
+        rows["checks unchanged"] = same
+    return rows, old_rows
+
+
+def _epic_too_long(contract: dict[str, Any]) -> str:
+    """A refusal for a text part over its cap, or ``""``."""
+    for part, name, cap in _EPIC_TEXT_CAPS:
+        value = contract.get(part)
+        if isinstance(value, str) and len(value) > cap:
+            return f"{name} is longer than {cap} characters. Nothing was changed."
+    return ""
+
+
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False, card_write=True)
+async def set_epic_contract(
+    task_id: str,
+    acceptance: str,
+    outcome: str = "",
+    out_of_scope: str = "",
+    risk_tier: str = "",
+    appetite_credits: str = "",
+    appetite_review_hours: str = "",
+    workstream: str = "",
+    spec_link: str = "",
+) -> str:
+    """Set the contract of an epic: the outcome in one sentence, 3 to 7
+    acceptance checks that a reviewer can tick, what is out of scope, the
+    risk tier (LOW, STANDARD or HIGH, which the lead sets), the appetite in
+    credits and in review hours, the workstream and a spec link (a Knowledge
+    page or a repository file). acceptance holds one check on each line, and
+    a line that starts with [x] is done. The contract replaces the saved one,
+    and a part left empty is cleared. So read task_detail first and send each
+    part to keep. A check with the text of a saved check keeps its id, its
+    done mark and its evidence. Only a task of the Epic type takes a
+    contract. Draft the outcome and the checks for the member: the card shows
+    what changes, and nothing is saved before the member approves."""
+    tid, task = await _task(task_id)
+    try:
+        current = (await get(f"/projects/tasks/{tid}/epic-contract")) or {}
+    except GatewayRefusal as exc:
+        # The task was just read, so a 404 here is the flag of the org.
+        if getattr(exc, "status", None) == 404:
+            return EPIC_CONTRACTS_OFF
+        raise
+    if not current.get("is_epic"):
+        return (
+            f"{_ref(task)} is not an epic, so it takes no epic contract. Nothing was "
+            "changed. Make it an epic first: set its type to Epic with update_task, "
+            f"then set the contract.\n  full_id: {tid}"
+        )
+    before = current.get("epic_contract") if isinstance(current.get("epic_contract"), dict) else None
+    checks = _epic_checks(acceptance, list((before or {}).get("acceptance") or ()))
+    if isinstance(checks, str):
+        return checks
+    tier = str(risk_tier or "").strip().upper()
+    if tier and tier not in EPIC_RISK_TIERS:
+        return "risk_tier is LOW, STANDARD or HIGH. Nothing was changed."
+    credits = _appetite(appetite_credits, "appetite_credits", EPIC_MAX_APPETITE_CREDITS)
+    if isinstance(credits, str):
+        return credits
+    hours = _appetite(appetite_review_hours, "appetite_review_hours",
+                      EPIC_MAX_APPETITE_REVIEW_HOURS)
+    if isinstance(hours, str):
+        return hours
+    contract: dict[str, Any] = {
+        "outcome": _epic_text(outcome),
+        "acceptance": checks,
+        "out_of_scope": _epic_text(out_of_scope),
+        "risk_tier": tier or None,
+        "appetite_credits": credits,
+        "appetite_review_hours": hours,
+        "workstream": _epic_text(workstream),
+        "spec_link": _epic_text(spec_link),
+    }
+    too_long = _epic_too_long(contract)
+    if too_long:
+        return too_long
+    rows, old_rows = _epic_change_rows(before, contract)
+    if before is not None and set(rows) <= {"checks unchanged"}:
+        return f"The epic contract of {_ref(task)} already says that. Nothing was changed."
+    lead = "impact: " + (_EPIC_FIRST if before is None else _EPIC_CHANGE)
+    if not await _confirm(
+        title="Save this epic contract?" if before is None else "Change this epic contract?",
+        detail=_ref(task),
+        context=_fields_block(rows, before=old_rows, lead=lead),
+    ):
+        return _not_confirmed()
+    # The version of the read rides as If-Match. A change by another writer
+    # while the card waited is a 412, and the save then writes nothing.
+    version = current.get("version")
+    try:
+        saved = (await put(
+            f"/projects/tasks/{tid}/epic-contract", {"epic_contract": contract},
+            headers={"If-Match": str(version)} if version else None,
+        )) or {}
+    except GatewayRefusal as exc:
+        if getattr(exc, "status", None) == 412:
+            return EPIC_CONTRACT_CHANGED + f"\n  full_id: {tid}"
+        raise
+    changed = [str(c).removeprefix("epic_").replace("_", " ")
+               for c in saved.get("changed") or () if isinstance(c, str)]
+    said = f" Changed: {', '.join(changed)}." if changed else ""
+    return f"Saved the epic contract of {_ref(task)}.{said}\n  full_id: {tid}"
 
 
 # ── WS-57 TR-3 — a task's URL references ────────────────────────────────────
@@ -4016,8 +4471,82 @@ DISPOSITIONS = ("INBOX", "NEXT", "WAITING", "SOMEDAY", "PROJECT", "REFERENCE", "
 ENERGIES = ("low", "medium", "high")
 
 
-def status_edit_refusal(status_set: dict[str, Any], node_name: Any) -> str:
+def status_guard_on(status_set: dict[str, Any]) -> bool:
+    """True when the status-set read says ``guard_on`` (PST-4).
+
+    The tool never reads the setting. The route is the ONE reader of
+    ``STATUS_SET_GUARD_ORGS`` and returns the answer. Only an explicit
+    ``True`` counts, so an older gateway means "off".
+    """
+    return status_set.get("guard_on") is True
+
+
+def _n_projects(n: int) -> str:
+    return f"{n} project{'' if n == 1 else 's'}"
+
+
+def shared_reach(status_set: dict[str, Any]) -> int:
+    """N of "changes the statuses of {owner} for {N} projects" (§9.4 ``reach``).
+
+    The read counts each board that an edit changes. An older read has
+    ``used_by`` only. A project that uses a set is always one of them.
+    """
+    n = int(status_set.get("reach") or status_set.get("used_by") or 0)
+    return max(n, 1) if status_set.get("owns") is False else n
+
+
+def shared_set_line(status_set: dict[str, Any]) -> str:
+    """The card words when an edit reaches other projects, or ``""``.
+
+    ``""`` with the flag off, so the card is as before this slice.
+    """
+    if not status_guard_on(status_set):
+        return ""
+    n = shared_reach(status_set)
+    if n < 2 and status_set.get("owns") is not False:
+        return ""
+    return (
+        f"Changes the statuses of {data(status_set.get('owner_name'))} "
+        f"for {_n_projects(n)}"
+    )
+
+
+def shared_set_refusal(status_set: dict[str, Any], node_name: Any) -> str:
+    """The refusal when a project that does not own its set asks for a change.
+
+    Said BEFORE any card (PST-4, task 1790). On 2026-11-05 the chat added and
+    renamed lanes of a set that 28 projects share, because the id it passed
+    was a subproject that used the space's set. The words name the owner and
+    N, and offer ``set_status_set`` mode=own first.
+    """
+    owner = data(status_set.get("owner_name"))
+    kind = "space" if status_set.get("owner_kind") == "space" else "project"
+    n = shared_reach(status_set)
+    return "\n".join([
+        f"{REFUSED} {data(node_name)} uses the statuses of the {kind} {owner}. "
+        f"{_n_projects(n)} {'shares' if n == 1 else 'share'} that set, so a change here "
+        f"changes {'it' if n == 1 else f'all {n}'}. "
+        "Nothing was done.",
+        "Next: To change the statuses of this project only, call set_status_set "
+        "with mode=own first. That gives the project a copy, and then you change "
+        "the copy. To change the shared set on purpose, ask the member. Then call "
+        "this tool again with change_whole_set=true.",
+    ])
+
+
+def status_edit_refusal(
+    status_set: dict[str, Any],
+    node_name: Any,
+    *,
+    guard_shared: bool = False,
+    change_shared: bool = False,
+) -> str:
     """The server's "no" before a status card, or ``""`` to go on.
+
+    PST-4: with ``guard_shared`` and the read's ``guard_on``, a project that
+    does not own its set is also refused (:func:`shared_set_refusal`), unless
+    the member asked for the shared change (``change_shared``). The flag is
+    the route's (``guard_on``). With it off, nothing here changes.
 
     *status_set* is ``GET /projects/nodes/{id}/status-set``. Its ``may_edit``
     is ``core.can_manage_settings``, the predicate the status write checks,
@@ -4029,6 +4558,13 @@ def status_edit_refusal(status_set: dict[str, Any], node_name: Any) -> str:
     write then decides. Fence: ``tests/unit/test_projects_agent_grants.py``.
     """
     if status_set.get("may_edit") is not False:
+        if (
+            guard_shared
+            and not change_shared
+            and status_guard_on(status_set)
+            and status_set.get("owns") is False
+        ):
+            return shared_set_refusal(status_set, node_name)
         return ""
     said = str(status_set.get("edit_refusal") or "").strip()
     lines = [
@@ -4190,14 +4726,69 @@ def _next_position(rows: list[dict[str, Any]]) -> int:
     return (max(taken) + 10) if taken else 10
 
 
+def _place_args(slot: int, after: str) -> tuple[int, str]:
+    """``slot`` (1-based, 0 = not given) and ``after`` (a lane name, empty = not given)."""
+    return max(int(slot or 0), 0), str(after or "").strip()
+
+
+def _place_refusal(
+    rows: list[dict[str, Any]], cat: str, self_id: str, slot: int, after: str,
+) -> str:
+    """The refusal BEFORE the card when the place cannot be: a slot past the
+    stage, or an ``after`` that is not a lane of the stage. ``""`` to go on.
+
+    The route refuses the same places with a 422. Saying it first means the
+    member never approves a card that cannot succeed (PST-4 review).
+    """
+    others = [r for r in rows if r.get("category") == cat and str(r.get("id")) != self_id]
+    size = len(others) + 1
+    stage = _category_words(cat)
+    names = ", ".join(data(r.get("name")) for r in others)
+    if after:
+        if any(str(r.get("name") or "").strip().lower() == after.lower() for r in others):
+            return ""
+        return (
+            f"{REFUSED} No lane named {data(after)} is in the {stage} stage"
+            + (f". Its other lanes, in order: {names}." if names else ", and it has no other lane.")
+            + " Nothing was done.\nNext: Name a lane of this stage in after, or pass slot."
+        )
+    if slot > size:
+        return (
+            f"{REFUSED} Slot {slot} is outside the {stage} stage. The stage has {size} "
+            f"place{'' if size == 1 else 's'} for this lane, so the slot is 1 to {size}. "
+            "Nothing was done.\nNext: Pass a slot in that range, or name a lane of this "
+            "stage in after."
+        )
+    return ""
+
+
+def _place_words(rows: list[dict[str, Any]], cat: str, self_id: str, slot: int, after: str) -> str:
+    """A place for the card: ``3 of 4 in its stage`` or ``after «Review»``."""
+    if after:
+        return f"after {data(after)}"
+    size = len([r for r in rows if r.get("category") == cat and str(r.get("id")) != self_id]) + 1
+    return f"{slot} of {size} in its stage"
+
+
 @_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
-async def create_status(project_id: str, name: str, category: str = "todo", color: str = "") -> str:
+async def create_status(
+    project_id: str,
+    name: str,
+    category: str = "todo",
+    color: str = "",
+    slot: int = 0,
+    after: str = "",
+    change_whole_set: bool = False,
+) -> str:
     """Add a status lane. category is backlog, todo, in_progress, done,
     cancelled or triage. color is one of six hues: gray, red, amber, green,
     blue or violet. Another colour maps to the nearest hue. The lane lands
-    LAST in the set the project uses. The card names the project that owns
-    that set, because a subproject may inherit its lanes from a parent.
-    Deleting a lane is a guarded act."""
+    LAST in its stage in the set the project uses. slot (1-based, inside the
+    stage) or after (a lane name of the same stage) places it elsewhere. The
+    card names the project that owns that set, because a subproject may
+    inherit its lanes from a parent. Pass change_whole_set=true only when the
+    member asks to change a set that other projects share. Deleting a lane is
+    a guarded act."""
     pid, node = await _node(project_id)
     label = str(name or "").strip()
     if not label:
@@ -4206,27 +4797,58 @@ async def create_status(project_id: str, name: str, category: str = "todo", colo
     if cat not in STATUS_CATEGORIES:
         return f"category is one of {', '.join(STATUS_CATEGORIES)}."
     owner = (await get(f"/projects/nodes/{pid}/status-set")) or {}
-    refused = status_edit_refusal(owner, node.get("name"))
+    refused = status_edit_refusal(
+        owner, node.get("name"), guard_shared=True, change_shared=change_whole_set,
+    )
     if refused:
         return refused
+    guard = status_guard_on(owner)
+    place, behind = _place_args(slot, after)
     rows = await _vocab(pid, "statuses")
     if _matches_by_name(rows, label):
         return f"{data(label)} already exists here. The statuses are: {_names(rows)}."
-    payload: dict[str, Any] = {"name": label, "category": cat, "position": _next_position(rows)}
+    bad_place = _place_refusal(rows, cat, "", place, behind) if (place or behind) else ""
+    if bad_place:
+        return bad_place
+    payload: dict[str, Any] = {"name": label, "category": cat}
+    shown: dict[str, Any] = {}
+    # slot and after are open in every org (a tool schema cannot be dark). The
+    # flag only decides what happens with NO place: last in the stage by slot
+    # (on), or the old raw position (off).
+    if behind:
+        payload["after"] = behind
+    elif place or guard:
+        payload["slot"] = place or len([r for r in rows if r.get("category") == cat]) + 1
+    else:
+        payload["position"] = _next_position(rows)
+    if "slot" in payload or "after" in payload:
+        shown["position"] = _place_words(rows, cat, "", payload.get("slot", 0), behind)
     if color.strip():
         payload["color"] = hue_of(color)
     set_of = "this project" if owner.get("owns") else data(owner.get("owner_name"))
+    shared = shared_set_line(owner)
+    wire = {k: v for k, v in payload.items() if k not in ("slot", "after")}
     if not await _confirm(
         title="Add this status?",
-        detail=f"{data(label)} in {data(node.get('name'))}",
-        context=_fields_block({**payload, "project": data(node.get("name")), "status set": set_of}),
+        detail=(
+            f"{data(label)} in {data(node.get('name'))}"
+            + (f". {shared}" if shared else "")
+        ),
+        context=_fields_block(
+            {**wire, **shown, "project": data(node.get("name")), "status set": set_of}
+        ),
     ):
         return CANCELLED
     row = await post(f"/projects/nodes/{pid}/statuses", payload)
+    where = (
+        f"to the statuses of {data(owner.get('owner_name'))}, used by {data(node.get('name'))}"
+        if guard and owner.get("owns") is False
+        else f"to {data(node.get('name'))}"
+    )
     return (
         f"Added status {data(row.get('name') or label)} "
         f"(category: {_category_words(row.get('category') or cat)}) "
-        f"to {data(node.get('name'))}.\n  status_id: {row.get('id')}"
+        f"{where}.\n  status_id: {row.get('id')}"
     )
 
 
@@ -4238,17 +4860,33 @@ async def update_status(
     category: str = "",
     color: str = "",
     position: int = -1,
+    slot: int = 0,
+    after: str = "",
+    change_whole_set: bool = False,
 ) -> str:
     """Rename, recategorise, recolour or reorder one lane, found by NAME in
     the project's set. Only the arguments you pass change. A rename changes
     what every task in the lane reads. color is one of gray, red, amber,
-    green, blue or violet. The card shows before → after."""
+    green, blue or violet. To reorder, pass slot (1-based, inside the stage of
+    the lane) or after (a lane name of the same stage). A lane never leaves
+    its stage by a reorder. position is a raw sort key, so do not guess it.
+    Pass change_whole_set=true only when the member asks to change a set that
+    other projects share. The card shows before → after."""
     pid, node = await _node(project_id)
+    owner = (await get(f"/projects/nodes/{pid}/status-set")) or {}
     refused = status_edit_refusal(
-        (await get(f"/projects/nodes/{pid}/status-set")) or {}, node.get("name")
+        owner, node.get("name"), guard_shared=True, change_shared=change_whole_set,
     )
     if refused:
         return refused
+    guard = status_guard_on(owner)
+    place, behind = _place_args(slot, after)
+    if guard and position >= 0:
+        return (
+            "position is a raw sort key, and the tool does not send it. Pass slot "
+            "(1-based, inside the stage of the lane) or after (a lane name of the "
+            "same stage). Nothing was done."
+        )
     row = await _resolve_status(pid, status)
     sid = uuid_of(str(row.get("id")), "status_id")
     payload: dict[str, Any] = {}
@@ -4268,15 +4906,34 @@ async def update_status(
     if position >= 0:
         payload["position"] = int(position)
         before["position"] = row.get("position")
+    send = dict(payload)
+    if place or behind:
+        if place and behind:
+            return "Pass slot or after, not both."
+        rows = await _vocab(pid, "statuses")
+        cat = str(payload.get("category") or row.get("category"))
+        bad_place = _place_refusal(rows, cat, str(row.get("id")), place, behind)
+        if bad_place:
+            return bad_place
+        here = [r for r in rows if r.get("category") == row.get("category")]
+        send["after" if behind else "slot"] = behind or place
+        payload["position"] = _place_words(rows, cat, str(row.get("id")), place, behind)
+        if row.get("category") == cat:
+            at = next((i for i, r in enumerate(here) if r.get("id") == row.get("id")), 0)
+            before["position"] = f"{at + 1} of {len(here)} in its stage"
     if not payload:
         return "Nothing to change. Pass at least one field."
+    shared = shared_set_line(owner)
     if not await _confirm(
         title="Change this status?",
-        detail=f"{data(row.get('name'))} in {data(node.get('name'))}",
+        detail=(
+            f"{data(row.get('name'))} in {data(node.get('name'))}"
+            + (f". {shared}" if shared else "")
+        ),
         context=_fields_block({**payload, "project": data(node.get("name"))}, before=before),
     ):
         return CANCELLED
-    updated = await patch(f"/projects/statuses/{sid}", payload)
+    updated = await patch(f"/projects/statuses/{sid}", send)
     return (
         f"Updated status {data(updated.get('name') or row.get('name'))} "
         f"(category: {_category_words(updated.get('category') or row.get('category'))}).\n"

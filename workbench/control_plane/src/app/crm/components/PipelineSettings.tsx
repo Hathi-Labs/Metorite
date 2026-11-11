@@ -32,8 +32,9 @@
  * courtesy half.
  *
  * Native mode with several pipelines (CRM-Q2) shows one read-only section for
- * each. The stage routes for a second pipeline are not in this build. Mirror
- * mode takes any count of pipelines, with a picker over the list.
+ * each. A second pipeline has its own stage routes (`/crm/pipelines/{id}/stages`),
+ * which the sections do not use yet. Mirror mode takes any count of pipelines,
+ * with a picker over the list.
  *
  * **Mirror mode** (WS-53 CRM-C3, crm_platform.md §20.6 item 14). Zoho owns the
  * stages, and an admin edits the Metorite overlay: the order, the win chance,
@@ -65,6 +66,7 @@ import {
 } from "../lib/board";
 import { TRY_AGAIN } from "../lib/api";
 import { colorOptions } from "../lib/colorOptions";
+import { defaultDealName, defaultFeedWords, type PipelineKind } from "../lib/newPipeline";
 import { orderedPipelines, placesOf, showPicker } from "../lib/pipelines";
 import {
   CLAMPED_PROBABILITY,
@@ -85,6 +87,7 @@ import type { SettingsSectionId } from "../lib/settingsSections";
 import { useCrmStore } from "../lib/store";
 import ConvertMappingCard from "./ConvertMappingCard";
 import FieldMapCard from "./FieldMapCard";
+import NewPipelineDialog from "./NewPipelineDialog";
 import FieldsCard from "./FieldsCard";
 import RecordNamesCard from "./RecordNamesCard";
 import { Card, NameList, PipelineSections, STATE_ROW, VocabularyNotice } from "./SettingsCards";
@@ -197,10 +200,12 @@ export default function PipelineSettings({
   setup,
   access,
   pipelines = null,
+  leadPipelines = null,
   pipelineId = null,
   showAdminCards = false,
   readOnly = false,
   studioAdmin = false,
+  pipelineCreate = false,
   section,
   questions,
   rules,
@@ -229,11 +234,23 @@ export default function PipelineSettings({
    * lead-conversion mapping. The page gives the same value to the sections.
    */
   studioAdmin?: boolean;
+  /**
+   * WS-CRM CRM-M3a: the caller is an admin, the CRM is Native, and
+   * `CRM_PIPELINES_ORGS` holds the org (`pipeline_create` of `GET /crm/mode`).
+   * Then the Deal stages card shows "New pipeline". The route checks again.
+   */
+  pipelineCreate?: boolean;
   /** The Setup hub (it holds the connection, CRM-X0) and the Access card of an admin, in this order. */
   setup?: React.ReactNode;
   access?: React.ReactNode;
   /** The deal pipelines (CRM-Q2). `null` while the gateway has no such route. */
   pipelines?: DealPipeline[] | null;
+  /**
+   * WS-CRM CRM-M4a: the lead pipelines (`GET /crm/pipelines?kind=lead`). With
+   * one or more, the Native Lead statuses card lists them to read, beside the
+   * default lead list.
+   */
+  leadPipelines?: DealPipeline[] | null;
   /** The pipeline the Deals board shows (CRM-U11). The stage list opens on it. */
   pipelineId?: string | null;
   /** The Fields and Sync health cards are for an admin. */
@@ -262,6 +279,30 @@ export default function PipelineSettings({
   onReorderLostReasons: (patches: PositionPatch[]) => Promise<void>;
 }) {
   const several = showPicker(pipelines);
+  // In the store, so the dialog stays open when the page mounts its phone tree.
+  const newPipelineOpen = useCrmStore((state) => state.newPipeline.open);
+  const newPipelineKind: PipelineKind = useCrmStore((state) => state.newPipeline.kind) ?? "deal";
+  const setNewPipeline = useCrmStore((state) => state.setNewPipeline);
+  const createPipeline = useCrmStore((state) => state.createPipeline);
+  // One dialog makes both kinds (CRM-M4a). A button of the other kind starts
+  // a fresh draft, so a deal draft never becomes a lead pipeline.
+  const openNew = (kind: PipelineKind) =>
+    setNewPipeline(kind === newPipelineKind ? { open: true, kind } : { open: true, kind, draft: null });
+  // CRM-M3a: "New pipeline", on the Native Deal stages card, for an admin.
+  const newPipeline =
+    pipelineCreate && !readOnly ? (
+      <Button variant="secondary" size="sm" icon="Plus" disabled={saving} onClick={() => openNew("deal")}>
+        New pipeline
+      </Button>
+    ) : undefined;
+  // CRM-M4a: the same, on the Native Lead statuses card. It opens the dialog
+  // in lead mode.
+  const newLeadPipeline = newPipeline ? (
+    <Button variant="secondary" size="sm" icon="Plus" disabled={saving} onClick={() => openNew("lead")}>
+      New pipeline
+    </Button>
+  ) : undefined;
+  const leadSections = leadPipelines && leadPipelines.length > 0 ? leadPipelines : null;
   const orderStatuses = useCrmStore((state) => state.orderStatuses);
   const resetStatusOrder = useCrmStore((state) => state.resetStatusOrder);
   const addStage = useCrmStore((state) => state.addStageBeforeClosed);
@@ -361,7 +402,8 @@ export default function PipelineSettings({
                 <PipelineSections
                   pipelines={pipelines}
                   fallback={dealStatuses}
-                  note="Stage editing for several pipelines is not available yet."
+                  note={SEVERAL_PIPELINES_NOTE}
+                  action={newPipeline}
                 />
               ) : (
                 <StageList
@@ -374,24 +416,56 @@ export default function PipelineSettings({
                   onOrder={orderStatuses}
                   onRemove={onRemoveStatus}
                   onAdd={addStage}
+                  action={newPipeline}
                 />
               )
             )}
+          {newPipeline && (
+            <NewPipelineDialog
+              open={newPipelineOpen}
+              kind={newPipelineKind}
+              pipelines={newPipelineKind === "lead" ? leadPipelines : pipelines}
+              dealPipelines={pipelines}
+              saving={saving}
+              onClose={() => setNewPipeline({ open: false, draft: null })}
+              onCreate={async (body) => {
+                const refused = await createPipeline(body);
+                if (refused === null) setNewPipeline({ open: false, draft: null });
+                return refused;
+              }}
+            />
+          )}
 
           {show("lead-statuses") &&
             held(
               "Lead statuses",
               leadStatuses.length,
-              <StageList
-                kind="lead"
-                mode="native"
-                statuses={leadStatuses}
-                saving={saving}
-                onSave={onSaveStatus}
-                onOrder={orderStatuses}
-                onRemove={onRemoveStatus}
-                onAdd={addStage}
-              />
+              leadSections ? (
+                // CRM-M4a: with a lead pipeline, the default list counts as the
+                // first one, as the default deal pipeline does. The card reads
+                // only until the status editor of each pipeline.
+                <PipelineSections
+                  title="Lead statuses"
+                  pipelines={[defaultLeadList(leadStatuses), ...leadSections]}
+                  fallback={leadStatuses}
+                  note={LEAD_PIPELINES_NOTE}
+                  action={newLeadPipeline}
+                  lineOf={(p) => feedsLine(p, pipelines)}
+                  emptyLine={vocabularyState === "loading" ? "Loading statuses…" : "No statuses yet."}
+                />
+              ) : (
+                <StageList
+                  kind="lead"
+                  mode="native"
+                  statuses={leadStatuses}
+                  saving={saving}
+                  onSave={onSaveStatus}
+                  onOrder={orderStatuses}
+                  onRemove={onRemoveStatus}
+                  onAdd={addStage}
+                  action={newLeadPipeline}
+                />
+              )
             )}
 
           {show("lost-reasons") &&
@@ -459,6 +533,54 @@ const LIST_WORDS: Record<
   },
 };
 
+/**
+ * The Native Deal stages card with two or more pipelines (CRM-M3a). It reads
+ * only until the stage editor of each pipeline (CRM-M3c), so it says what is
+ * coming. The words hold for any count of pipelines.
+ */
+export const SEVERAL_PIPELINES_NOTE =
+  "Each pipeline lists its stages here to read. Stage editing for each pipeline comes in a " +
+  "later release. Until then, the stages stay as they are.";
+
+/**
+ * The Native Lead statuses card with a lead pipeline (CRM-M4a). It reads only
+ * until the status editor of each lead pipeline, a later slice.
+ */
+export const LEAD_PIPELINES_NOTE =
+  "The default list holds each lead with no pipeline, and every lead status. Each lead " +
+  "pipeline lists its statuses here to read. Status editing for each pipeline comes in a " +
+  "later release. Until then, the statuses stay as they are.";
+
+/** The id of the default lead list on the read-only card. It is no pipeline. */
+export const DEFAULT_LEAD_LIST_ID = "default-lead-list";
+
+/**
+ * The default lead list as one more section: each lead status in lane order.
+ * A lead with no pipeline sits on it, so it comes first.
+ */
+export function defaultLeadList(statuses: readonly Status[]): DealPipeline {
+  return {
+    id: DEFAULT_LEAD_LIST_ID,
+    name: "Default list",
+    is_default: false,
+    position: Number.MIN_SAFE_INTEGER,
+    kind: "lead",
+    stages: statuses.map((s) => ({ id: s.id, name: s.name, position: s.position, type: s.type })),
+  };
+}
+
+/** Where the deals of one lead pipeline go, in words. None for the default list. */
+export function feedsLine(
+  pipeline: DealPipeline,
+  dealPipelines: readonly DealPipeline[] | null | undefined,
+): string | null {
+  if (pipeline.id === DEFAULT_LEAD_LIST_ID) return null;
+  const fed = pipeline.feeds_pipeline_id
+    ? dealPipelines?.find((p) => p.id === pipeline.feeds_pipeline_id)?.name
+    : null;
+  return `Feeds deals into ${fed ?? defaultFeedWords(defaultDealName(dealPipelines))}.`;
+}
+
 /** The two choices of "Column order" (Mirror mode). */
 const ORDER_TABS: TabDef[] = [
   { id: "zoho", label: "Same as Zoho" },
@@ -481,8 +603,9 @@ const laneOf = (status: Status) => ({ status, pipeline_position: null });
  * order on the board. A move saves at once, every id of the kind, through the
  * order route. On a failure the row goes back and the page shows the error.
  *
- * Mirror mode serves any count of pipelines. Native mode serves one pipeline
- * or none, and `PipelineSections` keeps the read-only list for more.
+ * Mirror mode serves any count of pipelines. Native mode edits the one
+ * pipeline on screen, and `PipelineSections` lists the stages of each pipeline
+ * to read when there are two or more.
  */
 export function StageList({
   kind,
@@ -496,9 +619,12 @@ export function StageList({
   onResetOrder,
   onRemove,
   onAdd,
+  action,
 }: {
   kind: StatusKind;
   mode: "mirror" | "native";
+  /** One control at the right end of the header ("New pipeline", CRM-M3a). */
+  action?: React.ReactNode;
   /** Every row of the kind, hidden and gone ones included. */
   statuses: Status[];
   /** `GET /crm/pipelines`, or null with no such route. */
@@ -605,9 +731,12 @@ export function StageList({
   return (
     <section className="rounded-xl border border-border bg-card/40" aria-label={words.title}>
       <header className="space-y-3 border-b border-border px-4 py-3">
-        <div>
-          <h2 className="text-sm font-semibold text-foreground">{words.title}</h2>
-          <p className="mt-0.5 text-xs text-muted-foreground">{words.line}</p>
+        <div className="flex items-start gap-3">
+          <div className="min-w-0 flex-1">
+            <h2 className="text-sm font-semibold text-foreground">{words.title}</h2>
+            <p className="mt-0.5 text-xs text-muted-foreground">{words.line}</p>
+          </div>
+          {action && <div className="shrink-0">{action}</div>}
         </div>
         {mirror && (
           <div className="space-y-1">
