@@ -308,6 +308,59 @@ describe("the write of the server copy", () => {
     expect(useAppearanceStore.getState().accent).toBe(ROSE);
   });
 
+  it("keeps a choice that never reached the server over the older server copy at the next page", async () => {
+    bindA();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new TypeError("fetch failed");
+      }),
+    );
+    await startAppearanceSync(A.email, A.org, { setMode: vi.fn() });
+    useAppearanceStore.getState().setAccent(ROSE);
+    vi.advanceTimersByTime(WRITE_DELAY_MS);
+    await Promise.resolve();
+    // A new page: the server still holds the older copy.
+    newPage();
+    stubFetch(() => json({ mode: "dark", density: null, accent: "#0ea5e9", updated_at: STAMP }));
+    bindA();
+    const setMode = vi.fn();
+    await startAppearanceSync(A.email, A.org, { setMode });
+    expect(useAppearanceStore.getState().accent).toBe(ROSE);
+    expect(setMode).not.toHaveBeenCalled();
+    expect(gets()).toHaveLength(0);
+    expect(puts()).toHaveLength(1);
+    expect(puts()[0]).toMatchObject({ body: { accent: ROSE } });
+  });
+
+  it("keeps a choice when the tab closed inside the 500 ms", async () => {
+    stubFetch(() => json({ mode: "dark", density: null, accent: "#0ea5e9", updated_at: STAMP }));
+    bindA();
+    await startAppearanceSync(A.email, A.org, { setMode: vi.fn() });
+    useAppearanceStore.getState().setAccent(ROSE);
+    // The timer never fires: the page is gone.
+    newPage();
+    calls = [];
+    bindA();
+    await startAppearanceSync(A.email, A.org, { setMode: vi.fn() });
+    expect(useAppearanceStore.getState().accent).toBe(ROSE);
+    expect(puts()).toHaveLength(1);
+  });
+
+  it("clears the unsent mark after a good PUT, so the next page reads the server copy", async () => {
+    stubFetch(() => json({ mode: "dark", density: null, accent: "#0ea5e9", updated_at: STAMP }));
+    bindA();
+    await startAppearanceSync(A.email, A.org, { setMode: vi.fn() });
+    useAppearanceStore.getState().setAccent(ROSE);
+    await vi.advanceTimersByTimeAsync(WRITE_DELAY_MS);
+    expect(puts()).toHaveLength(1);
+    newPage();
+    calls = [];
+    bindA();
+    await startAppearanceSync(A.email, A.org, { setMode: vi.fn() });
+    expect(gets()).toHaveLength(1);
+  });
+
   it("holds a change made before the bind, and sends it to the bound scope", async () => {
     stubFetch(() => json({ mode: "light", density: "compact", accent: ROSE, updated_at: STAMP }));
     useAppearanceStore.getState().setUserDensity("comfortable");

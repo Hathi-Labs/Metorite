@@ -30,7 +30,12 @@
  *    `{mode, density, accent}`, 500 ms after the last change, and a failure
  *    is silent. The apply of a server copy never writes, so two browsers
  *    cannot write each other in a loop.
- * 6. The write goes only to the bound scope. A passive tab (another tab moved
+ * 6. A member change sets an "unsent" mark for the scope in the browser, and
+ *    only a successful write clears it. While the mark is set, the page does
+ *    not apply the server copy. It sends the browser copy at the bind. So a
+ *    failed write, or a tab that closes inside the 500 ms, never lets an older
+ *    server copy replace the last choice (last write wins).
+ * 7. The write goes only to the bound scope. A passive tab (another tab moved
  *    the pointer to another account) writes nothing.
  *
  * Fence: `syncAppearance.test.ts`. The colour rule is `css.ts::isSafeColor`,
@@ -113,7 +118,32 @@ function owns(scope: string): boolean {
   return !isAppearancePassive() && tabAppearanceScope() === scope;
 }
 
-async function send(record: AppearanceRecord): Promise<void> {
+const UNSENT_PREFIX = "cc-appearance-unsent:";
+
+function unsentKey(scope: string): string {
+  return `${UNSENT_PREFIX}${scope}`;
+}
+
+function setUnsent(scope: string | null, on: boolean): void {
+  if (!scope || typeof window === "undefined") return;
+  try {
+    if (on) window.localStorage.setItem(unsentKey(scope), "1");
+    else window.localStorage.removeItem(unsentKey(scope));
+  } catch {
+    // No storage: the old behaviour holds.
+  }
+}
+
+function hasUnsent(scope: string): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(unsentKey(scope)) === "1";
+  } catch {
+    return false;
+  }
+}
+
+async function send(record: AppearanceRecord, scope: string): Promise<void> {
   if (sync.off) return;
   try {
     const res = await fetch(APPEARANCE_URL, {
@@ -123,8 +153,11 @@ async function send(record: AppearanceRecord): Promise<void> {
       body: JSON.stringify(record),
     });
     if (res.status === 404) sync.off = true;
+    // Only a 2xx clears the mark. A 404 means the feature is dark here, so
+    // the mark stays and nothing reads the server copy in that case.
+    else if (res.ok) setUnsent(scope, false);
   } catch {
-    // Silent: the browser copy holds the choice, and the next change sends it.
+    // Silent: the mark stays, and the next bind sends the browser copy.
   }
 }
 
@@ -135,7 +168,7 @@ function flush(): void {
     sync.pending = true;
     return;
   }
-  if (owns(scope)) void send(currentAppearance());
+  if (owns(scope)) void send(currentAppearance(), scope);
 }
 
 /**
@@ -145,6 +178,7 @@ function flush(): void {
  */
 export function noteMemberAppearanceChange(): void {
   sync.touched = true;
+  setUnsent(tabAppearanceScope(), true);
   if (sync.timer) clearTimeout(sync.timer);
   sync.timer = setTimeout(flush, WRITE_DELAY_MS);
 }
@@ -260,10 +294,16 @@ export function startAppearanceSync(
   sync.bound = scope;
   if (sync.pending) {
     sync.pending = false;
-    void send(currentAppearance());
+    void send(currentAppearance(), scope);
   }
   if (sync.readFor === scope) return Promise.resolve();
   sync.readFor = scope;
+  if (hasUnsent(scope)) {
+    // A choice of this browser never reached the server. It is newer than the
+    // server copy, so send it and do not apply the server copy over it.
+    void send(currentAppearance(), scope);
+    return Promise.resolve();
+  }
   return readAndApply(scope, apply);
 }
 
@@ -275,5 +315,6 @@ export function __resetAppearanceSyncForTests(): void {
   sync.readFor = null;
   sync.pending = false;
   sync.timer = null;
-  sync.memberMode = null;  sync.off = false;
+  sync.memberMode = null;
+  sync.off = false;
 }
