@@ -10,9 +10,11 @@ pids limits, and ONE read-write mount, the run's own working dir.
 
 **Dark by construction.** ``acquire()`` refuses unless ``MAF_CODING_SCOPE``
 names the bound agent's target for the bound organization, and the scope is
-empty by default. The one live caller is ``acb_skills.sandbox_tools`` (WS-43d),
-for projects-assistant under ``projects:<org>`` (§16.3), and only when
-:func:`covers` is true. The startup sweep is the one part that always runs.
+empty by default. The callers are ``acb_skills.sandbox_tools``: for
+projects-assistant under ``projects:<org>`` (WS-43d, §16.3), only when
+:func:`covers` is true, for the ``code_task`` session under ``code_task:<org>``
+(WS-43e), and for app-builder under ``app_builder:<org>`` (WS-43h, §7.8). The
+startup sweep is the one part that always runs.
 
 **The tenant comes from the run binding, never from input (R5).** The
 organization is ``executor._current_run_org()``. The agent, the thread, the
@@ -96,9 +98,29 @@ INSTANCE_MARKER_TARGET = "/workspace/.cc-instance"
 #: The agent whose target is ``app_builder``, and the one whose target is
 #: ``projects``. Every other agent is ``code_task`` (§7.7 condition 1, §16.3).
 APP_BUILDER_AGENT = "app-builder"
+APP_BUILDER_TARGET = "app_builder"
 PROJECTS_AGENT = "projects-assistant"
 PROJECTS_TARGET = "projects"
-MAF_CODING_TARGETS = frozenset({"code_task", "app_builder", PROJECTS_TARGET})
+MAF_CODING_TARGETS = frozenset({"code_task", APP_BUILDER_TARGET, PROJECTS_TARGET})
+
+#: The two read-only mounts of the ``app_builder`` target (§7.8, WS-43h). They
+#: come from code, never from a caller. The build scripts are a copy that the
+#: broker makes, so no container ever sees the agent dir or a clone.
+APP_BUILDER_BUILD_TARGET = "/opt/app-builder/build"
+T2_VENDOR_TARGET = "/opt/t2-vendor"
+#: The variable that ``build_t2.mjs`` reads for the vendor cache.
+T2_VENDOR_ENV = "CUSTOM_APPS_T2_VENDOR_DIR"
+#: The variable that ``build_t2.mjs`` reads for the source of ``@cc/ui``.
+T2_UI_ENV = "CUSTOM_APPS_T2_UI_SOURCE"
+#: Each file of the build copy, by its path in the repo, and no other file
+#: (§7.8). ``artifactUi.tsx`` is ``@cc/ui``: ``build_t2.mjs`` finds it from
+#: its own path in the repo, and the copy has no repo around it (review P1).
+APP_BUILDER_BUILD_SOURCES: dict[str, str] = {
+    "build_t2.mjs": "apps/agents/agent-app-builder/build/build_t2.mjs",
+    "install_t2_deps.mjs": "apps/agents/agent-app-builder/build/install_t2_deps.mjs",
+    "artifactUi.tsx": "workbench/control_plane/src/lib/artifactUi.tsx",
+}
+APP_BUILDER_BUILD_FILES = tuple(APP_BUILDER_BUILD_SOURCES)
 
 #: The system part of ``PATH``. The thread's ``.local/bin`` goes LAST, so a
 #: package one thread installs never shadows a system tool (§7.1 rule 6).
@@ -204,7 +226,7 @@ def target_for_agent(agent: str) -> str:
     """``app_builder`` for app-builder, ``projects`` for projects-assistant,
     and ``code_task`` for every other agent."""
     if agent == APP_BUILDER_AGENT:
-        return "app_builder"
+        return APP_BUILDER_TARGET
     if agent == PROJECTS_AGENT:
         return PROJECTS_TARGET
     return "code_task"
@@ -299,6 +321,67 @@ def _custom_apps_root() -> Path:
     from orchestrator.executor import _custom_apps_root as root
 
     return root()
+
+
+def app_builder_build_source() -> Path | None:
+    """The repo checkout that holds the agent's ``build/`` dir, or ``None`` (§7.8).
+
+    It is found from this module's own path, never from input or a setting.
+    The broker copies only :data:`APP_BUILDER_BUILD_SOURCES` out of it.
+    """
+    for parent in Path(__file__).resolve().parents:
+        candidate = parent / "apps" / "agents" / "agent-app-builder" / "build"
+        if candidate.is_dir() and not _is_link(candidate):
+            return parent
+    return None
+
+
+def ensure_app_git(workspace: Path) -> None:
+    """The app dir holds a real ``.git`` dir before a container starts (§7.5 rule A).
+
+    WS-43h (review P2). ``.git`` gets the empty read-only cover only when it
+    exists at the start. With no ``.git``, a container could write
+    ``.git/config`` and ``.gitattributes``, and the next host checkpoint
+    would run a planted filter on the host. So a ``.git`` that is a link or a
+    file is refused, and a missing one is made before the start. It fails
+    closed: no repo, no container.
+
+    The broker starts no process but ``docker`` (WS43-F1). The ``git init``
+    is ``durability.init_app_repo``, the one host git of an app dir.
+    """
+    git_dir = workspace / ".git"
+    if _is_link(git_dir) or (git_dir.exists() and not git_dir.is_dir()):
+        raise SandboxRefused("The .git of the app dir is not a real dir, so no sandbox starts.")
+    if git_dir.is_dir():
+        return
+    try:
+        from gateway.routes.apps.durability import init_app_repo
+    except ImportError as exc:
+        raise SandboxUnavailable(
+            "The app dir has no git repo, and no code here can make one. No sandbox starts."
+        ) from exc
+    if not init_app_repo(workspace) or _is_link(git_dir) or not git_dir.is_dir():
+        raise SandboxUnavailable(
+            "The app dir has no git repo, and git init failed. No sandbox starts."
+        )
+
+
+def _t2_vendor_source() -> Path | None:
+    """The T2 vendor cache as a real path, or ``None`` when the deploy made none.
+
+    ``gateway.routes.apps._common.t2_vendor_dir`` is the ONE place that names
+    it. The deploy makes it, outside every mount root, and no container can
+    write it.
+    """
+    try:
+        from gateway.routes.apps._common import t2_vendor_dir
+    except ImportError:
+        return None
+    try:
+        real = Path(t2_vendor_dir()).resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    return real if real.is_dir() else None
 
 
 def _real_state_root() -> Path:
@@ -624,8 +707,9 @@ def mount_list(
     - The ``projects`` target adds its nested mounts
       (:func:`projects_mounts`). No other target gets them. It needs
       *skill_cover*, and with none no container starts.
-    - *readonly_mounts* come from code, never from a caller. WS-43h adds the
-      app-builder list. A source with ``.git`` at any depth is refused.
+    - *readonly_mounts* come from code, never from a caller. The one list is
+      :meth:`SandboxBroker.app_builder_mounts` (WS-43h). A source with
+      ``.git`` at any depth is refused.
     """
     ws = binding.workspace
     _check_source_text(ws)
@@ -752,6 +836,12 @@ def build_run_argv(
         # sys.path, so a module that another member's run wrote in a shared
         # folder is never imported by name (review P1, fix round 1).
         env["PYTHONSAFEPATH"] = "1"
+    if binding.target == APP_BUILDER_TARGET:
+        # WS-43h (§7.8): `build_t2.mjs` reads the vendor cache here. The
+        # value is the fixed container path of the read-only mount, never a
+        # host path, and it holds no secret. `@cc/ui` is in the build copy.
+        env[T2_VENDOR_ENV] = T2_VENDOR_TARGET
+        env[T2_UI_ENV] = f"{APP_BUILDER_BUILD_TARGET}/artifactUi.tsx"
     for key, value in env.items():
         argv += ["--env", f"{key}={value}"]
     return [*argv, image, *KEEPALIVE]
@@ -1731,10 +1821,108 @@ class SandboxBroker:
     def _build_mounts(self, binding: RunBinding, others: set[Path]) -> list[Mount]:
         check_not_nested(binding.workspace, others)
         cover = None
+        readonly: list[tuple[Path, str]] = []
         if binding.target == PROJECTS_TARGET:
             prepare_projects_dirs(binding)
             cover = self.skill_cover(binding)
-        return mount_list(binding, self.git_cover(), skill_cover=cover)
+        if binding.target == APP_BUILDER_TARGET:
+            # Before the mounts: the .git cover needs a .git (review P2).
+            ensure_app_git(binding.workspace)
+            readonly = self.app_builder_mounts()
+        return mount_list(
+            binding, self.git_cover(), readonly_mounts=readonly, skill_cover=cover,
+        )
+
+    # ── the app_builder target: the build scripts and the vendor cache ──────
+
+    def app_builder_mounts(self) -> list[tuple[Path, str]]:
+        """The read-only mounts of an ``app_builder`` start (§7.8, WS-43h).
+
+        The list is code. No caller can add to it. It holds a copy of the
+        build scripts at :data:`APP_BUILDER_BUILD_TARGET`, and the T2 vendor
+        cache at :data:`T2_VENDOR_TARGET` when the deploy made it. A source
+        that is missing is left out, so the build fails in the container and
+        nothing runs on the host. :func:`mount_list` checks each source again:
+        a real dir, with no link and no ``.git`` at any depth.
+        """
+        mounts: list[tuple[Path, str]] = []
+        build = self.app_builder_build_copy()
+        if build is not None:
+            mounts.append((build, APP_BUILDER_BUILD_TARGET))
+        vendor = _t2_vendor_source()
+        if vendor is not None:
+            mounts.append((vendor, T2_VENDOR_TARGET))
+        return mounts
+
+    def app_builder_build_copy(self) -> Path | None:
+        """A copy of the agent's build scripts, made for a start, or ``None``.
+
+        The copy holds only :data:`APP_BUILDER_BUILD_SOURCES`, so it holds no
+        ``.git`` and no other file of the repo. Its name is a digest of
+        the content, so a start never changes a copy that a running container
+        mounts. Two starts that make the same copy at once each make a temp
+        dir and rename it into place, as the skill cover does. A file-system
+        error is :class:`SandboxUnavailable`.
+        """
+        source = app_builder_build_source()
+        if source is None:
+            _log.warning("sandbox_broker.app_builder_build_missing")
+            return None
+        try:
+            return self._build_app_builder_copy(source)
+        except OSError as exc:
+            _log.warning("sandbox_broker.app_builder_build_copy_failed", error=str(exc)[:200])
+            raise SandboxUnavailable(
+                "The copy of the app build scripts could not be made. Try again."
+            ) from exc
+
+    def _build_app_builder_copy(self, source: Path) -> Path | None:
+        files: dict[str, bytes] = {}
+        for name, rel in APP_BUILDER_BUILD_SOURCES.items():
+            src = source / rel
+            if _is_link(src) or not src.is_file():
+                continue
+            files[name] = src.read_bytes()
+        if not files:
+            return None
+        base = self.state_dir() / "app-builder-build"
+        base.mkdir(parents=True, exist_ok=True)
+        if _is_link(base):
+            raise SandboxUnavailable("The build copy dir is not a real dir.")
+        path = base / _digest(
+            *(f"{n}:{hashlib.sha256(d).hexdigest()}" for n, d in sorted(files.items())),
+            length=24,
+        )
+
+        def clean() -> bool:
+            if _is_link(path) or (path.exists() and not path.is_dir()):
+                raise SandboxUnavailable("A build copy is not a real dir.")
+            if not path.is_dir():
+                return False
+            have = {e.name: e for e in os.scandir(path)}
+            return set(have) == set(files) and all(
+                e.is_file(follow_symlinks=False) and Path(e.path).read_bytes() == files[e.name]
+                for e in have.values()
+            )
+
+        if clean():
+            return path.resolve()
+        tmp = base / f".tmp-{uuid.uuid4().hex}"
+        tmp.mkdir()
+        try:
+            for name, data in files.items():
+                (tmp / name).write_bytes(data)
+            if path.is_dir() and not clean():
+                shutil.rmtree(path, ignore_errors=True)
+            try:
+                os.rename(tmp, path)
+            except OSError:
+                # Another start renamed its copy into place first.
+                if not clean():
+                    raise
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        return path.resolve()
 
     # ── the projects target: host files and run data (§16.3) ────────────────
 

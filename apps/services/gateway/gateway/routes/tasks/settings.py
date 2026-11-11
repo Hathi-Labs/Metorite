@@ -25,7 +25,7 @@ from collections.abc import Callable
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
-from fastapi import Depends
+from fastapi import Depends, Header, HTTPException, Response
 from gateway.routes.tasks.core import (
     _log,
     _tenant_session,
@@ -348,6 +348,31 @@ def _day_templates(val: Any) -> list[dict]:
     return out
 
 
+def day_templates_token(val: Any) -> str:
+    """The compare-and-set token of the day rules (CAL-3, task 1677): the
+    sha256 hex of the canonical JSON (sorted keys, no spaces) of the NORMALISED
+    list. A client that reads the list and writes it back sends the token it
+    read in ``If-Match``. A change of the list between the two changes the
+    token, and the write answers 412 (``StaleDayRules``)."""
+    import hashlib
+    import json
+    canon = json.dumps(_day_templates(val), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()
+
+
+class StaleDayRules(Exception):
+    """The ``If-Match`` token no longer matches the stored day rules. Nothing
+    was written."""
+
+
+def _bare_token(header: str) -> str:
+    """The hex of an ``If-Match`` value: a weak mark and the quotes drop."""
+    t = header.strip()
+    if t[:2] in ("W/", "w/"):
+        t = t[2:]
+    return t.strip().strip('"')
+
+
 def _int_or(v: Any, default: int) -> int:
     """int(v), or `default` when v is None (0 is preserved, unlike `v or d`)."""
     try:
@@ -448,18 +473,65 @@ async def member_settings(db: Any, email: str) -> UserSettingsModel:
     return await _load(db, email, any_case=True)
 
 
-@router.get("/settings", response_model=UserSettingsModel)
-async def get_user_settings(user: UserContext = Depends(get_current_user)):
+async def get_user_settings(user: UserContext):
+    """The member's settings. A plain function, called by the feed and the shell
+    with ``user=``. The route is :func:`read_user_settings`."""
     async with _tenant_session() as db:
         return await _load(db, _uid(user))
 
 
-async def write_member_settings(uid: str, fields: dict[str, Any]) -> None:
+def _etag(model: UserSettingsModel) -> str:
+    return f'"{day_templates_token(model.day_templates)}"'
+
+
+@router.get("/settings", response_model=UserSettingsModel)
+async def read_user_settings(
+    response: Response, user: UserContext = Depends(get_current_user),
+):
+    model = await get_user_settings(user=user)
+    # CAL-3 (task 1677): the token of the day rules, for a client that edits the
+    # list and writes it back with ``If-Match``. A header, so the body keeps its
+    # shape. It validates ``day_templates`` only, not the whole body.
+    response.headers["ETag"] = _etag(model)
+    return model
+
+
+#: The lock of one member's row, taken for the length of the transaction. The
+#: advisory lock covers a member with no row yet (``FOR UPDATE`` locks nothing
+#: then), and the row lock covers a writer that sends no ``If-Match``. The
+#: tenant is the bound one.
+_LOCK_KEY_SQL = (
+    "SELECT pg_advisory_xact_lock(hashtextextended("
+    "coalesce(current_setting('app.tenant_id', true), '') || '/' || lower(:uid), 0))"
+)
+_DAY_RULES_FOR_UPDATE_SQL = (
+    "SELECT day_templates FROM user_settings "
+    f"WHERE organization_id = {_BOUND_ORG} AND user_id = :uid FOR UPDATE"
+)
+
+
+async def _check_day_rules_token(db: Any, uid: str, if_match: str) -> None:
+    await db.execute(text(_LOCK_KEY_SQL), {"uid": uid})
+    row = (await db.execute(text(_DAY_RULES_FOR_UPDATE_SQL), {"uid": uid})).first()
+    stored = day_templates_token(row[0] if row else [])
+    if _bare_token(if_match) != stored:
+        raise StaleDayRules()
+
+
+async def write_member_settings(
+    uid: str, fields: dict[str, Any], *, if_match: str | None = None,
+) -> None:
     """The one write of a member's settings row (upsert of ``fields``).
 
     ``PUT /tasks/settings`` and ``PUT /auth/me/zone`` (RX-7) both call it, so
     a second writer of the row never exists. ``uid`` is the session's address
     and the tenant is the bound one. Neither comes from a request body.
+
+    ``if_match`` (CAL-3, task 1677) is a compare-and-set on ``day_templates``.
+    When it is given and ``fields`` holds ``day_templates``, the write locks the
+    member's row, recomputes the token of the stored list in the same
+    transaction, and raises :class:`StaleDayRules` with nothing written when it
+    differs. Without it the write is as before.
     """
     if not fields:
         return
@@ -482,6 +554,8 @@ async def write_member_settings(uid: str, fields: dict[str, Any]) -> None:
     def _ph(k: str) -> str:
         return f":{k} ::jsonb" if k in _jsonb_cols else f":{k}"
     async with _tenant_session() as db:
+        if if_match is not None and "day_templates" in fields:
+            await _check_day_rules_token(db, uid, if_match)
         # A first write makes the row, and `_load` then stops reading the
         # People seed (D-PC-16). So a new row carries the seed, as the two
         # shell writes do. The shell's zone save (RX-5) makes this row for
@@ -496,14 +570,35 @@ async def write_member_settings(uid: str, fields: dict[str, Any]) -> None:
             {"uid": uid, **fields, **seed})
 
 
-@router.put("/settings", response_model=UserSettingsModel)
 async def put_user_settings(
-    patch: UserSettingsPatch,
-    user: UserContext = Depends(get_current_user),
+    patch: UserSettingsPatch, user: UserContext, *, if_match: str | None = None,
 ):
-    """Partial update — only the provided fields change (upsert)."""
+    """Partial update — only the provided fields change (upsert).
+
+    ``if_match`` (CAL-3, task 1677) is the token that ``GET`` returned in
+    ``ETag``. With it, a write of ``day_templates`` is a compare-and-set: a
+    stale token answers 412 and writes nothing. Without it nothing changes."""
     uid = _uid(user)
-    await write_member_settings(
-        uid, {k: v for k, v in patch.model_dump().items() if v is not None})
+    try:
+        await write_member_settings(
+            uid, {k: v for k, v in patch.model_dump().items() if v is not None},
+            if_match=if_match)
+    except StaleDayRules:
+        raise HTTPException(
+            status_code=412,
+            detail="The day rules changed since you read them. Read them again.",
+        ) from None
     async with _tenant_session() as db:
         return await _load(db, uid)
+
+
+@router.put("/settings", response_model=UserSettingsModel)
+async def write_user_settings(
+    patch: UserSettingsPatch,
+    response: Response,
+    user: UserContext = Depends(get_current_user),
+    if_match: str | None = Header(default=None),
+):
+    model = await put_user_settings(patch, user, if_match=if_match)
+    response.headers["ETag"] = _etag(model)
+    return model

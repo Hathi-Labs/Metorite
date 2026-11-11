@@ -688,11 +688,14 @@ class TestTheTouch:
         marked = row.addr_changed_at
         assert await touch("198.51.100.1") is True  # in the hour: no second mark
         row = _conn(world, cid)
-        assert row.addr_changed_at == marked and row.last_seen_addr == "198.51.100.1"
+        # The address that set the mark stays for the hour (review of 2026-11-07):
+        # the box that calls a minute later must not hide the one that raised it.
+        assert row.addr_changed_at == marked and row.last_seen_addr == "198.51.100.2"
         _admin(world, "UPDATE agent_connection SET addr_changed_at = now() - interval"
                       " '2 hours' WHERE id = CAST(:i AS uuid) RETURNING id", i=cid)
         assert await touch("198.51.100.3") is True  # past the hour: a new mark
-        assert _conn(world, cid).addr_changed_at > marked
+        row = _conn(world, cid)
+        assert row.addr_changed_at > marked and row.last_seen_addr == "198.51.100.3"
         # The audit writer opens a sync engine with no tenant. The edge never calls it.
         assert audits == []
 
