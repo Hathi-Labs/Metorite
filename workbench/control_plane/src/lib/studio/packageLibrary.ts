@@ -157,7 +157,6 @@ export interface OrgCard {
   error: { action: string; outcome: "failed" | "refused"; when: string } | null;
   errorLine: string;
   use: string;
-  href: string;
   changedAt: string | null;
 }
 
@@ -186,7 +185,6 @@ export function orgCard(p: OrgPackage, now: number = Date.now()): OrgCard {
     error,
     errorLine: error ? `${error.outcome === "failed" ? "Failed" : "Refused"}: ${error.action}, ${error.when}` : NO_ERRORS_LINE,
     use: USE_NOT_TRACKED_LINE,
-    href: previewHref(p.id),
     changedAt: p.updated_at,
   };
 }
@@ -194,4 +192,9 @@ export function orgCard(p: OrgPackage, now: number = Date.now()): OrgCard {
 /** The pill of the admin view shows only when the gateway said `admin: true`. */
 export function membersPill(admin: boolean, count: number): { id: "members"; label: string; count: number } | null {
   return admin ? { id: "members", label: "All members", count } : null;
+}
+
+/** The filter that the grid and the pills both use. "members" falls back to "all" when its pill is gone. */
+export function effectiveFilter(chosen: LibraryFilter, hasMembersPill: boolean): LibraryFilter {
+  return chosen === "members" && !hasMembersPill ? "all" : chosen;
 }

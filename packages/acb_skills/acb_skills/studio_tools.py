@@ -2995,6 +2995,9 @@ _ORG_NOTE = ("Action calls count each call through the door of a package. They a
              "workflow runs. Use is not tracked yet.")
 
 
+_ORG_CUT = " The list holds only the newest 500 packages, so the total is not the whole org."
+
+
 def _org_package_row(r: dict[str, Any]) -> dict[str, Any]:
     """One row of the admin view. It keeps the action, the outcome and the time of the last
     error, and no reason text, so a stored word never reaches the model."""
@@ -3050,10 +3053,18 @@ async def studio_package_get(package_id: str = "", offset: int = 0, limit: int =
         page = paged(rows, offset, limit, default=MAX_PACKAGE_ROWS, maximum=MAX_PACKAGE_ROWS,
                      noun="packages")
         if org and isinstance(reply.data, dict) and reply.data.get("admin") is True:
-            return _result(True, [], [], scope="org", packages=[
-                _org_package_row(r) for r in page.items],
-                total=page.total, shown=len(page.items), page=page.line,
-                note=_ORG_NOTE)
+            from acb_skills.untrusted import UntrustedFrame
+
+            # The names and the owners are text of other members, so the rows sit in a frame.
+            frame = UntrustedFrame.new()
+            cut = reply.data.get("truncated") is True
+            text_rows = json.dumps([_org_package_row(r) for r in page.items],
+                                   ensure_ascii=False, separators=(",", ":"), default=repr)
+            return _result(True, [], [], scope="org",
+                           packages=frame.wrap("STUDIO PACKAGES", text_rows),
+                           total=page.total, shown=len(page.items), page=page.line,
+                           truncated=cut,
+                           note=frame.note(_ORG_NOTE + (_ORG_CUT if cut else "")))
         return _result(True, [], [], packages=[{
             "id": _tag(r.get("id"), 40), "name": _name(r.get("name", ""), True),
             "status": _tag(r.get("status"), 20), "live_version": r.get("live_version"),

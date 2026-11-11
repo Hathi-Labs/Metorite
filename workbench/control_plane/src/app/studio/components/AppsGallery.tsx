@@ -23,7 +23,7 @@ import { startApp } from "@/lib/studio/startApp";
 import { useViewMode } from "@/components/ViewModeProvider";
 import {
   ACTION_CALLS_LABEL, PACKAGES_FAILED_LINE, type LibraryFilter, type OrgCard,
-  changedWords, libraryCounts, membersPill, mergeLibrary, orgCard,
+  changedWords, effectiveFilter, libraryCounts, membersPill, mergeLibrary, orgCard,
   packageShows, type PackageCard as PackageCardData,
 } from "@/lib/studio/packageLibrary";
 import { buildHref } from "@/lib/studio/packageDraft";
@@ -299,6 +299,14 @@ function Fact({ label, children, tone = "text-foreground" }: { label: string; ch
   );
 }
 
+/** An action id such as `reassign_ticket_to_desk` may wrap at an underscore, not in the middle of a word. */
+function breakAtUnderscores(text: string): React.ReactNode {
+  const parts = text.split("_");
+  return parts.map((part, i) => (
+    <span key={i}>{part}{i < parts.length - 1 ? <>_<wbr /></> : null}</span>
+  ));
+}
+
 /** A package of any member, as an admin sees it. It opens nothing, because the package page is the owner's. It holds no reason text and no value. */
 function OrgPackageCard({ card }: { card: OrgCard }) {
   const live = card.state === "live";
@@ -312,7 +320,7 @@ function OrgPackageCard({ card }: { card: OrgCard }) {
           <div className="min-w-0 flex-1">
             <h3 className="text-sm font-semibold text-foreground truncate">{card.name}</h3>
             <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground mt-0.5">
-              <span className="truncate">by {card.mine ? "you" : card.owner}</span>
+              <span className="truncate" title={card.owner}>by {card.mine ? "you" : card.owner}</span>
               <span>·</span>
               <Icon name="Clock" className="w-3 h-3 shrink-0" />
               <span className="shrink-0">{changedWords(card.changedAt)}</span>
@@ -323,7 +331,7 @@ function OrgPackageCard({ card }: { card: OrgCard }) {
       <dl className="flex flex-col gap-1 px-3 sm:px-4 pb-2">
         <Fact label="Live version">{card.version}</Fact>
         <Fact label={ACTION_CALLS_LABEL}>{card.calls}</Fact>
-        <Fact label="Last error" tone={card.error ? "text-destructive" : "text-foreground"}>{card.errorLine}</Fact>
+        <Fact label="Last error" tone={card.error ? "text-destructive" : "text-foreground"}>{breakAtUnderscores(card.errorLine)}</Fact>
         <Fact label="Use">{card.use}</Fact>
       </dl>
       <div className="mt-auto flex items-center gap-2 px-3 sm:px-4 pb-3">
@@ -345,7 +353,7 @@ export default function AppsGallery() {
   const [loading, setLoading] = useState(true);
   const packagesSeq = useRef(0);
   const [error, setError] = useState<string | null>(null);
-  const [filter, setFilter] = useState<Filter>("all");
+  const [chosen, setChosen] = useState<Filter>("all");
   const [describe, setDescribe] = useState("");
   const [packages, setPackages] = useState<PackageSummary[]>([]);
   const [packagesError, setPackagesError] = useState(false);
@@ -357,6 +365,23 @@ export default function AppsGallery() {
   // Fetch-on-mount wiring: same pattern (and lint carve-out) as
   // tasks/components/AssistantRail.tsx.
   /* eslint-disable react-hooks/set-state-in-effect */
+  const orgSeq = useRef(0);
+  const readOrg = useCallback(async () => {
+    const seq = ++orgSeq.current;
+    try {
+      const found = await listOrgPackages();
+      if (seq !== orgSeq.current) return;
+      setOrgAdmin(found.admin);
+      setOrgPackages(found.packages);
+      setOrgTruncated(found.truncated);
+    } catch {
+      if (seq !== orgSeq.current) return;
+      setOrgAdmin(false);
+      setOrgPackages([]);
+      setOrgTruncated(false);
+    }
+  }, []);
+
   const fetchApps = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -374,21 +399,6 @@ export default function AppsGallery() {
         if (seq !== packagesSeq.current) return;
         setPackages([]);
         setPackagesError(!(e instanceof Error && e.message === STUDIO_OFF));
-      });
-    // The admin read goes with it. A failure, a switch that is off and a caller without the right
-    // all leave the pill out, so a member never sees a broken control.
-    const orgRead = listOrgPackages()
-      .then((found) => {
-        if (seq !== packagesSeq.current) return;
-        setOrgAdmin(found.admin);
-        setOrgPackages(found.packages);
-        setOrgTruncated(found.truncated);
-      })
-      .catch(() => {
-        if (seq !== packagesSeq.current) return;
-        setOrgAdmin(false);
-        setOrgPackages([]);
-        setOrgTruncated(false);
       });
     try {
       const res = await fetch("/api/apps");
@@ -408,10 +418,13 @@ export default function AppsGallery() {
       // Hold the skeleton until both reads settle, so "No apps yet" never flashes
       // while the packages are still on the way. A failure of one still shows the other.
       await packagesRead;
-      await orgRead;
       setLoading(false);
+      // The admin read starts AFTER the library shows, so a slow org list never holds the
+      // member's own apps. A failure, a switch that is off and a caller without the right all
+      // leave the pill out, so a member never sees a broken control.
+      void readOrg();
     }
-  }, []);
+  }, [readOrg]);
 
   useEffect(() => {
     fetchApps();
@@ -517,6 +530,9 @@ export default function AppsGallery() {
   );
 
   const counts = useMemo(() => libraryCounts(apps, packages, myEmail), [apps, packages, myEmail]);
+  const members = membersPill(orgAdmin, orgPackages.length);
+  // ONE filter for the grid and the pills. A pill that is gone cannot stay chosen.
+  const filter = effectiveFilter(chosen, members !== null);
 
   const visible = useMemo(() => {
     const keep = (a: AppMeta): boolean => {
@@ -538,9 +554,7 @@ export default function AppsGallery() {
   }, [apps, packages, filter, myEmail]);
   const total = apps.length + packages.length;
   const orgCards = useMemo(() => orgPackages.map((p) => orgCard(p)), [orgPackages]);
-  const members = membersPill(orgAdmin, orgPackages.length);
-  // A pill that is gone cannot stay chosen.
-  const showMembers = filter === "members" && members !== null;
+  const showMembers = filter === "members";
 
   return (
     <section className="flex flex-col" aria-label="Apps">
@@ -580,8 +594,8 @@ export default function AppsGallery() {
           { id: "templates", label: "Templates", count: counts.templates },
           ...(members ? [members] : []),
         ]}
-        activeId={showMembers || filter !== "members" ? filter : "all"}
-        onChange={(id) => setFilter(id as Filter)}
+        activeId={filter}
+        onChange={(id) => setChosen(id as Filter)}
       />
 
       {buildError && (

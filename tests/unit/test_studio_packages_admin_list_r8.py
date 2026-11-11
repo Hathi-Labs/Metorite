@@ -167,11 +167,13 @@ def _run(world: Any, fn: Callable[[Any], Awaitable[Any]]) -> Any:
                 return UserContext(email=_email(key), role=UserRole.EMPLOYEE,
                                    access=access, organization_id=org)
 
-            async def call(key: str, path: str) -> httpx.Response:
+            async def call(key: str, path: str, method: str = "GET",
+                           body: Any = None) -> httpx.Response:
                 users[key] = await resolve(key)
                 token = bind_tenant(world.orgs[PEOPLE[key][0]])
                 try:
-                    return await client.get(path, headers={"x-test-as": key})
+                    return await client.request(method, path, json=body,
+                                                headers={"x-test-as": key})
                 finally:
                     release_tenant(token)
 
@@ -403,3 +405,41 @@ def test_the_tables_are_forced_and_the_role_has_no_bypass(world, pkgs) -> None:
 
     sup, bypass = _run(world, fn)
     assert (sup, bypass) == (False, False)
+
+
+# ── Lifecycle rows are not action calls (fix round 1, P1) ──────────────────
+
+
+def test_a_package_made_through_the_route_has_no_action_calls_until_a_door_call(world) -> None:
+    """The create, the object sync and the publish write ``kind = 'action'`` rows
+    with ``detail.op``. They are not calls through the door. A real package must
+    read "No runs yet" until one door call."""
+    mid = f"j4{TAG}-route-{uuid.uuid4().hex[:4]}"
+    manifest = {
+        "studio": 1, "id": mid, "name": "Visits", "purpose": "Track visits.",
+        "objects": [{"name": "visit", "fields": [{"key": "site", "type": "text"}]}],
+        "actions": [{"id": "find", "uses": "object:visit.list"}]}
+
+    async def fn(call: Any) -> Any:
+        made = await call("ana", "/studio/packages", "POST", manifest)
+        assert made.status_code in (200, 201), made.text
+        pid = made.json()["package"]["id"]
+        pub = await call("ana", f"/studio/packages/{pid}/versions", "POST", {})
+        assert pub.status_code in (200, 201), pub.text
+        before = (await call("admin_a", "/studio/packages?scope=org")).json()
+        door = await call("ana", f"/studio/apps/{pid}/actions/find", "POST",
+                          {"limit": 5, "offset": 0})
+        assert door.status_code == 200, door.text
+        after = (await call("admin_a", "/studio/packages?scope=org")).json()
+        return pid, before, after
+
+    pid, before, after = _run(world, fn)
+    with world.p.admin_engine.connect() as c:
+        lifecycle = int(c.execute(text(
+            "SELECT count(*) FROM app_audit WHERE app_id = CAST(:p AS uuid) "
+            "AND kind = 'action' AND detail->>'op' IS NOT NULL"), {"p": pid}).scalar_one())
+    assert lifecycle >= 2, "the route wrote no lifecycle row, so this test proves nothing"
+    row0 = {r["id"]: r for r in before["packages"]}[pid]
+    assert row0["action_calls"] == 0 and row0["last_error"] is None, row0
+    row1 = {r["id"]: r for r in after["packages"]}[pid]
+    assert row1["action_calls"] == 1 and row1["last_error"] is None, row1

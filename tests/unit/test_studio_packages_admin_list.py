@@ -19,6 +19,7 @@ The fences of this file:
 
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from contextlib import asynccontextmanager
@@ -135,6 +136,13 @@ def test_the_statement_is_one_bounded_set_read_that_never_selects_a_secret() -> 
     assert "detail->>'action'" in sql and "detail->>'outcome'" in sql
     assert "organization_id" in sql and "current_setting('app.tenant_id'" in sql
     assert "'failed', 'refused'" in sql
+    # Only a call through the door counts: lifecycle rows carry ``detail.op``, and
+    # door rows carry ``detail.action``. The count and the probe use one rule.
+    assert sql.count("detail->>'action' IS NOT NULL") == 2
+    assert "c.organization_id = " in sql and "x.organization_id = " in sql
+    # The last-error probe reads the newest ``:count_cap`` rows, never every row.
+    assert sql.count("LIMIT :count_cap") == 2
+    assert "ORDER BY x.at DESC, x.id DESC LIMIT :count_cap" in sql
 
 
 # ── The handler ────────────────────────────────────────────────────────────
@@ -225,19 +233,29 @@ def test_a_guest_with_the_org_scope_gets_403_and_reads_nothing(
 # ── The fences of the sources ──────────────────────────────────────────────
 
 
-def test_the_right_is_read_in_the_new_module_and_in_no_route_file() -> None:
-    """A5c-2 allows the text of the right only inside its own function of
-    ``routes/studio``. This slice keeps the string outside that folder."""
-    for path in sorted(_STUDIO_ROUTES.glob("*.py")):
-        text = path.read_text(encoding="utf-8")
-        assert "admin:members:manage" not in text, path.name
-        assert "ADMIN_RIGHT" not in text, path.name
+def _list_packages_body() -> str:
+    src = (_STUDIO_ROUTES / "packages.py").read_text(encoding="utf-8")
+    return src.split("async def list_packages")[1].split("@router.")[0]
+
+
+def test_the_handler_never_reads_the_right_itself() -> None:
+    """The handler calls ``holds_admin_right`` and holds no string of the right.
+
+    The fence covers the body of ``list_packages`` only. PR 2122 (A5c-2) adds its
+    own constant for the right in ``routes/studio/packages.py``, so a scan of the
+    folder would turn red for whichever PR merges second. After A5c-2 merges,
+    ``packages_admin_list.py`` should import that one constant, and this module
+    should drop its own."""
+    body = _list_packages_body()
+    assert "admin:members:manage" not in body
+    assert "ADMIN_RIGHT" not in body
+    assert "has_permission" not in body
 
 
 def test_the_route_calls_the_module_and_names_no_right() -> None:
     src = (_STUDIO_ROUTES / "packages.py").read_text(encoding="utf-8")
     assert "admin_list.holds_admin_right(user)" in src
-    assert "has_permission" not in src.split("async def list_packages")[1].split("@router")[0]
+    assert "has_permission" not in _list_packages_body()
 
 
 # ── The chat read (studio_package_get with scope "org") ────────────────────
@@ -268,7 +286,11 @@ async def test_the_chat_read_asks_for_the_org_scope_and_keeps_no_reason(
     out = await st.studio_package_get(scope="org")
     assert paths == ["/studio/packages?scope=org"]
     assert out["ok"] is True and out["scope"] == "org"
-    (got,) = out["packages"]
+    assert out["truncated"] is False
+    # The names and owners are member text, so the rows sit in an untrusted frame.
+    assert isinstance(out["packages"], str) and "STUDIO PACKAGES" in out["packages"]
+    body = out["packages"].split(chr(10))[1:-1]
+    (got,) = json.loads(chr(10).join(body))
     assert got["owner"].lower().endswith("ben@example.test")
     assert got["state"] == "live" and got["action_calls"] == 3 and got["use"] == "Not tracked yet"
     assert set(got["last_error"]) == {"action", "outcome", "at"}
@@ -295,3 +317,13 @@ async def test_chat_scope_is_checked_and_an_id_wins(monkeypatch: pytest.MonkeyPa
     assert paths == []
     await st.studio_package_get(scope="")
     assert paths == ["/studio/packages"]
+
+
+async def test_the_chat_read_says_when_the_org_list_was_cut(monkeypatch: pytest.MonkeyPatch) -> None:
+    from acb_skills import studio_tools as st
+
+    row = admin_list.row_out(_row(), ANA)
+    _tool_gateway(monkeypatch, {"packages": [row], "admin": True, "truncated": True})
+    out = await st.studio_package_get(scope="org")
+    assert out["truncated"] is True
+    assert "500" in out["note"]

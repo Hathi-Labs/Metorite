@@ -13,7 +13,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   ACTION_CALLS_LABEL, NO_ERRORS_LINE, NO_LIST_LINE, NO_RUNS_LINE, USE_NOT_TRACKED_LINE, appBrief, callsWords,
-  changedWords, libraryCounts, membersPill, mergeLibrary, noListLine, orgCard, packageCard, packageShows,
+  changedWords, effectiveFilter, libraryCounts, membersPill, mergeLibrary, noListLine, orgCard, packageCard, packageShows,
 } from "./packageLibrary";
 import type { OrgPackage, PackageSummary } from "./realDoor";
 
@@ -129,7 +129,7 @@ describe("chat first", () => {
 describe("the gallery loads both reads before it clears the skeleton", () => {
   it("waits for the packages, and drops an older answer", () => {
     expect(gallery).toContain("await packagesRead;");
-    expect(gallery.indexOf("await packagesRead;")).toBeLessThan(gallery.indexOf("setLoading(false);\n    }\n  }, []);"));
+    expect(gallery.indexOf("await packagesRead;")).toBeLessThan(gallery.indexOf("setLoading(false);\n      // The admin read starts AFTER"));
     expect(gallery).toContain("seq !== packagesSeq.current");
   });
   it("draws the state chip with the shared Badge", () => {
@@ -209,5 +209,27 @@ describe("the admin view of packages", () => {
     expect(gallery).toContain("listOrgPackages()");
     expect(gallery).toContain("membersPill(orgAdmin");
     expect(gallery).not.toMatch(/admin:members|isAdmin|role === "admin"/);
+  });
+
+  it("a chosen members filter falls back to all when the pill goes, for the grid and the pills alike", () => {
+    expect(effectiveFilter("members", true)).toBe("members");
+    expect(effectiveFilter("members", false)).toBe("all");
+    expect(effectiveFilter("drafts", false)).toBe("drafts");
+    expect(gallery).toContain("const filter = effectiveFilter(chosen, members !== null)");
+    expect(gallery).toContain("activeId={filter}");
+  });
+
+  it("the org list loads AFTER the library shows, and never holds the skeleton", () => {
+    const body = gallery.slice(gallery.indexOf("const fetchApps"));
+    const finish = body.indexOf("setLoading(false)");
+    expect(finish).toBeGreaterThan(0);
+    expect(body.indexOf("void readOrg()")).toBeGreaterThan(finish);
+    expect(body.slice(0, finish)).not.toContain("listOrgPackages");
+    expect(body.slice(0, finish)).not.toMatch(/await readOrg|await orgRead/);
+  });
+
+  it("the admin card gives the full owner address and breaks an action id at underscores", () => {
+    expect(gallery).toContain("title={card.owner}");
+    expect(gallery).toContain("breakAtUnderscores(card.errorLine)");
   });
 });

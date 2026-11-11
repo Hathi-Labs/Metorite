@@ -15,17 +15,23 @@ and no email but the owner. The last error holds the action id, the outcome and
 the time, and never the ``reason`` of the audit row.
 
 **What a "run" is.** An action call through the door writes one ``app_audit``
-row with ``kind = 'action'``. It is not a workflow run. The UI says "Action
-calls".
+row with ``kind = 'action'`` and ``detail.action``. It is not a workflow run.
+The UI says "Action calls". A create, an object sync and an install write
+``kind = 'action'`` rows too, but with ``detail.op`` and no ``detail.action``.
+They are not calls, so the count and the last error read only rows with
+``detail.action``.
 
 **Use.** Nothing writes a token or a cost for a package action, so no source
 exists for the use of a package. The answer holds ``use: null``, and the UI
 says "Not tracked yet".
 
 **One statement, bounded.** One set-based statement reads at most
-:data:`MAX_PACKAGES` packages. The count of calls stops at
-:data:`MAX_COUNT` per package, and the last error is one index probe per
-package (``idx_app_audit_app_kind_at``). No N+1.
+:data:`MAX_PACKAGES` packages. For each package, the count reads at most
+:data:`MAX_COUNT` of the newest action rows. The last error looks inside the
+same window of the newest :data:`MAX_COUNT` rows. Both walk
+``idx_app_audit_app_kind_at`` (``app_id, kind, at DESC``) and filter the rows
+with ``detail.action``. So an old error past the window shows as "No errors".
+No N+1.
 
 Shared installs ("Shared with them") are not here. They come after
 ``package_host.resolve.visible_installs`` merges (J2a).
@@ -39,7 +45,7 @@ from typing import Any
 
 from sqlalchemy import text
 
-__all__ = ["ADMIN_RIGHT", "ERROR_OUTCOMES", "MAX_COUNT", "MAX_PACKAGES", "AdminRow",
+__all__ = ["ADMIN_RIGHT", "MAX_COUNT", "MAX_PACKAGES", "AdminRow",
            "holds_admin_right", "list_org_packages", "row_out"]
 
 #: The admin right of the member roster. The same string that gates
@@ -52,9 +58,6 @@ MAX_PACKAGES = 500
 #: The most action calls that the count reads for one package.
 MAX_COUNT = 10_000
 
-#: The outcomes of the door that make a "last error".
-ERROR_OUTCOMES = ("failed", "refused")
-
 _BOUND_ORG = "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)"
 
 #: ``:cap`` is :data:`MAX_PACKAGES` + 1, so one extra row says "truncated".
@@ -62,12 +65,17 @@ _SQL = (
     "SELECT a.id::text, a.slug, a.name, a.description, a.owner_email, a.status, "
     "a.live_version, a.created_at, a.updated_at, a.manifest->>'id', "
     "(SELECT count(*) FROM (SELECT 1 FROM app_audit c WHERE c.app_id = a.id "
-    "AND c.kind = 'action' LIMIT :count_cap) s) AS calls, "
+    f"AND c.organization_id = {_BOUND_ORG} AND c.kind = 'action' "
+    "AND c.detail->>'action' IS NOT NULL ORDER BY c.at DESC, c.id DESC "
+    "LIMIT :count_cap) s) AS calls, "
     "e.detail->>'action', e.detail->>'outcome', e.at "
     "FROM apps a LEFT JOIN LATERAL ("
-    "SELECT x.detail, x.at FROM app_audit x WHERE x.app_id = a.id AND x.kind = 'action' "
-    "AND x.detail->>'outcome' IN ('failed', 'refused') "
-    "ORDER BY x.at DESC, x.id DESC LIMIT 1) e ON true "
+    "SELECT w.detail, w.at FROM (SELECT x.id, x.detail, x.at FROM app_audit x "
+    f"WHERE x.app_id = a.id AND x.organization_id = {_BOUND_ORG} AND x.kind = 'action' "
+    "AND x.detail->>'action' IS NOT NULL "
+    "ORDER BY x.at DESC, x.id DESC LIMIT :count_cap) w "
+    "WHERE w.detail->>'outcome' IN ('failed', 'refused') "
+    "ORDER BY w.at DESC, w.id DESC LIMIT 1) e ON true "
     f"WHERE a.organization_id = {_BOUND_ORG} AND a.format = 'manifest' "
     "ORDER BY a.updated_at DESC, a.id LIMIT :cap"
 )
