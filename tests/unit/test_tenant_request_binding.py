@@ -252,11 +252,12 @@ _ALLOWED_CHAINS = frozenset({
 #: ``query_string`` are the signed path and query (§10.1).
 _SCOPE_KEYS = frozenset({"route", "app", "path", "query_string"})
 #: The four signed headers, the two that tell branch 0 to refuse a body on a
-#: GET, the nonce of a write (EA-6a, EA3-28), and the signed MCP session key
-#: (SW-7, spec §12.5).
+#: GET, the nonce of a write (EA-6a, EA3-28), the signed MCP session key
+#: (SW-7, spec §12.5), and the signed batch key of a bulk call (MCP-G28a, D209).
 _HEADERS = frozenset({
     "x-agent-connection", "x-agent-timestamp", "x-agent-signature", "x-actor-via",
     "content-length", "transfer-encoding", "x-agent-nonce", "x-agent-session",
+    "x-agent-batch",
 })
 #: EA-6a (EA3-28): the ONE function that may read the body, and only as
 #: ``await request.body()`` with no argument. It hashes the body of a write
@@ -1164,17 +1165,35 @@ def test_the_runtime_identity_check_turns_red(monkeypatch):
 #: request: the scan and the tripwire are as before. The pins before it were
 #: 3.12 ``29b8aaad…a9a2`` and 3.13 ``187571d8…21f7``. This pin needs
 #: the diff-reviewer review and the independent verification.
+#:
+#: MCP-G28a (2026-11-11, external_agent_access.md §9.2, D209, task 2541):
+#: step 2 reads the optional signed ``X-Agent-Batch`` once and in its shape,
+#: on a write only, and the canonical string ends with ``batch:<key>`` only
+#: when it is present (the pattern of SW-7). `_claim_call` passes the key to
+#: `_claim_write` for a write of ``MCP_WRITE_ROUTES``, never for a door write.
+#: `_claim_write` has two counters: the call counter (``agent_writes``) counts
+#: 1 for a write with no key and 1 for each 50 rows of one key, and the row
+#: counter (``agent_write_rows``) counts 1 for each write. The new helper
+#: `_count_write` holds the one count, and the digest covers it. The scan and
+#: the tripwire allow the one new header. The pins before it were 3.12
+#: ``f5c27b8e…cdf515c`` and 3.13 ``bbc92971…3815e8cb``. This pin needs the
+#: diff-reviewer review and the independent verification.
+#:
+#: MCP-G28a fix round 1 (2026-11-11, Opus review): a failure of the store
+#: between the ``INCR`` of the batch key and the charge of the call that the
+#: row was due now drops the key before the 503. The new helper
+#: `_drop_unpaid_batch` binds the ROW's organization again and deletes the
+#: key, best effort, and the digest covers it. Nothing new is read from the
+#: request: the scan and the tripwire are as in MCP-G28a. The pins of the
+#: first build were 3.12 ``170d9537…0b68b039`` and 3.13 ``ee79fd33…b9518580``.
+#: This pin needs the diff-reviewer review and the independent verification.
 _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
-    # WS-24b (2026-11-06): branches 1' and 2 of get_current_user changed (the
-    # LLM-key fallback went, and an unset token fails closed). Branch 0 did not.
-    # This pin needs the diff-reviewer review and the independent verification.
-    # BR-7b (2026-11-07): the merge of main (the EA-19b pins above) with the BR-7b
-    # change of `_audit_door`: it adds the `policy` key of the audit payload
-    # (door.scope). No step of branch 0 changed. Both digests were computed
-    # with this test's own function under 3.12 and 3.13. This pin needs the
-    # diff-reviewer review and the independent verification.
-    (3, 12): "f5c27b8ed2dbeeff26b2cb89fcfe822c0204dbe52c116e8601af34a62cdf515c",
-    (3, 13): "bbc929711b1e309708d5b1fb0b5d01e352dbd17456b4da4046b2afa13815e8cb",
+    # MCP-G28a fix round 1 (2026-11-11): both digests were computed from the
+    # files with the steps of this test's own function, under CPython 3.12.12
+    # and 3.13.2. That reader gave the pins of main exactly. This pin needs
+    # the diff-reviewer review and the independent verification.
+    (3, 12): "1d1039e8d54ad7d7ca059754f8ae02334dbe0fb02fbe3c2639b592ccceacfdac",
+    (3, 13): "6adc5684a0cb9efe701bcefdb31604836c95c668bf08bf9a759067724884e97d",
 }
 
 #: EA-6a: two helpers of ``deps.py`` that branch 0 calls and that never see
@@ -1183,9 +1202,13 @@ _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
 #: digest covers them, and an edit to either one fails the digest test.
 #: MCP-P1a adds the four helpers of the app door: the claim dispatch, the door
 #: gate (the door flag, AD-18, the app scope and the caps), the door read cap
-#: and the audit row. None of them sees the request.
+#: and the audit row. None of them sees the request. MCP-G28a adds
+#: ``_count_write``, the one count of a counter of the write cap, and its fix
+#: round 1 adds ``_drop_unpaid_batch``, the best-effort delete of a batch key
+#: whose row did not pay its call.
 _BRANCH_ZERO_HELPERS = ("_read_connection", "_claim_write", "_claim_call", "_door_gate",
-                        "_claim_door_read", "_audit_door")
+                        "_claim_door_read", "_audit_door", "_count_write",
+                        "_drop_unpaid_batch")
 
 
 def _branch_zero_digest() -> str:
