@@ -191,7 +191,7 @@ async def test_a_mail_that_matched_before_keeps_its_rank(seeded, app_engine) -> 
         {k: round(v, 6) for k, v in old.items()}
 
 
-def test_the_index_plan_of_the_prefix_query(seeded) -> None:  # noqa: F811
+def test_the_index_plan_of_the_prefix_query(seeded) -> None:
     """The plan, printed for the report. The stored column is tested first."""
     with seeded.admin_engine.connect() as c:
         plan = "\n".join(r[0] for r in c.execute(text(
