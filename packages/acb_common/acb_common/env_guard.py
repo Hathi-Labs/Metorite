@@ -226,6 +226,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # agents. The text reaches every agent session of the org, so a tenant
     # must not open it for another org.
     "AGENT_GUIDANCE_ORGS",
+    # WS-MCP SW-94: AGENT_POLICY_ORGS opens the policy store of agent work. A
+    # policy can pause the agents of an org and set how strict a refusal is,
+    # so a tenant must not open it for another org.
+    "AGENT_POLICY_ORGS",
     # WS-MCP PB-2: PLAYBOOK_ORGS opens the orchestration playbook prompts,
     # resources and the default guidance block. It is Metorite's own text and
     # it reaches every agent session of the org, so only the operator writes it.
