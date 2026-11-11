@@ -8,7 +8,11 @@
 
 **Single owner.** This file owns the member view of agents, the cost rule and the visibility rule. `agent_coordination.md` owns the Agents panel itself (SW-8, SW-29b, SW-51). Every other document that mentions the member view links here and adds nothing.
 
-**Decisions that bind it:** D1 (one cost record), D12 (visibility), D49, D56, D87 to D89 (one shell seam), D99, D140, D183, D205 (building blocks) and D211 (the ladder).
+**Decisions that bind it:**
+
+- D1 (one cost record), D12 (visibility), D49, D56 and D99.
+- D87 to D89 (one shell seam), D140 and D183.
+- D205 (building blocks) and D211 (the ladder).
 
 D204 point 5 folds the member view into the Fleet panel.
 
