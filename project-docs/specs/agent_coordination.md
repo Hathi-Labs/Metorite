@@ -989,6 +989,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **Done when.** The next agent's `get_task_context` starts with the note. A release with work left and no `next` gets 422 with the reason.
 - **Fence.** `test_mcp_edge_context.py`, the edge tool schema test, and an R8 test for the 422.
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE.
+- **Built (task 858).** Not merged yet. The `response` activity carries `content.handoff`. No migration is needed, because the `type` CHECK already allows `response` and `content` is JSONB. A note holds at most 1,000 characters in each text. The rule: `left` with text needs `next`, else 422 "A handoff with work left needs a next step." A release or a finish with no `handoff` works as before. A release with a note writes the `response` and the release in one transaction. The newest note rides on the task-runs read, so `get_task_context` makes no new gateway call, and it returns `handoff` first, as untrusted text. The task panel shows the card "Handed off by <client> for <member>" above the run card. Fence: `test_mcp_edge_agent_runs.py` (R8) and `agentHandoff.test.ts`.
 
 #### SW-31 · Agent guidance
 
