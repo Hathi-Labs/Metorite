@@ -1224,7 +1224,7 @@ async def fold_cutover_overlay(db: Any, org: str) -> dict[str, int]:
 
     CRM-M3b (D166): a deal stage's ``ui_probability`` goes into each of its
     pipeline memberships too, BEFORE the stage fold clears it. Each reader
-    takes the membership value first (migration 398), so the board reads the
+    takes the membership value first (migration 408), so the board reads the
     same win chance before and after the switch. A value that breaks the
     clamp of D-CRM-10 for the type of the stage goes in as NULL, and NULL
     reads the stage row, which the fold sets to the same value

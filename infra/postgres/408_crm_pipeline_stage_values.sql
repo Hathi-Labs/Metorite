@@ -1,5 +1,5 @@
 -- ============================================================================
--- 398_crm_pipeline_stage_values.sql — the win chance and the warning days of a
+-- 408_crm_pipeline_stage_values.sql — the win chance and the warning days of a
 -- stage, for each deal pipeline (WS-CRM CRM-M3b, D166, Metorite task 2041).
 --
 -- What: two nullable columns on `crm_pipeline_stages`, the row that puts one
@@ -48,7 +48,7 @@
 --
 -- The number is taken at build time (R1). It was 394 until 2026-11-09 11:15
 -- UTC, when two branches held 396 and 397. Main held 390, so this file took
--- 398, above each ref and each worktree. Check it again at merge.
+-- 408, above each ref and each worktree. Check it again at merge.
 -- Pinned by tests/unit/test_crm_pipelines_native.py, which finds this file by
 -- CONTENT, never by number (R1).
 -- ============================================================================
