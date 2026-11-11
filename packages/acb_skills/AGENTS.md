@@ -166,6 +166,7 @@ not write a second copy of that seam. A bare test file name is under
    - `skills_store.py` and `studio_tools.py` keep no code point list of their own. Do not use `reply_card.clean_reply_body` for owner text, because it cleans in silence and breaks Indic text. Fence: `test_hidden_text.py`, with `tests/fixtures/hidden_text_cases.json`.
 5n. company_search_tools.py -- `search_company`, the assistant's one read over every app (D105, spec `knowledge_base.md` §20.5).
    - It reads as the run's member through `core_tools` only, behind `COMPANY_SEARCH_ENABLED`. Fence: `test_company_search_tool.py`.
+   - KR-ZERO (task 2974): both docstrings say that every word must be in one record. A dated answer prints `broadened` on the line after the header. A dated zero answer names what the route tried and says that zero is not proof. The KR-2 answer does not change. Fence: `test_company_search_zero.py`.
 5n-a. handoff.py + chat_constraints.py -- what crosses a handoff, and the member's limits of one chat (D116, spec `one_assistant_context.md` §4).
    - `handoff.head_task` is the ONE call of every delegation site. `chat_constraints_enabled` is the one reader of `CHAT_CONSTRAINTS`.
    - A keep stores only whole sentences that the member typed in this turn. Never use `member_message` for it. A drop needs the member's approval on a card.

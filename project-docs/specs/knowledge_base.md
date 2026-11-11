@@ -5,6 +5,12 @@ The owner accepted every proposal of §15 and every default of §16 the same
 day ("Go with defaults"), recorded as **D104**. Board row **WS-61**.
 Verified against the code on 2026-10-25.
 
+**KR-ZERO is BUILT, 2026-11-12** (branch `mt-bdf0d8ea-kr-zero`, no
+migration, behind `CONTEXT_RECENCY`, Metorite task 2974). A zero answer of
+`GET /search/company` asks again with each word alone. The answer says what
+became of the meaning half, and the tool says that zero is not proof
+(§20.4, §20.7).
+
 **KB-9b slice 2 is BUILT, 2026-10-26** (branch `kb-9b2-sync-card`, no
 migration, dark behind `MY_DAY_PROVIDERS` and `KNOWLEDGE_SOURCES`, Metorite
 task #461). The card `source_sync_failed` for the member who connected a
@@ -1708,6 +1714,29 @@ page.
   fails. So one search makes at most one embedding call. The command bar
   asks for the lexical half only, so a keystroke costs no embedding.
 - **Output.** `{query, hits: [hit], skipped: [key]}`. No chat model runs.
+- **A zero is not proof (KR-ZERO, task 2974).** Each app matches every word
+  of the query in one record. So "Aroh Attero" found nothing on production,
+  over a mailbox with about 10 Aroh threads. With `CONTEXT_RECENCY` on, the
+  route does three more things:
+  1. It starts the query embed at its start, as one task, when a source with
+     meaning is asked. The task runs while the keyword sources run. Each
+     source that needs the vector waits for that task inside its own time.
+     The log line is `search.company.embed ms=… outcome=…`.
+  2. The answer says in `meaning` what became of that embed: `ran`,
+     `timed_out`, `failed` or `off`.
+  3. When every app that answered found nothing, and the query holds 2 to 5
+     bare words, the route asks those apps again with each word alone. It
+     skips a stop word and a one-letter word, and it runs no vector half.
+     `broadened` names each word and its hits. `hits` holds the merged hits,
+     with no repeated id. A query with a quote, `or` or a leading `-` is not
+     broadened.
+
+  The budgets are constants in `retrieval/company.py`. The embed task has
+  3 s (`EMBED_BUDGET_S`), and each source still waits at most 0.8 s for it.
+  The second pass has 2.5 s (`BROADEN_BUDGET_S`), and the words share it
+  equally. The whole answer stops at 6 s (`ANSWER_CAP_S`), so the worst case
+  is 1.5 times the 4 s of the first pass. With the flag off, the answer of
+  KR-1 does not change.
 
 ### 20.5 `search_company` — the assistant's tool
 
@@ -1770,6 +1799,7 @@ Somebody should write a page from those emails.
 | **KR-4** | `narrow_and_read` gets a `company` adapter over the route, and per-app reads | A question over 60 records from three apps narrows with no model | AGENT-SAFE |
 | **KR-5** | The My Day context join of §20.6 | A `needs_reply` card from a CRM contact shows the contact's open deal | AGENT-SAFE. The `decide` modes stay owner flips (MD-10) |
 | **KR-6** | A vector column for tasks and for CRM records, in their own tables, behind their own reads | The source's answer changes, and the seam does not | AGENT-SAFE to build. The embed spend is the owner's flip |
+| **KR-ZERO** ✅ BUILT 2026-11-12 (task 2974) | A zero answer is not proof (§20.4). With `CONTEXT_RECENCY` on, the route starts one embed task at its start, and it asks again with each word alone after a zero. The answer carries `meaning` and `broadened`. The `search_company` text says that every word must be in one record. A dated zero answer names what the route tried | `test_company_search_zero.py` passes, and the other `test_company_search_*.py` suites stay green. With the flag off, the answer of KR-1 does not change | AGENT-SAFE. The flip of `EMAIL_SEMANTIC_SEARCH_ENABLED` stays the owner's |
 
 The order is KR-1, KR-2, then KB-3 with KR-3, then KR-5, KR-4 and KR-6.
 

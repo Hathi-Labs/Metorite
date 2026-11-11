@@ -262,6 +262,22 @@ async def _tasks(user: UserContext, q: str, k: int) -> list[Hit]:
 
 # ── email ───────────────────────────────────────────────────────────────────
 
+def email_meaning_on() -> bool:
+    """True when ``EMAIL_SEMANTIC_SEARCH_ENABLED`` is on. Fails closed.
+
+    It is the gate of Email's vector half, and ``email_embeddings.embed_query``
+    reads the same setting. The route reads it before it starts the one embed
+    of a turn (KR-ZERO), and the email source reads it before it takes the
+    vector of that task.
+    """
+    try:
+        from acb_common.settings import get_settings
+
+        return getattr(get_settings(), "email_semantic_search_enabled", False) is True
+    except Exception:
+        return False
+
+
 def _email_hit(m: Any) -> Hit:
     row = _as_dict(m)
     sender = row.get("from_address") or {}
@@ -321,6 +337,12 @@ async def _email(
         from gateway.routes.email.transport.search import semantic_messages
 
         async def embed(words: str) -> list[float] | None:
+            # KR-ZERO: the route started the one embed of this turn. The gate of
+            # Email still binds, and the wait_for below bounds the wait.
+            if turn_vector.started(user.organization_id, words):
+                if not email_meaning_on():
+                    return None
+                return await turn_vector.wait(user.organization_id, words)
             kept = turn_vector.recall(user.organization_id, words)
             if kept is not None:
                 return kept

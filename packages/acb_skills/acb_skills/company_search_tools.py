@@ -27,8 +27,14 @@ not in the tool floor and not in the injection chain. Its risk is in
 gets :data:`search_company_dated` in place of :func:`search_company`. It has
 the same name, and it takes ``after`` too. Its answer opens with a header
 that names the apps it searched and skipped, and each line prints the
-``stamp`` of its record. With the flag off, the tool and its answer are the
-ones of KR-2, byte for byte. ``orchestrator/agents.py`` makes the choice.
+``stamp`` of its record. With the flag off, the answer is the one of KR-2,
+byte for byte. ``orchestrator/agents.py`` makes the choice.
+
+**A zero is not proof** (WS-61 KR-ZERO, task 2974). Both docstrings tell
+the model that every word must appear in one record, and to search each
+name alone before it says that no record exists. The dated answer prints
+the route's ``broadened`` and ``meaning`` keys. A zero answer names what
+the route tried and says that zero is not proof.
 """
 
 from __future__ import annotations
@@ -256,6 +262,67 @@ def _hit_lines(hit: dict[str, Any], *, dated: bool = False) -> list[str]:
     return [first, second]
 
 
+#: The first words of a broadened answer (KR-ZERO, task 2974).
+BROADENED_OPENING = "No record holds all of the words. Each word alone:"
+
+#: The line of a zero answer, kept from KR-2.
+NOTHING = "(no matching records)"
+
+#: The sentence of each ``meaning`` value of the route (KR-ZERO).
+MEANING_WORDS: dict[str, str] = {
+    "ran": "The meaning search ran too.",
+    "timed_out": "The meaning search did not finish in time, so it found nothing.",
+    "failed": "The meaning search failed, so it found nothing.",
+    "off": "No meaning search ran, because it is off for this company.",
+}
+
+
+def _broadened_line(body: dict[str, Any]) -> str:
+    """The opening line of a broadened answer, or ``""``.
+
+    For example: "No record holds all of the words. Each word alone: Aroh
+    (5), Attero (3)." ``""`` when the route did not broaden. A word with apps that ran out of
+    time names them, so a zero of that word is not read as proof (KR-ZERO).
+    """
+    entries = body.get("broadened")
+    if not isinstance(entries, list):
+        return ""
+    parts: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        word = _line(entry.get("word"))
+        if not word:
+            continue
+        hits = entry.get("hits")
+        count = hits if isinstance(hits, int) and not isinstance(hits, bool) else 0
+        missed = [_line(s) for s in entry.get("skipped") or [] if _line(s)]
+        extra = f", not searched in {', '.join(missed)}" if missed else ""
+        parts.append(f"{word} ({count}{extra})")
+    return f"{BROADENED_OPENING} {', '.join(parts)}." if parts else ""
+
+
+def _tried_line(body: dict[str, Any]) -> str:
+    """What a zero answer tried, and that zero is not proof (KR-ZERO)."""
+    words = _line(body.get("query")).replace('"', "'")
+    tried = f'Tried: "{words}", with every word in one record' if words else (
+        "Tried: every word in one record")
+    if body.get("broadened"):
+        tried += ", then each word alone"
+    parts = [tried + "."]
+    meaning = MEANING_WORDS.get(str(body.get("meaning") or ""))
+    if meaning:
+        parts.append(meaning)
+    parts.append("Zero records is no proof that none exist.")
+    if body.get("broadened"):
+        parts.append("Try other words, such as a full name or an email address, "
+                     "before you tell the member that no record exists.")
+    else:
+        parts.append("Search each name alone before you tell the member "
+                     "that no record exists.")
+    return " ".join(parts)
+
+
 def _dated_header(body: dict[str, Any]) -> str:
     """The header of CX-1 (§4.3): the opening, then searched and skipped.
 
@@ -278,15 +345,27 @@ def format_answer(body: Any, *, dated: bool = False) -> str:
 
     *dated* is the answer of CX-1: the header of :func:`_dated_header` and
     the stamp on each line. ``False`` gives the KR-2 answer, byte for byte.
+
+    Dated, the answer also reads KR-ZERO's keys. A broadened answer opens
+    with :data:`BROADENED_OPENING`, on the line after the header. A zero
+    answer adds a line that names what the route tried, says what became of
+    the meaning search, and says that zero is not proof.
     """
     hits = body.get("hits") if isinstance(body, dict) else None
     skipped = body.get("skipped") if isinstance(body, dict) else None
-    lines = [_dated_header(body if isinstance(body, dict) else {}) if dated else HEADER]
+    data = body if isinstance(body, dict) else {}
+    lines = [_dated_header(data) if dated else HEADER]
+    opening = 1
+    if dated and _broadened_line(data):
+        lines.append(_broadened_line(data))
+        opening = 2
     for hit in hits or []:
         if isinstance(hit, dict):
             lines += _hit_lines(hit, dated=dated)
-    if len(lines) == 1:
-        lines.append("(no matching records)")
+    if len(lines) == opening:
+        lines.append(NOTHING)
+        if dated:
+            lines.append(_tried_line(data))
     if skipped and not dated:
         names = ", ".join(_line(s) for s in skipped)
         lines.append(f"Not searched (the app failed, refused or ran out of time): {names}.")
@@ -301,6 +380,11 @@ async def search_company(query: str, apps: str | None = None) -> str:
     Knowledge at once, and returns short passages. Each record has a full_id
     (for example deal:<id>) to cite and an in-app link. Open a whole record
     only when the passage is not enough.
+
+    Every word must appear in one record, so put one name in each call.
+    Before you tell the member that no record exists, search each name
+    alone. When records match what the member asked about, read the ones
+    that matter and tell the member what they say before you act on them.
 
     Args:
         query: The words to find, 2 to 300 characters: a customer, a person,
@@ -328,6 +412,11 @@ async def _search_company_dated(
     (for example deal:<id>) to cite, an in-app link, and the date it last
     changed. Inside each app, newer records come first. Open a whole record
     only when the passage is not enough.
+
+    Every word must appear in one record, so put one name in each call.
+    Before you tell the member that no record exists, search each name
+    alone. When records match what the member asked about, read the ones
+    that matter and tell the member what they say before you act on them.
 
     Args:
         query: The words to find, 2 to 300 characters: a customer, a person,
@@ -361,6 +450,7 @@ search_company_dated = _read_tool(_search_company_dated)
 
 
 __all__ = [
+    "BROADENED_OPENING",
     "DATED_HEADER",
     "HEADER",
     "company_search_enabled",

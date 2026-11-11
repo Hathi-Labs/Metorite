@@ -22,7 +22,9 @@ on. ``/knowledge/search`` and the command bar keep the age decay.
 a session, with a limit of :data:`QUERY_EMBED_TIMEOUT_S`, and only when
 ``KNOWLEDGE_EMBED`` names the org. A query with no vector returns the
 lexical half and says so in ``degraded``. The lexical half never fails
-because the vector half did.
+because the vector half did. Inside a company-search turn that started its
+one embed task (KR-ZERO), it waits for that task within the same limit, and
+makes no call of its own.
 
 **The one visibility rule.** Each read of ``kb_chunks`` joins
 ``kb_pages p ON p.id = c.source_id AND p.state = 'published'`` and puts in
@@ -92,6 +94,10 @@ async def embed_query(organization_id: str | None, q: str) -> list[float] | None
     kept = turn_vector.recall(organization_id, words)
     if kept is not None:
         return kept
+    # KR-ZERO: the route started the one embed of this turn at its start. Wait
+    # for that task within this limit, and make no second call of the door.
+    if turn_vector.started(organization_id, words):
+        return await turn_vector.wait(organization_id, words, QUERY_EMBED_TIMEOUT_S)
     try:
         vectors = await asyncio.wait_for(
             embed_door.embed([words], org=organization_id, timeout=QUERY_EMBED_TIMEOUT_S),
@@ -103,6 +109,19 @@ async def embed_query(organization_id: str | None, q: str) -> list[float] | None
     vector = vectors[0] if vectors else None
     turn_vector.remember(organization_id, words, vector)
     return vector
+
+
+async def turn_embed(
+    organization_id: str | None, words: str, *, timeout: float,
+) -> list[float] | None:
+    """The vector of *words* for one company-search turn (KR-ZERO), or ``None``.
+
+    One call of the embed door, the same model and size as :func:`embed_query`
+    and the email vector half. It checks no gate: ``GET /search/company``
+    checks each gate before it starts the task. It never raises.
+    """
+    vectors = await embed_door.embed([words], org=organization_id, timeout=timeout)
+    return vectors[0] if vectors else None
 
 
 def _age_years(valid_from: Any, today: date) -> float:
