@@ -8,6 +8,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
+import { refuseUnsafePath } from "@/lib/gatewayPath";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -19,6 +20,8 @@ export async function GET(
   const me = await requireIdentity();
   if (me instanceof NextResponse) return me;
   const { id } = await ctx.params;
+  const refused = refuseUnsafePath([id]);
+  if (refused) return refused;
   let upstream: Response;
   try {
     upstream = await gatewayFetch(

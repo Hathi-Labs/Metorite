@@ -646,7 +646,7 @@ class TestTheReadCutoverFlag:
 
     def test_the_flag_defaults_off_and_reads_the_env_idiom(self, monkeypatch):
         """UNSET = OFF, fail-closed, and only the truthy tokens flip it on — the
-        same idiom as `deps._refuse_llm_key_identity`."""
+        same idiom as `deps._trust_unverified_sso_headers`."""
         from acb_auth.access import identity_cutover_enabled
 
         monkeypatch.delenv("IDENTITY_CUTOVER", raising=False)

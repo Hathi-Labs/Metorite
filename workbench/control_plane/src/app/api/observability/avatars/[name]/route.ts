@@ -7,6 +7,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
+import { refuseUnsafePath } from "@/lib/gatewayPath";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +17,8 @@ export async function PUT(req: NextRequest, ctx: Ctx): Promise<NextResponse> {
   const me = await requireIdentity();
   if (me instanceof NextResponse) return me;
   const { name } = await ctx.params;
+  const refused = refuseUnsafePath([name]);
+  if (refused) return refused;
   let body: unknown = {};
   try {
     body = await req.json();
@@ -43,6 +46,8 @@ export async function DELETE(_req: NextRequest, ctx: Ctx): Promise<NextResponse>
   const me = await requireIdentity();
   if (me instanceof NextResponse) return me;
   const { name } = await ctx.params;
+  const refused = refuseUnsafePath([name]);
+  if (refused) return refused;
   try {
     const res = await gatewayFetch(
       `${GATEWAY_URL}/observability/avatars/${encodeURIComponent(name)}`,

@@ -148,17 +148,17 @@ describe("the composer", () => {
     // A refusal gives the words back with its notice.
     // It keeps the typed mark of the send (WS-63 D-PZ-37).
     expect(block).toContain('if (out.kind === "refused") giveBack(trimmed, out.notice, typed);');
-    expect(src).toMatch(/setInput\(\(prev\) => mergeCappedText\(prev, text\)\);\s*setComposerNotice\(notice\);/);
+    expect(src).toMatch(/setInput\(\(prev\) => mergeCappedText\(prev, back\.words\)\);\s*if \(back\.items\.length\) attRef\.current\.restore\(back\.items\);\s*setComposerNotice\(notice\);/);
     // No send mode and no queue anywhere in the composer.
     expect(src).not.toMatch(/\bSendMode\b|\bsendMode\b|queueRef|enqueue\(|showSendMenu|saveQueue|getQueue/);
     // The one control follows the box.
-    expect(src).toContain("primaryAction({ runActive: isRunActive && !loadingHistory, hasText: !!input.trim() })");
+    expect(src).toContain("primaryAction({ runActive: isRunActive && !loadingHistory, hasText: !!input.trim() || hasReadyFiles })");
     expect(src).toMatch(/<ChatSendButton\s+action=\{primary\}\s+onClick=\{primary === "stop" \? handleStop : undefined\}/);
   });
 
   it("Esc stops a live run only from an empty box", () => {
     const src = code(read("../components/AgentChat.tsx"));
-    expect(src).toMatch(/e\.key === "Escape" && primaryAction\(\{[^}]*hasText: !!input\.trim\(\) \}\) === "stop"\) \{\s*e\.preventDefault\(\);\s*handleStop\(\);/);
+    expect(src).toMatch(/e\.key === "Escape" && primaryAction\(\{[^}]*hasText: !!input\.trim\(\) \|\| hasReadyFiles \}\) === "stop"\) \{\s*e\.preventDefault\(\);\s*handleStop\(\);/);
   });
 });
 

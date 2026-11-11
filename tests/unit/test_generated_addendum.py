@@ -119,8 +119,14 @@ class _FakeCopilotAgent:
         self._default_options: dict[str, Any] = {}
 
 
+_REAL_IMAGE_WITHHELD = ti._image_withheld
+
+
 @pytest.fixture()
 def _injection_env(monkeypatch):
+    # WS-VOX VOX-3: analyze_image is per org. These runs pin the surface of a
+    # lit org (the dark case is in test_attachment_analyze_image.py).
+    monkeypatch.setattr(ti, "_image_withheld", lambda: frozenset())
     monkeypatch.setenv("AGENT_PERMISSION_MODE", "approve_all")
     monkeypatch.delenv("SKILLS_FAIL_CLOSED", raising=False)
     fake_apps = types.ModuleType("orchestrator.app_tools")
@@ -332,6 +338,107 @@ def test_the_sandbox_section_owns_the_document_files() -> None:
         assert phrase in text, phrase
     for library in ("reportlab", "python-docx", "python-pptx", "openpyxl"):
         assert library in ad.SANDBOX_LIBRARIES, library
+
+
+@pytest.mark.parametrize(("flag", "held"), [
+    ("", False),
+    ("0f9e8d7c-aaaa-4aaa-8aaa-000000000000", False),
+    ("6b1f0c1e-3c55-4a07-9c3e-0a1b2c3d4e5f", True),
+    ("*", True),
+])
+def test_analyze_image_is_injected_only_for_an_org_on_the_flag(
+    monkeypatch, _injection_env, flag, held,
+) -> None:
+    """WS-VOX VOX-3 fix round: the real injection, per org, tool and addendum."""
+    from acb_common import get_settings
+    from acb_common.db import bind_tenant, release_tenant
+
+    org = "6b1f0c1e-3c55-4a07-9c3e-0a1b2c3d4e5f"
+    monkeypatch.setattr(ti, "_image_withheld", _REAL_IMAGE_WITHHELD)
+    monkeypatch.setattr(ti, "_run_org_or_none", lambda: org)
+    monkeypatch.setattr(get_settings(), "image_analysis_orgs", flag, raising=False)
+    monkeypatch.setattr(
+        ti, "_load_disabled_skill_families", lambda name: frozenset())
+    agent = _FakeCopilotAgent()
+    ti._build_injected_tools_addendum.cache_clear()
+    token = bind_tenant(org)
+    try:
+        ti._inject_agent_tools([agent], tool_scope=None, agent_name="fake-copilot",
+                               agent_config=_PERSONAL)
+        text = _addendum_of(agent)
+    finally:
+        release_tenant(token)
+        ti._build_injected_tools_addendum.cache_clear()
+    injected = {getattr(getattr(t, "func", t), "__name__", "") for t in agent._tools}
+    assert ("analyze_image" in injected) is held
+    assert ("### Images in the chat" in text) is held
+
+
+def _flag_orgs(monkeypatch, lit: str) -> None:
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "image_analysis_orgs", lit, raising=False)
+
+
+def test_the_addendum_cache_keys_on_the_org_flag_without_a_clear(monkeypatch, _injection_env) -> None:
+    """WS-VOX VOX-3 fix round 3: ONE clear, then lit, dark, lit again. Each run
+    gets the section state of its own org, whatever the cache holds."""
+    from acb_common.db import bind_tenant, release_tenant
+
+    lit_org = "6b1f0c1e-3c55-4a07-9c3e-0a1b2c3d4e5f"
+    dark_org = "0f9e8d7c-6b5a-4f3e-8d2c-1b0a9f8e7d6c"
+    _flag_orgs(monkeypatch, lit_org)
+    head = "### Images in the chat"
+
+    def _render(org: str) -> bool:
+        token = bind_tenant(org)
+        try:
+            monkeypatch.setattr(ti, "_run_org_or_none", lambda: org)
+            monkeypatch.setattr(ti, "_image_withheld", _REAL_IMAGE_WITHHELD)
+            monkeypatch.setattr(
+                ti, "_load_disabled_skill_families", lambda name: frozenset())
+            agent = _FakeCopilotAgent()
+            ti._inject_agent_tools([agent], tool_scope=None, agent_name="fake-copilot",
+                                   agent_config=_PERSONAL)
+            return head in _addendum_of(agent)
+        finally:
+            release_tenant(token)
+
+    ti._build_injected_tools_addendum.cache_clear()
+    try:
+        assert _render(lit_org) is True
+        assert _render(dark_org) is False
+        assert _render(lit_org) is True
+        assert _render(dark_org) is False
+    finally:
+        ti._build_injected_tools_addendum.cache_clear()
+
+
+def test_the_gateway_preview_caller_keys_on_its_tenant(monkeypatch) -> None:
+    """The catalog preview passes the flag of its own tenant, so a lit org's
+    text never sits under the dark key (and the reverse)."""
+    import gateway.routes.integrations_skills as gis
+    from acb_common.db import bind_tenant, release_tenant
+
+    lit_org = "6b1f0c1e-3c55-4a07-9c3e-0a1b2c3d4e5f"
+    dark_org = "0f9e8d7c-6b5a-4f3e-8d2c-1b0a9f8e7d6c"
+    _flag_orgs(monkeypatch, lit_org)
+    head = "### Images in the chat"
+
+    def _preview(org: str) -> bool:
+        token = bind_tenant(org)
+        try:
+            return head in gis._addendum_for_scope(None)
+        finally:
+            release_tenant(token)
+
+    ti._build_injected_tools_addendum.cache_clear()
+    try:
+        assert _preview(lit_org) is True
+        assert _preview(dark_org) is False
+        assert _preview(lit_org) is True
+    finally:
+        ti._build_injected_tools_addendum.cache_clear()
 
 
 def test_fail_closed_on_injection_narrows_unscoped_agent(

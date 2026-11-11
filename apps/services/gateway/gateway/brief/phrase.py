@@ -205,7 +205,7 @@ async def member_block(db: Any, org: str, member: str) -> str:
     row = (await db.execute(text(ap.READ_SQL), params)).first()
     names = (await db.execute(text(ap.ADDRESS_SQL), params)).first()
     preferred, _zone, display = names[:3] if names else (None, None, None)
-    return ap.member_block(row[0] if row is not None else None, preferred, display)
+    return ap.member_block(row[0] if row is not None else None, preferred, display, org)
 
 
 async def _ask(member: str, messages: list[dict[str, str]], ref: str) -> Any:

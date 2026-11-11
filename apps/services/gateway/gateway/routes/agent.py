@@ -244,6 +244,21 @@ async def _route_incoming_turn(
     )
 
 
+async def _keep_card_draft(user: UserContext, thread_id: str, raw: Any) -> None:
+    """Hand a steer's ``card_draft`` to the email module (§18.11 step 2).
+
+    The tenant and the member are the session's (*user*), never the body's.
+    ``keep_card_draft`` checks the snapshot against the card's own record, and
+    the flag (``EMAIL_EDIT_CARD_ORGS``). A fault keeps nothing and never stops
+    the steer."""
+    try:
+        from gateway.routes.email.automation.redraft import keep_card_draft
+
+        await keep_card_draft(user, thread_id, raw)
+    except Exception as exc:  # a snapshot never stops a steer
+        _log.warning("agent.card_draft_failed", error=type(exc).__name__)
+
+
 def _followup_refused(thread_id: str, reason: str) -> Response:
     """The 202 of a steer follow-up that starts no run. The chat drops its
     placeholder on it, as it does for a steer."""
@@ -689,18 +704,27 @@ _AGENT_REGISTRY: list[dict] = [
     },
     {
         "name": "app-builder",
+        # Owner, 2026-11-07 (task 1909): the chat gave a Studio build to this
+        # agent. The description now keeps every new app away from it. The
+        # tool stays, so the base count of the chat and the pack budget do
+        # not move (test_projects_packs.py pins them).
         "description": (
-            "App Workshop builder — turns chat into small internal web apps "
-            "(Custom Apps). Each Workshop session is bound to its app's "
-            "workspace; the agent edits index.html and the app.json manifest "
-            "and keeps the preview renderable after every round."
+            "Legacy App Workshop editor. Use it ONLY when the member names an "
+            "existing App Workshop app (an index.html app) and asks to change "
+            "that app. NEVER use it to build a new app, tracker, board, form "
+            "or tool: AI Studio builds those with the studio tools "
+            "(studio_plan, studio_draft, studio_save)."
         ),
-        "tags": ["apps", "builder", "workshop"],
+        "tags": ["workshop", "legacy"],
         "status": "live",
-        # Copilot-SDK engine: the builder needs native file/shell tools to
-        # edit the app workspace. BYOK-routed through the gateway tiers (no
-        # GitHub quota dependency).
-        "agent_runtime": "github-copilot",
+        # WS-43h (D84, maf_coding_engine.md §7.8): "maf", so the OBJECT that
+        # the factory builds decides the path at every executor site. With
+        # `app_builder:<org>` in MAF_CODING_SCOPE the factory builds a MAF
+        # harness agent, and the run takes the native path. Every other org
+        # gets the GitHubCopilotAgent, whose `_default_options` still sends
+        # it down the Copilot path, as before. The label alone sent a MAF
+        # object down the Copilot path, where it fails.
+        "agent_runtime": "maf",
         "local_path": "apps/agents/agent-app-builder",
         "integrations": [],
         "optional_integrations": [],
@@ -1717,8 +1741,8 @@ async def list_agents(
     # A COPY of each entry. The loop below writes each declared runtime into
     # the entry, and the executor reads ``_AGENT_REGISTRY`` for its label. A
     # write into the shared dict changed the label of the process on the first
-    # GET /agent (WS-43n review): task-manager and app-builder declare "maf"
-    # in config.json and are labelled "github-copilot" here, on purpose.
+    # GET /agent (WS-43n review): task-manager declares "maf" in config.json
+    # and is labelled "github-copilot" here, on purpose.
     static = [dict(a) for a in _AGENT_REGISTRY if a["name"] not in dynamic_names]
     # Back-fill agent_runtime for legacy dynamic entries that predate the field
     # or have NULL in the DB column. WS-43n (§15.5): the default is "maf" for
@@ -2773,7 +2797,7 @@ async def _extract_run_memory(
                 name=f"agent:{agent_name}:{member[:20]}",
                 content=message[:500],
                 source_description=f"agent_{agent_name}",
-                group_id=member,
+                # KG-9: the bound tenant names the episode's group.
             )
         except Exception:  # an episode must never kill the relay
             _log.warning("agent.run_end_episode_failed", thread_id=thread_id[:12])
@@ -2879,6 +2903,11 @@ async def run_agent_stream_endpoint(
     # The display of a card answer that went as a new message. It is for the
     # saved turn only, and never reaches the executor.
     _card_answer = req.payload.pop("card_answer", None)
+    # §18.11: the member's own version of an open new-mail card, sent with a
+    # message during the run. Popped HERE, so it never reaches the executor.
+    # Only a STEER keeps it (`_keep_card_draft` below), and the email module
+    # checks it against the card's own record.
+    _card_draft = req.payload.pop("card_draft", None)
     # WS-67 OA-7d: the app slug of the dock, a hint for the tool packs. Popped
     # so the payload never carries it on. Cleaned against the packs that name
     # an app, bound for the run below, and never read for a tenant or a member.
@@ -3063,6 +3092,12 @@ async def run_agent_stream_endpoint(
     # a paste send none, so they never get that card (PZ-32 repair 1).
     _sent_text = (_sent_words
                   if _card_answer is None and not _resume and not _followup else "")
+    # §18.11 step 2: a steer of the web chat keeps the member's version of an
+    # open new-mail card BEFORE the steer goes out, so the tool that the
+    # steer wakes finds it. This door is the web chat's: no WhatsApp turn
+    # reaches it. Any other route drops it.
+    if _card_draft is not None and _decision.route.name == "STEER":
+        await _keep_card_draft(user, req.thread_id or "", _card_draft)
     _steered = await _apply_turn_decision(
         _decision, req, agent_name, actor_email, room,
     )
@@ -3128,6 +3163,8 @@ async def run_agent_stream_endpoint(
         agent_name=agent_name,
         thread_id=req.thread_id,
         shared=_room_is_shared,
+        # KG-9: the org compartment is this member's org, from the session.
+        organization_id=_room_org,
     )
 
     try:
@@ -3390,6 +3427,12 @@ async def run_agent_stream_endpoint(
         # from the server's room and never the body. A room of one that
         # other members can read (visibility org or people) is not solo.
         solo_room=room_is_solo(room),
+        # PZ-39: the ids of this turn's own rows, so the greeting gap leaves
+        # them out. The request supplies both ids (`user_message_id` and
+        # `assistant_message_id`). A client can only skip rows of its own
+        # chat, so the worst case is one extra greeting for this member. The
+        # read stays bound to the run's org, member and session.
+        turn_row_ids=(_persist_message_id, _new_user_id),
     )
 
     # The roster this run's authority intersection is folded over, recorded so a
@@ -4206,6 +4249,26 @@ def _member_graph_session(user: UserContext) -> Any:
     return tenant_session(getattr(user, "organization_id", None))
 
 
+def _mutation_audit(user: UserContext, event: Any) -> None:
+    """Record one mutation-queue decision in the reviewer's tenant (task 2221).
+
+    The approve, reject and re-mutate rows name the reviewer, the agent, the
+    commit and the PR. This stamps ``user.organization_id``, the tenant that
+    ``get_current_user`` resolved from the identity and that
+    ``_member_graph_session`` wrote the ``pending_commit`` row in. It never
+    reads a request field (R5). With no org and ``ACB_GRAPH_TENANT_BIND`` on,
+    ``refuse_tenantless`` skips the row, so it never lands under the operator
+    org. Fence: ``tests/unit/test_mutation_queue_audit_org_r8.py`` (R8).
+    """
+    import acb_audit
+
+    org = getattr(user, "organization_id", None)
+    event.organization_id = str(org) if org else None
+    if acb_audit.refuse_tenantless(event):
+        return
+    acb_audit.record(event)
+
+
 @router.get("/run/{run_id}/status")
 async def get_run_status(
     run_id: str,
@@ -4455,7 +4518,7 @@ async def approve_pending_commit(
     """
     import asyncio  # noqa: PLC0415
 
-    from acb_audit import AuditEvent, record  # noqa: PLC0415
+    from acb_audit import AuditEvent  # noqa: PLC0415
 
     try:
         from sqlalchemy import text  # noqa: PLC0415
@@ -4590,7 +4653,8 @@ async def approve_pending_commit(
                         },
                     )
                     sess.commit()
-                record(
+                _mutation_audit(
+                    user,
                     AuditEvent(
                         actor=f"human:{reviewer}",
                         action="mutation_monorepo_pr_opened",
@@ -4693,7 +4757,8 @@ async def approve_pending_commit(
             # Non-fatal — the primary commit is already approved
             _log.warning("mutation.cascade_failed", error=str(_cascade_exc))
 
-        record(
+        _mutation_audit(
+            user,
             AuditEvent(
                 actor=f"human:{reviewer}",
                 action="mutation_commit_approved",
@@ -4739,7 +4804,7 @@ async def reject_pending_commit(
     """
     import asyncio  # noqa: PLC0415
 
-    from acb_audit import AuditEvent, record  # noqa: PLC0415
+    from acb_audit import AuditEvent  # noqa: PLC0415
 
     try:
         from sqlalchemy import text  # noqa: PLC0415
@@ -4787,7 +4852,8 @@ async def reject_pending_commit(
             )
             sess.commit()
 
-        record(
+        _mutation_audit(
+            user,
             AuditEvent(
                 actor=f"human:{reviewer}",
                 action="mutation_commit_rejected",
@@ -4834,7 +4900,7 @@ async def remutate_pending_commit(
     """
     import asyncio  # noqa: PLC0415
 
-    from acb_audit import AuditEvent, record  # noqa: PLC0415
+    from acb_audit import AuditEvent  # noqa: PLC0415
 
     try:
         from sqlalchemy import text  # noqa: PLC0415
@@ -4882,7 +4948,8 @@ async def remutate_pending_commit(
             )
             sess.commit()
 
-        record(
+        _mutation_audit(
+            user,
             AuditEvent(
                 actor=f"human:{reviewer}",
                 action="mutation_commit_remutate_requested",

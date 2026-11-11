@@ -101,11 +101,12 @@ describe("fix round 1: the Forms, the door and the object pick", () => {
     expect(formFields(fields, computedKeys(rules)).map((f) => f.key)).toEqual(["qty", "price"]);
     expect(formFields(fields, computedKeys([])).map((f) => f.key)).toEqual(["qty", "price", "total"]);
   });
-  it("both Form mounts take the filtered fields and the Detail takes all of them", () => {
+  it("both Form mounts take the filtered fields and the Detail takes all but a lines field", () => {
     const forms = page.match(/<StudioForm[^>]*?fields=\{[^}]*\}/g) ?? [];
     expect(forms).toHaveLength(2);
     for (const f of forms) expect(f).toContain("fields={formFields(");
-    expect(page).toContain("<StudioDetail fields={fields}");
+    // C13: the one Detail mount skips a lines relation through detailFields.
+    expect(page).toContain("<StudioDetail fields={detailFields(fields)}");
   });
   it("the page keeps one door through a re-read of the package", () => {
     expect(page).toContain("createDoorKeeper");

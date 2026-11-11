@@ -6,6 +6,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Email } from "../lib/types";
 import { fullDateLabel, initials, buildOptimisticSent } from "../lib/utils";
 import { getEmail, fetchFullBody, detectReplyCommitment } from "../lib/api";
+import { withFailedFiles } from "../lib/attachmentRow";
 import { useDraftSession } from "../lib/useDraftSession";
 import { splitQuotedText } from "../lib/quoting";
 import { useEmailStore, withPatch } from "../lib/emailStore";
@@ -159,7 +160,7 @@ export function ConversationView({
           .then((full) => setHydrated((h) => ({ ...h, [m.id]: full })))
           // On failure, cache the list row so the effect doesn't retry this
           // message forever every time `hydrated` changes for another card.
-          .catch(() => setHydrated((h) => ({ ...h, [m.id]: m })));
+          .catch(() => setHydrated((h) => ({ ...h, [m.id]: withFailedFiles(m) })));
       }
     });
   }, [expanded, visible, hydrated]);
@@ -272,6 +273,12 @@ export function ConversationView({
                 {view.hasAttachments && (
                   <AttachmentList
                     attachments={view.attachments}
+                    status={view.attachmentsStatus}
+                    onRetry={async () => {
+                      // This one message: the other cards stay as they are.
+                      const again = await getEmail(m.id);
+                      setHydrated((h) => ({ ...h, [m.id]: again }));
+                    }}
                     pending={!hydrated[m.id]}
                     className="mb-3"
                   />

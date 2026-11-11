@@ -8,7 +8,7 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { PROJECTS_CHANGED_EVENT } from "@/components/projects/ProjectToolCards";
+import { PROJECTS_CHANGED_EVENT } from "@/lib/projectsEvents";
 
 import { LIVE_REFRESH_MS, wireLiveRefresh } from "./liveRefresh";
 

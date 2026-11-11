@@ -666,7 +666,8 @@ class TestTheFirstPartyFlowOnARealDatabase:
         async with tenant_engine_scope(promoted.app_dsn):
             code, _ = await _sign_in(promoted, email)
             assert await agent_tokens.revoke_connection_scoped(
-                promoted.org_a, _connection_of_code(promoted, code), member_email=email)
+                promoted.org_a, _connection_of_code(promoted, code), member_email=email,
+                reason=agent_tokens.REVOKE_MEMBER)
             r = await _check(promoted.org_a, _aroh(), email)
         _assert_screen(r)
 

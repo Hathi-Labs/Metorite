@@ -88,11 +88,16 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "voice_profile": ("show my writing style",),
     # -- crm-records --
     "convert_lead": ("convert the lead Acme to a deal",),
+    # WS-CRM CRM-M2b: the edit of any field, and the task change.
+    "crm_update_record": ("change the amount of the Acme deal in the crm to 50000",),
+    "crm_update_task": ("mark my crm follow-up task with Acme as done",),
     "create_lead": ("create a lead for Acme",),
     "crm_search_notes": ("search my crm notes for pricing",),
     # WS-CRM CRM-M1: the read of the CRM Change history.
     "crm_change_history": ("what changed in the crm last tuesday",
                            "who changed the crm setup this week"),
+    # WS-CRM CRM-M3a: a new deal pipeline.
+    "crm_create_pipeline": ("create a new crm pipeline for AMC contracts",),
     "get_pipeline": ("show the sales pipeline",),
     "get_record": ("show the Acme record in the crm",),
     "get_timeline": ("show the timeline of the Acme deals",),
@@ -136,6 +141,7 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "export_tasks": ("export the tasks to CSV",),
     "find_conflicts": ("are there scheduling conflicts in the project plan?",),
     "fit_for_task": ("who is the best fit for this task?",),
+    "get_plan": ("what can start now in this epic?",),
     "link_tasks": ("make this task block the other task",),
     "link_tasks_batch": ("link these tasks in order as dependencies",),
     "update_tasks": ("update these tasks, a different due date for each",),
@@ -223,6 +229,17 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "project_authorities": ("which page is the authority page of this project?",),
     "pin_authority": ("pin this page as the authority of the project",),
     "unpin_authority": ("remove the authority page of the project",),
+    # WS-39 LP-1a: the updates of a project sit in the same pack.
+    "list_project_updates": ("show the project updates of Website Relaunch",),
+    "post_project_update": ("post a project update: the vendor slipped a week",),
+    "delete_project_update": ("remove my last project update",),
+    # WS-39 TPL-1a: the project templates of the organization.
+    "list_templates": ("which project templates do we have?",),
+    "save_as_template": ("save this project as a template",),
+    "create_project_from_template": ("use the project template Install kit for the Acme job",
+                                     "start the Acme job from the template Install kit"),
+    # SP-8a: the contract of an epic sits in the authority pack.
+    "set_epic_contract": ("set the epic contract of this epic",),
     # -- studio (STU-G1) --
     "studio_describe": ("which field types can a studio app manifest use?",),
     "studio_draft": ("draft an app manifest in AI Studio",),
@@ -242,6 +259,10 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     # -- studio records (STU-D2b) --
     "studio_package_get": ("list my studio packages",),
     "studio_record_list": ("show the records of my studio package",),
+    # -- studio record writes (STU-B2c-2b) --
+    "studio_record_create": ("add a record to my studio package",),
+    "studio_record_update": ("change a record in my studio package",),
+    "studio_record_delete": ("delete a record from my studio package",),
     # -- projects-reminders --
     "list_reminders": ("what reminders do I have?",),
     "promote_reminder": ("turn the reminder into a task",),
@@ -250,6 +271,29 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "resolve_reminder": ("mark the reminder as done",),
     "set_reminder": ("remind me to call Ravi at 5pm",),
     "update_reminder": ("change the reminder text",),
+    # -- calendar-day (CAL-1a, task 1675) --
+    "my_tasks_day_digest": ("start my day",),
+    "my_tasks_list_schedule": ("show my calendar for today",),
+    "my_tasks_plan_day": ("rebuild my day",),
+    "my_tasks_replan_day": ("I fell behind, fit what's left",),
+    "my_tasks_rollover": ("roll over my tasks from yesterday",),
+    "my_tasks_schedule": ("block an hour for the report",),
+    "my_tasks_set_one_thing": ("make the report my one thing for today",),
+    "my_tasks_unschedule": ("block an hour, then take that block off",),
+    # -- calendar-day settings (CAL-2, task 1676) --
+    "my_tasks_get_calendar_settings": ("what are my working hours?",),
+    "my_tasks_update_calendar_settings": (
+        "I work 8 to 6", "never book meetings before 10", "I'm sharpest 9 to 12",
+        "turn on auto rollover"),
+    # -- calendar-day rules (CAL-3, task 1677) --
+    "my_tasks_list_day_rules": ("what are my day rules?",),
+    "my_tasks_add_day_rule": ("keep mornings for deep work", "protect my mornings",
+                              "add a focus block on Fridays"),
+    "my_tasks_edit_day_rule": ("move my focus block to 9 to 12",),
+    "my_tasks_delete_day_rule": ("delete the second day rule",),
+    # -- calendar-day flows (CAL-4, task 1678) --
+    "my_tasks_start_my_day": ("start my day", "good morning plan"),
+    "my_tasks_close_my_day": ("close my day", "wrap up my day"),
 }
 
 #: Known gaps, kept out of the table on purpose. A bare "calendar" or "project"
@@ -259,7 +303,6 @@ REQUESTS: dict[str, tuple[str, ...]] = {
 #: Projects apps load the core pack by surface, and the offered-pack lines in the
 #: rules of the loader show the member's model where the tools are.
 KNOWN_GAPS: dict[str, str] = {
-    "show my calendar": "bare calendar is out (Google or Notion calendar)",
     "summarise the Website Relaunch project": "a name sits between 'the' and 'project'",
 }
 

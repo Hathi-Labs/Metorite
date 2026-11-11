@@ -24,6 +24,7 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
+from acb_auth import agent_oauth as _agent_oauth
 from acb_common import get_settings
 from acb_common.db import current_tenant
 from fastapi import HTTPException
@@ -263,6 +264,13 @@ def build_task_filters(
     watching: bool = False,
     viewer: str | None = None,
     top_level: bool = False,
+    has_parent: bool | None = None,
+    is_epic: bool | None = None,
+    assigned: bool | None = None,
+    updated_before: str | None = None,
+    updated_after: str | None = None,
+    created_after: str | None = None,
+    title_prefix: str | None = None,
 ) -> tuple[list[str], dict[str, Any]]:
     """The WHERE fragments for one task query, and their bound parameters.
 
@@ -373,6 +381,43 @@ def build_task_filters(
     if due_before:
         clauses.append("t.due_at < :due_before")
         params["due_before"] = parse_when(due_before, field="due_before")
+
+    # MCP-G19a. The audit filters of the agent door. Each is optional, and
+    # they combine with every filter above. `list_tasks` and `board_stats`
+    # both call this builder, so a count and a list cannot disagree.
+    if has_parent is True:
+        clauses.append("t.parent_task_id IS NOT NULL")
+    elif has_parent is False:
+        clauses.append("t.parent_task_id IS NULL")
+    if assigned is True:
+        clauses.append(
+            "EXISTS (SELECT 1 FROM pm_task_assignees aa WHERE aa.task_id = t.id)"
+        )
+    elif assigned is False:
+        clauses.append(
+            "NOT EXISTS (SELECT 1 FROM pm_task_assignees aa WHERE aa.task_id = t.id)"
+        )
+    if is_epic is not None:
+        # The same rule as `core.is_epic_type`: the flag, or the system seed
+        # type named Epic. A task with no type is not an epic.
+        epic = (
+            "EXISTS (SELECT 1 FROM pm_task_types ty WHERE ty.id = t.type_id"
+            " AND (coalesce(ty.is_epic, false)"
+            " OR (coalesce(ty.is_system, false) AND ty.name = 'Epic')))"
+        )
+        clauses.append(epic if is_epic else f"NOT {epic}")
+    if updated_before:
+        clauses.append("t.updated_at < :updated_before")
+        params["updated_before"] = parse_when(updated_before, field="updated_before")
+    if updated_after:
+        clauses.append("t.updated_at >= :updated_after")
+        params["updated_after"] = parse_when(updated_after, field="updated_after")
+    if created_after:
+        clauses.append("t.created_at >= :created_after")
+        params["created_after"] = parse_when(created_after, field="created_after")
+    if title_prefix and title_prefix.strip():
+        clauses.append("t.title ILIKE :title_prefix")
+        params["title_prefix"] = like_escape(title_prefix.strip()) + "%"
 
     if importance_gte is not None:
         clauses.append("t.importance >= :importance_gte")
@@ -970,6 +1015,25 @@ def agent_run_lease_s() -> int:
     return value if value > 0 else AGENT_RUN_LEASE_DEFAULT_S
 
 
+# ── Task 1045a: the `waiting` time (agent_coordination.md §3.2, D140.8) ────
+
+#: What a `waiting` line may wait on. The CHECK `pm_agent_runs_waiting_on` of
+#: the migration lists the same five.
+#: The one copy is ``acb_auth.agent_oauth.RUN_WAITING_ON``, which the edge
+#: reads too.
+AGENT_RUN_WAITING_ON: tuple[str, ...] = _agent_oauth.RUN_WAITING_ON
+#: The longest wait, in minutes (D140.8).
+AGENT_RUN_WAITING_MAX_MIN = _agent_oauth.RUN_WAITING_MAX_MIN
+
+
+def agent_run_waiting_cap_min() -> int:
+    """The longest wait in minutes: 120, or the lease when the lease is
+    shorter (D140.8, SW-4 item 2). A wait never passes one lease, so a
+    waiting run always keeps its task. Read on each call, so the environment
+    override of the lease works in a running process."""
+    return max(1, min(AGENT_RUN_WAITING_MAX_MIN, agent_run_lease_s() // 60))
+
+
 def agent_run_hold_s(status: str) -> int:
     """How long a run in *status* keeps its task with no activity."""
     factor = AGENT_RUN_QUESTION_LEASE_FACTOR if status == "awaiting" else 1
@@ -1059,12 +1123,19 @@ AGENT_RUN_ANSWER_WAITS_SQL = (
 #:   The age limit is the stale band and not the lease: the state says
 #:   whether an agent works on the task NOW, and the lease is read from the
 #:   environment, which this import-time constant cannot follow.
+#: * Task 1045a (``agent_coordination.md`` §3.2): ``waiting`` comes FIRST. The
+#:   newest activity set a ``waiting_until`` that has not passed. Any later
+#:   activity clears it (``agent_runs._move_run``), so the rule holds only
+#:   while the waiting line is the newest activity. A wait whose time passed
+#:   reads ``stale`` at once, before the stale band ends.
 #: * Every other status reads as itself.
 AGENT_RUN_STATE_SQL = (
     "CASE r.status"
     " WHEN 'created' THEN 'queued'"
     " WHEN 'in_progress' THEN CASE"
+    "   WHEN r.waiting_until > now() THEN 'waiting'"
     f"   WHEN r.last_activity_at < now() - interval '{AGENT_RUN_STALE_AFTER_S} seconds'"
+    "     OR r.waiting_until IS NOT NULL"
     "     THEN 'stale'"
     f"   WHEN {AGENT_RUN_ANSWER_WAITS_SQL} THEN 'answered'"
     "   ELSE 'working' END"
@@ -1199,6 +1270,34 @@ def unheld_clause() -> str:
     )
 
 
+def holder_sql() -> str:
+    """The member who holds the task now, or null for a free task. The same
+    open-run, lease and connection rules as :func:`unheld_clause`, so
+    ``holder`` is null exactly where ``unheld`` is true."""
+    open_list = ", ".join(f"'{s}'" for s in AGENT_RUN_OPEN_STATUSES)
+    return (
+        "(SELECT lower(h.member_email) FROM pm_agent_runs h"
+        " WHERE h.task_id IS NOT NULL AND h.task_id = t.id"
+        f"   AND h.status IN ({open_list})"
+        f"   AND {lease_held_sql('h')}"
+        f"   AND NOT {connection_gone_sql('h')}"
+        " ORDER BY h.last_activity_at DESC LIMIT 1)"
+    )
+
+
+#: The age bands of ``updated_age``, in order.
+UPDATED_AGE_BANDS: tuple[str, ...] = ("<1d", "1-3d", "3-7d", "7-30d", ">30d")
+
+UPDATED_AGE_SQL = (
+    "(CASE"
+    " WHEN t.updated_at >= now() - interval '1 day' THEN '<1d'"
+    " WHEN t.updated_at >= now() - interval '3 days' THEN '1-3d'"
+    " WHEN t.updated_at >= now() - interval '7 days' THEN '3-7d'"
+    " WHEN t.updated_at >= now() - interval '30 days' THEN '7-30d'"
+    " ELSE '>30d' END)"
+)
+
+
 def agent_state_sql(task_filter: str) -> str:
     """The pill query over the tasks that *task_filter* selects (alias ``r``).
 
@@ -1220,6 +1319,7 @@ def agent_state_sql(task_filter: str) -> str:
     return f"""
 SELECT DISTINCT ON (r.task_id) r.task_id, {AGENT_RUN_STATE_SQL} AS state,
        r.client_via, r.member_email, r.status AS run_status, {_AGENT_NOTE_SQL} AS note,
+       r.waiting_on, r.waiting_until,
        COALESCE(r.started_at, r.created_at) AS held_since,
        r.last_activity_at AS held_last,
        EXTRACT(EPOCH FROM (clock_timestamp() - r.last_activity_at)) AS idle_s,
@@ -1332,14 +1432,26 @@ def held_by_of(hit: Any) -> dict[str, Any]:
     }
 
 
+def waiting_of(state: Any, on: Any, until: Any) -> dict[str, Any] | None:
+    """``{on, until}`` of a run that reads ``waiting`` (task 1045a), else
+    ``None``. A wait whose time passed reads ``stale``, so it shows no wait.
+    ONE rule for the task row and the runs wire (``agent_runs._runs_out``)."""
+    if state != "waiting" or on is None or until is None:
+        return None
+    return {"on": on, "until": wire(until)}
+
+
 async def attach_agent_state(db: Any, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Fill each row's ``agent_state``, ``agent_client_via``,
     ``agent_member_email`` and ``agent_note``, mutating and returning the list.
 
-    ``queued``, ``working``, ``awaiting``, ``answered``, ``stopping``,
-    ``stale`` or ``failed``. ``None`` for a task with no open run. While the
-    flag is off, every row gets ``None`` and no pill statement runs, so the
-    task reads cost nothing until the owner turns the feature on.
+    ``queued``, ``working``, ``waiting``, ``awaiting``, ``answered``,
+    ``stopping``, ``stale`` or ``failed``. ``None`` for a task with no open
+    run. While the flag is off, every row gets ``None`` and no pill statement
+    runs, so the task reads cost nothing until the owner turns the feature on.
+
+    Task 1045a: ``agent_waiting`` is ``{on, until}`` while the state reads
+    ``waiting`` (:func:`waiting_of`), so the card can say "waiting on CI".
 
     EA-13d and EA-13e ride the same call, because every route that hands a
     task row to the client already calls it, and the client merges the row
@@ -1349,7 +1461,7 @@ async def attach_agent_state(db: Any, rows: list[dict[str, Any]]) -> list[dict[s
     """
     for row in rows:
         row.update(agent_state=None, agent_client_via=None, agent_member_email=None,
-                   agent_note=None, held_by=None)
+                   agent_note=None, agent_waiting=None, held_by=None)
     ids = [str(r["id"]) for r in rows if r.get("id")]
     if ids and agent_runs_enabled():
         found = (await db.execute(text(_AGENT_STATE_SQL), {"ids": ids})).fetchall()
@@ -1360,7 +1472,10 @@ async def attach_agent_state(db: Any, rows: list[dict[str, Any]]) -> list[dict[s
                 note = " ".join(str(hit.note or "").split())
                 row.update(agent_state=hit.state, agent_client_via=hit.client_via,
                            agent_member_email=hit.member_email,
-                           agent_note=note[:AGENT_NOTE_MAX] or None)
+                           agent_note=note[:AGENT_NOTE_MAX] or None,
+                           agent_waiting=waiting_of(
+                               hit.state, getattr(hit, "waiting_on", None),
+                               getattr(hit, "waiting_until", None)))
                 if hit.run_status in AGENT_RUN_OPEN_STATUSES:
                     row["held_by"] = held_by_of(hit)
     await attach_pr_chip(db, rows)
@@ -1453,8 +1568,9 @@ async def attach_pr_chip(db: Any, rows: list[dict[str, Any]]) -> list[dict[str, 
 
 #: The states that read as "working" on the strip: the agent has the task, and
 #: the run is live, answered or idle (EA3-43). ONE copy: the summary strip, the
-#: analytics and :func:`agent_focus_clause` read it here.
-WORKING_STATES: tuple[str, ...] = ("working", "answered", "stale")
+#: analytics and :func:`agent_focus_clause` read it here. Task 1045a: a
+#: ``waiting`` run still holds its task, so the strip counts it as working.
+WORKING_STATES: tuple[str, ...] = ("working", "answered", "stale", "waiting")
 
 #: The five foci of the agent strip, in the order it draws them. ``waiting`` is
 #: "Waiting on me". The list filter ``agent_focus`` accepts exactly these.

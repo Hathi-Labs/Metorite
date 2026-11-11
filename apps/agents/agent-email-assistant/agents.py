@@ -270,21 +270,14 @@ def _current_user_email() -> str:
 
 
 def _internal_token() -> str:
-    """The gateway's internal bearer token.
+    """The gateway's internal bearer token: ``GATEWAY_INTERNAL_TOKEN`` only.
 
-    ``gateway_internal_token`` IS a real Settings field
-    (``acb_common/settings.py``) — the service-identity/LLM-key split — and it
-    ships empty, which is why ``litellm_master_key`` is the fallback rather than
-    the primary. The order below is load-bearing in that direction: on a box
-    where the split HAS been provisioned, "simplifying" this to read
-    ``litellm_master_key`` first sends the wrong token and 403s every call.
+    There is no ``litellm_master_key`` rung (WS-24b, 2026-11-06). The gateway
+    no longer accepts the LLM key as service identity, so that rung would only
+    send a token that 401s. Unset gives ``""``, and the gateway refuses it.
     """
     settings = get_settings()
-    return (
-        getattr(settings, "gateway_internal_token", "")
-        or getattr(settings, "litellm_master_key", "")
-        or "sk-local"
-    )
+    return (getattr(settings, "gateway_internal_token", "") or "").strip()
 
 
 def _headers() -> dict[str, str]:
@@ -4881,6 +4874,7 @@ async def update_assistant_settings(
     setif("sensitive_data_protection", sensitive_data_protection)
     setif("morning_brief_enabled", morning_brief_enabled)
     setif("org_domains", org_domains)
+    _mark_auto_run_choice(body, auto_run)
     body.pop("always_copy", None)
     if always_copy is not None:
         try:
@@ -5021,6 +5015,7 @@ async def apply_settings_to_mailboxes(
                 await _get("/email/assistant/settings", {"account_id": aid}))
             body.update(wanted)
             body["account_id"] = aid
+            _mark_auto_run_choice(body, wanted.get("auto_run"))
             await _patch_settings(body)
             done.append(_mailbox_text(a))
         except Exception:
@@ -5093,6 +5088,7 @@ async def _held_settings(account_id: str | None, wanted: dict[str, Any]) -> str:
         await _get("/email/assistant/settings", {"account_id": account_id}) or {})
     body["account_id"] = account_id
     body.update(values)
+    _mark_auto_run_choice(body, values.get("auto_run"))
     await _patch_settings(body)
     return f"Assistant settings updated for {box}: " + "; ".join(
         f"{k} is {_setting_shown(v)}" for k, v in values.items()) + "."
@@ -5721,6 +5717,22 @@ async def _patch_settings(body: dict[str, Any]) -> Any:
     return (await _request("PUT", "/email/assistant/settings", json=body)).json()
 
 
+#: Task 2305 (``email_app_master_plan.md`` §12.3.13.7): the write-only marker
+#: of the member's own Auto-run choice. The PUT stamps the choice only for a
+#: body that carries it with ``auto_run``. The GET answers ``auto_run_chosen``,
+#: so a copy of the GET body never carries this name.
+_AUTO_RUN_CHOICE = "auto_run_choice"
+
+
+def _mark_auto_run_choice(body: dict[str, Any], auto_run: Any) -> None:
+    """Add the marker to a settings PUT body only when the model passed
+    ``auto_run``. A save of any other setting sends no marker, so it never
+    records an Auto-run choice that the member did not make."""
+    body.pop(_AUTO_RUN_CHOICE, None)
+    if auto_run is not None:
+        body[_AUTO_RUN_CHOICE] = True
+
+
 @_annotate_risk(open_world=False)
 async def find_follow_ups(account_id: str) -> str:
     """Scan NOW for threads waiting too long for a reply, label them "Follow-up",
@@ -5875,6 +5887,107 @@ def _attachment_refs(attachments: list[str] | None) -> list[dict[str, Any]]:
         else:
             refs.append({"path": s})
     return refs
+
+
+# ── A file of a send resolves before its card (task 2491) ───────────────────
+#
+# Defect of 2026-11-09: a chat upload went to send_email, the member approved
+# the card, and only then did ``POST /email/send`` refuse the file (422). The
+# model sent the mail again with no file, under a second card. So each file
+# now resolves before any card, the way the send resolves it, and a file that
+# does not resolve shows no card.
+
+#: The most files of one check (``metorite_files.MAX_METORITE_FILES``).
+_FILE_CHECK_BATCH = 20
+#: The next step after a file that cannot go. ``Not sent.`` comes first.
+_FILE_NEXT_STEP = (
+    "No card was shown. Tell the member that this file cannot go with the "
+    "email, and ask whether to send it without the file or to attach the "
+    "file in Email first. Do not send without the file before the member "
+    "answers.")
+#: The answer when the gateway did not check the files.
+_FILES_UNCHECKED = (
+    "Not sent. The files of this email could not be checked, so no card was "
+    "shown. Try again in a moment.")
+
+
+def _file_name_only(path: str) -> str:
+    """The last part of *path*, as a card shows a name: no folder is named."""
+    last = str(path).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    return _card_file_name(last or "file")
+
+
+def _not_attachable(paths: list[str], why: str = "") -> str:
+    """The answer when a file of a send does not resolve (task 2491): what
+    happened, each file by its name, and the next step. *why* is the reason
+    that the resolver gave, when it gave one."""
+    names = [f'"{_file_name_only(p)}"' for p in paths]
+    if len(names) == 1:
+        head = f"The file {names[0]} is not one this mail can attach."
+        why = why or "It is not a file in your own workspace."
+    else:
+        listed = f"{', '.join(names[:-1])} and {names[-1]}"
+        head = f"The files {listed} are not ones this mail can attach."
+        why = why or "They are not files in your own workspace."
+    return f"Not sent. {head} {why} {_FILE_NEXT_STEP}"
+
+
+async def _unattachable_files(refs: list[dict[str, Any]]) -> str | None:
+    """None when each workspace file of a send resolves. Else the answer that
+    names each file that does not, and no card shows (task 2491).
+
+    The gateway checks each file with ``send.refused_artifacts``, the
+    resolver that ``POST /email/send`` runs (``/email/metorite-files/resolve``
+    with ``artifacts``). It reads no bytes and sends nothing. An answer with
+    no ``refused`` list fails closed."""
+    refused: list[str] = []
+    for i in range(0, len(refs), _FILE_CHECK_BATCH):
+        chunk = refs[i:i + _FILE_CHECK_BATCH]
+        try:
+            res = await _post("/email/metorite-files/resolve",
+                              {"refs": [], "artifacts": chunk})
+        except GatewayError as exc:
+            if 400 <= exc.status < 500:
+                return _FILES_UNCHECKED
+            raise
+        got = res.get("refused") if isinstance(res, dict) else None
+        if not isinstance(got, list):
+            return _FILES_UNCHECKED
+        for path in got:
+            # The gateway gives the path. The answer names the text that the
+            # model gave, so "Shot 10:00.png" is not named "00.png".
+            ref = next((r for r in chunk if str(r.get("path")) == str(path)), None)
+            refused.append(_ref_text(ref) if ref else str(path))
+    return _not_attachable(refused) if refused else None
+
+
+def _ref_text(ref: dict[str, Any]) -> str:
+    """A ref of :func:`_attachment_refs` as the model wrote it."""
+    agent, path = str(ref.get("agent") or ""), str(ref.get("path") or "")
+    return f"{agent}:{path}" if agent else path
+
+
+def _held_unparsed_files(files: list[str]) -> str | None:
+    """None when each file of a held send has a form that the held card can
+    resolve. Else the answer that names each file that has none (task 2491).
+
+    The held card resolves each file before its card. Its first step is
+    ``acb_skills.held_card.parse_file_ref``, the parse of both of its
+    resolvers, and a bare workspace path fails it. This calls the same
+    parse, so the answer can name the file."""
+    try:
+        from acb_skills.held_card import parse_file_ref
+    except ImportError:  # an older platform: the held card refuses it
+        return None
+    bad: list[str] = []
+    why = ""
+    for ref in files:
+        try:
+            parse_file_ref(ref)
+        except ValueError as exc:
+            bad.append(ref)
+            why = why or str(exc)
+    return _not_attachable(bad, why) if bad else None
 
 
 #: The most addresses of one list that a send card names one by one. A longer
@@ -6206,6 +6319,14 @@ async def send_email(
         return refusal
     if warning:
         reply_notices.insert(0, warning)
+    # Task 2491: each workspace file resolves BEFORE either card, through the
+    # resolver of the send. A file that the send would refuse shows no card,
+    # so it costs the member no approval. A Metorite file resolves before
+    # each card too: below for this card, and in ``POST /email/new-card``.
+    refs = _attachment_refs([a for a in (attachments or []) if not _is_metorite_ref(a)])
+    unattachable = await _unattachable_files(refs) if refs else None
+    if unattachable:
+        return unattachable
     if not reply_to_email_id and _edit_card_open():
         # §18.10 (owner, 2026-11-03): a new mail shows the ONE email card that
         # the member edits. The gateway records it, and its act sends only the
@@ -6228,7 +6349,6 @@ async def send_email(
     if reply_to_email_id:
         payload["reply_to_message_id"] = reply_to_email_id
     metorite = [str(a) for a in (attachments or []) if _is_metorite_ref(a)]
-    refs = _attachment_refs([a for a in (attachments or []) if not _is_metorite_ref(a)])
     if refs:
         payload["artifacts"] = refs
     shared: list[dict[str, Any]] = []
@@ -6305,6 +6425,37 @@ _NEW_MAIL_REVISED = (
     "call send_email again with the new text, so a new card shows. If they ask "
     "to add a person, find the address with find_contact first. If they ask "
     "about something else, answer that first.")
+#: §18.11 step 5: the line after the member's own version of the card. The
+#: version itself is the gateway's neutral data block (``compose_card_draft``).
+_START_FROM_THE_MEMBER = (
+    "Start from the member's own version above, not from your first text. "
+    "Keep each part of it that their words below do not ask to change.")
+#: The longest data block of the member's version that the tool passes on
+#: (``chat_recovery.CARD_DRAFT_MAX``).
+_MEMBER_VERSION_MAX = 24_000
+#: §18.11 fix round 5: the words the model reads in front of the answer of a
+#: card that came back. The revise did not happen (a 503 twice), so the
+#: gateway spent nothing, and the tool asked the SAME card again, with the
+#: member's edits still on it. The member then answered that card.
+_REVISE_UNREAD = (
+    "The member wrote in the chat while this card was open, but the gateway "
+    "could not read the card. So the member's card edits did not reach you, "
+    "and the card stayed open with those edits. The member then answered the "
+    "card, and the answer follows. Do not change or send this email again for "
+    "that chat message.")
+#: The most times that one card comes back in one call (fix round 5).
+_MAX_COMEBACKS = 3
+#: The answer when the card came back that many times and the revise still
+#: did not run. No card is drawn now. The member's edits went with the card,
+#: so the model tells the member to check the ticks of the next card (fix
+#: round 6).
+_REVISE_GAVE_UP = (
+    "The member wrote in the chat while this card was open, but the gateway "
+    "could not read the card again and again, so the card is closed. Nothing "
+    "was sent. Do not call send_email now. Tell the member that the email was "
+    "not sent, and that their edits on the card were lost. Ask them to try "
+    "again in a moment, and to check the people that are ticked on the next "
+    "card before they press Send.")
 #: The answer when the member pressed Discard, or the card closed with no answer.
 _NEW_MAIL_DISCARDED = "Send cancelled — the email was not sent."
 #: The notice of a held card with a new address (§21): it starts unticked.
@@ -6324,6 +6475,108 @@ def _edit_card_open() -> bool:
     except ImportError:
         return False
     return edit_card_channel_open()
+
+
+def _run_thread() -> str:
+    """The chat thread of this run, or "" (§18.11).
+
+    It is the thread that the run streams to, and the thread that a chat
+    message of the member steers. It comes from the run, never from the
+    model. The gateway keeps it on the card's record, so only this thread
+    can send a snapshot of the card or take its link."""
+    try:
+        from orchestrator.executor import resolve_relay_thread_id
+    except ImportError:
+        return ""
+    try:
+        return str(resolve_relay_thread_id() or "").strip()[:200]
+    except Exception:
+        return ""
+
+
+async def _revised_text(lead: str, card_id: str, thread: str) -> str | None:
+    """The REVISED answer of a new-mail card that a chat message closed (§18.11).
+
+    It spends the old card (``POST /email/new-card/revise``), so a late answer
+    to it sends nothing. When the member had edited the card, the gateway
+    answers their version as a neutral data block, and the answer adds it, so
+    the model starts from it.
+
+    None when the revise did not happen (fix round 5): a 503 after the one
+    more try of :func:`_revise_card`. The gateway then spent nothing, so the
+    caller asks the SAME card again (:func:`_ask_until_revised`). Any other
+    failure gives *lead* alone: nothing was sent, and the model asks again.
+    A 409 gives *lead* too (fix round 6). The record is gone, so a card that
+    came back could not send, and the unticks already wait in the hash."""
+    if not card_id or not thread:
+        return lead
+    try:
+        res = await _revise_card(card_id, thread)
+    except GatewayError as exc:  # the card is closed either way, and nothing went
+        return None if exc.status == 503 else lead
+    except Exception:  # the card is closed either way, and nothing went
+        return lead
+    block = str(res.get("snapshot") or "") if isinstance(res, dict) else ""
+    if not block.strip():
+        return lead
+    return f"{lead}\n\n{block[:_MEMBER_VERSION_MAX]}\n{_START_FROM_THE_MEMBER}"
+
+
+async def _ask_until_revised(
+    form: dict[str, Any], card_id: str, thread: str, lead: str,
+) -> tuple[Any, str | None, bool]:
+    """``(answer, revised, came_back)`` of a new-mail card (§18.11).
+
+    It shows the card and waits. A chat message that closes it runs the
+    revise. When the revise ran, ``revised`` is the REVISED text for the
+    model. When it did not run (fix round 5), the gateway spent nothing, so
+    this shows the SAME card again, with ``reopened`` on its form. The chat
+    then puts it back in place, with the member's edits, and a next message
+    is a steer that carries them. ``came_back`` says that it did so once.
+
+    It shows the card again at most :data:`_MAX_COMEBACKS` times, so no fault
+    can spin it. After that, the model reads :data:`_REVISE_GAVE_UP` and draws
+    no card."""
+    from acb_skills import ask_tools
+
+    comebacks = 0
+    answer = await _ask_new_mail_card(form, card_id)
+    while answer is ask_tools.REVISED:
+        revised = await _revised_text(lead, card_id, thread)
+        if revised is not None:
+            return None, revised, comebacks > 0
+        if comebacks >= _MAX_COMEBACKS:
+            return None, _REVISE_GAVE_UP, True
+        comebacks += 1
+        answer = await _ask_new_mail_card({**form, "reopened": True}, card_id)
+    return answer, None, comebacks > 0
+
+
+def _noted(out: Any, came_back: bool) -> Any:
+    """*out* with :data:`_REVISE_UNREAD` in front, when the card came back."""
+    if not came_back:
+        return out
+    if isinstance(out, dict):
+        return {**out, "chat_note": _REVISE_UNREAD}
+    return f"{_REVISE_UNREAD}\n\n{out}"
+
+
+async def _revise_card(card_id: str, thread: str) -> Any:
+    """``POST /email/new-card/revise``, and ONE more try after a 503 (§18.11).
+
+    The route answers 503 for a fault in any step up to the spend, and it
+    spends nothing then (fix round 5). Each of those steps is safe to run
+    twice, so the second try keeps the member's unticks through a short
+    fault. A try after a spend finds no record and answers 404, so the card
+    is never spent twice."""
+    body = {"card_id": card_id, "card_thread_id": thread}
+    try:
+        return await _post("/email/new-card/revise", body) or {}
+    except GatewayError as exc:
+        if exc.status != 503:
+            raise
+    await asyncio.sleep(_GET_RETRY_DELAY_S)
+    return await _post("/email/new-card/revise", body) or {}
 
 
 def _new_mail_title(form: dict[str, Any]) -> str:
@@ -6349,7 +6602,8 @@ def _new_mail_form(prep: dict[str, Any], notices: list[str]) -> dict[str, Any]:
     """The form of the card, from the answer of ``POST /email/new-card``.
 
     The people, the subject, the text and the files are the gateway's, as
-    it recorded them. Each person starts ticked. *notices* are the lines of
+    it recorded them. Each person starts ticked, but a person that the
+    member unticked on the draft before (§18.11 rule 7). *notices* are the lines of
     the tool: the usual mailbox, each always-copy colleague and a look-alike
     warning."""
     people: dict[str, list[str]] = {"to": [str(a) for a in prep.get("to") or []],
@@ -6362,6 +6616,18 @@ def _new_mail_form(prep: dict[str, Any], notices: list[str]) -> dict[str, Any]:
         "recipients": {"reply": people, "reply_all": people},
         "files": [str(f) for f in prep.get("files") or []], "notices": [], "note": "",
     }
+    # §18.11 step 6: the gateway linked this card to the card that a chat
+    # message revised. The tool copies the two fields, and sets neither.
+    if prep.get("revises"):
+        form["revises"], form["draft"] = prep["revises"], prep.get("draft")
+    # §18.11 rule 7: the gateway starts each person that the member unticked
+    # on that card unticked, and names them. The tool copies the start and the
+    # names, and sets neither. ``clean_reply_form`` checks that each name is a
+    # person of the card who starts unticked.
+    if isinstance(prep.get("ticked"), dict) and prep.get("unticked"):
+        start = {k: [str(a) for a in prep["ticked"].get(k) or []] for k in people}
+        form["ticked"] = {"reply": start, "reply_all": start}
+        form["unticked"] = [str(a) for a in prep["unticked"]]
     for line in notices:
         if str(line or "").strip():
             _form_notice(form, " ".join(str(line).split()))
@@ -6456,10 +6722,13 @@ async def _new_mail_card(
        record. The tool names no person and no text of its own there."""
     metorite = [str(a) for a in (attachments or []) if _is_metorite_ref(a)]
     refs = _attachment_refs([a for a in (attachments or []) if not _is_metorite_ref(a)])
+    # §18.11: the run's own chat thread, so the gateway can link a redraft.
+    thread = _run_thread()
     try:
         prep = await _post("/email/new-card", {
             "account_id": account_id, "to": to, "cc": cc, "bcc": bcc,
             "subject": subject, "body": body, "artifacts": refs, "metorite_files": metorite,
+            **({"card_thread_id": thread} if thread else {}),
         }) or {}
     except GatewayError as exc:
         if exc.status in (404, 409, 422):
@@ -6469,11 +6738,18 @@ async def _new_mail_card(
     if not card_id:
         return "Not sent. The card of this email could not be recorded. Try again."
     form = _new_mail_form(prep, notices)
-    answer = await _ask_new_mail_card(form, card_id)
-    from acb_skills import ask_tools
+    # §18.11 step 4: a chat message spends the old card, and the model starts
+    # from the member's version. A revise that did not run shows the card again.
+    answer, revised, came_back = await _ask_until_revised(
+        form, card_id, thread, _NEW_MAIL_REVISED)
+    if revised is not None:
+        return revised
+    return _noted(await _new_mail_answered(answer, sender, usual), came_back)
 
-    if answer is ask_tools.REVISED:
-        return _NEW_MAIL_REVISED
+
+async def _new_mail_answered(answer: Any, sender: str, usual: str) -> str:
+    """The end of a new-mail card that the member answered: the act of the
+    answer, or the words of a card that sends nothing (§18.10)."""
     if isinstance(answer, str):
         return answer
     # H-393: the member can edit the text on the card, so it is checked again.
@@ -6543,10 +6819,16 @@ async def _held_new_mail(
         account_id, ask = await _new_mail_mailbox(to[0])
         if ask:
             return ask
+    wanted = [str(a) for a in (attachments or []) if str(a).strip()]
+    # Task 2491: a file that the held card cannot resolve shows no card, and
+    # the answer names it. The held card resolves every file before its card.
+    unparsed = _held_unparsed_files(wanted)
+    if unparsed:
+        return unparsed
     res = await _held_card({
         "kind": "new", "account_id": account_id, "to": to, "cc": list(cc or []),
         "bcc": list(bcc or []), "subject": subject or "", "note": body,
-        "files": [str(a) for a in (attachments or []) if str(a).strip()],
+        "files": wanted,
     }, "Not sent", "Send cancelled — the email was not sent.", form=True)
     if isinstance(res, str):
         return res
@@ -6958,14 +7240,19 @@ async def _held_card(
         return _NO_CARD_CHANNEL
     if not ask_tools.reply_card_channel_open():
         return _NO_CARD_CHANNEL
+    # §18.11: only a card to edit names the run's chat thread, so a rows card
+    # (a WhatsApp run) takes no snapshot and no revise.
+    edit = form and _edit_card_open()
+    thread = _run_thread() if edit else ""
     try:
-        prep = await _post("/email/held-card", body) or {}
+        prep = await _post("/email/held-card",
+                           {**body, "card_thread_id": thread} if thread else body) or {}
     except GatewayError as exc:
         if exc.status in (404, 409, 422):
             return _held_refusal(exc, lead)
         raise
-    if form and isinstance(prep.get("form"), dict) and _edit_card_open():
-        return await _held_form_card(prep, lead, cancelled)
+    if edit and isinstance(prep.get("form"), dict):
+        return await _held_form_card(prep, lead, cancelled, thread)
     answer = await ask_tools.request_confirmation(
         title=str(prep.get("title") or "Send this mail?"),
         detail=str(prep.get("detail") or ""),
@@ -6996,20 +7283,31 @@ async def _held_card(
 
 
 async def _held_form_card(
-    prep: dict[str, Any], lead: str, cancelled: str,
+    prep: dict[str, Any], lead: str, cancelled: str, thread: str = "",
 ) -> dict[str, Any] | str:
     """The held new mail as the one email card (§18.10), on the gateway's
     record. The gateway's form keeps each §21 rule: the classes, and a new
-    address that starts unticked. Its act checks the answered text again."""
-    from acb_skills import ask_tools
+    address that starts unticked. Its act checks the answered text again.
 
+    A chat message that closes it (§18.11) spends the record through the
+    same revise route as a plain card. The next held card works out its
+    classes and its ticks again, so the member's version never ticks a new
+    address. A revise that did not run shows the same card again."""
     form = dict(prep["form"])
     form["notices"] = list(form.get("notices") or [])
     if any(c == "new" for c in (form.get("classes") or {}).values()):
         _form_notice(form, _NEW_MAIL_NEW_UNTICKED)
-    answer = await _ask_new_mail_card(form, str(prep.get("card_id") or ""))
-    if answer is ask_tools.REVISED:
-        return _HELD_CARD_REVISED
+    card_id = str(prep.get("card_id") or "")
+    answer, revised, came_back = await _ask_until_revised(
+        form, card_id, thread, _HELD_CARD_REVISED)
+    if revised is not None:
+        return revised
+    return _noted(await _held_form_answered(answer, lead, cancelled), came_back)
+
+
+async def _held_form_answered(answer: Any, lead: str, cancelled: str) -> dict[str, Any] | str:
+    """The end of a held new-mail card that the member answered: the act of
+    the answer, or the words of a card that sends nothing (§18.10)."""
     if isinstance(answer, str):
         return cancelled if answer == _NEW_MAIL_DISCARDED else answer
     try:
@@ -8513,25 +8811,64 @@ async def set_sender_status(
 
 # ── Reply Zero ───────────────────────────────────────────────────────────────
 
-@_annotate_risk(open_world=False)
-async def mark_thread_done(
-    account_id: str, thread_id: str, done: bool = True
-) -> str:
-    """Mark a Reply-Zero thread done (handled) or reopen it (done=false).
-    It shows the user a card first."""
-    # Fix round 1 (P2-b): the card names the thread, so read it first. The
-    # list read changes no read state.
+async def _thread_of_email(email_id: str) -> tuple[str, str]:
+    """The thread id and the mailbox of one email, or two empty strings.
+
+    The email decides the thread and the mailbox, as in ``read_thread``
+    (EM-T8e-2). The gateway answers only an email that the member may read.
+    """
     try:
-        rows = (await _get("/email/messages", {
+        head = await _get(f"/email/messages/{email_id}") or {}
+    except Exception:
+        return "", ""
+    return (str(head.get("thread_id") or "").strip(),
+            str(head.get("account_id") or "").strip())
+
+
+async def _thread_rows(account_id: str, thread_id: str) -> list[dict[str, Any]]:
+    """One email of the thread in the mailbox, so the card can name it. The
+    list read changes no read state (fix round 1, P2-b)."""
+    try:
+        return (await _get("/email/messages", {
             "thread_id": thread_id, "account_id": account_id, "page_size": "1",
         })).get("emails", [])
-    except Exception:  # the card then names the id
-        rows = []
+    except Exception:
+        return []
+
+
+@_annotate_risk(open_world=False)
+async def mark_thread_done(
+    account_id: str, thread_id: str = "", done: bool = True, email_id: str = "",
+) -> str:
+    """Mark a Reply-Zero thread done (handled) or reopen it (done=false).
+    Give the email_id that find_priority, query_inbox, read_email or
+    read_thread showed: the email decides its thread and its mailbox. A
+    thread_id works too. It shows the user a card first."""
+    tid = (thread_id or "").strip()
+    acct = (account_id or "").strip()
+    eid = (email_id or "").strip()
+    if eid:
+        tid, box = await _thread_of_email(eid)
+        acct = box or acct
+    if not tid:
+        return ("Nothing changed. Give the email_id of an email in the thread, "
+                "as find_priority or query_inbox shows it.")
+    rows = await _thread_rows(acct, tid)
+    if not rows and not eid:
+        # Task 2873 (2026-11-11): every read tool shows EMAIL ids, so the chat
+        # passed one as the thread id, twice, and the member was sent to the
+        # Email app. A thread id that names no thread is tried once as an email.
+        as_thread, box = await _thread_of_email(tid)
+        if as_thread:
+            tid, acct = as_thread, box or acct
+            rows = await _thread_rows(acct, tid)
     if not rows:
         return (
-            f"Nothing changed. No email of {await _named(account_id)} is in the "
-            f"thread {thread_id}. Read the thread id again with find_priority."
+            f"Nothing changed. No email of {await _named(acct)} is in that "
+            f"thread. Call mark_thread_done again with the email_id that "
+            f"find_priority or query_inbox shows for the email."
         )
+    account_id, thread_id = acct, tid
     subject = _card_text(rows[0].get("subject") or "(no subject)", 120)
     box = await _named(account_id)
     refusal = await _card_refusal(
