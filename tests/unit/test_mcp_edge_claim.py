@@ -181,7 +181,8 @@ class TestTheClaimProtocolBlock:
     async def test_the_claim_result_carries_the_block_when_on(self, runs_on, monkeypatch):
         monkeypatch.setattr(get_settings(), "agent_protocol_orgs", "*")
         body = await self._claim_result()
-        assert body["protocol"] == {"version": 1, "lines": list(tools.PROTOCOL_LINES)}
+        # SW-43c raised the version to 2 with the line of the answer thought.
+        assert body["protocol"] == {"version": 2, "lines": list(tools.PROTOCOL_LINES)}
         assert body["task"]["id"] == TASK
 
     async def test_the_block_is_read_from_the_claim_result_alone(self, runs_on, monkeypatch):

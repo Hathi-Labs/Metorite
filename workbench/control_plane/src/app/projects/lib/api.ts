@@ -28,6 +28,7 @@ import {
   attentionPage,
   resumeBody,
 } from "./needsAttention";
+import { type AgentsOverview, parseOverview } from "./agentsAtWork";
 import type { Rule as RecurrenceRule } from "./recurrence";
 import { taskVersions } from "./taskUndo";
 
@@ -3411,6 +3412,26 @@ export const agentRunsApi = {
    */
   summary: (projectId: string) =>
     call<AgentSummary>(`${encodeURIComponent(projectId)}/agent-summary`),
+};
+
+/**
+ * WS-AGA AGA-8 — Agents at work. One read of every agent the member may see
+ * (`GET /projects/agents/overview`, AGA-7). `null` means the feature is dark
+ * for this member (404, 401 or 403), and the section then draws nothing.
+ */
+export const agentsOverviewApi = {
+  read: async (): Promise<AgentsOverview | null> => {
+    try {
+      const overview = parseOverview(await call<unknown>("agents/overview"));
+      if (!overview) {
+        throw new ProjectsApiError("The agents answer could not be read.", 200);
+      }
+      return overview;
+    } catch (err) {
+      if (err instanceof ProjectsApiError && [401, 403, 404].includes(err.status)) return null;
+      throw err;
+    }
+  },
 };
 
 /**
