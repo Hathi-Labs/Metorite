@@ -76,6 +76,7 @@ const ARCHIVE = row({
   question: {
     kind: "archive_request",
     body: "The agent asks to archive this task.",
+    expires_at: "2099-01-01T00:00:00+00:00",
     options: [
       { id: "approve", label: "Approve" },
       { id: "decline", label: "Decline" },
