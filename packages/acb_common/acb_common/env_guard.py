@@ -226,6 +226,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # agents. The text reaches every agent session of the org, so a tenant
     # must not open it for another org.
     "AGENT_GUIDANCE_ORGS",
+    # WS-MCP PB-2: PLAYBOOK_ORGS opens the orchestration playbook prompts,
+    # resources and the default guidance block. It is Metorite's own text and
+    # it reaches every agent session of the org, so only the operator writes it.
+    "PLAYBOOK_ORGS",
     # SW-68a: MY_WORK_PLAN_ORDER_ORGS turns on the plan order of `my_work`. It
     # changes which task an agent takes first, so only the operator writes it.
     "MY_WORK_PLAN_ORDER_ORGS",
