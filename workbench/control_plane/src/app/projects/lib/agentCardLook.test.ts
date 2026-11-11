@@ -56,6 +56,37 @@ describe("agentCardLook", () => {
   it("stopping changes nothing", () => {
     expect(agentCardLook("stopping").edge).toBeNull();
   });
+
+  // Task 1045a (`agent_coordination.md` §3.2): a still accent edge, because
+  // motion means working (EA-13g). The line says what the agent waits on.
+  it("waiting is a still edge with what the agent waits on and for how long", () => {
+    const now = Date.parse("2026-11-06T10:00:00Z");
+    expect(
+      agentCardLook("waiting", {
+        clientVia: via,
+        waiting: { on: "ci", until: "2026-11-06T10:25:00Z" },
+        nowMs: now,
+      }),
+    ).toEqual({ edge: "steady", line: "Waiting on CI · about 25 min" });
+    // Seconds round up, so the line never says "about 0 min".
+    expect(
+      agentCardLook("waiting", {
+        waiting: { on: "agent", until: "2026-11-06T10:00:20Z" },
+        nowMs: now,
+      }).line,
+    ).toBe("Waiting on another agent · about 1 min");
+    // The agent's own sub-agents are work, not a wait (owner, 2026-11-07).
+    // A row with the old value reads as a wait the client does not name.
+    expect(
+      agentCardLook("waiting", { waiting: { on: "subagents" as never } }).line,
+    ).toBe("Waiting");
+    // A row with no wait, or an `on` the client does not know, still reads.
+    expect(agentCardLook("waiting", { clientVia: via }).line).toBe("Waiting");
+    expect(
+      agentCardLook("waiting", { clientVia: via, waiting: { on: "lunch" as never } }).line,
+    ).toBe("Waiting");
+    expect(agentCardLook("waiting").edge).not.toBe("live");
+  });
 });
 
 describe("the stylesheet", () => {
@@ -72,6 +103,20 @@ describe("the stylesheet", () => {
     }
     expect(css).not.toContain('data-agent-edge="muted"');
     expect(css).not.toContain('data-agent-edge="dashed-accent"');
+  });
+
+  // Task 1045a. The waiting edge is the steady edge. It draws from the
+  // accent token only, and both looks define that token, so the edge shows
+  // in light and in dark. It has no animation, so it does not move.
+  it("draws the waiting edge from the accent token in light and in dark", () => {
+    expect(agentCardLook("waiting").edge).toBe("steady");
+    const steady = css.match(/\[data-agent-edge="steady"\]\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(steady).toMatch(/var\(--primary\)/);
+    expect(steady).not.toMatch(/#[0-9a-f]{3,8}\b|rgb\(|hsl\(|animation/i);
+    const block = (selector: string) =>
+      css.match(new RegExp(`(?:^|\\n)${selector}\\s*\\{([\\s\\S]*?)\\n\\}`))?.[1] ?? "";
+    expect(block(":root"), "dark").toMatch(/--primary:/);
+    expect(block("\\.light"), "light").toMatch(/--primary:/);
   });
 
   // A change of state must not move the card: each edge takes 2px on each side.
