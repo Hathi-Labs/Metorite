@@ -283,12 +283,16 @@ CALC_FIELDS: list[dict[str, Any]] = [
     {"key": "cost", "type": "number"},
     {"key": "z", "type": "number"},
     {"key": "label", "type": "text"},
+    {"key": "a5", "type": "number"},
 ]
 CALC_RULES: list[dict[str, Any]] = [
     {"name": "y_of", "kind": "formula", "target": "y", "rounding": "half_up",
      "expr": {"fn": "add", "args": [{"ref": "a"}, {"ref": "a"}]}},
     {"name": "z_of", "kind": "formula", "target": "z", "rounding": "half_up",
      "expr": {"fn": "mul", "args": [{"ref": "cost"}, {"ref": "y"}]}},
+    # Verifier F1: `a5` reads the blocked `a` alone, so it runs on each change.
+    {"name": "a5_of", "kind": "formula", "target": "a5", "rounding": "half_up",
+     "expr": {"fn": "add", "args": [{"ref": "a"}, {"num": "5"}]}},
 ]
 CALC_ACCESS: list[dict[str, Any]] = [
     {"role": "clerk", "read": "all", "write": "all", "hide": ["cost"]},
@@ -1500,3 +1504,27 @@ def test_r8_a_delete_that_moves_a_tainted_rule_is_refused_for_each_value(world) 
                                        {key: start.data.get(key)}))
         assert len(said) == 1, (obj.name, said)
         assert said.pop().startswith("AccessDenied: Your roles cannot delete")
+
+
+
+def test_r8_the_access_check_of_a_change_comes_before_each_formula(world) -> None:
+    """Rule 13, the order. `a` is blocked for a clerk, because `y = a + a` feeds
+    `z = cost * y` and `cost` is hidden. A change of `a` near 10^15 would also
+    make `a5 = a + 5` fail. Each probe, for each stored `cost`, gets the one
+    AccessDenied text.
+
+    Mutation: move `_check_write(held, mark.after, checked)` after
+    `clean = _formulas(held, checked, mark.after)` in `_apply_write`. The
+    probes from 999999999999995 up then get a formula error, and this test
+    turns red. A formula that reads a hidden input is frozen, so it never
+    raises on a change (rule 13). `a5` reads the blocked key alone."""
+    said = set()
+    for cost in (7, 10**15 - 1):
+        _set_data(world, world.calc1, cost=cost)
+        for i in range(12):
+            said.add(_outcome3(world, AS_CLERK, Write("update", world.calc.id, world.calc1,
+                                                      {"a": 999_999_999_999_999 - i})))
+    _set_data(world, world.calc1, cost=7)
+    assert len(said) == 1, said
+    assert said.pop() == ("AccessDenied: Your roles cannot set `a` of `calc`, because a "
+                          "rule over data that you cannot read uses it.")

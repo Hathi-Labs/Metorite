@@ -758,3 +758,19 @@ def test_the_largest_value_of_a_field_fits_its_bound(spec: dict[str, Any]) -> No
     value = [worst] * sf.MAX_MANY_ITEMS if field.many else worst
     sf.check_value(field, value)
     assert sf.entry_bytes(field.key, value) <= sf.max_entry_bytes(field)
+
+
+
+def test_the_access_check_comes_before_the_formulas_on_each_write() -> None:
+    """Rule 13, the order, as a source fence. On a create and on a change,
+    `_check_write` runs before the formulas, so no formula error comes first.
+    `test_r8_the_access_check_of_a_change_comes_before_each_formula` is the R8
+    fence of the same rule."""
+    source = (_ROOT / "apps" / "services" / "gateway" / "gateway" / "studio"
+              / "objects_store.py").read_text(encoding="utf-8")
+    body = source.split("async def _apply_write(", 1)[1].split("\ndef ", 1)[0]
+    create, change = body.split("mark = _live_mark(batch, step)", 1)
+    assert create.index("_check_write(held, None, checked") < create.index(
+        "clean = run_formulas(held.plan, held.name, checked)")
+    assert change.index("_check_write(held, mark.after, checked)") < change.index(
+        "clean = _formulas(held, checked, mark.after)")
