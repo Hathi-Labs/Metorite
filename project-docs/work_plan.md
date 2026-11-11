@@ -112,8 +112,9 @@ verification commands.)
   table names the rung of each slice. The board holds one demo task for each
   rung, with the tag `Demo`, and a `Rung N` tag on each slice. Rung 0 (a
   leak, data loss, a broken live feature, a dated owner gate) outranks the
-  ladder. **Fence.** Advisory until LAD-1 (task 2888) adds
-  `tests/unit/test_playbook_ladder.py`. The spec-auditor checks the rung column.
+  ladder. **Fence.** `tests/unit/test_playbook_ladder.py` (LAD-1, task 2888)
+  fences the playbook half. The spec half is advisory: the spec-auditor checks
+  the rung column.
 
 ---
 
@@ -6056,7 +6057,7 @@ The owner said in chat on 2026-11-11: prioritize in stages that give the most gr
 7. **The product default.** The playbook (LAD-1, task 2888), the Projects planning AI (LAD-2) and `get_plan` (LAD-3) teach and show the ladder. The text of the playbook stays neutral, as §4 of the playbook spec says. Epic: task 2887 (WS-LAD).
 8. **The program order.** AI Studio and the MCP climb first. Every other app project then gets its own ladder. The milestones M0 to M4 stay as the company's dates.
 
-Fence: advisory until LAD-1 adds `tests/unit/test_playbook_ladder.py` (R7). R10 in §1 carries the rule to specs.
+Fence: `tests/unit/test_playbook_ladder.py` (LAD-1, task 2888) fences the playbook half (R7). R10 in §1 carries the rule to specs, and that half is advisory.
 
 Re-check this number at merge. The first merge wins a D-number.
 
