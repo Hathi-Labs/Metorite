@@ -43,6 +43,7 @@ import { useToast } from "@/components/ui/Toast";
 import { invalidate, put } from "@/lib/dataCache";
 import { useCachedResource } from "@/lib/useCachedResource";
 
+import AgentAccessPanel from "./AgentAccessPanel";
 import WaitingRequests from "./WaitingRequests";
 import { AGENT_SETUP_TEXT } from "../lib/agentSetupText";
 
@@ -60,10 +61,8 @@ import {
   agentHost,
   dayText,
   deleteSwitchHint,
-  listMine,
+  listMyAgents,
   listOrg,
-  personalText,
-  pinsText,
   readAgentAccess,
   revoke,
   revokeCopy,
@@ -72,7 +71,9 @@ import {
   shownRows,
   type AgentConnection,
   type ClientState,
+  type MyAgents,
 } from "../lib/agents";
+import { grantChips } from "../lib/changeAccess";
 
 const STATE_TONE: Record<ClientState, BadgeTone> = {
   tested: "success",
@@ -321,19 +322,25 @@ function AgentRow({
   row,
   showMember,
   onRevoke,
+  onChanged,
 }: {
   row: AgentConnection;
   showMember: boolean;
   onRevoke: (row: AgentConnection) => void;
+  /** Set only where the member may change the grant (their own agents, flag on). */
+  onChanged?: (row: AgentConnection) => void;
 }) {
   const host = agentHost(row);
   const claim = agentClaim(row);
+  const chips = grantChips(row, scopeWords);
+  const [changing, setChanging] = useState(false);
   return (
     <li
       data-testid="agent-row"
       data-agent-id={row.id}
-      className="flex flex-col gap-3 rounded-lg border border-border bg-card p-3 sm:flex-row sm:items-start sm:justify-between"
+      className="flex flex-col gap-3 rounded-lg border border-border bg-card p-3"
     >
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
       <div className="flex min-w-0 flex-1 flex-col gap-2">
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
           <Icon name="Bot" size={16} className="shrink-0 text-muted-foreground" />
@@ -345,31 +352,62 @@ function AgentRow({
           ) : null}
         </div>
         {claim ? <p className="text-xs text-muted-foreground">{claim}</p> : null}
-        <div className="flex flex-wrap gap-1">
-          {scopeWords(row.scopes).map((words) => (
+        <div data-testid="agent-grant-chips" className="flex flex-wrap gap-1">
+          {chips.scopes.map((words) => (
             <Badge key={words} tone="neutral">
               {words}
             </Badge>
           ))}
+          <span data-testid="chip-projects">
+            <Badge tone="neutral">{chips.projects}</Badge>
+          </span>
+          {chips.personal ? (
+            <span data-testid="chip-personal">
+              <Badge tone="neutral">Personal</Badge>
+            </span>
+          ) : null}
         </div>
-        <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 sm:grid-cols-3 lg:grid-cols-5">
-          <Fact label="Projects" value={pinsText(row.pinned_projects)} />
-          <Fact label="Personal projects" value={personalText(row.include_personal)} />
+        <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 sm:grid-cols-3">
           <Fact label="Connected" value={dayText(row.created_at)} />
           <Fact label="Last token refresh" value={dayText(row.last_used_at)} />
           <Fact label="Expires" value={dayText(row.expires_at)} />
         </dl>
       </div>
-      <Button
-        variant="secondary"
-        size="sm"
-        icon="Unplug"
-        className="self-start"
-        onClick={() => onRevoke(row)}
-        aria-label={`Revoke ${host}${showMember ? ` of ${row.member_email}` : ""}`}
-      >
-        Revoke
-      </Button>
+      <div className="flex shrink-0 gap-2 self-start">
+        {onChanged ? (
+          <Button
+            variant="secondary"
+            size="sm"
+            icon="SlidersHorizontal"
+            selected={changing}
+            onClick={() => setChanging((open) => !open)}
+            aria-expanded={changing}
+            aria-label={`Change access for ${host}`}
+          >
+            Change access
+          </Button>
+        ) : null}
+        <Button
+          variant="secondary"
+          size="sm"
+          icon="Unplug"
+          onClick={() => onRevoke(row)}
+          aria-label={`Revoke ${host}${showMember ? ` of ${row.member_email}` : ""}`}
+        >
+          Revoke
+        </Button>
+      </div>
+      </div>
+      {changing && onChanged ? (
+        <AgentAccessPanel
+          row={row}
+          onCancel={() => setChanging(false)}
+          onSaved={(next) => {
+            setChanging(false);
+            onChanged(next);
+          }}
+        />
+      ) : null}
     </li>
   );
 }
@@ -384,6 +422,7 @@ function AgentList({
   showMember,
   empty,
   onRevoke,
+  onChanged,
 }: {
   title: string;
   testId: string;
@@ -394,6 +433,7 @@ function AgentList({
   showMember: boolean;
   empty: { message: string; hint: string };
   onRevoke: (row: AgentConnection) => void;
+  onChanged?: (row: AgentConnection) => void;
 }) {
   const headingId = `${testId}-title`;
   return (
@@ -412,7 +452,7 @@ function AgentList({
       ) : (
         <ul className="flex flex-col gap-2">
           {rows.map((row) => (
-            <AgentRow key={row.id} row={row} showMember={showMember} onRevoke={onRevoke} />
+            <AgentRow key={row.id} row={row} showMember={showMember} onRevoke={onRevoke} onChanged={onChanged} />
           ))}
         </ul>
       )}
@@ -424,7 +464,7 @@ function AgentList({
 
 export default function AgentsView({ canManageOrg }: { canManageOrg: boolean }) {
   const toast = useToast();
-  const mine = useCachedResource(MY_AGENTS_KEY, listMine);
+  const mine = useCachedResource(MY_AGENTS_KEY, listMyAgents);
   const org = useCachedResource(canManageOrg ? ORG_AGENTS_KEY : null, listOrg);
   // Ids revoked here. Their rows go at once, before the lists read again.
   const [gone, setGone] = useState<ReadonlySet<string>>(new Set());
@@ -432,6 +472,7 @@ export default function AgentsView({ canManageOrg }: { canManageOrg: boolean }) 
   const [busy, setBusy] = useState(false);
 
   const off = mine.data === null;
+  const changeAccess = mine.data?.changeAccess === true;
   const copy = asking ? revokeCopy(asking.row, asking.admin) : null;
 
   async function confirmRevoke(): Promise<void> {
@@ -461,8 +502,27 @@ export default function AgentsView({ canManageOrg }: { canManageOrg: boolean }) 
     }
   }
 
+  /** A saved change: show the stored row at once, then read both lists again. */
+  function changed(next: AgentConnection): void {
+    const current = mine.data;
+    if (current) {
+      const swapped: MyAgents = {
+        ...current,
+        connections: current.connections.map((r) => (r.id === next.id ? next : r)),
+      };
+      put(MY_AGENTS_KEY, swapped);
+    }
+    toast.show({
+      key: `agents:change:${next.id}`,
+      variant: "success",
+      title: "Access changed",
+      description: `${agentHost(next)} uses the new access on its next call.`,
+    });
+    invalidate(AGENTS_KEY_PREFIX);
+  }
+
   return (
-    <div data-testid="agents-view" className="flex flex-1 flex-col gap-6 overflow-y-auto p-4 sm:p-6">
+    <div data-testid="agents-view"className="flex flex-1 flex-col gap-6 overflow-y-auto p-4 sm:p-6">
       {off ? null : <ConnectCard />}
 
       {off ? null : <DeleteSwitchCard />}
@@ -470,7 +530,7 @@ export default function AgentsView({ canManageOrg }: { canManageOrg: boolean }) 
       <AgentList
         title="My connected agents"
         testId="agents-mine"
-        rows={shownRows(mine.data, gone)}
+        rows={shownRows(mine.data?.connections, gone)}
         loading={mine.loading}
         error={mine.error}
         off={off}
@@ -480,6 +540,7 @@ export default function AgentsView({ canManageOrg }: { canManageOrg: boolean }) 
           hint: "Use the steps above to connect one.",
         }}
         onRevoke={(row) => setAsking({ row, admin: false })}
+        onChanged={changeAccess ? changed : undefined}
       />
 
       {canManageOrg && !off ? (

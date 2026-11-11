@@ -986,6 +986,8 @@ DEBT: dict[str, str] = {
     "DELETE /api/integrations/github": "P-8",
     "DELETE /api/integrations/plugins/{}": "P-8",
     "GET /api/agent-access/connections": "P-8",
+    # EA-17c-2: Change access in the AI agents view. The chat tool is not built.
+    "PATCH /api/agent-access/connections/{}": "P-8",
     # MCP-P1b-1: the list "Waiting for you" and Approve or Decline on
     # AppRequestCard. In a chat, the card of STU-B2c-2c (task 1866) is the
     # chat surface of the decision: the member presses Approve or Decline on
@@ -1029,7 +1031,7 @@ DEBT_CEILING: dict[str, int] = {
     "shell": 15,
     "settings": 28,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write. SW-31b added the guidance read and save, paid by SW-31c (task 1531).
     "admin": 36,
-    "integrations": 21,  # MCP-P1b-1 added the app-request list and decision (task 1703).
+    "integrations": 22,  # MCP-P1b-1 added the app-request list and decision (task 1703). EA-17c-2 (task 1814) added the PATCH of Change access.
     "studio": 3,  # BETA-1: the delete of a package waits for the chat tool of A5c-2. G5 adds the version read. B2c-2b adds no debt: its writes are ALSO rows of the door route.
 }
 

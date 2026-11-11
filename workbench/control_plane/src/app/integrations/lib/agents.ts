@@ -113,7 +113,13 @@ export interface AgentConnection {
   client_origin: string;
   scopes: string[];
   pinned_projects: string[];
+  /** The left-out list of D-EA-12. Absent on a gateway from before EA-17a. */
+  left_out_projects?: string[];
   include_personal: boolean;
+  /** What the agent asked for at the connect. `null` before EA-17a (EA-17c-2). */
+  requested_scopes?: string[] | null;
+  /** The scopes that Change access may turn on (EA-17c-1, D-EA-13). */
+  ceiling_scopes?: string[];
   created_at: string;
   last_used_at: string | null;
   expires_at: string;
@@ -195,17 +201,38 @@ export class AgentsError extends Error {
   }
 }
 
-async function readList(res: Response): Promise<AgentConnection[] | null> {
+/** The member's list: the rows, and whether Change access is on (EA-17c-2). */
+export interface MyAgents {
+  connections: AgentConnection[];
+  changeAccess: boolean;
+}
+
+async function readBody(res: Response): Promise<MyAgents | null> {
   // 404: the agent flag is off for this deployment. Not an error to show.
   if (res.status === 404) return null;
   if (!res.ok) throw new AgentsError(`The list did not load (${res.status}).`, res.status);
-  const body = (await res.json().catch(() => ({}))) as { connections?: AgentConnection[] };
-  return Array.isArray(body.connections) ? body.connections : [];
+  const body = (await res.json().catch(() => ({}))) as {
+    connections?: AgentConnection[];
+    change_access?: unknown;
+  };
+  return {
+    connections: Array.isArray(body.connections) ? body.connections : [],
+    changeAccess: body.change_access === true,
+  };
+}
+
+async function readList(res: Response): Promise<AgentConnection[] | null> {
+  return (await readBody(res))?.connections ?? null;
+}
+
+/** The member's own agents and the Change access flag. `null` when agent connections are off. */
+export async function listMyAgents(): Promise<MyAgents | null> {
+  return readBody(await fetch("/api/agent-access/connections", { cache: "no-store" }));
 }
 
 /** The member's own agents. `null` when agent connections are off. */
 export async function listMine(): Promise<AgentConnection[] | null> {
-  return readList(await fetch("/api/agent-access/connections", { cache: "no-store" }));
+  return (await listMyAgents())?.connections ?? null;
 }
 
 /** Every agent connection of the org. Needs `integrations:manage`. */
