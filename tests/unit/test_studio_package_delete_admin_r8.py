@@ -37,21 +37,29 @@ is not a pass.
 6. An owner who is active again between two calls of a delete stops it: the
    next call is 403, and the rest of the records stay.
 
-**The mutations (R7).** Each ran alone against this file, and each named
-test went red:
+**The mutations (R7).** Each ran alone against this file on 2026-11-11, on
+a private database, and each named test went red:
 
-* M1. ``_OWNER_ACTIVE_SQL`` answers false for each owner. Red: case 3 (both
-  tests) and case 6.
-* M2. ``_OWNER_ACTIVE_SQL`` drops ``status = 'active'``. Red: case 2 (both
-  statuses).
-* M3. ``_delete_mode`` drops the ``has_permission`` check. Red: case 4.
-* M4. ``_ADMIN_GET_SQL`` drops the org filter, and the store reads with no
-  bind of the tenant. RLS still hides org A from org B, so case 5 stays
-  green: RLS is the backstop, and the hermetic fence
+* M1. ``_OWNER_ACTIVE_SQL`` answers false for each owner. Red (4):
+  ``test_r8_an_admin_gets_403_owner_active_for_an_active_owner`` (both
+  addresses), ``test_r8_an_admin_of_org_b_learns_nothing_of_a_package_of_org_a``
+  and ``test_r8_an_owner_who_is_active_again_between_two_calls_stops_the_delete``.
+* M2. ``_OWNER_ACTIVE_SQL`` drops ``status = 'active'``. Red (3):
+  ``test_r8_an_admin_deletes_the_package_of_an_owner_with_a_row_that_is_not_active``
+  (both statuses) and
+  ``test_r8_an_owner_who_is_active_again_between_two_calls_stops_the_delete``.
+* M3. ``_delete_mode`` drops the ``has_permission`` check. Red (1):
+  ``test_r8_a_plain_member_and_an_admin_of_org_b_get_404_and_change_nothing``.
+* M4. ``_ADMIN_GET_SQL`` drops the org filter. All 8 stay green: RLS hides
+  org A from org B, so RLS is the backstop. The hermetic fence
   ``test_the_admin_statements_bind_the_org_and_the_active_status`` holds the
-  filter.
-* M5. The store writes the owner as ``user_email`` of the audit rows. Red:
-  case 2 (both statuses).
+  filter, and it went red.
+* M5. The store writes the owner as ``user_email`` of the audit rows
+  (``_end_call`` and ``_finish_delete``). Red (4):
+  ``test_r8_an_admin_frees_the_object_room_of_a_package_whose_owner_has_no_row``,
+  ``test_r8_an_admin_deletes_the_package_of_an_owner_with_a_row_that_is_not_active``
+  (both statuses) and
+  ``test_r8_an_owner_who_is_active_again_between_two_calls_stops_the_delete``.
 """
 
 from __future__ import annotations

@@ -32,13 +32,24 @@ names the admin in each audit row. Group c2 holds the routes: the route sets
 read, an admin gets 403 ``owner_active`` for an active owner, and an admin
 of org B gets 404. The R8 half is ``test_studio_package_delete_admin_r8.py``.
 
-* M25. Read ``body.get("as_admin")`` in the route. Red here:
-  ``test_only_the_mode_helper_sets_the_admin_switch`` and
-  ``test_a_plain_member_gets_404_with_no_admin_read``.
-* M26. Skip the owner check of a later step. Red here:
+Each mutation below ran alone on 2026-11-11, and each named test went red.
+
+* M25. Take ``as_admin`` from the body (``body.get("as_admin")``) in place of
+  ``_delete_mode``. Red here: ``test_only_the_mode_helper_sets_the_admin_switch``,
+  ``test_a_plain_member_gets_404_with_no_admin_read`` and
+  ``test_a_stranger_with_a_bad_body_gets_404_and_not_422``.
+* M26. Check the owner on the first step only. Red here:
   ``test_an_owner_who_is_active_again_ends_a_later_step_with_the_partial_row``.
-* M27. Write the owner as the actor of an admin audit row. Red here:
-  ``test_the_last_admin_step_deletes_the_row_of_the_owner_and_names_the_admin``.
+* M27. Write the owner as the actor of an admin audit row, in ``_end_call``
+  and ``_finish_delete``. Red here:
+  ``test_the_last_admin_step_deletes_the_row_of_the_owner_and_names_the_admin``
+  and ``test_an_admin_partial_row_of_a_budget_end_names_the_admin``.
+* M28. Drop ``status = 'active'`` from ``_OWNER_ACTIVE_SQL``, or drop the org
+  filter of ``_ADMIN_GET_SQL``. Red here:
+  ``test_the_admin_statements_bind_the_org_and_the_active_status``.
+* M29. Drop the ``ADMIN_RIGHT`` check of ``_delete_mode``. Red here:
+  ``test_a_plain_member_gets_404_with_no_admin_read``, and
+  ``test_studio_route_gate.py::test_the_share_verb_is_read_by_the_install_only``.
 
 **The mutations (R7).** Each was run on 2026-11-05 against both halves, one
 at a time, and each turned the tests below red. The R8 half holds the ones

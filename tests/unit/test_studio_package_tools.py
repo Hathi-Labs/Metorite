@@ -1371,7 +1371,7 @@ async def test_a_stale_hash_from_the_page_facts_is_refused_and_writes_nothing(gw
 # Each DELETE call removes ``chunk`` records, and a call that leaves records
 # answers 202 with a new token, as the route does.
 #
-# The mutations (R7). Each ran alone, and each test named went red:
+# The mutations (R7). Each ran alone on 2026-11-11, and each test named went red:
 #
 # * D1, show the card only in a held chat (``if await _must_ask():`` around the
 #   card): ``always_shows_one_card_with_the_counts[False]``.
