@@ -110,9 +110,10 @@ store that must work before a tenant is known.
     row first, as rule 3 says. A resource scope must be in the ceiling, the
     scopes that every live token of the connection covers inside
     ``requested_scopes`` (:func:`ceiling_of`), because the edge intersects
-    the token scope with the connection scopes. The ceiling binds a turn-on only: a scope that the
-    row holds, or that a held scope covers, needs no check. A mark that the
-    member no longer sees stays, and a new one is refused. A grant that
+    the token scope with the connection scopes. The ceiling binds a turn-on
+    only: a scope that the row holds, or that a held scope covers, needs no
+    check. A mark that the member no longer sees stays, and a new one is
+    refused. A grant that
     equals the row writes nothing. ``offline_access`` and
     ``requested_scopes`` never change here.
 

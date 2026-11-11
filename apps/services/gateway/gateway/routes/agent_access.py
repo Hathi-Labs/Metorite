@@ -44,7 +44,10 @@ The public half (metadata, ``token``, ``revoke``) is the edge unit
    subset of what the client requested. ``include_personal`` is false in a
    body that leaves it out, so a broken client fails closed. The consent page
    ticks it by default, and sends it on each approve
-   (D-EA-4).
+   (D-EA-4). ⚠️ EA-17c-3: the connection stores the member's choice, and
+   the code carries every requested resource scope
+   (``agent_oauth.mint_scope``), so the connection scopes alone narrow the
+   token. ``offline_access`` stays the member's choice.
 7. ⚠️ **The client's metadata comes through ``gateway.outbound_guard``**, the
    one SSRF seam, with a size cap and a time cap of its own. Only this half
    fetches. The edge never imports the guard. The document must name its own
