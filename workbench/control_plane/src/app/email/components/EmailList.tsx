@@ -164,7 +164,7 @@ export function EmailList({
     selectedIds, toggleEmailSelected, setSelectedEmails, clearEmailSelection,
     bulkUpdateSelected, bulkDeleteSelected, captureEmailToTasks,
     runTestOnMessage, testRunningIds, snoozeEmail,
-    viewAll, accounts, searchQuery, searchScope, searchFilters,
+    viewAll, accounts, searchQuery, searchScope, searchFilters, searchBroadened,
   } = useEmailStore();
   // In All inboxes each row names its mailbox (EM-T8d, D-EM-22, §11.4).
   const mailboxOfRow = (accountId: string) =>
@@ -440,6 +440,16 @@ export function EmailList({
             <AppIcon name="X" size={11} /> Clear
           </Button>
         </div>
+      )}
+
+      {/* No mail held every word, so these hold at least one (server `broadened`). */}
+      {searchBroadened && emails.length > 0 && (
+        <p
+          data-testid="email-search-broadened"
+          className="px-3 py-1.5 border-b border-border flex-shrink-0 text-[11px] text-muted-foreground"
+        >
+          No email holds every word. These hold at least one.
+        </p>
       )}
 
       {/* Persistent select-all header — aligned with the per-row checkboxes. */}

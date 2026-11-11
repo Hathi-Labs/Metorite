@@ -297,7 +297,7 @@ async def _email(
         received_before=None, is_read=None,
         is_starred=None, has_attachments=None, sender_category=None,
         importance=None, hybrid=False, light=True, page=1, page_size=k,
-        with_total=False, user=user,
+        with_total=False, user=user, broaden=False,
     )
     lexical = [_email_hit(m) for m in (answer.get("emails") or [])[:k]]
     if not vectors:
