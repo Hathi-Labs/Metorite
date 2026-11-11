@@ -9390,7 +9390,7 @@ async def _set_run_plan(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     steps = args["steps"]
     for step in steps:
         _refuse_nul(step, ("content",))
-    status, body = await _write(
+    _status, body = await _write(
         ctx, "PUT", RUN_PLAN_ROUTE, TEXT_RUN_NOT_FOUND,
         path_params={"run_id": str(args["run_id"])}, json_body={"steps": steps},
         texts={409: TEXT_RUN_CONFLICT})

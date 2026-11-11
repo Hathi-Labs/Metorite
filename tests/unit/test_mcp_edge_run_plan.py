@@ -69,7 +69,7 @@ class TestTheTool:
         assert tools.SET_RUN_PLAN.method == "PUT"
         assert tools.SET_RUN_PLAN.runs is True
 
-    async def test_it_follows_the_runs_flag_and_the_writes_flag(self, edge, monkeypatch):  # noqa: F811
+    async def test_it_follows_the_runs_flag_and_the_writes_flag(self, edge, monkeypatch):
         """Mutation: build the tool with ``runs=False``, and it lists with the
         runs flag off."""
         from acb_common import get_settings
