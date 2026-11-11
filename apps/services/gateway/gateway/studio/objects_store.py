@@ -279,10 +279,12 @@ from acb_common.studio_access import (
     access_reads,
     blocked_keys,
     check_access_fit,
+    close_inputs,
     parse_access,
     rollup_hidden,
     scope_for,
     stored_access,
+    tainted_rules,
     with_formulas,
 )
 from acb_common.studio_fields import (
@@ -3043,6 +3045,10 @@ class _Held:
     #: C8a fix round 1 (P1-4). The keys that the viewer may not write, because
     #: a rule answers from data that the viewer cannot read.
     blocked: frozenset[str] = frozenset()
+    #: C8a fix round 3. The names of the rules that answer from data that the
+    #: viewer cannot read (``studio_access.tainted_rules``). Each key that one
+    #: reads is blocked, so on a change it never runs (:func:`_check_records`).
+    taint: frozenset[str] = frozenset()
 
     def view(self) -> _View:
         """The view of the viewer of the batch, as a read builds it."""
@@ -3053,6 +3059,25 @@ class _Held:
     def computed(self) -> frozenset[str]:
         """The keys that a formula or a roll-up fills. No caller writes them."""
         return frozenset(str(r.target) for r in self.rules if r.kind in (FORMULA, ROLLUP))
+
+    @property
+    def frozen(self) -> frozenset[str]:
+        """Fix round 3. The formulas that keep their stored value on a change:
+        a tainted formula, and a formula whose target is blocked. The viewer
+        cannot change any key that one reads, so a new run would give the
+        stored value, and it would read data that the viewer cannot read."""
+        return frozenset(r.name for r in self.rules if r.kind == FORMULA and (
+            r.name in self.taint or str(r.target) in self.blocked))
+
+    @property
+    def pinned(self) -> frozenset[str]:
+        """Fix round 3 (rule 4). The keys that a create sets also at their
+        default: the keys of a tainted ``unique``, and the groups of a tainted
+        ``group_sum_min`` with a floor above 0. Each one counts the new record
+        among records that the viewer cannot read."""
+        return frozenset(str(k) for r in self.rules if r.name in self.taint and (
+            r.kind == UNIQUE or (r.kind == GROUP_SUM_MIN and not floor_holds_at_zero(r)))
+            for k in r.keys)
 
 
 @dataclass
@@ -3203,25 +3228,35 @@ async def _lock_objects(db: Any, batch: _Batch) -> None:
         readers = [r for _, _, r in batch.rollups if r.source == str(row[0])]
         hidden = _View(scope, rules, tainted).maybe_hidden()
         blocked = blocked_keys(scope, rules, hidden, readers)
-        batch.objects[oid] = _Held(str(row[0]), fields, rules, plan, scope, tainted, blocked)
+        taint = tainted_rules(scope, rules, hidden)
+        batch.objects[oid] = _Held(str(row[0]), fields, rules, plan, scope, tainted, blocked,
+                                   taint)
     _block_children(batch)
 
 
 def _block_children(batch: _Batch) -> None:
-    """Fix round 2 (P1-D), the second pass of step 2. A roll-up whose target a
-    rule of the parent reads beside data that the viewer cannot read is in the
-    blocked keys of the parent. A child write moves that target, so the keys
-    that the roll-up reads in the child are blocked too: a refusal of the
-    parent rule would show the hidden data. Each parent has its first-pass
-    keys here, because a roll-up never reads a roll-up."""
-    first = {oid: held.blocked for oid, held in batch.objects.items()}
-    for parent, _, rule in batch.rollups:
-        if rule.target is None or rule.target not in first.get(parent, frozenset()):
-            continue
-        child = batch.names.get(str(rule.source))
-        held = batch.objects.get(child) if child is not None else None
-        if held is not None:
-            batch.objects[str(child)] = replace(held, blocked=held.blocked | set(rule.source_keys()))
+    """Fix rounds 2 and 3, the second pass of step 2. A roll-up whose target is
+    a blocked key of the parent moves with each child write, so the keys that
+    the roll-up reads in the child are blocked too: a refusal of the parent
+    rule would show the hidden data. The child then blocks each input of a
+    formula that fills one of them (``close_inputs``), so `amount = qty *
+    price` blocks `price`. The pass runs to a fixpoint, because a child can be
+    the parent of another roll-up. The sets only grow, so it ends."""
+    grown = True
+    while grown:
+        grown = False
+        for parent, _, rule in batch.rollups:
+            above = batch.objects.get(parent)
+            if above is None or rule.target is None or rule.target not in above.blocked:
+                continue
+            child = batch.names.get(str(rule.source))
+            held = batch.objects.get(child) if child is not None else None
+            if held is None:
+                continue
+            more = close_inputs(held.blocked | set(rule.source_keys()), held.rules)
+            if more != held.blocked:
+                batch.objects[str(child)] = replace(held, blocked=more)
+                grown = True
 
 
 async def _lock_records(db: Any, batch: _Batch) -> None:
@@ -3438,13 +3473,15 @@ async def _check_line_parents(db: Any, batch: _Batch, deadline: float) -> None:
                     raise _no_parent(link)
 
 
-def _refuse_hidden_write(held: _Held, data: Any) -> None:
+def _refuse_hidden_write(held: _Held, data: Any, *, create: bool = False) -> None:
     """C8a. A write that names a key hidden from the viewer is refused: the
-    viewer cannot read the value back, and a refusal of it would show it."""
+    viewer cannot read the value back, and a refusal of it would show it.
+    Fix round 3 (rule 5): a create sets no key that it sends with no value."""
     if held.scope is None or held.scope.open or not isinstance(data, Mapping):
         return
     hidden = held.scope.maybe_hidden()
-    for key in sorted(str(k) for k in data if k in hidden):
+    for key in sorted(str(k) for k, v in data.items()
+                      if k in hidden and not (create and v is None)):
         raise FieldError(key, f"Field `{key}` is hidden from you, so a write cannot set it.")
 
 
@@ -3461,12 +3498,18 @@ def _sent(held: _Held, data: Any) -> set[str]:
     """Fix round 2 (P2). The keys that a create sets, from what the caller
     sent, before the machine fills its initial state. A state equal to the
     initial state is the default of the store, and a create holds no move, so
-    no guard runs on it."""
+    no guard runs on it.
+
+    Fix round 3 (rule 4). A pinned state (:attr:`_Held.pinned`) gets no such
+    pass: a tainted key rule counts the new record in its initial state, so
+    the state counts as set, also when the caller leaves it out."""
     if not isinstance(data, Mapping):
         return set()
+    pinned = held.pinned
     initial = {str(r.field): r.initial for r in held.rules if r.kind == STATE_MACHINE}
-    return {str(k) for k, v in data.items()
-            if v is not None and not (k in initial and v == initial[k])} - held.computed
+    sent = {str(k) for k, v in data.items()
+            if v is not None and not (k in initial and k not in pinned and v == initial[k])}
+    return (sent | (set(initial) & pinned)) - held.computed
 
 
 def _check_row(held: _Held, before: Mapping[str, Any] | None) -> None:
@@ -3504,17 +3547,33 @@ def _check_write(held: _Held, before: Mapping[str, Any] | None,
     if not held.blocked or (before is None and after is None):
         return
     if after is None:
-        # Fix round 2 (P1-C): a delete takes each key of the record out of a
-        # sum, a key rule or a roll-up, so it drives the same rules as a write.
-        assert before is not None
-        if _changed(held, before, {}) & held.blocked:
-            raise AccessDenied(f"Your roles cannot delete this record of `{held.name}`, because "
-                               "a rule over data that you cannot read uses it.")
-        return
+        # Fix rounds 2 and 3 (rule 3): a delete takes each key of the record out
+        # of a sum, a key rule or a roll-up. So a delete is refused when the
+        # object has a blocked key, whatever the record holds: a test of the
+        # stored keys would follow a value that the viewer cannot read.
+        raise AccessDenied(f"Your roles cannot delete this record of `{held.name}`, because "
+                           "a rule over data that you cannot read uses it.")
     changed = _changed(held, before, after) if sent is None else sent
     for key in sorted(changed & held.blocked):
         raise AccessDenied(f"Your roles cannot set `{key}` of `{held.name}`, because a rule "
                            "over data that you cannot read uses it.")
+
+
+def _formulas(held: _Held, checked: Mapping[str, Any],
+              before: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Fix round 3. The formulas of one write: ``run_formulas``, with the
+    stored value of each frozen target (:attr:`_Held.frozen`) on a change. A
+    frozen formula never runs on a change, so its result and its errors
+    cannot follow data that the viewer cannot read. A create runs each
+    formula, because it holds only what the viewer sent."""
+    frozen = held.frozen
+    if held.plan is None or before is None or not frozen:
+        return run_formulas(held.plan, held.name, checked)
+    plan = replace(held.plan, ordered=tuple(
+        (rule, field) for rule, field in held.plan.ordered if rule.name not in frozen))
+    kept = {field.key: before[field.key] for rule, field in held.plan.ordered
+            if rule.name in frozen and field.key in before}
+    return run_formulas(plan, held.name, {**checked, **kept})
 
 
 async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
@@ -3524,15 +3583,17 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
     plain = held.fields if held.plan is None else list(held.plan.plain)
     linked = _link(batch, step)
     if step.op == "create":
-        _refuse_hidden_write(held, step.data)
+        _refuse_hidden_write(held, step.data, create=True)
         if linked is not None and isinstance(step.data, Mapping):
             # C13: the line takes its parent from the batch, never from its data.
             step = replace(step, data={**step.data, linked[0].via: {"id": linked[1]}})
         data = with_initial(held.rules, step.data)
         refuse_computed_keys(held.plan, held.name, data)
         data = with_rollup_zero(held.plan, data)
-        clean = run_formulas(held.plan, held.name, validate_record(plain, data))
-        _check_write(held, None, clean, _sent(held, step.data))
+        checked = validate_record(plain, data)
+        # Fix round 3 (rule 2): the access rules come before each formula.
+        _check_write(held, None, checked, _sent(held, step.data))
+        clean = run_formulas(held.plan, held.name, checked)
         moves = _line_moves(batch, oid, None, clean)
         row = (await db.execute(text(_CREATE_RECORD_SQL), {
             "oid": oid, "data": record_json(clean), "actor": batch.who,
@@ -3561,8 +3622,12 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
     _refuse_hidden_write(held, changes)
     refuse_computed_keys(held.plan, held.name, changes)
     merged = without_targets(held.plan, {**(mark.after or {}), **changes})
-    clean = run_formulas(held.plan, held.name, validate_record(plain, merged))
-    _check_write(held, mark.after, clean)
+    checked = validate_record(plain, merged)
+    # Fix round 3 (rule 2): the access rules come before each formula, so no
+    # formula error or rule refusal comes first. The formulas then keep the
+    # stored value of each frozen target (`_formulas`).
+    _check_write(held, mark.after, checked)
+    clean = _formulas(held, checked, mark.after)
     if _line_moves(batch, oid, mark.after, clean):
         batch.moved[(oid, str(step.record_id))] = batch.index
     row = (await db.execute(text(_UPDATE_RECORD_SQL), {
@@ -3594,6 +3659,12 @@ def _check_records(batch: _Batch) -> dict[tuple[str, Rule, tuple[Any, ...]], int
         for rule in held.rules:
             check_kind_known(rule, held.name)
             check_rule_is_hot(rule, held.name, held.fields)
+            if rule.name in held.taint and mark.before is not None:
+                # Fix round 3. The viewer cannot change a key that a tainted
+                # rule reads, so the rule answers as it did before the batch.
+                # It never runs on a change, and its answer cannot follow
+                # data that the viewer cannot read.
+                continue
             if rule.kind == RANGE and mark.after is not None:
                 check_range(rule, held.name, mark.after)
             if rule.kind == STATE_MACHINE:
@@ -3606,7 +3677,15 @@ def _check_records(batch: _Batch) -> dict[tuple[str, Rule, tuple[Any, ...]], int
                 if floor_holds_at_zero(rule):
                     nets[at] = add_change(rule, key, mark.before, mark.after,
                                           nets.get(at, Decimal(0)))
-    return {at: index for at, index in keys.items() if at not in nets or nets[at] < 0}
+    checked = {at: index for at, index in keys.items() if at not in nets or nets[at] < 0}
+    for (oid, rule, _key), index in checked.items():
+        held = batch.objects[oid]
+        if rule.name in held.taint:
+            # Fix round 3. A create that a tainted key rule would count among
+            # records that the viewer cannot read is refused before the read.
+            batch.index = index
+            raise AccessDenied(_BLOCKED.format(name=held.name))
+    return checked
 
 
 async def _check_key(timed: _Timed, oid: str, pid: str, held: _Held, rule: Rule,
@@ -3811,8 +3890,8 @@ async def _derive_parent(timed: _Timed, batch: _Batch, key: tuple[str, str],
     held, mark = batch.objects[oid], batch.marks[key]
     plan = held.plan
     assert plan is not None  # the parent holds a roll-up, so it has a plan
-    clean = run_formulas(plan, held.name, validate_record(
-        list(plan.plain), without_targets(plan, data)))
+    clean = _formulas(held, validate_record(list(plan.plain), without_targets(plan, data)),
+                      mark.after)
     old = mark.after or {}
     moved = sorted(k for k in batch.readers.get(held.name, set()) if clean.get(k) != old.get(k))
     if moved:
@@ -3897,6 +3976,10 @@ async def _run_steps(db: Any, batch: _Batch) -> list[Record | bool]:
 #: C8a. The text of a refusal that would name a hidden key, or show a record
 #: that the viewer cannot read. It names the rule and the object only.
 _MASKED = "Rule `{rule}` of object `{object}` refuses this write. Ask the owner of the app why."
+#: Fix round 3. The one text of a write that a tainted rule would judge. It
+#: names the object only, so it is the same for each value.
+_BLOCKED = ("Your roles cannot make this write to `{name}`, because a rule over data that "
+            "you cannot read uses it.")
 
 
 def _masked(batch: _Batch, exc: Exception) -> Exception:
@@ -3909,6 +3992,11 @@ def _masked(batch: _Batch, exc: Exception) -> Exception:
     held = next((h for h in batch.objects.values() if h.name == name), None)
     if not isinstance(exc, RuleViolation) or held is None or held.scope is None:
         return exc
+    if exc.rule in held.taint:
+        # Fix round 3, belt and braces. A tainted rule never runs on a change,
+        # and a create that it would judge is refused. A refusal of one still
+        # gets the one text of a blocked write.
+        return AccessDenied(_BLOCKED.format(name=held.name))
     if held.scope.open and not held.tainted:
         return exc
     rule = next((r for r in held.rules if r.name == exc.rule), None)

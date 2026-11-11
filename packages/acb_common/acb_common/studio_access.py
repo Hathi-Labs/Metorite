@@ -73,9 +73,9 @@ from acb_common.studio_rules import (
     FORMULA,
     GROUP_SUM_MIN,
     HIERARCHY,
-    RANGE,
     ROLLUP,
     STATE_MACHINE,
+    UNIQUE,
     Rule,
     rule_reads,
 )
@@ -383,6 +383,11 @@ class Scope:
         viewer more of the record, or that makes more grants read it). The
         owner and a viewer of an open object get None.
 
+        Fix round 3. A create holds no data that the viewer cannot read, so
+        it is ``widens`` only when a grant that reads the new record hides a
+        key that the record shows, because another grant that reads it shows
+        that key (:meth:`create_widens`).
+
         Fix round 2 (P1-A). The hide check runs for EVERY viewer that a rule
         binds, a grant that writes all too: the keys hidden on the record
         before a change must stay hidden after it. A create starts from
@@ -402,8 +407,10 @@ class Scope:
             for key in sorted(self.guarded - set(self.write_keys)):
                 if old.get(key) != after.get(key):
                     return ("guarded", key)
-        start = self.maybe_hidden() if before is None else self.hidden_for(before)
-        if start - self.hidden_for(after):
+        if before is None:
+            if self.create_widens(after):
+                return ("widens", None)
+        elif self.hidden_for(before) - self.hidden_for(after):
             return ("widens", None)
         if self.write_all:
             return None
@@ -423,6 +430,18 @@ class Scope:
         for grant in matching[1:]:
             hidden &= frozenset(grant.hide)
         return hidden
+
+    def create_widens(self, data: Mapping[str, Any]) -> bool:
+        """Fix round 3 (rule 5). True when a grant that reads the new record
+        *data* hides a key that another grant that reads it shows. The new
+        record would then show the viewer more than that grant does. A key
+        that a grant which reads all shows (one out of :meth:`maybe_hidden`)
+        counts for nothing, because the viewer sees it on each record. A
+        record that one grant reads passes."""
+        if self.open:
+            return False
+        shown, most = self.hidden_for(data), self.maybe_hidden()
+        return any((frozenset(g.hide) & most) - shown for g in self._matching(data))
 
     def maybe_hidden(self) -> frozenset[str]:
         """The keys that some record may hide from the viewer: each key that a
@@ -506,45 +525,66 @@ def _inputs(key: str, rules: Sequence[Rule]) -> set[str]:
     return out
 
 
+def close_inputs(keys: Collection[str], rules: Sequence[Rule]) -> frozenset[str]:
+    """Fix round 3. *keys*, and each key that a formula of one of them reads,
+    through each formula. A change of such an input changes the key."""
+    out: set[str] = set()
+    for key in keys:
+        out |= _inputs(str(key), rules)
+    return frozenset(out)
+
+
+#: The rules that read records past the row rule of the viewer.
+_ACROSS = (UNIQUE, GROUP_SUM_MIN, HIERARCHY)
+
+
+def tainted_rules(scope: Scope, rules: Sequence[Rule], hidden: frozenset[str]) -> frozenset[str]:
+    """Fix round 3. The names of the rules that answer from data that *scope*
+    cannot read. *hidden* is what the viewer may not see of the object
+    (``_View.maybe_hidden``). A rule is tainted when it reads a key of
+    *hidden*. A ``unique``, a ``group_sum_min`` and a ``hierarchy`` are tainted
+    too for a viewer that cannot read every record, because each reads other
+    records. The owner and a viewer of an open object with nothing hidden get
+    none."""
+    if scope.open and not hidden:
+        return frozenset()
+    return frozenset(rule.name for rule in rules
+                     if rule_reads(rule) & hidden or (rule.kind in _ACROSS and scope.row_bound))
+
+
 def blocked_keys(scope: Scope, rules: Sequence[Rule], hidden: frozenset[str],
                  readers: Sequence[Rule] = ()) -> frozenset[str]:
-    """Fix round 1 (P1-4). The keys that *scope* may not write, because a rule
-    would answer from data that the viewer cannot read. A refusal that follows
-    the value of a write would show that data by bisection. The rule is
-    conservative, and the owner may relax it later.
+    """The keys that *scope* may not write, because a rule would answer from
+    data that the viewer cannot read (fix rounds 1 to 3).
 
-    *rules* are the rules of the object, *hidden* is what the viewer may not
-    see of it (``_View.maybe_hidden``), and *readers* are the roll-ups of
-    other objects that read this object.
+    The invariant (fix round 3): for a viewer who is not the owner, the
+    outcome of a write must not follow any value that the viewer cannot
+    read, directly or through a chain. *rules* are the rules of the object,
+    *hidden* is what the viewer may not see of it (``_View.maybe_hidden``),
+    and *readers* are the roll-ups of other objects that read this object.
 
-    * A formula that reads a hidden key blocks each key that it reads.
-    * A ``range`` on a hidden key blocks each input of that key.
-    * A ``group_sum_min`` blocks its keys and its field, for a viewer that
-      cannot read every record or that cannot see a key that it reads.
-    * A state machine whose guard reads a hidden key blocks its field.
-    * A ``hierarchy`` (C18) blocks its parent field for a viewer that cannot
-      read every record, because its walk reads the parents of the record.
+    * Each tainted rule (:func:`tainted_rules`) blocks each key that it reads.
+      A state machine blocks only its field, because a guard runs on a move.
     * A roll-up that reads this object blocks each key that it reads here,
       unless the viewer reads every record and sees each of those keys.
+    * The closure: a blocked key that a formula fills blocks each input of
+      the formula, through each formula (:func:`close_inputs`). The store adds
+      the second closure, from a blocked roll-up target of a parent to the
+      keys that the roll-up reads in the child (``_block_children``).
 
-    ``unique`` blocks nothing. Its refusal stays one bit: some record holds
-    the key. The owner and a viewer of an open object with no hidden key
-    get nothing."""
+    A ``unique`` over records that the viewer cannot read is tainted (fix
+    round 3), so the one bit of fix round 1 is gone. The owner and a viewer
+    of an open object with no hidden key get nothing."""
+    taint = tainted_rules(scope, rules, hidden)
     out: set[str] = set()
     for rule in rules:
-        reads = rule_reads(rule)
-        if rule.kind == FORMULA and reads & hidden:
-            out |= reads
-        elif rule.kind == RANGE and rule.field in hidden:
-            out |= _inputs(str(rule.field), rules)
-        elif rule.kind == GROUP_SUM_MIN and (scope.row_bound or reads & hidden):
-            out |= reads
-        elif rule.kind == STATE_MACHINE and (reads - {rule.field}) & hidden:
+        if rule.name not in taint:
+            continue
+        if rule.kind == STATE_MACHINE:
             out.add(str(rule.field))
-        elif rule.kind == HIERARCHY and (scope.row_bound or reads & hidden):
-            # C18: the walk of a new parent reads records past the row rule.
-            out |= reads
+        else:
+            out |= rule_reads(rule)
     for rule in readers:
         if rule.kind == ROLLUP and not scope.shows_all(rule.source_keys()):
             out |= set(rule.source_keys())
-    return frozenset(out)
+    return close_inputs(out, rules)

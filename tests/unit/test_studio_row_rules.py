@@ -303,7 +303,8 @@ def test_an_update_cannot_make_more_grants_read_the_record() -> None:
 
 def test_blocked_keys_follow_each_rule_that_reads_hidden_data() -> None:
     """P1-4. A key that a rule reads beside hidden data, or over rows that the
-    viewer cannot read, cannot be written. `unique` blocks nothing."""
+    viewer cannot read, cannot be written. Fix round 3: a `unique` over rows
+    that the viewer cannot read blocks its keys too."""
     rules = parse_rules([
         {"name": "pay", "kind": "formula", "target": "total", "rounding": "half_up",
          "expr": {"fn": "add", "args": [{"ref": "amount"}, {"ref": "bonus"}]}},
@@ -314,7 +315,7 @@ def test_blocked_keys_follow_each_rule_that_reads_hidden_data() -> None:
     employee = _scope_plus("employee", specs=(WRITER,))
     hidden = frozenset({"bonus", "total"})
     blocked = sa.blocked_keys(employee, rules, hidden)
-    assert {"amount", "qty", "sku"} <= blocked and "month" not in blocked
+    assert {"amount", "qty", "sku", "month"} <= blocked
     hr = _scope_plus("hr", specs=(HR,))
     assert sa.blocked_keys(hr, rules, frozenset()) == frozenset()
     roll = parse_rules([{"name": "heads", "kind": "rollup", "target": "n", "source": "slip",
@@ -412,6 +413,65 @@ def test_a_source_view_hides_each_formula_of_a_hidden_key() -> None:
                          "source": "paycheck", "via": "crew", "agg": "sum", "field": "net"}])
     assert sa.rollup_hidden(roll, {"paycheck": with_rules}) == {"net_total"}
     assert sa.blocked_keys(with_rules, (), frozenset(), roll) == {"crew", "net"}
+
+
+# ── Fix round 3: the invariant ───────────────────────────────────────────────
+
+
+def test_the_closure_blocks_each_input_through_each_formula() -> None:
+    """Rule 1. `y = a + a` and `z = cost * y`, and `cost` is hidden: `z_of` is
+    tainted, `y` is blocked, so `a` is blocked too. `label` stays free."""
+    rules = parse_rules([
+        {"name": "y_of", "kind": "formula", "target": "y", "rounding": "half_up",
+         "expr": {"fn": "add", "args": [{"ref": "a"}, {"ref": "a"}]}},
+        {"name": "z_of", "kind": "formula", "target": "z", "rounding": "half_up",
+         "expr": {"fn": "mul", "args": [{"ref": "cost"}, {"ref": "y"}]}},
+    ])
+    clerk = {"role": "clerk", "read": "all", "write": "all", "hide": ["cost"]}
+    scope = _scope_roles({"clerk"}, (clerk,), rules)
+    hidden = sa.with_formulas(scope.maybe_hidden(), rules)
+    assert sa.tainted_rules(scope, rules, hidden) == {"z_of"}
+    assert sa.blocked_keys(scope, rules, hidden) == {"a", "cost", "y"}
+    assert sa.close_inputs({"z"}, rules) == {"z", "cost", "y", "a"}
+
+
+def test_a_key_rule_over_rows_that_the_viewer_cannot_read_is_tainted() -> None:
+    """Rule 1. A `unique`, a `group_sum_min` and a `hierarchy` read other rows.
+    For a viewer that a row rule binds, each is tainted. A viewer that reads
+    every row and sees each key gets none."""
+    rules = parse_rules([
+        {"name": "qty_of", "kind": "formula", "target": "qty", "rounding": "half_up",
+         "expr": {"fn": "sub", "args": [{"ref": "qty_in"}, {"ref": "qty_out"}]}},
+        {"name": "stock", "kind": "group_sum_min", "field": "qty", "group_by": ["sku"], "min": 0},
+        {"name": "once", "kind": "unique", "fields": ["code"]},
+    ])
+    employee = _scope_plus("employee", specs=(WRITER,))
+    assert sa.tainted_rules(employee, rules, frozenset()) == {"stock", "once"}
+    assert sa.blocked_keys(employee, rules, frozenset()) == {
+        "qty", "qty_in", "qty_out", "sku", "code"}
+    hr = _scope_plus("hr", specs=(HR,))
+    assert sa.tainted_rules(hr, rules, frozenset()) == frozenset()
+
+
+def test_a_create_widens_only_into_a_grant_that_hides_less() -> None:
+    """Rule 5. A create holds no data that the viewer cannot read. It widens
+    when one grant that reads the new record hides a key that another grant
+    that reads it shows."""
+    both = _scope_roles({"clerk", "self"}, (CLERK, SELF))
+    assert both.create_widens({"employee": ME})
+    assert both.write_problem(None, {"employee": ME}) == ("widens", None)
+    assert not both.create_widens({"employee": "ceo@x.test"})
+    manager = {"role": "manager", "read": {"where": "manager = $me"}, "hide": ["notes"]}
+    employee = {"role": "employee", "read": {"where": "employee = $me"}, "write": "all",
+                "hide": ["bank"]}
+    two = _scope_roles({"manager", "employee"}, (manager, employee))
+    assert two.write_problem(None, {"employee": ME}) is None
+    assert two.create_widens({"employee": ME, "manager": ME})
+    # A grant that reads all and hides nothing shows each key on each record, so
+    # the hide of the employee grant counts for nothing.
+    seen_all = _scope_plus("employee", "auditor",
+                           specs=(WRITER, {"role": "auditor", "read": "all"}))
+    assert not seen_all.create_widens({"employee": ME})
 
 
 # ── The field type and the query grammar ────────────────────────────────────

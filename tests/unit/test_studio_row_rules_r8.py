@@ -67,7 +67,6 @@ from acb_common.db import tenant_session
 from acb_common.studio_access import AccessError, Viewer
 from acb_common.studio_fields import FieldError
 from acb_common.studio_query import QueryError
-from acb_common.studio_rules import ConstraintViolation
 from gateway.studio import objects_store as store
 from gateway.studio.objects_store import (
     AccessDenied,
@@ -108,6 +107,14 @@ X1 = f"x1.{TAG}@stuc8a.test"
 AS_CLERK_EMP = Viewer(X1, frozenset({"clerk", "employee"}))
 AS_CLERK = Viewer(f"clerk.{TAG}@stuc8a.test", frozenset({"clerk"}))
 AS_MOVER = Viewer(M1, frozenset({"mover"}))
+# Fix round 3: the viewers of the third package (org B).
+S1, S2 = (f"s{i}.{TAG}@stuc8a.test" for i in (1, 2))
+W1, W2 = (f"w{i}.{TAG}@stuc8a.test" for i in (1, 2))
+H1, H2 = (f"h{i}.{TAG}@stuc8a.test" for i in (1, 2))
+AS_MOVER2 = Viewer(M1, frozenset({"mover2"}))
+AS_SPENDER = Viewer(S1, frozenset({"spender"}))
+AS_WORKER = Viewer(W1, frozenset({"worker"}))
+AS_HOLDER = Viewer(H1, frozenset({"holder"}))
 
 TEAM_FIELDS: list[dict[str, Any]] = [
     {"key": "name", "type": "text"},
@@ -140,7 +147,6 @@ SLIP_RULES: list[dict[str, Any]] = [
     {"name": "pay", "kind": "formula", "target": "total", "rounding": "half_up",
      "expr": {"fn": "add", "args": [{"ref": "amount"}, {"ref": "bonus"}]}},
     {"name": "total_ok", "kind": "range", "field": "total", "max": 1_000_000},
-    {"name": "slip_once", "kind": "unique", "fields": ["month"]},
 ]
 TEAM_RULES: list[dict[str, Any]] = [
     {"name": "heads", "kind": "rollup", "target": "headcount", "source": "slip",
@@ -253,6 +259,166 @@ async def _define(db: Any, pkg: str, name: str, fields: Any, rules: Any = None,
     return made
 
 
+# ── The fix round 3 world: a third package, of org B ─────────────────────────
+#: Each object hides its data through a chain: a formula of a formula, a formula
+#: of a roll-up, or a key rule over rows that the viewer cannot read.
+MOVE2_FIELDS: list[dict[str, Any]] = [
+    {"key": "by", "type": "person", "hot": True},
+    {"key": "sku", "type": "text", "hot": True},
+    {"key": "qty_in", "type": "number"},
+    {"key": "qty_out", "type": "number"},
+    {"key": "qty", "type": "number", "hot": True},
+]
+MOVE2_RULES: list[dict[str, Any]] = [
+    {"name": "qty_of", "kind": "formula", "target": "qty", "rounding": "half_up",
+     "expr": {"fn": "sub", "args": [{"ref": "qty_in"}, {"ref": "qty_out"}]}},
+    {"name": "stock2", "kind": "group_sum_min", "field": "qty", "group_by": ["sku"], "min": 0},
+]
+MOVE2_ACCESS: list[dict[str, Any]] = [
+    {"role": "mover2", "read": {"where": "by = $me"}, "write": "all"},
+]
+CALC_FIELDS: list[dict[str, Any]] = [
+    {"key": "a", "type": "number"},
+    {"key": "y", "type": "number"},
+    {"key": "cost", "type": "number"},
+    {"key": "z", "type": "number"},
+    {"key": "label", "type": "text"},
+]
+CALC_RULES: list[dict[str, Any]] = [
+    {"name": "y_of", "kind": "formula", "target": "y", "rounding": "half_up",
+     "expr": {"fn": "add", "args": [{"ref": "a"}, {"ref": "a"}]}},
+    {"name": "z_of", "kind": "formula", "target": "z", "rounding": "half_up",
+     "expr": {"fn": "mul", "args": [{"ref": "cost"}, {"ref": "y"}]}},
+]
+CALC_ACCESS: list[dict[str, Any]] = [
+    {"role": "clerk", "read": "all", "write": "all", "hide": ["cost"]},
+]
+ORDER2_FIELDS: list[dict[str, Any]] = [
+    {"key": "name", "type": "text"},
+    {"key": "cost", "type": "number"},
+    {"key": "total", "type": "number"},
+    {"key": "margin", "type": "number"},
+]
+ORDER2_RULES: list[dict[str, Any]] = [
+    {"name": "line2_sum", "kind": "rollup", "target": "total", "source": "line2",
+     "via": "order2", "agg": "sum", "field": "amount"},
+    {"name": "margin2_of", "kind": "formula", "target": "margin", "rounding": "half_up",
+     "expr": {"fn": "sub", "args": [{"ref": "total"}, {"ref": "cost"}]}},
+    {"name": "margin2_ok", "kind": "range", "field": "margin", "max": 100},
+]
+ORDER2_ACCESS: list[dict[str, Any]] = [
+    {"role": "clerk", "read": "all", "write": "all", "hide": ["cost"]},
+]
+LINE2_FIELDS: list[dict[str, Any]] = [
+    {"key": "order2", "type": "relation", "to": "order2", "hot": True},
+    {"key": "qty", "type": "number"},
+    {"key": "price", "type": "number"},
+    {"key": "amount", "type": "number", "hot": True},
+    {"key": "memo", "type": "text"},
+]
+LINE2_RULES: list[dict[str, Any]] = [
+    {"name": "amount_of", "kind": "formula", "target": "amount", "rounding": "half_up",
+     "expr": {"fn": "mul", "args": [{"ref": "qty"}, {"ref": "price"}]}},
+]
+BUDGET_FIELDS: list[dict[str, Any]] = [
+    {"key": "owner", "type": "person", "hot": True},
+    {"key": "dept", "type": "text", "hot": True},
+    {"key": "cap", "type": "number"},
+    {"key": "spent", "type": "number"},
+    {"key": "left", "type": "number", "hot": True},
+]
+BUDGET_RULES: list[dict[str, Any]] = [
+    {"name": "spent_sum", "kind": "rollup", "target": "spent", "source": "expense",
+     "via": "budget", "agg": "sum", "field": "amount"},
+    {"name": "left_of", "kind": "formula", "target": "left", "rounding": "half_up",
+     "expr": {"fn": "sub", "args": [{"ref": "cap"}, {"ref": "spent"}]}},
+    {"name": "dept_floor", "kind": "group_sum_min", "field": "left", "group_by": ["dept"],
+     "min": 0},
+]
+BUDGET_ACCESS: list[dict[str, Any]] = [
+    {"role": "spender", "read": {"where": "owner = $me"}, "write": "all"},
+]
+EXPENSE_FIELDS: list[dict[str, Any]] = [
+    {"key": "budget", "type": "relation", "to": "budget", "hot": True},
+    {"key": "amount", "type": "number", "hot": True},
+    {"key": "memo", "type": "text"},
+]
+TICKET_FIELDS: list[dict[str, Any]] = [
+    {"key": "by", "type": "person", "hot": True},
+    {"key": "status", "type": "select", "options": ["open", "done"], "hot": True},
+    {"key": "points", "type": "number", "hot": True},
+]
+TICKET_RULES: list[dict[str, Any]] = [
+    {"name": "flow2", "kind": "state_machine", "field": "status", "initial": "open",
+     "moves": [{"from": "open", "to": "done"}]},
+    {"name": "quota", "kind": "group_sum_min", "field": "points", "group_by": ["status"],
+     "min": 1},
+]
+TICKET_ACCESS: list[dict[str, Any]] = [
+    {"role": "worker", "read": {"where": "by = $me"}, "write": "all"},
+]
+REVIEW_FIELDS: list[dict[str, Any]] = [
+    {"key": "employee", "type": "person", "hot": True},
+    {"key": "manager", "type": "person", "hot": True},
+    {"key": "bank", "type": "text"},
+    {"key": "notes", "type": "text"},
+]
+REVIEW_ACCESS: list[dict[str, Any]] = [
+    {"role": "manager", "read": {"where": "manager = $me"}, "hide": ["notes"]},
+    {"role": "employee", "read": {"where": "employee = $me"}, "write": "all", "hide": ["bank"]},
+]
+BADGE_FIELDS: list[dict[str, Any]] = [
+    {"key": "by", "type": "person", "hot": True},
+    {"key": "code", "type": "text", "hot": True},
+]
+BADGE_RULES: list[dict[str, Any]] = [
+    {"name": "code_once", "kind": "unique", "fields": ["code"]},
+]
+BADGE_ACCESS: list[dict[str, Any]] = [
+    {"role": "holder", "read": {"where": "by = $me"}, "write": "all"},
+]
+
+
+async def _build_round_three(db: Any, pkg: str) -> dict[str, Any]:
+    """The objects and the records of fix round 3, in the package *pkg* of org B."""
+    move2 = await _define(db, pkg, "move2", MOVE2_FIELDS, MOVE2_RULES, MOVE2_ACCESS)
+    calc = await _define(db, pkg, "calc", CALC_FIELDS, CALC_RULES, CALC_ACCESS)
+    order2 = await _define(db, pkg, "order2", ORDER2_FIELDS)
+    line2 = await _define(db, pkg, "line2", LINE2_FIELDS, LINE2_RULES)
+    assert await store.set_constraints(db, order2.id, ORDER2_RULES, package_id=pkg)
+    assert await store.set_access(db, order2.id, ORDER2_ACCESS, package_id=pkg)
+    budget = await _define(db, pkg, "budget", BUDGET_FIELDS)
+    expense = await _define(db, pkg, "expense", EXPENSE_FIELDS)
+    assert await store.set_constraints(db, budget.id, BUDGET_RULES, package_id=pkg)
+    assert await store.set_access(db, budget.id, BUDGET_ACCESS, package_id=pkg)
+    ticket = await _define(db, pkg, "ticket", TICKET_FIELDS, TICKET_RULES, TICKET_ACCESS)
+    review = await _define(db, pkg, "review", REVIEW_FIELDS, access=REVIEW_ACCESS)
+    badge = await _define(db, pkg, "badge", BADGE_FIELDS, BADGE_RULES, BADGE_ACCESS)
+
+    async def put(*writes: Write) -> list[Any]:
+        return await store.apply_writes(db, OWNER, package_id=pkg, viewer=AS_OWNER,
+                                        writes=list(writes))
+
+    mine2, other2 = await put(
+        Write("create", move2.id, data={"by": M1, "sku": "A", "qty_in": 1000, "qty_out": 0}),
+        Write("create", move2.id, data={"by": M2, "sku": "A", "qty_in": 3, "qty_out": 0}))
+    calc1 = (await put(Write("create", calc.id, data={"a": 1, "cost": 7, "label": "c"})))[0]
+    o2 = (await put(Write("create", order2.id, data={"name": "O2", "cost": 50})))[0]
+    l2 = (await put(Write("create", line2.id, data={
+        "order2": {"id": o2.id}, "qty": 1, "price": 10, "memo": "m"})))[0]
+    b1, b2 = await put(
+        Write("create", budget.id, data={"owner": S1, "dept": "D", "cap": 100}),
+        Write("create", budget.id, data={"owner": S2, "dept": "D", "cap": 0}))
+    e1 = (await put(Write("create", expense.id, data={
+        "budget": {"id": b1.id}, "amount": 1, "memo": "e"})))[0]
+    tk2 = (await put(Write("create", ticket.id, data={"by": W2, "points": 5})))[0]
+    await put(Write("create", badge.id, data={"by": H2, "code": "B-1"}))
+    return {"pkg3": pkg, "move2": move2, "calc": calc, "order2": order2, "line2": line2,
+            "budget": budget, "expense": expense, "ticket": ticket, "review": review,
+            "badge": badge, "mine2": mine2.id, "other2": other2.id, "calc1": calc1.id,
+            "o2": o2.id, "l2": l2.id, "b1": b1.id, "b2": b2.id, "e1": e1.id, "tk2": tk2.id}
+
+
 async def _build_round_two(db: Any, pkg: str) -> dict[str, Any]:
     """The objects and the records of fix round 2, in the package *pkg*."""
     staff = await _define(db, pkg, "staff", STAFF_FIELDS, access=STAFF_ACCESS)
@@ -318,7 +484,7 @@ def world(promoted):  # noqa: F811
     p = promoted
     ids: dict[str, str] = {}
     with p.admin_engine.begin() as c:
-        for key, org in (("a", p.org_a), ("b", p.org_b), ("a2", p.org_a)):
+        for key, org in (("a", p.org_a), ("b", p.org_b), ("a2", p.org_a), ("b3", p.org_b)):
             ids[key] = str(c.execute(text(_PACKAGE_INSERT), {
                 "s": f"stuc8a-{TAG}-{key}", "oe": OWNER, "org": org,
                 "manifest": _PACKAGE_MANIFEST}).scalar_one())
@@ -346,10 +512,12 @@ def world(promoted):  # noqa: F811
             made = await store.apply_writes(db, OWNER, package_id=pkg, viewer=AS_OWNER,
                                             writes=[Write("create", slip.id, data=r) for r in rows])
             two = await _build_round_two(db, ids["a2"])
+        async with tenant_session(p.org_b) as db:
+            three = await _build_round_three(db, ids["b3"])
         return SimpleNamespace(p=p, a=p.org_a, b=p.org_b, pkg=pkg, pkg_b=ids["b"], slip=slip,
                                team=team, claim=claim, t1=t1.id, t2=t2.id,
                                s1=made[0].id, s2=made[1].id, s3=made[2].id, s4=made[3].id,
-                               **two)
+                               **two, **three)
 
     w = _run(p, build)
     yield w
@@ -556,15 +724,6 @@ def test_r8_a_bisection_of_a_hidden_key_gets_one_refusal_for_every_amount(world)
     assert "`total`" in full.message
 
 
-def test_r8_a_key_rule_over_rows_that_the_viewer_cannot_read_names_no_field(world) -> None:
-    """A `unique` refusal still tells a viewer that some record holds the key: the
-    one bit that the spec lists. Its text names the rule and the object only."""
-    taken = Write("create", world.slip.id, data={"employee": E1, "month": "2026-02"})
-    masked = _refused(world, AS_E1, taken)
-    assert isinstance(masked, ConstraintViolation) and masked.rule == "slip_once"
-    assert "`month`" not in masked.message
-    full = _refused(world, AS_OWNER, taken)
-    assert "`month`" in full.message
 
 
 # ── Fix round 1 ─────────────────────────────────────────────────────────────
@@ -888,3 +1047,244 @@ def test_r8_an_employee_creates_a_record_when_a_guard_reads_a_hidden_key(world) 
                                           {"status": "approved"}))
     assert isinstance(moved, AccessDenied)
     _write2(world, AS_OWNER, Write("delete", world.request.id, made.id))
+
+
+# ── Fix round 3: the invariant ──────────────────────────────────────────────
+#
+# For a viewer that a row rule or a hide binds, the outcome of a write (a
+# success or a refusal) must not follow any value that the viewer cannot read,
+# directly or through a chain.
+
+
+def _write3(world: Any, viewer: Viewer, *writes: Write) -> list[Any]:
+    async def go() -> list[Any]:
+        async with tenant_session(world.b) as db:
+            return await store.apply_writes(db, viewer.email, package_id=world.pkg3,
+                                            viewer=viewer, writes=list(writes))
+    return _run(world.p, go)
+
+
+def _refused3(world: Any, viewer: Viewer, *writes: Write) -> Exception:
+    with pytest.raises(BatchError) as caught:
+        _write3(world, viewer, *writes)
+    return caught.value.cause
+
+
+class _Undo(Exception):
+    """Roll the SAVEPOINT of a probe back after a write that passed."""
+
+
+def _outcome(org: str, pkg: str, world: Any, viewer: Viewer, write: Write) -> str:
+    """The outcome of one write, rolled back: `ok`, or the class and the text."""
+    async def go() -> str:
+        async with tenant_session(org) as db:
+            try:
+                async with db.begin_nested():
+                    await store.apply_writes(db, viewer.email, package_id=pkg, viewer=viewer,
+                                             writes=[write])
+                    raise _Undo
+            except _Undo:
+                return "ok"
+            except BatchError as exc:
+                return f"{type(exc.cause).__name__}: {exc.cause}"
+    return _run(world.p, go)
+
+
+def _set_data(world: Any, rid: str, **values: Any) -> None:
+    """The admin writes a stored value that the viewer cannot read."""
+    with world.p.admin_engine.begin() as c:
+        c.execute(text("UPDATE studio_records SET data = data || CAST(:d AS jsonb) "
+                       "WHERE id = CAST(:r AS uuid)"), {"d": json.dumps(values), "r": rid})
+
+
+def test_r8_sixty_probes_near_the_cap_of_a_formula_get_one_refusal(world) -> None:
+    """The probe of 999999999999990 against 999999999999989: `total = amount +
+    bonus`, and `bonus` (10) is hidden. A formula error must never come before
+    the refusal of the access, so each amount gets one text."""
+    said = set()
+    for i in range(60):
+        cause = _refused(world, AS_E1, Write("update", world.slip.id, world.s1,
+                                             {"amount": 999_999_999_999_999 - i}))
+        said.add(f"{type(cause).__name__}: {cause}")
+    assert len(said) == 1, said
+    assert said.pop().startswith("AccessDenied")
+
+
+def test_r8_a_formula_input_of_a_key_rule_over_other_rows_is_blocked(world) -> None:
+    """`qty = qty_in - qty_out`, and a stock of `qty` by sku reads rows that M1
+    cannot read. A write of `qty_out` moves `qty`, so it is blocked."""
+    cause = _refused3(world, AS_MOVER2, Write("update", world.move2.id, world.mine2,
+                                              {"qty_out": 5}))
+    assert isinstance(cause, AccessDenied), cause
+
+
+def test_r8_a_chain_of_formulas_blocks_its_first_input(world) -> None:
+    """`y = a + a` and `z = cost * y`, and `cost` is hidden from a clerk. A write
+    of `a` moves `z`, so it is blocked. The label stays free."""
+    cause = _refused3(world, AS_CLERK, Write("update", world.calc.id, world.calc1, {"a": 5}))
+    assert isinstance(cause, AccessDenied), cause
+    _write3(world, AS_CLERK, Write("update", world.calc.id, world.calc1, {"label": "d"}))
+
+
+def test_r8_a_formula_input_of_a_child_of_a_hidden_parent_rule_is_blocked(world) -> None:
+    """`amount = qty * price` on a line, `total` adds the amounts, and `margin =
+    total - cost` is at most 100 with `cost` hidden. A write of `price` moves the
+    margin, so it is blocked. The memo stays free."""
+    cause = _refused3(world, AS_CLERK, Write("update", world.line2.id, world.l2, {"price": 99}))
+    assert isinstance(cause, AccessDenied), cause
+    _write3(world, AS_CLERK, Write("update", world.line2.id, world.l2, {"memo": "n"}))
+
+
+def test_r8_a_child_of_a_key_rule_over_a_formula_of_a_roll_up_is_blocked(world) -> None:
+    """`left = cap - spent`, `spent` adds the expenses, and a floor of `left` by
+    dept reads the budget of S2. An expense of S1 moves the floor, so it is
+    blocked, for each amount."""
+    said = set()
+    for amount in (1, 99, 100, 101, 10_000):
+        cause = _refused3(world, AS_SPENDER, Write("create", world.expense.id, data={
+            "budget": {"id": world.b1}, "amount": amount}))
+        said.add(f"{type(cause).__name__}: {cause}")
+    assert len(said) == 1 and said.pop().startswith("AccessDenied")
+
+
+def test_r8_a_delete_gets_one_outcome_whatever_the_stored_hidden_values(world) -> None:
+    """A delete of a slip with `bonus` and of a slip with no `bonus` gets the
+    same outcome. The refusal never reads a stored hidden value."""
+    x, y = _write(world, AS_OWNER,
+                  Write("create", world.slip.id, data={"employee": E1, "amount": 1, "bonus": 5}),
+                  Write("create", world.slip.id, data={"employee": E1}))
+    outcomes = {_outcome(world.a, world.pkg, world, AS_E1, Write("delete", world.slip.id, rid))
+                for rid in (x.id, y.id)}
+    assert len(outcomes) == 1, outcomes
+    _write(world, AS_OWNER, Write("delete", world.slip.id, x.id),
+           Write("delete", world.slip.id, y.id))
+
+
+def test_r8_an_initial_state_that_is_a_key_of_a_floor_above_zero_is_blocked(world) -> None:
+    """The floor of `points` by `status` is 1, so each create in a status reads the
+    tickets of other workers. The initial state is no exemption then."""
+    cause = _refused3(world, AS_WORKER, Write("create", world.ticket.id, data={"by": W1}))
+    assert isinstance(cause, AccessDenied), cause
+
+
+def test_r8_a_manager_and_employee_creates_the_own_review(world) -> None:
+    """A legit create of two roles: the manager grant hides `notes`, the employee
+    grant hides `bank`, and the new record is read by the employee grant alone."""
+    made = _write3(world, AS_M1_BOTH, Write("create", world.review.id, data={"employee": M1}))[0]
+    assert "bank" not in made.data
+    _write3(world, AS_OWNER, Write("delete", world.review.id, made.id))
+
+
+def test_r8_a_unique_key_over_rows_that_the_viewer_cannot_read_is_blocked(world) -> None:
+    """A `unique` of `code` counts the badges of other holders. A taken code and a
+    free code get the same refusal, so the refusal shows no other badge."""
+    said = set()
+    for code in ("B-1", "B-2"):
+        cause = _refused3(world, AS_HOLDER, Write("create", world.badge.id, data={
+            "by": H1, "code": code}))
+        said.add(f"{type(cause).__name__}: {cause}")
+    assert len(said) == 1 and said.pop().startswith("AccessDenied")
+
+
+_HIDDEN_VALUES = (0, 10, 10**15 - 1, -5)
+
+
+def _probes(fields: Any, skip: set[str], person: str) -> list[tuple[str, Any]]:
+    out: list[tuple[str, Any]] = []
+    for f in fields:
+        key, kind = f["key"], f["type"]
+        if key in skip or f.get("lines"):
+            continue
+        if kind == "number":
+            out += [(key, 1), (key, 999_999_999_999_990)]
+        elif kind == "text":
+            out.append((key, "probe"))
+        elif kind == "person":
+            out += [(key, person), (key, f"other.{TAG}@stuc8a.test")]
+    return out
+
+
+def test_r8_no_write_of_a_bound_viewer_follows_a_hidden_value(world) -> None:
+    """The invariant, as a property. For each world of a bound viewer, each key
+    that the viewer may name and each probe value, the outcome of a change and of
+    a create is the same for each hidden value: 0, 10, 10**15 - 1 and -5."""
+    cases = [
+        # (org, package, viewer, object, record, the fields, computed keys,
+        #  the record that holds the hidden value, its key, the data of a create)
+        (world.a, world.pkg, AS_E1, world.slip, world.s1, SLIP_FIELDS, {"total"},
+         world.s1, "bonus", {"employee": E1}),
+        (world.b, world.pkg3, AS_CLERK, world.calc, world.calc1, CALC_FIELDS, {"y", "z"},
+         world.calc1, "cost", {}),
+        (world.b, world.pkg3, AS_CLERK, world.line2, world.l2, LINE2_FIELDS, {"amount"},
+         world.o2, "cost", {"order2": {"id": world.o2}}),
+    ]
+    wrong: list[str] = []
+    for org, pkg, viewer, obj, rid, fields, computed, holder, hidden, base in cases:
+        for key, value in _probes(fields, computed, viewer.email):
+            for op in ("update", "create"):
+                seen = set()
+                for h in _HIDDEN_VALUES:
+                    _set_data(world, holder, **{hidden: h})
+                    write = (Write("update", obj.id, rid, {key: value}) if op == "update"
+                             else Write("create", obj.id, data={**base, key: value}))
+                    seen.add(_outcome(org, pkg, world, viewer, write))
+                if len(seen) != 1:
+                    wrong.append(f"{obj.name}.{key}={value} {op}: {sorted(seen)}")
+    _set_data(world, world.s1, bonus=10)
+    _set_data(world, world.calc1, cost=7)
+    _set_data(world, world.o2, cost=50)
+    assert wrong == []
+
+
+def test_r8_no_write_of_a_bound_viewer_follows_a_record_that_it_cannot_read(world) -> None:
+    """The invariant, as a property, over a value in a record that the viewer
+    cannot read. The owner writes each hidden value through the store, so each
+    state is one that the store can reach. A value that the owner cannot write
+    is no state, and the test skips it. The outcome of each change and each
+    create of the viewer is the same for each value that the owner wrote."""
+    cases = [
+        # (viewer, object, its fields, computed keys, the record of an update,
+        #  the data of a create, the object and the record of the value, its key)
+        (AS_MOVER2, world.move2, MOVE2_FIELDS, {"qty"}, world.mine2, {"by": M1},
+         world.move2, world.other2, "qty_in"),
+        (AS_SPENDER, world.budget, BUDGET_FIELDS, {"spent", "left"}, world.b1,
+         {"owner": S1}, world.budget, world.b2, "cap"),
+        (AS_SPENDER, world.expense, EXPENSE_FIELDS, set(), world.e1,
+         {"budget": {"id": world.b1}}, world.budget, world.b2, "cap"),
+        (AS_WORKER, world.ticket, TICKET_FIELDS, set(), world.tk2, {"by": W1},
+         world.ticket, world.tk2, "points"),
+    ]
+    wrong: list[str] = []
+    reached = 0
+    for viewer, obj, fields, computed, rid, base, holder_obj, holder, hidden in cases:
+        start = _get3(world, AS_OWNER, holder_obj.id, holder)
+        assert start is not None
+        states = []
+        for h in _HIDDEN_VALUES:
+            said = _outcome(world.b, world.pkg3, world, AS_OWNER,
+                            Write("update", holder_obj.id, holder, {hidden: h}))
+            if said == "ok":
+                states.append(h)
+        assert states, (obj.name, hidden)
+        reached += len(states)
+        for key, value in _probes(fields, computed, viewer.email):
+            for op in ("update", "create"):
+                seen = set()
+                for h in states:
+                    _write3(world, AS_OWNER, Write("update", holder_obj.id, holder, {hidden: h}))
+                    write = (Write("update", obj.id, rid, {key: value}) if op == "update"
+                             else Write("create", obj.id, data={**base, key: value}))
+                    seen.add(_outcome(world.b, world.pkg3, world, viewer, write))
+                if len(seen) != 1:
+                    wrong.append(f"{obj.name}.{key}={value} {op}: {sorted(seen)}")
+        _write3(world, AS_OWNER, Write("update", holder_obj.id, holder,
+                                       {hidden: start.data.get(hidden)}))
+    assert reached >= 12, reached
+    assert wrong == []
+
+
+def _get3(world: Any, viewer: Viewer, oid: str, rid: str) -> Any:
+    async def go() -> Any:
+        async with tenant_session(world.b) as db:
+            return await store.get_record(db, oid, rid, package_id=world.pkg3, viewer=viewer)
+    return _run(world.p, go)
