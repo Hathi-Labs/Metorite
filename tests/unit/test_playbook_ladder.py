@@ -6,7 +6,6 @@ the demo task, the `Rung N` tag, rung 0 and "the foundation rides with the rung"
 from __future__ import annotations
 
 import pytest
-
 from acb_playbook import loader
 from agent_edge import playbook_prompts
 
