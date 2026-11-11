@@ -1,6 +1,6 @@
 ---
 slug: kit/skill/planning
-version: 1
+version: 2
 title: Kit skill: planning
 summary: How to read a plan with get_plan and pick the next slice.
 audience: both
@@ -18,8 +18,10 @@ audience: both
 ## Pick a slice
 
 - Take a slice from the ready set only.
-- Prefer the slice with the least slack on the critical path.
+- Take a ready slice of the lowest open rung first. The tag `Rung N` names the rung. A slice with no rung tag is Later.
+- Inside that rung, take the slice with the least slack to the demo task of the rung.
 - If slack ties, take the higher priority.
+- Rung 0 is safety work with no demo task. It goes before the other rungs.
 - If you find a loop, a hidden slice or a gap, report it on the task. Do not repair the plan alone.
 
 ## Split a goal
