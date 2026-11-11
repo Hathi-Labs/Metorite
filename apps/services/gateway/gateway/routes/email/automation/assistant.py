@@ -66,12 +66,16 @@ async def _load_assistant_about(
     actually bear on this email make the budget.
     """
     row = (await db.execute(text(
-        """SELECT about, signature, personal_instructions, writing_style,
+        """SELECT about, personal_instructions, writing_style,
                   learned_writing_style
            FROM email_assistant_settings WHERE account_id = :aid"""
     ), {"aid": account_id})).fetchone()
     about = (row.about if row else "") or ""
-    signature = (row.signature if row else "") or ""
+    # WS-17 SG-2 (D-EM-66): the resolver gives the signature. A drafted step
+    # asks for ``new`` until SG-5 passes the kind of the step.
+    from gateway.routes.email.signature import resolve_signature
+
+    signature = await resolve_signature(db, account_id, "new")
     personal = (getattr(row, "personal_instructions", None) or "") if row else ""
     style = (getattr(row, "writing_style", None) or "") if row else ""
     learned_style = (
@@ -216,6 +220,13 @@ class AssistantSettingsModel(BaseModel):
     # with no row, ON for Outlook, a stored value as it is). A model default of
     # True stored ON for a member who chose nothing.
     auto_run: bool | None = None
+    # Task 2305: the write-only marker of the member's own Auto-run act. Only
+    # the Auto-run switch, setup Done, the notice's "Turn on" and a chat
+    # change of ``auto_run`` send it. With a value of ``auto_run``, the PUT
+    # stamps ``auto_run_chosen_at``. Every client spreads the GET body into
+    # the PUT, so the name differs from the GET field ``auto_run_chosen``,
+    # and the answers never carry it.
+    auto_run_choice: bool = False
     cold_email_blocker: str = "OFF"  # OFF | LABEL | ARCHIVE
     # No member chooses a model or a tier (D-EM-7 for the rules, D-EM-61 for
     # the rest). EMAIL_TASK_TIERS holds the tier of each task. These three
@@ -272,6 +283,27 @@ class AssistantSettingsModel(BaseModel):
     insights_enabled: bool = False
 
 
+def auto_run_chosen(row: Any) -> bool:
+    """True when the member chose Auto-run (task 2305, §12.3.13.7).
+
+    A stored ``auto_run_chosen_at`` (an explicit act), or a stored
+    ``auto_run = true``, is a choice. A row with ``auto_run = false`` and no
+    stamp is not one: a save of another field wrote it from the GET body.
+    No row is no choice. The GET and the PUT answer both use this rule.
+    """
+    if row is None:
+        return False
+    return (getattr(row, "auto_run_chosen_at", None) is not None
+            or getattr(row, "auto_run", None) is True)
+
+
+def _signature_upload_on() -> bool:
+    """True when this server can host a signature image (WS-17 SG-1)."""
+    from gateway.routes.email.signature_images import public_base_url
+
+    return public_base_url() is not None
+
+
 @router.get("/assistant/settings")
 async def get_assistant_settings(
     account_id: str = Query(...),
@@ -283,7 +315,8 @@ async def get_assistant_settings(
             db, account_id, user.email or "anonymous", required=True)
         await _assert_account_owner(db, account_id, user.email or "anonymous", level="send")
         row = (await db.execute(text(
-            """SELECT about, signature, auto_run, cold_email_blocker,
+            """SELECT about, auto_run, auto_run_chosen_at,
+                      cold_email_blocker,
                       digest_frequency, personal_instructions, writing_style,
                       learned_writing_style,
                       draft_replies, follow_up_days, draft_confidence,
@@ -306,7 +339,13 @@ async def get_assistant_settings(
         # Fall back to the legacy single field if the new column is still 0.
         if not awaiting and row:
             awaiting = getattr(row, "follow_up_days", 0) or 0
-        from gateway.routes.email.signature import signature_text  # noqa: PLC0415
+        from gateway.routes.email.signature import (  # noqa: PLC0415
+            signature_forms,
+            signature_text,
+        )
+        # WS-17 SG-2 (D-EM-66): the editor gets the stored free HTML, and the
+        # composer seeds the text of the ``new`` form that the resolver gives.
+        forms = await signature_forms(db, account_id)
         # A stored value always wins. With NO settings row, answer what the
         # engine does: drafting is ON only when a reply rule carries
         # DRAFT_EMAIL. A new mailbox has no rules, so it reads OFF (D-EM-6).
@@ -329,18 +368,20 @@ async def get_assistant_settings(
         return {
             "account_id": account_id,
             "about": row.about if row else "",
-            "signature": row.signature if row else "",
+            "signature": forms.stored,
             # The SERVER's plain-text rendering of the signature — the composer
             # seeds this exact text into the body so the draft-write paths'
             # idempotent re-signing recognises it (a client-side re-derivation
             # could differ by whitespace and get double-signed).
-            "signature_text": signature_text((row.signature if row else "") or ""),
+            "signature_text": signature_text(forms.of("new")),
             "auto_run": auto_run,
-            # Read-only (task 2267): true when a settings row exists, so the
-            # client can tell "the member chose" from "no stored choice". The
-            # PUT model has no such field, and it ignores the one the screen
-            # sends back. ``auto_run`` above is unchanged.
-            "auto_run_chosen": row is not None,
+            # Read-only (task 2267, rule of task 2305): true when the member
+            # chose Auto-run, so the client can tell "the member chose" from
+            # "no stored choice". A row alone is no choice, because a save of
+            # another field writes one. The PUT model has no such field, and
+            # it ignores the one the screen sends back. ``auto_run`` above is
+            # unchanged.
+            "auto_run_chosen": auto_run_chosen(row),
             "cold_email_blocker": (row.cold_email_blocker if row else "OFF") or "OFF",
             "digest_frequency": (row.digest_frequency if row else "OFF") or "OFF",
             "personal_instructions": (
@@ -410,6 +451,13 @@ async def get_assistant_settings(
             ),
             # Read-only: the account's own domain, always treated as internal.
             "own_domain": own_domain,
+            # Read-only (WS-17 SG-1, §23.3.9): False when this server has no
+            # https address to host a signature image. The editor turns its
+            # upload button off.
+            "signature_image_upload": _signature_upload_on(),
+            # Only a save removes anything (the PUT answer). The key is here so
+            # the GET and the PUT carry the same keys.
+            "signature_removed": [],
         }
 
 
@@ -419,6 +467,16 @@ async def put_assistant_settings(
     user: UserContext = Depends(get_current_user),
 ):
     """Upsert the assistant settings for an account."""
+    # WS-17 SG-1 (D-EM-70): a new HTML signature is cleaned on save, and each
+    # `data:` image in it becomes a hosted image first. This runs BEFORE the
+    # session below, because a hosted image runs a child process for up to
+    # 10 s, and no session waits on it. A signature equal to the stored one
+    # stays byte for byte.
+    from gateway.routes.email.signature_images import (
+        signature_for_save,
+    )
+    signature, signature_removed = await signature_for_save(
+        req.account_id, user.email or "anonymous", req.signature)
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, user.email or "anonymous")
         _log_retired_model_fields(req)
@@ -436,9 +494,14 @@ async def put_assistant_settings(
         from gateway.routes.email.automation.rules import auto_run_on
         auto_run = (req.auto_run if req.auto_run is not None
                     else await auto_run_on(db, req.account_id))
+        # Task 2305: only the member's own Auto-run act stamps the choice: the
+        # marker AND a value. The upsert keeps a stamp that exists (COALESCE),
+        # so no body clears it, and a body with no marker leaves it as it is.
+        choice = req.auto_run_choice is True and req.auto_run is not None
         saved = (await db.execute(text(
             """INSERT INTO email_assistant_settings
-                 (account_id, about, signature, auto_run, cold_email_blocker,
+                 (account_id, about, signature, auto_run, auto_run_chosen_at,
+                  cold_email_blocker,
                   digest_frequency,
                   personal_instructions,
                   writing_style, draft_replies, follow_up_days, draft_confidence,
@@ -447,7 +510,9 @@ async def put_assistant_settings(
                   digest_time_of_day, digest_send_to_email, morning_brief_enabled,
                   multi_rule_execution, sensitive_data_protection, org_domains,
                   insights_enabled, updated_at)
-               VALUES (:aid, :about, :sig, :auto, :cold,
+               VALUES (:aid, :about, :sig, :auto,
+                       CASE WHEN CAST(:choice AS boolean) THEN now() END,
+                       :cold,
                        :digest,
                        :pi, :ws, :dr, :fu, :dc, :fua, :funr, :fuad, :dcat,
                        :ddow, :dtod, :dste, :mbe, :mre, :sdp, :orgd, :ins,
@@ -456,6 +521,9 @@ async def put_assistant_settings(
                  about = EXCLUDED.about,
                  signature = EXCLUDED.signature,
                  auto_run = EXCLUDED.auto_run,
+                 auto_run_chosen_at = COALESCE(
+                     email_assistant_settings.auto_run_chosen_at,
+                     EXCLUDED.auto_run_chosen_at),
                  cold_email_blocker = EXCLUDED.cold_email_blocker,
                  digest_frequency = EXCLUDED.digest_frequency,
                  personal_instructions = EXCLUDED.personal_instructions,
@@ -476,9 +544,10 @@ async def put_assistant_settings(
                  org_domains = EXCLUDED.org_domains,
                  insights_enabled = EXCLUDED.insights_enabled,
                  updated_at = now()
-               RETURNING learned_writing_style"""
-        ), {"aid": req.account_id, "about": req.about, "sig": req.signature,
-            "auto": auto_run, "cold": req.cold_email_blocker or "OFF",
+               RETURNING learned_writing_style, auto_run, auto_run_chosen_at"""
+        ), {"aid": req.account_id, "about": req.about, "sig": signature,
+            "auto": auto_run, "choice": choice,
+            "cold": req.cold_email_blocker or "OFF",
             "digest": req.digest_frequency or "OFF",
             "pi": req.personal_instructions, "ws": req.writing_style,
             "dr": req.draft_replies, "fu": awaiting,
@@ -510,7 +579,9 @@ async def put_assistant_settings(
             "SELECT email_address FROM email_accounts WHERE id = :aid"
         ), {"aid": req.account_id})).fetchone()
         from gateway.routes.email.automation.identity import _domain_of  # noqa: PLC0415
-        from gateway.routes.email.signature import signature_text
+        from gateway.routes.email.signature import signature_forms, signature_text
+        # WS-17 SG-2 (D-EM-66): the composer seeds the text of the ``new`` form.
+        forms = await signature_forms(db, req.account_id, stored=signature or "")
         own_domain = _domain_of(getattr(acc_row, "email_address", "") or "")
         # The answer carries EVERY key the GET carries. SettingsTab keeps this
         # body as its state and PUTs it back on the next change, so a missing
@@ -519,11 +590,12 @@ async def put_assistant_settings(
         return {
             "account_id": req.account_id,
             "about": req.about or "",
-            "signature": req.signature or "",
-            "signature_text": signature_text(req.signature or ""),
+            "signature": signature or "",
+            "signature_text": signature_text(forms.of("new")),
             "auto_run": auto_run,
-            # The upsert above wrote the row, so the choice is stored now.
-            "auto_run_chosen": True,
+            # Task 2305: the GET's rule over the row that the upsert
+            # RETURNs. A save of another field is no choice.
+            "auto_run_chosen": auto_run_chosen(saved),
             "cold_email_blocker": req.cold_email_blocker or "OFF",
             "digest_frequency": req.digest_frequency or "OFF",
             "personal_instructions": req.personal_instructions or "",
@@ -547,6 +619,10 @@ async def put_assistant_settings(
             "org_domains": org_domains,
             "insights_enabled": req.insights_enabled,
             "own_domain": own_domain,
+            "signature_image_upload": _signature_upload_on(),
+            # WS-17 SG-1 (D-EM-70): each link or image address that the clean
+            # of THIS save removed, so the dialog can name it.
+            "signature_removed": signature_removed,
         }
 
 

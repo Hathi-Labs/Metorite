@@ -932,16 +932,20 @@ def _build_output_discipline_block(
 
 
 def _with_attachment_rule(instructions: str, holds_reader: bool) -> str:
-    """*instructions* with the attachment failure rule, once.
+    """*instructions* with the attachment failure rule and the files rule, once.
 
     For a native MAF agent, which reads no Copilot addendum. Only an agent
     that holds ``read_attachment`` gets it, and the rule itself is the
     marker, so a second injection adds nothing (KV-cache stable).
     """
-    from acb_skills.addendum import ATTACHMENT_FAILURE_RULE  # noqa: PLC0415
+    from acb_skills.addendum import (  # noqa: PLC0415
+        ATTACHMENT_FAILURE_RULE,
+        FILES_ON_TASK_RULE,
+    )
     if not holds_reader or ATTACHMENT_FAILURE_RULE in instructions:
         return instructions
-    return instructions + "\n\n" + ATTACHMENT_FAILURE_RULE
+    # IMG-A3 (task 2489): the Projects pack has no room for the files rule.
+    return instructions + "\n\n" + ATTACHMENT_FAILURE_RULE + " " + FILES_ON_TASK_RULE
 
 
 # ── The house voice (WS-52, ``specs/agent_writing_voice.md``) ──────────────

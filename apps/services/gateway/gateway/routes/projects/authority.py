@@ -83,6 +83,10 @@ PROJECT_DELETE_REFUSED = (
     "Only the person who created this project, the project lead or a Projects "
     "admin can delete it."
 )
+#: The 403 of a project update delete (WS-39 LP-1a). The chat holds no copy.
+UPDATE_DELETE_REFUSED = (
+    "Only the author of this update or a Projects admin can delete it."
+)
 #: The 403 of a grant write.
 GRANT_WRITE_REFUSED = (
     "Only the project lead or a Projects admin can change who can see this project."
@@ -333,6 +337,24 @@ async def assert_may_delete_task(db: Any, user: Any, task: Any) -> None:
     """403 with :data:`TASK_DELETE_REFUSED`, or return."""
     if not await may_delete_task(db, user, task):
         raise HTTPException(status_code=403, detail=TASK_DELETE_REFUSED)
+
+
+def may_delete_update(user: Any, update: Any) -> bool:
+    """May *user* delete *update*, a row of ``pm_project_updates``? (LP-1a.)
+
+    The author, or a member who may manage Projects settings
+    (``core.can_manage_settings``), as for a task. A lead who did not write
+    the update may not delete it: an update is the author's own statement.
+    No query, so a list can ask it for each row.
+    """
+    me = _me(user)
+    return can_manage_settings(user) or (bool(me) and _same_person(_field(update, "author"), me))
+
+
+def assert_may_delete_update(user: Any, update: Any) -> None:
+    """403 with :data:`UPDATE_DELETE_REFUSED`, or return."""
+    if not may_delete_update(user, update):
+        raise HTTPException(status_code=403, detail=UPDATE_DELETE_REFUSED)
 
 
 async def assert_may_delete_project(db: Any, user: Any, project: Any) -> None:

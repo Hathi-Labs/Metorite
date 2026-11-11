@@ -827,9 +827,13 @@ def test_a_scope_change_during_the_run_does_not_clear_the_flag(
 #: card, and says open_world=False. None sends anything outside Metorite.
 #: 2026-11-02 (WS-PJP PJP-4, D168.1): update_tasks joined. Each ticked row is one
 #: update_task patch through the gateway, behind one card, and says open_world=False.
+#: 2026-11-08 (WS-39 LP-1a): list_project_updates (a read) and post_project_update (one
+#: card) joined. Each reaches only the gateway, and says open_world=False.
 #: 2026-11-08 (WS-VOX VOX-3, projects_ai_chat.md §31): analyze_image joined the
 #: floor. It sends an attached image only to the metered tier-vision model of the
 #: Console, writes nothing, and says open_world=False.
+#: 2026-11-08 (SP-12, task 2295): get_plan (a read) joined. It reads one gateway route,
+#: the one plan engine, writes nothing and says open_world=False.
 COVERED_PROJECTS_TOOLS = frozenset({
     "analyze_image",
     "add_subtasks", "add_task_ref", "remove_task_ref", "analytics_finished", "analytics_load", "analytics_outlook",
@@ -842,6 +846,7 @@ COVERED_PROJECTS_TOOLS = frozenset({
     "create_area", "delete_area", "rename_area",
     "nudge_task", "export_tasks", "attach_to_task",
     "grant_access", "revoke_access", "pin_authority", "unpin_authority", "project_authorities",
+    "list_project_updates", "post_project_update", "delete_project_update",
     "answer_decision", "my_decisions",
     "report_recipients", "add_report_recipient", "remove_report_recipient", "set_report_schedule",
     "waiting_agent_requests", "needs_attention",
@@ -851,7 +856,7 @@ COVERED_PROJECTS_TOOLS = frozenset({
     "file_tasks",
     "file_access_ls", "file_access_read", "file_access_read_lines",
     "file_access_replace", "file_access_replace_lines", "file_access_write",
-    "find_conflicts", "find_tasks", "fit_for_task",
+    "find_conflicts", "find_tasks", "fit_for_task", "get_plan",
     "intake_queue", "link_tasks", "link_tasks_batch", "list_tasks",
     "make_document", "make_report", "mark_notifications_read", "merge_tags", "merge_tasks",
     "move_project", "convert_folder_to_project",
@@ -868,6 +873,9 @@ COVERED_PROJECTS_TOOLS = frozenset({
     "update_type", "vocabulary", "watch", "watchers",
     "list_reminders", "set_reminder", "update_reminder", "resolve_reminder",
     "reopen_reminder", "reschedule_reminder", "promote_reminder",
+    # WS-39 TPL-1a: the templates. Each act is the member's own, through the
+    # gateway, and says open_world=False.
+    "list_templates", "save_as_template", "create_project_from_template",
 })
 
 

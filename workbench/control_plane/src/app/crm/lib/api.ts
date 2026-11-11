@@ -325,6 +325,16 @@ export function listPipelines(): Promise<DealPipeline[] | null> {
 }
 
 /**
+ * The lead pipelines, each with its lead statuses in order (WS-CRM CRM-M4a).
+ * Only a row that says `kind: "lead"` counts, so a gateway from before
+ * CRM-M4a, which reads no `kind`, gives none and never its deal pipelines.
+ */
+export async function listLeadPipelines(): Promise<DealPipeline[] | null> {
+  const rows = await orNullOn404(call<DealPipeline[]>("/pipelines?kind=lead"));
+  return rows ? rows.filter((row) => row.kind === "lead") : null;
+}
+
+/**
  * What a new deal pipeline would hold, in order (WS-CRM CRM-M3a). It reads
  * only. The gateway answers each refusal of the create here too, so the
  * dialog shows it before the member presses Create. Admin only, and 404 for
