@@ -6053,6 +6053,21 @@ Fence: `tests/unit/test_app_capability_parity.py` (new, task of WS-MKT) proves t
 
 Re-check this number at merge. The first merge wins a D-number.
 
+### D208 — A Projects act with no typed MCP tool reaches the MCP through the app door (2026-11-11)
+
+The owner chose option (b) in chat on 2026-11-09 (Metorite tasks 2520 and 2521). MCP-G24 records it. `external_agent_access.md` §19.16 holds the design.
+
+1. **One path for the rest of Projects.** A Projects act that no typed tool serves reaches the MCP through the app door of §19 (D136.2). Nobody builds one typed tool for each act. The typed tools of §9 stay, and `MCP_ROUTES` stays their allowlist (§19.3).
+2. **The door table, and an exception to AD-1 and D136.1.** `acb_common/app_manifests/projects.py` holds one row for each of the 215 routes of the Projects chat manifest. Each row has the class and the chat tool of its chat row. It adds an `op` or an `off_door` reason (AD-2). `acb_common` cannot import `skill_projects`, so the table repeats the 215 pairs. That is a second list, so D208 amends AD-1 and D136.1 for Projects. The exception ends when MCP-G24c moves the chat manifest into `acb_common`. Until then, the fence holds the pairs, the class and the tool equal, row for row.
+3. **No pair is in both sets (AD-3).** A row whose route is in `MCP_ROUTES` names no op. It says that a typed tool serves it.
+4. **The first acts.** Cycles and saved views get 11 door ops. Status editing and template apply stay off the door until MCP-G24b, the registration slice. The chat client holds guards that their routes lack (§19.16). Import stays class X, because its routes need `admin:access:manage` (§19.11). Goals and teams have no route. A goal object is later work (task 977), and a team is a filter (D87).
+5. **The approval path.** Each class B or C op asks the member for each call (§19.5, D124.2). No op is a proposal, and no op sends. No op writes a grant, answers for a person, or reaches another person. No op deletes a record for good. Two ops delete the link row of a task in an open cycle, and the task stays.
+6. **Dark.** The table is not in `app_manifests.APPS`, so the door serves no Projects op. MCP-G24b registers it, after MCP-P1b-2 builds the spend. Until then, the table needs no flag.
+
+Fence: `tests/unit/test_projects_door_coverage.py`. MCP-G25 adds `tests/unit/test_mcp_projects_parity.py` on the same table.
+
+Re-check this number at merge. The first merge wins a D-number.
+
 ### D210 — Sound cues: a few tasteful sounds for the moments that matter (2026-11-11)
 
 The owner asked in chat on 2026-11-11 for tasteful sound effects. The clear chimes are for an email sent or received, the agent with something for me, a new item in My Day, and a reminder. The owner's standing word applies to the details: the product manager's recommendation, when it fits the philosophy. Epic: task 2862 (WS-SND, project My Day).

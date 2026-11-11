@@ -905,6 +905,10 @@ class AgentConnectionOut(BaseModel):
 
 class AgentConnectionsOut(BaseModel):
     connections: list[AgentConnectionOut]
+    #: True when ``agent_change_access_orgs`` holds the organization of the
+    #: session (EA-17c-2). The view shows "Change access" only then. The
+    #: admin list leaves it False, because Change access is the member's own.
+    change_access: bool = False
 
 
 def connection_out(row: agent_tokens.ConnectionRow) -> AgentConnectionOut:
@@ -1010,7 +1014,10 @@ async def list_my_connections(
     org = str(current_tenant())
     rows = await agent_tokens.list_connections(org, member_email=email)
     await audit_new_addresses(org, rows)
-    body = AgentConnectionsOut(connections=[connection_out(r) for r in rows])
+    body = AgentConnectionsOut(
+        connections=[connection_out(r) for r in rows],
+        change_access=agent_oauth.change_access_allowed(current_tenant()),
+    )
     return JSONResponse(body.model_dump(), headers=_NO_STORE)
 
 
