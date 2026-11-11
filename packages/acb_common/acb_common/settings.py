@@ -2313,7 +2313,7 @@ class Settings(BaseSettings):
     # the edge lists the playbook prompts (`set_up_agent_team`, `plan_slices`,
     # `write_brief`, `review_my_fleet`, `run_retro`). The same shape as
     # `agent_access_orgs`: ids with a comma between them, or `*`. Empty, the
-    # default, keeps them dark. Only the edge reads it, at each call, through
+    # default, keeps them dark. The edge and the gateway read it, at each call, through
     # `acb_auth.agent_oauth.playbook_allowed`. 🔴 A change on a box is gate
     # `enforcement-flip`.
     playbook_orgs: str = ""
