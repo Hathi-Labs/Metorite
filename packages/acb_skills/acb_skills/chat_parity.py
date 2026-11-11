@@ -361,7 +361,7 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "POST /api/studio/packages": "studio_save",
     # STU-G3c: the IDE saves a draft with the PUT that studio_save sends (based_on in the query).
     "PUT /api/studio/packages/{}/draft": "studio_save",
-    # STU-G5: the IDE publishes with the POST that studio_publish sends (notes and based_on in the body).
+    # STU-G5: the IDE publishes with the POST that studio_publish sends (notes, based_on and origin in the body).
     "POST /api/studio/packages/{}/versions": "studio_publish",
     "POST /api/studio/apps/{}/actions/{}": "studio_record_list",
     "GET /api/studio/skills": "studio_skill_list",
