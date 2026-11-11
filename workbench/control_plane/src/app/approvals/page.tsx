@@ -40,7 +40,9 @@ import {
   FULL_LIST_HREF,
   FULL_LIST_LABEL,
   type ApprovalTab,
+  QUESTIONS_READ_FAILED,
   activeTab,
+  tabsPending,
   tabsShown,
   waitingSectionOn,
 } from "./lib/approvalTabs";
@@ -141,7 +143,7 @@ export default function ApprovalsPage() {
     return () => clearInterval(t);
   }, [load]);
 
-  const waitingOn = waitingSectionOn(questions.on);
+  const waitingOn = waitingSectionOn(questions.on, questions.failed);
   useEffect(() => {
     if (!waitingOn) {
       setWaiting(null);
@@ -213,7 +215,14 @@ export default function ApprovalsPage() {
   // One count in the title bar: the route's "For me" count with the tabs on,
   // else the CIV-14k list. The Projects badge and the My Day card say the same.
   const waitingLen = tabs ? (questions.count ?? 0) : (waiting?.length ?? 0);
-  const shownTab = tabs ? activeTab(picked, queue.load === "closed") : "actions";
+  // The default tab is decided ONCE, when the queue read first lands, and the
+  // page does not flip it afterwards. The member's own pick always wins.
+  const defaultTab = useRef<ApprovalTab | null>(null);
+  if (tabs && defaultTab.current === null && queue.load !== "pending") {
+    defaultTab.current = activeTab(null, queue.load === "closed");
+  }
+  // `null`: the body waits for the default, so nothing draws and then moves.
+  const shownTab: ApprovalTab | null = !tabs ? "actions" : (picked ?? defaultTab.current);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -243,8 +252,11 @@ export default function ApprovalsPage() {
       />
       <div className="min-h-0 flex-1 overflow-auto">
     <div className="mx-auto max-w-3xl px-4 py-6">
+      {tabsPending(questions.on, questions.failed) && (
+        <div className="mb-4 h-8" aria-hidden="true" data-approval-tabs-reserved="" />
+      )}
       {tabs && (
-        <ApprovalTabs active={shownTab} questionCount={questions.count} onPick={setPicked} />
+        <ApprovalTabs active={shownTab ?? "actions"} questionCount={questions.count} onPick={setPicked} />
       )}
       {tabs && shownTab === "questions" && (
         <section aria-label="Agent questions" className="flex flex-col" data-approval-questions="">
@@ -349,6 +361,11 @@ export default function ApprovalsPage() {
       {/* One live region, always mounted, so a screen reader announces the
           line when it arrives. It is empty when there is nothing to say. */}
       <div role="status">
+        {questions.failed && questions.on === null && (
+          <p className="mt-4 text-xs text-destructive" data-approval-questions-failed="">
+            {QUESTIONS_READ_FAILED}
+          </p>
+        )}
         {queue.load === "failed" && (
           <p className="mt-4 text-xs text-destructive">
             Could not load the queue. Refresh to try again.

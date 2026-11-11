@@ -28,10 +28,25 @@ export function tabsShown(questionsOn: boolean | null): boolean {
   return questionsOn === true;
 }
 
-/** The CIV-14k section reads the old route only when the questions route is off. */
-export function waitingSectionOn(questionsOn: boolean | null): boolean {
-  return questionsOn === false;
+/**
+ * The CIV-14k section reads the old route when the questions route is off (a
+ * 404), and also when the questions read FAILED with anything else and has not
+ * answered yet (`failed`). Only a 404 means off, so a 500 or a timeout never
+ * leaves the page with neither the tabs nor the old section. Unknown and not
+ * failed (the first read is on its way): neither draws.
+ */
+export function waitingSectionOn(questionsOn: boolean | null, failed = false): boolean {
+  return questionsOn === false || (questionsOn === null && failed);
 }
+
+/** True while the first read is on its way: the page reserves the tab bar. */
+export function tabsPending(questionsOn: boolean | null, failed: boolean): boolean {
+  return questionsOn === null && !failed;
+}
+
+/** The line under the page when the questions read failed. */
+export const QUESTIONS_READ_FAILED =
+  "Could not read the agent questions. The page shows the older list and reads again soon.";
 
 /** "Agent questions · 3". A count of zero or an unknown count prints the plain name. */
 export function questionsTabLabel(count: number | undefined): string {

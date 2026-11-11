@@ -13,6 +13,7 @@ import {
   FULL_LIST_HREF,
   activeTab,
   questionsTabLabel,
+  tabsPending,
   tabsShown,
   waitingSectionOn,
 } from "./approvalTabs";
@@ -29,6 +30,19 @@ describe("the tabs follow the questions route", () => {
       true,
       false,
     ]);
+  });
+
+  it("treats only a 404 as off: a failed first read keeps the CIV-14k section", () => {
+    // on=null with an error (500, timeout, network): the old section reads.
+    expect(waitingSectionOn(null, true)).toBe(true);
+    expect(tabsShown(null)).toBe(false);
+    expect(tabsPending(null, true)).toBe(false);
+    // on=null and no error yet: the first read is on its way. Reserve the bar.
+    expect(tabsPending(null, false)).toBe(true);
+    expect(waitingSectionOn(null, false)).toBe(false);
+    // A later failure after a good read never brings the old section back.
+    expect(waitingSectionOn(true, true)).toBe(false);
+    expect(tabsPending(true, false)).toBe(false);
   });
 
   it("words the tab with the route's count", () => {
@@ -85,6 +99,23 @@ describe("the page", () => {
     expect(src).toContain('aria-label="Waiting for you"');
     const bar = readFileSync(new URL("../components/ApprovalTabs.tsx", import.meta.url), "utf8");
     expect(bar.match(/data-approval-tab=/g)).toHaveLength(2);
+  });
+
+  it("keeps the old section and says so when the first read fails, and retries on the poll", () => {
+    expect(src).toContain("waitingSectionOn(questions.on, questions.failed)");
+    expect(src).toContain("QUESTIONS_READ_FAILED");
+    const hook = readFileSync(new URL("../../projects/components/useQuestionsBadge.ts", import.meta.url), "utf8");
+    expect(code(hook)).toMatch(/catch \{[\s\S]*setFailed\(true\)/);
+    // Only a 404 (null) sets off. The poll keeps reading while `on` is not false.
+    expect(code(hook)).toMatch(/if \(page === null\) \{\s*offRef\.current = true;/);
+  });
+
+  it("reserves the tab bar and decides the default tab once (no layout shift)", () => {
+    expect(src).toContain("data-approval-tabs-reserved");
+    expect(src).toMatch(/defaultTab\.current === null && queue\.load !== "pending"/);
+    expect(src).toContain("picked ?? defaultTab.current");
+    // The old per-render flip is gone.
+    expect(src).not.toContain("activeTab(picked,");
   });
 
   it("builds no shell part (R9)", () => {

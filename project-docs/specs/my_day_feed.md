@@ -811,7 +811,7 @@ note is a change of the task. The fence covers every kind of `BASE`
 | `deal_quiet` | `waiting_since`, set to `status_changed_at` |
 | `deal_close_passed` | `due_at`, the close date at 00:00 in the zone of the member |
 | `agent_asks` | `waiting_since`, the newest `asked_at` on the thread |
-| `agent_questions` | `waiting_since`, the oldest `asked_at` of the questions shown |
+| `agent_questions` | `waiting_since`, the NEWEST `asked_at` of the whole "mine" list, so a new question brings a dismissed card back |
 | `colleague_out` | None. The id is the day, so a dismiss holds for that day |
 | `digest_ready` | None. The id is the week, so a dismiss holds for that week (WS-53 CRM-Q28) |
 | `crm_open_questions` | None. The id is the UTC date of `new_at`, so a dismiss holds for that day (WS-53 CRM-Q32) |

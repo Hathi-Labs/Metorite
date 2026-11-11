@@ -212,9 +212,13 @@ async def question_rows(
     ]
 
 
-async def read_mine(user: UserContext, limit: int) -> tuple[list[dict[str, Any]], int]:
-    """The oldest *limit* rows of "For me", and the whole "mine" count, for the
-    My Day card (EA-18c). It runs the reads of the route as they are:
+async def read_mine(
+    user: UserContext, limit: int,
+) -> tuple[list[dict[str, Any]], int, str | None]:
+    """The oldest *limit* rows of "For me", the whole "mine" count, and the time
+    of the NEWEST question of the whole list (``None`` for an empty list), for
+    the My Day card (EA-18c). The newest time moves the card's state fingerprint
+    when a new question arrives, as ``agent_asks`` does. It runs the reads of the route as they are:
     :func:`read_questions` with the scope of the whole tenant that the reader
     sees, the "mine" filter (a row with a ``why``), and :func:`question_rows`.
     It writes no SQL of its own. The caller checks ``agent_questions_allowed``.
@@ -232,7 +236,8 @@ async def read_mine(user: UserContext, limit: int) -> tuple[list[dict[str, Any]]
         rows = await question_rows(
             db, vis, mine[:limit], review=holds_answer_role(user),
         )
-    return rows, len(mine)
+    newest = wire(mine[-1][1].created_at) if mine else None
+    return rows, len(mine), newest
 
 
 @router.get("/agent-questions", dependencies=[Depends(require_agent_questions)])
