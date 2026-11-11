@@ -128,7 +128,8 @@ The ``based_on`` check reads the stored draft, so the addition never moves it.
 **Create.** There is no idempotency key. A second create with the same
 manifest id by the same member answers 409 ``package_exists`` with the id of
 the first. Two creates at the same moment can both pass, and that is
-accepted. A member holds at most :data:`MAX_PACKAGES_PER_MEMBER` packages.
+accepted. The template route takes an advisory lock of the member and the
+manifest id first, so two of its calls cannot both pass. A member holds at most :data:`MAX_PACKAGES_PER_MEMBER` packages.
 
 **The delete (A5c-1).** Two steps, with no state in the database. The owner
 reads ``GET /packages/{id}/delete-preview``: each object with its field
@@ -179,6 +180,7 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from acb_common import get_logger
+from acb_common import studio_templates as templates
 from acb_common.studio_manifest import manifest_hash
 from acb_skills.studio_tools import complete_record_actions
 from fastapi import Depends, HTTPException, Request, Response
@@ -248,6 +250,8 @@ NOT_PUBLISHED = "not_published"
 VERSION_CHANGED = "version_changed"
 FORBIDDEN = "forbidden"
 UNKNOWN_GROUP = "unknown_group"
+UNKNOWN_TEMPLATE = ("The template is not in the registry. Send an id that GET /studio/templates "
+                    "lists.")
 
 CATALOG_DOWN = "The action catalog is not available now, so try the publish again later."
 BODY_OVER_CAP = "This body is too large, so send a smaller manifest."
@@ -506,26 +510,44 @@ def _sync_audit(version: int, result: objects_store.SyncResult) -> dict[str, Any
     }
 
 
-@router.post("/packages", status_code=201)
-async def create_package(
-    request: Request,
-    user: UserContext = Depends(get_current_user),
-) -> dict[str, Any]:
-    """A new private draft package of the caller, from the manifest in the body."""
-    if not flags.studio_allowed(user.organization_id):
-        raise HTTPException(status_code=404, detail=NOT_FOUND)
-    manifest = await _json_body(request)
+def _package_exists(pid: str) -> HTTPException:
+    """409 ``package_exists`` with the id of the package of the caller."""
+    return HTTPException(status_code=409, detail={
+        "code": PACKAGE_EXISTS, "package_id": pid,
+        "message": "You have a package with this manifest id. "
+        "Save to it with PUT, or choose a new id."})
+
+
+async def _create_checked(user: UserContext, manifest: dict[str, Any], *,
+                          resume: bool = False) -> dict[str, Any]:
+    """Create a private draft package of the caller from *manifest*. The create
+    route and the template route both call it, so the checks (a repeat manifest
+    id is 409 ``package_exists``, the per-member limit) stay in one place.
+
+    With *resume* (the template route only, STU-K1a), the session first takes
+    the create lock of the member and the manifest id, so a parallel call
+    waits. A draft of the caller with that manifest id and no live version is
+    the trace of a call whose publish failed. The answer is that draft, and
+    no new package. The create route sends no *resume*, so its answers do not
+    change."""
     with _store_errors():
         encoded = store.check_manifest(manifest)
     async with _tenant_session() as db:
         with _store_errors():
+            if resume:
+                await store.lock_create(db, user.email, manifest["id"])
             held = await store.list_summaries(db, user.email)
             for found in held:
                 if found.manifest_id == manifest["id"]:
-                    raise HTTPException(status_code=409, detail={
-                        "code": PACKAGE_EXISTS, "package_id": found.id,
-                        "message": "You have a package with this manifest id. "
-                        "Save to it with PUT, or choose a new id."})
+                    if resume and found.live_version is None:
+                        draft = await store.get_package(db, user.email, found.id)
+                        if draft is None:
+                            raise _not_found()
+                        if manifest_hash(draft.manifest) != manifest_hash(manifest):
+                            # A hand-made or changed draft is not the template.
+                            raise _package_exists(found.id)
+                        return {"package": _package_out(draft)}
+                    raise _package_exists(found.id)
             if len(held) >= MAX_PACKAGES_PER_MEMBER:
                 raise HTTPException(status_code=409, detail={
                     "code": PACKAGE_LIMIT,
@@ -538,6 +560,58 @@ async def create_package(
                 "sha256": hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
                 "bytes": len(encoded.encode("utf-8"))})
     return {"package": _package_out(package)}
+
+
+@router.post("/packages", status_code=201)
+async def create_package(
+    request: Request,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """A new private draft package of the caller, from the manifest in the body."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    manifest = await _json_body(request)
+    return await _create_checked(user, manifest)
+
+
+@router.get("/templates")
+async def list_app_templates(user: UserContext = Depends(get_current_user)) -> dict[str, Any]:
+    """The Studio app templates of the code registry: id, name and purpose."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    return {"templates": [dict(t) for t in templates.list_templates()]}
+
+
+@router.post("/packages/from-template", status_code=201)
+async def create_from_template(
+    request: Request,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """One step (STU-K1a): create a package from a template, publish it, and
+    keep the private install of the caller. The body holds ``template`` and
+    nothing else is read. The member is the session member and the org is the
+    bound tenant. A member who holds a live package of the template manifest id
+    gets 409 ``package_exists`` (the create route's answer), and nothing changes.
+
+    The catalog read comes first, so a 503 ``catalog_unavailable`` writes
+    nothing. The create and the publish are two transactions. When the publish
+    fails after the create, a draft stays, and a retry publishes that draft:
+    the same id, no second package. Both sessions take the create lock of the
+    member and the manifest id first, so of two parallel calls one publishes
+    and the other gets 409 ``package_exists``."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    body = await _json_body(request)
+    manifest = templates.get_template(body.get("template"))
+    if manifest is None:
+        raise _unprocessable(UNKNOWN_TEMPLATE, [{"path": "$.template", "message": UNKNOWN_TEMPLATE}])
+    # The catalog first: a catalog that is down answers 503 and writes nothing.
+    known = await _catalog()
+    created = await _create_checked(user, manifest, resume=True)
+    pid = created["package"]["id"]
+    published = await _publish_draft(user, pid, "", None, ORIGIN_IDE, known=known,
+                                     first_of=manifest["id"], template_manifest=manifest)
+    return {"package": created["package"], **published}
 
 
 @router.get("/packages")
@@ -599,6 +673,53 @@ async def save_draft(
             "record_actions": {"added": [a["id"] for a in added], "skipped": skipped}}
 
 
+async def _publish_draft(user: UserContext, pid: str, notes: str, expected: str | None,
+                         origin: str, *, known: dict[str, str] | None = None,
+                         first_of: str | None = None,
+                         template_manifest: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Publish the draft of the package *pid* of the caller, project its objects
+    and keep the private install, in one transaction. The publish route and the
+    template route both call it: there is ONE publish path.
+
+    *known* is a catalog that the caller read already. With *first_of* (the
+    template route only, a manifest id), the session first takes the create
+    lock, and a package that is live already is 409 ``package_exists``. So of
+    two parallel template calls only one publishes. With *template_manifest*,
+    the stored draft must still hash the same, or the answer is 409
+    ``package_exists`` and nothing is written."""
+    if known is None:
+        known = await _catalog()
+    async with _tenant_session() as db:
+        with _store_errors():
+            if first_of is not None:
+                await store.lock_create(db, user.email, first_of)
+                current = await store.get_package(db, user.email, pid)
+                if current is None:
+                    raise _not_found()
+                if current.live_version is not None:
+                    raise _package_exists(pid)
+                if template_manifest is not None and (
+                        manifest_hash(current.manifest) != manifest_hash(template_manifest)):
+                    # A PUT between the two sessions changed the draft.
+                    raise _package_exists(pid)
+            version = await store.publish_version(db, user.email, pid, notes, catalog=known,
+                                                  expected_hash=expected)
+            if version is None or version.manifest is None:
+                raise _not_found()
+            result = await objects_store.sync_objects(
+                db, user.email, package_id=pid, objects=version.manifest.get("objects") or [])
+            if result is None:
+                raise _not_found()
+            await _keep_install(db, user, pid, version, origin)
+            rows = await objects_store.list_objects(db, pid)
+    if result.changed:
+        await record_app_audit_bound(
+            app_id=pid, user_email=user.email, kind="action",
+            app_version=version.version, detail=_sync_audit(version.version, result))
+    return {"version": _version_out(version), "objects": [_object_out(o) for o in rows],
+            "sync": _sync_out(result)}
+
+
 @router.post("/packages/{package_id}/versions", status_code=201)
 async def publish(
     package_id: str,
@@ -621,25 +742,7 @@ async def publish(
             {"path": "$.notes", "message": "The release notes are text."}])
     expected = _based_on(body.get("based_on"))
     origin = _origin(body.get("origin"))
-    known = await _catalog()
-    async with _tenant_session() as db:
-        with _store_errors():
-            version = await store.publish_version(db, user.email, pid, notes, catalog=known,
-                                                  expected_hash=expected)
-            if version is None or version.manifest is None:
-                raise _not_found()
-            result = await objects_store.sync_objects(
-                db, user.email, package_id=pid, objects=version.manifest.get("objects") or [])
-            if result is None:
-                raise _not_found()
-            await _keep_install(db, user, pid, version, origin)
-            rows = await objects_store.list_objects(db, pid)
-    if result.changed:
-        await record_app_audit_bound(
-            app_id=pid, user_email=user.email, kind="action",
-            app_version=version.version, detail=_sync_audit(version.version, result))
-    return {"version": _version_out(version), "objects": [_object_out(o) for o in rows],
-            "sync": _sync_out(result)}
+    return await _publish_draft(user, pid, notes, expected, origin)
 
 
 @router.get("/packages/{package_id}/versions")
