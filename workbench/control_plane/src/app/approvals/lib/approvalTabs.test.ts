@@ -90,7 +90,7 @@ describe("the page", () => {
   it("reads the CIV-14k route only while the questions route is off", () => {
     // `loadWaiting` runs inside an effect that returns early unless the section is on.
     expect(src).toMatch(/if \(!waitingOn\) \{\s*setWaiting\(null\);\s*return;\s*\}\s*void loadWaiting\(\)/);
-    expect(src).toContain("waitingSectionOn(questions.on)");
+    expect(src).toContain("waitingSectionOn(questions.on, questions.failed)");
   });
 
   it("adds no second tab beside the CIV-14k section", () => {
