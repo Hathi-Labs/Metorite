@@ -2483,9 +2483,9 @@ async def test_every_manifest_tool_is_now_built() -> None:
     # WS-55 MCP-G15: an outside agent records a decision that its member made
     # outside Metorite. The chat acts as the member, who answers on the task.
     mcp_g15 = {"record_outside_decision"}
-    # SW-43a: a member takes back an answer on the run card. The chat tool
-    # comes with slice SW-43c (spec agent_coordination.md §3.9).
-    sw_43 = {"withdraw_agent_answer"}
+    # SW-43a and SW-43b: a member takes back or changes an answer on the run
+    # card. The chat tools come with slice SW-43c (spec agent_coordination.md §3.9).
+    sw_43 = {"withdraw_agent_answer", "replace_agent_answer"}
     # WS-55 EA-18a: the list of the questions that wait on a person. A read
     # tool for "what questions wait on me" is a later slice (spec §12.8, D109).
     ea_18a = {"agent_questions"}
