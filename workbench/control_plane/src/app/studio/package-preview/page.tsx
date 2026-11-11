@@ -30,6 +30,7 @@ import RecordsStatus from "@/components/studio/RecordsStatus";
 import StudioDetail from "@/components/studio/StudioDetail";
 import StudioForm from "@/components/studio/StudioForm";
 import DeletePackageButton from "@/components/studio/DeletePackageButton";
+import PackageLifetimeBar from "@/components/studio/PackageLifetimeBar";
 import Button from "@/components/ui/Button";
 import SelectButton from "@/components/ui/SelectButton";
 import { tableBlock } from "@/lib/studio/blocks";
@@ -136,6 +137,7 @@ function Records({ pkg, objectName }: { pkg: string; objectName: string | null }
         {note ? <span role="status" className="text-xs text-muted-foreground">{note}</span> : null}
       </>
     }>
+      <PackageLifetimeBar pkg={pkg} />
       {!canList ? (
         <p role="status" className={`${PANEL} text-sm text-muted-foreground`}>{noListLine(object.label ?? object.name)}</p>
       ) : (

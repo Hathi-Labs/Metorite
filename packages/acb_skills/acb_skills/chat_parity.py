@@ -400,6 +400,12 @@ EXEMPT: dict[str, tuple[str, str]] = {
         "The shell reads the org default of the star set and the preset, to draw the sidebar for a member "
         "with no choice of their own (PKG-17b). No member click sends it. The chat sets no org default here.",
     ),
+    # ── AI Studio ──
+    "GET /api/studio/packages/{}/lifetime": (
+        "stream",
+        "The app page reads the end date of the private install of the owner, to draw the end-date bar "
+        "(PKG-10e-2). No member click sends it. The chat keeps or restores an app with the Keep and Restore rows.",
+    ),
     # ── Email ──
     "GET /api/email/attachments/{}/download": (
         "download",
@@ -676,6 +682,9 @@ DEBT: dict[str, str] = {
     # ── AI Studio (BETA-1): the app page deletes a package. A5c-2 builds the chat tool. ──
     "DELETE /api/studio/packages/{}": "P-9",
     "GET /api/studio/packages/{}/delete-preview": "P-9",
+    # PKG-10e-2 (task 2971): the end-date bar of an app page sends Keep and Restore. A later chat tool pays both.
+    "POST /api/studio/packages/{}/keep": "P-9",
+    "POST /api/studio/packages/{}/restore": "P-9",
     # STU-G5: the Publish dialog reads the live version with its manifest. G1d (chat reads versions) pays it.
     "GET /api/studio/packages/{}/versions/{}": "P-9",
     # ── Tasks ──
@@ -1054,7 +1063,7 @@ DEBT_CEILING: dict[str, int] = {
     "settings": 30,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write. SW-31b added the guidance read and save, paid by SW-31c (task 1531). PKG-20 added the appearance read and write.
     "admin": 36,
     "integrations": 22,  # MCP-P1b-1 added the app-request list and decision (task 1703). EA-17c-2 (task 1814) added the PATCH of Change access.
-    "studio": 3,  # BETA-1: the delete of a package waits for the chat tool of A5c-2. G5 adds the version read. B2c-2b adds no debt: its writes are ALSO rows of the door route.
+    "studio": 5,  # PKG-10e-2 added Keep and Restore of the end-date bar (task 2971), paid by P-9. BETA-1: the delete of a package waits for the chat tool of A5c-2. G5 adds the version read. B2c-2b adds no debt: its writes are ALSO rows of the door route.
 }
 
 #: A UI file -> the most requests in it that the fence cannot read. A new
