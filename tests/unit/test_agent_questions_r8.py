@@ -1305,6 +1305,29 @@ class TestTheFocus:
 
 
 @_DB_GATE
+class TestTheRunWireCanAnswer:
+    """EA-18b. ``GET /agent-runs/{id}`` says if the reader may answer, from the
+    one rule of the write route, so the run panel never offers a refused button."""
+
+    async def test_can_answer_follows_the_write_rule_for_each_reader(self, w):
+        async with _session(w.p) as call:
+            run, _ = await _ask(w, call)
+            for reader in (w.creator, w.assignee, w.member, w.owner, w.admin, w.manager):
+                got = await call(reader, "GET", f"/projects/agent-runs/{run}")
+                assert got.json()["run"]["can_answer"] is True, reader.email
+            got = await call(w.viewer, "GET", f"/projects/agent-runs/{run}")
+            assert got.status_code == 200, got.text
+            assert got.json()["run"]["can_answer"] is False
+
+    async def test_with_the_flag_off_the_key_is_absent(self, w, monkeypatch):
+        _flag_off(monkeypatch)
+        async with _session(w.p) as call:
+            run, _ = await _ask(w, call)
+            got = await call(w.viewer, "GET", f"/projects/agent-runs/{run}")
+            assert "can_answer" not in got.json()["run"]
+
+
+@_DB_GATE
 class TestTheFlags:
 
     async def test_a7_with_the_flag_off_the_route_answers_404(self, w, monkeypatch):

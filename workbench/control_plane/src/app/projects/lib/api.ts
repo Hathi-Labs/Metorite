@@ -18,6 +18,13 @@ import {
   normalizeRunDetail,
 } from "./agentRuns";
 import { type TaskDecisions, answerBody, readTaskDecisions } from "./decisions";
+import {
+  type QuestionScope,
+  type QuestionSort,
+  type QuestionsPage,
+  questionsPage,
+  questionsQuery,
+} from "./agentQuestions";
 import type { EpicRollup } from "./epicRollup";
 import {
   ATTENTION_LIMIT,
@@ -3415,6 +3422,32 @@ export const attentionApi = {
    */
   mine: async (): Promise<AttentionPage> =>
     attentionPage(await call<unknown>(`needs-attention?mine=true&limit=${ATTENTION_LIMIT}`)),
+};
+
+/**
+ * WS-55 EA-18b — Questions for me (`external_agent_access.md` §12.8). The open
+ * agent questions that wait on a person. One route feeds the Projects pane,
+ * and later the My Day card and the Approvals tab. The words are in
+ * `agentQuestions.ts`.
+ */
+export const questionsApi = {
+  /**
+   * One page. `null` means the route is OFF: `AGENT_QUESTIONS_ORGS` does not
+   * hold the org, the route answers 404, and the sidebar draws no entry.
+   */
+  list: async (opts: {
+    scope?: QuestionScope;
+    project?: string | null;
+    sort?: QuestionSort;
+    limit?: number;
+  }): Promise<QuestionsPage | null> => {
+    try {
+      return questionsPage(await call<unknown>(`agent-questions?${questionsQuery(opts)}`));
+    } catch (err) {
+      if (err instanceof ProjectsApiError && err.status === 404) return null;
+      throw err;
+    }
+  },
 };
 
 export interface NotificationRow {

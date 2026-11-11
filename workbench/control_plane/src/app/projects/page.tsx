@@ -287,6 +287,8 @@ import {
 import { archiveBar } from "./lib/archiveBar";
 import { lanesAfter, planShowView } from "./lib/chatView";
 import ReportsView from "./components/ReportsView";
+import { QuestionsView } from "./components/QuestionsView";
+import { useQuestionsBadge } from "./components/useQuestionsBadge";
 import NodeDashboard from "./components/NodeDashboard";
 import SpaceSettings from "./components/SpaceSettings";
 import {
@@ -500,6 +502,7 @@ function ProjectNav({
   onManageTags,
   onManageLifecycle,
   counts,
+  questionsOn = false,
   personal = NO_ROOTS,
 }: {
   roots: ProjectRow[];
@@ -511,6 +514,8 @@ function ProjectNav({
   onApp: (id: ProjectAppId) => void;
   /** WS-64 OP-2 — the count beside each My work entry (`lib/myWork.ts`). */
   counts?: Partial<Record<ProjectAppId, number>>;
+  /** WS-55 EA-18b — Questions shows only while its route answers (flag on). */
+  questionsOn?: boolean;
   onSelect: (project: ProjectRow) => void;
   onAddChild: (parent: ProjectRow, option: ChildOption) => void;
   /** Open Space Settings for a space (migration 194). */
@@ -597,7 +602,9 @@ function ProjectNav({
             </p>
           ) : null}
           <div className="flex flex-col gap-0.5">
-            {section.items.map((item) => {
+            {section.items
+              .filter((item) => item.id !== "questions" || questionsOn)
+              .map((item) => {
               const preview = item.launch === "preview";
               const active = !preview && app === item.id;
               return (
@@ -1232,9 +1239,14 @@ function ProjectsWorkspace() {
   // OP-11 fix round, item 11: the count on the Needs attention lens of My
   // tasks. The space reads the same cache key for the lens itself.
   const myAttention = useMyAttention(MY_WORK_LIVE && isMyTasksApp(app));
+  // WS-55 EA-18b — the Questions entry and its badge (the "mine" count).
+  const questions = useQuestionsBadge();
   const navCounts = useMemo(
-    () => (MY_WORK_LIVE ? myWorkNavCounts(mySummary.data) : undefined),
-    [mySummary.data],
+    () => ({
+      ...(MY_WORK_LIVE ? myWorkNavCounts(mySummary.data) : {}),
+      ...(questions.count ? { questions: questions.count } : {}),
+    }),
+    [mySummary.data, questions.count],
   );
   const { access, loading: accessLoading } = useAccess();
   const mayImport = IMPORT_LIVE && canImport(access, accessLoading);
@@ -1960,6 +1972,7 @@ function ProjectsWorkspace() {
     app === "reports" ||
     app === "ai-chat" ||
     app === "settings" ||
+    app === "questions" ||
     isMyWorkId(app);
   // WS-55 SW-11a — the project the Needs attention lens reads, and whether the
   // lens is on for it. A new project opens on its board, never on the lens of
@@ -2117,6 +2130,7 @@ function ProjectsWorkspace() {
             selectedId={selected?.id ?? null}
             app={app}
             counts={navCounts}
+            questionsOn={questions.on === true}
             onApp={chooseApp}
             onSelect={(project) => {
               setApp(null);
@@ -4956,6 +4970,21 @@ function ProjectsWorkspace() {
     <div className="min-w-0 flex-1 overflow-hidden">
       <AssistantRail {...railPlace} view={null} />
     </div>
+  ) : app === "questions" ? (
+    // WS-55 EA-18b (`external_agent_access.md` §12.8) — the agent questions
+    // that wait on the reader. The pane reads its own list. A project name
+    // opens that project, and "Open task" opens the task, as a deep link does.
+    <QuestionsView
+      projects={flatten(visibleRoots).map((e) => ({
+        id: e.node.id,
+        label: displayNodeName(e.node),
+        depth: e.depth,
+      }))}
+      personLabels={personLabels}
+      onOpenTask={(taskId) => router.push(`/projects?task=${encodeURIComponent(taskId)}`)}
+      onOpenProject={(id) => router.push(`/projects?project=${encodeURIComponent(id)}`)}
+      onChanged={questions.refresh}
+    />
   ) : app === "reports" ? (
     // §9.12.8 — a saved question, rendered on screen before anything sends.
     // WS-27bn R5f: Reports is also where the Analytics app went. It opens on
@@ -5891,7 +5920,11 @@ function ProjectsWorkspace() {
   // or folder dashboard, and a filed SPACE must still say it is filed (rule 1
   // names spaces). Only the app's own pages, which show no node, drop it.
   const onAppPage =
-    app === "reports" || app === "ai-chat" || app === "settings" || isMyWorkId(app);
+    app === "reports" ||
+    app === "ai-chat" ||
+    app === "settings" ||
+    app === "questions" ||
+    isMyWorkId(app);
   const archiveBarEl =
     !onAppPage && selected && archiveBarNow ? (
       <div
@@ -6005,6 +6038,7 @@ function ProjectsWorkspace() {
               selectedId={selected?.id ?? null}
               app={app}
               counts={navCounts}
+              questionsOn={questions.on === true}
               onApp={chooseApp}
               onSelect={(project) => {
                 setApp(null);
