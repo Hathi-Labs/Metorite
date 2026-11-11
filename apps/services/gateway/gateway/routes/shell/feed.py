@@ -1018,15 +1018,18 @@ register(Provider("chat", ("chat",), _chat, CHAT_KINDS, needs=False, gated=True)
 # ── Questions for me (WS-55 EA-18c, external_agent_access.md §12.8, feed only) ─
 #
 # `agent_questions`: the agent questions that wait on the member, as ONE card.
-# The source reads the list's own read, `agent_questions.read_questions`, and
+# The source reads `agent_questions.read_mine`, which runs `read_questions` and
 # keeps the rows that carry a `why` (the "For me" scope). It writes no SQL.
 # The oldest 3 questions go on the card, and `total` is the count of the list,
 # so the card, the Projects sidebar badge and the Approvals tab say one number.
 #
-# The flag `AGENT_QUESTIONS_ORGS` gates it inside (`SourceAbsent`), as the route
-# does with 404. It is not gated by `MY_DAY_PROVIDERS`, so one flag turns on all
-# three doors. An off org costs one flag read. Its one act opens the list in
-# Projects, where an answer runs the same write as the list (D100, D101).
+# Gated like the other feed-only sources (MD-3b): it runs only while
+# `MY_DAY_PROVIDERS` lists `agent_questions`, so the answer of the feed does not
+# change by one byte before the flip. The flag `AGENT_QUESTIONS_ORGS` gates it
+# inside too (`SourceAbsent`), as the route answers 404. Turn on both to show
+# the card. Its one act opens the list in Projects, where an answer runs the
+# same write as the list (D100, D101). The session is the Projects app's own:
+# `agent_questions.read_mine`. This file opens none.
 #
 # Fence: `tests/unit/test_feed_agent_questions.py` and its `_r8` twin.
 
@@ -1063,28 +1066,15 @@ def _question_fact(row: dict[str, Any]) -> dict[str, Any]:
 
 async def _agent_questions(user: UserContext) -> Found:
     from gateway.routes.projects import agent_questions as aq
-    from gateway.routes.projects.agent_runs import _member, holds_answer_role
-    from gateway.routes.projects.analytics import scope_clause, scope_params
-    from gateway.routes.projects.core import _tenant_session, resolve_visibility
-    from gateway.routes.projects.filters import agent_questions_allowed, agent_runs_enabled
+    from gateway.routes.projects.filters import agent_questions_allowed
 
     if not agent_questions_allowed(getattr(user, "organization_id", None)):
         raise needs.SourceAbsent("AGENT_QUESTIONS_ORGS does not hold the org")
-    mine: list[tuple[Any, Any]] = []
-    rows: list[dict[str, Any]] = []
-    async with _tenant_session() as db:
-        vis = await resolve_visibility(db, user)
-        scope_sql = await scope_clause(db, vis, None, True)
-        if agent_runs_enabled():
-            every = await aq.read_questions(
-                db, vis, _member(user), scope_sql, scope_params(None))
-            # The list's own scope: a row has a `why` when it is "for me".
-            mine = [pair for pair in every if pair[0].why is not None]
-        rows = await aq.question_rows(
-            db, vis, mine[:QUESTIONS_SHOWN], review=holds_answer_role(user))
+    # The Projects app's own read: its session, its tenant and its visibility.
+    rows, total_mine = await aq.read_mine(user, QUESTIONS_SHOWN)
     signals: list[Signal] = []
     if rows:
-        total = len(mine)
+        total = total_mine
         shown = [_question_fact(r) for r in rows]
         title = ("An agent question waits for you" if total == 1
                  else f"{total} agent questions wait for you")
@@ -1097,11 +1087,11 @@ async def _agent_questions(user: UserContext) -> Found:
             href=QUESTIONS_HREF, acts=(link("answer", "Answer", QUESTIONS_HREF),),
             at=asked,
         ))
-    return Found([], len(mine), capped=False, signals=lambda: signals)
+    return Found([], total_mine, capped=False, signals=lambda: signals)
 
 
 register(Provider("agent_questions", ("projects",), _agent_questions, QUESTION_KINDS,
-                  needs=False, app="projects"))
+                  needs=False, gated=True, app="projects"))
 
 
 # ── Knowledge (WS-61 KB-9a and KB-9b, knowledge_base.md §9, feed only, gated) ─
@@ -1461,6 +1451,8 @@ _ORG_CARD_LINES: dict[str, tuple[str, Any]] = {
     "digest_ready": ("digest_ready", lambda f, _tz, _today: _digest_line(f)),
     "crm_open_questions": ("open_questions", lambda f, _tz, _today: _questions_line(f)),
     "kb_gap": ("gap", lambda f, _tz, _today: _gap_line(f)),
+    # WS-55 EA-18c: the agent questions that wait on the member.
+    "agent_questions": ("agent_questions", lambda f, _tz, _today: _questions_card_line(f)),
     # KB-9b: the two page cards.
     "doc_needs_review": ("review_due", _review_line),
     "doc_shared_with_me": ("shared", lambda f, _tz, _today: _shared_line(f)),
@@ -1515,8 +1507,6 @@ def _md3_why(kind: str, facts: dict[str, Any], tz: ZoneInfo,
         # word of a model.
         template, line = _ORG_CARD_LINES[kind]
         return template, line(facts, tz, today)
-    if kind == "agent_questions":
-        return "agent_questions", _questions_card_line(facts)
     if kind == "agent_asks":
         at = facts.get("waiting_since")
         return "asks", (f"Asked {_when(at, tz, today)} at {_clock(at, tz)}. "

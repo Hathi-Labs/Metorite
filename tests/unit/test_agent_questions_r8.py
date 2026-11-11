@@ -1418,3 +1418,76 @@ class TestTheFlags:
             # The gates hold with the runs flag off too.
             assert (await _list(call, w.viewer, scope="everyone")).status_code == 403
             assert (await _list(call, w.creator, project=w.space["id"])).status_code == 404
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# R8: the My Day card (EA-18c). The real provider, on the real tables.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def _card_signals(user: Any) -> tuple[Any, list[Any]]:
+    """The real ``agent_questions`` provider for *user*: its ``Found`` and
+    signals. It opens the Projects app's own session, so the tenant is bound
+    here as the middleware binds it."""
+    from gateway.routes.shell import needs
+
+    scope = bind_tenant(user.organization_id)
+    try:
+        found = await needs.REGISTRY["agent_questions"].run(user)
+        return found, found.signals()
+    finally:
+        release_tenant(scope)
+
+
+@_DB_GATE
+class TestTheMyDayCard:
+
+    async def test_the_card_counts_what_the_list_counts_and_shows_the_3_oldest(self, w):
+        async with _session(w.p) as call:
+            runs = []
+            for task in (w.task, w.task_other, w.task_third, w.task_held):
+                runs.append(await _ask(w, call, task=task))
+            listed = (await _list(call, w.creator)).json()
+            found, [signal] = await _card_signals(w.creator)
+            # One number in all three doors: the list's own `counts.mine`.
+            assert listed["counts"]["mine"] == 4
+            assert found.total == signal.facts["total"] == 4
+            # The 3 oldest, in the list's own order.
+            oldest = [r["activity_id"] for r in listed["rows"][:3]]
+            assert [q["activity_id"] for q in signal.facts["questions"]] == oldest
+            assert signal.title == "4 agent questions wait for you"
+            assert signal.facts["questions"][0]["path"]  # the project path, or the task title
+            assert signal.facts["questions"][0]["options"]
+
+    async def test_a_member_with_no_open_question_sees_no_card(self, w):
+        async with _session(w.p) as call:
+            await _ask(w, call)
+            # The viewer created nothing, holds no task and is not the run's member.
+            found, signals = await _card_signals(w.viewer)
+            assert found.total == 0 and signals == []
+
+    async def test_a_reader_of_another_org_sees_no_card(self, w):
+        async with _session(w.p) as call:
+            await _ask(w, call)
+            found, signals = await _card_signals(w.b_member)
+            assert found.total == 0 and signals == []
+
+    async def test_an_answered_question_leaves_the_card(self, w):
+        async with _session(w.p) as call:
+            run, _ = await _ask(w, call)
+            _, signals = await _card_signals(w.creator)
+            assert len(signals) == 1
+            done = await _act(call, w.creator, run, type="prompt", selected=["pg"],
+                              idempotency_key=_key())
+            assert done.status_code == 201, done.text
+            found, signals = await _card_signals(w.creator)
+            assert found.total == 0 and signals == []
+
+    async def test_with_the_flag_off_the_source_reads_absent(self, w, monkeypatch):
+        from gateway.routes.shell import needs
+
+        async with _session(w.p) as call:
+            await _ask(w, call)
+            _flag_off(monkeypatch)
+            with pytest.raises(needs.SourceAbsent):
+                await _card_signals(w.creator)
