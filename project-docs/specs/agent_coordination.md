@@ -2,7 +2,7 @@
 
 > **Dated 2026-11-11, price (D204.9).** Seat tiers are final. The flat ₹500 seat ends when PLN-0 merges. Until then the code sells the flat seat. Read each line that says the flat seat as the seat of D152 after PLN-0. Lines: 474 and 724.
 
-**Status: ACTIVE (SW-0, 2026-10-30). SW-68a (the plan order of `my_work`) is built, 2026-11-08. The rest of SW-68 is open. The replan of 2026-11-09 (task 2518) sets the queue order, the lane scope and pull start (SW-100, new). It parks SW-17, SW-20, SW-22, SW-69, SW-74, SW-75, SW-89, SW-90 and SW-92. SW-43a (withdraw an answer) is built and dark, 2026-11-05. SW-43b and SW-43c are open. SW-16a (the link tools) is built, 2026-11-08. SW-16b (the write fence) is open.**
+**Status: ACTIVE (SW-0, 2026-10-30). SW-68a (the plan order of `my_work`) is built, 2026-11-08. The rest of SW-68 is open. The replan of 2026-11-09 (task 2518) sets the queue order, the lane scope and pull start (SW-100, new). It parks SW-17, SW-20, SW-22, SW-69, SW-74, SW-75, SW-89, SW-90 and SW-92. SW-43a (withdraw an answer) is built and dark, 2026-11-05. SW-43b (change an answer) is built and dark, 2026-11-11. SW-43c is open. SW-16a (the link tools) is built, 2026-11-08. SW-16b (the write fence) is open.**
 
 **SW-34b (the read-only door `/mcp/readonly`) is built, 2026-11-07.**
 
@@ -249,7 +249,7 @@ The source is the Linear research of 2026-10-30, the comment on epic 321. Append
 - **Race.** The route takes the same `FOR UPDATE` lock of the run as an agent post. The check runs under the lock. So one write wins. When the agent wins, the member gets 409 "The agent already has your answer. Send a comment instead."
 - **Protocol.** An agent posts a thought that names the answer id before it acts on an answer. The thought ends the window.
 - **Flag.** `agent_answer_change_enabled`, default off. Off: the route answers 404 and the run wire has no `answer` field. No migration.
-- **Slices.** SW-43a withdraw (built dark). SW-43b a replace route, with the option `confirm: true` and the card text "Are you sure?", and a Change button. SW-43c the chat tool, the agent text on by default, and the flag on.
+- **Slices.** SW-43a withdraw (built dark). SW-43b a replace route, with the option `confirm: true` and the card text "Are you sure?", and a Change button (built dark, 2026-11-11). SW-43c the chat tool, the agent text on by default, and the flag on.
 
 ### 3.10 Many people, each with their own agents (P9, D183)
 
@@ -610,7 +610,7 @@ The first keys: `stages_required`, `brief_required`, `claim_scope_mode`, `review
 
 | Item | Already planned | New |
 |---|---|---|
-| **Shared lessons for each project** | SW-31 (guidance with history; SW-31a is built, SW-31b is not). Task 1068 (SW-42): an agent proposes a guidance edit and a lead approves. The guidance table holds rule rows with `state`, `proposed_by`, a source and a quote, and lead acceptance (ALN-5, ALN-5b, ALN-11) | **SW-98.** A lesson is a rule row. SW-98 adds `verify_by` and provenance, so a lesson expires unless someone verifies it again. An import path takes local memory files as proposals |
+| **Shared lessons for each project** | SW-31 (guidance with history, with SW-31a and SW-31b built and dark). Task 1068 (SW-42): an agent proposes a guidance edit and a lead approves. The guidance table holds rule rows with `state`, `proposed_by`, a source and a quote, and lead acceptance (ALN-5, ALN-5b, ALN-11) | **SW-98.** A lesson is a rule row. SW-98 adds `verify_by` and provenance, so a lesson expires unless someone verifies it again. An import path takes local memory files as proposals |
 | **A cause tag on each stalled run** | §3.10.11 names seven causes in prose. `pm_agent_run_strands` holds a `reason` (`agent_quiet`, `answer_unread`, `question_unanswered`) that says which sweep rule fired | **SW-99.** A fixed `cause` vocabulary that says why the run stalled, on the strand and on the release activity of a run. Reports group by cause |
 | **Versioned lane and prompt templates** | Nothing | **PB-9** (`orchestration_playbook.md`). The templates are playbook content. A lane (SW-67) names the template version it came from |
 
@@ -989,7 +989,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-31 · Agent guidance
 
-- **Status.** **SW-31a is built, dark** (backend and MCP return, no UI), behind `AGENT_GUIDANCE_ORGS`. SW-31b (the Settings screen) is not built.
+- **Status.** **SW-31a and SW-31b are built, dark**, behind `AGENT_GUIDANCE_ORGS`. SW-31a is the backend and the MCP return. SW-31b is the Settings → Agents screen at `/settings/agents`. It waits for the D145 owner preview before the merge. The chat tool is SW-31c (task 1531).
 - **Split.** SW-31a: items 1, 3, 4 and 5 below, the routes `/agent-guidance`, and the flag. SW-31b: item 2, the Settings → Agents screen at the new route `/settings/agents`.
 - **Gate for SW-31b.** D145 owner preview. It is a new route and a new screen, so the owner approves the preview before the merge.
 - **Scope.**
@@ -1007,6 +1007,14 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
   - **Who writes.** The save of a project or a space needs the write floor of a grant (`authority.assert_may_write_guidance`). The save of the org needs `admin:settings:manage` (`core.ORG_VOCABULARY_WRITE`), the house rule for an org-wide write. A `manager` holds `projects:settings:write` and not that permission, so a manager gets 403 on the org.
   - **Who reads.** A member who sees a task but not its space gets the space block. Its source is the stub `{"hidden": true}`, with no name and no project id, as EA-15 shows a hidden parent. The refs read each id through the visibility seam, so a hidden or an unknown project gets null.
   - **The answer.** The edge returns `guidance` as `{blocks, dropped}`. `dropped` counts the farthest blocks that the cap cut. `get_task_context` makes 14 gateway calls at most (MCP-G18 added the attachments read). The blocks name their level as `project`, `space` or `company`. The chat tool for guidance is a follow-up (SW-31c).
+- **As built (SW-31b).** These notes record the build.
+  - **The page.** `workbench/control_plane/src/app/settings/agents/page.tsx` opens with `AppTopBar`. Every member can open it, because the lead of a project also writes guidance. The account menu shows "Agents" in its Settings group while guidance is on for the org (`useAgentGuidanceEnabled`). The Organisation bar also links to it for an admin. The way back leads to Organisation for an admin, and to Settings for any other member.
+  - **The parts.** A scope picker (`SelectButton`) holds the whole organization and the team tree of `GET /projects/tree`, read with `buildProjectTree`. A Markdown `Textarea` has a counter against 8,000. "Save guidance" saves a new version. The History list shows the version, the writer, the time and the first line. A version opens read-only, and "Use this text" copies it into the editor.
+  - **Who writes.** The org level needs the capability `admin:settings:manage`. A project reads `can_write_grants` from `GET /projects/nodes/{id}`. A failed read of those facts turns Save off, with the reason. A member who cannot write reads the text, with Save off and the reason. The gateway still decides each save, and its 403 shows in the same place.
+  - **The editor.** One reducer (`editorReducer`) holds a draft, a note and a save state for each scope. After a save, the draft stays until the History head shows the new version. Discard shows for any changed draft.
+  - **Dark.** A 404 with the detail "Not Found" draws "Agent guidance is not turned on for this organization". A hidden project gets its own words.
+  - **The BFF.** `api/agent-guidance/route.ts` (POST) and `api/agent-guidance/history/route.ts` (GET) forward through `proxyToGateway`. The POST answers 422 for a `project_id` that is not a project id or null. The pure decisions are in `guidance.ts`, and `guidance.test.ts` holds them.
+  - **Parity.** `chat_parity.py` holds the save and the history read as P-8 debt, and SW-31c pays it. The settings ceiling went from 26 to 28.
 
 #### SW-32 · A plan on each run
 
@@ -1204,6 +1212,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 #### SW-43b · Change an answer
 
 - **Scope.** A replace route that withdraws and answers in one transaction. An option `confirm: true` asks "Are you sure?" before it writes. A Change button on the card.
+- **Built dark, 2026-11-11 (task 1801).** `POST /projects/agent-runs/{run_id}/answer/replace` takes `answer_id`, `selected`, an optional `body` and a key. It writes the marker of a withdraw and a new member prompt with `content.replaces`, in one transaction. A bad option rolls the withdraw back. The key of the marker is the key plus `:w`. The option field `confirm` is stored only when true. The card asks "Are you sure?" and then sends. The run card has a Change button next to Withdraw.
 - **Depends on.** SW-43a.
 
 #### SW-43c · Chat tool and flag on
@@ -1456,7 +1465,7 @@ They keep their own gates.
 
 ### 5.11 P10 — Metorite runs the fleet and teaches it
 
-**Source.** §3.11 and D186. Task 1906 holds the brief. Each slice below has a task in Backlog under epic 321. The slices PB-1 to PB-10 are in `orchestration_playbook.md` §7. Slices of other specs keep their owners and gates. P10 depends on these slices: SW-7a, SW-46, SW-48, SW-56, SW-60, SW-31 (SW-31a is built, SW-31b is not), SW-34a and EA-19 (task 1819). It also depends on task 1731. P10 merges after PR 1777, which holds P9.
+**Source.** §3.11 and D186. Task 1906 holds the brief. Each slice below has a task in Backlog under epic 321. The slices PB-1 to PB-10 are in `orchestration_playbook.md` §7. Slices of other specs keep their owners and gates. P10 depends on these slices: SW-7a, SW-46, SW-48, SW-56, SW-60, SW-31 (SW-31a and SW-31b are built, dark), SW-34a and EA-19 (task 1819). It also depends on task 1731. P10 merges after PR 1777, which holds P9.
 
 **Common rules.** Every slice ships dark behind a flag or a setting that is off, unless it says otherwise. A new table is tenant-scoped under FORCE ROW LEVEL SECURITY (R5). A migration is expand only (R6), and its number is taken at build time (R1). Each new route joins `skill_projects/manifest.py`. Each new tool joins `MCP_WRITE_ROUTES` or `MCP_ROUTES` with a named scope (§2.3 rule 6). A box token authenticates at the edge, so a runner call is an MCP tool and not a gateway route. A migration makes a slice HIGH.
 

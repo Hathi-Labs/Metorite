@@ -1,8 +1,13 @@
 """Workflow CRUD — the edit-model lifecycle (spec F1, §6).
 
 Workflows are org-internal: any member holding the ``workflows`` feature sees
-and edits every workflow (v1 — per-workflow ACLs are an open question, spec
-Q3 covers publish rights). ``owner_email`` is attribution, not access.
+every workflow (v1 — per-workflow ACLs are an open question, spec Q3 covers
+publish rights). ``owner_email`` is attribution, not access.
+
+A write (create, duplicate, edit, delete) also carries ``AUTHOR_GATE``: it
+needs ``feature:studio`` where ``WORKFLOW_STUDIO_GATE_ORGS`` holds the org
+(STU-J1-3, ``core.py``). ``validate`` writes nothing, so it is a read and
+keeps the router gate only.
 """
 
 from __future__ import annotations
@@ -13,6 +18,7 @@ from typing import Any
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
 from gateway.routes.workflows.core import (
+    AUTHOR_GATE,
     HOOK_PATH,
     MAX_GRAPH_BYTES,
     _tenant_session,
@@ -102,7 +108,7 @@ async def list_workflows(
     ]
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, dependencies=[AUTHOR_GATE])
 async def create_workflow(
     body: WorkflowCreate,
     user: UserContext = Depends(get_current_user),
@@ -131,7 +137,7 @@ async def create_workflow(
     }
 
 
-@router.post("/{workflow_id}/duplicate", status_code=201)
+@router.post("/{workflow_id}/duplicate", status_code=201, dependencies=[AUTHOR_GATE])
 async def duplicate_workflow(
     workflow_id: str,
     user: UserContext = Depends(get_current_user),
@@ -231,7 +237,7 @@ async def get_workflow(
     }
 
 
-@router.put("/{workflow_id}")
+@router.put("/{workflow_id}", dependencies=[AUTHOR_GATE])
 async def update_workflow(
     workflow_id: str,
     body: WorkflowUpdate,
@@ -319,7 +325,7 @@ async def update_workflow(
     }
 
 
-@router.delete("/{workflow_id}", status_code=204)
+@router.delete("/{workflow_id}", status_code=204, dependencies=[AUTHOR_GATE])
 async def delete_workflow(
     workflow_id: str,
     user: UserContext = Depends(get_current_user),

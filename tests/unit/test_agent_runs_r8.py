@@ -131,6 +131,7 @@ def test_the_routes_are_mounted() -> None:
         ("POST", "/projects/agent-runs/{run_id}/activities"),
         ("POST", "/projects/agent-runs/{run_id}/finish"),
         ("POST", "/projects/agent-runs/{run_id}/answer/withdraw"),
+        ("POST", "/projects/agent-runs/{run_id}/answer/replace"),
     ):
         assert pair in mounted, pair
 
@@ -1206,6 +1207,111 @@ async def _answered(w: Any, call: Any) -> tuple[str, str, str]:
 def _withdraw(call: Any, user: Any, rid: str, answer: str, key: str | None = None) -> Any:
     return call(user, "POST", f"/projects/agent-runs/{rid}/answer/withdraw",
                 {"answer_id": answer, "idempotency_key": key or _key()})
+
+
+def _replace(call: Any, user: Any, rid: str, answer: str, selected: list[str],
+             key: str | None = None) -> Any:
+    return call(user, "POST", f"/projects/agent-runs/{rid}/answer/replace",
+                {"answer_id": answer, "selected": selected, "idempotency_key": key or _key()})
+
+
+@_DB_GATE
+class TestReplaceAnAnswer:
+    """SW-43b. One transaction: the old answer is withdrawn, the new one is written."""
+
+    async def test_the_flag_off_gives_404(self, w):
+        async with _session(w.p) as call:
+            rid, _q, aid = await _answered(w, call)
+            assert (await _replace(call, w.a, rid, aid, ["my"])).status_code == 404
+
+    async def test_a_replace_swaps_the_answer_and_the_run_keeps_working(self, wd):
+        w = wd
+        async with _session(w.p) as call:
+            rid, qid, aid = await _answered(w, call)
+            done = await _replace(call, w.a, rid, aid, ["my"])
+            assert done.status_code == 200, done.text
+            run = done.json()["run"]
+            assert run["status"] == "in_progress"
+            assert run["answer"]["id"] != aid and run["answer"]["changeable"] is True
+            new = done.json()["activity"]
+            assert new["content"]["selected"] == ["my"]
+            assert new["content"]["replaces"] == aid and new["in_reply_to"] == qid
+            old = _rows(w.p, "SELECT in_reply_to, content FROM pm_agent_run_activities "
+                             "WHERE id = CAST(:i AS uuid)", i=aid)[0]
+            assert old.in_reply_to is None and old.content["withdrawn"]["by"] == w.a_email
+            # The agent reads the new answer and the marker, never the old answer.
+            read = await call(w.agent_a, "GET", f"/projects/agent-runs/{rid}")
+            ids = [a["id"] for a in read.json()["activities"]]
+            assert aid not in ids and new["id"] in ids
+
+    async def test_a_bad_option_rolls_the_withdraw_back(self, wd):
+        w = wd
+        async with _session(w.p) as call:
+            rid, _q, aid = await _answered(w, call)
+            bad = await _replace(call, w.a, rid, aid, ["nope"])
+            assert bad.status_code == 422
+            row = _rows(w.p, "SELECT in_reply_to FROM pm_agent_run_activities "
+                             "WHERE id = CAST(:i AS uuid)", i=aid)[0]
+            assert row.in_reply_to is not None
+            assert _count(w.p, "SELECT count(*) FROM pm_agent_run_activities "
+                               "WHERE run_id = CAST(:r AS uuid) AND content ? 'withdraws'",
+                          r=rid) == 0
+
+    async def test_after_the_agent_read_it_gives_409(self, wd):
+        w = wd
+        async with _session(w.p) as call:
+            rid, _q, aid = await _answered(w, call)
+            await _act(call, w.agent_a, rid, type="thought", body="Got it")
+            late = await _replace(call, w.a, rid, aid, ["my"])
+            assert late.status_code == 409
+            assert "already has your answer" in late.json()["detail"]
+
+    async def test_only_the_runs_member_and_never_an_agent(self, wd):
+        w = wd
+        async with _session(w.p) as call:
+            rid, _q, aid = await _answered(w, call)
+            assert (await _replace(call, w.c, rid, aid, ["my"])).status_code == 403
+            assert (await _replace(call, w.agent_a, rid, aid, ["my"])).status_code == 403
+            assert (await _replace(call, w.b, rid, aid, ["my"])).status_code == 404
+
+    async def test_a_replace_needs_an_option_or_a_text(self, wd):
+        w = wd
+        async with _session(w.p) as call:
+            rid, _q, aid = await _answered(w, call)
+            none = await call(w.a, "POST", f"/projects/agent-runs/{rid}/answer/replace",
+                              {"answer_id": aid, "idempotency_key": _key()})
+            assert none.status_code == 422
+            typed = await call(w.a, "POST", f"/projects/agent-runs/{rid}/answer/replace",
+                               {"answer_id": aid, "body": "Use Postgres 16",
+                                "idempotency_key": _key()})
+            assert typed.status_code == 200, typed.text
+            assert typed.json()["activity"]["content"]["replaces"] == aid
+
+    async def test_a_replay_of_the_key_writes_once(self, wd):
+        w = wd
+        async with _session(w.p) as call:
+            rid, _q, aid = await _answered(w, call)
+            key = _key()
+            first = await _replace(call, w.a, rid, aid, ["my"], key)
+            second = await _replace(call, w.a, rid, aid, ["my"], key)
+            assert (first.status_code, second.status_code) == (200, 200)
+            assert second.json()["created"] is False
+            assert first.json()["activity"]["id"] == second.json()["activity"]["id"]
+            assert _count(w.p, "SELECT count(*) FROM pm_agent_run_activities "
+                               "WHERE run_id = CAST(:r AS uuid) AND content ? 'replaces'",
+                          r=rid) == 1
+
+    async def test_confirm_is_kept_on_an_option_and_absent_otherwise(self, wd):
+        w = wd
+        async with _session(w.p) as call:
+            run = await _start(w, call)
+            opts = [{"id": "go", "label": "Restart it now", "confirm": True},
+                    {"id": "no", "label": "Not now"}]
+            asked = await _act(call, w.agent_a, run["id"], type="elicitation",
+                               body="Restart?", options=opts)
+            assert asked.status_code == 201, asked.text
+            stored = asked.json()["activity"]["signal_metadata"]["options"]
+            assert stored[0]["confirm"] is True and "confirm" not in stored[1]
 
 
 @_DB_GATE

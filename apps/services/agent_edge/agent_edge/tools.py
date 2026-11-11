@@ -82,6 +82,7 @@ import contextlib
 import hashlib
 import hmac
 import json
+import math
 import re
 import weakref
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping
@@ -192,8 +193,8 @@ TEXT_PARENT_OTHER_PROJECT = (
     "The parent task is in another project. Send the project_id of the parent task.")
 TEXT_UPDATE_EMPTY = (
     "Send one or more fields to change: title, description, tags, due_at,"
-    " custom_fields, importance, leveraged, estimate_mins, start_date, type_id or"
-    " parent_task_id.")
+    " custom_fields, importance, leveraged, estimate_mins, start_date, type_id,"
+    " parent_task_id or epic_contract.")
 #: WS-MCP SW-23. The texts of the Check of a task: the ``check`` input of
 #: ``create_task`` and ``update_task``, and ``report_check``.
 TEXT_CHECKS_OFF = "Checks are turned off in this organization."
@@ -929,6 +930,11 @@ def _type_ok(value: Any, kind: str | list[str]) -> bool:
         return isinstance(value, str)
     if kind == "integer":
         return isinstance(value, int) and not isinstance(value, bool)
+    if kind == "number":
+        # SP-8a: the appetite of an epic contract. A bool is not a number, and
+        # neither is an infinity or a NaN, which JSON cannot carry back.
+        return (isinstance(value, int | float) and not isinstance(value, bool)
+                and math.isfinite(value))
     if kind == "boolean":
         return isinstance(value, bool)
     if kind == "object":
@@ -1243,6 +1249,11 @@ class Tool:
     #: 3 and 4 of ``test_mcp_edge_coverage.py`` do not read them, and
     #: ``tests/unit/test_mcp_edge_app_door.py`` holds them.
     app_scope: str = ""
+    #: PB-3a (D186). True for ``read_playbook``. It reads the playbook package
+    #: and no gateway route, so it has no fixed route and the rules 3 and 4 of
+    #: ``test_mcp_edge_coverage.py`` do not read it. It shows only for an
+    #: organization on ``playbook_orgs`` (:func:`offered`).
+    playbook: bool = False
     #: WS-MCP SW-23. True for ``report_check``. It shows only while
     #: ``agent_task_checks_enabled`` is on, read through
     #: ``agent_oauth.task_checks_enabled``.
@@ -1868,6 +1879,10 @@ BOARD_STATS = Tool(
 
 PLAN_ROUTE = "/projects/plan/analysis"
 
+#: The reasons a slice is not ready, as the engine words them (PJP-6).
+_PLAN_NOT_READY_REASONS = frozenset(
+    {"open blocker", "no owner", "no estimate", "no done-when"})
+
 _ID_SCHEMA: dict[str, Any] = {"type": "string", "pattern": _UUID_PATTERN}
 _ID_LIST: dict[str, Any] = {"type": "array", "items": _ID_SCHEMA}
 
@@ -1929,6 +1944,30 @@ _GET_PLAN_OUTPUT: dict[str, Any] = {
             "additionalProperties": False,
         },
         "not_enough": {"type": ["string", "null"]},
+        "gaps": {
+            "type": "object",
+            "properties": {
+                "no_owner": _ID_LIST,
+                "no_estimate": _ID_LIST,
+                "too_big": _ID_LIST,
+                "no_done_when": _ID_LIST,
+                "words": {"type": "array", "items": {"type": "string"}},
+            },
+            "additionalProperties": False,
+        },
+        "not_ready": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "task_id": _ID_SCHEMA,
+                    "reasons": {"type": "array",
+                                "items": {"type": "string", "enum": sorted(_PLAN_NOT_READY_REASONS)}},
+                },
+                "required": ["task_id", "reasons"],
+                "additionalProperties": False,
+            },
+        },
         "ignored_links": {
             "type": "array",
             "items": {
@@ -1989,6 +2028,8 @@ async def _get_plan(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     words = missing.get("words")
     waves = body.get("waves")
     labels = body.get("labels")
+    gaps = body.get("gaps") if isinstance(body.get("gaps"), dict) else {}
+    gap_words = gaps.get("words")
     return {
         "root_task_id": body["root_task_id"],
         "slices": _int(body.get("slices")),
@@ -2018,6 +2059,21 @@ async def _get_plan(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         },
         "not_enough": (body["not_enough"]
                        if isinstance(body.get("not_enough"), str) else None),
+        "gaps": {
+            "no_owner": _ids(gaps.get("no_owner")),
+            "no_estimate": _ids(gaps.get("no_estimate")),
+            "too_big": _ids(gaps.get("too_big")),
+            "no_done_when": _ids(gaps.get("no_done_when")),
+            "words": ([w for w in gap_words if isinstance(w, str)]
+                      if isinstance(gap_words, list) else []),
+        },
+        "not_ready": [
+            {"task_id": row["task_id"],
+             "reasons": [r for r in (row.get("reasons") if isinstance(row.get("reasons"), list) else [])
+                         if r in _PLAN_NOT_READY_REASONS]}
+            for row in _dicts(body.get("not_ready"))
+            if _id(row.get("task_id")) is not None
+        ],
         "ignored_links": [
             {"blocker": row["blocker"], "blocked": row["blocked"], "reason": row["reason"]}
             for row in _dicts(body.get("ignored_links"))
@@ -2048,7 +2104,10 @@ GET_PLAN = Tool(
         " start. held holds the slices that wait on an open blocker outside the"
         " tree, and outside_blockers names those blockers. hidden counts the"
         " slices and blockers that this member cannot see, and never names them."
-        " cycle lists a loop of links, and then no path is given. labels gives"
+        " gaps lists the open slices with no owner, no estimate, no done-when or an"
+        " estimate over 10 working days. not_ready lists the slices that are not"
+        " ready to start, each with its reasons. cycle lists a loop of links,"
+        " and then no path is given. labels gives"
         " the number and title of the tasks that the answer names." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_READ,
@@ -2808,6 +2867,7 @@ _OPTION_ID_SCHEMA: dict[str, Any] = {"anyOf": [{"type": "string"}, _UNTRUSTED_SC
 _OPTION_SCHEMA = _object({
     "id": _OPTION_ID_SCHEMA, "label": _UNTRUSTED_SCHEMA,
     "description": _UNTRUSTED_OR_NULL, "recommended": {"type": "boolean"},
+    "confirm": {"type": "boolean"},
 })
 _OPTIONS_OR_NULL: dict[str, Any] = {"anyOf": [
     {"type": "array", "items": _OPTION_SCHEMA}, {"type": "null"}]}
@@ -2888,6 +2948,7 @@ def _option(raw: Any) -> dict[str, Any] | None:
         "label": untrusted(raw.get("label") or ""),
         "description": untrusted(description) if isinstance(description, str) else None,
         "recommended": _bool(raw.get("recommended")),
+        "confirm": _bool(raw.get("confirm")),
     }
 
 
@@ -3229,6 +3290,205 @@ def reference(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+# ── The epic contract (SP-8a, project_management_app.md §13.3) ─────────────
+
+#: The route of the ``epic_contract`` block of ``update_task``. It replaces the
+#: whole contract, and its body is ``{"epic_contract": {...}}``.
+EPIC_CONTRACT_ROUTE = "/projects/tasks/{task_id}/epic-contract"
+#: The keys of the contract that ``get_task`` and ``get_task_context`` return,
+#: and of one acceptance check (§9.1).
+EPIC_CONTRACT_KEYS: tuple[str, ...] = (
+    "outcome", "acceptance", "out_of_scope", "risk_tier", "appetite_credits",
+    "appetite_review_hours", "workstream", "spec_link", "updated_by", "updated_at",
+)
+EPIC_CHECK_KEYS: tuple[str, ...] = ("id", "text", "done", "evidence")
+#: The rules of a contract. Each is a copy of ``epic_contract.py`` of the
+#: gateway, and ``test_epic_contract_r8.py`` pins each pair equal.
+EPIC_RISK_TIERS: tuple[str, ...] = ("LOW", "STANDARD", "HIGH")
+EPIC_MIN_CHECKS = 3
+EPIC_MAX_CHECKS = 7
+EPIC_MAX_CHECK_CHARS = 300
+EPIC_MAX_EVIDENCE_CHARS = 1000
+EPIC_MAX_OUTCOME_CHARS = 500
+EPIC_MAX_OUT_OF_SCOPE_CHARS = 2000
+EPIC_MAX_WORKSTREAM_CHARS = 120
+EPIC_MAX_SPEC_LINK_CHARS = 500
+EPIC_MAX_APPETITE_CREDITS = 1_000_000_000
+EPIC_MAX_APPETITE_REVIEW_HOURS = 100_000
+#: The shape of a check id. A stored id of another shape leaves as untrusted text.
+_EPIC_CHECK_ID_PATTERN = "^[A-Za-z0-9_-]{1,40}$"
+_EPIC_CHECK_ID_RE = re.compile(_EPIC_CHECK_ID_PATTERN[1:-1])
+
+#: The ``detail`` of each 422 of the contract route. Copies of the gateway's
+#: texts (``core.NOT_EPIC_DETAIL`` and ``epic_contract.py``), pinned equal.
+NOT_EPIC_DETAIL = (
+    "This task is not an epic, so it takes no epic contract. Nothing changed. "
+    "Make it an epic first: set its type to Epic, then save the contract."
+)
+EPIC_CHECK_COUNT_DETAIL = (
+    f"An epic contract needs {EPIC_MIN_CHECKS} to {EPIC_MAX_CHECKS} acceptance checks. "
+    f"Nothing changed. Send from {EPIC_MIN_CHECKS} to {EPIC_MAX_CHECKS} checks."
+)
+EPIC_DUPLICATE_CHECK_DETAIL = (
+    "Two acceptance checks have the same id or the same text. Nothing changed. "
+    "Give each check its own text."
+)
+#: The fixed texts of the edge, in the pattern of :data:`TEXT_EPIC_TYPE_HAS_PARENT`.
+TEXT_NOT_EPIC = (
+    "This task is not an epic, so it takes no epic contract. Nothing changed."
+    " Make it an epic first: send type_id of the Epic type with update_task,"
+    " then send epic_contract in a call of its own.")
+TEXT_EPIC_CHECK_COUNT = (
+    f"An epic contract needs {EPIC_MIN_CHECKS} to {EPIC_MAX_CHECKS} acceptance"
+    f" checks. Nothing changed. Send from {EPIC_MIN_CHECKS} to {EPIC_MAX_CHECKS}"
+    " checks in acceptance.")
+TEXT_EPIC_DUPLICATE_CHECK = (
+    "Two acceptance checks have the same id or the same text. Nothing changed."
+    " Give each check its own text.")
+TEXT_EPIC_CONTRACT_ALONE = (
+    "Send epic_contract in a call of its own. Then change the other fields"
+    " with the new version.")
+#: The ``detail`` of the 404 while ``EPIC_CONTRACT_ORGS`` does not hold the
+#: org. A copy of ``epic_contract.CONTRACTS_OFF_DETAIL``, pinned equal. The
+#: edge never reads the flag: the gateway answers for it.
+EPIC_CONTRACTS_OFF_DETAIL = "Epic contracts are not on for this organization."
+TEXT_EPIC_CONTRACTS_OFF = (
+    "Epic contracts are not on for this organization. Nothing changed.")
+#: The texts of ``create_task``. No task exists, so none names update_task.
+TEXT_CREATE_NOT_EPIC = (
+    "The type is not an epic type, so the new task takes no epic contract. No"
+    " task was made. Send epic_contract with type_id of the Epic type, or leave"
+    " epic_contract out.")
+TEXT_CREATE_CONTRACTS_OFF = (
+    "Epic contracts are not on for this organization. No task was made. Leave"
+    " epic_contract out.")
+_EPIC_DETAILS: Mapping[tuple[int, str], str] = {
+    (422, NOT_EPIC_DETAIL): TEXT_NOT_EPIC,
+    (422, EPIC_CHECK_COUNT_DETAIL): TEXT_EPIC_CHECK_COUNT,
+    (422, EPIC_DUPLICATE_CHECK_DETAIL): TEXT_EPIC_DUPLICATE_CHECK,
+    (404, EPIC_CONTRACTS_OFF_DETAIL): TEXT_EPIC_CONTRACTS_OFF,
+}
+#: The same refusals for ``create_task``, which made no task.
+_CREATE_EPIC_DETAILS: Mapping[tuple[int, str], str] = {
+    **_EPIC_DETAILS,
+    (422, NOT_EPIC_DETAIL): TEXT_CREATE_NOT_EPIC,
+    (404, EPIC_CONTRACTS_OFF_DETAIL): TEXT_CREATE_CONTRACTS_OFF,
+}
+
+
+def _epic_number(value: Any) -> float | int | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _epic_check(item: Mapping[str, Any]) -> dict[str, Any]:
+    """One acceptance check. The id is plain only in its shape. The text and
+    the evidence are text that people wrote, so both are untrusted (§9.4)."""
+    evidence = item.get("evidence")
+    return {
+        "id": shaped(item.get("id"), _EPIC_CHECK_ID_RE),
+        "text": untrusted(item.get("text") or ""),
+        "done": _bool(item.get("done")),
+        "evidence": untrusted(evidence) if isinstance(evidence, str) else None,
+    }
+
+
+def epic_contract(value: Any) -> dict[str, Any] | None:
+    """The contract of an epic (SP-8a), or ``None``. The pinned keys, and no
+    other. Each free text leaves as ``untrusted_text``. ``risk_tier`` is one
+    of :data:`EPIC_RISK_TIERS`, or ``None``. The gateway gives ``None`` for a
+    task that is not an epic."""
+    if not isinstance(value, Mapping):
+        return None
+    checks = value.get("acceptance")
+    tier = value.get("risk_tier")
+
+    def text_of(name: str) -> dict[str, str] | None:
+        found = value.get(name)
+        return untrusted(found) if isinstance(found, str) else None
+
+    return {
+        "outcome": text_of("outcome"),
+        "acceptance": [_epic_check(c) for c in checks if isinstance(c, Mapping)]
+        [:EPIC_MAX_CHECKS] if isinstance(checks, list) else [],
+        "out_of_scope": text_of("out_of_scope"),
+        "risk_tier": tier if tier in EPIC_RISK_TIERS else None,
+        "appetite_credits": _epic_number(value.get("appetite_credits")),
+        "appetite_review_hours": _epic_number(value.get("appetite_review_hours")),
+        "workstream": text_of("workstream"),
+        "spec_link": text_of("spec_link"),
+        "updated_by": _str_or_none(value.get("updated_by")),
+        "updated_at": _str_or_none(value.get("updated_at")),
+    }
+
+
+_NULLABLE_NUMBER: dict[str, Any] = {"type": ["number", "null"]}
+_EPIC_CHECK_SCHEMA = _object({
+    "id": _SHAPED_OR_NULL, "text": _UNTRUSTED_SCHEMA, "done": {"type": "boolean"},
+    "evidence": _UNTRUSTED_OR_NULL,
+})
+_EPIC_CONTRACT_SCHEMA: dict[str, Any] = {"anyOf": [_object({
+    "outcome": _UNTRUSTED_OR_NULL,
+    "acceptance": {"type": "array", "items": _EPIC_CHECK_SCHEMA},
+    "out_of_scope": _UNTRUSTED_OR_NULL,
+    "risk_tier": {"type": ["string", "null"], "enum": [*EPIC_RISK_TIERS, None]},
+    "appetite_credits": _NULLABLE_NUMBER, "appetite_review_hours": _NULLABLE_NUMBER,
+    "workstream": _UNTRUSTED_OR_NULL, "spec_link": _UNTRUSTED_OR_NULL,
+    "updated_by": _NULLABLE_STRING, "updated_at": _NULLABLE_STRING,
+}), {"type": "null"}]}
+
+#: The ``epic_contract`` input of ``update_task`` and ``create_task``.
+_EPIC_CHECK_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "string", "pattern": _EPIC_CHECK_ID_PATTERN,
+               "description": "The id of a check from get_task. Leave it out for a"
+                              " new check, and Metorite makes one."},
+        "text": {"type": "string", "minLength": 1, "maxLength": EPIC_MAX_CHECK_CHARS,
+                 "description": "What a reviewer checks, in one sentence."},
+        "done": {"type": "boolean", "description": "true when the check passed."},
+        "evidence": {"type": "string", "maxLength": EPIC_MAX_EVIDENCE_CHARS,
+                     "description": "What shows that the check passed, such as a"
+                                    " link to a pull request."},
+    },
+    "required": ["text"],
+    "additionalProperties": False,
+}
+_EPIC_CONTRACT_INPUT: dict[str, Any] = {
+    "type": "object",
+    "description": (
+        "The contract of an epic. It replaces the whole contract: a part that"
+        " you leave out is cleared, so send each part that you keep. Only a"
+        " task of the Epic type takes it."),
+    "properties": {
+        "outcome": {"type": "string", "maxLength": EPIC_MAX_OUTCOME_CHARS,
+                    "description": "One sentence: what is true when the epic is done."},
+        "acceptance": {
+            "type": "array", "minItems": EPIC_MIN_CHECKS, "maxItems": EPIC_MAX_CHECKS,
+            "items": _EPIC_CHECK_INPUT,
+            "description": f"{EPIC_MIN_CHECKS} to {EPIC_MAX_CHECKS} checks that a"
+                           " reviewer can tick."},
+        "out_of_scope": {"type": "string", "maxLength": EPIC_MAX_OUT_OF_SCOPE_CHARS,
+                         "description": "What this epic does not do."},
+        "risk_tier": {"type": "string", "enum": list(EPIC_RISK_TIERS),
+                      "description": "The review depth that the lead set."},
+        "appetite_credits": {"type": "number", "minimum": 0,
+                             "maximum": EPIC_MAX_APPETITE_CREDITS,
+                             "description": "The credits that the epic may spend."},
+        "appetite_review_hours": {"type": "number", "minimum": 0,
+                                  "maximum": EPIC_MAX_APPETITE_REVIEW_HOURS,
+                                  "description": "The review hours that the epic may"
+                                                 " spend."},
+        "workstream": {"type": "string", "maxLength": EPIC_MAX_WORKSTREAM_CHARS,
+                       "description": "The track that owns the epic: a project id"
+                                      " or a name."},
+        "spec_link": {"type": "string", "maxLength": EPIC_MAX_SPEC_LINK_CHARS,
+                      "description": "A Knowledge page or a repository file."},
+    },
+    "required": ["acceptance"],
+    "additionalProperties": False,
+}
 #: SP-9. The roll-up of an epic over EVERY descendant that the member sees.
 #: The gateway adds ``rollup`` to ``GET /projects/tasks/{id}`` for a task whose
 #: type is an epic type, and leaves the key out for any other task. The four
@@ -3301,6 +3561,8 @@ _GET_TASK_OUTPUT: dict[str, Any] = _object({
     "links": {"type": "array", "items": _LINK_SCHEMA},
     "refs": {"type": "array", "items": _REF_SCHEMA},
     "agent_runs": {"type": "array", "items": _RUN_SCHEMA},
+    # SP-8a: the contract of an epic, or null.
+    "epic_contract": _EPIC_CONTRACT_SCHEMA,
     "rollup": _ROLLUP_SCHEMA,
 })
 # `rollup` is present for an epic only, so it is the one key that is not required.
@@ -3428,6 +3690,8 @@ async def _get_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         if isinstance(links, list) else [],
         "refs": [reference(r) for r in _rows_of(refs)],
         "agent_runs": runs,
+        # SP-8a: from the task row itself, so no request more.
+        "epic_contract": epic_contract(row.get("epic_contract")),
     }
     # SP-9. The same read, the same visibility: the gateway counted for this
     # member, and a pin of the agent narrowed it there.
@@ -3457,7 +3721,10 @@ GET_TASK = Tool(
         " tasks left out because this member cannot see them. Put url in the"
         " description of each pull"
         " request, and short_id in the branch name, so that the pull request"
-        " links itself to the task." + _UNTRUSTED_NOTE
+        " links itself to the task. epic_contract is the contract of an epic:"
+        " the outcome, 3 to 7 acceptance checks, what is out of scope, the risk"
+        " tier, the appetite in credits and review hours, the workstream and the"
+        " spec link. It is null for a task that is not an epic." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_READ,
     input_schema=_TASK_ID_INPUT,
@@ -3702,6 +3969,8 @@ ANCESTOR_KEYS: tuple[str, ...] = ("id", "task_number", "title", "status", "descr
 CONTEXT_KEYS: tuple[str, ...] = (
     "task", "ancestors", "project", "blocked_by", "blocks", "subtasks", "agent_runs",
     "held_by", "refs", "recent_comments", "attachments", "images",
+    # SP-8a: the contract of an epic, or null.
+    "epic_contract",
 )
 
 #: The most attachments that ``get_task_context`` returns (MCP-G18). The
@@ -3820,6 +4089,111 @@ PROTOCOL_LINES: tuple[str, ...] = (
     "End each turn with one result: review or done, a question, or release_task.",
     "Hand off with evidence: what is done, what is left, and the proof.",
 )
+#: PB-4 (D186, orchestration_playbook.md §5, §7). The tips of the results of
+#: ``claim_task`` and ``my_work``: at most :data:`TIPS_MAX` short lines of fixed
+#: server text, each naming one playbook topic. A tip shows once for each run.
+#: They are apart from the protocol block, which holds the safety lines. They
+#: show only while the runs flag is on and the organization is on
+#: ``playbook_orgs``, the flag of the playbook content. The edge keeps no state
+#: of its own, so "once" is one ``SET NX`` key in the tenant Redis wrapper for
+#: each connection, run and tip. That is a hint, not an authority: a lost key
+#: only shows a tip again, and a store outage shows none. Fence:
+#: ``test_mcp_edge_context.py`` ``TestTheTips``.
+TIPS_KEY = "tips"
+TIPS_MAX = 2
+TIP_LINE_MAX = 120
+TIPS_NAMESPACE = "agent_tips"
+#: A key lives three days, longer than a run holds a task.
+TIPS_TTL_S = 3 * 24 * 60 * 60
+#: A task with a description shorter than this has no brief yet. SW-70 gives the
+#: task a real brief, and this test then reads it.
+TIP_BRIEF_MIN_CHARS = 40
+
+
+@dataclass(frozen=True)
+class Tip:
+    id: str
+    tool: str
+    topic: str
+    text: str
+
+
+#: The rule table. Each row names the tool, and :func:`_tip_applies` holds the
+#: context test. Order is the order of preference when two apply.
+TIP_RULES: tuple[Tip, ...] = (
+    Tip("brief", "claim_task", "brief-contract",
+        "This task has little text. Write its brief first: read_playbook topic brief-contract."),
+    Tip("stalled", "my_work", "failures",
+        "A run of yours went quiet. Name its cause: read_playbook topic failures."),
+)
+
+_TIP_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {"id": {"type": "string"}, "topic": {"type": "string"},
+                   "text": {"type": "string", "maxLength": TIP_LINE_MAX}},
+    "required": ["id", "topic", "text"],
+    "additionalProperties": False,
+}
+_TIPS_SCHEMA: dict[str, Any] = {"type": "array", "maxItems": TIPS_MAX, "items": _TIP_SCHEMA}
+
+
+def _description_chars(task: Any) -> int:
+    """The length of the description of a task of a result, 0 for none."""
+    found = task.get("description") if isinstance(task, dict) else None
+    text = found.get("untrusted_text") if isinstance(found, dict) else None
+    return len(text.strip()) if isinstance(text, str) else 0
+
+
+def _tip_applies(tip: Tip, result: Mapping[str, Any]) -> bool:
+    if tip.id == "brief":
+        return _description_chars(result.get("task")) < TIP_BRIEF_MIN_CHARS
+    if tip.id == "stalled":
+        rows = result.get("rows")
+        return isinstance(rows, list) and any(
+            isinstance(r, dict) and r.get("reason") == REASON_HELD for r in rows)
+    return False
+
+
+async def _tip_unseen(ctx: Context, scope: str, tip: Tip) -> bool:
+    """True the first time this connection sees *tip* for *scope* (a run id, or
+    the session). A store failure reads as seen: no tip, no error."""
+    lookup = ctx.caller.lookup
+    # A claim that landed is never reported as busy (EA-6d): the read takes the
+    # post-write budget when it is smaller than 2 seconds, and no time means no tip.
+    limit = min(2.0, _post_write_budget())
+    if limit <= 0:
+        return False
+    try:
+        async with asyncio.timeout(limit):
+            return await idempotency.first_time(
+                lookup, TIPS_NAMESPACE, (scope, tip.id), ttl_s=TIPS_TTL_S)
+    except Exception as exc:
+        _log.warning("agent_edge.tips_unavailable", tip=tip.id, error=type(exc).__name__,
+                     connection_id=lookup.connection_id)
+        return False
+
+
+async def _tips(ctx: Context, tool: str, result: Mapping[str, Any],
+                run_id: str | None) -> list[dict[str, str]] | None:
+    """The tips of one result, or ``None``: the key is then left out.
+
+    ``None`` while the runs flag is off, the organization of the token row is not
+    on ``playbook_orgs``, no rule applies, or every applying tip was shown for
+    this run. *run_id* is the run of the claim. ``my_work`` has no single run, so
+    its tips show once for each MCP session, or for the connection."""
+    if not (agent_oauth.runs_enabled()
+            and agent_oauth.playbook_allowed(ctx.caller.lookup.organization_id)):
+        return None
+    scope = run_id or ctx.session or "connection"
+    shown: list[dict[str, str]] = []
+    for tip in TIP_RULES:
+        if len(shown) >= TIPS_MAX:
+            break
+        if tip.tool == tool and _tip_applies(tip, result) and await _tip_unseen(ctx, scope, tip):
+            shown.append({"id": tip.id, "topic": tip.topic, "text": tip.text})
+    return shown or None
+
+
 _PROTOCOL_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -4049,6 +4423,8 @@ _CONTEXT_OUTPUT: dict[str, Any] = _optional(_object({
     "attachments": {"type": "array", "items": _ATTACHMENT_SCHEMA},
     # IMG-3: the PNG, JPEG, GIF and WebP files of `attachments`.
     "images": {"type": "integer", "minimum": 0},
+    # SP-8a: the contract of an epic, or null.
+    "epic_contract": _EPIC_CONTRACT_SCHEMA,
 }), GUIDANCE_KEY, _GUIDANCE_SCHEMA)
 _CONTEXT_OUTPUT = _optional(_CONTEXT_OUTPUT, COMMENTS_TRUNCATED_KEY, {"type": "boolean"})
 # SW-24: the newest handoff note. Absent while no run left one.
@@ -4337,6 +4713,8 @@ async def _get_task_context(ctx: Context, args: dict[str, Any]) -> dict[str, Any
         "recent_comments": comments,
         "attachments": files[0],
         "images": files[2],
+        # SP-8a: from the task row, so the call ceiling does not move.
+        "epic_contract": epic_contract(row.get("epic_contract")),
     })
     if files[1]:
         result[ATTACHMENTS_TRUNCATED_KEY] = True
@@ -4367,6 +4745,8 @@ GET_TASK_CONTEXT = Tool(
         " content. The list keeps the"
         " oldest 100, and attachments_truncated is true when more exist."
         " images counts the PNG, JPEG, GIF and WebP files of attachments."
+        " epic_contract is the contract of an epic, as get_task gives it, or"
+        " null. Its acceptance checks say when the work is done."
         " " + prompts.IMAGE_RULE +
         " A parent that this member cannot"
         " see shows as {\"hidden\": true}, and the parents above it do not"
@@ -4742,6 +5122,7 @@ _MY_WORK_ROW_SCHEMA = _optional(_MY_WORK_ROW_SCHEMA, CHECK_KEY, _CHECK_ROW_SCHEM
 _MY_WORK_OUTPUT: dict[str, Any] = _optional(_object({
     "rows": {"type": "array", "items": _MY_WORK_ROW_SCHEMA},
 }), PROTOCOL_KEY, _PROTOCOL_SCHEMA)
+_MY_WORK_OUTPUT = _optional(_MY_WORK_OUTPUT, TIPS_KEY, _TIPS_SCHEMA)
 
 
 async def _plan_of(ctx: Context, ids: list[str]) -> tuple[list[str], dict[str, dict[str, Any]]]:
@@ -5043,6 +5424,9 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     protocol = _protocol(ctx)
     if protocol is not None:
         answer[PROTOCOL_KEY] = protocol
+    tips = await _tips(ctx, "my_work", answer, None)
+    if tips is not None:
+        answer[TIPS_KEY] = tips
     return answer
 
 
@@ -5375,6 +5759,8 @@ CREATE_BODY_KEYS: tuple[str, ...] = (
     "description", "tags", "due_at",
     # MCP-G2: the planning fields of the app, and the first assignees.
     "importance", "leveraged", "estimate_mins", "start_date", "assignees",
+    # SP-8a: the contract of a new epic.
+    "epic_contract",
     # SW-23: the input `check` fills it (:func:`_check_body`).
     CHECK_BODY_KEY,
 )
@@ -5387,6 +5773,10 @@ UPDATE_BODY_KEYS: tuple[str, ...] = (
     # SW-23: the input `check` fills it, and null removes the Check.
     CHECK_BODY_KEY,
 )
+#: SP-8a. The one body key of the PUT of the epic contract, the write that
+#: ``update_task`` sends IN PLACE of its PATCH for ``epic_contract``. The
+#: create sends the same key in its POST body (:data:`CREATE_BODY_KEYS`).
+EPIC_CONTRACT_BODY_KEYS: tuple[str, ...] = ("epic_contract",)
 
 
 def _body_inputs(keys: tuple[str, ...]) -> dict[str, str]:
@@ -5525,6 +5915,10 @@ _CREATE_INPUT: dict[str, Any] = {
                            " project grant or an admin read right. Each one gets"
                            " one notification"
                            " that names this agent."},
+        # SP-8a: the contract of a new epic, with type_id of the Epic type.
+        "epic_contract": {**_EPIC_CONTRACT_INPUT,
+                          "description": _EPIC_CONTRACT_INPUT["description"]
+                          + " Send it with type_id of the Epic type."},
         "idempotency_key": {
             "type": "string", "pattern": idempotency.KEY_PATTERN,
             "description": "8 to 128 letters, digits and . _ : -. The same key"
@@ -5575,6 +5969,10 @@ _UPDATE_INPUT: dict[str, Any] = {
             "description": "Moves the task under this parent task, in the same"
                            " project. null moves it to the top level. Send it in a"
                            " call of its own."},
+        # SP-8a: the contract of an epic. A call of its own.
+        "epic_contract": {**_EPIC_CONTRACT_INPUT,
+                          "description": _EPIC_CONTRACT_INPUT["description"]
+                          + " Send it in a call of its own."},
         CHECK_INPUT: {**_CHECK_INPUT, "type": ["string", "null"],
                       "description": _CHECK_INPUT["description"]
                       + " A new Check clears the last result. null removes the Check."},
@@ -5583,10 +5981,10 @@ _UPDATE_INPUT: dict[str, Any] = {
     "additionalProperties": False,
 }
 
-_UPDATE_OUTPUT: dict[str, Any] = _object({
+_UPDATE_OUTPUT: dict[str, Any] = _optional(_object({
     "task": _object({k: v for k, v in _TASK_SCHEMA["properties"].items()
                      if k != "assignees"}),
-})
+}), "epic_contract", _EPIC_CONTRACT_SCHEMA)
 
 
 async def _project_statuses(ctx: Context, project: str) -> dict[str, dict[str, Any]]:
@@ -5663,10 +6061,12 @@ async def _create(ctx: Context, args: dict[str, Any],
     _check_body(args, payload)
     sent.post = True
     # MCP-G2: the gateway assigns in the create's own transaction, so a
-    # refused assignee leaves no task, and the key goes free.
+    # refused assignee leaves no task, and the key goes free. SP-8a: the
+    # contract lands in that transaction too, so a refused one makes no task.
     _, row = await _write(ctx, "POST", CREATE_ROUTE, TEXT_PROJECT_NOT_FOUND,
                           json_body=payload,
                           details={(422, EPIC_PARENT_DETAIL): TEXT_EPIC_PARENT,
+                                   **_CREATE_EPIC_DETAILS,
                                    **_CHECK_WRITE_DETAILS},
                           coded=_assignee_codes(args.get("assignees") or ()))
     if not isinstance(row, dict) or _id(row.get("id")) is None:
@@ -5906,7 +6306,10 @@ CREATE_TASK = Tool(
         " one notification that names this agent. When one person is refused,"
         " no task is made. A person assigns anybody else in the app. Send"
         " an idempotency_key when you may retry: the same key gives back the"
-        " first task with created false, and makes no second task. Returns the"
+        " first task with created false, and makes no second task. With"
+        " type_id of the Epic type, epic_contract sets the contract of the new"
+        " epic: 3 to 7 acceptance checks and the other parts. A contract on"
+        " another type is refused, and no task is made. Returns the"
         " task with its version." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,
@@ -5993,6 +6396,32 @@ async def _move_in_project(ctx: Context, args: dict[str, Any]) -> dict[str, Any]
     return await _updated(ctx, after)
 
 
+async def _put_epic_contract(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """Replace the contract of an epic (SP-8a): one PUT of
+    :data:`EPIC_CONTRACT_ROUTE` with ``If-Match``, the version of the task.
+
+    The body is ``{"epic_contract": {...}}`` and holds only the parts that
+    the input names. The gateway refuses a task that is not an epic, and each
+    refusal maps to a text of :data:`_EPIC_DETAILS`. A pinned connection
+    reaches only the epics of its pin: any other task is "Task not found."
+    The result is the task as it is now, and the saved contract.
+    """
+    _, answer = await _write(
+        ctx, "PUT", EPIC_CONTRACT_ROUTE, TEXT_TASK_NOT_FOUND,
+        path_params={"task_id": str(args["task_id"])},
+        json_body={name: args[name] for name in EPIC_CONTRACT_BODY_KEYS},
+        if_match=str(args["expected_version"]), details=_EPIC_DETAILS)
+    # The write landed, so the call reports it and never says busy (EA-6d fix
+    # round 2). The task row of the answer is the fallback of the re-read.
+    body = answer if isinstance(answer, dict) else {}
+    written = body.get("task")
+    if not isinstance(written, dict) or _id(written.get("id")) is None:
+        written = {"id": str(args["task_id"])}
+    result = await _updated(ctx, written)
+    result["epic_contract"] = epic_contract(body.get("epic_contract"))
+    return result
+
+
 async def _update_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     """PATCH the named fields only, with ``If-Match`` (§9.2).
 
@@ -6005,11 +6434,16 @@ async def _update_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     (:func:`_move_in_project`), never a PATCH. It goes in a call of its own,
     so one call is one write and one transaction.
     """
-    _refuse_nul(args, (*UPDATE_BODY_KEYS, CHECK_INPUT))
+    _refuse_nul(args, (*UPDATE_BODY_KEYS, CHECK_INPUT, *EPIC_CONTRACT_BODY_KEYS))
     _refuse_bad_start_date(args)
     _refuse_check_off(args)
     payload = {name: args[name] for name in UPDATE_BODY_KEYS if name in args}
     _check_body(args, payload)
+    if "epic_contract" in args:
+        # SP-8a: a write of its own, so one call is one transaction.
+        if payload or "parent_task_id" in args:
+            raise ToolError(TEXT_EPIC_CONTRACT_ALONE)
+        return await _put_epic_contract(ctx, args)
     if "parent_task_id" in args:
         if payload:
             raise ToolError(TEXT_MOVE_ALONE)
@@ -6056,7 +6490,12 @@ UPDATE_TASK = Tool(
         " and null moves it to the top level. An Epic cannot have a parent."
         " Send parent_task_id in a call of"
         " its own. To move a task to another project, call preview_move_tasks"
-        " and then move_tasks."
+        " and then move_tasks. epic_contract sets the contract of an epic: the"
+        " outcome, 3 to 7 acceptance checks, out_of_scope, risk_tier,"
+        " appetite_credits, appetite_review_hours, workstream and spec_link. It"
+        " replaces the whole contract, so read it with get_task and send each"
+        " part that you keep. Only a task of the Epic type takes it. Send it in"
+        " a call of its own."
         " This tool cannot change the status (use set_task_status), the project"
         " or the assignees (use set_assignees). Returns the task with its new"
         " version." + _UNTRUSTED_NOTE
@@ -6067,12 +6506,13 @@ UPDATE_TASK = Tool(
     route=TASK_ROUTE,
     params={"task_id": "task_id", "expected_version": "If-Match",
             **_body_inputs(UPDATE_BODY_KEYS),
-            "parent_task_id": "parent_task_id"},
+            "parent_task_id": "parent_task_id",
+            **{name: name for name in EPIC_CONTRACT_BODY_KEYS}},
     not_found=TEXT_TASK_NOT_FOUND,
     run=_update_task,
     routes=(TASK_ROUTE, STATUSES_ROUTE, TYPES_ROUTE),
     method="PATCH",
-    alt_writes=(("POST", MOVE_ROUTE),),
+    alt_writes=(("POST", MOVE_ROUTE), ("PUT", EPIC_CONTRACT_ROUTE)),
     annotations=dict(WRITE_ANNOTATIONS),
 )
 
@@ -6226,7 +6666,8 @@ UPDATE_TASKS = Tool(
     description=(
         "Change up to 50 tasks in one call, for a clean-up of a board. Each item"
         " of updates takes the inputs of update_task: task_id, expected_version"
-        " and the fields to change, type_id and parent_task_id too. The rules of"
+        " and the fields to change, type_id, parent_task_id and epic_contract too."
+        " The rules of"
         " update_task hold for each item. Each item is a change of its own, with"
         " its own version. A failed item never stops the others. The result"
         " lists each item: ok true with the task and its new version, or ok"
@@ -6246,7 +6687,9 @@ UPDATE_TASKS = Tool(
     routes=(TASK_ROUTE, STATUSES_ROUTE, TYPES_ROUTE),
     method="PATCH",
     edge_inputs=frozenset({"updates"}),
-    alt_writes=(("POST", MOVE_ROUTE),),
+    # Each item is a call of update_task, so the writes in place of the
+    # PATCH are the same: the move, and the PUT of an epic contract (SP-8a).
+    alt_writes=UPDATE_TASK.alt_writes,
     annotations=dict(WRITE_ANNOTATIONS),
     timeout_s=BULK_TOOL_TIMEOUT_S,
 )
@@ -6990,6 +7433,7 @@ _CLAIM_OUTPUT: dict[str, Any] = _optional(_optional(_optional(_object({
     "open_subtasks", {"type": "array", "maxItems": 5, "items": {"type": "string"}},
 ), GUIDANCE_KEY, _GUIDANCE_SCHEMA)
 _CLAIM_OUTPUT = _optional(_CLAIM_OUTPUT, PROTOCOL_KEY, _PROTOCOL_SCHEMA)
+_CLAIM_OUTPUT = _optional(_CLAIM_OUTPUT, TIPS_KEY, _TIPS_SCHEMA)
 
 
 async def _claim_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
@@ -7040,6 +7484,9 @@ async def _claim_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     protocol = _protocol(ctx)
     if protocol is not None:
         result[PROTOCOL_KEY] = protocol
+    tips = await _tips(ctx, "claim_task", result, result["agent_run_id"])
+    if tips is not None:
+        result[TIPS_KEY] = tips
     return result
 
 
@@ -8337,6 +8784,10 @@ _OPTIONS_INPUT: dict[str, Any] = {
                             "description": "What the choice means, if it is not clear."},
             "recommended": {"type": "boolean",
                             "description": "True for the choice you recommend."},
+            "confirm": {"type": "boolean",
+                        "description": "True for a costly choice: it stops machines or"
+                                       " sessions, or restarts a box. The member must"
+                                       " confirm it with \"Are you sure?\"."},
         },
         "required": ["id", "label"],
         "additionalProperties": False,
@@ -9245,6 +9696,11 @@ TEXT_NO_APP = "Metorite has no app with that name. Call list_apps."
 TEXT_TOOLS_APP = "This app has tools of its own. Use those tools, not app_read or app_write."
 TEXT_APP_OFF = "Agents cannot use this app in this organization."
 TEXT_APPS_OFF = "Agents cannot use the apps of this organization now."
+
+#: PB-3a. The playbook is dark for an organization off ``playbook_orgs``.
+TEXT_PLAYBOOK_OFF = "The playbook is not on for this organization."
+#: PB-3a. A topic that the playbook does not hold. It never echoes the input.
+TEXT_NO_TOPIC = "The playbook has no topic with that name. Call read_playbook with no topic to list them."
 TEXT_NO_OP = "This app has no operation with that name. Call describe_app."
 TEXT_USE_WRITE = "Use app_write for a change."
 TEXT_USE_READ = "Use app_read for a read."
@@ -9973,6 +10429,85 @@ def scope_of(tool: Tool, arguments: Any) -> str | None:
     return wanted if wanted in found.scopes else None
 
 
+# ── PB-3a: read_playbook (D186, orchestration_playbook.md §5 and §7) ─────────
+
+_READ_PLAYBOOK_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {"topic": {
+        "type": "string", "minLength": 1, "maxLength": 100,
+        "pattern": "^[a-z0-9]+([/-][a-z0-9]+)*$",
+        "description": "The topic to read, such as brief-contract or patterns/one-agent-first."
+                       " Leave it out to list the topics."}},
+    "additionalProperties": False,
+}
+
+_PLAYBOOK_TOPIC_PROPS: dict[str, Any] = {
+    "slug": {"type": "string"}, "version": {"type": "integer"},
+    "title": _UNTRUSTED_SCHEMA, "summary": _UNTRUSTED_SCHEMA,
+    "audience": {"type": "string"},
+}
+
+_READ_PLAYBOOK_OUTPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "topics": {"type": "array", "items": {
+            "type": "object", "properties": _PLAYBOOK_TOPIC_PROPS,
+            "required": list(_PLAYBOOK_TOPIC_PROPS), "additionalProperties": False}},
+        "topic": {"type": ["object", "null"], "properties": {
+            **_PLAYBOOK_TOPIC_PROPS, "body": _UNTRUSTED_SCHEMA},
+            "required": [*_PLAYBOOK_TOPIC_PROPS, "body"], "additionalProperties": False},
+    },
+    "required": ["topics", "topic"],
+    "additionalProperties": False,
+}
+
+
+def _playbook_entry(topic: Any) -> dict[str, Any]:
+    return {"slug": topic.slug, "version": topic.version, "title": untrusted(topic.title),
+            "summary": untrusted(topic.summary), "audience": topic.audience}
+
+
+async def _read_playbook(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """``read_playbook``: the topics of the playbook, or one topic with its body.
+
+    No gateway request. The text is the playbook of ``acb_playbook``, the same
+    for every organization, and it leaves as untrusted text (§9.4).
+    """
+    from acb_playbook import load_all
+
+    topics = load_all()
+    wanted = args.get("topic")
+    if wanted is None:
+        return {"topics": [_playbook_entry(t) for t in topics], "topic": None}
+    for topic in topics:
+        if topic.slug == wanted:
+            return {"topics": [], "topic": {**_playbook_entry(topic),
+                                            "body": untrusted(topic.body)}}
+    raise ToolError(TEXT_NO_TOPIC)
+
+
+READ_PLAYBOOK = Tool(
+    name="read_playbook",
+    title="Read the playbook",
+    description=(
+        "Read the orchestration playbook of Metorite: patterns for agent teams,"
+        " the brief contract, gates, failure causes, the cost model and starter"
+        " files. Leave topic out to list the topics, each with its version and"
+        " summary. Send a topic to read it. The text is the same for every"
+        " organization. Use it when your client shows no MCP resources."
+        + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_READ,
+    input_schema=_READ_PLAYBOOK_INPUT,
+    output_schema=_READ_PLAYBOOK_OUTPUT,
+    route="",
+    params={},
+    not_found=TEXT_NO_TOPIC,
+    run=_read_playbook,
+    playbook=True,
+)
+
+
 # ── The registry ────────────────────────────────────────────────────────────
 
 #: Every tool of the edge, by name, in the order of ``tools/list``. The two
@@ -10008,16 +10543,20 @@ TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     ASK_ON_TASK, FINISH_AGENT_RUN, REQUEST_TASK_ARCHIVE, RECORD_OUTSIDE_DECISION,
     RELEASE_TASK, DELETE_TASK,
     LIST_APPS, DESCRIBE_APP, APP_READ, APP_WRITE,
+    READ_PLAYBOOK,
 )}
 
 
-def offered(tool: Tool) -> bool:
+def offered(tool: Tool, organization_id: object = None) -> bool:
     """A read always. A write only while the writes flag is on (fix round 1),
     read through the ONE reader, ``agent_oauth.writes_enabled``. An
     agent-run tool only while the runs flag is on too (EA-12b), read through
     the ONE reader, ``agent_oauth.runs_enabled``. A tool of the app door only
-    while ``agent_oauth.door_apps`` names an app (MCP-P1a, AD-15)."""
+    while ``agent_oauth.door_apps`` names an app (MCP-P1a, AD-15). The playbook
+    tool only for an organization that ``playbook_orgs`` names (PB-3a)."""
     if tool.door and not agent_oauth.door_apps():
+        return False
+    if tool.playbook and not agent_oauth.playbook_allowed(organization_id):
         return False
     if tool.runs and not agent_oauth.runs_enabled():
         return False
@@ -10026,7 +10565,7 @@ def offered(tool: Tool) -> bool:
     return tool.method == "GET" or agent_oauth.writes_enabled()
 
 
-def _covered(tool: Tool, scopes: frozenset[str]) -> bool:
+def _covered(tool: Tool, scopes: frozenset[str], organization_id: object = None) -> bool:
     """True when *scopes* hold the tool's scope and the tool is offered.
     ``app_read`` and ``app_write`` show with no app scope, because their scope
     is the one of the app in each call (:func:`scope_of`), and check 8 asks
@@ -10038,17 +10577,19 @@ def _covered(tool: Tool, scopes: frozenset[str]) -> bool:
     ``tests/unit/test_mcp_edge_readonly.py``."""
     if tool.app_scope == "write" and not any(agent_oauth.covered_by(s) for s in scopes):
         return False
-    return (tool.required_scope is None or tool.required_scope in scopes) and offered(tool)
+    return ((tool.required_scope is None or tool.required_scope in scopes)
+            and offered(tool, organization_id))
 
 
-def listed(scopes: frozenset[str], *, delete_on: bool = False) -> list[dict[str, Any]]:
+def listed(scopes: frozenset[str], *, delete_on: bool = False,
+           organization_id: object = None) -> list[dict[str, Any]]:
     """The ``tools/list`` entries that *scopes* cover. Varies by scope, a
     write tool shows only while the writes flag is on (EA-6a), and an
     agent-run tool only while the runs flag is on (EA-12b). ``delete_task``
     shows only with *delete_on*, the member's switch (EA-6h)."""
     return [
         t.describe() for t in TOOLS.values()
-        if _covered(t, scopes) and (delete_on or not t.switch)
+        if _covered(t, scopes, organization_id) and (delete_on or not t.switch)
     ]
 
 
@@ -10071,8 +10612,10 @@ async def listed_for(ctx: Context) -> list[dict[str, Any]]:
     switch only when the scopes and the flags would show ``delete_task``,
     so a read connection sends no request."""
     scopes = frozenset(ctx.caller.scopes)
-    wants = any(t.switch and _covered(t, scopes) for t in TOOLS.values())
-    return listed(scopes, delete_on=wants and await delete_switch_on(ctx))
+    org = ctx.caller.lookup.organization_id
+    wants = any(t.switch and _covered(t, scopes, org) for t in TOOLS.values())
+    return listed(scopes, delete_on=wants and await delete_switch_on(ctx),
+                  organization_id=org)
 
 
 def call_timeout(tool: Tool, args: Mapping[str, Any]) -> float:
@@ -10095,7 +10638,9 @@ async def call(tool: Tool, ctx: Context, arguments: Any) -> dict[str, Any]:
     :data:`TEXT_WRITES_OFF`, and an agent-run tool while the runs flag is
     off answers :data:`TEXT_RUNS_OFF`. Neither makes a gateway request.
     """
-    if not offered(tool):
+    if not offered(tool, ctx.caller.lookup.organization_id):
+        if tool.playbook and not agent_oauth.playbook_allowed(ctx.caller.lookup.organization_id):
+            return error_result(TEXT_PLAYBOOK_OFF)
         if tool.door and not agent_oauth.door_apps():
             return error_result(TEXT_APPS_OFF)
         if tool.runs and not agent_oauth.runs_enabled():
@@ -10214,6 +10759,24 @@ __all__ = [
     "DOOR_PAGE_MAX",
     "DOOR_RESULT_MAX_BYTES",
     "DOOR_SCHEMA_MAX_BYTES",
+    "EPIC_CHECK_COUNT_DETAIL",
+    "EPIC_CHECK_KEYS",
+    "EPIC_CONTRACTS_OFF_DETAIL",
+    "EPIC_CONTRACT_BODY_KEYS",
+    "EPIC_CONTRACT_KEYS",
+    "EPIC_CONTRACT_ROUTE",
+    "EPIC_DUPLICATE_CHECK_DETAIL",
+    "EPIC_MAX_APPETITE_CREDITS",
+    "EPIC_MAX_APPETITE_REVIEW_HOURS",
+    "EPIC_MAX_CHECKS",
+    "EPIC_MAX_CHECK_CHARS",
+    "EPIC_MAX_EVIDENCE_CHARS",
+    "EPIC_MAX_OUTCOME_CHARS",
+    "EPIC_MAX_OUT_OF_SCOPE_CHARS",
+    "EPIC_MAX_SPEC_LINK_CHARS",
+    "EPIC_MAX_WORKSTREAM_CHARS",
+    "EPIC_MIN_CHECKS",
+    "EPIC_RISK_TIERS",
     "FIELD_KEYS",
     "FINISH_AGENT_RUN",
     "GET_AGENT_RUN",
@@ -10283,6 +10846,7 @@ __all__ = [
     "NOTE_OTHER_TYPE",
     "NOTE_TEXT",
     "NOTE_TOO_LARGE",
+    "NOT_EPIC_DETAIL",
     "OPEN_RUN_STATUSES",
     "OUTSIDE_BODY_KEYS",
     "OUTSIDE_DECISION_ROUTE",
@@ -10301,6 +10865,7 @@ __all__ = [
     "PROTOCOL_LINE_MAX",
     "PROTOCOL_VERSION",
     "READ_ANNOTATIONS",
+    "READ_PLAYBOOK",
     "RECORD_OUTSIDE_DECISION",
     "REF_KEYS",
     "RELEASE_TASK",
@@ -10353,6 +10918,8 @@ __all__ = [
     "TEXT_COMMENT_NOT_OWN",
     "TEXT_COMMENT_NUL",
     "TEXT_CREATE_CLOSED",
+    "TEXT_CREATE_CONTRACTS_OFF",
+    "TEXT_CREATE_NOT_EPIC",
     "TEXT_DELETE_OFF",
     "TEXT_DELETE_TITLE",
     "TEXT_DOOR_CONFLICT",
@@ -10363,6 +10930,10 @@ __all__ = [
     "TEXT_DOOR_LIMIT",
     "TEXT_DOOR_NOT_FOUND",
     "TEXT_DOOR_READ_CAP",
+    "TEXT_EPIC_CHECK_COUNT",
+    "TEXT_EPIC_CONTRACTS_OFF",
+    "TEXT_EPIC_CONTRACT_ALONE",
+    "TEXT_EPIC_DUPLICATE_CHECK",
     "TEXT_EPIC_PARENT",
     "TEXT_EPIC_TYPE_HAS_PARENT",
     "TEXT_EXTENSIONS",
@@ -10399,12 +10970,14 @@ __all__ = [
     "TEXT_NAME_BLANK",
     "TEXT_NEEDS_APPROVAL",
     "TEXT_NOT_APPROVED",
+    "TEXT_NOT_EPIC",
     "TEXT_NO_APP",
     "TEXT_NO_CHECK",
     "TEXT_NO_OP",
     "TEXT_NO_PAGES",
     "TEXT_NO_REQUEST",
     "TEXT_NO_RUN_STATE",
+    "TEXT_NO_TOPIC",
     "TEXT_OUTSIDE_KEY_USED",
     "TEXT_PAGE_ARGS",
     "TEXT_PARENT_ARCHIVED",
@@ -10414,6 +10987,7 @@ __all__ = [
     "TEXT_PARENT_NOT_FOUND",
     "TEXT_PARENT_OTHER_PROJECT",
     "TEXT_PARENT_TOO_DEEP",
+    "TEXT_PLAYBOOK_OFF",
     "TEXT_PROJECT_KEY_REUSED",
     "TEXT_PROJECT_KEY_UNKNOWN",
     "TEXT_PROJECT_NOT_FOUND",
@@ -10445,6 +11019,13 @@ __all__ = [
     "TEXT_WRITES_OFF",
     "TEXT_WRITE_FORBIDDEN",
     "TIMELINE_ROW_KEYS",
+    "TIPS_KEY",
+    "TIPS_MAX",
+    "TIPS_NAMESPACE",
+    "TIPS_TTL_S",
+    "TIP_BRIEF_MIN_CHARS",
+    "TIP_LINE_MAX",
+    "TIP_RULES",
     "TOOLS",
     "TOOL_TIMEOUT_S",
     "TREE_RACE_DETAIL",
@@ -10463,6 +11044,7 @@ __all__ = [
     "Context",
     "GatewayUnauthorized",
     "ImageContent",
+    "Tip",
     "Tool",
     "ToolError",
     "agent_run",
@@ -10476,6 +11058,7 @@ __all__ = [
     "door_limit",
     "door_rows",
     "door_value",
+    "epic_contract",
     "field_value",
     "image_bytes_match",
     "image_result",
