@@ -1124,9 +1124,13 @@ async def get_task(
         # SP-9 — an epic rolls up EVERY descendant the reader can see. The key
         # is absent for any other task. `subtasks` (direct children) is not
         # touched. The one home of the rule is `rollup.py`.
-        from gateway.routes.projects.rollup import epic_rollup
+        from gateway.routes.projects.rollup import epic_rollup, goal_rollup
 
         rollup = await epic_rollup(db, vis, row)
+        if rollup is None:
+            # WM-5 — a Goal rolls up its linked epics, in any project. No key
+            # while PROJECTS_GOALS_ORGS does not hold the org.
+            rollup = await goal_rollup(db, vis, row)
         if rollup is not None:
             result["rollup"] = rollup
         return result
