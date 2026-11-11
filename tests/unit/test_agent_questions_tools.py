@@ -337,3 +337,13 @@ def test_a_refusal_shows_the_clean_detail_and_not_the_route(monkeypatch) -> None
     approve(monkeypatch)
     said = _run(skill_projects.answer_agent_question(RUN, answer="x"))
     assert "Only the task creator can answer." in said and "/projects/agent-runs" not in said
+
+
+def test_the_withdrawn_mark_alone_stops_a_replay_from_counting(monkeypatch) -> None:
+    replay = {"created": False, "activity": {
+        "content": {"body": "x", "withdrawn": {"at": "2026-11-10T09:00:00+00:00"}},
+        "in_reply_to": QID}}
+    _gateway(monkeypatch, post=replay)
+    approve(monkeypatch)
+    said = _run(skill_projects.answer_agent_question(RUN, answer="x"))
+    assert "Already answered" not in said
