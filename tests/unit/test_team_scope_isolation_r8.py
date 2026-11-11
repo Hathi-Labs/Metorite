@@ -146,7 +146,7 @@ from acb_auth.access import invalidate as invalidate_access
 from acb_common import get_settings
 from acb_common.db import bind_tenant, release_tenant
 from agent_edge import app as edge_app_module
-from agent_edge import gateway_client
+from agent_edge import gateway_client, tools
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
@@ -396,6 +396,13 @@ redis_fake = tw.redis_fake
 def live_app(monkeypatch, world, redis_fake):
     """The real gateway app behind the real edge, with box tokens on."""
     from gateway.main import app as gateway_app
+
+    # The app mounts this router. The import also names it for
+    # `scripts/affected_tests.py` (CIV-18), so that a change to any Projects
+    # route module selects this fence.
+    from gateway.routes.projects import router as projects_router
+
+    assert projects_router.routes, "the Projects router holds no route"
 
     settings = get_settings()
     for name, value in (
@@ -859,6 +866,8 @@ class TestTheMcpDoor:
         missing_task = await _mcp(live, token, "get_task", {"task_id": MISSING})
         missing_node = await _mcp(live, token, "get_project", {"project_id": MISSING})
         assert missing_task["isError"] is True and missing_node["isError"] is True
+        assert missing_task["content"][0]["text"] == tools.TEXT_TASK_NOT_FOUND
+        assert missing_node["content"][0]["text"] == tools.TEXT_PROJECT_NOT_FOUND
         for sp in _unseen(live, who):
             for task in sp.tasks:
                 got = await _mcp(live, token, "get_task", {"task_id": task})
