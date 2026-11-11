@@ -684,6 +684,7 @@ jobs:
               tests/unit/test_credential_tenant_threading.py \
               tests/unit/test_h3_rls_promotion_rehearsal.py \
               tests/unit/test_studio_templates_r8.py \
+              tests/unit/test_skill_packs_r8.py \
               tests/unit/test_studio_hierarchy_r8.py \
               tests/unit/test_action_broker_tenancy_r8.py \
               tests/unit/test_org_settings_tenancy_r8.py \
@@ -724,6 +725,7 @@ jobs:
               tests/unit/test_studio_route_gate_r8.py \
               tests/unit/test_workflows_author_gate_r8.py \
               tests/unit/test_package_host_store_r8.py \
+              tests/unit/test_auth_me_install_features_r8.py \
               tests/unit/test_shell_layout_r8.py \
               tests/unit/test_package_disposal_r8.py \
               tests/unit/test_package_lifetime_r8.py \
