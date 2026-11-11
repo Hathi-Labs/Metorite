@@ -218,8 +218,10 @@ def _own_run(run: Any, user: UserContext) -> bool:
         return False
     if str(run.connection_id or "").lower() != str(agent.connection_id or "").lower():
         return False
+    # The rule of the claim gate (`agent_runs._OPEN_RUN_SQL`): a call with no
+    # session owns only a run with no key, so it never reaches a session's run.
     mine = getattr(agent, "session_key", None)
-    return run.session_key is None or mine is None or run.session_key == mine
+    return run.session_key is None or (mine is not None and run.session_key == mine)
 
 
 async def _closing_refusal(db: Any, user: UserContext, task: Any) -> str | None:

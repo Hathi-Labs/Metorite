@@ -41,7 +41,7 @@ export function TaskCheckBlock({ check }: { check?: TaskCheck | null }) {
         {check.text}
       </p>
       {check.last_evidence ? (
-        <p className="line-clamp-4 whitespace-pre-wrap break-words text-xs text-muted-foreground">
+        <p className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words text-xs text-muted-foreground">
           {check.last_evidence}
         </p>
       ) : null}
