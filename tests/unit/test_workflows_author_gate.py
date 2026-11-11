@@ -49,7 +49,13 @@ went red.
   ``test_a_studio_deny_refuses_a_draft_run``,
   ``test_a_guest_with_workflows_reads_and_runs_but_does_not_write`` and
   ``test_only_run_workflow_calls_the_check_in_a_handler``.
-* M3: make ``author_gate_on`` return False. Red: each test of c, e and g.
+* M3: make ``author_gate_on`` return False. Red:
+  ``test_a_studio_deny_refuses_each_write``,
+  ``test_a_studio_deny_refuses_a_draft_run``,
+  ``test_a_refused_write_reads_no_body``,
+  ``test_a_guest_with_workflows_reads_and_runs_but_does_not_write``,
+  ``test_a_listed_org_is_on_and_another_org_is_off``,
+  ``test_star_checks_a_caller_with_no_org`` and the R8 half.
 * M4: add ``AUTHOR_GATE`` to the publish route. Red:
   ``test_the_gates_of_each_route_are_the_gates_of_its_class`` and
   ``test_a_studio_deny_keeps_the_live_routes_of_a_publisher``.
