@@ -190,6 +190,8 @@ A delete stays a single guarded act (class C). No batch tool deletes.
 
    **Since ALN-4.** `projects-authority` holds 3 tools, and it is on wherever the core pack is on. WS-39 LP-1a adds the two tools of a project update to it, so it holds 5 (`project_management_app.md` §14.2a). It does not count in the reach test, because it holds fewer than `REACH_MIN_TOOLS` tools (fix round 4). Before fix round 4 it kept the owner reached up to 107 tools while no work pack fitted. Then a bulk load beside the core and plan packs refused with `LOAD_NO_PATH`, and the chat handed off one round later.
 
+   **Since SP-5a.** The pack `projects-cycles` comes after `projects-authority`. It holds 6 tools: `list_cycles`, `cycle_detail`, `create_cycle`, `plan_cycle`, `start_cycle` and `close_cycle`. It follows the core pack (`FOLLOWS`), so it needs no flag change. It holds fewer than `REACH_MIN_TOOLS` tools, so it does not count in the reach test (`project_management_app.md` §13.2).
+
 These tests changed because their premise changed:
 
 - `test_projects_packs.py`: `SLUGS` and `SIZES` (:69 to :71), the 120-tool union (:119) and the "35 tools" answer (:716).

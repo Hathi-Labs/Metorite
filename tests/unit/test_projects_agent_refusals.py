@@ -386,3 +386,26 @@ def test_the_model_reads_the_gateway_detail_of_a_refusal(monkeypatch) -> None:
     results = _tool_results(model.bodies[1])
     assert any(r.startswith(REFUSED) and "«Task not found.»" in r for r in results), results
     assert not any("Function failed" in r for r in results), results
+
+
+# ── Task 2494: a card that the member's chat message closed ─────────────────
+
+
+async def test_the_registered_tool_answers_a_closed_card_with_its_own_text(monkeypatch) -> None:
+    """The real registration (``_agent_tool`` in ``build_agents()``) catches
+    ``CardClosedByChat``. A swap to a wrapper that does not catch it makes a
+    closed card read "Error: Function failed." to the model, and this fails."""
+    import acb_skills.ask_tools as ask_tools
+
+    from skill_projects.writes import CARD_REVISED
+
+    calls = fake_gateway(monkeypatch, {"id": TASK, "task_number": 7, "title": "Fix the extruder"})
+
+    async def closed_by_chat(**_kwargs: Any) -> Any:
+        return ask_tools.REVISED
+
+    monkeypatch.setattr(ask_tools, "request_confirmation", closed_by_chat)
+    text = await _call("comment", task_id=TASK, body="Looks good")
+    assert text == CARD_REVISED, text
+    assert "Function failed" not in text
+    assert writes(calls) == [], "a closed card writes nothing"
